@@ -37,9 +37,9 @@ Claude Code reports its status.
 | `prefix K` | show the sidebar with keyboard focus, or hide it |
 | `prefix k` | toggle keyboard focus between the sidebar and the pane |
 | drag the sidebar's edge | resize it |
-| `C-j` / `C-k`, `C-n` / `C-p` | move between panes |
+| `j` / `k`, `C-j` / `C-k`, `C-n` / `C-p` | move between panes |
 | `gg` / `G` | first / last pane |
-| typing | fuzzy-filter sessions by name |
+| `/` | search: type to fuzzy-filter sessions by name, `Esc` cancels |
 | `Esc` / `C-c` | clear the filter, or return focus to the pane |
 | `Enter` / click | jump to the pane |
 

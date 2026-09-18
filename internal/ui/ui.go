@@ -39,16 +39,17 @@ type row struct {
 }
 
 type model struct {
-	opts   Options
-	snap   snapshot
-	rows   []row
-	cursor int // index into rows; on a selectable row when any exist
-	top    int // first row shown; moves only when the cursor leaves the view
-	width  int
-	height int
-	status string // error shown on the last line
-	filter string // fuzzy filter on session names; empty shows all
-	gPend  bool   // a "g" was typed: "gg" goes to the top
+	opts      Options
+	snap      snapshot
+	rows      []row
+	cursor    int // index into rows; on a selectable row when any exist
+	top       int // first row shown; moves only when the cursor leaves the view
+	width     int
+	height    int
+	status    string // error shown on the last line
+	filter    string // fuzzy filter on session names; empty shows all
+	searching bool   // "/" pressed: typing edits the filter
+	gPend     bool   // a "g" was typed: "gg" goes to the top
 }
 
 // Run starts the sidebar and blocks until it exits.
@@ -106,29 +107,67 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clampTop()
 		}
 	case tea.KeyMsg:
+		// Runes that arrive together (fast typing, send-keys) come as one
+		// message; outside a search each is a separate command.
+		if !m.searching && msg.Type == tea.KeyRunes && len(msg.Runes) > 1 {
+			var mm tea.Model = m
+			var cmd tea.Cmd
+			for _, r := range msg.Runes {
+				mm, cmd = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+			}
+			return mm, cmd
+		}
 		key := msg.String()
-		// "gg" goes to the top; a lone "g" followed by anything else is
-		// filter text like any other letter.
+		// Keys that work the same whether or not a search is being typed.
+		switch key {
+		case "ctrl+j", "ctrl+n", "down":
+			m.move(1)
+			return m, nil
+		case "ctrl+k", "ctrl+p", "up":
+			m.move(-1)
+			return m, nil
+		case "enter":
+			m.jump()
+			return m, nil
+		}
+		if m.searching {
+			switch key {
+			case "esc", "ctrl+c":
+				m.searching = false
+				m.setFilter("")
+			case "backspace":
+				if r := []rune(m.filter); len(r) > 0 {
+					m.setFilter(string(r[:len(r)-1]))
+				}
+			default:
+				if msg.Type == tea.KeyRunes && !msg.Alt {
+					m.setFilter(m.filter + string(msg.Runes))
+				}
+			}
+			return m, nil
+		}
+		// "gg" goes to the top.
 		if m.gPend {
 			m.gPend = false
 			if key == "g" {
 				m.cursor = -1
 				m.move(1)
-				break
 			}
-			m.setFilter(m.filter + "g")
+			return m, nil
 		}
 		switch key {
-		case "ctrl+c", "esc":
-			// Leave: clear the filter, or hand the keyboard back.
+		case "/":
+			m.searching = true
+			m.setFilter("")
+		case "esc", "ctrl+c":
 			if m.filter != "" {
 				m.setFilter("")
 			} else if err := tmux.ReleaseSideFocus(m.opts.Client); err != nil {
 				m.status = err.Error()
 			}
-		case "ctrl+j", "ctrl+n", "down":
+		case "j":
 			m.move(1)
-		case "ctrl+k", "ctrl+p", "up":
+		case "k":
 			m.move(-1)
 		case "g":
 			m.gPend = true
@@ -138,16 +177,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "home":
 			m.cursor = -1
 			m.move(1)
-		case "backspace":
-			if r := []rune(m.filter); len(r) > 0 {
-				m.setFilter(string(r[:len(r)-1]))
-			}
-		case "enter":
-			m.jump()
-		default:
-			if msg.Type == tea.KeyRunes && !msg.Alt {
-				m.setFilter(m.filter + string(msg.Runes))
-			}
 		}
 	}
 	return m, nil
@@ -164,6 +193,7 @@ func (m *model) jump() {
 		m.status = err.Error()
 		return
 	}
+	m.searching = false
 	if m.filter != "" {
 		m.setFilter("")
 		m.focus(pane)
@@ -213,7 +243,7 @@ const scrollMargin = 3
 // viewRows is how many rows fit; an error or the filter takes the last line.
 func (m *model) viewRows() int {
 	h := m.height
-	if m.status != "" || m.filter != "" {
+	if m.status != "" || m.searching || m.filter != "" {
 		h--
 	}
 	if h > 0 {
@@ -441,7 +471,7 @@ func (m model) View() string {
 	switch {
 	case m.status != "":
 		b.WriteString(stErr.Render(m.status))
-	case m.filter != "":
+	case m.searching || m.filter != "":
 		b.WriteString(stDim.Render("/") + m.filter)
 	}
 	return strings.TrimRight(b.String(), "\n")
