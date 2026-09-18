@@ -42,7 +42,7 @@ Claude Code reports its status.
 | `j` / `k`, `C-j` / `C-k`, `C-n` / `C-p` | move between panes |
 | `gg` / `G` | first / last pane |
 | `n` / `N` | next / previous session that wants you (waiting, or done since you last looked) |
-| `/` | search: type to fuzzy-filter sessions by name, `Esc` cancels |
+| `/` | search: type to fuzzy-filter by session name or Claude session title, `Esc` cancels |
 | `Esc` / `C-c` | clear the filter, or return focus to the pane |
 | `Enter` / click | jump to the pane |
 

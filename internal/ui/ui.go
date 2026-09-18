@@ -498,17 +498,28 @@ func claudeTitle(title string) string {
 	return t
 }
 
-// paneLabel is the row text for a pane: its foreground command, or for a
-// Claude Code pane (one a hook reported, or one running claude without
-// hook data), a status indicator and the session title.
-func (m *model) paneLabel(p tmux.Pane) string {
-	s, hooked := m.snap.states[p.PaneID]
+// claudeTitleOf returns pane p's Claude Code title and true when it is a
+// Claude Code pane (one a hook reported, or one running claude without hook
+// data); otherwise "", false.
+func (m *model) claudeTitleOf(p tmux.Pane) (string, bool) {
+	_, hooked := m.snap.states[p.PaneID]
 	if !hooked && p.CurrentCommand != "claude" {
+		return "", false
+	}
+	return claudeTitle(p.Title), true
+}
+
+// paneLabel is the row text for a pane: its foreground command, or for a
+// Claude Code pane, a status indicator and the session title.
+func (m *model) paneLabel(p tmux.Pane) string {
+	title, isClaude := m.claudeTitleOf(p)
+	if !isClaude {
 		if host, ok := m.snap.ssh[p.PanePID]; ok {
 			return stProc.Render("ssh ") + host
 		}
 		return stProc.Render(p.CurrentCommand)
 	}
+	s, hooked := m.snap.states[p.PaneID]
 	ind := indicators[state.Unknown]
 	if hooked {
 		ind = indicators[s.Status]
@@ -516,7 +527,7 @@ func (m *model) paneLabel(p tmux.Pane) string {
 	if m.done(p.PaneID) {
 		ind = indicatorDone
 	}
-	return ind + " " + claudeTitle(p.Title)
+	return ind + " " + title
 }
 
 func (m *model) rebuild() {
@@ -556,15 +567,39 @@ func (m *model) rebuild() {
 		return order[i].name < order[j].name
 	})
 	if m.filter != "" {
-		// Best matches first; non-matching sessions drop out.
-		names := make([]string, len(order))
-		for i, s := range order {
-			names[i] = s.name
+		// A session matches when its name or a Claude pane's title
+		// fuzzy-matches; best matches first, non-matching sessions drop
+		// out. A session that matches via a pane keeps all its panes.
+		var texts []string
+		var owner []*sess
+		for _, s := range order {
+			texts = append(texts, s.name)
+			owner = append(owner, s)
+			for _, p := range s.panes {
+				if title, ok := m.claudeTitleOf(p); ok {
+					texts = append(texts, title)
+					owner = append(owner, s)
+				}
+			}
+		}
+		best := map[*sess]int{}
+		matched := map[*sess]bool{}
+		for _, match := range fuzzy.Find(m.filter, texts) {
+			s := owner[match.Index]
+			if !matched[s] || match.Score > best[s] {
+				best[s] = match.Score
+			}
+			matched[s] = true
 		}
 		var ranked []*sess
-		for _, match := range fuzzy.Find(m.filter, names) {
-			ranked = append(ranked, order[match.Index])
+		for _, s := range order {
+			if matched[s] {
+				ranked = append(ranked, s)
+			}
 		}
+		sort.SliceStable(ranked, func(i, j int) bool {
+			return best[ranked[i]] > best[ranked[j]]
+		})
 		order = ranked
 	}
 
