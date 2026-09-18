@@ -114,13 +114,13 @@ func Jump(client, paneID string) error {
 	_, err := run("switch-client", "-c", client, "-t", paneID, ";",
 		"select-window", "-t", paneID, ";",
 		"select-pane", "-t", paneID, ";",
-		"refresh-client", "-t", client, "-f", "!side-focus")
+		"refresh-client", "-t", client, "-f", "!side-status-focus")
 	return err
 }
 
 // ReleaseSideFocus hands keyboard focus from the side status line back to
 // the client's active pane.
 func ReleaseSideFocus(client string) error {
-	_, err := run("refresh-client", "-t", client, "-f", "!side-focus")
+	_, err := run("refresh-client", "-t", client, "-f", "!side-status-focus")
 	return err
 }
