@@ -31,7 +31,7 @@ The selected row is shown inverted.
 
 ```sh
 brew install andreypopp/tap/kido        # kido, kido-hook and the tmux configs
-brew install andreypopp/tap/tmux-kido   # the patched tmux (replaces Homebrew's tmux)
+brew install andreypopp/tap/tmux   # the patched tmux (replaces Homebrew's tmux)
 make install-hooks                      # merges hooks/settings-hooks.json into ~/.claude/settings.json
 ```
 

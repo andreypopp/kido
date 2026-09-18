@@ -1,5 +1,5 @@
 # kido inside a native tmux side column.
-# Needs the patched tmux: brew install andreypopp/tap/tmux-kido
+# Needs the patched tmux: brew install andreypopp/tap/tmux
 # (github.com/andreypopp/tmux, branch side-pane).
 #   source-file "$(brew --prefix)/share/kido/kido-side.tmux"
 
