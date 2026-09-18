@@ -1,0 +1,12 @@
+{
+  "hooks": {
+    "SessionStart":       [{ "hooks": [{ "type": "command", "command": "kido-hook", "timeout": 5, "async": true }] }],
+    "SessionEnd":         [{ "hooks": [{ "type": "command", "command": "kido-hook", "timeout": 5 }] }],
+    "UserPromptSubmit":   [{ "hooks": [{ "type": "command", "command": "kido-hook", "timeout": 5, "async": true }] }],
+    "PreToolUse":         [{ "hooks": [{ "type": "command", "command": "kido-hook", "timeout": 5, "async": true }] }],
+    "PostToolUse":        [{ "hooks": [{ "type": "command", "command": "kido-hook", "timeout": 5, "async": true }] }],
+    "PermissionRequest":  [{ "hooks": [{ "type": "command", "command": "kido-hook", "timeout": 5, "async": true }] }],
+    "Stop":               [{ "hooks": [{ "type": "command", "command": "kido-hook", "timeout": 5, "async": true }] }],
+    "Notification":       [{ "hooks": [{ "type": "command", "command": "kido-hook", "timeout": 5, "async": true }] }]
+  }
+}
