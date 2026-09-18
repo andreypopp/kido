@@ -7,11 +7,11 @@ status of Claude Code panes.
 
 ```
 tmux
-┌ claude Tmux config ● running 17s
+┌ ● Tmux config          <- a Claude Code session: ● running, ◆ waiting, ○ idle
 └ zsh
 · nvim
 review
-· claude Fix login redirect ◆ waiting 40s
+· ◆ Fix login redirect
 ```
 
 ## Install

@@ -3,7 +3,6 @@
 package ui
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -299,7 +298,6 @@ var (
 	stCurrent = lipgloss.NewStyle().Bold(true)
 	stProc    = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
 	stDim     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	stClaude  = lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Bold(true)
 	stCursor  = lipgloss.NewStyle().Reverse(true)
 	stErr     = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 
@@ -308,7 +306,6 @@ var (
 	stIdle    = lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
 	stUnknown = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 
-	claudeLabel = stClaude.Render("claude")
 	// Glyphs grouping a window's panes: a dot for a lone pane, else a
 	// bracket spanning the window's rows.
 	glyphLone, glyphFirst, glyphMid, glyphLast = stDim.Render("·"), stDim.Render("┌"), stDim.Render("├"), stDim.Render("└")
@@ -327,27 +324,18 @@ func glyph(i, n int) string {
 	}
 }
 
-func badge(s state.Status, age time.Duration) string {
+// indicator marks a Claude Code pane by its status; the glyph alone says
+// it is an agent session.
+func indicator(s state.Status) string {
 	switch s {
 	case state.Running:
-		return stRunning.Render("● running " + short(age))
+		return stRunning.Render("●")
 	case state.Waiting:
-		return stWaiting.Render("◆ waiting " + short(age))
+		return stWaiting.Render("◆")
 	case state.Idle:
-		return stIdle.Render("○ idle " + short(age))
+		return stIdle.Render("○")
 	default:
-		return stUnknown.Render("? no hook data")
-	}
-}
-
-func short(d time.Duration) string {
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	default:
-		return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+		return stUnknown.Render("?")
 	}
 }
 
@@ -365,17 +353,17 @@ func claudeTitle(title string) string {
 
 // paneLabel is the row text for a pane: its foreground command, or for a
 // Claude Code pane (one a hook reported, or one running claude without
-// hook data), the session name and status badge.
+// hook data), a status indicator and the session title.
 func (m *model) paneLabel(p tmux.Pane) string {
 	s, hooked := m.snap.states[p.PaneID]
 	if !hooked && p.CurrentCommand != "claude" {
 		return stProc.Render(p.CurrentCommand)
 	}
-	st, age := state.Unknown, time.Duration(0)
+	st := state.Unknown
 	if hooked {
-		st, age = s.Status, time.Since(s.TS).Truncate(time.Second)
+		st = s.Status
 	}
-	return claudeLabel + " " + claudeTitle(p.Title) + " " + badge(st, age)
+	return indicator(st) + " " + claudeTitle(p.Title)
 }
 
 func (m *model) rebuild() {
