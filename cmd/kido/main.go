@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"kido/internal/hook"
+	"kido/internal/procs"
 	"kido/internal/state"
 	"kido/internal/tmux"
 	"kido/internal/ui"
@@ -157,7 +158,7 @@ func runHook(r io.Reader) error {
 	now := time.Now().UTC()
 	s := state.Session{
 		Pane:   os.Getenv("TMUX_PANE"),
-		PID:    os.Getppid(), // the claude process runs the hook
+		PID:    procs.HookParent(), // the claude process, past the sh -c wrapper
 		Status: e.Status,
 		TS:     now,
 	}
