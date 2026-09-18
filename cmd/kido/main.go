@@ -61,6 +61,7 @@ func main() {
 var hookEvents = []string{
 	"SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse",
 	"PostToolUse", "PermissionRequest", "Stop", "Notification",
+	"PreCompact", "PostCompact",
 }
 
 // setupClaude registers `kido hook` for hookEvents in the Claude Code
@@ -147,6 +148,7 @@ func hook(r io.Reader) error {
 		Event            string `json:"hook_event_name"`
 		SessionID        string `json:"session_id"`
 		NotificationType string `json:"notification_type"`
+		Trigger          string `json:"trigger"` // PreCompact/PostCompact: "auto" or "manual"
 	}
 	if err := json.NewDecoder(r).Decode(&in); err != nil {
 		return err
@@ -164,6 +166,16 @@ func hook(r io.Reader) error {
 		status = state.Idle
 	case "PermissionRequest", "Elicitation":
 		status = state.Waiting
+	case "PreCompact":
+		status = state.Compacting
+	case "PostCompact":
+		// An automatic compaction happens mid-turn and work resumes; a
+		// manual /compact leaves the session waiting for input.
+		if in.Trigger == "manual" {
+			status = state.Idle
+		} else {
+			status = state.Running
+		}
 	case "Notification":
 		switch in.NotificationType {
 		case "permission_prompt", "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input":

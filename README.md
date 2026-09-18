@@ -7,7 +7,7 @@ status of Claude Code panes.
 
 ```
 tmux
-┌ ● Tmux config          <- a Claude Code session: ● running, ◆ waiting, ○ idle
+┌ ● Tmux config          <- a Claude Code session: ● running, ◆ waiting, ◌ compacting, ○ idle
 └ zsh
 · nvim
 review
@@ -46,5 +46,5 @@ Claude Code reports its status.
 ## Status
 
 `kido hook` is the Claude Code hook. Prompt submit and tool use show
-`● running`, permission requests `◆ waiting`, session start and stop
-`○ idle`. State lives in `~/.local/state/kido/`.
+`● running`, permission requests `◆ waiting`, context compaction `◌`,
+session start and stop `○ idle`. State lives in `~/.local/state/kido/`.

@@ -142,6 +142,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "backspace":
 				if r := []rune(m.filter); len(r) > 0 {
 					m.setFilter(string(r[:len(r)-1]))
+				} else {
+					m.searching = false // nothing left to erase: leave search
 				}
 			default:
 				if msg.Type == tea.KeyRunes && !msg.Alt {
@@ -246,14 +248,13 @@ func (m *model) move(delta int) {
 // view starts moving when the cursor gets this close to an edge.
 const scrollMargin = 3
 
-// viewRows is how many rows fit; an error or the filter takes the last line.
+// viewRows is how many rows fit above the bottom line, which is always
+// reserved (for the search prompt or an error) so the frame never changes
+// height: Bubble Tea's renderer drops a row when a frame shrinks while its
+// other lines stay the same.
 func (m *model) viewRows() int {
-	h := m.height
-	if m.status != "" || m.searching || m.filter != "" {
-		h--
-	}
-	if h > 0 {
-		return h
+	if m.height > 1 {
+		return m.height - 1
 	}
 	return len(m.rows)
 }
@@ -304,6 +305,7 @@ var (
 	stRunning = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	stWaiting = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true)
 	stIdle    = lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
+	stCompact = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 	stUnknown = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 
 	// Glyphs grouping a window's panes: a dot for a lone pane, else a
@@ -332,6 +334,8 @@ func indicator(s state.Status) string {
 		return stRunning.Render("●")
 	case state.Waiting:
 		return stWaiting.Render("◆")
+	case state.Compacting:
+		return stCompact.Render("◌")
 	case state.Idle:
 		return stIdle.Render("○")
 	default:
@@ -463,11 +467,14 @@ func (m model) View() string {
 		b.WriteString(line)
 		b.WriteByte('\n')
 	}
+	for n := len(m.rows) - m.top; n < h; n++ {
+		b.WriteByte('\n') // keep the bottom line in place below short lists
+	}
 	switch {
 	case m.status != "":
 		b.WriteString(stErr.Render(m.status))
 	case m.searching || m.filter != "":
 		b.WriteString(stDim.Render("/") + m.filter)
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return b.String()
 }

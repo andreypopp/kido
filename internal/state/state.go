@@ -14,10 +14,11 @@ import (
 type Status string
 
 const (
-	Running Status = "running" // model or a tool is executing
-	Waiting Status = "waiting" // blocked on a permission prompt
-	Idle    Status = "idle"    // turn finished, waiting for user input
-	Unknown Status = "unknown" // claude process seen but no hook data
+	Running    Status = "running"    // model or a tool is executing
+	Waiting    Status = "waiting"    // blocked on a permission prompt
+	Compacting Status = "compacting" // context is being compacted
+	Idle       Status = "idle"       // turn finished, waiting for user input
+	Unknown    Status = "unknown"    // claude process seen but no hook data
 )
 
 // Session is one state file.
