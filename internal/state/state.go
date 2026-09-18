@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -23,6 +24,7 @@ const (
 
 // Session is one state file.
 type Session struct {
+	ID     string    `json:"-"`    // Claude Code session id (the file name)
 	Pane   string    `json:"pane"` // TMUX_PANE, e.g. "%18"
 	PID    int       `json:"pid"`  // claude process pid
 	Status Status    `json:"status"`
@@ -65,6 +67,7 @@ func Load() (map[string]Session, error) {
 		if json.Unmarshal(b, &s) != nil || s.Pane == "" || !alive(s.PID) {
 			continue
 		}
+		s.ID = strings.TrimSuffix(e.Name(), ".json")
 		if prev, ok := out[s.Pane]; !ok || s.TS.After(prev.TS) {
 			out[s.Pane] = s
 		}

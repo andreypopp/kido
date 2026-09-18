@@ -32,6 +32,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "snapshot":
+			if err := snapshot(os.Stdout); err != nil {
+				fmt.Fprintln(os.Stderr, "kido snapshot:", err)
+				os.Exit(1)
+			}
+			return
 		}
 	}
 
@@ -148,7 +154,8 @@ func hook(r io.Reader) error {
 		Event            string `json:"hook_event_name"`
 		SessionID        string `json:"session_id"`
 		NotificationType string `json:"notification_type"`
-		Trigger          string `json:"trigger"` // PreCompact/PostCompact: "auto" or "manual"
+		Trigger          string `json:"trigger"`   // PreCompact/PostCompact: "auto" or "manual"
+		ToolName         string `json:"tool_name"` // PreToolUse/PostToolUse
 	}
 	if err := json.NewDecoder(r).Decode(&in); err != nil {
 		return err
@@ -160,7 +167,14 @@ func hook(r io.Reader) error {
 	switch in.Event {
 	case "SessionEnd":
 		return state.Remove(in.SessionID)
-	case "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure":
+	case "PreToolUse":
+		// Asking the user a question blocks like a permission prompt.
+		if in.ToolName == "AskUserQuestion" {
+			status = state.Waiting
+		} else {
+			status = state.Running
+		}
+	case "UserPromptSubmit", "PostToolUse", "PostToolUseFailure":
 		status = state.Running
 	case "SessionStart", "Stop":
 		status = state.Idle
@@ -180,6 +194,8 @@ func hook(r io.Reader) error {
 		switch in.NotificationType {
 		case "permission_prompt", "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input":
 			status = state.Waiting
+		case "idle_prompt":
+			status = state.Idle // fires when a turn ended without a Stop, e.g. after Esc
 		default:
 			return nil
 		}

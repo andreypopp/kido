@@ -36,8 +36,9 @@ type snapshot struct {
 }
 
 type row struct {
-	text   string
-	paneID string // non-empty for selectable rows
+	text      string
+	paneID    string // non-empty for selectable rows
+	attention bool   // a Claude session waiting on you, or done unseen
 }
 
 type model struct {
@@ -52,11 +53,17 @@ type model struct {
 	filter    string // fuzzy filter on session names; empty shows all
 	searching bool   // "/" pressed: typing edits the filter
 	gPend     bool   // a "g" was typed: "gg" goes to the top
+
+	// Claude panes seen working; when one goes idle while it is not the
+	// active pane it counts as done until the user visits it.
+	busy map[string]bool
+	done map[string]bool
 }
 
 // Run starts the sidebar and blocks until it exits.
 func Run(opts Options) error {
-	m := model{opts: opts, snap: take(opts.Client)}
+	m := model{opts: opts, snap: take(opts.Client), busy: map[string]bool{}, done: map[string]bool{}}
+	m.track()
 	m.rebuild()
 	m.focus(m.snap.active)
 	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
@@ -96,6 +103,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case snapshot:
 		was := m.snap
 		m.snap = msg
+		m.track()
 		m.rebuild()
 		// Follow the user: a pane switch in tmux, or the keyboard going
 		// back to the pane (prefix k, a click elsewhere) both put the
@@ -186,6 +194,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.move(1)
 		case "k":
 			m.move(-1)
+		case "n":
+			m.nextAttention(1)
+		case "N":
+			m.nextAttention(-1)
 		case "g":
 			m.gPend = true
 		case "G", "end":
@@ -220,6 +232,40 @@ func (m *model) jump() {
 func (m *model) setFilter(f string) {
 	m.filter = f
 	m.rebuild()
+}
+
+// track updates the done bookkeeping from the latest snapshot.
+func (m *model) track() {
+	for pane, s := range m.snap.states {
+		switch s.Status {
+		case state.Running, state.Waiting, state.Compacting:
+			m.busy[pane] = true
+			m.done[pane] = false
+		case state.Idle:
+			if m.busy[pane] && pane != m.snap.active {
+				m.done[pane] = true
+			}
+			m.busy[pane] = false
+		}
+	}
+	// Visiting the pane is what marks it seen.
+	if m.snap.active != "" {
+		m.done[m.snap.active] = false
+	}
+}
+
+// nextAttention moves the cursor to the next row needing attention, in
+// the given direction, wrapping around.
+func (m *model) nextAttention(delta int) {
+	n := len(m.rows)
+	for step := 1; step <= n; step++ {
+		i := ((m.cursor+delta*step)%n + n) % n
+		if m.rows[i].attention {
+			m.cursor = i
+			m.ensureVisible()
+			return
+		}
+	}
 }
 
 // indexOf returns the row of paneID, or -1.
@@ -315,6 +361,7 @@ var (
 	stWaiting = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true)
 	stIdle    = lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
 	stCompact = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
+	stDone    = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true)
 	stUnknown = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 
 	// Glyphs grouping a window's panes: a dot for a lone pane, else a
@@ -336,8 +383,12 @@ func glyph(i, n int) string {
 }
 
 // indicator marks a Claude Code pane by its status; the glyph alone says
-// it is an agent session.
-func indicator(s state.Status) string {
+// it is an agent session. done is an idle session that finished while
+// its pane was not being looked at.
+func indicator(s state.Status, done bool) string {
+	if done {
+		return stDone.Render("✓")
+	}
 	switch s {
 	case state.Running:
 		return stRunning.Render("●")
@@ -366,20 +417,22 @@ func claudeTitle(title string) string {
 
 // paneLabel is the row text for a pane: its foreground command, or for a
 // Claude Code pane (one a hook reported, or one running claude without
-// hook data), a status indicator and the session title.
-func (m *model) paneLabel(p tmux.Pane) string {
+// hook data), a status indicator and the session title. attention is
+// whether the pane wants the user.
+func (m *model) paneLabel(p tmux.Pane) (text string, attention bool) {
 	s, hooked := m.snap.states[p.PaneID]
 	if !hooked && p.CurrentCommand != "claude" {
 		if host, ok := m.snap.ssh[p.PanePID]; ok {
-			return stProc.Render("ssh ") + host
+			return stProc.Render("ssh ") + host, false
 		}
-		return stProc.Render(p.CurrentCommand)
+		return stProc.Render(p.CurrentCommand), false
 	}
 	st := state.Unknown
 	if hooked {
 		st = s.Status
 	}
-	return indicator(st) + " " + claudeTitle(p.Title)
+	done := m.done[p.PaneID]
+	return indicator(st, done) + " " + claudeTitle(p.Title), done || st == state.Waiting
 }
 
 func (m *model) rebuild() {
@@ -449,9 +502,11 @@ func (m *model) rebuild() {
 		}
 		for _, panes := range windows {
 			for i, p := range panes {
+				text, attention := m.paneLabel(p)
 				m.rows = append(m.rows, row{
-					text:   glyph(i, len(panes)) + " " + m.paneLabel(p),
-					paneID: p.PaneID,
+					text:      glyph(i, len(panes)) + " " + text,
+					paneID:    p.PaneID,
+					attention: attention,
 				})
 			}
 		}

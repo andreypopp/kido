@@ -7,7 +7,7 @@ status of Claude Code panes.
 
 ```
 tmux
-┌ ● Tmux config          <- a Claude Code session: ● running, ◆ waiting, ◌ compacting, ○ idle
+┌ ● Tmux config          <- a Claude Code session: ● running, ◆ waiting, ◌ compacting, ✓ done, ○ idle
 └ zsh
 · nvim
 · ssh deploy@build-box      <- panes running ssh show the destination
@@ -40,6 +40,7 @@ Claude Code reports its status.
 | drag the sidebar's edge | resize it |
 | `j` / `k`, `C-j` / `C-k`, `C-n` / `C-p` | move between panes |
 | `gg` / `G` | first / last pane |
+| `n` / `N` | next / previous session that wants you (waiting, or done since you last looked) |
 | `/` | search: type to fuzzy-filter sessions by name, `Esc` cancels |
 | `Esc` / `C-c` | clear the filter, or return focus to the pane |
 | `Enter` / click | jump to the pane |
@@ -47,8 +48,14 @@ Claude Code reports its status.
 ## Status
 
 `kido hook` is the Claude Code hook. Prompt submit and tool use show
-`● running`, permission requests `◆ waiting`, context compaction `◌`,
-session start and stop `○ idle`. State lives in `~/.local/state/kido/`.
+`● running`, permission prompts and questions `◆ waiting`, context
+compaction `◌`, session start and stop `○ idle`. A session that finishes
+while you are elsewhere shows `✓ done` until you visit its pane. State
+lives in `~/.local/state/kido/`.
+
+`kido snapshot` prints a shell script that recreates every session,
+window, pane and layout, resuming Claude Code panes by their exact session
+id. Run it outside tmux after a `tmux kill-server`.
 
 ## Setting up another machine
 
