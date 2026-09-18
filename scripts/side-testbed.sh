@@ -1,14 +1,15 @@
 #!/bin/sh
-# Kill, recreate and attach to the patched-tmux test server with a
-# 50-session layout for kido. Run it from a terminal outside tmux:
+# Kill, recreate and attach to a throwaway tmux server with a 50-session
+# layout for trying kido out. Needs the tmux fork (brew install
+# andreypopp/tap/tmux). Run it from a terminal outside tmux:
 #
 #   scripts/side-testbed.sh            # kill && start && attach
 #   scripts/side-testbed.sh --no-attach
 #
-# Env: TMUX_SIDE_BIN (default ~/.local/tmux-side/bin/tmux), SOCKET (default side)
+# Env: TMUX_BIN (default: tmux on PATH), SOCKET (default side)
 
 set -e
-T="${TMUX_SIDE_BIN:-$HOME/.local/tmux-side/bin/tmux}"
+T="${TMUX_BIN:-tmux}"
 L="${SOCKET:-side}"
 here=$(cd "$(dirname "$0")/.." && pwd)
 cwd="$here"
