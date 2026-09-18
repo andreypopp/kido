@@ -27,8 +27,8 @@ brew uninstall tmux && brew install andreypopp/tap/tmux
 source-file "$(brew --prefix)/share/kido/kido-side.tmux"
 ```
 
-Merge `$(brew --prefix)/share/kido/settings-hooks.json` into
-`~/.claude/settings.json` so Claude Code reports its status.
+Then `kido setup-claude` registers the hook in `~/.claude/settings.json` so
+Claude Code reports its status.
 
 ## Keys
 
@@ -44,6 +44,6 @@ Merge `$(brew --prefix)/share/kido/settings-hooks.json` into
 
 ## Status
 
-`kido-hook` is a Claude Code hook. Prompt submit and tool use show
+`kido hook` is the Claude Code hook. Prompt submit and tool use show
 `● running`, permission requests `◆ waiting`, session start and stop
 `○ idle`. State lives in `~/.local/state/kido/`.

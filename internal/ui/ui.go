@@ -1,10 +1,9 @@
-// Package ui is the Bubble Tea sidebar: sessions → panes → processes, with
+// Package ui is the Bubble Tea sidebar: sessions and their panes, with
 // Claude Code panes badged by their hook-reported status.
 package ui
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -15,7 +14,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/sahilm/fuzzy"
 
-	"kido/internal/procs"
 	"kido/internal/state"
 	"kido/internal/tmux"
 )
@@ -23,24 +21,16 @@ import (
 // Options configures the sidebar.
 type Options struct {
 	Interval time.Duration
-	Popup    bool   // quit after jumping (popup closes when the command exits)
-	Client   string // tmux client to switch on jump; resolved via tmux when empty
-	Focus    string // pane to put the cursor on at startup; client's active pane when empty
-	Width    int    // pinned sidebar width, used to keep the pane in place
-	Side     bool   // running inside a tmux side status column (no pane of our own)
-	ShowSelf bool   // list the pane kido itself runs in
+	Client   string // tmux client the sidebar belongs to
 }
 
-type tickMsg time.Time
-
+// snapshot is everything the sidebar shows, taken off the UI goroutine.
 type snapshot struct {
 	current string // session the client is attached to
 	active  string // the client's active pane
 	panes   []tmux.Pane
-	procs   *procs.Table
 	states  map[string]state.Session
 	err     error
-	at      time.Time
 }
 
 type row struct {
@@ -50,142 +40,79 @@ type row struct {
 
 type model struct {
 	opts   Options
-	self   string
 	snap   snapshot
 	rows   []row
-	cursor int // index into rows; always on a selectable row when any exist
+	cursor int // index into rows; on a selectable row when any exist
 	top    int // first row shown; moves only when the cursor leaves the view
 	width  int
 	height int
-	status string
+	status string // error shown on the last line
 	filter string // fuzzy filter on session names; empty shows all
 }
 
 // Run starts the sidebar and blocks until it exits.
 func Run(opts Options) error {
-	m := model{opts: opts}
-	if !opts.Popup && !opts.Side {
-		// Hide the pane the sidebar itself occupies. In a popup or a side
-		// column there is no such pane; TMUX_PANE, if set, is inherited.
-		m.self = os.Getenv("TMUX_PANE")
-	}
-	if m.opts.Focus == "" {
-		m.opts.Focus = tmux.ActivePane(m.client())
-	}
-	m.snap = take(m.client())
+	m := model{opts: opts, snap: take(opts.Client)}
 	m.rebuild()
-	m.focus(m.opts.Focus)
+	m.focus(m.snap.active)
 	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	return err
 }
 
-// keepInPlace moves a pinned sidebar back to the left edge when a layout
-// command (rotate-window, swap-pane, select-layout...) displaced it. Hooks
-// cover most cases, but rotate and swap fire none.
-func (m *model) keepInPlace() {
-	if m.self == "" || m.opts.Width <= 0 || tmux.InPlace(m.self, m.opts.Width) {
-		return
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		exe = "kido"
-	}
-	_ = tmux.EnsureSidebar(m.self, m.opts.Width, exe)
-}
-
-// client resolves which tmux client to act on. An explicit -client wins;
-// a pinned sidebar uses the client attached to its own session, which can
-// change over time, so this is re-resolved on every use rather than cached.
-func (m *model) client() string {
-	if m.opts.Client != "" {
-		return m.opts.Client
-	}
-	if m.self != "" {
-		if c := tmux.ClientFor(m.self); c != "" {
-			return c
-		}
-	}
-	return tmux.CurrentClient()
-}
-
 func take(client string) snapshot {
-	s := snapshot{at: time.Now()}
+	var s snapshot
 	s.current, s.active = tmux.ClientState(client)
 	if s.panes, s.err = tmux.ListPanes(); s.err != nil {
-		return s
-	}
-	if s.procs, s.err = procs.Snapshot(); s.err != nil {
 		return s
 	}
 	s.states, s.err = state.Load()
 	return s
 }
 
-func (m model) Init() tea.Cmd { return tick(m.opts.Interval) }
-
-func tick(d time.Duration) tea.Cmd {
-	return tea.Tick(d, func(t time.Time) tea.Msg { return tickMsg(t) })
+// tick waits, then takes a snapshot in the background.
+func (m model) tick() tea.Cmd {
+	client, d := m.opts.Client, m.opts.Interval
+	return tea.Tick(d, func(time.Time) tea.Msg { return take(client) })
 }
+
+func (m model) Init() tea.Cmd { return m.tick() }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.ensureVisible()
-	case tickMsg:
-		m.keepInPlace()
+	case snapshot:
 		was := m.snap.active
-		m.snap = take(m.client())
+		m.snap = msg
 		m.rebuild()
-		if m.snap.active != was && m.snap.active != "" {
-			// The user switched panes in tmux: follow them.
-			m.focus(m.snap.active)
+		if msg.active != was && msg.active != "" {
+			m.focus(msg.active) // the user switched panes in tmux: follow
 		}
-		return m, tick(m.opts.Interval)
+		return m, m.tick()
 	case tea.MouseMsg:
-		// Click selects the row under the pointer and jumps; wheel moves.
 		switch {
 		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft:
 			if i := m.rowAt(msg.Y); i >= 0 {
 				m.cursor = i
-				return m.jump()
+				m.jump()
 			}
 		case msg.Button == tea.MouseButtonWheelUp:
-			m.scroll(-3)
+			m.top -= 3
+			m.clampTop()
 		case msg.Button == tea.MouseButtonWheelDown:
-			m.scroll(3)
+			m.top += 3
+			m.clampTop()
 		}
-		return m, nil
 	case tea.KeyMsg:
-		// Runes that arrive in one read (pasted or sent with send-keys) come as
-		// a single KeyMsg; handle them one at a time.
-		if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 {
-			var cmd tea.Cmd
-			var mm tea.Model = m
-			for _, r := range msg.Runes {
-				mm, cmd = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-				if cmd != nil {
-					return mm, cmd
-				}
-			}
-			return mm, nil
-		}
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "esc":
 			if m.filter != "" {
 				m.setFilter("")
-				break
-			}
-			if m.opts.Popup {
-				return m, tea.Quit
-			}
-			if m.opts.Side {
-				// Hand the keyboard back to the active pane.
-				if err := tmux.ReleaseSideFocus(m.client()); err != nil {
-					m.status = err.Error()
-				}
+			} else if err := tmux.ReleaseSideFocus(m.opts.Client); err != nil {
+				m.status = err.Error()
 			}
 		case "ctrl+j", "ctrl+n", "down":
 			m.move(1)
@@ -198,14 +125,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cursor = len(m.rows)
 			m.move(-1)
 		case "backspace":
-			if m.filter != "" {
-				r := []rune(m.filter)
+			if r := []rune(m.filter); len(r) > 0 {
 				m.setFilter(string(r[:len(r)-1]))
 			}
 		case "enter":
-			return m.jump()
+			m.jump()
 		default:
-			// Any other printable key narrows the session filter.
 			if msg.Type == tea.KeyRunes && !msg.Alt {
 				m.setFilter(m.filter + string(msg.Runes))
 			}
@@ -214,51 +139,62 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// setFilter changes the session filter and rebuilds the rows.
-func (m *model) setFilter(f string) {
-	m.filter = f
-	m.rebuild()
-	if m.cursor < 0 || m.cursor >= len(m.rows) || m.rows[m.cursor].paneID == "" {
-		m.cursor = -1
-		m.move(1)
-	}
-}
-
-// jump switches the client to the pane under the cursor.
-func (m model) jump() (tea.Model, tea.Cmd) {
+// jump switches the client to the pane under the cursor, hands it the
+// keyboard, and clears the filter with the pane still selected.
+func (m *model) jump() {
 	if m.cursor < 0 || m.cursor >= len(m.rows) {
-		return m, nil
+		return
 	}
-	if err := tmux.Jump(m.client(), m.rows[m.cursor].paneID); err != nil {
+	pane := m.rows[m.cursor].paneID
+	if err := tmux.Jump(m.opts.Client, pane); err != nil {
 		m.status = err.Error()
-		return m, nil
+		return
 	}
 	if m.filter != "" {
-		// Keep the chosen pane selected while the full list comes back.
-		pane := m.rows[m.cursor].paneID
 		m.setFilter("")
 		m.focus(pane)
 	}
-	if m.opts.Popup {
-		return m, tea.Quit
-	}
-	if m.opts.Side {
-		// The pane is selected; give it the keyboard too.
-		if err := tmux.ReleaseSideFocus(m.client()); err != nil {
-			m.status = err.Error()
-		}
-	}
-	return m, nil
 }
 
-// rowAt maps a screen line to a selectable row index, or -1.
-func (m *model) rowAt(y int) int {
-	i := m.top + y
-	if i < 0 || i >= len(m.rows) || m.rows[i].paneID == "" {
-		return -1
-	}
-	return i
+func (m *model) setFilter(f string) {
+	m.filter = f
+	m.rebuild()
 }
+
+// indexOf returns the row of paneID, or -1.
+func (m *model) indexOf(paneID string) int {
+	for i, r := range m.rows {
+		if r.paneID != "" && r.paneID == paneID {
+			return i
+		}
+	}
+	return -1
+}
+
+// focus puts the cursor on paneID if it is listed.
+func (m *model) focus(paneID string) {
+	if i := m.indexOf(paneID); i >= 0 {
+		m.cursor = i
+		m.ensureVisible()
+	}
+}
+
+// move steps the cursor to the next selectable row in the given direction.
+func (m *model) move(delta int) {
+	for i := m.cursor + delta; i >= 0 && i < len(m.rows); i += delta {
+		if m.rows[i].paneID != "" {
+			m.cursor = i
+			m.ensureVisible()
+			return
+		}
+	}
+}
+
+// ---- scrolling -------------------------------------------------------------
+
+// scrollMargin is how many rows to keep visible beyond the cursor: the
+// view starts moving when the cursor gets this close to an edge.
+const scrollMargin = 3
 
 // viewRows is how many rows fit; an error or the filter takes the last line.
 func (m *model) viewRows() int {
@@ -272,12 +208,6 @@ func (m *model) viewRows() int {
 	return len(m.rows)
 }
 
-// scroll moves the view by delta rows, keeping the cursor where it is.
-func (m *model) scroll(delta int) {
-	m.top += delta
-	m.clampTop()
-}
-
 func (m *model) clampTop() {
 	if max := len(m.rows) - m.viewRows(); m.top > max {
 		m.top = max
@@ -286,10 +216,6 @@ func (m *model) clampTop() {
 		m.top = 0
 	}
 }
-
-// scrollMargin is how many rows to keep visible beyond the cursor: the
-// view starts moving when the cursor gets this close to an edge.
-const scrollMargin = 3
 
 // ensureVisible scrolls just enough to keep the cursor inside the view
 // with scrollMargin rows of context, as far as the list allows.
@@ -307,31 +233,18 @@ func (m *model) ensureVisible() {
 	m.clampTop()
 }
 
-// focus puts the cursor on paneID if it is listed.
-func (m *model) focus(paneID string) {
-	for i, r := range m.rows {
-		if r.paneID != "" && r.paneID == paneID {
-			m.cursor = i
-			m.ensureVisible()
-			return
-		}
+// rowAt maps a screen line to a selectable row index, or -1.
+func (m *model) rowAt(y int) int {
+	i := m.top + y
+	if i < 0 || i >= len(m.rows) || m.rows[i].paneID == "" {
+		return -1
 	}
+	return i
 }
 
-func (m *model) move(delta int) {
-	for i := m.cursor + delta; i >= 0 && i < len(m.rows); i += delta {
-		if m.rows[i].paneID != "" {
-			m.cursor = i
-			m.ensureVisible()
-			return
-		}
-	}
-}
-
-// ---- rendering -----------------------------------------------------------
+// ---- rows ------------------------------------------------------------------
 
 var (
-	stSession = lipgloss.NewStyle()
 	stCurrent = lipgloss.NewStyle().Bold(true)
 	stProc    = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
 	stDim     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
@@ -343,20 +256,34 @@ var (
 	stWaiting = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true)
 	stIdle    = lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
 	stUnknown = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+
+	claudeLabel = stClaude.Render("claude")
+	// Glyphs grouping a window's panes: a dot for a lone pane, else a
+	// bracket spanning the window's rows.
+	glyphLone, glyphFirst, glyphMid, glyphLast = stDim.Render("·"), stDim.Render("┌"), stDim.Render("├"), stDim.Render("└")
 )
 
-func badge(s state.Status, age time.Duration) string {
-	a := ""
-	if age > 0 {
-		a = " " + short(age)
+func glyph(i, n int) string {
+	switch {
+	case n == 1:
+		return glyphLone
+	case i == 0:
+		return glyphFirst
+	case i == n-1:
+		return glyphLast
+	default:
+		return glyphMid
 	}
+}
+
+func badge(s state.Status, age time.Duration) string {
 	switch s {
 	case state.Running:
-		return stRunning.Render("● running" + a)
+		return stRunning.Render("● running " + short(age))
 	case state.Waiting:
-		return stWaiting.Render("◆ waiting" + a)
+		return stWaiting.Render("◆ waiting " + short(age))
 	case state.Idle:
-		return stIdle.Render("○ idle" + a)
+		return stIdle.Render("○ idle " + short(age))
 	default:
 		return stUnknown.Render("? no hook data")
 	}
@@ -373,141 +300,6 @@ func short(d time.Duration) string {
 	}
 }
 
-// claudeStatus resolves the badge for a pane that hosts a claude process.
-func (m *model) claudeStatus(paneID string) (state.Status, time.Duration) {
-	s, ok := m.snap.states[paneID]
-	if !ok {
-		return state.Unknown, 0
-	}
-	// The hook records the claude pid; if it is gone the file is left over
-	// from a session that died without firing SessionEnd.
-	if s.PID != 0 && !m.snap.procs.Alive(s.PID) {
-		return state.Unknown, 0
-	}
-	return s.Status, time.Since(s.TS).Truncate(time.Second)
-}
-
-func (m *model) rebuild() {
-	prevPane := ""
-	if m.cursor >= 0 && m.cursor < len(m.rows) {
-		prevPane = m.rows[m.cursor].paneID
-	}
-	m.rows = m.rows[:0]
-
-	if m.snap.err != nil {
-		m.rows = append(m.rows, row{text: stErr.Render(m.snap.err.Error())})
-		return
-	}
-
-	// Group by session, preserving tmux order.
-	type sess struct {
-		name     string
-		attached bool
-		created  int64
-		panes    []tmux.Pane
-	}
-	var order []string
-	bySess := map[string]*sess{}
-	for _, p := range m.snap.panes {
-		if !m.opts.ShowSelf && (p.PaneID == m.self || p.Sidebar || p.CurrentCommand == "kido") {
-			continue
-		}
-		s, ok := bySess[p.SessionName]
-		if !ok {
-			s = &sess{name: p.SessionName, attached: p.SessionAttached, created: p.SessionCreated}
-			bySess[p.SessionName] = s
-			order = append(order, p.SessionName)
-		}
-		s.panes = append(s.panes, p)
-	}
-	// Oldest session first; names break ties.
-	sort.SliceStable(order, func(i, j int) bool {
-		a, b := bySess[order[i]], bySess[order[j]]
-		if a.created != b.created {
-			return a.created < b.created
-		}
-		return a.name < b.name
-	})
-	if m.filter != "" {
-		// Best matches first; non-matching sessions drop out.
-		var ranked []string
-		for _, match := range fuzzy.Find(m.filter, order) {
-			ranked = append(ranked, match.Str)
-		}
-		order = ranked
-	}
-
-	for _, name := range order {
-		s := bySess[name]
-		name := stSession.Render(s.name)
-		if s.name == m.snap.current {
-			name = stCurrent.Render(s.name)
-		}
-		m.rows = append(m.rows, row{text: name})
-
-		// Group panes by window, keeping tmux's order.
-		var windows [][]tmux.Pane
-		for _, p := range s.panes {
-			n := len(windows)
-			if n == 0 || windows[n-1][0].WindowIndex != p.WindowIndex {
-				windows = append(windows, nil)
-				n++
-			}
-			windows[n-1] = append(windows[n-1], p)
-		}
-		for _, panes := range windows {
-			for i, p := range panes {
-				m.rows = append(m.rows, row{
-					text:   stDim.Render(bracket(i, len(panes))) + " " + m.paneLabel(p),
-					paneID: p.PaneID,
-				})
-			}
-		}
-	}
-
-	// Restore cursor to the same pane, else first selectable row.
-	m.cursor = -1
-	for i, r := range m.rows {
-		if r.paneID != "" && (m.cursor == -1 || r.paneID == prevPane) {
-			m.cursor = i
-			if r.paneID == prevPane {
-				break
-			}
-		}
-	}
-}
-
-// bracket is the glyph that groups a window's panes: a dot for a lone pane,
-// else a bracket spanning the window's rows.
-func bracket(i, n int) string {
-	switch {
-	case n == 1:
-		return "·"
-	case i == 0:
-		return "┌"
-	case i == n-1:
-		return "└"
-	default:
-		return "├"
-	}
-}
-
-// paneLabel is the row text for a pane: its foreground command, or for a
-// pane running Claude Code, the session name and status badge.
-func (m *model) paneLabel(p tmux.Pane) string {
-	_, isClaude := m.snap.procs.FindDescendant(p.PanePID, "claude")
-	if !isClaude {
-		if t := m.snap.procs.Tree(p.PanePID); t != nil && t.Comm == "claude" {
-			isClaude = true
-		}
-	}
-	if !isClaude {
-		return stProc.Render(p.CurrentCommand)
-	}
-	st, age := m.claudeStatus(p.PaneID)
-	return stClaude.Render("claude") + " " + claudeTitle(p.Title) + " " + badge(st, age)
-}
-
 // claudeTitle extracts the session name from the pane title Claude Code
 // sets, e.g. "✳ Tmux config" → "Tmux config". Falls back to "-".
 func claudeTitle(title string) string {
@@ -520,12 +312,106 @@ func claudeTitle(title string) string {
 	return t
 }
 
+// paneLabel is the row text for a pane: its foreground command, or for a
+// Claude Code pane (one a hook reported, or one running claude without
+// hook data), the session name and status badge.
+func (m *model) paneLabel(p tmux.Pane) string {
+	s, hooked := m.snap.states[p.PaneID]
+	if !hooked && p.CurrentCommand != "claude" {
+		return stProc.Render(p.CurrentCommand)
+	}
+	st, age := state.Unknown, time.Duration(0)
+	if hooked {
+		st, age = s.Status, time.Since(s.TS).Truncate(time.Second)
+	}
+	return claudeLabel + " " + claudeTitle(p.Title) + " " + badge(st, age)
+}
+
+func (m *model) rebuild() {
+	prev := ""
+	if m.cursor >= 0 && m.cursor < len(m.rows) {
+		prev = m.rows[m.cursor].paneID
+	}
+	m.rows = m.rows[:0]
+
+	if m.snap.err != nil {
+		m.rows = append(m.rows, row{text: stErr.Render(m.snap.err.Error())})
+		m.cursor = -1
+		return
+	}
+
+	// Group by session, oldest first, then by window in tmux's order.
+	type sess struct {
+		name    string
+		created int64
+		panes   []tmux.Pane
+	}
+	var order []*sess
+	bySess := map[string]*sess{}
+	for _, p := range m.snap.panes {
+		s, ok := bySess[p.SessionName]
+		if !ok {
+			s = &sess{name: p.SessionName, created: p.SessionCreated}
+			bySess[p.SessionName] = s
+			order = append(order, s)
+		}
+		s.panes = append(s.panes, p)
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		if order[i].created != order[j].created {
+			return order[i].created < order[j].created
+		}
+		return order[i].name < order[j].name
+	})
+	if m.filter != "" {
+		// Best matches first; non-matching sessions drop out.
+		names := make([]string, len(order))
+		for i, s := range order {
+			names[i] = s.name
+		}
+		var ranked []*sess
+		for _, match := range fuzzy.Find(m.filter, names) {
+			ranked = append(ranked, order[match.Index])
+		}
+		order = ranked
+	}
+
+	for _, s := range order {
+		name := s.name
+		if name == m.snap.current {
+			name = stCurrent.Render(name)
+		}
+		m.rows = append(m.rows, row{text: name})
+
+		var windows [][]tmux.Pane
+		for _, p := range s.panes {
+			n := len(windows)
+			if n == 0 || windows[n-1][0].WindowIndex != p.WindowIndex {
+				windows = append(windows, nil)
+				n++
+			}
+			windows[n-1] = append(windows[n-1], p)
+		}
+		for _, panes := range windows {
+			for i, p := range panes {
+				m.rows = append(m.rows, row{
+					text:   glyph(i, len(panes)) + " " + m.paneLabel(p),
+					paneID: p.PaneID,
+				})
+			}
+		}
+	}
+
+	if m.cursor = m.indexOf(prev); m.cursor < 0 {
+		m.move(1)
+	}
+	m.clampTop()
+}
+
 func (m model) View() string {
 	var b strings.Builder
 	h := m.viewRows()
-	m.clampTop()
-	start := m.top
-	for i := start; i < len(m.rows) && i-start < h; i++ {
+	for i := m.top; i < len(m.rows) && i-m.top < h; i++ {
 		line := m.rows[i].text
 		if m.width > 0 {
 			line = ansi.Truncate(line, m.width, "…")
@@ -533,11 +419,7 @@ func (m model) View() string {
 		if i == m.cursor {
 			// Invert the whole row; drop inner colours so the inversion
 			// is uniform across it.
-			plain := ansi.Strip(line)
-			if pad := m.width - lipgloss.Width(plain); pad > 0 {
-				plain += strings.Repeat(" ", pad)
-			}
-			line = stCursor.Render(plain)
+			line = stCursor.Width(m.width).Render(ansi.Strip(line))
 		}
 		b.WriteString(line)
 		b.WriteByte('\n')

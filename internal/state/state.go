@@ -1,11 +1,12 @@
-// Package state reads the per-session status files written by the Claude
-// Code hook script (hooks/kido-hook.sh).
+// Package state is the status Claude Code sessions report through hooks:
+// one JSON file per session under the state directory, keyed by tmux pane.
 package state
 
 import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -21,14 +22,10 @@ const (
 
 // Session is one state file.
 type Session struct {
-	SessionID string    `json:"session_id"`
-	Pane      string    `json:"pane"` // TMUX_PANE, e.g. "%18"
-	PID       int       `json:"pid"`  // claude process pid, when known
-	CWD       string    `json:"cwd"`
-	Status    Status    `json:"status"`
-	Event     string    `json:"event"` // last hook_event_name
-	Message   string    `json:"message,omitempty"`
-	TS        time.Time `json:"ts"`
+	Pane   string    `json:"pane"` // TMUX_PANE, e.g. "%18"
+	PID    int       `json:"pid"`  // claude process pid
+	Status Status    `json:"status"`
+	TS     time.Time `json:"ts"`
 }
 
 // Dir returns the directory holding state files.
@@ -43,11 +40,11 @@ func Dir() string {
 	return filepath.Join(home, ".local", "state", "kido")
 }
 
-// Load reads every state file, keyed by pane id. When several sessions claim
-// the same pane (a restarted claude whose predecessor never fired
-// SessionEnd), the most recent wins.
+// Load reads every state file whose claude process is still alive, keyed
+// by pane id. When several claim the same pane, the most recent wins.
 func Load() (map[string]Session, error) {
-	entries, err := os.ReadDir(Dir())
+	dir := Dir()
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return map[string]Session{}, nil
@@ -59,12 +56,12 @@ func Load() (map[string]Session, error) {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(Dir(), e.Name()))
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
 			continue
 		}
 		var s Session
-		if json.Unmarshal(b, &s) != nil || s.Pane == "" {
+		if json.Unmarshal(b, &s) != nil || s.Pane == "" || !alive(s.PID) {
 			continue
 		}
 		if prev, ok := out[s.Pane]; !ok || s.TS.After(prev.TS) {
@@ -72,4 +69,40 @@ func Load() (map[string]Session, error) {
 		}
 	}
 	return out, nil
+}
+
+// alive reports whether pid exists (a file whose claude died without a
+// SessionEnd hook is stale).
+func alive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
+}
+
+// Record writes the state file for session id atomically.
+func Record(id string, s Session) error {
+	dir := Dir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	b, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(dir, id+".json.tmp")
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, id+".json"))
+}
+
+// Remove deletes the state file for session id.
+func Remove(id string) error {
+	err := os.Remove(filepath.Join(Dir(), id+".json"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
