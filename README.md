@@ -1,42 +1,34 @@
 # kido
 
-A tmux sidebar for Claude Code sessions. It lives in the side status column
-of [andreypopp/tmux](https://github.com/andreypopp/tmux), a tmux fork that
-adds `side-status-command`: a column on the edge of every window, in every
-session, running an interactive program. kido lists sessions and panes
-there and badges Claude Code panes with their live status.
+A tmux sidebar for Claude Code sessions. It runs inside the side status
+column of [andreypopp/tmux](https://github.com/andreypopp/tmux), a tmux fork
+with `side-status-command`, and lists every session and pane with the live
+status of Claude Code panes.
 
 ```
-tmux                                 <- current session in bold
-┌ claude Tmux config ● running 17s   <- panes of one window share a bracket
+tmux
+┌ claude Tmux config ● running 17s
 └ zsh
-· nvim                               <- single-pane window
+· nvim
 review
 · claude Fix login redirect ◆ waiting 40s
-weave
-· zsh
 ```
-
-The selected row is shown inverted.
 
 ## Install
 
 ```sh
 brew install andreypopp/tap/kido
-brew uninstall tmux && brew install andreypopp/tap/tmux   # the fork, replaces Homebrew's tmux
+brew uninstall tmux && brew install andreypopp/tap/tmux
 ```
 
-In `~/.tmux.conf`:
+`~/.tmux.conf`:
 
 ```tmux
 source-file "$(brew --prefix)/share/kido/kido-side.tmux"
 ```
 
-Then merge `$(brew --prefix)/share/kido/settings-hooks.json` into
-`~/.claude/settings.json` (or run `make install-hooks` from a checkout) so
-Claude Code reports session status. Running Claude sessions pick the hooks
-up live; a session started before that shows `? no hook data` until its next
-event.
+Merge `$(brew --prefix)/share/kido/settings-hooks.json` into
+`~/.claude/settings.json` so Claude Code reports its status.
 
 ## Keys
 
@@ -44,38 +36,14 @@ event.
 |-----|--------|
 | `prefix K` | show the sidebar with keyboard focus, or hide it |
 | `prefix k` | toggle keyboard focus between the sidebar and the pane |
-| `prefix <` / `>` | narrow or widen the sidebar (or drag its edge with the mouse) |
+| `prefix <` / `>` | narrow or widen the sidebar (or drag its edge) |
 | `C-j` / `C-k`, `C-n` / `C-p` | move between panes |
-| any text | fuzzy-filter sessions by name, best matches first |
-| `Esc` | clear the filter; with no filter, return focus to the pane |
-| `Enter` | jump to the selected pane and clear the filter |
-| click | jump to the pane under the pointer |
+| typing | fuzzy-filter sessions by name |
+| `Esc` | clear the filter, or return focus to the pane |
+| `Enter` / click | jump to the pane |
 
-## How it works
+## Status
 
-- tmux runs `kido` once per attached client in a pty the size of the column.
-- kido polls `tmux list-panes -a` and `ps` twice a second, sorts sessions by
-  creation time, and follows the client's active pane.
-- `kido-hook` is a Claude Code hook script. Claude runs it on session start,
-  prompt submit, tool use, permission requests, stop, and session end. It
-  writes one JSON file per session under `~/.local/state/kido/` with the tmux
-  pane, claude pid, and status; the sidebar joins these to panes by pane id.
-
-| hook event | status |
-|------------|--------|
-| UserPromptSubmit, PreToolUse, PostToolUse | running |
-| PermissionRequest, Notification(permission_prompt, agent_needs_input, elicitation_*) | waiting |
-| SessionStart, Stop | idle |
-| SessionEnd | file removed |
-
-`KIDO_STATE_DIR` overrides the state directory for both the hook and the
-sidebar. `scripts/side-testbed.sh` starts a throwaway server with 50
-sessions for trying things out.
-
-## From source
-
-`make install` builds and copies `kido` and `kido-hook` to `~/.local/bin`.
-tmux's `run-shell` may not have that directory on PATH, so point the config
-at absolute paths in that case. The binary also still supports running as a
-pinned pane per window (`kido toggle`, `kido ensure`, `kido focus`) or in a
-popup (`kido -popup`) on a stock tmux.
+`kido-hook` is a Claude Code hook. Prompt submit and tool use show
+`● running`, permission requests `◆ waiting`, session start and stop
+`○ idle`. State lives in `~/.local/state/kido/`.
