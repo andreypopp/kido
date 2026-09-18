@@ -58,6 +58,23 @@ lives in `~/.local/state/kido/`.
 window, pane and layout, resuming Claude Code panes by their exact session
 id. Run it outside tmux after a `tmux kill-server`.
 
+## Tests
+
+`make test` runs the unit tests (`go vet` plus `go test ./...`, excluding
+`e2e/`).
+
+`make e2e` runs the end-to-end tests, which drive a real tmux server built
+from the [andreypopp/tmux](https://github.com/andreypopp/tmux) fork (branch
+`side-pane`). They need that fork's `tmux` binary either on `PATH` or
+pointed to via `KIDO_TMUX=/path/to/tmux`; set `KIDO_E2E_REQUIRED=1` to make
+them fail instead of skip when the fork isn't available. Build the fork
+locally with `scripts/install-tmux-fork.sh <prefix>`.
+
+CI (`.github/workflows/ci.yml`) runs `go vet`, the unit tests and the e2e
+tests on every push to `main` and every pull request, on both Linux and
+macOS, building the tmux fork from source (cached by the fork's commit and
+the build dependency versions).
+
 ## Setting up another machine
 
 For an agent or a human bootstrapping a fresh macOS box with Homebrew:

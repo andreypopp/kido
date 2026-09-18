@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  TERM: xterm-256color
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: ssh availability
+        run: |
+          which ssh
+          ssh -V
+          which ps
+
+      - name: Install tmux fork build dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libevent-dev libncurses-dev bison autoconf automake pkg-config libutf8proc-dev
+
+      - name: Install tmux fork build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libevent ncurses utf8proc automake autoconf pkg-config
+
+      - name: Resolve tmux fork revision
+        id: tmux-fork
+        run: |
+          sha=$(git ls-remote https://github.com/andreypopp/tmux.git refs/heads/side-pane | cut -f1)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Fingerprint build dependency versions
+        id: tmux-deps
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            fp=$(dpkg-query -W -f='${Package} ${Version}\n' libevent-dev libncurses-dev libutf8proc-dev 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+          else
+            fp=$(brew list --versions libevent ncurses utf8proc | shasum -a 256 | cut -d' ' -f1)
+          fi
+          echo "fingerprint=$fp" >> "$GITHUB_OUTPUT"
+
+      - name: Cache tmux fork build
+        id: tmux-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/tmux-side
+          key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.sha }}-${{ steps.tmux-deps.outputs.fingerprint }}
+
+      - name: Verify cached tmux fork
+        id: tmux-verify
+        if: steps.tmux-cache.outputs.cache-hit == 'true'
+        run: |
+          if [ -x "$HOME/tmux-side/bin/tmux" ] && "$HOME/tmux-side/bin/tmux" -V | grep -qx 'tmux next-3.9'; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and install tmux fork
+        if: steps.tmux-cache.outputs.cache-hit != 'true' || steps.tmux-verify.outputs.ok != 'true'
+        run: ./scripts/install-tmux-fork.sh "$HOME/tmux-side"
+
+      - name: Save tmux fork build cache
+        if: steps.tmux-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/tmux-side
+          key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.sha }}-${{ steps.tmux-deps.outputs.fingerprint }}
+
+      - name: Verify tmux fork version
+        run: $HOME/tmux-side/bin/tmux -V
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Unit tests
+        run: go test $(go list ./... | grep -v '/e2e$') -count=1
+
+      - name: E2E tests
+        run: |
+          if [ -d ./e2e ]; then
+            KIDO_TMUX="$HOME/tmux-side/bin/tmux" KIDO_E2E_REQUIRED=1 go test ./e2e/ -count=1 -v -timeout 10m
+          else
+            echo "e2e/ package not present yet, skipping"
+          fi
