@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -40,7 +41,7 @@ const (
 	sideWidth = 40 // side-status-width; the separator sits at column 40
 	outerCols = 200
 	outerRows = 50
-	settle    = 5 * time.Second // kido polls every 500ms
+	settle    = 5 * time.Second // kido polls every 100ms
 	// shell is pane_current_command for a bare pane: the inner config
 	// pins default-shell to /bin/bash, which exists on both CI runners
 	// and on dev machines.
@@ -71,7 +72,51 @@ func setup(m *testing.M) (int, error) {
 		return 0, err
 	}
 	tmuxBin, tmuxWhy = findTmux()
-	return m.Run(), nil
+	before := controlClients()
+	code := m.Run()
+	// kido's control client must die with kido: a leak here means an
+	// orphaned "tmux -C" holding a socket open.
+	if leaked := newControlClients(before); len(leaked) > 0 {
+		time.Sleep(time.Second) // exiting clients get a moment to go
+		if leaked = newControlClients(before); len(leaked) > 0 {
+			fmt.Fprintf(os.Stderr, "leaked control clients: %v\n", leaked)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}
+	return code, nil
+}
+
+// controlClients is the set of pids of tmux control clients running right
+// now, kido's and anyone else's.
+func controlClients() map[string]bool {
+	pids := map[string]bool{}
+	out, err := exec.Command("ps", "-axo", "pid=,args=").Output()
+	if err != nil {
+		return pids
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 {
+			continue
+		}
+		if filepath.Base(f[1]) == "tmux" && slices.Contains(f[2:], "-C") {
+			pids[f[0]] = true
+		}
+	}
+	return pids
+}
+
+// newControlClients is the control clients that appeared since before.
+func newControlClients(before map[string]bool) []string {
+	var out []string
+	for pid := range controlClients() {
+		if !before[pid] {
+			out = append(out, pid)
+		}
+	}
+	return out
 }
 
 // buildFakeClaude compiles a binary called "claude" that sleeps: tmux
@@ -178,8 +223,10 @@ type harness struct {
 var sanitize = regexp.MustCompile(`[^A-Za-z0-9]+`)
 
 // start brings up both servers with one inner session and waits until the
-// sidebar has rendered it.
-func start(t *testing.T, session string) *harness {
+// sidebar has rendered it. Extra arguments are passed to kido: a long
+// -interval makes a test prove that an update came from tmux's control-mode
+// notifications rather than from the next poll.
+func start(t *testing.T, session string, kidoArgs ...string) *harness {
 	t.Helper()
 	requireTmux(t)
 
@@ -195,6 +242,10 @@ func start(t *testing.T, session string) *harness {
 		t.Fatal(err)
 	}
 
+	args := ""
+	if len(kidoArgs) > 0 {
+		args = " " + strings.Join(kidoArgs, " ")
+	}
 	conf := filepath.Join(h.dir, "inner.conf")
 	body := fmt.Sprintf(`
 set -g status off
@@ -204,7 +255,7 @@ set -g default-command ""
 set -g side-status left
 set -g side-status-width %d
 set -g side-status-style "fg=default,bg=default"
-set -g side-status-command "KIDO_STATE_DIR=%s %s"
+set -g side-status-command "KIDO_STATE_DIR=%s %s%s"
 set -g mouse on
 bind-key K if-shell -F '#{==:#{side-status},off}' \
   'set -g side-status left ; refresh-client -f side-status-focus' \
@@ -212,7 +263,7 @@ bind-key K if-shell -F '#{==:#{side-status},off}' \
 bind-key k if-shell -F '#{m:*side-status-focus*,#{client_flags}}' \
   'refresh-client -f !side-status-focus' \
   'refresh-client -f side-status-focus'
-`, sideWidth, h.stateDir, kidoBin)
+`, sideWidth, h.stateDir, kidoBin, args)
 	if err := os.WriteFile(conf, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}

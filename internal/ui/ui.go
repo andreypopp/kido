@@ -23,6 +23,11 @@ import (
 
 // Options configures the sidebar.
 type Options struct {
+	// Interval is how often the sidebar re-reads tmux and the state
+	// files. A tick is a write and a read on the control connection, not a
+	// process, so it can be short; tmux changes arrive as notifications in
+	// between, and the tick is what catches the things tmux does not
+	// report (a pane's command changing, the side-status-focus flag).
 	Interval time.Duration
 	Client   string // tmux client the sidebar belongs to
 }
@@ -35,8 +40,14 @@ type snapshot struct {
 	panes   []tmux.Pane
 	states  map[string]state.Session
 	ssh     map[int]string // pane pid -> ssh destination
+	probed  time.Time      // when the process table was last read
 	err     error
 }
+
+// sshProbe is the shortest gap between two reads of the process table.
+// Panes running ssh are looked up there, and at a 100ms tick an
+// unresolvable one would otherwise mean ten ps calls a second.
+const sshProbe = time.Second
 
 type row struct {
 	text   string
@@ -45,6 +56,7 @@ type row struct {
 
 type model struct {
 	opts      Options
+	conn      *tmux.Conn // control-mode connection; queries fall back to exec
 	snap      snapshot
 	rows      []row
 	cursor    int // index into rows; on a selectable row when any exist
@@ -71,7 +83,10 @@ func Run(opts Options) error {
 	if !termenv.DefaultOutput().EnvNoColor() {
 		lipgloss.SetColorProfile(termenv.ANSI)
 	}
-	m := model{opts: opts, snap: take(opts.Client, nil), started: time.Now(), seen: map[string]time.Time{}}
+	conn := tmux.Connect(opts.Client)
+	defer conn.Close()
+	m := model{opts: opts, conn: conn, started: time.Now(), seen: map[string]time.Time{}}
+	m.snap = take(conn, opts.Client, snapshot{})
 	m.track()
 	m.rebuild()
 	m.focus(m.snap.active)
@@ -79,23 +94,26 @@ func Run(opts Options) error {
 	return err
 }
 
-// take gathers a snapshot. prevSSH is the last snapshot's ssh map: the
-// process table is only read when a pane runs ssh that it does not cover.
-func take(client string, prevSSH map[int]string) snapshot {
+// take gathers a snapshot. prev is the last one: its ssh map spares the
+// process table, which is only re-read when a pane runs ssh that the map
+// does not cover and the last read is old enough.
+func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 	var s snapshot
-	s.current, s.focused = tmux.ClientState(client)
-	if s.panes, s.err = tmux.ListPanes(); s.err != nil {
+	s.current, s.focused = clientState(conn, client)
+	if s.panes, s.err = listPanes(conn); s.err != nil {
 		return s
 	}
 	s.active = tmux.ActivePane(s.panes, s.current)
 	s.ssh = map[int]string{}
-	hosts := prevSSH
+	s.probed = prev.probed
+	hosts, read := prev.ssh, false
 	for _, p := range s.panes {
 		if p.CurrentCommand != "ssh" {
 			continue
 		}
-		if _, ok := hosts[p.PanePID]; !ok {
-			hosts = procs.SSHHosts()
+		if _, ok := hosts[p.PanePID]; !ok && !read && time.Since(s.probed) >= sshProbe {
+			hosts, read = procs.SSHHosts(), true
+			s.probed = time.Now()
 		}
 		if host, ok := hosts[p.PanePID]; ok {
 			s.ssh[p.PanePID] = host
@@ -105,10 +123,44 @@ func take(client string, prevSSH map[int]string) snapshot {
 	return s
 }
 
-// tick waits, then takes a snapshot in the background.
+// clientState and listPanes ask the control connection, falling back to
+// running tmux while it is down (a reconnect gap must not blank the
+// sidebar).
+func clientState(conn *tmux.Conn, client string) (string, bool) {
+	if conn != nil {
+		if session, focused, err := conn.ClientState(client); err == nil {
+			return session, focused
+		}
+	}
+	return tmux.ClientState(client)
+}
+
+func listPanes(conn *tmux.Conn) ([]tmux.Pane, error) {
+	if conn != nil {
+		if panes, err := conn.ListPanes(); err == nil {
+			return panes, nil
+		}
+	}
+	return tmux.ListPanes()
+}
+
+// tick takes the next snapshot in the background: after the interval, or
+// as soon as tmux reports a change, whichever comes first.
 func (m model) tick() tea.Cmd {
-	client, d, prevSSH := m.opts.Client, m.opts.Interval, m.snap.ssh
-	return tea.Tick(d, func(time.Time) tea.Msg { return take(client, prevSSH) })
+	conn, client, d, prev := m.conn, m.opts.Client, m.opts.Interval, m.snap
+	return func() tea.Msg {
+		var notify <-chan struct{}
+		if conn != nil {
+			notify = conn.Notify()
+		}
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-notify:
+		}
+		return take(conn, client, prev)
+	}
 }
 
 // same reports whether two snapshots would render identically.

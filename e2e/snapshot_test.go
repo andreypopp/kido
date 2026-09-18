@@ -2,12 +2,15 @@ package e2e
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // layoutNoise removes everything a layout string carries that depends on
@@ -68,6 +71,20 @@ func TestSnapshotReplays(t *testing.T) {
 	h.claudePane("beta", "✳ Fresh")
 	h.hook("sess-resume", resume, "SessionStart")
 	h.waitGlyph("Resumable", "○")
+
+	// A window is named after the client that created it until tmux
+	// renames it to its pane's command a moment later; a snapshot taken in
+	// between records "tmux" as a window name. Wait for the server to stop
+	// changing shape. (The claude windows keep the name for good: their
+	// pane writes nothing, so tmux never renames them.)
+	var prev []windowShape
+	h.waitFor(func() bool {
+		now := shapes(t, h.inner)
+		settled := prev != nil && slices.Equal(prev, now)
+		prev = now
+		time.Sleep(200 * time.Millisecond)
+		return settled
+	}, settle, func() string { return fmt.Sprintf("a steady server (shapes are %+v)", shapes(t, h.inner)) })
 
 	// kido snapshot talks to the server named by $TMUX.
 	tmuxEnv := h.in("display-message", "-p", "#{socket_path},#{pid},0")

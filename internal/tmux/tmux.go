@@ -73,7 +73,7 @@ type Pane struct {
 const sep = "\x1f"
 
 // pane_title is last because it may contain anything.
-var format = strings.Join([]string{
+var paneFormat = strings.Join([]string{
 	"#{session_name}",
 	"#{session_created}",
 	"#{window_index}",
@@ -87,14 +87,11 @@ var format = strings.Join([]string{
 	"#{pane_title}",
 }, sep)
 
-// ListPanes returns every pane on the server, in tmux's own order.
-func ListPanes() ([]Pane, error) {
-	out, err := run("list-panes", "-a", "-F", format)
-	if err != nil {
-		return nil, err
-	}
+// parsePanes turns list-panes output lines into panes. Shared by the exec
+// and control-mode paths, which ask for the same format.
+func parsePanes(lines []string) []Pane {
 	var panes []Pane
-	for _, line := range strings.Split(out, "\n") {
+	for _, line := range lines {
 		f := strings.SplitN(line, sep, 11)
 		if len(f) < 11 {
 			continue
@@ -107,7 +104,16 @@ func ListPanes() ([]Pane, error) {
 		p.PanePID, _ = strconv.Atoi(f[7])
 		panes = append(panes, p)
 	}
-	return panes, nil
+	return panes
+}
+
+// ListPanes returns every pane on the server, in tmux's own order.
+func ListPanes() ([]Pane, error) {
+	out, err := run("list-panes", "-a", "-F", paneFormat)
+	if err != nil {
+		return nil, err
+	}
+	return parsePanes(strings.Split(out, "\n")), nil
 }
 
 // CurrentClient asks tmux which client this process belongs to. Used when
@@ -121,17 +127,37 @@ func CurrentClient() string {
 // side status line's job.
 const sideFocusFlag = "side-status-focus"
 
+// clientFormat is what ClientState asks for, one line per client.
+// display-message -c would be shorter, but it only honours -c for the
+// formats when the target client happens to be on the command's own target
+// session (cmd-display-message.c), which is not so over the control
+// connection: that client has a session of its own.
+var clientFormat = strings.Join([]string{
+	"#{client_name}",
+	"#{client_session}",
+	"#{client_flags}",
+}, sep)
+
+// parseClientState picks client's line out of list-clients output.
+func parseClientState(lines []string, client string) (session string, focused bool) {
+	for _, line := range lines {
+		f := strings.SplitN(line, sep, 3)
+		if len(f) < 3 || f[0] != client {
+			continue
+		}
+		return f[1], strings.Contains(f[2], sideFocusFlag)
+	}
+	return "", false
+}
+
 // ClientState returns the client's session and whether the side status
-// line has its keyboard focus. (display-message's #{session_name} would
-// report the command's target session, not the client's.)
+// line has its keyboard focus.
 func ClientState(client string) (session string, focused bool) {
-	out, err := run("display-message", "-p", "-c", client,
-		"#{client_session}\t#{client_flags}")
+	out, err := run("list-clients", "-F", clientFormat)
 	if err != nil {
 		return "", false
 	}
-	sess, flags, _ := strings.Cut(out, "\t")
-	return sess, strings.Contains(flags, sideFocusFlag)
+	return parseClientState(strings.Split(out, "\n"), client)
 }
 
 // ActivePane returns the active pane of session within panes.

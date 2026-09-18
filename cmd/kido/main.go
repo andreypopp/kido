@@ -44,7 +44,7 @@ func main() {
 	}
 
 	opts := ui.Options{}
-	flag.DurationVar(&opts.Interval, "interval", 500*time.Millisecond, "refresh interval")
+	flag.DurationVar(&opts.Interval, "interval", 100*time.Millisecond, "refresh interval; tmux changes also refresh immediately")
 	flag.StringVar(&opts.Client, "client", "", "tmux client to act on; defaults to $TMUX_SIDE_CLIENT, then the current client")
 	flag.Parse()
 
