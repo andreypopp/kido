@@ -17,11 +17,7 @@ bind-key K if-shell -F '#{==:#{side-status},off}' \
   'set -g side-status off'
 
 # prefix + k: toggle keyboard focus between the side column and the pane
+# (drag the line next to the window area with the mouse to resize)
 bind-key k if-shell -F '#{m:*side-status-focus*,#{client_flags}}' \
   'refresh-client -f !side-status-focus' \
   'refresh-client -f side-status-focus'
-
-# prefix + < / > shrink or widen the side column by 4 (the line next to the
-# window area can also be dragged with the mouse)
-bind-key -r < set-option -F side-status-width "#{e|-|:#{side-status-width},4}"
-bind-key -r > set-option -F side-status-width "#{e|+|:#{side-status-width},4}"

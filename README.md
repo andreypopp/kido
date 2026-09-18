@@ -36,10 +36,11 @@ Claude Code reports its status.
 |-----|--------|
 | `prefix K` | show the sidebar with keyboard focus, or hide it |
 | `prefix k` | toggle keyboard focus between the sidebar and the pane |
-| `prefix <` / `>` | narrow or widen the sidebar (or drag its edge) |
+| drag the sidebar's edge | resize it |
 | `C-j` / `C-k`, `C-n` / `C-p` | move between panes |
+| `gg` / `G` | first / last pane |
 | typing | fuzzy-filter sessions by name |
-| `Esc` | clear the filter, or return focus to the pane |
+| `Esc` / `C-c` | clear the filter, or return focus to the pane |
 | `Enter` / click | jump to the pane |
 
 ## Status

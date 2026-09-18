@@ -48,6 +48,7 @@ type model struct {
 	height int
 	status string // error shown on the last line
 	filter string // fuzzy filter on session names; empty shows all
+	gPend  bool   // a "g" was typed: "gg" goes to the top
 }
 
 // Run starts the sidebar and blocks until it exits.
@@ -105,10 +106,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clampTop()
 		}
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c":
-			return m, tea.Quit
-		case "esc":
+		key := msg.String()
+		// "gg" goes to the top; a lone "g" followed by anything else is
+		// filter text like any other letter.
+		if m.gPend {
+			m.gPend = false
+			if key == "g" {
+				m.cursor = -1
+				m.move(1)
+				break
+			}
+			m.setFilter(m.filter + "g")
+		}
+		switch key {
+		case "ctrl+c", "esc":
+			// Leave: clear the filter, or hand the keyboard back.
 			if m.filter != "" {
 				m.setFilter("")
 			} else if err := tmux.ReleaseSideFocus(m.opts.Client); err != nil {
@@ -118,12 +130,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.move(1)
 		case "ctrl+k", "ctrl+p", "up":
 			m.move(-1)
+		case "g":
+			m.gPend = true
+		case "G", "end":
+			m.cursor = len(m.rows)
+			m.move(-1)
 		case "home":
 			m.cursor = -1
 			m.move(1)
-		case "end":
-			m.cursor = len(m.rows)
-			m.move(-1)
 		case "backspace":
 			if r := []rune(m.filter); len(r) > 0 {
 				m.setFilter(string(r[:len(r)-1]))
