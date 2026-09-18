@@ -11,27 +11,34 @@ import (
 )
 
 // SSHHosts returns the destination ("user@host" or "host") of every ssh
-// process, keyed by its parent pid (a pane's shell). One ps call.
+// process, keyed both by its own pid (a pane started directly with ssh as
+// its command) and by its parent pid (the usual case: a pane's shell ran
+// ssh). One ps call.
 func SSHHosts() map[int]string {
 	out := map[int]string{}
-	ps, err := exec.Command("ps", "-axo", "ppid=,comm=,args=").Output()
+	ps, err := exec.Command("ps", "-axo", "pid=,ppid=,comm=,args=").Output()
 	if err != nil {
 		return out
 	}
 	sc := bufio.NewScanner(bytes.NewReader(ps))
 	for sc.Scan() {
 		f := strings.Fields(sc.Text())
-		if len(f) < 3 {
+		if len(f) < 4 {
 			continue
 		}
-		if filepath.Base(f[1]) != "ssh" {
+		if filepath.Base(f[2]) != "ssh" {
 			continue
 		}
-		ppid, err := strconv.Atoi(f[0])
+		pid, err := strconv.Atoi(f[0])
 		if err != nil {
 			continue
 		}
-		if host := sshHost(f[3:]); host != "" {
+		ppid, err := strconv.Atoi(f[1])
+		if err != nil {
+			continue
+		}
+		if host := sshHost(f[4:]); host != "" {
+			out[pid] = host
 			out[ppid] = host
 		}
 	}

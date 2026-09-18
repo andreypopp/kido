@@ -201,6 +201,15 @@ bind-key k if-shell -F '#{m:*side-status-focus*,#{client_flags}}' \
 
 	h.must(h.tmux(h.outer, "-f", "/dev/null", "new-session", "-d", "-s", "host",
 		"-x", strconv.Itoa(outerCols), "-y", strconv.Itoa(outerRows)))
+	// Ubuntu runners lack the tmux-256color terminfo (it ships in the
+	// ncurses-term package, not installed by default); without it the
+	// inner tmux started below fails with "open terminal failed" and its
+	// pane exits immediately, leaving the sidebar blank. screen-256color
+	// is always present. remain-on-exit keeps a dead inner client's error
+	// text on screen instead of the pane vanishing, so failures are
+	// diagnosable.
+	h.must(h.tmux(h.outer, "set-option", "-g", "default-terminal", "screen-256color"))
+	h.must(h.tmux(h.outer, "set-option", "-g", "remain-on-exit", "on"))
 	inner := fmt.Sprintf("unset TMUX; exec %q -L %s -f %q new-session -s %s -c %q",
 		tmuxBin, h.inner, conf, session, h.dir)
 	h.must(h.tmux(h.outer, "new-window", "-d", "-t", "host", "-n", "side", inner))
@@ -461,11 +470,45 @@ func (h *harness) waitFor(cond func() bool, timeout time.Duration, msg string) {
 			return
 		}
 		if time.Now().After(deadline) {
-			h.t.Fatalf("timed out waiting for %s\nsidebar:\n%s", msg,
-				strings.Join(h.rows(), "\n"))
+			h.t.Fatalf("timed out waiting for %s\n%s", msg, h.diagnose())
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// diagnose renders a compact snapshot of both servers for a failed waitFor:
+// the outer pane's full capture, whether its pane died and why, and the
+// inner server's session list (or the error reaching it). Capped at ~30
+// lines total.
+func (h *harness) diagnose() string {
+	h.t.Helper()
+	var b strings.Builder
+
+	fmt.Fprintln(&b, "outer capture:")
+	capLines := h.capture()
+	if len(capLines) > 20 {
+		capLines = capLines[:20]
+	}
+	for _, l := range capLines {
+		fmt.Fprintln(&b, "  "+l)
+	}
+
+	status, err := h.tmux(h.outer, "display-message", "-p", "-t", "host:side",
+		"#{pane_dead} #{pane_dead_status} #{pane_current_command}")
+	if err != nil {
+		fmt.Fprintf(&b, "outer pane status: error: %v\n", err)
+	} else {
+		fmt.Fprintf(&b, "outer pane status (dead deadstatus cmd): %s\n", status)
+	}
+
+	sessions, err := h.tmux(h.inner, "list-sessions")
+	if err != nil {
+		fmt.Fprintf(&b, "inner list-sessions: error: %v\n", err)
+	} else {
+		fmt.Fprintf(&b, "inner list-sessions:\n  %s\n", strings.ReplaceAll(sessions, "\n", "\n  "))
+	}
+
+	return b.String()
 }
 
 // waitRow waits until a sidebar line contains sub.

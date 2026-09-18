@@ -28,21 +28,26 @@ cd "$workdir/tmux"
 # ncurses that ships with the OS unless we point at the brewed one
 # explicitly. libevent and utf8proc are normally linked and found without
 # help, but we add them too for robustness against non-default brew setups.
+jemalloc_flag=""
 if [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
-	for formula in ncurses libevent utf8proc; do
+	for formula in ncurses libevent utf8proc jemalloc; do
 		formula_prefix=$(brew --prefix "$formula" 2>/dev/null || true)
 		if [ -n "$formula_prefix" ] && [ -d "$formula_prefix/lib/pkgconfig" ]; then
 			PKG_CONFIG_PATH="$formula_prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 		fi
 	done
 	export PKG_CONFIG_PATH
+	# The fork's configure requires an explicit --enable-jemalloc or
+	# --disable-jemalloc choice on macOS; use it since Homebrew's jemalloc
+	# is installed above.
+	jemalloc_flag="--enable-jemalloc"
 fi
 
 echo "==> autogen.sh" >&2
 sh autogen.sh
 
-echo "==> configure --prefix=$prefix --enable-utf8proc" >&2
-./configure --prefix="$prefix" --enable-utf8proc
+echo "==> configure --prefix=$prefix --enable-utf8proc $jemalloc_flag" >&2
+./configure --prefix="$prefix" --enable-utf8proc $jemalloc_flag
 
 njobs=$(command -v nproc >/dev/null 2>&1 && nproc || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 

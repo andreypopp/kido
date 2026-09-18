@@ -90,3 +90,29 @@ func TestSSHRow(t *testing.T) {
 	}, settle, "pane running ssh")
 	h.waitRow("ssh deploy@example.test")
 }
+
+// TestSSHRowDirect shows a pane whose command is ssh itself (e.g. `tmux
+// new-window 'ssh host'`), not a shell that then ran ssh: the pane's root
+// process is ssh, so kido must key the destination by ssh's own pid too.
+func TestSSHRowDirect(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	proxy := filepath.Join(h.dir, "proxy")
+	if err := os.WriteFile(proxy, []byte("#!/bin/sh\nexec sleep 300\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Passing the command as separate arguments (rather than one quoted
+	// string) makes tmux run it directly with execvp, with no shell in
+	// between: the pane's root process is ssh itself.
+	pane := h.in("new-window", "-P", "-F", "#{pane_id}", "-d", "-t", "alpha:",
+		"ssh", "-F", "/dev/null", "-o", "ProxyCommand="+proxy, "deploy@example.test")
+	h.waitFor(func() bool {
+		for _, p := range h.panes() {
+			if p.ID == pane && p.Command == "ssh" {
+				return true
+			}
+		}
+		return false
+	}, settle, "pane running ssh")
+	h.waitRow("ssh deploy@example.test")
+}

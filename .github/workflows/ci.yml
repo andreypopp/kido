@@ -34,11 +34,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libevent-dev libncurses-dev bison autoconf automake pkg-config libutf8proc-dev
+          sudo apt-get install -y libevent-dev libncurses-dev bison autoconf automake pkg-config libutf8proc-dev ncurses-term
 
       - name: Install tmux fork build dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install libevent ncurses utf8proc automake autoconf pkg-config
+        run: brew install libevent ncurses utf8proc jemalloc automake autoconf pkg-config
 
       - name: Resolve tmux fork revision
         id: tmux-fork
@@ -52,7 +52,7 @@ jobs:
           if [ "${{ runner.os }}" = "Linux" ]; then
             fp=$(dpkg-query -W -f='${Package} ${Version}\n' libevent-dev libncurses-dev libutf8proc-dev 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
           else
-            fp=$(brew list --versions libevent ncurses utf8proc | shasum -a 256 | cut -d' ' -f1)
+            fp=$(brew list --versions libevent ncurses utf8proc jemalloc | shasum -a 256 | cut -d' ' -f1)
           fi
           echo "fingerprint=$fp" >> "$GITHUB_OUTPUT"
 
