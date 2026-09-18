@@ -561,10 +561,9 @@ func (m *model) rebuild() {
 		s.panes = append(s.panes, p)
 	}
 	sort.SliceStable(order, func(i, j int) bool {
-		if order[i].created != order[j].created {
-			return order[i].created < order[j].created
-		}
-		return order[i].name < order[j].name
+		return tmux.SessionLess(
+			tmux.Session{Name: order[i].name, Created: order[i].created},
+			tmux.Session{Name: order[j].name, Created: order[j].created})
 	})
 	if m.filter != "" {
 		// A session matches when its name or a Claude pane's title

@@ -40,6 +40,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "switch-session":
+			if err := switchSession(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "kido switch-session:", err)
+				os.Exit(1)
+			}
+			return
 		}
 	}
 
@@ -126,6 +132,48 @@ func setupClaude() error {
 	}
 	fmt.Printf("registered kido hook for %d events in %s\n", len(hook.Events()), path)
 	return nil
+}
+
+// switchSession implements `kido switch-session next|prev [-client NAME]`:
+// it switches the current client to the adjacent session in kido's order
+// (internal/tmux.SortSessions), wrapping around. The client flag may come
+// before or after the direction, since a key binding's run-shell command is
+// easiest to write with the flag last (bind -n S-Down run-shell "kido
+// switch-session next -client '#{client_name}'").
+func switchSession(args []string) error {
+	var client, dir string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if name, value, ok := strings.Cut(arg, "="); ok && (name == "-client" || name == "--client") {
+			client = value
+			continue
+		}
+		switch arg {
+		case "-client", "--client":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("%s needs a value", arg)
+			}
+			client = args[i]
+		case "next", "prev":
+			if dir != "" {
+				return fmt.Errorf("only one of next/prev allowed")
+			}
+			dir = arg
+		default:
+			return fmt.Errorf("unknown argument %q", arg)
+		}
+	}
+	if dir == "" {
+		return fmt.Errorf("usage: kido switch-session next|prev [-client NAME]")
+	}
+	if client == "" {
+		client = os.Getenv("TMUX_SIDE_CLIENT")
+	}
+	if client == "" {
+		client = tmux.CurrentClient()
+	}
+	return tmux.SwitchSession(client, dir == "next")
 }
 
 // isKidoHook reports whether a hooks entry runs kido (any earlier form).

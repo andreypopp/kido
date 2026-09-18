@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -121,6 +122,94 @@ func ListPanes() ([]Pane, error) {
 func CurrentClient() string {
 	out, _ := run("display-message", "-p", "#{client_name}")
 	return out
+}
+
+// Session is one tmux session, enough to order it the way the sidebar does.
+type Session struct {
+	Name    string
+	Created int64 // unix time, #{session_created}
+}
+
+// SessionLess orders sessions oldest first (session_created), ties broken by
+// name. This is kido's one true session order: the sidebar's grouping and
+// `kido switch-session` both sort with it, so they cannot drift apart.
+func SessionLess(a, b Session) bool {
+	if a.Created != b.Created {
+		return a.Created < b.Created
+	}
+	return a.Name < b.Name
+}
+
+// SortSessions orders sessions in place, oldest first, ties broken by name.
+func SortSessions(sessions []Session) {
+	sort.SliceStable(sessions, func(i, j int) bool { return SessionLess(sessions[i], sessions[j]) })
+}
+
+// sessionFormat is what ListSessions asks for, one line per session.
+var sessionFormat = strings.Join([]string{
+	"#{session_created}",
+	"#{session_name}",
+}, sep)
+
+// parseSessions turns list-sessions output lines into sessions.
+func parseSessions(lines []string) []Session {
+	var sessions []Session
+	for _, line := range lines {
+		f := strings.SplitN(line, sep, 2)
+		if len(f) < 2 {
+			continue
+		}
+		s := Session{Name: f[1]}
+		s.Created, _ = strconv.ParseInt(f[0], 10, 64)
+		sessions = append(sessions, s)
+	}
+	return sessions
+}
+
+// ListSessions returns every session on the server, in tmux's own order (by
+// name); pass the result to SortSessions for kido's order.
+func ListSessions() ([]Session, error) {
+	out, err := run("list-sessions", "-F", sessionFormat)
+	if err != nil {
+		return nil, err
+	}
+	return parseSessions(strings.Split(out, "\n")), nil
+}
+
+// SwitchSession switches client to the session adjacent to its current one
+// in kido's order (oldest first, ties by name), wrapping around. next
+// selects the following session, otherwise the preceding one. A server with
+// one session, or a client not attached to any session kido can find, is a
+// no-op.
+func SwitchSession(client string, next bool) error {
+	sessions, err := ListSessions()
+	if err != nil {
+		return err
+	}
+	if len(sessions) < 2 {
+		return nil
+	}
+	SortSessions(sessions)
+
+	current, _ := ClientState(client)
+	i := -1
+	for j, s := range sessions {
+		if s.Name == current {
+			i = j
+			break
+		}
+	}
+	if i < 0 {
+		return nil
+	}
+	delta := -1
+	if next {
+		delta = 1
+	}
+	target := sessions[(i+delta+len(sessions))%len(sessions)]
+
+	_, err = run("switch-client", "-c", client, "-t", target.Name)
+	return err
 }
 
 // sideFocusFlag is the patched tmux's client flag that routes keys to the

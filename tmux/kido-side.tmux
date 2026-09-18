@@ -21,3 +21,8 @@ bind-key K if-shell -F '#{==:#{side-status},off}' \
 bind-key k if-shell -F '#{m:*side-status-focus*,#{client_flags}}' \
   'refresh-client -f !side-status-focus' \
   'refresh-client -f side-status-focus'
+
+# example: switch to the adjacent session in the sidebar's order (not bound
+# by default; uncomment to enable, or bind other keys of your choosing)
+# bind-key -n S-Up   run-shell "kido switch-session prev -client '#{client_name}'"
+# bind-key -n S-Down run-shell "kido switch-session next -client '#{client_name}'"

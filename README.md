@@ -46,6 +46,19 @@ Claude Code reports its status.
 | `Esc` / `C-c` | clear the filter, or return focus to the pane |
 | `Enter` / click | jump to the pane |
 
+## Commands
+
+`kido switch-session next|prev [-client NAME]` switches the current client
+to the adjacent session in the sidebar's order (oldest first, ties by name),
+wrapping around. It defaults to `$TMUX_SIDE_CLIENT`, then the current
+client, when `-client` is not given. Not bound by default; bind it yourself,
+e.g. in `~/.tmux.conf`:
+
+```
+bind-key -n S-Up   run-shell "kido switch-session prev -client '#{client_name}'"
+bind-key -n S-Down run-shell "kido switch-session next -client '#{client_name}'"
+```
+
 ## Status
 
 `kido hook` is the Claude Code hook. Prompt submit and tool use show
