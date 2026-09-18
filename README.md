@@ -49,3 +49,25 @@ Claude Code reports its status.
 `kido hook` is the Claude Code hook. Prompt submit and tool use show
 `● running`, permission requests `◆ waiting`, context compaction `◌`,
 session start and stop `○ idle`. State lives in `~/.local/state/kido/`.
+
+## Setting up another machine
+
+For an agent or a human bootstrapping a fresh macOS box with Homebrew:
+
+1. Install the tmux fork and kido (the tap's `tmux` replaces Homebrew's):
+
+       brew uninstall tmux 2>/dev/null; brew install andreypopp/tap/tmux andreypopp/tap/kido
+
+2. Load the sidebar on every server start and register the Claude Code hook.
+   Use the literal path: tmux does not expand `$(brew --prefix)`.
+
+       printf '\n# kido sidebar\nsource-file %s/share/kido/kido-side.tmux\n' "$(brew --prefix)" >> ~/.tmux.conf
+       kido setup-claude
+
+3. Start or attach a session from a terminal outside tmux. To carry a layout
+   over from another machine, capture it there with `tmux list-panes -a -F`
+   into a script of `new-session`, `split-window` and `select-layout` calls,
+   typing `claude --continue` into panes that were running Claude.
+
+4. Check: `tmux -V` prints `next-3.9`, the sidebar is on the left, `prefix K`
+   hides and shows it, `prefix k` toggles keyboard focus, `/` searches.
