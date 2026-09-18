@@ -50,9 +50,10 @@ Claude Code reports its status.
 
 `kido hook` is the Claude Code hook. Prompt submit and tool use show
 `● running`, permission prompts and questions `◆ waiting`, context
-compaction `◌`, session start and stop `○ idle`. A session that finishes
-while you are elsewhere shows `✓ done` until you visit its pane. State
-lives in `~/.local/state/kido/`.
+compaction `◌`, session start and stop `○ idle`. A session stays
+`● running` at turn end while background commands or agents it started
+are still running. A session that finishes while you are elsewhere shows
+`✓ done` until you visit its pane. State lives in `~/.local/state/kido/`.
 
 `kido snapshot` prints a shell script that recreates every session,
 window, pane and layout, resuming Claude Code panes by their exact session

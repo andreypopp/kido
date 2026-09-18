@@ -13,6 +13,15 @@ func TestApply(t *testing.T) {
 	}{
 		{Input{Event: "SessionStart", SessionID: "s"}, idle},
 		{Input{Event: "Stop", SessionID: "s"}, ended},
+		{Input{Event: "Stop", SessionID: "s", BackgroundTasks: []struct {
+			Status string `json:"status"`
+		}{{Status: "running"}}}, running},
+		{Input{Event: "Stop", SessionID: "s", BackgroundTasks: []struct {
+			Status string `json:"status"`
+		}{{Status: "completed"}}}, ended},
+		{Input{Event: "Stop", SessionID: "s", BackgroundTasks: []struct {
+			Status string `json:"status"`
+		}{}}, ended},
 		{Input{Event: "PreToolUse", SessionID: "s", ToolName: "Bash"}, running},
 		{Input{Event: "PreToolUse", SessionID: "s", ToolName: "AskUserQuestion"}, waiting},
 		{Input{Event: "Notification", SessionID: "s", NotificationType: "permission_prompt"}, waiting},

@@ -15,6 +15,23 @@ type Input struct {
 	NotificationType string `json:"notification_type"`
 	Trigger          string `json:"trigger"`   // PreCompact/PostCompact: "auto" or "manual"
 	ToolName         string `json:"tool_name"` // PreToolUse/PostToolUse
+	// BackgroundTasks lists shell/agent work still running when a turn ends.
+	// Stop and SubagentStop fire even while these are in flight; kido treats
+	// the session as still running rather than idle until they finish.
+	BackgroundTasks []struct {
+		Status string `json:"status"`
+	} `json:"background_tasks"`
+}
+
+// hasRunningBackgroundTask reports whether any background task is still
+// running.
+func (in Input) hasRunningBackgroundTask() bool {
+	for _, t := range in.BackgroundTasks {
+		if t.Status == "running" {
+			return true
+		}
+	}
+	return false
 }
 
 // Effect is what an event means for the session.
@@ -41,7 +58,12 @@ var events = map[string]func(Input) Effect{
 	"SessionEnd":       func(Input) Effect { return Effect{Remove: true} },
 	"UserPromptSubmit": func(Input) Effect { return running },
 	"PostToolUse":      func(Input) Effect { return running },
-	"Stop":             func(Input) Effect { return ended },
+	"Stop": func(in Input) Effect {
+		if in.hasRunningBackgroundTask() {
+			return running
+		}
+		return ended
+	},
 	// Asking the user a question blocks like a permission prompt.
 	"PreToolUse": func(in Input) Effect {
 		if in.ToolName == "AskUserQuestion" {
