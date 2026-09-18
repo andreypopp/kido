@@ -1,15 +1,18 @@
 package e2e
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
 
-// searchLine returns the search prompt kido draws on the column's last
+// searchRows is the number of rows setupSearch's unfiltered list has.
+const searchRows = 6
+
+// searchLineOf returns the search prompt kido draws on the column's last
 // line, or "".
-func (h *harness) searchLine() string {
-	h.t.Helper()
-	for _, l := range h.sidebar() {
+func searchLineOf(lines []string) string {
+	for _, l := range sidebarOf(lines) {
 		if strings.HasPrefix(l, "/") {
 			return l
 		}
@@ -17,17 +20,31 @@ func (h *harness) searchLine() string {
 	return ""
 }
 
+func (h *harness) searchLine() string { h.t.Helper(); return searchLineOf(h.capture()) }
+
 func (h *harness) waitSearch(want string) {
 	h.t.Helper()
 	h.waitFor(func() bool { return h.searchLine() == want }, settle,
-		"search prompt "+want+" (is "+h.searchLine()+")")
+		func() string { return fmt.Sprintf("search prompt %q (is %q)", want, h.searchLine()) })
+}
+
+// waitSearchClosed waits until the prompt is gone and the full list is
+// back, reading both off one capture.
+func (h *harness) waitSearchClosed() {
+	h.t.Helper()
+	h.waitFor(func() bool {
+		lines := h.capture()
+		return searchLineOf(lines) == "" && len(rowsOf(lines)) == searchRows
+	}, settle, func() string {
+		return fmt.Sprintf("search closed (prompt %q, %d rows)", h.searchLine(), len(h.rows()))
+	})
 }
 
 func setupSearch(t *testing.T) *harness {
 	h := start(t, "alpha")
 	h.newSession("beta")
 	h.newSession("gamma")
-	h.waitFor(func() bool { return len(h.rows()) == 6 }, settle, "6 rows")
+	h.waitRows(searchRows)
 	focusSidebar(h)
 	return h
 }
@@ -43,13 +60,12 @@ func TestSearchFilters(t *testing.T) {
 	h.waitSearch("/bet")
 	h.waitFor(func() bool {
 		rows := h.rows()
-		return len(rows) == 3 && strings.TrimSpace(rows[0]) == "beta" // + pane row + prompt
-	}, settle, "only beta listed")
+		return len(rows) == 3 && rows[0] == "beta" // + pane row + prompt
+	}, settle, msgf("only beta listed"))
 
 	// Esc cancels: the full list comes back and the prompt goes away.
 	h.sendKeys("Escape")
-	h.waitFor(func() bool { return h.searchLine() == "" && len(h.rows()) == 6 }, settle,
-		"filter cleared")
+	h.waitSearchClosed()
 	if !h.clientFocused() {
 		t.Error("Esc leaving the search also released the keyboard")
 	}
@@ -69,8 +85,7 @@ func TestSearchBackspaceCloses(t *testing.T) {
 	h.sendKeys("BSpace")
 	h.waitSearch("/")
 	h.sendKeys("BSpace") // nothing left to erase: leave the search
-	h.waitFor(func() bool { return h.searchLine() == "" && len(h.rows()) == 6 }, settle,
-		"search closed")
+	h.waitSearchClosed()
 	if !h.clientFocused() {
 		t.Error("Backspace closing the search released the keyboard")
 	}
@@ -89,6 +104,5 @@ func TestSearchEnterJumps(t *testing.T) {
 
 	h.waitSession("gamma")
 	h.waitFocused(false)
-	h.waitFor(func() bool { return h.searchLine() == "" && len(h.rows()) == 6 }, settle,
-		"list restored after the jump")
+	h.waitSearchClosed()
 }

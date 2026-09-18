@@ -29,7 +29,7 @@ func shapes(t *testing.T, socket string) []windowShape {
 	t.Helper()
 	cmd := exec.Command(tmuxBin, "-L", socket, "list-panes", "-a", "-F",
 		"#{session_name}\t#{window_index}\t#{window_name}\t#{window_layout}")
-	cmd.Env = append(os.Environ(), "TMUX=")
+	cmd.Env = cleanEnv("TMUX=")
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("list-panes on %s: %v", socket, err)
@@ -72,7 +72,9 @@ func TestSnapshotReplays(t *testing.T) {
 	// kido snapshot talks to the server named by $TMUX.
 	tmuxEnv := h.in("display-message", "-p", "#{socket_path},#{pid},0")
 	cmd := exec.Command(kidoBin, "snapshot")
-	cmd.Env = append(os.Environ(), "TMUX="+tmuxEnv, "KIDO_STATE_DIR="+h.stateDir)
+	// No KIDO_TMUX: kido resolves the tmux binary from the server $TMUX
+	// names, which is the point of the test running against the fork.
+	cmd.Env = cleanEnv("TMUX="+tmuxEnv, "KIDO_STATE_DIR="+h.stateDir)
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
 	out, err := cmd.Output()
@@ -99,7 +101,7 @@ func TestSnapshotReplays(t *testing.T) {
 	t.Cleanup(func() { killServer(third) })
 
 	run := exec.Command("/bin/sh", path)
-	run.Env = append(os.Environ(), "TMUX=", "TMUX_BIN="+tmuxBin+" -f /dev/null -L "+third)
+	run.Env = cleanEnv("TMUX=", "TMUX_BIN="+tmuxBin+" -f /dev/null -L "+third)
 	if b, err := run.CombinedOutput(); err != nil {
 		t.Fatalf("replay: %v\n%s\nscript:\n%s", err, b, replay)
 	}

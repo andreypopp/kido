@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -19,7 +20,7 @@ func (h *harness) waitGlyph(title, glyph string) {
 	h.t.Helper()
 	want := "· " + glyph + " " + title
 	h.waitFor(func() bool { return h.rowFor(title) == want }, settle,
-		"row "+want+" (is "+h.rowFor(title)+")")
+		func() string { return fmt.Sprintf("row %q (is %q)", want, h.rowFor(title)) })
 }
 
 // TestClaudeStatuses walks a Claude pane through every hook event and
@@ -98,7 +99,7 @@ func TestAttentionKeys(t *testing.T) {
 	h := start(t, "alpha")
 	h.newSession("beta")
 	h.newSession("gamma")
-	h.waitFor(func() bool { return len(h.rows()) == 6 }, settle, "6 rows")
+	h.waitRows(6)
 
 	betaPane := h.claudePane("beta", "✳ Waiting job")
 	gammaPane := h.claudePane("gamma", "✳ Done job")
@@ -108,7 +109,7 @@ func TestAttentionKeys(t *testing.T) {
 	h.waitGlyph("Done job", "✓")
 
 	focusSidebar(h)
-	h.waitSelected(h.shell) // alpha's own pane
+	h.waitSelected(shell) // alpha's own pane
 
 	h.sendKeys("n")
 	h.waitSelected("Waiting job")

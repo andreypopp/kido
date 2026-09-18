@@ -11,9 +11,10 @@ install: build
 
 # unit tests; the end-to-end suite needs the patched tmux and is separate
 test:
+	go vet ./...
 	go test ./cmd/... ./internal/...
 
-# drives kido inside a real tmux fork (skips without one; KIDO_TMUX picks
-# the binary, KIDO_E2E_REQUIRED=1 turns the skip into a failure)
+# drives kido inside a real tmux fork; needs the fork on PATH or
+# KIDO_TMUX=<path>; KIDO_E2E_REQUIRED=1 fails instead of skipping
 e2e:
 	go test ./e2e/ -count=1 -v

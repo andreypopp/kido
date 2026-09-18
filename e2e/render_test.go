@@ -1,8 +1,6 @@
 package e2e
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,11 +18,11 @@ func TestRenderGrouping(t *testing.T) {
 	h.newSession("alpha")
 	h.in("split-window", "-d", "-t", "alpha:")
 	h.in("split-window", "-d", "-t", "alpha:")
-	h.waitFor(func() bool { return len(h.rows()) >= 6 }, settle, "all rows")
+	h.waitFor(func() bool { return len(h.rows()) >= 6 }, settle, msgf("all rows"))
 
 	rows := h.rows()
-	want := []string{"zeta", "· " + h.shell, "alpha",
-		"┌ " + h.shell, "├ " + h.shell, "└ " + h.shell}
+	want := []string{"zeta", "· " + shell, "alpha",
+		"┌ " + shell, "├ " + shell, "└ " + shell}
 	if len(rows) != len(want) {
 		t.Fatalf("rows = %q, want %q", rows, want)
 	}
@@ -52,47 +50,31 @@ func TestFollowActivePane(t *testing.T) {
 	h.newSession("beta")
 	// "cat" waits on stdin, so this window's row reads differently from
 	// every shell row and the selection is unambiguous.
-	// "cat -" (rather than bare "cat") is passed as two argv elements so
-	// tmux execs it directly instead of routing it through a shell: on
-	// Ubuntu /bin/sh is dash, which does not exec a single-word command
-	// string, leaving the pane's foreground process "sh" instead of "cat".
-	h.in("new-window", "-d", "-t", "beta:", "-n", "editor", "cat", "-")
+	h.newWindow("beta", "editor", "cat", "-")
 	h.waitRow("· cat")
 
-	h.waitSelected(h.shell)
+	h.waitSelected(shell)
 	h.in("switch-client", "-c", h.client, "-t", "beta:1")
 	h.waitSession("beta")
 
 	h.waitSelected("cat")
-	h.waitFor(func() bool { return h.selectedIndex() == h.rowIndex("· cat") }, settle,
-		"selection on the cat row")
+	h.waitFor(func() bool {
+		lines := h.capture()
+		return selectedIndexOf(lines) == rowIndexOf(lines, "· cat")
+	}, settle, msgf("selection on the cat row"))
 }
 
 // TestSSHRow shows a pane running ssh by its destination.
 func TestSSHRow(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	// ssh blocks on the proxy command, so no network is needed. The proxy
-	// is a script rather than "sleep 300" because kido reads ssh's
-	// arguments out of ps output, where a space inside an option value is
-	// indistinguishable from an argument separator.
-	proxy := filepath.Join(h.dir, "proxy")
-	if err := os.WriteFile(proxy, []byte("#!/bin/sh\nexec sleep 300\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	pane := h.in("new-window", "-P", "-F", "#{pane_id}", "-d", "-t", "alpha:")
+	// ssh blocks on the proxy command, so no network is needed.
+	pane := h.newWindow("alpha", "")
 	// ssh must be a child of the pane's shell: kido keys the destination
 	// by the ssh process's ppid.
 	h.in("send-keys", "-t", pane,
-		"ssh -F /dev/null -o ProxyCommand="+proxy+" deploy@example.test", "Enter")
-	h.waitFor(func() bool {
-		for _, p := range h.panes() {
-			if p.ID == pane && p.Command == "ssh" {
-				return true
-			}
-		}
-		return false
-	}, settle, "pane running ssh")
+		"ssh -F /dev/null -o ProxyCommand="+h.sshProxy()+" deploy@example.test", "Enter")
+	h.waitPaneCommand(pane, "ssh")
 	h.waitRow("ssh deploy@example.test")
 }
 
@@ -102,22 +84,10 @@ func TestSSHRow(t *testing.T) {
 func TestSSHRowDirect(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	proxy := filepath.Join(h.dir, "proxy")
-	if err := os.WriteFile(proxy, []byte("#!/bin/sh\nexec sleep 300\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// Passing the command as separate arguments (rather than one quoted
-	// string) makes tmux run it directly with execvp, with no shell in
-	// between: the pane's root process is ssh itself.
-	pane := h.in("new-window", "-P", "-F", "#{pane_id}", "-d", "-t", "alpha:",
-		"ssh", "-F", "/dev/null", "-o", "ProxyCommand="+proxy, "deploy@example.test")
-	h.waitFor(func() bool {
-		for _, p := range h.panes() {
-			if p.ID == pane && p.Command == "ssh" {
-				return true
-			}
-		}
-		return false
-	}, settle, "pane running ssh")
+	// newWindow passes the command as separate arguments, so tmux runs it
+	// directly with execvp and the pane's root process is ssh itself.
+	pane := h.newWindow("alpha", "", "ssh", "-F", "/dev/null",
+		"-o", "ProxyCommand="+h.sshProxy(), "deploy@example.test")
+	h.waitPaneCommand(pane, "ssh")
 	h.waitRow("ssh deploy@example.test")
 }

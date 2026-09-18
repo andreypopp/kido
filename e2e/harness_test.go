@@ -5,8 +5,11 @@
 //
 //	go test ./e2e/ -count=1 -v
 //
-// Set KIDO_TMUX to the patched tmux if it is not the "tmux" on PATH. The
-// tests skip when no patched tmux is available, unless KIDO_E2E_REQUIRED=1.
+// KIDO_TMUX picks which tmux the harness tests (default: the "tmux" on
+// PATH); it is the harness's own knob and is kept out of every environment
+// kido itself runs in, because kido resolves the tmux binary from the
+// server it is talking to. The tests skip when no patched tmux is
+// available, unless KIDO_E2E_REQUIRED=1.
 package e2e
 
 import (
@@ -22,6 +25,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 var (
@@ -36,6 +41,10 @@ const (
 	outerCols = 200
 	outerRows = 50
 	settle    = 5 * time.Second // kido polls every 500ms
+	// shell is pane_current_command for a bare pane: the inner config
+	// pins default-shell to /bin/bash, which exists on both CI runners
+	// and on dev machines.
+	shell = "bash"
 )
 
 func TestMain(m *testing.M) {
@@ -74,22 +83,33 @@ func buildFakeClaude(dir string) (string, error) {
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		return "", err
 	}
-	files := map[string]string{
-		"go.mod":  "module fakeclaude\n\ngo 1.27\n",
-		"main.go": "package main\n\nimport \"time\"\n\nfunc main() { time.Sleep(30 * time.Minute) }\n",
+	main := "package main\n\nimport \"time\"\n\nfunc main() { time.Sleep(30 * time.Minute) }\n"
+	if err := os.WriteFile(filepath.Join(src, "main.go"), []byte(main), 0o644); err != nil {
+		return "", err
 	}
-	for name, body := range files {
-		if err := os.WriteFile(filepath.Join(src, name), []byte(body), 0o644); err != nil {
-			return "", err
-		}
-	}
+	// Building a named file needs no go.mod: the source imports only the
+	// standard library.
 	out := filepath.Join(dir, "claude")
-	cmd := exec.Command("go", "build", "-o", out, ".")
+	cmd := exec.Command("go", "build", "-o", out, "main.go")
 	cmd.Dir = src
 	if b, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("go build fake claude: %v\n%s", err, b)
 	}
 	return out, nil
+}
+
+// cleanEnv is this process's environment with KIDO_TMUX removed, plus
+// extra. Everything the harness spawns gets it: KIDO_TMUX would otherwise
+// reach kido through the tmux servers it starts, and kido must resolve the
+// tmux binary on its own.
+func cleanEnv(extra ...string) []string {
+	env := make([]string, 0, len(os.Environ())+len(extra))
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "KIDO_TMUX=") {
+			env = append(env, kv)
+		}
+	}
+	return append(env, extra...)
 }
 
 // findTmux locates a tmux that has the side status column.
@@ -152,7 +172,7 @@ type harness struct {
 	outer    string // outer socket name
 	inner    string // inner socket name
 	client   string // the inner client's name, e.g. /dev/ttys012
-	shell    string // pane_current_command of a bare shell pane on this platform
+	proxy    string // ssh ProxyCommand script, written on demand
 }
 
 var sanitize = regexp.MustCompile(`[^A-Za-z0-9]+`)
@@ -179,12 +199,12 @@ func start(t *testing.T, session string) *harness {
 	body := fmt.Sprintf(`
 set -g status off
 set -sg escape-time 0
-set -g default-shell /bin/sh
+set -g default-shell /bin/bash
 set -g default-command ""
 set -g side-status left
 set -g side-status-width %d
 set -g side-status-style "fg=default,bg=default"
-set -g side-status-command "KIDO_STATE_DIR=%s KIDO_TMUX=%s %s"
+set -g side-status-command "KIDO_STATE_DIR=%s %s"
 set -g mouse on
 bind-key K if-shell -F '#{==:#{side-status},off}' \
   'set -g side-status left ; refresh-client -f side-status-focus' \
@@ -192,7 +212,7 @@ bind-key K if-shell -F '#{==:#{side-status},off}' \
 bind-key k if-shell -F '#{m:*side-status-focus*,#{client_flags}}' \
   'refresh-client -f !side-status-focus' \
   'refresh-client -f side-status-focus'
-`, sideWidth, h.stateDir, tmuxBin, kidoBin)
+`, sideWidth, h.stateDir, kidoBin)
 	if err := os.WriteFile(conf, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -204,33 +224,18 @@ bind-key k if-shell -F '#{m:*side-status-focus*,#{client_flags}}' \
 
 	h.must(h.tmux(h.outer, "-f", "/dev/null", "new-session", "-d", "-s", "host",
 		"-x", strconv.Itoa(outerCols), "-y", strconv.Itoa(outerRows)))
-	// Ubuntu runners lack the tmux-256color terminfo (it ships in the
-	// ncurses-term package, not installed by default); without it the
-	// inner tmux started below fails with "open terminal failed" and its
-	// pane exits immediately, leaving the sidebar blank. screen-256color
-	// is always present. remain-on-exit keeps a dead inner client's error
-	// text on screen instead of the pane vanishing, so failures are
-	// diagnosable.
+	// CI no longer installs ncurses-term, so screen-256color (always
+	// present) is the only terminfo the inner tmux can open on Ubuntu.
 	h.must(h.tmux(h.outer, "set-option", "-g", "default-terminal", "screen-256color"))
+	// remain-on-exit keeps a dead client's error on screen, not vanishing.
 	h.must(h.tmux(h.outer, "set-option", "-g", "remain-on-exit", "on"))
 	inner := fmt.Sprintf("unset TMUX; exec %q -L %s -f %q new-session -s %s -c %q",
 		tmuxBin, h.inner, conf, session, h.dir)
 	h.must(h.tmux(h.outer, "new-window", "-d", "-t", "host", "-n", "side", inner))
 
 	h.waitFor(func() bool { return hasLine(h.sidebar(), session) }, settle,
-		"sidebar shows session "+session)
-	h.client = h.clientName()
-	// default-shell is forced to /bin/sh above so panes don't depend on the
-	// runner's login shell, but what that reports as pane_current_command
-	// is itself platform-dependent (e.g. macOS's /bin/sh re-execs the real
-	// /bin/bash, so it reads "bash"; Ubuntu's is dash and reads "sh").
-	// Probe it once per harness instead of hard-coding a name.
-	for _, p := range h.panes() {
-		if p.Session == session {
-			h.shell = p.Command
-			break
-		}
-	}
+		msgf("sidebar shows session %s", session))
+	h.client = strings.TrimSpace(strings.Split(h.in("list-clients", "-F", "#{client_name}"), "\n")[0])
 	return h
 }
 
@@ -249,7 +254,7 @@ func killServer(socket string) {
 func (h *harness) tmux(socket string, args ...string) (string, error) {
 	full := append([]string{"-L", socket}, args...)
 	cmd := exec.Command(tmuxBin, full...)
-	cmd.Env = append(os.Environ(), "TMUX=")
+	cmd.Env = cleanEnv("TMUX=")
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
@@ -303,7 +308,6 @@ func (h *harness) prefix(key string) {
 	h.t.Helper()
 	h.sendKeys("C-b")
 	h.sendKeys(key)
-	time.Sleep(150 * time.Millisecond)
 }
 
 // ---- mouse -----------------------------------------------------------------
@@ -324,7 +328,6 @@ func (h *harness) click(x, y int) {
 	h.t.Helper()
 	h.mouseSeq(0, x, y, true)
 	h.mouseSeq(0, x, y, false)
-	time.Sleep(150 * time.Millisecond)
 }
 
 func (h *harness) wheelUp(x, y int)   { h.t.Helper(); h.mouseSeq(64, x, y, true) }
@@ -344,32 +347,30 @@ func (h *harness) drag(fromX, toX, y int) {
 	}
 	h.mouseSeq(32, toX, y, true)
 	h.mouseSeq(0, toX, y, false)
-	time.Sleep(300 * time.Millisecond)
 }
 
 // ---- reading the screen ----------------------------------------------------
 
-var ansiRE = regexp.MustCompile(`\x1b\[[0-9;:?]*[ -/]*[@-~]`)
+// reverseRE matches an SGR escape that turns on reverse video (parameter
+// 7), tolerating tmux combining it with other attributes in the same
+// escape ("\x1b[1;7m") rather than requiring a literal "\x1b[7m".
+var reverseRE = regexp.MustCompile(`\x1b\[(?:\d+;)*7(?:;\d+)*m`)
 
-func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
+// sgrOn holds, per SGR parameter the tests read, a matcher for an escape
+// that turns that attribute on. Built once so it is safe to share between
+// parallel tests.
+var sgrOn = map[string]*regexp.Regexp{
+	"7": reverseRE,                                        // reverse video: the selected row
+	"1": regexp.MustCompile(`\x1b\[(?:\d+;)*1(?:;\d+)*m`), // bold: the client's session
+}
 
-// sgrRE matches an SGR escape sequence, capturing its semicolon-separated
-// parameter list (which may be empty, e.g. "\x1b[m").
-var sgrRE = regexp.MustCompile(`\x1b\[([0-9;]*)m`)
-
-// hasReverseVideo reports whether line carries an SGR escape that turns on
-// reverse video (parameter 7), tolerating tmux combining it with other
-// attributes in the same escape (e.g. "\x1b[1;7m" or "\x1b[7;1m") rather
-// than requiring the literal "\x1b[7m".
-func hasReverseVideo(line string) bool {
-	for _, m := range sgrRE.FindAllStringSubmatch(line, -1) {
-		for _, p := range strings.Split(m[1], ";") {
-			if p == "7" {
-				return true
-			}
-		}
+// hasSGR reports whether line switches on the SGR attribute param.
+func hasSGR(line, param string) bool {
+	re, ok := sgrOn[param]
+	if !ok {
+		panic("hasSGR: no matcher for SGR parameter " + param)
 	}
-	return false
+	return re.MatchString(line)
 }
 
 // capture returns the outer pane's screen with escape sequences kept.
@@ -382,16 +383,25 @@ func (h *harness) capture() []string {
 	return strings.Split(out, "\n")
 }
 
-// sidebarOf cuts the side column (everything left of the separator) out of
-// a captured screen and strips colours.
+// sideOf cuts the side column (everything left of the separator) out of a
+// captured line, escape sequences and all. The separator rune cannot occur
+// inside an escape, so cutting before stripping is safe and keeps the
+// window area's attributes out of the SGR checks.
+func sideOf(line string) string {
+	if i := strings.IndexRune(line, '│'); i >= 0 {
+		return line[:i]
+	}
+	return line
+}
+
+// sideText is one captured line as the side column's plain text.
+func sideText(line string) string { return strings.TrimSpace(ansi.Strip(sideOf(line))) }
+
+// sidebarOf is sideText over a captured screen.
 func sidebarOf(lines []string) []string {
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
-		text := stripANSI(line)
-		if i := strings.IndexRune(text, '│'); i >= 0 {
-			text = text[:i]
-		}
-		out = append(out, strings.TrimRight(text, " "))
+		out = append(out, sideText(line))
 	}
 	return out
 }
@@ -399,104 +409,79 @@ func sidebarOf(lines []string) []string {
 // sidebar returns the side column's text lines.
 func (h *harness) sidebar() []string { return sidebarOf(h.capture()) }
 
-// sidebarVisible reports whether the column's separator line is on screen:
-// with the column hidden the window area starts at the first column.
-func (h *harness) sidebarVisible() bool {
+// separatorAt reports whether the column separator sits at column w.
+func (h *harness) separatorAt(w int) bool {
 	h.t.Helper()
 	for _, line := range h.capture() {
-		r := []rune(stripANSI(line))
-		if len(r) >= sideWidth && r[sideWidth-1] == '│' {
+		r := []rune(ansi.Strip(line))
+		if len(r) >= w && r[w-1] == '│' {
 			return true
 		}
 	}
 	return false
 }
 
-// sidebarText returns the non-empty side column lines.
-func (h *harness) rows() []string {
+// sidebarVisible reports whether the column's separator line is on screen:
+// with the column hidden the window area starts at the first column.
+func (h *harness) sidebarVisible() bool { return h.separatorAt(sideWidth) }
+
+// rowsOf keeps the non-empty side column lines of a captured screen.
+func rowsOf(lines []string) []string {
 	var out []string
-	for _, l := range h.sidebar() {
-		if strings.TrimSpace(l) != "" {
+	for _, l := range sidebarOf(lines) {
+		if l != "" {
 			out = append(out, l)
 		}
 	}
 	return out
 }
 
-// selectedRow returns the text of the row kido draws in reverse video.
-func (h *harness) selectedRow() string {
-	h.t.Helper()
-	for _, line := range h.capture() {
-		if !hasReverseVideo(line) {
-			continue
+// rows returns the non-empty side column lines.
+func (h *harness) rows() []string { return rowsOf(h.capture()) }
+
+// selectedRowOf returns the text of the row kido draws in reverse video.
+func selectedRowOf(lines []string) string {
+	for _, line := range lines {
+		if hasSGR(sideOf(line), "7") {
+			return sideText(line)
 		}
-		text := stripANSI(line)
-		if i := strings.IndexRune(text, '│'); i >= 0 {
-			text = text[:i]
-		}
-		return strings.TrimSpace(text)
 	}
 	return ""
 }
 
-// selectedIndex is the screen line (1-based, as the mouse counts) of the
+// selectedIndexOf is the screen line (1-based, as the mouse counts) of the
 // reverse-video row, or 0.
-func (h *harness) selectedIndex() int {
-	h.t.Helper()
-	for i, line := range h.capture() {
-		if hasReverseVideo(line) {
+func selectedIndexOf(lines []string) int {
+	for i, line := range lines {
+		if hasSGR(sideOf(line), "7") {
 			return i + 1
 		}
 	}
 	return 0
 }
 
+func (h *harness) selectedRow() string { h.t.Helper(); return selectedRowOf(h.capture()) }
+func (h *harness) selectedIndex() int  { h.t.Helper(); return selectedIndexOf(h.capture()) }
+
 // waitSelectedLine waits until the reverse-video row is screen line n.
 func (h *harness) waitSelectedLine(n int) {
 	h.t.Helper()
-	h.waitFor(func() bool { return h.selectedIndex() == n }, settle,
-		fmt.Sprintf("selection on line %d (is %d: %q)", n, h.selectedIndex(), h.selectedRow()))
+	h.waitFor(func() bool { return h.selectedIndex() == n }, settle, func() string {
+		lines := h.capture()
+		return fmt.Sprintf("selection on line %d (is %d: %q)", n,
+			selectedIndexOf(lines), selectedRowOf(lines))
+	})
 }
 
 // isBold reports whether the sidebar line containing sub is rendered bold.
 func (h *harness) isBold(sub string) bool {
 	h.t.Helper()
 	for _, line := range h.capture() {
-		text := stripANSI(line)
-		if i := strings.IndexRune(text, '│'); i >= 0 {
-			text = text[:i]
-		}
-		if strings.Contains(text, sub) {
-			return strings.Contains(line, "\x1b[1m")
+		if strings.Contains(sideText(line), sub) {
+			return hasSGR(sideOf(line), "1")
 		}
 	}
 	return false
-}
-
-// TestHasReverseVideo checks the SGR matcher tmux's escape output has to
-// survive: reverse video (7) combined with other attributes, in either
-// order, on the same escape, plus lines that should not match. Needs no
-// tmux server.
-func TestHasReverseVideo(t *testing.T) {
-	cases := []struct {
-		line string
-		want bool
-	}{
-		{"\x1b[7mselected\x1b[0m", true},
-		{"\x1b[1;7mselected\x1b[0m", true},
-		{"\x1b[7;1mselected\x1b[0m", true},
-		{"\x1b[0;7;4mselected\x1b[0m", true},
-		{"plain text, no escapes", false},
-		{"\x1b[1mbold only\x1b[0m", false},
-		{"\x1b[27mnot reverse (27 is reverse-off)", false},
-		{"\x1b[17mnot reverse (17 contains a 7 digit, not a 7 parameter)", false},
-		{"\x1b[m", false},
-	}
-	for _, c := range cases {
-		if got := hasReverseVideo(c.line); got != c.want {
-			t.Errorf("hasReverseVideo(%q) = %v, want %v", c.line, got, c.want)
-		}
-	}
 }
 
 func hasLine(lines []string, sub string) bool {
@@ -508,10 +493,10 @@ func hasLine(lines []string, sub string) bool {
 	return false
 }
 
-// rowIndex is the screen row (1-based, as the mouse counts) of the first
-// sidebar line containing sub, or 0.
-func (h *harness) rowIndex(sub string) int {
-	for i, l := range h.sidebar() {
+// rowIndexOf is the screen row (1-based, as the mouse counts) of the first
+// side column line containing sub, or 0.
+func rowIndexOf(lines []string, sub string) int {
+	for i, l := range sidebarOf(lines) {
 		if strings.Contains(l, sub) {
 			return i + 1
 		}
@@ -519,9 +504,19 @@ func (h *harness) rowIndex(sub string) int {
 	return 0
 }
 
+func (h *harness) rowIndex(sub string) int { return rowIndexOf(h.capture(), sub) }
+
 // ---- waiting ---------------------------------------------------------------
 
-func (h *harness) waitFor(cond func() bool, timeout time.Duration, msg string) {
+// msgf is a waitFor description that is only formatted if the wait fails.
+func msgf(format string, a ...any) func() string {
+	return func() string { return fmt.Sprintf(format, a...) }
+}
+
+// waitFor polls cond until it holds or timeout passes. describe is called
+// only on failure, so a description that reads the screen costs nothing
+// while polling and reports the state at the deadline.
+func (h *harness) waitFor(cond func() bool, timeout time.Duration, describe func() string) {
 	h.t.Helper()
 	deadline := time.Now().Add(timeout)
 	for {
@@ -529,102 +524,70 @@ func (h *harness) waitFor(cond func() bool, timeout time.Duration, msg string) {
 			return
 		}
 		if time.Now().After(deadline) {
-			h.t.Fatalf("timed out waiting for %s\n%s", msg, h.diagnose())
+			h.t.Fatalf("timed out waiting for %s\n%s", describe(), h.diagnose())
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 }
 
-// diagnose renders a compact snapshot of both servers for a failed waitFor:
-// the outer pane's capture, whether its pane died and why, the sidebar's raw
-// escape bytes (to see what attributes tmux actually emitted, e.g. when a
-// selection match fails even though the row is visible), the inner
-// server's clients and first pane's live state, and its session list (or
-// the error reaching any of these). Capped at ~40 lines total.
+// diagnose renders a compact snapshot of both servers for a failed
+// waitFor: what the outer pane shows (with the escapes tmux emitted made
+// visible), whether that pane died and why, and the inner server's
+// sessions.
 func (h *harness) diagnose() string {
 	h.t.Helper()
 	var b strings.Builder
 
-	fmt.Fprintln(&b, "outer capture:")
-	capLines := h.capture()
-	if len(capLines) > 12 {
-		capLines = capLines[:12]
-	}
-	for _, l := range capLines {
-		fmt.Fprintln(&b, "  "+l)
-	}
-
-	status, err := h.tmux(h.outer, "display-message", "-p", "-t", "host:side",
-		"#{pane_dead} #{pane_dead_status} #{pane_current_command}")
-	if err != nil {
-		fmt.Fprintf(&b, "outer pane status: error: %v\n", err)
-	} else {
-		fmt.Fprintf(&b, "outer pane status (dead deadstatus cmd): %s\n", status)
-	}
-
-	fmt.Fprintln(&b, "sidebar raw (escapes visible):")
-	rawLines := h.capture()
-	if len(rawLines) > 8 {
-		rawLines = rawLines[:8]
-	}
-	for _, l := range rawLines {
+	fmt.Fprintln(&b, "outer capture (escapes as ^[):")
+	for i, l := range h.capture() {
+		if i == 12 {
+			break
+		}
 		fmt.Fprintln(&b, "  "+strings.ReplaceAll(l, "\x1b", "^["))
 	}
-
-	clients, err := h.tmux(h.inner, "list-clients", "-F",
-		"#{client_name} #{client_session} #{client_flags} #{client_termname}")
-	if err != nil {
-		fmt.Fprintf(&b, "inner list-clients: error: %v\n", err)
-	} else {
-		fmt.Fprintf(&b, "inner list-clients:\n  %s\n", strings.ReplaceAll(clients, "\n", "\n  "))
-	}
-
-	// h.panes() and friends call h.must, which would fail the test from
-	// inside diagnose(); go straight through h.tmux (which just returns an
-	// error) instead so a broken inner server doesn't swallow this report.
-	firstPane, err := h.tmux(h.inner, "list-panes", "-a", "-F", "#{pane_id}")
-	if err != nil {
-		fmt.Fprintf(&b, "inner list-panes: error: %v\n", err)
-	} else if id := strings.SplitN(firstPane, "\n", 2)[0]; id != "" {
-		info, err := h.tmux(h.inner, "display-message", "-p", "-t", id,
-			"#{pane_current_command} #{pane_pid}")
+	// h.in and friends would fail the test from inside diagnose(); go
+	// straight through h.tmux, which only returns an error.
+	report := func(label string, args ...string) {
+		out, err := h.tmux(h.inner, args...)
 		if err != nil {
-			fmt.Fprintf(&b, "inner first pane state: error: %v\n", err)
-		} else {
-			fmt.Fprintf(&b, "inner first pane (%s) state: %s\n", id, info)
+			fmt.Fprintf(&b, "%s: error: %v\n", label, err)
+			return
 		}
+		fmt.Fprintf(&b, "%s:\n  %s\n", label, strings.ReplaceAll(out, "\n", "\n  "))
 	}
-
-	sessions, err := h.tmux(h.inner, "list-sessions")
-	if err != nil {
-		fmt.Fprintf(&b, "inner list-sessions: error: %v\n", err)
+	if out, err := h.tmux(h.outer, "display-message", "-p", "-t", "host:side",
+		"#{pane_dead} #{pane_dead_status} #{pane_current_command}"); err != nil {
+		fmt.Fprintf(&b, "outer pane status: error: %v\n", err)
 	} else {
-		fmt.Fprintf(&b, "inner list-sessions:\n  %s\n", strings.ReplaceAll(sessions, "\n", "\n  "))
+		fmt.Fprintf(&b, "outer pane status (dead deadstatus cmd): %s\n", out)
 	}
-
+	report("inner list-sessions", "list-sessions")
 	return b.String()
 }
 
 // waitRow waits until a sidebar line contains sub.
 func (h *harness) waitRow(sub string) {
 	h.t.Helper()
-	h.waitFor(func() bool { return hasLine(h.sidebar(), sub) }, settle, "row "+strconv.Quote(sub))
+	h.waitFor(func() bool { return hasLine(h.sidebar(), sub) }, settle,
+		msgf("row %q", sub))
+}
+
+// waitRows waits until the column holds exactly n non-empty rows.
+func (h *harness) waitRows(n int) {
+	h.t.Helper()
+	h.waitFor(func() bool { return len(h.rows()) == n }, settle, func() string {
+		return fmt.Sprintf("%d rows (are %q)", n, h.rows())
+	})
 }
 
 // waitSelected waits until the reverse-video row contains sub.
 func (h *harness) waitSelected(sub string) {
 	h.t.Helper()
 	h.waitFor(func() bool { return strings.Contains(h.selectedRow(), sub) }, settle,
-		"selection on "+strconv.Quote(sub)+" (is "+strconv.Quote(h.selectedRow())+")")
+		func() string { return fmt.Sprintf("selection on %q (is %q)", sub, h.selectedRow()) })
 }
 
 // ---- client state ----------------------------------------------------------
-
-func (h *harness) clientName() string {
-	h.t.Helper()
-	out := h.in("list-clients", "-F", "#{client_name}")
-	return strings.TrimSpace(strings.Split(out, "\n")[0])
-}
 
 func (h *harness) clientSession() string {
 	h.t.Helper()
@@ -653,13 +616,13 @@ func (h *harness) clientFocused() bool {
 func (h *harness) waitSession(name string) {
 	h.t.Helper()
 	h.waitFor(func() bool { return h.clientSession() == name }, settle,
-		"client attached to "+name)
+		msgf("client attached to %s", name))
 }
 
 func (h *harness) waitFocused(want bool) {
 	h.t.Helper()
 	h.waitFor(func() bool { return h.clientFocused() == want }, settle,
-		fmt.Sprintf("side-status-focus = %v", want))
+		msgf("side-status-focus = %v", want))
 }
 
 // ---- inner server helpers --------------------------------------------------
@@ -689,23 +652,61 @@ func (h *harness) panes() []paneInfo {
 	return ps
 }
 
-// paneOf returns the id of session's first pane.
-func (h *harness) paneOf(session string) string {
-	h.t.Helper()
-	for _, p := range h.panes() {
-		if p.Session == session {
-			return p.ID
-		}
-	}
-	h.t.Fatalf("no pane in session %q", session)
-	return ""
-}
-
 // newSession creates an inner session and waits for it in the sidebar.
 func (h *harness) newSession(name string) {
 	h.t.Helper()
 	h.in("new-session", "-d", "-s", name, "-c", h.dir)
 	h.waitRow(name)
+}
+
+// newWindow opens a window in session (named name, if any) running argv,
+// and returns its pane id. argv is always passed as separate arguments so
+// tmux execs it directly; a lone command word is instead routed through
+// the pane's shell (spawn.c execs only for argc > 1), which on some
+// shells stays the pane's foreground process and hides the real command
+// from pane_current_command. Pass no argv at all for a plain shell pane.
+func (h *harness) newWindow(session, name string, argv ...string) string {
+	h.t.Helper()
+	if len(argv) == 1 {
+		h.t.Fatalf("newWindow(%q, %q, %q): a one-word command is run through the pane's "+
+			"shell, not exec'd; add an argument the command ignores, or pass "+
+			"\"sh\", \"-c\", \"exec %s\"", session, name, argv[0], argv[0])
+	}
+	args := []string{"new-window", "-P", "-F", "#{pane_id}", "-d", "-t", session + ":"}
+	if name != "" {
+		args = append(args, "-n", name)
+	}
+	return h.in(append(args, argv...)...)
+}
+
+// waitPaneCommand waits until pane id runs cmd as its foreground process.
+func (h *harness) waitPaneCommand(id, cmd string) {
+	h.t.Helper()
+	h.waitFor(func() bool {
+		for _, p := range h.panes() {
+			if p.ID == id {
+				return p.Command == cmd
+			}
+		}
+		return false
+	}, settle, msgf("pane %s running %s", id, cmd))
+}
+
+// sshProxy writes (once per harness) a ProxyCommand script that just
+// blocks, so an ssh pane needs no network. It is a script rather than
+// "sleep 300" because kido reads ssh's arguments out of ps output, where a
+// space inside an option value is indistinguishable from an argument
+// separator.
+func (h *harness) sshProxy() string {
+	h.t.Helper()
+	if h.proxy == "" {
+		p := filepath.Join(h.dir, "proxy")
+		if err := os.WriteFile(p, []byte("#!/bin/sh\nexec sleep 300\n"), 0o755); err != nil {
+			h.t.Fatal(err)
+		}
+		h.proxy = p
+	}
+	return h.proxy
 }
 
 // ---- the kido hook ---------------------------------------------------------
@@ -726,31 +727,19 @@ func (h *harness) hook(sessionID, pane, event string, kv ...string) {
 	}
 	cmd := exec.Command(kidoBin, "hook")
 	cmd.Stdin = bytes.NewReader(body)
-	cmd.Env = append(os.Environ(), "TMUX_PANE="+pane, "KIDO_STATE_DIR="+h.stateDir)
+	cmd.Env = cleanEnv("TMUX_PANE="+pane, "KIDO_STATE_DIR="+h.stateDir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		h.t.Fatalf("kido hook %s: %v\n%s", event, err, out)
 	}
 }
 
 // claudePane opens a window in session running the fake claude binary and
-// titles it, so the pane looks like a Claude Code pane to kido.
+// titles it, so the pane looks like a Claude Code pane to kido. The "--"
+// is the ignored argument newWindow insists on.
 func (h *harness) claudePane(session, title string) string {
 	h.t.Helper()
-	// claudeBin takes no arguments, but a lone command word is still routed
-	// through a shell by tmux (spawn.c execs directly only for argc > 1); on
-	// Ubuntu /bin/sh is dash, which does not exec the last command in a -c
-	// string, so the pane's foreground process would stay "sh" rather than
-	// "claude". Passing a harmless extra argv element (fakeclaude ignores
-	// its arguments) makes tmux exec claudeBin directly instead.
-	id := h.in("new-window", "-P", "-F", "#{pane_id}", "-d", "-t", session+":", claudeBin, "--")
-	h.waitFor(func() bool {
-		for _, p := range h.panes() {
-			if p.ID == id && p.Command == "claude" {
-				return true
-			}
-		}
-		return false
-	}, settle, "pane "+id+" running claude")
+	id := h.newWindow(session, "", claudeBin, "--")
+	h.waitPaneCommand(id, "claude")
 	h.title(id, title)
 	return id
 }
@@ -761,13 +750,12 @@ func (h *harness) claudePane(session, title string) string {
 func (h *harness) title(pane, title string) {
 	h.t.Helper()
 	h.waitFor(func() bool {
-		h.in("select-pane", "-t", pane, "-T", title)
-		time.Sleep(200 * time.Millisecond)
 		for _, p := range h.panes() {
-			if p.ID == pane {
-				return p.Title == title
+			if p.ID == pane && p.Title == title {
+				return true
 			}
 		}
+		h.in("select-pane", "-t", pane, "-T", title)
 		return false
-	}, settle, "pane "+pane+" titled "+title)
+	}, settle, msgf("pane %s titled %s", pane, title))
 }

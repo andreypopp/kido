@@ -1,7 +1,6 @@
 package e2e
 
 import (
-	"strconv"
 	"testing"
 )
 
@@ -21,15 +20,15 @@ func TestPrefixKShowHide(t *testing.T) {
 	focusSidebar(h)
 	h.prefix("K") // the column is on: K hides it
 	h.waitFor(func() bool { return h.in("show", "-gv", "side-status") == "off" }, settle,
-		"side-status off")
-	h.waitFor(func() bool { return !h.sidebarVisible() }, settle, "sidebar gone")
+		msgf("side-status off"))
+	h.waitFor(func() bool { return !h.sidebarVisible() }, settle, msgf("sidebar gone"))
 	if h.clientFocused() {
 		t.Error("side-status-focus still set while the column is hidden")
 	}
 
 	h.prefix("K") // and back, with focus
 	h.waitFor(func() bool { return h.in("show", "-gv", "side-status") == "left" }, settle,
-		"side-status left")
+		msgf("side-status left"))
 	h.waitRow("alpha")
 	h.waitFocused(true)
 }
@@ -54,7 +53,7 @@ func TestMotionKeys(t *testing.T) {
 	h.in("split-window", "-d", "-t", "alpha:")
 	h.newSession("beta")
 	h.in("split-window", "-d", "-t", "beta:")
-	h.waitFor(func() bool { return len(h.rows()) == 6 }, settle, "6 rows")
+	h.waitRows(6)
 	focusSidebar(h)
 
 	// Lines: 1 alpha, 2 ┌ shell, 3 └ shell, 4 beta, 5 ┌ shell, 6 └ shell.
@@ -84,7 +83,7 @@ func TestFirstLastKeys(t *testing.T) {
 	h := start(t, "alpha")
 	h.newSession("beta")
 	h.in("split-window", "-d", "-t", "beta:")
-	h.waitFor(func() bool { return len(h.rows()) == 5 }, settle, "5 rows")
+	h.waitRows(5)
 	focusSidebar(h)
 
 	// Lines: 1 alpha, 2 · shell, 3 beta, 4 ┌ shell, 5 └ shell.
@@ -102,11 +101,11 @@ func TestEnterJumps(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	h.newSession("beta")
-	h.waitFor(func() bool { return len(h.rows()) == 4 }, settle, "4 rows")
+	h.waitRows(4)
 	focusSidebar(h)
 
 	h.sendKeys("G") // beta's pane
-	h.waitSelected(h.shell)
+	h.waitSelected(shell)
 	h.sendKeys("Enter")
 
 	h.waitSession("beta")
@@ -136,7 +135,7 @@ func TestPrefixPassthrough(t *testing.T) {
 
 	h.prefix("c") // new window in the client's session
 	h.waitFor(func() bool { return len(h.panes()) == before+1 }, settle,
-		"a window created by prefix c (had "+strconv.Itoa(before)+" panes)")
+		msgf("a window created by prefix c (had %d panes)", before))
 	if !h.clientFocused() {
 		t.Error("the prefix command cleared side-status-focus")
 	}

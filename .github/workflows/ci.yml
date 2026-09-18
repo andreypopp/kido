@@ -7,6 +7,7 @@ on:
 
 env:
   TERM: xterm-256color
+  HOMEBREW_NO_AUTO_UPDATE: 1
 
 jobs:
   test:
@@ -24,21 +25,16 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: ssh availability
-        run: |
-          which ssh
-          ssh -V
-          which ps
-
-      - name: Install tmux fork build dependencies (Ubuntu)
+      - name: Install tmux dependencies (Ubuntu)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libevent-dev libncurses-dev bison autoconf automake pkg-config libutf8proc-dev ncurses-term
+          sudo apt-get install -y libevent-dev libncurses-dev libutf8proc-dev \
+            bison autoconf automake pkg-config
 
-      - name: Install tmux fork build dependencies (macOS)
+      - name: Install tmux dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install libevent ncurses utf8proc jemalloc automake autoconf pkg-config
+        run: brew install libevent ncurses utf8proc automake autoconf pkg-config
 
       - name: Resolve tmux fork revision
         id: tmux-fork
@@ -46,104 +42,31 @@ jobs:
           sha=$(git ls-remote https://github.com/andreypopp/tmux.git refs/heads/side-pane | cut -f1)
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-      - name: Fingerprint build dependency versions
-        id: tmux-deps
-        run: |
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            fp=$(dpkg-query -W -f='${Package} ${Version}\n' libevent-dev libncurses-dev libutf8proc-dev 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
-          else
-            fp=$(brew list --versions libevent ncurses utf8proc jemalloc | shasum -a 256 | cut -d' ' -f1)
-          fi
-          echo "fingerprint=$fp" >> "$GITHUB_OUTPUT"
-
-      - name: Cache tmux fork build
+      # restore/save rather than actions/cache: a failing job must still
+      # save the build it just paid for.
+      - name: Restore tmux fork build
         id: tmux-cache
         uses: actions/cache/restore@v4
         with:
           path: ~/tmux-side
-          key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.sha }}-${{ steps.tmux-deps.outputs.fingerprint }}
-
-      - name: Verify cached tmux fork
-        id: tmux-verify
-        if: steps.tmux-cache.outputs.cache-hit == 'true'
-        run: |
-          if [ -x "$HOME/tmux-side/bin/tmux" ] && "$HOME/tmux-side/bin/tmux" -V | grep -qx 'tmux next-3.9'; then
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-          fi
+          key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.sha }}
 
       - name: Build and install tmux fork
-        if: steps.tmux-cache.outputs.cache-hit != 'true' || steps.tmux-verify.outputs.ok != 'true'
+        if: steps.tmux-cache.outputs.cache-hit != 'true'
         run: ./scripts/install-tmux-fork.sh "$HOME/tmux-side"
 
-      - name: Save tmux fork build cache
+      - name: Save tmux fork build
         if: steps.tmux-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ~/tmux-side
-          key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.sha }}-${{ steps.tmux-deps.outputs.fingerprint }}
+          key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.sha }}
 
-      - name: Verify tmux fork version
+      - name: Check tmux fork
         run: $HOME/tmux-side/bin/tmux -V
 
-      - name: go vet
-        run: go vet ./...
-
       - name: Unit tests
-        run: go test $(go list ./... | grep -v '/e2e$') -count=1
+        run: make test
 
       - name: E2E tests
-        run: |
-          if [ -d ./e2e ]; then
-            KIDO_TMUX="$HOME/tmux-side/bin/tmux" KIDO_E2E_REQUIRED=1 go test ./e2e/ -count=1 -v -timeout 10m
-          else
-            echo "e2e/ package not present yet, skipping"
-          fi
-
-      - name: Diagnose blank sidebar (Linux)
-        if: failure() && runner.os == 'Linux'
-        run: |
-          set -x
-          FORK="$HOME/tmux-side/bin/tmux"
-          go build -o /tmp/kido ./cmd/kido
-          mkdir -p /tmp/kd
-
-          # A throwaway inner server whose side-status-command we swap
-          # between a plain diagnostic shell and kido itself.
-          "$FORK" -L diag -f /dev/null new-session -d -s d -x 120 -y 30
-          "$FORK" -L diag set-option -g side-status left
-          "$FORK" -L diag set-option -g side-status-width 40
-
-          # A throwaway outer server that gives the inner server a pty
-          # client, the same trick the e2e harness uses (harness_test.go):
-          # screen-256color because Ubuntu runners lack tmux-256color
-          # terminfo, and remain-on-exit so a dead client's error stays on
-          # screen instead of the pane vanishing.
-          "$FORK" -L diagouter -f /dev/null new-session -d -s host -x 120 -y 30
-          "$FORK" -L diagouter set-option -g default-terminal screen-256color
-          "$FORK" -L diagouter set-option -g remain-on-exit on
-          "$FORK" -L diagouter new-window -d -t host -n side \
-            "unset TMUX; exec \"$FORK\" -L diag attach"
-          sleep 2
-
-          echo "=== side-status-command: plain shell ==="
-          "$FORK" -L diag set-option -g side-status-command \
-            'echo HELLO; tty; env | grep -E "^(TMUX|TERM)"; sleep 30'
-          "$FORK" -L diag show-options -g side-status-command
-          sleep 3
-          "$FORK" -L diagouter list-clients
-          "$FORK" -L diagouter capture-pane -p -t host:side
-
-          echo "=== side-status-command: kido ==="
-          "$FORK" -L diag set-option -g side-status-command \
-            "KIDO_TMUX=$FORK KIDO_STATE_DIR=/tmp/kd /tmp/kido 2>/tmp/kido.err; echo EXIT=\$? >> /tmp/kido.err; sleep 30"
-          "$FORK" -L diag show-options -g side-status-command
-          sleep 3
-          "$FORK" -L diagouter list-clients
-          "$FORK" -L diagouter capture-pane -p -t host:side
-          echo "--- /tmp/kido.err ---"
-          cat /tmp/kido.err || true
-
-          "$FORK" -L diag kill-server || true
-          "$FORK" -L diagouter kill-server || true
+        run: KIDO_TMUX=$HOME/tmux-side/bin/tmux KIDO_E2E_REQUIRED=1 make e2e

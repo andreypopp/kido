@@ -15,17 +15,11 @@ var (
 	binaryPath = "tmux"
 )
 
-// binary returns the tmux executable to run: $KIDO_TMUX when set (an
-// explicit override for environments where the server's binary can't be
-// resolved by inspecting its process, such as Linux CI), else the one
-// running the server named by $TMUX when it can be found (so a patched
-// tmux talks to itself), else whatever "tmux" resolves to on PATH.
+// binary returns the tmux executable to run: the one running the server
+// named by $TMUX when it can be found (so a patched tmux talks to itself),
+// else whatever "tmux" resolves to on PATH.
 func binary() string {
 	binaryOnce.Do(func() {
-		if p := os.Getenv("KIDO_TMUX"); p != "" {
-			binaryPath = p
-			return
-		}
 		f := strings.Split(os.Getenv("TMUX"), ",")
 		if len(f) < 2 {
 			return

@@ -65,10 +65,12 @@ type model struct {
 
 // Run starts the sidebar and blocks until it exits.
 func Run(opts Options) error {
-	// kido always runs inside a pty and its styles are the interface, but
-	// termenv treats a CI env var (set by GitHub Actions, and passed through
-	// by tmux) as proof of no TTY and downgrades to no color at all.
-	lipgloss.SetColorProfile(termenv.ANSI256)
+	// kido's stdout is a tmux pane by construction, but termenv treats a CI
+	// env var (which tmux passes into the job) as proof of no TTY and would
+	// strip every style. Force the basic profile unless the user opted out.
+	if !termenv.DefaultOutput().EnvNoColor() {
+		lipgloss.SetColorProfile(termenv.ANSI)
+	}
 	m := model{opts: opts, snap: take(opts.Client, nil), started: time.Now(), seen: map[string]time.Time{}}
 	m.track()
 	m.rebuild()
