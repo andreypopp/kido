@@ -10,6 +10,7 @@ tmux
 ┌ ● Tmux config          <- a Claude Code session: ● running, ◆ waiting, ◌ compacting, ○ idle
 └ zsh
 · nvim
+· ssh deploy@build-box      <- panes running ssh show the destination
 review
 · ◆ Fix login redirect
 ```

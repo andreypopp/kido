@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/sahilm/fuzzy"
 
+	"kido/internal/procs"
 	"kido/internal/state"
 	"kido/internal/tmux"
 )
@@ -30,6 +31,7 @@ type snapshot struct {
 	focused bool   // the sidebar has the keyboard
 	panes   []tmux.Pane
 	states  map[string]state.Session
+	ssh     map[int]string // pane pid -> ssh destination
 	err     error
 }
 
@@ -67,6 +69,13 @@ func take(client string) snapshot {
 	if s.panes, s.err = tmux.ListPanes(); s.err != nil {
 		return s
 	}
+	var sshPanes []int
+	for _, p := range s.panes {
+		if p.CurrentCommand == "ssh" {
+			sshPanes = append(sshPanes, p.PanePID)
+		}
+	}
+	s.ssh = procs.SSHHosts(sshPanes)
 	s.states, s.err = state.Load()
 	return s
 }
@@ -361,6 +370,9 @@ func claudeTitle(title string) string {
 func (m *model) paneLabel(p tmux.Pane) string {
 	s, hooked := m.snap.states[p.PaneID]
 	if !hooked && p.CurrentCommand != "claude" {
+		if host, ok := m.snap.ssh[p.PanePID]; ok {
+			return stProc.Render("ssh ") + host
+		}
 		return stProc.Render(p.CurrentCommand)
 	}
 	st := state.Unknown
