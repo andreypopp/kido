@@ -3,6 +3,8 @@
 package ui
 
 import (
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -36,9 +38,8 @@ type snapshot struct {
 }
 
 type row struct {
-	text      string
-	paneID    string // non-empty for selectable rows
-	attention bool   // a Claude session waiting on you, or done unseen
+	text   string
+	paneID string // non-empty for selectable rows
 }
 
 type model struct {
@@ -50,19 +51,20 @@ type model struct {
 	width     int
 	height    int
 	status    string // error shown on the last line
-	filter    string // fuzzy filter on session names; empty shows all
+	filter    string // fuzzy filter on session names; "" unless searching
 	searching bool   // "/" pressed: typing edits the filter
 	gPend     bool   // a "g" was typed: "gg" goes to the top
 
-	// Claude panes seen working; when one goes idle while it is not the
-	// active pane it counts as done until the user visits it.
-	busy map[string]bool
-	done map[string]bool
+	// A Claude session whose turn ended after its pane was last looked at
+	// is "done" until the user visits it. seen records the last time each
+	// pane was the active one; started stands in for panes never seen.
+	started time.Time
+	seen    map[string]time.Time
 }
 
 // Run starts the sidebar and blocks until it exits.
 func Run(opts Options) error {
-	m := model{opts: opts, snap: take(opts.Client), busy: map[string]bool{}, done: map[string]bool{}}
+	m := model{opts: opts, snap: take(opts.Client, nil), started: time.Now(), seen: map[string]time.Time{}}
 	m.track()
 	m.rebuild()
 	m.focus(m.snap.active)
@@ -70,28 +72,43 @@ func Run(opts Options) error {
 	return err
 }
 
-func take(client string) snapshot {
+// take gathers a snapshot. prevSSH is the last snapshot's ssh map: the
+// process table is only read when a pane runs ssh that it does not cover.
+func take(client string, prevSSH map[int]string) snapshot {
 	var s snapshot
 	s.current, s.focused = tmux.ClientState(client)
 	if s.panes, s.err = tmux.ListPanes(); s.err != nil {
 		return s
 	}
 	s.active = tmux.ActivePane(s.panes, s.current)
-	var sshPanes []int
+	s.ssh = map[int]string{}
+	hosts := prevSSH
 	for _, p := range s.panes {
-		if p.CurrentCommand == "ssh" {
-			sshPanes = append(sshPanes, p.PanePID)
+		if p.CurrentCommand != "ssh" {
+			continue
+		}
+		if _, ok := hosts[p.PanePID]; !ok {
+			hosts = procs.SSHHosts()
+		}
+		if host, ok := hosts[p.PanePID]; ok {
+			s.ssh[p.PanePID] = host
 		}
 	}
-	s.ssh = procs.SSHHosts(sshPanes)
 	s.states, s.err = state.Load()
 	return s
 }
 
 // tick waits, then takes a snapshot in the background.
 func (m model) tick() tea.Cmd {
-	client, d := m.opts.Client, m.opts.Interval
-	return tea.Tick(d, func(time.Time) tea.Msg { return take(client) })
+	client, d, prevSSH := m.opts.Client, m.opts.Interval, m.snap.ssh
+	return tea.Tick(d, func(time.Time) tea.Msg { return take(client, prevSSH) })
+}
+
+// same reports whether two snapshots would render identically.
+func (a snapshot) same(b snapshot) bool {
+	return a.current == b.current && a.active == b.active && a.focused == b.focused &&
+		a.err == nil && b.err == nil &&
+		slices.Equal(a.panes, b.panes) && maps.Equal(a.states, b.states) && maps.Equal(a.ssh, b.ssh)
 }
 
 func (m model) Init() tea.Cmd { return m.tick() }
@@ -105,7 +122,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		was := m.snap
 		m.snap = msg
 		m.track()
-		m.rebuild()
+		if !msg.same(was) {
+			m.rebuild()
+		}
 		// Follow the user: a pane switch in tmux, or the keyboard going
 		// back to the pane (prefix k, a click elsewhere) both put the
 		// selection on the active pane.
@@ -129,87 +148,78 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clampTop()
 		}
 	case tea.KeyMsg:
-		// Runes that arrive together (fast typing, send-keys) come as one
-		// message; outside a search each is a separate command.
-		if !m.searching && msg.Type == tea.KeyRunes && len(msg.Runes) > 1 {
-			var mm tea.Model = m
-			var cmd tea.Cmd
-			for _, r := range msg.Runes {
-				mm, cmd = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-			}
-			return mm, cmd
-		}
-		key := msg.String()
-		// Keys that work the same whether or not a search is being typed.
-		switch key {
-		case "ctrl+j", "ctrl+n", "down":
-			m.move(1)
-			return m, nil
-		case "ctrl+k", "ctrl+p", "up":
-			m.move(-1)
-			return m, nil
-		case "enter":
-			m.jump()
-			return m, nil
-		}
-		if m.searching {
-			switch key {
-			case "esc", "ctrl+c":
-				m.searching = false
-				m.setFilter("")
-			case "backspace":
-				if r := []rune(m.filter); len(r) > 0 {
-					m.setFilter(string(r[:len(r)-1]))
-				} else {
-					m.searching = false // nothing left to erase: leave search
-				}
-			default:
-				if msg.Type == tea.KeyRunes && !msg.Alt {
-					m.setFilter(m.filter + string(msg.Runes))
-				}
-			}
-			return m, nil
-		}
-		// "gg" goes to the top.
-		if m.gPend {
-			m.gPend = false
-			if key == "g" {
-				m.cursor = -1
-				m.move(1)
-			}
-			return m, nil
-		}
-		switch key {
-		case "/":
-			m.searching = true
-			m.setFilter("")
-		case "esc", "ctrl+c":
-			if m.filter != "" {
-				m.setFilter("")
-			} else if err := tmux.ReleaseSideFocus(m.opts.Client); err != nil {
-				m.status = err.Error()
-			} else {
-				m.focus(m.snap.active)
-			}
-		case "j":
-			m.move(1)
-		case "k":
-			m.move(-1)
-		case "n":
-			m.nextAttention(1)
-		case "N":
-			m.nextAttention(-1)
-		case "g":
-			m.gPend = true
-		case "G", "end":
-			m.cursor = len(m.rows)
-			m.move(-1)
-		case "home":
-			m.cursor = -1
-			m.move(1)
-		}
+		m.key(msg)
 	}
 	return m, nil
+}
+
+// key handles one key press.
+func (m *model) key(msg tea.KeyMsg) {
+	// Runes that arrive together (fast typing, send-keys) come as one
+	// message; while searching they are all filter text, otherwise each
+	// is a separate command.
+	if msg.Type == tea.KeyRunes && !msg.Alt {
+		if m.searching {
+			m.setFilter(m.filter + string(msg.Runes))
+			return
+		}
+		if len(msg.Runes) > 1 {
+			for _, r := range msg.Runes {
+				m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+			}
+			return
+		}
+	}
+	pend := m.gPend
+	m.gPend = false
+	switch msg.String() {
+	case "ctrl+j", "ctrl+n", "down":
+		m.move(1)
+	case "ctrl+k", "ctrl+p", "up":
+		m.move(-1)
+	case "enter":
+		m.jump()
+	case "esc", "ctrl+c":
+		// Leave the search, or hand the keyboard back to the pane.
+		if m.searching {
+			m.searching = false
+			m.setFilter("")
+		} else if err := tmux.ReleaseSideFocus(m.opts.Client); err != nil {
+			m.status = err.Error()
+		} else {
+			m.focus(m.snap.active)
+		}
+	case "backspace":
+		if r := []rune(m.filter); len(r) > 0 {
+			m.setFilter(string(r[:len(r)-1]))
+		} else {
+			m.searching = false // nothing left to erase: leave the search
+		}
+	case "/":
+		m.searching = true
+		m.setFilter("")
+	case "j":
+		m.move(1)
+	case "k":
+		m.move(-1)
+	case "n":
+		m.nextAttention(1)
+	case "N":
+		m.nextAttention(-1)
+	case "g": // "gg" goes to the top
+		if pend {
+			m.cursor = -1
+			m.move(1)
+		} else {
+			m.gPend = true
+		}
+	case "G", "end":
+		m.cursor = len(m.rows)
+		m.move(-1)
+	case "home":
+		m.cursor = -1
+		m.move(1)
+	}
 }
 
 // jump switches the client to the pane under the cursor, hands it the
@@ -223,8 +233,8 @@ func (m *model) jump() {
 		m.status = err.Error()
 		return
 	}
-	m.searching = false
-	if m.filter != "" {
+	if m.searching {
+		m.searching = false
 		m.setFilter("")
 		m.focus(pane)
 	}
@@ -235,33 +245,46 @@ func (m *model) setFilter(f string) {
 	m.rebuild()
 }
 
-// track updates the done bookkeeping from the latest snapshot.
+// track notes that the active pane is being looked at right now.
 func (m *model) track() {
-	for pane, s := range m.snap.states {
-		switch s.Status {
-		case state.Running, state.Waiting, state.Compacting:
-			m.busy[pane] = true
-			m.done[pane] = false
-		case state.Idle:
-			if m.busy[pane] && pane != m.snap.active {
-				m.done[pane] = true
-			}
-			m.busy[pane] = false
-		}
-	}
-	// Visiting the pane is what marks it seen.
 	if m.snap.active != "" {
-		m.done[m.snap.active] = false
+		m.seen[m.snap.active] = time.Now()
+	}
+	for pane := range m.seen {
+		if _, ok := m.snap.states[pane]; !ok {
+			delete(m.seen, pane) // the session is gone
+		}
 	}
 }
 
-// nextAttention moves the cursor to the next row needing attention, in
+// done reports whether pane's Claude session finished a turn since the
+// pane was last looked at.
+func (m *model) done(pane string) bool {
+	s, ok := m.snap.states[pane]
+	if !ok || s.Status != state.Idle || s.Ended.IsZero() {
+		return false
+	}
+	seen, ok := m.seen[pane]
+	if !ok {
+		seen = m.started
+	}
+	return s.Ended.After(seen)
+}
+
+// wants reports whether pane's Claude session needs the user: it is
+// waiting on a prompt, or done and not yet looked at.
+func (m *model) wants(pane string) bool {
+	return m.snap.states[pane].Status == state.Waiting || m.done(pane)
+}
+
+// nextAttention moves the cursor to the next row that wants the user, in
 // the given direction, wrapping around.
 func (m *model) nextAttention(delta int) {
 	n := len(m.rows)
-	for step := 1; step <= n; step++ {
-		i := ((m.cursor+delta*step)%n + n) % n
-		if m.rows[i].attention {
+	i := m.cursor
+	for range n {
+		i = (i + delta + n) % n
+		if m.wants(m.rows[i].paneID) {
 			m.cursor = i
 			m.ensureVisible()
 			return
@@ -383,26 +406,18 @@ func glyph(i, n int) string {
 	}
 }
 
-// indicator marks a Claude Code pane by its status; the glyph alone says
-// it is an agent session. done is an idle session that finished while
-// its pane was not being looked at.
-func indicator(s state.Status, done bool) string {
-	if done {
-		return stDone.Render("✓")
+// indicators mark a Claude Code pane by its status; the glyph alone says
+// it is an agent session.
+var (
+	indicators = map[state.Status]string{
+		state.Running:    stRunning.Render("●"),
+		state.Waiting:    stWaiting.Render("◆"),
+		state.Compacting: stCompact.Render("◌"),
+		state.Idle:       stIdle.Render("○"),
+		state.Unknown:    stUnknown.Render("?"),
 	}
-	switch s {
-	case state.Running:
-		return stRunning.Render("●")
-	case state.Waiting:
-		return stWaiting.Render("◆")
-	case state.Compacting:
-		return stCompact.Render("◌")
-	case state.Idle:
-		return stIdle.Render("○")
-	default:
-		return stUnknown.Render("?")
-	}
-}
+	indicatorDone = stDone.Render("✓") // idle since finishing, not yet looked at
+)
 
 // claudeTitle extracts the session name from the pane title Claude Code
 // sets, e.g. "✳ Tmux config" → "Tmux config". Falls back to "-".
@@ -418,22 +433,23 @@ func claudeTitle(title string) string {
 
 // paneLabel is the row text for a pane: its foreground command, or for a
 // Claude Code pane (one a hook reported, or one running claude without
-// hook data), a status indicator and the session title. attention is
-// whether the pane wants the user.
-func (m *model) paneLabel(p tmux.Pane) (text string, attention bool) {
+// hook data), a status indicator and the session title.
+func (m *model) paneLabel(p tmux.Pane) string {
 	s, hooked := m.snap.states[p.PaneID]
 	if !hooked && p.CurrentCommand != "claude" {
 		if host, ok := m.snap.ssh[p.PanePID]; ok {
-			return stProc.Render("ssh ") + host, false
+			return stProc.Render("ssh ") + host
 		}
-		return stProc.Render(p.CurrentCommand), false
+		return stProc.Render(p.CurrentCommand)
 	}
-	st := state.Unknown
+	ind := indicators[state.Unknown]
 	if hooked {
-		st = s.Status
+		ind = indicators[s.Status]
 	}
-	done := m.done[p.PaneID]
-	return indicator(st, done) + " " + claudeTitle(p.Title), done || st == state.Waiting
+	if m.done(p.PaneID) {
+		ind = indicatorDone
+	}
+	return ind + " " + claudeTitle(p.Title)
 }
 
 func (m *model) rebuild() {
@@ -503,11 +519,9 @@ func (m *model) rebuild() {
 		}
 		for _, panes := range windows {
 			for i, p := range panes {
-				text, attention := m.paneLabel(p)
 				m.rows = append(m.rows, row{
-					text:      glyph(i, len(panes)) + " " + text,
-					paneID:    p.PaneID,
-					attention: attention,
+					text:   glyph(i, len(panes)) + " " + m.paneLabel(p),
+					paneID: p.PaneID,
 				})
 			}
 		}
@@ -541,7 +555,7 @@ func (m model) View() string {
 	switch {
 	case m.status != "":
 		b.WriteString(stErr.Render(m.status))
-	case m.searching || m.filter != "":
+	case m.searching:
 		b.WriteString(stDim.Render("/") + m.filter)
 	}
 	return b.String()

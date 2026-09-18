@@ -22,10 +22,11 @@ brew install andreypopp/tap/kido
 brew uninstall tmux && brew install andreypopp/tap/tmux
 ```
 
-`~/.tmux.conf`:
+Load the sidebar on every server start. tmux does not expand
+`$(brew --prefix)` inside its config, so write the literal path:
 
-```tmux
-source-file /opt/homebrew/share/kido/kido-side.tmux
+```sh
+printf '\n# kido sidebar\nsource-file %s/share/kido/kido-side.tmux\n' "$(brew --prefix)" >> ~/.tmux.conf
 ```
 
 Then `kido setup-claude` registers the hook in `~/.claude/settings.json` so
@@ -65,16 +66,12 @@ For an agent or a human bootstrapping a fresh macOS box with Homebrew:
 
        brew uninstall tmux 2>/dev/null; brew install andreypopp/tap/tmux andreypopp/tap/kido
 
-2. Load the sidebar on every server start and register the Claude Code hook.
-   Use the literal path: tmux does not expand `$(brew --prefix)`.
+2. Add the `source-file` line from Install to `~/.tmux.conf`, then
+   `kido setup-claude`.
 
-       printf '\n# kido sidebar\nsource-file %s/share/kido/kido-side.tmux\n' "$(brew --prefix)" >> ~/.tmux.conf
-       kido setup-claude
-
-3. Start or attach a session from a terminal outside tmux. To carry a layout
-   over from another machine, capture it there with `tmux list-panes -a -F`
-   into a script of `new-session`, `split-window` and `select-layout` calls,
-   typing `claude --continue` into panes that were running Claude.
+3. To carry the sessions over, run `kido snapshot > layout.sh` on the old
+   machine, copy the script, adjust any paths that differ, and run it from a
+   terminal outside tmux on the new one.
 
 4. Check: `tmux -V` prints `next-3.9`, the sidebar is on the left, `prefix K`
    hides and shows it, `prefix k` toggles keyboard focus, `/` searches.

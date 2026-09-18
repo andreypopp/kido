@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"kido/internal/hook"
 	"kido/internal/state"
 	"kido/internal/tmux"
 	"kido/internal/ui"
@@ -22,7 +23,7 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "hook":
-			if err := hook(os.Stdin); err != nil {
+			if err := runHook(os.Stdin); err != nil {
 				fmt.Fprintln(os.Stderr, "kido hook:", err)
 			}
 			return // never fail the Claude Code hook
@@ -62,14 +63,6 @@ func main() {
 	}
 }
 
-// hookEvents are the Claude Code events setup-claude registers the hook
-// for; hook dispatches on hook_event_name.
-var hookEvents = []string{
-	"SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse",
-	"PostToolUse", "PermissionRequest", "Stop", "Notification",
-	"PreCompact", "PostCompact",
-}
-
 // setupClaude registers `kido hook` for hookEvents in the Claude Code
 // settings file, replacing any earlier kido hooks and keeping everything
 // else. The previous file is kept as settings.json.bak.
@@ -98,7 +91,7 @@ func setupClaude() error {
 	if hooks == nil {
 		hooks = map[string]any{}
 	}
-	for _, event := range hookEvents {
+	for _, event := range hook.Events() {
 		var kept []any
 		if list, ok := hooks[event].([]any); ok {
 			for _, entry := range list {
@@ -130,7 +123,7 @@ func setupClaude() error {
 	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("registered kido hook for %d events in %s\n", len(hookEvents), path)
+	fmt.Printf("registered kido hook for %d events in %s\n", len(hook.Events()), path)
 	return nil
 }
 
@@ -147,65 +140,29 @@ func isKidoHook(entry any) bool {
 	return false
 }
 
-// hook is the Claude Code hook: it reads the event from stdin and records
-// the session's status for the sidebar.
-func hook(r io.Reader) error {
-	var in struct {
-		Event            string `json:"hook_event_name"`
-		SessionID        string `json:"session_id"`
-		NotificationType string `json:"notification_type"`
-		Trigger          string `json:"trigger"`   // PreCompact/PostCompact: "auto" or "manual"
-		ToolName         string `json:"tool_name"` // PreToolUse/PostToolUse
-	}
+// runHook is the Claude Code hook: it reads the event from stdin and
+// records the session's status for the sidebar.
+func runHook(r io.Reader) error {
+	var in hook.Input
 	if err := json.NewDecoder(r).Decode(&in); err != nil {
 		return err
 	}
-	if in.SessionID == "" {
+	e := hook.Apply(in)
+	switch {
+	case e.Ignore:
 		return nil
-	}
-	var status state.Status
-	switch in.Event {
-	case "SessionEnd":
+	case e.Remove:
 		return state.Remove(in.SessionID)
-	case "PreToolUse":
-		// Asking the user a question blocks like a permission prompt.
-		if in.ToolName == "AskUserQuestion" {
-			status = state.Waiting
-		} else {
-			status = state.Running
-		}
-	case "UserPromptSubmit", "PostToolUse", "PostToolUseFailure":
-		status = state.Running
-	case "SessionStart", "Stop":
-		status = state.Idle
-	case "PermissionRequest", "Elicitation":
-		status = state.Waiting
-	case "PreCompact":
-		status = state.Compacting
-	case "PostCompact":
-		// An automatic compaction happens mid-turn and work resumes; a
-		// manual /compact leaves the session waiting for input.
-		if in.Trigger == "manual" {
-			status = state.Idle
-		} else {
-			status = state.Running
-		}
-	case "Notification":
-		switch in.NotificationType {
-		case "permission_prompt", "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input":
-			status = state.Waiting
-		case "idle_prompt":
-			status = state.Idle // fires when a turn ended without a Stop, e.g. after Esc
-		default:
-			return nil
-		}
-	default:
-		return nil
 	}
-	return state.Record(in.SessionID, state.Session{
+	now := time.Now().UTC()
+	s := state.Session{
 		Pane:   os.Getenv("TMUX_PANE"),
 		PID:    os.Getppid(), // the claude process runs the hook
-		Status: status,
-		TS:     time.Now().UTC(),
-	})
+		Status: e.Status,
+		TS:     now,
+	}
+	if e.Ended {
+		s.Ended = now
+	}
+	return state.Record(in.SessionID, s)
 }

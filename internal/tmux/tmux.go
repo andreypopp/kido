@@ -49,11 +49,13 @@ type Pane struct {
 	SessionName    string
 	SessionCreated int64 // unix time
 	WindowIndex    int
-	WindowActive   bool   // the session's current window
+	WindowName     string
+	WindowLayout   string
 	PaneID         string // e.g. "%18"
-	PaneActive     bool   // the window's active pane
+	Active         bool   // the session's current pane
 	PanePID        int
 	CurrentCommand string
+	CurrentPath    string
 	Title          string
 }
 
@@ -64,11 +66,13 @@ var format = strings.Join([]string{
 	"#{session_name}",
 	"#{session_created}",
 	"#{window_index}",
-	"#{window_active}",
+	"#{window_name}",
+	"#{window_layout}",
 	"#{pane_id}",
-	"#{pane_active}",
+	"#{&&:#{window_active},#{pane_active}}",
 	"#{pane_pid}",
 	"#{pane_current_command}",
+	"#{pane_current_path}",
 	"#{pane_title}",
 }, sep)
 
@@ -80,15 +84,16 @@ func ListPanes() ([]Pane, error) {
 	}
 	var panes []Pane
 	for _, line := range strings.Split(out, "\n") {
-		f := strings.SplitN(line, sep, 9)
-		if len(f) < 9 {
+		f := strings.SplitN(line, sep, 11)
+		if len(f) < 11 {
 			continue
 		}
-		p := Pane{SessionName: f[0], WindowActive: f[3] == "1", PaneID: f[4],
-			PaneActive: f[5] == "1", CurrentCommand: f[7], Title: f[8]}
+		p := Pane{SessionName: f[0], WindowName: f[3], WindowLayout: f[4],
+			PaneID: f[5], Active: f[6] == "1", CurrentCommand: f[8],
+			CurrentPath: f[9], Title: f[10]}
 		p.SessionCreated, _ = strconv.ParseInt(f[1], 10, 64)
 		p.WindowIndex, _ = strconv.Atoi(f[2])
-		p.PanePID, _ = strconv.Atoi(f[6])
+		p.PanePID, _ = strconv.Atoi(f[7])
 		panes = append(panes, p)
 	}
 	return panes, nil
@@ -101,6 +106,10 @@ func CurrentClient() string {
 	return out
 }
 
+// sideFocusFlag is the patched tmux's client flag that routes keys to the
+// side status line's job.
+const sideFocusFlag = "side-status-focus"
+
 // ClientState returns the client's session and whether the side status
 // line has its keyboard focus. (display-message's #{session_name} would
 // report the command's target session, not the client's.)
@@ -111,13 +120,13 @@ func ClientState(client string) (session string, focused bool) {
 		return "", false
 	}
 	sess, flags, _ := strings.Cut(out, "\t")
-	return sess, strings.Contains(flags, "side-status-focus")
+	return sess, strings.Contains(flags, sideFocusFlag)
 }
 
 // ActivePane returns the active pane of session within panes.
 func ActivePane(panes []Pane, session string) string {
 	for _, p := range panes {
-		if p.SessionName == session && p.WindowActive && p.PaneActive {
+		if p.SessionName == session && p.Active {
 			return p.PaneID
 		}
 	}
@@ -130,13 +139,13 @@ func Jump(client, paneID string) error {
 	_, err := run("switch-client", "-c", client, "-t", paneID, ";",
 		"select-window", "-t", paneID, ";",
 		"select-pane", "-t", paneID, ";",
-		"refresh-client", "-t", client, "-f", "!side-status-focus")
+		"refresh-client", "-t", client, "-f", "!"+sideFocusFlag)
 	return err
 }
 
 // ReleaseSideFocus hands keyboard focus from the side status line back to
 // the client's active pane.
 func ReleaseSideFocus(client string) error {
-	_, err := run("refresh-client", "-t", client, "-f", "!side-status-focus")
+	_, err := run("refresh-client", "-t", client, "-f", "!"+sideFocusFlag)
 	return err
 }

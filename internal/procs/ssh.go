@@ -5,21 +5,15 @@ import (
 	"bufio"
 	"bytes"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
 
-// SSHHosts returns, for each of the given pane shell pids that has an ssh
-// child, the destination ssh was started for ("user@host" or "host").
-func SSHHosts(panePIDs []int) map[int]string {
+// SSHHosts returns the destination ("user@host" or "host") of every ssh
+// process, keyed by its parent pid (a pane's shell). One ps call.
+func SSHHosts() map[int]string {
 	out := map[int]string{}
-	if len(panePIDs) == 0 {
-		return out
-	}
-	want := map[int]bool{}
-	for _, pid := range panePIDs {
-		want[pid] = true
-	}
 	ps, err := exec.Command("ps", "-axo", "ppid=,comm=,args=").Output()
 	if err != nil {
 		return out
@@ -30,11 +24,11 @@ func SSHHosts(panePIDs []int) map[int]string {
 		if len(f) < 3 {
 			continue
 		}
-		ppid, err := strconv.Atoi(f[0])
-		if err != nil || !want[ppid] {
+		if filepath.Base(f[1]) != "ssh" {
 			continue
 		}
-		if f[1] != "ssh" && !strings.HasSuffix(f[1], "/ssh") {
+		ppid, err := strconv.Atoi(f[0])
+		if err != nil {
 			continue
 		}
 		if host := sshHost(f[3:]); host != "" {

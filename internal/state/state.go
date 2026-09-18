@@ -29,6 +29,9 @@ type Session struct {
 	PID    int       `json:"pid"`  // claude process pid
 	Status Status    `json:"status"`
 	TS     time.Time `json:"ts"`
+	// When the last turn ended (Stop or equivalent); zero if the session
+	// is idle for another reason, such as having just started.
+	Ended time.Time `json:"ended,omitempty"`
 }
 
 // Dir returns the directory holding state files.
