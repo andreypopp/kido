@@ -24,7 +24,7 @@ brew uninstall tmux && brew install andreypopp/tap/tmux
 `~/.tmux.conf`:
 
 ```tmux
-source-file "$(brew --prefix)/share/kido/kido-side.tmux"
+source-file /opt/homebrew/share/kido/kido-side.tmux
 ```
 
 Then `kido setup-claude` registers the hook in `~/.claude/settings.json` so
