@@ -72,10 +72,11 @@ func Run(opts Options) error {
 
 func take(client string) snapshot {
 	var s snapshot
-	s.current, s.active, s.focused = tmux.ClientState(client)
+	s.current, s.focused = tmux.ClientState(client)
 	if s.panes, s.err = tmux.ListPanes(); s.err != nil {
 		return s
 	}
+	s.active = tmux.ActivePane(s.panes, s.current)
 	var sshPanes []int
 	for _, p := range s.panes {
 		if p.CurrentCommand == "ssh" {

@@ -49,7 +49,9 @@ type Pane struct {
 	SessionName    string
 	SessionCreated int64 // unix time
 	WindowIndex    int
+	WindowActive   bool   // the session's current window
 	PaneID         string // e.g. "%18"
+	PaneActive     bool   // the window's active pane
 	PanePID        int
 	CurrentCommand string
 	Title          string
@@ -62,7 +64,9 @@ var format = strings.Join([]string{
 	"#{session_name}",
 	"#{session_created}",
 	"#{window_index}",
+	"#{window_active}",
 	"#{pane_id}",
+	"#{pane_active}",
 	"#{pane_pid}",
 	"#{pane_current_command}",
 	"#{pane_title}",
@@ -76,14 +80,15 @@ func ListPanes() ([]Pane, error) {
 	}
 	var panes []Pane
 	for _, line := range strings.Split(out, "\n") {
-		f := strings.SplitN(line, sep, 7)
-		if len(f) < 7 {
+		f := strings.SplitN(line, sep, 9)
+		if len(f) < 9 {
 			continue
 		}
-		p := Pane{SessionName: f[0], PaneID: f[3], CurrentCommand: f[5], Title: f[6]}
+		p := Pane{SessionName: f[0], WindowActive: f[3] == "1", PaneID: f[4],
+			PaneActive: f[5] == "1", CurrentCommand: f[7], Title: f[8]}
 		p.SessionCreated, _ = strconv.ParseInt(f[1], 10, 64)
 		p.WindowIndex, _ = strconv.Atoi(f[2])
-		p.PanePID, _ = strconv.Atoi(f[4])
+		p.PanePID, _ = strconv.Atoi(f[6])
 		panes = append(panes, p)
 	}
 	return panes, nil
@@ -96,19 +101,27 @@ func CurrentClient() string {
 	return out
 }
 
-// ClientState returns the client's session name, active pane id, and
-// whether the side status line has its keyboard focus.
-func ClientState(client string) (session, pane string, focused bool) {
+// ClientState returns the client's session and whether the side status
+// line has its keyboard focus. (display-message's #{session_name} would
+// report the command's target session, not the client's.)
+func ClientState(client string) (session string, focused bool) {
 	out, err := run("display-message", "-p", "-c", client,
-		"#{session_name}\t#{pane_id}\t#{client_flags}")
+		"#{client_session}\t#{client_flags}")
 	if err != nil {
-		return "", "", false
+		return "", false
 	}
-	f := strings.SplitN(out, "\t", 3)
-	if len(f) != 3 {
-		return "", "", false
+	sess, flags, _ := strings.Cut(out, "\t")
+	return sess, strings.Contains(flags, "side-status-focus")
+}
+
+// ActivePane returns the active pane of session within panes.
+func ActivePane(panes []Pane, session string) string {
+	for _, p := range panes {
+		if p.SessionName == session && p.WindowActive && p.PaneActive {
+			return p.PaneID
+		}
 	}
-	return f[0], f[1], strings.Contains(f[2], "side-status-focus")
+	return ""
 }
 
 // Jump makes paneID the active pane of client, switching session and
