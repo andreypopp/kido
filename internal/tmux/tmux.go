@@ -15,16 +15,33 @@ var (
 	binaryPath = "tmux"
 )
 
-// binary returns the tmux executable to run: the one running the server
-// named by $TMUX when it can be found (so a patched tmux talks to itself),
-// else whatever "tmux" resolves to on PATH.
+// binary returns the tmux executable to run: $KIDO_TMUX when set (an
+// explicit override for environments where the server's binary can't be
+// resolved by inspecting its process, such as Linux CI), else the one
+// running the server named by $TMUX when it can be found (so a patched
+// tmux talks to itself), else whatever "tmux" resolves to on PATH.
 func binary() string {
 	binaryOnce.Do(func() {
+		if p := os.Getenv("KIDO_TMUX"); p != "" {
+			binaryPath = p
+			return
+		}
 		f := strings.Split(os.Getenv("TMUX"), ",")
 		if len(f) < 2 {
 			return
 		}
-		out, err := exec.Command("ps", "-o", "comm=", "-p", f[1]).Output()
+		pid := f[1]
+
+		// Linux: /proc/<pid>/exe is a symlink to the absolute binary path,
+		// unlike "ps -o comm=" which only reports the basename.
+		if p, err := os.Readlink("/proc/" + pid + "/exe"); err == nil {
+			if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
+				binaryPath = p
+				return
+			}
+		}
+
+		out, err := exec.Command("ps", "-o", "comm=", "-p", pid).Output()
 		if err != nil {
 			return
 		}

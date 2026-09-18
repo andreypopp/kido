@@ -57,8 +57,8 @@ func TestMotionKeys(t *testing.T) {
 	h.waitFor(func() bool { return len(h.rows()) == 6 }, settle, "6 rows")
 	focusSidebar(h)
 
-	// Lines: 1 alpha, 2 ┌ zsh, 3 └ zsh, 4 beta, 5 ┌ zsh, 6 └ zsh. The
-	// selection starts on alpha's active pane, line 2. Every pane row
+	// Lines: 1 alpha, 2 ┌ shell, 3 └ shell, 4 beta, 5 ┌ shell, 6 └ shell.
+	// The selection starts on alpha's active pane, line 2. Every pane row
 	// reads the same, so assert the line, not the text.
 	h.waitSelectedLine(2)
 	for _, c := range []struct {
@@ -87,7 +87,7 @@ func TestFirstLastKeys(t *testing.T) {
 	h.waitFor(func() bool { return len(h.rows()) == 5 }, settle, "5 rows")
 	focusSidebar(h)
 
-	// Lines: 1 alpha, 2 · zsh, 3 beta, 4 ┌ zsh, 5 └ zsh.
+	// Lines: 1 alpha, 2 · shell, 3 beta, 4 ┌ shell, 5 └ shell.
 	h.sendKeys("G")
 	h.waitSelectedLine(5)
 
@@ -106,7 +106,7 @@ func TestEnterJumps(t *testing.T) {
 	focusSidebar(h)
 
 	h.sendKeys("G") // beta's pane
-	h.waitSelected("zsh")
+	h.waitSelected(h.shell)
 	h.sendKeys("Enter")
 
 	h.waitSession("beta")

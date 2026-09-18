@@ -23,7 +23,8 @@ func TestRenderGrouping(t *testing.T) {
 	h.waitFor(func() bool { return len(h.rows()) >= 6 }, settle, "all rows")
 
 	rows := h.rows()
-	want := []string{"zeta", "· zsh", "alpha", "┌ zsh", "├ zsh", "└ zsh"}
+	want := []string{"zeta", "· " + h.shell, "alpha",
+		"┌ " + h.shell, "├ " + h.shell, "└ " + h.shell}
 	if len(rows) != len(want) {
 		t.Fatalf("rows = %q, want %q", rows, want)
 	}
@@ -54,7 +55,7 @@ func TestFollowActivePane(t *testing.T) {
 	h.in("new-window", "-d", "-t", "beta:", "-n", "editor", "cat")
 	h.waitRow("· cat")
 
-	h.waitSelected("zsh")
+	h.waitSelected(h.shell)
 	h.in("switch-client", "-c", h.client, "-t", "beta:1")
 	h.waitSession("beta")
 

@@ -152,6 +152,7 @@ type harness struct {
 	outer    string // outer socket name
 	inner    string // inner socket name
 	client   string // the inner client's name, e.g. /dev/ttys012
+	shell    string // pane_current_command of a bare shell pane on this platform
 }
 
 var sanitize = regexp.MustCompile(`[^A-Za-z0-9]+`)
@@ -178,10 +179,12 @@ func start(t *testing.T, session string) *harness {
 	body := fmt.Sprintf(`
 set -g status off
 set -sg escape-time 0
+set -g default-shell /bin/sh
+set -g default-command ""
 set -g side-status left
 set -g side-status-width %d
 set -g side-status-style "fg=default,bg=default"
-set -g side-status-command "KIDO_STATE_DIR=%s %s"
+set -g side-status-command "KIDO_STATE_DIR=%s KIDO_TMUX=%s %s"
 set -g mouse on
 bind-key K if-shell -F '#{==:#{side-status},off}' \
   'set -g side-status left ; refresh-client -f side-status-focus' \
@@ -189,7 +192,7 @@ bind-key K if-shell -F '#{==:#{side-status},off}' \
 bind-key k if-shell -F '#{m:*side-status-focus*,#{client_flags}}' \
   'refresh-client -f !side-status-focus' \
   'refresh-client -f side-status-focus'
-`, sideWidth, h.stateDir, kidoBin)
+`, sideWidth, h.stateDir, tmuxBin, kidoBin)
 	if err := os.WriteFile(conf, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -217,6 +220,17 @@ bind-key k if-shell -F '#{m:*side-status-focus*,#{client_flags}}' \
 	h.waitFor(func() bool { return hasLine(h.sidebar(), session) }, settle,
 		"sidebar shows session "+session)
 	h.client = h.clientName()
+	// default-shell is forced to /bin/sh above so panes don't depend on the
+	// runner's login shell, but what that reports as pane_current_command
+	// is itself platform-dependent (e.g. macOS's /bin/sh re-execs the real
+	// /bin/bash, so it reads "bash"; Ubuntu's is dash and reads "sh").
+	// Probe it once per harness instead of hard-coding a name.
+	for _, p := range h.panes() {
+		if p.Session == session {
+			h.shell = p.Command
+			break
+		}
+	}
 	return h
 }
 

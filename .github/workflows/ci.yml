@@ -100,3 +100,50 @@ jobs:
           else
             echo "e2e/ package not present yet, skipping"
           fi
+
+      - name: Diagnose blank sidebar (Linux)
+        if: failure() && runner.os == 'Linux'
+        run: |
+          set -x
+          FORK="$HOME/tmux-side/bin/tmux"
+          go build -o /tmp/kido ./cmd/kido
+          mkdir -p /tmp/kd
+
+          # A throwaway inner server whose side-status-command we swap
+          # between a plain diagnostic shell and kido itself.
+          "$FORK" -L diag -f /dev/null new-session -d -s d -x 120 -y 30
+          "$FORK" -L diag set-option -g side-status left
+          "$FORK" -L diag set-option -g side-status-width 40
+
+          # A throwaway outer server that gives the inner server a pty
+          # client, the same trick the e2e harness uses (harness_test.go):
+          # screen-256color because Ubuntu runners lack tmux-256color
+          # terminfo, and remain-on-exit so a dead client's error stays on
+          # screen instead of the pane vanishing.
+          "$FORK" -L diagouter -f /dev/null new-session -d -s host -x 120 -y 30
+          "$FORK" -L diagouter set-option -g default-terminal screen-256color
+          "$FORK" -L diagouter set-option -g remain-on-exit on
+          "$FORK" -L diagouter new-window -d -t host -n side \
+            "unset TMUX; exec \"$FORK\" -L diag attach"
+          sleep 2
+
+          echo "=== side-status-command: plain shell ==="
+          "$FORK" -L diag set-option -g side-status-command \
+            'echo HELLO; tty; env | grep -E "^(TMUX|TERM)"; sleep 30'
+          "$FORK" -L diag show-options -g side-status-command
+          sleep 3
+          "$FORK" -L diagouter list-clients
+          "$FORK" -L diagouter capture-pane -p -t host:side
+
+          echo "=== side-status-command: kido ==="
+          "$FORK" -L diag set-option -g side-status-command \
+            "KIDO_TMUX=$FORK KIDO_STATE_DIR=/tmp/kd /tmp/kido 2>/tmp/kido.err; echo EXIT=\$? >> /tmp/kido.err; sleep 30"
+          "$FORK" -L diag show-options -g side-status-command
+          sleep 3
+          "$FORK" -L diagouter list-clients
+          "$FORK" -L diagouter capture-pane -p -t host:side
+          echo "--- /tmp/kido.err ---"
+          cat /tmp/kido.err || true
+
+          "$FORK" -L diag kill-server || true
+          "$FORK" -L diagouter kill-server || true

@@ -108,7 +108,7 @@ func TestAttentionKeys(t *testing.T) {
 	h.waitGlyph("Done job", "✓")
 
 	focusSidebar(h)
-	h.waitSelected("zsh") // alpha's own pane
+	h.waitSelected(h.shell) // alpha's own pane
 
 	h.sendKeys("n")
 	h.waitSelected("Waiting job")
