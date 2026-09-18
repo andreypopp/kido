@@ -28,6 +28,7 @@ type Options struct {
 type snapshot struct {
 	current string // session the client is attached to
 	active  string // the client's active pane
+	focused bool   // the sidebar has the keyboard
 	panes   []tmux.Pane
 	states  map[string]state.Session
 	err     error
@@ -63,7 +64,7 @@ func Run(opts Options) error {
 
 func take(client string) snapshot {
 	var s snapshot
-	s.current, s.active = tmux.ClientState(client)
+	s.current, s.active, s.focused = tmux.ClientState(client)
 	if s.panes, s.err = tmux.ListPanes(); s.err != nil {
 		return s
 	}
@@ -85,11 +86,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.ensureVisible()
 	case snapshot:
-		was := m.snap.active
+		was := m.snap
 		m.snap = msg
 		m.rebuild()
-		if msg.active != was && msg.active != "" {
-			m.focus(msg.active) // the user switched panes in tmux: follow
+		// Follow the user: a pane switch in tmux, or the keyboard going
+		// back to the pane (prefix k, a click elsewhere) both put the
+		// selection on the active pane.
+		if (msg.active != was.active || (was.focused && !msg.focused)) &&
+			msg.active != "" {
+			m.focus(msg.active)
 		}
 		return m, m.tick()
 	case tea.MouseMsg:
@@ -164,6 +169,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.setFilter("")
 			} else if err := tmux.ReleaseSideFocus(m.opts.Client); err != nil {
 				m.status = err.Error()
+			} else {
+				m.focus(m.snap.active)
 			}
 		case "j":
 			m.move(1)

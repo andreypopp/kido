@@ -96,16 +96,19 @@ func CurrentClient() string {
 	return out
 }
 
-// ClientState returns the session name and active pane id of client.
-func ClientState(client string) (session, pane string) {
-	out, err := run("display-message", "-p", "-c", client, "#{session_name}\t#{pane_id}")
+// ClientState returns the client's session name, active pane id, and
+// whether the side status line has its keyboard focus.
+func ClientState(client string) (session, pane string, focused bool) {
+	out, err := run("display-message", "-p", "-c", client,
+		"#{session_name}\t#{pane_id}\t#{client_flags}")
 	if err != nil {
-		return "", ""
+		return "", "", false
 	}
-	if s, p, ok := strings.Cut(out, "\t"); ok {
-		return s, p
+	f := strings.SplitN(out, "\t", 3)
+	if len(f) != 3 {
+		return "", "", false
 	}
-	return "", ""
+	return f[0], f[1], strings.Contains(f[2], "side-status-focus")
 }
 
 // Jump makes paneID the active pane of client, switching session and
