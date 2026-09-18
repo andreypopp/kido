@@ -5,8 +5,9 @@
 
 set -g side-status left
 set -g side-status-width 40
-# just the line, no background behind it
-set -g side-status-style "fg=green"
+# the style is the sidebar's default text and background (like popup-style),
+# so keep it at the terminal defaults
+set -g side-status-style "fg=default,bg=default"
 set -g side-status-command "kido"
 set -g mouse on
 
