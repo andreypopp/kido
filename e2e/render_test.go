@@ -52,7 +52,11 @@ func TestFollowActivePane(t *testing.T) {
 	h.newSession("beta")
 	// "cat" waits on stdin, so this window's row reads differently from
 	// every shell row and the selection is unambiguous.
-	h.in("new-window", "-d", "-t", "beta:", "-n", "editor", "cat")
+	// "cat -" (rather than bare "cat") is passed as two argv elements so
+	// tmux execs it directly instead of routing it through a shell: on
+	// Ubuntu /bin/sh is dash, which does not exec a single-word command
+	// string, leaving the pane's foreground process "sh" instead of "cat".
+	h.in("new-window", "-d", "-t", "beta:", "-n", "editor", "cat", "-")
 	h.waitRow("· cat")
 
 	h.waitSelected(h.shell)

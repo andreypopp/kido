@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 	"github.com/sahilm/fuzzy"
 
 	"kido/internal/procs"
@@ -64,6 +65,10 @@ type model struct {
 
 // Run starts the sidebar and blocks until it exits.
 func Run(opts Options) error {
+	// kido always runs inside a pty and its styles are the interface, but
+	// termenv treats a CI env var (set by GitHub Actions, and passed through
+	// by tmux) as proof of no TTY and downgrades to no color at all.
+	lipgloss.SetColorProfile(termenv.ANSI256)
 	m := model{opts: opts, snap: take(opts.Client, nil), started: time.Now(), seen: map[string]time.Time{}}
 	m.track()
 	m.rebuild()

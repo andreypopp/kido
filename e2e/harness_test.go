@@ -353,6 +353,25 @@ var ansiRE = regexp.MustCompile(`\x1b\[[0-9;:?]*[ -/]*[@-~]`)
 
 func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
 
+// sgrRE matches an SGR escape sequence, capturing its semicolon-separated
+// parameter list (which may be empty, e.g. "\x1b[m").
+var sgrRE = regexp.MustCompile(`\x1b\[([0-9;]*)m`)
+
+// hasReverseVideo reports whether line carries an SGR escape that turns on
+// reverse video (parameter 7), tolerating tmux combining it with other
+// attributes in the same escape (e.g. "\x1b[1;7m" or "\x1b[7;1m") rather
+// than requiring the literal "\x1b[7m".
+func hasReverseVideo(line string) bool {
+	for _, m := range sgrRE.FindAllStringSubmatch(line, -1) {
+		for _, p := range strings.Split(m[1], ";") {
+			if p == "7" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // capture returns the outer pane's screen with escape sequences kept.
 func (h *harness) capture() []string {
 	h.t.Helper()
@@ -408,7 +427,7 @@ func (h *harness) rows() []string {
 func (h *harness) selectedRow() string {
 	h.t.Helper()
 	for _, line := range h.capture() {
-		if !strings.Contains(line, "\x1b[7m") {
+		if !hasReverseVideo(line) {
 			continue
 		}
 		text := stripANSI(line)
@@ -425,7 +444,7 @@ func (h *harness) selectedRow() string {
 func (h *harness) selectedIndex() int {
 	h.t.Helper()
 	for i, line := range h.capture() {
-		if strings.Contains(line, "\x1b[7m") {
+		if hasReverseVideo(line) {
 			return i + 1
 		}
 	}
@@ -452,6 +471,32 @@ func (h *harness) isBold(sub string) bool {
 		}
 	}
 	return false
+}
+
+// TestHasReverseVideo checks the SGR matcher tmux's escape output has to
+// survive: reverse video (7) combined with other attributes, in either
+// order, on the same escape, plus lines that should not match. Needs no
+// tmux server.
+func TestHasReverseVideo(t *testing.T) {
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{"\x1b[7mselected\x1b[0m", true},
+		{"\x1b[1;7mselected\x1b[0m", true},
+		{"\x1b[7;1mselected\x1b[0m", true},
+		{"\x1b[0;7;4mselected\x1b[0m", true},
+		{"plain text, no escapes", false},
+		{"\x1b[1mbold only\x1b[0m", false},
+		{"\x1b[27mnot reverse (27 is reverse-off)", false},
+		{"\x1b[17mnot reverse (17 contains a 7 digit, not a 7 parameter)", false},
+		{"\x1b[m", false},
+	}
+	for _, c := range cases {
+		if got := hasReverseVideo(c.line); got != c.want {
+			t.Errorf("hasReverseVideo(%q) = %v, want %v", c.line, got, c.want)
+		}
+	}
 }
 
 func hasLine(lines []string, sub string) bool {
@@ -491,17 +536,19 @@ func (h *harness) waitFor(cond func() bool, timeout time.Duration, msg string) {
 }
 
 // diagnose renders a compact snapshot of both servers for a failed waitFor:
-// the outer pane's full capture, whether its pane died and why, and the
-// inner server's session list (or the error reaching it). Capped at ~30
-// lines total.
+// the outer pane's capture, whether its pane died and why, the sidebar's raw
+// escape bytes (to see what attributes tmux actually emitted, e.g. when a
+// selection match fails even though the row is visible), the inner
+// server's clients and first pane's live state, and its session list (or
+// the error reaching any of these). Capped at ~40 lines total.
 func (h *harness) diagnose() string {
 	h.t.Helper()
 	var b strings.Builder
 
 	fmt.Fprintln(&b, "outer capture:")
 	capLines := h.capture()
-	if len(capLines) > 20 {
-		capLines = capLines[:20]
+	if len(capLines) > 12 {
+		capLines = capLines[:12]
 	}
 	for _, l := range capLines {
 		fmt.Fprintln(&b, "  "+l)
@@ -513,6 +560,39 @@ func (h *harness) diagnose() string {
 		fmt.Fprintf(&b, "outer pane status: error: %v\n", err)
 	} else {
 		fmt.Fprintf(&b, "outer pane status (dead deadstatus cmd): %s\n", status)
+	}
+
+	fmt.Fprintln(&b, "sidebar raw (escapes visible):")
+	rawLines := h.capture()
+	if len(rawLines) > 8 {
+		rawLines = rawLines[:8]
+	}
+	for _, l := range rawLines {
+		fmt.Fprintln(&b, "  "+strings.ReplaceAll(l, "\x1b", "^["))
+	}
+
+	clients, err := h.tmux(h.inner, "list-clients", "-F",
+		"#{client_name} #{client_session} #{client_flags} #{client_termname}")
+	if err != nil {
+		fmt.Fprintf(&b, "inner list-clients: error: %v\n", err)
+	} else {
+		fmt.Fprintf(&b, "inner list-clients:\n  %s\n", strings.ReplaceAll(clients, "\n", "\n  "))
+	}
+
+	// h.panes() and friends call h.must, which would fail the test from
+	// inside diagnose(); go straight through h.tmux (which just returns an
+	// error) instead so a broken inner server doesn't swallow this report.
+	firstPane, err := h.tmux(h.inner, "list-panes", "-a", "-F", "#{pane_id}")
+	if err != nil {
+		fmt.Fprintf(&b, "inner list-panes: error: %v\n", err)
+	} else if id := strings.SplitN(firstPane, "\n", 2)[0]; id != "" {
+		info, err := h.tmux(h.inner, "display-message", "-p", "-t", id,
+			"#{pane_current_command} #{pane_pid}")
+		if err != nil {
+			fmt.Fprintf(&b, "inner first pane state: error: %v\n", err)
+		} else {
+			fmt.Fprintf(&b, "inner first pane (%s) state: %s\n", id, info)
+		}
 	}
 
 	sessions, err := h.tmux(h.inner, "list-sessions")
@@ -656,7 +736,13 @@ func (h *harness) hook(sessionID, pane, event string, kv ...string) {
 // titles it, so the pane looks like a Claude Code pane to kido.
 func (h *harness) claudePane(session, title string) string {
 	h.t.Helper()
-	id := h.in("new-window", "-P", "-F", "#{pane_id}", "-d", "-t", session+":", claudeBin)
+	// claudeBin takes no arguments, but a lone command word is still routed
+	// through a shell by tmux (spawn.c execs directly only for argc > 1); on
+	// Ubuntu /bin/sh is dash, which does not exec the last command in a -c
+	// string, so the pane's foreground process would stay "sh" rather than
+	// "claude". Passing a harmless extra argv element (fakeclaude ignores
+	// its arguments) makes tmux exec claudeBin directly instead.
+	id := h.in("new-window", "-P", "-F", "#{pane_id}", "-d", "-t", session+":", claudeBin, "--")
 	h.waitFor(func() bool {
 		for _, p := range h.panes() {
 			if p.ID == id && p.Command == "claude" {
