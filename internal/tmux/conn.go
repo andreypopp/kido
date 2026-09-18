@@ -34,6 +34,16 @@ type Conn struct {
 		sync.Mutex
 		c *child
 	}
+
+	// followed is the session this connection's control client is attached
+	// to, as far as Follow knows: set by dial (which attaches to the side
+	// client's session directly) and by a successful Follow. It makes
+	// Follow a no-op when nothing changed, so a call every tick costs
+	// nothing once the two clients agree.
+	followed struct {
+		sync.Mutex
+		session string
+	}
 }
 
 // ErrNotConnected is returned by Conn methods while the control client is
@@ -144,6 +154,34 @@ func (c *Conn) ClientState(client string) (session string, focused bool, err err
 	return session, focused, nil
 }
 
+// Follow makes the control client switch to session, so that the
+// %layout-change, %window-pane-changed and %session-window-changed
+// notifications for windows in it - only sent to a control client for the
+// session it is itself attached to - reach this connection. It is a no-op
+// once the control client is already there, so it is cheap enough to call
+// on every tick; an error (the session no longer exists) is left for the
+// next call to retry. switch-client with -t only moves the targeted
+// client, so this never disturbs the user's own client.
+func (c *Conn) Follow(session string) error {
+	c.followed.Lock()
+	same := c.followed.session == session
+	c.followed.Unlock()
+	if same {
+		return nil
+	}
+	if _, err := c.Run("switch-client -t " + quote(session)); err != nil {
+		return err
+	}
+	c.setFollowed(session)
+	return nil
+}
+
+func (c *Conn) setFollowed(session string) {
+	c.followed.Lock()
+	c.followed.session = session
+	c.followed.Unlock()
+}
+
 // quote wraps an argument for tmux's own command parser, which splits on
 // whitespace and treats "#" as a comment outside quotes. Inside single
 // quotes everything is literal, so an embedded quote is closed, escaped and
@@ -223,7 +261,8 @@ func (c *Conn) dial() (*child, error) {
 	args := []string{"-C", "attach-session", "-f", "no-output,ignore-size"}
 	// no-output keeps tmux from streaming every pane's bytes at us;
 	// ignore-size keeps this sizeless client out of window sizing.
-	if session, _ := ClientState(c.client); session != "" {
+	session, _ := ClientState(c.client)
+	if session != "" {
 		args = append(args, "-t", session)
 	}
 	cmd := exec.Command(binary(), args...)
@@ -273,6 +312,7 @@ func (c *Conn) dial() (*child, error) {
 			ch.kill()
 			return nil, b.err
 		}
+		c.setFollowed(session) // matches Follow's no-op check; avoids a redundant switch right after connecting
 		return ch, nil
 	case <-ch.dead:
 		return nil, errors.New("tmux -C: client exited before attaching")

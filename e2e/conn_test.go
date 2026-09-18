@@ -113,3 +113,31 @@ func TestSessionKillRefreshesQuickly(t *testing.T) {
 		2*time.Second, func() string { return msgf("%d rows (are %q)", before+1, h.rows())() })
 	t.Logf("post-kill window shown after %v", took)
 }
+
+// %layout-change, %window-pane-changed and %session-window-changed are only
+// sent to a control client for windows linked in its own attached session.
+// When the user switches their client to another session, kido's control
+// client must follow so a split there still shows up before the next poll,
+// not only after it.
+func TestControlClientFollowsSessionSwitch(t *testing.T) {
+	h := start(t, "alpha", slowPoll)
+	h.waitControlClients(1)
+	h.newSession("beta")
+
+	// Switching the side client's own session is a client-session change,
+	// which is announced regardless of what the control client is attached
+	// to, so the sidebar picks it up quickly even at a slow poll.
+	h.in("switch-client", "-c", h.client, "-t", "beta")
+	h.waitFor(func() bool { return h.isBold("beta") }, settle,
+		msgf("sidebar shows beta as current"))
+	h.waitControlClients(1) // the follow must not spawn another client
+
+	before := h.rowCount()
+	h.in("split-window", "-t", "beta")
+	// 1.5s is still a fifth of the poll interval, with room for a loaded
+	// CI runner's pty round trips. Without following beta, this would only
+	// resolve on the next 5s poll.
+	took := h.waitQuickly(func() bool { return h.rowCount() == before+1 },
+		1500*time.Millisecond, func() string { return msgf("%d rows (are %q)", before+1, h.rows())() })
+	t.Logf("split in the followed session shown after %v", took)
+}

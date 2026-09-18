@@ -100,6 +100,14 @@ func Run(opts Options) error {
 func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 	var s snapshot
 	s.current, s.focused = clientState(conn, client)
+	if conn != nil && s.current != "" {
+		// Keep the control client attached to the same session as the
+		// user's client, so tmux's per-attachment notifications
+		// (%layout-change and friends) reach it too, not just the 100ms
+		// tick. A no-op once they already agree; errors (the session is
+		// gone) are left for the next tick to retry.
+		conn.Follow(s.current)
+	}
 	if s.panes, s.err = listPanes(conn); s.err != nil {
 		return s
 	}
