@@ -59,6 +59,17 @@ bind-key -n S-Up   run-shell "kido switch-session prev -client '#{client_name}'"
 bind-key -n S-Down run-shell "kido switch-session next -client '#{client_name}'"
 ```
 
+`kido prompt [--session]` reads a prompt from stdin and types it into the
+one Claude Code pane in scope, then presses Enter. By default the scope is
+the caller's own tmux window; `--session` widens it to the whole session.
+Exit codes: `0` sent, `1` no prompt given (empty stdin) or a tmux error,
+`4` no Claude Code pane found in scope, `5` more than one found.
+
+```sh
+echo "run the tests" | kido prompt
+echo "run the tests" | kido prompt --session
+```
+
 ## Status
 
 `kido hook` is the Claude Code hook. Prompt submit and tool use show

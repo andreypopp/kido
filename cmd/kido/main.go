@@ -46,6 +46,8 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "prompt":
+			os.Exit(prompt(os.Args[2:], os.Stdin))
 		}
 	}
 

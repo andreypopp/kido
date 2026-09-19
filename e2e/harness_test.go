@@ -122,13 +122,32 @@ func newControlClients(before map[string]bool) []string {
 // buildFakeClaude compiles a binary called "claude" that sleeps: tmux
 // reports it as pane_current_command, which is what kido keys off for
 // panes without hook state and for `kido snapshot`. (Copying /bin/sleep
-// does not work on macOS: the copy fails its code signature.)
+// does not work on macOS: the copy fails its code signature.) It also
+// echoes every line it reads from stdin before going back to waiting, so
+// a test can drive a claudePane with send-keys and read back what arrived
+// (see TestPrompt*).
 func buildFakeClaude(dir string) (string, error) {
 	src := filepath.Join(dir, "fakeclaude")
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		return "", err
 	}
-	main := "package main\n\nimport \"time\"\n\nfunc main() { time.Sleep(30 * time.Minute) }\n"
+	main := `package main
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"time"
+)
+
+func main() {
+	sc := bufio.NewScanner(os.Stdin)
+	for sc.Scan() {
+		fmt.Println("got:", sc.Text())
+	}
+	time.Sleep(30 * time.Minute)
+}
+`
 	if err := os.WriteFile(filepath.Join(src, "main.go"), []byte(main), 0o644); err != nil {
 		return "", err
 	}

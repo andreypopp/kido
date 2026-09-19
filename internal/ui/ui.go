@@ -502,8 +502,7 @@ func claudeTitle(title string) string {
 // Claude Code pane (one a hook reported, or one running claude without hook
 // data); otherwise "", false.
 func (m *model) claudeTitleOf(p tmux.Pane) (string, bool) {
-	_, hooked := m.snap.states[p.PaneID]
-	if !hooked && p.CurrentCommand != "claude" {
+	if !state.IsClaudePane(m.snap.states, p) {
 		return "", false
 	}
 	return claudeTitle(p.Title), true

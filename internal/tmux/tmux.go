@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -273,5 +274,23 @@ func Jump(client, paneID string) error {
 // the client's active pane.
 func ReleaseSideFocus(client string) error {
 	_, err := run("refresh-client", "-t", client, "-f", "!"+sideFocusFlag)
+	return err
+}
+
+// promptKeyDelay is the pause between typing a prompt's text and pressing
+// Enter, mirroring ~/.config/ink/plugged/cctools/bin/ccsend: without it, a
+// paste-sensitive reader (Claude Code included) can see the Enter as part
+// of the pasted text rather than a submission.
+const promptKeyDelay = 100 * time.Millisecond
+
+// SendPrompt types text into pane as literal keys, then presses Enter
+// after promptKeyDelay so it submits as a paste rather than being cut
+// mid-line.
+func SendPrompt(pane, text string) error {
+	if _, err := run("send-keys", "-t", pane, "-l", text); err != nil {
+		return err
+	}
+	time.Sleep(promptKeyDelay)
+	_, err := run("send-keys", "-t", pane, "Enter")
 	return err
 }

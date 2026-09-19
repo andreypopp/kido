@@ -9,6 +9,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"kido/internal/tmux"
 )
 
 // Status is the coarse activity state of a Claude Code session.
@@ -103,6 +105,15 @@ func Record(id string, s Session) error {
 		return err
 	}
 	return os.Rename(tmp, filepath.Join(dir, id+".json"))
+}
+
+// IsClaudePane reports whether p is a Claude Code pane: one a hook has
+// reported (its state file still names this pane, by key in states, which
+// Load keys by pane id), or one currently running the claude command with
+// no hook data yet.
+func IsClaudePane(states map[string]Session, p tmux.Pane) bool {
+	_, hooked := states[p.PaneID]
+	return hooked || p.CurrentCommand == "claude"
 }
 
 // Remove deletes the state file for session id.
