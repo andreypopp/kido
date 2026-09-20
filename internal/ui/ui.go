@@ -50,10 +50,12 @@ type snapshot struct {
 }
 
 // dismissal is one waiting session whose prompt the user dismissed
-// without Claude Code saying so.
+// without Claude Code saying so. The dismissal happened at an unknown
+// time after the hook reported the prompt, so that report time stands
+// in for Stop's Ended: it survives a kido restart, whereas the time kido
+// noticed would make every old dismissal look freshly done.
 type dismissal struct {
 	reported time.Time // the state file's TS this was decided for
-	at       time.Time // when kido noticed; stands in for Stop's Ended
 }
 
 // promptGrace is how long a session must have been waiting before kido
@@ -148,7 +150,7 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 	s.dismissed = dismissals(conn, prev.dismissed, s.states)
 	for pane, d := range s.dismissed {
 		sess := s.states[pane]
-		sess.Status, sess.Ended = state.Idle, d.at
+		sess.Status, sess.Ended = state.Idle, d.reported
 		s.states[pane] = sess
 	}
 	return s
@@ -183,7 +185,7 @@ func dismissals(conn *tmux.Conn, prev map[string]dismissal, states map[string]st
 		if err != nil || !atInputPrompt(lines) {
 			continue
 		}
-		keep(pane, dismissal{reported: s.TS, at: time.Now()})
+		keep(pane, dismissal{reported: s.TS})
 	}
 	return out
 }
