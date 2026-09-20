@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -14,7 +15,8 @@ import (
 
 // prompt implements `kido prompt [--window]`: it reads a prompt from
 // stdin (the whole input, with one trailing newline stripped) and sends
-// it to the one Claude Code pane in scope, the way
+// it to the one agent pane in scope: over the agent's inbox socket when it
+// reported one (see deliver and inbox.go), otherwise the way
 // ~/.config/ink/plugged/cctools/bin/ccsend does: send-keys -l the text,
 // then Enter a moment later.
 //
@@ -85,15 +87,42 @@ func prompt(args []string, stdin io.Reader) int {
 		fmt.Fprintln(os.Stderr, "agent not found")
 		return 4
 	case 1:
-		if err := tmux.SendPrompt(candidates[0].PaneID, text); err != nil {
-			fmt.Fprintln(os.Stderr, "kido prompt:", err)
-			return 1
-		}
-		return 0
+		return deliver(states[candidates[0].PaneID].Inbox, candidates[0].PaneID, text)
 	default:
 		fmt.Fprintln(os.Stderr, "multiple agents found")
 		return 5
 	}
+}
+
+// deliver hands text to the chosen agent and returns prompt's exit code,
+// printing any error itself. An agent that reported an inbox socket (pi,
+// through its kido extension) gets the prompt as a real user message over
+// that socket; everything else - Claude Code above all, which has no such
+// socket - gets it typed into the pane with send-keys.
+//
+// The two paths are not interchangeable once a connection is up: only a
+// failure that proves the message was never sent (errInboxUnavailable: no
+// socket, or a stale one a dead process left behind) falls back to
+// send-keys. A later failure is reported as an error, because the agent
+// may already have the prompt and typing it again would send it twice.
+func deliver(inbox, pane, text string) int {
+	if inbox != "" {
+		err := deliverInbox(inbox, text)
+		switch {
+		case err == nil:
+			return 0
+		case errors.Is(err, errInboxUnavailable):
+			// Nothing was sent; send-keys is still open.
+		default:
+			fmt.Fprintln(os.Stderr, "kido prompt:", err)
+			return 1
+		}
+	}
+	if err := tmux.SendPrompt(pane, text); err != nil {
+		fmt.Fprintln(os.Stderr, "kido prompt:", err)
+		return 1
+	}
+	return 0
 }
 
 // parsePromptArgs parses prompt's flags: --window/-window, rejecting any

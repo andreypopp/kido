@@ -62,6 +62,12 @@ type Session struct {
 	// agent-status). Empty for Claude Code, and for an agent that has not
 	// reported one; the UI falls back to the pane title in that case.
 	Title string `json:"title,omitempty"`
+	// Inbox is the path of a unix socket the agent listens on to receive
+	// prompts as proper user messages, reported with --inbox (kido
+	// agent-status). Empty for Claude Code and for any agent that has no
+	// such socket; `kido prompt` then types the prompt into the pane with
+	// send-keys instead. See cmd/kido/inbox.go for the protocol.
+	Inbox string `json:"inbox,omitempty"`
 	// When the last turn ended (Stop or equivalent); zero if the session
 	// is idle for another reason, such as having just started.
 	Ended time.Time `json:"ended,omitempty"`

@@ -325,15 +325,16 @@ func runHook(r io.Reader, debug bool) error {
 	case e.Remove:
 		return state.Remove(in.SessionID)
 	}
-	return recordSession(state.AgentClaude, in.SessionID, e, "")
+	return recordSession(state.AgentClaude, in.SessionID, e, "", "")
 }
 
 // recordSession builds and writes the state.Session for one agent report:
 // the pane and pid of the call ($TMUX_PANE, procs.HookParent - the agent
 // process, past any sh -c wrapper), e's status, e's end time (via endedAt)
-// when e.Ended, and title. Shared by runHook and agentStatus, which differ
-// only in which agent, effect and title they report.
-func recordSession(agent, sessionID string, e hook.Effect, title string) error {
+// when e.Ended, and title and inbox. Shared by runHook and agentStatus,
+// which differ only in which agent, effect, title and inbox they report
+// (Claude Code has neither a title nor an inbox).
+func recordSession(agent, sessionID string, e hook.Effect, title, inbox string) error {
 	now := time.Now().UTC()
 	s := state.Session{
 		Agent:  agent,
@@ -342,6 +343,7 @@ func recordSession(agent, sessionID string, e hook.Effect, title string) error {
 		Status: e.Status,
 		TS:     now,
 		Title:  title,
+		Inbox:  inbox,
 	}
 	if e.Ended {
 		s.Ended = endedAt(sessionID, now)
@@ -364,7 +366,7 @@ func endedAt(id string, now time.Time) time.Time {
 
 // agentStatusUsage is what `kido agent-status` accepts.
 const agentStatusUsage = "usage: kido agent-status --agent NAME --session ID " +
-	"--status running|waiting|compacting|idle [--title TITLE] [--ended] [--remove]"
+	"--status running|waiting|compacting|idle [--title TITLE] [--inbox PATH] [--ended] [--remove]"
 
 // agentStatus implements `kido agent-status`, how an agent that is not
 // Claude Code reports itself to the sidebar: the same record `kido hook`
@@ -380,6 +382,14 @@ const agentStatusUsage = "usage: kido agent-status --agent NAME --session ID " +
 // pane title kido would otherwise strip a marker off (see internal/ui);
 // when omitted, the previously recorded title (if any) is kept rather than
 // blanked, since an extension's coalescing may not re-send it every time.
+//
+// --inbox is the path of a unix socket the agent listens on for prompts
+// (see cmd/kido/inbox.go); `kido prompt` then delivers over it instead of
+// typing into the pane. It is carried across calls that omit it the way
+// --title is, but unlike --title an explicit empty value clears it:
+// `--inbox ""` is how an agent says its socket is gone, and a stale path
+// would otherwise keep kido dialling a socket nobody is listening on. That
+// is why presence is read from fs.Visit rather than from the value.
 func agentStatus(args []string) error {
 	fs := flag.NewFlagSet("agent-status", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -387,11 +397,18 @@ func agentStatus(args []string) error {
 	session := fs.String("session", "", "the agent's session id; one state file per session")
 	status := fs.String("status", "", "running|waiting|compacting|idle")
 	title := fs.String("title", "", "the session's name, shown as the pane's label")
+	inbox := fs.String("inbox", "", "path of the unix socket the agent takes prompts on; empty clears it")
 	ended := fs.Bool("ended", false, "a turn just finished")
 	remove := fs.Bool("remove", false, "delete the session's record")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w\n%s", err, agentStatusUsage)
 	}
+	gaveInbox := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "inbox" {
+			gaveInbox = true
+		}
+	})
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unknown argument %q\n%s", fs.Arg(0), agentStatusUsage)
 	}
@@ -404,14 +421,19 @@ func agentStatus(args []string) error {
 	if !state.Valid(state.Status(*status)) {
 		return fmt.Errorf("unknown status %q\n%s", *status, agentStatusUsage)
 	}
-	sessionTitle := *title
-	if sessionTitle == "" {
+	sessionTitle, sessionInbox := *title, *inbox
+	if sessionTitle == "" || !gaveInbox {
 		if prev, ok, _ := state.Get(*session); ok {
-			sessionTitle = prev.Title
+			if sessionTitle == "" {
+				sessionTitle = prev.Title
+			}
+			if !gaveInbox {
+				sessionInbox = prev.Inbox
+			}
 		}
 	}
 	e := hook.Effect{Status: state.Status(*status), Ended: *ended}
-	return recordSession(*agent, *session, e, sessionTitle)
+	return recordSession(*agent, *session, e, sessionTitle, sessionInbox)
 }
 
 // logHookEvent appends one line to <state.Dir()>/debug.log: a timestamp,

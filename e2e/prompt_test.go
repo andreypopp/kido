@@ -2,11 +2,109 @@ package e2e
 
 import (
 	"fmt"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
 )
+
+// socketDir is a temp directory short enough to hold a unix socket path:
+// h.dir embeds the test's name under /var/folders/... on macOS, which can
+// push sun_path past its ~104-byte limit.
+func socketDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "kido-inbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
+// inbox is a fake agent inbox, standing in for the socket pi's kido
+// extension listens on: it reads each connection to EOF (the client's
+// half-close is the end of one prompt), answers "ok\n", and records what
+// arrived.
+type inbox struct {
+	path string
+	mu   sync.Mutex
+	msgs []string
+}
+
+// startInbox listens on a fresh unix socket and serves it until the test
+// ends.
+func startInbox(t *testing.T) *inbox {
+	t.Helper()
+	in := &inbox{path: filepath.Join(socketDir(t), "inbox.sock")}
+	ln, err := net.Listen("unix", in.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			b, _ := io.ReadAll(conn)
+			in.mu.Lock()
+			in.msgs = append(in.msgs, string(b))
+			in.mu.Unlock()
+			io.WriteString(conn, "ok\n") //nolint:errcheck // best effort
+			conn.Close()
+		}
+	}()
+	return in
+}
+
+// received is the prompts delivered over the socket so far.
+func (in *inbox) received() []string {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return append([]string(nil), in.msgs...)
+}
+
+// staleInboxPath is a socket file with no listener behind it, the way a
+// dead agent leaves one: connecting to it is refused rather than missing.
+func staleInboxPath(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(socketDir(t), "stale.sock")
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.SetUnlinkOnClose(false) // leave the file behind, as a crash would
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// waitInbox waits until the fake inbox has received exactly the prompts in
+// want.
+func (h *harness) waitInbox(in *inbox, want ...string) {
+	h.t.Helper()
+	h.waitFor(func() bool {
+		got := in.received()
+		if len(got) != len(want) {
+			return false
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				return false
+			}
+		}
+		return true
+	}, settle, func() string {
+		return fmt.Sprintf("inbox to receive %q (has %q)", want, in.received())
+	})
+}
 
 // claudePaneHere splits target's window (e.g. "alpha:") with the fake
 // claude binary and titles it the way Claude Code does, without switching
@@ -23,11 +121,14 @@ func (h *harness) claudePaneHere(target, title string) string {
 
 // runPrompt types a shell command line into the client's active pane (the
 // harness starts focused on the session's plain shell) that pipes text
-// into `kido prompt`, reporting its exit code.
+// into `kido prompt`, reporting its exit code. KIDO_STATE_DIR is spelled
+// out because only the sidebar's side-status-command carries it: without
+// it kido would read the developer's real state directory and never see
+// the records these tests write.
 func (h *harness) runPrompt(text string, args ...string) {
 	h.t.Helper()
-	cmd := fmt.Sprintf("printf %s | %s prompt %s; echo rc=$?",
-		shellQuote(text), kidoBin, strings.Join(args, " "))
+	cmd := fmt.Sprintf("printf %s | KIDO_STATE_DIR=%s %s prompt %s; echo rc=$?",
+		shellQuote(text), shellQuote(h.stateDir), kidoBin, strings.Join(args, " "))
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")
 }
@@ -149,6 +250,42 @@ func TestPromptWindowFlagNoneElsewhereInSession(t *testing.T) {
 	h.runPrompt("hi", "--window")
 	h.waitMain("agent not found")
 	h.waitMain("rc=4")
+}
+
+// TestPromptInboxNative checks the native delivery path: a pane whose
+// agent reported an inbox socket (`kido agent-status --inbox`) gets the
+// prompt as a message over that socket, byte for byte, and no keystrokes
+// at all - the pane's own screen must stay as the agent drew it, with none
+// of the "got: ..." the fake agent echoes for send-keys input.
+func TestPromptInboxNative(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	pane := h.piPane("alpha", "π - alpha")
+	in := startInbox(t)
+	h.agentStatus("pi-1", pane, "pi", "idle", "--inbox", in.path)
+
+	h.runPrompt("over the socket")
+	h.waitMain("rc=0")
+	h.waitInbox(in, "over the socket")
+	// SendPrompt types the text and presses Enter before kido exits, so a
+	// wrong send would already be on the pane's screen by now.
+	if got := h.paneText(pane); strings.Contains(got, "got:") {
+		t.Errorf("pane %s was typed into as well: %q", pane, got)
+	}
+}
+
+// TestPromptInboxStaleFallsBack checks that a recorded socket nobody is
+// listening on (an agent that died without clearing it) is not an error:
+// nothing was delivered, so kido falls back to send-keys and still exits 0.
+func TestPromptInboxStaleFallsBack(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	pane := h.piPane("alpha", "π - alpha")
+	h.agentStatus("pi-1", pane, "pi", "idle", "--inbox", staleInboxPath(t))
+
+	h.runPrompt("fall back to keys")
+	h.waitMain("rc=0")
+	h.waitPaneText(pane, "got: fall back to keys")
 }
 
 // TestPromptWindowFlagOne checks that --window sends to the window's own

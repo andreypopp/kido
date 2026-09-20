@@ -320,6 +320,44 @@ func TestAgentStatus(t *testing.T) {
 	}
 }
 
+// TestAgentStatusInbox checks --inbox: recorded when given, carried across
+// reports that omit it (an extension coalescing its reports may not
+// re-send it), and cleared by an explicit empty value, which is how an
+// agent says its socket is gone.
+func TestAgentStatusInbox(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%12")
+
+	base := []string{"--agent", "pi", "--session", "p1", "--status", "running"}
+	report := func(extra ...string) state.Session {
+		t.Helper()
+		if err := agentStatus(append(append([]string(nil), base...), extra...)); err != nil {
+			t.Fatalf("agentStatus %v: %v", extra, err)
+		}
+		s, ok, err := state.Get("p1")
+		if err != nil || !ok {
+			t.Fatalf("state.Get: %v, ok=%v", err, ok)
+		}
+		return s
+	}
+
+	if s := report(); s.Inbox != "" {
+		t.Errorf("inbox = %q, want empty with no --inbox ever given", s.Inbox)
+	}
+	if s := report("--inbox", "/tmp/pi-inbox.sock"); s.Inbox != "/tmp/pi-inbox.sock" {
+		t.Errorf("inbox = %q, want the reported socket", s.Inbox)
+	}
+	if s := report(); s.Inbox != "/tmp/pi-inbox.sock" {
+		t.Errorf("inbox = %q, want it carried across a report that omits --inbox", s.Inbox)
+	}
+	if s := report("--inbox", ""); s.Inbox != "" {
+		t.Errorf("inbox = %q, want cleared by an explicit empty --inbox", s.Inbox)
+	}
+	if s := report(); s.Inbox != "" {
+		t.Errorf("inbox = %q, want it to stay cleared", s.Inbox)
+	}
+}
+
 // TestAgentStatusErrors checks the argument shapes that must fail.
 func TestAgentStatusErrors(t *testing.T) {
 	dir := t.TempDir()

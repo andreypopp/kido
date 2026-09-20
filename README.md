@@ -76,15 +76,21 @@ bind-key -n S-Up   run-shell "kido switch-window prev -client '#{client_name}'"
 bind-key -n S-Down run-shell "kido switch-window next -client '#{client_name}'"
 ```
 
-`kido prompt [--window]` reads a prompt from stdin and types it into the
-one agent pane in scope, then presses Enter. By default the scope is
-the caller's own tmux window, widening to the whole session when the
-window has no agent pane at all; a window with several is still
-ambiguous and never widens (several in the window means several in the
-session too), so only "not found" widens the search. `--window` pins the
-scope to the caller's window only, never widening to the session. Exit
-codes: `0` sent, `1` no prompt given (empty stdin) or a tmux error, `4`
-agent not found in scope, `5` multiple agents found.
+`kido prompt [--window]` reads a prompt from stdin and sends it to the one
+agent pane in scope. How it arrives depends on the agent: pi gets a proper
+user message, handed to its extension over the unix socket the extension
+reported with `kido agent-status --inbox`, so pi decides for itself what to
+do with one that lands mid-turn. Every other agent, Claude Code included,
+has no such socket and gets the prompt typed into its pane as keystrokes
+followed by Enter — which is also what happens if the socket has gone away
+with the process that opened it. By default the scope is the caller's own
+tmux window, widening to the whole session when the window has no agent
+pane at all; a window with several is still ambiguous and never widens
+(several in the window means several in the session too), so only "not
+found" widens the search. `--window` pins the scope to the caller's window
+only, never widening to the session. Exit codes: `0` sent, `1` no prompt
+given (empty stdin) or an error, `4` agent not found in scope, `5` multiple
+agents found.
 
 ```sh
 echo "run the tests" | kido prompt
@@ -111,15 +117,18 @@ pi reports through `kido agent-status`, which any agent that is not Claude
 Code can call from inside its own pane:
 
 ```
-kido agent-status --agent NAME --session ID --status running|waiting|compacting|idle [--title TITLE] [--ended] [--remove]
+kido agent-status --agent NAME --session ID --status running|waiting|compacting|idle [--title TITLE] [--inbox PATH] [--ended] [--remove]
 ```
 
 `--title` is the session's name, shown in place of the agent's pane title
 (kept across calls that omit it, so an extension only needs to re-send it
-when it changes). `--ended` marks the end of a turn (that is what `✓ done`
-tracks) and `--remove` drops the session's record when the agent exits. A
-pi pane is recognised even before it reports anything, from the pi in the
-pane's process tree.
+when it changes). `--inbox` is the path of a unix socket the agent takes
+prompts on, which is what makes `kido prompt` deliver a real user message
+instead of keystrokes; it is kept across calls that omit it too, and
+`--inbox ""` clears it when the socket goes away. `--ended` marks the end
+of a turn (that is what `✓ done` tracks) and `--remove` drops the
+session's record when the agent exits. A pi pane is recognised even before
+it reports anything, from the pi in the pane's process tree.
 
 `kido setup-pi` installs a status extension for the pi coding agent into
 `~/.pi/agent/extensions/`, which pi discovers on its next start. pi panes
