@@ -22,7 +22,9 @@ bind-key k if-shell -F '#{m:*side-status-focus*,#{client_flags}}' \
   'refresh-client -f !side-status-focus' \
   'refresh-client -f side-status-focus'
 
-# example: switch to the adjacent session in the sidebar's order (not bound
-# by default; uncomment to enable, or bind other keys of your choosing)
-# bind-key -n S-Up   run-shell "kido switch-session prev -client '#{client_name}'"
-# bind-key -n S-Down run-shell "kido switch-session next -client '#{client_name}'"
+# example: switch to the adjacent window in the sidebar's order, across
+# session boundaries (unlike tmux's own next-window/previous-window, which
+# wrap inside one session); not bound by default, uncomment to enable, or
+# bind other keys of your choosing
+# bind-key -n S-Up   run-shell "kido switch-window prev -client '#{client_name}'"
+# bind-key -n S-Down run-shell "kido switch-window next -client '#{client_name}'"

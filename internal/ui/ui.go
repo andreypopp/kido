@@ -636,28 +636,25 @@ func (m *model) rebuild() {
 		return
 	}
 
-	// Group by session, oldest first, then by window in tmux's order.
+	// Group by session, oldest first, then by window: tmux.OrderWindows is
+	// kido's one true window order, shared with `kido switch-window` so the
+	// two cannot drift apart.
 	type sess struct {
 		name    string
-		created int64
-		panes   []tmux.Pane
+		windows [][]tmux.Pane
 	}
 	var order []*sess
 	bySess := map[string]*sess{}
-	for _, p := range m.snap.panes {
-		s, ok := bySess[p.SessionName]
+	for _, w := range tmux.OrderWindows(m.snap.panes) {
+		name := w[0].SessionName
+		s, ok := bySess[name]
 		if !ok {
-			s = &sess{name: p.SessionName, created: p.SessionCreated}
-			bySess[p.SessionName] = s
+			s = &sess{name: name}
+			bySess[name] = s
 			order = append(order, s)
 		}
-		s.panes = append(s.panes, p)
+		s.windows = append(s.windows, w)
 	}
-	sort.SliceStable(order, func(i, j int) bool {
-		return tmux.SessionLess(
-			tmux.Session{Name: order[i].name, Created: order[i].created},
-			tmux.Session{Name: order[j].name, Created: order[j].created})
-	})
 	if m.filter != "" {
 		// A session matches when its name or a Claude pane's title
 		// fuzzy-matches; best matches first, non-matching sessions drop
@@ -667,10 +664,12 @@ func (m *model) rebuild() {
 		for _, s := range order {
 			texts = append(texts, s.name)
 			owner = append(owner, s)
-			for _, p := range s.panes {
-				if title, ok := m.claudeTitleOf(p); ok {
-					texts = append(texts, title)
-					owner = append(owner, s)
+			for _, w := range s.windows {
+				for _, p := range w {
+					if title, ok := m.claudeTitleOf(p); ok {
+						texts = append(texts, title)
+						owner = append(owner, s)
+					}
 				}
 			}
 		}
@@ -702,16 +701,7 @@ func (m *model) rebuild() {
 		}
 		m.rows = append(m.rows, row{text: name})
 
-		var windows [][]tmux.Pane
-		for _, p := range s.panes {
-			n := len(windows)
-			if n == 0 || windows[n-1][0].WindowIndex != p.WindowIndex {
-				windows = append(windows, nil)
-				n++
-			}
-			windows[n-1] = append(windows[n-1], p)
-		}
-		for _, panes := range windows {
+		for _, panes := range s.windows {
 			for i, p := range panes {
 				m.rows = append(m.rows, row{
 					text:   glyph(i, len(panes)) + " " + m.paneLabel(p),

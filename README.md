@@ -59,6 +59,21 @@ bind-key -n S-Up   run-shell "kido switch-session prev -client '#{client_name}'"
 bind-key -n S-Down run-shell "kido switch-session next -client '#{client_name}'"
 ```
 
+`kido switch-window next|prev [-client NAME]` switches the current client to
+the adjacent window in the sidebar's order: a single flat list across the
+whole server, sessions oldest first then each session's windows in tmux's
+own order, wrapping around. This walks *across* sessions - advancing past a
+session's last window moves to the next session's first window - unlike
+tmux's own `next-window`/`previous-window`, which wrap inside one session.
+It otherwise behaves exactly like `switch-session` above (same flags,
+defaults, and no-op cases). It's the same example keys as `switch-session`
+above; bind one or the other, or pick different keys for each:
+
+```
+bind-key -n S-Up   run-shell "kido switch-window prev -client '#{client_name}'"
+bind-key -n S-Down run-shell "kido switch-window next -client '#{client_name}'"
+```
+
 `kido prompt [--window]` reads a prompt from stdin and types it into the
 one Claude Code pane in scope, then presses Enter. By default the scope is
 the caller's own tmux window, widening to the whole session when the

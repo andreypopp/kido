@@ -62,6 +62,7 @@ type Pane struct {
 	SessionName    string
 	SessionCreated int64 // unix time
 	WindowIndex    int
+	WindowID       string // e.g. "@7"; unique server-wide, unlike WindowIndex
 	WindowName     string
 	WindowLayout   string
 	PaneID         string // e.g. "%18"
@@ -79,6 +80,7 @@ var paneFormat = strings.Join([]string{
 	"#{session_name}",
 	"#{session_created}",
 	"#{window_index}",
+	"#{window_id}",
 	"#{window_name}",
 	"#{window_layout}",
 	"#{pane_id}",
@@ -94,19 +96,66 @@ var paneFormat = strings.Join([]string{
 func parsePanes(lines []string) []Pane {
 	var panes []Pane
 	for _, line := range lines {
-		f := strings.SplitN(line, sep, 11)
-		if len(f) < 11 {
+		f := strings.SplitN(line, sep, 12)
+		if len(f) < 12 {
 			continue
 		}
-		p := Pane{SessionName: f[0], WindowName: f[3], WindowLayout: f[4],
-			PaneID: f[5], Active: f[6] == "1", CurrentCommand: f[8],
-			CurrentPath: f[9], Title: f[10]}
+		p := Pane{SessionName: f[0], WindowID: f[3], WindowName: f[4], WindowLayout: f[5],
+			PaneID: f[6], Active: f[7] == "1", CurrentCommand: f[9],
+			CurrentPath: f[10], Title: f[11]}
 		p.SessionCreated, _ = strconv.ParseInt(f[1], 10, 64)
 		p.WindowIndex, _ = strconv.Atoi(f[2])
-		p.PanePID, _ = strconv.Atoi(f[7])
+		p.PanePID, _ = strconv.Atoi(f[8])
 		panes = append(panes, p)
 	}
 	return panes
+}
+
+// OrderWindows groups panes into windows in kido's order: sessions oldest
+// first, ties broken by name (SessionLess), and within a session each
+// window's panes kept in ListPanes' own order (tmux's natural window
+// order). This is kido's one true window order: the sidebar's grouping and
+// `kido switch-window` both walk it, so they cannot drift apart. Each
+// returned slice is one window's panes, in pane order, so windows[i][0]
+// identifies the window (SessionName, WindowID).
+func OrderWindows(panes []Pane) [][]Pane {
+	type sess struct {
+		name    string
+		created int64
+		panes   []Pane
+	}
+	var order []*sess
+	bySess := map[string]*sess{}
+	for _, p := range panes {
+		s, ok := bySess[p.SessionName]
+		if !ok {
+			s = &sess{name: p.SessionName, created: p.SessionCreated}
+			bySess[p.SessionName] = s
+			order = append(order, s)
+		}
+		s.panes = append(s.panes, p)
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		return SessionLess(
+			Session{Name: order[i].name, Created: order[i].created},
+			Session{Name: order[j].name, Created: order[j].created})
+	})
+
+	var windows [][]Pane
+	for _, s := range order {
+		var cur []Pane
+		for _, p := range s.panes {
+			if len(cur) > 0 && cur[0].WindowID != p.WindowID {
+				windows = append(windows, cur)
+				cur = nil
+			}
+			cur = append(cur, p)
+		}
+		if len(cur) > 0 {
+			windows = append(windows, cur)
+		}
+	}
+	return windows
 }
 
 // ListPanes returns every pane on the server, in tmux's own order.
@@ -221,6 +270,58 @@ func SwitchSession(client string, next bool) error {
 	target := sessions[(i+delta+len(sessions))%len(sessions)]
 
 	_, err = run("switch-client", "-c", client, "-t", target.Name)
+	return err
+}
+
+// SwitchWindow switches client to the window adjacent to its current one in
+// kido's order (OrderWindows: sessions oldest first, windows in tmux's own
+// order within a session), wrapping around the whole server. This crosses
+// session boundaries: advancing past a session's last window moves to the
+// next session's first window, unlike tmux's own next-window/previous-window
+// which wrap inside one session. A server with one window, or a client whose
+// current window kido cannot find, is a no-op. Targeting a window in another
+// session takes one tmux invocation: switch-client to the target's session,
+// then select-window by window id (unique server-wide, unlike
+// session:index), the way Jump does it.
+func SwitchWindow(client string, next bool) error {
+	panes, err := ListPanes()
+	if err != nil {
+		return err
+	}
+	windows := OrderWindows(panes)
+	if len(windows) < 2 {
+		return nil
+	}
+
+	session, _ := ClientState(client)
+	activeWindowID := ""
+	for _, p := range panes {
+		if p.SessionName == session && p.Active {
+			activeWindowID = p.WindowID
+			break
+		}
+	}
+	if activeWindowID == "" {
+		return nil
+	}
+	i := -1
+	for j, w := range windows {
+		if w[0].WindowID == activeWindowID {
+			i = j
+			break
+		}
+	}
+	if i < 0 {
+		return nil
+	}
+	delta := -1
+	if next {
+		delta = 1
+	}
+	target := windows[(i+delta+len(windows))%len(windows)][0]
+
+	_, err = run("switch-client", "-c", client, "-t", target.SessionName, ";",
+		"select-window", "-t", target.WindowID)
 	return err
 }
 
