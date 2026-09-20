@@ -610,7 +610,14 @@ var (
 // so the whole row - structure included - reads as one bold unit rather
 // than a bold label hanging off an unbolded branch.
 func glyph(i, n int, bold bool) string {
-	st := stDim.Bold(bold)
+	// Bold does nothing useful here: colour 8 is already a bright
+	// variant, and box-drawing glyphs rarely have a bold weight in a
+	// monospace font. The active window's branches are lifted out of
+	// the dim colour instead, which shows at any weight.
+	st := stDim
+	if bold {
+		st = stProc.Bold(true)
+	}
 	switch {
 	case n == 1:
 		return st.Render("·")
