@@ -592,35 +592,54 @@ var (
 	stDone    = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true)
 	stUnknown = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 
-	// Glyphs grouping a window's panes: a dot for a lone pane, else a
-	// bracket spanning the window's rows.
-	glyphLone, glyphFirst, glyphMid, glyphLast = stDim.Render("·"), stDim.Render("┌"), stDim.Render("├"), stDim.Render("└")
+	// stActiveWindow bolds every row of the window the client is currently
+	// on, so it stands out from the rest of its session at a glance. Kept
+	// distinct from stCurrent (the current session's name) since the two
+	// mark different things and can be true on the same screen at once.
+	stActiveWindow = lipgloss.NewStyle().Bold(true)
 )
 
-func glyph(i, n int) string {
+// glyph renders one tree glyph grouping a window's panes: a dot for a lone
+// pane, else a bracket spanning the window's rows. The glyphs are dim like
+// the rest of the tree structure, but when bold is set (the client's
+// current window) they carry the same bold weight as the rest of the row,
+// so the whole row - structure included - reads as one bold unit rather
+// than a bold label hanging off an unbolded branch.
+func glyph(i, n int, bold bool) string {
+	st := stDim
+	if bold {
+		st = st.Bold(true)
+	}
 	switch {
 	case n == 1:
-		return glyphLone
+		return st.Render("·")
 	case i == 0:
-		return glyphFirst
+		return st.Render("┌")
 	case i == n-1:
-		return glyphLast
+		return st.Render("└")
 	default:
-		return glyphMid
+		return st.Render("├")
 	}
 }
 
-// indicators mark an agent pane by its status; the glyph alone says it is
-// an agent session, the same for every agent.
+// indicatorGlyph and indicatorStyle mark an agent pane by its status; the
+// glyph alone says it is an agent session, the same for every agent.
 var (
-	indicators = map[state.Status]string{
-		state.Running:    stRunning.Render("●"),
-		state.Waiting:    stWaiting.Render("◆"),
-		state.Compacting: stCompact.Render("◌"),
-		state.Idle:       stIdle.Render("○"),
-		state.Unknown:    stUnknown.Render("?"),
+	indicatorGlyph = map[state.Status]string{
+		state.Running:    "●",
+		state.Waiting:    "◆",
+		state.Compacting: "◌",
+		state.Idle:       "○",
+		state.Unknown:    "?",
 	}
-	indicatorDone = stDone.Render("✓") // idle since finishing, not yet looked at
+	indicatorStyle = map[state.Status]lipgloss.Style{
+		state.Running:    stRunning,
+		state.Waiting:    stWaiting,
+		state.Compacting: stCompact,
+		state.Idle:       stIdle,
+		state.Unknown:    stUnknown,
+	}
+	indicatorDoneGlyph = "✓" // idle since finishing, not yet looked at
 )
 
 // piPrefix is what pi puts before the title it sets: "π - <session> -
@@ -662,24 +681,43 @@ func (m *model) agentTitleOf(p tmux.Pane) (string, bool) {
 
 // paneLabel is the row text for a pane: its foreground command, or for an
 // agent pane, a status indicator and the session title. Which agent it is
-// makes no difference to the row.
-func (m *model) paneLabel(p tmux.Pane) string {
+// makes no difference to the row. bold is set for every pane of the
+// client's current window, and composes with the dim command/ssh-prefix
+// style and the status indicator's own color by adding bold weight to
+// each, rather than wrapping the finished text in a second style (which
+// would reset the colors and indicator glyphs it wraps).
+func (m *model) paneLabel(p tmux.Pane, bold bool) string {
 	title, isAgent := m.agentTitleOf(p)
 	if !isAgent {
-		if host, ok := m.snap.ssh[p.PanePID]; ok {
-			return stProc.Render("ssh ") + host
+		procStyle := stProc
+		if bold {
+			procStyle = procStyle.Bold(true)
 		}
-		return stProc.Render(p.CurrentCommand)
+		if host, ok := m.snap.ssh[p.PanePID]; ok {
+			hostStyle := lipgloss.NewStyle()
+			if bold {
+				hostStyle = stActiveWindow
+			}
+			return procStyle.Render("ssh ") + hostStyle.Render(host)
+		}
+		return procStyle.Render(p.CurrentCommand)
 	}
 	s, reported := m.snap.states[p.PaneID]
-	ind := indicators[state.Unknown]
+	indStyle, ic := indicatorStyle[state.Unknown], indicatorGlyph[state.Unknown]
 	if reported {
-		ind = indicators[s.Status]
+		indStyle, ic = indicatorStyle[s.Status], indicatorGlyph[s.Status]
 	}
 	if m.done(p.PaneID) {
-		ind = indicatorDone
+		indStyle, ic = stDone, indicatorDoneGlyph
 	}
-	return ind + " " + title
+	if bold {
+		indStyle = indStyle.Bold(true)
+	}
+	titleStyle := lipgloss.NewStyle()
+	if bold {
+		titleStyle = stActiveWindow
+	}
+	return indStyle.Render(ic) + " " + titleStyle.Render(title)
 }
 
 func (m *model) rebuild() {
@@ -753,6 +791,18 @@ func (m *model) rebuild() {
 		order = ranked
 	}
 
+	// activeWindow is the window holding the client's active pane: kido
+	// bolds every row in it so the current window stands out from the rest
+	// of its session, not just the session name. WindowID is unique
+	// server-wide, so comparing it alone (with no session check) is enough.
+	var activeWindow string
+	for _, p := range m.snap.panes {
+		if p.PaneID == m.snap.active {
+			activeWindow = p.WindowID
+			break
+		}
+	}
+
 	for _, s := range order {
 		name := s.name
 		if name == m.snap.current {
@@ -761,9 +811,10 @@ func (m *model) rebuild() {
 		m.rows = append(m.rows, row{text: name})
 
 		for _, panes := range s.windows {
+			bold := activeWindow != "" && len(panes) > 0 && panes[0].WindowID == activeWindow
 			for i, p := range panes {
 				m.rows = append(m.rows, row{
-					text:   glyph(i, len(panes)) + " " + m.paneLabel(p),
+					text:   glyph(i, len(panes), bold) + " " + m.paneLabel(p, bold),
 					paneID: p.PaneID,
 				})
 			}
