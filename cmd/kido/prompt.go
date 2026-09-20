@@ -100,6 +100,16 @@ func prompt(args []string, stdin io.Reader) int {
 // that socket; everything else - Claude Code above all, which has no such
 // socket - gets it typed into the pane with send-keys.
 //
+// One protocol, not a kind of address: inbox names a socket speaking
+// kido's own line protocol (cmd/kido/inbox.go), and deliverInbox is the
+// only thing that can be on the other end. A second agent whose socket
+// frames messages differently - Claude Code's per-session socket, say -
+// would need a kind recorded alongside the path in state.Session (say
+// InboxKind, defaulting to kido's own for records written before it), and
+// a switch on that kind right here choosing the client to run. Nothing
+// needs that yet, so the field stays one protocol wide rather than
+// pretending to be general.
+//
 // The two paths are not interchangeable once a connection is up: only a
 // failure that proves the message was never sent (errInboxUnavailable: no
 // socket, or a stale one a dead process left behind) falls back to

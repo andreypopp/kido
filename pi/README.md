@@ -62,14 +62,13 @@ path once, as `--inbox <path>` on the first status report; kido carries that
 value forward, so later reports omit it. On `session_shutdown` the socket is
 closed and the file unlinked.
 
-Path: `<state>/inbox/<first 8 chars of the session id>.sock`, where `<state>` is
-`$KIDO_STATE_DIR`, else `$XDG_STATE_HOME/kido`, else `~/.local/state/kido`. The
-directory is created mode 0700. The name is kept short because a unix socket
-path may be no longer than ~104 bytes; if the path would exceed that, the
-extension simply runs without an inbox. A leftover socket file from a pi that
-died without cleaning up is removed before binding — but only after a probe
-connect proves nothing is listening; if something is, the extension falls back
-to `<pid>.sock` and otherwise skips the inbox.
+Where to bind is kido's decision, not the extension's: it runs `kido inbox-path
+<pid>`, which prints `<state>/inbox/<pid>.sock`, creating the directory mode
+0700. kido owns the state-directory precedence and the socket-path length
+budget; if the path would not fit, `inbox-path` exits non-zero and the extension
+simply runs without an inbox. Because the name is this pi's process id, no live
+process can own a leftover file at that path, so one is unlinked unconditionally
+before binding — no liveness probe, no fallback names.
 
 Protocol — a client:
 
@@ -83,11 +82,12 @@ Protocol — a client:
 printf 'run the tests and summarise failures' | socat - UNIX-CONNECT:"$sock"
 ```
 
-The prompt then arrives as a real user message. Delivery mode follows the
-session's state: when pi is idle it is sent plainly, which triggers a turn
-immediately; while the agent is mid-stream it is sent with `deliverAs:
-"followUp"`, so the running turn finishes first — `"steer"` would redirect work
-the user is watching, which an externally injected prompt has no business doing.
+The prompt then arrives as a real user message, always sent with `deliverAs:
+"followUp"`. That single mode is right in both states: `deliverAs` is only
+consulted while the agent is streaming, where `"followUp"` waits for it to
+finish all its tools — `"steer"` would redirect work the user is watching, which
+an externally injected prompt has no business doing — and when pi is idle the
+message is sent immediately and triggers a new turn.
 
 An empty message is ignored, and anything over 1 MiB is dropped rather than
 buffered. Like the status reporting, the inbox is silent and non-fatal: it never

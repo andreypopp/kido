@@ -20,12 +20,14 @@
  *     status/title actually differs from what was last sent.
  *
  * Inbox:
- *   On session start the extension binds a unix STREAM socket under the kido
- *   state directory and reports its path once, with `--inbox <path>` on the
- *   first status report; kido carries that value forward. A client writes a
- *   prompt as UTF-8 with no framing, half-closes its write half, reads `ok\n`
- *   and closes; the prompt is then delivered as a real user message. Any
- *   failure here is silent and leaves status reporting working.
+ *   On session start the extension asks kido where to bind — `kido inbox-path
+ *   <pid>` prints an absolute socket path, creating its directory, and fails if
+ *   the path would be too long — binds a unix STREAM socket there and reports
+ *   the path once, with `--inbox <path>` on the first status report; kido
+ *   carries that value forward. A client writes a prompt as UTF-8 with no
+ *   framing, half-closes its write half, reads `ok\n` and closes; the prompt is
+ *   then delivered as a real user message. Any failure here is silent and
+ *   leaves status reporting working.
  *
  * Install:
  *   mkdir -p ~/.pi/agent/extensions
@@ -34,42 +36,16 @@
  * Or, for a one-off run:  pi -e /path/to/kido-status.ts
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { spawn } from "node:child_process";
-import { accessSync, constants, mkdirSync, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
-import { connect, createServer, type Server, type Socket } from "node:net";
-import { delimiter, join } from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { execFileSync, spawn } from "node:child_process";
+import { accessSync, constants, unlinkSync } from "node:fs";
+import { createServer, type Server, type Socket } from "node:net";
+import { delimiter, isAbsolute, join } from "node:path";
 
 type Status = "running" | "waiting" | "compacting" | "idle";
 
-// A unix socket path is limited to ~104 bytes on macOS (sun_path), so the
-// bound path has to stay short: a truncated session id, not the full one.
-const MAX_SOCKET_PATH = 100;
 // Anything larger than this is dropped rather than buffered.
 const MAX_PROMPT_BYTES = 1024 * 1024;
-
-function stateDir(): string {
-  const explicit = process.env.KIDO_STATE_DIR;
-  if (explicit) return explicit;
-  const xdg = process.env.XDG_STATE_HOME;
-  if (xdg) return join(xdg, "kido");
-  return join(homedir(), ".local", "state", "kido");
-}
-
-// Resolve to `true` if something is already listening on `path`.
-function isLive(path: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const probe = connect(path);
-    const done = (live: boolean) => {
-      probe.destroy();
-      resolve(live);
-    };
-    probe.on("connect", () => done(true));
-    probe.on("error", () => done(false));
-    probe.setTimeout(500, () => done(true)); // unclear: treat as live, don't clobber
-  });
-}
 
 function findKido(): string | null {
   const path = process.env.PATH;
@@ -87,6 +63,24 @@ function findKido(): string | null {
   return null;
 }
 
+// Where to bind is kido's decision, not ours: it owns the state-directory
+// precedence and the sun_path length budget, and re-deriving either here would
+// be a second, drifting copy of them. It exits non-zero (printing nothing) when
+// the path would not fit or the name is bad; then we simply run without an
+// inbox. Run synchronously: one fast subprocess, once per session start.
+function askInboxPath(kido: string, name: string): string | null {
+  try {
+    const out = execFileSync(kido, ["inbox-path", name], {
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf8",
+      timeout: 2000, // a hung kido must not stall session start
+    }).trim();
+    return out && isAbsolute(out) ? out : null;
+  } catch {
+    return null; // no such subcommand, non-zero exit, timeout — no inbox
+  }
+}
+
 export default function (pi: ExtensionAPI) {
   let kido: string | null = null;
   let sessionId: string | null = null;
@@ -98,31 +92,17 @@ export default function (pi: ExtensionAPI) {
   let inbox: Server | null = null;
   let inboxPath: string | null = null;
   let inboxReported = false;
-  // The ctx handed to a handler belongs to the session that is live at that
-  // moment; a socket callback has none of its own, so keep the latest.
-  let lastCtx: ExtensionContext | null = null;
 
   const deliver = (text: string): void => {
-    // Delivery mode from the session's own state. Idle: a plain send, which
-    // triggers a turn immediately. Mid-stream: "followUp", which waits until
-    // the agent has no tool calls left — "steer" would redirect the running
-    // turn before its next LLM call, hijacking work the user is watching,
-    // whereas an externally injected prompt should queue behind it.
-    try {
-      if (lastCtx?.isIdle() ?? true) {
-        pi.sendUserMessage(text);
-      } else {
-        pi.sendUserMessage(text, { deliverAs: "followUp" });
-      }
-    } catch {
-      // A turn can start between isIdle() and the send, and a plain send while
-      // streaming throws. Retry once in the mode that is always legal.
-      try {
-        pi.sendUserMessage(text, { deliverAs: "followUp" });
-      } catch {
-        // give up quietly
-      }
-    }
+    // Unconditionally "followUp", idle or not. The docs say of sendUserMessage
+    // that "When not streaming, the message is sent immediately and triggers a
+    // new turn" — `deliverAs` is only consulted while streaming, where
+    // "followUp" "[w]aits for agent to finish all tools". That is exactly what
+    // an externally injected prompt should do: queue behind work the user is
+    // watching, rather than redirect the running turn the way "steer" would.
+    // One call covers both cases and leaves no window between a check and a
+    // send in which a turn could start.
+    pi.sendUserMessage(text, { deliverAs: "followUp" });
   };
 
   const onConnection = (sock: Socket): void => {
@@ -179,41 +159,28 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  const startInbox = async (id: string): Promise<void> => {
-    const dir = join(stateDir(), "inbox");
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    // Short and unique enough: a session id prefix. If that name is taken by a
-    // live listener (a second pi on the same session, or a /reload whose old
-    // server is still bound), fall back to the pid and then to the clock.
-    const names = [
-      `${id.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 8)}.sock`,
-      `${process.pid}.sock`,
-      `${process.pid}-${Date.now().toString(36).slice(-4)}.sock`,
-    ];
-    for (const name of names) {
-      const path = join(dir, name);
-      if (Buffer.byteLength(path) > MAX_SOCKET_PATH) return;
-      // A leftover file from a pi that died without cleaning up is safe to
-      // remove — but only once we know nothing is listening on it.
-      if (await isLive(path)) continue;
-      try {
-        unlinkSync(path);
-      } catch {
-        // nothing there
-      }
-      const server = createServer({ allowHalfOpen: true }, onConnection);
-      server.on("error", () => {});
-      const bound = await new Promise<boolean>((resolve) => {
-        server.once("error", () => resolve(false));
-        server.listen(path, () => resolve(true));
-      });
-      if (!bound) continue;
-      server.unref(); // never hold pi's event loop open
-      inbox = server;
-      inboxPath = path;
-      inboxReported = false;
-      return;
+  const startInbox = async (bin: string): Promise<void> => {
+    // Named after this process's pid, which is unique among live processes by
+    // construction: a leftover file at that path cannot belong to a running
+    // listener, so it is always safe to remove — no liveness probe needed.
+    const path = askInboxPath(bin, String(process.pid));
+    if (!path) return;
+    try {
+      unlinkSync(path);
+    } catch {
+      // nothing there
     }
+    const server = createServer({ allowHalfOpen: true }, onConnection);
+    server.on("error", () => {});
+    const bound = await new Promise<boolean>((resolve) => {
+      server.once("error", () => resolve(false));
+      server.listen(path, () => resolve(true));
+    });
+    if (!bound) return; // never publish a path we are not listening on
+    server.unref(); // never hold pi's event loop open
+    inbox = server;
+    inboxPath = path;
+    inboxReported = false;
   };
 
   // Fire-and-forget. Coalesced: identical consecutive reports are dropped.
@@ -224,7 +191,14 @@ export default function (pi: ExtensionAPI) {
     if (!kido || !sessionId) return;
 
     const key = [status, title ?? "", opts.ended ? 1 : 0, opts.remove ? 1 : 0].join("|");
-    if (key === lastKey) return;
+    // The one report that carries --inbox must never be coalesced away:
+    // session_start awaits the socket bind, and another handler can send an
+    // equivalent "idle" report inside that window, which would make the
+    // session_start report look like a duplicate — and kido would never learn
+    // the socket path. So bypass coalescing while the path is unreported;
+    // afterwards identical statuses coalesce exactly as before.
+    const pendingInbox = inboxPath !== null && !inboxReported;
+    if (!pendingInbox && key === lastKey) return;
     lastKey = key;
     current = status;
 
@@ -241,7 +215,7 @@ export default function (pi: ExtensionAPI) {
     if (opts.ended) args.push("--ended");
     if (opts.remove) args.push("--remove");
     // Reported once; kido carries the value forward across later reports.
-    if (inboxPath && !inboxReported) {
+    if (pendingInbox && inboxPath) {
       args.push("--inbox", inboxPath);
       inboxReported = true;
     }
@@ -262,21 +236,17 @@ export default function (pi: ExtensionAPI) {
     // invocations that never start a session.
     kido = process.env.TMUX_PANE ? findKido() : null;
     if (!kido) return;
-    lastCtx = ctx;
     sessionId = ctx.sessionManager.getSessionId() ?? null;
     title = ctx.sessionManager.getSessionName() || undefined;
     lastKey = null;
     // A session switch or /reload re-runs this: drop the old inbox first.
     stopInbox();
-    if (sessionId) {
-      try {
-        await startInbox(sessionId);
-      } catch {
-        // no inbox; status reporting carries on regardless
-      }
+    try {
+      await startInbox(kido);
+    } catch {
+      // no inbox; status reporting carries on regardless
     }
-    // Awaited before the first report so that report can carry --inbox; a
-    // later one would be coalesced away, the status not having changed.
+    // Awaited before the first report so that report can carry --inbox.
     send("idle");
   });
 
@@ -296,7 +266,6 @@ export default function (pi: ExtensionAPI) {
   // A prompt can also be raised while pi is idle (an extension command calling
   // ctx.ui.select(), say); reporting "running" then would stick forever.
   pi.on("ui_prompt_end", (_event, ctx) => {
-    lastCtx = ctx;
     send(ctx.isIdle() ? "idle" : "running");
   });
 
@@ -313,7 +282,6 @@ export default function (pi: ExtensionAPI) {
 
   // The true idle signal: no retry, compaction, or follow-up left.
   pi.on("agent_settled", (_event, ctx) => {
-    lastCtx = ctx;
     if (!ctx.isIdle()) return;
     send("idle", { ended: true });
   });

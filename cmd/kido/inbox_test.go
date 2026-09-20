@@ -2,89 +2,15 @@ package main
 
 import (
 	"errors"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
+
+	"kido/internal/testutil"
 )
-
-// socketDir is a temp directory short enough to hold a unix socket:
-// t.TempDir() embeds the test's name under /var/folders/... on macOS,
-// which can push sun_path past its 104-byte limit.
-func socketDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "kido-inbox")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	return dir
-}
-
-// inboxServer is a fake agent inbox: it accepts one connection at a time,
-// reads the whole message (the client's half-close is the end of it),
-// answers as reply says, and records what arrived. reply "" means never
-// answer at all, leaving the client on its deadline.
-func inboxServer(t *testing.T, reply string) (path string, got func() []string) {
-	t.Helper()
-	path = filepath.Join(socketDir(t), "inbox.sock")
-	ln, err := net.Listen("unix", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { ln.Close() })
-
-	var mu sync.Mutex
-	var msgs []string
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			b, _ := io.ReadAll(conn)
-			mu.Lock()
-			msgs = append(msgs, string(b))
-			mu.Unlock()
-			if reply == "" {
-				// Hold the connection open with nothing to read, so
-				// the client hits its deadline rather than EOF.
-				time.AfterFunc(10*time.Second, func() { conn.Close() })
-				continue
-			}
-			io.WriteString(conn, reply) //nolint:errcheck // best effort
-			conn.Close()
-		}
-	}()
-	return path, func() []string {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]string(nil), msgs...)
-	}
-}
-
-// staleSocket is a socket file whose listener is gone, the way a dead
-// agent leaves one behind: connecting gets ECONNREFUSED, not ENOENT.
-func staleSocket(t *testing.T) string {
-	t.Helper()
-	path := filepath.Join(socketDir(t), "stale.sock")
-	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ln.SetUnlinkOnClose(false)
-	if err := ln.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("stale socket vanished: %v", err)
-	}
-	return path
-}
 
 // TestDeliverInboxHappy checks that the message arrives byte for byte,
 // including newlines and non-ASCII, with no framing or trailing newline
@@ -95,11 +21,11 @@ func TestDeliverInboxHappy(t *testing.T) {
 		"first line\nsecond line\n\nfourth",
 		"héllo — π agents, ünicode ✳",
 	} {
-		path, got := inboxServer(t, "ok\n")
-		if err := deliverInbox(path, text); err != nil {
+		in := testutil.StartInbox(t, "ok\n")
+		if err := deliverInbox(in.Path, text); err != nil {
 			t.Fatalf("deliverInbox(%q): %v", text, err)
 		}
-		msgs := got()
+		msgs := in.Received()
 		if len(msgs) != 1 || msgs[0] != text {
 			t.Errorf("server got %q, want exactly [%q]", msgs, text)
 		}
@@ -111,21 +37,26 @@ func TestDeliverInboxHappy(t *testing.T) {
 // out, so the caller must not send it again with send-keys.
 func TestDeliverInboxNoReply(t *testing.T) {
 	defer func(d time.Duration) { inboxTimeout = d }(inboxTimeout)
-	inboxTimeout = 150 * time.Millisecond
+	inboxTimeout = 300 * time.Millisecond
 
-	path, got := inboxServer(t, "")
+	in := testutil.StartInbox(t, "")
 	start := time.Now()
-	err := deliverInbox(path, "hi")
+	err := deliverInbox(in.Path, "hi")
 	if err == nil {
 		t.Fatal("deliverInbox: no error, want a deadline error")
 	}
 	if errors.Is(err, errInboxUnavailable) {
 		t.Errorf("err = %v, want a hard error (the message was already written)", err)
 	}
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Errorf("took %v; the deadline did not bound the read", elapsed)
+	// One deadline covers the whole exchange, connect included, so a peer
+	// that never answers costs one timeout and not two. (A unix connect()
+	// returns at once while the listen backlog has room, so this fixture
+	// exercises the read half; the bound is what pins the contract.)
+	if elapsed := time.Since(start); elapsed > inboxTimeout+inboxTimeout/2 {
+		t.Errorf("took %v, want under %v: the one deadline must bound the whole exchange",
+			elapsed, inboxTimeout+inboxTimeout/2)
 	}
-	if msgs := got(); len(msgs) != 1 || msgs[0] != "hi" {
+	if msgs := in.Received(); len(msgs) != 1 || msgs[0] != "hi" {
 		t.Errorf("server got %q, want [\"hi\"]", msgs)
 	}
 }
@@ -133,8 +64,8 @@ func TestDeliverInboxNoReply(t *testing.T) {
 // TestDeliverInboxBadReply checks that an answer other than "ok" is a hard
 // error too, for the same reason.
 func TestDeliverInboxBadReply(t *testing.T) {
-	path, _ := inboxServer(t, "nope\n")
-	err := deliverInbox(path, "hi")
+	in := testutil.StartInbox(t, "nope\n")
+	err := deliverInbox(in.Path, "hi")
 	if err == nil || errors.Is(err, errInboxUnavailable) {
 		t.Errorf("err = %v, want a hard error", err)
 	}
@@ -147,14 +78,81 @@ func TestDeliverInboxBadReply(t *testing.T) {
 func TestDeliverInboxUnavailable(t *testing.T) {
 	cases := map[string]string{
 		"empty":   "",
-		"missing": filepath.Join(socketDir(t), "nothing-here.sock"),
-		"stale":   staleSocket(t),
+		"missing": filepath.Join(testutil.SocketDir(t), "nothing-here.sock"),
+		"stale":   testutil.StaleSocket(t),
 		"toolong": "/tmp/" + strings.Repeat("x", 200) + ".sock",
 	}
 	for name, path := range cases {
 		err := deliverInbox(path, "hi")
 		if !errors.Is(err, errInboxUnavailable) {
 			t.Errorf("%s: err = %v, want errInboxUnavailable", name, err)
+		}
+	}
+}
+
+// TestInboxPath checks the contract `kido inbox-path NAME` publishes: an
+// absolute <state dir>/inbox/<name>.sock, with the inbox directory created
+// private to the user.
+func TestInboxPath(t *testing.T) {
+	// SocketDir rather than t.TempDir(): the path gets a socket bound on
+	// it below, and t.TempDir() embeds the test's name.
+	dir := testutil.SocketDir(t)
+	t.Setenv("KIDO_STATE_DIR", dir)
+
+	got, err := inboxPath("pi-123")
+	if err != nil {
+		t.Fatalf("inboxPath: %v", err)
+	}
+	want := filepath.Join(dir, "inbox", "pi-123.sock")
+	if got != want {
+		t.Errorf("inboxPath = %q, want %q", got, want)
+	}
+	if !filepath.IsAbs(got) {
+		t.Errorf("inboxPath = %q, want an absolute path", got)
+	}
+	fi, err := os.Stat(filepath.Join(dir, "inbox"))
+	if err != nil {
+		t.Fatalf("inbox directory: %v", err)
+	}
+	if !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+		t.Errorf("inbox directory mode = %v, want drwx------", fi.Mode())
+	}
+	// A socket really can be bound there: the whole point of the length
+	// check is that the path kido hands out is one the kernel accepts.
+	ln, err := net.Listen("unix", got)
+	if err != nil {
+		t.Fatalf("listen on %s: %v", got, err)
+	}
+	ln.Close()
+}
+
+// TestInboxPathTooLong checks that a path over sun_path's limit is an
+// error with nothing usable returned, so the caller skips having an inbox
+// rather than listening where kido cannot dial.
+func TestInboxPathTooLong(t *testing.T) {
+	deep := filepath.Join(os.TempDir(), "kido-"+strings.Repeat("deep", 30))
+	t.Setenv("KIDO_STATE_DIR", deep)
+
+	got, err := inboxPath("agent")
+	if err == nil {
+		t.Fatalf("inboxPath = %q, want an error for a path over %d bytes", got, sunPathMax)
+	}
+	if got != "" {
+		t.Errorf("inboxPath = %q, want no path alongside the error", got)
+	}
+	if _, err := os.Stat(deep); err == nil {
+		os.RemoveAll(deep)
+		t.Error("a rejected name created the state directory; it must not")
+	}
+}
+
+// TestInboxPathBadName checks that a name that could reach outside the
+// inbox directory is rejected.
+func TestInboxPathBadName(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	for _, name := range []string{"", "..", "../escape", "sub/agent", "a..b"} {
+		if got, err := inboxPath(name); err == nil {
+			t.Errorf("inboxPath(%q) = %q, want an error", name, got)
 		}
 	}
 }

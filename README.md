@@ -125,10 +125,28 @@ kido agent-status --agent NAME --session ID --status running|waiting|compacting|
 when it changes). `--inbox` is the path of a unix socket the agent takes
 prompts on, which is what makes `kido prompt` deliver a real user message
 instead of keystrokes; it is kept across calls that omit it too, and
-`--inbox ""` clears it when the socket goes away. `--ended` marks the end
-of a turn (that is what `✓ done` tracks) and `--remove` drops the
-session's record when the agent exits. A pi pane is recognised even before
-it reports anything, from the pi in the pane's process tree.
+`--inbox ""` clears it when the socket goes away. That socket speaks
+kido's own line protocol — one prompt per connection, written with no
+framing and ended by half-closing the write half, answered with `ok\n` —
+and nothing else; it is not a general "send a message here" address, so an
+agent with a socket of its own that frames messages differently must not
+report it here. `--ended` marks the end of a turn (that is what `✓ done`
+tracks) and `--remove` drops the session's record when the agent exits. A
+pi pane is recognised even before it reports anything, from the pi in the
+pane's process tree.
+
+`kido inbox-path NAME` prints where such a socket belongs — an absolute
+`<state dir>/inbox/NAME.sock` — creating the `inbox` directory (mode
+`0700`) if it is missing, so an extension never has to work out where
+kido's state lives or how long a unix socket path may be. A name with a
+path separator or `..` in it, or one whose path would not fit in
+`sun_path`, prints nothing and exits 1: the caller can then simply run
+without an inbox and let `kido prompt` fall back to keystrokes.
+
+```sh
+kido agent-status --agent pi --session "$id" --status idle \
+  --inbox "$(kido inbox-path "$id")"
+```
 
 `kido setup-pi` installs a status extension for the pi coding agent into
 `~/.pi/agent/extensions/`, which pi discovers on its next start. pi panes

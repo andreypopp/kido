@@ -297,7 +297,16 @@ func start(t *testing.T, session string, kidoArgs ...string) *harness {
 		args = " " + strings.Join(kidoArgs, " ")
 	}
 	conf := filepath.Join(h.dir, "inner.conf")
+	// KIDO_STATE_DIR goes into the inner server's global environment, from
+	// its config file, so it is set before any session exists: every pane
+	// of every inner session inherits it, as does the side-status-command
+	// job the server runs itself, and a test that types a `kido ...`
+	// command into a pane cannot silently read and write the developer's
+	// real ~/.local/state/kido. This is the only place the inner server
+	// learns it; the only copies left are h.hook and h.agentStatus, which
+	// run out of band from the test binary rather than in the server.
 	body := fmt.Sprintf(`
+set-environment -g KIDO_STATE_DIR "%s"
 set -g status off
 set -sg escape-time 0
 set -g default-shell /bin/bash
@@ -305,7 +314,7 @@ set -g default-command ""
 set -g side-status left
 set -g side-status-width %d
 set -g side-status-style "fg=default,bg=default"
-set -g side-status-command "KIDO_STATE_DIR=%s %s%s"
+set -g side-status-command "%s%s"
 set -g mouse on
 bind-key K if-shell -F '#{==:#{side-status},off}' \
   'set -g side-status left ; refresh-client -f side-status-focus' \
@@ -313,7 +322,7 @@ bind-key K if-shell -F '#{==:#{side-status},off}' \
 bind-key k if-shell -F '#{m:*side-status-focus*,#{client_flags}}' \
   'refresh-client -f !side-status-focus' \
   'refresh-client -f side-status-focus'
-`, sideWidth, h.stateDir, kidoBin, args)
+`, h.stateDir, sideWidth, kidoBin, args)
 	if err := os.WriteFile(conf, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -815,7 +824,9 @@ func (h *harness) sshProxy() string {
 // hook runs `kido hook` with the payload built from event and the extra
 // key/value pairs, reporting for pane. The hook records its parent pid,
 // which is this test binary: alive for the whole run, so the state file
-// stays valid.
+// stays valid. It runs out of band, straight from the test binary rather
+// than inside the inner server, so it carries KIDO_STATE_DIR itself
+// instead of inheriting it the way a pane does.
 func (h *harness) hook(sessionID, pane, event string, kv ...string) {
 	h.t.Helper()
 	payload := map[string]string{"hook_event_name": event, "session_id": sessionID}
@@ -837,7 +848,9 @@ func (h *harness) hook(sessionID, pane, event string, kv ...string) {
 // agentStatus runs `kido agent-status` for pane, the way an agent that is
 // not Claude Code reports itself. extra carries any further flags
 // (--ended, --remove, --title). Like the hook, it records its parent pid,
-// which is this test binary: alive for the whole run.
+// which is this test binary: alive for the whole run, and like the hook it
+// runs out of band, so it spells KIDO_STATE_DIR out rather than inheriting
+// it from the inner server.
 func (h *harness) agentStatus(sessionID, pane, agent, status string, extra ...string) {
 	h.t.Helper()
 	args := []string{"agent-status", "--agent", agent, "--session", sessionID}

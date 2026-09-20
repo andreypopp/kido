@@ -80,6 +80,23 @@ func main() {
 		case "debug-log":
 			fmt.Println(filepath.Join(state.Dir(), "debug.log"))
 			return
+		case "inbox-path":
+			// Like debug-log: kido owns where its state lives, so an
+			// agent's extension asks rather than reimplementing Dir().
+			if len(os.Args) != 3 {
+				fmt.Fprintln(os.Stderr, "usage: kido inbox-path NAME")
+				os.Exit(1)
+			}
+			path, err := inboxPath(os.Args[2])
+			if err != nil {
+				// Nothing on stdout: the caller can then simply go
+				// without an inbox instead of listening where kido
+				// cannot dial.
+				fmt.Fprintln(os.Stderr, "kido inbox-path:", err)
+				os.Exit(1)
+			}
+			fmt.Println(path)
+			return
 		case "snapshot":
 			if err := snapshot(os.Stdout); err != nil {
 				fmt.Fprintln(os.Stderr, "kido snapshot:", err)
@@ -383,9 +400,13 @@ const agentStatusUsage = "usage: kido agent-status --agent NAME --session ID " +
 // when omitted, the previously recorded title (if any) is kept rather than
 // blanked, since an extension's coalescing may not re-send it every time.
 //
-// --inbox is the path of a unix socket the agent listens on for prompts
-// (see cmd/kido/inbox.go); `kido prompt` then delivers over it instead of
-// typing into the pane. It is carried across calls that omit it the way
+// --inbox is the path of a unix socket the agent listens on for prompts,
+// speaking kido's own line protocol and no other (write the prompt,
+// half-close, answer "ok\n"; see cmd/kido/inbox.go). It is not a general
+// "send a message here" address, so an agent with a socket of its own
+// that frames messages differently must not report it here. `kido prompt`
+// then delivers over it instead of typing into the pane. `kido inbox-path
+// NAME` says where to put the socket. It is carried across calls that omit it the way
 // --title is, but unlike --title an explicit empty value clears it:
 // `--inbox ""` is how an agent says its socket is gone, and a stale path
 // would otherwise keep kido dialling a socket nobody is listening on. That
@@ -397,7 +418,8 @@ func agentStatus(args []string) error {
 	session := fs.String("session", "", "the agent's session id; one state file per session")
 	status := fs.String("status", "", "running|waiting|compacting|idle")
 	title := fs.String("title", "", "the session's name, shown as the pane's label")
-	inbox := fs.String("inbox", "", "path of the unix socket the agent takes prompts on; empty clears it")
+	inbox := fs.String("inbox", "",
+		"path of the unix socket the agent takes prompts on, speaking kido's own protocol (see `kido inbox-path`); empty clears it")
 	ended := fs.Bool("ended", false, "a turn just finished")
 	remove := fs.Bool("remove", false, "delete the session's record")
 	if err := fs.Parse(args); err != nil {
