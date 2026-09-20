@@ -64,53 +64,6 @@ func TestFollowActivePane(t *testing.T) {
 	}, settle, msgf("selection on the cat row"))
 }
 
-// TestActiveWindowBold bolds every row of the window the client is
-// currently on, and moves the bold when the client switches windows within
-// the same session; a window the client is not on stays unbold even though
-// it is in the same session.
-//
-// The active pane of the current window is also the selected row, whose
-// reverse video strips every inner style (see View in internal/ui/ui.go),
-// bold included - so bold can only be observed on a row that is not
-// selected. Each window here gets a second, non-active pane for exactly
-// that: a bold check that reverse video cannot mask. Every pane runs a
-// distinct foreground command so isBold's substring match is unambiguous.
-func TestActiveWindowBold(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha") // window 0: pane 0 is the shell, active
-
-	// cat and sleep block on their own, so they stay the foreground
-	// command; -d keeps the new pane out of focus, so the shell (window 0)
-	// and tail (window 1) stay the active panes of their windows.
-	h.in("split-window", "-d", "-t", "alpha:", "cat", "-")
-	h.newWindow("alpha", "editor", "tail", "-f", "/dev/null")
-	h.in("split-window", "-d", "-t", "alpha:editor", "sleep", "300")
-	h.waitRow("cat")
-	h.waitRow("tail")
-	h.waitRow("sleep")
-
-	// The client starts on window 0: its non-active pane (cat) is bold,
-	// window 1's non-active pane (sleep) is not.
-	h.waitFor(func() bool { return h.isBold("cat") }, settle,
-		msgf("window 0's cat row is bold"))
-	if h.isBold("tail") {
-		t.Error("tail row is bold but window 1 is not the client's current window")
-	}
-	if h.isBold("sleep") {
-		t.Error("sleep row is bold but window 1 is not the client's current window")
-	}
-
-	h.in("select-window", "-t", "alpha:editor")
-	h.waitFor(func() bool { return h.isBold("sleep") }, settle,
-		msgf("window 1's sleep row is bold after switching to it"))
-	if h.isBold("cat") {
-		t.Error("cat row is still bold after the client left window 0")
-	}
-	if h.isBold(shell) {
-		t.Error("shell row is bold but is not in the client's current window")
-	}
-}
-
 // TestSSHRow shows a pane running ssh by its destination.
 func TestSSHRow(t *testing.T) {
 	t.Parallel()

@@ -36,16 +36,15 @@ type Options struct {
 
 // snapshot is everything the sidebar shows, taken off the UI goroutine.
 type snapshot struct {
-	current      string // session the client is attached to
-	active       string // the client's active pane
-	activeWindow string // the active pane's window id
-	focused      bool   // the sidebar has the keyboard
-	panes        []tmux.Pane
-	states       map[string]state.Session
-	ssh          map[int]string // pane pid -> ssh destination
-	pi           map[int]bool   // pane pid -> pi runs in this pane
-	probed       time.Time      // when the process table was last read
-	err          error
+	current string // session the client is attached to
+	active  string // the client's active pane
+	focused bool   // the sidebar has the keyboard
+	panes   []tmux.Pane
+	states  map[string]state.Session
+	ssh     map[int]string // pane pid -> ssh destination
+	pi      map[int]bool   // pane pid -> pi runs in this pane
+	probed  time.Time      // when the process table was last read
+	err     error
 
 	// probes remembers the last screen read of each waiting pane, so the
 	// screen is read at most once per probeInterval rather than on every
@@ -151,8 +150,7 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 	if s.panes, s.err = listPanes(conn); s.err != nil {
 		return s
 	}
-	active := tmux.ActivePane(s.panes, s.current)
-	s.active, s.activeWindow = active.PaneID, active.WindowID
+	s.active = tmux.ActivePane(s.panes, s.current)
 	s.states, s.err = state.Load()
 	s.ssh, s.pi = map[int]string{}, map[int]bool{}
 	s.probed = prev.probed
@@ -303,7 +301,7 @@ func (m model) tick() tea.Cmd {
 
 // same reports whether two snapshots would render identically.
 func (a snapshot) same(b snapshot) bool {
-	return a.current == b.current && a.active == b.active && a.activeWindow == b.activeWindow && a.focused == b.focused &&
+	return a.current == b.current && a.active == b.active && a.focused == b.focused &&
 		a.err == nil && b.err == nil &&
 		slices.Equal(a.panes, b.panes) && maps.Equal(a.states, b.states) &&
 		maps.Equal(a.ssh, b.ssh) && maps.Equal(a.pi, b.pi)
@@ -605,50 +603,31 @@ var (
 
 // glyph renders one tree glyph grouping a window's panes: a dot for a lone
 // pane, else a bracket spanning the window's rows. The glyphs are dim like
-// the rest of the tree structure, but when bold is set (the client's
-// current window) they carry the same bold weight as the rest of the row,
-// so the whole row - structure included - reads as one bold unit rather
-// than a bold label hanging off an unbolded branch.
-func glyph(i, n int, bold bool) string {
-	// Bold does nothing useful here: colour 8 is already a bright
-	// variant, and box-drawing glyphs rarely have a bold weight in a
-	// monospace font. The active window's branches are lifted out of
-	// the dim colour instead, which shows at any weight.
-	st := stDim
-	if bold {
-		st = stProc.Bold(true)
-	}
+// the rest of the tree structure.
+func glyph(i, n int) string {
 	switch {
 	case n == 1:
-		return st.Render("·")
+		return stDim.Render("·")
 	case i == 0:
-		return st.Render("┌")
+		return stDim.Render("┌")
 	case i == n-1:
-		return st.Render("└")
+		return stDim.Render("└")
 	default:
-		return st.Render("├")
+		return stDim.Render("├")
 	}
 }
 
-// indicatorGlyph and indicatorStyle mark an agent pane by its status; the
-// glyph alone says it is an agent session, the same for every agent.
-var (
-	indicatorGlyph = map[state.Status]string{
-		state.Running:    "●",
-		state.Waiting:    "◆",
-		state.Compacting: "◌",
-		state.Idle:       "○",
-		state.Unknown:    "?",
-	}
-	indicatorStyle = map[state.Status]lipgloss.Style{
-		state.Running:    stRunning,
-		state.Waiting:    stWaiting,
-		state.Compacting: stCompact,
-		state.Idle:       stIdle,
-		state.Unknown:    stUnknown,
-	}
-	indicatorDoneGlyph = "✓" // idle since finishing, not yet looked at
-)
+// indicators marks an agent pane by its status: the glyph alone says it is
+// an agent session, the same for every agent.
+var indicators = map[state.Status]string{
+	state.Running:    stRunning.Render("●"),
+	state.Waiting:    stWaiting.Render("◆"),
+	state.Compacting: stCompact.Render("◌"),
+	state.Idle:       stIdle.Render("○"),
+	state.Unknown:    stUnknown.Render("?"),
+}
+
+var indicatorDone = stDone.Render("✓") // idle since finishing, not yet looked at
 
 // piPrefix is what pi puts before the title it sets: "π - <session> -
 // <cwd>", or "π - <cwd>" when the session is unnamed. Only the marker is
@@ -701,32 +680,24 @@ func (m *model) agentTitleOf(p tmux.Pane) (string, bool) {
 
 // paneLabel is the row text for a pane: its foreground command, or for an
 // agent pane, a status indicator and the session title. Which agent it is
-// makes no difference to the row. bold is set for every pane of the
-// client's current window, and composes with the dim command/ssh-prefix
-// style and the status indicator's own color by adding bold weight to
-// each, rather than wrapping the finished text in a second style (which
-// would reset the colors and indicator glyphs it wraps).
-func (m *model) paneLabel(p tmux.Pane, bold bool) string {
+// makes no difference to the row.
+func (m *model) paneLabel(p tmux.Pane) string {
 	title, isAgent := m.agentTitleOf(p)
 	if !isAgent {
-		procStyle := stProc.Bold(bold)
 		if host, ok := m.snap.ssh[p.PanePID]; ok {
-			hostStyle := lipgloss.NewStyle().Bold(bold)
-			return procStyle.Render("ssh ") + hostStyle.Render(host)
+			return stProc.Render("ssh ") + host
 		}
-		return procStyle.Render(p.CurrentCommand)
+		return stProc.Render(p.CurrentCommand)
 	}
 	s, reported := m.snap.states[p.PaneID]
-	indStyle, ic := indicatorStyle[state.Unknown], indicatorGlyph[state.Unknown]
+	ind := indicators[state.Unknown]
 	if reported {
-		indStyle, ic = indicatorStyle[s.Status], indicatorGlyph[s.Status]
+		ind = indicators[s.Status]
 	}
 	if m.done(p.PaneID) {
-		indStyle, ic = stDone, indicatorDoneGlyph
+		ind = indicatorDone
 	}
-	indStyle = indStyle.Bold(bold)
-	titleStyle := lipgloss.NewStyle().Bold(bold)
-	return indStyle.Render(ic) + " " + titleStyle.Render(title)
+	return ind + " " + title
 }
 
 func (m *model) rebuild() {
@@ -800,12 +771,6 @@ func (m *model) rebuild() {
 		order = ranked
 	}
 
-	// activeWindow is the window holding the client's active pane: kido
-	// bolds every row in it so the current window stands out from the rest
-	// of its session, not just the session name. WindowID is unique
-	// server-wide, so comparing it alone (with no session check) is enough.
-	activeWindow := m.snap.activeWindow
-
 	for _, s := range order {
 		name := s.name
 		if name == m.snap.current {
@@ -814,10 +779,9 @@ func (m *model) rebuild() {
 		m.rows = append(m.rows, row{text: name})
 
 		for _, panes := range s.windows {
-			bold := activeWindow != "" && len(panes) > 0 && panes[0].WindowID == activeWindow
 			for i, p := range panes {
 				m.rows = append(m.rows, row{
-					text:   glyph(i, len(panes), bold) + " " + m.paneLabel(p, bold),
+					text:   glyph(i, len(panes)) + " " + m.paneLabel(p),
 					paneID: p.PaneID,
 				})
 			}
