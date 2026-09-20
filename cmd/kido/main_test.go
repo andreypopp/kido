@@ -211,6 +211,46 @@ func TestSetupClaudeModeSwitch(t *testing.T) {
 	}
 }
 
+// TestRunHookEndedPreservesEarlierEnd checks that an Ended effect keeps an
+// existing idle record's Ended time rather than overwriting it with now,
+// since a later event minting Ended for the same turn is a less
+// authoritative observation than the one already recorded.
+func TestRunHookEndedPreservesEarlierEnd(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("KIDO_STATE_DIR", dir)
+	t.Setenv("TMUX_PANE", "%7")
+
+	// No existing record: Ended is stamped to now.
+	before := time.Now().UTC()
+	if err := runHook(strings.NewReader(`{"hook_event_name":"Stop","session_id":"s"}`), false); err != nil {
+		t.Fatalf("runHook: %v", err)
+	}
+	after := time.Now().UTC()
+	states, err := state.Load()
+	if err != nil {
+		t.Fatalf("state.Load: %v", err)
+	}
+	got := states["%7"].Ended
+	if got.Before(before) || got.After(after) {
+		t.Fatalf("Ended = %v, want between %v and %v", got, before, after)
+	}
+	firstEnded := got
+
+	// A second event that also mints Ended for the same session keeps the
+	// earlier, already-recorded Ended rather than overwriting it with now.
+	time.Sleep(2 * time.Millisecond)
+	if err := runHook(strings.NewReader(`{"hook_event_name":"Notification","notification_type":"idle_prompt","session_id":"s"}`), false); err != nil {
+		t.Fatalf("runHook: %v", err)
+	}
+	states, err = state.Load()
+	if err != nil {
+		t.Fatalf("state.Load: %v", err)
+	}
+	if got := states["%7"].Ended; !got.Equal(firstEnded) {
+		t.Errorf("Ended = %v, want preserved %v", got, firstEnded)
+	}
+}
+
 func TestDebugLogPath(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("KIDO_STATE_DIR", dir)

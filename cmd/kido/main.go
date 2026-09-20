@@ -21,27 +21,41 @@ import (
 	"kido/internal/ui"
 )
 
-// hasFlag reports whether args contains name as -name or --name.
-func hasFlag(args []string, name string) bool {
-	for _, a := range args {
-		if a == "-"+name || a == "--"+name {
-			return true
-		}
+// debugFlag parses a command's args for its one boolean --debug flag,
+// erroring on anything else (an unknown flag, a positional argument), the
+// same shape as prompt's flag.NewFlagSet.
+func debugFlag(cmd string, args []string) (bool, error) {
+	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	debug := fs.Bool("debug", false, "")
+	if err := fs.Parse(args); err != nil {
+		return false, err
 	}
-	return false
+	if fs.NArg() > 0 {
+		return false, fmt.Errorf("unknown argument %q", fs.Arg(0))
+	}
+	return *debug, nil
 }
 
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "hook":
-			debug := hasFlag(os.Args[2:], "debug")
+			debug, err := debugFlag("hook", os.Args[2:])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "kido hook:", err)
+				return // never fail the Claude Code hook
+			}
 			if err := runHook(os.Stdin, debug); err != nil {
 				fmt.Fprintln(os.Stderr, "kido hook:", err)
 			}
 			return // never fail the Claude Code hook
 		case "setup-claude":
-			debug := hasFlag(os.Args[2:], "debug")
+			debug, err := debugFlag("setup-claude", os.Args[2:])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "kido setup-claude:", err)
+				os.Exit(1)
+			}
 			if err := setupClaude(debug); err != nil {
 				fmt.Fprintln(os.Stderr, "kido setup-claude:", err)
 				os.Exit(1)
@@ -145,30 +159,11 @@ func writeClaudeSettings(path string, debug bool) (int, error) {
 		target[event] = true
 	}
 
-	// Strip stale kido entries left by a previous run in the other mode,
-	// for events outside the current target set.
+	// One pass over every known event: strip any kido entry (left by a
+	// previous run, in either mode), then append the new one when the
+	// event is in the target set. An event left with nothing is dropped
+	// rather than kept as an empty list.
 	for _, event := range hook.AllEvents() {
-		if target[event] {
-			continue
-		}
-		list, ok := hooks[event].([]any)
-		if !ok {
-			continue
-		}
-		var kept []any
-		for _, entry := range list {
-			if !isKidoHook(entry) {
-				kept = append(kept, entry)
-			}
-		}
-		if len(kept) == 0 {
-			delete(hooks, event)
-		} else {
-			hooks[event] = kept
-		}
-	}
-
-	for _, event := range targetEvents {
 		var kept []any
 		if list, ok := hooks[event].([]any); ok {
 			for _, entry := range list {
@@ -177,11 +172,18 @@ func writeClaudeSettings(path string, debug bool) (int, error) {
 				}
 			}
 		}
-		h := map[string]any{"type": "command", "command": command, "timeout": 5}
-		if event != "SessionEnd" {
-			h["async"] = true // never delay Claude; SessionEnd must finish
+		if target[event] {
+			h := map[string]any{"type": "command", "command": command, "timeout": 5}
+			if event != "SessionEnd" {
+				h["async"] = true // never delay Claude; SessionEnd must finish
+			}
+			kept = append(kept, map[string]any{"hooks": []any{h}})
 		}
-		hooks[event] = append(kept, map[string]any{"hooks": []any{h}})
+		if len(kept) == 0 {
+			delete(hooks, event)
+		} else {
+			hooks[event] = kept
+		}
 	}
 	settings["hooks"] = hooks
 
@@ -285,7 +287,15 @@ func runHook(r io.Reader, debug bool) error {
 		TS:     now,
 	}
 	if e.Ended {
+		// An end time describes when the turn ended, not when kido noticed.
+		// If an earlier event already recorded this session as idle with an
+		// Ended time, it is a more authoritative observation of the same
+		// turn ending than this one; keep it rather than stamping now and
+		// making an old end look freshly done.
 		s.Ended = now
+		if prev, ok, _ := state.Get(in.SessionID); ok && prev.Status == state.Idle && !prev.Ended.IsZero() {
+			s.Ended = prev.Ended
+		}
 	}
 	return state.Record(in.SessionID, s)
 }
@@ -295,11 +305,14 @@ func runHook(r io.Reader, debug bool) error {
 // hook.Apply returned. A failure to log is ignored; it must never break
 // the hook.
 func logHookEvent(raw []byte, in hook.Input, e hook.Effect) {
-	dir := state.Dir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
+	path := filepath.Join(state.Dir(), "debug.log")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if os.IsNotExist(err) {
+		if err = os.MkdirAll(state.Dir(), 0o755); err != nil {
+			return
+		}
+		f, err = os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "debug.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}
@@ -310,25 +323,6 @@ func logHookEvent(raw []byte, in hook.Input, e hook.Effect) {
 		compact.Write(bytes.ReplaceAll(raw, []byte("\n"), []byte(" ")))
 	}
 	line := fmt.Sprintf("%s\t%s\t%s\t%s\n",
-		time.Now().Format(time.RFC3339Nano), os.Getenv("TMUX_PANE"), compact.String(), effectString(in, e))
+		time.Now().Format(time.RFC3339Nano), os.Getenv("TMUX_PANE"), compact.String(), hook.Describe(in.Event, e))
 	f.WriteString(line) //nolint:errcheck // logging must never fail the hook
-}
-
-// effectString renders a hook.Effect the way debug.log records it:
-// "unmapped" for events outside hook's table, else "remove", "ended",
-// "ignore", or "status=<status>".
-func effectString(in hook.Input, e hook.Effect) string {
-	if !hook.Mapped(in.Event) {
-		return "unmapped"
-	}
-	switch {
-	case e.Remove:
-		return "remove"
-	case e.Ended:
-		return "ended"
-	case e.Ignore:
-		return "ignore"
-	default:
-		return "status=" + string(e.Status)
-	}
 }

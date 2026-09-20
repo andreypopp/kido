@@ -24,6 +24,15 @@ const (
 ────────────────────────────────────────
   ⏸ manual mode on · ? for shortcuts · ← for agents
 `
+	// A narrow pane - the sidebar takes 40 columns of the window - wraps
+	// the footer onto a second line, which footerLines allows for.
+	idleWrappedFooterScreen = `
+──────────────────────────────────
+❯
+──────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to
+  cycle) · ← for agents
+`
 	busyScreen = `
 ✳ Ideating… (5s · ↓ 156 tokens)
   ⎿  Tip: Did you know you can drag and drop image files into your terminal?
@@ -74,6 +83,7 @@ func TestAtInputPrompt(t *testing.T) {
 	}{
 		{"idle", idleScreen, true},
 		{"idle with text typed", idleTypingScreen, true},
+		{"idle with a wrapped footer", idleWrappedFooterScreen, true},
 		{"busy", busyScreen, false},
 		{"question dialog", questionScreen, false},
 		{"permission dialog", permissionScreen, false},

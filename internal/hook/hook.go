@@ -132,11 +132,30 @@ func AllEvents() []string {
 	return names
 }
 
-// Mapped reports whether event is in kido's effect table (Events()), as
+// mapped reports whether event is in kido's effect table (Events()), as
 // opposed to one of the other Claude Code events listed by AllEvents().
-func Mapped(event string) bool {
+func mapped(event string) bool {
 	_, ok := events[event]
 	return ok
+}
+
+// Describe renders the effect of a hook event the way debug.log records
+// it: "unmapped" for an event outside kido's table, else "remove",
+// "ended", "ignore", or "status=<status>".
+func Describe(event string, e Effect) string {
+	if !mapped(event) {
+		return "unmapped"
+	}
+	switch {
+	case e.Remove:
+		return "remove"
+	case e.Ended:
+		return "ended"
+	case e.Ignore:
+		return "ignore"
+	default:
+		return "status=" + string(e.Status)
+	}
 }
 
 // Apply returns the effect of a hook payload.

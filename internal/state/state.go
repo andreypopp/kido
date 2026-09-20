@@ -80,6 +80,26 @@ func Load() (map[string]Session, error) {
 	return out, nil
 }
 
+// Get reads the state file for session id, if one exists. It does not
+// filter by pane or process liveness the way Load does: callers that want
+// the raw last-recorded record for a specific session (e.g. to compare
+// against a new observation) use this instead.
+func Get(id string) (Session, bool, error) {
+	b, err := os.ReadFile(filepath.Join(Dir(), id+".json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Session{}, false, nil
+		}
+		return Session{}, false, err
+	}
+	var s Session
+	if err := json.Unmarshal(b, &s); err != nil {
+		return Session{}, false, err
+	}
+	s.ID = id
+	return s, true, nil
+}
+
 // alive reports whether pid exists (a file whose claude died without a
 // SessionEnd hook is stale).
 func alive(pid int) bool {

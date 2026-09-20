@@ -43,25 +43,40 @@ type snapshot struct {
 	probed  time.Time      // when the process table was last read
 	err     error
 
-	// dismissed remembers the waiting panes whose prompt was found gone
-	// from the screen, so the screen is read once per report rather than
-	// on every tick. See screen.go.
-	dismissed map[string]dismissal
+	// probes remembers the last screen read of each waiting pane, so the
+	// screen is read at most once per probeInterval rather than on every
+	// tick. See screen.go.
+	probes map[string]probe
 }
 
-// dismissal is one waiting session whose prompt the user dismissed
-// without Claude Code saying so. The dismissal happened at an unknown
-// time after the hook reported the prompt, so that report time stands
-// in for Stop's Ended: it survives a kido restart, whereas the time kido
-// noticed would make every old dismissal look freshly done.
-type dismissal struct {
-	reported time.Time // the state file's TS this was decided for
+// probe is one read of a waiting session's screen: whether its input box
+// was back, meaning the user dismissed the question or denied the
+// permission without Claude Code saying so. The dismissal happened at an
+// unknown time after the hook reported the prompt, so that report time
+// stands in for Stop's Ended: it survives a kido restart, whereas the
+// time kido noticed would make every old dismissal look freshly done.
+//
+// The verdict is never final: it is recomputed on the next probe, so a
+// dialog that painted late cannot leave a genuinely waiting pane showing
+// idle for good. Because Ended comes from the report time alone, a
+// recomputed verdict is identical to the old one and the snapshot does
+// not churn.
+type probe struct {
+	reported  time.Time // the state file's TS this was decided for
+	read      time.Time // when the screen was last read
+	dismissed bool      // the input box was back
 }
 
 // promptGrace is how long a session must have been waiting before kido
 // reads its screen: the hook fires just before Claude Code paints the
 // dialog, and until it does the screen still shows the input box.
 const promptGrace = 500 * time.Millisecond
+
+// probeInterval is the shortest gap between two reads of the same
+// waiting pane's screen. Every read is a capture-pane down the one
+// control connection, and at a 100ms tick a pane sitting on a real
+// dialog would otherwise mean ten screen dumps a second.
+const probeInterval = time.Second
 
 // sshProbe is the shortest gap between two reads of the process table.
 // Panes running ssh are looked up there, and at a 100ms tick an
@@ -147,45 +162,56 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 		}
 	}
 	s.states, s.err = state.Load()
-	s.dismissed = dismissals(conn, prev.dismissed, s.states)
-	for pane, d := range s.dismissed {
+	s.probes = dismissals(conn, prev.probes, s.states)
+	for pane, p := range s.probes {
+		if !p.dismissed {
+			continue
+		}
 		sess := s.states[pane]
-		sess.Status, sess.Ended = state.Idle, d.reported
+		sess.Status, sess.Ended = state.Idle, p.reported
 		s.states[pane] = sess
 	}
 	return s
 }
 
 // dismissals reads the screen of every session the hooks report as
-// waiting and keeps the ones that are back at their input box: the user
-// dismissed the question or denied the permission, which Claude Code
-// reports through no hook of its own. prev carries the panes already
-// decided, each against the report it was decided for, so a pane costs
-// one capture-pane per report rather than one per tick.
-func dismissals(conn *tmux.Conn, prev map[string]dismissal, states map[string]state.Session) map[string]dismissal {
-	var out map[string]dismissal
-	keep := func(pane string, d dismissal) {
+// waiting and reports, per pane, whether it is back at its input box:
+// the user dismissed the question or denied the permission, which Claude
+// Code reports through no hook of its own. prev carries the last read of
+// each pane; one younger than probeInterval, taken for the same report,
+// is reused, so a pane costs at most one capture-pane a second however
+// often the sidebar ticks. Anything else - a newer report, a stale read,
+// a pane that was not waiting before - is read afresh and the verdict
+// recomputed rather than carried over.
+func dismissals(conn *tmux.Conn, prev map[string]probe, states map[string]state.Session) map[string]probe {
+	var out map[string]probe
+	keep := func(pane string, p probe) {
 		if out == nil {
-			out = map[string]dismissal{}
+			out = map[string]probe{}
 		}
-		out[pane] = d
+		out[pane] = p
 	}
+	now := time.Now()
 	for pane, s := range states {
+		// Waiting only: every other status has a hook behind it and needs
+		// no guessing. It is the dismissal gap documented in the events
+		// table in internal/hook/hook.go that this stands in for, so do
+		// not loosen this to Running.
 		if s.Status != state.Waiting {
 			continue
 		}
-		if d, ok := prev[pane]; ok && d.reported.Equal(s.TS) {
-			keep(pane, d)
+		if p, ok := prev[pane]; ok && p.reported.Equal(s.TS) && now.Sub(p.read) < probeInterval {
+			keep(pane, p)
 			continue
 		}
-		if time.Since(s.TS) < promptGrace {
+		if now.Sub(s.TS) < promptGrace {
 			continue
 		}
+		// A screen kido cannot read leaves the pane waiting, and the
+		// attempt is recorded all the same so a failing capture does not
+		// retry at tick rate.
 		lines, err := capturePane(conn, pane)
-		if err != nil || !atInputPrompt(lines) {
-			continue
-		}
-		keep(pane, dismissal{reported: s.TS})
+		keep(pane, probe{reported: s.TS, read: now, dismissed: err == nil && atInputPrompt(lines)})
 	}
 	return out
 }

@@ -67,14 +67,32 @@ func TestAllEvents(t *testing.T) {
 		if !seen[e] {
 			t.Errorf("Events() event %q missing from AllEvents()", e)
 		}
-		if !Mapped(e) {
-			t.Errorf("Mapped(%q) = false, want true", e)
+		if !mapped(e) {
+			t.Errorf("mapped(%q) = false, want true", e)
 		}
 	}
-	if Mapped("FileChanged") {
-		t.Errorf("Mapped(FileChanged) = true, want false")
+	if mapped("FileChanged") {
+		t.Errorf("mapped(FileChanged) = true, want false")
 	}
-	if Mapped("NoSuchEvent") {
-		t.Errorf("Mapped(NoSuchEvent) = true, want false")
+	if mapped("NoSuchEvent") {
+		t.Errorf("mapped(NoSuchEvent) = true, want false")
+	}
+}
+
+func TestDescribe(t *testing.T) {
+	for _, c := range []struct {
+		event string
+		e     Effect
+		want  string
+	}{
+		{"FileChanged", Effect{}, "unmapped"},
+		{"SessionEnd", Effect{Remove: true}, "remove"},
+		{"Stop", ended, "ended"},
+		{"Notification", ignore, "ignore"},
+		{"Stop", running, "status=running"},
+	} {
+		if got := Describe(c.event, c.e); got != c.want {
+			t.Errorf("Describe(%q, %+v) = %q, want %q", c.event, c.e, got, c.want)
+		}
 	}
 }
