@@ -45,3 +45,36 @@ func TestApply(t *testing.T) {
 		t.Errorf("registered events = %d, want 10", n)
 	}
 }
+
+func TestAllEvents(t *testing.T) {
+	all := AllEvents()
+	if n := len(all); n != 33 {
+		t.Errorf("len(AllEvents()) = %d, want 33", n)
+	}
+	seen := map[string]bool{}
+	prev := ""
+	for _, e := range all {
+		if seen[e] {
+			t.Errorf("duplicate event %q", e)
+		}
+		seen[e] = true
+		if e < prev {
+			t.Errorf("AllEvents() not sorted: %q before %q", prev, e)
+		}
+		prev = e
+	}
+	for _, e := range Events() {
+		if !seen[e] {
+			t.Errorf("Events() event %q missing from AllEvents()", e)
+		}
+		if !Mapped(e) {
+			t.Errorf("Mapped(%q) = false, want true", e)
+		}
+	}
+	if Mapped("FileChanged") {
+		t.Errorf("Mapped(FileChanged) = true, want false")
+	}
+	if Mapped("NoSuchEvent") {
+		t.Errorf("Mapped(NoSuchEvent) = true, want false")
+	}
+}

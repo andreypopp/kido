@@ -86,6 +86,21 @@ State lives in `~/.local/state/kido/`.
 window, pane and layout, resuming Claude Code panes by their exact session
 id. Run it outside tmux after a `tmux kill-server`.
 
+## Debugging
+
+`kido setup-claude --debug` registers `kido hook --debug` for every Claude
+Code hook event (not just the ones kido acts on). Each event then appends
+a line to `kido debug-log`'s path (tab-separated: timestamp, `TMUX_PANE`,
+the raw hook payload, and the effect kido computed, or `unmapped` for
+events outside its table) instead of changing behavior otherwise. Run
+`kido setup-claude` again (without `--debug`) to go back to normal.
+
+```sh
+kido setup-claude --debug
+tail -f "$(kido debug-log)"
+kido setup-claude   # back to normal
+```
+
 ## Tests
 
 `make test` runs `go vet` and the unit tests.

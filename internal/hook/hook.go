@@ -109,6 +109,36 @@ func Events() []string {
 	return names
 }
 
+// allEvents is the full list of Claude Code hook events, per the Claude
+// Code hooks reference. Most are not in the events table above (Apply
+// treats them as unmapped); --debug registers all of them so their raw
+// payloads land in the debug log too.
+var allEvents = []string{
+	"SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "StopFailure",
+	"PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch",
+	"PermissionRequest", "PermissionDenied", "SubagentStart", "SubagentStop",
+	"TaskCreated", "TaskCompleted", "Notification", "MessageDisplay",
+	"FileChanged", "CwdChanged", "ConfigChange", "DirectoryAdded",
+	"WorktreeCreate", "WorktreeRemove", "PreCompact", "PostCompact",
+	"PreModelSwitch", "PostModelSwitch", "Elicitation", "ElicitationResult",
+	"InstructionsLoaded", "TeammateIdle", "Setup", "UserPromptExpansion",
+}
+
+// AllEvents lists every Claude Code hook event, sorted, including ones
+// kido does not otherwise map to an effect.
+func AllEvents() []string {
+	names := append([]string(nil), allEvents...)
+	sort.Strings(names)
+	return names
+}
+
+// Mapped reports whether event is in kido's effect table (Events()), as
+// opposed to one of the other Claude Code events listed by AllEvents().
+func Mapped(event string) bool {
+	_, ok := events[event]
+	return ok
+}
+
 // Apply returns the effect of a hook payload.
 func Apply(in Input) Effect {
 	f, ok := events[in.Event]
