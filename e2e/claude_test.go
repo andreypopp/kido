@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // rowFor returns the sidebar row of the pane whose title contains name.
@@ -90,6 +91,39 @@ func TestClaudeDone(t *testing.T) {
 	h.in("select-pane", "-t", pane)
 	h.waitSession("beta")
 	h.waitGlyph("Away job", "○")
+}
+
+// TestClaudeDismissedPrompt checks the one status kido works out for
+// itself: dismissing a question or denying a permission fires no hook at
+// all, so the waiting glyph would stick until Claude Code's idle_prompt
+// notification a minute later. kido reads the pane instead.
+func TestClaudeDismissedPrompt(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	h.newSession("beta")
+	// The fake starts on a question dialog, matching the hook below.
+	pane := h.claudePane("beta", "✳ Dismissed")
+
+	h.hook("sess-dismiss", pane, "PreToolUse", "tool_name", "AskUserQuestion")
+	h.waitGlyph("Dismissed", "◆")
+
+	// Answering the question puts the input box back while the tool runs,
+	// and no hook says so either: the footer is what keeps the pane from
+	// being read as idle.
+	h.fakeClaude(pane, "busy")
+	time.Sleep(time.Second)
+	if got := h.rowFor("Dismissed"); got != "· ◆ Dismissed" {
+		t.Fatalf("row = %q, want the waiting glyph while work is in flight", got)
+	}
+
+	// Dismissing it leaves the box with nothing running. The client is on
+	// alpha, so the pane is not being looked at: it reads as done.
+	h.fakeClaude(pane, "esc")
+	h.waitGlyph("Dismissed", "✓")
+
+	// A hook still has the last word.
+	h.hook("sess-dismiss", pane, "UserPromptSubmit")
+	h.waitGlyph("Dismissed", "●")
 }
 
 // TestAttentionKeys checks n/N cycling through the sessions that want the

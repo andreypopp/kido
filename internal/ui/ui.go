@@ -42,7 +42,24 @@ type snapshot struct {
 	ssh     map[int]string // pane pid -> ssh destination
 	probed  time.Time      // when the process table was last read
 	err     error
+
+	// dismissed remembers the waiting panes whose prompt was found gone
+	// from the screen, so the screen is read once per report rather than
+	// on every tick. See screen.go.
+	dismissed map[string]dismissal
 }
+
+// dismissal is one waiting session whose prompt the user dismissed
+// without Claude Code saying so.
+type dismissal struct {
+	reported time.Time // the state file's TS this was decided for
+	at       time.Time // when kido noticed; stands in for Stop's Ended
+}
+
+// promptGrace is how long a session must have been waiting before kido
+// reads its screen: the hook fires just before Claude Code paints the
+// dialog, and until it does the screen still shows the input box.
+const promptGrace = 500 * time.Millisecond
 
 // sshProbe is the shortest gap between two reads of the process table.
 // Panes running ssh are looked up there, and at a 100ms tick an
@@ -128,7 +145,47 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 		}
 	}
 	s.states, s.err = state.Load()
+	s.dismissed = dismissals(conn, prev.dismissed, s.states)
+	for pane, d := range s.dismissed {
+		sess := s.states[pane]
+		sess.Status, sess.Ended = state.Idle, d.at
+		s.states[pane] = sess
+	}
 	return s
+}
+
+// dismissals reads the screen of every session the hooks report as
+// waiting and keeps the ones that are back at their input box: the user
+// dismissed the question or denied the permission, which Claude Code
+// reports through no hook of its own. prev carries the panes already
+// decided, each against the report it was decided for, so a pane costs
+// one capture-pane per report rather than one per tick.
+func dismissals(conn *tmux.Conn, prev map[string]dismissal, states map[string]state.Session) map[string]dismissal {
+	var out map[string]dismissal
+	keep := func(pane string, d dismissal) {
+		if out == nil {
+			out = map[string]dismissal{}
+		}
+		out[pane] = d
+	}
+	for pane, s := range states {
+		if s.Status != state.Waiting {
+			continue
+		}
+		if d, ok := prev[pane]; ok && d.reported.Equal(s.TS) {
+			keep(pane, d)
+			continue
+		}
+		if time.Since(s.TS) < promptGrace {
+			continue
+		}
+		lines, err := capturePane(conn, pane)
+		if err != nil || !atInputPrompt(lines) {
+			continue
+		}
+		keep(pane, dismissal{reported: s.TS, at: time.Now()})
+	}
+	return out
 }
 
 // clientState and listPanes ask the control connection, falling back to
@@ -150,6 +207,15 @@ func listPanes(conn *tmux.Conn) ([]tmux.Pane, error) {
 		}
 	}
 	return tmux.ListPanes()
+}
+
+func capturePane(conn *tmux.Conn, pane string) ([]string, error) {
+	if conn != nil {
+		if lines, err := conn.CapturePane(pane); err == nil {
+			return lines, nil
+		}
+	}
+	return tmux.CapturePane(pane)
 }
 
 // tick takes the next snapshot in the background: after the interval, or

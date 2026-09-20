@@ -126,6 +126,12 @@ func newControlClients(before map[string]bool) []string {
 // echoes every line it reads from stdin before going back to waiting, so
 // a test can drive a claudePane with send-keys and read back what arrived
 // (see TestPrompt*).
+//
+// Two of those lines are commands rather than text: they redraw the pane
+// as the real Claude Code draws it, because kido reads a waiting pane's
+// screen to notice a dismissed prompt (internal/ui/screen.go). The fake
+// starts showing a question dialog, "busy" switches to the input box with
+// work still in flight, and "esc" to the input box with nothing running.
 func buildFakeClaude(dir string) (string, error) {
 	src := filepath.Join(dir, "fakeclaude")
 	if err := os.MkdirAll(src, 0o755); err != nil {
@@ -140,10 +146,28 @@ import (
 	"time"
 )
 
+const rule = "────────────────────────────────────────"
+
+// box is Claude Code's input box: two rules around the prompt line, then
+// a footer that offers to interrupt only while something is running.
+func box(footer string) {
+	fmt.Printf("\n%s\n❯ \n%s\n  %s\n", rule, rule, footer)
+}
+
 func main() {
+	// A question dialog: the box is gone, so the pane reads as blocked.
+	fmt.Print("\nDo you prefer tea or coffee?\n\n❯ 1. Tea\n  2. Coffee\n\n" +
+		"Enter to select · Esc to cancel\n")
 	sc := bufio.NewScanner(os.Stdin)
 	for sc.Scan() {
-		fmt.Println("got:", sc.Text())
+		switch sc.Text() {
+		case "busy":
+			box("⏸ manual mode on · esc to interrupt · ← for agents")
+		case "esc":
+			box("⏸ manual mode on · ? for shortcuts · ← for agents")
+		default:
+			fmt.Println("got:", sc.Text())
+		}
 	}
 	time.Sleep(30 * time.Minute)
 }
@@ -812,6 +836,15 @@ func (h *harness) claudePane(session, title string) string {
 	h.waitPaneCommand(id, "claude")
 	h.title(id, title)
 	return id
+}
+
+// fakeClaude sends one of the fake claude's screen commands to pane:
+// "busy" for the input box with work in flight, "esc" for the input box
+// with nothing running (what a dismissed prompt leaves behind).
+func (h *harness) fakeClaude(pane, cmd string) {
+	h.t.Helper()
+	h.in("send-keys", "-t", pane, "-l", cmd)
+	h.in("send-keys", "-t", pane, "Enter")
 }
 
 // title names a pane the way Claude Code does ("✳ <name>"). A shell in the

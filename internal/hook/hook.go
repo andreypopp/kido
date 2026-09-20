@@ -53,6 +53,12 @@ var (
 
 // events maps each registered event to its effect. Some depend on payload
 // fields, so the values are functions.
+//
+// The table is only as good as what Claude Code reports, and it reports
+// nothing when a question is dismissed or a permission denied: a waiting
+// session stays waiting here until the idle_prompt notification a minute
+// later. kido catches that from the pane's screen instead; see
+// internal/ui/screen.go.
 var events = map[string]func(Input) Effect{
 	"SessionStart":     func(Input) Effect { return idle },
 	"SessionEnd":       func(Input) Effect { return Effect{Remove: true} },

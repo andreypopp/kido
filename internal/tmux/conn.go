@@ -141,6 +141,11 @@ func (c *Conn) ListPanes() ([]Pane, error) {
 	return parsePanes(lines), nil
 }
 
+// CapturePane is CapturePane over the connection.
+func (c *Conn) CapturePane(pane string) ([]string, error) {
+	return c.Run("capture-pane -p -t " + quote(pane))
+}
+
 // ClientState is ClientState over the connection.
 func (c *Conn) ClientState(client string) (session string, focused bool, err error) {
 	lines, err := c.Run("list-clients -F " + quote(clientFormat))

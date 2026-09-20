@@ -77,7 +77,10 @@ echo "run the tests" | kido prompt --session
 compaction `◌`, session start and stop `○ idle`. A session stays
 `● running` at turn end while background commands or agents it started
 are still running. A session that finishes while you are elsewhere shows
-`✓ done` until you visit its pane. State lives in `~/.local/state/kido/`.
+`✓ done` until you visit its pane. Dismissing a question or denying a
+permission fires no hook at all, so kido reads the pane instead and returns
+the session to idle as soon as its input box is back with nothing running.
+State lives in `~/.local/state/kido/`.
 
 `kido snapshot` prints a shell script that recreates every session,
 window, pane and layout, resuming Claude Code panes by their exact session

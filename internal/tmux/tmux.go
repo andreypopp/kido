@@ -118,6 +118,17 @@ func ListPanes() ([]Pane, error) {
 	return parsePanes(strings.Split(out, "\n")), nil
 }
 
+// CapturePane returns the visible contents of a pane as plain text, one
+// line per screen row. Wrapped lines are deliberately not joined (-J):
+// what the caller reads is the shape of the last few rows.
+func CapturePane(pane string) ([]string, error) {
+	out, err := run("capture-pane", "-p", "-t", pane)
+	if err != nil {
+		return nil, err
+	}
+	return strings.Split(out, "\n"), nil
+}
+
 // CurrentClient asks tmux which client this process belongs to. Used when
 // kido is started by hand in a pane rather than by the side status line.
 func CurrentClient() string {
