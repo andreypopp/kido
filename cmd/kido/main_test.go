@@ -259,3 +259,90 @@ func TestDebugLogPath(t *testing.T) {
 		t.Errorf("debug-log path = %q, want %q", got, want)
 	}
 }
+
+// TestAgentStatus checks the record `kido agent-status` writes for an
+// agent that is not Claude Code.
+func TestAgentStatus(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("KIDO_STATE_DIR", dir)
+	t.Setenv("TMUX_PANE", "%12")
+
+	if err := agentStatus([]string{"--agent", "pi", "--session", "p1", "--status", "running"}); err != nil {
+		t.Fatalf("agentStatus: %v", err)
+	}
+	s, ok, err := state.Get("p1")
+	if err != nil || !ok {
+		t.Fatalf("state.Get: %v, ok=%v", err, ok)
+	}
+	if s.Agent != state.AgentPi || s.Pane != "%12" || s.Status != state.Running {
+		t.Errorf("record = %+v, want a running pi record for %%12", s)
+	}
+	if s.PID <= 0 {
+		t.Errorf("pid = %d, want the calling agent's pid", s.PID)
+	}
+	if s.TS.IsZero() || !s.Ended.IsZero() {
+		t.Errorf("ts=%v ended=%v, want a timestamp and no end", s.TS, s.Ended)
+	}
+
+	// --title is accepted (and not recorded: the sidebar reads the pane
+	// title), --ended stamps an end.
+	if err := agentStatus([]string{"--agent", "pi", "--session", "p1",
+		"--status", "idle", "--title", "π - kido", "--ended"}); err != nil {
+		t.Fatalf("agentStatus --ended: %v", err)
+	}
+	s, _, err = state.Get("p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Status != state.Idle || s.Ended.IsZero() {
+		t.Fatalf("record = %+v, want idle with an end", s)
+	}
+	firstEnded := s.Ended
+
+	// An end describes when the turn ended, not when kido noticed: a
+	// second report of the same turn keeps the earlier end.
+	time.Sleep(2 * time.Millisecond)
+	if err := agentStatus([]string{"--agent", "pi", "--session", "p1", "--status", "idle", "--ended"}); err != nil {
+		t.Fatalf("agentStatus: %v", err)
+	}
+	if s, _, _ = state.Get("p1"); !s.Ended.Equal(firstEnded) {
+		t.Errorf("ended = %v, want preserved %v", s.Ended, firstEnded)
+	}
+
+	// --remove drops the record, and is idempotent.
+	for range 2 {
+		if err := agentStatus([]string{"--agent", "pi", "--session", "p1", "--remove"}); err != nil {
+			t.Fatalf("agentStatus --remove: %v", err)
+		}
+	}
+	if _, ok, _ := state.Get("p1"); ok {
+		t.Error("record still there after --remove")
+	}
+}
+
+// TestAgentStatusErrors checks the argument shapes that must fail.
+func TestAgentStatusErrors(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("KIDO_STATE_DIR", dir)
+	t.Setenv("TMUX_PANE", "%12")
+
+	for _, c := range []struct {
+		name string
+		args []string
+	}{
+		{"no status", []string{"--agent", "pi", "--session", "p1"}},
+		{"unknown status", []string{"--agent", "pi", "--session", "p1", "--status", "busy"}},
+		{"kido's own status", []string{"--agent", "pi", "--session", "p1", "--status", "unknown"}},
+		{"no agent", []string{"--session", "p1", "--status", "idle"}},
+		{"no session", []string{"--agent", "pi", "--status", "idle"}},
+		{"unknown flag", []string{"--agent", "pi", "--session", "p1", "--status", "idle", "--what"}},
+		{"stray argument", []string{"--agent", "pi", "--session", "p1", "--status", "idle", "x"}},
+	} {
+		if err := agentStatus(c.args); err == nil {
+			t.Errorf("%s: no error", c.name)
+		}
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) > 0 {
+		t.Errorf("failed calls wrote %d files", len(entries))
+	}
+}

@@ -35,6 +35,7 @@ var (
 	tmuxWhy   string // why it is unusable
 	kidoBin   string // freshly built kido
 	claudeBin string // a binary named "claude" that just sleeps
+	nodeBin   string // the same binary named "node", for a pi pane
 )
 
 const (
@@ -68,7 +69,13 @@ func setup(m *testing.M) (int, error) {
 	if out, err := exec.Command("go", "build", "-o", kidoBin, "kido/cmd/kido").CombinedOutput(); err != nil {
 		return 0, fmt.Errorf("go build kido: %v\n%s", err, out)
 	}
-	if claudeBin, err = buildFakeClaude(dir); err != nil {
+	if claudeBin, err = buildFakeAgent(dir, "claude"); err != nil {
+		return 0, err
+	}
+	// pi is a bash shim around node, so tmux reports a pi pane as "node".
+	// A pane running this one is a pi pane to kido only through what pi
+	// reports with `kido agent-status`, which is what the tests drive.
+	if nodeBin, err = buildFakeAgent(dir, "node"); err != nil {
 		return 0, err
 	}
 	tmuxBin, tmuxWhy = findTmux()
@@ -119,7 +126,7 @@ func newControlClients(before map[string]bool) []string {
 	return out
 }
 
-// buildFakeClaude compiles a binary called "claude" that sleeps: tmux
+// buildFakeAgent compiles a binary with the given name that sleeps: tmux
 // reports it as pane_current_command, which is what kido keys off for
 // panes without hook state and for `kido snapshot`. (Copying /bin/sleep
 // does not work on macOS: the copy fails its code signature.) It also
@@ -132,8 +139,8 @@ func newControlClients(before map[string]bool) []string {
 // screen to notice a dismissed prompt (internal/ui/screen.go). The fake
 // starts showing a question dialog, "busy" switches to the input box with
 // work still in flight, and "esc" to the input box with nothing running.
-func buildFakeClaude(dir string) (string, error) {
-	src := filepath.Join(dir, "fakeclaude")
+func buildFakeAgent(dir, name string) (string, error) {
+	src := filepath.Join(dir, "fakeagent-"+name)
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		return "", err
 	}
@@ -177,11 +184,11 @@ func main() {
 	}
 	// Building a named file needs no go.mod: the source imports only the
 	// standard library.
-	out := filepath.Join(dir, "claude")
+	out := filepath.Join(dir, name)
 	cmd := exec.Command("go", "build", "-o", out, "main.go")
 	cmd.Dir = src
 	if b, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("go build fake claude: %v\n%s", err, b)
+		return "", fmt.Errorf("go build fake agent %s: %v\n%s", name, err, b)
 	}
 	return out, nil
 }
@@ -827,6 +834,35 @@ func (h *harness) hook(sessionID, pane, event string, kv ...string) {
 	}
 }
 
+// agentStatus runs `kido agent-status` for pane, the way an agent that is
+// not Claude Code reports itself. extra carries any further flags
+// (--ended, --remove, --title). Like the hook, it records its parent pid,
+// which is this test binary: alive for the whole run.
+func (h *harness) agentStatus(sessionID, pane, agent, status string, extra ...string) {
+	h.t.Helper()
+	args := []string{"agent-status", "--agent", agent, "--session", sessionID}
+	if status != "" {
+		args = append(args, "--status", status)
+	}
+	cmd := exec.Command(kidoBin, append(args, extra...)...)
+	cmd.Env = cleanEnv("TMUX_PANE="+pane, "KIDO_STATE_DIR="+h.stateDir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		h.t.Fatalf("kido agent-status %s: %v\n%s", status, err, out)
+	}
+}
+
+// piPane opens a window in session running the fake agent named "node",
+// which is what tmux reports for a real pi pane, and titles it the way pi
+// titles its pane ("π - <session> - <cwd>"). The pane is nothing to kido
+// until pi reports through agentStatus.
+func (h *harness) piPane(session, title string) string {
+	h.t.Helper()
+	id := h.newWindow(session, "", nodeBin, "--")
+	h.waitPaneCommand(id, "node")
+	h.title(id, title)
+	return id
+}
+
 // claudePane opens a window in session running the fake claude binary and
 // titles it, so the pane looks like a Claude Code pane to kido. The "--"
 // is the ignored argument newWindow insists on.
@@ -847,7 +883,7 @@ func (h *harness) fakeClaude(pane, cmd string) {
 	h.in("send-keys", "-t", pane, "Enter")
 }
 
-// title names a pane the way Claude Code does ("✳ <name>"). A shell in the
+// title names a pane the way an agent does ("✳ <name>", "π - <name>"). A shell in the
 // pane rewrites the title from its prompt, so keep setting it until it
 // sticks.
 func (h *harness) title(pane, title string) {

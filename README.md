@@ -1,13 +1,15 @@
 # kido
 
-A tmux sidebar for Claude Code sessions. It runs inside the side status
+A tmux sidebar for coding agent sessions. It runs inside the side status
 column of [andreypopp/tmux](https://github.com/andreypopp/tmux), a tmux fork
 with `side-status-command`, and lists every session and pane with the live
-status of Claude Code panes.
+status of agent panes. Claude Code and pi are both supported, and look the
+same in the sidebar: a status indicator and the session title, whichever
+agent is running.
 
 ```
 tmux
-┌ ● Tmux config          <- a Claude Code session: ● running, ◆ waiting, ◌ compacting, ✓ done, ○ idle
+┌ ● Tmux config          <- an agent session: ● running, ◆ waiting, ◌ compacting, ✓ done, ○ idle
 └ zsh
 · nvim
 · ssh deploy@build-box      <- panes running ssh show the destination
@@ -42,7 +44,7 @@ Claude Code reports its status.
 | `j` / `k`, `C-j` / `C-k`, `C-n` / `C-p` | move between panes |
 | `gg` / `G` | first / last pane |
 | `n` / `N` | next / previous session that wants you (waiting, or done since you last looked) |
-| `/` | search: type to fuzzy-filter by session name or Claude session title, `Esc` cancels |
+| `/` | search: type to fuzzy-filter by session name or agent session title, `Esc` cancels |
 | `Esc` / `C-c` | clear the filter, or return focus to the pane |
 | `Enter` / click | jump to the pane |
 
@@ -75,14 +77,14 @@ bind-key -n S-Down run-shell "kido switch-window next -client '#{client_name}'"
 ```
 
 `kido prompt [--window]` reads a prompt from stdin and types it into the
-one Claude Code pane in scope, then presses Enter. By default the scope is
+one agent pane in scope, then presses Enter. By default the scope is
 the caller's own tmux window, widening to the whole session when the
-window has no Claude Code pane at all; a window with several is still
+window has no agent pane at all; a window with several is still
 ambiguous and never widens (several in the window means several in the
 session too), so only "not found" widens the search. `--window` pins the
 scope to the caller's window only, never widening to the session. Exit
 codes: `0` sent, `1` no prompt given (empty stdin) or a tmux error, `4` no
-Claude Code pane found in scope, `5` more than one found.
+agent pane found in scope, `5` more than one found.
 
 ```sh
 echo "run the tests" | kido prompt
@@ -91,15 +93,37 @@ echo "run the tests" | kido prompt --window
 
 ## Status
 
-`kido hook` is the Claude Code hook. Prompt submit and tool use show
-`● running`, permission prompts and questions `◆ waiting`, context
-compaction `◌`, session start and stop `○ idle`. A session stays
-`● running` at turn end while background commands or agents it started
-are still running. A session that finishes while you are elsewhere shows
-`✓ done` until you visit its pane. Dismissing a question or denying a
-permission fires no hook at all, so kido reads the pane instead and returns
-the session to idle as soon as its input box is back with nothing running.
-State lives in `~/.local/state/kido/`.
+Agents report what they are doing and the sidebar badges their pane with
+it: work in flight shows `● running`, a permission prompt or a question
+`◆ waiting`, context compaction `◌`, a session that is sitting at its
+prompt `○ idle`. A session stays `● running` at turn end while background
+commands or agents it started are still running, and one that finishes
+while you are elsewhere shows `✓ done` until you visit its pane. The label
+next to the indicator is the pane's own title, as the agent set it. State
+lives in `~/.local/state/kido/`.
+
+Claude Code reports through `kido hook`, registered by `kido setup-claude`.
+Dismissing a question or denying a permission fires no hook at all, so
+there kido reads the pane instead and returns the session to idle as soon
+as its input box is back with nothing running.
+
+pi reports through `kido agent-status`, which any agent that is not Claude
+Code can call from inside its own pane:
+
+```
+kido agent-status --agent NAME --session ID --status running|waiting|compacting|idle [--title TITLE] [--ended] [--remove]
+```
+
+`--ended` marks the end of a turn (that is what `✓ done` tracks) and
+`--remove` drops the session's record when the agent exits. A pi pane is
+recognised even before it reports anything, from the pi in the pane's
+process tree.
+
+`kido setup-pi` installs a status extension for the pi coding agent into
+`~/.pi/agent/extensions/`, which pi discovers on its next start. pi panes
+then show the same indicators and titles as Claude Code panes. When pi
+runs Claude Code inside itself, the sidebar shows pi, not the embedded
+session.
 
 `kido snapshot` prints a shell script that recreates every session,
 window, pane and layout, resuming Claude Code panes by their exact session

@@ -1,5 +1,7 @@
 // Package ui is the Bubble Tea sidebar: sessions and their panes, with
-// Claude Code panes badged by their hook-reported status.
+// agent panes badged by the status the agent reported. Agents are not told
+// apart on screen: a pi pane and a Claude Code pane are both an indicator
+// and a title.
 package ui
 
 import (
@@ -40,6 +42,7 @@ type snapshot struct {
 	panes   []tmux.Pane
 	states  map[string]state.Session
 	ssh     map[int]string // pane pid -> ssh destination
+	pi      map[int]bool   // pane pid -> pi runs in this pane
 	probed  time.Time      // when the process table was last read
 	err     error
 
@@ -78,10 +81,19 @@ const promptGrace = 500 * time.Millisecond
 // dialog would otherwise mean ten screen dumps a second.
 const probeInterval = time.Second
 
-// sshProbe is the shortest gap between two reads of the process table.
-// Panes running ssh are looked up there, and at a 100ms tick an
-// unresolvable one would otherwise mean ten ps calls a second.
-const sshProbe = time.Second
+// procsProbe is the shortest gap between two reads of the process table.
+// Panes running ssh, and panes that might be running pi, are looked up
+// there, and at a 100ms tick an unresolvable one would otherwise mean ten
+// ps calls a second.
+const procsProbe = time.Second
+
+// piCommands are the foreground commands a pi pane can show. pi is a bash
+// shim around node and renames itself in-process, which ps (and so tmux)
+// never sees, so "node" is what a pi pane usually reports; "pi" covers an
+// install that runs under its own name. A pane showing one of these that
+// turns out not to be pi costs one ps call a second, the same price an
+// ssh pane whose destination cannot be resolved has always paid.
+var piCommands = map[string]bool{"node": true, "pi": true}
 
 type row struct {
 	text   string
@@ -102,7 +114,7 @@ type model struct {
 	searching bool   // "/" pressed: typing edits the filter
 	gPend     bool   // a "g" was typed: "gg" goes to the top
 
-	// A Claude session whose turn ended after its pane was last looked at
+	// An agent session whose turn ended after its pane was last looked at
 	// is "done" until the user visits it. seen records the last time each
 	// pane was the active one; started stands in for panes never seen.
 	started time.Time
@@ -128,9 +140,10 @@ func Run(opts Options) error {
 	return err
 }
 
-// take gathers a snapshot. prev is the last one: its ssh map spares the
-// process table, which is only re-read when a pane runs ssh that the map
-// does not cover and the last read is old enough.
+// take gathers a snapshot. prev is the last one: its ssh and pi maps spare
+// the process table, which is only re-read when a pane asks something they
+// do not answer (an unresolved ssh destination, a pane that could be pi)
+// and the last read is old enough.
 func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 	var s snapshot
 	s.current, s.focused = clientState(conn, client)
@@ -146,22 +159,43 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 		return s
 	}
 	s.active = tmux.ActivePane(s.panes, s.current)
-	s.ssh = map[int]string{}
+	s.states, s.err = state.Load()
+	s.ssh, s.pi = map[int]string{}, map[int]bool{}
 	s.probed = prev.probed
-	hosts, read := prev.ssh, false
-	for _, p := range s.panes {
-		if p.CurrentCommand != "ssh" {
-			continue
-		}
-		if _, ok := hosts[p.PanePID]; !ok && !read && time.Since(s.probed) >= sshProbe {
-			hosts, read = procs.SSHHosts(), true
+	// The last sweep's answers stand until a pane asks something they do
+	// not cover, and then only one fresh sweep is made per tick and at most
+	// one per procsProbe: a faster tick must not mean more ps calls.
+	scan, read := procs.Scan{SSH: prev.ssh, Pi: prev.pi}, false
+	sweep := func() {
+		if !read && time.Since(s.probed) >= procsProbe {
+			scan, read = procs.Sweep(), true
 			s.probed = time.Now()
 		}
-		if host, ok := hosts[p.PanePID]; ok {
-			s.ssh[p.PanePID] = host
+	}
+	for _, p := range s.panes {
+		switch {
+		case p.CurrentCommand == "ssh":
+			if _, ok := scan.SSH[p.PanePID]; !ok {
+				sweep()
+			}
+			if host, ok := scan.SSH[p.PanePID]; ok {
+				s.ssh[p.PanePID] = host
+			}
+		case piCommands[p.CurrentCommand]:
+			if _, reported := s.states[p.PaneID]; reported {
+				// The agent already says what this pane is; the process
+				// table is only asked about panes that have said nothing,
+				// so an install the sweep cannot match costs no ps calls.
+				continue
+			}
+			if !scan.Pi[p.PanePID] {
+				sweep()
+			}
+			if scan.Pi[p.PanePID] {
+				s.pi[p.PanePID] = true
+			}
 		}
 	}
-	s.states, s.err = state.Load()
 	s.probes = dismissals(conn, prev.probes, s.states)
 	for pane, p := range s.probes {
 		if !p.dismissed {
@@ -193,6 +227,14 @@ func dismissals(conn *tmux.Conn, prev map[string]probe, states map[string]state.
 	}
 	now := time.Now()
 	for pane, s := range states {
+		// Claude Code only: atInputPrompt reads a Claude Code screen (see
+		// screen.go), and the gap it stands in for is Claude Code's own.
+		// Another agent reports its own transitions, so reading its screen
+		// would be a capture-pane a second spent on a guess that cannot
+		// apply.
+		if s.Agent != state.AgentClaude {
+			continue
+		}
 		// Waiting only: every other status has a hook behind it and needs
 		// no guessing. It is the dismissal gap documented in the events
 		// table in internal/hook/hook.go that this stands in for, so do
@@ -269,7 +311,8 @@ func (m model) tick() tea.Cmd {
 func (a snapshot) same(b snapshot) bool {
 	return a.current == b.current && a.active == b.active && a.focused == b.focused &&
 		a.err == nil && b.err == nil &&
-		slices.Equal(a.panes, b.panes) && maps.Equal(a.states, b.states) && maps.Equal(a.ssh, b.ssh)
+		slices.Equal(a.panes, b.panes) && maps.Equal(a.states, b.states) &&
+		maps.Equal(a.ssh, b.ssh) && maps.Equal(a.pi, b.pi)
 }
 
 func (m model) Init() tea.Cmd { return m.tick() }
@@ -418,7 +461,7 @@ func (m *model) track() {
 	}
 }
 
-// done reports whether pane's Claude session finished a turn since the
+// done reports whether pane's agent session finished a turn since the
 // pane was last looked at.
 func (m *model) done(pane string) bool {
 	s, ok := m.snap.states[pane]
@@ -432,7 +475,7 @@ func (m *model) done(pane string) bool {
 	return s.Ended.After(seen)
 }
 
-// wants reports whether pane's Claude session needs the user: it is
+// wants reports whether pane's agent session needs the user: it is
 // waiting on a prompt, or done and not yet looked at.
 func (m *model) wants(pane string) bool {
 	return m.snap.states[pane].Status == state.Waiting || m.done(pane)
@@ -567,8 +610,8 @@ func glyph(i, n int) string {
 	}
 }
 
-// indicators mark a Claude Code pane by its status; the glyph alone says
-// it is an agent session.
+// indicators mark an agent pane by its status; the glyph alone says it is
+// an agent session, the same for every agent.
 var (
 	indicators = map[state.Status]string{
 		state.Running:    stRunning.Render("●"),
@@ -580,41 +623,57 @@ var (
 	indicatorDone = stDone.Render("✓") // idle since finishing, not yet looked at
 )
 
-// claudeTitle extracts the session name from the pane title Claude Code
-// sets, e.g. "✳ Tmux config" → "Tmux config". Falls back to "-".
-func claudeTitle(title string) string {
-	t := strings.TrimLeftFunc(title, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
+// piPrefix is what pi puts before the title it sets: "π - <session> -
+// <cwd>", or "π - <cwd>" when the session is unnamed. Only the marker is
+// dropped; what the agent chose to name itself is shown whole.
+const piPrefix = "π - "
+
+// agentTitle extracts the session name from the pane title an agent sets,
+// e.g. "✳ Tmux config" → "Tmux config" for Claude Code and "π - kido -
+// internal" → "kido - internal" for pi. Anything else is left as it is.
+// Falls back to "-".
+//
+// pi's marker is a letter as far as unicode is concerned, so it needs its
+// own prefix test; Claude Code's keeps the older rule of trimming leading
+// punctuation and symbols, which is what every Claude Code title kido has
+// ever shown went through.
+func agentTitle(title string) string {
+	t, ok := strings.CutPrefix(title, piPrefix)
+	if !ok {
+		t = strings.TrimLeftFunc(title, func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+		})
+	}
 	if t == "" {
 		return "-"
 	}
 	return t
 }
 
-// claudeTitleOf returns pane p's Claude Code title and true when it is a
-// Claude Code pane (one a hook reported, or one running claude without hook
-// data); otherwise "", false.
-func (m *model) claudeTitleOf(p tmux.Pane) (string, bool) {
-	if !state.IsClaudePane(m.snap.states, p) {
+// agentTitleOf returns pane p's agent title and true when it is an agent
+// pane (one that reported, one running claude, or one running pi without
+// having reported); otherwise "", false.
+func (m *model) agentTitleOf(p tmux.Pane) (string, bool) {
+	if !state.IsAgentPane(m.snap.states, m.snap.pi, p) {
 		return "", false
 	}
-	return claudeTitle(p.Title), true
+	return agentTitle(p.Title), true
 }
 
-// paneLabel is the row text for a pane: its foreground command, or for a
-// Claude Code pane, a status indicator and the session title.
+// paneLabel is the row text for a pane: its foreground command, or for an
+// agent pane, a status indicator and the session title. Which agent it is
+// makes no difference to the row.
 func (m *model) paneLabel(p tmux.Pane) string {
-	title, isClaude := m.claudeTitleOf(p)
-	if !isClaude {
+	title, isAgent := m.agentTitleOf(p)
+	if !isAgent {
 		if host, ok := m.snap.ssh[p.PanePID]; ok {
 			return stProc.Render("ssh ") + host
 		}
 		return stProc.Render(p.CurrentCommand)
 	}
-	s, hooked := m.snap.states[p.PaneID]
+	s, reported := m.snap.states[p.PaneID]
 	ind := indicators[state.Unknown]
-	if hooked {
+	if reported {
 		ind = indicators[s.Status]
 	}
 	if m.done(p.PaneID) {
@@ -666,7 +725,7 @@ func (m *model) rebuild() {
 			owner = append(owner, s)
 			for _, w := range s.windows {
 				for _, p := range w {
-					if title, ok := m.claudeTitleOf(p); ok {
+					if title, ok := m.agentTitleOf(p); ok {
 						texts = append(texts, title)
 						owner = append(owner, s)
 					}

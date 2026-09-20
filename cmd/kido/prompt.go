@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"kido/internal/procs"
 	"kido/internal/state"
 	"kido/internal/tmux"
 )
@@ -22,7 +23,10 @@ import (
 // -window) pins the scope to the caller's window only, never widening.
 // The caller's own pane ($TMUX_PANE) is only ever a candidate when it is
 // itself a Claude Code pane, since candidates are picked by
-// state.IsClaudePane and a plain shell pane never qualifies.
+// state.IsAgentPane and a plain shell pane never qualifies. An agent pane
+// is any pane kido badges in the sidebar, so a pi pane counts too; the
+// messages still speak of claude code, which is what users of this command
+// have always read.
 //
 // Returns the process exit code, printing any error to stderr itself.
 func prompt(args []string, stdin io.Reader) int {
@@ -56,13 +60,14 @@ func prompt(args []string, stdin io.Reader) int {
 	}
 
 	states, _ := state.Load()
-	candidates := claudePanesIn(panes, states, self, false)
+	pi := procs.Sweep().Pi
+	candidates := agentPanesIn(panes, states, pi, self, false)
 	if !window && len(candidates) == 0 {
 		// Widen to the session only when the window has none at all.
 		// Several panes in the window would also be several in the
 		// session, so exit 5 (ambiguous) must not change by widening;
 		// only the not-found case does.
-		candidates = claudePanesIn(panes, states, self, true)
+		candidates = agentPanesIn(panes, states, pi, self, true)
 	}
 
 	switch len(candidates) {
@@ -96,9 +101,9 @@ func parsePromptArgs(args []string) (window bool, err error) {
 	return *windowFlag, nil
 }
 
-// claudePanesIn returns the Claude Code panes (per state.IsClaudePane) in
-// self's session, narrowed to self's window unless wholeSession.
-func claudePanesIn(panes []tmux.Pane, states map[string]state.Session, self tmux.Pane, wholeSession bool) []tmux.Pane {
+// agentPanesIn returns the agent panes (per state.IsAgentPane) in self's
+// session, narrowed to self's window unless wholeSession.
+func agentPanesIn(panes []tmux.Pane, states map[string]state.Session, pi map[int]bool, self tmux.Pane, wholeSession bool) []tmux.Pane {
 	var out []tmux.Pane
 	for _, p := range panes {
 		if p.SessionName != self.SessionName {
@@ -107,7 +112,7 @@ func claudePanesIn(panes []tmux.Pane, states map[string]state.Session, self tmux
 		if !wholeSession && p.WindowIndex != self.WindowIndex {
 			continue
 		}
-		if state.IsClaudePane(states, p) {
+		if state.IsAgentPane(states, pi, p) {
 			out = append(out, p)
 		}
 	}

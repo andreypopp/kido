@@ -1,6 +1,6 @@
 // Command kido renders a tmux sidebar listing sessions and panes, with
-// Claude Code sessions badged by activity status. It runs inside the side
-// status line of the andreypopp/tmux fork (side-status-command).
+// agent sessions badged by activity status. It runs inside the side status
+// line of the andreypopp/tmux fork (side-status-command).
 package main
 
 import (
@@ -50,6 +50,16 @@ func main() {
 				fmt.Fprintln(os.Stderr, "kido hook:", err)
 			}
 			return // never fail the Claude Code hook
+		case "setup-pi":
+			if len(os.Args) > 2 {
+				fmt.Fprintln(os.Stderr, "usage: kido setup-pi")
+				os.Exit(1)
+			}
+			if err := setupPi(); err != nil {
+				fmt.Fprintln(os.Stderr, "kido setup-pi:", err)
+				os.Exit(1)
+			}
+			return
 		case "setup-claude":
 			debug, err := debugFlag("setup-claude", os.Args[2:])
 			if err != nil {
@@ -58,6 +68,12 @@ func main() {
 			}
 			if err := setupClaude(debug); err != nil {
 				fmt.Fprintln(os.Stderr, "kido setup-claude:", err)
+				os.Exit(1)
+			}
+			return
+		case "agent-status":
+			if err := agentStatus(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "kido agent-status:", err)
 				os.Exit(1)
 			}
 			return
@@ -311,23 +327,83 @@ func runHook(r io.Reader, debug bool) error {
 	}
 	now := time.Now().UTC()
 	s := state.Session{
+		Agent:  state.AgentClaude,
 		Pane:   os.Getenv("TMUX_PANE"),
 		PID:    procs.HookParent(), // the claude process, past the sh -c wrapper
 		Status: e.Status,
 		TS:     now,
 	}
 	if e.Ended {
-		// An end time describes when the turn ended, not when kido noticed.
-		// If an earlier event already recorded this session as idle with an
-		// Ended time, it is a more authoritative observation of the same
-		// turn ending than this one; keep it rather than stamping now and
-		// making an old end look freshly done.
-		s.Ended = now
-		if prev, ok, _ := state.Get(in.SessionID); ok && prev.Status == state.Idle && !prev.Ended.IsZero() {
-			s.Ended = prev.Ended
-		}
+		s.Ended = endedAt(in.SessionID, now)
 	}
 	return state.Record(in.SessionID, s)
+}
+
+// endedAt is the time to record as the end of session id's turn, now being
+// when kido noticed it. An end time describes when the turn ended, not when
+// kido noticed. If an earlier report already recorded this session as idle
+// with an Ended time, it is a more authoritative observation of the same
+// turn ending than this one; keep it rather than stamping now and making an
+// old end look freshly done.
+func endedAt(id string, now time.Time) time.Time {
+	if prev, ok, _ := state.Get(id); ok && prev.Status == state.Idle && !prev.Ended.IsZero() {
+		return prev.Ended
+	}
+	return now
+}
+
+// agentStatusUsage is what `kido agent-status` accepts.
+const agentStatusUsage = "usage: kido agent-status --agent NAME --session ID " +
+	"--status running|waiting|compacting|idle [--title TITLE] [--ended] [--remove]"
+
+// agentStatus implements `kido agent-status`, how an agent that is not
+// Claude Code reports itself to the sidebar: the same record `kido hook`
+// writes for Claude Code, from plain arguments rather than a hook payload.
+// It is meant to be run from inside the agent's own pane, whose id it takes
+// from $TMUX_PANE, and it records the calling agent's pid so the record
+// goes stale when the agent dies.
+//
+// --status is the agent's new status; --ended says a turn just finished
+// (meaningful with idle: it is what makes the sidebar show the pane as done
+// until the user visits it); --remove deletes the record, for shutdown.
+// --title is accepted and not recorded: the sidebar takes a pane's label
+// from the pane title the agent sets, never from here.
+func agentStatus(args []string) error {
+	fs := flag.NewFlagSet("agent-status", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	agent := fs.String("agent", "", "name of the reporting agent, e.g. pi")
+	session := fs.String("session", "", "the agent's session id; one state file per session")
+	status := fs.String("status", "", "running|waiting|compacting|idle")
+	fs.String("title", "", "ignored; the sidebar reads the pane title")
+	ended := fs.Bool("ended", false, "a turn just finished")
+	remove := fs.Bool("remove", false, "delete the session's record")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("%w\n%s", err, agentStatusUsage)
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unknown argument %q\n%s", fs.Arg(0), agentStatusUsage)
+	}
+	if *agent == "" || *session == "" {
+		return fmt.Errorf("--agent and --session are required\n%s", agentStatusUsage)
+	}
+	if *remove {
+		return state.Remove(*session)
+	}
+	if !state.Valid(state.Status(*status)) {
+		return fmt.Errorf("unknown status %q\n%s", *status, agentStatusUsage)
+	}
+	now := time.Now().UTC()
+	s := state.Session{
+		Agent:  *agent,
+		Pane:   os.Getenv("TMUX_PANE"),
+		PID:    procs.HookParent(), // the agent process, past any sh -c wrapper
+		Status: state.Status(*status),
+		TS:     now,
+	}
+	if *ended {
+		s.Ended = endedAt(*session, now)
+	}
+	return state.Record(*session, s)
 }
 
 // logHookEvent appends one line to <state.Dir()>/debug.log: a timestamp,
