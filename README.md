@@ -149,7 +149,9 @@ kido agent-status --agent pi --session "$id" --status idle \
 ```
 
 `kido setup-pi` installs a status extension for the pi coding agent into
-`~/.pi/agent/extensions/`, which pi discovers on its next start. pi panes
+`~/.pi/agent/extensions/`, which pi discovers on its next start. It leaves
+a symlink there alone, so you can point that name at a checkout and edit
+the extension in place. pi panes
 then show the same indicators and titles as Claude Code panes. When pi
 runs Claude Code inside itself, the sidebar shows pi, not the embedded
 session.

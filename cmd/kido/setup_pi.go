@@ -22,6 +22,17 @@ func setupPi() error {
 		return err
 	}
 	path := filepath.Join(dir, pi.ExtensionName)
+	// Writing follows a symlink, so a link pointing at a checkout would
+	// have this overwrite the source it was linked to. Leave it alone:
+	// whoever linked it wants their own copy to be the live one.
+	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s is a symlink to %s, leaving it alone\n", path, target)
+		return nil
+	}
 	if old, err := os.ReadFile(path); err == nil {
 		if err := os.WriteFile(path+".bak", old, 0o644); err != nil {
 			return err
