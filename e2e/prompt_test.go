@@ -122,3 +122,82 @@ func TestPromptNone(t *testing.T) {
 	h.waitMain("claude code not found")
 	h.waitMain("rc=4")
 }
+
+// TestPromptFallbackFlagWindowOne checks that --fallback-to-session sends to
+// the window's own Claude Code pane, and never widens to the session, when
+// the window already has exactly one: a second Claude Code pane sits in
+// another window of the same session, so a naive "always search the
+// session" implementation would see two candidates and exit 5 here.
+func TestPromptFallbackFlagWindowOne(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	inWindow := h.claudePaneHere("alpha:", "✳ Claude")
+	h.claudePane("alpha", "✳ Other") // another window, same session
+
+	h.runPrompt("hello there", "--fallback-to-session")
+	h.waitMain("rc=0")
+	h.waitPaneText(inWindow, "got: hello there")
+}
+
+// TestPromptFallbackFlagWindowSeveral checks that several Claude Code
+// panes in the window is still exit 5 with --fallback-to-session: the
+// window is not empty, so the search is never widened to the session.
+func TestPromptFallbackFlagWindowSeveral(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	h.claudePaneHere("alpha:", "✳ One")
+	h.claudePaneHere("alpha:", "✳ Two")
+
+	h.runPrompt("hi", "--fallback-to-session")
+	h.waitMain("multiple claude code found")
+	h.waitMain("rc=5")
+}
+
+// TestPromptFallbackFlagSessionOne checks that --fallback-to-session
+// widens to the session when the window has no Claude Code pane at all,
+// finding the one in another window.
+func TestPromptFallbackFlagSessionOne(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	pane := h.claudePane("alpha", "✳ Claude") // a new window, not the shell's own
+
+	h.runPrompt("session scope", "--fallback-to-session")
+	h.waitMain("rc=0")
+	h.waitPaneText(pane, "got: session scope")
+}
+
+// TestPromptFallbackFlagSessionSeveral checks that, with the window empty,
+// several Claude Code panes elsewhere in the session is exit 5.
+func TestPromptFallbackFlagSessionSeveral(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	h.claudePane("alpha", "✳ One")
+	h.claudePane("alpha", "✳ Two")
+
+	h.runPrompt("hi", "--fallback-to-session")
+	h.waitMain("multiple claude code found")
+	h.waitMain("rc=5")
+}
+
+// TestPromptFallbackFlagNone checks that no Claude Code pane anywhere,
+// window or session, is exit code 4 with --fallback-to-session too.
+func TestPromptFallbackFlagNone(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+
+	h.runPrompt("hi", "--fallback-to-session")
+	h.waitMain("claude code not found")
+	h.waitMain("rc=4")
+}
+
+// TestPromptFlagsMutuallyExclusive checks that --session and
+// --fallback-to-session together are rejected up front, before kido ever
+// talks to tmux.
+func TestPromptFlagsMutuallyExclusive(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+
+	h.runPrompt("hi", "--session", "--fallback-to-session")
+	h.waitMain("mutually exclusive")
+	h.waitMain("rc=1")
+}
