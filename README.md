@@ -59,23 +59,19 @@ bind-key -n S-Up   run-shell "kido switch-session prev -client '#{client_name}'"
 bind-key -n S-Down run-shell "kido switch-session next -client '#{client_name}'"
 ```
 
-`kido prompt [--session | --fallback-to-session]` reads a prompt from
-stdin and types it into the one Claude Code pane in scope, then presses
-Enter. By default the scope is the caller's own tmux window; `--session`
-widens it to the whole session. `--fallback-to-session` keeps the window
-as the primary scope but falls back to the session when the window has no
-Claude Code pane at all; a window with several is still ambiguous and
-never widens (several in the window means several in the session too), so
-only "not found" widens the search. `--session` and
-`--fallback-to-session` are mutually exclusive. Exit codes: `0` sent, `1`
-no prompt given (empty stdin), a tmux error, or `--session` combined with
-`--fallback-to-session`; `4` no Claude Code pane found in scope, `5` more
-than one found.
+`kido prompt [--window]` reads a prompt from stdin and types it into the
+one Claude Code pane in scope, then presses Enter. By default the scope is
+the caller's own tmux window, widening to the whole session when the
+window has no Claude Code pane at all; a window with several is still
+ambiguous and never widens (several in the window means several in the
+session too), so only "not found" widens the search. `--window` pins the
+scope to the caller's window only, never widening to the session. Exit
+codes: `0` sent, `1` no prompt given (empty stdin) or a tmux error, `4` no
+Claude Code pane found in scope, `5` more than one found.
 
 ```sh
 echo "run the tests" | kido prompt
-echo "run the tests" | kido prompt --session
-echo "run the tests" | kido prompt --fallback-to-session
+echo "run the tests" | kido prompt --window
 ```
 
 ## Status

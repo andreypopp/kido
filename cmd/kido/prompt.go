@@ -11,25 +11,22 @@ import (
 	"kido/internal/tmux"
 )
 
-// prompt implements `kido prompt [--session] [--fallback-to-session]`: it
-// reads a prompt from stdin (the whole input, with one trailing newline
-// stripped) and sends it to the one Claude Code pane in scope, the way
+// prompt implements `kido prompt [--window]`: it reads a prompt from
+// stdin (the whole input, with one trailing newline stripped) and sends
+// it to the one Claude Code pane in scope, the way
 // ~/.config/ink/plugged/cctools/bin/ccsend does: send-keys -l the text,
 // then Enter a moment later.
 //
-// Scope is the caller's window by default, or its session with --session
-// (also accepted as -session, since flag handles both spellings the same
-// way). --fallback-to-session (also -fallback-to-session) keeps the
-// default window scope, but widens to the session when the window has no
-// Claude Code pane at all; it is mutually exclusive with --session, which
-// already means "search the session". The caller's own pane ($TMUX_PANE)
-// is only ever a candidate when it is itself a Claude Code pane, since
-// candidates are picked by state.IsClaudePane and a plain shell pane never
-// qualifies.
+// With no flag, the scope is the caller's window, widening to the whole
+// session when the window has no Claude Code pane at all. --window (also
+// -window) pins the scope to the caller's window only, never widening.
+// The caller's own pane ($TMUX_PANE) is only ever a candidate when it is
+// itself a Claude Code pane, since candidates are picked by
+// state.IsClaudePane and a plain shell pane never qualifies.
 //
 // Returns the process exit code, printing any error to stderr itself.
 func prompt(args []string, stdin io.Reader) int {
-	session, fallback, err := parsePromptArgs(args)
+	window, err := parsePromptArgs(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "kido prompt:", err)
 		return 1
@@ -59,8 +56,8 @@ func prompt(args []string, stdin io.Reader) int {
 	}
 
 	states, _ := state.Load()
-	candidates := claudePanesIn(panes, states, self, session)
-	if fallback && len(candidates) == 0 {
+	candidates := claudePanesIn(panes, states, self, false)
+	if !window && len(candidates) == 0 {
 		// Widen to the session only when the window has none at all.
 		// Several panes in the window would also be several in the
 		// session, so exit 5 (ambiguous) must not change by widening;
@@ -84,25 +81,19 @@ func prompt(args []string, stdin io.Reader) int {
 	}
 }
 
-// parsePromptArgs parses prompt's flags: --session/-session and
-// --fallback-to-session/-fallback-to-session, rejecting the two together
-// and any stray positional argument.
-func parsePromptArgs(args []string) (session, fallback bool, err error) {
+// parsePromptArgs parses prompt's flags: --window/-window, rejecting any
+// stray positional argument.
+func parsePromptArgs(args []string) (window bool, err error) {
 	fs := flag.NewFlagSet("prompt", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	sessionFlag := fs.Bool("session", false, "search the caller's session instead of its window")
-	fallbackFlag := fs.Bool("fallback-to-session", false,
-		"search the caller's session, but only when its window has no Claude Code pane")
+	windowFlag := fs.Bool("window", false, "search only the caller's window, never widening to the session")
 	if err := fs.Parse(args); err != nil {
-		return false, false, err
+		return false, err
 	}
 	if fs.NArg() > 0 {
-		return false, false, fmt.Errorf("unknown argument %q", fs.Arg(0))
+		return false, fmt.Errorf("unknown argument %q", fs.Arg(0))
 	}
-	if *sessionFlag && *fallbackFlag {
-		return false, false, fmt.Errorf("--session and --fallback-to-session are mutually exclusive")
-	}
-	return *sessionFlag, *fallbackFlag, nil
+	return *windowFlag, nil
 }
 
 // claudePanesIn returns the Claude Code panes (per state.IsClaudePane) in

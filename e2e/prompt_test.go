@@ -71,50 +71,65 @@ func (h *harness) waitPaneText(id, sub string) {
 		func() string { return fmt.Sprintf("pane %s shows %q (is %q)", id, sub, h.paneText(id)) })
 }
 
-// TestPromptWindow checks the default scope: a Claude Code pane split
-// into the caller's own window is found, gets the prompt, and kido prompt
-// exits 0.
-func TestPromptWindow(t *testing.T) {
+// TestPromptDefaultWindowOne checks the default scope: a Claude Code pane
+// split into the caller's own window is found and sent to, without the
+// session being searched at all — a second Claude Code pane sits in
+// another window of the same session, so a naive "always search the
+// session" implementation would see two candidates and exit 5 here.
+func TestPromptDefaultWindowOne(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	pane := h.claudePaneHere("alpha:", "✳ Claude")
+	inWindow := h.claudePaneHere("alpha:", "✳ Claude")
+	h.claudePane("alpha", "✳ Other") // another window, same session
 
 	h.runPrompt("hello there")
 	h.waitMain("rc=0")
-	h.waitPaneText(pane, "got: hello there")
+	h.waitPaneText(inWindow, "got: hello there")
 }
 
-// TestPromptSession checks --session: a Claude Code pane in another
-// window of the same session is invisible to the default (window) scope
-// but found with --session.
-func TestPromptSession(t *testing.T) {
+// TestPromptDefaultWindowSeveral checks that several Claude Code panes in
+// the window is exit 5 with no widening to the session (the window is not
+// empty, so the search never widens).
+func TestPromptDefaultWindowSeveral(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	h.claudePaneHere("alpha:", "✳ One")
+	h.claudePaneHere("alpha:", "✳ Two")
+
+	h.runPrompt("hi")
+	h.waitMain("multiple claude code found")
+	h.waitMain("rc=5")
+}
+
+// TestPromptDefaultSessionOne checks that the default scope widens to the
+// session when the window has no Claude Code pane at all, finding the one
+// in another window.
+func TestPromptDefaultSessionOne(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	pane := h.claudePane("alpha", "✳ Claude") // a new window, not the shell's own
 
-	h.runPrompt("window scope")
-	h.waitMain("rc=4") // claude code not found: wrong window, no --session
-
-	h.runPrompt("session scope", "--session")
+	h.runPrompt("session scope")
 	h.waitMain("rc=0")
 	h.waitPaneText(pane, "got: session scope")
 }
 
-// TestPromptMultipleInSession checks that two Claude Code panes in scope
-// is an error (ambiguous), exit code 5.
-func TestPromptMultipleInSession(t *testing.T) {
+// TestPromptDefaultSessionSeveral checks that, with the window empty,
+// several Claude Code panes elsewhere in the session is exit 5.
+func TestPromptDefaultSessionSeveral(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	h.claudePane("alpha", "✳ One")
 	h.claudePane("alpha", "✳ Two")
 
-	h.runPrompt("hi", "--session")
+	h.runPrompt("hi")
 	h.waitMain("multiple claude code found")
 	h.waitMain("rc=5")
 }
 
-// TestPromptNone checks that no Claude Code pane anywhere is exit code 4.
-func TestPromptNone(t *testing.T) {
+// TestPromptDefaultNone checks that no Claude Code pane anywhere, window
+// or session, is exit code 4.
+func TestPromptDefaultNone(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
@@ -123,81 +138,27 @@ func TestPromptNone(t *testing.T) {
 	h.waitMain("rc=4")
 }
 
-// TestPromptFallbackFlagWindowOne checks that --fallback-to-session sends to
-// the window's own Claude Code pane, and never widens to the session, when
-// the window already has exactly one: a second Claude Code pane sits in
-// another window of the same session, so a naive "always search the
-// session" implementation would see two candidates and exit 5 here.
-func TestPromptFallbackFlagWindowOne(t *testing.T) {
+// TestPromptWindowFlagNoneElsewhereInSession checks that --window never
+// widens to the session: with none in the window but one elsewhere in the
+// session, it still exits 4.
+func TestPromptWindowFlagNoneElsewhereInSession(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	inWindow := h.claudePaneHere("alpha:", "✳ Claude")
-	h.claudePane("alpha", "✳ Other") // another window, same session
+	h.claudePane("alpha", "✳ Claude") // a new window, not the shell's own
 
-	h.runPrompt("hello there", "--fallback-to-session")
-	h.waitMain("rc=0")
-	h.waitPaneText(inWindow, "got: hello there")
-}
-
-// TestPromptFallbackFlagWindowSeveral checks that several Claude Code
-// panes in the window is still exit 5 with --fallback-to-session: the
-// window is not empty, so the search is never widened to the session.
-func TestPromptFallbackFlagWindowSeveral(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-	h.claudePaneHere("alpha:", "✳ One")
-	h.claudePaneHere("alpha:", "✳ Two")
-
-	h.runPrompt("hi", "--fallback-to-session")
-	h.waitMain("multiple claude code found")
-	h.waitMain("rc=5")
-}
-
-// TestPromptFallbackFlagSessionOne checks that --fallback-to-session
-// widens to the session when the window has no Claude Code pane at all,
-// finding the one in another window.
-func TestPromptFallbackFlagSessionOne(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-	pane := h.claudePane("alpha", "✳ Claude") // a new window, not the shell's own
-
-	h.runPrompt("session scope", "--fallback-to-session")
-	h.waitMain("rc=0")
-	h.waitPaneText(pane, "got: session scope")
-}
-
-// TestPromptFallbackFlagSessionSeveral checks that, with the window empty,
-// several Claude Code panes elsewhere in the session is exit 5.
-func TestPromptFallbackFlagSessionSeveral(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-	h.claudePane("alpha", "✳ One")
-	h.claudePane("alpha", "✳ Two")
-
-	h.runPrompt("hi", "--fallback-to-session")
-	h.waitMain("multiple claude code found")
-	h.waitMain("rc=5")
-}
-
-// TestPromptFallbackFlagNone checks that no Claude Code pane anywhere,
-// window or session, is exit code 4 with --fallback-to-session too.
-func TestPromptFallbackFlagNone(t *testing.T) {
-	t.Parallel()
-	h := start(t, "alpha")
-
-	h.runPrompt("hi", "--fallback-to-session")
+	h.runPrompt("hi", "--window")
 	h.waitMain("claude code not found")
 	h.waitMain("rc=4")
 }
 
-// TestPromptFlagsMutuallyExclusive checks that --session and
-// --fallback-to-session together are rejected up front, before kido ever
-// talks to tmux.
-func TestPromptFlagsMutuallyExclusive(t *testing.T) {
+// TestPromptWindowFlagOne checks that --window sends to the window's own
+// Claude Code pane.
+func TestPromptWindowFlagOne(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
+	pane := h.claudePaneHere("alpha:", "✳ Claude")
 
-	h.runPrompt("hi", "--session", "--fallback-to-session")
-	h.waitMain("mutually exclusive")
-	h.waitMain("rc=1")
+	h.runPrompt("hello there", "--window")
+	h.waitMain("rc=0")
+	h.waitPaneText(pane, "got: hello there")
 }

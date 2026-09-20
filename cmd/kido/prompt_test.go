@@ -1,8 +1,6 @@
 package main
 
 import (
-	"io"
-	"os"
 	"strings"
 	"testing"
 )
@@ -25,55 +23,24 @@ func TestPromptUnknownArg(t *testing.T) {
 	}
 }
 
-// TestPromptFlagParsing checks parsePromptArgs directly for --session,
-// --fallback-to-session (both spellings), and the default (neither set).
+// TestPromptFlagParsing checks parsePromptArgs directly for --window
+// (both spellings) and the default (unset).
 func TestPromptFlagParsing(t *testing.T) {
 	cases := []struct {
-		args         []string
-		session, fbk bool
+		args   []string
+		window bool
 	}{
-		{nil, false, false},
-		{[]string{"--session"}, true, false},
-		{[]string{"-session"}, true, false},
-		{[]string{"--fallback-to-session"}, false, true},
-		{[]string{"-fallback-to-session"}, false, true},
+		{nil, false},
+		{[]string{"--window"}, true},
+		{[]string{"-window"}, true},
 	}
 	for _, c := range cases {
-		session, fbk, err := parsePromptArgs(c.args)
+		window, err := parsePromptArgs(c.args)
 		if err != nil {
 			t.Fatalf("parsePromptArgs(%v): %v", c.args, err)
 		}
-		if session != c.session || fbk != c.fbk {
-			t.Errorf("parsePromptArgs(%v) = (%v, %v), want (%v, %v)",
-				c.args, session, fbk, c.session, c.fbk)
+		if window != c.window {
+			t.Errorf("parsePromptArgs(%v) = %v, want %v", c.args, window, c.window)
 		}
-	}
-}
-
-// TestPromptFlagsMutuallyExclusive checks that --session and
-// --fallback-to-session together are rejected, both via parsePromptArgs
-// directly and via prompt's exit code and message.
-func TestPromptFlagsMutuallyExclusive(t *testing.T) {
-	args := []string{"--session", "--fallback-to-session"}
-	if _, _, err := parsePromptArgs(args); err == nil {
-		t.Fatalf("parsePromptArgs(%v): want error, got nil", args)
-	}
-
-	old := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stderr = w
-	code := prompt(args, strings.NewReader("hi"))
-	w.Close()
-	os.Stderr = old
-	out, _ := io.ReadAll(r)
-
-	if code != 1 {
-		t.Errorf("code = %d, want 1", code)
-	}
-	if want := "--session and --fallback-to-session are mutually exclusive"; !strings.Contains(string(out), want) {
-		t.Errorf("stderr = %q, want it to contain %q", out, want)
 	}
 }
