@@ -366,15 +366,17 @@ const agentStatusUsage = "usage: kido agent-status --agent NAME --session ID " +
 // --status is the agent's new status; --ended says a turn just finished
 // (meaningful with idle: it is what makes the sidebar show the pane as done
 // until the user visits it); --remove deletes the record, for shutdown.
-// --title is accepted and not recorded: the sidebar takes a pane's label
-// from the pane title the agent sets, never from here.
+// --title is the session's name, shown as the pane's label in place of the
+// pane title kido would otherwise strip a marker off (see internal/ui);
+// when omitted, the previously recorded title (if any) is kept rather than
+// blanked, since an extension's coalescing may not re-send it every time.
 func agentStatus(args []string) error {
 	fs := flag.NewFlagSet("agent-status", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	agent := fs.String("agent", "", "name of the reporting agent, e.g. pi")
 	session := fs.String("session", "", "the agent's session id; one state file per session")
 	status := fs.String("status", "", "running|waiting|compacting|idle")
-	fs.String("title", "", "ignored; the sidebar reads the pane title")
+	title := fs.String("title", "", "the session's name, shown as the pane's label")
 	ended := fs.Bool("ended", false, "a turn just finished")
 	remove := fs.Bool("remove", false, "delete the session's record")
 	if err := fs.Parse(args); err != nil {
@@ -399,6 +401,12 @@ func agentStatus(args []string) error {
 		PID:    procs.HookParent(), // the agent process, past any sh -c wrapper
 		Status: state.Status(*status),
 		TS:     now,
+		Title:  *title,
+	}
+	if s.Title == "" {
+		if prev, ok, _ := state.Get(*session); ok {
+			s.Title = prev.Title
+		}
 	}
 	if *ended {
 		s.Ended = endedAt(*session, now)

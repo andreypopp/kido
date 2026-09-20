@@ -159,7 +159,7 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 		return s
 	}
 	s.active = tmux.ActivePane(s.panes, s.current)
-	s.states, s.err = state.Load()
+	s.states, s.err = state.LoadAndSweep()
 	s.ssh, s.pi = map[int]string{}, map[int]bool{}
 	s.probed = prev.probed
 	// The last sweep's answers stand until a pane asks something they do
@@ -672,9 +672,21 @@ func agentTitle(title string) string {
 // agentTitleOf returns pane p's agent title and true when it is an agent
 // pane (one that reported, one running claude, or one running pi without
 // having reported); otherwise "", false.
+//
+// A recorded Title (from kido agent-status --title) wins over the pane
+// title: it is the exact name the agent reported, not something kido must
+// guess at by stripping a marker off whatever the agent painted in the
+// terminal title, and splitting on a fixed marker cannot be fooled by a
+// session name that happens to contain one. Claude Code never records a
+// Title, so its rows keep going through agentTitle(p.Title) unchanged. An
+// agent that reports no title (or hasn't reported at all yet) falls back
+// to the pane title the same way.
 func (m *model) agentTitleOf(p tmux.Pane) (string, bool) {
 	if !state.IsAgentPane(m.snap.states, m.snap.pi, p) {
 		return "", false
+	}
+	if s, ok := m.snap.states[p.PaneID]; ok && s.Title != "" {
+		return s.Title, true
 	}
 	return agentTitle(p.Title), true
 }

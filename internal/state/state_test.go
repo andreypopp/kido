@@ -3,6 +3,7 @@ package state
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -96,6 +97,60 @@ func TestIsAgentPane(t *testing.T) {
 		if got := IsAgentPane(states, c.pi, c.pane); got != c.want {
 			t.Errorf("%s: IsAgentPane = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// deadPID starts and waits for a trivial child process, returning its pid:
+// guaranteed to belong to no process by the time the caller uses it.
+func deadPID(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command("true")
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	return cmd.Process.Pid
+}
+
+// TestLoadAndSweepDeletesDeadRecords checks the three cases the state
+// directory can hold: a live session's file survives, a dead one's file is
+// both skipped and removed from disk, and a malformed file is skipped
+// without stopping the sweep over the rest of the directory.
+func TestLoadAndSweepDeletesDeadRecords(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("KIDO_STATE_DIR", dir)
+
+	write(t, "live", Session{Pane: "%1", Status: Idle, TS: time.Now().UTC()}) // write sets PID = os.Getpid()
+
+	dead := deadPID(t)
+	b, err := json.Marshal(Session{Pane: "%2", PID: dead, Status: Idle, TS: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadPath := filepath.Join(dir, "dead.json")
+	if err := os.WriteFile(deadPath, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	malformedPath := filepath.Join(dir, "malformed.json")
+	if err := os.WriteFile(malformedPath, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	states, err := LoadAndSweep()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := states["%1"]; !ok {
+		t.Errorf("live record missing from LoadAndSweep's result: %+v", states)
+	}
+	if _, ok := states["%2"]; ok {
+		t.Errorf("dead record should not be returned: %+v", states)
+	}
+	if _, err := os.Stat(deadPath); !os.IsNotExist(err) {
+		t.Errorf("dead.json should have been deleted, stat err = %v", err)
+	}
+	if _, err := os.Stat(malformedPath); err != nil {
+		t.Errorf("malformed.json should have been left alone: %v", err)
 	}
 }
 

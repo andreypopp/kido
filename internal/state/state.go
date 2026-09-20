@@ -58,6 +58,10 @@ type Session struct {
 	PID    int       `json:"pid"`  // agent process pid
 	Status Status    `json:"status"`
 	TS     time.Time `json:"ts"`
+	// Title is the session name an agent reported with --title (kido
+	// agent-status). Empty for Claude Code, and for an agent that has not
+	// reported one; the UI falls back to the pane title in that case.
+	Title string `json:"title,omitempty"`
 	// When the last turn ended (Stop or equivalent); zero if the session
 	// is idle for another reason, such as having just started.
 	Ended time.Time `json:"ended,omitempty"`
@@ -86,6 +90,24 @@ func Dir() string {
 // agent is what the pane is, so agent rank decides first (pi beats claude)
 // and only records from the same agent are compared by time.
 func Load() (map[string]Session, error) {
+	return load(false)
+}
+
+// LoadAndSweep is Load, but also deletes a state file found to belong to a
+// dead process instead of merely skipping it. pi's headless Claude Code
+// bridge (pi-claude-bridge) writes one such file per turn, and without
+// this they never go away. Used by the sidebar's poll; other callers keep
+// using Load, which never touches disk.
+//
+// Deletion only ever targets a file whose recorded pid is not alive, so a
+// hook or agent-status call concurrently writing a fresh file for a live
+// session is never touched; a removal error (the file is already gone, or
+// a race with another sweep) is not fatal.
+func LoadAndSweep() (map[string]Session, error) {
+	return load(true)
+}
+
+func load(sweep bool) (map[string]Session, error) {
 	dir := Dir()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -99,12 +121,19 @@ func Load() (map[string]Session, error) {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		path := filepath.Join(dir, e.Name())
+		b, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
 		var s Session
-		if json.Unmarshal(b, &s) != nil || s.Pane == "" || !alive(s.PID) {
+		if json.Unmarshal(b, &s) != nil || s.Pane == "" {
+			continue
+		}
+		if !alive(s.PID) {
+			if sweep {
+				os.Remove(path) //nolint:errcheck // best effort; a concurrent writer may recreate it
+			}
 			continue
 		}
 		s.ID = strings.TrimSuffix(e.Name(), ".json")

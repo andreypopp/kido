@@ -114,10 +114,12 @@ Code can call from inside its own pane:
 kido agent-status --agent NAME --session ID --status running|waiting|compacting|idle [--title TITLE] [--ended] [--remove]
 ```
 
-`--ended` marks the end of a turn (that is what `✓ done` tracks) and
-`--remove` drops the session's record when the agent exits. A pi pane is
-recognised even before it reports anything, from the pi in the pane's
-process tree.
+`--title` is the session's name, shown in place of the agent's pane title
+(kept across calls that omit it, so an extension only needs to re-send it
+when it changes). `--ended` marks the end of a turn (that is what `✓ done`
+tracks) and `--remove` drops the session's record when the agent exits. A
+pi pane is recognised even before it reports anything, from the pi in the
+pane's process tree.
 
 `kido setup-pi` installs a status extension for the pi coding agent into
 `~/.pi/agent/extensions/`, which pi discovers on its next start. pi panes
