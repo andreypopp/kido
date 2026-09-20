@@ -83,8 +83,8 @@ window has no agent pane at all; a window with several is still
 ambiguous and never widens (several in the window means several in the
 session too), so only "not found" widens the search. `--window` pins the
 scope to the caller's window only, never widening to the session. Exit
-codes: `0` sent, `1` no prompt given (empty stdin) or a tmux error, `4` no
-agent pane found in scope, `5` more than one found.
+codes: `0` sent, `1` no prompt given (empty stdin) or a tmux error, `4`
+agent not found in scope, `5` multiple agents found.
 
 ```sh
 echo "run the tests" | kido prompt

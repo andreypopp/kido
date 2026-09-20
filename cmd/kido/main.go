@@ -325,18 +325,28 @@ func runHook(r io.Reader, debug bool) error {
 	case e.Remove:
 		return state.Remove(in.SessionID)
 	}
+	return recordSession(state.AgentClaude, in.SessionID, e, "")
+}
+
+// recordSession builds and writes the state.Session for one agent report:
+// the pane and pid of the call ($TMUX_PANE, procs.HookParent - the agent
+// process, past any sh -c wrapper), e's status, e's end time (via endedAt)
+// when e.Ended, and title. Shared by runHook and agentStatus, which differ
+// only in which agent, effect and title they report.
+func recordSession(agent, sessionID string, e hook.Effect, title string) error {
 	now := time.Now().UTC()
 	s := state.Session{
-		Agent:  state.AgentClaude,
+		Agent:  agent,
 		Pane:   os.Getenv("TMUX_PANE"),
-		PID:    procs.HookParent(), // the claude process, past the sh -c wrapper
+		PID:    procs.HookParent(),
 		Status: e.Status,
 		TS:     now,
+		Title:  title,
 	}
 	if e.Ended {
-		s.Ended = endedAt(in.SessionID, now)
+		s.Ended = endedAt(sessionID, now)
 	}
-	return state.Record(in.SessionID, s)
+	return state.Record(sessionID, s)
 }
 
 // endedAt is the time to record as the end of session id's turn, now being
@@ -394,24 +404,14 @@ func agentStatus(args []string) error {
 	if !state.Valid(state.Status(*status)) {
 		return fmt.Errorf("unknown status %q\n%s", *status, agentStatusUsage)
 	}
-	now := time.Now().UTC()
-	s := state.Session{
-		Agent:  *agent,
-		Pane:   os.Getenv("TMUX_PANE"),
-		PID:    procs.HookParent(), // the agent process, past any sh -c wrapper
-		Status: state.Status(*status),
-		TS:     now,
-		Title:  *title,
-	}
-	if s.Title == "" {
+	sessionTitle := *title
+	if sessionTitle == "" {
 		if prev, ok, _ := state.Get(*session); ok {
-			s.Title = prev.Title
+			sessionTitle = prev.Title
 		}
 	}
-	if *ended {
-		s.Ended = endedAt(*session, now)
-	}
-	return state.Record(*session, s)
+	e := hook.Effect{Status: state.Status(*status), Ended: *ended}
+	return recordSession(*agent, *session, e, sessionTitle)
 }
 
 // logHookEvent appends one line to <state.Dir()>/debug.log: a timestamp,

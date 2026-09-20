@@ -97,7 +97,7 @@ func TestPromptDefaultWindowSeveral(t *testing.T) {
 	h.claudePaneHere("alpha:", "✳ Two")
 
 	h.runPrompt("hi")
-	h.waitMain("multiple claude code found")
+	h.waitMain("multiple agents found")
 	h.waitMain("rc=5")
 }
 
@@ -123,7 +123,7 @@ func TestPromptDefaultSessionSeveral(t *testing.T) {
 	h.claudePane("alpha", "✳ Two")
 
 	h.runPrompt("hi")
-	h.waitMain("multiple claude code found")
+	h.waitMain("multiple agents found")
 	h.waitMain("rc=5")
 }
 
@@ -134,7 +134,7 @@ func TestPromptDefaultNone(t *testing.T) {
 	h := start(t, "alpha")
 
 	h.runPrompt("hi")
-	h.waitMain("claude code not found")
+	h.waitMain("agent not found")
 	h.waitMain("rc=4")
 }
 
@@ -147,7 +147,7 @@ func TestPromptWindowFlagNoneElsewhereInSession(t *testing.T) {
 	h.claudePane("alpha", "✳ Claude") // a new window, not the shell's own
 
 	h.runPrompt("hi", "--window")
-	h.waitMain("claude code not found")
+	h.waitMain("agent not found")
 	h.waitMain("rc=4")
 }
 

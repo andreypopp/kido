@@ -80,34 +80,23 @@ func Dir() string {
 }
 
 // Load reads every state file whose agent process is still alive, keyed
-// by pane id.
+// by pane id. A file found to belong to a dead process is removed rather
+// than merely skipped: pi's headless Claude Code bridge (pi-claude-bridge)
+// writes one such file per turn, and without this they never go away.
+// Deletion only ever targets a file whose recorded pid is not alive, so a
+// hook or agent-status call concurrently writing a fresh file for a live
+// session is never touched; a removal error (the file is already gone, or
+// a race with another sweep) is not fatal.
 //
 // Several files can claim the same pane, and the winner must not depend on
 // which one was written last: pi runs Claude Code inside its own pane
 // (pi-claude-bridge, headless, inheriting TMUX_PANE), so that inner Claude
 // Code's hooks write a claude record for a pane that is really a pi pane,
 // and the two keep overwriting each other as both agents work. The outer
-// agent is what the pane is, so agent rank decides first (pi beats claude)
-// and only records from the same agent are compared by time.
+// agent is what the pane is, so the outer agent wins the pane (pi beats
+// claude; see beats) and only records of the same standing are compared by
+// time.
 func Load() (map[string]Session, error) {
-	return load(false)
-}
-
-// LoadAndSweep is Load, but also deletes a state file found to belong to a
-// dead process instead of merely skipping it. pi's headless Claude Code
-// bridge (pi-claude-bridge) writes one such file per turn, and without
-// this they never go away. Used by the sidebar's poll; other callers keep
-// using Load, which never touches disk.
-//
-// Deletion only ever targets a file whose recorded pid is not alive, so a
-// hook or agent-status call concurrently writing a fresh file for a live
-// session is never touched; a removal error (the file is already gone, or
-// a race with another sweep) is not fatal.
-func LoadAndSweep() (map[string]Session, error) {
-	return load(true)
-}
-
-func load(sweep bool) (map[string]Session, error) {
 	dir := Dir()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -131,9 +120,7 @@ func load(sweep bool) (map[string]Session, error) {
 			continue
 		}
 		if !alive(s.PID) {
-			if sweep {
-				os.Remove(path) //nolint:errcheck // best effort; a concurrent writer may recreate it
-			}
+			os.Remove(path) //nolint:errcheck // best effort; a concurrent writer may recreate it
 			continue
 		}
 		s.ID = strings.TrimSuffix(e.Name(), ".json")
@@ -154,23 +141,30 @@ func agentOf(agent string) string {
 	return agent
 }
 
-// rank orders agents by how far out they sit: the outermost agent owning a
-// pane wins it, whatever the other wrote last. pi runs Claude Code inside
-// itself, so pi outranks claude; an unknown agent is treated like pi, since
-// a bare claude record is the one kido knows can come from the inside.
-func rank(agent string) int {
-	if agentOf(agent) == AgentClaude {
-		return 0
-	}
-	return 1
+// outer reports whether agent is the outer agent of a pane it shares with
+// Claude Code: pi runs Claude Code inside itself (pi-claude-bridge), so a pi
+// record always wins a pane over a claude one, whatever the other wrote
+// last. An unknown agent is treated as outer too, since a bare claude
+// record is the one kido knows can come from the inside.
+//
+// This is a two-agent test, not a general ranking: it is correct only
+// because the nested agent is always Claude Code. Two non-Claude agents
+// nested in one pane would both report "outer" and fall through to beats'
+// timestamp comparison, reintroducing the flip-flop Load's doc comment
+// warns about. The real rule for that case is which record's process is an
+// ancestor of the other's - procs.Sweep already builds the parent map that
+// would answer it, but nothing exposes it yet.
+func outer(agent string) bool {
+	return agentOf(agent) != AgentClaude
 }
 
 // beats reports whether s should replace prev as the record for their
-// shared pane: a higher-ranked agent always does, an equal-ranked one only
-// when it is more recent.
+// shared pane: the outer agent always wins, and between two records from
+// the same standing (both outer, or both Claude Code) the more recent one
+// wins.
 func beats(s, prev Session) bool {
-	if r, pr := rank(s.Agent), rank(prev.Agent); r != pr {
-		return r > pr
+	if so, po := outer(s.Agent), outer(prev.Agent); so != po {
+		return so
 	}
 	return s.TS.After(prev.TS)
 }

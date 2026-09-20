@@ -127,8 +127,9 @@ export default function (pi: ExtensionAPI) {
   // Restore whatever we reported before compaction started: a manual /compact
   // can happen while idle, and agent_settled would not fire afterwards to
   // correct a blind "running".
-  pi.on("session_compact", () => send(beforeCompact));
-  pi.on("session_compact_failed", () => send(beforeCompact));
+  const restoreBeforeCompact = () => send(beforeCompact);
+  pi.on("session_compact", restoreBeforeCompact);
+  pi.on("session_compact_failed", restoreBeforeCompact);
 
   // The true idle signal: no retry, compaction, or follow-up left.
   pi.on("agent_settled", (_event, ctx) => {

@@ -362,14 +362,15 @@ func ClientState(client string) (session string, focused bool) {
 	return parseClientState(strings.Split(out, "\n"), client)
 }
 
-// ActivePane returns the active pane of session within panes.
-func ActivePane(panes []Pane, session string) string {
+// ActivePane returns the active pane of session within panes, or the zero
+// Pane if none is found.
+func ActivePane(panes []Pane, session string) Pane {
 	for _, p := range panes {
 		if p.SessionName == session && p.Active {
-			return p.PaneID
+			return p
 		}
 	}
-	return ""
+	return Pane{}
 }
 
 // Jump makes paneID the active pane of client, switching session and

@@ -80,6 +80,17 @@ func Sweep() Scan {
 	return s
 }
 
+// MaybePi reports whether a pane's foreground command could be pi, and
+// so whether the pane is worth a process sweep. pi is a bash shim around
+// node and renames itself in-process, which ps (and so tmux) never sees,
+// so "node" is what a pi pane usually reports; "pi" covers an install
+// that runs under its own name. A pane matching this that turns out not
+// to be pi costs one ps call a second, the same price an ssh pane whose
+// destination cannot be resolved has always paid.
+func MaybePi(command string) bool {
+	return command == "node" || command == "pi"
+}
+
 // isPi reports whether p is a pi process: the bash shim and the node it
 // execs both name pi's script in their arguments, and a pi installed so
 // that it runs under its own name is matched by that name alone.

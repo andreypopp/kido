@@ -125,6 +125,43 @@ func TestEscReleasesFocus(t *testing.T) {
 	h.waitFocused(false)
 }
 
+// TestShiftUpDownSwitchesWindow checks that shift+up/down inside the sidebar
+// call the same window-switching path as `kido switch-window`, without
+// handing the keyboard back to the pane: the sidebar's own S-Up/S-Down keys
+// would otherwise do nothing, since focused keys are routed to the side job
+// and never reach the client-level bindings in tmux/kido-side.tmux.
+func TestShiftUpDownSwitchesWindow(t *testing.T) {
+	t.Parallel()
+	h := setupSwitchWindowSessions(t) // sessions a, c, b (created order), each with two windows
+
+	focusSidebar(h)
+	h.waitWindow("a", "a0")
+
+	// Lines: 1 a, 2 a0, 3 a1, 4 c, 5 c0, 6 c1, 7 b, 8 b0, 9 b1.
+	h.waitSelectedLine(2)
+
+	h.sendKeys("S-Down") // a0 -> a1, inside session a
+	h.waitWindow("a", "a1")
+	h.waitSelectedLine(3)
+	if !h.clientFocused() {
+		t.Fatal("shift+down released the sidebar's keyboard focus")
+	}
+
+	h.sendKeys("S-Down") // a1 -> c0, crossing into session c
+	h.waitWindow("c", "c0")
+	h.waitSelectedLine(5)
+	if !h.clientFocused() {
+		t.Fatal("shift+down released the sidebar's keyboard focus")
+	}
+
+	h.sendKeys("S-Up") // c0 -> a1, back across the session boundary
+	h.waitWindow("a", "a1")
+	h.waitSelectedLine(3)
+	if !h.clientFocused() {
+		t.Fatal("shift+up released the sidebar's keyboard focus")
+	}
+}
+
 // TestPrefixPassthrough checks that the prefix still reaches tmux while
 // the sidebar holds the keyboard.
 func TestPrefixPassthrough(t *testing.T) {

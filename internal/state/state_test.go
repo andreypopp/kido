@@ -111,11 +111,11 @@ func deadPID(t *testing.T) int {
 	return cmd.Process.Pid
 }
 
-// TestLoadAndSweepDeletesDeadRecords checks the three cases the state
-// directory can hold: a live session's file survives, a dead one's file is
-// both skipped and removed from disk, and a malformed file is skipped
-// without stopping the sweep over the rest of the directory.
-func TestLoadAndSweepDeletesDeadRecords(t *testing.T) {
+// TestLoadDeletesDeadRecords checks the three cases the state directory can
+// hold: a live session's file survives, a dead one's file is both skipped
+// and removed from disk, and a malformed file is skipped without stopping
+// the walk over the rest of the directory.
+func TestLoadDeletesDeadRecords(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("KIDO_STATE_DIR", dir)
 
@@ -136,12 +136,12 @@ func TestLoadAndSweepDeletesDeadRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	states, err := LoadAndSweep()
+	states, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := states["%1"]; !ok {
-		t.Errorf("live record missing from LoadAndSweep's result: %+v", states)
+		t.Errorf("live record missing from Load's result: %+v", states)
 	}
 	if _, ok := states["%2"]; ok {
 		t.Errorf("dead record should not be returned: %+v", states)

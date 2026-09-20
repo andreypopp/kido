@@ -36,15 +36,16 @@ type Options struct {
 
 // snapshot is everything the sidebar shows, taken off the UI goroutine.
 type snapshot struct {
-	current string // session the client is attached to
-	active  string // the client's active pane
-	focused bool   // the sidebar has the keyboard
-	panes   []tmux.Pane
-	states  map[string]state.Session
-	ssh     map[int]string // pane pid -> ssh destination
-	pi      map[int]bool   // pane pid -> pi runs in this pane
-	probed  time.Time      // when the process table was last read
-	err     error
+	current      string // session the client is attached to
+	active       string // the client's active pane
+	activeWindow string // the active pane's window id
+	focused      bool   // the sidebar has the keyboard
+	panes        []tmux.Pane
+	states       map[string]state.Session
+	ssh          map[int]string // pane pid -> ssh destination
+	pi           map[int]bool   // pane pid -> pi runs in this pane
+	probed       time.Time      // when the process table was last read
+	err          error
 
 	// probes remembers the last screen read of each waiting pane, so the
 	// screen is read at most once per probeInterval rather than on every
@@ -86,14 +87,6 @@ const probeInterval = time.Second
 // there, and at a 100ms tick an unresolvable one would otherwise mean ten
 // ps calls a second.
 const procsProbe = time.Second
-
-// piCommands are the foreground commands a pi pane can show. pi is a bash
-// shim around node and renames itself in-process, which ps (and so tmux)
-// never sees, so "node" is what a pi pane usually reports; "pi" covers an
-// install that runs under its own name. A pane showing one of these that
-// turns out not to be pi costs one ps call a second, the same price an
-// ssh pane whose destination cannot be resolved has always paid.
-var piCommands = map[string]bool{"node": true, "pi": true}
 
 type row struct {
 	text   string
@@ -158,8 +151,9 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 	if s.panes, s.err = listPanes(conn); s.err != nil {
 		return s
 	}
-	s.active = tmux.ActivePane(s.panes, s.current)
-	s.states, s.err = state.LoadAndSweep()
+	active := tmux.ActivePane(s.panes, s.current)
+	s.active, s.activeWindow = active.PaneID, active.WindowID
+	s.states, s.err = state.Load()
 	s.ssh, s.pi = map[int]string{}, map[int]bool{}
 	s.probed = prev.probed
 	// The last sweep's answers stand until a pane asks something they do
@@ -181,7 +175,7 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 			if host, ok := scan.SSH[p.PanePID]; ok {
 				s.ssh[p.PanePID] = host
 			}
-		case piCommands[p.CurrentCommand]:
+		case procs.MaybePi(p.CurrentCommand):
 			if _, reported := s.states[p.PaneID]; reported {
 				// The agent already says what this pane is; the process
 				// table is only asked about panes that have said nothing,
@@ -309,7 +303,7 @@ func (m model) tick() tea.Cmd {
 
 // same reports whether two snapshots would render identically.
 func (a snapshot) same(b snapshot) bool {
-	return a.current == b.current && a.active == b.active && a.focused == b.focused &&
+	return a.current == b.current && a.active == b.active && a.activeWindow == b.activeWindow && a.focused == b.focused &&
 		a.err == nil && b.err == nil &&
 		slices.Equal(a.panes, b.panes) && maps.Equal(a.states, b.states) &&
 		maps.Equal(a.ssh, b.ssh) && maps.Equal(a.pi, b.pi)
@@ -381,6 +375,10 @@ func (m *model) key(msg tea.KeyMsg) {
 		m.move(1)
 	case "ctrl+k", "ctrl+p", "up":
 		m.move(-1)
+	case "shift+down":
+		m.switchWindow(true)
+	case "shift+up":
+		m.switchWindow(false)
 	case "enter":
 		m.jump()
 	case "esc", "ctrl+c":
@@ -441,6 +439,18 @@ func (m *model) jump() {
 		m.searching = false
 		m.setFilter("")
 		m.focus(pane)
+	}
+}
+
+// switchWindow moves the client to the adjacent window in kido's order, the
+// same as `kido switch-window`, without releasing the sidebar's keyboard
+// focus. The cursor is not moved here: the switch happens through tmux, and
+// the snapshot only catches up on the next poll, at which point the normal
+// Update path (msg.active != was.active) snaps the selection to the new
+// active pane, the same as it does when the sidebar loses focus.
+func (m *model) switchWindow(next bool) {
+	if err := tmux.SwitchWindow(m.opts.Client, next); err != nil {
+		m.status = err.Error()
 	}
 }
 
@@ -591,12 +601,6 @@ var (
 	stCompact = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 	stDone    = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true)
 	stUnknown = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-
-	// stActiveWindow bolds every row of the window the client is currently
-	// on, so it stands out from the rest of its session at a glance. Kept
-	// distinct from stCurrent (the current session's name) since the two
-	// mark different things and can be true on the same screen at once.
-	stActiveWindow = lipgloss.NewStyle().Bold(true)
 )
 
 // glyph renders one tree glyph grouping a window's panes: a dot for a lone
@@ -606,10 +610,7 @@ var (
 // so the whole row - structure included - reads as one bold unit rather
 // than a bold label hanging off an unbolded branch.
 func glyph(i, n int, bold bool) string {
-	st := stDim
-	if bold {
-		st = st.Bold(true)
-	}
+	st := stDim.Bold(bold)
 	switch {
 	case n == 1:
 		return st.Render("·")
@@ -701,15 +702,9 @@ func (m *model) agentTitleOf(p tmux.Pane) (string, bool) {
 func (m *model) paneLabel(p tmux.Pane, bold bool) string {
 	title, isAgent := m.agentTitleOf(p)
 	if !isAgent {
-		procStyle := stProc
-		if bold {
-			procStyle = procStyle.Bold(true)
-		}
+		procStyle := stProc.Bold(bold)
 		if host, ok := m.snap.ssh[p.PanePID]; ok {
-			hostStyle := lipgloss.NewStyle()
-			if bold {
-				hostStyle = stActiveWindow
-			}
+			hostStyle := lipgloss.NewStyle().Bold(bold)
 			return procStyle.Render("ssh ") + hostStyle.Render(host)
 		}
 		return procStyle.Render(p.CurrentCommand)
@@ -722,13 +717,8 @@ func (m *model) paneLabel(p tmux.Pane, bold bool) string {
 	if m.done(p.PaneID) {
 		indStyle, ic = stDone, indicatorDoneGlyph
 	}
-	if bold {
-		indStyle = indStyle.Bold(true)
-	}
-	titleStyle := lipgloss.NewStyle()
-	if bold {
-		titleStyle = stActiveWindow
-	}
+	indStyle = indStyle.Bold(bold)
+	titleStyle := lipgloss.NewStyle().Bold(bold)
 	return indStyle.Render(ic) + " " + titleStyle.Render(title)
 }
 
@@ -807,13 +797,7 @@ func (m *model) rebuild() {
 	// bolds every row in it so the current window stands out from the rest
 	// of its session, not just the session name. WindowID is unique
 	// server-wide, so comparing it alone (with no session check) is enough.
-	var activeWindow string
-	for _, p := range m.snap.panes {
-		if p.PaneID == m.snap.active {
-			activeWindow = p.WindowID
-			break
-		}
-	}
+	activeWindow := m.snap.activeWindow
 
 	for _, s := range order {
 		name := s.name
