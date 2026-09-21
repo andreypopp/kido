@@ -16,8 +16,8 @@ import (
 // prompt implements `kido prompt [--window]`: it reads a prompt from
 // stdin (the whole input, with one trailing newline stripped) and sends
 // it to the one agent pane in scope: over the agent's inbox socket when it
-// reported one (see deliver and inbox.go), otherwise send-keys -l the
-// text, then Enter a moment later.
+// reported one (see deliver and inbox.go), otherwise pasted into the pane
+// with Enter a moment later (see tmux.SendPrompt).
 //
 // With no flag, the scope is the caller's window, widening to the whole
 // session when the window has no Claude Code pane at all. --window (also
@@ -95,7 +95,7 @@ func prompt(args []string, stdin io.Reader) int {
 // printing any error itself. An agent that reported an inbox socket (pi,
 // through its kido extension) gets the prompt as a real user message over
 // that socket; everything else - Claude Code above all, which has no such
-// socket - gets it typed into the pane with send-keys.
+// socket - gets it pasted into the pane by tmux.SendPrompt.
 func deliver(inbox, pane, text string) int {
 	if inbox != "" {
 		err := deliverInbox(inbox, text)

@@ -57,6 +57,18 @@ func run(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// runStdin is run for a tmux command that reads standard input, such as
+// load-buffer -.
+func runStdin(stdin string, args ...string) (string, error) {
+	cmd := exec.Command(binary(), args...)
+	cmd.Stdin = strings.NewReader(stdin)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("tmux %s: %w", strings.Join(args, " "), err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // Pane is one tmux pane plus the window and session it belongs to.
 type Pane struct {
 	SessionName    string
@@ -405,16 +417,45 @@ func ReleaseSideFocus(client string) error {
 	return err
 }
 
-// promptKeyDelay is the pause between typing a prompt's text and pressing
-// Enter: without it, a paste-sensitive reader (Claude Code included) can
-// see the Enter as part of the pasted text rather than a submission.
+// promptKeyDelay is the pause between delivering a prompt's text and
+// pressing Enter: without it, a paste-sensitive reader (Claude Code
+// included) can see the Enter as part of the pasted text rather than a
+// submission.
 const promptKeyDelay = 100 * time.Millisecond
 
-// SendPrompt types text into pane as literal keys, then presses Enter
-// after promptKeyDelay so it submits as a paste rather than being cut
-// mid-line.
+// promptBufferPrefix names the tmux buffer SendPrompt loads a prompt
+// into. tmux's own buffers are named buffer0, buffer1 and so on, and a
+// name a user picks by hand is theirs to choose, so nothing of theirs can
+// carry this prefix; the pid keeps two kido processes on one server off
+// each other's buffer. Pasting with -d deletes it again, leaving the
+// user's buffer stack and its ordering exactly as it was.
+const promptBufferPrefix = "kido-prompt"
+
+// promptBuffer is the buffer name for this process.
+func promptBuffer() string { return fmt.Sprintf("%s-%d", promptBufferPrefix, os.Getpid()) }
+
+// SendPrompt delivers text to pane as a paste, then presses Enter after
+// promptKeyDelay.
+//
+// A paste rather than literal keys, because send-keys -l writes the bytes
+// to the pty as they are: an application that has enabled bracketed paste
+// - Claude Code, zsh's zle, most TUIs - reads a bare newline as a submit,
+// so a multi-line prompt would arrive as one input per line, the first
+// submitted alone and the rest left dangling. paste-buffer -p wraps the
+// text in the paste brackets when the application asked for them, which
+// makes its newlines part of a single input; when it did not ask, -p
+// pastes the raw bytes, exactly today's behaviour for a plain shell pane.
+//
+// Enter stays a separate key after promptKeyDelay: sent before the text
+// has landed, the submit cuts the paste mid-line.
 func SendPrompt(pane, text string) error {
-	if _, err := run("send-keys", "-t", pane, "-l", text); err != nil {
+	buf := promptBuffer()
+	if _, err := runStdin(text, "load-buffer", "-b", buf, "-"); err != nil {
+		return err
+	}
+	if _, err := run("paste-buffer", "-b", buf, "-d", "-t", pane, "-p"); err != nil {
+		// -d never ran, so the buffer would otherwise outlive the failure.
+		run("delete-buffer", "-b", buf)
 		return err
 	}
 	time.Sleep(promptKeyDelay)

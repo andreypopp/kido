@@ -114,8 +114,10 @@ never widens.
 
 pi receives a user message over the unix socket its extension reported with
 `kido agent-status --inbox`. Every other agent, Claude Code included, gets
-the prompt typed into its pane followed by Enter, as does pi when the
-socket has gone away.
+the prompt pasted into its pane followed by Enter, as does pi when the
+socket has gone away. It is a paste rather than typed keys because an
+application with bracketed paste on reads a bare newline as a submit,
+which would split a multi-line prompt into one input per line.
 
 Exit codes: `0` sent, `1` empty stdin or an error, `4` no agent in scope,
 `5` several.

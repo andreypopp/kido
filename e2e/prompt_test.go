@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -93,6 +94,104 @@ func (h *harness) waitPaneText(id, sub string) {
 	h.t.Helper()
 	h.waitFor(func() bool { return strings.Contains(h.paneText(id), sub) }, settle,
 		func() string { return fmt.Sprintf("pane %s shows %q (is %q)", id, sub, h.paneText(id)) })
+}
+
+// paneLines is pane id's own screen as trimmed lines. capture-pane already
+// drops each row's trailing blanks; trimming the front too makes a line
+// comparable to what was typed or printed on it.
+func (h *harness) paneLines(id string) []string {
+	h.t.Helper()
+	var out []string
+	for _, l := range strings.Split(h.paneText(id), "\n") {
+		out = append(out, strings.TrimSpace(l))
+	}
+	return out
+}
+
+// waitPaneLine waits until one of pane id's rows is exactly want, which
+// distinguishes a command's output ("AAA") from the command line that
+// produced it ("echo AAA").
+func (h *harness) waitPaneLine(id, want string) {
+	h.t.Helper()
+	h.waitFor(func() bool {
+		for _, l := range h.paneLines(id) {
+			if l == want {
+				return true
+			}
+		}
+		return false
+	}, settle, func() string {
+		return fmt.Sprintf("pane %s to have a row %q (is %q)", id, want, h.paneText(id))
+	})
+}
+
+// lineIndex is the first row of lines satisfying match, or -1.
+func lineIndex(lines []string, match func(string) bool) int {
+	for i, l := range lines {
+		if match(l) {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestPromptMultiLine checks that a two-line prompt reaches the agent as
+// one input rather than one input per line.
+//
+// The pane is a bare zsh, which is the cheapest stand-in for Claude Code
+// here: zle enables bracketed paste exactly as Claude Code does, so it is
+// the one thing in the harness that can tell a paste from typed keys. Sent
+// as literal keys, the newline in the middle is an Enter: zsh runs "echo
+// AAA" on its own and prints AAA before "echo BBB" is ever typed. Sent as
+// a bracketed paste, both lines land in one command line and only the
+// Enter that follows runs them, so both echoes are on screen before either
+// output is. That order is the assertion.
+func TestPromptMultiLine(t *testing.T) {
+	t.Parallel()
+	zsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("no zsh in PATH")
+	}
+	h := start(t, "alpha")
+
+	// -f: no rc files, so the pane holds nothing but zle's own defaults
+	// (bracketed paste among them) and the developer's own zsh setup
+	// cannot change what this test sees.
+	pane := h.newWindow("alpha", "", zsh, "-f")
+	h.waitPaneCommand(pane, "zsh")
+	// zle must have turned bracketed paste on before the paste lands, or
+	// tmux writes the bytes raw and the test proves nothing. zsh -f's
+	// default prompt is "%m%# ", so a row ending in "%" means zle is up.
+	h.waitFor(func() bool {
+		for _, l := range h.paneLines(pane) {
+			if strings.HasSuffix(l, "%") {
+				return true
+			}
+		}
+		return false
+	}, settle, func() string {
+		return fmt.Sprintf("pane %s to reach a zsh prompt (is %q)", pane, h.paneText(pane))
+	})
+
+	// A state record with no inbox socket is what makes kido treat this
+	// pane as an agent and deliver through tmux.SendPrompt; pi's own
+	// socket path (TestPromptInboxNative) never reaches it.
+	h.agentStatus("pi-1", pane, "pi", "idle")
+
+	// printf expands the \n, so the newline is made inside the pane
+	// rather than typed into the caller's shell.
+	h.runPrompt(`echo AAA\necho BBB`)
+	h.waitMain("rc=0")
+	h.waitPaneLine(pane, "BBB") // both lines have run by now
+
+	lines := h.paneLines(pane)
+	echoBBB := lineIndex(lines, func(l string) bool { return strings.Contains(l, "echo BBB") })
+	outAAA := lineIndex(lines, func(l string) bool { return l == "AAA" })
+	if echoBBB < 0 || outAAA < 0 || echoBBB > outAAA {
+		t.Errorf("the two lines were not one input: %q\n"+
+			"want the second line (row %d) on screen before AAA's output (row %d)",
+			h.paneText(pane), echoBBB, outAAA)
+	}
 }
 
 // TestPromptDefaultWindowOne checks the default scope: a Claude Code pane
@@ -190,8 +289,8 @@ func TestPromptInboxNative(t *testing.T) {
 	h.runPrompt("over the socket")
 	h.waitMain("rc=0")
 	h.waitInbox(in, "over the socket")
-	// SendPrompt types the text and presses Enter before kido exits, so a
-	// wrong send would already be on the pane's screen by now.
+	// SendPrompt pastes the text and presses Enter before kido exits, so
+	// a wrong send would already be on the pane's screen by now.
 	if got := h.paneText(pane); strings.Contains(got, "got:") {
 		t.Errorf("pane %s was typed into as well: %q", pane, got)
 	}
