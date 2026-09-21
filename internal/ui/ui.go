@@ -337,6 +337,10 @@ func (a snapshot) same(b snapshot) bool {
 //	CommandStartTime the same, and
 //	LastPromptTime   the same: together they are Pane.ShellStatus, so a
 //	                 command starting or finishing must rebuild the row
+//	CommandStatus    the failed indicator, and
+//	CommandStatusOK  the same (an empty status is not a clean exit), and
+//	CommandEndTime   the same: they are what model.failed reads, so a
+//	                 command exiting nonzero must rebuild the row
 //
 // (pane_command_duration is not in the pane format at all: it ticks every
 // second, so it would make every snapshot differ from the last.)
@@ -358,7 +362,10 @@ func samePanes(a, b []tmux.Pane) bool {
 			x.CurrentCommand != y.CurrentCommand || x.Title != y.Title ||
 			x.CommandRunning != y.CommandRunning ||
 			x.CommandStartTime != y.CommandStartTime ||
-			x.LastPromptTime != y.LastPromptTime {
+			x.LastPromptTime != y.LastPromptTime ||
+			x.CommandStatus != y.CommandStatus ||
+			x.CommandStatusOK != y.CommandStatusOK ||
+			x.CommandEndTime != y.CommandEndTime {
 			return false
 		}
 	}
@@ -549,13 +556,26 @@ func (m *model) setFilter(f string) {
 }
 
 // track notes that the active pane is being looked at right now.
+//
+// The bookkeeping is per pane, not per agent session: a plain shell pane
+// is in it too, because failed() dates a command's failure against the
+// last visit the same way done() dates a turn's end. So a remembered pane
+// is forgotten when the pane itself is gone, not when an agent record is -
+// dropping shell panes here would leave every failed row stuck red.
 func (m *model) track() {
 	if m.snap.active != "" {
 		m.seen[m.snap.active] = time.Now()
 	}
+	if m.snap.err != nil {
+		return // no pane list to compare against: forget nothing
+	}
+	live := make(map[string]bool, len(m.snap.panes))
+	for _, p := range m.snap.panes {
+		live[p.PaneID] = true
+	}
 	for pane := range m.seen {
-		if _, ok := m.snap.states[pane]; !ok {
-			delete(m.seen, pane) // the session is gone
+		if !live[pane] {
+			delete(m.seen, pane) // the pane is gone
 		}
 	}
 }
@@ -572,6 +592,34 @@ func (m *model) done(pane string) bool {
 		seen = m.started
 	}
 	return s.Ended.After(seen)
+}
+
+// failed reports whether pane p's last command exited nonzero and the user
+// has not looked at the pane since it did. It is the shell counterpart of
+// done: the row stays marked until the pane is visited, not until the next
+// prompt.
+//
+// A pane running a command right now is not failed: the running indicator
+// wins, and the failure that matters is the one the pane is left sitting
+// on.
+func (m *model) failed(p tmux.Pane) bool {
+	running, ok := p.ShellStatus()
+	if !ok || running {
+		return false // no OSC 133 integration, or busy right now
+	}
+	if !p.CommandStatusOK || p.CommandStatus == 0 || p.CommandEndTime == 0 {
+		return false
+	}
+	seen, ok := m.seen[p.PaneID]
+	if !ok {
+		seen = m.started // never visited: anything since kido started counts
+	}
+	// tmux reports whole unix seconds, m.seen a wall-clock instant. The
+	// comparison is strict so that a command failing in a pane the user is
+	// looking at (seen is refreshed every tick, so seen >= the truncated
+	// end time) never lights up; the price is that a failure in the very
+	// second the user left the pane is missed.
+	return time.Unix(p.CommandEndTime, 0).After(seen)
 }
 
 // wants reports whether pane's agent session needs the user: it is
@@ -686,7 +734,6 @@ var (
 
 	stRunning = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	stWaiting = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true)
-	stIdle    = lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
 	stCompact = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 	stDone    = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true)
 	stUnknown = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
@@ -709,16 +756,57 @@ func glyph(i, n int) string {
 }
 
 // indicators marks an agent pane by its status: the glyph alone says it is
-// an agent session, the same for every agent.
-var indicators = map[state.Status]string{
-	state.Running:    stRunning.Render("●"),
-	state.Waiting:    stWaiting.Render("◆"),
-	state.Compacting: stCompact.Render("◌"),
-	state.Idle:       stIdle.Render("○"),
-	state.Unknown:    stUnknown.Render("?"),
+// an agent session, the same for every agent. Idle is deliberately empty -
+// a pane with nothing to say shows nothing - and field() keeps the column
+// the label starts at the same all the same.
+//
+// The glyphs are held unrendered and styled by indicator() on the fly: a
+// lipgloss style decides its colour profile the first time it renders, and
+// Run forces the profile after this package is initialised, so a string
+// rendered up here would come out unstyled wherever termenv sees no TTY (a
+// CI environment variable is enough to convince it of that).
+var indicators = map[state.Status]struct {
+	style lipgloss.Style
+	glyph string
+}{
+	state.Running:    {stRunning, "▌"},
+	state.Waiting:    {stWaiting, "◆"},
+	state.Compacting: {stCompact, "◌"},
+	state.Idle:       {},
+	state.Unknown:    {stUnknown, "?"},
 }
 
-var indicatorDone = stDone.Render("✓") // idle since finishing, not yet looked at
+// indicator is the glyph for an agent status, styled; "" for idle and for
+// anything unknown.
+func indicator(s state.Status) string {
+	i, ok := indicators[s]
+	if !ok || i.glyph == "" {
+		return ""
+	}
+	return i.style.Render(i.glyph)
+}
+
+// indicatorDone is an agent idle since finishing a turn, not yet looked at;
+// indicatorFailed a shell whose last command exited nonzero, likewise not
+// yet looked at. Both are rendered on demand, for the reason above.
+func indicatorDone() string   { return stDone.Render("✓") }
+func indicatorFailed() string { return stErr.Render("▌") }
+
+// field is the indicator column: one glyph and one space, or two spaces
+// when there is no indicator, so every label starts at the same column
+// whatever the pane is doing. Agent rows and shell rows with OSC 133 both
+// go through it; a shell without the integration gets no field at all, and
+// the missing offset is the tell that kido knows nothing about it.
+func field(ind string) string {
+	if ind == "" {
+		return "  "
+	}
+	return ind + " "
+}
+
+// agentPrefix marks a row as an agent's rather than a shell's, so the two
+// are told apart at a glance now that they share one indicator vocabulary.
+func agentPrefix() string { return stDim.Render("ai:") + " " }
 
 // piPrefix is what pi puts before the title it sets: "π - <session> -
 // <cwd>", or "π - <cwd>" when the session is unnamed. Only the marker is
@@ -770,8 +858,9 @@ func (m *model) agentTitleOf(p tmux.Pane) (string, bool) {
 }
 
 // paneLabel is the row text for a pane: its foreground command, or for an
-// agent pane, a status indicator and the session title. Which agent it is
-// makes no difference to the row.
+// agent pane, the "ai:" prefix and the session title, both behind the same
+// two-column indicator field. Which agent it is makes no difference to the
+// row.
 func (m *model) paneLabel(p tmux.Pane) string {
 	title, isAgent := m.agentTitleOf(p)
 	if !isAgent {
@@ -780,26 +869,31 @@ func (m *model) paneLabel(p tmux.Pane) string {
 			text = stProc.Render("ssh ") + host
 		}
 		// A shell with kido's OSC 133 integration (shell/zsh) gets the
-		// same running/idle indicator an agent pane has. A shell without
-		// it says nothing, and its row stays exactly as it always was.
-		if running, ok := p.ShellStatus(); ok {
-			ind := indicators[state.Idle]
-			if running {
-				ind = indicators[state.Running]
-			}
-			return ind + " " + text
+		// same indicators an agent pane has: running, or the last command
+		// having failed. A shell without it says nothing, and its row
+		// stays exactly as it always was, field and all.
+		running, ok := p.ShellStatus()
+		if !ok {
+			return text
 		}
-		return text
+		ind := ""
+		switch {
+		case running:
+			ind = indicator(state.Running) // a running command wins over a past failure
+		case m.failed(p):
+			ind = indicatorFailed()
+		}
+		return field(ind) + text
 	}
 	s, reported := m.snap.states[p.PaneID]
-	ind := indicators[state.Unknown]
+	ind := indicator(state.Unknown)
 	if reported {
-		ind = indicators[s.Status]
+		ind = indicator(s.Status)
 	}
 	if m.done(p.PaneID) {
-		ind = indicatorDone
+		ind = indicatorDone()
 	}
-	return ind + " " + title
+	return field(ind) + agentPrefix() + title
 }
 
 func (m *model) rebuild() {

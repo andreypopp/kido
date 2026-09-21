@@ -17,9 +17,13 @@ func (h *harness) rowFor(name string) string {
 	return ""
 }
 
+// waitGlyph waits until the agent pane titled title shows glyph in its
+// indicator field. An empty glyph is the idle pane's empty field: the
+// field is two columns wide whatever it holds, so every label starts at
+// the same place.
 func (h *harness) waitGlyph(title, glyph string) {
 	h.t.Helper()
-	want := "· " + glyph + " " + title
+	want := "· " + indField(glyph) + "ai: " + title
 	h.waitFor(func() bool { return h.rowFor(title) == want }, settle,
 		func() string { return fmt.Sprintf("row %q (is %q)", want, h.rowFor(title)) })
 }
@@ -36,22 +40,22 @@ func TestClaudeStatuses(t *testing.T) {
 		glyph string
 		event []string
 	}{
-		{"○", []string{"SessionStart"}},
-		{"●", []string{"PreToolUse", "tool_name", "Bash"}},
+		{"", []string{"SessionStart"}},
+		{"▌", []string{"PreToolUse", "tool_name", "Bash"}},
 		{"◆", []string{"PreToolUse", "tool_name", "AskUserQuestion"}},
-		{"●", []string{"PostToolUse"}},
+		{"▌", []string{"PostToolUse"}},
 		{"◆", []string{"PermissionRequest"}},
-		{"●", []string{"UserPromptSubmit"}},
+		{"▌", []string{"UserPromptSubmit"}},
 		{"◆", []string{"Notification", "notification_type", "permission_prompt"}},
 		{"◌", []string{"PreCompact", "trigger", "auto"}},
-		{"●", []string{"PostCompact", "trigger", "auto"}},
+		{"▌", []string{"PostCompact", "trigger", "auto"}},
 	} {
 		h.hook("sess-1", pane, c.event[0], c.event[1:]...)
 		h.waitGlyph("Tmux config", c.glyph)
 	}
 
 	// The title comes from the pane title with the leading marker gone.
-	if got := h.rowFor("Tmux config"); got != "· ● Tmux config" {
+	if got := h.rowFor("Tmux config"); got != "· ▌ ai: Tmux config" {
 		t.Errorf("row = %q", got)
 	}
 
@@ -79,7 +83,7 @@ func TestClaudeDone(t *testing.T) {
 	pane := h.claudePane("beta", "✳ Away job")
 
 	h.hook("sess-away", pane, "PreToolUse", "tool_name", "Bash")
-	h.waitGlyph("Away job", "●")
+	h.waitGlyph("Away job", "▌")
 
 	// The client is on alpha, so beta's pane is not being looked at.
 	h.hook("sess-away", pane, "Stop")
@@ -90,7 +94,7 @@ func TestClaudeDone(t *testing.T) {
 	h.in("select-window", "-t", pane)
 	h.in("select-pane", "-t", pane)
 	h.waitSession("beta")
-	h.waitGlyph("Away job", "○")
+	h.waitGlyph("Away job", "")
 }
 
 // TestClaudeDismissedPrompt checks the one status kido works out for
@@ -112,7 +116,7 @@ func TestClaudeDismissedPrompt(t *testing.T) {
 	// being read as idle.
 	h.fakeClaude(pane, "busy")
 	time.Sleep(time.Second)
-	if got := h.rowFor("Dismissed"); got != "· ◆ Dismissed" {
+	if got := h.rowFor("Dismissed"); got != "· ◆ ai: Dismissed" {
 		t.Fatalf("row = %q, want the waiting glyph while work is in flight", got)
 	}
 
@@ -123,7 +127,7 @@ func TestClaudeDismissedPrompt(t *testing.T) {
 
 	// A hook still has the last word.
 	h.hook("sess-dismiss", pane, "UserPromptSubmit")
-	h.waitGlyph("Dismissed", "●")
+	h.waitGlyph("Dismissed", "▌")
 }
 
 // TestAttentionKeys checks n/N cycling through the sessions that want the

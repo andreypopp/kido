@@ -76,7 +76,14 @@ type Pane struct {
 	CommandRunning   bool
 	CommandStartTime int64 // unix time of the last 133;C
 	LastPromptTime   int64 // unix time of the last 133;A
-	Title            string
+	// The last finished command's exit status, from the last 133;D.
+	// tmux prints pane_command_status empty when it has none (it keeps
+	// -1 internally), so the flag is what tells "no status yet" from a
+	// clean exit; CommandEndTime is the unix time of that 133;D.
+	CommandStatus   int
+	CommandStatusOK bool
+	CommandEndTime  int64
+	Title           string
 }
 
 // ShellStatus reports whether pane p is running a command right now, and
@@ -120,6 +127,8 @@ var paneFormat = strings.Join([]string{
 	"#{pane_command_running}",
 	"#{pane_command_start_time}",
 	"#{pane_last_prompt_time}",
+	"#{pane_command_status}",
+	"#{pane_command_end_time}",
 	"#{pane_title}",
 }, sep)
 
@@ -128,18 +137,24 @@ var paneFormat = strings.Join([]string{
 func parsePanes(lines []string) []Pane {
 	var panes []Pane
 	for _, line := range lines {
-		f := strings.SplitN(line, sep, 15)
-		if len(f) < 15 {
+		f := strings.SplitN(line, sep, 17)
+		if len(f) < 17 {
 			continue
 		}
 		p := Pane{SessionName: f[0], WindowID: f[3], WindowName: f[4], WindowLayout: f[5],
 			PaneID: f[6], Active: f[7] == "1", CurrentCommand: f[9],
-			CurrentPath: f[10], CommandRunning: f[11] == "1", Title: f[14]}
+			CurrentPath: f[10], CommandRunning: f[11] == "1", Title: f[16]}
 		p.SessionCreated, _ = strconv.ParseInt(f[1], 10, 64)
 		p.WindowIndex, _ = strconv.Atoi(f[2])
 		p.PanePID, _ = strconv.Atoi(f[8])
 		p.CommandStartTime, _ = strconv.ParseInt(f[12], 10, 64)
 		p.LastPromptTime, _ = strconv.ParseInt(f[13], 10, 64)
+		// An empty status field means tmux has no exit status for this
+		// pane, which is not the same as a status of 0.
+		if n, err := strconv.Atoi(f[14]); err == nil {
+			p.CommandStatus, p.CommandStatusOK = n, true
+		}
+		p.CommandEndTime, _ = strconv.ParseInt(f[15], 10, 64)
 		panes = append(panes, p)
 	}
 	return panes

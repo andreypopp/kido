@@ -9,12 +9,12 @@ agent is running.
 
 ```
 tmux
-┌ ● Tmux config          <- an agent session: ● running, ◆ waiting, ◌ compacting, ✓ done, ○ idle
-└ zsh
-· nvim
-· ssh deploy@build-box      <- panes running ssh show the destination
+┌ ▌ ai: Tmux config      <- an agent session: ▌ running, ◆ waiting, ◌ compacting, ✓ done
+└   zsh
+· ▌ cargo test           <- a shell running a command (red ▌ when the last one failed)
+· ssh deploy@build-box   <- panes running ssh show the destination
 review
-· ◆ Fix login redirect
+· ◆ ai: Fix login redirect
 ```
 
 ## Install
@@ -37,10 +37,10 @@ Claude Code reports its status.
 ### Shell status (optional, zsh only)
 
 By default only agent panes show a status indicator. Plain shell panes can
-show one too - `●` while a command runs, `○` at the prompt - but tmux only
-knows that if the shell tells it, through OSC 133 markers. kido ships a zsh
-shim that emits them, installed by pointing `ZDOTDIR` at it rather than by
-editing any of your startup files. Add one line to `~/.tmux.conf`, with the
+show one too - `▌` while a command runs, a red `▌` when the last one
+failed - but tmux only knows that if the shell tells it, through OSC 133
+markers. kido ships a zsh shim that emits them, installed by pointing
+`ZDOTDIR` at it rather than by editing any of your startup files. Add one line to `~/.tmux.conf`, with the
 literal brew prefix (tmux does not expand `$(brew --prefix)`):
 
 ```
@@ -149,15 +149,20 @@ echo "run the tests" | kido prompt --window
 ## Status
 
 Agents report what they are doing and the sidebar badges their pane with
-it: work in flight shows `● running`, a permission prompt or a question
-`◆ waiting`, context compaction `◌`, a session that is sitting at its
-prompt `○ idle`. Plain shell panes get the same `●`/`○` pair when their
-shell reports through OSC 133 (see Shell status under Install); without it
-their rows stay bare. A session stays `● running` at turn end while
-background commands or agents it started are still running, and one that
-finishes while you are elsewhere shows `✓ done` until you visit its pane. The label
-next to the indicator is the pane's own title, as the agent set it. State
-lives in `~/.local/state/kido/`.
+it: work in flight shows `▌ running`, a permission prompt or a question
+`◆ waiting`, context compaction `◌`, and a session sitting at its prompt
+nothing at all. Agent rows carry an `ai:` prefix so they read apart from
+shell rows, which share the same vocabulary when their shell reports
+through OSC 133 (see Shell status under Install): `▌` while a command
+runs, a red `▌` when the last one exited nonzero, until you visit the
+pane. A shell without the integration gets no indicator column at all, so
+its row sits two columns to the left.
+
+A session stays `▌ running` at turn end while background commands or
+agents it started are still running, and one that finishes while you are
+elsewhere shows `✓ done` until you visit its pane. The label next to the
+indicator is the pane's own title, as the agent set it. State lives in
+`~/.local/state/kido/`.
 
 Claude Code reports through `kido hook`, registered by `kido setup-claude`.
 Dismissing a question or denying a permission fires no hook at all, so

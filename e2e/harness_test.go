@@ -470,8 +470,19 @@ var reverseRE = regexp.MustCompile(`\x1b\[(?:\d+;)*7(?:;\d+)*m`)
 // that turns that attribute on. Built once so it is safe to share between
 // parallel tests.
 var sgrOn = map[string]*regexp.Regexp{
-	"7": reverseRE,                                        // reverse video: the selected row
-	"1": regexp.MustCompile(`\x1b\[(?:\d+;)*1(?:;\d+)*m`), // bold: the client's session
+	"7":  reverseRE,                                         // reverse video: the selected row
+	"1":  regexp.MustCompile(`\x1b\[(?:\d+;)*1(?:;\d+)*m`),  // bold: the client's session
+	"31": regexp.MustCompile(`\x1b\[(?:\d+;)*31(?:;\d+)*m`), // red: a failed command's indicator
+}
+
+// indField is the sidebar's two-column indicator field as the tests spell
+// it: the glyph and a space, or two spaces when there is none. It mirrors
+// field() in internal/ui.
+func indField(glyph string) string {
+	if glyph == "" {
+		return "  "
+	}
+	return glyph + " "
 }
 
 // hasSGR reports whether line switches on the SGR attribute param.

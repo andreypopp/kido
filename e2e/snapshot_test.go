@@ -70,13 +70,13 @@ func TestSnapshotReplays(t *testing.T) {
 	resume := h.claudePane("beta", "✳ Resumable")
 	h.claudePane("beta", "✳ Fresh")
 	h.hook("sess-resume", resume, "SessionStart")
-	h.waitGlyph("Resumable", "○")
+	h.waitGlyph("Resumable", "")
 
 	// A pi pane that has reported through agent-status resumes by its own
 	// session id too, the same way a hooked Claude pane does.
 	piPane := h.piPane("beta", "π - resumable - kido")
 	h.agentStatus("pi-resume", piPane, "pi", "idle")
-	h.waitGlyph("resumable - kido", "○")
+	h.waitGlyph("resumable - kido", "")
 
 	// A window is named after the client that created it until tmux
 	// renames it to its pane's command a moment later; a snapshot taken in

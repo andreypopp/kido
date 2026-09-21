@@ -98,14 +98,28 @@ func TestSSHRowDirect(t *testing.T) {
 
 // TestShellStatusRow drives a plain zsh pane through kido's OSC 133 shim
 // (shell/zsh, installed by pointing ZDOTDIR at it) and expects the row to
-// carry the same indicators an agent pane has: ○ at the prompt, ● while a
-// command runs, ○ again when it is done.
+// carry the same indicators an agent pane has: an empty two-column field
+// at the prompt, a green ▌ while a command runs, and a red ▌ once a
+// command has exited nonzero, until the pane is visited.
 func TestShellStatusRow(t *testing.T) {
 	t.Parallel()
 	if _, err := exec.LookPath("zsh"); err != nil {
 		t.Skip("no zsh in PATH")
 	}
 	h := start(t, "alpha")
+
+	// The pane the client starts on, to come back to: a visited pane is
+	// the selected row, which kido draws with its colours stripped, so the
+	// colour checks below only mean something from somewhere else.
+	home := ""
+	for _, p := range h.panes() {
+		if p.Session == "alpha" && p.Active {
+			home = p.ID
+		}
+	}
+	if home == "" {
+		t.Fatal("no active pane in alpha")
+	}
 
 	shim, err := filepath.Abs(filepath.Join("..", "shell", "zsh"))
 	if err != nil {
@@ -114,26 +128,61 @@ func TestShellStatusRow(t *testing.T) {
 	// The ZDOTDIR the shim restores: an empty directory rather than the
 	// developer's own, so the test never reads their rc files. The empty
 	// .zshrc is what keeps zsh from opening its new-user setup wizard.
-	home := filepath.Join(h.dir, "zdotdir")
-	if err := os.MkdirAll(home, 0o755); err != nil {
+	zdot := filepath.Join(h.dir, "zdotdir")
+	if err := os.MkdirAll(zdot, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".zshrc"), nil, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(zdot, ".zshrc"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// The one line a user adds to ~/.tmux.conf, with the paths filled in.
 	h.in("set-option", "-g", "default-command",
-		fmt.Sprintf("KIDO_ZDOTDIR=%q ZDOTDIR=%q exec zsh", home, shim))
+		fmt.Sprintf("KIDO_ZDOTDIR=%q ZDOTDIR=%q exec zsh", zdot, shim))
 
 	// No argv, so the pane runs default-command: zsh through the shim.
 	pane := h.newWindow("alpha", "")
 	h.waitPaneCommand(pane, "zsh")
-	h.waitRow("○ zsh")
+	// An idle integrated shell shows nothing, in a field that keeps the
+	// label at the column every other row starts at.
+	h.waitZshRow("·   zsh", false)
 
 	h.in("send-keys", "-t", pane, "sleep 5", "Enter")
 	h.waitPaneCommand(pane, "sleep")
-	h.waitRow("● sleep")
+	h.waitZshRow("· ▌ sleep", false)
 
-	h.waitFor(func() bool { return hasLine(h.sidebar(), "○ zsh") },
-		10*time.Second, msgf("the row back at ○ zsh after the sleep"))
+	h.waitFor(func() bool { return h.zshRow("·   zsh", false) },
+		10*time.Second, msgf("the row back at an empty indicator after the sleep"))
+
+	// A command that fails leaves the row red until the pane is visited.
+	h.in("send-keys", "-t", pane, "false", "Enter")
+	h.waitZshRow("· ▌ zsh", true)
+
+	// Visiting the pane clears it: the failure is older than the visit.
+	h.in("select-window", "-t", pane)
+	h.in("select-pane", "-t", pane)
+	h.waitSelected("zsh")
+	h.in("select-window", "-t", home)
+	h.in("select-pane", "-t", home)
+	h.waitZshRow("·   zsh", false)
+}
+
+// zshRow reports whether the sidebar holds exactly the row want, with (or
+// without) a red foreground on it. Text and colour are read from one
+// capture, so a row cannot be matched in one frame and coloured in
+// another.
+func (h *harness) zshRow(want string, red bool) bool {
+	h.t.Helper()
+	for _, line := range h.capture() {
+		if sideText(line) == want {
+			return hasSGR(sideOf(line), "31") == red
+		}
+	}
+	return false
+}
+
+func (h *harness) waitZshRow(want string, red bool) {
+	h.t.Helper()
+	h.waitFor(func() bool { return h.zshRow(want, red) }, settle, func() string {
+		return fmt.Sprintf("row %q (red=%v); rows are %q", want, red, h.rows())
+	})
 }
