@@ -93,7 +93,7 @@ func TestQuote(t *testing.T) {
 
 func TestParsePanes(t *testing.T) {
 	line := strings.Join([]string{"work", "1700000000", "2", "@7", "win", "layout",
-		"%3", "1", "4242", "claude", "/tmp", "1", "1700000100", "1700000050",
+		"%3", "1", "4242", "claude", "/tmp", "0", "1", "1700000100", "1700000050",
 		"2", "1700000090", "✳ Title"}, sep)
 	p := parsePanes([]string{line, "junk"})
 	if len(p) != 1 {
@@ -115,11 +115,14 @@ func TestParsePanes(t *testing.T) {
 // status must not read as one that exited 0.
 func TestParsePanesEmptyCommandStatus(t *testing.T) {
 	line := strings.Join([]string{"work", "1700000000", "2", "@7", "win", "layout",
-		"%3", "0", "4242", "zsh", "/tmp", "0", "", "1700000050",
+		"%3", "0", "4242", "zsh", "/tmp", "1", "0", "", "1700000050",
 		"", "", "zsh"}, sep)
 	p := parsePanes([]string{line})
 	if len(p) != 1 {
 		t.Fatalf("got %d panes, want 1", len(p))
+	}
+	if !p[0].AlternateOn {
+		t.Error("alternate_on was not parsed")
 	}
 	if p[0].CommandStatusOK || p[0].CommandStatus != 0 || p[0].CommandEndTime != 0 {
 		t.Errorf("got status (%d, %v) end %d, want no status and no end time",

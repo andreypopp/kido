@@ -74,6 +74,12 @@ type Pane struct {
 	// emit the markers (kido ships a zsh integration in shell/zsh,
 	// installed by `kido setup-zsh`). A shell that
 	// never emits them leaves LastPromptTime zero; see ShellStatus.
+	// AlternateOn is tmux's own answer to "a program owns this terminal":
+	// vim, a pager, top and friends all take the screen by switching to
+	// the alternate buffer. It is the innermost program that does so, so
+	// unlike pane_current_command - which names the process group leader -
+	// it sees less running under git, or nvim running under sudo.
+	AlternateOn      bool
 	CommandRunning   bool
 	CommandStartTime int64 // unix time of the last 133;C
 	LastPromptTime   int64 // unix time of the last 133;A
@@ -125,6 +131,7 @@ var paneFormat = strings.Join([]string{
 	"#{pane_current_path}",
 	// OSC 133. pane_command_duration is deliberately left out: it ticks
 	// every second, which would defeat the snapshot change-detection.
+	"#{alternate_on}",
 	"#{pane_command_running}",
 	"#{pane_command_start_time}",
 	"#{pane_last_prompt_time}",
@@ -138,24 +145,25 @@ var paneFormat = strings.Join([]string{
 func parsePanes(lines []string) []Pane {
 	var panes []Pane
 	for _, line := range lines {
-		f := strings.SplitN(line, sep, 17)
-		if len(f) < 17 {
+		f := strings.SplitN(line, sep, 18)
+		if len(f) < 18 {
 			continue
 		}
 		p := Pane{SessionName: f[0], WindowID: f[3], WindowName: f[4], WindowLayout: f[5],
 			PaneID: f[6], Active: f[7] == "1", CurrentCommand: f[9],
-			CurrentPath: f[10], CommandRunning: f[11] == "1", Title: f[16]}
+			CurrentPath: f[10], AlternateOn: f[11] == "1",
+			CommandRunning: f[12] == "1", Title: f[17]}
 		p.SessionCreated, _ = strconv.ParseInt(f[1], 10, 64)
 		p.WindowIndex, _ = strconv.Atoi(f[2])
 		p.PanePID, _ = strconv.Atoi(f[8])
-		p.CommandStartTime, _ = strconv.ParseInt(f[12], 10, 64)
-		p.LastPromptTime, _ = strconv.ParseInt(f[13], 10, 64)
+		p.CommandStartTime, _ = strconv.ParseInt(f[13], 10, 64)
+		p.LastPromptTime, _ = strconv.ParseInt(f[14], 10, 64)
 		// An empty status field means tmux has no exit status for this
 		// pane, which is not the same as a status of 0.
-		if n, err := strconv.Atoi(f[14]); err == nil {
+		if n, err := strconv.Atoi(f[15]); err == nil {
 			p.CommandStatus, p.CommandStatusOK = n, true
 		}
-		p.CommandEndTime, _ = strconv.ParseInt(f[15], 10, 64)
+		p.CommandEndTime, _ = strconv.ParseInt(f[16], 10, 64)
 		panes = append(panes, p)
 	}
 	return panes

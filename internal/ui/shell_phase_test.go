@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"kido/internal/procs"
 	"kido/internal/state"
 	"kido/internal/tmux"
 )
@@ -281,5 +282,93 @@ func TestShellDebounceRedraws(t *testing.T) {
 	tick(100*time.Millisecond, false)
 	if green() {
 		t.Error("the row is still green after the hold ran out")
+	}
+}
+
+// TestInteractivePaneLabel checks the bypass: a pane whose foreground
+// command owns the terminal draws no indicator however long it has been
+// "running", while an ordinary command in the same state draws the green
+// one. The panes are driven through track() on a controlled clock,
+// because the running glyph only appears once the debounce has drawn it.
+func TestInteractivePaneLabel(t *testing.T) {
+	const pid = 4242
+	base := time.Unix(1700000000, 0)
+	clock := base
+	m := &model{
+		started: base.Add(-time.Hour),
+		seen:    map[string]time.Time{},
+		phases:  map[string]shellPhase{},
+		now:     func() time.Time { return clock },
+	}
+	// One integrated shell pane with a command running in it. Only the
+	// command, and whether it has taken the alternate screen, vary below.
+	pane := func(command string, alternate bool) tmux.Pane {
+		return tmux.Pane{
+			PaneID:           "%1",
+			PanePID:          pid,
+			CurrentCommand:   command,
+			AlternateOn:      alternate,
+			LastPromptTime:   base.Unix() - 1,
+			CommandRunning:   true,
+			CommandStartTime: base.Unix(),
+		}
+	}
+	label := func(p tmux.Pane, ssh map[int]procs.SSHSession) string {
+		m.at = m.now()
+		m.snap = snapshot{panes: []tmux.Pane{p}, ssh: ssh}
+		m.track()
+		return m.paneLabel(p)
+	}
+	// Past the debounce delay, so a plain command is drawn as running.
+	warm := func(p tmux.Pane, ssh map[int]procs.SSHSession) string {
+		clock = base
+		m.phases = map[string]shellPhase{}
+		label(p, ssh)
+		clock = clock.Add(500 * time.Millisecond)
+		return label(p, ssh)
+	}
+	running := indicator(state.Running)
+	for _, tc := range []struct {
+		name string
+		pane tmux.Pane
+		ssh  map[int]procs.SSHSession
+		want string
+	}{{
+		name: "a program on the alternate screen says nothing",
+		pane: pane("nvim", true),
+		want: field("") + stProc.Render("nvim"),
+	}, {
+		// The case a list of command names cannot reach: the pager has
+		// the screen, but the pane reports the process group leader.
+		name: "a pager under another command still says nothing",
+		pane: pane("git", true),
+		want: field("") + stProc.Render("git"),
+	}, {
+		name: "an ordinary command still runs",
+		pane: pane("cargo", false),
+		want: field(running) + stProc.Render("cargo"),
+	}, {
+		name: "an ssh shell says nothing",
+		pane: pane("ssh", false),
+		ssh:  map[int]procs.SSHSession{pid: {Host: "build-box", Interactive: true}},
+		want: field("") + stProc.Render("ssh ") + "build-box",
+	}, {
+		name: "ssh running a remote command is a job",
+		pane: pane("ssh", false),
+		ssh:  map[int]procs.SSHSession{pid: {Host: "build-box"}},
+		want: field(running) + stProc.Render("ssh ") + "build-box",
+	}, {
+		// A remote full-screen program takes this pane's alternate
+		// screen too, even though ssh itself carries a command.
+		name: "a remote editor says nothing",
+		pane: pane("ssh", true),
+		ssh:  map[int]procs.SSHSession{pid: {Host: "build-box"}},
+		want: field("") + stProc.Render("ssh ") + "build-box",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := warm(tc.pane, tc.ssh); got != tc.want {
+				t.Errorf("paneLabel = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

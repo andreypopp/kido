@@ -50,9 +50,9 @@ type snapshot struct {
 	focused bool   // the sidebar has the keyboard
 	panes   []tmux.Pane
 	states  map[string]state.Session
-	ssh     map[int]string // pane pid -> ssh destination
-	pi      map[int]bool   // pane pid -> pi runs in this pane
-	probed  time.Time      // when the process table was last read
+	ssh     map[int]procs.SSHSession // pane pid -> what its ssh is doing
+	pi      map[int]bool             // pane pid -> pi runs in this pane
+	probed  time.Time                // when the process table was last read
 	err     error
 
 	// probes remembers the last screen read of each waiting pane, so the
@@ -212,7 +212,7 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 	}
 	s.active = tmux.ActivePane(s.panes, s.current)
 	s.states, s.err = state.Load()
-	s.ssh, s.pi = map[int]string{}, map[int]bool{}
+	s.ssh, s.pi = map[int]procs.SSHSession{}, map[int]bool{}
 	s.probed = prev.probed
 	// At most one fresh sweep per tick, and at most one per procsProbe: a
 	// faster tick must not mean more ps calls.
@@ -229,8 +229,8 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 			if _, ok := scan.SSH[p.PanePID]; !ok {
 				sweep()
 			}
-			if host, ok := scan.SSH[p.PanePID]; ok {
-				s.ssh[p.PanePID] = host
+			if sess, ok := scan.SSH[p.PanePID]; ok {
+				s.ssh[p.PanePID] = sess
 			}
 		case procs.MaybePi(p.CurrentCommand):
 			if _, reported := s.states[p.PaneID]; reported {
@@ -1007,16 +1007,26 @@ func (m *model) agentTitleOf(p tmux.Pane) (string, bool) {
 	return agentTitle(p.Title), true
 }
 
-// paneLabel is the row text for a pane: its foreground command, or for an
-// agent pane, the "ai:" prefix and the session title, both behind the same
-// two-column indicator field. Which agent it is makes no difference to the
-// row.
+// paneLabel is the row text for a pane: its foreground command, or an
+// agent pane's session title, both behind the same two-column indicator
+// field. Which agent it is makes no difference to the row.
 func (m *model) paneLabel(p tmux.Pane) string {
 	title, isAgent := m.agentTitleOf(p)
 	if !isAgent {
 		text := stProc.Render(p.CurrentCommand)
-		if host, ok := m.snap.ssh[p.PanePID]; ok {
-			text = stProc.Render("ssh ") + host
+		// A program that owns the terminal is one kido has nothing to say
+		// about: it runs for as long as the user is working in it, so "a
+		// command is running" is not news. tmux answers that directly -
+		// taking the screen means switching to the alternate buffer - and
+		// answers it for the innermost program, where pane_current_command
+		// would name the process group leader (git, for a pager; sudo, for
+		// an editor under it). An ssh sitting at a remote shell takes no
+		// alternate buffer of its own, so it is decided from its arguments
+		// instead; a full-screen program on the far side still shows here.
+		interactive := p.AlternateOn
+		if sess, ok := m.snap.ssh[p.PanePID]; ok {
+			text = stProc.Render("ssh ") + sess.Host
+			interactive = interactive || sess.Interactive
 		}
 		// A shell with kido's OSC 133 integration (shell/zsh, installed
 		// by `kido setup-zsh`) gets the same indicators an agent pane
@@ -1025,6 +1035,11 @@ func (m *model) paneLabel(p tmux.Pane) string {
 		// was, field and all.
 		if _, ok := p.ShellStatus(); !ok {
 			return text
+		}
+		if interactive {
+			// The field stays, so the row still lines up with the other
+			// integrated shells; only the glyph goes.
+			return field("") + text
 		}
 		return field(m.shellIndicator(m.phases[p.PaneID])) + text
 	}
@@ -1068,8 +1083,8 @@ func (m *model) rebuild() {
 					if title, ok := m.agentTitleOf(p); ok {
 						texts = append(texts, title)
 						owner = append(owner, i)
-					} else if host, ok := m.snap.ssh[p.PanePID]; ok {
-						texts = append(texts, host)
+					} else if sess, ok := m.snap.ssh[p.PanePID]; ok {
+						texts = append(texts, sess.Host)
 						owner = append(owner, i)
 					}
 				}

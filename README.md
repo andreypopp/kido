@@ -175,7 +175,8 @@ visit the pane.
 Shell panes with the OSC 133 integration use the same indicators: green `▌`
 while a command runs, then, until you visit the pane, green `✓` if the last
 one exited zero or red `▌` if it exited nonzero. A shell without the
-integration has no indicator column.
+integration has no indicator column. A program that has taken the
+terminal (an editor, a pager, an `ssh` shell) shows no indicator.
 
 Claude Code reports through `kido hook`. Dismissing a question or denying a
 permission fires no hook, so kido reads the pane and returns it to idle

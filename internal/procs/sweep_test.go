@@ -96,21 +96,42 @@ func TestParseProcesses(t *testing.T) {
 	})
 }
 
-func TestSSHHost(t *testing.T) {
+// TestSSHSession checks both halves of the argv walk: the destination,
+// and whether the session is a remote shell (a pty, so nothing "runs")
+// or a job.
+func TestSSHSession(t *testing.T) {
 	for _, c := range []struct {
 		args []string
-		want string
+		host string
+		want bool // interactive
 	}{
-		{[]string{"myhost"}, "myhost"},
-		{[]string{"-p", "2222", "user@box"}, "user@box"},
-		{[]string{"-p2222", "box"}, "box"},
-		{[]string{"-J", "jump", "-i", "key", "-o", "X=y", "dest"}, "dest"},
-		{[]string{"-v", "-A", "root@1.2.3.4", "uptime"}, "root@1.2.3.4"},
-		{[]string{"ssh://me@h:22"}, "me@h:22"},
-		{[]string{"-L", "8080:x:80", "--", "h"}, "h"},
+		{[]string{"myhost"}, "myhost", true},
+		{[]string{"myhost", "make", "build"}, "myhost", false},
+		{[]string{"-t", "myhost", "make", "build"}, "myhost", true},
+		{[]string{"-tt", "myhost", "tail", "-f", "log"}, "myhost", true},
+		{[]string{"-T", "myhost", "make"}, "myhost", false},
+		{[]string{"-T", "myhost"}, "myhost", false},
+		{[]string{"-N", "-L", "8080:x:80", "myhost"}, "myhost", true},
+		{[]string{"-p", "2222", "user@box"}, "user@box", true},
+		{[]string{"-p", "2222", "user@box", "uptime"}, "user@box", false},
+		{[]string{"-p2222", "box"}, "box", true},
+		{[]string{"-p2222", "box", "uptime"}, "box", false},
+		{[]string{"-J", "jump", "-i", "key", "-o", "X=y", "dest"}, "dest", true},
+		{[]string{"-v", "-A", "root@1.2.3.4", "uptime"}, "root@1.2.3.4", false},
+		{[]string{"ssh://me@h:22"}, "me@h:22", true},
+		{[]string{"-L", "8080:x:80", "--", "h"}, "h", true},
+		{[]string{"--", "h", "uptime"}, "h", false},
+		// A value that happens to contain flag letters is never scanned
+		// for them: this stays a plain interactive session.
+		{[]string{"-oProxyCommand=nc -T -N %h %p", "h"}, "h", true},
+		// No destination at all: nothing is known, so nothing is claimed.
+		{[]string{"-v", "-p", "2222"}, "", false},
+		{nil, "", false},
 	} {
-		if got := sshHost(c.args); got != c.want {
-			t.Errorf("%v: got %q want %q", c.args, got, c.want)
+		got := sshSession(c.args)
+		if got.Host != c.host || got.Interactive != c.want {
+			t.Errorf("%v: got (%q, %v) want (%q, %v)",
+				c.args, got.Host, got.Interactive, c.host, c.want)
 		}
 	}
 }
