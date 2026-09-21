@@ -26,7 +26,9 @@ review
    sidebar config kido ships. Reload with `tmux source-file ~/.tmux.conf`,
    or restart tmux.
 
-3. `kido setup-claude` registers the hook in `~/.claude/settings.json`.
+3. `kido setup-claude` registers the hook in `~/.claude/settings.json` so
+   Claude Code reports its status. If you use pi, `kido setup-pi` installs
+   its status extension into `~/.pi/agent/extensions/`.
 
 4. Optional, zsh only: `kido setup-zsh` adds a marked block to `~/.zshrc`
    sourcing the script that emits the OSC 133 markers tmux reads to tell
