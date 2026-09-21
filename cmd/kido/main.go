@@ -321,7 +321,10 @@ func isKidoHook(entry any) bool {
 }
 
 // runHook is the Claude Code hook: it reads the event from stdin and
-// records the session's status for the sidebar. With debug, every event
+// records the session's status for the sidebar. The session's last record
+// is read first, for the one thing an event alone cannot say: whether the
+// session is already parked at running waiting on background work
+// (state.Session.Background). With debug, every event
 // (mapped or not) is appended to debug.log before anything else runs.
 func runHook(r io.Reader, debug bool) error {
 	raw, err := io.ReadAll(r)
@@ -331,6 +334,10 @@ func runHook(r io.Reader, debug bool) error {
 	var in hook.Input
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return err
+	}
+	if in.SessionID != "" {
+		prev, _, _ := state.Get(in.SessionID)
+		in.Background = prev.Background
 	}
 	e := hook.Apply(in)
 	if debug {
@@ -348,20 +355,21 @@ func runHook(r io.Reader, debug bool) error {
 // recordSession builds and writes the state.Session for one agent report:
 // the pane ($TMUX_PANE) and the pid the caller supplies (procs.ReporterPID,
 // walked past a wrapping shell or not depending on which path can be
-// behind one), e's status, e's end time (via endedAt) when e.Ended, and
-// title and inbox. Shared by runHook and agentStatus, which differ only in
-// which agent, pid, effect, title and inbox they report (Claude Code has
-// neither a title nor an inbox).
+// behind one), e's status, e's end time (via endedAt) when e.Ended, e's
+// background wait, and title and inbox. Shared by runHook and
+// agentStatus, which differ only in which agent, pid, effect, title and
+// inbox they report (Claude Code has neither a title nor an inbox).
 func recordSession(agent, sessionID string, pid int, e hook.Effect, title, inbox string) error {
 	now := time.Now().UTC()
 	s := state.Session{
-		Agent:  agent,
-		Pane:   os.Getenv("TMUX_PANE"),
-		PID:    pid,
-		Status: e.Status,
-		TS:     now,
-		Title:  title,
-		Inbox:  inbox,
+		Agent:      agent,
+		Pane:       os.Getenv("TMUX_PANE"),
+		PID:        pid,
+		Status:     e.Status,
+		TS:         now,
+		Title:      title,
+		Inbox:      inbox,
+		Background: e.Background,
 	}
 	if e.Ended {
 		s.Ended = endedAt(sessionID, now)

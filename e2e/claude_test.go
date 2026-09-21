@@ -97,6 +97,61 @@ func TestClaudeDone(t *testing.T) {
 	h.waitGlyph("Away job", "")
 }
 
+// TestClaudeBackgroundWork checks the pane of a turn that ended with
+// background work still running: it stays running until the work is done,
+// and only the SubagentStop reporting nothing left turns it into "✓ done".
+func TestClaudeBackgroundWork(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	h.newSession("beta")
+	// The client is on alpha, so beta's pane is not being looked at and a
+	// finished turn shows the done glyph.
+	pane := h.claudePane("beta", "✳ Background job")
+
+	running := []any{map[string]any{"status": "running"}}
+	h.hook("sess-bg", pane, "PreToolUse", "tool_name", "Bash")
+	h.waitGlyph("Background job", "▌")
+
+	// The turn ends, but a background subagent is still going.
+	h.hookPayload("sess-bg", pane, "Stop", map[string]any{"background_tasks": running})
+	h.waitGlyph("Background job", "▌")
+
+	// Its own tool calls and turns keep arriving under this session id and
+	// leave the pane where it is.
+	h.hookPayload("sess-bg", pane, "PreToolUse", map[string]any{"agent_id": "a", "tool_name": "Bash"})
+	h.hookPayload("sess-bg", pane, "SubagentStop", map[string]any{"agent_id": "a", "background_tasks": running})
+	// So does the idle_prompt notification a minute after the Stop, which
+	// knows nothing of the background job.
+	h.hook("sess-bg", pane, "Notification", "notification_type", "idle_prompt")
+	time.Sleep(time.Second)
+	if got := h.rowFor("Background job"); got != "· ▌ ai: Background job" {
+		t.Fatalf("row = %q, want still running while the background job is", got)
+	}
+
+	// The last background task finishing ends the turn.
+	h.hookPayload("sess-bg", pane, "SubagentStop", map[string]any{"agent_id": "a", "background_tasks": []any{}})
+	h.waitGlyph("Background job", "✓")
+}
+
+// TestClaudeSubagentMidTurn checks the other side of it: a subagent
+// finishing while the main loop is still working says nothing about the
+// turn, so the pane stays running.
+func TestClaudeSubagentMidTurn(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	h.newSession("beta")
+	pane := h.claudePane("beta", "✳ Midturn job")
+
+	h.hook("sess-mid", pane, "PreToolUse", "tool_name", "Bash")
+	h.waitGlyph("Midturn job", "▌")
+
+	h.hookPayload("sess-mid", pane, "SubagentStop", map[string]any{"agent_id": "a", "background_tasks": []any{}})
+	time.Sleep(time.Second)
+	if got := h.rowFor("Midturn job"); got != "· ▌ ai: Midturn job" {
+		t.Fatalf("row = %q, want still running: the main loop never stopped", got)
+	}
+}
+
 // TestClaudeDismissedPrompt checks the one status kido works out for
 // itself: dismissing a question or denying a permission fires no hook at
 // all, so the waiting glyph would stick until Claude Code's idle_prompt

@@ -74,6 +74,16 @@ type Session struct {
 	// When the last turn ended (Stop or equivalent); zero if the session
 	// is idle for another reason, such as having just started.
 	Ended time.Time `json:"ended,omitempty"`
+	// Background says the session's main loop has already stopped and it
+	// is running only because background work (a subagent, a background
+	// shell) is still in flight. It is how the next hook event knows that
+	// the end of that work ends the turn. Files written by a kido that
+	// predates it have no such key and read as false, which is the state
+	// of every session that is not waiting on background work.
+	//
+	// Nothing clears it explicitly: every report writes a whole fresh
+	// Session, so it survives only as long as events keep setting it.
+	Background bool `json:"background,omitempty"`
 }
 
 // Dir returns the directory holding state files.

@@ -15,12 +15,23 @@ type Input struct {
 	NotificationType string `json:"notification_type"`
 	Trigger          string `json:"trigger"`   // PreCompact/PostCompact: "auto" or "manual"
 	ToolName         string `json:"tool_name"` // PreToolUse/PostToolUse
+	// AgentID is set on every event a subagent raises, and empty on the
+	// ones the main loop raises. A subagent's tool calls report the parent
+	// session id, so this is the only thing separating "the model is
+	// working" from "a subagent kido is waiting on is working".
+	AgentID string `json:"agent_id"`
 	// BackgroundTasks lists shell/agent work still running when a turn ends.
 	// Stop and SubagentStop fire even while these are in flight; kido treats
 	// the session as still running rather than idle until they finish.
 	BackgroundTasks []struct {
 		Status string `json:"status"`
 	} `json:"background_tasks"`
+	// Background is not part of the payload: the caller sets it from the
+	// session's last recorded state (state.Session.Background), which says
+	// the main loop has already stopped and only background work is
+	// holding the session at running. SubagentStop needs it to tell the
+	// end of that background work from a subagent finishing mid-turn.
+	Background bool `json:"-"`
 }
 
 // hasRunningBackgroundTask reports whether any background task is still
@@ -34,12 +45,36 @@ func (in Input) hasRunningBackgroundTask() bool {
 	return false
 }
 
+// working is the effect of a tool call: the session is running. Whether it
+// also clears a pending background wait depends on who made the call. A
+// background subagent's tool calls arrive under the parent's session id and
+// keep arriving for as long as the subagent runs, so treating them as the
+// main loop waking up would clear the flag immediately and leave the
+// session stuck at running once the subagent finished. Only a call from
+// the main loop (no agent id) means the turn is going again.
+func working(in Input) Effect {
+	return Effect{Status: state.Running, Background: in.Background && in.AgentID != ""}
+}
+
+// blocked is the effect of something asking the user: the session is
+// waiting. A pending background wait survives it, since a session whose
+// main loop has stopped can only be blocked on behalf of the background
+// work kido is waiting on, and that work is not over.
+func blocked(in Input) Effect {
+	return Effect{Status: state.Waiting, Background: in.Background}
+}
+
 // Effect is what an event means for the session.
 type Effect struct {
 	Status state.Status
 	Ended  bool // a turn ended: the session is idle because work finished
 	Remove bool // the session is gone
 	Ignore bool // nothing to record
+	// Background records that the main loop has stopped and the session is
+	// running only because background work is still in flight. It is
+	// written to the session (state.Session.Background) and comes back as
+	// Input.Background on the next event.
+	Background bool
 }
 
 var (
@@ -49,6 +84,8 @@ var (
 	ended      = Effect{Status: state.Idle, Ended: true}
 	compacting = Effect{Status: state.Compacting}
 	ignore     = Effect{Ignore: true}
+	// backgrounded is a turn that ended with background work still going.
+	backgrounded = Effect{Status: state.Running, Background: true}
 )
 
 // events maps each registered event to its effect. Some depend on payload
@@ -63,27 +100,44 @@ var events = map[string]func(Input) Effect{
 	"SessionStart":     func(Input) Effect { return idle },
 	"SessionEnd":       func(Input) Effect { return Effect{Remove: true} },
 	"UserPromptSubmit": func(Input) Effect { return running },
-	"PostToolUse":      func(Input) Effect { return running },
+	"PostToolUse":      func(in Input) Effect { return working(in) },
 	"Stop": func(in Input) Effect {
 		if in.hasRunningBackgroundTask() {
-			return running
+			return backgrounded
 		}
 		return ended
+	},
+	// Nothing else moves a session off running once Stop parked it there
+	// with background work outstanding: the main loop has stopped, so no
+	// further Stop fires. SubagentStop is the only event that keeps
+	// arriving, and its background_tasks - not the fact that it fired, as
+	// it fires on every subagent turn - says when the wait is over.
+	"SubagentStop": func(in Input) Effect {
+		if in.Background && !in.hasRunningBackgroundTask() {
+			return ended
+		}
+		return ignore
 	},
 	// Asking the user a question blocks like a permission prompt.
 	"PreToolUse": func(in Input) Effect {
 		if in.ToolName == "AskUserQuestion" {
-			return waiting
+			return blocked(in)
 		}
-		return running
+		return working(in)
 	},
-	"PermissionRequest": func(Input) Effect { return waiting },
+	"PermissionRequest": func(in Input) Effect { return blocked(in) },
 	"Notification": func(in Input) Effect {
 		switch in.NotificationType {
 		case "permission_prompt", "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input":
-			return waiting
+			return blocked(in)
 		case "idle_prompt":
-			// Fires when a turn ended without a Stop, e.g. after Esc.
+			// Fires when a turn ended without a Stop, e.g. after Esc - but
+			// also a minute after every Stop, background work or not, and
+			// it carries no background_tasks of its own. A session already
+			// parked by Stop with work outstanding knows better.
+			if in.Background {
+				return ignore
+			}
 			return ended
 		}
 		return ignore
@@ -141,7 +195,8 @@ func mapped(event string) bool {
 
 // Describe renders the effect of a hook event the way debug.log records
 // it: "unmapped" for an event outside kido's table, else "remove",
-// "ended", "ignore", or "status=<status>".
+// "ended", "ignore", or "status=<status>", with " background" appended
+// when the session is only running because background work is.
 func Describe(event string, e Effect) string {
 	if !mapped(event) {
 		return "unmapped"
@@ -153,6 +208,8 @@ func Describe(event string, e Effect) string {
 		return "ended"
 	case e.Ignore:
 		return "ignore"
+	case e.Background:
+		return "status=" + string(e.Status) + " background"
 	default:
 		return "status=" + string(e.Status)
 	}

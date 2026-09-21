@@ -823,10 +823,20 @@ func (h *harness) sshProxy() string {
 // instead of inheriting it the way a pane does.
 func (h *harness) hook(sessionID, pane, event string, kv ...string) {
 	h.t.Helper()
-	payload := map[string]string{"hook_event_name": event, "session_id": sessionID}
+	payload := map[string]any{}
 	for i := 0; i+1 < len(kv); i += 2 {
 		payload[kv[i]] = kv[i+1]
 	}
+	h.hookPayload(sessionID, pane, event, payload)
+}
+
+// hookPayload is hook for a payload whose fields are not all strings:
+// background_tasks is a list of objects, so it cannot go through hook's
+// key/value pairs.
+func (h *harness) hookPayload(sessionID, pane, event string, payload map[string]any) {
+	h.t.Helper()
+	payload["hook_event_name"] = event
+	payload["session_id"] = sessionID
 	body, err := json.Marshal(payload)
 	if err != nil {
 		h.t.Fatal(err)

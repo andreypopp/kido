@@ -251,6 +251,77 @@ func TestRunHookEndedPreservesEarlierEnd(t *testing.T) {
 	}
 }
 
+// TestRunHookBackgroundWait checks the full round trip of a turn that ends
+// with background work outstanding: the wait is recorded, survives the
+// subagent's own tool calls, and ends - with a fresh end time - on the
+// SubagentStop that reports nothing left running.
+func TestRunHookBackgroundWait(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("KIDO_STATE_DIR", dir)
+	t.Setenv("TMUX_PANE", "%9")
+
+	fire := func(payload string) state.Session {
+		t.Helper()
+		if err := runHook(strings.NewReader(payload), false); err != nil {
+			t.Fatalf("runHook: %v", err)
+		}
+		s, _, err := state.Get("s")
+		if err != nil {
+			t.Fatalf("state.Get: %v", err)
+		}
+		return s
+	}
+
+	// A turn that ends with a background task running stays running, and
+	// the record says why.
+	s := fire(`{"hook_event_name":"Stop","session_id":"s","background_tasks":[{"status":"running"}]}`)
+	if s.Status != state.Running || !s.Background || !s.Ended.IsZero() {
+		t.Fatalf("after Stop: %+v", s)
+	}
+
+	// The background subagent's own tool calls carry the session id but
+	// say nothing about the main loop: the wait stands.
+	s = fire(`{"hook_event_name":"PreToolUse","session_id":"s","agent_id":"a","tool_name":"Bash"}`)
+	if s.Status != state.Running || !s.Background {
+		t.Fatalf("after subagent PreToolUse: %+v", s)
+	}
+
+	// A SubagentStop with work still in flight changes nothing.
+	s = fire(`{"hook_event_name":"SubagentStop","session_id":"s","agent_id":"a","background_tasks":[{"status":"running"}]}`)
+	if s.Status != state.Running || !s.Background {
+		t.Fatalf("after busy SubagentStop: %+v", s)
+	}
+
+	// idle_prompt fires a minute after any turn ends and carries no view
+	// of background work: it must not end this one.
+	s = fire(`{"hook_event_name":"Notification","notification_type":"idle_prompt","session_id":"s"}`)
+	if s.Status != state.Running || !s.Background || !s.Ended.IsZero() {
+		t.Fatalf("after idle_prompt: %+v", s)
+	}
+
+	// The last one finishing ends the turn, end time and all.
+	before := time.Now().UTC()
+	s = fire(`{"hook_event_name":"SubagentStop","session_id":"s","agent_id":"a","background_tasks":[]}`)
+	if s.Status != state.Idle || s.Background {
+		t.Fatalf("after final SubagentStop: %+v", s)
+	}
+	if s.Ended.Before(before) || s.Ended.After(time.Now().UTC()) {
+		t.Errorf("Ended = %v, want stamped now", s.Ended)
+	}
+
+	// The main loop working again clears the wait, and a SubagentStop from
+	// a subagent it spawned no longer ends the turn.
+	fire(`{"hook_event_name":"Stop","session_id":"s","background_tasks":[{"status":"running"}]}`)
+	s = fire(`{"hook_event_name":"PreToolUse","session_id":"s","tool_name":"Bash"}`)
+	if s.Status != state.Running || s.Background {
+		t.Fatalf("after main-loop PreToolUse: %+v", s)
+	}
+	s = fire(`{"hook_event_name":"SubagentStop","session_id":"s","agent_id":"a","background_tasks":[]}`)
+	if s.Status != state.Running || !s.Ended.IsZero() {
+		t.Errorf("SubagentStop with no wait pending: %+v", s)
+	}
+}
+
 func TestDebugLogPath(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("KIDO_STATE_DIR", dir)
