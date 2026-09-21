@@ -71,6 +71,21 @@ func TestDeliverInboxBadReply(t *testing.T) {
 	}
 }
 
+// TestDeliverInboxRefused checks that a "refused" reply is reported as
+// errAskRefused, distinct from both "ok" and a generic bad reply, and
+// that it is not errInboxUnavailable - the send-keys fallback must never
+// fire on a deliberate refusal.
+func TestDeliverInboxRefused(t *testing.T) {
+	in := testutil.StartInbox(t, "refused\n")
+	err := deliverInbox(in.Path, "hi")
+	if !errors.Is(err, errAskRefused) {
+		t.Fatalf("err = %v, want errAskRefused", err)
+	}
+	if errors.Is(err, errInboxUnavailable) {
+		t.Errorf("err = %v, want not errInboxUnavailable: a refusal must never trigger the paste fallback", err)
+	}
+}
+
 // TestDeliverInboxUnavailable checks the cases that mean nothing was
 // delivered and send-keys is still open: no path at all, a path that does
 // not exist, a stale socket a dead agent left behind, and a path too long

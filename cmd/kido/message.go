@@ -20,32 +20,70 @@ import (
 // inboxTimeout is a variable rather than a constant.
 var listPanes = tmux.ListPanes
 
-// message implements `kido message [--reply-to ID] <to>`: it reads text
-// from stdin (the whole input, with one trailing newline stripped) and
-// delivers it to the agent to names, resolved by resolveTarget within the
-// caller's own tmux session.
+// message implements `kido message [--kind K] [--reply-to ID] [--id ID]
+// <to>`: it reads text from stdin (the whole input, with one trailing
+// newline stripped) and delivers it to the agent to names, resolved by
+// resolveTarget within the caller's own tmux session.
+//
+// --kind is one of message (the default), ask, reply or notice - see
+// msg.Kind. A reply must carry --reply-to, naming the ask it answers; an
+// ask must not, since it starts a new correlation rather than answering
+// one. --id lets the caller assign the envelope's own id instead of
+// having one generated: pi's ask_agent tool (pi/kido-status.ts) needs to
+// know an ask's id before sending it, to register what it is waiting for,
+// so it generates the id itself and passes it through here. There is no
+// `kido ask` CLI twin: a short-lived CLI process has no inbox of its own
+// to receive the reply on, only a long-lived extension does, which is why
+// ask_agent lives entirely in pi/kido-status.ts and calls this command
+// just to send the question.
 //
 // An agent that has reported an inbox socket gets it as a real user
 // message, in the v1 envelope (internal/msg) when it has advertised that
 // protocol, else as v0 raw text - the same contract kido prompt relies
 // on. An agent with no inbox at all (Claude Code, or any agent whose
 // socket bind failed) gets it pasted into its pane instead, by the same
-// deliverInboxOrPaste kido prompt uses.
+// deliverInboxOrPaste kido prompt uses; this is refused for any --kind
+// other than message, since a paste cannot carry the kind or id an
+// ask/reply/notice needs and would otherwise silently arrive as a plain
+// prompt.
 //
 // Returns the process exit code, printing any error to stderr itself.
 func message(args []string, stdin io.Reader) int {
 	fs := flag.NewFlagSet("message", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	kindFlag := fs.String("kind", string(msg.KindMessage), "kind of envelope: message, ask, reply, or notice")
 	replyTo := fs.String("reply-to", "", "id of an earlier ask this message answers")
+	idFlag := fs.String("id", "", "id to assign this envelope; a fresh one is generated if omitted")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, "kido message:", err)
 		return 1
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: kido message [--reply-to ID] <to>")
+		fmt.Fprintln(os.Stderr, "usage: kido message [--kind K] [--reply-to ID] [--id ID] <to>")
 		return 1
 	}
 	to := fs.Arg(0)
+
+	// One dispatch on kind, so what each kind does and does not accept is
+	// read off in one place rather than from a chain of conditions that
+	// each test it again.
+	kind := msg.Kind(*kindFlag)
+	switch kind {
+	case msg.KindMessage, msg.KindNotice:
+	case msg.KindAsk:
+		if *replyTo != "" {
+			fmt.Fprintln(os.Stderr, "kido message: --kind ask must not have --reply-to; it starts a new correlation, not an answer to one")
+			return 1
+		}
+	case msg.KindReply:
+		if *replyTo == "" {
+			fmt.Fprintln(os.Stderr, "kido message: --kind reply requires --reply-to")
+			return 1
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "kido message: invalid --kind %q, want message, ask, reply, or notice\n", *kindFlag)
+		return 1
+	}
 
 	b, err := io.ReadAll(stdin)
 	if err != nil {
@@ -92,12 +130,25 @@ func message(args []string, stdin io.Reader) int {
 		return 1
 	}
 
+	// A target that has not advertised protocol 1 only ever gets v0 raw
+	// text (see the comment above), which has nowhere to carry kind or id;
+	// silently downgrading an ask or reply to a plain prompt would strip
+	// the very thing that made it one, so it is refused instead.
+	if kind != msg.KindMessage && target.Protocol < msg.V1 {
+		fmt.Fprintf(os.Stderr, "kido message: %s has not advertised kido's v1 inbox protocol, only message can be sent as v0 text\n", targetLabel(target))
+		return 1
+	}
+
+	envID := *idFlag
+	if envID == "" {
+		envID = msg.NewID()
+	}
 	payload := text
 	if target.Protocol >= msg.V1 {
 		env := msg.Envelope{
 			V:       msg.V1,
-			Kind:    msg.KindMessage,
-			ID:      msg.NewID(),
+			Kind:    kind,
+			ID:      envID,
 			From:    senderOf(states),
 			ReplyTo: *replyTo,
 			Text:    text,
@@ -152,10 +203,7 @@ func senderOf(states map[string]state.Session) msg.From {
 // says which session an agent is in. Shared with buildAgents (agents.go),
 // which scopes kido agents the same way.
 func sessionsInSession(states map[string]state.Session, panes []tmux.Pane, session string) []state.Session {
-	byPane := map[string]tmux.Pane{}
-	for _, p := range panes {
-		byPane[p.PaneID] = p
-	}
+	byPane := paneIndex(panes)
 	var out []state.Session
 	for _, s := range states {
 		if byPane[s.Pane].SessionID == session {
@@ -182,8 +230,9 @@ func resolveTarget(states map[string]state.Session, panes []tmux.Pane, self, to 
 	if !ok {
 		return state.Session{}, fmt.Errorf("pane %q not found", self)
 	}
+	byPane := paneIndex(panes)
 	scoped := sessionsInSession(states, panes, caller.SessionID)
-	if s, found, err := matchTarget(scoped, to); err != nil {
+	if s, found, err := matchTarget(scoped, byPane, to); err != nil {
 		return state.Session{}, err
 	} else if found {
 		return s, nil
@@ -199,7 +248,7 @@ func resolveTarget(states map[string]state.Session, panes []tmux.Pane, self, to 
 	for _, s := range states {
 		all = append(all, s)
 	}
-	switch s, found, ambiguous := matchTarget(all, to); {
+	switch s, found, ambiguous := matchTarget(all, byPane, to); {
 	case found && ambiguous != nil:
 		return state.Session{}, fmt.Errorf("%w, none in this tmux session", ambiguous)
 	case found:
@@ -209,19 +258,21 @@ func resolveTarget(states map[string]state.Session, panes []tmux.Pane, self, to 
 }
 
 // matchTarget applies message's addressing rules to a set of candidate
-// sessions: an exact case-insensitive title, then an exact id, then a
-// unique id prefix. found reports whether any rule matched at all, so
-// resolveTarget can tell "ambiguous" from "look elsewhere". err is
-// non-nil only when a rule's own candidates were ambiguous, naming them
-// so the caller can disambiguate.
-func matchTarget(sessions []state.Session, to string) (target state.Session, found bool, err error) {
-	var byTitle []state.Session
+// sessions: an exact case-insensitive name match (Title, falling back to
+// the pane's title exactly as displayName/buildAgents in agents.go does -
+// otherwise a name shown by kido agents for a session with no reported
+// Title would be refused here), then an exact id, then a unique id prefix.
+// found reports whether any rule matched at all, so resolveTarget can tell
+// "ambiguous" from "look elsewhere". err is non-nil only when a rule's own
+// candidates were ambiguous, naming them so the caller can disambiguate.
+func matchTarget(sessions []state.Session, byPane map[string]tmux.Pane, to string) (target state.Session, found bool, err error) {
+	var byName []state.Session
 	for _, s := range sessions {
-		if s.Title != "" && strings.EqualFold(s.Title, to) {
-			byTitle = append(byTitle, s)
+		if name := displayName(s, byPane); name != "" && strings.EqualFold(name, to) {
+			byName = append(byName, s)
 		}
 	}
-	if s, found, err := decide(byTitle, to, "name"); found {
+	if s, found, err := decide(byName, to, "name"); found {
 		return s, true, err
 	}
 

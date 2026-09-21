@@ -13,10 +13,13 @@ install: build
 	cp shell/zsh/integration.zsh $(BIN)/../share/kido/shell/zsh/integration.zsh
 	cp tmux/kido-side.tmux $(BIN)/../share/kido/kido-side.tmux
 
-# unit tests; the end-to-end suite needs the patched tmux and is separate
+# unit tests; the end-to-end suite needs the patched tmux and is separate.
+# test-ts covers pi/kido-status.ts under node and skips without one, so the
+# Go tests above never gain a node dependency of their own.
 test:
 	go vet ./...
 	go test ./cmd/... ./internal/...
+	./scripts/test-ts.sh
 
 # drives kido inside a real tmux fork; needs the fork on PATH or
 # KIDO_TMUX=<path>; KIDO_E2E_REQUIRED=1 fails instead of skipping

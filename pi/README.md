@@ -108,7 +108,7 @@ reporting carries on unaffected.
 
 ## Tools
 
-Three tools register unconditionally when the extension loads, and simply do
+Four tools register unconditionally when the extension loads, and simply do
 nothing useful until a session has started and kido has been found:
 
 - `list_agents()` runs `kido agents --json` and returns every agent visible
@@ -117,13 +117,62 @@ nothing useful until a session has started and kido has been found:
   text capped at 256 bytes and shown next to this session in kido's
   sidebar, separate from the running/waiting/idle status above. An empty
   string clears it.
-- `message_agent(to, message, replyTo?)` runs `kido message [--reply-to
-  <id>] <to>`, piping `message` on stdin. `to` is resolved by an exact,
-  case-insensitive name, then an exact session id, then a unique id
-  prefix, scoped to this tmux session; ambiguity is an error naming the
-  candidates rather than a guess. An agent with an inbox gets it as a real
-  user message; an agent with none (Claude Code, above all) gets it pasted
-  into its pane instead. Either way kido's stdout reports which happened
-  and to whom, and the tool relays that back verbatim. `replyTo` is
-  plumbed into the envelope for a later phase to consume; nothing reads it
-  yet.
+- `message_agent(to, message, replyTo?)` runs `kido message [--kind reply
+  --reply-to <id>] <to>`, piping `message` on stdin. `to` is resolved by
+  an exact, case-insensitive name, then an exact session id, then a
+  unique id prefix, scoped to this tmux session; ambiguity is an error
+  naming the candidates rather than a guess. An agent with an inbox gets
+  it as a real user message; an agent with none (Claude Code, above all)
+  gets it pasted into its pane instead. Either way kido's stdout reports
+  which happened and to whom, and the tool relays that back verbatim.
+  `replyTo`, when given, sends the message as kind `reply` so the
+  receiver's dispatch (below) can correlate it with a pending `ask_agent`.
+- `ask_agent(to, question, timeoutMs?)` runs `kido message --kind ask --id
+  <id> <to>`, then blocks the tool call until a matching `reply` envelope
+  arrives at this session's own inbox - which is also why there is no
+  `kido ask` CLI twin: a short-lived subprocess has no inbox of its own to
+  receive the answer on. Default timeout is 5 minutes; a timeout returns
+  an error naming the ask's id, and a reply that arrives after the timeout
+  still reaches the model, as an ordinary message (see Inbox dispatch,
+  below). A wait also ends early, with a different error, if this
+  session's inbox goes away under it - `session_shutdown`, or a `/reload`
+  whose rebind fails - since an answer would then have nowhere to arrive
+  and waiting out the remaining five minutes would only pretend
+  otherwise. A `/reload` that rebinds normally does *not* end the wait:
+  the socket is named after the pid, which does not change, so a reply
+  still lands. Refused, before anything is sent: the target is an ancestor (a
+  subagent may not block the parent that spawned it), is outside this
+  tmux session, has no inbox (there is no way back over a paste), or is
+  the caller itself. If this session already has an ask outstanding to
+  the same target and that target asks it something in the meantime, the
+  reverse ask is refused on the wire rather than let both sides deadlock
+  (see "Cycles" below).
+
+### Inbox dispatch
+
+A payload's `kind` (see "Inbox" above) decides what happens to it, never
+silently: every kind, recognised or not, reaches the model as some form of
+text rather than being dropped.
+
+- `message` - delivered as the user message it always was.
+- `ask` - delivered with an explicit instruction to reply via
+  `message_agent(to, message, replyTo=<id>)`. Refused instead (see
+  "Cycles") if doing so would close a cycle.
+- `reply` - resolves the matching `ask_agent` call, if one is still
+  waiting on that id. If none is (the asker already timed out, or the id
+  is foreign), the answer is still delivered, as an ordinary message -
+  never dropped.
+- `notice` - delivered as informational text.
+- anything else - delivered anyway, marked as an unrecognised kind, so a
+  typo or a newer kido talking to an older extension is visible rather
+  than silently read as a plain message.
+
+### Cycles
+
+Each extension instance keeps its outstanding asks in memory only: an
+edge to a target exists exactly as long as an `ask_agent` call is waiting
+on it. If this session is holding an ask to X and receives an ask from X
+before that one resolves, it answers `refused` on the wire
+instead of `ok` - a distinct answer kido's `deliverInbox` reports as its
+own error, never triggering the send-keys paste fallback, since nothing
+was mis-delivered. A refused ask is not delivered to the model at all.

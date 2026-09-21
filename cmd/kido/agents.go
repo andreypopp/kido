@@ -89,10 +89,7 @@ func agentsCmd(args []string) error {
 // than the record decides that), decorated with the tmux.Pane a fresh
 // ListPanes gave it.
 func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, self string) []AgentInfo {
-	byPane := map[string]tmux.Pane{}
-	for _, p := range panes {
-		byPane[p.PaneID] = p
-	}
+	byPane := paneIndex(panes)
 	scoped := sessionsInSession(states, panes, session)
 	byInstance := map[string]string{} // instance -> agent id, for resolving Parent
 	for _, s := range scoped {
@@ -106,13 +103,9 @@ func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, se
 	out := make([]AgentInfo, 0, len(ordered))
 	for _, s := range ordered {
 		p := byPane[s.Pane]
-		name := s.Title
-		if name == "" {
-			name = p.Title
-		}
 		out = append(out, AgentInfo{
 			ID:         s.ID,
-			Name:       name,
+			Name:       displayName(s, byPane),
 			Agent:      s.Agent,
 			Pane:       s.Pane,
 			Window:     p.WindowID,
@@ -183,6 +176,30 @@ func orderTree(scoped []state.Session, byInstance map[string]string) []state.Ses
 		walk(s.ID)
 	}
 	return out
+}
+
+// paneIndex is panes indexed by PaneID, the lookup buildAgents,
+// sessionsInSession and matchTarget all need to turn a state.Session's
+// pane into the tmux.Pane it currently lives in.
+func paneIndex(panes []tmux.Pane) map[string]tmux.Pane {
+	byPane := map[string]tmux.Pane{}
+	for _, p := range panes {
+		byPane[p.PaneID] = p
+	}
+	return byPane
+}
+
+// displayName is the name a session shows in kido agents and list_agents:
+// its reported Title, falling back to its pane's title when it has not set
+// one. matchTarget (message.go) applies the exact same fallback, so a name
+// this function produces is always one matchTarget can resolve back - the
+// two must not drift, or a name read off list_agents would be refused by
+// kido message.
+func displayName(s state.Session, byPane map[string]tmux.Pane) string {
+	if s.Title != "" {
+		return s.Title
+	}
+	return byPane[s.Pane].Title
 }
 
 // parentID resolves s's parent to an agent id, "" for a root: the

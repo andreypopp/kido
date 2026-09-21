@@ -126,6 +126,34 @@ func TestMessageResolveByName(t *testing.T) {
 	}
 }
 
+// TestMessageResolveByPaneTitleFallback checks defect D3: buildAgents
+// (agents.go) names a session with no reported Title after its pane's
+// title, and that is exactly the name a model reads off list_agents /
+// kido agents. matchTarget must accept that same name, or kido message
+// refuses a target by the very name kido agents just showed for it.
+func TestMessageResolveByPaneTitleFallback(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%1")
+	withPanes(t, []tmux.Pane{
+		{PaneID: "%1", SessionID: "$1"},
+		{PaneID: "%2", SessionID: "$1", Title: "worker-2"},
+	})
+
+	in := testutil.StartInbox(t, "ok\n")
+	if err := state.Record("target", state.Session{
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := message([]string{"worker-2"}, strings.NewReader("hi")); code != 0 {
+		t.Fatalf("code = %d, want 0: worker-2 is the name kido agents shows for this session", code)
+	}
+	if msgs := in.Received(); len(msgs) != 1 {
+		t.Fatalf("server got %q, want one message", msgs)
+	}
+}
+
 // TestMessageResolveAmbiguity checks the three addressing rules and their
 // ambiguity errors: two sessions with the same title, an id prefix that
 // matches two ids, and a target found nowhere at all.
@@ -340,5 +368,126 @@ func TestMessageRefusesInvalidUTF8(t *testing.T) {
 	}
 	if calls := pastes(); len(calls) != 0 {
 		t.Fatalf("sendPrompt calls = %v, want none", calls)
+	}
+}
+
+// TestMessageKindAsk checks that --kind ask sends an ask envelope with no
+// ReplyTo, and that the caller-supplied --id, not a generated one, is
+// what ends up on the wire - ask_agent (pi/kido-status.ts) must know the
+// id before sending, to register what it is waiting for.
+func TestMessageKindAsk(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%1")
+	withPanes(t, samePane)
+
+	in := testutil.StartInbox(t, "ok\n")
+	if err := state.Record("target", state.Session{
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path, Protocol: msg.V1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := message([]string{"--kind", "ask", "--id", "ask-7", "target"}, strings.NewReader("are you done?")); code != 0 {
+		t.Fatalf("message = %d, want 0", code)
+	}
+	msgs := in.Received()
+	if len(msgs) != 1 {
+		t.Fatalf("server got %d messages, want 1: %q", len(msgs), msgs)
+	}
+	env, ok := msg.Parse([]byte(msgs[0]))
+	if !ok {
+		t.Fatalf("payload %q did not parse as a v1 envelope", msgs[0])
+	}
+	if env.Kind != msg.KindAsk || env.ID != "ask-7" || env.ReplyTo != "" || env.Text != "are you done?" {
+		t.Errorf("envelope = %+v, want kind ask, id ask-7, no ReplyTo, the question text", env)
+	}
+}
+
+// TestMessageKindRejected checks the flag combinations message refuses
+// before it delivers anything at all - each case is a rule about what a
+// kind means, and a live target is recorded for every one of them so a
+// pass cannot come from the target being unresolvable instead.
+func TestMessageKindRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		why  string
+	}{
+		{"reply without reply-to", []string{"--kind", "reply", "target"}, "a reply must name the ask it answers"},
+		{"ask with reply-to", []string{"--kind", "ask", "--reply-to", "x", "target"}, "an ask starts a new correlation, it does not answer one"},
+		{"unknown kind", []string{"--kind", "bogus", "target"}, "only the four kinds in msg.Kind exist"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("KIDO_STATE_DIR", t.TempDir())
+			t.Setenv("TMUX_PANE", "%1")
+			withPanes(t, samePane)
+			pastes := withSendPrompt(t, errors.New("sendPrompt must not be called"))
+
+			if err := state.Record("target", state.Session{Pane: "%2", PID: os.Getpid(), Status: state.Idle}); err != nil {
+				t.Fatal(err)
+			}
+			if code := message(c.args, strings.NewReader("x")); code != 1 {
+				t.Fatalf("code = %d, want 1: %s", code, c.why)
+			}
+			if calls := pastes(); len(calls) != 0 {
+				t.Fatalf("sendPrompt calls = %v, want none", calls)
+			}
+		})
+	}
+}
+
+// TestMessageKindNonMessageRequiresV1 checks that an ask/reply/notice sent
+// to a target that has not advertised protocol 1 is refused outright,
+// rather than silently downgraded to v0 raw text that would strip the
+// kind and id entirely.
+func TestMessageKindNonMessageRequiresV1(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%1")
+	withPanes(t, samePane)
+	pastes := withSendPrompt(t, errors.New("sendPrompt must not be called"))
+
+	in := testutil.StartInbox(t, "ok\n")
+	if err := state.Record("target", state.Session{
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if code := message([]string{"--kind", "ask", "target"}, strings.NewReader("x")); code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	if calls := pastes(); len(calls) != 0 {
+		t.Fatalf("sendPrompt calls = %v, want none", calls)
+	}
+	if msgs := in.Received(); len(msgs) != 0 {
+		t.Fatalf("inbox got %v, want nothing delivered", msgs)
+	}
+}
+
+// TestMessageAskRefusalDoesNotPaste checks that a "refused" wire answer -
+// what a receiver sends when answering this ask would close a cycle (see
+// AGENTS.md's Cycles section) - surfaces as an error without ever falling
+// back to send-keys: the question was read and deliberately declined, not
+// mis-delivered, so pasting it again would just hand the target the same
+// cycle it refused.
+func TestMessageAskRefusalDoesNotPaste(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%1")
+	withPanes(t, samePane)
+	pastes := withSendPrompt(t, errors.New("sendPrompt must not be called"))
+
+	in := testutil.StartInbox(t, "refused\n")
+	if err := state.Record("target", state.Session{
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path, Protocol: msg.V1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	code := message([]string{"--kind", "ask", "--id", "ask-9", "target"}, strings.NewReader("are you done?"))
+	if code == 0 {
+		t.Fatal("code = 0, want an error: the ask was refused")
+	}
+	if calls := pastes(); len(calls) != 0 {
+		t.Fatalf("sendPrompt calls = %v, want none: a refusal must never paste", calls)
 	}
 }

@@ -21,7 +21,9 @@ import (
 //   - one prompt per connection: connect, write the prompt as UTF-8 with
 //     no trailing newline and no framing, then half-close the write half
 //     so the reader sees EOF as the end of the message;
-//   - the agent answers "ok\n" and closes.
+//   - the agent answers "ok\n" and closes, or, for an ask envelope it is
+//     refusing to avoid a cycle (see AGENTS.md's Cycles section),
+//     "refused\n".
 
 // inboxTimeout bounds the whole exchange, from write to reply. The agent
 // answers as soon as it has read the message, so anything slower than this
@@ -88,6 +90,15 @@ func inboxPath(name string) (string, error) {
 // may already have arrived and a fallback would send it twice.
 var errInboxUnavailable = errors.New("no agent listening on the inbox")
 
+// errAskRefused reports that an ask was read and deliberately declined,
+// not merely undelivered: the target already has an ask outstanding to
+// the asker, and answering this one too would close a cycle. It is
+// distinct from errInboxUnavailable on purpose - deliverInboxOrPaste must
+// never fall back to a paste on this error, since nothing was
+// mis-delivered and pasting the question again would just hand the
+// target the same cycle it just refused.
+var errAskRefused = errors.New("ask refused: the target already has an ask outstanding to the asker")
+
 // deliverInbox sends text to the agent listening on the unix socket at
 // path and waits for its acknowledgement. A nil error means the agent has
 // the message. errInboxUnavailable (test with errors.Is) means the message
@@ -130,8 +141,12 @@ func deliverInbox(path, text string) error {
 	if err != nil {
 		return fmt.Errorf("inbox %s: %w", path, err)
 	}
-	if got := strings.TrimSpace(string(reply)); got != "ok" {
+	switch got := strings.TrimSpace(string(reply)); got {
+	case "ok":
+		return nil
+	case "refused":
+		return fmt.Errorf("inbox %s: %w", path, errAskRefused)
+	default:
 		return fmt.Errorf("inbox %s: answered %q, want \"ok\"", path, got)
 	}
-	return nil
 }

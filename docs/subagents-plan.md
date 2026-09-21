@@ -244,9 +244,16 @@ Against an agent with no inbox (Claude Code), it falls back to a v0 paste,
 which is what `kido prompt` already does and the only reason the v0 path
 survives.
 
-`replyTo` answers a pending ask; if omitted and exactly one ask from `to`
-is pending it is inferred, and if several are the message is sent
-unthreaded rather than guessed at.
+`replyTo` answers a pending ask; if omitted, the message is sent
+unthreaded rather than guessed at, even when exactly one ask from `to` is
+pending. Inferring it was considered and dropped: the ask id is already
+handed to the model verbatim, with a literal `replyTo=<id>` to copy, so
+inference would only ever cover a model that ignored an explicit
+instruction - and guessing wrong does not fail safe, it resolves the
+*wrong* pending ask on the far side, handing one question's answer to
+another. That is worse than the unthreaded send already prescribed for
+the ambiguous case, so the single-pending case gets no special treatment
+either.
 
 ### `ask_agent(to, question, timeoutMs?)`
 
