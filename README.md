@@ -8,12 +8,12 @@ them the same.
 
 ```
 tmux
-┌ ▌ ai: Tmux config      an agent: ▌ running, ◆ waiting, ◌ compacting, ✓ done
+┌ ▌ Tmux config          an agent: ▌ running, ◆ waiting, ◌ compacting, ✓ done
 └   zsh
 · ▌ cargo test           a shell running a command (red ▌ when the last failed)
 · ssh deploy@build-box   ssh panes show the destination
 review
-· ◆ ai: Fix login redirect
+· ◆ Fix login redirect
 ```
 
 ## Install
@@ -168,9 +168,9 @@ reported no session is recreated bare. Run it outside tmux after a
 ## Status
 
 Agent panes show `▌ running`, `◆ waiting`, `◌ compacting`, `✓ done`, or
-nothing when idle, with an `ai:` prefix on the label. A session stays
-running at turn end while background commands or agents it started are
-still going. `✓ done` lasts until you visit the pane.
+nothing when idle. A session stays running at turn end while background
+commands or agents it started are still going. `✓ done` lasts until you
+visit the pane.
 
 Shell panes with the OSC 133 integration use the same indicators: green `▌`
 while a command runs, then, until you visit the pane, green `✓` if the last

@@ -958,10 +958,6 @@ func field(ind string) string {
 	return ind + " "
 }
 
-// agentPrefix marks a row as an agent's rather than a shell's, so the two
-// are told apart at a glance now that they share one indicator vocabulary.
-func agentPrefix() string { return stDim.Render("ai:") + " " }
-
 // piPrefix is what pi puts before the title it sets: "π - <session> -
 // <cwd>", or "π - <cwd>" when the session is unnamed. Only the marker is
 // dropped; what the agent chose to name itself is shown whole.
@@ -1039,7 +1035,7 @@ func (m *model) paneLabel(p tmux.Pane) string {
 	if m.done(p.PaneID) {
 		ind = indicatorDone()
 	}
-	return field(ind) + agentPrefix() + title
+	return field(ind) + title
 }
 
 func (m *model) rebuild() {
