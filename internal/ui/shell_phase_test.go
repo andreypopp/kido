@@ -290,6 +290,47 @@ func TestShellDebounceRedraws(t *testing.T) {
 // "running", while an ordinary command in the same state draws the green
 // one. The panes are driven through track() on a controlled clock,
 // because the running glyph only appears once the debounce has drawn it.
+// TestInteractiveLeavesNoHold pins the fix for a row flashing green for
+// half a second when an editor is quit: while the program held the
+// terminal the pane must never look like a run the debounce has drawn, or
+// the hold paints it on the way back to the prompt.
+func TestInteractiveLeavesNoHold(t *testing.T) {
+	const pane = "%1"
+	base := time.Unix(1700000000, 0)
+	clock := base
+	m := &model{
+		started: base.Add(-time.Hour),
+		seen:    map[string]time.Time{},
+		phases:  map[string]shellPhase{},
+		now:     func() time.Time { return clock },
+	}
+	step := func(d time.Duration, alternate, running bool) string {
+		clock = clock.Add(d)
+		m.at = m.now()
+		p := tmux.Pane{
+			PaneID: pane, CurrentCommand: "nvim", AlternateOn: alternate,
+			LastPromptTime: base.Unix() - 1, CommandRunning: running,
+			CommandStartTime: base.Unix(),
+		}
+		m.snap = snapshot{panes: []tmux.Pane{p}}
+		m.track()
+		return m.paneLabel(p)
+	}
+	// An editor open for a while: the pane says nothing throughout.
+	for _, d := range []time.Duration{0, 300 * time.Millisecond, time.Second} {
+		if got := step(d, true, true); got != field("")+stProc.Render("nvim") {
+			t.Fatalf("while the editor is open: paneLabel = %q", got)
+		}
+	}
+	// It exits: tmux drops the alternate screen and the running flag in
+	// the same tick. Nothing may be drawn on the way out.
+	for _, d := range []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond} {
+		if got := step(d, false, false); got != field("")+stProc.Render("nvim") {
+			t.Errorf("+%v after the editor exits: paneLabel = %q, want no indicator", d, got)
+		}
+	}
+}
+
 func TestInteractivePaneLabel(t *testing.T) {
 	const pid = 4242
 	base := time.Unix(1700000000, 0)

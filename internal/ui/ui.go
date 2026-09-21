@@ -614,6 +614,11 @@ func (m *model) track() {
 	for _, p := range m.snap.panes {
 		live[p.PaneID] = true
 		if running, ok := p.ShellStatus(); ok {
+			// A program holding the terminal is not a run, so it never
+			// becomes one the debounce has drawn - otherwise quitting an
+			// editor left the hold painting the row green for half a
+			// second on the way back to the prompt.
+			running = running && !m.interactivePane(p)
 			prev := m.phases[p.PaneID]
 			ph := m.observe(prev, running)
 			// The outcome is readable only while the pane is idle, so
@@ -1007,6 +1012,22 @@ func (m *model) agentTitleOf(p tmux.Pane) (string, bool) {
 	return agentTitle(p.Title), true
 }
 
+// interactivePane reports whether a program has taken pane p's terminal,
+// so kido has nothing to say about it: it runs for as long as the user is
+// working in it, and "a command is running" is not news. tmux answers that
+// directly - taking the screen means switching to the alternate buffer -
+// and answers it for the innermost program, where pane_current_command
+// would name the process group leader (git, for a pager; sudo, for an
+// editor under it). An ssh sitting at a remote shell takes no alternate
+// buffer of its own, so it is decided from its arguments instead; a
+// full-screen program on the far side still shows here.
+func (m *model) interactivePane(p tmux.Pane) bool {
+	if sess, ok := m.snap.ssh[p.PanePID]; ok && sess.Interactive {
+		return true
+	}
+	return p.AlternateOn
+}
+
 // paneLabel is the row text for a pane: its foreground command, or an
 // agent pane's session title, both behind the same two-column indicator
 // field. Which agent it is makes no difference to the row.
@@ -1014,19 +1035,8 @@ func (m *model) paneLabel(p tmux.Pane) string {
 	title, isAgent := m.agentTitleOf(p)
 	if !isAgent {
 		text := stProc.Render(p.CurrentCommand)
-		// A program that owns the terminal is one kido has nothing to say
-		// about: it runs for as long as the user is working in it, so "a
-		// command is running" is not news. tmux answers that directly -
-		// taking the screen means switching to the alternate buffer - and
-		// answers it for the innermost program, where pane_current_command
-		// would name the process group leader (git, for a pager; sudo, for
-		// an editor under it). An ssh sitting at a remote shell takes no
-		// alternate buffer of its own, so it is decided from its arguments
-		// instead; a full-screen program on the far side still shows here.
-		interactive := p.AlternateOn
 		if sess, ok := m.snap.ssh[p.PanePID]; ok {
 			text = stProc.Render("ssh ") + sess.Host
-			interactive = interactive || sess.Interactive
 		}
 		// A shell with kido's OSC 133 integration (shell/zsh, installed
 		// by `kido setup-zsh`) gets the same indicators an agent pane
@@ -1036,7 +1046,7 @@ func (m *model) paneLabel(p tmux.Pane) string {
 		if _, ok := p.ShellStatus(); !ok {
 			return text
 		}
-		if interactive {
+		if m.interactivePane(p) {
 			// The field stays, so the row still lines up with the other
 			// integrated shells; only the glyph goes.
 			return field("") + text
