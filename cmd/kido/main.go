@@ -76,6 +76,13 @@ func main() {
 			}
 			dispatch("setup-zsh", setupZsh)
 			return
+		case "setup-tmux":
+			if len(os.Args) > 2 {
+				fmt.Fprintln(os.Stderr, "usage: kido setup-tmux")
+				os.Exit(1)
+			}
+			dispatch("setup-tmux", setupTmux)
+			return
 		case "setup-claude":
 			debug, err := debugFlag("setup-claude", os.Args[2:])
 			if err != nil {

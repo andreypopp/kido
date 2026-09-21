@@ -18,33 +18,30 @@ review
 
 ## Install
 
-```sh
-brew install andreypopp/tap/kido
-brew uninstall tmux && brew install andreypopp/tap/tmux
-```
+1. Install the fork and kido (the tap's `tmux` replaces Homebrew's):
 
-tmux does not expand `$(brew --prefix)` in its config, so write the literal
-path:
+       brew uninstall tmux 2>/dev/null; brew install andreypopp/tap/tmux andreypopp/tap/kido
 
-```sh
-printf '\n# kido sidebar\nsource-file %s/share/kido/kido-side.tmux\n' "$(brew --prefix)" >> ~/.tmux.conf
-```
+2. `kido setup-tmux` adds a marked block to `~/.tmux.conf` sourcing the
+   sidebar config kido ships. Reload with `tmux source-file ~/.tmux.conf`,
+   or restart tmux.
 
-`kido setup-claude` registers the hook in `~/.claude/settings.json`.
+3. `kido setup-claude` registers the hook in `~/.claude/settings.json`.
 
-### Shell status (zsh only, optional)
+4. Optional, zsh only: `kido setup-zsh` adds a marked block to `~/.zshrc`
+   sourcing the script that emits the OSC 133 markers tmux reads to tell
+   whether a pane is running a command. Shells already running are
+   unaffected.
 
-tmux learns whether a pane is running a command from OSC 133 markers, which
-the shell has to emit. `kido setup-zsh` adds a marked block to `~/.zshrc`
-sourcing the script kido ships:
+5. To carry sessions from another machine, run `kido snapshot > layout.sh`
+   there, copy it, adjust paths that differ, and run it outside tmux.
 
-```sh
-kido setup-zsh
-```
+6. Check: `tmux -V` prints `next-3.9`, the sidebar is on the left,
+   `prefix K` hides and shows it, `prefix k` toggles focus, `/` searches.
 
-The block sources the script only if it exists, and writes a line to stderr
-naming it if not. A second run leaves the block alone; a block pointing
-elsewhere is rewritten in place. Shells already running are unaffected.
+Both `setup-tmux` and `setup-zsh` source the shipped file only if it is
+there. A second run leaves the block alone; a block pointing elsewhere is
+rewritten in place.
 
 ## Keys
 
@@ -211,18 +208,3 @@ fork with `scripts/install-tmux-fork.sh <prefix>`.
 
 CI runs both on every push to `main` and every pull request, on Linux and
 macOS.
-
-## Setting up another machine
-
-1. Install the fork and kido (the tap's `tmux` replaces Homebrew's):
-
-       brew uninstall tmux 2>/dev/null; brew install andreypopp/tap/tmux andreypopp/tap/kido
-
-2. Add the `source-file` line from Install to `~/.tmux.conf`, then run
-   `kido setup-claude`, and `kido setup-zsh` for shell status.
-
-3. To carry sessions over, run `kido snapshot > layout.sh` on the old
-   machine, copy it, adjust paths that differ, and run it outside tmux.
-
-4. Check: `tmux -V` prints `next-3.9`, the sidebar is on the left,
-   `prefix K` hides and shows it, `prefix k` toggles focus, `/` searches.
