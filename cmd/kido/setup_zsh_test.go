@@ -243,3 +243,99 @@ func TestZshrcBlockRuns(t *testing.T) {
 		t.Errorf("stderr = %q, want it to name %q and how to fix it", errs, missing)
 	}
 }
+
+// A Homebrew-shaped install: bin/kido and share/kido are symlinks the
+// package manager repoints on upgrade, and the versioned directory they
+// point at is what `brew cleanup` later deletes. invokedPath has to keep
+// the prefix spelling, so findIntegration resolves through the symlinks
+// that survive.
+func TestInvokedPathKeepsThePrefixSpelling(t *testing.T) {
+	root := t.TempDir()
+	versioned := filepath.Join(root, "Cellar", "kido", "HEAD-abc1234")
+	if err := os.MkdirAll(filepath.Join(versioned, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(versioned, "share", "kido", "shell", "zsh", "integration.zsh")
+	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(script, []byte("# integration\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	realBin := filepath.Join(versioned, "bin", "kido")
+	if err := os.WriteFile(realBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	prefix := filepath.Join(root, "prefix")
+	if err := os.MkdirAll(filepath.Join(prefix, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prefixBin := filepath.Join(prefix, "bin", "kido")
+	if err := os.Symlink(realBin, prefixBin); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(prefix, "share"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(versioned, "share", "kido"), filepath.Join(prefix, "share", "kido")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := invokedPath(prefixBin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != prefixBin {
+		t.Fatalf("invokedPath = %q, want the unresolved %q", got, prefixBin)
+	}
+
+	// The whole point: what lands in ~/.zshrc goes through the prefix,
+	// not the versioned directory a cleanup removes.
+	found, err := findIntegration(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(found, "Cellar") {
+		t.Errorf("findIntegration = %q, want a path that avoids the versioned directory", found)
+	}
+}
+
+// argv[0] with no separator is a PATH lookup, and that must not resolve
+// symlinks either.
+func TestInvokedPathLooksUpABareName(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real-kido")
+	if err := os.WriteFile(target, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "kido-under-test")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	got, err := invokedPath("kido-under-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != link {
+		t.Errorf("invokedPath = %q, want the unresolved %q", got, link)
+	}
+}
+
+// Nothing usable in argv[0] falls back to os.Executable rather than
+// failing: the test binary's own path.
+func TestInvokedPathFallsBackToExecutable(t *testing.T) {
+	want, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := invokedPath("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("invokedPath = %q, want %q", got, want)
+	}
+}

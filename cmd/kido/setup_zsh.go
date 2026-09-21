@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // The markers around the block setup-zsh keeps in ~/.zshrc. They are what
@@ -37,6 +39,35 @@ unset kido_integration
 `, zshrcBegin, source, zshrcEnd)
 }
 
+// invokedPath returns the path kido was started as, with symlinks left
+// alone. os.Executable is not it on Linux, where it reads /proc/self/exe
+// and so always comes back fully resolved - for a Homebrew install, the
+// versioned Cellar directory rather than the prefix symlink pointing at
+// it. findIntegration would then have no unresolved candidate to prefer,
+// and setup-zsh would write a path into ~/.zshrc that the next `brew
+// cleanup` deletes. argv[0] keeps the spelling: used as-is when it has a
+// separator, looked up on PATH when it does not. os.Executable stays the
+// fallback, for a caller that cleared argv[0] or a lookup that fails.
+func invokedPath(arg0 string) (string, error) {
+	var p string
+	switch {
+	case strings.ContainsRune(arg0, filepath.Separator):
+		p = arg0
+	case arg0 != "":
+		if found, err := exec.LookPath(arg0); err == nil {
+			p = found
+		}
+	}
+	if p != "" {
+		if abs, err := filepath.Abs(p); err == nil {
+			if fi, err := os.Stat(abs); err == nil && !fi.IsDir() {
+				return abs, nil
+			}
+		}
+	}
+	return os.Executable()
+}
+
 // findIntegration returns the absolute path of the zsh integration script
 // that ships with the kido binary at exe. It lives at
 // <prefix>/share/kido/shell/zsh/integration.zsh next to <prefix>/bin/kido:
@@ -53,7 +84,9 @@ unset kido_integration
 // spelling stays valid while the resolved one names a version directory
 // that the next `brew cleanup` deletes - leaving every new shell printing
 // a "no such file" from the rc. Resolving is only the fallback, for an
-// install whose bin is a symlink somewhere with no share beside it.
+// install whose bin is a symlink somewhere with no share beside it. The
+// caller has to pass an unresolved exe for that ordering to mean
+// anything: see invokedPath.
 func findIntegration(exe string) (string, error) {
 	candidates := []string{exe}
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil && resolved != exe {
@@ -88,7 +121,7 @@ func setupZsh() error {
 	if err != nil {
 		return err
 	}
-	exe, err := os.Executable()
+	exe, err := invokedPath(os.Args[0])
 	if err != nil {
 		return err
 	}
