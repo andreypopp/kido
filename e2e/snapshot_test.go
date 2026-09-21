@@ -72,6 +72,12 @@ func TestSnapshotReplays(t *testing.T) {
 	h.hook("sess-resume", resume, "SessionStart")
 	h.waitGlyph("Resumable", "○")
 
+	// A pi pane that has reported through agent-status resumes by its own
+	// session id too, the same way a hooked Claude pane does.
+	piPane := h.piPane("beta", "π - resumable - kido")
+	h.agentStatus("pi-resume", piPane, "pi", "idle")
+	h.waitGlyph("resumable - kido", "○")
+
 	// A window is named after the client that created it until tmux
 	// renames it to its pane's command a moment later; a snapshot taken in
 	// between records "tmux" as a window name. Wait for the server to stop
@@ -106,9 +112,18 @@ func TestSnapshotReplays(t *testing.T) {
 	if !strings.Contains(script, "claude --continue") {
 		t.Errorf("snapshot does not continue the unhooked claude pane:\n%s", script)
 	}
+	if !strings.Contains(script, "pi --session pi-resume") {
+		t.Errorf("snapshot does not resume the reported pi pane:\n%s", script)
+	}
 
-	// There is no claude here: run "true" instead, keeping everything else.
-	replay := regexp.MustCompile(`'claude --[^']*'`).ReplaceAllString(script, "'true'")
+	// There is no claude, and real pi is not available in CI (nor is its
+	// session pi-resume, which was only ever reported through agent-status,
+	// a session pi could actually resume): run "true" for both instead,
+	// keeping everything else. The assertions above already checked the
+	// commands the script would have run. Anchored on the trailing " Enter"
+	// send-keys always writes, so this only touches a send-keys command
+	// line and not a bare "claude" window name a -n flag may carry.
+	replay := regexp.MustCompile(`'(claude|pi)(?: [^']*)?' Enter`).ReplaceAllString(script, "'true' Enter")
 	path := filepath.Join(h.dir, "replay.sh")
 	if err := os.WriteFile(path, []byte(replay), 0o755); err != nil {
 		t.Fatal(err)
@@ -124,10 +139,10 @@ func TestSnapshotReplays(t *testing.T) {
 	}
 
 	want, got := shapes(t, h.inner), shapes(t, third)
-	// alpha: the split window and "editor"; beta: its shell and two
-	// claude windows.
-	if len(want) != 5 {
-		t.Fatalf("the source server has %d windows, want 5: %+v", len(want), want)
+	// alpha: the split window and "editor"; beta: its shell, two claude
+	// windows and a pi window.
+	if len(want) != 6 {
+		t.Fatalf("the source server has %d windows, want 6: %+v", len(want), want)
 	}
 	if want[0].panes != 2 {
 		t.Fatalf("alpha's first window has %d panes, want 2", want[0].panes)

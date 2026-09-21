@@ -187,8 +187,10 @@ runs Claude Code inside itself, the sidebar shows pi, not the embedded
 session.
 
 `kido snapshot` prints a shell script that recreates every session,
-window, pane and layout, resuming Claude Code panes by their exact session
-id. Run it outside tmux after a `tmux kill-server`.
+window, pane and layout, resuming Claude Code and pi panes by their exact
+session id. A pane that reported no session (or ran an agent kido cannot
+recognize) is recreated bare, dropping only that agent's history, not the
+pane itself. Run it outside tmux after a `tmux kill-server`.
 
 ## Debugging
 
