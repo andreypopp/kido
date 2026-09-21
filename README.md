@@ -35,10 +35,7 @@ review
    whether a pane is running a command. Shells already running are
    unaffected.
 
-5. To carry sessions from another machine, run `kido snapshot > layout.sh`
-   there, copy it, adjust paths that differ, and run it outside tmux.
-
-6. Check: `tmux -V` prints `next-3.9`, the sidebar is on the left,
+5. Check: `tmux -V` prints `next-3.9`, the sidebar is on the left,
    `prefix K` hides and shows it, `prefix k` toggles focus, `/` searches.
 
 Both `setup-tmux` and `setup-zsh` source the shipped file only if it is
