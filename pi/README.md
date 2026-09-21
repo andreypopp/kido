@@ -108,7 +108,7 @@ reporting carries on unaffected.
 
 ## Tools
 
-Two tools register unconditionally when the extension loads, and simply do
+Three tools register unconditionally when the extension loads, and simply do
 nothing useful until a session has started and kido has been found:
 
 - `list_agents()` runs `kido agents --json` and returns every agent visible
@@ -117,3 +117,13 @@ nothing useful until a session has started and kido has been found:
   text capped at 256 bytes and shown next to this session in kido's
   sidebar, separate from the running/waiting/idle status above. An empty
   string clears it.
+- `message_agent(to, message, replyTo?)` runs `kido message [--reply-to
+  <id>] <to>`, piping `message` on stdin. `to` is resolved by an exact,
+  case-insensitive name, then an exact session id, then a unique id
+  prefix, scoped to this tmux session; ambiguity is an error naming the
+  candidates rather than a guess. An agent with an inbox gets it as a real
+  user message; an agent with none (Claude Code, above all) gets it pasted
+  into its pane instead. Either way kido's stdout reports which happened
+  and to whom, and the tool relays that back verbatim. `replyTo` is
+  plumbed into the envelope for a later phase to consume; nothing reads it
+  yet.

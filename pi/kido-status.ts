@@ -31,12 +31,14 @@
  *     status/title/activity actually differs from what was last sent.
  *
  * Tools:
- *   `list_agents()` and `set_status(activity)` both shell out to kido
- *   (`kido agents --json`, `kido agent-status --activity`) the same way
- *   status reporting does. They register unconditionally at factory time -
- *   before session_start has resolved kido or a session id - and simply
- *   no-op at call time until those are known, since pi may run the factory
- *   in invocations that never start a session.
+ *   `list_agents()`, `set_status(activity)` and `message_agent(to, message,
+ *   replyTo?)` all shell out to kido (`kido agents --json`, `kido
+ *   agent-status --activity`, `kido message [--reply-to] <to>`) the same
+ *   way status reporting does. They register unconditionally at factory
+ *   time - before session_start has resolved kido or a session id - and
+ *   simply no-op at call time until those are known, since pi may run the
+ *   factory in invocations that never start a session. What message_agent
+ *   accepts and how kido resolves it is in pi/README.md.
  *
  * Inbox:
  *   On session start the extension asks kido where to bind — `kido inbox-path
@@ -407,8 +409,63 @@ export default function (pi: ExtensionAPI) {
     },
   };
 
+  const messageAgentParams = Type.Object(
+    {
+      to: Type.String({
+        description: "Who to message: an agent's exact name, exact session id, or a unique prefix of its session id.",
+      }),
+      message: Type.String({ description: "The message text to deliver." }),
+      replyTo: Type.Optional(
+        Type.String({ description: "The id of an earlier ask this message answers, if any." }),
+      ),
+    },
+    { additionalProperties: false },
+  );
+  const messageAgentTool: ToolDefinition<typeof messageAgentParams> = {
+    name: "message_agent",
+    label: "Message Agent",
+    description:
+      "Send a message to another agent in this tmux session, addressed by name, session id, or a unique id prefix.",
+    promptSnippet: "message_agent(to, message, replyTo?) - send a message to another agent in this tmux session",
+    parameters: messageAgentParams,
+    async execute(_toolCallId, params) {
+      if (!kido) {
+        return { content: [{ type: "text", text: "kido is not available; cannot message other agents" }], details: {} };
+      }
+      const args = ["message"];
+      if (params.replyTo) args.push("--reply-to", params.replyTo);
+      // "--" first: to is model-authored, and one beginning with a dash
+      // would otherwise be parsed as a kido flag and reported as "flag
+      // provided but not defined" rather than as no such agent.
+      args.push("--", params.to);
+      try {
+        // kido resolves both the caller (via $TMUX_PANE) and the target's
+        // tmux session from execFileSync's inherited environment.
+        const out = execFileSync(kido, args, {
+          input: params.message,
+          stdio: ["pipe", "pipe", "pipe"],
+          encoding: "utf8",
+          timeout: 5000,
+        });
+        // kido message prints one line saying what actually happened -
+        // delivered by inbox, or pasted into the target's pane - which is
+        // exactly what the model needs to know, not just "ok".
+        const text = out.trim() || `message delivered to ${params.to}`;
+        return { content: [{ type: "text", text }], details: {} };
+      } catch (err) {
+        const stderr = (err as { stderr?: Buffer | string })?.stderr;
+        const detail = stderr ? stderr.toString().trim() : err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: `could not message ${params.to}: ${detail}` }],
+          details: {},
+        };
+      }
+    },
+  };
+
   pi.registerTool(listAgentsTool);
   pi.registerTool(setStatusTool);
+  pi.registerTool(messageAgentTool);
 
   pi.on("session_start", async (_event, ctx) => {
     // Resource lookup belongs here, not in the factory: the factory may run in

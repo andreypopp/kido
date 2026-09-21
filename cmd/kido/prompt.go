@@ -92,28 +92,49 @@ func prompt(args []string, stdin io.Reader) int {
 }
 
 // deliver hands text to the chosen agent and returns prompt's exit code,
-// printing any error itself. An agent that reported an inbox socket (pi,
-// through its kido extension) gets the prompt as a real user message over
-// that socket; everything else - Claude Code above all, which has no such
-// socket - gets it pasted into the pane by tmux.SendPrompt.
+// printing any error itself. See deliverInboxOrPaste for the actual
+// inbox-or-paste rule, shared with kido message.
 func deliver(inbox, pane, text string) int {
-	if inbox != "" {
-		err := deliverInbox(inbox, text)
-		switch {
-		case err == nil:
-			return 0
-		case errors.Is(err, errInboxUnavailable):
-			// Nothing was sent; send-keys is still open.
-		default:
-			fmt.Fprintln(os.Stderr, "kido prompt:", err)
-			return 1
-		}
-	}
-	if err := tmux.SendPrompt(pane, text); err != nil {
+	if _, err := deliverInboxOrPaste(inbox, text, pane, text); err != nil {
 		fmt.Fprintln(os.Stderr, "kido prompt:", err)
 		return 1
 	}
 	return 0
+}
+
+// sendPrompt is tmux.SendPrompt, indirected so tests can check the paste
+// fallback fires without talking to a real tmux server - the same reason
+// listPanes is a variable.
+var sendPrompt = tmux.SendPrompt
+
+// deliverInboxOrPaste hands a message to the agent listening on inbox,
+// falling back to a tmux paste of pasteText into pane only when the inbox
+// turns out unavailable (errInboxUnavailable) - never on any other error,
+// since the message may already have been delivered and resending would
+// double-send (see AGENTS.md). Each destination is followed by what it
+// receives, because the two payloads differ for kido message: the inbox
+// gets a v1 envelope when the target advertises one, but a paste always
+// types the raw text, since nothing on the receiving end of send-keys
+// parses JSON.
+//
+// paste reports which path was actually used, for a caller that wants to
+// say so (kido message's stdout).
+func deliverInboxOrPaste(inbox, inboxPayload, pane, pasteText string) (paste bool, err error) {
+	if inbox != "" {
+		err := deliverInbox(inbox, inboxPayload)
+		switch {
+		case err == nil:
+			return false, nil
+		case errors.Is(err, errInboxUnavailable):
+			// Nothing was sent; send-keys is still open.
+		default:
+			return false, err
+		}
+	}
+	if err := sendPrompt(pane, pasteText); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // parsePromptArgs parses prompt's flags: --window/-window, rejecting any

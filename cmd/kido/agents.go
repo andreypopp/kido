@@ -85,22 +85,15 @@ func agentsCmd(args []string) error {
 
 // buildAgents assembles the AgentInfo rows for kido agents and pi's
 // list_agents tool: every live state.Session whose pane is currently in
-// session, decorated with the tmux.Pane a fresh ListPanes gave it.
-// A record names a pane and nothing above it - a pane can be moved to
-// another window or session while its process keeps running - so the
-// pane list, not the record, is what says which session an agent is in.
+// session (sessionsInSession, which explains why the pane list rather
+// than the record decides that), decorated with the tmux.Pane a fresh
+// ListPanes gave it.
 func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, self string) []AgentInfo {
 	byPane := map[string]tmux.Pane{}
 	for _, p := range panes {
 		byPane[p.PaneID] = p
 	}
-	var scoped []state.Session
-	for _, s := range states {
-		if byPane[s.Pane].SessionID != session {
-			continue
-		}
-		scoped = append(scoped, s)
-	}
+	scoped := sessionsInSession(states, panes, session)
 	byInstance := map[string]string{} // instance -> agent id, for resolving Parent
 	for _, s := range scoped {
 		if s.Instance != "" {
@@ -158,7 +151,7 @@ func orderTree(scoped []state.Session, byInstance map[string]string) []state.Ses
 		children[parent] = append(children[parent], s)
 	}
 	for _, c := range children {
-		sort.SliceStable(c, func(i, j int) bool { return c[i].TS.Before(c[j].TS) })
+		sort.SliceStable(c, func(i, j int) bool { return olderFirst(c[i], c[j]) })
 	}
 	out := make([]state.Session, 0, len(scoped))
 	seen := map[string]bool{}
@@ -180,7 +173,7 @@ func orderTree(scoped []state.Session, byInstance map[string]string) []state.Ses
 			orphans = append(orphans, s)
 		}
 	}
-	sort.SliceStable(orphans, func(i, j int) bool { return orphans[i].TS.Before(orphans[j].TS) })
+	sort.SliceStable(orphans, func(i, j int) bool { return olderFirst(orphans[i], orphans[j]) })
 	for _, s := range orphans {
 		if seen[s.ID] {
 			continue // the ring's first member already pulled this one in
@@ -223,4 +216,17 @@ func printAgents(w io.Writer, agents []AgentInfo) error {
 			a.ID, a.Name, a.Agent, a.Model, a.Pane, a.Window, a.Status, a.Activity, a.IdleFor, a.Parent, a.Depth, self, a.Cwd)
 	}
 	return tw.Flush()
+}
+
+// olderFirst orders two records by when they last reported, falling back
+// to the session id. The ids only ever break a tie, but records are
+// gathered by ranging a map and two agents reporting inside the same
+// clock tick are not rare, so without the tiebreak the list - and the
+// sidebar tree built from it - would reorder between two calls that saw
+// exactly the same state.
+func olderFirst(a, b state.Session) bool {
+	if a.TS.Equal(b.TS) {
+		return a.ID < b.ID
+	}
+	return a.TS.Before(b.TS)
 }

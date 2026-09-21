@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -132,6 +133,34 @@ func TestBuildAgentsRecycledPIDNoEdge(t *testing.T) {
 	for _, a := range got {
 		if a.ID == "child" && a.Parent != "" {
 			t.Errorf("child's parent = %q, want none: ParentPID matching root's PID must not create an edge", a.Parent)
+		}
+	}
+}
+
+// TestBuildAgentsStableOrderOnTie pins the id tiebreak in olderFirst.
+// Records are gathered by ranging a map, so two agents that last
+// reported inside the same clock tick would otherwise come back in a
+// different order on each call against identical state - and the
+// sidebar tree is built from this list.
+func TestBuildAgentsStableOrderOnTie(t *testing.T) {
+	ts := time.Now().UTC()
+	states := map[string]state.Session{}
+	for _, id := range []string{"ccc", "aaa", "bbb"} {
+		states[id] = state.Session{ID: id, Pane: "%" + id, TS: ts}
+	}
+	panes := []tmux.Pane{
+		{PaneID: "%ccc", SessionID: "$1"},
+		{PaneID: "%aaa", SessionID: "$1"},
+		{PaneID: "%bbb", SessionID: "$1"},
+	}
+	want := []string{"aaa", "bbb", "ccc"}
+	for i := 0; i < 20; i++ {
+		var got []string
+		for _, a := range buildAgents(states, panes, "$1", "%aaa") {
+			got = append(got, a.ID)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("run %d: order = %v, want %v", i, got, want)
 		}
 	}
 }
