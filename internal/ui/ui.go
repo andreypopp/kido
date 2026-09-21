@@ -776,9 +776,11 @@ func (m *model) rebuild() {
 		s.windows = append(s.windows, w)
 	}
 	if m.filter != "" {
-		// A session matches when its name or a Claude pane's title
-		// fuzzy-matches; best matches first, non-matching sessions drop
-		// out. A session that matches via a pane keeps all its panes.
+		// A session matches when its name, a Claude pane's title, or an
+		// ssh pane's destination fuzzy-matches; best matches first,
+		// non-matching sessions drop out. A session that matches via a
+		// pane keeps all its panes. Plain foreground commands are not
+		// searchable text.
 		var texts []string
 		var owner []*sess
 		for _, s := range order {
@@ -788,6 +790,9 @@ func (m *model) rebuild() {
 				for _, p := range w {
 					if title, ok := m.agentTitleOf(p); ok {
 						texts = append(texts, title)
+						owner = append(owner, s)
+					} else if host, ok := m.snap.ssh[p.PanePID]; ok {
+						texts = append(texts, host)
 						owner = append(owner, s)
 					}
 				}

@@ -133,10 +133,12 @@ func TestSearchMatchesClaudeTitle(t *testing.T) {
 	h.waitSearchClosed(5)
 }
 
-// TestSearchIgnoresSSHAndCommand checks that a query matching only an ssh
-// destination or a plain command does not surface that session: only the
-// session name and Claude pane titles are searched.
-func TestSearchIgnoresSSHAndCommand(t *testing.T) {
+// TestSearchMatchesSSHDestinationNotCommand checks that a query matching an
+// ssh pane's destination surfaces that session (searching either the user
+// or the host part of "deploy@example.test"), while a query matching only a
+// plain foreground command does not: only the session name, agent titles,
+// and ssh destinations are searched.
+func TestSearchMatchesSSHDestinationNotCommand(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	pane := h.newWindow("alpha", "", "ssh", "-F", "/dev/null",
@@ -150,8 +152,20 @@ func TestSearchIgnoresSSHAndCommand(t *testing.T) {
 	h.sendKeys("/")
 	h.sendLiteral("example")
 	h.waitSearch("/example")
-	h.waitFor(func() bool { return len(h.rows()) == 1 }, settle, // just the prompt
-		func() string { return "ssh host not searched, no sessions: " + fmt.Sprint(h.rows()) })
+	h.waitFor(func() bool {
+		rows := h.rows()
+		return len(rows) == 4 && rows[0] == "alpha" // + 2 panes + prompt
+	}, settle, func() string { return "ssh host searched, only alpha listed: " + fmt.Sprint(h.rows()) })
+	h.sendKeys("Escape")
+	h.waitSearchClosed(6)
+
+	h.sendKeys("/")
+	h.sendLiteral("deploy")
+	h.waitSearch("/deploy")
+	h.waitFor(func() bool {
+		rows := h.rows()
+		return len(rows) == 4 && rows[0] == "alpha" // + 2 panes + prompt
+	}, settle, func() string { return "ssh user searched, only alpha listed: " + fmt.Sprint(h.rows()) })
 	h.sendKeys("Escape")
 	h.waitSearchClosed(6)
 
