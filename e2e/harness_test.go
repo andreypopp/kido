@@ -473,6 +473,7 @@ var sgrOn = map[string]*regexp.Regexp{
 	"7":  reverseRE,                                         // reverse video: the selected row
 	"1":  regexp.MustCompile(`\x1b\[(?:\d+;)*1(?:;\d+)*m`),  // bold: the client's session
 	"31": regexp.MustCompile(`\x1b\[(?:\d+;)*31(?:;\d+)*m`), // red: a failed command's indicator
+	"32": regexp.MustCompile(`\x1b\[(?:\d+;)*32(?:;\d+)*m`), // green: a done indicator
 }
 
 // indField is the sidebar's two-column indicator field as the tests spell

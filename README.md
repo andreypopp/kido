@@ -172,9 +172,10 @@ nothing when idle, with an `ai:` prefix on the label. A session stays
 running at turn end while background commands or agents it started are
 still going. `✓ done` lasts until you visit the pane.
 
-Shell panes with the OSC 133 integration use the same `▌`: green while a
-command runs, red until you visit the pane when the last one exited
-nonzero. A shell without the integration has no indicator column.
+Shell panes with the OSC 133 integration use the same indicators: green `▌`
+while a command runs, then, until you visit the pane, green `✓` if the last
+one exited zero or red `▌` if it exited nonzero. A shell without the
+integration has no indicator column.
 
 Claude Code reports through `kido hook`. Dismissing a question or denying a
 permission fires no hook, so kido reads the pane and returns it to idle

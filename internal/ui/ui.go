@@ -90,6 +90,21 @@ const promptGrace = 500 * time.Millisecond
 // dialog would otherwise mean ten screen dumps a second.
 const probeInterval = time.Second
 
+// shellRunDelay is how long kido must have observed a command running in a
+// shell pane before it draws the green running indicator. A command that
+// finishes inside it is never drawn as running at all: at a 100ms tick, a
+// short one would otherwise flash the glyph for a single frame.
+const shellRunDelay = 200 * time.Millisecond
+
+// shellRunHold is how long the running indicator stays on a pane whose
+// command has stopped, when nothing else has taken its place. It only ever
+// applies to a run that was drawn (one that lasted shellRunDelay), so the
+// hold can only lengthen a green that is already on screen, never create
+// one; and only when shellOutcome has nothing to show, which is precisely
+// when the user is sitting in that pane. Everywhere else the ✓ or the red
+// ▌ replaces the green at once.
+const shellRunHold = 500 * time.Millisecond
+
 // procsProbe is the shortest gap between two reads of the process table.
 // Panes running ssh, and panes that might be running pi, are looked up
 // there, and at a 100ms tick an unresolvable one would otherwise mean ten
@@ -120,6 +135,41 @@ type model struct {
 	// pane was the active one; started stands in for panes never seen.
 	started time.Time
 	seen    map[string]time.Time
+
+	// phases debounces the shell running indicator, keyed by PaneID. It is
+	// kido's own observation of each pane rather than anything tmux
+	// reports: tmux's OSC 133 timestamps are whole seconds, far too coarse
+	// for the sub-second thresholds, so what counts is when the 100ms tick
+	// first saw a command start and stop.
+	phases map[string]shellPhase
+
+	// now is the clock, injectable so tests can drive the phases above;
+	// at is the one reading taken for the update being handled, so every
+	// deadline in a frame is measured against the same instant.
+	now func() time.Time
+	at  time.Time
+}
+
+// shellPhase is what the last tick observed of one shell pane's command
+// activity, and when that observation last changed.
+type shellPhase struct {
+	running bool      // a command was running at the last observation
+	since   time.Time // when running last flipped, in kido's own clock
+	// drawn records that the current run (or, once it has stopped, the
+	// last one) lasted shellRunDelay and so reached the screen. The hold
+	// reads it: keeping "running" up for 500ms after a 50ms command that
+	// was never drawn would create a blink instead of removing one.
+	drawn bool
+	// held is the pane's outcome (see shellOutcome): live while it sits
+	// idle, and then the one it was showing when a run started, kept for
+	// the window before that run is drawn. tmux clears
+	// pane_command_status on 133;C, so the outcome is gone from the
+	// moment a command starts and cannot be recovered: without this the
+	// row would blank for shellRunDelay at the start of every command on
+	// a pane the user is not watching, which is the blink the delay was
+	// added to remove.
+	held   int
+	heldOK bool
 }
 
 // Run starts the sidebar and blocks until it exits.
@@ -132,7 +182,13 @@ func Run(opts Options) error {
 	}
 	conn := tmux.Connect(opts.Client)
 	defer conn.Close()
-	m := model{opts: opts, conn: conn, started: time.Now(), seen: map[string]time.Time{}}
+	m := model{
+		opts: opts, conn: conn,
+		seen: map[string]time.Time{}, phases: map[string]shellPhase{},
+		now: time.Now,
+	}
+	m.at = m.now()
+	m.started = m.at
 	m.snap = take(conn, opts.Client, snapshot{})
 	m.track()
 	m.rebuild()
@@ -322,54 +378,41 @@ func (a snapshot) same(b snapshot) bool {
 // a drag-resize rewriting a layout string, force a full rebuild that
 // produced an identical screen.
 //
-// Compared, field by field:
-//
-//	SessionName    the session header row, and the grouping
-//	SessionCreated the session order (tmux.OrderSessions sorts on it)
-//	WindowID       where one window's panes end and the next begin, which
-//	               is what glyph() draws the tree with
-//	PaneID         the row's identity: the cursor, the states and probes
-//	               maps, and jumping all key on it
-//	PanePID        the key into the ssh and pi maps, so the row text
-//	CurrentCommand the row text, and whether the pane counts as an agent
-//	Title          the agent title on the row
-//	CommandRunning   the OSC 133 status indicator on a plain shell row
-//	CommandStartTime the same, and
-//	LastPromptTime   the same: together they are Pane.ShellStatus, so a
-//	                 command starting or finishing must rebuild the row
-//	CommandStatus    the failed indicator, and
-//	CommandStatusOK  the same (an empty status is not a clean exit), and
-//	CommandEndTime   the same: they are what model.failed reads, so a
-//	                 command exiting nonzero must rebuild the row
-//
-// (pane_command_duration is not in the pane format at all: it ticks every
-// second, so it would make every snapshot differ from the last.)
-//
-// Not compared: WindowIndex, WindowName, WindowLayout and CurrentPath,
-// which reach no row (a renumbering reorders the pane list itself, which
-// the positional comparison here catches anyway); and Active, whose only
-// drawn consequence is snapshot.active, compared separately by same() - a
-// pane switch inside a session the client is not attached to changes
-// nothing on screen.
+// It compares by exclusion rather than by listing the fields that matter.
+// The list grew a field at a time as the sidebar learned to draw more, and
+// a field left out of it does not fail anything: the row simply freezes on
+// screen until something else happens to change. Zeroing the few fields
+// that reach no row inverts that, so a field added to tmux.Pane is compared
+// by default and the worst a forgotten exclusion costs is a rebuild that
+// redraws the same thing.
 func samePanes(a, b []tmux.Pane) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for i := range a {
-		x, y := a[i], b[i]
-		if x.SessionName != y.SessionName || x.SessionCreated != y.SessionCreated ||
-			x.WindowID != y.WindowID || x.PaneID != y.PaneID || x.PanePID != y.PanePID ||
-			x.CurrentCommand != y.CurrentCommand || x.Title != y.Title ||
-			x.CommandRunning != y.CommandRunning ||
-			x.CommandStartTime != y.CommandStartTime ||
-			x.LastPromptTime != y.LastPromptTime ||
-			x.CommandStatus != y.CommandStatus ||
-			x.CommandStatusOK != y.CommandStatusOK ||
-			x.CommandEndTime != y.CommandEndTime {
+		if drawnPart(a[i]) != drawnPart(b[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+// drawnPart is p without the fields the sidebar neither draws nor orders
+// by, so two panes that would render identically compare equal.
+//
+// WindowIndex, WindowName, WindowLayout and CurrentPath reach no row - a
+// renumbering reorders the pane list itself, which samePanes' positional
+// comparison catches anyway. Active's only drawn consequence is
+// snapshot.active, which same() compares separately: a pane switch inside a
+// session the client is not attached to changes nothing on screen.
+//
+// (pane_command_duration is excluded one level further down, by not being
+// in the pane format at all: it ticks every second, so it would make every
+// snapshot differ from the last.)
+func drawnPart(p tmux.Pane) tmux.Pane {
+	p.WindowIndex, p.WindowName, p.WindowLayout, p.CurrentPath = 0, "", "", ""
+	p.Active = false
+	return p
 }
 
 func (m model) Init() tea.Cmd { return m.tick() }
@@ -381,9 +424,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ensureVisible()
 	case snapshot:
 		was := m.snap
+		// The second reason to rebuild: the running indicator's delay and
+		// hold are driven by kido's own clock, not by anything tmux
+		// reports, so a pane whose deadline falls in a tick where the
+		// snapshot is unchanged has to be redrawn all the same, or it
+		// freezes mid-transition until tmux happens to say something else.
+		//
+		// This is deliberately read before the tick is folded in, of the
+		// frame currently on screen: the tick that closes a window - the
+		// one where the run turns 200ms old, or the hold runs out - is the
+		// one that leaves it, so asking afterwards would answer "no" on
+		// exactly the tick that has to redraw.
+		pending := m.shellPending()
+		m.at = m.now()
 		m.snap = msg
 		m.track()
-		if !msg.same(was) {
+		if !msg.same(was) || pending {
 			m.rebuild()
 		}
 		// Follow the user: a pane switch in tmux, or the keyboard going
@@ -555,29 +611,106 @@ func (m *model) setFilter(f string) {
 	m.rebuild()
 }
 
-// track notes that the active pane is being looked at right now.
+// track notes that the active pane is being looked at right now, and
+// records what this tick observed of every integrated shell pane.
 //
-// The bookkeeping is per pane, not per agent session: a plain shell pane
-// is in it too, because failed() dates a command's failure against the
-// last visit the same way done() dates a turn's end. So a remembered pane
-// is forgotten when the pane itself is gone, not when an agent record is -
-// dropping shell panes here would leave every failed row stuck red.
+// Both maps are per pane, not per agent session: a plain shell pane is in
+// seen too, because shellOutcome dates a command's outcome against the last
+// visit the same way done() dates a turn's end. So a remembered pane is
+// forgotten when the pane itself is gone, not when an agent record is -
+// dropping shell panes here would leave every failed row stuck red. phases
+// is garbage-collected against the same live pane list for the same reason.
 func (m *model) track() {
 	if m.snap.active != "" {
-		m.seen[m.snap.active] = time.Now()
+		m.seen[m.snap.active] = m.at
 	}
 	if m.snap.err != nil {
-		return // no pane list to compare against: forget nothing
+		return // no pane list to compare against: forget nothing, observe nothing
 	}
 	live := make(map[string]bool, len(m.snap.panes))
 	for _, p := range m.snap.panes {
 		live[p.PaneID] = true
+		if running, ok := p.ShellStatus(); ok {
+			prev := m.phases[p.PaneID]
+			ph := m.observe(prev, running)
+			// The outcome is readable only while the pane is idle -
+			// tmux clears the exit status on 133;C - so take it then and
+			// carry it through the run that follows. Holding it here,
+			// once per tick, is also the only place it is computed:
+			// shellIndicator renders straight off the phase.
+			if running {
+				ph.held, ph.heldOK = prev.held, prev.heldOK
+			} else {
+				ph.held, ph.heldOK = m.shellOutcome(p)
+			}
+			m.phases[p.PaneID] = ph
+		}
 	}
 	for pane := range m.seen {
 		if !live[pane] {
 			delete(m.seen, pane) // the pane is gone
 		}
 	}
+	for pane := range m.phases {
+		if !live[pane] {
+			delete(m.phases, pane)
+		}
+	}
+}
+
+// observe folds this tick's reading of a pane into its phase. A pane seen
+// for the first time starts stopped-and-undrawn, so a command already
+// running when kido starts takes shellRunDelay to appear, the same as one
+// that starts under it.
+//
+// A run that starts while the previous run's hold is still on screen
+// inherits its drawn flag, so the green never blanks between two commands
+// typed back to back: the hold exists to stop exactly that gap, and a
+// second command would otherwise punch a shellRunDelay hole in it.
+func (m *model) observe(prev shellPhase, running bool) shellPhase {
+	switch {
+	case running == prev.running:
+		if running && !prev.drawn && m.at.Sub(prev.since) >= shellRunDelay {
+			prev.drawn = true
+		}
+		return prev
+	case running:
+		return shellPhase{running: true, since: m.at,
+			drawn: prev.drawn && m.at.Sub(prev.since) < shellRunHold}
+	default:
+		// Stopped: keep drawn as it is, because the hold is what reads it.
+		return shellPhase{running: false, since: m.at, drawn: prev.drawn}
+	}
+}
+
+// shellPending reports whether any pane is inside a clock-driven window -
+// running but not yet drawn, or stopped and still held - and so would
+// change what it draws on a later tick with nothing in the snapshot
+// moving. Update rebuilds on it: without that a pane whose 200ms or 500ms
+// deadline expires in a quiet tick would freeze mid-transition until tmux
+// happened to report something unrelated. Deleting it reintroduces that
+// silently, because every test that changes the snapshot too still passes.
+func (m *model) shellPending() bool {
+	for _, ph := range m.phases {
+		if ph.running && !ph.drawn {
+			return true
+		}
+		if !ph.running && ph.drawn && m.at.Sub(ph.since) < shellRunHold {
+			return true
+		}
+	}
+	return false
+}
+
+// seenAt is when the user last looked at pane, or when kido started for
+// one never visited under it - so anything that happened since then counts
+// as unseen. Both until-visited rules, done() and shellOutcome(), date
+// their event against it.
+func (m *model) seenAt(pane string) time.Time {
+	if t, ok := m.seen[pane]; ok {
+		return t
+	}
+	return m.started
 }
 
 // done reports whether pane's agent session finished a turn since the
@@ -587,39 +720,87 @@ func (m *model) done(pane string) bool {
 	if !ok || s.Status != state.Idle || s.Ended.IsZero() {
 		return false
 	}
-	seen, ok := m.seen[pane]
-	if !ok {
-		seen = m.started
-	}
-	return s.Ended.After(seen)
+	return s.Ended.After(m.seenAt(pane))
 }
 
-// failed reports whether pane p's last command exited nonzero and the user
-// has not looked at the pane since it did. It is the shell counterpart of
-// done: the row stays marked until the pane is visited, not until the next
-// prompt.
+// shellOutcome reports the exit status of the last command that finished in
+// pane p since the user last looked at it, and whether there was one. It is
+// the shell counterpart of done: the row stays marked until the pane is
+// visited, not until the next prompt.
 //
-// A pane running a command right now is not failed: the running indicator
-// wins, and the failure that matters is the one the pane is left sitting
-// on.
-func (m *model) failed(p tmux.Pane) bool {
-	running, ok := p.ShellStatus()
-	if !ok || running {
-		return false // no OSC 133 integration, or busy right now
+// m.seen is refreshed every tick while a pane is active, so a command run
+// and watched never leaves a mark; only one that finished while the user
+// was elsewhere does, which is why marking every successful command this
+// way is not noise.
+//
+// A pane running a command right now has no outcome: the status on record
+// belongs to a command this one has superseded, and the one that matters is
+// the one the pane is left sitting on. Whether anything is drawn in its
+// place while it runs is shellIndicator's call, not this function's.
+func (m *model) shellOutcome(p tmux.Pane) (status int, ok bool) {
+	running, integrated := p.ShellStatus()
+	if !integrated || running {
+		return 0, false // no OSC 133 integration, or busy right now
 	}
-	if !p.CommandStatusOK || p.CommandStatus == 0 || p.CommandEndTime == 0 {
-		return false
+	if !p.CommandStatusOK || p.CommandEndTime == 0 {
+		return 0, false
 	}
-	seen, ok := m.seen[p.PaneID]
-	if !ok {
-		seen = m.started // never visited: anything since kido started counts
+	// A status on record is not proof a command ran: an integration whose
+	// precmd emits 133;D unconditionally reports one at the shell's very
+	// first prompt, carrying whatever exit status the rc files left
+	// behind, with no 133;C before it - and every freshly opened pane
+	// would wear a checkmark until it was visited. kido's own script does
+	// not do that (shell/zsh/integration.zsh), but a remote host's or
+	// another terminal's might, and only 133;C sets
+	// pane_command_start_time, so a zero there means nothing has run.
+	if p.CommandStartTime == 0 {
+		return 0, false
 	}
-	// tmux reports whole unix seconds, m.seen a wall-clock instant. The
+	// tmux reports whole unix seconds, seenAt a wall-clock instant. The
 	// comparison is strict so that a command failing in a pane the user is
-	// looking at (seen is refreshed every tick, so seen >= the truncated
-	// end time) never lights up; the price is that a failure in the very
-	// second the user left the pane is missed.
-	return time.Unix(p.CommandEndTime, 0).After(seen)
+	// looking at (seen is refreshed every tick, so it is at or past the
+	// truncated end time) never lights up; the price is that a failure in
+	// the very second the user left the pane is missed.
+	if !time.Unix(p.CommandEndTime, 0).After(m.seenAt(p.PaneID)) {
+		return 0, false
+	}
+	return p.CommandStatus, true
+}
+
+// shellIndicator is the indicator for an integrated shell pane, debounced
+// against kido's own observations of it (see shellPhase). "" draws nothing.
+// Only shell panes go through it: an agent pane's status comes from hooks,
+// which report transitions rather than a flag sampled every 100ms, and does
+// not flicker.
+//
+// It reads the phase alone, which track() has already brought up to date
+// for this tick - the outcome included, since a running pane cannot be
+// asked for one (tmux clears the exit status on 133;C).
+//
+// In order:
+//
+//  1. a run that has lasted shellRunDelay is green, and wins over any past
+//     outcome, which is the status of a command this one has superseded;
+//  2. otherwise the outcome shows: at once when the command has just
+//     finished, and carried unchanged through a run too young to be drawn
+//     rather than blanking for 200ms. No hold, no delay - this is the pane
+//     the user is not looking at, and a ✓ or a red ▌ landing a tick late
+//     there would be a lie about what the pane is doing now;
+//  3. otherwise a run that was drawn and has just stopped keeps its green
+//     for shellRunHold. Step 2 having found nothing means the user is
+//     sitting in this pane (seenAt is refreshed every tick for the active
+//     pane, so a command finishing there is never "since the last visit"),
+//     so the hold only ever smooths the pane being watched.
+func (m *model) shellIndicator(ph shellPhase) string {
+	switch {
+	case ph.running && ph.drawn:
+		return indicator(state.Running)
+	case ph.heldOK:
+		return outcomeIndicator(ph.held)
+	case ph.drawn && m.at.Sub(ph.since) < shellRunHold:
+		return indicator(state.Running)
+	}
+	return ""
 }
 
 // wants reports whether pane's agent session needs the user: it is
@@ -869,26 +1050,17 @@ func (m *model) paneLabel(p tmux.Pane) string {
 			text = stProc.Render("ssh ") + host
 		}
 		// A shell with kido's OSC 133 integration (shell/zsh, installed
-		// by `kido setup-zsh`) gets the
-		// same indicators an agent pane has: running, or the last command
-		// having failed. A shell without it says nothing, and its row
-		// stays exactly as it always was, field and all.
-		running, ok := p.ShellStatus()
-		if !ok {
+		// by `kido setup-zsh`) gets the same indicators an agent pane
+		// has: running, done, or the last command having failed. A shell
+		// without it says nothing, and its row stays exactly as it always
+		// was, field and all.
+		if _, ok := p.ShellStatus(); !ok {
 			return text
 		}
-		ind := ""
-		switch {
-		case running:
-			ind = indicator(state.Running) // a running command wins over a past failure
-		case m.failed(p):
-			ind = indicatorFailed()
-		}
-		return field(ind) + text
+		return field(m.shellIndicator(m.phases[p.PaneID])) + text
 	}
-	s, reported := m.snap.states[p.PaneID]
-	ind := indicator(state.Unknown)
-	if reported {
+	ind := indicator(state.Unknown) // an agent pane that has not reported
+	if s, reported := m.snap.states[p.PaneID]; reported {
 		ind = indicator(s.Status)
 	}
 	if m.done(p.PaneID) {
@@ -1011,4 +1183,12 @@ func (m model) View() string {
 		b.WriteString(stDim.Render("/") + m.filter)
 	}
 	return b.String()
+}
+
+// outcomeIndicator is the glyph for a finished command's exit status.
+func outcomeIndicator(status int) string {
+	if status == 0 {
+		return indicatorDone()
+	}
+	return indicatorFailed()
 }
