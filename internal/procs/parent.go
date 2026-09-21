@@ -36,8 +36,7 @@ func parentOf(pid int) (ppid int, comm string, ok bool) {
 }
 
 // parseParent reads the (ppid, comm) pair psFields returns for a `ps -o
-// ppid=,comm= -p <pid>` query: its one row, if any. Split out of parentOf
-// so it can be table-tested without executing ps.
+// ppid=,comm= -p <pid>` query: its one row, if any.
 func parseParent(rows [][]string) (ppid int, comm string, ok bool) {
 	if len(rows) == 0 || len(rows[0]) < 2 {
 		return 0, "", false

@@ -64,10 +64,10 @@ function findKido(): string | null {
 }
 
 // Where to bind is kido's decision, not ours: it owns the state-directory
-// precedence and the sun_path length budget, and re-deriving either here would
-// be a second, drifting copy of them. It exits non-zero (printing nothing) when
-// the path would not fit or the name is bad; then we simply run without an
-// inbox. Run synchronously: one fast subprocess, once per session start.
+// precedence and the sun_path length budget. It exits non-zero (printing
+// nothing) when the path would not fit or the name is bad; then we simply run
+// without an inbox. Run synchronously: one fast subprocess, once per session
+// start.
 function askInboxPath(kido: string, name: string): string | null {
   try {
     const out = execFileSync(kido, ["inbox-path", name], {

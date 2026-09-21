@@ -19,8 +19,7 @@ const (
 // by the file being there, because the rc outlives the install. A kido
 // uninstalled, or moved by an upgrade that repointed a prefix symlink,
 // would otherwise make every new shell start with a "no such file or
-// directory" from a line the user did not write and cannot place. Saying
-// which file is missing and how to fix it is the same cost and useful.
+// directory" from a line the user did not write and cannot place.
 //
 // The path goes in a variable rather than three times over, so nothing
 // can drift, and is unset again so the rc leaves nothing behind. zsh does
@@ -77,9 +76,7 @@ func findIntegration(exe string) (string, error) {
 }
 
 // setupZsh installs the zsh shell integration by sourcing the script that
-// ships with kido from the user's ~/.zshrc, which is all tmux's own OSC
-// 133 support needs - no default-command and no ZDOTDIR, so the user's
-// shell choice stays theirs and a nested zsh keeps the integration.
+// ships with kido from the user's ~/.zshrc.
 //
 // Nothing is copied: the package owns the script, so an upgrade refreshes
 // it where it lies and the .zshrc line keeps pointing at the same place.

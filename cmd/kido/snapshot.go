@@ -80,10 +80,8 @@ func snapshot(w io.Writer) error {
 // same way the Claude Code path always worked. A pane with no record falls
 // back to what can be told from its foreground command alone -
 // pane_current_command "claude" for Claude Code - or, for pi, from piPanes
-// (procs.Sweep().Pi, keyed by pane pid), since pi's foreground process is
-// just "node" and never reveals itself in tmux's own view of the pane. A
-// pane that matches none of this (a plain shell, or any other program) gets
-// no command at all.
+// (procs.Sweep().Pi, keyed by pane pid). A pane that matches none of this
+// (a plain shell, or any other program) gets no command at all.
 //
 // The new pane already starts in the recreated pane's directory (the
 // new-session/new-window/split-window call above always passes -c), which

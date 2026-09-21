@@ -91,17 +91,12 @@ func main() {
 			fmt.Println(filepath.Join(state.Dir(), "debug.log"))
 			return
 		case "inbox-path":
-			// Like debug-log: kido owns where its state lives, so an
-			// agent's extension asks rather than reimplementing Dir().
 			if len(os.Args) != 3 {
 				fmt.Fprintln(os.Stderr, "usage: kido inbox-path NAME")
 				os.Exit(1)
 			}
 			path, err := inboxPath(os.Args[2])
 			if err != nil {
-				// Nothing on stdout: the caller can then simply go
-				// without an inbox instead of listening where kido
-				// cannot dial.
 				fmt.Fprintln(os.Stderr, "kido inbox-path:", err)
 				os.Exit(1)
 			}
@@ -133,9 +128,7 @@ func main() {
 	// The fork sets TMUX_SIDE_CLIENT only in the environment of the
 	// side-status-command job (status.c, status_side_start). Its absence is
 	// therefore exactly "kido was not started as a side column": a popup, or
-	// a plain pane. There kido is a one-shot picker that can be quit, since
-	// handing the keyboard back to a side column nobody is showing would
-	// trap the user in a program with no exit.
+	// a plain pane. See ui.Options.Standalone.
 	side := os.Getenv("TMUX_SIDE_CLIENT")
 	opts.Standalone = side == ""
 	if opts.Client == "" {
@@ -214,10 +207,6 @@ func writeClaudeSettings(path string, debug bool) (int, error) {
 		target[event] = true
 	}
 
-	// One pass over every known event: strip any kido entry (left by a
-	// previous run, in either mode), then append the new one when the
-	// event is in the target set. An event left with nothing is dropped
-	// rather than kept as an empty list.
 	for _, event := range hook.AllEvents() {
 		var kept []any
 		if list, ok := hooks[event].([]any); ok {
@@ -259,10 +248,7 @@ func writeClaudeSettings(path string, debug bool) (int, error) {
 
 // parseSwitchArgs parses the argument shape shared by switch-session and
 // switch-window: next|prev plus an optional -client/--client flag, in
-// either order. The client flag may come before or after the direction,
-// since a key binding's run-shell command is easiest to write with the flag
-// last (bind -n S-Down run-shell "kido switch-session next -client
-// '#{client_name}'"). client falls back to $TMUX_SIDE_CLIENT, then the
+// either order. client falls back to $TMUX_SIDE_CLIENT, then the
 // current client, when -client is not given.
 func parseSwitchArgs(cmd string, args []string) (client, dir string, err error) {
 	for i := 0; i < len(args); i++ {
@@ -312,9 +298,7 @@ func switchSession(args []string) error {
 
 // switchWindow implements `kido switch-window next|prev [-client NAME]`: it
 // switches the current client to the adjacent window in the sidebar's
-// order (internal/tmux.OrderSessions), wrapping around the whole server and
-// crossing session boundaries, unlike tmux's own next-window/previous-window
-// which wrap inside one session.
+// order (internal/tmux.OrderSessions), wrapping around the whole server.
 func switchWindow(args []string) error {
 	client, dir, err := parseSwitchArgs("switch-window", args)
 	if err != nil {
@@ -358,8 +342,6 @@ func runHook(r io.Reader, debug bool) error {
 	case e.Remove:
 		return state.Remove(in.SessionID)
 	}
-	// Claude Code runs the hook through `sh -c`, so the immediate parent
-	// is that shell, not claude; ReporterPID(true) walks past it.
 	return recordSession(state.AgentClaude, in.SessionID, procs.ReporterPID(true), e, "", "")
 }
 
@@ -432,12 +414,10 @@ func agentStatusUsage() string {
 // blanked, since an extension's coalescing may not re-send it every time.
 //
 // --inbox is the path of a unix socket the agent listens on for prompts,
-// speaking kido's own line protocol and no other (write the prompt,
-// half-close, answer "ok\n"; see cmd/kido/inbox.go). It is not a general
-// "send a message here" address, so an agent with a socket of its own
-// that frames messages differently must not report it here. `kido prompt`
-// then delivers over it instead of typing into the pane. `kido inbox-path
-// NAME` says where to put the socket. It is carried across calls that omit it the way
+// speaking kido's own line protocol and no other (see cmd/kido/inbox.go).
+// `kido prompt` then delivers over it instead of typing into the pane;
+// `kido inbox-path NAME` says where to put the socket. It is carried
+// across calls that omit it the way
 // --title is, but unlike --title an explicit empty value clears it:
 // `--inbox ""` is how an agent says its socket is gone, and a stale path
 // would otherwise keep kido dialling a socket nobody is listening on. That
@@ -486,8 +466,6 @@ func agentStatus(args []string) error {
 		}
 	}
 	e := hook.Effect{Status: state.Status(*status), Ended: *ended}
-	// Spawned directly by the agent's extension, with no shell wrapper to
-	// walk past: ReporterPID(false) is the immediate parent, no ps call.
 	return recordSession(*agent, *session, procs.ReporterPID(false), e, sessionTitle, sessionInbox)
 }
 

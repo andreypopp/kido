@@ -205,11 +205,6 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 	var s snapshot
 	s.current, s.focused = clientState(conn, client)
 	if conn != nil && s.current != "" {
-		// Keep the control client attached to the same session as the
-		// user's client, so tmux's per-attachment notifications
-		// (%layout-change and friends) reach it too, not just the 100ms
-		// tick. A no-op once they already agree; errors (the session is
-		// gone) are left for the next tick to retry.
 		conn.Follow(s.current)
 	}
 	if s.panes, s.err = listPanes(conn); s.err != nil {
@@ -219,9 +214,8 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 	s.states, s.err = state.Load()
 	s.ssh, s.pi = map[int]string{}, map[int]bool{}
 	s.probed = prev.probed
-	// The last sweep's answers stand until a pane asks something they do
-	// not cover, and then only one fresh sweep is made per tick and at most
-	// one per procsProbe: a faster tick must not mean more ps calls.
+	// At most one fresh sweep per tick, and at most one per procsProbe: a
+	// faster tick must not mean more ps calls.
 	scan, read := procs.Scan{SSH: prev.ssh, Pi: prev.pi}, false
 	sweep := func() {
 		if !read && time.Since(s.probed) >= procsProbe {
@@ -378,13 +372,10 @@ func (a snapshot) same(b snapshot) bool {
 // a drag-resize rewriting a layout string, force a full rebuild that
 // produced an identical screen.
 //
-// It compares by exclusion rather than by listing the fields that matter.
-// The list grew a field at a time as the sidebar learned to draw more, and
-// a field left out of it does not fail anything: the row simply freezes on
-// screen until something else happens to change. Zeroing the few fields
-// that reach no row inverts that, so a field added to tmux.Pane is compared
-// by default and the worst a forgotten exclusion costs is a rebuild that
-// redraws the same thing.
+// It compares by exclusion, not by listing the fields that matter: a field
+// left out of such a list does not fail anything, it just freezes the row
+// on screen. Zeroing the few fields that reach no row inverts that, so a
+// new tmux.Pane field is compared by default.
 func samePanes(a, b []tmux.Pane) bool {
 	if len(a) != len(b) {
 		return false
@@ -405,10 +396,6 @@ func samePanes(a, b []tmux.Pane) bool {
 // comparison catches anyway. Active's only drawn consequence is
 // snapshot.active, which same() compares separately: a pane switch inside a
 // session the client is not attached to changes nothing on screen.
-//
-// (pane_command_duration is excluded one level further down, by not being
-// in the pane format at all: it ticks every second, so it would make every
-// snapshot differ from the last.)
 func drawnPart(p tmux.Pane) tmux.Pane {
 	p.WindowIndex, p.WindowName, p.WindowLayout, p.CurrentPath = 0, "", "", ""
 	p.Active = false
@@ -429,12 +416,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// reports, so a pane whose deadline falls in a tick where the
 		// snapshot is unchanged has to be redrawn all the same, or it
 		// freezes mid-transition until tmux happens to say something else.
-		//
-		// This is deliberately read before the tick is folded in, of the
-		// frame currently on screen: the tick that closes a window - the
-		// one where the run turns 200ms old, or the hold runs out - is the
-		// one that leaves it, so asking afterwards would answer "no" on
-		// exactly the tick that has to redraw.
+		// It is deliberately read before the tick is folded in, of the
+		// frame currently on screen.
 		pending := m.shellPending()
 		m.at = m.now()
 		m.snap = msg
@@ -633,11 +616,9 @@ func (m *model) track() {
 		if running, ok := p.ShellStatus(); ok {
 			prev := m.phases[p.PaneID]
 			ph := m.observe(prev, running)
-			// The outcome is readable only while the pane is idle -
-			// tmux clears the exit status on 133;C - so take it then and
-			// carry it through the run that follows. Holding it here,
-			// once per tick, is also the only place it is computed:
-			// shellIndicator renders straight off the phase.
+			// The outcome is readable only while the pane is idle, so
+			// take it then and carry it through the run that follows
+			// (see shellPhase.held).
 			if running {
 				ph.held, ph.heldOK = prev.held, prev.heldOK
 			} else {
@@ -688,8 +669,7 @@ func (m *model) observe(prev shellPhase, running bool) shellPhase {
 // change what it draws on a later tick with nothing in the snapshot
 // moving. Update rebuilds on it: without that a pane whose 200ms or 500ms
 // deadline expires in a quiet tick would freeze mid-transition until tmux
-// happened to report something unrelated. Deleting it reintroduces that
-// silently, because every test that changes the snapshot too still passes.
+// happened to report something unrelated.
 func (m *model) shellPending() bool {
 	for _, ph := range m.phases {
 		if ph.running && !ph.drawn {
@@ -771,11 +751,8 @@ func (m *model) shellOutcome(p tmux.Pane) (status int, ok bool) {
 // against kido's own observations of it (see shellPhase). "" draws nothing.
 // Only shell panes go through it: an agent pane's status comes from hooks,
 // which report transitions rather than a flag sampled every 100ms, and does
-// not flicker.
-//
-// It reads the phase alone, which track() has already brought up to date
-// for this tick - the outcome included, since a running pane cannot be
-// asked for one (tmux clears the exit status on 133;C).
+// not flicker. It reads the phase alone, which track() has already brought
+// up to date for this tick.
 //
 // In order:
 //
@@ -853,8 +830,6 @@ func (m *model) move(delta int) {
 	}
 }
 
-// ---- scrolling -------------------------------------------------------------
-
 // scrollMargin is how many rows to keep visible beyond the cursor: the
 // view starts moving when the cursor gets this close to an edge.
 const scrollMargin = 3
@@ -903,8 +878,6 @@ func (m *model) rowAt(y int) int {
 	}
 	return i
 }
-
-// ---- rows ------------------------------------------------------------------
 
 var (
 	stCurrent = lipgloss.NewStyle().Bold(true)
@@ -1082,9 +1055,6 @@ func (m *model) rebuild() {
 		return
 	}
 
-	// Sessions oldest first, each with its windows: tmux.OrderSessions is
-	// kido's one true order, shared with `kido switch-session` and `kido
-	// switch-window` so they cannot drift apart.
 	order := tmux.OrderSessions(m.snap.panes)
 	if m.filter != "" {
 		// A session matches when its name, a Claude pane's title, or an

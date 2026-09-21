@@ -180,8 +180,6 @@ func Quote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// ---- the child process -----------------------------------------------------
-
 type child struct {
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
@@ -191,10 +189,9 @@ type child struct {
 
 	// session is the session this control client is attached to, as far as
 	// Follow knows: the one dial attached it to, then whatever a
-	// successful Follow switched it to. It makes Follow a no-op when
-	// nothing changed, so a call every tick costs nothing once the two
-	// clients agree; and because it lives on the child, a re-dialled client
-	// starts out describing itself with no reset to remember.
+	// successful Follow switched it to. Because it lives on the child, a
+	// re-dialled client starts out describing itself with no reset to
+	// remember.
 	session struct {
 		sync.Mutex
 		name string
@@ -338,8 +335,6 @@ func (c *Conn) dial() (*child, error) {
 	}
 }
 
-// ---- notifications ---------------------------------------------------------
-
 // notifications are the control-mode notifications (control-notify.c) that
 // change what the sidebar draws. Everything else - %output, paste buffer
 // changes, subscriptions - is ignored.
@@ -395,8 +390,6 @@ func (c *Conn) coalesce() {
 		}
 	}
 }
-
-// ---- the control-mode stream -----------------------------------------------
 
 // block is one command's output: the lines between %begin and %end, or the
 // error text of a %error.

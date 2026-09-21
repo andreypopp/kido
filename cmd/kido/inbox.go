@@ -22,13 +22,6 @@ import (
 //     no trailing newline and no framing, then half-close the write half
 //     so the reader sees EOF as the end of the message;
 //   - the agent answers "ok\n" and closes.
-//
-// Delivering this way beats send-keys because the agent receives a
-// well-formed user message rather than keystrokes, and can decide for
-// itself what to do when one arrives mid-turn.
-//
-// A prompt that never reaches an inbox falls back to send-keys, but only
-// when the failure proves nothing was delivered: see errInboxUnavailable.
 
 // inboxTimeout bounds the whole exchange, from write to reply. The agent
 // answers as soon as it has read the message, so anything slower than this
@@ -124,16 +117,12 @@ func deliverInbox(path, text string) error {
 	conn := c.(*net.UnixConn) // a unix dial always yields one, and CloseWrite is the framing
 	defer conn.Close()
 
-	// The same deadline, not a fresh one: what is left of it after the
-	// dial is what the write and the read get.
 	if err := conn.SetDeadline(deadline); err != nil {
 		return fmt.Errorf("inbox %s: %w", path, err)
 	}
 	if _, err := io.WriteString(conn, text); err != nil {
 		return fmt.Errorf("inbox %s: %w", path, err)
 	}
-	// The half-close is the framing: it is what tells the agent the
-	// message is complete.
 	if err := conn.CloseWrite(); err != nil {
 		return fmt.Errorf("inbox %s: %w", path, err)
 	}

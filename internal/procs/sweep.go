@@ -56,9 +56,7 @@ func Sweep() Scan {
 
 // parseProcesses turns psFields' rows (pid ppid comm args...) into process
 // rows and the pid->ppid map Sweep's ancestor walk needs. A row with fewer
-// than 4 fields - missing or malformed - is skipped. Split out of Sweep so
-// this parsing, where argv itself may contain further whitespace, can be
-// table-tested without executing ps.
+// than 4 fields - missing or malformed - is skipped.
 func parseProcesses(rows [][]string) (all []process, parent map[int]int) {
 	parent = map[int]int{}
 	for _, f := range rows {

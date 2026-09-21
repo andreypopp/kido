@@ -134,9 +134,7 @@ func TestControlClientFollowsSessionSwitch(t *testing.T) {
 
 	before := h.rowCount()
 	h.in("split-window", "-t", "beta")
-	// 1.5s is still a fifth of the poll interval, with room for a loaded
-	// CI runner's pty round trips. Without following beta, this would only
-	// resolve on the next 5s poll.
+	// Without following beta, this would only resolve on the next 5s poll.
 	took := h.waitQuickly(func() bool { return h.rowCount() == before+1 },
 		1500*time.Millisecond, func() string { return msgf("%d rows (are %q)", before+1, h.rows())() })
 	t.Logf("split in the followed session shown after %v", took)

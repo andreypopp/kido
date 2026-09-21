@@ -255,8 +255,6 @@ func requireTmux(t *testing.T) {
 	t.Skip("no patched tmux: " + tmuxWhy)
 }
 
-// ---- harness ---------------------------------------------------------------
-
 // harness is one pair of tmux servers: "outer" hosts a pty, "inner" is the
 // server under test whose client lives in that pty and whose side status
 // column runs kido.
@@ -359,8 +357,6 @@ func killServer(socket string) {
 	}
 }
 
-// ---- running tmux ----------------------------------------------------------
-
 func (h *harness) tmux(socket string, args ...string) (string, error) {
 	full := append([]string{"-L", socket}, args...)
 	cmd := exec.Command(tmuxBin, full...)
@@ -394,8 +390,6 @@ func (h *harness) out(args ...string) string {
 	return h.must(h.tmux(h.outer, args...))
 }
 
-// ---- keys ------------------------------------------------------------------
-
 // sendKeys sends keys to the inner client's pty, one send-keys call per
 // key: tmux drops keys batched with the prefix.
 func (h *harness) sendKeys(keys ...string) {
@@ -419,8 +413,6 @@ func (h *harness) prefix(key string) {
 	h.sendKeys("C-b")
 	h.sendKeys(key)
 }
-
-// ---- mouse -----------------------------------------------------------------
 
 // SGR mouse reports; x and y are 1-based screen coordinates.
 func (h *harness) mouseSeq(b, x, y int, press bool) {
@@ -458,8 +450,6 @@ func (h *harness) drag(fromX, toX, y int) {
 	h.mouseSeq(32, toX, y, true)
 	h.mouseSeq(0, toX, y, false)
 }
-
-// ---- reading the screen ----------------------------------------------------
 
 // reverseRE matches an SGR escape that turns on reverse video (parameter
 // 7), tolerating tmux combining it with other attributes in the same
@@ -628,8 +618,6 @@ func rowIndexOf(lines []string, sub string) int {
 
 func (h *harness) rowIndex(sub string) int { return rowIndexOf(h.capture(), sub) }
 
-// ---- waiting ---------------------------------------------------------------
-
 // msgf is a waitFor description that is only formatted if the wait fails.
 func msgf(format string, a ...any) func() string {
 	return func() string { return fmt.Sprintf(format, a...) }
@@ -709,8 +697,6 @@ func (h *harness) waitSelected(sub string) {
 		func() string { return fmt.Sprintf("selection on %q (is %q)", sub, h.selectedRow()) })
 }
 
-// ---- client state ----------------------------------------------------------
-
 func (h *harness) clientSession() string {
 	h.t.Helper()
 	out := h.in("list-clients", "-F", "#{client_name}\t#{client_session}")
@@ -746,8 +732,6 @@ func (h *harness) waitFocused(want bool) {
 	h.waitFor(func() bool { return h.clientFocused() == want }, settle,
 		msgf("side-status-focus = %v", want))
 }
-
-// ---- inner server helpers --------------------------------------------------
 
 type paneInfo struct {
 	Session string
@@ -831,8 +815,6 @@ func (h *harness) sshProxy() string {
 	return h.proxy
 }
 
-// ---- the kido hook ---------------------------------------------------------
-
 // hook runs `kido hook` with the payload built from event and the extra
 // key/value pairs, reporting for pane. The hook records its parent pid,
 // which is this test binary: alive for the whole run, so the state file
@@ -859,10 +841,8 @@ func (h *harness) hook(sessionID, pane, event string, kv ...string) {
 
 // agentStatus runs `kido agent-status` for pane, the way an agent that is
 // not Claude Code reports itself. extra carries any further flags
-// (--ended, --remove, --title). Like the hook, it records its parent pid,
-// which is this test binary: alive for the whole run, and like the hook it
-// runs out of band, so it spells KIDO_STATE_DIR out rather than inheriting
-// it from the inner server.
+// (--ended, --remove, --title). Like the hook, it runs out of band from
+// the test binary.
 func (h *harness) agentStatus(sessionID, pane, agent, status string, extra ...string) {
 	h.t.Helper()
 	args := []string{"agent-status", "--agent", agent, "--session", sessionID}

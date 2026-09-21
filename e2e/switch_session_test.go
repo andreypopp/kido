@@ -44,8 +44,6 @@ func (h *harness) runSwitchSession(dir string) {
 	h.t.Helper()
 	tmuxEnv := h.in("display-message", "-p", "#{socket_path},#{pid},0")
 	cmd := exec.Command(kidoBin, "switch-session", dir, "-client", h.client)
-	// No KIDO_TMUX: kido resolves the tmux binary from the server $TMUX
-	// names, which is the point of the test running against the fork.
 	cmd.Env = cleanEnv("TMUX=" + tmuxEnv)
 	var errb bytes.Buffer
 	cmd.Stderr = &errb

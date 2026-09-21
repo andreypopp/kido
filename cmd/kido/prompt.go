@@ -16,9 +16,8 @@ import (
 // prompt implements `kido prompt [--window]`: it reads a prompt from
 // stdin (the whole input, with one trailing newline stripped) and sends
 // it to the one agent pane in scope: over the agent's inbox socket when it
-// reported one (see deliver and inbox.go), otherwise the way
-// ~/.config/ink/plugged/cctools/bin/ccsend does: send-keys -l the text,
-// then Enter a moment later.
+// reported one (see deliver and inbox.go), otherwise send-keys -l the
+// text, then Enter a moment later.
 //
 // With no flag, the scope is the caller's window, widening to the whole
 // session when the window has no Claude Code pane at all. --window (also
@@ -62,10 +61,8 @@ func prompt(args []string, stdin io.Reader) int {
 
 	states, _ := state.Load()
 	// procs.Sweep() shells out to ps, so it is only worth the cost when it
-	// could actually change the answer: some in-scope pane whose current
-	// command could be pi and which has not already reported a state
-	// record (needsSweep, mirroring internal/ui's take()). Otherwise pi
-	// stays nil, which state.IsAgentPane treats as "nothing known".
+	// could actually change the answer (needsSweep). Otherwise pi stays
+	// nil, which state.IsAgentPane treats as "nothing known".
 	var pi map[int]bool
 	if needsSweep(panes, states, self, false) {
 		pi = procs.Sweep().Pi
@@ -99,22 +96,6 @@ func prompt(args []string, stdin io.Reader) int {
 // through its kido extension) gets the prompt as a real user message over
 // that socket; everything else - Claude Code above all, which has no such
 // socket - gets it typed into the pane with send-keys.
-//
-// One protocol, not a kind of address: inbox names a socket speaking
-// kido's own line protocol (cmd/kido/inbox.go), and deliverInbox is the
-// only thing that can be on the other end. A second agent whose socket
-// frames messages differently - Claude Code's per-session socket, say -
-// would need a kind recorded alongside the path in state.Session (say
-// InboxKind, defaulting to kido's own for records written before it), and
-// a switch on that kind right here choosing the client to run. Nothing
-// needs that yet, so the field stays one protocol wide rather than
-// pretending to be general.
-//
-// The two paths are not interchangeable once a connection is up: only a
-// failure that proves the message was never sent (errInboxUnavailable: no
-// socket, or a stale one a dead process left behind) falls back to
-// send-keys. A later failure is reported as an error, because the agent
-// may already have the prompt and typing it again would send it twice.
 func deliver(inbox, pane, text string) int {
 	if inbox != "" {
 		err := deliverInbox(inbox, text)

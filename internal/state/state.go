@@ -63,14 +63,13 @@ type Session struct {
 	// reported one; the UI falls back to the pane title in that case.
 	Title string `json:"title,omitempty"`
 	// Inbox is the path of a unix socket that speaks kido's own inbox
-	// protocol - write the prompt, half-close, read "ok\n" (see
-	// cmd/kido/inbox.go) - reported with --inbox (kido agent-status). It
-	// is not a general "send a message here" address: an agent with a
-	// socket of its own that frames messages differently (Claude Code's
-	// per-session socket, for one) cannot be named here. Empty for Claude
-	// Code and for any agent that has no kido inbox; `kido prompt` then
-	// types the prompt into the pane with send-keys instead. What a second
-	// protocol would take is written down on deliver in cmd/kido/prompt.go.
+	// protocol (see cmd/kido/inbox.go), reported with --inbox (kido
+	// agent-status). It is not a general "send a message here" address:
+	// an agent with a socket of its own that frames messages differently
+	// (Claude Code's per-session socket, for one) cannot be named here.
+	// Empty for Claude Code and for any agent that has no kido inbox;
+	// `kido prompt` then types the prompt into the pane with send-keys
+	// instead.
 	Inbox string `json:"inbox,omitempty"`
 	// When the last turn ended (Stop or equivalent); zero if the session
 	// is idle for another reason, such as having just started.
@@ -160,10 +159,7 @@ func agentOf(agent string) string {
 // This is a two-agent test, not a general ranking: it is correct only
 // because the nested agent is always Claude Code. Two non-Claude agents
 // nested in one pane would both report "outer" and fall through to beats'
-// timestamp comparison, reintroducing the flip-flop Load's doc comment
-// warns about. The real rule for that case is which record's process is an
-// ancestor of the other's - procs.Sweep already builds the parent map that
-// would answer it, but nothing exposes it yet.
+// timestamp comparison, reintroducing the flip-flop Load's doc warns about.
 func outer(agent string) bool {
 	return agentOf(agent) != AgentClaude
 }

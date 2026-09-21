@@ -27,14 +27,9 @@ import "strings"
 //
 // atInputPrompt only ever downgrades a waiting pane to idle, so the
 // conservative direction is to say no: a screen kido cannot read leaves the
-// status exactly as the hooks reported it.
-//
-// The read is not a one-off. A dialog can paint later than promptGrace on a
-// loaded machine, and a single early look would then pin a genuinely waiting
-// pane to idle until the next hook event. So the caller re-reads the screen
-// every probeInterval for as long as the pane is waiting on the same report
-// and recomputes the verdict, which is how the conservative direction is
-// actually honoured: a wrong yes lasts one interval, not the session.
+// status exactly as the hooks reported it. The caller re-reads the screen
+// while the pane stays waiting and recomputes the verdict, so a wrong yes
+// lasts one interval, not the session (see probe in ui.go).
 
 // footerLines is how many lines may follow the input box's closing rule.
 // The footer is one line; the allowance is for a wrapped one.

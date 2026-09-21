@@ -279,10 +279,7 @@ func SwitchSession(client string, next bool) error {
 // session boundaries: advancing past a session's last window moves to the
 // next session's first window, unlike tmux's own next-window/previous-window
 // which wrap inside one session. A server with one window, or a client whose
-// current window kido cannot find, is a no-op. Targeting a window in another
-// session takes one tmux invocation: switch-client to the target's session,
-// then select-window by window id (unique server-wide, unlike
-// session:index), the way Jump does it.
+// current window kido cannot find, is a no-op.
 func SwitchWindow(client string, next bool) error {
 	panes, err := ListPanes()
 	if err != nil {
@@ -384,7 +381,7 @@ func ActivePane(panes []Pane, session string) string {
 // server with side-status off, where the jump goes through unharmed; and
 // when the client does happen to be showing a focused sidebar, a jump made
 // from a popup should hand it the keyboard just as one made from the
-// sidebar does. So there is nothing for a standalone kido to skip.
+// sidebar does.
 func Jump(client, paneID string) error {
 	_, err := run("switch-client", "-c", client, "-t", paneID, ";",
 		"select-window", "-t", paneID, ";",
@@ -401,9 +398,8 @@ func ReleaseSideFocus(client string) error {
 }
 
 // promptKeyDelay is the pause between typing a prompt's text and pressing
-// Enter, mirroring ~/.config/ink/plugged/cctools/bin/ccsend: without it, a
-// paste-sensitive reader (Claude Code included) can see the Enter as part
-// of the pasted text rather than a submission.
+// Enter: without it, a paste-sensitive reader (Claude Code included) can
+// see the Enter as part of the pasted text rather than a submission.
 const promptKeyDelay = 100 * time.Millisecond
 
 // SendPrompt types text into pane as literal keys, then presses Enter

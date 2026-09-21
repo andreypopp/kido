@@ -284,8 +284,7 @@ func TestAgentStatus(t *testing.T) {
 		t.Errorf("ts=%v ended=%v, want a timestamp and no end", s.TS, s.Ended)
 	}
 
-	// --title is accepted (and not recorded: the sidebar reads the pane
-	// title), --ended stamps an end.
+	// --ended stamps an end.
 	if err := agentStatus([]string{"--agent", "pi", "--session", "p1",
 		"--status", "idle", "--title", "π - kido", "--ended"}); err != nil {
 		t.Fatalf("agentStatus --ended: %v", err)
