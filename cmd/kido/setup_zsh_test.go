@@ -1,18 +1,17 @@
 package main
 
 import (
-	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// block is the .zshrc block setup-zsh keeps, as the test expects to read
-// it back, built from the same markers the code uses.
-func block(source string) string {
-	return fmt.Sprintf("%s\nsource %q\n%s\n", zshrcBegin, source, zshrcEnd)
-}
+// block is the .zshrc block setup-zsh keeps. The cases below are about
+// where it lands in the file, not what is in it, so they build it the
+// same way the code does rather than restating it and drifting.
+func block(source string) string { return zshrcBlock(source) }
 
 // TestSetZshrcBlock covers the rc edit: a missing file, one without the
 // block, one that already has it at the same path (left alone), one that
@@ -199,5 +198,48 @@ func TestFindIntegrationPrefersUnresolved(t *testing.T) {
 	want := filepath.Join(root, "share", "kido", "shell", "zsh", "integration.zsh")
 	if got != want {
 		t.Errorf("findIntegration = %q, want the version-stable %q", got, want)
+	}
+}
+
+// TestZshrcBlockRuns checks the generated block against a real zsh: that
+// it parses, that it sources a script that is there, and that a missing
+// one produces a message on stderr instead of zsh's own error - the whole
+// point of the guard.
+func TestZshrcBlockRuns(t *testing.T) {
+	zsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("no zsh in PATH")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "integration.zsh")
+	if err := os.WriteFile(script, []byte("print sourced\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(t *testing.T, source string) (string, string) {
+		t.Helper()
+		var out, errb strings.Builder
+		cmd := exec.Command(zsh, "-c", zshrcBlock(source))
+		cmd.Stdout, cmd.Stderr = &out, &errb
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("zsh: %v (stderr %q)", err, errb.String())
+		}
+		return out.String(), errb.String()
+	}
+
+	out, errs := run(t, script)
+	if strings.TrimSpace(out) != "sourced" {
+		t.Errorf("stdout = %q, want the script to have been sourced", out)
+	}
+	if errs != "" {
+		t.Errorf("stderr = %q, want nothing", errs)
+	}
+
+	missing := filepath.Join(dir, "gone.zsh")
+	out, errs = run(t, missing)
+	if out != "" {
+		t.Errorf("stdout = %q, want nothing", out)
+	}
+	if !strings.Contains(errs, missing) || !strings.Contains(errs, "setup-zsh") {
+		t.Errorf("stderr = %q, want it to name %q and how to fix it", errs, missing)
 	}
 }

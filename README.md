@@ -47,7 +47,9 @@ kido setup-zsh
 
 That adds a marked block to `~/.zshrc` sourcing the script from wherever
 kido is installed, and nothing else: no `default-command`, so your shell
-stays your own choice. Running it again is a no-op, and deleting the block
+stays your own choice. The block sources the script only if it is there,
+and says so on stderr if it is not, so uninstalling kido leaves a
+readable note rather than an error on every new shell. Running it again is a no-op, and deleting the block
 by hand undoes it. Then open a new pane - it is zsh only, and it only
 reaches shells started afterwards, so panes that are already open keep
 their old rows.

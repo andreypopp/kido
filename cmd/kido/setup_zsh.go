@@ -15,6 +15,29 @@ const (
 	zshrcEnd   = "# <<< kido shell integration <<<"
 )
 
+// zshrcBlock is the block setup-zsh keeps in ~/.zshrc: the source guarded
+// by the file being there, because the rc outlives the install. A kido
+// uninstalled, or moved by an upgrade that repointed a prefix symlink,
+// would otherwise make every new shell start with a "no such file or
+// directory" from a line the user did not write and cannot place. Saying
+// which file is missing and how to fix it is the same cost and useful.
+//
+// The path goes in a variable rather than three times over, so nothing
+// can drift, and is unset again so the rc leaves nothing behind. zsh does
+// not word-split an unquoted parameter, so the uses need no quoting.
+func zshrcBlock(source string) string {
+	return fmt.Sprintf(`%s
+kido_integration=%q
+if [[ -r $kido_integration ]]; then
+  source $kido_integration
+else
+  print -u2 "kido: no shell integration at $kido_integration; run: kido setup-zsh"
+fi
+unset kido_integration
+%s
+`, zshrcBegin, source, zshrcEnd)
+}
+
 // findIntegration returns the absolute path of the zsh integration script
 // that ships with the kido binary at exe. It lives at
 // <prefix>/share/kido/shell/zsh/integration.zsh next to <prefix>/bin/kido:
@@ -114,7 +137,7 @@ func setupZsh() error {
 // one of the two markers is an edit kido cannot make sense of, and is an
 // error rather than a guess.
 func setZshrcBlock(rc []byte, source string) ([]byte, string, error) {
-	block := fmt.Sprintf("%s\nsource %q\n%s\n", zshrcBegin, source, zshrcEnd)
+	block := zshrcBlock(source)
 
 	begin := bytes.Index(rc, []byte(zshrcBegin))
 	end := bytes.Index(rc, []byte(zshrcEnd))
