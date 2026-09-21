@@ -34,16 +34,6 @@ type Conn struct {
 		sync.Mutex
 		c *child
 	}
-
-	// followed is the session this connection's control client is attached
-	// to, as far as Follow knows: set by dial (which attaches to the side
-	// client's session directly) and by a successful Follow. It makes
-	// Follow a no-op when nothing changed, so a call every tick costs
-	// nothing once the two clients agree.
-	followed struct {
-		sync.Mutex
-		session string
-	}
 }
 
 // ErrNotConnected is returned by Conn methods while the control client is
@@ -134,7 +124,7 @@ func (c *Conn) Run(cmd string) ([]string, error) {
 
 // ListPanes is ListPanes over the connection.
 func (c *Conn) ListPanes() ([]Pane, error) {
-	lines, err := c.Run("list-panes -a -F " + quote(paneFormat))
+	lines, err := c.Run("list-panes -a -F " + Quote(paneFormat))
 	if err != nil {
 		return nil, err
 	}
@@ -143,12 +133,12 @@ func (c *Conn) ListPanes() ([]Pane, error) {
 
 // CapturePane is CapturePane over the connection.
 func (c *Conn) CapturePane(pane string) ([]string, error) {
-	return c.Run("capture-pane -p -t " + quote(pane))
+	return c.Run("capture-pane -p -t " + Quote(pane))
 }
 
 // ClientState is ClientState over the connection.
 func (c *Conn) ClientState(client string) (session string, focused bool, err error) {
-	lines, err := c.Run("list-clients -F " + quote(clientFormat))
+	lines, err := c.Run("list-clients -F " + Quote(clientFormat))
 	if err != nil {
 		return "", false, err
 	}
@@ -168,30 +158,25 @@ func (c *Conn) ClientState(client string) (session string, focused bool, err err
 // next call to retry. switch-client with -t only moves the targeted
 // client, so this never disturbs the user's own client.
 func (c *Conn) Follow(session string) error {
-	c.followed.Lock()
-	same := c.followed.session == session
-	c.followed.Unlock()
-	if same {
+	ch := c.child()
+	if ch == nil {
+		return ErrNotConnected // Run would say the same; take() ignores it either way
+	}
+	if ch.attached() == session {
 		return nil
 	}
-	if _, err := c.Run("switch-client -t " + quote(session)); err != nil {
+	if _, err := c.Run("switch-client -t " + Quote(session)); err != nil {
 		return err
 	}
-	c.setFollowed(session)
+	ch.setAttached(session)
 	return nil
 }
 
-func (c *Conn) setFollowed(session string) {
-	c.followed.Lock()
-	c.followed.session = session
-	c.followed.Unlock()
-}
-
-// quote wraps an argument for tmux's own command parser, which splits on
+// Quote wraps an argument for tmux's own command parser, which splits on
 // whitespace and treats "#" as a comment outside quotes. Inside single
 // quotes everything is literal, so an embedded quote is closed, escaped and
 // reopened as in the shell.
-func quote(s string) string {
+func Quote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
@@ -203,6 +188,29 @@ type child struct {
 	replies chan block
 	dead    chan struct{} // closed when the client is gone
 	once    sync.Once
+
+	// session is the session this control client is attached to, as far as
+	// Follow knows: the one dial attached it to, then whatever a
+	// successful Follow switched it to. It makes Follow a no-op when
+	// nothing changed, so a call every tick costs nothing once the two
+	// clients agree; and because it lives on the child, a re-dialled client
+	// starts out describing itself with no reset to remember.
+	session struct {
+		sync.Mutex
+		name string
+	}
+}
+
+func (ch *child) attached() string {
+	ch.session.Lock()
+	defer ch.session.Unlock()
+	return ch.session.name
+}
+
+func (ch *child) setAttached(name string) {
+	ch.session.Lock()
+	defer ch.session.Unlock()
+	ch.session.name = name
 }
 
 func (ch *child) kill() {
@@ -286,6 +294,7 @@ func (c *Conn) dial() (*child, error) {
 		return nil, err
 	}
 	ch := &child{cmd: cmd, stdin: stdin, replies: make(chan block, 4), dead: make(chan struct{})}
+	ch.setAttached(session) // what it was just attached to; matches Follow's no-op check
 	go func() {
 		parse(stdout, func(b block) {
 			select {
@@ -317,7 +326,6 @@ func (c *Conn) dial() (*child, error) {
 			ch.kill()
 			return nil, b.err
 		}
-		c.setFollowed(session) // matches Follow's no-op check; avoids a redundant switch right after connecting
 		return ch, nil
 	case <-ch.dead:
 		return nil, errors.New("tmux -C: client exited before attaching")

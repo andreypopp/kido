@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"kido/internal/state"
@@ -19,7 +18,7 @@ func snapshot(w io.Writer) error {
 		return err
 	}
 	states, _ := state.Load()
-	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+	q := tmux.Quote
 
 	fmt.Fprintf(w, "#!/bin/sh\n# tmux sessions captured by kido snapshot on %s.\n", time.Now().Format("2006-01-02 15:04"))
 	fmt.Fprintln(w, "# Run outside tmux, then attach. Claude Code panes resume their session.")

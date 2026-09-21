@@ -6,7 +6,6 @@ package ui
 
 import (
 	"maps"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -313,8 +312,47 @@ func (m model) tick() tea.Cmd {
 func (a snapshot) same(b snapshot) bool {
 	return a.current == b.current && a.active == b.active && a.focused == b.focused &&
 		a.err == nil && b.err == nil &&
-		slices.Equal(a.panes, b.panes) && maps.Equal(a.states, b.states) &&
+		samePanes(a.panes, b.panes) && maps.Equal(a.states, b.states) &&
 		maps.Equal(a.ssh, b.ssh) && maps.Equal(a.pi, b.pi)
+}
+
+// samePanes compares two pane lists by what the sidebar actually draws and
+// orders by, not by the whole tmux.Pane: a tmux.Pane also carries fields
+// only `kido snapshot` reads, and comparing those made a cd in any pane, or
+// a drag-resize rewriting a layout string, force a full rebuild that
+// produced an identical screen.
+//
+// Compared, field by field:
+//
+//	SessionName    the session header row, and the grouping
+//	SessionCreated the session order (tmux.OrderSessions sorts on it)
+//	WindowID       where one window's panes end and the next begin, which
+//	               is what glyph() draws the tree with
+//	PaneID         the row's identity: the cursor, the states and probes
+//	               maps, and jumping all key on it
+//	PanePID        the key into the ssh and pi maps, so the row text
+//	CurrentCommand the row text, and whether the pane counts as an agent
+//	Title          the agent title on the row
+//
+// Not compared: WindowIndex, WindowName, WindowLayout and CurrentPath,
+// which reach no row (a renumbering reorders the pane list itself, which
+// the positional comparison here catches anyway); and Active, whose only
+// drawn consequence is snapshot.active, compared separately by same() - a
+// pane switch inside a session the client is not attached to changes
+// nothing on screen.
+func samePanes(a, b []tmux.Pane) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		x, y := a[i], b[i]
+		if x.SessionName != y.SessionName || x.SessionCreated != y.SessionCreated ||
+			x.WindowID != y.WindowID || x.PaneID != y.PaneID || x.PanePID != y.PanePID ||
+			x.CurrentCommand != y.CurrentCommand || x.Title != y.Title {
+			return false
+		}
+	}
+	return true
 }
 
 func (m model) Init() tea.Cmd { return m.tick() }
@@ -756,25 +794,10 @@ func (m *model) rebuild() {
 		return
 	}
 
-	// Group by session, oldest first, then by window: tmux.OrderWindows is
-	// kido's one true window order, shared with `kido switch-window` so the
-	// two cannot drift apart.
-	type sess struct {
-		name    string
-		windows [][]tmux.Pane
-	}
-	var order []*sess
-	bySess := map[string]*sess{}
-	for _, w := range tmux.OrderWindows(m.snap.panes) {
-		name := w[0].SessionName
-		s, ok := bySess[name]
-		if !ok {
-			s = &sess{name: name}
-			bySess[name] = s
-			order = append(order, s)
-		}
-		s.windows = append(s.windows, w)
-	}
+	// Sessions oldest first, each with its windows: tmux.OrderSessions is
+	// kido's one true order, shared with `kido switch-session` and `kido
+	// switch-window` so they cannot drift apart.
+	order := tmux.OrderSessions(m.snap.panes)
 	if m.filter != "" {
 		// A session matches when its name, a Claude pane's title, or an
 		// ssh pane's destination fuzzy-matches; best matches first,
@@ -782,51 +805,55 @@ func (m *model) rebuild() {
 		// pane keeps all its panes. Plain foreground commands are not
 		// searchable text.
 		var texts []string
-		var owner []*sess
-		for _, s := range order {
-			texts = append(texts, s.name)
-			owner = append(owner, s)
-			for _, w := range s.windows {
+		var owner []int // index into order
+		for i, s := range order {
+			texts = append(texts, s.Name)
+			owner = append(owner, i)
+			for _, w := range s.Windows {
 				for _, p := range w {
 					if title, ok := m.agentTitleOf(p); ok {
 						texts = append(texts, title)
-						owner = append(owner, s)
+						owner = append(owner, i)
 					} else if host, ok := m.snap.ssh[p.PanePID]; ok {
 						texts = append(texts, host)
-						owner = append(owner, s)
+						owner = append(owner, i)
 					}
 				}
 			}
 		}
-		best := map[*sess]int{}
-		matched := map[*sess]bool{}
+		best := map[int]int{}
+		matched := map[int]bool{}
 		for _, match := range fuzzy.Find(m.filter, texts) {
-			s := owner[match.Index]
-			if !matched[s] || match.Score > best[s] {
-				best[s] = match.Score
+			i := owner[match.Index]
+			if !matched[i] || match.Score > best[i] {
+				best[i] = match.Score
 			}
-			matched[s] = true
+			matched[i] = true
 		}
-		var ranked []*sess
-		for _, s := range order {
-			if matched[s] {
-				ranked = append(ranked, s)
+		var ranked []int // indices into order, so the score stays with the session
+		for i := range order {
+			if matched[i] {
+				ranked = append(ranked, i)
 			}
 		}
-		sort.SliceStable(ranked, func(i, j int) bool {
-			return best[ranked[i]] > best[ranked[j]]
+		sort.SliceStable(ranked, func(a, b int) bool {
+			return best[ranked[a]] > best[ranked[b]]
 		})
-		order = ranked
+		sessions := make([]tmux.Session, 0, len(ranked))
+		for _, i := range ranked {
+			sessions = append(sessions, order[i])
+		}
+		order = sessions
 	}
 
 	for _, s := range order {
-		name := s.name
+		name := s.Name
 		if name == m.snap.current {
 			name = stCurrent.Render(name)
 		}
 		m.rows = append(m.rows, row{text: name})
 
-		for _, panes := range s.windows {
+		for _, panes := range s.Windows {
 			for i, p := range panes {
 				m.rows = append(m.rows, row{
 					text:   glyph(i, len(panes)) + " " + m.paneLabel(p),

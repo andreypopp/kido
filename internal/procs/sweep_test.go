@@ -2,6 +2,100 @@ package procs
 
 import "testing"
 
+// macOSFixture is real `ps -axo pid=,ppid=,comm=,args=` output captured on
+// this machine (macOS): comm is truncated to 16 characters, and args holds
+// the full command line, spaces and all - including a `zsh -c '...'`
+// wrapper whose argument is itself many words long.
+const macOSFixture = `49417 71584 /bin/zsh         /bin/zsh -c source /Users/andrepopp/.claude/shell-snapshots/snapshot-zsh-1789943097813-ct8v62.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true
+49420 49417 /bin/zsh         /bin/zsh -c source /Users/andrepopp/.claude/shell-snapshots/snapshot-zsh-1789943097813-ct8v62.sh 2>/dev/null || true
+24619 64101 zsh              zsh
+24710 24619 claude           claude
+24003  1296 zsh              zsh --login
+24089 24003 ssh              ssh ahrefs/devbox-uk -t zsh -i -c 's '
+71584 64129 claude           claude --continue
+`
+
+// linuxFixture is a hand-written, synthetic stand-in for `ps
+// -axo pid=,ppid=,comm=,args=` output on Linux, where comm is the bare
+// executable name (no truncation, no leading path) and pi's bash shim
+// execs node in place, so the outer pid still shows "node" while args
+// names pi's script - the shape isPi and markAncestors exist to see
+// through.
+const linuxFixture = `  600   500 bash     bash /opt/homebrew/Cellar/pi/1.2/libexec/bin/pi
+  700   600 node     node /opt/homebrew/Cellar/pi/1.2/libexec/bin/pi
+  500     1 zsh      zsh
+`
+
+func TestParseProcesses(t *testing.T) {
+	t.Run("real macOS output, args with embedded spaces", func(t *testing.T) {
+		all, parent := parseProcesses(splitPSFields([]byte(macOSFixture)))
+		if len(all) != 7 {
+			t.Fatalf("got %d rows, want 7", len(all))
+		}
+		if all[0].pid != 49417 || all[0].ppid != 71584 {
+			t.Errorf("row 0 = %+v, want pid 49417 ppid 71584", all[0])
+		}
+		if parent[49417] != 71584 || parent[24710] != 24619 {
+			t.Errorf("parent map = %v, missing expected entries", parent)
+		}
+		// args is whatever strings.Fields split the rest of the line into:
+		// a quoted argument with spaces (the zsh -c payload) still lands
+		// as several separate elements, since parseProcesses only ever
+		// re-splits on whitespace.
+		if len(all[0].args) < 5 {
+			t.Errorf("args = %v, want the zsh -c payload split into several fields", all[0].args)
+		}
+		if all[0].args[0] != "/bin/zsh" || all[0].args[1] != "-c" {
+			t.Errorf("args[0:2] = %v, want [/bin/zsh -c]", all[0].args[0:2])
+		}
+	})
+
+	t.Run("synthetic Linux output, pi behind a bash shim", func(t *testing.T) {
+		all, parent := parseProcesses(splitPSFields([]byte(linuxFixture)))
+		if len(all) != 3 {
+			t.Fatalf("got %d rows, want 3", len(all))
+		}
+		pi := map[int]bool{}
+		for _, p := range all {
+			if isPi(p) {
+				markAncestors(pi, parent, p.pid)
+			}
+		}
+		for _, pid := range []int{600, 700, 500} {
+			if !pi[pid] {
+				t.Errorf("pid %d not marked as behind pi", pid)
+			}
+		}
+	})
+
+	t.Run("a command whose comm field itself has a leading path with spaces", func(t *testing.T) {
+		// A row where the program's own name/path contains a space shifts
+		// every field after it: parseProcesses only ever splits on
+		// whitespace, so this is columns misreading columns, not a crash.
+		all, _ := parseProcesses(splitPSFields([]byte("  10    1 My App    /Applications/My App.app/Contents/MacOS/My App --flag\n")))
+		if len(all) != 1 {
+			t.Fatalf("got %d rows, want 1", len(all))
+		}
+		if all[0].comm != "My" {
+			t.Errorf("comm = %q, want the field after ppid (\"My\"), showing the misalignment", all[0].comm)
+		}
+	})
+
+	t.Run("missing or malformed rows are skipped", func(t *testing.T) {
+		in := "PID PPID COMM ARGS\n" + // a stray header-shaped line: non-numeric pid
+			"  1 launchd\n" + // too few fields
+			"abc def comm args\n" + // non-numeric pid and ppid
+			"  99   1 sh sh -c true\n" // one well-formed row
+		all, parent := parseProcesses(splitPSFields([]byte(in)))
+		if len(all) != 1 || all[0].pid != 99 {
+			t.Fatalf("got %+v, want exactly the one well-formed row", all)
+		}
+		if parent[99] != 1 {
+			t.Errorf("parent[99] = %d, want 1", parent[99])
+		}
+	})
+}
+
 func TestSSHHost(t *testing.T) {
 	for _, c := range []struct {
 		args []string

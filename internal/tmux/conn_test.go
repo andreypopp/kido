@@ -85,8 +85,8 @@ func TestQuote(t *testing.T) {
 		{"/dev/ttys012", "'/dev/ttys012'"},
 		{"it's", `'it'\''s'`},
 	} {
-		if got := quote(c.in); got != c.want {
-			t.Errorf("quote(%q) = %q, want %q", c.in, got, c.want)
+		if got := Quote(c.in); got != c.want {
+			t.Errorf("Quote(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }
@@ -122,11 +122,11 @@ func TestParseClientState(t *testing.T) {
 	}
 }
 
-// TestOrderWindows checks that windows are ordered sessions-oldest-first
-// (ties by name), with each session's own windows kept in ListPanes' order,
-// so the grouping the sidebar renders and the one switch-window walks
-// cannot drift apart.
-func TestOrderWindows(t *testing.T) {
+// TestOrderSessions checks that sessions come out oldest first (ties by
+// name), each with its own windows in ListPanes' order, so the grouping the
+// sidebar renders and the one switch-session and switch-window walk cannot
+// drift apart.
+func TestOrderSessions(t *testing.T) {
 	panes := []Pane{
 		{SessionName: "b", SessionCreated: 200, WindowID: "@3", PaneID: "%1"},
 		{SessionName: "b", SessionCreated: 200, WindowID: "@4", PaneID: "%2"},
@@ -134,25 +134,29 @@ func TestOrderWindows(t *testing.T) {
 		{SessionName: "a", SessionCreated: 100, WindowID: "@1", PaneID: "%4"}, // second pane, same window
 		{SessionName: "a", SessionCreated: 100, WindowID: "@2", PaneID: "%5"},
 	}
-	windows := OrderWindows(panes)
-	if len(windows) != 4 {
-		t.Fatalf("got %d windows, want 4: %+v", len(windows), windows)
+	sessions := OrderSessions(panes)
+	var names []string
+	var got [][2]string // session, window id, flattened the way SwitchWindow does
+	for _, s := range sessions {
+		names = append(names, s.Name)
+		for _, w := range s.Windows {
+			got = append(got, [2]string{w[0].SessionName, w[0].WindowID})
+		}
 	}
-	var got [][2]string // session, window id
-	for _, w := range windows {
-		got = append(got, [2]string{w[0].SessionName, w[0].WindowID})
+	if want := []string{"a", "b"}; !equal(names, want) {
+		t.Errorf("sessions: got %v, want %v", names, want)
 	}
 	want := [][2]string{{"a", "@1"}, {"a", "@2"}, {"b", "@3"}, {"b", "@4"}}
 	if len(got) != len(want) {
-		t.Fatalf("got %v, want %v", got, want)
+		t.Fatalf("windows: got %v, want %v", got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("window %d: got %v, want %v", i, got[i], want[i])
 		}
 	}
-	if len(windows[0]) != 2 {
-		t.Errorf("session a window @1: got %d panes, want 2", len(windows[0]))
+	if len(sessions[0].Windows[0]) != 2 {
+		t.Errorf("session a window @1: got %d panes, want 2", len(sessions[0].Windows[0]))
 	}
 }
 

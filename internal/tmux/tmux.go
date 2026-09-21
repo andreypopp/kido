@@ -111,51 +111,53 @@ func parsePanes(lines []string) []Pane {
 	return panes
 }
 
-// OrderWindows groups panes into windows in kido's order: sessions oldest
-// first, ties broken by name (SessionLess), and within a session each
-// window's panes kept in ListPanes' own order (tmux's natural window
-// order). This is kido's one true window order: the sidebar's grouping and
-// `kido switch-window` both walk it, so they cannot drift apart. Each
-// returned slice is one window's panes, in pane order, so windows[i][0]
+// Session is one session's windows, grouped the way kido shows and walks
+// them: Windows[i] is one window's panes in pane order, so Windows[i][0]
 // identifies the window (SessionName, WindowID).
-func OrderWindows(panes []Pane) [][]Pane {
-	type sess struct {
-		name    string
+type Session struct {
+	Name    string
+	Windows [][]Pane
+}
+
+// OrderSessions groups panes into sessions and windows in kido's order:
+// sessions oldest first (session_created), ties broken by name, and within
+// a session each window's panes kept in ListPanes' own order (tmux's
+// natural window order). This is kido's one true order, derived from one
+// list-panes: the sidebar's grouping, `kido switch-session` and `kido
+// switch-window` all walk it, so they cannot drift apart.
+func OrderSessions(panes []Pane) []Session {
+	type group struct {
 		created int64
-		panes   []Pane
+		sess    Session
 	}
-	var order []*sess
-	bySess := map[string]*sess{}
+	var order []*group
+	bySess := map[string]*group{}
 	for _, p := range panes {
-		s, ok := bySess[p.SessionName]
+		g, ok := bySess[p.SessionName]
 		if !ok {
-			s = &sess{name: p.SessionName, created: p.SessionCreated}
-			bySess[p.SessionName] = s
-			order = append(order, s)
+			g = &group{created: p.SessionCreated, sess: Session{Name: p.SessionName}}
+			bySess[p.SessionName] = g
+			order = append(order, g)
 		}
-		s.panes = append(s.panes, p)
+		n := len(g.sess.Windows)
+		if n == 0 || g.sess.Windows[n-1][0].WindowID != p.WindowID {
+			g.sess.Windows = append(g.sess.Windows, nil)
+			n++
+		}
+		g.sess.Windows[n-1] = append(g.sess.Windows[n-1], p)
 	}
 	sort.SliceStable(order, func(i, j int) bool {
-		return SessionLess(
-			Session{Name: order[i].name, Created: order[i].created},
-			Session{Name: order[j].name, Created: order[j].created})
+		if order[i].created != order[j].created {
+			return order[i].created < order[j].created
+		}
+		return order[i].sess.Name < order[j].sess.Name
 	})
 
-	var windows [][]Pane
-	for _, s := range order {
-		var cur []Pane
-		for _, p := range s.panes {
-			if len(cur) > 0 && cur[0].WindowID != p.WindowID {
-				windows = append(windows, cur)
-				cur = nil
-			}
-			cur = append(cur, p)
-		}
-		if len(cur) > 0 {
-			windows = append(windows, cur)
-		}
+	sessions := make([]Session, 0, len(order))
+	for _, g := range order {
+		sessions = append(sessions, g.sess)
 	}
-	return windows
+	return sessions
 }
 
 // ListPanes returns every pane on the server, in tmux's own order.
@@ -185,72 +187,20 @@ func CurrentClient() string {
 	return out
 }
 
-// Session is one tmux session, enough to order it the way the sidebar does.
-type Session struct {
-	Name    string
-	Created int64 // unix time, #{session_created}
-}
-
-// SessionLess orders sessions oldest first (session_created), ties broken by
-// name. This is kido's one true session order: the sidebar's grouping and
-// `kido switch-session` both sort with it, so they cannot drift apart.
-func SessionLess(a, b Session) bool {
-	if a.Created != b.Created {
-		return a.Created < b.Created
-	}
-	return a.Name < b.Name
-}
-
-// SortSessions orders sessions in place, oldest first, ties broken by name.
-func SortSessions(sessions []Session) {
-	sort.SliceStable(sessions, func(i, j int) bool { return SessionLess(sessions[i], sessions[j]) })
-}
-
-// sessionFormat is what ListSessions asks for, one line per session.
-var sessionFormat = strings.Join([]string{
-	"#{session_created}",
-	"#{session_name}",
-}, sep)
-
-// parseSessions turns list-sessions output lines into sessions.
-func parseSessions(lines []string) []Session {
-	var sessions []Session
-	for _, line := range lines {
-		f := strings.SplitN(line, sep, 2)
-		if len(f) < 2 {
-			continue
-		}
-		s := Session{Name: f[1]}
-		s.Created, _ = strconv.ParseInt(f[0], 10, 64)
-		sessions = append(sessions, s)
-	}
-	return sessions
-}
-
-// ListSessions returns every session on the server, in tmux's own order (by
-// name); pass the result to SortSessions for kido's order.
-func ListSessions() ([]Session, error) {
-	out, err := run("list-sessions", "-F", sessionFormat)
-	if err != nil {
-		return nil, err
-	}
-	return parseSessions(strings.Split(out, "\n")), nil
-}
-
 // SwitchSession switches client to the session adjacent to its current one
-// in kido's order (oldest first, ties by name), wrapping around. next
-// selects the following session, otherwise the preceding one. A server with
-// one session, or a client not attached to any session kido can find, is a
-// no-op.
+// in kido's order (OrderSessions: oldest first, ties by name), wrapping
+// around. next selects the following session, otherwise the preceding one.
+// A server with one session, or a client not attached to any session kido
+// can find, is a no-op.
 func SwitchSession(client string, next bool) error {
-	sessions, err := ListSessions()
+	panes, err := ListPanes()
 	if err != nil {
 		return err
 	}
+	sessions := OrderSessions(panes)
 	if len(sessions) < 2 {
 		return nil
 	}
-	SortSessions(sessions)
 
 	current, _ := ClientState(client)
 	i := -1
@@ -274,7 +224,7 @@ func SwitchSession(client string, next bool) error {
 }
 
 // SwitchWindow switches client to the window adjacent to its current one in
-// kido's order (OrderWindows: sessions oldest first, windows in tmux's own
+// kido's order (OrderSessions: sessions oldest first, windows in tmux's own
 // order within a session), wrapping around the whole server. This crosses
 // session boundaries: advancing past a session's last window moves to the
 // next session's first window, unlike tmux's own next-window/previous-window
@@ -288,7 +238,10 @@ func SwitchWindow(client string, next bool) error {
 	if err != nil {
 		return err
 	}
-	windows := OrderWindows(panes)
+	var windows [][]Pane
+	for _, s := range OrderSessions(panes) {
+		windows = append(windows, s.Windows...)
+	}
 	if len(windows) < 2 {
 		return nil
 	}

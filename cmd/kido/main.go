@@ -37,6 +37,18 @@ func debugFlag(cmd string, args []string) (bool, error) {
 	return *debug, nil
 }
 
+// dispatch runs fn for a subcommand named name, printing "kido <name>:
+// <err>" to stderr and exiting 1 on failure. It is the shape shared by
+// every subcommand except hook, which must never fail the caller, and
+// prompt, which returns its own exit codes - both stay as their own cases
+// below.
+func dispatch(name string, fn func() error) {
+	if err := fn(); err != nil {
+		fmt.Fprintln(os.Stderr, "kido "+name+":", err)
+		os.Exit(1)
+	}
+}
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -55,10 +67,7 @@ func main() {
 				fmt.Fprintln(os.Stderr, "usage: kido setup-pi")
 				os.Exit(1)
 			}
-			if err := setupPi(); err != nil {
-				fmt.Fprintln(os.Stderr, "kido setup-pi:", err)
-				os.Exit(1)
-			}
+			dispatch("setup-pi", setupPi)
 			return
 		case "setup-claude":
 			debug, err := debugFlag("setup-claude", os.Args[2:])
@@ -66,16 +75,10 @@ func main() {
 				fmt.Fprintln(os.Stderr, "kido setup-claude:", err)
 				os.Exit(1)
 			}
-			if err := setupClaude(debug); err != nil {
-				fmt.Fprintln(os.Stderr, "kido setup-claude:", err)
-				os.Exit(1)
-			}
+			dispatch("setup-claude", func() error { return setupClaude(debug) })
 			return
 		case "agent-status":
-			if err := agentStatus(os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, "kido agent-status:", err)
-				os.Exit(1)
-			}
+			dispatch("agent-status", func() error { return agentStatus(os.Args[2:]) })
 			return
 		case "debug-log":
 			fmt.Println(filepath.Join(state.Dir(), "debug.log"))
@@ -98,22 +101,13 @@ func main() {
 			fmt.Println(path)
 			return
 		case "snapshot":
-			if err := snapshot(os.Stdout); err != nil {
-				fmt.Fprintln(os.Stderr, "kido snapshot:", err)
-				os.Exit(1)
-			}
+			dispatch("snapshot", func() error { return snapshot(os.Stdout) })
 			return
 		case "switch-session":
-			if err := switchSession(os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, "kido switch-session:", err)
-				os.Exit(1)
-			}
+			dispatch("switch-session", func() error { return switchSession(os.Args[2:]) })
 			return
 		case "switch-window":
-			if err := switchWindow(os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, "kido switch-window:", err)
-				os.Exit(1)
-			}
+			dispatch("switch-window", func() error { return switchWindow(os.Args[2:]) })
 			return
 		case "prompt":
 			os.Exit(prompt(os.Args[2:], os.Stdin))
@@ -300,7 +294,7 @@ func parseSwitchArgs(cmd string, args []string) (client, dir string, err error) 
 
 // switchSession implements `kido switch-session next|prev [-client NAME]`:
 // it switches the current client to the adjacent session in kido's order
-// (internal/tmux.SortSessions), wrapping around.
+// (internal/tmux.OrderSessions), wrapping around.
 func switchSession(args []string) error {
 	client, dir, err := parseSwitchArgs("switch-session", args)
 	if err != nil {
@@ -311,7 +305,7 @@ func switchSession(args []string) error {
 
 // switchWindow implements `kido switch-window next|prev [-client NAME]`: it
 // switches the current client to the adjacent window in the sidebar's
-// order (internal/tmux.OrderWindows), wrapping around the whole server and
+// order (internal/tmux.OrderSessions), wrapping around the whole server and
 // crossing session boundaries, unlike tmux's own next-window/previous-window
 // which wrap inside one session.
 func switchWindow(args []string) error {
@@ -357,21 +351,24 @@ func runHook(r io.Reader, debug bool) error {
 	case e.Remove:
 		return state.Remove(in.SessionID)
 	}
-	return recordSession(state.AgentClaude, in.SessionID, e, "", "")
+	// Claude Code runs the hook through `sh -c`, so the immediate parent
+	// is that shell, not claude; ReporterPID(true) walks past it.
+	return recordSession(state.AgentClaude, in.SessionID, procs.ReporterPID(true), e, "", "")
 }
 
 // recordSession builds and writes the state.Session for one agent report:
-// the pane and pid of the call ($TMUX_PANE, procs.HookParent - the agent
-// process, past any sh -c wrapper), e's status, e's end time (via endedAt)
-// when e.Ended, and title and inbox. Shared by runHook and agentStatus,
-// which differ only in which agent, effect, title and inbox they report
-// (Claude Code has neither a title nor an inbox).
-func recordSession(agent, sessionID string, e hook.Effect, title, inbox string) error {
+// the pane ($TMUX_PANE) and the pid the caller supplies (procs.ReporterPID,
+// walked past a wrapping shell or not depending on which path can be
+// behind one), e's status, e's end time (via endedAt) when e.Ended, and
+// title and inbox. Shared by runHook and agentStatus, which differ only in
+// which agent, pid, effect, title and inbox they report (Claude Code has
+// neither a title nor an inbox).
+func recordSession(agent, sessionID string, pid int, e hook.Effect, title, inbox string) error {
 	now := time.Now().UTC()
 	s := state.Session{
 		Agent:  agent,
 		Pane:   os.Getenv("TMUX_PANE"),
-		PID:    procs.HookParent(),
+		PID:    pid,
 		Status: e.Status,
 		TS:     now,
 		Title:  title,
@@ -396,9 +393,21 @@ func endedAt(id string, now time.Time) time.Time {
 	return now
 }
 
+// statusList joins state.Statuses() with "|", the form usage text shows,
+// so help text cannot drift from what state.Valid accepts.
+func statusList() string {
+	names := make([]string, len(state.Statuses()))
+	for i, s := range state.Statuses() {
+		names[i] = string(s)
+	}
+	return strings.Join(names, "|")
+}
+
 // agentStatusUsage is what `kido agent-status` accepts.
-const agentStatusUsage = "usage: kido agent-status --agent NAME --session ID " +
-	"--status running|waiting|compacting|idle [--title TITLE] [--inbox PATH] [--ended] [--remove]"
+func agentStatusUsage() string {
+	return "usage: kido agent-status --agent NAME --session ID " +
+		"--status " + statusList() + " [--title TITLE] [--inbox PATH] [--ended] [--remove]"
+}
 
 // agentStatus implements `kido agent-status`, how an agent that is not
 // Claude Code reports itself to the sidebar: the same record `kido hook`
@@ -431,14 +440,14 @@ func agentStatus(args []string) error {
 	fs.SetOutput(io.Discard)
 	agent := fs.String("agent", "", "name of the reporting agent, e.g. pi")
 	session := fs.String("session", "", "the agent's session id; one state file per session")
-	status := fs.String("status", "", "running|waiting|compacting|idle")
+	status := fs.String("status", "", statusList())
 	title := fs.String("title", "", "the session's name, shown as the pane's label")
 	inbox := fs.String("inbox", "",
 		"path of the unix socket the agent takes prompts on, speaking kido's own protocol (see `kido inbox-path`); empty clears it")
 	ended := fs.Bool("ended", false, "a turn just finished")
 	remove := fs.Bool("remove", false, "delete the session's record")
 	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("%w\n%s", err, agentStatusUsage)
+		return fmt.Errorf("%w\n%s", err, agentStatusUsage())
 	}
 	gaveInbox := false
 	fs.Visit(func(f *flag.Flag) {
@@ -447,16 +456,16 @@ func agentStatus(args []string) error {
 		}
 	})
 	if fs.NArg() > 0 {
-		return fmt.Errorf("unknown argument %q\n%s", fs.Arg(0), agentStatusUsage)
+		return fmt.Errorf("unknown argument %q\n%s", fs.Arg(0), agentStatusUsage())
 	}
 	if *agent == "" || *session == "" {
-		return fmt.Errorf("--agent and --session are required\n%s", agentStatusUsage)
+		return fmt.Errorf("--agent and --session are required\n%s", agentStatusUsage())
 	}
 	if *remove {
 		return state.Remove(*session)
 	}
 	if !state.Valid(state.Status(*status)) {
-		return fmt.Errorf("unknown status %q\n%s", *status, agentStatusUsage)
+		return fmt.Errorf("unknown status %q\n%s", *status, agentStatusUsage())
 	}
 	sessionTitle, sessionInbox := *title, *inbox
 	if sessionTitle == "" || !gaveInbox {
@@ -470,7 +479,9 @@ func agentStatus(args []string) error {
 		}
 	}
 	e := hook.Effect{Status: state.Status(*status), Ended: *ended}
-	return recordSession(*agent, *session, e, sessionTitle, sessionInbox)
+	// Spawned directly by the agent's extension, with no shell wrapper to
+	// walk past: ReporterPID(false) is the immediate parent, no ps call.
+	return recordSession(*agent, *session, procs.ReporterPID(false), e, sessionTitle, sessionInbox)
 }
 
 // logHookEvent appends one line to <state.Dir()>/debug.log: a timestamp,

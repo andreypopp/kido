@@ -2,9 +2,6 @@
 package procs
 
 import (
-	"bufio"
-	"bytes"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -42,15 +39,29 @@ type process struct {
 // about the processes behind panes.
 func Sweep() Scan {
 	s := Scan{SSH: map[int]string{}, Pi: map[int]bool{}}
-	out, err := exec.Command("ps", "-axo", "pid=,ppid=,comm=,args=").Output()
-	if err != nil {
-		return s
+	all, parent := parseProcesses(psFields("-axo", "pid=,ppid=,comm=,args="))
+	for _, p := range all {
+		if filepath.Base(p.comm) == "ssh" {
+			if host := sshHost(p.args[1:]); host != "" {
+				s.SSH[p.pid] = host
+				s.SSH[p.ppid] = host
+			}
+		}
+		if isPi(p) {
+			markAncestors(s.Pi, parent, p.pid)
+		}
 	}
-	var all []process
-	parent := map[int]int{}
-	sc := bufio.NewScanner(bytes.NewReader(out))
-	for sc.Scan() {
-		f := strings.Fields(sc.Text())
+	return s
+}
+
+// parseProcesses turns psFields' rows (pid ppid comm args...) into process
+// rows and the pid->ppid map Sweep's ancestor walk needs. A row with fewer
+// than 4 fields - missing or malformed - is skipped. Split out of Sweep so
+// this parsing, where argv itself may contain further whitespace, can be
+// table-tested without executing ps.
+func parseProcesses(rows [][]string) (all []process, parent map[int]int) {
+	parent = map[int]int{}
+	for _, f := range rows {
 		if len(f) < 4 {
 			continue
 		}
@@ -66,18 +77,7 @@ func Sweep() Scan {
 		all = append(all, p)
 		parent[pid] = ppid
 	}
-	for _, p := range all {
-		if filepath.Base(p.comm) == "ssh" {
-			if host := sshHost(p.args[1:]); host != "" {
-				s.SSH[p.pid] = host
-				s.SSH[p.ppid] = host
-			}
-		}
-		if isPi(p) {
-			markAncestors(s.Pi, parent, p.pid)
-		}
-	}
-	return s
+	return all, parent
 }
 
 // MaybePi reports whether a pane's foreground command could be pi, and
