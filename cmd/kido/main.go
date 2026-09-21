@@ -122,18 +122,33 @@ func main() {
 
 	opts := ui.Options{}
 	flag.DurationVar(&opts.Interval, "interval", 100*time.Millisecond, "refresh interval; tmux changes also refresh immediately")
-	flag.StringVar(&opts.Client, "client", "", "tmux client to act on; defaults to $TMUX_SIDE_CLIENT, then the current client")
+	flag.StringVar(&opts.Client, "client", "", "tmux client to act on; defaults to $TMUX_SIDE_CLIENT, and is required without it")
 	flag.Parse()
 
 	if os.Getenv("TMUX") == "" {
 		fmt.Fprintln(os.Stderr, "kido: must run inside tmux")
 		os.Exit(1)
 	}
+	// The fork sets TMUX_SIDE_CLIENT only in the environment of the
+	// side-status-command job (status.c, status_side_start). Its absence is
+	// therefore exactly "kido was not started as a side column": a popup, or
+	// a plain pane. There kido is a one-shot picker that can be quit, since
+	// handing the keyboard back to a side column nobody is showing would
+	// trap the user in a program with no exit.
+	side := os.Getenv("TMUX_SIDE_CLIENT")
+	opts.Standalone = side == ""
 	if opts.Client == "" {
-		opts.Client = os.Getenv("TMUX_SIDE_CLIENT")
+		opts.Client = side
 	}
 	if opts.Client == "" {
-		opts.Client = tmux.CurrentClient()
+		// Standalone, the client must be named: a popup is not a client, so
+		// tmux answers #{client_name} inside one with whichever client it
+		// saw last - measured, with two clients attached, as the *other*
+		// client than the one the popup was opened on. Guessing there would
+		// silently jump somebody else's screen, so the binding passes the
+		// name (see README) and kido says so rather than guessing.
+		fmt.Fprintln(os.Stderr, "kido: no tmux client; pass -client '#{client_name}'")
+		os.Exit(1)
 	}
 	if err := ui.Run(opts); err != nil {
 		fmt.Fprintln(os.Stderr, "kido:", err)

@@ -32,6 +32,16 @@ type Options struct {
 	// report (a pane's command changing, the side-status-focus flag).
 	Interval time.Duration
 	Client   string // tmux client the sidebar belongs to
+
+	// Standalone runs kido as a one-shot picker rather than as a client's
+	// side status line: q, Esc and C-c quit, and picking a pane jumps and
+	// then quits. It is set when $TMUX_SIDE_CLIENT is empty, which the
+	// fork sets only for the side-status-command job, so a popup (`tmux
+	// display-popup -E "kido -client '#{client_name}'"`) and a plain pane
+	// both run standalone. Without it there is no way out of the program:
+	// the sidebar hands the keyboard back to the pane instead of exiting,
+	// which only means anything when kido owns a side column.
+	Standalone bool
 }
 
 // snapshot is everything the sidebar shows, taken off the UI goroutine.
@@ -334,7 +344,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft:
 			if i := m.rowAt(msg.Y); i >= 0 {
 				m.cursor = i
-				m.jump()
+				// Two steps: m is a value receiver, so the copy returned
+				// must be made after jump has mutated it.
+				cmd := m.jump()
+				return m, cmd
 			}
 		case msg.Button == tea.MouseButtonWheelUp:
 			m.top -= 3
@@ -344,26 +357,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clampTop()
 		}
 	case tea.KeyMsg:
-		m.key(msg)
+		cmd := m.key(msg)
+		return m, cmd
 	}
 	return m, nil
 }
 
-// key handles one key press.
-func (m *model) key(msg tea.KeyMsg) {
+// key handles one key press, returning the command it asks for (only ever
+// tea.Quit, and only in standalone mode).
+func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 	// Runes that arrive together (fast typing, send-keys) come as one
 	// message; while searching they are all filter text, otherwise each
 	// is a separate command.
 	if msg.Type == tea.KeyRunes && !msg.Alt {
 		if m.searching {
 			m.setFilter(m.filter + string(msg.Runes))
-			return
+			return nil
 		}
 		if len(msg.Runes) > 1 {
+			var cmd tea.Cmd
 			for _, r := range msg.Runes {
-				m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+				// The first key that asks to quit wins; the rest of the
+				// batch is still handled, so the state the program exits
+				// with is the state every key left behind.
+				if c := m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}); c != nil && cmd == nil {
+					cmd = c
+				}
 			}
-			return
+			return cmd
 		}
 	}
 	pend := m.gPend
@@ -378,16 +399,29 @@ func (m *model) key(msg tea.KeyMsg) {
 	case "shift+up":
 		m.switchWindow(false)
 	case "enter":
-		m.jump()
+		return m.jump()
 	case "esc", "ctrl+c":
-		// Leave the search, or hand the keyboard back to the pane.
-		if m.searching {
+		// Leave the search, or hand the keyboard back to the pane - or,
+		// standalone, quit. The search is always left first, so Esc means
+		// the same thing in both modes: undo the search, then leave.
+		switch {
+		case m.searching:
 			m.searching = false
 			m.setFilter("")
-		} else if err := tmux.ReleaseSideFocus(m.opts.Client); err != nil {
-			m.status = err.Error()
-		} else {
-			m.focus(m.snap.active)
+		case m.opts.Standalone:
+			return tea.Quit
+		default:
+			if err := tmux.ReleaseSideFocus(m.opts.Client); err != nil {
+				m.status = err.Error()
+			} else {
+				m.focus(m.snap.active)
+			}
+		}
+	case "q":
+		// Standalone only: in the side column there is nothing to quit to,
+		// and "q" would be a keystroke the user cannot take back.
+		if m.opts.Standalone {
+			return tea.Quit
 		}
 	case "backspace":
 		if r := []rune(m.filter); len(r) > 0 {
@@ -420,24 +454,33 @@ func (m *model) key(msg tea.KeyMsg) {
 		m.cursor = -1
 		m.move(1)
 	}
+	return nil
 }
 
 // jump switches the client to the pane under the cursor, hands it the
-// keyboard, and clears the filter with the pane still selected.
-func (m *model) jump() {
+// keyboard, and clears the filter with the pane still selected. Standalone,
+// it also asks to quit once the jump went through: picking a pane is the
+// whole of a one-shot picker's job, and quitting is what closes the popup.
+// A failed jump leaves the program up with the error on the status line,
+// so the user can see it and try something else.
+func (m *model) jump() tea.Cmd {
 	if m.cursor < 0 || m.cursor >= len(m.rows) {
-		return
+		return nil
 	}
 	pane := m.rows[m.cursor].paneID
 	if err := tmux.Jump(m.opts.Client, pane); err != nil {
 		m.status = err.Error()
-		return
+		return nil
 	}
 	if m.searching {
 		m.searching = false
 		m.setFilter("")
 		m.focus(pane)
 	}
+	if m.opts.Standalone {
+		return tea.Quit
+	}
+	return nil
 }
 
 // switchWindow moves the client to the adjacent window in kido's order, the

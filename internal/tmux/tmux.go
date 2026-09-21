@@ -375,6 +375,13 @@ func ActivePane(panes []Pane, session string) string {
 
 // Jump makes paneID the active pane of client, switching session and
 // window as needed, and hands it the keyboard.
+//
+// The side-focus flag is cleared here in every mode, standalone included.
+// Clearing a flag a client does not have is a no-op, checked by hand on a
+// server with side-status off, where the jump goes through unharmed; and
+// when the client does happen to be showing a focused sidebar, a jump made
+// from a popup should hand it the keyboard just as one made from the
+// sidebar does. So there is nothing for a standalone kido to skip.
 func Jump(client, paneID string) error {
 	_, err := run("switch-client", "-c", client, "-t", paneID, ";",
 		"select-window", "-t", paneID, ";",

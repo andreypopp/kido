@@ -48,6 +48,36 @@ Claude Code reports its status.
 | `Esc` / `C-c` | clear the filter, or return focus to the pane |
 | `Enter` / click | jump to the pane |
 
+## Popup
+
+kido also runs as a one-shot picker outside the side column, which is what
+a popup wants: it opens over the pane, you pick something, it closes. The
+picker starts whenever `$TMUX_SIDE_CLIENT` is empty - the fork sets that
+only for the `side-status-command` job - so a popup (or a plain pane) gets
+it without asking, and the side column keeps the behaviour above.
+
+```
+bind-key P run-shell -b "tmux display-popup -c '#{client_name}' -E -w 40 -h 80% 'kido -client #{client_name}'"
+```
+
+Both halves of that line matter. `display-popup` does not expand `#{...}`
+inside the command it runs, and a popup has no client of its own, so kido
+cannot work out reliably which client to act on: with more than one client
+attached, tmux answers `#{client_name}` from inside the popup with whichever
+client it saw last, not the one you pressed the key on. Wrapping the popup
+in `run-shell`, which does expand formats, is what lets `-client` name the
+right client, and `-c` is what puts the popup on that client's screen rather
+than on tmux's own guess.
+
+The keys are the sidebar's, with the ones that only make sense in a column
+replaced by leaving:
+
+| key | action |
+|-----|--------|
+| `q` | close the picker |
+| `Esc` / `C-c` | clear the filter, or close the picker |
+| `Enter` / click | jump to the pane, then close the picker |
+
 ## Commands
 
 `kido switch-session next|prev [-client NAME]` switches the current client
