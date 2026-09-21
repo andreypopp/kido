@@ -34,6 +34,25 @@ printf '\n# kido sidebar\nsource-file %s/share/kido/kido-side.tmux\n' "$(brew --
 Then `kido setup-claude` registers the hook in `~/.claude/settings.json` so
 Claude Code reports its status.
 
+### Shell status (optional, zsh only)
+
+By default only agent panes show a status indicator. Plain shell panes can
+show one too - `●` while a command runs, `○` at the prompt - but tmux only
+knows that if the shell tells it, through OSC 133 markers. kido ships a zsh
+shim that emits them, installed by pointing `ZDOTDIR` at it rather than by
+editing any of your startup files. Add one line to `~/.tmux.conf`, with the
+literal brew prefix (tmux does not expand `$(brew --prefix)`):
+
+```
+set -g default-command 'KIDO_ZDOTDIR="$ZDOTDIR" ZDOTDIR=/opt/homebrew/share/kido/shell/zsh exec zsh'
+```
+
+The shim's `.zshenv` restores your own `ZDOTDIR` before anything else runs,
+so your `.zprofile`, `.zshrc` and `.zlogin` are still read from where they
+always were, and neither variable leaks into the session. It is zsh only,
+and it only affects shells started after the config is reloaded: panes that
+are already open keep their old rows until you open new ones.
+
 ## Keys
 
 | key | action |
@@ -132,9 +151,11 @@ echo "run the tests" | kido prompt --window
 Agents report what they are doing and the sidebar badges their pane with
 it: work in flight shows `● running`, a permission prompt or a question
 `◆ waiting`, context compaction `◌`, a session that is sitting at its
-prompt `○ idle`. A session stays `● running` at turn end while background
-commands or agents it started are still running, and one that finishes
-while you are elsewhere shows `✓ done` until you visit its pane. The label
+prompt `○ idle`. Plain shell panes get the same `●`/`○` pair when their
+shell reports through OSC 133 (see Shell status under Install); without it
+their rows stay bare. A session stays `● running` at turn end while
+background commands or agents it started are still running, and one that
+finishes while you are elsewhere shows `✓ done` until you visit its pane. The label
 next to the indicator is the pane's own title, as the agent set it. State
 lives in `~/.local/state/kido/`.
 

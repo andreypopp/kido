@@ -28,3 +28,14 @@ bind-key k if-shell -F '#{m:*side-status-focus*,#{client_flags}}' \
 # bind other keys of your choosing
 # bind-key -n S-Up   run-shell "kido switch-window prev -client '#{client_name}'"
 # bind-key -n S-Down run-shell "kido switch-window next -client '#{client_name}'"
+
+# example: show running/idle status for plain shell panes too, not just
+# agent panes. kido reads that from tmux's OSC 133 support, which only
+# knows what the shell tells it, so the shell has to emit the markers:
+# kido ships a zsh shim that does, installed by pointing ZDOTDIR at it
+# (your own ZDOTDIR is restored immediately, so your .zprofile/.zshrc/
+# .zlogin are still read from where they always were). zsh only, and it
+# only reaches shells started after this line is loaded, so it is not set
+# by default - uncommenting it would override every user's shell choice.
+# Write the literal brew prefix: tmux does not expand $(brew --prefix).
+# set -g default-command 'KIDO_ZDOTDIR="$ZDOTDIR" ZDOTDIR=/opt/homebrew/share/kido/shell/zsh exec zsh'

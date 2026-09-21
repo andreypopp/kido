@@ -333,6 +333,13 @@ func (a snapshot) same(b snapshot) bool {
 //	PanePID        the key into the ssh and pi maps, so the row text
 //	CurrentCommand the row text, and whether the pane counts as an agent
 //	Title          the agent title on the row
+//	CommandRunning   the OSC 133 status indicator on a plain shell row
+//	CommandStartTime the same, and
+//	LastPromptTime   the same: together they are Pane.ShellStatus, so a
+//	                 command starting or finishing must rebuild the row
+//
+// (pane_command_duration is not in the pane format at all: it ticks every
+// second, so it would make every snapshot differ from the last.)
 //
 // Not compared: WindowIndex, WindowName, WindowLayout and CurrentPath,
 // which reach no row (a renumbering reorders the pane list itself, which
@@ -348,7 +355,10 @@ func samePanes(a, b []tmux.Pane) bool {
 		x, y := a[i], b[i]
 		if x.SessionName != y.SessionName || x.SessionCreated != y.SessionCreated ||
 			x.WindowID != y.WindowID || x.PaneID != y.PaneID || x.PanePID != y.PanePID ||
-			x.CurrentCommand != y.CurrentCommand || x.Title != y.Title {
+			x.CurrentCommand != y.CurrentCommand || x.Title != y.Title ||
+			x.CommandRunning != y.CommandRunning ||
+			x.CommandStartTime != y.CommandStartTime ||
+			x.LastPromptTime != y.LastPromptTime {
 			return false
 		}
 	}
@@ -765,10 +775,21 @@ func (m *model) agentTitleOf(p tmux.Pane) (string, bool) {
 func (m *model) paneLabel(p tmux.Pane) string {
 	title, isAgent := m.agentTitleOf(p)
 	if !isAgent {
+		text := stProc.Render(p.CurrentCommand)
 		if host, ok := m.snap.ssh[p.PanePID]; ok {
-			return stProc.Render("ssh ") + host
+			text = stProc.Render("ssh ") + host
 		}
-		return stProc.Render(p.CurrentCommand)
+		// A shell with kido's OSC 133 integration (shell/zsh) gets the
+		// same running/idle indicator an agent pane has. A shell without
+		// it says nothing, and its row stays exactly as it always was.
+		if running, ok := p.ShellStatus(); ok {
+			ind := indicators[state.Idle]
+			if running {
+				ind = indicators[state.Running]
+			}
+			return ind + " " + text
+		}
+		return text
 	}
 	s, reported := m.snap.states[p.PaneID]
 	ind := indicators[state.Unknown]

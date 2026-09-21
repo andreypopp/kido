@@ -70,7 +70,34 @@ type Pane struct {
 	PanePID        int
 	CurrentCommand string
 	CurrentPath    string
-	Title          string
+	// OSC 133 shell integration, reported by tmux only for shells that
+	// emit the markers (kido ships a zsh shim in shell/zsh). A shell that
+	// never emits them leaves LastPromptTime zero; see ShellStatus.
+	CommandRunning   bool
+	CommandStartTime int64 // unix time of the last 133;C
+	LastPromptTime   int64 // unix time of the last 133;A
+	Title            string
+}
+
+// ShellStatus reports whether pane p is running a command right now, and
+// whether its shell reports that at all.
+//
+// ok is false when the shell has no OSC 133 integration - no prompt has
+// ever been marked - and then running means nothing: the caller must draw
+// the pane exactly as it did before. Every pane started before the user
+// loaded the shim is in that state.
+//
+// The running rule is deliberately not just CommandRunning. A program that
+// emits 133;C and exits without the matching 133;D (pi does this, as does
+// anything else with partial integration) would leave tmux believing a
+// command is still running forever. The shell's own precmd emits 133;A at
+// the next prompt, which puts LastPromptTime after CommandStartTime, and
+// that is what heals such a pane back to idle.
+func (p Pane) ShellStatus() (running, ok bool) {
+	if p.LastPromptTime == 0 {
+		return false, false
+	}
+	return p.CommandRunning && !(p.LastPromptTime > p.CommandStartTime), true
 }
 
 const sep = "\x1f"
@@ -88,6 +115,11 @@ var paneFormat = strings.Join([]string{
 	"#{pane_pid}",
 	"#{pane_current_command}",
 	"#{pane_current_path}",
+	// OSC 133. pane_command_duration is deliberately left out: it ticks
+	// every second, which would defeat the snapshot change-detection.
+	"#{pane_command_running}",
+	"#{pane_command_start_time}",
+	"#{pane_last_prompt_time}",
 	"#{pane_title}",
 }, sep)
 
@@ -96,16 +128,18 @@ var paneFormat = strings.Join([]string{
 func parsePanes(lines []string) []Pane {
 	var panes []Pane
 	for _, line := range lines {
-		f := strings.SplitN(line, sep, 12)
-		if len(f) < 12 {
+		f := strings.SplitN(line, sep, 15)
+		if len(f) < 15 {
 			continue
 		}
 		p := Pane{SessionName: f[0], WindowID: f[3], WindowName: f[4], WindowLayout: f[5],
 			PaneID: f[6], Active: f[7] == "1", CurrentCommand: f[9],
-			CurrentPath: f[10], Title: f[11]}
+			CurrentPath: f[10], CommandRunning: f[11] == "1", Title: f[14]}
 		p.SessionCreated, _ = strconv.ParseInt(f[1], 10, 64)
 		p.WindowIndex, _ = strconv.Atoi(f[2])
 		p.PanePID, _ = strconv.Atoi(f[8])
+		p.CommandStartTime, _ = strconv.ParseInt(f[12], 10, 64)
+		p.LastPromptTime, _ = strconv.ParseInt(f[13], 10, 64)
 		panes = append(panes, p)
 	}
 	return panes

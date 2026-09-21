@@ -93,14 +93,17 @@ func TestQuote(t *testing.T) {
 
 func TestParsePanes(t *testing.T) {
 	line := strings.Join([]string{"work", "1700000000", "2", "@7", "win", "layout",
-		"%3", "1", "4242", "claude", "/tmp", "✳ Title"}, sep)
+		"%3", "1", "4242", "claude", "/tmp", "1", "1700000100", "1700000050",
+		"✳ Title"}, sep)
 	p := parsePanes([]string{line, "junk"})
 	if len(p) != 1 {
 		t.Fatalf("got %d panes, want 1", len(p))
 	}
 	want := Pane{SessionName: "work", SessionCreated: 1700000000, WindowIndex: 2,
 		WindowID: "@7", WindowName: "win", WindowLayout: "layout", PaneID: "%3", Active: true,
-		PanePID: 4242, CurrentCommand: "claude", CurrentPath: "/tmp", Title: "✳ Title"}
+		PanePID: 4242, CurrentCommand: "claude", CurrentPath: "/tmp",
+		CommandRunning: true, CommandStartTime: 1700000100, LastPromptTime: 1700000050,
+		Title: "✳ Title"}
 	if p[0] != want {
 		t.Errorf("got %+v, want %+v", p[0], want)
 	}
