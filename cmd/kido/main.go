@@ -69,6 +69,13 @@ func main() {
 			}
 			dispatch("setup-pi", setupPi)
 			return
+		case "setup-zsh":
+			if len(os.Args) > 2 {
+				fmt.Fprintln(os.Stderr, "usage: kido setup-zsh")
+				os.Exit(1)
+			}
+			dispatch("setup-zsh", setupZsh)
+			return
 		case "setup-claude":
 			debug, err := debugFlag("setup-claude", os.Args[2:])
 			if err != nil {

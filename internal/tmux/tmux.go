@@ -71,7 +71,8 @@ type Pane struct {
 	CurrentCommand string
 	CurrentPath    string
 	// OSC 133 shell integration, reported by tmux only for shells that
-	// emit the markers (kido ships a zsh shim in shell/zsh). A shell that
+	// emit the markers (kido ships a zsh integration in shell/zsh,
+	// installed by `kido setup-zsh`). A shell that
 	// never emits them leaves LastPromptTime zero; see ShellStatus.
 	CommandRunning   bool
 	CommandStartTime int64 // unix time of the last 133;C
@@ -92,7 +93,7 @@ type Pane struct {
 // ok is false when the shell has no OSC 133 integration - no prompt has
 // ever been marked - and then running means nothing: the caller must draw
 // the pane exactly as it did before. Every pane started before the user
-// loaded the shim is in that state.
+// loaded the integration is in that state.
 //
 // The running rule is deliberately not just CommandRunning. A program that
 // emits 133;C and exits without the matching 133;D (pi does this, as does

@@ -5,9 +5,12 @@ BIN ?= $(HOME)/.local/bin
 build:
 	go build -o bin/kido ./cmd/kido
 
+# the shell integration goes where kido looks for it relative to its own
+# binary, the same layout Homebrew's pkgshare gives it
 install: build
-	mkdir -p $(BIN)
+	mkdir -p $(BIN) $(BIN)/../share/kido/shell/zsh
 	rm -f $(BIN)/kido && cp bin/kido $(BIN)/kido
+	cp shell/zsh/integration.zsh $(BIN)/../share/kido/shell/zsh/integration.zsh
 
 # unit tests; the end-to-end suite needs the patched tmux and is separate
 test:

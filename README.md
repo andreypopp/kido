@@ -39,19 +39,18 @@ Claude Code reports its status.
 By default only agent panes show a status indicator. Plain shell panes can
 show one too - `▌` while a command runs, a red `▌` when the last one
 failed - but tmux only knows that if the shell tells it, through OSC 133
-markers. kido ships a zsh shim that emits them, installed by pointing
-`ZDOTDIR` at it rather than by editing any of your startup files. Add one line to `~/.tmux.conf`, with the
-literal brew prefix (tmux does not expand `$(brew --prefix)`):
+markers. kido ships a zsh script that emits them:
 
-```
-set -g default-command 'KIDO_ZDOTDIR="$ZDOTDIR" ZDOTDIR=/opt/homebrew/share/kido/shell/zsh exec zsh'
+```sh
+kido setup-zsh
 ```
 
-The shim's `.zshenv` restores your own `ZDOTDIR` before anything else runs,
-so your `.zprofile`, `.zshrc` and `.zlogin` are still read from where they
-always were, and neither variable leaks into the session. It is zsh only,
-and it only affects shells started after the config is reloaded: panes that
-are already open keep their old rows until you open new ones.
+That adds a marked block to `~/.zshrc` sourcing the script from wherever
+kido is installed, and nothing else: no `default-command`, so your shell
+stays your own choice. Running it again is a no-op, and deleting the block
+by hand undoes it. Then open a new pane - it is zsh only, and it only
+reaches shells started afterwards, so panes that are already open keep
+their old rows.
 
 ## Keys
 
@@ -212,6 +211,12 @@ then show the same indicators and titles as Claude Code panes. When pi
 runs Claude Code inside itself, the sidebar shows pi, not the embedded
 session.
 
+`kido setup-zsh` adds a marked block to `~/.zshrc` sourcing kido's zsh OSC
+133 script (see Shell status under Install), so plain shell panes report
+running and failed commands. It is idempotent: a second run leaves the
+block alone, and a block pointing somewhere else is rewritten in place
+rather than added twice.
+
 `kido snapshot` prints a shell script that recreates every session,
 window, pane and layout, resuming Claude Code and pi panes by their exact
 session id. A pane that reported no session (or ran an agent kido cannot
@@ -256,7 +261,7 @@ For an agent or a human bootstrapping a fresh macOS box with Homebrew:
        brew uninstall tmux 2>/dev/null; brew install andreypopp/tap/tmux andreypopp/tap/kido
 
 2. Add the `source-file` line from Install to `~/.tmux.conf`, then
-   `kido setup-claude`.
+   `kido setup-claude` (and `kido setup-zsh` for shell status).
 
 3. To carry the sessions over, run `kido snapshot > layout.sh` on the old
    machine, copy the script, adjust any paths that differ, and run it from a

@@ -868,7 +868,8 @@ func (m *model) paneLabel(p tmux.Pane) string {
 		if host, ok := m.snap.ssh[p.PanePID]; ok {
 			text = stProc.Render("ssh ") + host
 		}
-		// A shell with kido's OSC 133 integration (shell/zsh) gets the
+		// A shell with kido's OSC 133 integration (shell/zsh, installed
+		// by `kido setup-zsh`) gets the
 		// same indicators an agent pane has: running, or the last command
 		// having failed. A shell without it says nothing, and its row
 		// stays exactly as it always was, field and all.
