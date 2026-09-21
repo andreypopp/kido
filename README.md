@@ -35,8 +35,14 @@ review
    whether a pane is running a command. Shells already running are
    unaffected.
 
-5. Check: `tmux -V` prints `next-3.9`, the sidebar is on the left,
-   `prefix K` hides and shows it, `prefix k` toggles focus, `/` searches.
+5. Optional: bind the popup picker, which is not bound by default (see
+   Popup for what the wrapping is for):
+
+       bind-key P run-shell -b "tmux display-popup -c '#{client_name}' -E -w 40 -h 80% 'kido -client #{client_name}'"
+
+6. Check: `tmux -V` prints `next-3.9`, the sidebar is on the left,
+   `prefix K` hides and shows it, `prefix k` toggles focus, `/` searches,
+   and `prefix P` opens the picker if you bound it.
 
 Both `setup-tmux` and `setup-zsh` source the shipped file only if it is
 there. A second run leaves the block alone; a block pointing elsewhere is
