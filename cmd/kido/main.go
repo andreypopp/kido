@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"kido/internal/hook"
 	"kido/internal/procs"
@@ -93,6 +95,9 @@ func main() {
 			return
 		case "agent-status":
 			dispatch("agent-status", func() error { return agentStatus(os.Args[2:]) })
+			return
+		case "agents":
+			dispatch("agents", func() error { return agentsCmd(os.Args[2:]) })
 			return
 		case "debug-log":
 			fmt.Println(filepath.Join(state.Dir(), "debug.log"))
@@ -358,28 +363,49 @@ func runHook(r io.Reader, debug bool) error {
 	case e.Remove:
 		return state.Remove(in.SessionID)
 	}
-	return recordSession(state.AgentClaude, in.SessionID, procs.ReporterPID(true), e, "", "", 0)
+	return recordSession(state.AgentClaude, in.SessionID, procs.ReporterPID(true), e, agentReport{})
+}
+
+// agentReport is what an agent may say about itself beyond its status:
+// the fields only `kido agent-status` can set. runHook passes the zero
+// value, Claude Code's hooks reporting none of them.
+type agentReport struct {
+	Title          string
+	Inbox          string
+	Protocol       int
+	Activity       string
+	Instance       string
+	ParentPID      int
+	ParentInstance string
+	Depth          int
+	Model          string
 }
 
 // recordSession builds and writes the state.Session for one agent report:
 // the pane ($TMUX_PANE) and the pid the caller supplies (procs.ReporterPID,
 // walked past a wrapping shell or not depending on which path can be
 // behind one), e's status, e's end time (via endedAt) when e.Ended, e's
-// background wait, and title, inbox and protocol. Shared by runHook and
-// agentStatus, which differ only in which agent, pid, effect, title, inbox
-// and protocol they report (Claude Code has none of the last three).
-func recordSession(agent, sessionID string, pid int, e hook.Effect, title, inbox string, protocol int) error {
+// background wait, and r's fields. Shared by runHook and agentStatus,
+// which differ only in which agent, pid, effect and report they supply
+// (Claude Code reports a zero agentReport).
+func recordSession(agent, sessionID string, pid int, e hook.Effect, r agentReport) error {
 	now := time.Now().UTC()
 	s := state.Session{
-		Agent:      agent,
-		Pane:       os.Getenv("TMUX_PANE"),
-		PID:        pid,
-		Status:     e.Status,
-		TS:         now,
-		Title:      title,
-		Inbox:      inbox,
-		Protocol:   protocol,
-		Background: e.Background,
+		Agent:          agent,
+		Pane:           os.Getenv("TMUX_PANE"),
+		PID:            pid,
+		Status:         e.Status,
+		TS:             now,
+		Title:          r.Title,
+		Inbox:          r.Inbox,
+		Protocol:       r.Protocol,
+		Background:     e.Background,
+		Activity:       r.Activity,
+		Instance:       r.Instance,
+		ParentPID:      r.ParentPID,
+		ParentInstance: r.ParentInstance,
+		Depth:          r.Depth,
+		Model:          r.Model,
 	}
 	if e.Ended {
 		s.Ended = endedAt(sessionID, now)
@@ -413,7 +439,9 @@ func statusList() string {
 // agentStatusUsage is what `kido agent-status` accepts.
 func agentStatusUsage() string {
 	return "usage: kido agent-status --agent NAME --session ID " +
-		"--status " + statusList() + " [--title TITLE] [--inbox PATH] [--protocol N] [--ended] [--remove]"
+		"--status " + statusList() + " [--title TITLE] [--inbox PATH] [--protocol N] " +
+		"[--activity TEXT] [--instance ID] [--parent-pid PID] [--parent-instance ID] " +
+		"[--depth N] [--model NAME] [--ended] [--remove]"
 }
 
 // agentStatus implements `kido agent-status`, how an agent that is not
@@ -448,6 +476,34 @@ func agentStatusUsage() string {
 // would show the user verbatim. Presence, not value, decides carry-forward,
 // so `--protocol 0` explicitly clears it exactly as `--inbox ""` clears
 // the socket path.
+//
+// --activity is free text describing what the agent is doing ("refactoring
+// internal/ui"), shown in the sidebar after the status. It follows the same
+// carry-forward rule as --inbox - presence, not value, decides it - because
+// an extension's coalescing may report a fresh status without re-sending
+// the activity that still applies; `--activity ""` is how it is cleared.
+// It is the one field a model writes directly, so it is sanitised on the
+// way in rather than trusted at either place it is drawn: see oneLine.
+//
+// --instance is an opaque id the agent generates once per process and
+// reports on every call - it identifies the process, not the session, so
+// it does not change across /resume or /reload the way a session id can.
+//
+// --parent-pid, --parent-instance and --depth describe a subagent's place
+// in the spawn tree: the pid and instance id of the agent that spawned
+// this one (zero/empty for a root agent), and its depth in that tree.
+// Unlike --title, --inbox and --protocol these need no carry-forward -
+// the agent reads them from its own environment (KIDO_AGENT_PARENT_PID,
+// KIDO_AGENT_PARENT_INSTANCE, KIDO_AGENT_DEPTH) and can report them fresh
+// on every call - so they are recorded exactly as given, defaulting to
+// zero. A parent edge is matched on ParentInstance, not ParentPID: see
+// cmd/kido/agents.go's parentID.
+//
+// --model is the name of the model the agent is currently running,
+// shown in the sidebar. It follows the same carry-forward rule as
+// --activity - presence, not value, decides it - since an extension's
+// coalescing may report a fresh status without re-sending a model that
+// has not changed.
 func agentStatus(args []string) error {
 	fs := flag.NewFlagSet("agent-status", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -459,20 +515,19 @@ func agentStatus(args []string) error {
 		"path of the unix socket the agent takes prompts on, speaking kido's own protocol (see `kido inbox-path`); empty clears it")
 	protocol := fs.Int("protocol", 0,
 		"highest inbox envelope version the agent understands (see internal/msg); omitted keeps the last reported value")
+	activity := fs.String("activity", "", "free text describing what the agent is doing, one line of at most 256 bytes; omitted keeps the last reported value, empty clears it")
+	instance := fs.String("instance", "", "opaque id the agent generates once per process and reports on every call")
+	parentPID := fs.Int("parent-pid", 0, "pid of the agent that spawned this one, 0 for a root agent")
+	parentInstance := fs.String("parent-instance", "", "instance id of the agent that spawned this one, empty for a root agent")
+	depth := fs.Int("depth", 0, "depth in the spawn tree, 0 for a root agent")
+	model := fs.String("model", "", "name of the model the agent is currently running; omitted keeps the last reported value, empty clears it")
 	ended := fs.Bool("ended", false, "a turn just finished")
 	remove := fs.Bool("remove", false, "delete the session's record")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w\n%s", err, agentStatusUsage())
 	}
-	gaveInbox, gaveProtocol := false, false
-	fs.Visit(func(f *flag.Flag) {
-		switch f.Name {
-		case "inbox":
-			gaveInbox = true
-		case "protocol":
-			gaveProtocol = true
-		}
-	})
+	given := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unknown argument %q\n%s", fs.Arg(0), agentStatusUsage())
 	}
@@ -485,22 +540,68 @@ func agentStatus(args []string) error {
 	if !state.Valid(state.Status(*status)) {
 		return fmt.Errorf("unknown status %q\n%s", *status, agentStatusUsage())
 	}
-	sessionTitle, sessionInbox, sessionProtocol := *title, *inbox, *protocol
-	if sessionTitle == "" || !gaveInbox || !gaveProtocol {
+	r := agentReport{
+		Title:          *title,
+		Inbox:          *inbox,
+		Protocol:       *protocol,
+		Activity:       oneLine(*activity, maxActivity),
+		Instance:       *instance,
+		ParentPID:      *parentPID,
+		ParentInstance: *parentInstance,
+		Depth:          *depth,
+		Model:          *model,
+	}
+	if r.Title == "" || !given["inbox"] || !given["protocol"] || !given["activity"] || !given["model"] {
 		if prev, ok, _ := state.Get(*session); ok {
-			if sessionTitle == "" {
-				sessionTitle = prev.Title
+			if r.Title == "" {
+				r.Title = prev.Title
 			}
-			if !gaveInbox {
-				sessionInbox = prev.Inbox
+			if !given["inbox"] {
+				r.Inbox = prev.Inbox
 			}
-			if !gaveProtocol {
-				sessionProtocol = prev.Protocol
+			if !given["protocol"] {
+				r.Protocol = prev.Protocol
+			}
+			if !given["activity"] {
+				r.Activity = prev.Activity
+			}
+			if !given["model"] {
+				r.Model = prev.Model
 			}
 		}
 	}
 	e := hook.Effect{Status: state.Status(*status), Ended: *ended}
-	return recordSession(*agent, *session, procs.ReporterPID(false), e, sessionTitle, sessionInbox, sessionProtocol)
+	return recordSession(*agent, *session, procs.ReporterPID(false), e, r)
+}
+
+// maxActivity caps what --activity records. The extension caps it too,
+// but a model is free to ignore the schema and any same-uid process can
+// run `kido agent-status`, so the cap that matters is the one here.
+const maxActivity = 256
+
+// oneLine is what makes model-authored free text safe to put in a state
+// record: control characters become spaces and the result is cut to max
+// bytes on a rune boundary.
+//
+// The sidebar draws one row per pane and View() budgets one terminal line
+// per row, so a newline in the activity draws a line the row accounting
+// does not know about and pushes everything below it down; an escape
+// sequence would colour the rest of the column. `kido agents` prints a
+// tab-separated table, which a tab or a newline breaks the same way. All
+// of that is cheaper to prevent at the one place a Session is built from
+// arguments than to defend at each of the two places one is drawn.
+func oneLine(s string, max int) string {
+	s = strings.Map(func(r rune) rune {
+		if r == utf8.RuneError || unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
+	for len(s) > max {
+		_, n := utf8.DecodeLastRuneInString(s)
+		s = s[:len(s)-n]
+	}
+	return strings.TrimRight(s, " ")
 }
 
 // logHookEvent appends one line to <state.Dir()>/debug.log: a timestamp,

@@ -72,7 +72,8 @@ func runStdin(stdin string, args ...string) (string, error) {
 // Pane is one tmux pane plus the window and session it belongs to.
 type Pane struct {
 	SessionName    string
-	SessionCreated int64 // unix time
+	SessionID      string // e.g. "$3"; stable while the session lives, unlike SessionName
+	SessionCreated int64  // unix time
 	WindowIndex    int
 	WindowID       string // e.g. "@7"; unique server-wide, unlike WindowIndex
 	WindowName     string
@@ -131,6 +132,7 @@ const sep = "\x1f"
 // pane_title is last because it may contain anything.
 var paneFormat = strings.Join([]string{
 	"#{session_name}",
+	"#{session_id}",
 	"#{session_created}",
 	"#{window_index}",
 	"#{window_id}",
@@ -157,25 +159,25 @@ var paneFormat = strings.Join([]string{
 func parsePanes(lines []string) []Pane {
 	var panes []Pane
 	for _, line := range lines {
-		f := strings.SplitN(line, sep, 18)
-		if len(f) < 18 {
+		f := strings.SplitN(line, sep, 19)
+		if len(f) < 19 {
 			continue
 		}
-		p := Pane{SessionName: f[0], WindowID: f[3], WindowName: f[4], WindowLayout: f[5],
-			PaneID: f[6], Active: f[7] == "1", CurrentCommand: f[9],
-			CurrentPath: f[10], AlternateOn: f[11] == "1",
-			CommandRunning: f[12] == "1", Title: f[17]}
-		p.SessionCreated, _ = strconv.ParseInt(f[1], 10, 64)
-		p.WindowIndex, _ = strconv.Atoi(f[2])
-		p.PanePID, _ = strconv.Atoi(f[8])
-		p.CommandStartTime, _ = strconv.ParseInt(f[13], 10, 64)
-		p.LastPromptTime, _ = strconv.ParseInt(f[14], 10, 64)
+		p := Pane{SessionName: f[0], SessionID: f[1], WindowID: f[4], WindowName: f[5], WindowLayout: f[6],
+			PaneID: f[7], Active: f[8] == "1", CurrentCommand: f[10],
+			CurrentPath: f[11], AlternateOn: f[12] == "1",
+			CommandRunning: f[13] == "1", Title: f[18]}
+		p.SessionCreated, _ = strconv.ParseInt(f[2], 10, 64)
+		p.WindowIndex, _ = strconv.Atoi(f[3])
+		p.PanePID, _ = strconv.Atoi(f[9])
+		p.CommandStartTime, _ = strconv.ParseInt(f[14], 10, 64)
+		p.LastPromptTime, _ = strconv.ParseInt(f[15], 10, 64)
 		// An empty status field means tmux has no exit status for this
 		// pane, which is not the same as a status of 0.
-		if n, err := strconv.Atoi(f[15]); err == nil {
+		if n, err := strconv.Atoi(f[16]); err == nil {
 			p.CommandStatus, p.CommandStatusOK = n, true
 		}
-		p.CommandEndTime, _ = strconv.ParseInt(f[16], 10, 64)
+		p.CommandEndTime, _ = strconv.ParseInt(f[17], 10, 64)
 		panes = append(panes, p)
 	}
 	return panes

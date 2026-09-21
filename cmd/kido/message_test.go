@@ -124,4 +124,3 @@ func TestMessageUsage(t *testing.T) {
 		t.Errorf("two targets: code = %d, want 1", code)
 	}
 }
-

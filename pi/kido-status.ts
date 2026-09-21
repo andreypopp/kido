@@ -6,10 +6,21 @@
  * extension makes a pi session visible in that sidebar by shelling out to:
  *
  *   kido agent-status --agent pi --session <id> --status running|waiting|compacting|idle
- *                     [--title <text>] [--ended] [--remove] [--inbox <path>] [--protocol <n>]
+ *                     [--title <text>] [--activity <text>] [--model <name>]
+ *                     [--instance <id>] [--parent-pid <pid>] [--parent-instance <id>]
+ *                     [--depth <n>] [--ended] [--remove]
+ *                     [--inbox <path>] [--protocol <n>]
  *
  * kido reads $TMUX_PANE from the environment, so the command must be spawned
  * from inside the pi process (which lives in the tmux pane).
+ *
+ * --instance is a random id generated once for this process (module scope,
+ * not per session) and reported on every call, so a parent edge survives a
+ * session id change under /resume or /reload. --parent-pid and
+ * --parent-instance, when set, name the process that spawned this one -
+ * read once from KIDO_AGENT_PARENT_PID and KIDO_AGENT_PARENT_INSTANCE,
+ * which `kido spawn` sets in a subagent's environment (see
+ * docs/subagents-plan.md); absent for a root session.
  *
  * Behaviour:
  *   - If `kido` is not on PATH, or pi is not running inside tmux, the extension
@@ -17,7 +28,15 @@
  *   - Every invocation is fire-and-forget (detached, stdio ignored). Failures
  *     never propagate into pi and never print to the TUI.
  *   - Status changes are coalesced: kido is only invoked when the reported
- *     status/title actually differs from what was last sent.
+ *     status/title/activity actually differs from what was last sent.
+ *
+ * Tools:
+ *   `list_agents()` and `set_status(activity)` both shell out to kido
+ *   (`kido agents --json`, `kido agent-status --activity`) the same way
+ *   status reporting does. They register unconditionally at factory time -
+ *   before session_start has resolved kido or a session id - and simply
+ *   no-op at call time until those are known, since pi may run the factory
+ *   in invocations that never start a session.
  *
  * Inbox:
  *   On session start the extension asks kido where to bind — `kido inbox-path
@@ -38,11 +57,47 @@
  * Or, for a one-off run:  pi -e /path/to/kido-status.ts
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { execFileSync, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { accessSync, constants, unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { delimiter, isAbsolute, join } from "node:path";
+import { Type } from "typebox";
+
+// Generated once per process, not per session: it identifies this pi
+// process to kido (see state.Session.Instance), and a session switch or
+// /reload must not change it out from under a child that already recorded
+// it as a ParentInstance.
+const INSTANCE = randomUUID();
+
+// A subagent's kido-status runs as a plain pi process spawned by `kido
+// spawn` (see docs/subagents-plan.md), which sets these in its environment.
+// Absent for a root session.
+const PARENT_PID = process.env.KIDO_AGENT_PARENT_PID ? Number(process.env.KIDO_AGENT_PARENT_PID) : undefined;
+const PARENT_INSTANCE = process.env.KIDO_AGENT_PARENT_INSTANCE || undefined;
+const DEPTH = process.env.KIDO_AGENT_DEPTH ? Number(process.env.KIDO_AGENT_DEPTH) : undefined;
+
+// Cap for set_status's free text. The JSON schema says 256 too, but a
+// model is free to ignore it, and the sidebar has one row to draw this in.
+const MAX_ACTIVITY_BYTES = 256;
+
+// Cut on a code-point boundary, never mid-sequence: decoding a buffer that
+// splits one leaves a U+FFFD behind, which is both mojibake and *three*
+// bytes, so a naive byte slice can come back longer than the cap it was
+// enforcing (258 bytes for a cap of 256, given three-byte characters).
+function capBytes(text: string, max: number): string {
+  if (Buffer.byteLength(text, "utf8") <= max) return text;
+  let out = "";
+  let used = 0;
+  for (const ch of text) {
+    const n = Buffer.byteLength(ch, "utf8");
+    if (used + n > max) break;
+    out += ch;
+    used += n;
+  }
+  return out;
+}
 
 type Status = "running" | "waiting" | "compacting" | "idle";
 
@@ -131,6 +186,8 @@ export default function (pi: ExtensionAPI) {
   let kido: string | null = null;
   let sessionId: string | null = null;
   let title: string | undefined;
+  let activity = "";
+  let model: string | undefined;
   let lastKey: string | null = null;
   let current: Status = "idle";
   let beforeCompact: Status = "idle";
@@ -242,7 +299,10 @@ export default function (pi: ExtensionAPI) {
   ): void => {
     if (!kido || !sessionId) return;
 
-    const key = [status, title ?? "", opts.ended ? 1 : 0, opts.remove ? 1 : 0].join("|");
+    // activity and model join the key: without them, set_status or a
+    // model switch that leaves the status unchanged would look like an
+    // identical report and be dropped, and the sidebar would never see it.
+    const key = [status, title ?? "", activity, model ?? "", opts.ended ? 1 : 0, opts.remove ? 1 : 0].join("|");
     // The one report that carries --inbox must never be coalesced away:
     // session_start awaits the socket bind, and another handler can send an
     // equivalent "idle" report inside that window, which would make the
@@ -262,8 +322,21 @@ export default function (pi: ExtensionAPI) {
       sessionId,
       "--status",
       status,
+      // Always sent, so that set_status("") reaches kido as the explicit
+      // empty value that clears it rather than as an omission kido would
+      // carry the old text forward across.
+      "--activity",
+      activity,
+      // Reported fresh on every call, from this process's own identity and
+      // environment - not carried forward, unlike --title and --activity.
+      "--instance",
+      INSTANCE,
     ];
     if (title) args.push("--title", title);
+    if (model) args.push("--model", model);
+    if (PARENT_PID !== undefined) args.push("--parent-pid", String(PARENT_PID));
+    if (PARENT_INSTANCE) args.push("--parent-instance", PARENT_INSTANCE);
+    if (DEPTH !== undefined) args.push("--depth", String(DEPTH));
     if (opts.ended) args.push("--ended");
     if (opts.remove) args.push("--remove");
     // Reported once, alongside --protocol; kido carries both forward
@@ -285,6 +358,58 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
+  const listAgentsParams = Type.Object({}, { additionalProperties: false });
+  const listAgentsTool: ToolDefinition<typeof listAgentsParams> = {
+    name: "list_agents",
+    label: "List Agents",
+    description: "List every agent visible in this tmux session, including yourself.",
+    promptSnippet: "list_agents() - see every agent in this tmux session",
+    parameters: listAgentsParams,
+    async execute() {
+      if (!kido) {
+        return { content: [{ type: "text", text: "[]" }], details: [] };
+      }
+      try {
+        // kido resolves the session from $TMUX_PANE, inherited by execFileSync.
+        const out = execFileSync(kido, ["agents", "--json"], {
+          stdio: ["ignore", "pipe", "ignore"],
+          encoding: "utf8",
+          timeout: 2000,
+        });
+        const agents = out.trim() ? JSON.parse(out) : [];
+        return { content: [{ type: "text", text: JSON.stringify(agents) }], details: agents };
+      } catch {
+        return { content: [{ type: "text", text: "[]" }], details: [] };
+      }
+    },
+  };
+
+  const setStatusParams = Type.Object(
+    {
+      activity: Type.String({
+        description: 'What you are doing right now ("refactoring internal/ui"), or "" to clear it. Capped at 256 bytes.',
+        maxLength: MAX_ACTIVITY_BYTES,
+      }),
+    },
+    { additionalProperties: false },
+  );
+  const setStatusTool: ToolDefinition<typeof setStatusParams> = {
+    name: "set_status",
+    label: "Set Status",
+    description:
+      "Set the free-text activity shown next to you in kido's tmux sidebar. Separate from your running/waiting/idle status.",
+    promptSnippet: "set_status(activity) - tell kido's sidebar what you are doing",
+    parameters: setStatusParams,
+    async execute(_toolCallId, params) {
+      activity = capBytes(params.activity, MAX_ACTIVITY_BYTES);
+      send(current);
+      return { content: [{ type: "text", text: "ok" }], details: {} };
+    },
+  };
+
+  pi.registerTool(listAgentsTool);
+  pi.registerTool(setStatusTool);
+
   pi.on("session_start", async (_event, ctx) => {
     // Resource lookup belongs here, not in the factory: the factory may run in
     // invocations that never start a session.
@@ -292,6 +417,7 @@ export default function (pi: ExtensionAPI) {
     if (!kido) return;
     sessionId = ctx.sessionManager.getSessionId() ?? null;
     title = ctx.sessionManager.getSessionName() || undefined;
+    model = ctx.model?.id;
     lastKey = null;
     // A session switch or /reload re-runs this: drop the old inbox first.
     stopInbox();
@@ -306,6 +432,11 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_info_changed", (event) => {
     title = event.name || undefined;
+    send(current);
+  });
+
+  pi.on("model_select", (event) => {
+    model = event.model.id;
     send(current);
   });
 

@@ -1054,13 +1054,19 @@ func (m *model) paneLabel(p tmux.Pane) string {
 		return field(m.shellIndicator(m.phases[p.PaneID])) + text
 	}
 	ind := indicator(state.Unknown) // an agent pane that has not reported
+	var activity string
 	if s, reported := m.snap.states[p.PaneID]; reported {
 		ind = indicator(s.Status)
+		activity = s.Activity
 	}
 	if m.done(p.PaneID) {
 		ind = indicatorDone()
 	}
-	return field(ind) + title
+	label := field(ind) + title
+	if activity != "" {
+		label += "  " + stDim.Render(activity)
+	}
+	return label
 }
 
 func (m *model) rebuild() {

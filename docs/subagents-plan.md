@@ -51,7 +51,7 @@ every window-creation, env-passing and linger case.
 
 ## Data model
 
-`state.Session` gains four `omitempty` fields, which read as zero in files
+`state.Session` gains six `omitempty` fields, which read as zero in files
 written by an older kido.
 
 ```go
@@ -59,21 +59,39 @@ written by an older kido.
 // Unlike Status it is not a closed vocabulary and does not drive colour.
 Activity string `json:"activity,omitempty"`
 
-// ParentPID is the pid of the agent that spawned this one, and
-// ParentStart its start time. Zero for a root agent.
+// Instance is an opaque id an agent generates once per process and
+// reports on every call (msg.NewID works). It, not the parent's session
+// id, is what a child names as its ParentInstance: a session id changes
+// under /resume and /reload (kido-status.ts re-runs session_start on
+// both), so a child keyed to its parent's old session id would look
+// orphaned while the parent is very much alive.
+Instance string `json:"instance,omitempty"`
+
+// ParentPID is the pid of the agent that spawned this one, kept for a
+// later phase to poll for liveness — it is not how a parent edge is
+// matched. ParentInstance, that parent's own Instance, is: an instance
+// string cannot be confused with a live process the way a recycled pid
+// can, since alive() reports EPERM as alive and would read a pid
+// reused by another user's process as a living parent. Zero/empty for
+// a root agent.
 //
-// The pid, not the parent's session id: a session id changes under
-// /resume and /reload (kido-status.ts re-runs session_start on both), so
-// a child keyed to its parent's old session id would look orphaned while
-// the parent is very much alive. ParentStart guards pid reuse, which
-// alive() cannot do on its own — it reports EPERM as alive, so a
-// recycled pid belonging to another user reads as a living parent.
-ParentPID   int       `json:"parentPid,omitempty"`
-ParentStart time.Time `json:"parentStart,omitempty"`
+// An earlier draft paired ParentPID with the parent's start time
+// instead, on the theory that a start time would guard pid reuse the
+// same way. That field was never implementable: nothing in Session
+// holds an agent's own start time to compare it against, so it would
+// have read as zero in every file kido ever wrote. Instance replaces
+// it and is simpler besides — there is no clock to read, and no
+// `omitempty` trap: a zero time.Time is not empty to encoding/json,
+// so the old field could never actually be omitted either.
+ParentPID      int    `json:"parentPid,omitempty"`
+ParentInstance string `json:"parentInstance,omitempty"`
 
 // Depth is 0 for a root agent, 1 for its subagent, 2 for that
 // subagent's. Spawning at maxDepth is refused.
 Depth int `json:"depth,omitempty"`
+
+// Model is the name of the model the agent is currently running.
+Model string `json:"model,omitempty"`
 ```
 
 There is no `Window` field. Window ids are monotonic for the server's
@@ -95,16 +113,20 @@ So `Activity` must follow the `--inbox` rule exactly: omitted keeps,
 `--activity ""` clears. Without that, the first `running` report after a
 `set_status` blanks the activity.
 
-`ParentPID`, `ParentStart` and `Depth` need **no** carry-forward: the
-child knows them from its environment and reports them on every status
-call. That is cheaper than carry-forward and more robust than walking the
-`Parent` chain, which fails as soon as one intermediate record is gone.
+`Instance`, `ParentPID`, `ParentInstance` and `Depth` need **no**
+carry-forward: the child knows them from its own generated id and its
+environment, and reports them on every status call. That is cheaper than
+carry-forward and more robust than walking the `Parent` chain, which
+fails as soon as one intermediate record is gone.
+
+`Model` follows the `--inbox`/`Activity` rule: omitted keeps, `--model ""`
+clears.
 
 ### Coalescing
 
 `kido-status.ts:193` keys coalescing on `[status, title, ended, remove]`.
-`Activity` must join that key, or a `set_status` that does not change the
-status is silently dropped.
+`Activity` and `Model` must join that key, or a `set_status` or a model
+switch that does not change the status is silently dropped.
 
 ### Session scoping
 
@@ -270,7 +292,7 @@ which runs:
 
 ```
 tmux new-window -d -t <session> -n <name> -c <parent cwd> \
-     -e KIDO_AGENT_PARENT_PID=P -e KIDO_AGENT_PARENT_START=T \
+     -e KIDO_AGENT_PARENT_PID=P -e KIDO_AGENT_PARENT_INSTANCE=I \
      -e KIDO_AGENT_DEPTH=N -e KIDO_AGENT_TASK_FILE=F \
      -PF '#{window_id}' -- pi --name <name> [--model M] [--tools ...]
 ```
@@ -316,9 +338,11 @@ sufficient, which is worth stating rather than pretending otherwise.
 
 **Parent death cancels children.** The child's pi is a child of the tmux
 server, not of the parent pi, so no OS parent-death signal applies. The
-child polls `KIDO_AGENT_PARENT_PID` every 5s with `kill(pid, 0)`, compares
-the start time against `KIDO_AGENT_PARENT_START`, and calls
-`ctx.shutdown()` when the parent is gone.
+child polls `KIDO_AGENT_PARENT_PID` every 5s with `kill(pid, 0)` and calls
+`ctx.shutdown()` when the parent is gone. `kill(pid, 0)` alone cannot tell
+a live parent from an unrelated process that reused its pid; a full check
+also confirms that some session in `kido agents` still reports that pid
+with `KIDO_AGENT_PARENT_INSTANCE` as its `Instance`.
 
 Cancellation lives in **one named place** — a `kido reap` path — never in
 `state.Load()`. `Load()` is called by `kido prompt` and the popup picker,
@@ -347,7 +371,7 @@ and neither should become a window killer as a side effect.
 
 ```
 kido agents [--session S] [--json]
-kido agent-status --activity TEXT --parent-pid P --depth N --protocol V
+kido agent-status --activity TEXT --instance ID --parent-pid P --parent-instance ID --depth N --model NAME --protocol V
 kido message <to> [-]            # text on stdin
 kido ask <to> [--timeout D] [-]
 kido spawn --parent-pid P --depth N --name N --task-file F
@@ -407,7 +431,7 @@ Linger needs a shortened duration; keep it a package variable as
 - **`state.Load()` deletes dead-pid files.** A pending reply addressed to
   a session that died is collected with it. Confirm that is desired and
   not a silently dropped answer.
-- **`alive()` reports EPERM as alive** (`state.go:216`). `ParentStart`
+- **`alive()` reports EPERM as alive** (`state.go:216`). `ParentInstance`
   covers the parent case; anything else relying on `alive()` for identity
   has the same hole.
 - **Moving a child's window to another session** with `move-window` puts

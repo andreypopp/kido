@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"kido/internal/hook"
 	"kido/internal/state"
@@ -390,6 +391,25 @@ func TestAgentStatus(t *testing.T) {
 	}
 }
 
+// reporter returns a function that runs one `kido agent-status` report
+// for session id - the standard flags plus whatever extra the caller
+// passes - and returns the record it wrote. The carry-forward tests below
+// all work by repeating a report with one flag varied.
+func reporter(t *testing.T, id string) func(extra ...string) state.Session {
+	base := []string{"--agent", "pi", "--session", id, "--status", "running"}
+	return func(extra ...string) state.Session {
+		t.Helper()
+		if err := agentStatus(append(append([]string(nil), base...), extra...)); err != nil {
+			t.Fatalf("agentStatus %v: %v", extra, err)
+		}
+		s, ok, err := state.Get(id)
+		if err != nil || !ok {
+			t.Fatalf("state.Get: %v, ok=%v", err, ok)
+		}
+		return s
+	}
+}
+
 // TestAgentStatusInbox checks --inbox: recorded when given, carried across
 // reports that omit it (an extension coalescing its reports may not
 // re-send it), and cleared by an explicit empty value, which is how an
@@ -398,18 +418,7 @@ func TestAgentStatusInbox(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%12")
 
-	base := []string{"--agent", "pi", "--session", "p1", "--status", "running"}
-	report := func(extra ...string) state.Session {
-		t.Helper()
-		if err := agentStatus(append(append([]string(nil), base...), extra...)); err != nil {
-			t.Fatalf("agentStatus %v: %v", extra, err)
-		}
-		s, ok, err := state.Get("p1")
-		if err != nil || !ok {
-			t.Fatalf("state.Get: %v, ok=%v", err, ok)
-		}
-		return s
-	}
+	report := reporter(t, "p1")
 
 	if s := report(); s.Inbox != "" {
 		t.Errorf("inbox = %q, want empty with no --inbox ever given", s.Inbox)
@@ -436,18 +445,7 @@ func TestAgentStatusProtocol(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%12")
 
-	base := []string{"--agent", "pi", "--session", "p1", "--status", "running"}
-	report := func(extra ...string) state.Session {
-		t.Helper()
-		if err := agentStatus(append(append([]string(nil), base...), extra...)); err != nil {
-			t.Fatalf("agentStatus %v: %v", extra, err)
-		}
-		s, ok, err := state.Get("p1")
-		if err != nil || !ok {
-			t.Fatalf("state.Get: %v, ok=%v", err, ok)
-		}
-		return s
-	}
+	report := reporter(t, "p1")
 
 	if s := report(); s.Protocol != 0 {
 		t.Errorf("protocol = %d, want 0 with no --protocol ever given", s.Protocol)
@@ -463,6 +461,114 @@ func TestAgentStatusProtocol(t *testing.T) {
 	}
 	if s := report(); s.Protocol != 0 {
 		t.Errorf("protocol = %d, want it to stay cleared", s.Protocol)
+	}
+}
+
+// TestAgentStatusActivity checks --activity: recorded when given, carried
+// across reports that omit it, and cleared by an explicit empty value -
+// the same carry-forward rule as --inbox, since a report that changes
+// status but says nothing about activity must not blank it.
+func TestAgentStatusActivity(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%12")
+
+	report := reporter(t, "p1")
+
+	if s := report(); s.Activity != "" {
+		t.Errorf("activity = %q, want empty with no --activity ever given", s.Activity)
+	}
+	if s := report("--activity", "refactoring internal/ui"); s.Activity != "refactoring internal/ui" {
+		t.Errorf("activity = %q, want the reported text", s.Activity)
+	}
+	if s := report(); s.Activity != "refactoring internal/ui" {
+		t.Errorf("activity = %q, want it carried across a report that omits --activity", s.Activity)
+	}
+	if s := report("--activity", ""); s.Activity != "" {
+		t.Errorf("activity = %q, want cleared by an explicit empty --activity", s.Activity)
+	}
+	if s := report(); s.Activity != "" {
+		t.Errorf("activity = %q, want it to stay cleared", s.Activity)
+	}
+}
+
+// TestAgentStatusModel checks --model: recorded when given, carried
+// across reports that omit it, and cleared by an explicit empty value -
+// the same carry-forward rule as --inbox and --activity, since a report
+// that changes status but says nothing about the model must not blank it.
+func TestAgentStatusModel(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%12")
+
+	report := reporter(t, "p1")
+
+	if s := report(); s.Model != "" {
+		t.Errorf("model = %q, want empty with no --model ever given", s.Model)
+	}
+	if s := report("--model", "claude-sonnet-5"); s.Model != "claude-sonnet-5" {
+		t.Errorf("model = %q, want the reported name", s.Model)
+	}
+	if s := report(); s.Model != "claude-sonnet-5" {
+		t.Errorf("model = %q, want it carried across a report that omits --model", s.Model)
+	}
+	if s := report("--model", ""); s.Model != "" {
+		t.Errorf("model = %q, want cleared by an explicit empty --model", s.Model)
+	}
+	if s := report(); s.Model != "" {
+		t.Errorf("model = %q, want it to stay cleared", s.Model)
+	}
+}
+
+// TestAgentStatusActivityIsOneLine pins the sanitising --activity gets on
+// the way into a record. The text is model-authored, and both places kido
+// draws it assume one line of printable characters: the sidebar budgets
+// one terminal line per pane row, so a newline draws a line the row
+// accounting knows nothing about and shifts everything below it, and an
+// escape sequence would colour the rest of the column; `kido agents`
+// prints a tab-separated table a tab would split. The byte cap is cut on
+// a rune boundary, so a capped multi-byte string is still valid UTF-8.
+func TestAgentStatusActivityIsOneLine(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%12")
+
+	report := reporter(t, "p1")
+
+	s := report("--activity", "one\ntwo\tthree\x1b[31m\x07")
+	if strings.ContainsAny(s.Activity, "\n\t\x1b\x07") {
+		t.Errorf("activity = %q, want no control characters", s.Activity)
+	}
+	if want := "one two three [31m"; s.Activity != want {
+		t.Errorf("activity = %q, want %q", s.Activity, want)
+	}
+
+	s = report("--activity", strings.Repeat("é", 300))
+	if n := len(s.Activity); n > maxActivity {
+		t.Errorf("activity is %d bytes, want at most %d", n, maxActivity)
+	}
+	if !utf8.ValidString(s.Activity) || strings.ContainsRune(s.Activity, utf8.RuneError) {
+		t.Errorf("activity = %q, want it cut on a rune boundary", s.Activity)
+	}
+}
+
+// TestAgentStatusParentAndDepth checks that --instance, --parent-pid,
+// --parent-instance and --depth are recorded exactly as given on every
+// call, with no carry-forward: the agent reports them fresh from its own
+// environment on every call, so an omitted flag means "root agent", not
+// "keep the last one".
+func TestAgentStatusParentAndDepth(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%12")
+
+	report := reporter(t, "p1")
+
+	s := report("--instance", "child-inst", "--parent-pid", "4242", "--parent-instance", "parent-inst", "--depth", "1")
+	if s.Instance != "child-inst" || s.ParentPID != 4242 || s.ParentInstance != "parent-inst" || s.Depth != 1 {
+		t.Fatalf("record = %+v, want instance child-inst, parent pid 4242, parent instance parent-inst and depth 1", s)
+	}
+
+	// Unlike --activity, omitting these on the next call resets them to
+	// zero rather than carrying the previous values forward.
+	if s := report(); s.Instance != "" || s.ParentPID != 0 || s.ParentInstance != "" || s.Depth != 0 {
+		t.Errorf("record = %+v, want a root agent (no carry-forward)", s)
 	}
 }
 

@@ -92,6 +92,44 @@ type Session struct {
 	// Nothing clears it explicitly: every report writes a whole fresh
 	// Session, so it survives only as long as events keep setting it.
 	Background bool `json:"background,omitempty"`
+	// Activity is free text the agent sets ("refactoring internal/ui").
+	// Unlike Status it is not a closed vocabulary and does not drive
+	// colour. Carried forward like Inbox - see agentStatus's --activity
+	// doc.
+	Activity string `json:"activity,omitempty"`
+	// Instance is an opaque id an agent generates once per process and
+	// reports on every status call (see msg.NewID). It, not the pid, is
+	// what a child names as its ParentInstance: a pid can be recycled,
+	// and alive() cannot tell a live process from a dead one it reused -
+	// it reports EPERM as alive, so a recycled pid belonging to another
+	// user reads as a living parent. An instance string cannot collide
+	// that way.
+	Instance string `json:"instance,omitempty"`
+	// ParentPID is the pid of the agent that spawned this one, kept only
+	// so a later phase can poll it for liveness - it is no longer how a
+	// parent edge is matched (see cmd/kido/agents.go's parentID).
+	// ParentInstance is that parent's own Instance, passed to the child
+	// via the environment, and is what parentID actually matches on.
+	//
+	// The plan this replaced paired ParentPID with the parent's start
+	// time, on the theory that a start time would guard pid reuse the way
+	// alive() cannot. That field was never implementable: nothing in
+	// Session holds an agent's own start time to compare it against, so
+	// it stayed zero in every file kido ever wrote. ParentInstance guards
+	// the same case and is simpler: no clock to read, no field to add
+	// just to have something to compare.
+	ParentPID      int    `json:"parentPid,omitempty"`
+	ParentInstance string `json:"parentInstance,omitempty"`
+	// Depth is 0 for a root agent, 1 for its subagent, 2 for that
+	// subagent's. Reported fresh on every call, from the agent's own
+	// environment - unlike Activity there is nothing to carry forward.
+	Depth int `json:"depth,omitempty"`
+	// Model is the name of the model the agent is currently running,
+	// e.g. "claude-sonnet-5". Carried forward like Inbox and Activity -
+	// see agentStatus's --model doc - since an extension's coalescing may
+	// report a fresh status without re-sending a model that has not
+	// changed.
+	Model string `json:"model,omitempty"`
 }
 
 // Dir returns the directory holding state files.

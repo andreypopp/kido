@@ -8,11 +8,20 @@ It shells out to:
 
 ```
 kido agent-status --agent pi --session <id> --status running|waiting|compacting|idle \
-     [--title <text>] [--ended] [--remove] [--inbox <path>] [--protocol <n>]
+     [--title <text>] [--activity <text>] [--model <name>] [--instance <id>] \
+     [--parent-pid <pid>] [--parent-instance <id>] [--depth <n>] \
+     [--ended] [--remove] [--inbox <path>] [--protocol <n>]
 ```
 
 kido reads `$TMUX_PANE` from the environment, so the command is spawned from
 inside the pi process, which lives in the tmux pane.
+
+`--instance` is a random id generated once for this process (not per session)
+and reported on every call, so kido can tell this process from another one
+reusing its pid. `--parent-pid`, `--parent-instance` and `--depth` are read
+once from `KIDO_AGENT_PARENT_PID`, `KIDO_AGENT_PARENT_INSTANCE` and
+`KIDO_AGENT_DEPTH`, which `kido spawn` sets in a subagent's environment (see
+`docs/subagents-plan.md`); absent for a root session.
 
 ## Install
 
@@ -96,3 +105,15 @@ An empty message is ignored, and anything over 1 MiB is dropped rather than
 buffered. Like the status reporting, the inbox is silent and non-fatal: it never
 writes to pi's stdout or stderr, and if it cannot be created or served, status
 reporting carries on unaffected.
+
+## Tools
+
+Two tools register unconditionally when the extension loads, and simply do
+nothing useful until a session has started and kido has been found:
+
+- `list_agents()` runs `kido agents --json` and returns every agent visible
+  in the current tmux session, including this one.
+- `set_status(activity)` runs `kido agent-status --activity <text>`, free
+  text capped at 256 bytes and shown next to this session in kido's
+  sidebar, separate from the running/waiting/idle status above. An empty
+  string clears it.
