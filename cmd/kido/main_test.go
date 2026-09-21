@@ -428,6 +428,44 @@ func TestAgentStatusInbox(t *testing.T) {
 	}
 }
 
+// TestAgentStatusProtocol checks --protocol: recorded when given, carried
+// across reports that omit it, and cleared by an explicit "--protocol 0" -
+// the same carry-forward rule as --inbox, since presence decides it, not
+// the value.
+func TestAgentStatusProtocol(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%12")
+
+	base := []string{"--agent", "pi", "--session", "p1", "--status", "running"}
+	report := func(extra ...string) state.Session {
+		t.Helper()
+		if err := agentStatus(append(append([]string(nil), base...), extra...)); err != nil {
+			t.Fatalf("agentStatus %v: %v", extra, err)
+		}
+		s, ok, err := state.Get("p1")
+		if err != nil || !ok {
+			t.Fatalf("state.Get: %v, ok=%v", err, ok)
+		}
+		return s
+	}
+
+	if s := report(); s.Protocol != 0 {
+		t.Errorf("protocol = %d, want 0 with no --protocol ever given", s.Protocol)
+	}
+	if s := report("--protocol", "1"); s.Protocol != 1 {
+		t.Errorf("protocol = %d, want 1", s.Protocol)
+	}
+	if s := report(); s.Protocol != 1 {
+		t.Errorf("protocol = %d, want it carried across a report that omits --protocol", s.Protocol)
+	}
+	if s := report("--protocol", "0"); s.Protocol != 0 {
+		t.Errorf("protocol = %d, want cleared by an explicit \"--protocol 0\"", s.Protocol)
+	}
+	if s := report(); s.Protocol != 0 {
+		t.Errorf("protocol = %d, want it to stay cleared", s.Protocol)
+	}
+}
+
 // TestAgentStatusErrors checks the argument shapes that must fail.
 func TestAgentStatusErrors(t *testing.T) {
 	dir := t.TempDir()

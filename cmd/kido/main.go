@@ -120,6 +120,8 @@ func main() {
 			return
 		case "prompt":
 			os.Exit(prompt(os.Args[2:], os.Stdin))
+		case "message":
+			os.Exit(message(os.Args[2:], os.Stdin))
 		}
 	}
 
@@ -356,17 +358,17 @@ func runHook(r io.Reader, debug bool) error {
 	case e.Remove:
 		return state.Remove(in.SessionID)
 	}
-	return recordSession(state.AgentClaude, in.SessionID, procs.ReporterPID(true), e, "", "")
+	return recordSession(state.AgentClaude, in.SessionID, procs.ReporterPID(true), e, "", "", 0)
 }
 
 // recordSession builds and writes the state.Session for one agent report:
 // the pane ($TMUX_PANE) and the pid the caller supplies (procs.ReporterPID,
 // walked past a wrapping shell or not depending on which path can be
 // behind one), e's status, e's end time (via endedAt) when e.Ended, e's
-// background wait, and title and inbox. Shared by runHook and
-// agentStatus, which differ only in which agent, pid, effect, title and
-// inbox they report (Claude Code has neither a title nor an inbox).
-func recordSession(agent, sessionID string, pid int, e hook.Effect, title, inbox string) error {
+// background wait, and title, inbox and protocol. Shared by runHook and
+// agentStatus, which differ only in which agent, pid, effect, title, inbox
+// and protocol they report (Claude Code has none of the last three).
+func recordSession(agent, sessionID string, pid int, e hook.Effect, title, inbox string, protocol int) error {
 	now := time.Now().UTC()
 	s := state.Session{
 		Agent:      agent,
@@ -376,6 +378,7 @@ func recordSession(agent, sessionID string, pid int, e hook.Effect, title, inbox
 		TS:         now,
 		Title:      title,
 		Inbox:      inbox,
+		Protocol:   protocol,
 		Background: e.Background,
 	}
 	if e.Ended {
@@ -410,7 +413,7 @@ func statusList() string {
 // agentStatusUsage is what `kido agent-status` accepts.
 func agentStatusUsage() string {
 	return "usage: kido agent-status --agent NAME --session ID " +
-		"--status " + statusList() + " [--title TITLE] [--inbox PATH] [--ended] [--remove]"
+		"--status " + statusList() + " [--title TITLE] [--inbox PATH] [--protocol N] [--ended] [--remove]"
 }
 
 // agentStatus implements `kido agent-status`, how an agent that is not
@@ -437,6 +440,14 @@ func agentStatusUsage() string {
 // `--inbox ""` is how an agent says its socket is gone, and a stale path
 // would otherwise keep kido dialling a socket nobody is listening on. That
 // is why presence is read from fs.Visit rather than from the value.
+//
+// --protocol is the highest inbox envelope version (internal/msg) the
+// agent understands, carried forward the same way as --inbox and for the
+// same reason: a sender that sees no advertised version must fall back to
+// v0 raw text rather than deliver a v1 envelope an unupgraded receiver
+// would show the user verbatim. Presence, not value, decides carry-forward,
+// so `--protocol 0` explicitly clears it exactly as `--inbox ""` clears
+// the socket path.
 func agentStatus(args []string) error {
 	fs := flag.NewFlagSet("agent-status", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -446,15 +457,20 @@ func agentStatus(args []string) error {
 	title := fs.String("title", "", "the session's name, shown as the pane's label")
 	inbox := fs.String("inbox", "",
 		"path of the unix socket the agent takes prompts on, speaking kido's own protocol (see `kido inbox-path`); empty clears it")
+	protocol := fs.Int("protocol", 0,
+		"highest inbox envelope version the agent understands (see internal/msg); omitted keeps the last reported value")
 	ended := fs.Bool("ended", false, "a turn just finished")
 	remove := fs.Bool("remove", false, "delete the session's record")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w\n%s", err, agentStatusUsage())
 	}
-	gaveInbox := false
+	gaveInbox, gaveProtocol := false, false
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "inbox" {
+		switch f.Name {
+		case "inbox":
 			gaveInbox = true
+		case "protocol":
+			gaveProtocol = true
 		}
 	})
 	if fs.NArg() > 0 {
@@ -469,8 +485,8 @@ func agentStatus(args []string) error {
 	if !state.Valid(state.Status(*status)) {
 		return fmt.Errorf("unknown status %q\n%s", *status, agentStatusUsage())
 	}
-	sessionTitle, sessionInbox := *title, *inbox
-	if sessionTitle == "" || !gaveInbox {
+	sessionTitle, sessionInbox, sessionProtocol := *title, *inbox, *protocol
+	if sessionTitle == "" || !gaveInbox || !gaveProtocol {
 		if prev, ok, _ := state.Get(*session); ok {
 			if sessionTitle == "" {
 				sessionTitle = prev.Title
@@ -478,10 +494,13 @@ func agentStatus(args []string) error {
 			if !gaveInbox {
 				sessionInbox = prev.Inbox
 			}
+			if !gaveProtocol {
+				sessionProtocol = prev.Protocol
+			}
 		}
 	}
 	e := hook.Effect{Status: state.Status(*status), Ended: *ended}
-	return recordSession(*agent, *session, procs.ReporterPID(false), e, sessionTitle, sessionInbox)
+	return recordSession(*agent, *session, procs.ReporterPID(false), e, sessionTitle, sessionInbox, sessionProtocol)
 }
 
 // logHookEvent appends one line to <state.Dir()>/debug.log: a timestamp,

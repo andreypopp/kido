@@ -8,7 +8,7 @@ It shells out to:
 
 ```
 kido agent-status --agent pi --session <id> --status running|waiting|compacting|idle \
-     [--title <text>] [--ended] [--remove] [--inbox <path>]
+     [--title <text>] [--ended] [--remove] [--inbox <path>] [--protocol <n>]
 ```
 
 kido reads `$TMUX_PANE` from the environment, so the command is spawned from
@@ -58,9 +58,12 @@ hand this pi session a prompt, so a session you are not typing into can still be
 given work.
 
 On `session_start` the extension binds a unix **stream** socket and reports its
-path once, as `--inbox <path>` on the first status report; kido carries that
-value forward, so later reports omit it. On `session_shutdown` the socket is
-closed and the file unlinked.
+path once, as `--inbox <path> --protocol <n>` on the first status report; kido
+carries both values forward, so later reports omit them. `--protocol` is the
+highest inbox envelope version this extension speaks (kido's `internal/msg`;
+see AGENTS.md), and a sender that sees no advertised protocol sends plain v0
+text instead of a JSON envelope. On `session_shutdown` the socket is closed and
+the file unlinked.
 
 Where to bind is kido's decision, not the extension's: it runs `kido inbox-path
 <pid>`, which prints `<state>/inbox/<pid>.sock`, creating the directory mode

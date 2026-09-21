@@ -6,7 +6,7 @@
  * extension makes a pi session visible in that sidebar by shelling out to:
  *
  *   kido agent-status --agent pi --session <id> --status running|waiting|compacting|idle
- *                     [--title <text>] [--ended] [--remove] [--inbox <path>]
+ *                     [--title <text>] [--ended] [--remove] [--inbox <path>] [--protocol <n>]
  *
  * kido reads $TMUX_PANE from the environment, so the command must be spawned
  * from inside the pi process (which lives in the tmux pane).
@@ -23,11 +23,13 @@
  *   On session start the extension asks kido where to bind — `kido inbox-path
  *   <pid>` prints an absolute socket path, creating its directory, and fails if
  *   the path would be too long — binds a unix STREAM socket there and reports
- *   the path once, with `--inbox <path>` on the first status report; kido
- *   carries that value forward. A client writes a prompt as UTF-8 with no
- *   framing, half-closes its write half, reads `ok\n` and closes; the prompt is
- *   then delivered as a real user message. Any failure here is silent and
- *   leaves status reporting working.
+ *   the path once, with `--inbox <path> --protocol <n>` on the first status
+ *   report; kido carries both values forward. A client writes a prompt as
+ *   UTF-8 with no framing, half-closes its write half, reads `ok\n` and
+ *   closes. The payload is either raw v0 text or a v1 JSON envelope (kido's
+ *   own inbox protocol - see internal/msg and AGENTS.md); either way the
+ *   text ends up delivered as a real user message. Any failure here is
+ *   silent and leaves status reporting working.
  *
  * Install:
  *   mkdir -p ~/.pi/agent/extensions
@@ -46,6 +48,50 @@ type Status = "running" | "waiting" | "compacting" | "idle";
 
 // Anything larger than this is dropped rather than buffered.
 const MAX_PROMPT_BYTES = 1024 * 1024;
+
+// The inbox envelope version this extension speaks (see internal/msg and
+// AGENTS.md's note on the protocol). Reported with --protocol alongside
+// --inbox so kido only ever sends an envelope to a receiver that has said
+// it understands one.
+const PROTOCOL_VERSION = 1;
+
+type EnvelopeKind = "message" | "ask" | "reply" | "notice";
+
+interface Envelope {
+  v: number;
+  kind: EnvelopeKind;
+  id: string;
+  from: { session: string; name?: string; pane?: string };
+  replyTo?: string;
+  text: string;
+}
+
+// parseEnvelope mirrors internal/msg.Parse: a payload counts as a v1
+// envelope only if it parses as a JSON object and carries both "v" and
+// "kind" - not just "looks like JSON". Anything else, including a JSON
+// object missing one of those keys, is v0 raw prompt text, so a user
+// prompt that happens to be a JSON object is never swallowed as a control
+// message.
+function parseEnvelope(text: string): Envelope | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return null;
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (!("v" in obj) || !("kind" in obj)) return null;
+  // Text is coerced rather than required, so that what counts as an
+  // envelope stays exactly what msg.Parse counts as one: Go reads a
+  // missing "text" as the zero string, and a cast here would instead hand
+  // pi.sendUserMessage an undefined it is not typed to take. An envelope
+  // with nothing to say is dropped at the delivery site.
+  const body = typeof obj.text === "string" ? obj.text : "";
+  return { ...obj, text: body } as unknown as Envelope;
+}
 
 function findKido(): string | null {
   const path = process.env.PATH;
@@ -133,7 +179,13 @@ export default function (pi: ExtensionAPI) {
       }
       const prompt = text.trim();
       if (!prompt) return;
-      deliver(prompt);
+      // kind is only ever "message" today - kido message is the only
+      // sender - so any v1 envelope is delivered as its text. ask/reply
+      // threading and notices are later phases.
+      const env = parseEnvelope(prompt);
+      const body = env ? env.text : prompt;
+      if (!body) return;
+      deliver(body);
     });
   };
 
@@ -214,9 +266,11 @@ export default function (pi: ExtensionAPI) {
     if (title) args.push("--title", title);
     if (opts.ended) args.push("--ended");
     if (opts.remove) args.push("--remove");
-    // Reported once; kido carries the value forward across later reports.
+    // Reported once, alongside --protocol; kido carries both forward
+    // across later reports. Protocol only means anything with an inbox to
+    // receive an envelope on, so the two are reported together.
     if (pendingInbox && inboxPath) {
-      args.push("--inbox", inboxPath);
+      args.push("--inbox", inboxPath, "--protocol", String(PROTOCOL_VERSION));
       inboxReported = true;
     }
 

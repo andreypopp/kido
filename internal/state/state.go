@@ -71,6 +71,14 @@ type Session struct {
 	// `kido prompt` then types the prompt into the pane with send-keys
 	// instead.
 	Inbox string `json:"inbox,omitempty"`
+	// Protocol is the highest inbox envelope version (see internal/msg) the
+	// agent's inbox understands, reported with --protocol (kido
+	// agent-status). Zero means either no inbox or an inbox that has not
+	// advertised a version, and a sender must treat both the same way: send
+	// v0 raw text, since a v1 envelope delivered to an unupgraded receiver
+	// would arrive as the user's literal prompt. Carried forward like
+	// Inbox - see agentStatus's --protocol doc.
+	Protocol int `json:"protocol,omitempty"`
 	// When the last turn ended (Stop or equivalent); zero if the session
 	// is idle for another reason, such as having just started.
 	Ended time.Time `json:"ended,omitempty"`
