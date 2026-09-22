@@ -31,10 +31,17 @@ type AgentInfo struct {
 	Cwd        string `json:"cwd"`
 	CanMessage bool   `json:"canMessage"`
 	Model      string `json:"model"`
-	// IdleFor is seconds since the session's last report (state.Session.TS),
-	// derived at list time rather than stored: it is only ever meaningful
-	// as of now.
-	IdleFor int `json:"idleFor"`
+	// SinceReport is seconds since the session's last report
+	// (state.Session.TS), derived at list time rather than stored: it is
+	// only ever meaningful as of now. It measures staleness, not idle time -
+	// a session reporting Running has a SinceReport too, and that is exactly
+	// what Stalled is derived from.
+	SinceReport int `json:"sinceReport"`
+	// Stalled is state.Stalled(s, now): the session claims to be running
+	// but has gone quiet for longer than state.StallThreshold, kido's own
+	// guess that it is wedged rather than merely busy. ask_agent refuses a
+	// stalled target immediately instead of waiting out its own timeout.
+	Stalled bool `json:"stalled"`
 }
 
 func agentsUsage() string {
@@ -105,20 +112,21 @@ func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, se
 	for _, s := range ordered {
 		p := byPane[s.Pane]
 		out = append(out, AgentInfo{
-			ID:         s.ID,
-			Name:       displayName(s, byPane),
-			Agent:      s.Agent,
-			Pane:       s.Pane,
-			Window:     p.WindowID,
-			Status:     string(s.Status),
-			Activity:   s.Activity,
-			Parent:     parentID(s, byInstance),
-			Depth:      s.Depth,
-			Self:       s.Pane == self,
-			Cwd:        p.CurrentPath,
-			CanMessage: s.Inbox != "",
-			Model:      s.Model,
-			IdleFor:    int(now.Sub(s.TS).Seconds()),
+			ID:          s.ID,
+			Name:        displayName(s, byPane),
+			Agent:       s.Agent,
+			Pane:        s.Pane,
+			Window:      p.WindowID,
+			Status:      string(s.Status),
+			Activity:    s.Activity,
+			Parent:      parentID(s, byInstance),
+			Depth:       s.Depth,
+			Self:        s.Pane == self,
+			Cwd:         p.CurrentPath,
+			CanMessage:  s.Inbox != "",
+			Model:       s.Model,
+			SinceReport: int(now.Sub(s.TS).Seconds()),
+			Stalled:     state.Stalled(s, now),
 		})
 	}
 	return out
@@ -141,6 +149,44 @@ func orderTree(scoped []state.Session, byInstance map[string]string) []state.Ses
 	return tree.Order(sorted,
 		func(s state.Session) string { return s.ID },
 		func(s state.Session) string { return parentID(s, byInstance) })
+}
+
+// isAncestor reports whether ancestorID is an ancestor of targetID within
+// agents, walking each agent's Parent edge - the same walk
+// pi/kido-status.ts's own isAncestor does on the extension side, kept in
+// step because both enforce the same rule: ask_agent refuses to ask an
+// ancestor, and kido interrupt/stop refuse to act on anything but a
+// descendant, so the parent stays free to orchestrate and a confused
+// descendant or peer cannot reach past or around it. seen guards a
+// corrupt or cyclic parent chain from looping forever, the same concern
+// orderTree has on the reporting side.
+//
+// Refuses ancestorID == targetID outright rather than walking for it: a
+// record whose own Parent field named itself would otherwise make this
+// true (the walk starts at that record's Parent, which is itself, and the
+// first comparison matches). Nothing writes such a record today - a
+// session's Parent always names a different process, the one that
+// spawned it - so this is a belt-and-braces refusal for corrupted state
+// rather than a case kido produces, and the worst outcome it prevents is
+// a session stopping itself.
+func isAncestor(agents []AgentInfo, ancestorID, targetID string) bool {
+	if ancestorID == targetID {
+		return false
+	}
+	byID := map[string]AgentInfo{}
+	for _, a := range agents {
+		byID[a.ID] = a
+	}
+	seen := map[string]bool{}
+	cur := byID[targetID].Parent
+	for cur != "" && !seen[cur] {
+		if cur == ancestorID {
+			return true
+		}
+		seen[cur] = true
+		cur = byID[cur].Parent
+	}
+	return false
 }
 
 // paneIndex is panes indexed by PaneID, the lookup buildAgents,
@@ -188,14 +234,18 @@ func parentID(s state.Session, byInstance map[string]string) string {
 // printAgents writes agents as a plain aligned table.
 func printAgents(w io.Writer, agents []AgentInfo) error {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tNAME\tAGENT\tMODEL\tPANE\tWINDOW\tSTATUS\tACTIVITY\tIDLEFOR\tPARENT\tDEPTH\tSELF\tCWD")
+	fmt.Fprintln(tw, "ID\tNAME\tAGENT\tMODEL\tPANE\tWINDOW\tSTATUS\tSTALLED\tACTIVITY\tSINCE\tPARENT\tDEPTH\tSELF\tCWD")
 	for _, a := range agents {
 		self := ""
 		if a.Self {
 			self = "*"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\n",
-			a.ID, a.Name, a.Agent, a.Model, a.Pane, a.Window, a.Status, a.Activity, a.IdleFor, a.Parent, a.Depth, self, a.Cwd)
+		stalled := ""
+		if a.Stalled {
+			stalled = "stalled"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\n",
+			a.ID, a.Name, a.Agent, a.Model, a.Pane, a.Window, a.Status, stalled, a.Activity, a.SinceReport, a.Parent, a.Depth, self, a.Cwd)
 	}
 	return tw.Flush()
 }

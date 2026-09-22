@@ -20,10 +20,12 @@ const V1 = 1
 type Kind string
 
 const (
-	KindMessage Kind = "message" // fire-and-forget text
-	KindAsk     Kind = "ask"     // a question expecting a reply envelope
-	KindReply   Kind = "reply"   // the answer to an earlier ask, by ReplyTo
-	KindNotice  Kind = "notice"  // informational, no reply expected
+	KindMessage   Kind = "message"   // fire-and-forget text
+	KindAsk       Kind = "ask"       // a question expecting a reply envelope
+	KindReply     Kind = "reply"     // the answer to an earlier ask, by ReplyTo
+	KindNotice    Kind = "notice"    // informational, no reply expected
+	KindInterrupt Kind = "interrupt" // abort the receiver's current turn; it stays alive
+	KindStop      Kind = "stop"      // end the receiver's session
 )
 
 // From identifies who sent an envelope. It is advisory, not authenticated

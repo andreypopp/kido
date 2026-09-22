@@ -9,6 +9,20 @@ import (
 	"kido/internal/tmux"
 )
 
+// TestIsAncestorRefusesSelfEdge pins the explicit refusal at the top of
+// isAncestor: without it, a corrupted record whose own Parent field named
+// itself would make isAncestor(agents, X, X) true, and control.go's
+// descendant-only check would let a session's stop/interrupt of itself
+// through on that basis (see the function's own doc).
+func TestIsAncestorRefusesSelfEdge(t *testing.T) {
+	agents := []AgentInfo{
+		{ID: "x", Parent: "x"}, // corrupted: names itself as its own parent
+	}
+	if isAncestor(agents, "x", "x") {
+		t.Error("isAncestor(agents, X, X) = true, want false even with a self-parent record")
+	}
+}
+
 // TestBuildAgentsScopesToSession checks that buildAgents includes only
 // agents whose pane is in the target session, excluding a live agent in
 // a different one.

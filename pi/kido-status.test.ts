@@ -19,7 +19,7 @@ import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdir
 import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
 import net from "node:net";
-import kidoStatus from "./kido-status.ts";
+import kidoStatus, { isAncestor } from "./kido-status.ts";
 
 // The fake kido binary. Written to disk once per fixture so it can be
 // found on PATH as a file literally named "kido" - findKido() joins a
@@ -93,6 +93,13 @@ switch (args[0]) {
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
     process.exit(0);
   }
+  case "interrupt":
+  case "stop": {
+    const logFile = process.env.KIDO_FAKE_CONTROL_LOG;
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
+    process.stdout.write((args[0] === "interrupt" ? "interrupted " : "stopped ") + args[args.length - 1] + "\\n");
+    process.exit(0);
+  }
   default:
     process.exit(1);
 }
@@ -110,6 +117,8 @@ interface Fixture {
   lastSpawnArgs(): string[] | undefined;
   waitForCloseWindow(ms?: number): Promise<string[]>;
   lastStatusArgs(): string[] | undefined;
+  statusReportsWith(status: string): string[][];
+  lastControlArgs(): string[] | undefined;
   // waitForLog polls lastLogFor until it has a match (see pollUntil).
   waitForLog(to: string, kind?: string, ms?: number): Promise<{ id: string; replyTo: string; to: string; text: string; failed?: boolean }>;
   restore(): void;
@@ -141,11 +150,13 @@ function makeFixture(): Fixture {
   const spawnLogFile = join(dir, "spawn.jsonl");
   const closeWindowLogFile = join(dir, "close-window.jsonl");
   const statusLogFile = join(dir, "status.jsonl");
+  const controlLogFile = join(dir, "control.jsonl");
   writeFileSync(agentsFile, "[]");
   writeFileSync(logFile, "");
   writeFileSync(spawnLogFile, "");
   writeFileSync(closeWindowLogFile, "");
   writeFileSync(statusLogFile, "");
+  writeFileSync(controlLogFile, "");
 
   const saved = {
     PATH: process.env.PATH,
@@ -155,6 +166,7 @@ function makeFixture(): Fixture {
     KIDO_FAKE_SPAWN_LOG: process.env.KIDO_FAKE_SPAWN_LOG,
     KIDO_FAKE_CLOSE_WINDOW_LOG: process.env.KIDO_FAKE_CLOSE_WINDOW_LOG,
     KIDO_FAKE_STATUS_LOG: process.env.KIDO_FAKE_STATUS_LOG,
+    KIDO_FAKE_CONTROL_LOG: process.env.KIDO_FAKE_CONTROL_LOG,
     KIDO_FAKE_INBOX_DIR: process.env.KIDO_FAKE_INBOX_DIR,
     KIDO_FAKE_INBOX_FAIL: process.env.KIDO_FAKE_INBOX_FAIL,
     KIDO_FAKE_MESSAGE_FAIL_TO: process.env.KIDO_FAKE_MESSAGE_FAIL_TO,
@@ -167,6 +179,7 @@ function makeFixture(): Fixture {
   process.env.KIDO_FAKE_SPAWN_LOG = spawnLogFile;
   process.env.KIDO_FAKE_CLOSE_WINDOW_LOG = closeWindowLogFile;
   process.env.KIDO_FAKE_STATUS_LOG = statusLogFile;
+  process.env.KIDO_FAKE_CONTROL_LOG = controlLogFile;
   process.env.KIDO_FAKE_INBOX_DIR = inboxDir;
   delete process.env.KIDO_FAKE_INBOX_FAIL;
   delete process.env.KIDO_FAKE_MESSAGE_FAIL_TO;
@@ -197,6 +210,15 @@ function makeFixture(): Fixture {
     },
     lastStatusArgs() {
       return last(jsonLines(statusLogFile));
+    },
+    statusReportsWith(status) {
+      return jsonLines(statusLogFile).filter((args: string[]) => {
+        const i = args.indexOf("--status");
+        return i >= 0 && args[i + 1] === status;
+      });
+    },
+    lastControlArgs() {
+      return last(jsonLines(controlLogFile));
     },
     // Named after this test process's own pid, exactly as startInbox asks
     // kido for - the same reason a /reload rebinds at the same path.
@@ -319,7 +341,7 @@ function sendToInbox(path: string, payload: string): Promise<string> {
   });
 }
 
-function envelope(kind: string, text: string, extra: { id?: string; replyTo?: string; from?: { session: string; name?: string } } = {}): string {
+function envelope(kind: string, text: string, extra: { id?: string; replyTo?: string; from?: { session: string; name?: string; pane?: string } } = {}): string {
   return JSON.stringify({
     v: 1,
     kind,
@@ -571,6 +593,27 @@ test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 r
 
     await sendToInbox(s.inboxPath, envelope("ping", "unknown kind text", { from }));
     assert.ok(s.delivered.some((d) => d.text.includes("unrecognised message kind") && d.text.includes("unknown kind text")));
+  } finally {
+    fx.restore();
+  }
+});
+
+test("interrupt_subagent runs kido interrupt with the target, and stop_subagent runs kido stop, passing --force through", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(twoPeers);
+    const s = await startSession(fx);
+
+    const interruptRes = await s.tools.get("interrupt_subagent").execute("c1", { to: "peer-a" });
+    assert.match(interruptRes.content[0].text, /interrupted peer-a/);
+    assert.deepEqual(fx.lastControlArgs(), ["interrupt", "--", "peer-a"]);
+
+    const stopRes = await s.tools.get("stop_subagent").execute("c2", { to: "peer-b" });
+    assert.match(stopRes.content[0].text, /stopped peer-b/);
+    assert.deepEqual(fx.lastControlArgs(), ["stop", "--", "peer-b"]);
+
+    await s.tools.get("stop_subagent").execute("c3", { to: "peer-b", force: true });
+    assert.deepEqual(fx.lastControlArgs(), ["stop", "--force", "--", "peer-b"]);
   } finally {
     fx.restore();
   }
@@ -1012,6 +1055,201 @@ test("parent-liveness poll: a recycled pid with a different instance counts as g
       await pollUntil(() => s.shutdowns() > 0, 2000, "ctx.shutdown() to be called for a recycled pid with no matching instance");
       await s.emit("session_shutdown");
     });
+  } finally {
+    fx.restore();
+  }
+});
+
+// withHeartbeatEnv sets KIDO_HEARTBEAT_MS, restoring whatever was there
+// before - kido-status.ts reads it once at module scope, so a case using
+// it goes through freshKidoStatus() to pick it up (see withParentEnv).
+async function withHeartbeatEnv<T>(ms: number, fn: () => Promise<T>): Promise<T> {
+  const saved = process.env.KIDO_HEARTBEAT_MS;
+  process.env.KIDO_HEARTBEAT_MS = String(ms);
+  try {
+    return await fn();
+  } finally {
+    if (saved === undefined) delete process.env.KIDO_HEARTBEAT_MS;
+    else process.env.KIDO_HEARTBEAT_MS = saved;
+  }
+}
+
+test("a running session re-sends its status on a heartbeat, bypassing the coalescing key that would otherwise drop a repeat", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    await withHeartbeatEnv(20, async () => {
+      const factory = await freshKidoStatus();
+      const s = await startSessionUsing(factory, fx);
+      // turn_start, tool_execution_start and tool_call all send the same
+      // "running" key: without the heartbeat bypass this is exactly the
+      // sequence send()'s coalescing collapses to a single report.
+      await s.emit("turn_start");
+      await s.emit("tool_execution_start");
+      await s.emit("tool_call");
+      await pollUntil(() => fx.statusReportsWith("running").length >= 1, 2000, "the first running report");
+      assert.equal(fx.statusReportsWith("running").length, 1, "coalescing must still drop the identical follow-ups");
+
+      await pollUntil(() => fx.statusReportsWith("running").length >= 2, 2000, "a heartbeat re-report past KIDO_HEARTBEAT_MS");
+      await s.emit("session_shutdown");
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
+test("the heartbeat stops once the session is no longer running", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    await withHeartbeatEnv(15, async () => {
+      const factory = await freshKidoStatus();
+      const s = await startSessionUsing(factory, fx);
+      await s.emit("turn_start");
+      // Wait for the heartbeat to have actually fired at least once, not
+      // merely the first (turn_start's own) report - otherwise stopping it
+      // immediately would prove nothing.
+      await pollUntil(() => fx.statusReportsWith("running").length >= 2, 2000, "a heartbeat re-report");
+      await s.emit("agent_settled", {}, { isIdle: () => true }); // the true idle signal; see the handler in kido-status.ts
+      // Each spawnDetached call already made before the stop still lands in
+      // the log asynchronously, so the count can grow briefly after this
+      // point regardless; what must not happen is it growing forever. Two
+      // readings several intervals apart, equal to each other, is that
+      // proof without racing the exact moment the last in-flight spawn
+      // lands.
+      await new Promise((r) => setTimeout(r, 200));
+      const a = fx.statusReportsWith("running").length;
+      await new Promise((r) => setTimeout(r, 200));
+      const b = fx.statusReportsWith("running").length;
+      assert.equal(b, a, "the running report count must stabilise once the session went idle, not keep growing");
+      await s.emit("session_shutdown");
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
+// startWithControlSpies is startSession but with ctx.abort()/ctx.shutdown()
+// spies the tests below observe - what an inbound "interrupt"/"stop"
+// envelope (handleInboundControl) actually calls.
+async function startWithControlSpies(fx: Fixture) {
+  const { pi, tools, delivered, emit } = createFakePi();
+  let aborts = 0;
+  let shutdowns = 0;
+  const ctx = { ...fakeCtx(), abort: () => { aborts++; }, shutdown: () => { shutdowns++; } };
+  (kidoStatus as (pi: unknown) => void)(pi);
+  await emit("session_start", {}, ctx);
+  return { tools, delivered, emit, inboxPath: fx.selfInboxPath(), aborts: () => aborts, shutdowns: () => shutdowns };
+}
+
+// controlTree is a self whose parent is "root-1", the shape
+// handleInboundControl's ancestor check needs: isAncestor walks self's own
+// parent chain looking for the envelope's sender.
+const controlTree = [
+  { id: "self", name: "self", parent: "root-1", pane: "%1", self: true, canMessage: true },
+  { id: "root-1", name: "root-1", parent: "", pane: "%2", self: false, canMessage: true },
+  { id: "peer-x", name: "peer-x", parent: "", pane: "%3", self: false, canMessage: true },
+];
+
+// TestIsAncestorRefusesSelfEdge's TS twin: without the explicit refusal
+// at the top of isAncestor, a record whose own "parent" named itself
+// would make isAncestor(agents, X, X) true, and handleInboundControl's
+// ancestor check would let a session act on a "stop" or "interrupt" that
+// claimed to be from itself. Nothing writes such a record today (see the
+// function's own doc); this pins the belt-and-braces refusal anyway.
+test("isAncestor refuses a self-edge, even with a corrupted self-parent record", () => {
+  const self = { id: "x", name: "x", parent: "x", pane: "%1", self: true, canMessage: true, window: "@1", stalled: false, sinceReport: 0 };
+  assert.equal(isAncestor([self], self, self), false);
+});
+
+test("an interrupt envelope from an ancestor calls ctx.abort() and does not shut the session down", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(controlTree);
+    const s = await startWithControlSpies(fx);
+    const resp = await sendToInbox(s.inboxPath, envelope("interrupt", "", { from: { session: "root-1", name: "root-1" } }));
+    assert.equal(resp, "ok");
+    assert.equal(s.aborts(), 1, "ctx.abort() must be called exactly once");
+    assert.equal(s.shutdowns(), 0, "an interrupt must never shut the session down");
+  } finally {
+    fx.restore();
+  }
+});
+
+test("a stop envelope from an ancestor shuts the session down", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(controlTree);
+    const s = await startWithControlSpies(fx);
+    const resp = await sendToInbox(s.inboxPath, envelope("stop", "", { from: { session: "root-1", name: "root-1" } }));
+    assert.equal(resp, "ok");
+    assert.equal(s.shutdowns(), 1, "ctx.shutdown() must be called exactly once");
+    assert.equal(s.aborts(), 0, "a stop must not also abort");
+  } finally {
+    fx.restore();
+  }
+});
+
+test("interrupt and stop are both refused, and neither abort nor shutdown is called, when the sender is not an ancestor", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(controlTree);
+    const s = await startWithControlSpies(fx);
+
+    const interruptResp = await sendToInbox(s.inboxPath, envelope("interrupt", "", { from: { session: "peer-x", name: "peer-x" } }));
+    assert.equal(interruptResp, "refused");
+
+    const stopResp = await sendToInbox(s.inboxPath, envelope("stop", "", { from: { session: "peer-x", name: "peer-x" } }));
+    assert.equal(stopResp, "refused");
+
+    assert.equal(s.aborts(), 0);
+    assert.equal(s.shutdowns(), 0);
+  } finally {
+    fx.restore();
+  }
+});
+
+// A person running `kido interrupt`/`kido stop` by hand has no state
+// record, so kido has no session id to put in the envelope's `from` - and
+// the scope rule deliberately lets that caller reach anything
+// (docs/subagents-plan.md's Scope section, cmd/kido/control.go's own
+// isAgent check). Matching only on `from.session` refused them here, so
+// the two enforcement layers disagreed precisely where the plan is most
+// explicit and a human's stop could not stop anything. Recognised by the
+// empty session *and* a pane no agent occupies, so an agent that simply
+// omits its session id is still held to the descendant rule.
+test("a control envelope from a human at the CLI is honoured; one merely missing a session id is not", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(controlTree);
+    const s = await startWithControlSpies(fx);
+
+    const human = await sendToInbox(s.inboxPath, envelope("interrupt", "", { from: { session: "", name: "", pane: "%99" } }));
+    assert.equal(human, "ok", "a human at the CLI may interrupt anything");
+    assert.equal(s.aborts(), 1);
+
+    const impostor = await sendToInbox(s.inboxPath, envelope("stop", "", { from: { session: "", name: "", pane: "%3" } }));
+    assert.equal(impostor, "refused", "a pane an agent occupies is an agent, whatever `from` says");
+    assert.equal(s.shutdowns(), 0);
+  } finally {
+    fx.restore();
+  }
+});
+
+test("ask_agent refuses a stalled target immediately, without sending anything", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([
+      { id: "self", name: "self", parent: "", self: true, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, stalled: true, sinceReport: 245 },
+    ]);
+    const s = await startSession(fx);
+    const ask = s.tools.get("ask_agent");
+
+    const result = await settlesWithin(ask.execute("c1", { to: "peer-a", question: "q" }), 500);
+    assert.match(result.content[0].text, /stalled/);
+    assert.match(result.content[0].text, /245/);
+    assert.equal(fx.lastLogFor("peer-a", "ask"), undefined, "a stalled target must never actually be asked");
   } finally {
     fx.restore();
   }

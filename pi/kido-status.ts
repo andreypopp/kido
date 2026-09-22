@@ -32,18 +32,27 @@
  *
  * Tools:
  *   `list_agents()`, `set_status(activity)`, `message_agent(to, message,
- *   replyTo?)`, `ask_agent(to, question, timeoutMs?)` and `spawn_subagent(task,
- *   name?, model?, tools?)` all shell out to kido (`kido agents --json`,
- *   `kido agent-status --activity`, `kido message [--kind K] [--reply-to]
- *   [--id] <to>`, `kido spawn ...`) the same way status reporting does,
- *   asynchronously so a slow or hung kido cannot block this process's
- *   event loop - notably its own inbox, which must stay able to accept a
- *   connection while a tool call is in flight. They register
+ *   replyTo?)`, `ask_agent(to, question, timeoutMs?)`, `spawn_subagent(task,
+ *   name?, model?, tools?)`, `interrupt_subagent(to)` and `stop_subagent(to,
+ *   force?)` all shell out to kido (`kido agents --json`, `kido agent-status
+ *   --activity`, `kido message [--kind K] [--reply-to] [--id] <to>`, `kido
+ *   spawn ...`, `kido interrupt <to>`, `kido stop <to> [--force]`) the same
+ *   way status reporting does, asynchronously so a slow or hung kido cannot
+ *   block this process's event loop - notably its own inbox, which must stay
+ *   able to accept a connection while a tool call is in flight. They register
  *   unconditionally at factory time - before session_start has resolved
  *   kido or a session id - and simply no-op at call time until those are
  *   known, since pi may run the factory in invocations that never start a
  *   session. What message_agent accepts and how kido resolves it is in
  *   pi/README.md.
+ *
+ *   interrupt_subagent aborts a descendant's current turn (ctx.abort()) and
+ *   stop_subagent ends its session outright, escalating to killing its
+ *   window if it does not respond within a few seconds - see
+ *   docs/subagents-plan.md's "Interrupting and stopping a subagent"
+ *   section. Both are refused for anything but a descendant, enforced both
+ *   by kido (before an envelope is ever sent) and again here on receipt,
+ *   since `from` is advisory.
  *
  *   spawn_subagent writes its task to a temp file and returns as soon as
  *   `kido spawn` has created the child's window - it does not wait for the
@@ -138,6 +147,17 @@ const LINGER_SECONDS = Number(process.env.KIDO_LINGER_SECONDS) || 30;
 // for the same reason as LINGER_SECONDS.
 const PARENT_LIVENESS_POLL_MS = Number(process.env.KIDO_PARENT_POLL_MS) || 5000;
 
+// HEARTBEAT_MS is how often a session re-sends its current status while
+// that status is "running". send() below coalesces away a report whose
+// key (status/title/activity/model/ended/remove) matches the last one
+// sent - and agent_start, turn_start, tool_execution_start and tool_call
+// all send exactly the same "running" key, so in a real pi only the first
+// of them ever reaches kido. A turn has no upper bound, so without a
+// heartbeat a healthy session mid-turn is indistinguishable from a wedged
+// one the moment state.StallThreshold elapses. A package variable for the
+// same reason as PARENT_LIVENESS_POLL_MS.
+const HEARTBEAT_MS = Number(process.env.KIDO_HEARTBEAT_MS) || 30000;
+
 // How long spawn_subagent waits for `kido spawn` before treating it as
 // hung. A package variable, like inboxTimeout on the Go side, so a test
 // can shorten it rather than actually waiting out a real 5s to exercise
@@ -145,6 +165,13 @@ const PARENT_LIVENESS_POLL_MS = Number(process.env.KIDO_PARENT_POLL_MS) || 5000;
 // once at module scope and freshKidoStatus() in the test suite reimports
 // the module to pick up a fresh value.
 const SPAWN_TIMEOUT_MS = Number(process.env.KIDO_SPAWN_TIMEOUT_MS) || 5000;
+
+// How long stop_subagent waits for `kido stop` before treating it as
+// hung. kido stop can itself block for stopEscalation
+// (cmd/kido/control.go, default 5s) waiting for a wedged target to go
+// before it kills the window, so this must comfortably exceed that
+// default rather than race it.
+const STOP_TIMEOUT_MS = Number(process.env.KIDO_STOP_TIMEOUT_MS) || 8000;
 
 // Cap for set_status's free text. The JSON schema says 256 too, but a
 // model is free to ignore it, and the sidebar has one row to draw this in.
@@ -189,7 +216,7 @@ const PROTOCOL_VERSION = 1;
 // round-trip").
 const DEFAULT_ASK_TIMEOUT_MS = 5 * 60 * 1000;
 
-type EnvelopeKind = "message" | "ask" | "reply" | "notice";
+type EnvelopeKind = "message" | "ask" | "reply" | "notice" | "interrupt" | "stop";
 
 interface Envelope {
   v: number;
@@ -207,9 +234,25 @@ interface AgentInfo {
   id: string;
   name: string;
   parent: string;
+  // The tmux pane the session reported itself in. Read only by
+  // handleInboundControl, to tell an envelope a person typed from one an
+  // agent sent: kido fills `from` from the calling process's own record,
+  // so a sender naming no session and sitting in a pane no agent
+  // occupies has no record, which is exactly what "a human at the CLI"
+  // means on the sending side too (cmd/kido/control.go's isAgent).
+  pane: string;
   self: boolean;
   canMessage: boolean;
   window: string;
+  // stalled and sinceReport mirror cmd/kido/agents.go's AgentInfo:
+  // sinceReport is seconds since the session's last report, and stalled
+  // is kido's own derived guess that a session reporting Running has gone
+  // quiet long enough to be wedged rather than merely busy
+  // (state.Stalled). ask_agent refuses a stalled target immediately
+  // rather than waiting out its own timeout against something that is
+  // never going to answer.
+  stalled: boolean;
+  sinceReport: number;
 }
 
 // parseEnvelope mirrors internal/msg.Parse: a payload counts as a v1
@@ -283,6 +326,14 @@ export function resolveAgent(agents: AgentInfo[], to: string): { agent?: AgentIn
 // cyclic parent chain from looping forever; buildAgents (cmd/kido/agents.go)
 // has the same concern on the reporting side.
 export function isAncestor(agents: AgentInfo[], self: AgentInfo, target: AgentInfo): boolean {
+  // Refused outright rather than walked for: a record whose own `parent`
+  // named itself would otherwise make this true (the walk starts at
+  // target's parent, which would be itself, and the first comparison
+  // matches). Nothing writes such a record today - see the matching
+  // comment on isAncestor in cmd/kido/agents.go, which this mirrors - so
+  // this is a belt-and-braces refusal for corrupted state, not a case
+  // kido produces.
+  if (self.id === target.id) return false;
   const byId = new Map(agents.map((a) => [a.id, a]));
   const seen = new Set<string>();
   let cur = target.parent;
@@ -312,6 +363,20 @@ export default function (pi: ExtensionAPI) {
   // startParentLivenessPoll below; null when this is a root session, or
   // once stopParentLivenessPoll has run.
   let parentPollTimer: NodeJS.Timeout | null = null;
+
+  // heartbeatTimer is the running-status heartbeat started by
+  // startHeartbeat below; null whenever the last reported status was not
+  // "running", so it never fires for an idle or waiting session.
+  let heartbeatTimer: NodeJS.Timeout | null = null;
+
+  // ctxAbort and ctxShutdown are how an inbound "interrupt"/"stop"
+  // envelope reaches pi: captured once, in session_start, from the ctx
+  // every lifecycle handler already receives (ctx.shutdown is the same
+  // reference startParentLivenessPoll below is given). Null until a
+  // session has actually started, the same window every other tool call
+  // here has to tolerate.
+  let ctxAbort: (() => void) | null = null;
+  let ctxShutdown: (() => void) | null = null;
 
   // How a waiting ask_agent ends. Three outcomes rather than two,
   // because "the answer never came" and "there is no longer anywhere for
@@ -440,13 +505,59 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
+  // handleInboundControl answers an "interrupt" or "stop" envelope:
+  // aborting the current turn or ending the session outright, but only
+  // for a sender this session can verify is one of its own ancestors
+  // (isAncestor, walking the same parent chain ask_agent's own ancestor
+  // check does, in the opposite direction - a caller may only reach its
+  // descendants, see AGENTS.md and docs/subagents-plan.md's Cycles
+  // section for the sibling rule this mirrors). Refused on the wire
+  // otherwise, the same "refused" answer a cycle refusal already uses:
+  // the wire only ever means "read, and deliberately declined", not
+  // specifically about asks.
+  //
+  // This is defence in depth, not the primary guard: kido interrupt/stop
+  // (cmd/kido/control.go) already enforce the same rule before an
+  // envelope is ever sent, using kido's own view of the spawn tree rather
+  // than trusting the sender's own agents list. A session that receives
+  // one anyway - through a bypassed CLI, or kido's and this session's
+  // views of the tree having briefly diverged - must not act on it just
+  // because it arrived.
+  const handleInboundControl = async (env: Envelope, kind: "interrupt" | "stop"): Promise<"ok" | "refused"> => {
+    const listed = await fetchAgents();
+    if ("error" in listed) return "refused";
+    const self = listed.agents.find((a) => a.self);
+    if (!self) return "refused";
+    // A human at the CLI may act on anything (docs/subagents-plan.md's
+    // Scope section), and cmd/kido/control.go lets one through on exactly
+    // this basis - it has no state record, so there is no descendant rule
+    // to apply to it. That caller also has no session id for kido to put
+    // in `from`, so without this the two enforcement layers disagree
+    // precisely where the plan is most explicit, and a person's `kido
+    // stop` is refused by the session it named. Recognised by the pair
+    // rather than the empty session alone, so a confused agent has to get
+    // two things wrong at once to be mistaken for a person; `from` stays
+    // advisory either way, and this is defence in depth, not a boundary.
+    const fromIsHuman = !env.from.session && !listed.agents.some((a) => a.pane === env.from.pane);
+    if (!fromIsHuman) {
+      const from = listed.agents.find((a) => a.id === env.from.session);
+      if (!from || !isAncestor(listed.agents, from, self)) return "refused";
+    }
+    if (kind === "interrupt") {
+      ctxAbort?.();
+    } else {
+      ctxShutdown?.();
+    }
+    return "ok";
+  };
+
   // handleInbound dispatches one inbox payload by envelope kind and
-  // returns the wire answer: "ok" for everything except a refused ask.
-  // Every branch delivers something to the model rather than dropping it -
-  // the plan is explicit that a message must never be lost, even one whose
-  // kind nobody recognises, since a typo'd kind is exactly the case where
-  // silence would be most misleading.
-  const handleInbound = (prompt: string): "ok" | "refused" => {
+  // returns the wire answer: "ok" for everything except a refused ask or
+  // control message. Every branch delivers something to the model rather
+  // than dropping it - the plan is explicit that a message must never be
+  // lost, even one whose kind nobody recognises, since a typo'd kind is
+  // exactly the case where silence would be most misleading.
+  const handleInbound = async (prompt: string): Promise<"ok" | "refused"> => {
     const env = parseEnvelope(prompt);
     if (!env) {
       // v0 raw text: delivered exactly as it always has been.
@@ -465,6 +576,9 @@ export default function (pi: ExtensionAPI) {
       case "notice":
         if (env.text) deliver(`[notice from ${labelFrom(env.from)}] ${env.text}`);
         return "ok";
+      case "interrupt":
+      case "stop":
+        return handleInboundControl(env, env.kind);
       default:
         // An unrecognised kind (a future kido, or a typo) still reaches
         // the model, marked as such, rather than being read as an
@@ -493,7 +607,7 @@ export default function (pi: ExtensionAPI) {
       chunks.push(chunk);
     });
     // The client half-closes after writing; "end" is the whole message.
-    sock.on("end", () => {
+    sock.on("end", async () => {
       if (dropped) return;
       // Concatenate before decoding: a multi-byte char can straddle chunks.
       const text = Buffer.concat(chunks).toString("utf8");
@@ -501,7 +615,7 @@ export default function (pi: ExtensionAPI) {
       // Decided (and any delivery or refusal done) before the socket is
       // closed: the caller's kido message reads the answer to tell a
       // refusal from an ordinary delivery.
-      const response = prompt ? handleInbound(prompt) : "ok";
+      const response = prompt ? await handleInbound(prompt) : "ok";
       try {
         sock.end(response + "\n");
       } catch {
@@ -579,10 +693,30 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // Fire-and-forget. Coalesced: identical consecutive reports are dropped.
+  // startHeartbeat/stopHeartbeat manage heartbeatTimer to match the
+  // status send() just reported: running gets a periodic re-send, so kido
+  // sees a fresh Session.TS every HEARTBEAT_MS even though the coalescing
+  // key below never changes; anything else has no timer at all. Both are
+  // idempotent, so calling either from every send() - whatever the
+  // previous state was - is simpler than tracking the transition.
+  const startHeartbeat = (): void => {
+    if (heartbeatTimer) return;
+    heartbeatTimer = setInterval(() => send(current, { heartbeat: true }), HEARTBEAT_MS);
+    heartbeatTimer.unref(); // a hung kido must never hold pi's event loop open
+  };
+  const stopHeartbeat = (): void => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  };
+
+  // Fire-and-forget. Coalesced: identical consecutive reports are dropped,
+  // except a heartbeat re-send, which must reach kido precisely because
+  // nothing about it changed (see HEARTBEAT_MS above).
   const send = (
     status: Status,
-    opts: { ended?: boolean; remove?: boolean } = {},
+    opts: { ended?: boolean; remove?: boolean; heartbeat?: boolean } = {},
   ): void => {
     if (!kido || !sessionId) return;
 
@@ -597,9 +731,11 @@ export default function (pi: ExtensionAPI) {
     // the socket path. So bypass coalescing while the path is unreported;
     // afterwards identical statuses coalesce exactly as before.
     const pendingInbox = inboxPath !== null && !inboxReported;
-    if (!pendingInbox && key === lastKey) return;
-    lastKey = key;
+    if (!pendingInbox && !opts.heartbeat && key === lastKey) return;
+    if (!opts.heartbeat) lastKey = key;
     current = status;
+    if (status === "running") startHeartbeat();
+    else stopHeartbeat();
 
     const args = [
       "agent-status",
@@ -924,6 +1060,19 @@ export default function (pi: ExtensionAPI) {
           details: {},
         };
       }
+      // Fail fast rather than wait out the default five-minute timeout
+      // against a target that is never going to answer: kido has already
+      // computed this from how long it has been since the target's last
+      // status report (state.Stalled), so it costs nothing extra here.
+      if (target.stalled) {
+        return {
+          content: [{
+            type: "text",
+            text: `${target.name || target.id} has been quiet for ${target.sinceReport}s while reporting running; likely stalled, refusing to wait for a reply`,
+          }],
+          details: {},
+        };
+      }
 
       // inbox may have gone null - session_shutdown, or a /reload whose
       // rebind failed - while the fetchAgents() call above was still in
@@ -1126,13 +1275,83 @@ export default function (pi: ExtensionAPI) {
     },
   };
 
+  const interruptSubagentParams = Type.Object(
+    {
+      to: Type.String({
+        description: "Who to interrupt: an agent's exact name, exact session id, or a unique prefix of its session id.",
+      }),
+    },
+    { additionalProperties: false },
+  );
+  const interruptSubagentTool: ToolDefinition<typeof interruptSubagentParams> = {
+    name: "interrupt_subagent",
+    label: "Interrupt Subagent",
+    description:
+      "Abort a descendant's current turn without ending its session - it stays alive and idle, ready for a corrected instruction. Refused for anything but a descendant.",
+    promptSnippet: "interrupt_subagent(to) - abort a descendant's current turn, without ending its session",
+    parameters: interruptSubagentParams,
+    async execute(_toolCallId, params) {
+      if (!kido) {
+        return { content: [{ type: "text", text: "kido is not available; cannot interrupt other agents" }], details: {} };
+      }
+      const res = await runKido(["interrupt", "--", params.to], { timeoutMs: 5000 });
+      if ("error" in res) {
+        return { content: [{ type: "text", text: `could not interrupt ${params.to}: ${res.error}` }], details: {} };
+      }
+      return { content: [{ type: "text", text: res.out || `interrupted ${params.to}` }], details: {} };
+    },
+  };
+
+  const stopSubagentParams = Type.Object(
+    {
+      to: Type.String({
+        description: "Who to stop: an agent's exact name, exact session id, or a unique prefix of its session id.",
+      }),
+      force: Type.Optional(
+        Type.Boolean({
+          description:
+            "Kill the target's window directly if it has no inbox to ask nicely over. Destructive and irreversible - only set this when you mean it.",
+        }),
+      ),
+    },
+    { additionalProperties: false },
+  );
+  const stopSubagentTool: ToolDefinition<typeof stopSubagentParams> = {
+    name: "stop_subagent",
+    label: "Stop Subagent",
+    description:
+      "End a descendant's session. Asks it to shut down over its inbox and, if it does not within a few seconds, kills its window instead. Refused for anything but a descendant.",
+    promptSnippet: "stop_subagent(to, force?) - end a descendant's session, killing its window if it does not respond",
+    parameters: stopSubagentParams,
+    async execute(_toolCallId, params) {
+      if (!kido) {
+        return { content: [{ type: "text", text: "kido is not available; cannot stop other agents" }], details: {} };
+      }
+      const args = ["stop"];
+      if (params.force) args.push("--force");
+      args.push("--", params.to);
+      const res = await runKido(args, { timeoutMs: STOP_TIMEOUT_MS });
+      if ("error" in res) {
+        return { content: [{ type: "text", text: `could not stop ${params.to}: ${res.error}` }], details: {} };
+      }
+      return { content: [{ type: "text", text: res.out || `stopped ${params.to}` }], details: {} };
+    },
+  };
+
   pi.registerTool(listAgentsTool);
   pi.registerTool(setStatusTool);
   pi.registerTool(messageAgentTool);
   pi.registerTool(askAgentTool);
   pi.registerTool(spawnSubagentTool);
+  pi.registerTool(interruptSubagentTool);
+  pi.registerTool(stopSubagentTool);
 
   pi.on("session_start", async (_event, ctx) => {
+    // Captured unconditionally, before the kido-on-PATH check below: a
+    // /reload re-runs this handler with a fresh ctx, and the old
+    // reference must not survive it.
+    ctxAbort = () => ctx.abort();
+    ctxShutdown = () => ctx.shutdown();
     // Resource lookup belongs here, not in the factory: the factory may run in
     // invocations that never start a session.
     kido = process.env.TMUX_PANE ? findKido() : null;
@@ -1141,6 +1360,10 @@ export default function (pi: ExtensionAPI) {
     title = ctx.sessionManager.getSessionName() || undefined;
     model = ctx.model?.id;
     lastKey = null;
+    // A /reload re-runs this handler mid-turn; the old timer must not
+    // survive it, since send("idle") below - not a heartbeat report - is
+    // what starts a fresh one if the restored session is still running.
+    stopHeartbeat();
     // A session switch or /reload re-runs this: drop the old inbox first.
     stopInbox();
     try {
@@ -1281,6 +1504,7 @@ export default function (pi: ExtensionAPI) {
     // stand in for "this session is shutting down".
     stopInbox();
     stopParentLivenessPoll();
+    stopHeartbeat();
     // Nothing is coming back this time, so no ask may be left waiting on
     // it - a tool call blocked on a five-minute timer is the last thing a
     // session on its way out should be holding.

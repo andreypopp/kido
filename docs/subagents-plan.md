@@ -222,7 +222,7 @@ Every agent in the current tmux session, including self:
 
 ```ts
 { id, name, agent, pane, window, status, activity,
-  parent, depth, self, cwd, model, idleFor }
+  parent, depth, self, cwd, model, sinceReport, stalled }
 ```
 
 Sorted parent-first then by spawn time, so the list reads as the tree.
@@ -470,6 +470,146 @@ e2e, driving `kido spawn` with the fake `node` binary:
 Linger needs a shortened duration; keep it a package variable as
 `inboxTimeout` already is.
 
+## Interrupting and stopping a subagent
+
+Two verbs, deliberately distinct, both delivered as new v1 envelope
+kinds (`internal/msg.KindInterrupt`, `KindStop`) over the existing inbox -
+no protocol version 2: kido runs on one machine with the binary and the
+extension upgraded together, so a version gate here would be ceremony.
+The risk it would cover - a stale extension showing the model an
+envelope's literal JSON - is already covered by the existing v1
+advertisement check every non-`message` kind requires (`kido message`'s
+`--kind ask/reply/notice` rule, reused as-is), and for `stop` specifically
+by its own escalation: a receiver too old to recognise the kind still
+leaves the session alive, so the window gets killed regardless.
+
+- **`interrupt`** aborts the subagent's *current turn*. It stays alive
+  and idle, ready for a corrected instruction - the common case, where a
+  child went the wrong way and the accumulated context is worth keeping.
+  pi's extension answers it with `ctx.abort()`.
+- **`stop`** ends the session outright. The child shuts down through the
+  same teardown phase 6 already built (`session_shutdown`: inbox closed,
+  parent notified, record removed, window linger scheduled); its window
+  then lingers and is collected by the existing sweep. There is no second
+  teardown path.
+
+**Scope.** A caller may only interrupt/stop its own descendants, or
+anything at all when the caller is a human at the CLI (one with no
+state record of its own - AGENTS.md's Trust section already treats an
+unauthenticated same-uid record as a reasonable basis for this kind of
+decision). This is not a security boundary; it exists so a confused peer
+cannot reach into a part of the tree it does not own. Enforced twice, on
+purpose: `cmd/kido/control.go` checks it before ever sending the envelope
+(the primary guard, using kido's own view of the spawn tree), and
+pi/kido-status.ts checks it again on receipt (defence in depth, using the
+receiving session's own `list_agents`), since `from` is advisory and a
+session must not act on a message just because it arrived claiming to be
+from an ancestor. Both walk the same ancestor chain `ask_agent`'s own
+ancestor refusal already walks, in the opposite direction.
+
+**Escalation.** A wedged child will not answer - a real pi has been
+observed sitting alive and blocked for hours after a laptop slept and its
+provider connection died. So `stop` asks over the inbox and then polls
+the target's own state record for up to `stopEscalation` (a package
+variable, default 5s, overridable via `KIDO_STOP_ESCALATION_MS` for the
+e2e suite the same way `KIDO_LINGER_SECONDS` already is) waiting for it
+to go; if it has not, it kills the target's window instead of trusting
+that the request was received. Without this, `stop` is only reliable
+exactly when it is least needed.
+
+That kill refuses a session's only window, for the same reason
+`kido close-window` does: `kill-window` on the last window ends the
+session and detaches every client attached to it, which is never what
+stopping one agent asked for, and `--force` does not buy it. It does
+*not* refuse a focused window, and that difference is deliberate:
+`close-window` and the reap sweep act on their own initiative and must
+not take a screen away from a user who may be reading it, while a `stop`
+was asked for by name.
+
+**No inbox, no `stop` without saying so.** An agent with no inbox at all
+(Claude Code, or a pi whose socket bind failed) cannot be asked anything,
+so `kido stop` against one degrades straight to killing its pane -
+destructive and irreversible, with no chance for the agent to clean up.
+This is the opposite of `kido message`'s paste fallback, where degrading
+silently was the whole point (there was always a gentler "some other
+way"). Here there is not, so it requires an explicit `--force`. The same
+degrade, and the same `--force` requirement, applies when an inbox was
+reported but has since gone stale (`errInboxUnavailable`): a recorded
+socket nobody answers is functionally no inbox at all.
+
+Delivered as `kido stop <agent> [--force]`, `kido interrupt <agent>`, and
+`stop_subagent`/`interrupt_subagent` tools in `pi/kido-status.ts`. The CLI
+twins are required for the same reason every other tool has one: the e2e
+harness cannot host a TypeScript extension, so anything living only in
+the extension is untestable.
+
+## Stall detection
+
+An agent can be alive and wedged - the same failure mode `stop`'s
+escalation exists for, seen from the other side. kido currently models
+only "running" and "gone": a wedged subagent sits in its window reporting
+`running` forever, its pane is not dead so the sweep will not touch it,
+and `TaskCompleted` never fires (AGENTS.md's note on what Claude Code
+actually reports), so there is no completion event to end it either. A
+parent blocked in `ask_agent` burns the full five-minute timeout finding
+that out.
+
+The signal is `state.Session.TS`, the last report time - but status
+reporting is *not* already a heartbeat, which an earlier draft of this
+section assumed. `send()` in pi/kido-status.ts coalesces a report away
+whenever its key (status/title/activity/model/ended/remove) matches the
+last one sent, and `agent_start`, `turn_start`, `tool_execution_start` and
+`tool_call` all send the identical `"running"` key - so in a real session
+only the first of them ever reaches kido, and `TS` then marks the start of
+the current turn, not the time since the agent last did anything. A turn
+has no upper bound, so raising the threshold cannot fix this: a healthy
+pi minutes into one long turn would still cross it, and worse, a parent
+blocked in `ask_agent` reports nothing itself for as long as the call
+lasts, so it would mark *itself* stalled before a busy child had any
+chance to answer.
+
+So `send()` also runs a real heartbeat: while the reported status is
+`"running"`, it re-sends that status every `HEARTBEAT_MS` (~30s),
+bypassing the coalescing key entirely, and stops the moment the status
+leaves `"running"` - unref'd, like the parent-liveness poll, so it cannot
+hold pi's process alive by itself. That makes `TS` a real last-seen
+heartbeat again, and `state.Stalled(s, now)` derives "claims running but
+has not reported in N minutes" from it the way `ShellStatus` derives a
+shell's state from timestamps rather than trusting a flag - never a new
+`state.Status` value, since that vocabulary is what an agent reports
+about *itself*, and a wedged agent by definition reports nothing.
+`state.StallThreshold` (a package variable, default three minutes -
+overridable via `KIDO_STALL_THRESHOLD_MS` the same way `stopEscalation`
+and `reap.Grace` are, since the e2e suite drives a built binary: six
+missed heartbeats is a margin against one or two dropped or delayed
+reports, not against turn length, and it still leaves most of
+`ask_agent`'s five-minute default timeout for a genuinely busy target to
+answer) is never true for anything but `Running` - idle and waiting are
+legitimately quiet.
+
+The heartbeat's re-send changes `TS` on every tick with nothing else
+about the session changing, so the sidebar's `snapshot.same` (comparing
+`state.Session` wholesale via `maps.Equal`) would otherwise force a full
+redraw every `HEARTBEAT_MS` per running agent - the same objection
+AGENTS.md raises against `pane_command_duration`. `sameStates` fixes this
+the way `drawnPart` already does for `tmux.Pane`: it compares sessions
+with `TS` zeroed (`drawnSession`), so a TS-only change draws nothing.
+`stallPending` (`internal/ui`) is the deliberate exception - it reads `TS`
+directly, off kido's own clock, to still catch a session crossing
+`state.StallThreshold` on an otherwise quiet tick, so the one thing `TS`
+is allowed to drive on screen still does.
+
+`AgentInfo.idleFor` (`kido agents` / `list_agents`) is renamed
+`sinceReport`: it was already this derivation's input, and the old name
+read as though it meant idle time, which is misleading for a session
+reporting `Running`. A new `stalled` field sits beside it, and the
+sidebar shows the same derivation as a distinct indicator.
+
+`ask_agent` reads `stalled` off the `list_agents` fetch it already makes
+before sending anything, so refusing a stalled target costs nothing extra
+and fails fast instead of blocking for the default five-minute timeout
+against a target that is never going to answer.
+
 ## Phasing
 
 1. **Protocol.** v1 envelope, v0 fallback, version advertisement.
@@ -483,6 +623,8 @@ Linger needs a shortened duration; keep it a package variable as
    completion notice.
 6. **Lifecycle + tree.** Linger, `kido reap`, indented sidebar,
    select-row-to-switch.
+7. **Interrupt, stop, stall detection.** `kido interrupt`/`kido stop`,
+   escalation, `state.Stalled`, `ask_agent` fail-fast.
 
 ## Open risks
 
@@ -498,3 +640,48 @@ Linger needs a shortened duration; keep it a package variable as
 - **Moving a child's window to another session** with `move-window` puts
   it outside the parent's scope and breaks `ask_agent`. Probably
   acceptable; say so explicitly rather than discovering it.
+
+## Deferred: subagents off this machine
+
+Spawning a subagent into a VM or a container, for isolation, is wanted
+soon. Nothing here is built for it, and the point of writing it down now
+is to record which parts already survive and which two decisions keep the
+door open at no cost.
+
+**What survives.** Spawning does: `tmux new-window` is local either way,
+and the isolation only changes what the window runs (`docker exec …`,
+`ssh host pi …`). So does the whole of the lifecycle above: the
+`@kido_subagent` mark and `#{pane_dead}` are facts tmux owns, so a pane
+whose `ssh` exits dies and is collected exactly as a local one is. So
+does identity, because an instance id is opaque and location-independent
+- which is the second reason it beat the parent start time it replaced.
+
+**What does not.** Three assumptions, each in one place: a shared
+filesystem (`state.Load` reading a directory, the inbox socket, the task
+file's path, `-c`), a shared pid namespace (`kill(parentPid, 0)`), and a
+kido binary on the agent's side (status reporting shells out to it).
+Unix sockets are the hardest of these: they cannot cross a host boundary
+at all, which is why pi-intercom carries a TCP transport beside its own.
+
+**The shift that cannot be dodged.** Discovery and transport invert.
+Today an agent writes state into a directory kido reads, and kido dials a
+socket on the agent's filesystem; remote means agents report *to* kido
+and kido serves a connection - kido gains a broker. That is a real
+change and is not worth building speculatively.
+
+**The two things worth doing before then**, because they cost nothing
+now:
+
+- Make heartbeat staleness the primary liveness signal and `kill(pid, 0)`
+  a local optimisation, not the other way round. "Has not reported in N
+  seconds" works across any boundary; a pid check works across none. The
+  stall detection this phase adds is already that mechanism.
+- Keep the task as content at the tool boundary, not a path. A file is
+  the right answer to the local tmux parser problem, but `kido spawn`
+  should be what decides it becomes one, so another backend can write it
+  inside the sandbox instead.
+
+A container sharing the state directory by bind-mount is much the cheaper
+case: same filesystem, sockets intact, and only the pid namespace
+differs - which is exactly what the first of those two removes the
+dependence on.

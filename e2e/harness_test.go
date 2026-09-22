@@ -309,9 +309,20 @@ func start(t *testing.T, session string, kidoArgs ...string) *harness {
 	// A real 30s read window would put every lifecycle test past the
 	// 5s settle, and shortening it in one process only would leave the
 	// two halves disagreeing about when a window is finished with.
+	// KIDO_STALL_THRESHOLD_MS shortens state.StallThreshold the same way,
+	// for state.Stalled and the sidebar's stalled indicator: a real 3
+	// minutes would put a stall test well past any reasonable timeout. 3s
+	// rather than something closer to it: several other tests in this
+	// suite (TestClaudeBackgroundWork, TestPiBeatsClaudeOnTheSamePane,
+	// TestClaudeSubagentMidTurn) report a status once and then sleep up to
+	// a full second before checking it is still shown running, and this
+	// setting is global to every inner server this harness starts - a
+	// shorter threshold marked their panes stalled too.
 	body := fmt.Sprintf(`
 set-environment -g KIDO_STATE_DIR "%s"
 set-environment -g KIDO_LINGER_SECONDS 1
+set-environment -g KIDO_STOP_ESCALATION_MS 300
+set-environment -g KIDO_STALL_THRESHOLD_MS 3000
 set -g status off
 set -sg escape-time 0
 set -g default-shell /bin/bash

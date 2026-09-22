@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -130,6 +131,53 @@ type Session struct {
 	// report a fresh status without re-sending a model that has not
 	// changed.
 	Model string `json:"model,omitempty"`
+}
+
+// StallThreshold is how long a session may claim Running without a fresh
+// report before kido treats it as stalled rather than merely busy: a
+// wedged agent (a dead network connection, a hung event loop) sits at
+// running forever with no completion event to say otherwise, and a
+// blocked ask_agent has no cheaper way to notice than this.
+//
+// Status reports do NOT fire on every tool call the way an earlier draft
+// of this comment claimed: send() in pi/kido-status.ts coalesces a report
+// away whenever its key (status/title/activity/model/ended/remove)
+// matches the last one sent, and agent_start, turn_start,
+// tool_execution_start and tool_call all send the identical "running"
+// key - so in a real session only the first of them ever reaches kido,
+// and TS then records the start of the current turn, not the time since
+// the agent last did something. A turn has no upper bound, so that made
+// this threshold unfixable by raising it: a healthy pi minutes into one
+// long turn would still cross it. pi/kido-status.ts now re-sends a
+// running session's status every ~30s (HEARTBEAT_MS there) purely to keep
+// TS fresh, bypassing the coalescing key, so TS is a real "last seen"
+// heartbeat again and three minutes - six missed heartbeats - is a
+// deliberate margin against one or two dropped or delayed reports, not
+// against turn length. It still leaves most of ask_agent's five-minute
+// default timeout for a genuinely busy target to actually answer. A
+// package variable so a test can shorten it, and overridable via
+// KIDO_STALL_THRESHOLD_MS the same way KIDO_STOP_ESCALATION_MS
+// (cmd/kido/control.go) and KIDO_LINGER_SECONDS (internal/reap) are: a
+// unit test can reassign the package variable directly, but the e2e
+// suite drives kido as a separately built binary, and only the
+// environment reaches that.
+var StallThreshold = stallThresholdFromEnv(3 * time.Minute)
+
+func stallThresholdFromEnv(def time.Duration) time.Duration {
+	if n, err := strconv.Atoi(os.Getenv("KIDO_STALL_THRESHOLD_MS")); err == nil && n > 0 {
+		return time.Duration(n) * time.Millisecond
+	}
+	return def
+}
+
+// Stalled reports whether s claims to be running but has gone quiet for
+// longer than StallThreshold - a derived read the same way ShellStatus
+// derives a shell's state from timestamps rather than trusting a flag.
+// Never true for anything but Running: idle and waiting are legitimately
+// quiet, and a wedged agent by definition is not the one that would
+// report itself stalled, so kido has to notice on its own.
+func Stalled(s Session, now time.Time) bool {
+	return s.Status == Running && now.Sub(s.TS) >= StallThreshold
 }
 
 // Dir returns the directory holding state files.

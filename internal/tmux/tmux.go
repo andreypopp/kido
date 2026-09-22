@@ -604,6 +604,22 @@ func LastWindow(panes []Pane, windowID string) bool {
 	return len(windows) <= 1
 }
 
+// LastPane reports whether windowID has exactly one pane. Combined with
+// LastWindow, this is the guard killTargetPane (cmd/kido/control.go)
+// needs: killing a window's only pane closes the window as tmux's own
+// side effect, so that is only dangerous when the window is also its
+// session's only one - a window sharing its pane with another loses
+// nothing by it.
+func LastPane(panes []Pane, windowID string) bool {
+	n := 0
+	for _, p := range panes {
+		if p.WindowID == windowID {
+			n++
+		}
+	}
+	return n <= 1
+}
+
 // KillWindow destroys windowID. A window that is already gone - closed by
 // its own linger helper, or by another kido's reaper a moment earlier -
 // is an error from tmux and nothing more: every caller here is one of
@@ -611,6 +627,15 @@ func LastWindow(panes []Pane, windowID string) bool {
 // is the expected outcome, not a failure.
 func KillWindow(windowID string) error {
 	_, err := run("kill-window", "-t", windowID)
+	return err
+}
+
+// KillPane destroys paneID, leaving any other pane in its window alone -
+// unlike KillWindow, which takes every pane in the window with it.
+// Killing a window's last pane closes the window as tmux's own
+// consequence of that, not anything this function does differently.
+func KillPane(paneID string) error {
+	_, err := run("kill-pane", "-t", paneID)
 	return err
 }
 

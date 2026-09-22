@@ -400,8 +400,33 @@ func (m model) tick() tea.Cmd {
 func (a snapshot) same(b snapshot) bool {
 	return a.current == b.current && a.active == b.active && a.focused == b.focused &&
 		a.err == nil && b.err == nil &&
-		samePanes(a.panes, b.panes) && maps.Equal(a.states, b.states) &&
+		samePanes(a.panes, b.panes) && sameStates(a.states, b.states) &&
 		maps.Equal(a.ssh, b.ssh) && maps.Equal(a.pi, b.pi)
+}
+
+// sameStates is maps.Equal for state.Session, except that state.Session.TS
+// is compared through drawnSession rather than directly - the Session
+// analogue of samePanes/drawnPart's exclusion rule, needed for the same
+// reason: pi/kido-status.ts now re-reports a running session's unchanged
+// status every HEARTBEAT_MS purely to keep TS fresh for state.Stalled (see
+// its doc), and without this every running agent would force a full
+// sidebar rebuild on that timer alone.
+func sameStates(a, b map[string]state.Session) bool {
+	return maps.EqualFunc(a, b, func(x, y state.Session) bool {
+		return drawnSession(x) == drawnSession(y)
+	})
+}
+
+// drawnSession is s without TS, the one field that changes on a heartbeat
+// re-report while nothing else about the session does. Zeroing it means a
+// TS-only change no longer forces a redraw; it is not the same as TS
+// reaching no row at all, since stallPending (below) still reads TS
+// directly, off kido's own clock, to catch a session crossing
+// state.StallThreshold on an otherwise quiet tick - the one thing TS is
+// allowed to drive on screen, and it still will.
+func drawnSession(s state.Session) state.Session {
+	s.TS = time.Time{}
+	return s
 }
 
 // samePanes compares two pane lists by what the sidebar actually draws and
@@ -462,7 +487,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// freezes mid-transition until tmux happens to say something else.
 		// It is deliberately read before the tick is folded in, of the
 		// frame currently on screen.
-		pending := m.shellPending()
+		pending := m.shellPending() || m.stallPending()
 		m.at = m.now()
 		m.snap = msg
 		m.track()
@@ -713,6 +738,28 @@ func (m *model) observe(prev shellPhase, running bool) shellPhase {
 	}
 }
 
+// stallPending reports whether any Running session's state.Stalled verdict
+// would read differently right now than it did as of the frame on screen
+// (m.at): a session going stalled is driven purely by kido's own clock,
+// with nothing in the tmux/state snapshot moving, so without this a
+// session that crossed state.StallThreshold in a quiet tick would freeze
+// as "running" until something unrelated changed the snapshot. Comparing
+// against a freshly read now, rather than watching every Running session
+// on every tick the way shellPending watches its own transient windows,
+// costs nothing extra for a session nowhere near the threshold.
+func (m *model) stallPending() bool {
+	now := m.now()
+	for _, s := range m.snap.states {
+		if s.Status != state.Running {
+			continue
+		}
+		if state.Stalled(s, m.at) != state.Stalled(s, now) {
+			return true
+		}
+	}
+	return false
+}
+
 // shellPending reports whether any pane is inside a clock-driven window -
 // running but not yet drawn, or stopped and still held - and so would
 // change what it draws on a later tick with nothing in the snapshot
@@ -940,6 +987,7 @@ var (
 	stCompact = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 	stDone    = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true)
 	stUnknown = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	stStalled = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
 )
 
 // glyph renders one tree glyph grouping a window's panes: a dot for a lone
@@ -994,6 +1042,12 @@ func indicator(s state.Status) string {
 // yet looked at. Both are rendered on demand, for the reason above.
 func indicatorDone() string   { return stDone.Render("✓") }
 func indicatorFailed() string { return stErr.Render("▌") }
+
+// indicatorStalled marks a session that claims Running but has gone quiet
+// past state.StallThreshold (state.Stalled) - kido's own guess that it is
+// wedged rather than merely busy, drawn the same on-demand way as
+// indicatorDone and indicatorFailed.
+func indicatorStalled() string { return stStalled.Render("!") }
 
 // field is the indicator column: one glyph and one space, or two spaces
 // when there is no indicator, so every label starts at the same column
@@ -1102,6 +1156,9 @@ func (m *model) paneLabel(p tmux.Pane) string {
 	if s, reported := m.snap.states[p.PaneID]; reported {
 		ind = indicator(s.Status)
 		activity = s.Activity
+		if state.Stalled(s, m.at) {
+			ind = indicatorStalled()
+		}
 	}
 	if m.done(p.PaneID) {
 		ind = indicatorDone()

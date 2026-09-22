@@ -24,6 +24,65 @@ func write(t *testing.T, id string, s Session) {
 	}
 }
 
+// TestStallThresholdFromEnv pins KIDO_STALL_THRESHOLD_MS: the e2e suite
+// drives kido as a built binary, so an override that only ever reassigns
+// the package variable (as TestStalled does) is invisible to it.
+func TestStallThresholdFromEnv(t *testing.T) {
+	saved := os.Getenv("KIDO_STALL_THRESHOLD_MS")
+	t.Cleanup(func() {
+		if saved == "" {
+			os.Unsetenv("KIDO_STALL_THRESHOLD_MS")
+		} else {
+			os.Setenv("KIDO_STALL_THRESHOLD_MS", saved)
+		}
+	})
+
+	os.Unsetenv("KIDO_STALL_THRESHOLD_MS")
+	if got := stallThresholdFromEnv(3 * time.Minute); got != 3*time.Minute {
+		t.Errorf("unset: got %v, want the default", got)
+	}
+
+	os.Setenv("KIDO_STALL_THRESHOLD_MS", "250")
+	if got := stallThresholdFromEnv(3 * time.Minute); got != 250*time.Millisecond {
+		t.Errorf("set to 250: got %v, want 250ms", got)
+	}
+
+	os.Setenv("KIDO_STALL_THRESHOLD_MS", "not-a-number")
+	if got := stallThresholdFromEnv(3 * time.Minute); got != 3*time.Minute {
+		t.Errorf("garbage: got %v, want the default", got)
+	}
+}
+
+// TestStalled checks the boundary state.Stalled draws: just under
+// StallThreshold is not stalled, just over is, and neither idle nor
+// waiting - however long they have gone quiet - ever count, since a
+// wedged agent is defined as one that claims to be Running.
+func TestStalled(t *testing.T) {
+	saved := StallThreshold
+	StallThreshold = time.Minute
+	t.Cleanup(func() { StallThreshold = saved })
+
+	now := time.Now()
+	cases := []struct {
+		name string
+		s    Session
+		want bool
+	}{
+		{"just under the threshold", Session{Status: Running, TS: now.Add(-59 * time.Second)}, false},
+		{"exactly at the threshold", Session{Status: Running, TS: now.Add(-time.Minute)}, true},
+		{"well over the threshold", Session{Status: Running, TS: now.Add(-5 * time.Minute)}, true},
+		{"idle, however stale", Session{Status: Idle, TS: now.Add(-time.Hour)}, false},
+		{"waiting, however stale", Session{Status: Waiting, TS: now.Add(-time.Hour)}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := Stalled(c.s, now); got != c.want {
+				t.Errorf("Stalled() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 // TestLoadAgentPrecedence checks the rule that makes one pane resolve to
 // one agent: pi runs Claude Code inside its own pane, so both write a
 // record naming that pane and the pi one must win whatever the timestamps

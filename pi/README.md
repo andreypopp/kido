@@ -176,3 +176,20 @@ before that one resolves, it answers `refused` on the wire
 instead of `ok` - a distinct answer kido's `deliverInbox` reports as its
 own error, never triggering the send-keys paste fallback, since nothing
 was mis-delivered. A refused ask is not delivered to the model at all.
+
+- `interrupt_subagent(to)` runs `kido interrupt <to>`, which delivers an
+  `interrupt` envelope; this session answers one addressed to it with
+  `ctx.abort()`, aborting the current turn without ending the session.
+- `stop_subagent(to, force?)` runs `kido stop <to> [--force]`, which
+  delivers a `stop` envelope; this session answers one addressed to it
+  with `ctx.shutdown()`, the same teardown a normal exit runs
+  (`session_shutdown`: inbox closed, parent notified, record removed).
+  `kido stop` escalates to killing the target's window if it does not go
+  within a few seconds - see `docs/subagents-plan.md`.
+
+Both are refused - on the wire, as `refused` - unless the sender can be
+verified as an ancestor of this session (the same ancestor walk
+`ask_agent`'s own refusal uses, in the opposite direction): a caller may
+only interrupt or stop its own descendants. `kido interrupt`/`kido stop`
+already enforce this before ever sending the envelope; this session
+checks it again on receipt, since `from` is advisory.
