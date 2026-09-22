@@ -345,8 +345,22 @@ func SwitchSession(client string, next bool) error {
 // order within a session), wrapping around the whole server. This crosses
 // session boundaries: advancing past a session's last window moves to the
 // next session's first window, unlike tmux's own next-window/previous-window
-// which wrap inside one session. A server with one window, or a client whose
-// current window kido cannot find, is a no-op.
+// which wrap inside one session.
+//
+// A subagent's window (marked with SubagentOption; see reap.Sweep, which
+// keys off the same mark for the same reason - a state record can lag or
+// outlive the pane it names, but the mark cannot) is skipped over rather
+// than visited, dead or alive: the user asked to move between top-level
+// windows, and a window still readable through the sidebar's Enter should
+// not also flicker in and out of ⇧↓'s reach as its pane dies and is later
+// swept. The walk steps through the full list, wrapping, until it lands on
+// an unmarked window; landing back on the window it started from - because
+// that is the only unmarked window on the server - is the one true no-op.
+// Starting from a subagent window with exactly one top-level window
+// elsewhere still reaches it: only the truly degenerate case (the current
+// window is that lone top-level window, or every window is a subagent's)
+// stays put. A client whose current window kido cannot find is also a
+// no-op.
 func SwitchWindow(client string, next bool) error {
 	panes, err := ListPanes()
 	if err != nil {
@@ -356,7 +370,7 @@ func SwitchWindow(client string, next bool) error {
 	for _, s := range OrderSessions(panes) {
 		windows = append(windows, s.Windows...)
 	}
-	if len(windows) < 2 {
+	if len(windows) == 0 {
 		return nil
 	}
 
@@ -385,7 +399,19 @@ func SwitchWindow(client string, next bool) error {
 	if next {
 		delta = 1
 	}
-	target := windows[(i+delta+len(windows))%len(windows)][0]
+	found := -1
+	j := i
+	for k := 0; k < len(windows); k++ {
+		j = (j + delta + len(windows)) % len(windows)
+		if windows[j][0].Subagent == "" {
+			found = j
+			break
+		}
+	}
+	if found < 0 || found == i {
+		return nil
+	}
+	target := windows[found][0]
 
 	_, err = run("switch-client", "-c", client, "-t", target.SessionName, ";",
 		"select-window", "-t", target.WindowID)

@@ -1021,7 +1021,12 @@ The price is that a window hoisted under a parent's pane is no longer in
 tmux's own window order: a subagent's window can sit above a
 lower-numbered one, and a parent's later panes sit below a whole foreign
 window. That is the trade, not a bug - the spawn tree is what the sidebar
-is for, and tmux's order is still one ⇧↓ away. The walk also draws as a
+is for. tmux's order used to be one ⇧↓ away regardless; `kido
+switch-window` (S-Up/S-Down) now skips a subagent's window on purpose -
+the user asked to cycle top-level windows, keyed off the same
+`@kido_subagent` mark reap.Sweep uses and for the same reason - so a
+hoisted window is reachable only through the sidebar itself once more.
+The walk also draws as a
 root anything whose anchor row never appeared, for the same reason the
 ordering emits what it missed: a dropped row is an agent nobody can see.
 

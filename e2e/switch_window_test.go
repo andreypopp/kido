@@ -57,6 +57,27 @@ func (h *harness) addWindow(session, name string) {
 	}, settle, msgf("session %s has window %s", session, name))
 }
 
+// markSubagent marks session's window (by name) with @kido_subagent - the
+// tmux window option `kido spawn` sets and the only thing
+// internal/tmux.SwitchWindow (and internal/reap.Sweep, for the same
+// reason) trusts to know a window is a subagent's. No status record is
+// involved: a live plain shell pane with the mark looks to switch-window
+// exactly like a live subagent's pane does.
+func (h *harness) markSubagent(session, window string) {
+	h.t.Helper()
+	h.in("set-option", "-w", "-t", session+":"+window, "@kido_subagent", "parent=root-inst depth=1")
+}
+
+// selectWindow puts the client directly on session's window (by name),
+// bypassing kido: the way a user manually navigating into a subagent's
+// window (with the sidebar's own Enter, say) would land there.
+func (h *harness) selectWindow(session, window string) {
+	h.t.Helper()
+	h.in("switch-client", "-c", h.client, "-t", session, ";",
+		"select-window", "-t", session+":"+window)
+	h.waitWindow(session, window)
+}
+
 // runSwitchWindow runs `kido switch-window <dir> -client <h.client>` against
 // the inner server, the way a key binding's run-shell would (see
 // tmux/kido-side.tmux).
@@ -192,4 +213,112 @@ func TestSwitchWindowSingleWindow(t *testing.T) {
 	h.waitSession("solo")
 	h.runSwitchWindow("prev")
 	h.waitSession("solo")
+}
+
+// TestSwitchWindowSkipsSubagentWindows checks that a1 and c1, each marked
+// @kido_subagent, are stepped over entirely: the flat list next/prev walk
+// becomes a0, c0, b0, b1 - not the six-window list TestSwitchWindowOrder
+// walks - in both directions.
+func TestSwitchWindowSkipsSubagentWindows(t *testing.T) {
+	t.Parallel()
+	h := setupSwitchWindowSessions(t)
+	h.markSubagent("a", "a1")
+	h.markSubagent("c", "c1")
+
+	h.runSwitchWindow("next") // a0 -> c0, skipping a1
+	h.waitWindow("c", "c0")
+	h.runSwitchWindow("next") // c0 -> b0, skipping c1
+	h.waitWindow("b", "b0")
+	h.runSwitchWindow("next") // b0 -> b1
+	h.waitWindow("b", "b1")
+	h.runSwitchWindow("next") // b1 -> wrap -> a0
+	h.waitWindow("a", "a0")
+
+	h.runSwitchWindow("prev") // a0 -> wrap -> b1
+	h.waitWindow("b", "b1")
+	h.runSwitchWindow("prev") // b1 -> b0
+	h.waitWindow("b", "b0")
+	h.runSwitchWindow("prev") // b0 -> c0, skipping c1
+	h.waitWindow("c", "c0")
+	h.runSwitchWindow("prev") // c0 -> a0, skipping a1
+	h.waitWindow("a", "a0")
+}
+
+// TestSwitchWindowFromInsideSubagent checks that starting from a subagent
+// window - one the user reached some other way, such as the sidebar's own
+// Enter, not by cycling into it with S-Up/S-Down - still skips over
+// further subagent windows to reach a top-level one. a1, c0 and c1 are
+// all marked, so from a1 next must cross two consecutive subagent windows
+// to reach b0: landing on c0 (the very next window in server order,
+// unskipped) is exactly the bug an unfixed walk that starts outside its
+// own reachable set would show. Starting from c1 going prev exercises the
+// same thing in the other direction, crossing c0 and a1 to reach a0.
+func TestSwitchWindowFromInsideSubagent(t *testing.T) {
+	t.Parallel()
+	h := setupSwitchWindowSessions(t)
+	h.markSubagent("a", "a1")
+	h.markSubagent("c", "c0")
+	h.markSubagent("c", "c1")
+
+	h.selectWindow("a", "a1") // land inside a subagent window directly
+	h.runSwitchWindow("next") // a1 -> b0, skipping c0 and c1
+	h.waitWindow("b", "b0")
+
+	h.selectWindow("c", "c1") // another subagent window, deeper in the run
+	h.runSwitchWindow("prev") // c1 -> a0, skipping c0 and a1
+	h.waitWindow("a", "a0")
+}
+
+// TestSwitchWindowSoleTopLevelWindow checks the degenerate case where only
+// one window on the whole server is not a subagent's: switch-window is a
+// no-op when that window is already current (there is nowhere else to
+// go), but still reaches it from inside any subagent window (that is a
+// real transition, not a no-op) - decided with the advisor rather than
+// counting top-level windows and treating count<2 as a blanket no-op,
+// which would wrongly strand a user inside a subagent window with one
+// top-level window elsewhere.
+func TestSwitchWindowSoleTopLevelWindow(t *testing.T) {
+	t.Parallel()
+	h := setupSwitchWindowSessions(t)
+	for _, w := range []struct{ session, window string }{
+		{"a", "a1"}, {"c", "c0"}, {"c", "c1"}, {"b", "b0"}, {"b", "b1"},
+	} {
+		h.markSubagent(w.session, w.window)
+	}
+
+	// a0 is the sole top-level window and already current: no-op.
+	h.runSwitchWindow("next")
+	h.waitWindow("a", "a0")
+	h.runSwitchWindow("prev")
+	h.waitWindow("a", "a0")
+
+	// From inside a subagent window, either direction reaches the lone
+	// top-level window rather than stalling.
+	h.selectWindow("c", "c0")
+	h.runSwitchWindow("next")
+	h.waitWindow("a", "a0")
+
+	h.selectWindow("b", "b1")
+	h.runSwitchWindow("prev")
+	h.waitWindow("a", "a0")
+}
+
+// TestSwitchWindowAllSubagentWindows checks the other degenerate case:
+// every window on the server carries the mark, so there is no top-level
+// window to land on at all. switch-window must not spin (the walk is
+// bounded to one pass over the window list) and must not move the
+// client anywhere.
+func TestSwitchWindowAllSubagentWindows(t *testing.T) {
+	t.Parallel()
+	h := setupSwitchWindowSessions(t)
+	for _, w := range []struct{ session, window string }{
+		{"a", "a0"}, {"a", "a1"}, {"c", "c0"}, {"c", "c1"}, {"b", "b0"}, {"b", "b1"},
+	} {
+		h.markSubagent(w.session, w.window)
+	}
+
+	h.runSwitchWindow("next")
+	h.waitWindow("a", "a0")
+	h.runSwitchWindow("prev")
+	h.waitWindow("a", "a0")
 }
