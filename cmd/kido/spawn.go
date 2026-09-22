@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -35,7 +36,8 @@ var (
 )
 
 func spawnUsage() string {
-	return "usage: kido spawn --parent-pid PID --parent-instance ID --name NAME --task-file FILE|- [--depth N] [--model M] [--tools T,...] [-- COMMAND...]"
+	return "usage: kido spawn --parent-pid PID --parent-instance ID --name NAME --task-file FILE|- [--depth N] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
+		"   or: kido spawn --resume RUN_ID [--parent-pid PID --parent-instance ID] [--keep-alive] [-- COMMAND...]"
 }
 
 // spawnCmd implements `kido spawn`: it creates a detached window in the
@@ -58,6 +60,8 @@ func spawnCmd(args []string) error {
 	taskFile := fs.String("task-file", "", `file holding the task text to deliver as the child's first message, or "-" for stdin`)
 	model := fs.String("model", "", "model the child will run, recorded in the run's meta for kido runs")
 	toolsFlag := fs.String("tools", "", "comma-separated tool allowlist the child will run, recorded in the run's meta for kido runs")
+	resumeID := fs.String("resume", "", "resume an existing run's own session instead of starting a new one")
+	keepAlive := fs.Bool("keep-alive", false, "the child does not self-reap after going idle (KIDO_AGENT_KEEP_ALIVE)")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w\n%s", err, spawnUsage())
 	}
@@ -67,19 +71,29 @@ func spawnCmd(args []string) error {
 			depthGiven = true
 		}
 	})
+	resuming := *resumeID != ""
 
 	switch {
-	case *parentPID <= 0:
+	case !resuming && *parentPID <= 0:
 		return fmt.Errorf("--parent-pid is required\n%s", spawnUsage())
-	case *parentInstance == "":
+	case !resuming && *parentInstance == "":
 		return fmt.Errorf("--parent-instance is required\n%s", spawnUsage())
 	case depthGiven && *claimedDepth < 0:
 		return fmt.Errorf("--depth must not be negative\n%s", spawnUsage())
-	case *name == "":
+	case !resuming && *name == "":
 		return fmt.Errorf("--name is required\n%s", spawnUsage())
-	case *taskFile == "":
+	case !resuming && *taskFile == "":
 		return fmt.Errorf("--task-file is required\n%s", spawnUsage())
+	case resuming && *taskFile != "":
+		return fmt.Errorf("--resume keeps the run's original task; --task-file is refused alongside it\n%s", spawnUsage())
+	case resuming && *name != "":
+		return fmt.Errorf("--resume keeps the run's original window name; --name is refused alongside it\n%s", spawnUsage())
 	}
+
+	if resuming {
+		return spawnResume(*resumeID, *parentPID, *parentInstance, fs.Args(), *keepAlive)
+	}
+
 	if i := strings.IndexAny(*name, tmuxConfUnsafe); i >= 0 {
 		return fmt.Errorf("refusing window name %q: it contains %q, which cannot survive tmux's own command-line parsing", *name, (*name)[i:i+1])
 	}
@@ -150,6 +164,9 @@ func spawnCmd(args []string) error {
 		// the run id from, and `kido run-outcome` needs it.
 		"KIDO_AGENT_RUN_ID=" + runID,
 	}
+	if *keepAlive {
+		env = append(env, "KIDO_AGENT_KEEP_ALIVE=1")
+	}
 	windowID, paneID, panePID, err := newWindow(pane.SessionID, *name, pane.CurrentPath, env, command)
 	if err != nil {
 		// The meta is written first: `kido runs` passes over a directory
@@ -172,6 +189,172 @@ func spawnCmd(args []string) error {
 	}
 	fmt.Printf("%s %s %s\n", windowID, paneID, runID)
 	return nil
+}
+
+// spawnResume implements `kido spawn --resume RUN_ID`: it creates a
+// detached window through the identical tmux.NewWindow / markSubagent
+// path a fresh spawn uses, but launches `pi --session RUN_ID` instead of
+// minting a new one, and continues run id's existing run record instead
+// of creating a second one - its task, its history and its id stay
+// (docs/design.md, "kido spawn --resume"). command is fs.Args(): the
+// COMMAND after "--", defaulting to plain pi exactly as a fresh spawn
+// does.
+func spawnResume(runID string, parentPID int, parentInstance string, command []string, keepAlive bool) error {
+	meta, err := subrun.ReadMeta(runID)
+	if err != nil {
+		return fmt.Errorf("run %q: %w", runID, err)
+	}
+
+	// EffectiveOutcome's ok is false exactly when the run is still alive
+	// and has recorded nothing about itself yet - the one case resuming
+	// makes no sense, since the run's own process already holds the
+	// session. Any recorded outcome, whatever it says, means the pid is
+	// gone (or kido stop said so), and resuming is what this command is for.
+	if _, ok, err := subrun.EffectiveOutcome(runID, meta.PID); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("run %q is still running (pid %d); resuming a live agent makes no sense", runID, meta.PID)
+	}
+
+	if !piSessionFileExists(meta.Cwd, runID) {
+		return fmt.Errorf("run %q: no pi session file found under %s; nothing to resume", runID, piSessionDir(meta.Cwd))
+	}
+
+	caller := os.Getenv("TMUX_PANE")
+	panes, err := listPanes()
+	if err != nil {
+		return err
+	}
+	pane, ok := findPane(panes, caller)
+	if !ok {
+		return fmt.Errorf("pane %q not found", caller)
+	}
+
+	// A caller with no state record - a bare human shell - gets no parent
+	// pid or instance defaulted for it, exactly as an unreported caller's
+	// own depth defaults to 0 below: the resumed run simply has no current
+	// parent, same as any other pi session kido never spawned. A caller
+	// that does have a record (another agent, or `kido runs`'s printed
+	// resume line run from inside a kido-tracked pane) becomes the run's
+	// new parent without --parent-pid/--parent-instance having to name it.
+	// Given explicitly, those flags still win, the same as a fresh spawn.
+	states, err := state.Load()
+	if err != nil {
+		return err
+	}
+	self := states[caller]
+	if parentPID == 0 {
+		parentPID = self.PID
+	}
+	if parentInstance == "" {
+		parentInstance = self.Instance
+	}
+	depth := self.Depth + 1
+	if depth > maxDepth {
+		return fmt.Errorf("refusing to resume at depth %d: maximum nesting is %d (root 0, subagent 1, subagent 2)", depth, maxDepth)
+	}
+
+	if len(command) == 0 {
+		command = []string{"pi"}
+	}
+	if command[0] == "pi" {
+		command = append([]string{command[0], "--session", runID}, command[1:]...)
+	}
+
+	env := []string{
+		"KIDO_AGENT_TASK_FILE=" + subrun.TaskPath(runID),
+		"KIDO_AGENT_RUN_ID=" + runID,
+	}
+	if parentPID > 0 {
+		env = append(env, "KIDO_AGENT_PARENT_PID="+strconv.Itoa(parentPID))
+	}
+	if parentInstance != "" {
+		env = append(env, "KIDO_AGENT_PARENT_INSTANCE="+parentInstance)
+	}
+	env = append(env, "KIDO_AGENT_DEPTH="+strconv.Itoa(depth))
+	if keepAlive {
+		env = append(env, "KIDO_AGENT_KEEP_ALIVE=1")
+	}
+
+	// A resumed run is running again: its old outcome, if any, no longer
+	// describes it, and RecordOutcome's O_EXCL would otherwise refuse every
+	// exit path that follows this one. Cleared before any of those paths
+	// runs again, not racing one of them - see ClearOutcome's own doc.
+	if err := subrun.ClearOutcome(runID); err != nil {
+		return err
+	}
+
+	// The window is created at the run's own cwd, not the caller's: pi
+	// sessions are project-scoped, and `pi --session` run from any other
+	// directory asks to fork into the current one instead of resuming.
+	windowID, paneID, panePID, err := newWindow(pane.SessionID, meta.Name, meta.Cwd, env, command)
+	if err != nil {
+		subrun.RecordOutcome(runID, subrun.Outcome{Result: subrun.Failed, Text: err.Error(), At: time.Now()}) //nolint:errcheck // best effort
+		return err
+	}
+	meta.Window, meta.Pane, meta.PID = windowID, paneID, panePID
+	meta.ParentInstance, meta.Depth = parentInstance, depth
+	if err := subrun.WriteMeta(meta); err != nil {
+		return err
+	}
+	// The mark is the only thing that makes this window reapable, exactly
+	// as for a fresh spawn.
+	if err := markSubagent(windowID, tmux.SubagentMark(runID, parentInstance, depth)); err != nil {
+		killWindow(windowID)                                                                                  //nolint:errcheck // best effort cleanup; the mark error is what matters
+		subrun.RecordOutcome(runID, subrun.Outcome{Result: subrun.Failed, Text: err.Error(), At: time.Now()}) //nolint:errcheck // best effort
+		return err
+	}
+	fmt.Printf("%s %s %s\n", windowID, paneID, runID)
+	return nil
+}
+
+// piSessionDir mirrors pi 0.85.1's own getDefaultSessionDirPath
+// (session-manager.js): PI_CODING_AGENT_SESSION_DIR overrides outright;
+// otherwise it is <agentDir>/sessions/--<cwd, its slashes and colons
+// turned to dashes>--, with PI_CODING_AGENT_DIR overriding <agentDir> the
+// same way pi itself honours it. This does not walk pi's own
+// settings.json "sessionDir" override (a project- or agent-dir-level
+// setting) - a real gap, noted in docs/design.md, rather than kido
+// reimplementing pi's full settings resolution just to check one file's
+// existence.
+func piSessionDir(cwd string) string {
+	if d := os.Getenv("PI_CODING_AGENT_SESSION_DIR"); d != "" {
+		return d
+	}
+	agentDir := os.Getenv("PI_CODING_AGENT_DIR")
+	if agentDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		agentDir = filepath.Join(home, ".pi", "agent")
+	}
+	trimmed := strings.TrimPrefix(cwd, "/")
+	safe := "--" + strings.NewReplacer("/", "-", "\\", "-", ":", "-").Replace(trimmed) + "--"
+	return filepath.Join(agentDir, "sessions", safe)
+}
+
+// piSessionFileExists reports whether id has a pi session file under
+// cwd's session directory: pi names one "<timestamp>_<id>.jsonl", so any
+// entry ending in "_<id>.jsonl" is a match. An unresolvable directory (no
+// $HOME) reads as present, so a check kido has no way to actually perform
+// fails open rather than blocking every resume on a guess.
+func piSessionFileExists(cwd, id string) bool {
+	dir := piSessionDir(cwd)
+	if dir == "" {
+		return true
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	suffix := "_" + id + ".jsonl"
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // readTask reads the task text from path, or from stdin when path is "-".

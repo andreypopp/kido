@@ -105,6 +105,12 @@ switch (args[0]) {
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
     process.exit(0);
   }
+  case "window-focused": {
+    const logFile = process.env.KIDO_FAKE_WINDOW_FOCUSED_LOG;
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
+    process.stdout.write((process.env.KIDO_FAKE_WINDOW_FOCUSED === "1" ? "true" : "false") + "\\n");
+    process.exit(0);
+  }
   case "interrupt":
   case "stop": {
     const logFile = process.env.KIDO_FAKE_CONTROL_LOG;
@@ -124,6 +130,8 @@ interface Fixture {
   setAgents(agents: unknown[]): void;
   setInboxFail(fail: boolean): void;
   setMessageFailTo(to: string | undefined): void;
+  setWindowFocused(focused: boolean): void;
+  windowFocusedCallCount(): number;
   selfInboxPath(): string;
   lastLogFor(to: string, kind?: string): { id: string; replyTo: string; to: string; text: string; failed?: boolean } | undefined;
   lastSpawnArgs(): string[] | undefined;
@@ -173,6 +181,8 @@ function makeFixture(): Fixture {
   writeFileSync(statusLogFile, "");
   writeFileSync(controlLogFile, "");
   writeFileSync(runOutcomeLogFile, "");
+  const windowFocusedLogFile = join(dir, "window-focused.jsonl");
+  writeFileSync(windowFocusedLogFile, "");
 
   const saved = {
     PATH: process.env.PATH,
@@ -184,6 +194,8 @@ function makeFixture(): Fixture {
     KIDO_FAKE_STATUS_LOG: process.env.KIDO_FAKE_STATUS_LOG,
     KIDO_FAKE_CONTROL_LOG: process.env.KIDO_FAKE_CONTROL_LOG,
     KIDO_FAKE_RUN_OUTCOME_LOG: process.env.KIDO_FAKE_RUN_OUTCOME_LOG,
+    KIDO_FAKE_WINDOW_FOCUSED_LOG: process.env.KIDO_FAKE_WINDOW_FOCUSED_LOG,
+    KIDO_FAKE_WINDOW_FOCUSED: process.env.KIDO_FAKE_WINDOW_FOCUSED,
     KIDO_FAKE_INBOX_DIR: process.env.KIDO_FAKE_INBOX_DIR,
     KIDO_FAKE_INBOX_FAIL: process.env.KIDO_FAKE_INBOX_FAIL,
     KIDO_FAKE_MESSAGE_FAIL_TO: process.env.KIDO_FAKE_MESSAGE_FAIL_TO,
@@ -198,6 +210,8 @@ function makeFixture(): Fixture {
   process.env.KIDO_FAKE_STATUS_LOG = statusLogFile;
   process.env.KIDO_FAKE_CONTROL_LOG = controlLogFile;
   process.env.KIDO_FAKE_RUN_OUTCOME_LOG = runOutcomeLogFile;
+  process.env.KIDO_FAKE_WINDOW_FOCUSED_LOG = windowFocusedLogFile;
+  delete process.env.KIDO_FAKE_WINDOW_FOCUSED; // default: not focused
   process.env.KIDO_FAKE_INBOX_DIR = inboxDir;
   delete process.env.KIDO_FAKE_INBOX_FAIL;
   delete process.env.KIDO_FAKE_MESSAGE_FAIL_TO;
@@ -217,6 +231,13 @@ function makeFixture(): Fixture {
     setMessageFailTo(to) {
       if (to) process.env.KIDO_FAKE_MESSAGE_FAIL_TO = to;
       else delete process.env.KIDO_FAKE_MESSAGE_FAIL_TO;
+    },
+    setWindowFocused(focused) {
+      if (focused) process.env.KIDO_FAKE_WINDOW_FOCUSED = "1";
+      else delete process.env.KIDO_FAKE_WINDOW_FOCUSED;
+    },
+    windowFocusedCallCount() {
+      return jsonLines(windowFocusedLogFile).length;
     },
     lastSpawnArgs() {
       return last(jsonLines(spawnLogFile))?.args;
@@ -1756,6 +1777,158 @@ test("ask_agent refuses a stalled target immediately, without sending anything",
     assert.match(result.content[0].text, /stalled/);
     assert.match(result.content[0].text, /245/);
     assert.equal(fx.lastLogFor("peer-a", "ask"), undefined, "a stalled target must never actually be asked");
+  } finally {
+    fx.restore();
+  }
+});
+
+// withIdleExitEnv sets KIDO_IDLE_EXIT_SECONDS and, optionally,
+// KIDO_AGENT_KEEP_ALIVE, restoring whatever was there before - both are
+// read once at module scope, so every case below goes through
+// freshExtensions() to pick them up (see withParentEnv).
+async function withIdleExitEnv<T>(seconds: number, keepAlive: boolean, fn: () => Promise<T>): Promise<T> {
+  const saved = {
+    KIDO_IDLE_EXIT_SECONDS: process.env.KIDO_IDLE_EXIT_SECONDS,
+    KIDO_AGENT_KEEP_ALIVE: process.env.KIDO_AGENT_KEEP_ALIVE,
+  };
+  process.env.KIDO_IDLE_EXIT_SECONDS = String(seconds);
+  if (keepAlive) process.env.KIDO_AGENT_KEEP_ALIVE = "1";
+  else delete process.env.KIDO_AGENT_KEEP_ALIVE;
+  try {
+    return await fn();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+test("idle self-exit: a settled turn with no further work shuts the session down after the configured idle interval, measured", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
+    await withParentEnv(process.pid, "parent-inst", 5000, async () => {
+      await withIdleExitEnv(0.1, false, async () => {
+        const factory = await freshExtensions();
+        const s = await startWithShutdownSpy(factory);
+        const t0 = Date.now();
+        await s.emit("agent_settled", {}, { isIdle: () => true });
+        await pollUntil(() => s.shutdowns() > 0, 2000, "ctx.shutdown() after the idle interval");
+        const elapsed = Date.now() - t0;
+        assert.ok(elapsed >= 100, `shut down after ${elapsed}ms, want at least the configured 100ms idle interval`);
+        assert.ok(elapsed < 1500, `shut down after ${elapsed}ms, want well under 1500ms - it must not wait on the heartbeat or the parent poll`);
+      });
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
+test("idle self-exit: new work resets the timer instead of letting it fire mid-turn", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
+    await withParentEnv(process.pid, "parent-inst", 5000, async () => {
+      await withIdleExitEnv(0.15, false, async () => {
+        const factory = await freshExtensions();
+        const s = await startWithShutdownSpy(factory);
+        await s.emit("agent_settled", {}, { isIdle: () => true }); // arms the 150ms timer
+        await new Promise((r) => setTimeout(r, 80)); // well under it
+        await s.emit("turn_start"); // new work: must cancel the pending shutdown
+        await new Promise((r) => setTimeout(r, 100)); // would have fired by 150ms from the settle, had it not reset
+        assert.equal(s.shutdowns(), 0, "new work must cancel the pending idle self-exit");
+        await s.emit("agent_settled", {}, { isIdle: () => true }); // the follow-up turn settles too
+        await pollUntil(() => s.shutdowns() > 0, 2000, "ctx.shutdown() once idle again after the follow-up");
+      });
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
+test("idle self-exit: a root session (no parent) never arms the timer", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true, window: "@1" }]);
+    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
+    delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+    try {
+      await withIdleExitEnv(0.05, false, async () => {
+        const factory = await freshExtensions();
+        const s = await startWithShutdownSpy(factory);
+        await s.emit("agent_settled", {}, { isIdle: () => true });
+        await new Promise((r) => setTimeout(r, 300)); // several times the configured interval
+        assert.equal(s.shutdowns(), 0, "a root session must never self-reap");
+      });
+    } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+test("idle self-exit: keepAlive opts a child out entirely", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
+    await withParentEnv(process.pid, "parent-inst", 5000, async () => {
+      await withIdleExitEnv(0.05, true, async () => {
+        const factory = await freshExtensions();
+        const s = await startWithShutdownSpy(factory);
+        await s.emit("agent_settled", {}, { isIdle: () => true });
+        await new Promise((r) => setTimeout(r, 300));
+        assert.equal(s.shutdowns(), 0, "keepAlive must prevent the idle timer from ever arming");
+      });
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
+test("idle self-exit: a focused window re-arms instead of shutting down, then exits once unfocused", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
+    fx.setWindowFocused(true);
+    await withParentEnv(process.pid, "parent-inst", 5000, async () => {
+      await withIdleExitEnv(0.05, false, async () => {
+        const factory = await freshExtensions();
+        const s = await startWithShutdownSpy(factory);
+        await s.emit("agent_settled", {}, { isIdle: () => true });
+        // Each re-arm check costs a fake-kido subprocess start (tens of ms),
+        // so the wait has to be generous relative to the 50ms interval to
+        // actually observe more than one of them.
+        await new Promise((r) => setTimeout(r, 600));
+        assert.equal(s.shutdowns(), 0, "a focused window must not be closed out from under the user");
+        assert.ok(
+          fx.windowFocusedCallCount() >= 2,
+          `window-focused was checked ${fx.windowFocusedCallCount()} times, want re-arming to have checked more than once`,
+        );
+
+        fx.setWindowFocused(false);
+        await pollUntil(() => s.shutdowns() > 0, 2000, "ctx.shutdown() once the window is no longer focused");
+      });
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
+test("spawn_subagent passes --keep-alive through only when keepAlive is set", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const spawn = s.tools.get("spawn_subagent");
+
+    await spawn.execute("c1", { task: "a", name: "kid-a" });
+    assert.ok(!fx.lastSpawnArgs()!.includes("--keep-alive"), "omitted keepAlive must not pass --keep-alive");
+
+    await spawn.execute("c2", { task: "b", name: "kid-b", keepAlive: true });
+    assert.ok(fx.lastSpawnArgs()!.includes("--keep-alive"), "keepAlive: true must pass --keep-alive");
   } finally {
     fx.restore();
   }

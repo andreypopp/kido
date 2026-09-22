@@ -87,6 +87,20 @@ const LINGER_SECONDS = Number(process.env.KIDO_LINGER_SECONDS) || 30;
 // so no OS parent-death signal reaches it; it polls instead.
 const PARENT_LIVENESS_POLL_MS = Number(process.env.KIDO_PARENT_POLL_MS) || 5000;
 
+// IDLE_EXIT_MS is how long a subagent sits idle after a settled turn
+// before it shuts itself down (docs/design.md, "Idle self-exit"). Not the
+// same figure as LINGER_SECONDS above, even though both default to 30:
+// this one is idle-to-self-shutdown, entirely inside the child's own
+// process, and only once it fires does sendCompletionNotice's own
+// scheduleWindowLinger start the second, independent 30s window-linger
+// clock. The two stack; nothing here may fold them into one number.
+const IDLE_EXIT_MS = (Number(process.env.KIDO_IDLE_EXIT_SECONDS) || 30) * 1000;
+
+// KEEP_ALIVE opts a child out of idle self-exit entirely, for a
+// deliberately long-lived helper (spawn_subagent's keepAlive argument,
+// plumbed through as KIDO_AGENT_KEEP_ALIVE by kido spawn --keep-alive).
+const KEEP_ALIVE = process.env.KIDO_AGENT_KEEP_ALIVE === "1";
+
 // How long spawn_subagent waits for `kido spawn` before treating it as hung.
 const SPAWN_TIMEOUT_MS = Number(process.env.KIDO_SPAWN_TIMEOUT_MS) || 5000;
 
@@ -339,6 +353,53 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
+  // idleExitTimer is the idle self-exit clock: armed on every settled turn
+  // (turnEnded), cleared by any sign of new work (workStarted). Only a
+  // child arms it at all (see armIdleExit's own gate).
+  let idleExitTimer: NodeJS.Timeout | null = null;
+
+  const clearIdleExit = (): void => {
+    if (idleExitTimer) {
+      clearTimeout(idleExitTimer);
+      idleExitTimer = null;
+    }
+  };
+
+  // windowFocused asks kido whether this session's own window is the one
+  // some client is currently looking at - the same test close-window and
+  // the sweep (internal/reap) use, via a dedicated kido subcommand rather
+  // than fetchAgents, since kido agents --json carries no focus field.
+  const windowFocused = async (windowID: string): Promise<boolean> => {
+    const host = status();
+    if (!host?.kidoPath()) return false; // no kido, no way to check; do not block on a guess either way
+    const res = await host.runKido(["window-focused", windowID], { timeoutMs: 2000 });
+    return "out" in res && res.out.trim() === "true";
+  };
+
+  // armIdleExit starts (or restarts) the idle-to-self-shutdown clock. Only
+  // a child arms it (PARENT_INSTANCE set, exactly as sendTurnNotice's own
+  // gate), and only when it has not opted out with keepAlive. Unref'd so
+  // it can never hold the process alive on its own, the same as the
+  // parent-liveness poll.
+  const armIdleExit = (shutdown: () => void): void => {
+    if (PARENT_INSTANCE === undefined || KEEP_ALIVE) return;
+    clearIdleExit();
+    idleExitTimer = setTimeout(async () => {
+      const listed = await fetchAgents();
+      const self = "agents" in listed ? listed.agents.find((a) => a.self) : undefined;
+      // A window a client is currently looking at is not reaped out from
+      // under them; the timer re-arms instead of giving up, so the window
+      // is collected once the user looks away (docs/design.md, "Idle
+      // self-exit").
+      if (self?.window && (await windowFocused(self.window))) {
+        armIdleExit(shutdown);
+        return;
+      }
+      shutdown();
+    }, IDLE_EXIT_MS);
+    idleExitTimer.unref();
+  };
+
   const listAgentsParams = Type.Object({}, { additionalProperties: false });
   const listAgentsTool: ToolDefinition<typeof listAgentsParams> = {
     name: "list_agents",
@@ -577,6 +638,12 @@ export default function (pi: ExtensionAPI) {
           description: "Tool names the subagent may use - its capability ceiling. Omit to leave it at pi's default set.",
         }),
       ),
+      keepAlive: Type.Optional(
+        Type.Boolean({
+          description:
+            "Keep the subagent alive after it goes idle instead of letting it self-reap after a short timeout. For a deliberately long-lived helper; defaults to false.",
+        }),
+      ),
     },
     { additionalProperties: false },
   );
@@ -608,6 +675,7 @@ export default function (pi: ExtensionAPI) {
         ...(params.tools && params.tools.length > 0 ? ["--tools", params.tools.join(",")] : []),
       ];
       const child = ["pi", "--name", name, ...modelAndTools];
+      const keepAliveArgs = params.keepAlive ? ["--keep-alive"] : [];
 
       // The task goes to kido spawn as text on stdin; kido decides it
       // becomes a file.
@@ -625,6 +693,7 @@ export default function (pi: ExtensionAPI) {
           "--task-file",
           "-",
           ...modelAndTools,
+          ...keepAliveArgs,
           "--",
           ...child,
         ],
@@ -829,11 +898,16 @@ export default function (pi: ExtensionAPI) {
       // check). abandonPending runs on every reason, reload included: a
       // reload still tears the inbox down.
       stopParentLivenessPoll();
+      clearIdleExit();
       abandonPending();
       await recordOwnOutcome(reason);
       await sendCompletionNotice(reason);
     },
     turnSettled: sendTurnNotice,
+    turnEnded() {
+      armIdleExit(() => ctxShutdown?.());
+    },
+    workStarted: clearIdleExit,
     handleEnvelope,
   };
   seam().agents = hooks;

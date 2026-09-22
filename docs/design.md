@@ -458,6 +458,107 @@ being unavailable is not evidence of anything and never shuts a session
 down. On a dead parent the child calls pi's `shutdown`, through the same
 teardown as a normal exit.
 
+## Idle self-exit, and resuming a run
+
+A subagent that finishes a turn and goes idle used to just sit there:
+nothing told it "done forever" from "waiting for follow-up", so it held
+its window, its pi process and its model context until someone quit it,
+stopped it, or its parent died. Spawn five and there are five idle
+agents. The fix is to reap it: a subagent idle for `KIDO_IDLE_EXIT_SECONDS`
+(30, matching the window linger's own default, but see below for why the
+two are not one figure) calls pi's own `shutdown` on itself.
+
+**One signal, reused.** The timer arms from the same `agent_settled` /
+`ctx.isIdle()` event Phase 12's turn notice already trusted for "the turn
+is truly over" ("Notifying the parent", above) - not a second,
+independently timed one. It arms on *every* settle, not only one with new
+result text to report: a settle with nothing to say is still idle. Any
+sign of new work - `turn_start` and the rest of the `running` family, or a
+message about to be delivered to the model - cancels and restarts it, so
+this is idle-for-30s, not 30s-since-the-first-settle: a child being
+actively used stays up.
+
+**Only a child arms it**, gated on `KIDO_AGENT_PARENT_INSTANCE` exactly as
+the turn notice is: a root session - a human's own interactive pi - must
+never reap itself. `spawn_subagent` also takes a `keepAlive` boolean,
+plumbed through as `KIDO_AGENT_KEEP_ALIVE`, for a deliberately long-lived
+helper that opts out of self-reaping entirely.
+
+**A window a client is looking at is not reaped out from under them.**
+Before shutting down, the timer asks `kido window-focused <id>` - the
+same `tmux.WindowFocused` test `kido close-window` and the sweep already
+share - and, if focused, simply re-arms rather than giving up, exactly as
+the linger helper re-checks on its own next pass; the window is collected
+once the user looks away.
+
+**The outcome is `completed`, not `stopped`**: nobody intervened, the
+child finished its own work on its own terms. `ctx.shutdown()` runs the
+same `session_shutdown` handler a normal exit does, so `recordOwnOutcome`
+sees `isRunEnding(undefined)` (a plain shutdown carries no reason) and
+records `completed` off `host.status() === "idle"`, same as any other
+quit.
+
+**Two 30-second figures stack, and are not one number.** Idle self-exit
+is entirely inside the child's own pi process; only once it actually
+shuts down does the window even become eligible for the linger helper's
+own, entirely separate 30 seconds ("Window lifecycle", above) before a
+sweep may close it. A child can therefore sit for up to a minute, total,
+between its last turn and its window disappearing. Nobody may fold these
+two into one knob: they run in different processes, guard different
+things (a live child deciding to leave, versus a dead child's corpse
+waiting to be swept), and read from different environment variables.
+
+**`kido spawn --resume <run-id>`.** Once idle children are routinely
+reaped, resuming one becomes the normal way to keep working with it, and
+a bare `pi --session <id>` (what `kido runs` used to print) comes back an
+orphan: no parent edge, no `@kido_subagent` mark, not a descendant for
+stop/ask scoping, and - worse - a *second* run record, since `kido spawn`
+normally mints a fresh run id from the command line it is given and a
+bare `pi` was never given one at all. `--resume` instead runs through the
+identical window-creation path (`tmux.NewWindow`, the mark) a fresh spawn
+uses, but:
+
+- launches `pi --session <run-id>` (not `--session-id`, which would
+  create one if missing - the point here is that it must already exist);
+- continues the existing run record rather than creating a second one:
+  its task, its history and its id stay, since `subrun.ReadMeta` is what
+  supplies the window's name and cwd and nothing about the task file or
+  its `delivered` marker is touched;
+- writes the *new* window, pane, pid and parent edge into that same meta
+  file - `WriteMeta` is only documented as being called once by a fresh
+  spawn, not enforced to be, and a resumed run's living facts have
+  changed;
+- clears any outcome already recorded. This is the one place outside
+  `RecordOutcome` allowed to touch an outcome at all, and it does not
+  weaken the O_EXCL "first writer wins" rule: that rule exists so that
+  several *exit paths racing to describe the same ending* cannot clobber
+  each other, and a resume is not a race between exit paths, it is a
+  deliberate act, by a human or an agent, asserting the run is alive
+  again, running strictly *before* any of those paths have anything to
+  say about this new attempt.
+
+It refuses an unknown run id (`ReadMeta` fails), a run that is still
+alive (`EffectiveOutcome`'s `ok` is false exactly when nothing has been
+recorded and the pid is live - resuming a live agent makes no sense), and
+a run whose pi session file is gone (`piSessionDir`, mirroring pi
+0.85.1's own `getDefaultSessionDirPath`: `PI_CODING_AGENT_SESSION_DIR` if
+set, else `<agentDir>/sessions/--<cwd, its slashes and colons dashed>--`;
+it does not walk pi's own per-project `sessionDir` setting, a known gap).
+The depth ceiling still applies, derived from the *resumer's* own caller
+record exactly as a fresh spawn's is - resuming does not bypass it.
+`--parent-pid`/`--parent-instance` are optional for `--resume` alone (a
+fresh spawn still requires them): omitted, they default to the caller's
+own reported pid and instance, the same source depth already reads, so a
+human with no state record resumes into a parentless (root-like) session
+that will not self-reap, while another agent resuming becomes the run's
+new parent without having to be named up front - which is what lets `kido
+runs <id>` print a single, parent-free `kido spawn --resume <id>` line
+that works from anywhere `cd`'d into the run's own cwd, rather than a
+line baked with somebody's identity that may no longer be the right
+resumer by the time it is run. `pi --fork <id>` stays the bare command it
+always was: forking into a standalone session, with no parent edge or run
+record of its own, is a different, legitimate thing.
+
 ## Interrupt and stop
 
 Two verbs, deliberately distinct. `interrupt` aborts the target's current
@@ -803,9 +904,12 @@ Every duration a test has to shorten is a package variable, and the ones
 the e2e suite needs also read an environment variable, because that
 suite drives kido as a separately built binary and only the environment
 reaches it: `KIDO_LINGER_SECONDS` (read by both the sweep and the
-extension's helper, so they agree), `KIDO_STALL_THRESHOLD_MS`,
-`KIDO_STOP_ESCALATION_MS`, `KIDO_HEARTBEAT_MS`, `KIDO_PARENT_POLL_MS`,
-`KIDO_SPAWN_TIMEOUT_MS` and `KIDO_STOP_TIMEOUT_MS`. The extension reads
+extension's helper, so they agree), `KIDO_IDLE_EXIT_SECONDS` (the idle
+self-exit timer, a different figure that stacks with `KIDO_LINGER_SECONDS`
+rather than sharing it - see "Idle self-exit, and resuming a run"),
+`KIDO_STALL_THRESHOLD_MS`, `KIDO_STOP_ESCALATION_MS`, `KIDO_HEARTBEAT_MS`,
+`KIDO_PARENT_POLL_MS`, `KIDO_SPAWN_TIMEOUT_MS` and `KIDO_STOP_TIMEOUT_MS`.
+The extension reads
 its own once at module scope, so its test suite re-imports both files
 under a cache-busting specifier to pick up a fresh value, and re-imports
 both together, because a fresh half and a cached half would silently pair

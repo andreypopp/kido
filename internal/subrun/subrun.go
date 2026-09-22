@@ -157,6 +157,23 @@ func RecordOutcome(id string, o Outcome) error {
 	return err
 }
 
+// ClearOutcome removes id's recorded outcome, if any, so a later
+// RecordOutcome can write a fresh one. Its only caller is `kido spawn
+// --resume`: resuming a run is a deliberate act telling kido the run is
+// alive again, not one more exit path racing to describe how it ended,
+// so it does not compete with RecordOutcome's "first writer wins" rule -
+// it runs before any of those exit paths have anything to say about the
+// resumed run, not concurrently with one of them.
+func ClearOutcome(id string) error {
+	if err := checkID(id); err != nil {
+		return err
+	}
+	if err := os.Remove(outcomePath(id)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // ReadOutcome reads id's outcome, if one has been recorded.
 func ReadOutcome(id string) (Outcome, bool, error) {
 	if err := checkID(id); err != nil {

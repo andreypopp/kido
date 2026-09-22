@@ -264,6 +264,17 @@ export interface AgentHooks {
   // included: each is separate news to a parent, not a repeat of one
   // already sent (docs/design.md, "Notifying the parent").
   turnSettled(resultText: string): Promise<void>;
+  // Called on every agent_settled where ctx.isIdle() is true, whether or
+  // not there was anything to say in turnSettled - this is the idle
+  // self-exit timer's only arming signal (docs/design.md, "Idle
+  // self-exit"), and it must fire even for a settle with no new result
+  // text, since the child is idle either way.
+  turnEnded(): void;
+  // Called on every signal kido-status.ts already treats as "this session
+  // has work to do" - a running report, or a message about to be handed
+  // to the model - so the idle self-exit timer resets rather than firing
+  // mid-turn.
+  workStarted(): void;
   // Dispatch one v1 envelope, answering the wire.
   handleEnvelope(env: Envelope): Promise<"ok" | "refused">;
 }
@@ -311,6 +322,10 @@ export default function (pi: ExtensionAPI) {
   let heartbeatTimer: NodeJS.Timeout | null = null;
 
   const deliver = (text: string): void => {
+    // A delivered message is about to produce a turn, so the idle
+    // self-exit timer must not fire in the gap between this call and
+    // pi's own turn_start.
+    seam().agents?.workStarted();
     // Unconditionally "followUp", idle or not. pi's docs: "When not
     // streaming, the message is sent immediately and triggers a new turn";
     // deliverAs is only consulted while streaming, where "followUp"
@@ -579,7 +594,10 @@ export default function (pi: ExtensionAPI) {
     send(current);
   });
 
-  const running = () => send("running");
+  const running = () => {
+    seam().agents?.workStarted();
+    send("running");
+  };
   pi.on("agent_start", running);
   pi.on("turn_start", running);
   pi.on("tool_execution_start", running);
@@ -641,6 +659,11 @@ export default function (pi: ExtensionAPI) {
     const result = lastAssistantText;
     lastAssistantText = "";
     if (result) void seam().agents?.turnSettled(result);
+    // turnEnded, unlike turnSettled, fires whether or not there was a
+    // result to report: it is the idle self-exit timer's only signal, and
+    // a child that settled with nothing new to say is idle exactly the
+    // same as one that answered.
+    seam().agents?.turnEnded();
   });
 
   pi.on("session_shutdown", async (event?: { reason?: string }) => {

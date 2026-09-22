@@ -161,10 +161,18 @@ func showRun(w io.Writer, id string, asJSON bool) error {
 		task = ""
 	}
 
-	// pi sessions are project-scoped: run from any other directory,
-	// `pi --session <id>` asks "Session found in different project...
-	// Fork into current directory? [y/N]" instead of resuming.
-	resume := "cd " + shellQuote(info.Cwd) + " && pi --session " + id
+	// A bare `pi --session <id>` comes back an orphan: no parent edge, no
+	// @kido_subagent mark, not a descendant for stop/ask scoping, and a
+	// fresh run record that abandons this one's history. `kido spawn
+	// --resume` goes through the same window-creation path a fresh spawn
+	// uses instead, and continues this run rather than starting another
+	// (cmd/kido/spawn.go's spawnResume). pi sessions are project-scoped, so
+	// the `cd` prefix stays even though spawnResume itself reads the run's
+	// own cwd from its meta rather than trusting the invoking shell's.
+	resume := "cd " + shellQuote(info.Cwd) + " && kido spawn --resume " + id
+	// `pi --fork` stays bare: forking into a standalone session, with no
+	// parent edge or run record of its own, is a different, legitimate
+	// thing from resuming this run.
 	fork := "cd " + shellQuote(info.Cwd) + " && pi --fork " + id
 
 	if asJSON {
