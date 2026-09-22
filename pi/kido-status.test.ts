@@ -670,6 +670,41 @@ test("a reply to an unnamed asker still reaches it after the asker reloads and i
   }
 });
 
+// message_agent's own returned text is the strongest of the three places
+// the stop-after instruction is repeated - the last thing the model reads
+// before deciding whether to keep talking - so it must carry it, but only
+// when replyTo genuinely answers an ask this session has pending; a
+// reply to a notice, or a stale/unknown id, is not that and must not gain
+// an instruction that makes no sense attached to it.
+test("message_agent's result says to stop after replying to a pending ask, but not after any other send", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([
+      { id: "self", name: "self", parent: "", self: true, canMessage: true },
+      { id: "peer-a", name: "peer-a", pane: "%2", parent: "", self: false, canMessage: true },
+    ]);
+    const s = await startSession(fx);
+
+    // pane set: handleInboundAsk only remembers a pending ask when the
+    // envelope carries one (pendingInboundAsks is keyed by pane).
+    await sendToInbox(s.inboxPath, envelope("ask", "you there?", { id: "ask-z", from: { session: "peer-a", name: "peer-a", pane: "%2" } }));
+    const toAsk = await s.tools.get("message_agent").execute("c1", { to: "peer-a", message: "yes", replyTo: "ask-z" });
+    assert.match(toAsk.content[0].text, /entire response|whole response/i, "a reply to a pending ask carries the stop-after instruction");
+
+    const plain = await s.tools.get("message_agent").execute("c2", { to: "peer-a", message: "unprompted" });
+    assert.doesNotMatch(plain.content[0].text, /entire response|whole response/i, "an unprompted message carries no such instruction");
+
+    const staleReplyTo = await s.tools.get("message_agent").execute("c3", { to: "peer-a", message: "late", replyTo: "no-such-ask" });
+    assert.doesNotMatch(
+      staleReplyTo.content[0].text,
+      /entire response|whole response/i,
+      "a replyTo naming no ask this session has pending carries no such instruction either",
+    );
+  } finally {
+    fx.restore();
+  }
+});
+
 test("abandonPending: session_shutdown and a failed rebind settle a waiting ask promptly; a successful rebind stays answerable", async () => {
   const fx = makeFixture();
   try {
@@ -742,12 +777,13 @@ test("parseEnvelope agrees with internal/msg.Parse's v0/v1 discriminator table",
   }
 });
 
-// An agent answering an ask routinely wrote its answer into its own
-// session's transcript, as it would for a user's question, where the
-// asker (blocked in ask_agent) never saw it. The delivered text must
-// steer away from that: name message_agent as the only channel that
-// reaches the asker, and say the terminal is not it.
-test("an inbound ask's delivered text says the reply must go through message_agent, not this session's own output", async () => {
+// A model answering an ask correctly calls message_agent - that part
+// already worked - and then went on to write a user-facing summary of
+// what it had just done, in the same turn. That trailing narration
+// reaches nobody: the asker already has its answer, and no user is
+// waiting on a report in this session. The delivered text must say the
+// message_agent call IS the whole response, not merely how to make it.
+test("an inbound ask's delivered text says the message_agent reply is the whole response, with no summary after it", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
@@ -755,7 +791,9 @@ test("an inbound ask's delivered text says the reply must go through message_age
     await sendToInbox(s.inboxPath, envelope("ask", "you there?", { id: "ask-y", from: { session: "peer-a", name: "peer-a" } }));
     const delivered = s.delivered.find((d) => d.text.includes("is asking"))?.text ?? "";
     assert.match(delivered, /message_agent/, "names the tool that actually reaches the asker");
-    assert.match(delivered, /cannot see this session's screen|this session's output/i, "says plainly that writing here does not reach the asker");
+    assert.match(delivered, /entire response|whole response/i, "says the reply call is the whole response, not just how to send it");
+    assert.match(delivered, /no summary|sign-off/i, "says plainly not to follow the reply with narration");
+    assert.match(delivered, /self-contained/i, "still tells the model the asker cannot see this session's context");
   } finally {
     fx.restore();
   }
@@ -864,6 +902,11 @@ test("a subagent's system prompt carries the notify_parent instruction; a root s
       assert.ok(override, "a subagent's before_agent_start hook returns a replacement system prompt");
       assert.ok(override!.systemPrompt.startsWith("base prompt"), "the base prompt is preserved, not replaced");
       assert.match(override!.systemPrompt, /notify_parent/, "the instruction names the tool the model must call");
+      assert.match(
+        override!.systemPrompt,
+        /entire response|whole response/i,
+        "also carries the stop-after-replying instruction, at system-prompt level where it can compete with the host's own",
+      );
     } finally {
       if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
       else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;

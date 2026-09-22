@@ -147,11 +147,16 @@ const NOTICE_CUSTOM_TYPE = "kido-notice";
 // The standing instruction appended to a subagent's system prompt (see
 // the before_agent_start hook below): with the automatic notice gone
 // (docs/design.md, "Notifying the parent"), nothing else tells a child
-// its own parent is waiting to be told when it is done. Kept to two
-// sentences: this rides along on every turn, so it must not compete with
-// the actual task for the model's attention.
+// its own parent is waiting to be told when it is done. Kept short: this
+// rides along on every turn, so it must not compete with the actual task
+// for the model's attention. The second sentence is one of three places
+// STOP_AFTER_ASK_REPLY's instruction is repeated (see handleInboundAsk) -
+// here specifically because it needs to sit at the same level as whatever
+// closing-recap instruction the host's own system prompt already carries,
+// which an inbound message cannot out-rank.
 const NOTIFY_PARENT_INSTRUCTION =
-  "You were spawned as a subagent. When your work is done, or you are blocked and cannot make further progress, call notify_parent with a short summary - your parent is not watching this session and will learn nothing otherwise.";
+  "You were spawned as a subagent. When your work is done, or you are blocked and cannot make further progress, call notify_parent with a short summary - your parent is not watching this session and will learn nothing otherwise. " +
+  "When you reply to another agent's question with message_agent, that call is the entire response - end the turn there, with no summary or sign-off after it.";
 
 // AgentInfo mirrors cmd/kido/agents.go's AgentInfo, what `kido agents
 // --json` prints. Only the fields read here are declared.
@@ -320,27 +325,29 @@ export default function (pi: ExtensionAPI) {
   // handleInboundAsk delivers an ask to the model with an explicit
   // instruction that a reply is expected, unless answering would close a
   // cycle, in which case it is refused on the wire and not delivered at
-  // all. The extra framing below ("cannot see this session's screen",
-  // "blocked until you reply") exists because a model answering an ask
-  // routinely wrote its answer into this session's own transcript - as it
-  // would for a user's question - where the asker, blocked in ask_agent,
-  // never sees it. The claim is about the channel, not the audience: it
-  // says nothing about whether a human is watching this pane, since one
-  // often is (docs/design.md; kido's sidebar exists so a human can), and
-  // telling a model otherwise risks suppressing narration a watching human
-  // wants, for no behavioural gain - the asker's blindness to this
-  // session's output is what actually requires message_agent, regardless
-  // of who else can see it. The reply's own tool-call line stays last: a
-  // model anchors on a prompt's tail, and pendingInboundAsks needs exactly
-  // that call echoed back.
+  // all. A model replying to an ask routinely called message_agent
+  // correctly and then went on to write a user-facing summary of what it
+  // had just done - wasted, since the asker already has the answer
+  // (delivered by message_agent, not by this session's own output) and no
+  // user is waiting on a report in this session. STOP_AFTER_ASK_REPLY below
+  // targets exactly that trailing narration, not "how to reply" (the
+  // existing tool-call line already gets that right). It is the weakest of
+  // three places this same instruction is repeated (see
+  // NOTIFY_PARENT_INSTRUCTION and messageAgentTool's own result text) - a
+  // prompt instruction competes with whatever system prompt the host
+  // already set and does not reliably win, so this reduces the sign-off
+  // rather than eliminating it; the other two are closer to where the
+  // model actually decides whether to keep talking.
+  const STOP_AFTER_ASK_REPLY =
+    "That message_agent call is the entire response - end the turn there, with no summary or sign-off after it.";
   const handleInboundAsk = (env: Envelope): "ok" | "refused" => {
     if (hasAskOutstandingTo(env.from.session)) return "refused";
     const from = labelFrom(env.from);
     if (env.from.pane) pendingInboundAsks.set(env.id, env.from.pane);
     deliver(
       `${from} is asking (id ${env.id}): ${env.text}\n\n` +
-        `This is a question from another agent, not from the user. ${from} cannot see this session's screen or context: only what you send with message_agent reaches them, so put the whole answer there and make it self-contained. ${from} is blocked until you reply, so reply before doing other work.\n\n` +
-        `Reply with message_agent(to=${JSON.stringify(from)}, message=<answer>, replyTo=${JSON.stringify(env.id)}).`,
+        `${from} cannot see this session's context, so make the answer self-contained. ` +
+        `Reply with message_agent(to=${JSON.stringify(from)}, message=<answer>, replyTo=${JSON.stringify(env.id)}). ${STOP_AFTER_ASK_REPLY}`,
     );
     return "ok";
   };
@@ -603,6 +610,15 @@ export default function (pi: ExtensionAPI) {
       const args = ["message"];
       // A reply is correlated on kind "reply", not on --reply-to alone.
       if (params.replyTo) args.push("--kind", "reply", "--reply-to", params.replyTo);
+      // Captured before resolveReplyTarget consumes the entry: this is the
+      // tool result's own chance to say STOP_AFTER_ASK_REPLY, and the
+      // strongest of the three places it is repeated (see
+      // handleInboundAsk) - a tool result is the last thing the model reads
+      // before deciding whether to keep talking, closer to that decision
+      // than either system prompt it competes with. Only for a reply to an
+      // ask this session actually has pending, not every replyTo: a reply
+      // to a notice, or a stale id, has nothing to stop after.
+      const wasPendingAsk = !!params.replyTo && pendingInboundAsks.has(params.replyTo);
       // Re-resolved from the asker's pane when this is a reply to a
       // still-remembered ask, since the model's own `to` was handed to it
       // when the ask arrived and a `/reload` since then can have moved the
@@ -617,8 +633,9 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text", text: `could not message ${params.to}: ${res.error}` }], details: {} };
       }
       // kido message says whether it delivered by inbox or pasted.
+      const delivered = res.out || `message delivered to ${params.to}`;
       return {
-        content: [{ type: "text", text: res.out || `message delivered to ${params.to}` }],
+        content: [{ type: "text", text: wasPendingAsk ? `${delivered} ${STOP_AFTER_ASK_REPLY}` : delivered }],
         details: {},
       };
     },
