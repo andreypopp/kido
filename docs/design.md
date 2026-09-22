@@ -877,15 +877,38 @@ because kido may already have done its work.
 
 ## The sidebar tree
 
-A subagent's window is drawn indented under the window of the agent that
-spawned it. The indent comes from the walk, not from the depth the agent
-reports about itself: a subagent whose parent is in another session, or
-gone, still reports depth 1, and used to be drawn indented under whatever
-row happened to precede it. A window is only indented under a window
-actually above it in this session's tree. One indent applies to the whole
-window, not one per pane, because the bracket glyphs join a window's
-panes into a column and indenting only the pane that holds the record
-would break that column apart.
+A subagent's window is drawn indented under the *pane* of the agent that
+spawned it, not after that agent's whole window: an orchestrator's
+subagents belong to the orchestrator, and a shell sharing its window has
+nothing to do with them. The anchor and the indent both come from the
+walk, not from the depth the agent reports about itself: a subagent whose
+parent is in another session, or gone, still reports depth 1, and used to
+be drawn indented under whatever row happened to precede it. A window is
+only nested under a pane the walk actually found an edge to.
+
+Nesting inside a window cuts its bracket in two, since the ┌ ├ └ glyphs
+join a window's panes into one column. The column is carried on down the
+left of the nested rows with a │ stem rather than restarted, so a
+three-pane window with a subagent hanging off its middle pane reads as
+one bracket with an indented block inside it:
+
+    ┌ zsh
+    ├ ▌ orchestrator
+    │ ┌ ▌ subagent
+    │ └ zsh
+    └ zsh
+
+The stem stops where the parent has no rows left below it, so a child of
+a window's last pane hangs free instead of dangling a line into empty
+space.
+
+The price is that a window hoisted under a parent's pane is no longer in
+tmux's own window order: a subagent's window can sit above a
+lower-numbered one, and a parent's later panes sit below a whole foreign
+window. That is the trade, not a bug - the spawn tree is what the sidebar
+is for, and tmux's order is still one ⇧↓ away. The walk also draws as a
+root anything whose anchor row never appeared, for the same reason the
+ordering emits what it missed: a dropped row is an agent nobody can see.
 
 Both walks, the sidebar's and `kido agents`', share one parent-first
 ordering that emits every item exactly once, tree or no tree. A cycle is

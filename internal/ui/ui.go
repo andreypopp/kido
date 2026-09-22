@@ -988,6 +988,18 @@ func glyph(i, n int) string {
 	}
 }
 
+// continuation is what stands in the column of a window whose rows a
+// nested subagent has interrupted: a stem while panes of that window are
+// still to come below the interruption, and nothing once the last one has
+// been drawn. See appendWindows for why a window's column is carried on
+// rather than restarted.
+func continuation(i, n int) string {
+	if i < n-1 {
+		return stDim.Render("│")
+	}
+	return " "
+}
+
 // indicators marks an agent pane by its status: the glyph alone says it is
 // an agent session, the same for every agent. Idle is deliberately empty -
 // a pane with nothing to say shows nothing - and field() keeps the column
@@ -1150,47 +1162,120 @@ func (m *model) paneLabel(p tmux.Pane) string {
 	return label
 }
 
-// windowAgent is the state record of whichever pane of w has a place in
-// the spawn tree, or the zero Session for a window with none.
-func windowAgent(w []tmux.Pane, states map[string]state.Session) state.Session {
+// windowAgent is the pane of w whose record has a place in the spawn
+// tree and that record, or the zero pane and Session for a window with
+// none. The pane matters and not just the record: a subagent's window is
+// drawn under the row of the pane its parent runs in, not under the
+// parent's window.
+func windowAgent(w []tmux.Pane, states map[string]state.Session) (tmux.Pane, state.Session) {
 	for _, p := range w {
 		if s, ok := states[p.PaneID]; ok && (s.Instance != "" || s.ParentInstance != "") {
-			return s
+			return p, s
 		}
 	}
-	return state.Session{}
+	return tmux.Pane{}, state.Session{}
 }
 
-// orderWindowsByTree reorders a session's windows so a subagent's window
-// follows the window of whatever agent spawned it, recursively, and
-// returns how deep each window sits in that tree. The depth comes from
-// this walk, never from the agent's reported Depth: a subagent whose
-// parent is in another session, or gone, still reports depth 1, and must
-// not be indented under a row it has no edge to.
-func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) ([][]tmux.Pane, map[string]int) {
+// windowPlacement is where one window sits in the sidebar tree: its
+// panes, how deep the walk put it, and the pane row it hangs off - the
+// pane of the agent that spawned it, or "" for a window drawn as a root.
+type windowPlacement struct {
+	panes  []tmux.Pane
+	depth  int
+	anchor string // pane id of the spawning agent; "" for a root
+}
+
+// orderWindowsByTree places a session's windows in the spawn tree: a
+// subagent's window follows the pane of whatever agent spawned it,
+// recursively. Both the anchor and the depth come from this walk, never
+// from the agent's reported Depth: a subagent whose parent is in another
+// session, or gone, still reports depth 1, and must not be drawn under a
+// row it has no edge to.
+func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) []windowPlacement {
 	byInstance := map[string]string{} // instance -> window id of the window holding it
+	anchors := map[string]string{}    // window id -> pane its agent runs in
 	for _, w := range windows {
-		if inst := windowAgent(w, states).Instance; inst != "" {
-			byInstance[inst] = w[0].WindowID
+		p, s := windowAgent(w, states)
+		if s.Instance == "" {
+			continue
 		}
+		byInstance[s.Instance] = w[0].WindowID
+		anchors[w[0].WindowID] = p.PaneID
 	}
-	parentOf := func(w []tmux.Pane) string { return byInstance[windowAgent(w, states).ParentInstance] }
+	parentOf := func(w []tmux.Pane) string {
+		_, s := windowAgent(w, states)
+		return byInstance[s.ParentInstance]
+	}
 	ordered := tree.Order(windows,
 		func(w []tmux.Pane) string { return w[0].WindowID },
 		parentOf)
 
 	// Order emits a window after its parent, or as a root with no parent
 	// yet seen (a ring, or a parent outside this session), so one pass
-	// suffices and a cycle cannot recurse.
+	// suffices and a cycle cannot recurse. A window whose parent is not
+	// already placed is a root, anchor and all: the anchor is only ever
+	// an edge the walk itself found.
+	out := make([]windowPlacement, 0, len(ordered))
 	depth := make(map[string]int, len(ordered))
 	for _, w := range ordered {
+		pl := windowPlacement{panes: w}
 		if d, ok := depth[parentOf(w)]; ok {
-			depth[w[0].WindowID] = d + 1
-			continue
+			pl.depth, pl.anchor = d+1, anchors[parentOf(w)]
 		}
-		depth[w[0].WindowID] = 0
+		depth[w[0].WindowID] = pl.depth
+		out = append(out, pl)
 	}
-	return ordered, depth
+	return out
+}
+
+// appendWindows draws one session's windows, each window's panes joined
+// into a column by the ┌ ├ └ glyphs, with a subagent's window nested
+// directly under the row of the pane that spawned it.
+//
+// Nesting cuts the parent window's column in two, so the column is
+// carried on down the left of the child's rows with a │ stem rather than
+// restarted: a three-pane window with a subagent hanging off its middle
+// pane reads as one bracket with an indented block inside it, which is
+// what it is. The stem stops as soon as the parent has no rows left
+// below, so a child of the last pane hangs free.
+//
+// The price is that a window hoisted under a parent's pane no longer
+// appears in tmux's own window order - a subagent's window can sit above
+// a lower-numbered one, and a parent's own later panes sit below a whole
+// foreign window. That is deliberate: the spawn tree is what the sidebar
+// is for, and tmux's order is still one ⇧↓ away.
+func (m *model) appendWindows(placements []windowPlacement) {
+	byAnchor := map[string][]int{}
+	for i, pl := range placements {
+		if pl.anchor != "" {
+			byAnchor[pl.anchor] = append(byAnchor[pl.anchor], i)
+		}
+	}
+	drawn := make([]bool, len(placements))
+	var emit func(i int, prefix string)
+	emit = func(i int, prefix string) {
+		if drawn[i] {
+			return
+		}
+		drawn[i] = true
+		panes := placements[i].panes
+		for j, p := range panes {
+			m.rows = append(m.rows, row{
+				text:   prefix + glyph(j, len(panes)) + " " + m.paneLabel(p),
+				paneID: p.PaneID,
+			})
+			nested := prefix + continuation(j, len(panes)) + " "
+			for _, k := range byAnchor[p.PaneID] {
+				emit(k, nested)
+			}
+		}
+	}
+	// A window whose anchor row was never drawn - an anchor pane that has
+	// gone, a ring the walk broke - is drawn as a root here rather than
+	// dropped: a missing row is an agent nobody can see.
+	for i := range placements {
+		emit(i, "")
+	}
 }
 
 func (m *model) rebuild() {
@@ -1262,18 +1347,7 @@ func (m *model) rebuild() {
 		}
 		m.rows = append(m.rows, row{text: name})
 
-		ordered, depth := orderWindowsByTree(s.Windows, m.snap.states)
-		for _, panes := range ordered {
-			// One indent for the whole window: the ┌/├/└ glyphs join its
-			// panes into a column.
-			indent := strings.Repeat("  ", depth[panes[0].WindowID])
-			for i, p := range panes {
-				m.rows = append(m.rows, row{
-					text:   indent + glyph(i, len(panes)) + " " + m.paneLabel(p),
-					paneID: p.PaneID,
-				})
-			}
-		}
+		m.appendWindows(orderWindowsByTree(s.Windows, m.snap.states))
 	}
 
 	if m.cursor = m.indexOf(prev); m.cursor < 0 {
