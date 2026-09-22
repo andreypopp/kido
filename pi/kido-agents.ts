@@ -475,11 +475,26 @@ export default function (pi: ExtensionAPI) {
 
   // Idempotent: a /reload re-runs session_start and must not pile up a
   // second timer. Unref'd so it never holds the event loop open.
+  // pollInFlight stops a tick from starting a second parentIsAlive() call
+  // while the previous one is still awaiting its subprocess round trip:
+  // setInterval fires on schedule regardless of whether its callback's own
+  // async work has finished, so a poll slower than PARENT_LIVENESS_POLL_MS
+  // (a loaded machine, a slow kido invocation) could otherwise overlap two
+  // or more calls into one real gap - each completing and incrementing
+  // missedParentPolls on its own, which would let a single transient gap
+  // reach the two-poll threshold faster than the debounce is meant to
+  // allow. Skipping the tick instead just delays the next real reading;
+  // it never suppresses one.
+  let pollInFlight = false;
+
   const startParentLivenessPoll = (shutdown: () => void): void => {
     if (PARENT_PID === undefined) return;
     stopParentLivenessPoll();
     parentPollTimer = setInterval(() => {
+      if (pollInFlight) return;
+      pollInFlight = true;
       parentIsAlive().then((alive) => {
+        pollInFlight = false;
         if (alive) return;
         // Stop first, or a slow shutdown is asked for again every tick.
         stopParentLivenessPoll();
@@ -495,6 +510,7 @@ export default function (pi: ExtensionAPI) {
       parentPollTimer = null;
     }
     missedParentPolls = 0;
+    pollInFlight = false;
   };
 
   // idleExitTimer is the idle self-exit clock: armed on every settled turn

@@ -50,9 +50,27 @@ switch (args[0]) {
   case "agents": {
     const file = process.env.KIDO_FAKE_AGENTS_FILE;
     const callLog = process.env.KIDO_FAKE_AGENTS_CALL_LOG;
-    if (callLog) fs.appendFileSync(callLog, "1\\n");
-    process.stdout.write(file && fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "[]");
-    process.exit(0);
+    // callIndex is 1 for the first call this fixture ever makes, counted
+    // from the log rather than a wall clock: a test that needs exactly one
+    // call to answer differently (KIDO_FAKE_AGENTS_GONE_ON_CALL) can name
+    // it by sequence number instead of racing real subprocess timing
+    // against its own flip of the agents file.
+    let callIndex = 0;
+    if (callLog) {
+      const existing = fs.existsSync(callLog) ? fs.readFileSync(callLog, "utf8") : "";
+      callIndex = existing.split("\\n").filter(Boolean).length + 1;
+      fs.appendFileSync(callLog, "1\\n");
+    }
+    const goneOnCall = Number(process.env.KIDO_FAKE_AGENTS_GONE_ON_CALL || 0);
+    const goneFile = process.env.KIDO_FAKE_AGENTS_GONE_FILE;
+    const src = goneOnCall > 0 && callIndex === goneOnCall && goneFile ? goneFile : file;
+    const respond = () => {
+      process.stdout.write(src && fs.existsSync(src) ? fs.readFileSync(src, "utf8") : "[]");
+      process.exit(0);
+    };
+    const delay = Number(process.env.KIDO_FAKE_AGENTS_DELAY_MS || 0);
+    if (delay > 0) setTimeout(respond, delay); else respond();
+    break;
   }
   case "agent-status": {
     const logFile = process.env.KIDO_FAKE_STATUS_LOG;
@@ -130,6 +148,8 @@ interface Fixture {
   logFile: string;
   inboxDir: string;
   setAgents(agents: unknown[]): void;
+  setAgentsGoneOnCall(callIndex: number, agents: unknown[]): void;
+  setAgentsDelay(ms: number): void;
   setInboxFail(fail: boolean): void;
   setMessageFailTo(to: string | undefined): void;
   setWindowFocused(focused: boolean): void;
@@ -179,6 +199,7 @@ function makeFixture(): Fixture {
   const controlLogFile = join(dir, "control.jsonl");
   const runOutcomeLogFile = join(dir, "run-outcome.jsonl");
   const agentsCallLogFile = join(dir, "agents-calls.jsonl");
+  const agentsGoneFile = join(dir, "agents-gone.json");
   writeFileSync(agentsFile, "[]");
   writeFileSync(logFile, "");
   writeFileSync(spawnLogFile, "");
@@ -201,6 +222,9 @@ function makeFixture(): Fixture {
     KIDO_FAKE_CONTROL_LOG: process.env.KIDO_FAKE_CONTROL_LOG,
     KIDO_FAKE_RUN_OUTCOME_LOG: process.env.KIDO_FAKE_RUN_OUTCOME_LOG,
     KIDO_FAKE_AGENTS_CALL_LOG: process.env.KIDO_FAKE_AGENTS_CALL_LOG,
+    KIDO_FAKE_AGENTS_GONE_ON_CALL: process.env.KIDO_FAKE_AGENTS_GONE_ON_CALL,
+    KIDO_FAKE_AGENTS_GONE_FILE: process.env.KIDO_FAKE_AGENTS_GONE_FILE,
+    KIDO_FAKE_AGENTS_DELAY_MS: process.env.KIDO_FAKE_AGENTS_DELAY_MS,
     KIDO_FAKE_WINDOW_FOCUSED_LOG: process.env.KIDO_FAKE_WINDOW_FOCUSED_LOG,
     KIDO_FAKE_WINDOW_FOCUSED: process.env.KIDO_FAKE_WINDOW_FOCUSED,
     KIDO_FAKE_INBOX_DIR: process.env.KIDO_FAKE_INBOX_DIR,
@@ -218,6 +242,9 @@ function makeFixture(): Fixture {
   process.env.KIDO_FAKE_CONTROL_LOG = controlLogFile;
   process.env.KIDO_FAKE_RUN_OUTCOME_LOG = runOutcomeLogFile;
   process.env.KIDO_FAKE_AGENTS_CALL_LOG = agentsCallLogFile;
+  delete process.env.KIDO_FAKE_AGENTS_GONE_ON_CALL;
+  process.env.KIDO_FAKE_AGENTS_GONE_FILE = agentsGoneFile;
+  delete process.env.KIDO_FAKE_AGENTS_DELAY_MS;
   process.env.KIDO_FAKE_WINDOW_FOCUSED_LOG = windowFocusedLogFile;
   delete process.env.KIDO_FAKE_WINDOW_FOCUSED; // default: not focused
   process.env.KIDO_FAKE_INBOX_DIR = inboxDir;
@@ -231,6 +258,19 @@ function makeFixture(): Fixture {
     inboxDir,
     setAgents(agents) {
       writeFileSync(agentsFile, JSON.stringify(agents));
+    },
+    // Deterministic alternative to flipping the fixture based on wall-clock
+    // timing: the fake kido itself answers the callIndex'th "agents" call
+    // with `agents`, and every other call with whatever setAgents last
+    // wrote - by call sequence, not by a race against a real subprocess's
+    // own latency.
+    setAgentsGoneOnCall(callIndex, agents) {
+      writeFileSync(agentsGoneFile, JSON.stringify(agents));
+      process.env.KIDO_FAKE_AGENTS_GONE_ON_CALL = String(callIndex);
+    },
+    setAgentsDelay(ms) {
+      if (ms > 0) process.env.KIDO_FAKE_AGENTS_DELAY_MS = String(ms);
+      else delete process.env.KIDO_FAKE_AGENTS_DELAY_MS;
     },
     setInboxFail(fail) {
       if (fail) process.env.KIDO_FAKE_INBOX_FAIL = "1";
@@ -1634,19 +1674,56 @@ test("parent-liveness poll: a single missed poll for the parent's record does no
     const alive = [{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }];
     const gone = [{ id: "self", name: "self", parent: "", self: true, canMessage: true, window: "@1" }];
     fx.setAgents(alive);
+    // The single miss is chosen by call sequence (setAgentsGoneOnCall), not
+    // by this test racing a real subprocess round trip against the
+    // extension's next scheduled tick to flip the fixture back in time -
+    // that raced version flaked under load even with a generous interval
+    // and kido-agents.ts's own pollInFlight guard against overlapping
+    // ticks, since a real subprocess's tail latency has no clean upper
+    // bound on a loaded machine. The 3rd call is arbitrary; it only needs
+    // to be neither the 1st (still settling in) nor adjacent to the last.
+    fx.setAgentsGoneOnCall(3, gone);
     await withParentEnv(process.pid, "parent-inst", 20, async () => {
       const factory = await freshExtensions();
       const s = await startWithShutdownSpy(factory);
-      await pollUntil(() => fx.agentsCallCount() >= 1, 2000, "the first liveness poll");
-      const before = fx.agentsCallCount();
-      fx.setAgents(gone);
-      // Exactly one poll observes the gap, then it closes - a bounded
-      // window, not a wall-clock guess, so this cannot flake by racing an
-      // extra poll into the gone window.
-      await pollUntil(() => fx.agentsCallCount() >= before + 1, 2000, "one poll to observe the missing parent record");
-      fx.setAgents(alive);
-      await pollUntil(() => fx.agentsCallCount() >= before + 4, 2000, "several more polls once the record reappears");
+      await pollUntil(() => fx.agentsCallCount() >= 8, 2000, "several polls, spanning the single gone reading");
       assert.equal(s.shutdowns(), 0, "a single missed poll must never end the session on its own");
+      await s.emit("session_shutdown");
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
+// setInterval fires on schedule whether or not its previous callback's own
+// async work has finished, so a poll interval shorter than a real
+// subprocess's round trip can start a second parentIsAlive() call while
+// the first is still awaiting its reply. Without kido-agents.ts's own
+// pollInFlight guard, both calls would eventually resolve close together
+// and each increment missedParentPolls on its own - reaching the
+// two-poll threshold from what was really only one slow gap, almost as
+// fast as a single reading would. A slow, constantly-"gone" fake kido
+// (KIDO_FAKE_AGENTS_DELAY_MS well over the poll interval) makes that
+// distinguishable: guarded, the threshold can only be reached by two
+// separate, sequential slow calls, so shutdown cannot land before roughly
+// two call-durations have actually elapsed.
+test("parent-liveness poll: a slow reply does not let overlapping ticks double-count a single gap", async () => {
+  const fx = makeFixture();
+  try {
+    const gone = [{ id: "self", name: "self", parent: "", self: true, canMessage: true, window: "@1" }];
+    fx.setAgents(gone);
+    const delayMs = 150;
+    fx.setAgentsDelay(delayMs);
+    await withParentEnv(process.pid, "parent-inst", 20, async () => {
+      const factory = await freshExtensions();
+      const s = await startWithShutdownSpy(factory);
+      const started = Date.now();
+      await pollUntil(() => s.shutdowns() > 0, 5000, "eventual shutdown once the parent is genuinely gone throughout");
+      const elapsed = Date.now() - started;
+      assert.ok(
+        elapsed >= delayMs * 2 - 50,
+        `shutdown after ${elapsed}ms is too fast for two sequential ${delayMs}ms replies - overlapping polls double-counted one gap`,
+      );
       await s.emit("session_shutdown");
     });
   } finally {
