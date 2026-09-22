@@ -1,9 +1,11 @@
 package reap
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,5 +210,115 @@ func TestSweepDoesNotOverwriteARecordedOutcome(t *testing.T) {
 	got, ok, err := subrun.ReadOutcome("run-done")
 	if err != nil || !ok || got.Result != subrun.Completed {
 		t.Errorf("outcome = %+v, %v, %v, want it to stay %q", got, ok, err, subrun.Completed)
+	}
+}
+
+// stubCapture replaces capturePaneScreen for the duration of a test with
+// one that returns text for a fixed pane id and an error for any other,
+// and restores the real tmux.CaptureScreen afterwards.
+func stubCapture(t *testing.T, paneID, text string) {
+	t.Helper()
+	real := capturePaneScreen
+	capturePaneScreen = func(p string) (string, error) {
+		if p != paneID {
+			return "", fmt.Errorf("no such pane %q", p)
+		}
+		return text, nil
+	}
+	t.Cleanup(func() { capturePaneScreen = real })
+}
+
+// TestSweepCapturesScreenBeforeClosing: the whole point of capturing from
+// inside Sweep rather than after it returns is that the caller only
+// closes a window Sweep has already named, so a screen written here is
+// always written before the window can be gone.
+func TestSweepCapturesScreenBeforeClosing(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	if err := subrun.Create("run-crash", "x"); err != nil {
+		t.Fatal(err)
+	}
+	stubCapture(t, "%1", "panic: something went wrong\n")
+
+	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-crash"), 60)}
+	check(t, Sweep(panes, nil, now), []string{"@1"})
+
+	got, ok, err := subrun.ReadScreen("run-crash")
+	if err != nil || !ok {
+		t.Fatalf("ReadScreen = %q, %v, %v", got, ok, err)
+	}
+	if got != "panic: something went wrong\n" {
+		t.Errorf("screen = %q", got)
+	}
+}
+
+// TestSweepCapturesNothingForAWindowItRefusesToClose covers both refusal
+// reasons Sweep already has tests for above (focused, session's last
+// window): neither may leave a screen behind, since neither closes the
+// window a screen would be captured for.
+func TestSweepCapturesNothingForAWindowItRefusesToClose(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	if err := subrun.Create("run-focused", "x"); err != nil {
+		t.Fatal(err)
+	}
+	stubCapture(t, "%1", "should never be written")
+
+	finished := dead(markedWithRun(pane("%1", "@1"), "run-focused"), 600)
+	check(t, Sweep([]tmux.Pane{other, watched(finished)}, nil, now), nil)
+
+	if _, ok, err := subrun.ReadScreen("run-focused"); err != nil || ok {
+		t.Fatalf("ReadScreen ok = %v, err = %v, want no screen for a window Sweep refused to close", ok, err)
+	}
+
+	if err := subrun.Create("run-lastwindow", "x"); err != nil {
+		t.Fatal(err)
+	}
+	solo := []tmux.Pane{dead(markedWithRun(pane("%2", "@2"), "run-lastwindow"), 600)}
+	check(t, Sweep(solo, nil, now), nil)
+	if _, ok, err := subrun.ReadScreen("run-lastwindow"); err != nil || ok {
+		t.Fatalf("ReadScreen ok = %v, err = %v, want no screen for a session's last window", ok, err)
+	}
+}
+
+// TestSweepClosesEvenWhenCaptureFails: losing a screen is much better
+// than leaking a window forever, so a capture-pane error must not stop
+// the window from being closed.
+func TestSweepClosesEvenWhenCaptureFails(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	if err := subrun.Create("run-nopane", "x"); err != nil {
+		t.Fatal(err)
+	}
+	stubCapture(t, "%never-matches", "unreachable")
+
+	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-nopane"), 60)}
+	check(t, Sweep(panes, nil, now), []string{"@1"})
+
+	if _, ok, err := subrun.ReadScreen("run-nopane"); err != nil || ok {
+		t.Fatalf("ReadScreen ok = %v, err = %v, want no screen after a failed capture", ok, err)
+	}
+}
+
+// TestSweepBoundsTheCapturedScreen pins maxScreenBytes: a wedged agent's
+// scrollback could be arbitrarily large, and what lands on disk must stay
+// bounded regardless.
+func TestSweepBoundsTheCapturedScreen(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	if err := subrun.Create("run-huge", "x"); err != nil {
+		t.Fatal(err)
+	}
+	huge := strings.Repeat("x", maxScreenBytes*2) + "TAIL"
+	stubCapture(t, "%1", huge)
+
+	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-huge"), 60)}
+	check(t, Sweep(panes, nil, now), []string{"@1"})
+
+	got, ok, err := subrun.ReadScreen("run-huge")
+	if err != nil || !ok {
+		t.Fatalf("ReadScreen = %q, %v, %v", got, ok, err)
+	}
+	if len(got) > maxScreenBytes {
+		t.Errorf("len(screen) = %d, want <= %d", len(got), maxScreenBytes)
+	}
+	if !strings.HasSuffix(got, "TAIL") {
+		t.Errorf("screen truncation dropped the tail: %q", got[max(0, len(got)-20):])
 	}
 }

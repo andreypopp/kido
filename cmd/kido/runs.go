@@ -160,6 +160,13 @@ func showRun(w io.Writer, id string, asJSON bool) error {
 	if err != nil {
 		task = ""
 	}
+	// A screen exists only when a sweep captured one before closing the
+	// run's window (internal/reap); a run still alive, or one whose
+	// window a human closed by hand, has none.
+	screen, hasScreen, err := subrun.ReadScreen(id)
+	if err != nil {
+		hasScreen = false
+	}
 
 	// A bare `pi --session <id>` comes back an orphan: no parent edge, no
 	// @kido_subagent mark, not a descendant for stop/ask scoping, and a
@@ -181,7 +188,11 @@ func showRun(w io.Writer, id string, asJSON bool) error {
 			Task   string `json:"task"`
 			Resume string `json:"resume"`
 			Fork   string `json:"fork"`
-		}{info, task, resume, fork}
+			Screen string `json:"screen,omitempty"`
+		}{info, task, resume, fork, ""}
+		if hasScreen {
+			out.Screen = screen
+		}
 		return json.NewEncoder(w).Encode(out)
 	}
 
@@ -207,5 +218,8 @@ func showRun(w io.Writer, id string, asJSON bool) error {
 	fmt.Fprintf(w, "resume:   %s\n", resume)
 	fmt.Fprintf(w, "fork:     %s\n", fork)
 	fmt.Fprintf(w, "task:\n%s\n", task)
+	if hasScreen {
+		fmt.Fprintf(w, "screen:\n%s\n", screen)
+	}
 	return nil
 }

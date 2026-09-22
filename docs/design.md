@@ -444,6 +444,40 @@ closes a window that is any client's current one or a session's last
 window; nothing is lost by waiting, since the sweep runs again next tick.
 A split window is finished only once all of it is.
 
+**The screen capture.** The sweep is the only thing that ever sees a
+marked window's dead pane before closing it destroys that screen for
+good, so it is also where a crash gets its one chance at a diagnosis: for
+every window the sweep is about to close, it saves each pane's visible
+screen plus a bounded amount of scrollback (`tmux.CaptureScreen`) to that
+run's own directory, before the caller actually closes the window -
+`internal/subrun.WriteScreen` writes `<run-dir>/screen` temp-then-rename,
+the way `state.Record` writes a state file, and last writer wins. This is
+deliberately not `RecordOutcome`'s O_EXCL discipline: an outcome has
+precedence to defend (`stopped` written before `completed` must not lose
+to it), but two screen captures of one window do not - rule 1's panes are
+already dead and frozen, so both captures read the same thing, and rule
+2's pane is still live, so a later capture is only ever more complete,
+never a worse answer competing with a better one. O_EXCL here would also
+have permanently stranded `kido spawn --resume`: nothing besides a sweep
+ever writes this file, so a first attempt's screen would outlive every
+subsequent attempt with no way to write a fresh one. `kido spawn --resume`
+clears it instead (`subrun.ClearScreen`, alongside `ClearOutcome`), so a
+run mid-second-attempt shows no screen rather than the first attempt's
+stale one. `kido runs <id>` prints it when present, since a screen nobody
+can reach is not a diagnosis. Capture is not gated on how the run ended:
+rule 2 closes a window whose subagent never got to record anything, and
+even a clean exit's last screen can be worth reading, so every window the
+sweep closes gets a capture attempt, and the outcome guess (Died, or
+whatever was already recorded) is a separate question from whether there
+is a screen to go with it. Losing a screen is always better than leaking
+a window, so a capture-pane error or a losing race never stops the window
+from being closed; the byte cap
+(`internal/reap.maxScreenBytes`, far smaller than a task's 1MB and
+comfortably larger than an activity line's 256 bytes) exists because a
+wedged agent's scrollback has no size limit of its own, and truncation
+keeps the tail, on the theory that whatever a crash has to say, it said
+last.
+
 The grace is the same 30 seconds on both sides, read from one environment
 variable, because the helper and the sweep run in different processes
 and a sweep with a shorter idea of the linger would simply close the
@@ -718,7 +752,13 @@ marked delivered and never shown. There is no retention: a run record is
 a pointer to a pi session file that pi itself never prunes, so deleting
 the pointer would not free the space a cleanup would be chasing. A run
 whose outcome is never written just sits there, and `kido runs` still
-has something to say about it.
+has something to say about it. The captured screen ("The screen
+capture", above) is the one exception to "a run record is a pointer": it
+is copied bytes, not a reference to something kept elsewhere. Its cap is
+chosen small enough that this does not matter - a few KB in the common
+case, 64KB at the ceiling - next to the pi session file the run already
+points to and that pi keeps forever regardless, which for any real
+conversation dwarfs it.
 
 ## Heartbeat and staleness
 

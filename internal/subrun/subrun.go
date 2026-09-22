@@ -42,6 +42,7 @@ func TaskPath(id string) string { return filepath.Join(dirFor(id), "task") }
 
 func metaPath(id string) string    { return filepath.Join(dirFor(id), "meta.json") }
 func outcomePath(id string) string { return filepath.Join(dirFor(id), "outcome") }
+func screenPath(id string) string  { return filepath.Join(dirFor(id), "screen") }
 
 // NewID generates a run id. It is also the child's own pi session id, so
 // it must be safe both as a directory name and on pi's command line;
@@ -172,6 +173,59 @@ func ClearOutcome(id string) error {
 		return err
 	}
 	return nil
+}
+
+// WriteScreen saves id's captured final screen, last writer wins: unlike
+// RecordOutcome's outcomes, two captures of one run carry no precedence
+// to defend (docs/design.md, "The screen capture") - rule 1 photographs
+// the same frozen dead panes twice, and rule 2's live capture only gets
+// more complete the later it runs - so refusing a second write the way
+// RecordOutcome does would just let a losing-race capture pin a run to a
+// worse screen forever, and would permanently strand `kido spawn --resume`
+// after its first attempt, since nothing else ever removes this file.
+// Written temp-then-rename, the way state.Record is, so a reader never
+// sees a partial write and two racing writers never corrupt one another;
+// os.Rename is the same-filesystem atomic swap that buys that.
+func WriteScreen(id string, data []byte) error {
+	if err := checkID(id); err != nil {
+		return err
+	}
+	tmp := screenPath(id) + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, screenPath(id))
+}
+
+// ClearScreen removes id's captured screen, if any, the same way
+// ClearOutcome clears an outcome: `kido spawn --resume`'s only caller,
+// so that a screen captured for the run's first attempt is not shown
+// under `kido runs <id>` as though it were the resumed attempt's own,
+// for however long the resumed attempt takes to end and capture a new
+// one of its own.
+func ClearScreen(id string) error {
+	if err := checkID(id); err != nil {
+		return err
+	}
+	if err := os.Remove(screenPath(id)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// ReadScreen reads id's captured final screen, if a sweep ever saved one.
+func ReadScreen(id string) (string, bool, error) {
+	if err := checkID(id); err != nil {
+		return "", false, err
+	}
+	b, err := os.ReadFile(screenPath(id))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return string(b), true, nil
 }
 
 // ReadOutcome reads id's outcome, if one has been recorded.

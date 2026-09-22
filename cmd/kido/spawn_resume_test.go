@@ -136,6 +136,12 @@ func TestSpawnResumeContinuesRunRecord(t *testing.T) {
 
 	cwd := t.TempDir()
 	newDeadRun(t, "resume-run", cwd)
+	// A screen captured for the first attempt describes that attempt, not
+	// the one about to run; resuming must clear it the same way it clears
+	// the stale outcome, or `kido runs` would show it as this attempt's own.
+	if err := subrun.WriteScreen("resume-run", []byte("first attempt's screen")); err != nil {
+		t.Fatal(err)
+	}
 	originalMeta, err := subrun.ReadMeta("resume-run")
 	if err != nil {
 		t.Fatal(err)
@@ -183,6 +189,9 @@ func TestSpawnResumeContinuesRunRecord(t *testing.T) {
 
 	if _, ok, err := subrun.ReadOutcome("resume-run"); err != nil || ok {
 		t.Errorf("ReadOutcome = %v, %v, want the stale outcome cleared so the run reads as running again", ok, err)
+	}
+	if _, ok, err := subrun.ReadScreen("resume-run"); err != nil || ok {
+		t.Errorf("ReadScreen = %v, %v, want the first attempt's screen cleared by the resume", ok, err)
 	}
 }
 

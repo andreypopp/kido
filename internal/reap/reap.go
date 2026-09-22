@@ -8,6 +8,7 @@ package reap
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"kido/internal/state"
@@ -32,11 +33,70 @@ func graceFromEnv(def time.Duration) time.Duration {
 // of the pane list.
 type window struct {
 	id       string
-	marked   bool   // carries tmux.SubagentOption: a window kido spawn created
-	runID    string // the run id embedded in that mark, see tmux.SubagentRunID
-	allDead  bool   // every pane of it is a remain-on-exit corpse
-	deadTime int64  // unix time the last of them died
+	paneIDs  []string // every pane in the window, in list-panes order
+	marked   bool     // carries tmux.SubagentOption: a window kido spawn created
+	runID    string   // the run id embedded in that mark, see tmux.SubagentRunID
+	allDead  bool     // every pane of it is a remain-on-exit corpse
+	deadTime int64    // unix time the last of them died
 	focused  bool
+}
+
+// maxScreenBytes bounds a captured screen. It is far smaller than
+// spawn.go's 1MB task cap - this is exhaust for a human to read after the
+// fact, not model input - but big enough to hold several hundred lines of
+// a typical crash; a wedged agent's scrollback could otherwise be
+// arbitrarily large, and captureScreenLines (internal/tmux) only bounds
+// how many lines are asked for, not how wide or how many bytes they are.
+const maxScreenBytes = 64 * 1024
+
+// capturePaneScreen is tmux.CaptureScreen, indirected so a unit test can
+// substitute a fake pane's screen without a real tmux server.
+var capturePaneScreen = tmux.CaptureScreen
+
+// captureScreen saves w's panes' final screen into its run's directory,
+// before mark's caller closes the window - reap.Sweep only returns a
+// window id for the caller to close after this has already run. It must
+// never stop a sweep from doing its job: a capture-pane error (the pane
+// is already gone, or tmux itself is unreachable) is silently skipped for
+// that pane, and a WriteScreen that loses a race to another sweep
+// (subrun.WriteScreen's own doc) is silently discarded - either way the
+// window is still closed.
+//
+// This runs for every window a sweep closes, not only rule 1's crashed
+// ones: a cleanly finished subagent's last screen is worth keeping too,
+// and there is no cheap way to tell the two apart beforehand - Died is
+// only mark's own guess, written moments after this, and rule 2 closes a
+// window whose subagent never got to record anything at all.
+func captureScreen(w *window) {
+	if w.runID == "" {
+		return
+	}
+	var b strings.Builder
+	for _, paneID := range w.paneIDs {
+		text, err := capturePaneScreen(paneID)
+		if err != nil {
+			continue
+		}
+		if len(w.paneIDs) > 1 {
+			// A split window: label each pane's block so a human reading
+			// the file can tell them apart.
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString("=== " + paneID + " ===\n")
+		}
+		b.WriteString(text)
+	}
+	data := []byte(b.String())
+	if len(data) == 0 {
+		return
+	}
+	if len(data) > maxScreenBytes {
+		// Keep the tail: the interesting part of a wedged agent's
+		// scrollback - a crash, a traceback - is whatever came last.
+		data = data[len(data)-maxScreenBytes:]
+	}
+	subrun.WriteScreen(w.runID, data) //nolint:errcheck // best effort, see doc comment
 }
 
 // Sweep returns the windows that should be closed now, in the order they
@@ -65,6 +125,7 @@ func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) []string 
 		}
 		closing[id] = true
 		if w.runID != "" {
+			captureScreen(w)
 			subrun.RecordOutcome(w.runID, subrun.Outcome{Result: subrun.Died, At: now}) //nolint:errcheck // best effort
 		}
 		out = append(out, id)
@@ -110,6 +171,7 @@ func foldWindows(panes []tmux.Pane) ([]*window, map[string]*window, map[string]s
 			byID[p.WindowID] = w
 			windows = append(windows, w)
 		}
+		w.paneIDs = append(w.paneIDs, p.PaneID)
 		if p.Subagent != "" {
 			w.marked = true
 			w.runID = tmux.SubagentRunID(p.Subagent)

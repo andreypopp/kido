@@ -282,6 +282,21 @@ func CapturePane(pane string) ([]string, error) {
 	return strings.Split(out, "\n"), nil
 }
 
+// captureScreenLines bounds how far back CaptureScreen asks tmux for, so
+// a pane with a large history-limit does not turn one capture-pane call
+// into megabytes before internal/reap's own byte cap even gets a chance
+// to trim it.
+const captureScreenLines = 1000
+
+// CaptureScreen returns pane's visible screen plus up to captureScreenLines
+// of scrollback, joined as a single block of text. It exists for
+// internal/reap, which saves a subagent window's last screen before
+// closing it; unlike CapturePane it does not split into lines, since the
+// caller only writes the block to a file.
+func CaptureScreen(pane string) (string, error) {
+	return run("capture-pane", "-p", "-t", pane, "-S", "-"+strconv.Itoa(captureScreenLines))
+}
+
 // CurrentClient asks tmux which client this process belongs to. Used when
 // kido is started by hand in a pane rather than by the side status line.
 func CurrentClient() string {

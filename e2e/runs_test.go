@@ -112,6 +112,32 @@ func TestRunRecordSurvivesReapAsCompleted(t *testing.T) {
 	}
 }
 
+// TestRunScreenCapturedOnReap spawns a child that writes recognisable
+// output to its own pane and exits, lets the sweep collect its window,
+// and checks that the text survives in the run's captured screen - both
+// on disk and through `kido runs <id>`, which is the only way a human
+// would actually see it (docs/design.md, "Window lifecycle").
+func TestRunScreenCapturedOnReap(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+
+	const marker = "KIDO-E2E-SCREEN-MARKER-4f2a"
+	// The sleep after echo is not decoration, see spawnRun's own comment on
+	// TestRunRecordSurvivesReapAsCompleted: a command that exits before
+	// tmux.NewWindow's second call lands (setting remain-on-exit) loses its
+	// window outright, before there is anything for a sweep to collect.
+	script := fmt.Sprintf("echo %s; sleep 0.3", marker)
+	runID, windowID := h.spawnRun("screen-e2e", script)
+
+	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
+		msgf("the sidebar's sweep to close window %s once the child has exited", windowID))
+
+	out := h.runKido("alpha", "screen-show.out", "runs", runID)
+	if !strings.Contains(out, marker) {
+		t.Errorf("kido runs %s = %q, want it to contain the captured marker %q", runID, out, marker)
+	}
+}
+
 // TestStopRecordsStoppedOutcome checks that `kido stop`, ending a wedged
 // child by escalating to a window kill, records the run's outcome as
 // Stopped rather than leaving the sweep to call it Died a moment later -

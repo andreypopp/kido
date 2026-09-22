@@ -283,6 +283,13 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 	if err := subrun.ClearOutcome(runID); err != nil {
 		return err
 	}
+	// The first attempt's captured screen, if a sweep saved one, describes
+	// that attempt and not this one; clearing it here keeps `kido runs
+	// <id>` from showing it as this attempt's own until a sweep captures a
+	// fresh one - see ClearScreen's own doc.
+	if err := subrun.ClearScreen(runID); err != nil {
+		return err
+	}
 
 	// The window is created at the run's own cwd, not the caller's: pi
 	// sessions are project-scoped, and `pi --session` run from any other

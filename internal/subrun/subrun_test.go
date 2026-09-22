@@ -75,6 +75,59 @@ func TestRecordOutcomeOnce(t *testing.T) {
 	}
 }
 
+// TestWriteScreenLastWriterWins pins WriteScreen against RecordOutcome's
+// own O_EXCL discipline on purpose: unlike an outcome, two captures of
+// one run's screen carry no precedence to defend (docs/design.md, "The
+// screen capture"), and refusing a second write would have permanently
+// stranded `kido spawn --resume`, whose only defence against a stale
+// screen is overwriting it with a fresh capture (or ClearScreen, see
+// TestClearScreen below).
+func TestWriteScreenLastWriterWins(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	id := "run-screen"
+	if err := Create(id, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := ReadScreen(id); err != nil || ok {
+		t.Fatalf("ReadScreen before any write = %v, %v, want no screen yet", ok, err)
+	}
+	if err := WriteScreen(id, []byte("first capture")); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteScreen(id, []byte("second capture")); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := ReadScreen(id)
+	if err != nil || !ok {
+		t.Fatalf("ReadScreen = %q, %v, %v", got, ok, err)
+	}
+	if got != "second capture" {
+		t.Errorf("screen = %q, want the later write to win", got)
+	}
+}
+
+func TestClearScreen(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	id := "run-screen-clear"
+	if err := Create(id, "x"); err != nil {
+		t.Fatal(err)
+	}
+	// Clearing before anything was ever captured must be a silent no-op,
+	// the same as ClearOutcome's own.
+	if err := ClearScreen(id); err != nil {
+		t.Fatalf("ClearScreen with nothing to clear = %v", err)
+	}
+	if err := WriteScreen(id, []byte("captured")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ClearScreen(id); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := ReadScreen(id); err != nil || ok {
+		t.Fatalf("ReadScreen after ClearScreen = %v, %v, want it gone", ok, err)
+	}
+}
+
 func TestEffectiveOutcomeRunningWhenAliveAndUnrecorded(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	id := "run-4"
