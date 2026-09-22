@@ -509,6 +509,61 @@ way. Here there is none, so it requires `--force`. A recorded socket
 nobody answers (`errInboxUnavailable`) is functionally no inbox at all
 and carries the same requirement.
 
+## Notifying the parent
+
+A subagent's completion notice used to be wired to `session_shutdown`
+alone. That is wrong for the common case: an interactive pi does not
+shut down when a turn ends, it goes idle and waits for more input, so a
+subagent that took a task, answered it and settled told its parent
+nothing until its process eventually exited - never, for a session that
+stays open to take more work. `spawn_subagent` is delegation; a parent
+that has to poll `kido agents` to learn a child answered defeats the
+point of the notice existing at all.
+
+So there are two notices, not one, and they read differently on purpose.
+`sendCompletionNotice` (`session_shutdown`, gated on `isRunEnding` as
+before) still means the run itself has ended. `sendTurnNotice` fires on
+every *settled turn* - `agent_settled` with `ctx.isIdle()` true - and
+means the child is still alive, resumable, and may yet be given more
+work; its wording ("finished a turn", never a status in parentheses)
+keeps a parent from reading it as the run being over. It fires again for
+every later turn a follow-up produces: each is its own news, not a
+repeat.
+
+**Content, not just a heads-up.** The notice carries the child's own
+last answer, extracted from `agent_end`'s `event.messages` (the last
+assistant message with no error) since `agent_settled`'s own event
+carries no message data at all. Capped at 4000 bytes - larger than the
+activity cap, since this is the child's actual work product and not a
+UI label, but far smaller than `MAX_PROMPT_BYTES`, since it is spliced
+whole into the parent's next turn as a followUp message rather than
+transported as an arbitrary payload.
+
+**One trigger, not two.** pi-subagents, which drives its own hand-rolled
+child session loop in-process, tracks two independent signals for "the
+child is done" and takes whichever arrives first, because it needs a
+signal that survives a stuck hook in its own machinery. This extension
+only observes pi's public lifecycle, where `agent_end` fires once per
+low-level run and pi's own docs say explicitly that pi "may still
+auto-retry, auto-compact and retry, or continue with queued follow-up
+messages" afterward - it is not a completion signal by itself. Reading
+pi 0.85.1's own bundle confirms `agent_settled` is emitted exactly once,
+in the same `finally` block that ends that retry/compaction/follow-up
+loop, which this file already trusted for "idle" before this change. A
+second, independently timed trigger here would race that authoritative
+signal instead of covering a real gap in it, so content and completion
+come from two different events for a real reason (one has the text, the
+other has the truth), but only one of them decides a turn is over.
+
+**No notice with nothing to say.** The same source confirms
+`agent_settled` is only ever emitted from inside the loop a real
+`prompt()` call starts, so a settle at session start, before any task has
+run an agent loop at all, cannot fire it - not merely "is assumed not
+to", but structurally cannot. The extension still keeps its own guard
+for it: the last captured result text is consumed (reset to empty) the
+moment it is handed to the notice, so a settle with nothing new to report
+sends nothing.
+
 ## Run outcomes
 
 An outcome is written by whichever code is positioned to know how the
@@ -651,8 +706,8 @@ the inbox server with plain v0 delivery; the inbox is status-side because
 it predates all the agent work and exists so `kido prompt` can hand a
 prompt to a session nobody is typing into. `kido-agents.ts` is the tools,
 envelope dispatch beyond a plain prompt, the ask bookkeeping and cycle
-edge, task delivery, the completion notice, outcome reporting, and the
-parent-liveness poll. They are two files because they are two jobs, and
+edge, task delivery, the turn and completion notices, outcome reporting,
+and the parent-liveness poll. They are two files because they are two jobs, and
 either loads alone and degrades: without the agent half an envelope's
 text is delivered as a plain prompt, without the status half every tool
 reports kido as unavailable.
@@ -699,10 +754,14 @@ points in its own handlers: the session context is captured first thing
 in `session_start` so a `/reload`'s fresh context replaces the old one
 even in a session with no kido; the parent poll and task delivery run
 after the inbox is bound (so a task's first turn can already be answered)
-and before the first report (which is what carries `--inbox`); and on
+and before the first report (which is what carries `--inbox`); on
 shutdown the outcome and the completion notice go out after the inbox is
 down and before the removal report, so kido still resolves this session's
-parent edge and window while they run.
+parent edge and window while they run; and a turn notice
+("Notifying the parent", above) goes out from `agent_settled`, driven
+through the same hook mechanism rather than the agent half registering
+its own `pi.on("agent_settled", ...)` handler, for the same ordering
+reason.
 
 `runKido` is asynchronous, via `spawn`, never `execFileSync`. A blocking
 call parks the whole process for as long as kido takes, up to five

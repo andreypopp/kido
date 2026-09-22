@@ -789,6 +789,28 @@ export default function (pi: ExtensionAPI) {
     await host.runKido(["message", "--kind", "notice", "--", self.parent], { input: text, timeoutMs: 3000 });
   };
 
+  // sendTurnNotice tells this session's parent, if kido still resolves
+  // one, that a turn has finished and what the child actually said. Its
+  // wording ("finished a turn" rather than sendCompletionNotice's
+  // "finished") is deliberate: this run is still "running" per
+  // docs/design.md's run-outcome rules - the child is alive, resumable,
+  // and may yet be given more work - while sendCompletionNotice means the
+  // run itself has ended. Not gated on isRunEnding: it is the opposite
+  // case, a turn ending with the run still very much alive, and it fires
+  // again for every later turn a follow-up produces, since each is its
+  // own news to the parent rather than a repeat.
+  async function sendTurnNotice(resultText: string): Promise<void> {
+    const host = status();
+    if (!host?.kidoPath() || PARENT_INSTANCE === undefined) return; // not a subagent
+    const listed = await fetchAgents();
+    if ("error" in listed) return;
+    const self = listed.agents.find((a) => a.self);
+    if (!self || !self.parent) return;
+    const title = host.title();
+    const text = `${title || "subagent"} finished a turn (still running): ${resultText}`;
+    await host.runKido(["message", "--kind", "notice", "--", self.parent], { input: text, timeoutMs: 3000 });
+  }
+
   // Published at factory time, with nothing read back until an event
   // fires, so load order does not matter.
   const hooks: AgentHooks = {
@@ -811,6 +833,7 @@ export default function (pi: ExtensionAPI) {
       await recordOwnOutcome(reason);
       await sendCompletionNotice(reason);
     },
+    turnSettled: sendTurnNotice,
     handleEnvelope,
   };
   seam().agents = hooks;

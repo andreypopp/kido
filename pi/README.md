@@ -198,6 +198,18 @@ text rather than being dropped.
   typo or a newer kido talking to an older extension is visible rather
   than silently read as a plain message.
 
+### Notices to a parent
+
+A subagent sends its parent two different notices, distinguishable by
+text: `sendTurnNotice`, on every settled turn (`agent_settled` with
+`ctx.isIdle()`), carries the child's own last answer and says the run is
+still alive ("finished a turn ... still running"); `sendCompletionNotice`,
+on a real `session_shutdown`, says the run has ended. Only the second is
+gated on `isRunEnding` - a `/reload` sends neither. See docs/design.md,
+"Notifying the parent", for why one event decides completion while
+another supplies the content, and how a settle with nothing to report
+stays silent.
+
 ### Cycles
 
 Each extension instance keeps its outstanding asks in memory only: an

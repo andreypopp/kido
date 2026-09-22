@@ -1179,6 +1179,166 @@ test("a completion notice reaches a live parent", async () => {
   }
 });
 
+// agentEndEvent builds the shape kido-status.ts's agent_end handler
+// reads off pi (pi 0.85.1's dist bundle: `{type:"agent_end", messages}}`),
+// with one clean assistant message carrying text.
+function agentEndEvent(text: string): { messages: Array<{ role: string; content: Array<{ type: string; text: string }> }> } {
+  return { messages: [{ role: "assistant", content: [{ type: "text", text }] }] };
+}
+
+// NOTICE_LATENCY_BOUND_MS bounds how long a turn-completion notice may take
+// to leave this session once agent_settled fires. Chosen well under a
+// second - and far under KIDO_HEARTBEAT_MS's 30s default - because
+// nothing between agent_settled and the outbound kido message spawn
+// waits on a timer or a poll; the only real cost is process startup for
+// two subprocesses (kido agents --json, then kido message), which the
+// other timings in this file put at tens of milliseconds each. A notice
+// that only went out on the next heartbeat would blow this bound by two
+// orders of magnitude.
+const NOTICE_LATENCY_BOUND_MS = 700;
+
+test("a settle after a delivered task notifies the parent promptly, carrying the child's own result text", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
+    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
+    try {
+      const factory = await freshExtensions();
+      const s = await startSessionUsing(factory, fx);
+      await s.emit("agent_end", agentEndEvent("the answer is 42"));
+      const t0 = Date.now();
+      await s.emit("agent_settled", {}, { isIdle: () => true });
+      const sent = await fx.waitForLog("parent-x", "notice");
+      const elapsed = Date.now() - t0;
+      assert.ok(sent.text.includes("the answer is 42"), `notice text ${JSON.stringify(sent.text)} must carry the child's own result`);
+      assert.ok(
+        elapsed < NOTICE_LATENCY_BOUND_MS,
+        `notice took ${elapsed}ms to be sent, want under ${NOTICE_LATENCY_BOUND_MS}ms - it must not wait on the heartbeat or any interval`,
+      );
+    } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+test("a settle in a session with no parent notifies nobody", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    await s.emit("agent_end", agentEndEvent("nobody is listening"));
+    await s.emit("agent_settled", {}, { isIdle: () => true });
+    // No parent to wait on a log entry for, so a fixed pause stands in for
+    // waitForLog's poll: long enough to catch a spurious send, short by
+    // this file's own standards.
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(jsonLines(fx.logFile).length, 0, "a root session has nobody to notify and must send nothing");
+  } finally {
+    fx.restore();
+  }
+});
+
+test("a settle that follows no work (session start, before any task) sends no notice", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
+    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
+    try {
+      const factory = await freshExtensions();
+      const s = await startSessionUsing(factory, fx);
+      // No agent_end at all: nothing has run an agent loop yet, matching
+      // what a real pi 0.85.1 does (_emitAgentSettled is only ever called
+      // from inside _runAgentPrompt, itself only entered by an actual
+      // prompt() call) - this settle has nothing to say.
+      await s.emit("agent_settled", {}, { isIdle: () => true });
+      await new Promise((r) => setTimeout(r, 200));
+      assert.equal(fx.lastLogFor("parent-x", "notice"), undefined, "a settle with no prior agent_end must send no notice");
+    } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+test("a second settle after follow-up work notifies again, with the new result", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
+    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
+    try {
+      const factory = await freshExtensions();
+      const s = await startSessionUsing(factory, fx);
+
+      await s.emit("agent_end", agentEndEvent("first answer"));
+      await s.emit("agent_settled", {}, { isIdle: () => true });
+      const first = await fx.waitForLog("parent-x", "notice");
+      assert.ok(first.text.includes("first answer"));
+
+      // Follow-up work delivered to the same, still-running session, then a
+      // second settle: each completed turn is its own news to the parent,
+      // not a repeat of the first.
+      await s.emit("agent_end", agentEndEvent("second answer"));
+      await s.emit("agent_settled", {}, { isIdle: () => true });
+      await pollUntil(() => {
+        const entries = jsonLines(fx.logFile).filter((l) => l.to === "parent-x" && l.kind === "notice");
+        return entries.length >= 2;
+      }, 2000, "a second notice after follow-up work");
+      const second = last(jsonLines(fx.logFile).filter((l) => l.to === "parent-x" && l.kind === "notice"))!;
+      assert.ok(second.text.includes("second answer"), `second notice ${JSON.stringify(second.text)} must carry the new result, not the first`);
+    } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+// A turn-completion notice and a real shutdown's completion notice must
+// read differently to a parent: one means the run is still alive and
+// resumable, the other means it has ended. Both are sent to the same
+// parent in the same run here, so only the wording tells them apart.
+test("a turn-completion notice and a real shutdown's completion notice are distinguishable", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
+    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
+    try {
+      const factory = await freshExtensions();
+      const s = await startSessionUsing(factory, fx);
+
+      await s.emit("agent_end", agentEndEvent("the turn's own answer"));
+      await s.emit("agent_settled", {}, { isIdle: () => true });
+      const turnNotice = await fx.waitForLog("parent-x", "notice");
+
+      await s.emit("session_shutdown");
+      await pollUntil(() => {
+        const entries = jsonLines(fx.logFile).filter((l) => l.to === "parent-x" && l.kind === "notice");
+        return entries.length >= 2;
+      }, 2000, "the shutdown's own completion notice");
+      const shutdownNotice = last(jsonLines(fx.logFile).filter((l) => l.to === "parent-x" && l.kind === "notice"))!;
+
+      assert.notEqual(turnNotice.text, shutdownNotice.text, "the two notices must not read identically");
+      assert.ok(!turnNotice.text.includes("(idle)") && !turnNotice.text.includes("(failed)"), "a turn notice must not claim the run has an ended status");
+      assert.ok(shutdownNotice.text.includes("(idle)"), "the shutdown notice keeps its own ended-status wording");
+    } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
 test("interleaving: an inbound ask from the same target is refused even while the outbound send to it is still in flight", async () => {
   const fx = makeFixture();
   try {

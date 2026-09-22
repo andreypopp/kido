@@ -67,6 +67,16 @@ const HEARTBEAT_MS = Number(process.env.KIDO_HEARTBEAT_MS) || 30000;
 // says 256 too, but a model is free to ignore it.
 const MAX_ACTIVITY_BYTES = 256;
 
+// Cap for a turn-completion notice's carried result text (see
+// extractAssistantText / turnSettled below). Bigger than the activity cap
+// - this is the child's actual work product, not a UI label - but far
+// smaller than MAX_PROMPT_BYTES: that cap bounds an arbitrary transport
+// payload, while this one is spliced whole into the parent's next turn as
+// a followUp message, so a subagent whose last answer happened to include
+// a large dump must not hand the parent's model a multi-kilobyte reply it
+// never asked for.
+const MAX_RESULT_BYTES = 4000;
+
 // Cut on a code-point boundary, never mid-sequence: decoding a buffer that
 // splits one leaves a U+FFFD behind, which is three bytes, so a naive
 // byte slice can come back longer than the cap it was enforcing.
@@ -81,6 +91,38 @@ function capBytes(text: string, max: number): string {
     used += n;
   }
   return out;
+}
+
+// The minimal shape of a pi message this extension reads out of
+// agent_end's event.messages (pi 0.85.1's dist bundle: `{type, content,
+// stopReason, errorMessage}` for an assistant message). Declared locally
+// rather than imported from @earendil-works/pi-ai, which this package
+// does not depend on.
+interface AgentEndMessage {
+  role: string;
+  stopReason?: string;
+  errorMessage?: string;
+  content?: Array<{ type?: string; text?: string }>;
+}
+
+// extractAssistantText finds the most recent clean assistant answer in
+// one low-level run's messages: the last assistant message that carries
+// no error, with its text parts joined. agent_settled's own event has no
+// message data at all, so this is the only place a notice's content can
+// come from.
+function extractAssistantText(messages: AgentEndMessage[] | undefined): string {
+  if (!Array.isArray(messages)) return "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m || m.role !== "assistant" || m.errorMessage || m.stopReason === "error") continue;
+    const text = (m.content ?? [])
+      .filter((p) => p?.type === "text" && typeof p.text === "string")
+      .map((p) => p.text as string)
+      .join("\n")
+      .trim();
+    if (text) return text;
+  }
+  return "";
 }
 
 export type Status = "running" | "waiting" | "compacting" | "idle";
@@ -215,6 +257,13 @@ export interface AgentHooks {
   // Called from session_shutdown after the inbox is down and before the
   // removal report.
   sessionEnding(reason?: string): Promise<void>;
+  // Called after a low-level agent run has truly settled (agent_settled,
+  // ctx.isIdle()) and produced some text - never for a settle with
+  // nothing to say, such as one at session start before any task has run
+  // an agent loop at all. Fired once per completed turn, follow-ups
+  // included: each is separate news to a parent, not a repeat of one
+  // already sent (docs/design.md, "Notifying the parent").
+  turnSettled(resultText: string): Promise<void>;
   // Dispatch one v1 envelope, answering the wire.
   handleEnvelope(env: Envelope): Promise<"ok" | "refused">;
 }
@@ -248,6 +297,15 @@ export default function (pi: ExtensionAPI) {
   let inbox: Server | null = null;
   let inboxPath: string | null = null;
   let inboxReported = false;
+
+  // The most recent clean assistant answer seen since the last settle
+  // this extension notified on, capped on the way in. Consumed (reset to
+  // "") the moment it is handed to turnSettled, which is what keeps a
+  // settle with no new agent_end in between - there should not be one,
+  // per pi 0.85.1's _runAgentPrompt, but this is what makes that an
+  // invariant rather than an assumption - from repeating stale content or
+  // notifying on nothing.
+  let lastAssistantText = "";
 
   // null whenever the last reported status was not "running".
   let heartbeatTimer: NodeJS.Timeout | null = null;
@@ -546,10 +604,43 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_compact", restoreBeforeCompact);
   pi.on("session_compact_failed", restoreBeforeCompact);
 
+  // agent_end fires once per low-level run - once per retry, compaction
+  // pass, or queued follow-up, as well as the final one - and is the only
+  // place a message's actual text is available (agent_settled's own event
+  // carries none). It is not itself a completion signal: pi's docs say
+  // explicitly that pi "may still auto-retry, auto-compact and retry, or
+  // continue with queued follow-up messages" after it fires, which
+  // pi-subagents' own two-signal design (src/runs/background/
+  // run-child-session.ts, tracking agentSettledReceived alongside a
+  // separately observed clean terminal assistant stop) is built to
+  // tolerate. That project drives its own hand-rolled run loop and needs
+  // a signal that survives a stuck hook in its own machinery; this
+  // extension only observes pi's public lifecycle, where agent_settled
+  // (see below) is emitted by pi itself, once, in the same finally block
+  // that ends the retry/compaction/follow-up loop - the same signal this
+  // file already trusts to report "idle" - so a second, independently
+  // timed trigger here would race the authoritative one instead of
+  // covering a real gap in it. Content and completion therefore come from
+  // two different events for a real reason (agent_settled's event has no
+  // message data), but only one of them decides that a turn is over.
+  pi.on("agent_end", (event: { messages?: AgentEndMessage[] }) => {
+    const text = extractAssistantText(event?.messages);
+    if (text) lastAssistantText = capBytes(text, MAX_RESULT_BYTES);
+  });
+
   // The true idle signal: no retry, compaction, or follow-up left.
   pi.on("agent_settled", (_event, ctx) => {
     if (!ctx.isIdle()) return;
     send("idle", { ended: true });
+    // Empty here means either nothing happened yet (session start, before
+    // any task has run an agent loop - _emitAgentSettled is only ever
+    // called from inside _runAgentPrompt, so this cannot fire before a
+    // prompt is submitted) or this settle's result was already handed to
+    // turnSettled by an earlier pass through this handler; either way,
+    // nobody needs telling.
+    const result = lastAssistantText;
+    lastAssistantText = "";
+    if (result) void seam().agents?.turnSettled(result);
   });
 
   pi.on("session_shutdown", async (event?: { reason?: string }) => {
