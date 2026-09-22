@@ -216,8 +216,45 @@ export default function (pi: ExtensionAPI) {
   };
 
   // labelFrom names an envelope's sender for the model to read, in the
-  // same fallback order targetLabel (cmd/kido/message.go) uses.
+  // same fallback order targetLabel (cmd/kido/message.go) uses. It is a
+  // label only, shown to the model, never the address a reply actually
+  // resolves against - see pendingInboundAsks below for why.
   const labelFrom = (from: Envelope["from"]): string => from.name || from.session || from.pane || "another agent";
+
+  // pendingInboundAsks remembers, for an ask still awaiting our reply,
+  // the asker's pane - the one part of `from` a `/reload` cannot change.
+  // labelFrom's own fallback (session id, absent a name) is exactly what
+  // a `/reload` invalidates: pi mints a fresh session id, so the address
+  // an unnamed asker was told to reply to at ask-delivery time can go
+  // stale before this session's model gets around to answering. Rather
+  // than trying to keep that label fresh, message_agent re-resolves the
+  // target from this pane at the moment a reply is actually sent (see
+  // resolveReplyTarget) - the instance id is the other value a reload
+  // cannot change, but kido's addressing has nothing that resolves one,
+  // while every pane is already in `kido agents --json`. Entries are
+  // removed once a reply consumes them; a never-answered ask leaves one
+  // behind for this session's lifetime, the same bound as an unanswered
+  // ask's own wire round trip already accepts.
+  const pendingInboundAsks = new Map<string, string>(); // ask id -> asker's pane
+
+  // resolveReplyTarget re-resolves a reply's destination from the
+  // asker's pane, freshly, rather than trusting the label the model was
+  // given when the ask arrived (see pendingInboundAsks). Falls back to
+  // the model's own `to` when there is no pending ask to re-resolve from
+  // (an unprompted message_agent call, or a replyTo this session never
+  // saw an ask for, including a second reply to one already answered) or
+  // when the pane no longer resolves to anyone (the asker really is
+  // gone, and the caller's own `to` will fail exactly as it would have
+  // without this).
+  const resolveReplyTarget = async (to: string, replyTo: string | undefined): Promise<string> => {
+    const pane = replyTo ? pendingInboundAsks.get(replyTo) : undefined;
+    if (!pane) return to;
+    pendingInboundAsks.delete(replyTo!);
+    const listed = await fetchAgents();
+    if ("error" in listed) return to;
+    const current = listed.agents.find((a) => a.pane === pane);
+    return current?.id ?? to;
+  };
 
   // handleInboundAsk delivers an ask to the model with an explicit
   // instruction that a reply is expected, unless answering would close a
@@ -226,6 +263,7 @@ export default function (pi: ExtensionAPI) {
   const handleInboundAsk = (env: Envelope): "ok" | "refused" => {
     if (hasAskOutstandingTo(env.from.session)) return "refused";
     const from = labelFrom(env.from);
+    if (env.from.pane) pendingInboundAsks.set(env.id, env.from.pane);
     deliver(
       `${from} is asking (id ${env.id}): ${env.text}\n\n` +
         `Reply with message_agent(to=${JSON.stringify(from)}, message=<answer>, replyTo=${JSON.stringify(env.id)}).`,
@@ -466,9 +504,15 @@ export default function (pi: ExtensionAPI) {
       const args = ["message"];
       // A reply is correlated on kind "reply", not on --reply-to alone.
       if (params.replyTo) args.push("--kind", "reply", "--reply-to", params.replyTo);
+      // Re-resolved from the asker's pane when this is a reply to a
+      // still-remembered ask, since the model's own `to` was handed to it
+      // when the ask arrived and a `/reload` since then can have moved the
+      // asker to a new session id (docs/design.md's addressing rules have
+      // nothing that survives that; the pane does).
+      const to = await resolveReplyTarget(params.to, params.replyTo);
       // "--" first: a model-authored `to` beginning with a dash would
       // otherwise be parsed as a kido flag.
-      args.push("--", params.to);
+      args.push("--", to);
       const res = await host.runKido(args, { input: params.message, timeoutMs: 5000 });
       if ("error" in res) {
         return { content: [{ type: "text", text: `could not message ${params.to}: ${res.error}` }], details: {} };
@@ -529,7 +573,11 @@ export default function (pi: ExtensionAPI) {
       if (target.id === self.id) {
         return { content: [{ type: "text", text: "cannot ask yourself" }], details: {} };
       }
-      if (isAncestor(agents, self, target)) {
+      // isAncestor(agents, target, self): is the TARGET an ancestor of ME?
+      // A child asking its parent (or any ancestor) is what this refuses;
+      // a parent asking its own child is the ordinary case and must fall
+      // through.
+      if (isAncestor(agents, target, self)) {
         return {
           content: [{ type: "text", text: `${target.name || target.id} is an ancestor; the parent stays free to orchestrate, so it cannot be asked` }],
           details: {},
@@ -843,9 +891,19 @@ export default function (pi: ExtensionAPI) {
   // scheduled whether or not the parent edge still resolves; a failed
   // notice is simply dropped, since there is nobody to tell. Nothing here
   // may throw past its own await.
+  //
+  // The outbound "message" is fired via spawnDetached, not awaited via
+  // runKido: session_shutdown must not sit through the up-to-several-
+  // second round trip of dialing a parent whose inbox accepts a
+  // connection and never replies (a parent mid-turn, or simply gone
+  // unresponsive) before this process is free to exit. spawnDetached
+  // hands the child its full stdin before returning, so the notice still
+  // reaches a live parent in the normal case; only the wait for its
+  // *reply* is given up, which nothing here ever read anyway.
   const sendCompletionNotice = async (reason?: string): Promise<void> => {
     const host = status();
-    if (!host?.kidoPath() || PARENT_INSTANCE === undefined) return; // not a subagent
+    const kido = host?.kidoPath();
+    if (!host || !kido || PARENT_INSTANCE === undefined) return; // not a subagent
     if (!isRunEnding(reason)) return;
     const listed = await fetchAgents();
     if ("error" in listed) return;
@@ -855,7 +913,7 @@ export default function (pi: ExtensionAPI) {
     const title = host.title();
     const activity = host.activity();
     const text = `${title || "subagent"} finished` + (activity ? `: ${activity}` : "") + ` (${host.status()})`;
-    await host.runKido(["message", "--kind", "notice", "--", self.parent], { input: text, timeoutMs: 3000 });
+    host.spawnDetached(kido, ["message", "--kind", "notice", "--", self.parent], { input: text });
   };
 
   // sendTurnNotice tells this session's parent, if kido still resolves

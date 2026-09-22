@@ -595,6 +595,49 @@ test("the cycle edge is released by a correlated reply or a timeout, but not by 
   }
 });
 
+// A pi session with no title falls back to its session id as the reply
+// address (labelFrom); a /reload changes that id while leaving the
+// sender's pane and instance untouched. message_agent must re-resolve
+// the reply against the sender's current session, found by pane, not
+// the stale one the model was told about when the ask arrived.
+test("a reply to an unnamed asker still reaches it after the asker reloads and its session id changes", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([
+      { id: "self", name: "self", parent: "", self: true, canMessage: true },
+      { id: "peer-a-old", name: "", pane: "%42", parent: "", self: false, canMessage: true },
+    ]);
+    const s = await startSession(fx);
+
+    const resp = await sendToInbox(
+      s.inboxPath,
+      envelope("ask", "still there?", { id: "ask-reload-1", from: { session: "peer-a-old", pane: "%42" } }),
+    );
+    assert.equal(resp, "ok");
+    const asked = s.delivered.find((d) => d.text.includes("is asking"));
+    assert.ok(asked, "the ask was delivered to the model");
+    assert.match(asked!.text, /message_agent\(to="peer-a-old"/, "an unnamed asker's fallback label is its session id");
+
+    // The asker reloads: same pane and agent, a new session id, before
+    // this session gets around to replying.
+    fx.setAgents([
+      { id: "self", name: "self", parent: "", self: true, canMessage: true },
+      { id: "peer-a-new", name: "", pane: "%42", parent: "", self: false, canMessage: true },
+    ]);
+
+    // The model does exactly what it was told: replies to the now-stale
+    // "peer-a-old" label.
+    const reply = await s.tools.get("message_agent").execute("c1", { to: "peer-a-old", message: "still here", replyTo: "ask-reload-1" });
+    assert.doesNotMatch(reply.content[0].text, /could not message/, "the reply must not fail just because the asker reloaded");
+
+    const sent = fx.lastLogFor("peer-a-new");
+    assert.ok(sent, "the reply was actually addressed to the asker's current session, not its stale one");
+    assert.equal(fx.lastLogFor("peer-a-old"), undefined, "the stale session id was never dialled");
+  } finally {
+    fx.restore();
+  }
+});
+
 test("abandonPending: session_shutdown and a failed rebind settle a waiting ask promptly; a successful rebind stays answerable", async () => {
   const fx = makeFixture();
   try {
@@ -953,7 +996,7 @@ test("a completion notice addressed to a dead parent is dropped without failing 
       const factory = await freshExtensions();
       const s = await startSessionUsing(factory, fx);
       await assert.doesNotReject(s.emit("session_shutdown"), "a dead parent must never make shutdown itself fail");
-      const sent = fx.lastLogFor("dead-parent", "notice");
+      const sent = await fx.waitForLog("dead-parent", "notice");
       assert.ok(sent, "a notice to the parent was attempted");
       assert.equal(sent!.failed, true, "the fake kido reports the same failure a dead parent's inbox would cause");
     } finally {
@@ -1114,7 +1157,11 @@ test("a reload shutdown schedules no linger and sends no completion notice; a qu
         .then(() => "called")
         .catch(() => "not called");
       assert.equal(closeWindowLog, "not called", "a reload must not schedule this session's own window to close");
-      assert.equal(reload.lastLogFor("parent-x", "notice"), undefined, "a reload must not tell the parent this subagent finished");
+      const noticeLog = await reload
+        .waitForLog("parent-x", "notice", 50)
+        .then(() => "sent")
+        .catch(() => "not sent");
+      assert.equal(noticeLog, "not sent", "a reload must not tell the parent this subagent finished");
     } finally {
       if (saved.INST === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
       else process.env.KIDO_AGENT_PARENT_INSTANCE = saved.INST;
@@ -1139,7 +1186,7 @@ test("a reload shutdown schedules no linger and sends no completion notice; a qu
       await s.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
       const args = await quit.waitForCloseWindow();
       assert.deepEqual(args, ["close-window", "@9"], "a quit still schedules this session's own window to close");
-      const sent = quit.lastLogFor("parent-x", "notice");
+      const sent = await quit.waitForLog("parent-x", "notice");
       assert.ok(sent, "a quit still tells the parent this subagent finished");
     } finally {
       if (saved.INST === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
@@ -1188,10 +1235,52 @@ test("a completion notice reaches a live parent", async () => {
       const factory = await freshExtensions();
       const s = await startSessionUsing(factory, fx);
       await s.emit("session_shutdown");
-      const sent = fx.lastLogFor("parent-x", "notice");
+      const sent = await fx.waitForLog("parent-x", "notice");
       assert.ok(sent, "a notice was sent to the resolved parent");
       assert.ok(sent!.text.length > 0, "the notice carries some result text");
     } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+// SHUTDOWN_LATENCY_BOUND_MS bounds how long session_shutdown may take
+// while the outbound completion notice is held up. The fake kido below
+// holds the reply for far longer than this bound (and longer than the
+// real inbox protocol's own ~2s deadline, cmd/kido/inbox.go's
+// inboxTimeout) precisely so a shutdown that still waited on it would
+// blow this bound, not skate under it by luck.
+const SHUTDOWN_LATENCY_BOUND_MS = 500;
+
+test("session_shutdown does not wait for the completion notice's reply: a wedged parent costs it nothing, and the notice still arrives", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
+    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
+    process.env.KIDO_FAKE_MESSAGE_DELAY_MS = "3000"; // a parent that accepts but never promptly replies
+    try {
+      const factory = await freshExtensions();
+      const s = await startSessionUsing(factory, fx);
+
+      const t0 = Date.now();
+      await s.emit("session_shutdown");
+      const elapsed = Date.now() - t0;
+      assert.ok(
+        elapsed < SHUTDOWN_LATENCY_BOUND_MS,
+        `session_shutdown took ${elapsed}ms with a wedged parent, want under ${SHUTDOWN_LATENCY_BOUND_MS}ms - it must not wait on the notice's reply`,
+      );
+
+      // The notice was still handed to the fake kido in full before
+      // shutdown returned - it arrives once the fake's own delay elapses,
+      // proving the fix does not simply drop it.
+      const sent = await fx.waitForLog("parent-x", "notice", 3500);
+      assert.ok(sent, "the notice still reaches the parent once its own reply delay elapses");
+    } finally {
+      delete process.env.KIDO_FAKE_MESSAGE_DELAY_MS;
       if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
       else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
     }
@@ -1758,6 +1847,88 @@ test("a control envelope from a human at the CLI is honoured; one merely missing
     const impostor = await sendToInbox(s.inboxPath, envelope("stop", "", { from: { session: "", name: "", pane: "%3" } }));
     assert.equal(impostor, "refused", "a pane an agent occupies is an agent, whatever `from` says");
     assert.equal(s.shutdowns(), 0);
+  } finally {
+    fx.restore();
+  }
+});
+
+// askTree is grand -> mid -> child, three levels, used below to pin
+// ask_agent's ancestor guard in both directions: which of self/target is
+// the caller decides which one gets marked self:true per case.
+const askTree = [
+  { id: "grand", name: "grand", parent: "", self: false, canMessage: true },
+  { id: "mid", name: "mid", parent: "grand", self: false, canMessage: true },
+  { id: "child", name: "child", parent: "mid", self: false, canMessage: true },
+];
+
+// isAncestor(agents, self, target) means "self is an ancestor of target"
+// (see its own doc above); ask_agent's guard must refuse a child asking
+// upward, not a parent asking downward. The inverted check refused the
+// ordinary case and let the dangerous one through - a subagent could
+// block its own parent for the full ask timeout, exactly the deadlock
+// docs/design.md's cycle-edge section exists to prevent - so each case
+// below checks not just the refusal text but that nothing was actually
+// sent (or was), off the fake kido's own log.
+test("ask_agent allows a parent asking its own child", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(askTree.map((a) => (a.id === "mid" ? { ...a, self: true } : a)));
+    const s = await startSession(fx);
+    const result = await s.tools.get("ask_agent").execute("c1", { to: "child", question: "status?", timeoutMs: 50 });
+    assert.doesNotMatch(result.content[0].text, /ancestor/, "a parent asking its own child must not be refused as an ancestor violation");
+    assert.ok(await fx.waitForLog("child", "ask"), "the ask was actually sent to the child");
+  } finally {
+    fx.restore();
+  }
+});
+
+test("ask_agent refuses a child asking its parent", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(askTree.map((a) => (a.id === "child" ? { ...a, self: true } : a)));
+    const s = await startSession(fx);
+    const result = await s.tools.get("ask_agent").execute("c1", { to: "mid", question: "status?", timeoutMs: 50 });
+    assert.match(result.content[0].text, /ancestor/, "a child asking its parent must be refused");
+    assert.equal(fx.lastLogFor("mid", "ask"), undefined, "nothing must actually be sent to the parent");
+  } finally {
+    fx.restore();
+  }
+});
+
+test("ask_agent refuses a child asking its grandparent, two levels up", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(askTree.map((a) => (a.id === "child" ? { ...a, self: true } : a)));
+    const s = await startSession(fx);
+    const result = await s.tools.get("ask_agent").execute("c1", { to: "grand", question: "status?", timeoutMs: 50 });
+    assert.match(result.content[0].text, /ancestor/, "a child asking its grandparent must be refused");
+    assert.equal(fx.lastLogFor("grand", "ask"), undefined, "nothing must actually be sent to the grandparent");
+  } finally {
+    fx.restore();
+  }
+});
+
+test("ask_agent still allows a peer asking a peer, unaffected by the ancestor guard", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(twoPeers.slice(0, 2)); // self, peer-a - unrelated parents
+    const s = await startSession(fx);
+    const result = await s.tools.get("ask_agent").execute("c1", { to: "peer-a", question: "status?", timeoutMs: 50 });
+    assert.doesNotMatch(result.content[0].text, /ancestor/);
+    assert.ok(await fx.waitForLog("peer-a", "ask"), "the ask was actually sent to the peer");
+  } finally {
+    fx.restore();
+  }
+});
+
+test("ask_agent still refuses asking yourself", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(askTree.map((a) => (a.id === "mid" ? { ...a, self: true } : a)));
+    const s = await startSession(fx);
+    const result = await s.tools.get("ask_agent").execute("c1", { to: "mid", question: "status?", timeoutMs: 50 });
+    assert.match(result.content[0].text, /cannot ask yourself/);
+    assert.equal(fx.lastLogFor("mid", "ask"), undefined);
   } finally {
     fx.restore();
   }

@@ -187,14 +187,34 @@ function findKido(): string | null {
 }
 
 // spawnDetached runs one fire-and-forget child: detached and
-// stdio-ignored, so a Ctrl+C on pi's process group does not kill it and
-// it outlives this process. Both failure paths are swallowed, the
-// synchronous throw and the async "error" event; an unhandled "error"
-// event is an uncaught exception on this process, not a failed spawn.
-function spawnDetached(cmd: string, args: string[]): void {
+// stdio-ignored (or stdin-piped, when opts.input is given), so a Ctrl+C
+// on pi's process group does not kill it and it outlives this process.
+// Both failure paths are swallowed, the synchronous throw and the async
+// "error" event; an unhandled "error" event is an uncaught exception on
+// this process, not a failed spawn.
+//
+// With opts.input, the write is queued and the child unref'd without
+// waiting for it to run at all - proven against a real child process,
+// not assumed: a write that fits in the pipe's kernel buffer (every
+// caller's payload does; kido's own caps keep it that way) is handed to
+// the kernel synchronously, so it survives this process calling
+// process.exit() on the very next line. Once the kernel has it, the
+// child - detached, its own process group - runs to completion
+// regardless of what becomes of this process, which is the whole point:
+// a slow or wedged peer on the far end of what that child does (an inbox
+// dial, say) costs the child seconds, never this one.
+function spawnDetached(cmd: string, args: string[], opts: { input?: string } = {}): void {
   try {
-    const child = spawn(cmd, args, { stdio: "ignore", detached: true });
+    const child = spawn(cmd, args, {
+      stdio: [opts.input !== undefined ? "pipe" : "ignore", "ignore", "ignore"],
+      detached: true,
+    });
     child.on("error", () => {});
+    if (opts.input !== undefined) {
+      // EPIPE if the child exits before reading stdin at all.
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(opts.input);
+    }
     child.unref();
   } catch {
     // never let a spawn failure reach pi
@@ -237,7 +257,7 @@ export interface StatusHost {
   setActivity(text: string): void;
   deliver(text: string): void;
   runKido(args: string[], opts: { input?: string; timeoutMs: number }): Promise<RunKidoResult>;
-  spawnDetached(cmd: string, args: string[]): void;
+  spawnDetached(cmd: string, args: string[], opts?: { input?: string }): void;
 }
 
 // AgentHooks is the reverse: the points in this half's lifecycle where
