@@ -63,7 +63,7 @@ func dirFor(id string) string { return filepath.Join(Dir(), id) }
 // asked to do, read back later by `kido runs <id>`. The child writes a
 // sibling "delivered" marker beside it once it has actually handed the
 // text to the model, which is how a pi /reload - which re-runs
-// session_start - knows not to deliver it twice (pi/kido-status.ts owns
+// session_start - knows not to deliver it twice (pi/kido-agents.ts owns
 // both halves of that; no Go code reads the marker).
 func TaskPath(id string) string { return filepath.Join(dirFor(id), "task") }
 

@@ -374,7 +374,7 @@ func TestMessageRefusesInvalidUTF8(t *testing.T) {
 
 // TestMessageKindAsk checks that --kind ask sends an ask envelope with no
 // ReplyTo, and that the caller-supplied --id, not a generated one, is
-// what ends up on the wire - ask_agent (pi/kido-status.ts) must know the
+// what ends up on the wire - ask_agent (pi/kido-agents.ts) must know the
 // id before sending, to register what it is waiting for.
 func TestMessageKindAsk(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
@@ -501,7 +501,7 @@ func TestMessageAskRefusalDoesNotPaste(t *testing.T) {
 // to paste into the pane - which, for an agent that is no longer running,
 // means typing the text at the shell the pane fell back to and pressing
 // Enter. For a notice that text is model-authored (a subagent's completion
-// notice is built from its own title and activity, pi/kido-status.ts), so
+// notice is built from its own title and activity, pi/kido-agents.ts), so
 // the paste would be a command line the model wrote, run in its parent's
 // pane. docs/subagents-plan.md's rule for a dead parent is that there is
 // nobody to tell; this pins that it is not told by send-keys instead.

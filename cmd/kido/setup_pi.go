@@ -8,10 +8,14 @@ import (
 	"kido/pi"
 )
 
-// setupPi installs the pi extension into pi's user extensions directory,
+// setupPi installs the pi extensions into pi's user extensions directory,
 // which pi discovers on startup with no further configuration. An
 // existing file is backed up next to it, the way setup-claude backs up
 // settings.json.
+//
+// Every file in pi.Extensions is installed, and each one independently: a
+// developer may well have pointed one of the two at a checkout, so the
+// symlink rule below is per file rather than per set.
 func setupPi() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -21,7 +25,17 @@ func setupPi() error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	path := filepath.Join(dir, pi.ExtensionName)
+	for _, ext := range pi.Extensions {
+		if err := installPiExtension(dir, ext); err != nil {
+			return err
+		}
+	}
+	fmt.Println("restart pi to load them")
+	return nil
+}
+
+func installPiExtension(dir string, ext pi.Extension) error {
+	path := filepath.Join(dir, ext.Name)
 	// Writing follows a symlink, so a link pointing at a checkout would
 	// have this overwrite the source it was linked to. Leave it alone:
 	// whoever linked it wants their own copy to be the live one.
@@ -40,10 +54,9 @@ func setupPi() error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.WriteFile(path, pi.Extension, 0o644); err != nil {
+	if err := os.WriteFile(path, ext.Data, 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("installed the kido status extension in %s\n", path)
-	fmt.Println("restart pi to load it")
+	fmt.Printf("installed the kido extension in %s\n", path)
 	return nil
 }

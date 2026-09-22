@@ -79,7 +79,7 @@ func spawnCmd(args []string) error {
 	fs.SetOutput(io.Discard)
 	parentPID := fs.Int("parent-pid", 0, "pid of the agent spawning this one")
 	parentInstance := fs.String("parent-instance", "", "Instance of the agent spawning this one")
-	// --depth is accepted for backward compatibility (pi/kido-status.ts
+	// --depth is accepted for backward compatibility (pi/kido-agents.ts
 	// still sends it, to give a model an early refusal without a round
 	// trip through kido - see the plan's Spawning section) but is no
 	// longer authoritative: see callerDepth below. It is parsed only so a

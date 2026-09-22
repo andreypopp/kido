@@ -3,7 +3,7 @@
 A tmux session is a work stream. Every agent in that session can see the
 others, tell them what it is doing, message them, and delegate to a
 subagent that gets its own window. kido owns discovery, transport and
-window lifecycle; pi's extension exposes the tools.
+window lifecycle; pi's extensions expose the tools.
 
 Status: proposal, revised after review. Nothing here is built yet.
 
@@ -46,8 +46,86 @@ Every tool shells out to a `kido` subcommand, including spawn. This is not
 just symmetry: `e2e/harness_test.go` builds fake `claude` and `node`
 binaries and drives kido through `kido agent-status`. It cannot host a
 TypeScript extension. A tool whose behaviour lives only in
-`kido-status.ts` is a tool the e2e suite cannot test, which rules out
+`kido-agents.ts` is a tool the e2e suite cannot test, which rules out
 every window-creation, env-passing and linger case.
+
+## Two extensions, not one
+
+All of this arrived inside `pi/kido-status.ts`, which began as "report
+this pi session's status to kido" and ended up also carrying an inbox
+server, envelope dispatch, seven tools, pending-ask bookkeeping,
+spawning, run records and parent-liveness polling. Reporting a status and
+coordinating a fleet of agents are unrelated jobs that happened to share
+a process. Two earlier simplification passes declined to split the file
+and both judged it on size; the argument is cohesion, and the delivery
+cost turned out to be bounded.
+
+So there are two extensions, installed together:
+
+- **`pi/kido-status.ts`** — the `send()`/coalescing machinery, the
+  heartbeat, the instance id, and the inbox **server** plus plain v0
+  prompt delivery. The inbox is status-side because it predates all the
+  agent work: it exists so `kido prompt` can hand a prompt to a session
+  nobody is typing into.
+- **`pi/kido-agents.ts`** — the tools, envelope dispatch beyond a plain
+  prompt, pending-ask bookkeeping and the cycle edge, the task-file
+  delivery, the completion notice, run-outcome reporting, and the
+  parent-liveness poll.
+
+**The inbox is the one thing that could not simply be cut.** The agent
+half needs it (to dispatch what arrives, and to refuse an `ask_agent`
+when there is nowhere for the answer to land), and it is one socket, with
+one coalescing key and one last-reported status beside it — nothing there
+may be duplicated. The two halves therefore meet at a pair of slots,
+`{host, agents}`: the status factory publishes a small `StatusHost` of
+accessors (`inboxOpen`, `runKido`, `deliver`, `setActivity`,
+`spawnDetached`, the instance id, session id, title, activity and status)
+and the agent factory publishes its `AgentHooks`.
+
+**The slots live on `globalThis`, not in module scope, and that is the
+one thing here that had to be measured rather than reasoned about.** The
+obvious argument — ES modules are singletons per resolved path, so
+`kido-agents.ts`'s `import ... from "./kido-status.ts"` *is* the module pi
+loaded — is false for pi. Against pi 0.85.1, each extension is evaluated
+in a registry of its own: that import produced a **second** evaluation of
+`kido-status.ts`, under the identical `file://` URL, with its own module
+scope and its own generated instance id. Module-scope slots therefore
+left each half holding a reference to a copy of the other that no session
+had ever started, and `list_agents` in a real pi answered `[]` while every
+unit test passed. `globalThis` (and the `Symbol.for` registry) *is* shared
+across those evaluations, also measured, so that is where the two halves
+can actually meet. `kido-agents.ts` consequently imports nothing but types
+from `kido-status.ts`, and reads the instance id across the seam rather
+than generating its own.
+
+**The load-order assumption is that there is none.** pi discovers
+extensions in a directory, the order is not ours to choose, and every
+factory runs before any `session_start`. Neither slot is read at factory
+time: each half writes its slot and then only reads the other's from
+inside an event, a tool call or a hook, by which point both factories
+have long since run. An extension loaded on its own finds the other slot
+empty and degrades rather than failing — the status half delivers an
+envelope's text as a plain prompt, and the agent half's tools report kido
+as unavailable.
+
+**The hooks exist because ordering within a lifecycle event is
+load-bearing**, and nothing says pi runs two extensions' handlers in any
+particular order. `AgentHooks` (`sessionStarting`, `sessionStarted`,
+`inboxLost`, `sessionEnding`, `handleEnvelope`) is called from the status
+half's own handlers at exactly the points the code used to sit at: the
+inbox is bound before the first report carries its path, and the parent
+is told this subagent finished while kido still has a record of it.
+`sessionEnding`'s synchronous prefix (stop the parent poll, release every
+waiting ask) runs in the same uninterrupted stretch as `stopInbox`, which
+is what lets `ask_agent`'s `inboxOpen()` check stand in for "this session
+is shutting down".
+
+Delivery moved with it: `pi.Extensions` is a set, `kido setup-pi` writes
+every file in it and applies its leave-a-symlink-alone rule per file, and
+the one-off is `pi -e .../kido-status.ts -e .../kido-agents.ts`. The test
+suite stayed one file: it drives the pair as a pi host would, through one
+fake pi and one real socket, and almost every case needs both halves at
+once.
 
 ## Data model
 
@@ -501,7 +579,7 @@ decision). This is not a security boundary; it exists so a confused peer
 cannot reach into a part of the tree it does not own. Enforced twice, on
 purpose: `cmd/kido/control.go` checks it before ever sending the envelope
 (the primary guard, using kido's own view of the spawn tree), and
-pi/kido-status.ts checks it again on receipt (defence in depth, using the
+pi/kido-agents.ts checks it again on receipt (defence in depth, using the
 receiving session's own `list_agents`), since `from` is advisory and a
 session must not act on a message just because it arrived claiming to be
 from an ancestor. Both walk the same ancestor chain `ask_agent`'s own
@@ -549,7 +627,7 @@ reported but has since gone stale (`errInboxUnavailable`): a recorded
 socket nobody answers is functionally no inbox at all.
 
 Delivered as `kido stop <agent> [--force]`, `kido interrupt <agent>`, and
-`stop_subagent`/`interrupt_subagent` tools in `pi/kido-status.ts`. The CLI
+`stop_subagent`/`interrupt_subagent` tools in `pi/kido-agents.ts`. The CLI
 twins are required for the same reason every other tool has one: the e2e
 harness cannot host a TypeScript extension, so anything living only in
 the extension is untestable.
@@ -795,7 +873,7 @@ see "Open risks" above.
 showing one in detail: its task text and the exact `pi --session` /
 `pi --fork` command to resume or branch from it. Like every other tool
 here, it exists because the e2e harness cannot host a TypeScript
-extension, so anything living only in `kido-status.ts` would be
+extension, so anything living only in `kido-agents.ts` would be
 untestable.
 
 **`spawn_subagent` returns the run id.** `list_agents` does not change: it

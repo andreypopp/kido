@@ -36,7 +36,7 @@ import (
 // died would close windows out from under the linger it exists to back
 // up. Read from the environment because the two halves of the lifecycle
 // run in different processes - this one in the sidebar, the helper's own
-// delay in pi/kido-status.ts, which reads the same variable - and a test
+// delay in pi/kido-agents.ts, which reads the same variable - and a test
 // must be able to shorten both without waiting out a real 30 seconds.
 var Grace = graceFromEnv(30 * time.Second)
 
@@ -79,7 +79,7 @@ type window struct {
 //
 //  2. a live subagent whose parent is gone is cancelled by closing its
 //     window - a forced stop rather than the graceful shutdown the poll
-//     in pi/kido-status.ts asks for, but the only lever a process outside
+//     in pi/kido-agents.ts asks for, but the only lever a process outside
 //     pi has. This one needs the record, since nothing in tmux knows who
 //     spawned whom; the mark is what keeps a stale record naming a
 //     recycled pane id from closing an unrelated window.

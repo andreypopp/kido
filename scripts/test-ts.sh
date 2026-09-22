@@ -1,5 +1,8 @@
 #!/bin/sh
-# Run pi/kido-status.test.ts under node's native TypeScript support.
+# Run pi/kido-status.test.ts under node's native TypeScript support. One
+# suite covers both extensions: it drives kido-status.ts and kido-agents.ts
+# as the pair a pi host loads, through one fake pi and one real inbox
+# socket, and almost every case needs both halves at once.
 #
 # Skips cleanly when node is missing or too old for unflagged TypeScript
 # (stable from node 22.18/23.6 on); KIDO_TS_TEST_REQUIRED=1 fails instead,

@@ -28,7 +28,7 @@ review
 
 3. `kido setup-claude` registers the hook in `~/.claude/settings.json` so
    Claude Code reports its status. If you use pi, `kido setup-pi` installs
-   its status extension into `~/.pi/agent/extensions/`.
+   its two extensions into `~/.pi/agent/extensions/`.
 
 4. Optional, zsh only: `kido setup-zsh` adds a marked block to `~/.zshrc`
    sourcing the script that emits the OSC 133 markers tmux reads to tell
@@ -157,10 +157,11 @@ kido agent-status --agent pi --session "$id" --status idle \
 
 ### `kido setup-pi`
 
-Installs the status extension into `~/.pi/agent/extensions/`, which pi
-picks up on its next start. A symlink there is left alone, so that name can
-point at a checkout. When pi runs Claude Code inside itself, the sidebar
-shows pi, not the embedded session.
+Installs both pi extensions into `~/.pi/agent/extensions/`, which pi picks
+up on its next start: `kido-status.ts` (status reporting and the inbox)
+and `kido-agents.ts` (the agent tools). A symlink there is left alone, so
+either name can point at a checkout. When pi runs Claude Code inside
+itself, the sidebar shows pi, not the embedded session.
 
 ### `kido snapshot`
 

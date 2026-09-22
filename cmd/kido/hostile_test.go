@@ -169,7 +169,7 @@ func TestSpawnHostileTaskTextRoundTrip(t *testing.T) {
 
 // TestMessageAddressingDashPrefixedTarget is phase-3 D3: a model-authored
 // target beginning with "-" must not be parsed as a kido flag. The fix
-// lives on the caller's side (pi/kido-status.ts passes "--" before the
+// lives on the caller's side (pi/kido-agents.ts passes "--" before the
 // target), and nothing in this repo pinned that "--" actually does what
 // the fix assumes on kido's end. If message ever stopped relying on
 // flag.FlagSet's ordinary "--" handling - a hand-rolled arg scanner, say -

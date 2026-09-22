@@ -59,7 +59,7 @@ func shellQuote(s string) string {
 //
 // This is the CLI twin list_agents and the other tools already have one
 // of, and for the same reason: the e2e harness cannot host a TypeScript
-// extension, so anything living only in pi/kido-status.ts would be
+// extension, so anything living only in pi/kido-agents.ts would be
 // untestable there.
 func runsCmd(args []string) error {
 	fs := flag.NewFlagSet("runs", flag.ContinueOnError)
@@ -83,7 +83,7 @@ func runOutcomeUsage() string {
 
 // runOutcomeCmd implements `kido run-outcome`: a run's own child reports
 // how it ended, at the same moment it already sends its parent a
-// completion notice (pi/kido-status.ts's sendCompletionNotice). <run-id>
+// completion notice (pi/kido-agents.ts's sendCompletionNotice). <run-id>
 // is that child's own pi session id - which is the run id, by
 // construction (see cmd/kido/spawn.go's --session-id) - so this needs no
 // separate lookup, just what the child already knows about itself. It is

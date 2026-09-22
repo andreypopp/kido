@@ -30,12 +30,12 @@ var listPanes = tmux.ListPanes
 // msg.Kind. A reply must carry --reply-to, naming the ask it answers; an
 // ask must not, since it starts a new correlation rather than answering
 // one. --id lets the caller assign the envelope's own id instead of
-// having one generated: pi's ask_agent tool (pi/kido-status.ts) needs to
+// having one generated: pi's ask_agent tool (pi/kido-agents.ts) needs to
 // know an ask's id before sending it, to register what it is waiting for,
 // so it generates the id itself and passes it through here. There is no
 // `kido ask` CLI twin: a short-lived CLI process has no inbox of its own
 // to receive the reply on, only a long-lived extension does, which is why
-// ask_agent lives entirely in pi/kido-status.ts and calls this command
+// ask_agent lives entirely in pi/kido-agents.ts and calls this command
 // just to send the question.
 //
 // An agent that has reported an inbox socket gets it as a real user

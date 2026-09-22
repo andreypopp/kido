@@ -58,7 +58,7 @@ func envLine(envOutput, key string) string {
 }
 
 // TestSpawnCreatesWindowInCallerSession drives `kido spawn` the way
-// spawn_subagent (pi/kido-status.ts) does, with a fake command standing in
+// spawn_subagent (pi/kido-agents.ts) does, with a fake command standing in
 // for pi, and checks everything that only exists because `kido spawn` is
 // a testable command in its own right (see AGENTS.md and
 // docs/subagents-plan.md's Spawning section): the new window lands in the

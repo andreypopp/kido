@@ -14,8 +14,8 @@ install: build
 	cp tmux/kido-side.tmux $(BIN)/../share/kido/kido-side.tmux
 
 # unit tests; the end-to-end suite needs the patched tmux and is separate.
-# test-ts covers pi/kido-status.ts under node and skips without one, so the
-# Go tests above never gain a node dependency of their own.
+# test-ts covers pi's two extensions under node and skips without one, so
+# the Go tests above never gain a node dependency of their own.
 test:
 	go vet ./...
 	go test ./cmd/... ./internal/...

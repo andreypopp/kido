@@ -1,10 +1,33 @@
-# pi extension: kido-status
+# pi extensions: kido-status and kido-agents
 
-Reports a [pi](https://github.com/earendil-works/pi) session's live status to
-kido, so pi sessions show up in the kido tmux sidebar next to Claude Code ones,
-and opens an *inbox* socket so kido can send a prompt into the session.
+Two extensions, installed together:
 
-It shells out to:
+- **`kido-status.ts`** reports a [pi](https://github.com/earendil-works/pi)
+  session's live status to kido, so pi sessions show up in the kido tmux
+  sidebar next to Claude Code ones, and opens an *inbox* socket so kido can
+  send a prompt into the session.
+- **`kido-agents.ts`** is agent coordination: the tools below, dispatch of
+  everything but a plain prompt arriving on that inbox, and the subagent
+  lifecycle.
+
+They are separate because they are separate jobs — being visible in a
+sidebar and coordinating a fleet of agents — but they share one session's
+inbox and one status report, so they find each other at load time through
+a pair of slots on `globalThis`, keyed by `Symbol.for("kido.pi.extension.seam")`.
+`kido-agents.ts` imports nothing but *types* from `kido-status.ts`, on
+purpose: pi evaluates each extension in a module registry of its own, so
+an ordinary import of the neighbouring file loads a second copy of it
+rather than reaching the one pi started (measured against pi 0.85.1 —
+list_agents answered `[]`). Load order does not matter either: pi may run
+either factory first, and neither reads the other's slot until a tool call
+or an event.
+
+Install both. Either on its own still loads and degrades quietly: without
+`kido-agents.ts`, an envelope arriving on the inbox is delivered as its
+own text rather than dispatched by kind; without `kido-status.ts`, the
+tools report kido as unavailable.
+
+The status half shells out to:
 
 ```
 kido agent-status --agent pi --session <id> --status running|waiting|compacting|idle \
@@ -27,17 +50,19 @@ once from `KIDO_AGENT_PARENT_PID`, `KIDO_AGENT_PARENT_INSTANCE` and
 
 ```sh
 mkdir -p ~/.pi/agent/extensions
-cp kido-status.ts ~/.pi/agent/extensions/
+cp kido-status.ts kido-agents.ts ~/.pi/agent/extensions/
 ```
 
+`kido setup-pi` does exactly this, from copies embedded in the binary.
 Extensions in `~/.pi/agent/extensions/` are auto-discovered at startup and can
 be hot-reloaded with `/reload`. For a project-local install use
 `.pi/extensions/` instead.
 
-For a one-off run without installing:
+For a one-off run without installing, pass both (`-e` repeats); they need
+not be in the same directory, but there is no reason not to be:
 
 ```sh
-pi -e /path/to/kido-status.ts
+pi -e /path/to/kido-status.ts -e /path/to/kido-agents.ts
 ```
 
 ## Behaviour
@@ -89,6 +114,12 @@ Protocol — a client:
 3. half-closes its write half (`shutdown(SHUT_WR)`),
 4. reads `ok\n`, and closes.
 
+Plain v0 text is delivered by `kido-status.ts` itself — that is what the
+inbox was built for, and it works with `kido-agents.ts` absent. A v1
+envelope is handed to `kido-agents.ts` and dispatched by kind (below);
+with no agent half loaded it degrades to its own text rather than being
+lost.
+
 ```sh
 # with socat; any client that half-closes will do
 printf 'run the tests and summarise failures' | socat - UNIX-CONNECT:"$sock"
@@ -108,7 +139,7 @@ reporting carries on unaffected.
 
 ## Tools
 
-Four tools register unconditionally when the extension loads, and simply do
+These register unconditionally when `kido-agents.ts` loads, and simply do
 nothing useful until a session has started and kido has been found:
 
 - `list_agents()` runs `kido agents --json` and returns every agent visible

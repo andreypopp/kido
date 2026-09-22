@@ -153,7 +153,7 @@ func orderTree(scoped []state.Session, byInstance map[string]string) []state.Ses
 
 // isAncestor reports whether ancestorID is an ancestor of targetID within
 // agents, walking each agent's Parent edge - the same walk
-// pi/kido-status.ts's own isAncestor does on the extension side, kept in
+// pi/kido-agents.ts's own isAncestor does on the extension side, kept in
 // step because both enforce the same rule: ask_agent refuses to ask an
 // ancestor, and kido interrupt/stop refuse to act on anything but a
 // descendant, so the parent stays free to orchestrate and a confused
