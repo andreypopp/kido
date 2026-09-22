@@ -21,7 +21,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -79,51 +78,7 @@ func setup(m *testing.M) (int, error) {
 		return 0, err
 	}
 	tmuxBin, tmuxWhy = findTmux()
-	before := controlClients()
-	code := m.Run()
-	// kido's control client must die with kido: a leak here means an
-	// orphaned "tmux -C" holding a socket open.
-	if leaked := newControlClients(before); len(leaked) > 0 {
-		time.Sleep(time.Second) // exiting clients get a moment to go
-		if leaked = newControlClients(before); len(leaked) > 0 {
-			fmt.Fprintf(os.Stderr, "leaked control clients: %v\n", leaked)
-			if code == 0 {
-				code = 1
-			}
-		}
-	}
-	return code, nil
-}
-
-// controlClients is the set of pids of tmux control clients running right
-// now, kido's and anyone else's.
-func controlClients() map[string]bool {
-	pids := map[string]bool{}
-	out, err := exec.Command("ps", "-axo", "pid=,args=").Output()
-	if err != nil {
-		return pids
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		f := strings.Fields(line)
-		if len(f) < 3 {
-			continue
-		}
-		if filepath.Base(f[1]) == "tmux" && slices.Contains(f[2:], "-C") {
-			pids[f[0]] = true
-		}
-	}
-	return pids
-}
-
-// newControlClients is the control clients that appeared since before.
-func newControlClients(before map[string]bool) []string {
-	var out []string
-	for pid := range controlClients() {
-		if !before[pid] {
-			out = append(out, pid)
-		}
-	}
-	return out
+	return m.Run(), nil
 }
 
 // buildFakeAgent compiles a binary with the given name that sleeps: tmux
@@ -349,8 +304,28 @@ bind-key k if-shell -F '#{m:*side-status-focus*,#{client_flags}}' \
 	}
 
 	t.Cleanup(func() {
+		// kido's control client must die with kido: a leak here means an
+		// orphaned "tmux -C" holding a socket open. Ask the inner server
+		// itself which pids are its own control clients, rather than
+		// scanning the whole machine's process table: a control client
+		// belonging to some other tmux server started during this test
+		// (another agent's session, say) is not this test's problem, and
+		// a machine-wide scan cannot tell the two apart.
+		pids := controlClientPIDs(h.inner)
+		// A second concurrent control-mode client on this server is a real
+		// bug: Conn's supervise loop kills the old child before dialling a
+		// new one (internal/tmux/conn.go), so anything beyond one means a
+		// redial forgot to reap what came before it.
+		if len(pids) > 1 {
+			t.Errorf("more than one control client attached to %s: %v", h.inner, pids)
+		}
 		killServer(h.inner)
 		killServer(h.outer)
+		for _, pid := range pids {
+			if !processGone(pid, time.Second) {
+				t.Errorf("leaked control client pid %s for socket %s", pid, h.inner)
+			}
+		}
 	})
 
 	h.must(h.tmux(h.outer, "-f", "/dev/null", "new-session", "-d", "-s", "host",
@@ -368,6 +343,46 @@ bind-key k if-shell -F '#{m:*side-status-focus*,#{client_flags}}' \
 		msgf("sidebar shows session %s", session))
 	h.client = strings.TrimSpace(strings.Split(h.in("list-clients", "-F", "#{client_name}"), "\n")[0])
 	return h
+}
+
+// controlClientPIDs asks a tmux server for the pids of its own
+// control-mode clients (kido's connection, and nothing else): the server
+// is authoritative about its own clients, unlike a process-table scan
+// that cannot tell this test's control client from anyone else's. It
+// returns nothing once the server is gone, which is why callers must ask
+// before killing it.
+func controlClientPIDs(socket string) []string {
+	out, err := exec.Command(tmuxBin, "-L", socket, "list-clients", "-F",
+		"#{client_pid}\t#{client_control_mode}").Output()
+	if err != nil {
+		return nil
+	}
+	var pids []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if pid, mode, ok := strings.Cut(line, "\t"); ok && mode == "1" {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// processGone polls for pid to exit within budget. kido holds the only
+// write end of its control client's stdin, so the pipe closes and the
+// client exits on its own the moment kido dies - by kill-server's own
+// SIGTERM to the side-status job, or otherwise - without kido needing a
+// signal handler; this is a regression guard on that staying true, not
+// a check that can currently fail on its own.
+func processGone(pid string, budget time.Duration) bool {
+	deadline := time.Now().Add(budget)
+	for {
+		if exec.Command("kill", "-0", pid).Run() != nil {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // killServer stops a test server and unlinks its socket, which tmux
