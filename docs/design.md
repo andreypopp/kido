@@ -82,16 +82,35 @@ parent was very much alive. A pid is not one either: pids are recycled,
 and kido's liveness test (`kill(pid, 0)`) reads EPERM as alive, so a pid
 reused by another user's process looks like a living parent.
 
-So every pi process generates an opaque instance id once, at module
-scope, and reports it on every status call. A child names its parent by
-that instance, passed through the environment at spawn, and a parent
-edge is matched on it and nothing else. The parent pid is still recorded
-and still passed, but only as a cheap first check for the liveness poll:
+So every pi process generates an opaque instance id once per process and
+reports it on every status call. A child names its parent by that
+instance, passed through the environment at spawn, and a parent edge is
+matched on it and nothing else. The parent pid is still recorded and
+still passed, but only as a cheap first check for the liveness poll:
 ESRCH is a definite "gone", and anything else defers to whether some
 live record in scope still reports the parent instance as its own. An
 instance string cannot collide the way a recycled pid can, and it is
 location-independent, which is what would let it survive a subagent
 running somewhere other than this machine.
+
+**"Once per process" is not "once at module scope", and that distinction
+was a real bug.** The instance used to be a plain `const INSTANCE =
+randomUUID()` at kido-status.ts's top level. Measured against pi 0.85.1:
+a `/reload` clears pi's extension module cache and re-evaluates each
+extension's top level from scratch (`resource-loader.js`'s `reload()`
+calls `clearExtensionCache()`; extensions load through jiti with
+`moduleCache: false`), so that `const` picked up a *new* random value on
+every reload even though the process, the pid and (for a reload
+specifically) the session id never changed. A child that had recorded
+the pre-reload value as its own `--parent-instance` could then never
+match it again - every parent-liveness poll afterward saw a live pid but
+no record naming that instance, which is indistinguishable from the
+parent actually being gone, and the child shut itself down minutes
+later. `INSTANCE` is now held on `globalThis` behind a `Symbol.for` key,
+the same mechanism the seam below already relies on to survive that same
+re-evaluation, and generated only if the slot is empty. `PARENT_PID`,
+`PARENT_INSTANCE` and depth need no such fix: they come from
+`process.env`, which a `/reload` does not touch.
 
 The instance is the one identity that is generated rather than read, so
 it is the one the agent extension reads across the seam from the status
@@ -99,6 +118,46 @@ extension instead of computing itself; a second copy would be a second
 id. Parent pid, parent instance and depth are read from the environment
 by both halves independently, since two readers of a constant cannot
 disagree.
+
+**The record itself must survive a reload too, not just the instance
+that names it.** `session_shutdown` fires for a reload exactly as it
+does for a real exit, and used to remove this session's own state record
+unconditionally in response - `send("idle", { remove: true })` - before
+`session_start` reported a fresh one moments later. That gap is what let
+a live parent's poll land on "no record" even with the instance held
+fixed: not the /reload bug's only ingredient, but a second, independent
+way to reproduce the same symptom. `session_shutdown` now removes the
+record for every reason except literally `"reload"`. This is deliberately
+not the same gate as `isRunEnding` (used for the run outcome and the
+completion linger, below): those answer "did the run finish", and
+correctly treat `"new"`, `"resume"` and `"fork"` as not run-ending, since
+the run carries on. The record's removal answers a different question -
+does the *filename* (the session id) still refer to this session - and
+for those three reasons it does not: pi hands back a new session id in
+the same process (measured against pi 0.85.1), so the old record must
+still be removed or it is a live-pid file that `Load()` - which only ever
+deletes a record whose pid is dead - leaves behind forever, claiming the
+same pane alongside the fresh record under the new id.
+
+**The child side stays defensive even so.** `parentIsAlive()` never
+treats a single "no matching instance in scope" reading as conclusive: it
+must see that same reading on two consecutive polls (`missedParentPolls`
+in kido-agents.ts, reset the moment a poll finds the parent again, and by
+`stopParentLivenessPoll`) before it will end the session, roughly ten
+seconds at the poll's default five-second interval. A dead pid (`ESRCH`)
+is never debounced - keepAlive protects against the idle-exit timer, not
+against an orphan outliving a parent that is actually gone, and a real
+ESRCH ends the session on the very next poll regardless. This is
+belt-and-braces on top of the two fixes above, not a substitute for
+either: `kido agents --json` carries no field a child could use to tell
+"my specific parent instance is missing" apart from "some *other* process
+now holds a recycled pid and was never registered at all" - both read as
+"no record names my parent instance", and nothing meaningfully sharper is
+buildable from what `AgentInfo` exposes today. The two-poll debounce
+buys tolerance for exactly the shape of gap the reload bug had (a
+record that disappears and reappears within about one poll interval)
+without adding a mechanism elaborate enough to mask a future regression
+of its own; a genuinely dead parent still exits promptly.
 
 ## Reporting, and what is carried forward
 

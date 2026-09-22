@@ -49,6 +49,8 @@ switch (args[0]) {
   }
   case "agents": {
     const file = process.env.KIDO_FAKE_AGENTS_FILE;
+    const callLog = process.env.KIDO_FAKE_AGENTS_CALL_LOG;
+    if (callLog) fs.appendFileSync(callLog, "1\\n");
     process.stdout.write(file && fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "[]");
     process.exit(0);
   }
@@ -140,6 +142,8 @@ interface Fixture {
   waitForCloseWindow(ms?: number): Promise<string[]>;
   lastStatusArgs(): string[] | undefined;
   statusReportsWith(status: string): string[][];
+  statusReportsWithRemove(): string[][];
+  agentsCallCount(): number;
   lastControlArgs(): string[] | undefined;
   // waitForLog polls lastLogFor until it has a match (see pollUntil).
   waitForLog(to: string, kind?: string, ms?: number): Promise<{ id: string; replyTo: string; to: string; text: string; failed?: boolean }>;
@@ -174,6 +178,7 @@ function makeFixture(): Fixture {
   const statusLogFile = join(dir, "status.jsonl");
   const controlLogFile = join(dir, "control.jsonl");
   const runOutcomeLogFile = join(dir, "run-outcome.jsonl");
+  const agentsCallLogFile = join(dir, "agents-calls.jsonl");
   writeFileSync(agentsFile, "[]");
   writeFileSync(logFile, "");
   writeFileSync(spawnLogFile, "");
@@ -181,6 +186,7 @@ function makeFixture(): Fixture {
   writeFileSync(statusLogFile, "");
   writeFileSync(controlLogFile, "");
   writeFileSync(runOutcomeLogFile, "");
+  writeFileSync(agentsCallLogFile, "");
   const windowFocusedLogFile = join(dir, "window-focused.jsonl");
   writeFileSync(windowFocusedLogFile, "");
 
@@ -194,6 +200,7 @@ function makeFixture(): Fixture {
     KIDO_FAKE_STATUS_LOG: process.env.KIDO_FAKE_STATUS_LOG,
     KIDO_FAKE_CONTROL_LOG: process.env.KIDO_FAKE_CONTROL_LOG,
     KIDO_FAKE_RUN_OUTCOME_LOG: process.env.KIDO_FAKE_RUN_OUTCOME_LOG,
+    KIDO_FAKE_AGENTS_CALL_LOG: process.env.KIDO_FAKE_AGENTS_CALL_LOG,
     KIDO_FAKE_WINDOW_FOCUSED_LOG: process.env.KIDO_FAKE_WINDOW_FOCUSED_LOG,
     KIDO_FAKE_WINDOW_FOCUSED: process.env.KIDO_FAKE_WINDOW_FOCUSED,
     KIDO_FAKE_INBOX_DIR: process.env.KIDO_FAKE_INBOX_DIR,
@@ -210,6 +217,7 @@ function makeFixture(): Fixture {
   process.env.KIDO_FAKE_STATUS_LOG = statusLogFile;
   process.env.KIDO_FAKE_CONTROL_LOG = controlLogFile;
   process.env.KIDO_FAKE_RUN_OUTCOME_LOG = runOutcomeLogFile;
+  process.env.KIDO_FAKE_AGENTS_CALL_LOG = agentsCallLogFile;
   process.env.KIDO_FAKE_WINDOW_FOCUSED_LOG = windowFocusedLogFile;
   delete process.env.KIDO_FAKE_WINDOW_FOCUSED; // default: not focused
   process.env.KIDO_FAKE_INBOX_DIR = inboxDir;
@@ -261,6 +269,12 @@ function makeFixture(): Fixture {
         const i = args.indexOf("--status");
         return i >= 0 && args[i + 1] === status;
       });
+    },
+    statusReportsWithRemove() {
+      return jsonLines(statusLogFile).filter((args: string[]) => args.includes("--remove"));
+    },
+    agentsCallCount() {
+      return jsonLines(agentsCallLogFile).length;
     },
     lastControlArgs() {
       return last(jsonLines(controlLogFile));
@@ -725,6 +739,25 @@ test("parseEnvelope agrees with internal/msg.Parse's v0/v1 discriminator table",
   for (const c of cases) {
     const got = parseEnvelope(c.raw) !== null;
     assert.equal(got, c.ok, `${c.name}: parseEnvelope(${JSON.stringify(c.raw)}) ok = ${got}, want ${c.ok}`);
+  }
+});
+
+// An agent answering an ask routinely wrote its answer into its own
+// session's transcript, as it would for a user's question, where the
+// asker (blocked in ask_agent) never saw it. The delivered text must
+// steer away from that: name message_agent as the only channel that
+// reaches the asker, and say the terminal is not it.
+test("an inbound ask's delivered text says the reply must go through message_agent, not this session's own output", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    await sendToInbox(s.inboxPath, envelope("ask", "you there?", { id: "ask-y", from: { session: "peer-a", name: "peer-a" } }));
+    const delivered = s.delivered.find((d) => d.text.includes("is asking"))?.text ?? "";
+    assert.match(delivered, /message_agent/, "names the tool that actually reaches the asker");
+    assert.match(delivered, /cannot see this session's screen|this session's output/i, "says plainly that writing here does not reach the asker");
+  } finally {
+    fx.restore();
   }
 });
 
@@ -1276,6 +1309,49 @@ test("a session_shutdown that is a reload or a session replacement records no ou
   }
 });
 
+// The parent-side fix for the same incident the child-side debounce
+// above guards against: session_shutdown used to remove this session's
+// own record unconditionally, including on a reload, which is what left
+// a gap for a child's poll to land in. Measured against a real pi 0.85.1
+// session_start/session_shutdown pair: a /reload delivers reason "reload"
+// and keeps the same session id (session_start's own
+// ctx.sessionManager.getSessionId() call returns it unchanged), while
+// "new", "resume" and "fork" each hand back a different one in the same
+// process - so those three must still remove the old record, or it is a
+// live-pid file that nothing ever cleans up, claiming this pane alongside
+// the fresh one under the new id.
+test("session_shutdown removes the record for every reason except a reload", async () => {
+  for (const reason of ["new", "resume", "fork", "quit", undefined]) {
+    const fx = makeFixture();
+    try {
+      fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+      const s = await startSession(fx, `sess-${reason}`);
+      await pollUntil(() => fx.lastStatusArgs() !== undefined, 2000, "the initial idle report");
+      await s.emit("session_shutdown", reason === undefined ? undefined : { type: "session_shutdown", reason });
+      await pollUntil(() => fx.statusReportsWithRemove().length >= 1, 2000, `a "${reason}" shutdown to report --remove`);
+    } finally {
+      fx.restore();
+    }
+  }
+
+  // The case under test: a reload must not remove the record at all.
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx, "sess-reload");
+    await pollUntil(() => fx.lastStatusArgs() !== undefined, 2000, "the initial idle report");
+    await s.emit("session_shutdown", { type: "session_shutdown", reason: "reload" });
+    // No event to wait on for a negative outcome - the reload branch
+    // returns before ever calling send(), so there is no spawnDetached
+    // call in flight to race against. The grace period is only margin
+    // against a regression that makes the call asynchronously instead.
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(fx.statusReportsWithRemove().length, 0, "a reload must never report --remove");
+  } finally {
+    fx.restore();
+  }
+});
+
 test("session_shutdown never records an outcome for a root session", async () => {
   const fx = makeFixture();
   try {
@@ -1501,6 +1577,40 @@ test("parent-liveness poll: does not shut down while the parent is alive and its
   }
 });
 
+// The regression test for the actual incident: a subagent spawned with
+// keepAlive died the moment its parent ran /reload. The parent's record
+// disappearing and reappearing (what session_shutdown's remove-then-
+// session_start's re-report looked like before the parent-side fix, and
+// what missedParentPolls's debounce keeps absorbing even if some future
+// change reopens a gap like it) must never end the child on its own - a
+// single missed poll is not evidence, exactly like an unreachable kido
+// already is not evidence just above it.
+test("parent-liveness poll: a single missed poll for the parent's record does not shut the child down (the /reload regression)", async () => {
+  const fx = makeFixture();
+  try {
+    const alive = [{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }];
+    const gone = [{ id: "self", name: "self", parent: "", self: true, canMessage: true, window: "@1" }];
+    fx.setAgents(alive);
+    await withParentEnv(process.pid, "parent-inst", 20, async () => {
+      const factory = await freshExtensions();
+      const s = await startWithShutdownSpy(factory);
+      await pollUntil(() => fx.agentsCallCount() >= 1, 2000, "the first liveness poll");
+      const before = fx.agentsCallCount();
+      fx.setAgents(gone);
+      // Exactly one poll observes the gap, then it closes - a bounded
+      // window, not a wall-clock guess, so this cannot flake by racing an
+      // extra poll into the gone window.
+      await pollUntil(() => fx.agentsCallCount() >= before + 1, 2000, "one poll to observe the missing parent record");
+      fx.setAgents(alive);
+      await pollUntil(() => fx.agentsCallCount() >= before + 4, 2000, "several more polls once the record reappears");
+      assert.equal(s.shutdowns(), 0, "a single missed poll must never end the session on its own");
+      await s.emit("session_shutdown");
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
 test("parent-liveness poll: a recycled pid with a different instance counts as gone", async () => {
   const fx = makeFixture();
   try {
@@ -1508,7 +1618,11 @@ test("parent-liveness poll: a recycled pid with a different instance counts as g
     // but no record in scope resolves this session's parent edge, exactly
     // as if the real parent exited and something else now holds its old
     // pid. state.Alive (internal/state) reports EPERM as alive for the
-    // same reason pid alone is not proof here (see AGENTS.md).
+    // same reason pid alone is not proof here (see AGENTS.md). Every poll
+    // sees the same empty record, so missedParentPolls's debounce (see the
+    // test above) reaches its threshold and this still ends the session -
+    // the debounce delays a genuine death by a couple of polls, it does
+    // not defeat it.
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true, window: "@1" }]);
     await withParentEnv(process.pid, "parent-inst", 20, async () => {
       const factory = await freshExtensions();

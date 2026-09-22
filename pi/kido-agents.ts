@@ -320,13 +320,26 @@ export default function (pi: ExtensionAPI) {
   // handleInboundAsk delivers an ask to the model with an explicit
   // instruction that a reply is expected, unless answering would close a
   // cycle, in which case it is refused on the wire and not delivered at
-  // all.
+  // all. The extra framing below ("cannot see this session's screen",
+  // "blocked until you reply") exists because a model answering an ask
+  // routinely wrote its answer into this session's own transcript - as it
+  // would for a user's question - where the asker, blocked in ask_agent,
+  // never sees it. The claim is about the channel, not the audience: it
+  // says nothing about whether a human is watching this pane, since one
+  // often is (docs/design.md; kido's sidebar exists so a human can), and
+  // telling a model otherwise risks suppressing narration a watching human
+  // wants, for no behavioural gain - the asker's blindness to this
+  // session's output is what actually requires message_agent, regardless
+  // of who else can see it. The reply's own tool-call line stays last: a
+  // model anchors on a prompt's tail, and pendingInboundAsks needs exactly
+  // that call echoed back.
   const handleInboundAsk = (env: Envelope): "ok" | "refused" => {
     if (hasAskOutstandingTo(env.from.session)) return "refused";
     const from = labelFrom(env.from);
     if (env.from.pane) pendingInboundAsks.set(env.id, env.from.pane);
     deliver(
       `${from} is asking (id ${env.id}): ${env.text}\n\n` +
+        `This is a question from another agent, not from the user. ${from} cannot see this session's screen or context: only what you send with message_agent reaches them, so put the whole answer there and make it self-contained. ${from} is blocked until you reply, so reply before doing other work.\n\n` +
         `Reply with message_agent(to=${JSON.stringify(from)}, message=<answer>, replyTo=${JSON.stringify(env.id)}).`,
     );
     return "ok";
@@ -411,11 +424,30 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // parentIsAlive: kill(pid, 0) first, where ESRCH is a definite "gone"
-  // answered without a subprocess. Success or EPERM is not proof of life
-  // (a pid can be recycled), so anything else defers to whether this
-  // session's own `parent` still resolves in kido agents, which a
-  // recycled pid cannot fake.
+  // missedParentPolls counts consecutive polls where the pid check was
+  // ambiguous (kill(pid, 0) succeeded or came back EPERM - a live pid
+  // proves nothing by itself, since a pid can be recycled by an unrelated
+  // process) and the registry, successfully queried, found no live record
+  // for this session's own parent. The primary fix for the actual incident
+  // this guards against - a /reload's record briefly disappearing and
+  // reappearing - lives on the parent side (kido-status.ts's
+  // session_shutdown no longer removes the record on "reload", and its
+  // INSTANCE now survives a reload instead of being regenerated); this
+  // debounce is defence in depth on top of that fix, not a substitute for
+  // it, for any other momentary gap in the parent's own record that isn't
+  // a reload. It is deliberately small: two consecutive misses, ~10s at
+  // the default poll interval, is enough to absorb a single missed read
+  // without meaningfully delaying a real orphan's cleanup.
+  let missedParentPolls = 0;
+  const CONSECUTIVE_MISSES_REQUIRED = 2;
+
+  // parentIsAlive: kill(pid, 0) first, where ESRCH is a definite "gone" -
+  // answered without a subprocess, and never debounced, so keepAlive gives
+  // no protection against a genuinely dead parent. Success or EPERM is not
+  // proof of life (a pid can be recycled), so anything else defers to
+  // whether this session's own `parent` still resolves in kido agents,
+  // and only after CONSECUTIVE_MISSES_REQUIRED polls in a row agree there
+  // is none - a single missed poll is inconclusive, not evidence.
   const parentIsAlive = async (): Promise<boolean> => {
     if (PARENT_PID === undefined) return true;
     try {
@@ -424,9 +456,14 @@ export default function (pi: ExtensionAPI) {
       if ((err as NodeJS.ErrnoException)?.code === "ESRCH") return false;
     }
     const listed = await fetchAgents();
-    if ("error" in listed) return true; // kido being unavailable is not evidence; never shut down on a guess
+    if ("error" in listed) return true; // kido being unavailable is not evidence; never shut down on a guess, and not a miss either
     const self = listed.agents.find((a) => a.self);
-    return !!self?.parent;
+    if (self?.parent) {
+      missedParentPolls = 0;
+      return true;
+    }
+    missedParentPolls++;
+    return missedParentPolls < CONSECUTIVE_MISSES_REQUIRED;
   };
 
   // Idempotent: a /reload re-runs session_start and must not pile up a
@@ -450,6 +487,7 @@ export default function (pi: ExtensionAPI) {
       clearInterval(parentPollTimer);
       parentPollTimer = null;
     }
+    missedParentPolls = 0;
   };
 
   // idleExitTimer is the idle self-exit clock: armed on every settled turn

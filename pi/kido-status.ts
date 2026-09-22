@@ -46,10 +46,22 @@ import { createServer, type Server, type Socket } from "node:net";
 import { delimiter, isAbsolute, join } from "node:path";
 
 // Generated once per process, not per session, so a /reload does not
-// change it under a child that recorded it as a ParentInstance. Read by
+// change it under a child that recorded it as a ParentInstance - held on
+// globalThis rather than module scope to make that true: pi (measured
+// against 0.85.1) clears its extension module cache and re-evaluates this
+// file's top level on every /reload (resource-loader.js's reload() calls
+// clearExtensionCache(); loader.js loads extensions through jiti with
+// moduleCache: false), so a plain `const INSTANCE = randomUUID()` here
+// picked up a fresh value each time even though the process, the pid and
+// the session id never changed. A child that recorded the pre-reload value
+// as its own --parent-instance could then never match it again, which is
+// what made a live parent look gone. Symbol.for is the same mechanism the
+// seam below already relies on to survive that same re-evaluation. Read by
 // kido-agents.ts through the seam, never by importing it: a second
-// evaluation of this file would generate a second id.
-const INSTANCE = randomUUID();
+// evaluation of this file would read the same slot, but importing it as a
+// runtime value would still cost a second module evaluation for nothing.
+const INSTANCE_SLOT = Symbol.for("kido.pi.extension.instance");
+const INSTANCE = ((globalThis as unknown as Record<symbol, string | undefined>)[INSTANCE_SLOT] ??= randomUUID());
 
 // Set by `kido spawn` in a subagent's environment; absent for a root
 // session. kido-agents.ts reads the same three itself.
@@ -603,6 +615,21 @@ export default function (pi: ExtensionAPI) {
     // Before the removal report: kido must still have a record of this
     // session while the agent half resolves its parent edge and window.
     await seam().agents?.sessionEnding(event?.reason);
+    // "reload" is the one reason (measured against pi 0.85.1) that keeps
+    // this same process AND this same session id - session_start reruns in
+    // the same pi process and ctx.sessionManager.getSessionId() comes back
+    // unchanged. Removing the record there is pure loss: the parent's own
+    // row would vanish from the sidebar and a child polling for it mid-gap
+    // would read a live parent as gone (this is the /reload bug). "quit"
+    // ends the record for real, and "new"/"resume"/"fork" each move this
+    // process to a NEW session id, so the OLD record must still be removed
+    // there or it is a live-pid file Load() never cleans up, permanently
+    // claiming this pane alongside the fresh one. This is deliberately not
+    // isRunEnding: that gate answers a different question (did the run
+    // finish) and already treats "new"/"resume"/"fork" as not run-ending,
+    // which is right for an outcome but wrong here, where the record's
+    // filename - the session id - is what actually changed.
+    if (event?.reason === "reload") return;
     send("idle", { remove: true });
   });
 }
