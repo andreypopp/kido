@@ -16,12 +16,60 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/sahilm/fuzzy"
+
 	"kido/internal/hook"
 	"kido/internal/procs"
 	"kido/internal/state"
 	"kido/internal/tmux"
 	"kido/internal/ui"
 )
+
+// subcommands lists every kido subcommand the switch in main recognises,
+// kept in one place so unknownSubcommand can name them; a subcommand
+// added to the switch and forgotten here just gets a plainer error.
+var subcommands = []string{
+	"hook", "setup-pi", "setup-zsh", "setup-tmux", "setup-claude",
+	"agent-status", "agents", "debug-log", "inbox-path", "snapshot",
+	"switch-session", "switch-window", "prompt", "message", "interrupt",
+	"stop", "spawn", "close-window", "window-focused", "reap",
+	"run-outcome", "runs",
+}
+
+// suggestSubcommand returns the known subcommand name's letters most
+// plainly appear within, in order, or "" when none do. Pattern and data
+// are backwards from fuzzy's usual filter-as-you-type use: here name is
+// the (long, wrong) thing the user typed and cmd is the (short, real)
+// thing it should have been, so fuzzy.Find(cmd, []string{name}) asks
+// whether cmd's letters occur in name in order - which is exactly what
+// catches list_agents, the pi tool name, containing agents, the
+// subcommand it should have invoked.
+func suggestSubcommand(name string) string {
+	best, bestScore := "", 0
+	for _, cmd := range subcommands {
+		matches := fuzzy.Find(cmd, []string{name})
+		if len(matches) == 0 {
+			continue
+		}
+		if best == "" || matches[0].Score > bestScore {
+			best, bestScore = cmd, matches[0].Score
+		}
+	}
+	return best
+}
+
+// unknownSubcommand reports that name is not a kido subcommand and exits
+// 1. Falling through to the interactive UI's own "no tmux client" error
+// used to hide this case entirely, describing a tmux problem when the
+// real one was a typo or a wrong name.
+func unknownSubcommand(name string) {
+	fmt.Fprintf(os.Stderr, "kido: unknown subcommand %q\n", name)
+	if suggestion := suggestSubcommand(name); suggestion != "" {
+		fmt.Fprintf(os.Stderr, "did you mean %q?\n", suggestion)
+	}
+	fmt.Fprintln(os.Stderr, "subcommands:", strings.Join(subcommands, ", "))
+	os.Exit(1)
+}
 
 // debugFlag parses a command's args for its one boolean --debug flag,
 // erroring on anything else.
@@ -149,6 +197,18 @@ func main() {
 		case "runs":
 			dispatch("runs", func() error { return runsCmd(os.Args[2:]) })
 			return
+		default:
+			// A leading flag (bare `kido -client NAME`, or any other flag)
+			// falls through to the interactive UI below, same as always.
+			// Anything else is a typo or a wrong name - the pi tool is
+			// called list_agents, the subcommand is `agents`, and the old
+			// fallthrough reported a misleading tmux-client error instead
+			// of naming the mismatch - so say so instead of guessing at a
+			// client.
+			if !strings.HasPrefix(os.Args[1], "-") {
+				unknownSubcommand(os.Args[1])
+				return
+			}
 		}
 	}
 
@@ -170,12 +230,22 @@ func main() {
 		opts.Client = side
 	}
 	if opts.Client == "" {
-		// Standalone, the client must be named: a popup is not a client, so
-		// tmux answers #{client_name} inside one with whichever client it
-		// saw last - measured, with two clients attached, as the *other*
-		// client than the one the popup was opened on. Guessing there would
-		// silently jump somebody else's screen, so the binding passes the
-		// name (see README) and kido says so rather than guessing.
+		opts.Client = tmux.ResolveClient(os.Getenv("TMUX_PANE"), os.Getenv("TMUX"))
+	}
+	if opts.Client == "" {
+		// Standalone with nothing safely inferrable: the client must be
+		// named. Asking tmux #{client_name} from inside won't do it - a
+		// popup is not a client, so tmux answers with whichever client it
+		// saw last, measured (two clients attached) as the *other* client
+		// than the one the popup was opened on. tmux.ResolveClient asks a
+		// different, answerable question instead: who is attached to this
+		// pane's session, ignoring kido's own control connections. This
+		// message is only reached when even that is ambiguous - nobody
+		// attached, or more than one real client - which is the genuinely
+		// ambiguous case the original hazard was about: guessing would risk
+		// silently jumping somebody else's screen. So the binding passes
+		// the name explicitly (see README) and kido says so rather than
+		// guessing.
 		fmt.Fprintln(os.Stderr, "kido: no tmux client; pass -client '#{client_name}'")
 		os.Exit(1)
 	}

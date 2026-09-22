@@ -405,13 +405,14 @@ var clientFormat = strings.Join([]string{
 	"#{client_name}",
 	"#{client_session}",
 	"#{client_flags}",
+	"#{client_control_mode}",
 }, sep)
 
 // parseClientState picks client's line out of list-clients output.
 func parseClientState(lines []string, client string) (session string, focused bool) {
 	for _, line := range lines {
-		f := strings.SplitN(line, sep, 3)
-		if len(f) < 3 || f[0] != client {
+		f := strings.SplitN(line, sep, 4)
+		if len(f) < 4 || f[0] != client {
 			continue
 		}
 		return f[1], strings.Contains(f[2], sideFocusFlag)
@@ -427,6 +428,72 @@ func ClientState(client string) (session string, focused bool) {
 		return "", false
 	}
 	return parseClientState(strings.Split(out, "\n"), client)
+}
+
+// realClients picks out the non-control-mode client names attached to a
+// session from list-clients output in clientFormat. Kido's own control
+// connections (Conn, one dialled per real client by side-status-command)
+// are attached to that same session and would otherwise be counted as
+// people to jump; #{client_control_mode} is the literal property that
+// makes a client unjumpable, unlike an empty #{client_tty} - which a
+// control client happens to have too, but so would some future client
+// type that is not one.
+func realClients(lines []string) []string {
+	var out []string
+	for _, line := range lines {
+		f := strings.SplitN(line, sep, 4)
+		if len(f) < 4 || f[0] == "" || f[3] == "1" {
+			continue
+		}
+		out = append(out, f[0])
+	}
+	return out
+}
+
+// paneSessionTarget resolves the session a standalone kido should look at
+// to find its own client: pane's own session from a live lookup, when
+// pane still names a pane tmux knows about (panes move, so nothing but a
+// fresh query is trustworthy) - or, when pane names nothing tmux can find,
+// the session id tmux substituted into $TMUX (tmuxEnv) at launch. That
+// fallback is what a popup needs: display-popup gives its command no pane
+// of its own, so the popup's $TMUX_PANE is absent from tmux's pane list
+// entirely, but its $TMUX carries "socket,pid,session-id" for the session
+// it was opened from - safe to trust for a popup's few-second life, which
+// cannot outlast a session rename or move.
+func paneSessionTarget(pane, tmuxEnv string) string {
+	if pane != "" {
+		if out, err := run("display-message", "-p", "-t", pane, "#{session_id}"); err == nil && out != "" {
+			return out
+		}
+	}
+	f := strings.Split(tmuxEnv, ",")
+	if len(f) < 3 || f[2] == "" {
+		return ""
+	}
+	return "$" + f[2]
+}
+
+// ResolveClient answers "who is attached to this pane's session", ignoring
+// kido's own control connections, so a standalone kido (a plain pane, or a
+// popup with no -client of its own) can pick its client without asking
+// tmux the unanswerable #{client_name} question - see the comment on
+// Options.Client in cmd/kido/main.go for why that is a different question
+// with no good answer from inside. It returns "" - the caller's existing
+// ambiguous case - when zero or more than one real client is attached.
+func ResolveClient(pane, tmuxEnv string) string {
+	target := paneSessionTarget(pane, tmuxEnv)
+	if target == "" {
+		return ""
+	}
+	out, err := run("list-clients", "-t", target, "-F", clientFormat)
+	if err != nil {
+		return ""
+	}
+	real := realClients(strings.Split(out, "\n"))
+	if len(real) == 1 {
+		return real[0]
+	}
+	return ""
 }
 
 // ActivePane returns the pane ID of the active pane of session within

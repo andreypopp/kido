@@ -155,8 +155,8 @@ func TestParsePanesDeadSubagent(t *testing.T) {
 
 func TestParseClientState(t *testing.T) {
 	lines := []string{
-		"/dev/ttys001" + sep + "other" + sep + "attached,UTF-8",
-		"/dev/ttys012" + sep + "work" + sep + "attached,side-status-focus,UTF-8",
+		"/dev/ttys001" + sep + "other" + sep + "attached,UTF-8" + sep + "0",
+		"/dev/ttys012" + sep + "work" + sep + "attached,side-status-focus,UTF-8" + sep + "0",
 	}
 	if sess, focused := parseClientState(lines, "/dev/ttys012"); sess != "work" || !focused {
 		t.Errorf("got (%q, %v), want (work, true)", sess, focused)
@@ -166,6 +166,37 @@ func TestParseClientState(t *testing.T) {
 	}
 	if sess, _ := parseClientState(lines, "/dev/ttys999"); sess != "" {
 		t.Errorf("unknown client: got %q, want empty", sess)
+	}
+}
+
+// TestRealClients pins that control-mode clients - kido's own Conn dials
+// one per real client - are excluded regardless of tty, and that an empty
+// tty alone (a hypothetical future client type) is not treated as the
+// same thing.
+func TestRealClients(t *testing.T) {
+	lines := []string{
+		"/dev/ttys001" + sep + "work" + sep + "attached,UTF-8" + sep + "0",
+		"client-2" + sep + "work" + sep + "attached,control-mode,UTF-8" + sep + "1",
+	}
+	if got := realClients(lines); len(got) != 1 || got[0] != "/dev/ttys001" {
+		t.Errorf("got %q, want just the real client", got)
+	}
+}
+
+// TestResolveClientAmbiguous pins the caller's fallback case: realClients
+// returning zero or several names must not be resolved by ResolveClient's
+// tmux-touching half, so this is covered through realClients directly.
+func TestResolveClientAmbiguousCount(t *testing.T) {
+	zero := []string{"client-1" + sep + "work" + sep + "control-mode" + sep + "1"}
+	if got := realClients(zero); len(got) != 0 {
+		t.Errorf("got %q, want none", got)
+	}
+	two := []string{
+		"/dev/ttys001" + sep + "work" + sep + "attached" + sep + "0",
+		"/dev/ttys002" + sep + "work" + sep + "attached" + sep + "0",
+	}
+	if got := realClients(two); len(got) != 2 {
+		t.Errorf("got %q, want two", got)
 	}
 }
 
