@@ -34,10 +34,14 @@ const maxTaskBytes = 1024 * 1024
 // model instead of quietly mangling something it authored.
 const maxWindowNameLen = 64
 
-// newWindow is tmux.NewWindow, indirected so tests can check what kido
-// spawn hands to tmux without a real server - the same reason listPanes
-// (message.go) and sendPrompt (prompt.go) are variables.
-var newWindow = tmux.NewWindow
+// newWindow and markSubagent are tmux.NewWindow and tmux.MarkSubagent,
+// indirected so tests can check what kido spawn hands to tmux without a
+// real server - the same reason listPanes (message.go) and sendPrompt
+// (prompt.go) are variables.
+var (
+	newWindow    = tmux.NewWindow
+	markSubagent = tmux.MarkSubagent
+)
 
 func spawnUsage() string {
 	return "usage: kido spawn --parent-pid PID --parent-instance ID --name NAME --task-file FILE [--depth N] [-- COMMAND...]"
@@ -166,6 +170,15 @@ func spawnCmd(args []string) error {
 	}
 	windowID, paneID, err := newWindow(pane.SessionID, *name, pane.CurrentPath, env, command)
 	if err != nil {
+		return err
+	}
+	// The mark is what makes this window reapable, and the only thing that
+	// does (internal/reap): it is how a sweep tells a window kido created
+	// from one the user did, long after every trace of the child is gone
+	// from kido's own state. A spawn whose mark failed is reported as a
+	// failure even though the window is up, because the alternative is a
+	// window nothing will ever collect.
+	if err := markSubagent(windowID, fmt.Sprintf("parent=%s depth=%d", *parentInstance, depth)); err != nil {
 		return err
 	}
 	fmt.Printf("%s %s\n", windowID, paneID)

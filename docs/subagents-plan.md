@@ -351,13 +351,43 @@ and the notice is dropped — there is nobody to tell.
 **Window linger.** Before exiting, the child spawns a detached
 `sh -c 'sleep 30; kido close-window @7'`. Not a bare `tmux kill-window`:
 the user may have switched to that window to read it, so the helper skips
-a window that is any client's current window and retries. pi-subagents
-does the same thing with a `CLEANUP_DELAY_MS` watchdog in
-`orca-progress-tabs.ts`.
+a window that is any client's current window. pi-subagents does the same
+thing with a `CLEANUP_DELAY_MS` watchdog in `orca-progress-tabs.ts`.
 
-This misses the `kill -9` case, where nothing runs the shutdown path. The
-backstop is a reaper in kido's poll. Both are needed; neither alone is
-sufficient, which is worth stating rather than pretending otherwise.
+It checks once and does **not** retry, because it does not have to: the
+sweep below collects the window on a later pass.
+
+**The sweep.** `internal/reap.Sweep` runs on the sidebar's own poll
+(`internal/ui`, every tick) and is what actually closes a subagent's
+window in a live session; `kido reap` is the same function by hand. It is
+never called from `state.Load()`, which `kido prompt` and the popup picker
+also call and which must not become a window killer.
+
+**A sweep identifies a subagent window from tmux, not from kido's
+state.** `kido spawn` sets a window option, `@kido_subagent`, and turns on
+`remain-on-exit`; a window carrying that option whose panes are all
+`#{pane_dead}` is finished, and is closed once it has been dead for the
+linger. That is the only design that works:
+
+- **The record is gone before any sweep sees it.** `internal/ui` calls
+  `state.Load()` every 100ms and `Load` deletes a dead-pid record as a
+  side effect of reading it, so a rule keyed to the record of a dead
+  subagent fires essentially never in a session with a sidebar. The
+  window option lives in the tmux server and nothing races it away.
+- **A pane id is not an identity.** Pane ids restart at `%0` on every new
+  tmux server while state files are global and outlive it, so a stale
+  record names a pane somebody else holds now. Requiring the window to be
+  one kido itself marked is what keeps a sweep from closing an unrelated
+  window - demonstrated, before the mark existed, against a plain `sleep`
+  shell that was nobody's subagent.
+
+The second rule - cancel a live subagent whose parent is gone - still
+needs the record, since nothing in tmux knows who spawned whom, and
+carries the same "must be a window we marked" guard.
+
+Neither rule ever closes a window that is a client's current one (the
+user is reading it; it is collected on a later pass) or a session's last
+window (closing it destroys the session).
 
 **Parent death cancels children.** The child's pi is a child of the tmux
 server, not of the parent pi, so no OS parent-death signal applies. The
@@ -399,7 +429,8 @@ kido message <to> [-]            # text on stdin
 kido ask <to> [--timeout D] [-]
 kido spawn --parent-pid P --parent-instance I --name N --task-file F [--depth N]
 kido close-window <id>           # linger helper, skips a focused window
-kido reap                        # cancel orphaned subagents
+kido reap                        # one sweep by hand; the sidebar's poll
+                                 # runs the same one continuously
 ```
 
 `kido message --from` is deliberately **not** offered: it would let any
@@ -426,8 +457,14 @@ e2e, driving `kido spawn` with the fake `node` binary:
 - spawn → child window exists in the same session with the right cwd and
   env, parent gets the notice
 - kill the parent → child window goes away
-- child finishes → window present at +5s, gone after linger
-- linger skips a window the client is currently in
+- child finishes → window present at +5s, gone after linger, **with a
+  real sidebar polling the same state directory**: the record is deleted
+  by that sidebar's own `state.Load` before the window closes, which is
+  the case the first design failed
+- a sweep leaves an unmarked window alone, and never closes a session's
+  last window
+- linger skips a window the client is currently in, and that window is
+  collected once the client leaves it
 - `list_agents` sees both windows of a session and no agent from another
 
 Linger needs a shortened duration; keep it a package variable as

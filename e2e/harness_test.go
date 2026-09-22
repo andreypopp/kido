@@ -303,8 +303,15 @@ func start(t *testing.T, session string, kidoArgs ...string) *harness {
 	// real ~/.local/state/kido. This is the only place the inner server
 	// learns it; the only copies left are h.hook and h.agentStatus, which
 	// run out of band from the test binary rather than in the server.
+	// KIDO_LINGER_SECONDS shortens the window-lifecycle grace the same way
+	// for everything the inner server runs: the sidebar's own reaper
+	// (internal/reap) and any `kido reap` or linger helper a test drives.
+	// A real 30s read window would put every lifecycle test past the
+	// 5s settle, and shortening it in one process only would leave the
+	// two halves disagreeing about when a window is finished with.
 	body := fmt.Sprintf(`
 set-environment -g KIDO_STATE_DIR "%s"
+set-environment -g KIDO_LINGER_SECONDS 1
 set -g status off
 set -sg escape-time 0
 set -g default-shell /bin/bash

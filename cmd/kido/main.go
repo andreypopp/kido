@@ -130,6 +130,12 @@ func main() {
 		case "spawn":
 			dispatch("spawn", func() error { return spawnCmd(os.Args[2:]) })
 			return
+		case "close-window":
+			dispatch("close-window", func() error { return closeWindowCmd(os.Args[2:]) })
+			return
+		case "reap":
+			dispatch("reap", func() error { return reapCmd(os.Args[2:]) })
+			return
 		}
 	}
 

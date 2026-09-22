@@ -18,8 +18,10 @@ import (
 	"github.com/sahilm/fuzzy"
 
 	"kido/internal/procs"
+	"kido/internal/reap"
 	"kido/internal/state"
 	"kido/internal/tmux"
+	"kido/internal/tree"
 )
 
 // Options configures the sidebar.
@@ -247,6 +249,7 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 			}
 		}
 	}
+	reapSubagentWindows(s.panes, s.states)
 	s.probes = dismissals(conn, prev.probes, s.states)
 	for pane, p := range s.probes {
 		if !p.dismissed {
@@ -330,6 +333,41 @@ func listPanes(conn *tmux.Conn) ([]tmux.Pane, error) {
 	return tmux.ListPanes()
 }
 
+// killWindow is tmux.KillWindow, indirected so a test can watch what the
+// reaper closes without a tmux server.
+var killWindow = tmux.KillWindow
+
+// reapSubagentWindows closes the subagent windows this snapshot shows as
+// finished. The sidebar's poll is where docs/subagents-plan.md always
+// said the backstop lives, and it is the only place it can live: a
+// subagent killed outright never runs its own linger helper, and `kido
+// reap` is a command nothing invokes on its own.
+//
+// It is called from take, on the snapshot goroutine, and deliberately not
+// from state.Load: `kido prompt` calls Load too, and a state directory
+// read has no business closing a window as a side effect. take is shared
+// with the standalone picker, which therefore sweeps as well - it is a
+// kido poll like any other, and a second one running is exactly as
+// harmless as a second sidebar.
+//
+// Several sidebars may be doing this at once - one per client - and each
+// will happily ask tmux to close a window another already closed. That
+// costs an error nobody reads, which is why the result is dropped rather
+// than reported: there is no reading of "this window is gone" that a
+// reaper should treat as a problem.
+func reapSubagentWindows(panes []tmux.Pane, states map[string]state.Session) {
+	if len(panes) == 0 {
+		return
+	}
+	sessions := make([]state.Session, 0, len(states))
+	for _, s := range states {
+		sessions = append(sessions, s)
+	}
+	for _, windowID := range reap.Sweep(panes, sessions, time.Now()) {
+		killWindow(windowID) //nolint:errcheck // best effort; the window may already be gone
+	}
+}
+
 func capturePane(conn *tmux.Conn, pane string) ([]string, error) {
 	if conn != nil {
 		if lines, err := conn.CapturePane(pane); err == nil {
@@ -396,6 +434,12 @@ func samePanes(a, b []tmux.Pane) bool {
 // comparison catches anyway. Active's only drawn consequence is
 // snapshot.active, which same() compares separately: a pane switch inside a
 // session the client is not attached to changes nothing on screen.
+//
+// The window-lifecycle fields (Dead, DeadTime, Subagent, SessionAttached)
+// are left in, though no row draws them: each changes at most a handful
+// of times in a pane's life, so keeping them costs an occasional
+// redundant redraw, and dropping them would risk a stale pane list
+// reaching the reaper.
 func drawnPart(p tmux.Pane) tmux.Pane {
 	p.WindowIndex, p.WindowName, p.WindowLayout, p.CurrentPath = 0, "", "", ""
 	p.Active = false
@@ -1069,6 +1113,66 @@ func (m *model) paneLabel(p tmux.Pane) string {
 	return label
 }
 
+// windowAgent is the state record of whichever pane of w has a place in
+// the spawn tree - a spawned window holds exactly one such pane. A window
+// with none comes back as the zero Session: an ordinary shell window, or
+// an agent that has not reported yet, is never anyone's child and never
+// has children of its own.
+func windowAgent(w []tmux.Pane, states map[string]state.Session) state.Session {
+	for _, p := range w {
+		if s, ok := states[p.PaneID]; ok && (s.Instance != "" || s.ParentInstance != "") {
+			return s
+		}
+	}
+	return state.Session{}
+}
+
+// orderWindowsByTree reorders a session's windows so a subagent's window
+// follows the window of whatever agent spawned it, recursively, and
+// returns how deep each window sits in that tree - the sidebar tree in
+// docs/subagents-plan.md's Sidebar section. It is tree.Order keyed by
+// window id, so everything that is not part of any tree keeps tmux's own
+// window order, and a bogus ParentInstance naming a window's own
+// descendant (or itself) costs that window its place in the tree and
+// nothing more - the same guarantee orderTree (cmd/kido/agents.go) makes
+// for kido agents.
+//
+// The indent comes from this walk and not from the agent's own reported
+// Depth, which is the only way the two can agree. Depth is what a record
+// says about itself: a subagent whose parent is in another session, or
+// gone, reports depth 1 all the same and used to be drawn indented under
+// whatever row happened to precede it - a parent it has no edge to. Here
+// a window is only ever indented under a window actually above it in this
+// session's tree.
+func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) ([][]tmux.Pane, map[string]int) {
+	// tmux.Session groups panes by window, so Windows[i][0] always exists
+	// and names the window they are in.
+	byInstance := map[string]string{} // instance -> window id of the window holding it
+	for _, w := range windows {
+		if inst := windowAgent(w, states).Instance; inst != "" {
+			byInstance[inst] = w[0].WindowID
+		}
+	}
+	parentOf := func(w []tmux.Pane) string { return byInstance[windowAgent(w, states).ParentInstance] }
+	ordered := tree.Order(windows,
+		func(w []tmux.Pane) string { return w[0].WindowID },
+		parentOf)
+
+	// One pass over the ordered result is enough, and is also what keeps a
+	// cycle from recursing: Order emits a window after its parent, or - if
+	// the parent chain closes a ring, or names nothing in this session -
+	// as a root with no parent yet seen, which is a depth of 0.
+	depth := make(map[string]int, len(ordered))
+	for _, w := range ordered {
+		if d, ok := depth[parentOf(w)]; ok {
+			depth[w[0].WindowID] = d + 1
+			continue
+		}
+		depth[w[0].WindowID] = 0
+	}
+	return ordered, depth
+}
+
 func (m *model) rebuild() {
 	prev := ""
 	if m.cursor >= 0 && m.cursor < len(m.rows) {
@@ -1138,10 +1242,17 @@ func (m *model) rebuild() {
 		}
 		m.rows = append(m.rows, row{text: name})
 
-		for _, panes := range s.Windows {
+		ordered, depth := orderWindowsByTree(s.Windows, m.snap.states)
+		for _, panes := range ordered {
+			// One indent for the whole window, not one per pane: the
+			// ┌/├/└ glyphs join a window's panes into a column, and
+			// indenting only the pane that happens to hold the agent
+			// record would break that column apart - a split subagent
+			// window drew its ┌ two columns right of its own └.
+			indent := strings.Repeat("  ", depth[panes[0].WindowID])
 			for i, p := range panes {
 				m.rows = append(m.rows, row{
-					text:   glyph(i, len(panes)) + " " + m.paneLabel(p),
+					text:   indent + glyph(i, len(panes)) + " " + m.paneLabel(p),
 					paneID: p.PaneID,
 				})
 			}

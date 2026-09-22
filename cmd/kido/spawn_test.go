@@ -17,19 +17,47 @@ type newWindowCall struct {
 	env, command       []string
 }
 
-// withNewWindow points newWindow at a fake that records its calls and
-// returns (windowID, paneID, err), so spawnCmd never talks to a real tmux
-// server.
+// marks records what markSubagent was asked to set, window id to value;
+// withNewWindow resets it.
+var marks map[string]string
+
+// withNewWindow points newWindow and markSubagent at fakes that record
+// their calls, so spawnCmd never talks to a real tmux server. newWindow
+// returns (windowID, paneID, err).
 func withNewWindow(t *testing.T, windowID, paneID string, err error) *[]newWindowCall {
 	t.Helper()
-	prev := newWindow
+	prev, prevMark := newWindow, markSubagent
 	var calls []newWindowCall
 	newWindow = func(session, name, cwd string, env, command []string) (string, string, error) {
 		calls = append(calls, newWindowCall{session, name, cwd, env, command})
 		return windowID, paneID, err
 	}
-	t.Cleanup(func() { newWindow = prev })
+	marks = map[string]string{}
+	markSubagent = func(windowID, info string) error {
+		marks[windowID] = info
+		return nil
+	}
+	t.Cleanup(func() { newWindow, markSubagent = prev, prevMark })
 	return &calls
+}
+
+// TestSpawnMarksTheWindow pins what makes a spawned window reapable at
+// all: without the @kido_subagent option (internal/reap) nothing will
+// ever close it, since a sweep refuses every window it did not create.
+func TestSpawnMarksTheWindow(t *testing.T) {
+	withPanes(t, samePane)
+	t.Setenv("TMUX_PANE", "%1")
+	withCallerDepth(t, 0)
+	withNewWindow(t, "@9", "%9", nil)
+	if err := spawnCmd([]string{
+		"--parent-pid", "123", "--parent-instance", "abc",
+		"--name", "kid", "--task-file", writeTaskFile(t, "x"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := marks["@9"]; !strings.Contains(got, "abc") {
+		t.Errorf("mark on @9 = %q, want it to name the parent instance", got)
+	}
 }
 
 // writeTaskFile returns a path to a real, readable file under maxTaskBytes,

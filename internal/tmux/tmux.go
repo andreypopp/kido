@@ -103,6 +103,24 @@ type Pane struct {
 	CommandStatus   int
 	CommandStatusOK bool
 	CommandEndTime  int64
+	// Dead is tmux's own #{pane_dead}: the pane's command has exited and
+	// remain-on-exit kept the pane - and with it the window - on screen
+	// anyway. DeadTime is when it exited, in unix seconds, and is fixed
+	// from then on: unlike pane_command_duration neither field ticks, so
+	// neither defeats the snapshot change-detection.
+	Dead     bool
+	DeadTime int64
+	// Subagent is the @kido_subagent window option kido spawn sets on a
+	// window of its own making, read through the pane because one
+	// list-panes is the only listing kido takes. It is what tells a window
+	// kido spawned from every other window on the server; see
+	// internal/reap.
+	Subagent string
+	// SessionAttached is whether any client is attached to this pane's
+	// session. With Active - window_active && pane_active, so a session's
+	// current pane - it is what WindowFocused means by a window somebody
+	// is looking at.
+	SessionAttached bool
 	Title           string
 }
 
@@ -151,22 +169,41 @@ var paneFormat = strings.Join([]string{
 	"#{pane_last_prompt_time}",
 	"#{pane_command_status}",
 	"#{pane_command_end_time}",
+	// Window lifecycle: a pane remain-on-exit left behind, when it died,
+	// whether anyone is attached to look at it, and the mark kido spawn
+	// puts on a window of its own making.
+	"#{pane_dead}",
+	"#{pane_dead_time}",
+	"#{session_attached}",
+	"#{" + SubagentOption + "}",
 	"#{pane_title}",
 }, sep)
+
+// SubagentOption is the tmux window option kido spawn sets on a window it
+// creates, and the only thing that marks a window as kido's to close (see
+// internal/reap). A window option rather than a field of the state
+// record: it lives in the tmux server, so it outlives the agent whose
+// window it is, state.Load's dead-pid sweep cannot delete it, and it
+// names a window that exists now rather than a pane id some later server
+// may have handed to somebody else.
+
+const SubagentOption = "@kido_subagent"
 
 // parsePanes turns list-panes output lines into panes. Shared by the exec
 // and control-mode paths, which ask for the same format.
 func parsePanes(lines []string) []Pane {
 	var panes []Pane
 	for _, line := range lines {
-		f := strings.SplitN(line, sep, 19)
-		if len(f) < 19 {
+		f := strings.SplitN(line, sep, 23)
+		if len(f) < 23 {
 			continue
 		}
 		p := Pane{SessionName: f[0], SessionID: f[1], WindowID: f[4], WindowName: f[5], WindowLayout: f[6],
 			PaneID: f[7], Active: f[8] == "1", CurrentCommand: f[10],
 			CurrentPath: f[11], AlternateOn: f[12] == "1",
-			CommandRunning: f[13] == "1", Title: f[18]}
+			CommandRunning: f[13] == "1", Dead: f[18] == "1",
+			SessionAttached: f[20] != "" && f[20] != "0",
+			Subagent:        f[21], Title: f[22]}
 		p.SessionCreated, _ = strconv.ParseInt(f[2], 10, 64)
 		p.WindowIndex, _ = strconv.Atoi(f[3])
 		p.PanePID, _ = strconv.Atoi(f[9])
@@ -178,6 +215,7 @@ func parsePanes(lines []string) []Pane {
 			p.CommandStatus, p.CommandStatusOK = n, true
 		}
 		p.CommandEndTime, _ = strconv.ParseInt(f[17], 10, 64)
+		p.DeadTime, _ = strconv.ParseInt(f[19], 10, 64)
 		panes = append(panes, p)
 	}
 	return panes
@@ -495,6 +533,13 @@ func newWindowArgs(session, name, cwd string, env, command []string) []string {
 // e2e/harness_test.go - a single-word command instead runs through the
 // pane's shell), in cwd, with env (each "KEY=VALUE") set for that command
 // alone. It returns the new window and pane ids from the one call.
+//
+// remain-on-exit is turned on for the new window before returning: a
+// subagent's window (the only caller today, kido spawn) must survive its
+// own command exiting, both for the ~30s the linger helper gives the user
+// to read its last screen and for `kido reap` to find and close it
+// afterward if the helper never ran at all - a window that vanished the
+// instant its command exited would leave nothing for either to act on.
 func NewWindow(session, name, cwd string, env, command []string) (string, string, error) {
 	out, err := run(newWindowArgs(session, name, cwd, env, command)...)
 	if err != nil {
@@ -504,5 +549,76 @@ func NewWindow(session, name, cwd string, env, command []string) (string, string
 	if !ok {
 		return "", "", fmt.Errorf("new-window: unexpected output %q", out)
 	}
+	if _, err := run("set-window-option", "-t", windowID, "remain-on-exit", "on"); err != nil {
+		return "", "", err
+	}
 	return windowID, paneID, nil
+}
+
+// Watched reports whether p is a pane somebody is looking at right now:
+// its session's current pane, in a session some client is attached to.
+// Being the current pane is not enough on its own - a detached session
+// still has one, with nobody there to read it.
+func (p Pane) Watched() bool { return p.Active && p.SessionAttached }
+
+// WindowFocused reports whether windowID holds such a pane, which for a
+// window means the user is reading it.
+//
+// It answers from the pane list alone, with no list-clients call of its
+// own, because both callers ask on a schedule: `kido close-window` once
+// per finishing subagent, and the sidebar's reaper (internal/reap) on
+// every poll. One definition of focus for both is also the point - a
+// window the linger helper refuses to close must be one the reaper
+// refuses to close, or the refusal buys the user nothing.
+func WindowFocused(panes []Pane, windowID string) bool {
+	for _, p := range panes {
+		if p.WindowID == windowID && p.Watched() {
+			return true
+		}
+	}
+	return false
+}
+
+// LastWindow reports whether windowID is the only window of its session.
+// Closing it would destroy the session - taking every pane in it, and
+// detaching every client attached to it - so neither `kido close-window`
+// nor the reaper (internal/reap) ever does, whatever else they think of
+// the window.
+func LastWindow(panes []Pane, windowID string) bool {
+	session := ""
+	for _, p := range panes {
+		if p.WindowID == windowID {
+			session = p.SessionID
+			break
+		}
+	}
+	if session == "" {
+		return false
+	}
+	windows := map[string]bool{}
+	for _, p := range panes {
+		if p.SessionID == session {
+			windows[p.WindowID] = true
+		}
+	}
+	return len(windows) <= 1
+}
+
+// KillWindow destroys windowID. A window that is already gone - closed by
+// its own linger helper, or by another kido's reaper a moment earlier -
+// is an error from tmux and nothing more: every caller here is one of
+// several processes racing to close the same window, and losing that race
+// is the expected outcome, not a failure.
+func KillWindow(windowID string) error {
+	_, err := run("kill-window", "-t", windowID)
+	return err
+}
+
+// MarkSubagent sets SubagentOption on windowID to info, which is how kido
+// spawn tells the reaper that this window is one it created and may close
+// (see internal/reap). info is free text for a human reading
+// `tmux show-options -w`; nothing parses it.
+func MarkSubagent(windowID, info string) error {
+	_, err := run("set-option", "-w", "-t", windowID, SubagentOption, info)
+	return err
 }

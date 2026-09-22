@@ -117,6 +117,27 @@ const TASK_FILE = process.env.KIDO_AGENT_TASK_FILE || undefined;
 // a spawn that kido would refuse anyway.
 const MAX_SPAWN_DEPTH = 2;
 
+// LINGER_SECONDS is how long a finished subagent's window stays open
+// before the linger helper (see scheduleWindowLinger below) may close it,
+// so the user has time to read its last screen
+// (docs/subagents-plan.md's Lifecycle section). A package variable, like
+// SPAWN_TIMEOUT_MS, set only via the environment since it is read once at
+// module scope and a test needs to shorten it rather than wait out a real
+// 30s.
+//
+// kido's own sweep (reap.Grace, internal/reap) reads the same variable,
+// and must: the sweep is what closes this window when the helper never
+// runs or finds the user reading it, and a sweep with a shorter idea of
+// the linger than the helper's would simply close it first.
+const LINGER_SECONDS = Number(process.env.KIDO_LINGER_SECONDS) || 30;
+
+// PARENT_LIVENESS_POLL_MS is how often a subagent checks whether its
+// parent is still around: its pi is a child of the tmux server, not of
+// the parent's own pi, so no OS parent-death signal ever reaches it (see
+// docs/subagents-plan.md's Lifecycle section). Also a package variable
+// for the same reason as LINGER_SECONDS.
+const PARENT_LIVENESS_POLL_MS = Number(process.env.KIDO_PARENT_POLL_MS) || 5000;
+
 // How long spawn_subagent waits for `kido spawn` before treating it as
 // hung. A package variable, like inboxTimeout on the Go side, so a test
 // can shorten it rather than actually waiting out a real 5s to exercise
@@ -188,6 +209,7 @@ interface AgentInfo {
   parent: string;
   self: boolean;
   canMessage: boolean;
+  window: string;
 }
 
 // parseEnvelope mirrors internal/msg.Parse: a payload counts as a v1
@@ -285,6 +307,11 @@ export default function (pi: ExtensionAPI) {
   let inbox: Server | null = null;
   let inboxPath: string | null = null;
   let inboxReported = false;
+
+  // parentPollTimer is the parent-liveness poll started by
+  // startParentLivenessPoll below; null when this is a root session, or
+  // once stopParentLivenessPoll has run.
+  let parentPollTimer: NodeJS.Timeout | null = null;
 
   // How a waiting ask_agent ends. Three outcomes rather than two,
   // because "the answer never came" and "there is no longer anywhere for
@@ -535,6 +562,23 @@ export default function (pi: ExtensionAPI) {
     inboxReported = false;
   };
 
+  // spawnDetached runs one fire-and-forget child: detached and
+  // stdio-ignored, so a Ctrl+C on pi's process group does not kill it and
+  // it outlives this process entirely - which is what a status report
+  // racing pi's exit and a linger helper that must sleep past it both
+  // need. Both failure paths are swallowed, the synchronous throw and the
+  // async "error" event; the latter is not optional, an unhandled one is
+  // an uncaught exception on this process rather than a failed spawn.
+  const spawnDetached = (cmd: string, args: string[]): void => {
+    try {
+      const child = spawn(cmd, args, { stdio: "ignore", detached: true });
+      child.on("error", () => {});
+      child.unref();
+    } catch {
+      // never let a spawn failure reach pi
+    }
+  };
+
   // Fire-and-forget. Coalesced: identical consecutive reports are dropped.
   const send = (
     status: Status,
@@ -590,15 +634,7 @@ export default function (pi: ExtensionAPI) {
       inboxReported = true;
     }
 
-    try {
-      const child = spawn(kido, args, { stdio: "ignore", detached: true });
-      // Mandatory: an unhandled spawn error would be an uncaught exception.
-      child.on("error", () => {});
-      // Detached so that Ctrl+C on pi's process group does not kill the report.
-      child.unref();
-    } catch {
-      // never let a spawn failure reach pi
-    }
+    spawnDetached(kido, args);
   };
 
   // runKido is how every tool shells out: via spawn, awaited but never
@@ -679,6 +715,63 @@ export default function (pi: ExtensionAPI) {
       return { agents: res.out ? JSON.parse(res.out) : [] };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
+    }
+  };
+
+  // parentIsAlive answers the parent-liveness poll's one question. A raw
+  // kill(pid, 0) is checked first: ESRCH is a definite "gone", answered
+  // without a kido subprocess. Anything else - the call succeeding, or
+  // throwing EPERM for a pid owned by someone else - is not proof of life
+  // by itself: state.Alive (internal/state, see AGENTS.md) reports EPERM
+  // as alive for the same reason, and a pid can be reused by an unrelated
+  // process either way. What actually tells a live parent from a process
+  // that merely reused its pid is the Instance match `kido agents --json`
+  // already computes for list_agents' own `parent` field (parentID,
+  // cmd/kido/agents.go): if this session's own entry there still resolves
+  // a parent at all, some live record in scope reports
+  // KIDO_AGENT_PARENT_INSTANCE as its own Instance, which a recycled pid
+  // cannot fake.
+  const parentIsAlive = async (): Promise<boolean> => {
+    if (PARENT_PID === undefined) return true; // a root session has no parent to lose
+    try {
+      process.kill(PARENT_PID, 0);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === "ESRCH") return false;
+      // EPERM or anything else is not proof of death; fall through to the
+      // Instance check below.
+    }
+    const listed = await fetchAgents();
+    if ("error" in listed) return true; // kido being unavailable is not evidence of anything; never shut down on a guess
+    const self = listed.agents.find((a) => a.self);
+    return !!self?.parent;
+  };
+
+  // startParentLivenessPoll begins the poll (docs/subagents-plan.md's
+  // Lifecycle section) for a subagent; a root session (no PARENT_PID) is
+  // never polled. Idempotent: a /reload re-runs session_start, and the
+  // old timer is stopped first rather than left to pile up a second one.
+  // The timer is unref'd so a hung or slow parent check never holds this
+  // process's event loop open on its own.
+  const startParentLivenessPoll = (shutdown: () => void): void => {
+    if (PARENT_PID === undefined) return;
+    stopParentLivenessPoll();
+    parentPollTimer = setInterval(() => {
+      parentIsAlive().then((alive) => {
+        if (alive) return;
+        // Stop first: the verdict cannot change back, and a shutdown that
+        // takes longer than one interval would otherwise be asked for
+        // again on every tick until the process actually goes.
+        stopParentLivenessPoll();
+        shutdown();
+      });
+    }, PARENT_LIVENESS_POLL_MS);
+    parentPollTimer.unref();
+  };
+
+  const stopParentLivenessPoll = (): void => {
+    if (parentPollTimer) {
+      clearInterval(parentPollTimer);
+      parentPollTimer = null;
     }
   };
 
@@ -1061,6 +1154,10 @@ export default function (pi: ExtensionAPI) {
     // would block on an answer that has nowhere to arrive.
     if (!inbox) abandonPending();
 
+    // A session switch or /reload re-runs this too; started fresh so a
+    // /reload never leaves two timers running (see startParentLivenessPoll).
+    startParentLivenessPoll(ctx.shutdown);
+
     // Deliver the task kido spawn left us, the same way an inbox prompt
     // is delivered - a subagent's first turn should read exactly like one
     // handed to it by another agent, not like a special case. A /reload
@@ -1137,25 +1234,42 @@ export default function (pi: ExtensionAPI) {
     send("idle", { ended: true });
   });
 
+  // scheduleWindowLinger spawns the detached helper
+  // docs/subagents-plan.md's Lifecycle section describes: sleep, then
+  // `kido close-window`, run as its own process so it survives this one's
+  // exit - this process's own event loop is gone by the time the sleep
+  // would otherwise have to fire. windowID and kido's own path are passed
+  // as sh's $0/$1 rather than interpolated into the script text, so
+  // neither needs shell-quoting.
+  const scheduleWindowLinger = (windowID: string): void => {
+    if (!kido) return;
+    spawnDetached("sh", ["-c", `sleep ${LINGER_SECONDS} && exec "$0" close-window "$1"`, kido, windowID]);
+  };
+
   // sendCompletionNotice tells this session's parent, if it has one and
-  // kido still knows where it is, that this subagent is finishing. Only
-  // ever called from session_shutdown, before the removal report below:
-  // list_agents/kido agents must still resolve this session's own parent
-  // edge (self.parent) while it does, which needs this session's own
+  // kido still knows where it is, that this subagent is finishing, and
+  // schedules its own window's linger close. Only ever called from
+  // session_shutdown, before the removal report below: list_agents/kido
+  // agents must still resolve this session's own parent edge (self.parent)
+  // and its own window while it does, which needs this session's own
   // record to still exist.
   //
-  // A dead or unreachable parent - kido message failing however it fails,
-  // errInboxUnavailable or otherwise - is exactly the case docs/
-  // subagents-plan.md means by "nobody to tell": there is no distinct
-  // handling for it, the result is simply dropped, same as any other
-  // runKido failure here. Nothing in this function may throw past its own
-  // await, or a subagent's shutdown would fail on account of a parent
-  // that already exited.
+  // The linger is scheduled whenever this is a subagent at all, whether or
+  // not its parent edge still resolves - an orphaned subagent's window
+  // still deserves the same 30s read window as one whose parent is still
+  // there to be told. A dead or unreachable parent for the notice itself -
+  // kido message failing however it fails, errInboxUnavailable or
+  // otherwise - is exactly the case docs/subagents-plan.md means by
+  // "nobody to tell": there is no distinct handling for it, the result is
+  // simply dropped, same as any other runKido failure here. Nothing in
+  // this function may throw past its own await, or a subagent's shutdown
+  // would fail on account of a parent that already exited.
   const sendCompletionNotice = async (): Promise<void> => {
     if (!kido || PARENT_INSTANCE === undefined) return; // not a subagent
     const listed = await fetchAgents();
     if ("error" in listed) return;
     const self = listed.agents.find((a) => a.self);
+    if (self?.window) scheduleWindowLinger(self.window);
     if (!self || !self.parent) return; // kido no longer has a parent edge for this session
     const text = `${title || "subagent"} finished` + (activity ? `: ${activity}` : "") + ` (${current})`;
     await runKido(["message", "--kind", "notice", "--", self.parent], { input: text, timeoutMs: 3000 });
@@ -1166,6 +1280,7 @@ export default function (pi: ExtensionAPI) {
     // can run in between - which is what lets ask_agent's `!inbox` check
     // stand in for "this session is shutting down".
     stopInbox();
+    stopParentLivenessPoll();
     // Nothing is coming back this time, so no ask may be left waiting on
     // it - a tool call blocked on a five-minute timer is the last thing a
     // session on its way out should be holding.

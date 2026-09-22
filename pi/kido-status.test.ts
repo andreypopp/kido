@@ -14,6 +14,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
@@ -87,6 +88,11 @@ switch (args[0]) {
     if (delay > 0) setTimeout(respond, delay); else respond();
     break;
   }
+  case "close-window": {
+    const logFile = process.env.KIDO_FAKE_CLOSE_WINDOW_LOG;
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
+    process.exit(0);
+  }
   default:
     process.exit(1);
 }
@@ -102,6 +108,7 @@ interface Fixture {
   selfInboxPath(): string;
   lastLogFor(to: string, kind?: string): { id: string; replyTo: string; to: string; text: string; failed?: boolean } | undefined;
   lastSpawnArgs(): string[] | undefined;
+  waitForCloseWindow(ms?: number): Promise<string[]>;
   lastStatusArgs(): string[] | undefined;
   // waitForLog polls lastLogFor until it has a match (see pollUntil).
   waitForLog(to: string, kind?: string, ms?: number): Promise<{ id: string; replyTo: string; to: string; text: string; failed?: boolean }>;
@@ -132,10 +139,12 @@ function makeFixture(): Fixture {
   const agentsFile = join(dir, "agents.json");
   const logFile = join(dir, "log.jsonl");
   const spawnLogFile = join(dir, "spawn.jsonl");
+  const closeWindowLogFile = join(dir, "close-window.jsonl");
   const statusLogFile = join(dir, "status.jsonl");
   writeFileSync(agentsFile, "[]");
   writeFileSync(logFile, "");
   writeFileSync(spawnLogFile, "");
+  writeFileSync(closeWindowLogFile, "");
   writeFileSync(statusLogFile, "");
 
   const saved = {
@@ -144,6 +153,7 @@ function makeFixture(): Fixture {
     KIDO_FAKE_AGENTS_FILE: process.env.KIDO_FAKE_AGENTS_FILE,
     KIDO_FAKE_LOG: process.env.KIDO_FAKE_LOG,
     KIDO_FAKE_SPAWN_LOG: process.env.KIDO_FAKE_SPAWN_LOG,
+    KIDO_FAKE_CLOSE_WINDOW_LOG: process.env.KIDO_FAKE_CLOSE_WINDOW_LOG,
     KIDO_FAKE_STATUS_LOG: process.env.KIDO_FAKE_STATUS_LOG,
     KIDO_FAKE_INBOX_DIR: process.env.KIDO_FAKE_INBOX_DIR,
     KIDO_FAKE_INBOX_FAIL: process.env.KIDO_FAKE_INBOX_FAIL,
@@ -155,6 +165,7 @@ function makeFixture(): Fixture {
   process.env.KIDO_FAKE_AGENTS_FILE = agentsFile;
   process.env.KIDO_FAKE_LOG = logFile;
   process.env.KIDO_FAKE_SPAWN_LOG = spawnLogFile;
+  process.env.KIDO_FAKE_CLOSE_WINDOW_LOG = closeWindowLogFile;
   process.env.KIDO_FAKE_STATUS_LOG = statusLogFile;
   process.env.KIDO_FAKE_INBOX_DIR = inboxDir;
   delete process.env.KIDO_FAKE_INBOX_FAIL;
@@ -178,6 +189,11 @@ function makeFixture(): Fixture {
     },
     lastSpawnArgs() {
       return last(jsonLines(spawnLogFile));
+    },
+    async waitForCloseWindow(ms = 2000) {
+      let found: string[] | undefined;
+      await pollUntil(() => (found = last(jsonLines(closeWindowLogFile))) !== undefined, ms, "a kido close-window call");
+      return found!;
     },
     lastStatusArgs() {
       return last(jsonLines(statusLogFile));
@@ -778,6 +794,56 @@ test("a completion notice addressed to a dead parent is dropped without failing 
   }
 });
 
+test("session_shutdown schedules the window linger helper for a subagent", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@7" }]);
+
+    const saved = { INST: process.env.KIDO_AGENT_PARENT_INSTANCE, LINGER: process.env.KIDO_LINGER_SECONDS };
+    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
+    process.env.KIDO_LINGER_SECONDS = "0.05"; // sleep(1) accepts fractional seconds on macOS and Linux
+    try {
+      const factory = await freshKidoStatus();
+      const s = await startSessionUsing(factory, fx);
+      await s.emit("session_shutdown");
+      const args = await fx.waitForCloseWindow();
+      assert.deepEqual(args, ["close-window", "@7"], "the linger helper closes this session's own window");
+    } finally {
+      if (saved.INST === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved.INST;
+      if (saved.LINGER === undefined) delete process.env.KIDO_LINGER_SECONDS;
+      else process.env.KIDO_LINGER_SECONDS = saved.LINGER;
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+// A root session (no KIDO_AGENT_PARENT_INSTANCE) must never get its own
+// window auto-closed: PARENT_INSTANCE undefined is what sendCompletionNotice
+// already reads as "not a subagent", and the linger is scheduled from
+// inside that same early return.
+test("session_shutdown never schedules a window linger for a root session", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true, window: "@7" }]);
+    process.env.KIDO_LINGER_SECONDS = "0.05";
+    try {
+      const s = await startSession(fx);
+      await s.emit("session_shutdown");
+      const closeWindowLog = await fx
+        .waitForCloseWindow(50)
+        .then(() => "called")
+        .catch(() => "not called");
+      assert.equal(closeWindowLog, "not called", "a root session's window must never be scheduled for close");
+    } finally {
+      delete process.env.KIDO_LINGER_SECONDS;
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
 test("a completion notice reaches a live parent", async () => {
   const fx = makeFixture();
   try {
@@ -847,6 +913,105 @@ test("interleaving: an inbound ask from the same target is refused even while th
     } finally {
       delete process.env.KIDO_FAKE_MESSAGE_DELAY_MS;
     }
+  } finally {
+    fx.restore();
+  }
+});
+
+// deadPid starts and waits for a trivial child process, returning its pid:
+// guaranteed to belong to no process by the time the caller uses it. The
+// same trick internal/state/state_test.go uses on the Go side.
+function deadPid(): number {
+  const r = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+  return r.pid!;
+}
+
+// withParentEnv sets KIDO_AGENT_PARENT_PID/INSTANCE and a short poll
+// interval, restoring whatever was there before on the way out -
+// kido-status.ts reads all three once at module scope, so every case
+// below goes through freshKidoStatus() to pick them up.
+async function withParentEnv<T>(pid: number, instance: string, pollMs: number, fn: () => Promise<T>): Promise<T> {
+  const saved = {
+    KIDO_AGENT_PARENT_PID: process.env.KIDO_AGENT_PARENT_PID,
+    KIDO_AGENT_PARENT_INSTANCE: process.env.KIDO_AGENT_PARENT_INSTANCE,
+    KIDO_PARENT_POLL_MS: process.env.KIDO_PARENT_POLL_MS,
+  };
+  process.env.KIDO_AGENT_PARENT_PID = String(pid);
+  process.env.KIDO_AGENT_PARENT_INSTANCE = instance;
+  process.env.KIDO_PARENT_POLL_MS = String(pollMs);
+  try {
+    return await fn();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+// startWithShutdownSpy is startSessionUsing but with a ctx.shutdown() the
+// test can observe - fakeCtx has no such spy, since no other test needs
+// one.
+async function startWithShutdownSpy(factory: (pi: unknown) => void) {
+  const { pi, tools, delivered, emit } = createFakePi();
+  let shutdowns = 0;
+  const ctx = { ...fakeCtx(), shutdown: () => { shutdowns++; } };
+  factory(pi);
+  await emit("session_start", {}, ctx);
+  return { tools, delivered, emit, shutdowns: () => shutdowns };
+}
+
+test("parent-liveness poll: shuts the session down when the parent's process is gone", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true, window: "@1" }]);
+    await withParentEnv(deadPid(), "parent-inst", 20, async () => {
+      const factory = await freshKidoStatus();
+      const s = await startWithShutdownSpy(factory);
+      await pollUntil(() => s.shutdowns() > 0, 2000, "ctx.shutdown() to be called for a dead parent pid");
+      await s.emit("session_shutdown"); // stop the poll, as a real shutdown would
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
+test("parent-liveness poll: does not shut down while the parent is alive and its instance still matches", async () => {
+  const fx = makeFixture();
+  try {
+    // list_agents' own parent field is non-empty: some live record in
+    // scope still reports parent-inst as its own Instance.
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
+    await withParentEnv(process.pid, "parent-inst", 20, async () => {
+      const factory = await freshKidoStatus();
+      const s = await startWithShutdownSpy(factory);
+      // Long enough for several poll ticks at 20ms; still short by test
+      // standards, and this is what proves the poll ran and chose not to
+      // shut down, not merely that it hadn't fired yet.
+      await new Promise((r) => setTimeout(r, 150));
+      assert.equal(s.shutdowns(), 0, "a live, correctly-matched parent must never trigger a shutdown");
+      await s.emit("session_shutdown");
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
+test("parent-liveness poll: a recycled pid with a different instance counts as gone", async () => {
+  const fx = makeFixture();
+  try {
+    // kill(pid, 0) succeeds - this process's own pid is certainly alive -
+    // but no record in scope resolves this session's parent edge, exactly
+    // as if the real parent exited and something else now holds its old
+    // pid. state.Alive (internal/state) reports EPERM as alive for the
+    // same reason pid alone is not proof here (see AGENTS.md).
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true, window: "@1" }]);
+    await withParentEnv(process.pid, "parent-inst", 20, async () => {
+      const factory = await freshKidoStatus();
+      const s = await startWithShutdownSpy(factory);
+      await pollUntil(() => s.shutdowns() > 0, 2000, "ctx.shutdown() to be called for a recycled pid with no matching instance");
+      await s.emit("session_shutdown");
+    });
   } finally {
     fx.restore();
   }

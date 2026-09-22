@@ -12,6 +12,7 @@ import (
 
 	"kido/internal/state"
 	"kido/internal/tmux"
+	"kido/internal/tree"
 )
 
 // AgentInfo is one row of `kido agents`, and what pi's list_agents tool
@@ -129,53 +130,17 @@ func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, se
 // so the result reads as a tree: every subagent follows its parent, and
 // siblings appear oldest first.
 //
-// Every agent comes out exactly once, tree or no tree. A walk from the
-// roots alone reaches no record whose parent chain closes a cycle, and a
-// cycle is reachable: a bug in a reporting agent (or a bare-metal replay
-// of an old state file) could report a ParentInstance that names one of
-// its own descendants, or itself. Anything the walk missed is therefore
-// emitted afterwards as a root, oldest first, keeping the invariant that
-// list_agents shows every agent in the session even when the tree it
-// draws them in is nonsense.
+// Sorting the whole list before the walk is what puts siblings oldest
+// first: tree.Order buckets children in the order it receives them, and
+// emits whatever the walk missed - a cycle - in that same order, which is
+// the invariant that list_agents shows every agent in the session even
+// when the tree it draws them in is nonsense.
 func orderTree(scoped []state.Session, byInstance map[string]string) []state.Session {
-	children := map[string][]state.Session{} // parent id ("" for a root) -> children
-	for _, s := range scoped {
-		parent := parentID(s, byInstance)
-		children[parent] = append(children[parent], s)
-	}
-	for _, c := range children {
-		sort.SliceStable(c, func(i, j int) bool { return olderFirst(c[i], c[j]) })
-	}
-	out := make([]state.Session, 0, len(scoped))
-	seen := map[string]bool{}
-	var walk func(parent string)
-	walk = func(parent string) {
-		for _, s := range children[parent] {
-			if seen[s.ID] {
-				continue
-			}
-			seen[s.ID] = true
-			out = append(out, s)
-			walk(s.ID)
-		}
-	}
-	walk("")
-	var orphans []state.Session
-	for _, s := range scoped {
-		if !seen[s.ID] {
-			orphans = append(orphans, s)
-		}
-	}
-	sort.SliceStable(orphans, func(i, j int) bool { return olderFirst(orphans[i], orphans[j]) })
-	for _, s := range orphans {
-		if seen[s.ID] {
-			continue // the ring's first member already pulled this one in
-		}
-		seen[s.ID] = true
-		out = append(out, s)
-		walk(s.ID)
-	}
-	return out
+	sorted := append([]state.Session(nil), scoped...)
+	sort.SliceStable(sorted, func(i, j int) bool { return olderFirst(sorted[i], sorted[j]) })
+	return tree.Order(sorted,
+		func(s state.Session) string { return s.ID },
+		func(s state.Session) string { return parentID(s, byInstance) })
 }
 
 // paneIndex is panes indexed by PaneID, the lookup buildAgents,

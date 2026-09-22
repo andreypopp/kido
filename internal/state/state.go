@@ -162,21 +162,66 @@ func Dir() string {
 // claude; see beats) and only records of the same standing are compared by
 // time.
 func Load() (map[string]Session, error) {
+	files, err := readFiles()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]Session{}
+	for _, s := range files {
+		if !alive(s.PID) {
+			os.Remove(filepath.Join(Dir(), s.ID+".json")) //nolint:errcheck // best effort; a concurrent writer may recreate it
+			continue
+		}
+		if prev, ok := out[s.Pane]; !ok || beats(s, prev) {
+			out[s.Pane] = s
+		}
+	}
+	return out, nil
+}
+
+// ReadAll reads every state file exactly as recorded, keyed by session id
+// rather than pane, and without either of Load's side effects: it neither
+// deletes a dead-pid file nor keeps only one record per pane. `kido reap`
+// (cmd/kido/reap.go) is its one caller, because a command whose whole
+// purpose is to reason about agents that have died should not be the
+// thing that deletes the evidence.
+//
+// It is not what makes reap work, and an earlier design that thought it
+// was did not: internal/ui calls Load every 100ms, so with a sidebar
+// running the record of a dead subagent is gone within a tick however
+// reap itself reads. What a sweep acts on is the tmux window (see
+// internal/reap); the records only answer who spawned whom, and that
+// answer is the same either way.
+func ReadAll() (map[string]Session, error) {
+	files, err := readFiles()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]Session, len(files))
+	for _, s := range files {
+		out[s.ID] = s
+	}
+	return out, nil
+}
+
+// readFiles reads every well-formed state file in Dir, normalising Agent
+// but applying none of Load's filtering - shared by Load and ReadAll,
+// which differ only in what they do with a dead-pid record.
+func readFiles() ([]Session, error) {
 	dir := Dir()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return map[string]Session{}, nil
+			return nil, nil
 		}
 		return nil, err
 	}
-	out := map[string]Session{}
+	var out []Session
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
 			continue
 		}
-		path := filepath.Join(dir, e.Name())
-		b, err := os.ReadFile(path)
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
 			continue
 		}
@@ -184,15 +229,9 @@ func Load() (map[string]Session, error) {
 		if json.Unmarshal(b, &s) != nil || s.Pane == "" {
 			continue
 		}
-		if !alive(s.PID) {
-			os.Remove(path) //nolint:errcheck // best effort; a concurrent writer may recreate it
-			continue
-		}
 		s.ID = strings.TrimSuffix(e.Name(), ".json")
 		s.Agent = agentOf(s.Agent)
-		if prev, ok := out[s.Pane]; !ok || beats(s, prev) {
-			out[s.Pane] = s
-		}
+		out = append(out, s)
 	}
 	return out, nil
 }
@@ -261,6 +300,12 @@ func alive(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil || err == syscall.EPERM
 }
+
+// Alive is alive, exported for kido reap (cmd/kido/reap.go): the one
+// caller outside this package that must apply the same liveness test Load
+// applies internally, rather than a second opinion about what a live pid
+// means.
+func Alive(pid int) bool { return alive(pid) }
 
 // Record writes the state file for session id atomically.
 func Record(id string, s Session) error {
