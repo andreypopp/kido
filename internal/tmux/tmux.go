@@ -615,19 +615,31 @@ func KillPane(paneID string) error {
 	return err
 }
 
-// SubagentMark and SubagentRunID are the two halves of the mark's value,
-// kept together so the one token anything parses cannot drift from the
-// code that writes it. The rest is free text for a human reading `tmux
-// show-options -w`. A missing "run=" token yields "", and a sweep still
-// works without it.
+// SubagentMark, SubagentRunID and SubagentParentInstance are the parts of
+// the mark's value, kept together so the tokens anything parses cannot
+// drift from the code that writes them. The rest is free text for a
+// human reading `tmux show-options -w`. A missing token yields "", and a
+// sweep (for run=) or the sidebar (for parent=) still works without it.
 func SubagentMark(runID, parentInstance string, depth int) string {
 	return fmt.Sprintf("run=%s parent=%s depth=%d", runID, parentInstance, depth)
 }
 
 func SubagentRunID(info string) string {
+	return subagentField(info, "run=")
+}
+
+// SubagentParentInstance is the sidebar's fallback anchor once a
+// subagent's own state record is gone: the mark is set once, when kido
+// spawn creates the window, and outlives the record the way the window
+// itself does.
+func SubagentParentInstance(info string) string {
+	return subagentField(info, "parent=")
+}
+
+func subagentField(info, prefix string) string {
 	for _, field := range strings.Fields(info) {
-		if id, ok := strings.CutPrefix(field, "run="); ok {
-			return id
+		if v, ok := strings.CutPrefix(field, prefix); ok {
+			return v
 		}
 	}
 	return ""

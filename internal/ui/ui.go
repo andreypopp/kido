@@ -439,11 +439,16 @@ func samePanes(a, b []tmux.Pane) bool {
 // snapshot.active, which same() compares separately: a pane switch inside a
 // session the client is not attached to changes nothing on screen.
 //
-// The window-lifecycle fields (Dead, DeadTime, Subagent, SessionAttached)
-// are left in, though no row draws them: each changes at most a handful
-// of times in a pane's life, so keeping them costs an occasional
-// redundant redraw, and dropping them would risk a stale pane list
-// reaching the reaper.
+// Dead, DeadTime and SessionAttached are left in, though no row draws
+// them: each changes at most a handful of times in a pane's life, so
+// keeping them costs an occasional redundant redraw, and dropping them
+// would risk a stale pane list reaching the reaper. Subagent is left in
+// for a stronger reason now: orderWindowsByTree reads it to place a
+// window once its agent record is gone, so a change to it must redraw
+// too. In practice it never changes after kido spawn sets it once at
+// window creation, and a window's first appearance already forces a
+// rebuild on its own, but excluding it here would be the same silent
+// staleness this comment warns about for the others.
 func drawnPart(p tmux.Pane) tmux.Pane {
 	p.WindowIndex, p.WindowName, p.WindowLayout, p.CurrentPath = 0, "", "", ""
 	p.Active = false
@@ -1176,6 +1181,18 @@ func windowAgent(w []tmux.Pane, states map[string]state.Session) (tmux.Pane, sta
 	return tmux.Pane{}, state.Session{}
 }
 
+// markParentOf is the parent instance carried in w's window mark
+// (tmux.SubagentOption), read by orderWindowsByTree only once windowAgent
+// finds no record at all: it is the fallback, not the source of truth.
+func markParentOf(w []tmux.Pane) string {
+	for _, p := range w {
+		if id := tmux.SubagentParentInstance(p.Subagent); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
 // windowPlacement is where one window sits in the sidebar tree: its
 // panes, how deep the walk put it, and the pane row it hangs off - the
 // pane of the agent that spawned it, or "" for a window drawn as a root.
@@ -1191,6 +1208,12 @@ type windowPlacement struct {
 // from the agent's reported Depth: a subagent whose parent is in another
 // session, or gone, still reports depth 1, and must not be drawn under a
 // row it has no edge to.
+//
+// The parent normally comes from the agent's own state record
+// (ParentInstance); a window whose record is gone - a finished subagent
+// lingering for the sweep - falls back to its window mark instead, so it
+// keeps its place in the tree for the whole linger rather than un-nesting
+// to the left margin the instant its record is removed. See markParentOf.
 func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) []windowPlacement {
 	byInstance := map[string]string{} // instance -> window id of the window holding it
 	anchors := map[string]string{}    // window id -> pane its agent runs in
@@ -1204,7 +1227,19 @@ func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) 
 	}
 	parentOf := func(w []tmux.Pane) string {
 		_, s := windowAgent(w, states)
-		return byInstance[s.ParentInstance]
+		parentInstance := s.ParentInstance
+		if s.Instance == "" && s.ParentInstance == "" {
+			// No agent record at all for this window - the common case is a
+			// subagent that reported --remove on exit while its window still
+			// lingers for the sweep. The mark outlives the record, so fall
+			// back to it. A window with any record instead follows the
+			// record even when it disagrees with the mark: a live subagent
+			// can move or be reparented (kido spawn --resume), and the mark
+			// is written once at window creation and never rewritten to
+			// match.
+			parentInstance = markParentOf(w)
+		}
+		return byInstance[parentInstance]
 	}
 	ordered := tree.Order(windows,
 		func(w []tmux.Pane) string { return w[0].WindowID },

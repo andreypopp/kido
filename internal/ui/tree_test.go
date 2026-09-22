@@ -82,6 +82,18 @@ func agentState(inst, parent, title string) state.Session {
 	}
 }
 
+// deadSubagentPane is a finished subagent's window as the sweep sees it
+// during its linger: its record is gone (nothing in states names its
+// pane), but the window mark kido spawn wrote survives, since only the
+// state record and the mark's own "run=" prefix are removed by
+// kido agent-status --remove.
+func deadSubagentPane(w, pane, parentInstance string) tmux.Pane {
+	return tmux.Pane{
+		SessionName: "sess", WindowID: w, PaneID: pane,
+		Dead: true, Subagent: tmux.SubagentMark("", parentInstance, 1),
+	}
+}
+
 func wantRows(t *testing.T, got, want []string) {
 	t.Helper()
 	if !reflect.DeepEqual(got, want) {
@@ -381,4 +393,124 @@ func TestOrderWindowsByTreeHandlesCycle(t *testing.T) {
 	if got[0].depth != 0 {
 		t.Errorf("the first window of a cycle is drawn as a root, want depth 0, got %d", got[0].depth)
 	}
+}
+
+// TestOrderWindowsByTreeFallsBackToMarkWhenRecordGone is the bug this
+// walk used to have: a finished subagent's record is removed on exit
+// (kido agent-status --remove) while its window lingers for the sweep.
+// With no record at all for the window, the parent comes from the
+// window mark instead of dropping to a root.
+func TestOrderWindowsByTreeFallsBackToMarkWhenRecordGone(t *testing.T) {
+	windows := [][]tmux.Pane{
+		{{PaneID: "%root", WindowID: "@root"}},
+		{deadSubagentPane("@kid", "%kid", "root-inst")},
+	}
+	states := map[string]state.Session{
+		"%root": {Instance: "root-inst"},
+	}
+	got := orderWindowsByTree(windows, states)
+	if !sameIDs(windowIDs(got), []string{"@root", "@kid"}) {
+		t.Fatalf("order = %v, want the marked window to follow its marked parent", windowIDs(got))
+	}
+	depth := depths(got)
+	if depth["@kid"] != 1 {
+		t.Errorf("depth[@kid] = %d, want 1: the mark says its parent is @root", depth["@kid"])
+	}
+	for _, pl := range got {
+		if pl.panes[0].WindowID == "@kid" && pl.anchor != "%root" {
+			t.Errorf("anchor[@kid] = %q, want %%root", pl.anchor)
+		}
+	}
+}
+
+// TestOrderWindowsByTreeRecordBeatsStaleMark checks requirement 1: the
+// record stays authoritative whenever it exists, even one that disagrees
+// with the mark - a live subagent moved or reparented by
+// kido spawn --resume, whose window mark was written once at creation
+// and is never rewritten to match.
+func TestOrderWindowsByTreeRecordBeatsStaleMark(t *testing.T) {
+	windows := [][]tmux.Pane{
+		{{PaneID: "%root", WindowID: "@root"}},
+		{{PaneID: "%other", WindowID: "@other"}},
+		{{PaneID: "%kid", WindowID: "@kid", Subagent: tmux.SubagentMark("run-1", "other-inst", 1)}},
+	}
+	states := map[string]state.Session{
+		"%root":  {Instance: "root-inst"},
+		"%other": {Instance: "other-inst"},
+		"%kid":   {Instance: "kid-inst", ParentInstance: "root-inst"},
+	}
+	got := orderWindowsByTree(windows, states)
+	for _, pl := range got {
+		if pl.panes[0].WindowID == "@kid" {
+			if pl.anchor != "%root" {
+				t.Errorf("anchor[@kid] = %q, want %%root: the live record names root-inst, not the mark's other-inst", pl.anchor)
+			}
+			if pl.depth != 1 {
+				t.Errorf("depth[@kid] = %d, want 1", pl.depth)
+			}
+		}
+	}
+}
+
+// TestOrderWindowsByTreeMarkedOrphanIsRoot is the marked counterpart of
+// TestOrderWindowsByTreeIndentsOnlyRealChildren: a window whose record is
+// gone and whose mark names a parent instance that is not in this
+// session (moved away, or a stale mark from a previous server) is drawn
+// flush left, not hung off whatever row precedes it.
+func TestOrderWindowsByTreeMarkedOrphanIsRoot(t *testing.T) {
+	windows := [][]tmux.Pane{
+		{{PaneID: "%shell", WindowID: "@shell"}},
+		{deadSubagentPane("@kid", "%kid", "elsewhere-inst")},
+	}
+	got := orderWindowsByTree(windows, map[string]state.Session{})
+	if !sameIDs(windowIDs(got), []string{"@shell", "@kid"}) {
+		t.Fatalf("order = %v, want both windows kept in tmux's own order", windowIDs(got))
+	}
+	if depths(got)["@kid"] != 0 {
+		t.Errorf("depth[@kid] = %d, want 0: its marked parent is in no window of this session", depths(got)["@kid"])
+	}
+	for _, pl := range got {
+		if pl.anchor != "" {
+			t.Errorf("anchor[%s] = %q, want none", pl.panes[0].WindowID, pl.anchor)
+		}
+	}
+}
+
+// TestOrderWindowsByTreeMarkFallbackDropsNothing is requirement 4 for the
+// mark fallback specifically: a mark naming a parent instance that
+// exists nowhere at all - not even in another session's row - still
+// keeps the window in the result, drawn as a root.
+func TestOrderWindowsByTreeMarkFallbackDropsNothing(t *testing.T) {
+	windows := [][]tmux.Pane{
+		{deadSubagentPane("@kid", "%kid", "nonexistent-inst")},
+	}
+	got := orderWindowsByTree(windows, map[string]state.Session{})
+	if !sameIDs(windowIDs(got), []string{"@kid"}) {
+		t.Fatalf("order = %v, want the window kept even though its marked parent doesn't exist", windowIDs(got))
+	}
+}
+
+// TestRenderNestsADeadSubagentForTheWholeLinger is the bug report itself,
+// as a rendered screen: a finished subagent's record is removed while
+// its dead-paned window lingers for the sweep, and it must stay nested
+// under its parent's pane rather than jump to the left margin for the
+// whole linger.
+func TestRenderNestsADeadSubagentForTheWholeLinger(t *testing.T) {
+	panes := []tmux.Pane{
+		agentPane("@13", "%22", "orchestrator"),
+		deadSubagentPane("@20", "%30", "root-inst"),
+	}
+	states := map[string]state.Session{
+		"%22": agentState("root-inst", "", "orchestrator"),
+	}
+	// Before the fix this rendered as two flush-left rows: "sess",
+	// "· ▌ orchestrator", "· " (the dead pane un-nested at the left
+	// margin, no longer indented under its parent) - exactly during the
+	// window the user is most likely to be looking at it to read its last
+	// screen.
+	wantRows(t, renderRows(panes, states), []string{
+		"sess",
+		"· ▌ orchestrator",
+		"  · ",
+	})
 }
