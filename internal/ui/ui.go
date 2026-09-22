@@ -1068,6 +1068,28 @@ func continuation(i, n int) string {
 	return " "
 }
 
+// groupGlyph and groupContinuation are glyph/continuation's counterparts
+// one level up: not a window's own panes, but several subagent windows
+// anchored to the same parent pane. Anchored siblings share one visual
+// group - tree(1)'s ├/└, never ┌ - so ownership reads at a glance instead
+// of as a run of identical dots. A lone child (n==1) gets no group glyph
+// at all: appendWindows leaves it to glyph/continuation exactly as before,
+// since a group of one has no sibling to distinguish it from and the dot
+// or bracket it already draws says everything a group marker would.
+func groupGlyph(i, n int) string {
+	if i == n-1 {
+		return stDim.Render("└")
+	}
+	return stDim.Render("├")
+}
+
+func groupContinuation(i, n int) string {
+	if i < n-1 {
+		return stDim.Render("│")
+	}
+	return " "
+}
+
 // indicators marks an agent pane by its status: the glyph alone says it is
 // an agent session, the same for every agent. Idle is deliberately empty -
 // a pane with nothing to say shows nothing - and field() keeps the column
@@ -1374,6 +1396,18 @@ func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) 
 // what it is. The stem stops as soon as the parent has no rows left
 // below, so a child of the last pane hangs free.
 //
+// Several windows anchored to the same pane - a parent with more than one
+// live subagent - are a second, inner bracket the same way: a ├/└ group
+// glyph marks each sibling's own first row, in place of that window's own
+// ┌ (glyph would otherwise draw the same dot or bracket-open on every
+// sibling, with nothing to say they belong together). The group glyph
+// only ever replaces a window's row-0 glyph, never adds a column next to
+// it, so a two-pane sibling's own closing row still carries its own
+// └ - the group and the window brackets compose exactly like the outer
+// window bracket and a nested child already do, one level further in.
+// depth > 1 is the same recursion again: a subagent's own subagents are
+// just another anchor lookup, off its own first pane.
+//
 // The price is that a window hoisted under a parent's pane no longer
 // appears in tmux's own window order - a subagent's window can sit above
 // a lower-numbered one, and a parent's own later panes sit below a whole
@@ -1387,21 +1421,43 @@ func (m *model) appendWindows(placements []windowPlacement) {
 		}
 	}
 	drawn := make([]bool, len(placements))
-	var emit func(i int, prefix string)
-	emit = func(i int, prefix string) {
+	// prefix is the ambient stem for a window's own row 0; cont is the
+	// ambient stem for its remaining rows, which differs from prefix only
+	// when lead is set - a sibling in a group of more than one, where row
+	// 0's own glyph is replaced by the group glyph lead and everything
+	// below it carries the group's own continuation instead.
+	var emit func(i int, prefix, cont, lead string)
+	emit = func(i int, prefix, cont, lead string) {
 		if drawn[i] {
 			return
 		}
 		drawn[i] = true
 		panes := placements[i].panes
 		for j, p := range panes {
+			amb, g := cont, glyph(j, len(panes))
+			nested := amb + continuation(j, len(panes)) + " "
+			if j == 0 {
+				amb = prefix
+				nested = amb + continuation(j, len(panes)) + " "
+				if lead != "" {
+					// The group glyph stands in for row 0's own bracket glyph
+					// entirely, so what continues below it is the group's own
+					// continuation (cont), not a continuation of a bracket that
+					// was never drawn.
+					g, nested = lead, cont
+				}
+			}
 			m.rows = append(m.rows, row{
-				text:   prefix + glyph(j, len(panes)) + " " + m.paneLabel(p),
+				text:   amb + g + " " + m.paneLabel(p),
 				paneID: p.PaneID,
 			})
-			nested := prefix + continuation(j, len(panes)) + " "
-			for _, k := range byAnchor[p.PaneID] {
-				emit(k, nested)
+			kids := byAnchor[p.PaneID]
+			if len(kids) == 1 {
+				emit(kids[0], nested, nested, "")
+				continue
+			}
+			for gi, k := range kids {
+				emit(k, nested, nested+groupContinuation(gi, len(kids))+" ", groupGlyph(gi, len(kids)))
 			}
 		}
 	}
@@ -1409,7 +1465,7 @@ func (m *model) appendWindows(placements []windowPlacement) {
 	// gone, a ring the walk broke - is drawn as a root here rather than
 	// dropped: a missing row is an agent nobody can see.
 	for i := range placements {
-		emit(i, "")
+		emit(i, "", "", "")
 	}
 }
 

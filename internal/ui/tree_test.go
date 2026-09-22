@@ -131,6 +131,136 @@ func TestRenderNestsUnderTheParentPane(t *testing.T) {
 	})
 }
 
+// TestRenderGroupsSiblingSubagents is the user's own sketch: a parent
+// with several live subagents reads as one bracket around all of them -
+// ├ for each sibling but the last, └ for the last - rather than as a run
+// of identical dots that says nothing about them belonging together.
+func TestRenderGroupsSiblingSubagents(t *testing.T) {
+	panes := []tmux.Pane{
+		agentPane("@13", "%22", "orchestrator"),
+		shellPane("@13", "%47"),
+		agentPane("@20", "%30", "subagent-a"),
+		agentPane("@21", "%31", "subagent-b"),
+		agentPane("@22", "%32", "subagent-c"),
+	}
+	states := map[string]state.Session{
+		"%22": agentState("root-inst", "", "orchestrator"),
+		"%30": agentState("kid-a-inst", "root-inst", "subagent-a"),
+		"%31": agentState("kid-b-inst", "root-inst", "subagent-b"),
+		"%32": agentState("kid-c-inst", "root-inst", "subagent-c"),
+	}
+	wantRows(t, renderRows(panes, states), []string{
+		"sess",
+		"┌ ▌ orchestrator",
+		"│ ├ ▌ subagent-a",
+		"│ ├ ▌ subagent-b",
+		"│ └ ▌ subagent-c",
+		"└ zsh",
+	})
+}
+
+// TestRenderGroupsSiblingSubagentsWithTheirOwnShells is the two-pane
+// sibling in that same group: the group glyph stands in for that
+// sibling's own bracket-open row 0, and its own bracket still closes with
+// └ on its second row - the group and the window bracket compose without
+// either one dropping a row.
+func TestRenderGroupsSiblingSubagentsWithTheirOwnShells(t *testing.T) {
+	panes := []tmux.Pane{
+		agentPane("@13", "%22", "orchestrator"),
+		agentPane("@20", "%30", "subagent-a"),
+		shellPane("@20", "%40"),
+		agentPane("@21", "%31", "subagent-b"),
+	}
+	states := map[string]state.Session{
+		"%22": agentState("root-inst", "", "orchestrator"),
+		"%30": agentState("kid-a-inst", "root-inst", "subagent-a"),
+		"%31": agentState("kid-b-inst", "root-inst", "subagent-b"),
+	}
+	wantRows(t, renderRows(panes, states), []string{
+		"sess",
+		"· ▌ orchestrator",
+		"  ├ ▌ subagent-a",
+		"  │ └ zsh",
+		"  └ ▌ subagent-b",
+	})
+}
+
+// TestRenderGroupsSiblingSubagentsAtDepthTwo is the sketch generalised one
+// level further: subagent-a is itself a group of one (a lone grandchild,
+// no group glyph of its own) hanging off the group's own │ continuation,
+// and subagent-b's grandchildren form a group of their own, nested inside
+// a group nested inside a group.
+func TestRenderGroupsSiblingSubagentsAtDepthTwo(t *testing.T) {
+	panes := []tmux.Pane{
+		agentPane("@1", "%1", "root"),
+		agentPane("@2", "%2", "subagent-a"),
+		agentPane("@3", "%3", "subagent-b"),
+		agentPane("@4", "%4", "grandkid-a1"),
+		agentPane("@5", "%5", "grandkid-b1"),
+		agentPane("@6", "%6", "grandkid-b2"),
+	}
+	states := map[string]state.Session{
+		"%1": agentState("root-inst", "", "root"),
+		"%2": agentState("a-inst", "root-inst", "subagent-a"),
+		"%3": agentState("b-inst", "root-inst", "subagent-b"),
+		"%4": agentState("a1-inst", "a-inst", "grandkid-a1"),
+		"%5": agentState("b1-inst", "b-inst", "grandkid-b1"),
+		"%6": agentState("b2-inst", "b-inst", "grandkid-b2"),
+	}
+	wantRows(t, renderRows(panes, states), []string{
+		"sess",
+		"· ▌ root",
+		"  ├ ▌ subagent-a",
+		"  │ · ▌ grandkid-a1",
+		"  └ ▌ subagent-b",
+		"    ├ ▌ grandkid-b1",
+		"    └ ▌ grandkid-b2",
+	})
+}
+
+// TestRenderGroupsSiblingSubagentsWithADeadOne checks the × treatment
+// survives grouping: a lingering dead sibling keeps its dim × and label
+// while still taking its ├/└ place among its live siblings.
+func TestRenderGroupsSiblingSubagentsWithADeadOne(t *testing.T) {
+	id := newRun(t, "subagent-b", "")
+	panes := []tmux.Pane{
+		agentPane("@13", "%22", "orchestrator"),
+		agentPane("@20", "%30", "subagent-a"),
+		lingeringSubagentPane("@21", "%31", id, "root-inst"),
+	}
+	states := map[string]state.Session{
+		"%22": agentState("root-inst", "", "orchestrator"),
+		"%30": agentState("kid-a-inst", "root-inst", "subagent-a"),
+	}
+	wantRows(t, renderRows(panes, states), []string{
+		"sess",
+		"· ▌ orchestrator",
+		"  ├ ▌ subagent-a",
+		"  └ × subagent-b",
+	})
+}
+
+// TestRenderMultipleTopLevelAgentsInOneWindow checks that root-level
+// agents sharing a window - not a subagent group at all, just two panes
+// of one window - are unaffected by grouping: the window's own ┌/└/├
+// bracket draws them exactly as it always has, since neither anchors the
+// other.
+func TestRenderMultipleTopLevelAgentsInOneWindow(t *testing.T) {
+	panes := []tmux.Pane{
+		agentPane("@1", "%1", "first"),
+		agentPane("@1", "%2", "second"),
+	}
+	states := map[string]state.Session{
+		"%1": agentState("first-inst", "", "first"),
+		"%2": agentState("second-inst", "", "second"),
+	}
+	wantRows(t, renderRows(panes, states), []string{
+		"sess",
+		"┌ ▌ first",
+		"└ ▌ second",
+	})
+}
+
 // TestRenderKeepsTheColumnAcrossANestedChild is the case the glyphs make
 // awkward: a three-pane window with a subagent hanging off its middle
 // pane. The parent's column is carried down the left of the child's rows
@@ -273,8 +403,8 @@ func TestRenderIsDeterministic(t *testing.T) {
 	wantRows(t, want, []string{
 		"sess",
 		"┌ ▌ root",
-		"│ · ▌ kid-a",
-		"│ · ▌ kid-b",
+		"│ ├ ▌ kid-a",
+		"│ └ ▌ kid-b",
 		"│   · ▌ grandkid",
 		"└ zsh",
 	})
