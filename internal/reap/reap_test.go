@@ -124,6 +124,9 @@ func TestSweepCollectsAFocusedWindowOnceTheUserLeaves(t *testing.T) {
 
 // TestSweepCancelsSubagentOfDeadParent is rule 2: the subagent is alive
 // and its window is not dead, so only its parent's absence can close it.
+// A single sweep is not enough - see TestSweepDoesNotActOnASingleMiss -
+// so this drives its own isolated reaper across two sweeps OrphanGrace
+// apart, the second of which finally closes the window.
 func TestSweepCancelsSubagentOfDeadParent(t *testing.T) {
 	child := state.Session{Pane: "%1", PID: os.Getpid(),
 		Instance: "child-inst", ParentInstance: "root-inst"}
@@ -131,7 +134,49 @@ func TestSweepCancelsSubagentOfDeadParent(t *testing.T) {
 	// process is gone, which is the reading that decides this.
 	parent := state.Session{Pane: "%p", PID: deadPID(t), Instance: "root-inst"}
 	panes := []tmux.Pane{other, marked(pane("%1", "@1"))}
-	check(t, Sweep(panes, []state.Session{child, parent}, now), []string{"@1"})
+	sessions := []state.Session{child, parent}
+
+	r := newReaper()
+	check(t, r.sweep(panes, sessions, now), nil)
+	check(t, r.sweep(panes, sessions, now.Add(OrphanGrace)), []string{"@1"})
+}
+
+// TestSweepDoesNotActOnASingleMiss is the regression test for the real
+// incident: a same-pane collision (state.beats) can evict the parent's
+// own record for a tick or few, without its process ever dying, and
+// having it reappear before OrphanGrace elapses must close nothing at
+// all - not even after the clock would otherwise have run out, since
+// seeing the parent again resets it.
+func TestSweepDoesNotActOnASingleMiss(t *testing.T) {
+	child := state.Session{Pane: "%1", PID: os.Getpid(),
+		Instance: "child-inst", ParentInstance: "root-inst"}
+	panes := []tmux.Pane{other, marked(pane("%1", "@1"))}
+	missing := []state.Session{child} // the parent's own record is absent
+	present := []state.Session{child, {Pane: "%p", PID: os.Getpid(), Instance: "root-inst"}}
+
+	r := newReaper()
+	check(t, r.sweep(panes, missing, now), nil)
+	check(t, r.sweep(panes, present, now.Add(time.Second)), nil) // parent seen alive: clock reset
+	check(t, r.sweep(panes, missing, now.Add(OrphanGrace)), nil) // not OrphanGrace since the reset
+}
+
+// TestSweepNeverActsOnAPaneCollisionAlone: the child remembers its
+// parent's pid from when it was spawned (ParentPID), and that reading
+// alone is enough to never even start the debounce clock, however many
+// sweeps a collision (state.beats evicting the parent's own record for
+// the pane) survives.
+func TestSweepNeverActsOnAPaneCollisionAlone(t *testing.T) {
+	child := state.Session{Pane: "%1", PID: os.Getpid(),
+		Instance: "child-inst", ParentInstance: "root-inst", ParentPID: os.Getpid()}
+	panes := []tmux.Pane{other, marked(pane("%1", "@1"))}
+	// No session named "root-inst" at all: Load's beats() has evicted it
+	// in favour of something else sharing the pane.
+	sessions := []state.Session{child}
+
+	r := newReaper()
+	for i := 0; i < 5; i++ {
+		check(t, r.sweep(panes, sessions, now.Add(time.Duration(i)*OrphanGrace)), nil)
+	}
 }
 
 func TestSweepLeavesSubagentOfLiveParentAlone(t *testing.T) {

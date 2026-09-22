@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"kido/internal/state"
@@ -28,6 +29,46 @@ func graceFromEnv(def time.Duration) time.Duration {
 	}
 	return def
 }
+
+// OrphanGrace is how long rule 2 must see a subagent's parent continuously
+// gone - in both the readings Sweep uses, see the rule below - before its
+// window is actually closed. A parent's own state record can go missing
+// for a tick or several without the parent having died: two records
+// (typically a one-shot `pi --print` that inherited TMUX_PANE from its
+// caller's pane) can briefly collide on one pane, and state.beats
+// resolves that collision on each Load by timestamp, so the parent's own
+// record can lose for as long as the intruder keeps reporting. A single
+// miss is not evidence; closing a window kills the process inside it with
+// no chance to run its own shutdown path. It must stay comfortably above
+// pi's own parent-liveness poll (pi/kido-agents.ts, two consecutive
+// misses at PARENT_LIVENESS_POLL_MS, ~10s by default) or the sweep races
+// a child that was already shutting down cleanly on its own and stamps
+// its outcome Died instead of whatever it was about to record itself.
+var OrphanGrace = orphanGraceFromEnv(15 * time.Second)
+
+func orphanGraceFromEnv(def time.Duration) time.Duration {
+	if n, err := strconv.Atoi(os.Getenv("KIDO_ORPHAN_SECONDS")); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return def
+}
+
+// reaper holds rule 2's debounce state across sweeps: firstMissed records,
+// per parent instance, the first tick that instance looked gone by both
+// of rule 2's readings. It is package-level state rather than a Sweep
+// parameter because Sweep's signature is relied on by internal/ui and
+// cmd/kido unchanged; a fresh process (`kido reap`) therefore starts with
+// an empty map and can never fire rule 2 on its one and only sweep - rule
+// 2 needs a long-running caller, the sidebar's poll, to see the same
+// parent gone twice. `kido reap` still runs rule 1 in full.
+type reaper struct {
+	mu          sync.Mutex
+	firstMissed map[string]time.Time // ParentInstance -> when it first looked gone
+}
+
+func newReaper() *reaper { return &reaper{firstMissed: map[string]time.Time{}} }
+
+var defaultReaper = newReaper()
 
 // window is what a sweep needs to know about one tmux window, folded out
 // of the pane list.
@@ -108,12 +149,22 @@ func captureScreen(w *window) {
 //
 //  1. every pane of a marked window is dead and has been for Grace. This
 //     rule reads no state record at all.
-//  2. a live subagent whose parent is gone is cancelled by closing its
-//     window.
+//  2. a live subagent whose parent has looked gone, by both readings
+//     Sweep has of it, for OrphanGrace is cancelled by closing its
+//     window. A single miss - one Sweep call where the parent's record
+//     is briefly unreadable - is not enough on its own; see OrphanGrace.
+//     This debounce is per *process* (the package-level defaultReaper),
+//     so only a caller that sweeps repeatedly, the sidebar's poll, can
+//     ever trigger rule 2; a one-shot `kido reap` observes at most once
+//     and so only ever applies rule 1.
 //
 // Neither rule closes a window that is any client's current one, or a
 // session's last window.
 func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) []string {
+	return defaultReaper.sweep(panes, sessions, now)
+}
+
+func (r *reaper) sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) []string {
 	windows, byID, byPane := foldWindows(panes)
 
 	closing := map[string]bool{}
@@ -143,16 +194,43 @@ func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) []string 
 			live[s.Instance] = true
 		}
 	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for _, s := range sessions {
 		// A dead subagent is rule 1's business: acting on its record here
 		// would let a state file left by a previous tmux server close a
 		// window by pane id alone.
-		if s.ParentInstance == "" || !state.Alive(s.PID) || live[s.ParentInstance] {
+		if s.ParentInstance == "" || !state.Alive(s.PID) {
+			continue
+		}
+		// Two independent readings of the parent's liveness: the registry's
+		// per-pane record (live, built above) and the pid the child itself
+		// recorded for its parent when it was spawned (ParentPID). A
+		// same-pane collision can evict the parent's own record from
+		// `sessions` for a few seconds without its pid ever dying, so
+		// either reading saying "alive" is enough - and it is checked
+		// before touching the debounce clock, so a transient collision
+		// never even starts one. A record with no ParentPID (an older
+		// report, or an agent that predates it) makes state.Alive(0) false
+		// and falls straight through to the instance check alone, exactly
+		// as before this change.
+		if live[s.ParentInstance] || state.Alive(s.ParentPID) {
+			delete(r.firstMissed, s.ParentInstance)
+			continue
+		}
+		since, seen := r.firstMissed[s.ParentInstance]
+		if !seen {
+			r.firstMissed[s.ParentInstance] = now
+			continue
+		}
+		if now.Sub(since) < OrphanGrace {
 			continue
 		}
 		if id, ok := byPane[s.Pane]; ok {
 			mark(id) // rule 2
 		}
+		delete(r.firstMissed, s.ParentInstance)
 	}
 	return out
 }

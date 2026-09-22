@@ -254,6 +254,47 @@ func TestSidebarCancelsSubagentOfDeadParent(t *testing.T) {
 		msgf("the sidebar's poll to cancel subagent window %s, whose parent is gone", windowID))
 }
 
+// TestSidebarSurvivesATransientParentPaneCollision is the regression e2e
+// test for the actual incident: a same-pane collision - a newer record
+// sharing the parent's own pane, exactly the shape a `pi --print` that
+// inherited TMUX_PANE from its caller's pane produces (state.beats) -
+// must never close a healthy child's window, however long the collision
+// lasts, because the child's own recorded ParentPID is still the true
+// parent's live pid regardless of which record Load() currently returns
+// for that pane.
+func TestSidebarSurvivesATransientParentPaneCollision(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+
+	parentScript := fmt.Sprintf("%s agent-status --agent pi --session parent-collision-e2e --status idle "+
+		"--instance root-inst; exec sleep 300", kidoBin)
+	parentPane := h.newWindow("alpha", "parent-collision-e2e", "sh", "-c", parentScript)
+	h.waitPaneCommand(parentPane, "sleep")
+	parentPID, err := strconv.Atoi(h.in("display-message", "-p", "-t", parentPane, "#{pane_pid}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	childScript := fmt.Sprintf("%s agent-status --agent pi --session child-collision-e2e --status idle "+
+		"--instance child-inst --parent-instance root-inst --parent-pid %d; exec sleep 300",
+		kidoBin, parentPID)
+	childPane := h.newWindow("alpha", "kid-collision-e2e", "sh", "-c", childScript)
+	h.waitPaneCommand(childPane, "sleep")
+	windowID := h.windowID(childPane)
+	h.in("set-window-option", "-t", windowID, "remain-on-exit", "on")
+	h.in("set-option", "-w", "-t", windowID, "@kido_subagent", "parent=root-inst depth=1")
+
+	// The collision: an intruder claims the parent's own pane with a
+	// newer timestamp, the same way a `pi --print` inheriting TMUX_PANE
+	// does. Left in place for the whole test - if the only thing keeping
+	// the child alive were the registry's per-pane record, this alone
+	// would starve rule 2 of a live parent for as long as it lasts.
+	h.agentStatus("intruder-collision-e2e", parentPane, "pi", "idle", "--instance", "intruder-inst")
+
+	h.stays(func() bool { return h.windowExists(windowID) },
+		"a subagent's window was closed by a pane collision on its parent's own record, though the parent's pid never died")
+}
+
 // TestCloseWindowLeavesFocusedWindowAlone checks `kido close-window`
 // against a real tmux server: a window the client has actually switched
 // to must be left open, since the user may have gone there to read a

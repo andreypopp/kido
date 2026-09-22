@@ -140,6 +140,52 @@ func TestLoadSameAgentMostRecentWins(t *testing.T) {
 	}
 }
 
+// TestLoadTwoOuterRecordsOnOnePaneFlipByTimestamp pins the case AGENTS.md
+// flags as unenforced and untested: outer() treats any two non-Claude
+// agents as equally "outer", so two pi records sharing one pane (the real
+// incident this guards - a headless `pi --print` inheriting TMUX_PANE
+// from the pane it was launched in) fall through to beats' timestamp
+// comparison and the winner flips to whichever reported most recently.
+// This is deliberately NOT "fixed" into a stable tiebreak here: the same
+// timestamp-wins rule is what TestLoadSameAgentMostRecentWins pins for the
+// ordinary case of one real agent's own record evolving over the pane's
+// lifetime (a new Claude Code session id replacing an old one after
+// /clear, say), and a tiebreak that instead favoured the older record
+// would silently break that - it has no way to tell "a legitimate second
+// record for this pane" from "an intruder that inherited a pane it never
+// owned". The fix for the destructive consequence of this flip lives in
+// internal/reap instead (OrphanGrace, plus a ParentPID fallback that does
+// not even depend on which record Load happens to return); this test just
+// records that the flip itself is real and known, not a surprise.
+func TestLoadTwoOuterRecordsOnOnePaneFlipByTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("KIDO_STATE_DIR", dir)
+
+	earlier := time.Now().UTC().Add(-time.Minute)
+	later := time.Now().UTC()
+	write(t, "pi-root", Session{Agent: AgentPi, Pane: "%9", Status: Idle, TS: earlier})
+	write(t, "pi-headless", Session{Agent: AgentPi, Pane: "%9", Status: Running, TS: later})
+
+	states, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := states["%9"]; got.ID != "pi-headless" {
+		t.Errorf("pane %%9 = %+v, want the more recent record (pi-headless) to win the collision", got)
+	}
+
+	// The headless record ends (its file is removed, as session_shutdown
+	// does on exit) and the root's own record is the only one left.
+	os.Remove(filepath.Join(dir, "pi-headless.json"))
+	states, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := states["%9"]; got.ID != "pi-root" {
+		t.Errorf("pane %%9 = %+v, want the surviving record (pi-root) once the collision ends", got)
+	}
+}
+
 func TestIsAgentPane(t *testing.T) {
 	states := map[string]Session{"%2": {Agent: AgentPi, Pane: "%2", Status: Running}}
 	for _, c := range []struct {
