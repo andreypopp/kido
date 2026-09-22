@@ -20,6 +20,7 @@ import (
 	"kido/internal/procs"
 	"kido/internal/reap"
 	"kido/internal/state"
+	"kido/internal/subrun"
 	"kido/internal/tmux"
 	"kido/internal/tree"
 )
@@ -61,6 +62,67 @@ type snapshot struct {
 	// screen is read at most once per probeInterval rather than on every
 	// tick. See screen.go.
 	probes map[string]probe
+
+	// lingering carries the name and outcome of a subagent window whose
+	// state record is already gone but whose @kido_subagent mark still
+	// names its run - the sweep's ~30s read window (docs/design.md,
+	// "Window lifecycle"). Both live in files under internal/subrun, not
+	// in tmux or the state directory, so they must be read here and
+	// carried in the snapshot rather than read from paneLabel: rendering
+	// is a pure function of the snapshot, and same() must see a changed
+	// outcome the same way it sees a changed pane - reading the files at
+	// render time would let two "equal" snapshots draw differently, and
+	// an outcome recorded after the record was already gone (a slow
+	// run-outcome call outracing the removal report, a kill-window that
+	// has to retry) would never redraw.
+	lingering map[string]lingering
+}
+
+// lingering is one lingering subagent window's label, keyed by run id.
+type lingering struct {
+	name      string
+	outcome   subrun.Result
+	outcomeOK bool // whether an outcome has been recorded at all
+}
+
+// lingeringSubagents reads the name and outcome of every subagent window
+// this snapshot's panes show as marked but with no state record for the
+// pane the mark is on - the only panes lingeringLabel ever needs this
+// for, so a run's files are read at most once per tick per such window,
+// and never for a live agent pane or a plain shell.
+func lingeringSubagents(panes []tmux.Pane, states map[string]state.Session) map[string]lingering {
+	var out map[string]lingering
+	for _, p := range panes {
+		if p.Subagent == "" {
+			continue
+		}
+		if _, reported := states[p.PaneID]; reported {
+			continue
+		}
+		runID := tmux.SubagentRunID(p.Subagent)
+		if runID == "" {
+			continue
+		}
+		if _, ok := out[runID]; ok {
+			continue
+		}
+		meta, err := subrun.ReadMeta(runID)
+		if err != nil {
+			// A run directory that is missing or unreadable is not this
+			// pane's business to explain; paneLabel falls back to the plain
+			// pane command the way it always has.
+			continue
+		}
+		if out == nil {
+			out = map[string]lingering{}
+		}
+		l := lingering{name: meta.Name}
+		if o, ok, err := subrun.ReadOutcome(runID); err == nil && ok {
+			l.outcome, l.outcomeOK = o.Result, true
+		}
+		out[runID] = l
+	}
+	return out
 }
 
 // probe is one read of a waiting session's screen: whether its input box
@@ -250,6 +312,7 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 		}
 	}
 	reapSubagentWindows(s.panes, s.states)
+	s.lingering = lingeringSubagents(s.panes, s.states)
 	s.probes = dismissals(conn, prev.probes, s.states)
 	for pane, p := range s.probes {
 		if !p.dismissed {
@@ -388,7 +451,7 @@ func (a snapshot) same(b snapshot) bool {
 	return a.current == b.current && a.active == b.active && a.focused == b.focused &&
 		a.err == nil && b.err == nil &&
 		samePanes(a.panes, b.panes) && sameStates(a.states, b.states) &&
-		maps.Equal(a.ssh, b.ssh) && maps.Equal(a.pi, b.pi)
+		maps.Equal(a.ssh, b.ssh) && maps.Equal(a.pi, b.pi) && maps.Equal(a.lingering, b.lingering)
 }
 
 // sameStates is maps.Equal for state.Session with TS excluded through
@@ -1042,6 +1105,16 @@ func indicator(s state.Status) string {
 func indicatorDone() string   { return stDone.Render("✓") }
 func indicatorFailed() string { return stErr.Render("▌") }
 
+// indicatorGone marks a lingering subagent window: its process is dead and
+// its record is already gone, so field("") - the "kido knows nothing about
+// this pane" tell a plain uninstrumented shell earns - would say the wrong
+// thing about a row kido actually knows more about than a live one (its
+// name, and often its outcome). × is used nowhere else, so it cannot be
+// confused with a live status, and it is dimmed the same as the row's own
+// text, rendered on demand for the same package-init reason as the rest of
+// this table.
+func indicatorGone() string { return stDim.Render("×") }
+
 // indicatorStalled marks a session state.Stalled reports as wedged,
 // rendered on demand for the same reason as indicatorDone.
 func indicatorStalled() string { return stStalled.Render("!") }
@@ -1123,12 +1196,39 @@ func (m *model) interactivePane(p tmux.Pane) bool {
 	return p.AlternateOn
 }
 
+// lingeringLabel is the row text for a lingering subagent window's pane -
+// one carrying tmux.SubagentOption whose run has no live record for this
+// pane (see lingeringSubagents, which does the file reads this only looks
+// up) - or "", false when p is not one. Dimming the whole label, name and
+// outcome alike, says "not interactive" the same way stDim already does
+// for the tree's own stems and an agent's activity text; the × in the
+// field column is what actually says "dead", since a dim row inside an
+// already-dim nested block does not otherwise stand out at a glance.
+func (m *model) lingeringLabel(p tmux.Pane) (string, bool) {
+	runID := tmux.SubagentRunID(p.Subagent)
+	if runID == "" {
+		return "", false
+	}
+	l, ok := m.snap.lingering[runID]
+	if !ok {
+		return "", false
+	}
+	label := field(indicatorGone()) + stDim.Render(l.name)
+	if l.outcomeOK {
+		label += "  " + stDim.Render(string(l.outcome))
+	}
+	return label, true
+}
+
 // paneLabel is the row text for a pane: its foreground command, or an
 // agent pane's session title, both behind the same two-column indicator
 // field. Which agent it is makes no difference to the row.
 func (m *model) paneLabel(p tmux.Pane) string {
 	title, isAgent := m.agentTitleOf(p)
 	if !isAgent {
+		if label, ok := m.lingeringLabel(p); ok {
+			return label
+		}
 		text := stProc.Render(p.CurrentCommand)
 		if sess, ok := m.snap.ssh[p.PanePID]; ok {
 			text = stProc.Render("ssh ") + sess.Host

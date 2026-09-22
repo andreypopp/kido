@@ -2,12 +2,14 @@ package ui
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
 
 	"kido/internal/state"
+	"kido/internal/subrun"
 	"kido/internal/tmux"
 )
 
@@ -46,15 +48,21 @@ func sameIDs(got, want []string) bool {
 // on: the ordering alone reads the same whether a child's window follows
 // its parent's window or its parent's pane, so an ordering-only test
 // cannot tell the two layouts apart.
+// testAt is the fixed instant every renderRows test runs at. agentState
+// stamps it onto TS too, so state.Stalled sees a zero gap and its answer
+// does not depend on a stray ~/.local/state/kido/wake left by a real kido
+// running on the machine the tests happen to run on.
+var testAt = time.Unix(1700000000, 0)
+
 func renderRows(panes []tmux.Pane, states map[string]state.Session) []string {
-	at := time.Unix(1700000000, 0)
+	at := testAt
 	m := model{
 		started: at,
 		seen:    map[string]time.Time{},
 		phases:  map[string]shellPhase{},
 		now:     func() time.Time { return at },
 		at:      at,
-		snap:    snapshot{current: "sess", panes: panes, states: states},
+		snap:    snapshot{current: "sess", panes: panes, states: states, lingering: lingeringSubagents(panes, states)},
 	}
 	m.rebuild()
 	out := make([]string, 0, len(m.rows))
@@ -78,7 +86,7 @@ func shellPane(w, pane string) tmux.Pane {
 func agentState(inst, parent, title string) state.Session {
 	return state.Session{
 		Agent: state.AgentPi, Status: state.Running, Title: title,
-		Instance: inst, ParentInstance: parent,
+		Instance: inst, ParentInstance: parent, TS: testAt,
 	}
 }
 
@@ -183,9 +191,9 @@ func TestRenderNestsRecursively(t *testing.T) {
 	states := map[string]state.Session{
 		"%1": agentState("root-inst", "", "root"),
 		"%2": {Agent: state.AgentPi, Status: state.Running, Title: "kid",
-			Instance: "kid-inst", ParentInstance: "root-inst", Depth: 1},
+			Instance: "kid-inst", ParentInstance: "root-inst", Depth: 1, TS: testAt},
 		"%3": {Agent: state.AgentPi, Status: state.Running, Title: "grandkid",
-			Instance: "gk-inst", ParentInstance: "kid-inst", Depth: 1},
+			Instance: "gk-inst", ParentInstance: "kid-inst", Depth: 1, TS: testAt},
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -207,7 +215,7 @@ func TestRenderDrawsAnOrphanAsARoot(t *testing.T) {
 	states := map[string]state.Session{
 		"%1": agentState("other-inst", "", "unrelated"),
 		"%2": {Agent: state.AgentPi, Status: state.Running, Title: "orphan",
-			Instance: "orphan-inst", ParentInstance: "elsewhere-inst", Depth: 1},
+			Instance: "orphan-inst", ParentInstance: "elsewhere-inst", Depth: 1, TS: testAt},
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -512,5 +520,151 @@ func TestRenderNestsADeadSubagentForTheWholeLinger(t *testing.T) {
 		"sess",
 		"· ▌ orchestrator",
 		"  · ",
+	})
+}
+
+// lingeringSubagentPane is a finished subagent's window carrying a real
+// run id in its mark, unlike deadSubagentPane's empty one, so
+// lingeringSubagents has something to look up on disk.
+func lingeringSubagentPane(w, pane, runID, parentInstance string) tmux.Pane {
+	return tmux.Pane{
+		SessionName: "sess", WindowID: w, PaneID: pane,
+		Dead: true, Subagent: tmux.SubagentMark(runID, parentInstance, 1),
+	}
+}
+
+// newRun writes a run's meta (and, if result != "", its outcome) under a
+// fresh KIDO_STATE_DIR and returns its id.
+func newRun(t *testing.T, name string, result subrun.Result) string {
+	t.Helper()
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	id := subrun.NewID()
+	if err := subrun.Create(id, "task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := subrun.WriteMeta(subrun.Meta{ID: id, Name: name}); err != nil {
+		t.Fatal(err)
+	}
+	if result != "" {
+		if err := subrun.RecordOutcome(id, subrun.Outcome{Result: result}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return id
+}
+
+// TestRenderLingeringSubagentShowsItsOwnName is the identity half of the
+// bug report: a lingering window with no record must show the run's own
+// name, not the bare pane command (CurrentCommand is empty here, the way
+// a dead pane's is; the live bug reads "pi", but either way it is not
+// the run's name).
+func TestRenderLingeringSubagentShowsItsOwnName(t *testing.T) {
+	id := newRun(t, "fix the flaky test", "")
+	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
+	rows := renderRows(panes, nil)
+	wantRows(t, rows, []string{
+		"sess",
+		"· × fix the flaky test",
+	})
+}
+
+// TestRenderLingeringSubagentLooksDead checks the row is visibly distinct
+// from every live status glyph, not just from a bare pane command: the ×
+// this task adds must not collide with anything indicator() or
+// indicatorDone()/indicatorFailed() already draws for a live pane.
+func TestRenderLingeringSubagentLooksDead(t *testing.T) {
+	id := newRun(t, "subagent", "")
+	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
+	rows := renderRows(panes, nil)
+	row := rows[1]
+	if !strings.Contains(row, "×") {
+		t.Fatalf("row = %q, want the dead glyph ×", row)
+	}
+	for _, live := range []string{"▌", "◆", "◌", "✓", "!"} {
+		if strings.Contains(row, live) {
+			t.Errorf("row = %q, contains %q, a live status glyph", row, live)
+		}
+	}
+}
+
+// TestRenderLingeringSubagentShowsOutcome checks the second half: when a
+// sweep or the subagent's own run-outcome call has recorded how the run
+// ended, the row shows it.
+func TestRenderLingeringSubagentShowsOutcome(t *testing.T) {
+	id := newRun(t, "subagent", subrun.Completed)
+	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
+	wantRows(t, renderRows(panes, nil), []string{
+		"sess",
+		"· × subagent  completed",
+	})
+}
+
+// TestRenderLingeringSubagentInventsNoOutcome is the other side of that:
+// absence of a recorded outcome must not be guessed at, because a sweep
+// writes Died a moment later for a genuine crash and "not known yet" is
+// the honest answer until then.
+func TestRenderLingeringSubagentInventsNoOutcome(t *testing.T) {
+	id := newRun(t, "subagent", "")
+	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
+	row := renderRows(panes, nil)[1]
+	for _, guess := range []string{"completed", "failed", "stopped", "died"} {
+		if strings.Contains(row, guess) {
+			t.Errorf("row = %q, invented an outcome %q nobody recorded", row, guess)
+		}
+	}
+}
+
+// TestRenderLiveSubagentUnaffectedByLingering is the regression that
+// matters most: a live subagent with a record still renders its status
+// indicator and title exactly as before, never the lingering label - the
+// lingering path is only reachable through paneLabel's !isAgent branch.
+func TestRenderLiveSubagentUnaffectedByLingering(t *testing.T) {
+	panes := []tmux.Pane{
+		agentPane("@13", "%22", "orchestrator"),
+		shellPane("@13", "%47"),
+		agentPane("@20", "%30", "subagent"),
+	}
+	states := map[string]state.Session{
+		"%22": agentState("root-inst", "", "orchestrator"),
+		"%30": agentState("kid-inst", "root-inst", "subagent"),
+	}
+	wantRows(t, renderRows(panes, states), []string{
+		"sess",
+		"┌ ▌ orchestrator",
+		"│ · ▌ subagent",
+		"└ zsh",
+	})
+}
+
+// TestRenderLingeringSubagentMissingRunDirDegradesGracefully covers a
+// mark whose run directory was never created, or has since been removed:
+// lingeringSubagents must skip it rather than error out or panic, and
+// the row falls back to the plain pane-command label it always had.
+func TestRenderLingeringSubagentMissingRunDirDegradesGracefully(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", "no-such-run", "")}
+	rows := renderRows(panes, nil)
+	wantRows(t, rows, []string{
+		"sess",
+		"· ",
+	})
+}
+
+// TestRenderLingeringSubagentStillNests is f430308's fix, checked again
+// with a real run id in the mark rather than the empty one
+// deadSubagentPane uses: the identity fix must not cost the place fix.
+func TestRenderLingeringSubagentStillNests(t *testing.T) {
+	id := newRun(t, "subagent", "")
+	panes := []tmux.Pane{
+		agentPane("@13", "%22", "orchestrator"),
+		lingeringSubagentPane("@20", "%30", id, "root-inst"),
+	}
+	states := map[string]state.Session{
+		"%22": agentState("root-inst", "", "orchestrator"),
+	}
+	wantRows(t, renderRows(panes, states), []string{
+		"sess",
+		"· ▌ orchestrator",
+		"  · × subagent",
 	})
 }
