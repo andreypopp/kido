@@ -193,22 +193,27 @@ text rather than being dropped.
   waiting on that id. If none is (the asker already timed out, or the id
   is foreign), the answer is still delivered, as an ordinary message -
   never dropped.
-- `notice` - delivered as informational text.
+- `notice` - delivered as a custom message, rendered collapsed to one
+  line ("notification from X - ctrl-o to expand") with the full text
+  behind pi's own ctrl-o toggle; the model always sees the full text
+  regardless of how it renders.
 - anything else - delivered anyway, marked as an unrecognised kind, so a
   typo or a newer kido talking to an older extension is visible rather
   than silently read as a plain message.
 
 ### Notices to a parent
 
-A subagent sends its parent two different notices, distinguishable by
-text: `sendTurnNotice`, on every settled turn (`agent_settled` with
-`ctx.isIdle()`), carries the child's own last answer and says the run is
-still alive ("finished a turn ... still running"); `sendCompletionNotice`,
-on a real `session_shutdown`, says the run has ended. Only the second is
-gated on `isRunEnding` - a `/reload` sends neither. See docs/design.md,
-"Notifying the parent", for why one event decides completion while
-another supplies the content, and how a settle with nothing to report
-stays silent.
+A subagent no longer notifies its parent automatically. `notify_parent(summary)`
+runs `kido message --kind notice`, sent only when the model itself decides
+its work is done - a settled turn can be triggered by anything, a peer's
+`ask_agent` included, and only the subagent's own model knows whether a
+given turn was actually its delegated work finishing. A subagent that
+crashes or is idle-reaped without calling it tells its parent nothing;
+the run record still holds the outcome (`kido runs`). A standing
+instruction to call it, appended to the system prompt on every turn
+(`before_agent_start`, gated on this being a subagent at all) is what
+tells a spawned child this is its job - see docs/design.md, "Notifying
+the parent".
 
 ### Cycles
 
@@ -226,9 +231,15 @@ was mis-delivered. A refused ask is not delivered to the model at all.
 - `stop_subagent(to, force?)` runs `kido stop <to> [--force]`, which
   delivers a `stop` envelope; this session answers one addressed to it
   with `ctx.shutdown()`, the same teardown a normal exit runs
-  (`session_shutdown`: inbox closed, parent notified, record removed).
-  `kido stop` escalates to killing the target's window if it does not go
-  within a few seconds - see `docs/subagents-plan.md`.
+  (`session_shutdown`: inbox closed, record removed, own window's linger
+  scheduled). `kido stop` escalates to killing the target's window if it
+  does not go within a few seconds - see `docs/subagents-plan.md`.
+- `notify_parent(summary)` runs `kido message --kind notice <parent>`,
+  piping `summary` on stdin. Refused, before anything is sent, for a
+  session with no parent - a root session was not spawned, so there is
+  nobody to tell. Call this once, when the model itself judges its
+  delegated work is actually done; nothing calls it automatically (see
+  "Notices to a parent" below).
 
 Both are refused - on the wire, as `refused` - unless the sender can be
 verified as an ancestor of this session (the same ancestor walk

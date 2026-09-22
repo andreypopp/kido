@@ -12,14 +12,16 @@
  * Tools:
  *   `list_agents()`, `set_status(activity)`, `message_agent(to, message,
  *   replyTo?)`, `ask_agent(to, question, timeoutMs?)`, `spawn_subagent(task,
- *   name?, model?, tools?)`, `interrupt_subagent(to)` and `stop_subagent(to,
- *   force?)` all shell out to a kido subcommand, asynchronously. They
- *   register unconditionally at factory time and no-op at call time until
- *   session_start has resolved kido and a session id, since pi may run the
- *   factory in invocations that never start a session. ask_agent waits
- *   here, in the extension, because only a long-lived process has an inbox
- *   for the reply to arrive on. The rules behind each tool are in
- *   docs/design.md.
+ *   name?, model?, tools?)`, `interrupt_subagent(to)`, `stop_subagent(to,
+ *   force?)` and `notify_parent(summary)` all shell out to a kido
+ *   subcommand, asynchronously. They register unconditionally at factory
+ *   time and no-op at call time until session_start has resolved kido and a
+ *   session id, since pi may run the factory in invocations that never
+ *   start a session. ask_agent waits here, in the extension, because only a
+ *   long-lived process has an inbox for the reply to arrive on. A subagent
+ *   is told to call notify_parent by a standing instruction appended to its
+ *   own system prompt (before_agent_start), since nothing calls it for the
+ *   model. The rules behind each tool are in docs/design.md.
  *
  * Inbox dispatch:
  *   Everything arriving on kido-status.ts's inbox socket that parses as a
@@ -68,6 +70,31 @@ const DEPTH = process.env.KIDO_AGENT_DEPTH ? Number(process.env.KIDO_AGENT_DEPTH
 // kido-status.ts's own.
 const MAX_ACTIVITY_BYTES = 256;
 
+// notify_parent's own cap, matching kido-status.ts's former MAX_RESULT_BYTES
+// (the automatic notice's own bound, before this tool replaced it): bigger
+// than the activity cap, since this is a work product and not a UI label,
+// but far smaller than MAX_PROMPT_BYTES, since it is spliced whole into the
+// parent's next turn as a followUp message. Enforced here, not just in the
+// schema, the same way set_status enforces MAX_ACTIVITY_BYTES itself: a
+// model is free to ignore what the schema merely asks for.
+const MAX_NOTICE_BYTES = 4000;
+
+// capBytes cuts on a code-point boundary, never mid-sequence, mirroring
+// kido-status.ts's own (a naive byte slice can split a multi-byte
+// character and come back longer than the cap it was enforcing).
+function capBytes(text: string, max: number): string {
+  if (Buffer.byteLength(text, "utf8") <= max) return text;
+  let out = "";
+  let used = 0;
+  for (const ch of text) {
+    const n = Buffer.byteLength(ch, "utf8");
+    if (used + n > max) break;
+    out += ch;
+    used += n;
+  }
+  return out;
+}
+
 // The task text `kido spawn` left for us to deliver as our first message.
 const TASK_FILE = process.env.KIDO_AGENT_TASK_FILE || undefined;
 
@@ -91,7 +118,7 @@ const PARENT_LIVENESS_POLL_MS = Number(process.env.KIDO_PARENT_POLL_MS) || 5000;
 // before it shuts itself down (docs/design.md, "Idle self-exit"). Not the
 // same figure as LINGER_SECONDS above, even though both default to 30:
 // this one is idle-to-self-shutdown, entirely inside the child's own
-// process, and only once it fires does sendCompletionNotice's own
+// process, and only once it fires does scheduleCompletionLinger's own
 // scheduleWindowLinger start the second, independent 30s window-linger
 // clock. The two stack; nothing here may fold them into one number.
 const IDLE_EXIT_MS = (Number(process.env.KIDO_IDLE_EXIT_SECONDS) || 30) * 1000;
@@ -112,6 +139,19 @@ const STOP_TIMEOUT_MS = Number(process.env.KIDO_STOP_TIMEOUT_MS) || 8000;
 // ask_agent's default wait: a full turn of the target's latency, not a
 // round-trip.
 const DEFAULT_ASK_TIMEOUT_MS = 5 * 60 * 1000;
+
+// The custom message type an inbound notice is delivered as, matched by
+// registerMessageRenderer below.
+const NOTICE_CUSTOM_TYPE = "kido-notice";
+
+// The standing instruction appended to a subagent's system prompt (see
+// the before_agent_start hook below): with the automatic notice gone
+// (docs/design.md, "Notifying the parent"), nothing else tells a child
+// its own parent is waiting to be told when it is done. Kept to two
+// sentences: this rides along on every turn, so it must not compete with
+// the actual task for the model's attention.
+const NOTIFY_PARENT_INSTRUCTION =
+  "You were spawned as a subagent. When your work is done, or you are blocked and cannot make further progress, call notify_parent with a short summary - your parent is not watching this session and will learn nothing otherwise.";
 
 // AgentInfo mirrors cmd/kido/agents.go's AgentInfo, what `kido agents
 // --json` prints. Only the fields read here are declared.
@@ -221,6 +261,27 @@ export default function (pi: ExtensionAPI) {
   // resolves against - see pendingInboundAsks below for why.
   const labelFrom = (from: Envelope["from"]): string => from.name || from.session || from.pane || "another agent";
 
+  // deliverNotice hands an inbound notice to the model as a custom
+  // message rather than an ordinary user message, so the TUI can render
+  // it collapsed (registerMessageRenderer(NOTICE_CUSTOM_TYPE, ...) below)
+  // while the model still sees the notice's full text - collapsing is a
+  // transcript-display concern only. Every notice collapses the same way
+  // regardless of who sent it: kind, not identity, is what a sender chose
+  // when it ran `kido message --kind notice` instead of the default
+  // `--kind message`, and `from` is advisory anyway (docs/design.md, the
+  // inbox), so nothing here does a lookup to decide. deliverAs is
+  // unconditionally "followUp" and triggerTurn is true for the same
+  // reason kido-status.ts's own deliver() sends every prompt as a
+  // followUp: an idle parent must still be woken by a notice exactly as
+  // it was when this arrived as a plain user message.
+  const deliverNotice = (text: string, from: string): void => {
+    clearIdleExit();
+    pi.sendMessage(
+      { customType: NOTICE_CUSTOM_TYPE, content: text, display: true, details: { from } },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
+  };
+
   // pendingInboundAsks remembers, for an ask still awaiting our reply,
   // the asker's pane - the one part of `from` a `/reload` cannot change.
   // labelFrom's own fallback (session id, absent a name) is exactly what
@@ -325,7 +386,7 @@ export default function (pi: ExtensionAPI) {
         handleInboundReply(env);
         return "ok";
       case "notice":
-        if (env.text) deliver(`[notice from ${labelFrom(env.from)}] ${env.text}`);
+        if (env.text) deliverNotice(env.text, labelFrom(env.from));
         return "ok";
       case "interrupt":
       case "stop":
@@ -415,8 +476,8 @@ export default function (pi: ExtensionAPI) {
   };
 
   // armIdleExit starts (or restarts) the idle-to-self-shutdown clock. Only
-  // a child arms it (PARENT_INSTANCE set, exactly as sendTurnNotice's own
-  // gate), and only when it has not opted out with keepAlive. Unref'd so
+  // a child arms it (PARENT_INSTANCE set, exactly as notify_parent's own
+  // refusal check), and only when it has not opted out with keepAlive. Unref'd so
   // it can never hold the process alive on its own, the same as the
   // parent-liveness poll.
   const armIdleExit = (shutdown: () => void): void => {
@@ -823,6 +884,51 @@ export default function (pi: ExtensionAPI) {
     },
   };
 
+  const notifyParentParams = Type.Object(
+    {
+      summary: Type.String({
+        description: `A short summary of the finished work to send to your parent. Capped at ${MAX_NOTICE_BYTES} bytes.`,
+        maxLength: MAX_NOTICE_BYTES,
+      }),
+    },
+    { additionalProperties: false },
+  );
+  const notifyParentTool: ToolDefinition<typeof notifyParentParams> = {
+    name: "notify_parent",
+    label: "Notify Parent",
+    description:
+      "Tell your parent your work is done, carrying a short summary. Call this once, when you have an answer or have given up - nothing else reports it. Only meaningful for a subagent; refused for a session with no parent.",
+    promptSnippet: "notify_parent(summary) - tell your parent your work is done, once it actually is",
+    parameters: notifyParentParams,
+    async execute(_toolCallId, params) {
+      // The one refusal that has nothing to do with kido being reachable:
+      // a root session (a human's own interactive pi) has no parent to
+      // tell, ever, so this must read as a clear refusal rather than the
+      // same silent no-op every other tool gives an unavailable kido.
+      if (PARENT_INSTANCE === undefined) {
+        return { content: [{ type: "text", text: "this session has no parent (it was not spawned as a subagent); notify_parent has nobody to tell" }], details: {} };
+      }
+      const host = status();
+      if (!host?.kidoPath()) {
+        return { content: [{ type: "text", text: "kido is not available; cannot notify the parent" }], details: {} };
+      }
+      const listed = await fetchAgents();
+      if ("error" in listed) {
+        return { content: [{ type: "text", text: `could not list agents: ${listed.error}` }], details: {} };
+      }
+      const self = listed.agents.find((a) => a.self);
+      if (!self || !self.parent) {
+        return { content: [{ type: "text", text: "could not resolve this session's parent; nothing sent" }], details: {} };
+      }
+      const text = capBytes(params.summary, MAX_NOTICE_BYTES);
+      const res = await host.runKido(["message", "--kind", "notice", "--", self.parent], { input: text, timeoutMs: 5000 });
+      if ("error" in res) {
+        return { content: [{ type: "text", text: `could not notify parent: ${res.error}` }], details: {} };
+      }
+      return { content: [{ type: "text", text: res.out || "notified parent" }], details: {} };
+    },
+  };
+
   pi.registerTool(listAgentsTool);
   pi.registerTool(setStatusTool);
   pi.registerTool(messageAgentTool);
@@ -830,6 +936,38 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool(spawnSubagentTool);
   pi.registerTool(interruptSubagentTool);
   pi.registerTool(stopSubagentTool);
+  pi.registerTool(notifyParentTool);
+
+  // Every notice, whatever kind of sender wrote it, collapses to one line
+  // by default; ctrl-o expansion is pi's own built-in toggle
+  // (options.expanded), not a keybinding registered here, so this does not
+  // fight another extension (pi-plain.ts) that reads the same toggle. The
+  // component below satisfies pi-tui's Component interface (render(width):
+  // string[]) without importing @earendil-works/pi-tui: pi's own runtime
+  // always resolves it (a dependency of pi-coding-agent itself), but this
+  // package's own test suite does not install it, and the interface is one
+  // method wide.
+  pi.registerMessageRenderer<{ from: string }>(NOTICE_CUSTOM_TYPE, (message, options, theme) => {
+    const from = message.details?.from || "another agent";
+    if (!options.expanded) {
+      const line = theme.fg("dim", `notification from ${from} — ctrl-o to expand`);
+      return { render: () => [line] };
+    }
+    const content = typeof message.content === "string" ? message.content : "";
+    const lines = [theme.fg("dim", `notification from ${from}:`), ...content.split("\n")];
+    return { render: () => lines };
+  });
+
+  // notifyParentInstruction rides on every turn, not just the first, since
+  // a delivered task is a one-shot user message and a subagent's later
+  // follow-up turns (a parent's own message_agent call, say) have no other
+  // memory of "tell your parent when you're done". pi resets to the base
+  // system prompt whenever no handler returns one, so this must return it
+  // on every call, not only once.
+  pi.on("before_agent_start", (event) => {
+    if (PARENT_INSTANCE === undefined) return;
+    return { systemPrompt: `${event.systemPrompt}\n\n${NOTIFY_PARENT_INSTRUCTION}` };
+  });
 
   // deliverTask hands the model the task kido spawn left for us, the same
   // way an inbox prompt is delivered. A missing or unreadable file is
@@ -883,60 +1021,24 @@ export default function (pi: ExtensionAPI) {
     await host.runKido(["run-outcome", "--result", result, "--", sessionId], { timeoutMs: 3000 });
   };
 
-  // sendCompletionNotice tells this session's parent, if kido still
-  // resolves one, that this subagent is finishing, and schedules its own
-  // window's linger. Gated on isRunEnding like recordOwnOutcome: an
-  // ungated /reload, measured against pi 0.85.1, closed a live subagent's
-  // window and told its parent the child had finished. The linger is
-  // scheduled whether or not the parent edge still resolves; a failed
-  // notice is simply dropped, since there is nobody to tell. Nothing here
-  // may throw past its own await.
-  //
-  // The outbound "message" is fired via spawnDetached, not awaited via
-  // runKido: session_shutdown must not sit through the up-to-several-
-  // second round trip of dialing a parent whose inbox accepts a
-  // connection and never replies (a parent mid-turn, or simply gone
-  // unresponsive) before this process is free to exit. spawnDetached
-  // hands the child its full stdin before returning, so the notice still
-  // reaches a live parent in the normal case; only the wait for its
-  // *reply* is given up, which nothing here ever read anyway.
-  const sendCompletionNotice = async (reason?: string): Promise<void> => {
+  // scheduleCompletionLinger schedules this session's own window's
+  // linger once the run has actually ended. Gated on isRunEnding like
+  // recordOwnOutcome: an ungated /reload, measured against pi 0.85.1,
+  // closed a live subagent's window out from under it. Renamed from
+  // sendCompletionNotice - the run's ending is no longer automatically
+  // reported to the parent at all (docs/design.md, "Notifying the
+  // parent"; a subagent calls notify_parent itself, on its own
+  // judgement), so only the window-lifecycle half of that function's job
+  // remains here.
+  const scheduleCompletionLinger = async (reason?: string): Promise<void> => {
     const host = status();
-    const kido = host?.kidoPath();
-    if (!host || !kido || PARENT_INSTANCE === undefined) return; // not a subagent
+    if (!host?.kidoPath() || PARENT_INSTANCE === undefined) return; // not a subagent
     if (!isRunEnding(reason)) return;
     const listed = await fetchAgents();
     if ("error" in listed) return;
     const self = listed.agents.find((a) => a.self);
     if (self?.window) scheduleWindowLinger(self.window);
-    if (!self || !self.parent) return;
-    const title = host.title();
-    const activity = host.activity();
-    const text = `${title || "subagent"} finished` + (activity ? `: ${activity}` : "") + ` (${host.status()})`;
-    host.spawnDetached(kido, ["message", "--kind", "notice", "--", self.parent], { input: text });
   };
-
-  // sendTurnNotice tells this session's parent, if kido still resolves
-  // one, that a turn has finished and what the child actually said. Its
-  // wording ("finished a turn" rather than sendCompletionNotice's
-  // "finished") is deliberate: this run is still "running" per
-  // docs/design.md's run-outcome rules - the child is alive, resumable,
-  // and may yet be given more work - while sendCompletionNotice means the
-  // run itself has ended. Not gated on isRunEnding: it is the opposite
-  // case, a turn ending with the run still very much alive, and it fires
-  // again for every later turn a follow-up produces, since each is its
-  // own news to the parent rather than a repeat.
-  async function sendTurnNotice(resultText: string): Promise<void> {
-    const host = status();
-    if (!host?.kidoPath() || PARENT_INSTANCE === undefined) return; // not a subagent
-    const listed = await fetchAgents();
-    if ("error" in listed) return;
-    const self = listed.agents.find((a) => a.self);
-    if (!self || !self.parent) return;
-    const title = host.title();
-    const text = `${title || "subagent"} finished a turn (still running): ${resultText}`;
-    await host.runKido(["message", "--kind", "notice", "--", self.parent], { input: text, timeoutMs: 3000 });
-  }
 
   // Published at factory time, with nothing read back until an event
   // fires, so load order does not matter.
@@ -959,9 +1061,8 @@ export default function (pi: ExtensionAPI) {
       clearIdleExit();
       abandonPending();
       await recordOwnOutcome(reason);
-      await sendCompletionNotice(reason);
+      await scheduleCompletionLinger(reason);
     },
-    turnSettled: sendTurnNotice,
     turnEnded() {
       armIdleExit(() => ctxShutdown?.());
     },

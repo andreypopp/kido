@@ -294,6 +294,8 @@ function createFakePi() {
   const tools = new Map<string, any>();
   const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
   const delivered: Array<{ text: string; opts: unknown }> = [];
+  const messages: Array<{ message: any; opts: unknown }> = [];
+  const renderers = new Map<string, (message: any, options: any, theme: any) => unknown>();
   const pi = {
     registerTool(tool: any) {
       tools.set(tool.name, tool);
@@ -304,12 +306,28 @@ function createFakePi() {
     sendUserMessage(text: string, opts: unknown) {
       delivered.push({ text, opts });
     },
+    sendMessage(message: any, opts: unknown) {
+      messages.push({ message, opts });
+    },
+    registerMessageRenderer(customType: string, renderer: (message: any, options: any, theme: any) => unknown) {
+      renderers.set(customType, renderer);
+    },
   };
-  async function emit(event: string, ...args: unknown[]) {
-    for (const h of handlers.get(event) ?? []) await h(...args);
+  // emit returns each handler's own return value, in registration order,
+  // so a test can read what a hook like before_agent_start would hand
+  // back to a real pi host - the fake host applies none of it itself.
+  async function emit(event: string, ...args: unknown[]): Promise<unknown[]> {
+    const results: unknown[] = [];
+    for (const h of handlers.get(event) ?? []) results.push(await h(...args));
+    return results;
   }
-  return { pi, tools, delivered, emit };
+  return { pi, tools, delivered, messages, renderers, emit };
 }
+
+// fakeTheme is the minimal Theme surface a message renderer reads: fg()
+// applied as an identity function, so a rendered line's text is asserted
+// on directly rather than through a colour-code-stripping helper.
+const fakeTheme = { fg: (_color: string, text: string) => text } as any;
 
 function fakeCtx(sessionId = "self-session") {
   return {
@@ -320,10 +338,10 @@ function fakeCtx(sessionId = "self-session") {
 }
 
 async function startSession(fx: Fixture, sessionId?: string) {
-  const { pi, tools, delivered, emit } = createFakePi();
+  const { pi, tools, delivered, messages, renderers, emit } = createFakePi();
   loadExtensions(pi);
   await emit("session_start", {}, fakeCtx(sessionId));
-  return { tools, delivered, emit, inboxPath: fx.selfInboxPath() };
+  return { tools, delivered, messages, renderers, emit, inboxPath: fx.selfInboxPath() };
 }
 
 // loadExtensions is what a pi host does with the pair: run both factories
@@ -343,10 +361,10 @@ function loadExtensions(pi: unknown): void {
 // freshExtensions below reloads both so those module-scope constants are
 // recomputed from whatever the environment holds at that moment.
 async function startSessionUsing(factory: (pi: unknown) => void, fx: Fixture, sessionId?: string) {
-  const { pi, tools, delivered, emit } = createFakePi();
+  const { pi, tools, delivered, messages, renderers, emit } = createFakePi();
   factory(pi);
   await emit("session_start", {}, fakeCtx(sessionId));
-  return { tools, delivered, emit, inboxPath: fx.selfInboxPath() };
+  return { tools, delivered, messages, renderers, emit, inboxPath: fx.selfInboxPath() };
 }
 
 // freshExtensions reimports both extensions under a cache-busting
@@ -385,7 +403,7 @@ test("either load order wires the pair up: agents first, status second", async (
     const resp = await sendToInbox(s.inboxPath, envelope("notice", "loaded either way", { from: { session: "peer-a", name: "peer-a" } }));
     assert.equal(resp, "ok");
     assert.ok(
-      s.delivered.some((d) => d.text.includes("notice from peer-a") && d.text.includes("loaded either way")),
+      s.messages.some((m) => m.message.content === "loaded either way"),
       "the envelope was dispatched by the agent half, not delivered as plain text",
     );
   } finally {
@@ -724,7 +742,10 @@ test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 r
     assert.ok(s.delivered.some((d) => d.text === "hello"), "kind message delivers its text as-is");
 
     await sendToInbox(s.inboxPath, envelope("notice", "build finished", { from }));
-    assert.ok(s.delivered.some((d) => d.text.includes("notice from peer-a") && d.text.includes("build finished")));
+    assert.ok(
+      s.messages.some((m) => m.message.customType === "kido-notice" && m.message.content === "build finished" && m.message.details?.from === "peer-a"),
+      "kind notice reaches the model as a custom message, named by its sender, full text intact",
+    );
 
     const askResp = await sendToInbox(s.inboxPath, envelope("ask", "you there?", { id: "ask-x", from }));
     assert.equal(askResp, "ok");
@@ -737,6 +758,95 @@ test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 r
     assert.ok(s.delivered.some((d) => d.text.includes("unrecognised message kind") && d.text.includes("unknown kind text")));
   } finally {
     fx.restore();
+  }
+});
+
+// Part 4 of the notify_parent refactor (docs/design.md, "Notifying the
+// parent"): an inbound notice renders collapsed by default and expands
+// under pi's own ctrl-o toggle (options.expanded), which this extension
+// never binds itself - see kido-agents.ts's registerMessageRenderer call.
+test("an inbound notice renders collapsed by default, naming the sender, and expands to the full text", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const from = { session: "peer-a", name: "peer-a" };
+
+    await sendToInbox(s.inboxPath, envelope("notice", "the whole result, in full", { from }));
+    const sent = s.messages.find((m) => m.message.customType === "kido-notice");
+    assert.ok(sent, "a notice was sent as a custom message");
+    assert.equal(sent!.message.content, "the whole result, in full", "the model-visible content is the notice's full text");
+
+    const renderer = s.renderers.get("kido-notice");
+    assert.ok(renderer, "the agent half registered a renderer for its own custom type");
+
+    const collapsed = renderer!(sent!.message, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
+    assert.match(collapsed, /notification from peer-a.*ctrl-o to expand/, "the collapsed line names the sender and hints at expansion");
+    assert.ok(!collapsed.includes("the whole result, in full"), "the collapsed line does not leak the full text");
+
+    const expanded = renderer!(sent!.message, { expanded: true, outputPad: 1 }, fakeTheme).render(80).join("\n");
+    assert.ok(expanded.includes("the whole result, in full"), "expanding shows the full content");
+  } finally {
+    fx.restore();
+  }
+});
+
+test("a notice from a nameless sender still renders sanely, collapsed and expanded", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    // No name and no session: what a human running `kido message --kind
+    // notice` from a bare pane looks like on the wire (labelFrom's own
+    // fallback order: name, session, pane, "another agent").
+    await sendToInbox(s.inboxPath, envelope("notice", "from a human", { from: { session: "", pane: "%12" } as any }));
+    const sent = s.messages.find((m) => m.message.customType === "kido-notice");
+    assert.equal(sent!.message.details.from, "%12", "the pane stands in for a name when there is none");
+
+    const renderer = s.renderers.get("kido-notice")!;
+    const collapsed = renderer(sent!.message, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
+    assert.match(collapsed, /notification from %12/, "a nameless sender still gets a sane, non-empty label");
+  } finally {
+    fx.restore();
+  }
+});
+
+// Part 3 of the notify_parent refactor: a spawned child must be told
+// reporting is its own job now that nothing does it automatically. Fires
+// on every prompt, not just the child's first, since a task delivered
+// once via deliverTask is the wrong lifetime for a standing rule (a
+// parent's later message_agent call produces a follow-up turn with no
+// other memory of it).
+test("a subagent's system prompt carries the notify_parent instruction; a root session's does not", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
+    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
+    try {
+      const factory = await freshExtensions();
+      const s = await startSessionUsing(factory, fx);
+      const results = await s.emit("before_agent_start", { systemPrompt: "base prompt" });
+      const override = results.find((r: any) => r?.systemPrompt) as { systemPrompt: string } | undefined;
+      assert.ok(override, "a subagent's before_agent_start hook returns a replacement system prompt");
+      assert.ok(override!.systemPrompt.startsWith("base prompt"), "the base prompt is preserved, not replaced");
+      assert.match(override!.systemPrompt, /notify_parent/, "the instruction names the tool the model must call");
+    } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
+    }
+  } finally {
+    fx.restore();
+  }
+
+  const rootFx = makeFixture();
+  try {
+    rootFx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(rootFx); // root session: no KIDO_AGENT_PARENT_INSTANCE
+    const results = await s.emit("before_agent_start", { systemPrompt: "base prompt" });
+    assert.ok(results.every((r) => r === undefined), "a root session's system prompt is left alone");
+  } finally {
+    rootFx.restore();
   }
 });
 
@@ -984,25 +1094,70 @@ test("a missing KIDO_AGENT_TASK_FILE does not break session_start", async () => 
   }
 });
 
-test("a completion notice addressed to a dead parent is dropped without failing session_shutdown", async () => {
+// Part 1 of the notify_parent refactor (docs/design.md, "Notifying the
+// parent"): a settled turn and a plain shutdown must no longer tell the
+// parent anything on their own. A subagent that wants that now calls
+// notify_parent itself - see its own tests below.
+test("a settled turn sends no automatic notice, and neither does a plain shutdown", async () => {
   const fx = makeFixture();
   try {
-    fx.setAgents([{ id: "self", name: "self", parent: "dead-parent", self: true, canMessage: true }]);
-    fx.setMessageFailTo("dead-parent");
-
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
     const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
     process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
     try {
       const factory = await freshExtensions();
       const s = await startSessionUsing(factory, fx);
-      await assert.doesNotReject(s.emit("session_shutdown"), "a dead parent must never make shutdown itself fail");
-      const sent = await fx.waitForLog("dead-parent", "notice");
-      assert.ok(sent, "a notice to the parent was attempted");
-      assert.equal(sent!.failed, true, "the fake kido reports the same failure a dead parent's inbox would cause");
+      await s.emit("agent_settled", {}, { isIdle: () => true });
+      await new Promise((r) => setTimeout(r, 200));
+      assert.equal(jsonLines(fx.logFile).filter((l) => l.kind === "notice").length, 0, "a settle must send no notice on its own");
+      await s.emit("session_shutdown");
+      await new Promise((r) => setTimeout(r, 200));
+      assert.equal(jsonLines(fx.logFile).filter((l) => l.kind === "notice").length, 0, "a plain shutdown must send no notice either");
     } finally {
       if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
       else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
     }
+  } finally {
+    fx.restore();
+  }
+});
+
+// Part 2: notify_parent is the only way a subagent tells its parent
+// anything now; unlike the automatic notices it replaced, it is sent via
+// runKido and awaited, since a deliberate tool call has no reason to race
+// this process's own exit the way session_shutdown's notice used to.
+test("notify_parent sends a notice to the resolved parent, carrying the given summary", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
+    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
+    try {
+      const factory = await freshExtensions();
+      const s = await startSessionUsing(factory, fx);
+      const tool = s.tools.get("notify_parent");
+      const result = await tool.execute("call-1", { summary: "the answer is 42" });
+      assert.ok(result.content[0].text.length > 0, "the tool reports what happened");
+      const sent = await fx.waitForLog("parent-x", "notice");
+      assert.equal(sent!.text, "the answer is 42", "the notice carries the summary verbatim");
+    } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+test("notify_parent from a session with no parent refuses clearly, and sends nothing", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx); // root session: no KIDO_AGENT_PARENT_INSTANCE
+    const tool = s.tools.get("notify_parent");
+    const result = await tool.execute("call-1", { summary: "nobody to tell" });
+    assert.match(result.content[0].text, /no parent/i, "the refusal names the reason rather than reading as a silent no-op");
+    assert.equal(jsonLines(fx.logFile).length, 0, "nothing was sent");
   } finally {
     fx.restore();
   }
@@ -1134,14 +1289,13 @@ test("session_shutdown never records an outcome for a root session", async () =>
 });
 
 // The same reason/reload gate that keeps recordOwnOutcome from
-// recording a live run as finished must also keep sendCompletionNotice
-// from telling the parent the run finished and from scheduling the
-// child's own window to be closed out from under it ~30s later. Measured
-// against a real pi 0.85.1 subagent: typing /reload in a live subagent
-// left its window closed and only the parent row remaining in kido
-// agents, plus an orphaned `sh -c sleep ...` helper in `ps` on top of the
-// one the real ending later spawns.
-test("a reload shutdown schedules no linger and sends no completion notice; a quit does both", async () => {
+// recording a live run as finished must also keep scheduleCompletionLinger
+// from scheduling the child's own window to be closed out from under it
+// ~30s later. Measured against a real pi 0.85.1 subagent: typing /reload
+// in a live subagent left its window closed, plus an orphaned
+// `sh -c sleep ...` helper in `ps` on top of the one the real ending
+// later spawns.
+test("a reload shutdown schedules no linger; a quit does", async () => {
   const reload = makeFixture();
   try {
     reload.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@9" }]);
@@ -1157,11 +1311,6 @@ test("a reload shutdown schedules no linger and sends no completion notice; a qu
         .then(() => "called")
         .catch(() => "not called");
       assert.equal(closeWindowLog, "not called", "a reload must not schedule this session's own window to close");
-      const noticeLog = await reload
-        .waitForLog("parent-x", "notice", 50)
-        .then(() => "sent")
-        .catch(() => "not sent");
-      assert.equal(noticeLog, "not sent", "a reload must not tell the parent this subagent finished");
     } finally {
       if (saved.INST === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
       else process.env.KIDO_AGENT_PARENT_INSTANCE = saved.INST;
@@ -1172,8 +1321,8 @@ test("a reload shutdown schedules no linger and sends no completion notice; a qu
     reload.restore();
   }
 
-  // Negative control: an actual quit still does both, so the assertions
-  // above cannot pass by disabling the linger/notice outright.
+  // Negative control: an actual quit still schedules the linger, so the
+  // assertion above cannot pass by disabling it outright.
   const quit = makeFixture();
   try {
     quit.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@9" }]);
@@ -1186,8 +1335,6 @@ test("a reload shutdown schedules no linger and sends no completion notice; a qu
       await s.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
       const args = await quit.waitForCloseWindow();
       assert.deepEqual(args, ["close-window", "@9"], "a quit still schedules this session's own window to close");
-      const sent = await quit.waitForLog("parent-x", "notice");
-      assert.ok(sent, "a quit still tells the parent this subagent finished");
     } finally {
       if (saved.INST === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
       else process.env.KIDO_AGENT_PARENT_INSTANCE = saved.INST;
@@ -1218,231 +1365,6 @@ test("session_shutdown never schedules a window linger for a root session", asyn
       assert.equal(closeWindowLog, "not called", "a root session's window must never be scheduled for close");
     } finally {
       delete process.env.KIDO_LINGER_SECONDS;
-    }
-  } finally {
-    fx.restore();
-  }
-});
-
-test("a completion notice reaches a live parent", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
-
-    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
-    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
-    try {
-      const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
-      await s.emit("session_shutdown");
-      const sent = await fx.waitForLog("parent-x", "notice");
-      assert.ok(sent, "a notice was sent to the resolved parent");
-      assert.ok(sent!.text.length > 0, "the notice carries some result text");
-    } finally {
-      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
-      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
-    }
-  } finally {
-    fx.restore();
-  }
-});
-
-// SHUTDOWN_LATENCY_BOUND_MS bounds how long session_shutdown may take
-// while the outbound completion notice is held up. The fake kido below
-// holds the reply for far longer than this bound (and longer than the
-// real inbox protocol's own ~2s deadline, cmd/kido/inbox.go's
-// inboxTimeout) precisely so a shutdown that still waited on it would
-// blow this bound, not skate under it by luck.
-const SHUTDOWN_LATENCY_BOUND_MS = 500;
-
-test("session_shutdown does not wait for the completion notice's reply: a wedged parent costs it nothing, and the notice still arrives", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
-    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
-    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
-    process.env.KIDO_FAKE_MESSAGE_DELAY_MS = "3000"; // a parent that accepts but never promptly replies
-    try {
-      const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
-
-      const t0 = Date.now();
-      await s.emit("session_shutdown");
-      const elapsed = Date.now() - t0;
-      assert.ok(
-        elapsed < SHUTDOWN_LATENCY_BOUND_MS,
-        `session_shutdown took ${elapsed}ms with a wedged parent, want under ${SHUTDOWN_LATENCY_BOUND_MS}ms - it must not wait on the notice's reply`,
-      );
-
-      // The notice was still handed to the fake kido in full before
-      // shutdown returned - it arrives once the fake's own delay elapses,
-      // proving the fix does not simply drop it.
-      const sent = await fx.waitForLog("parent-x", "notice", 3500);
-      assert.ok(sent, "the notice still reaches the parent once its own reply delay elapses");
-    } finally {
-      delete process.env.KIDO_FAKE_MESSAGE_DELAY_MS;
-      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
-      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
-    }
-  } finally {
-    fx.restore();
-  }
-});
-
-// agentEndEvent builds the shape kido-status.ts's agent_end handler
-// reads off pi (pi 0.85.1's dist bundle: `{type:"agent_end", messages}}`),
-// with one clean assistant message carrying text.
-function agentEndEvent(text: string): { messages: Array<{ role: string; content: Array<{ type: string; text: string }> }> } {
-  return { messages: [{ role: "assistant", content: [{ type: "text", text }] }] };
-}
-
-// NOTICE_LATENCY_BOUND_MS bounds how long a turn-completion notice may take
-// to leave this session once agent_settled fires. Chosen well under a
-// second - and far under KIDO_HEARTBEAT_MS's 30s default - because
-// nothing between agent_settled and the outbound kido message spawn
-// waits on a timer or a poll; the only real cost is process startup for
-// two subprocesses (kido agents --json, then kido message), which the
-// other timings in this file put at tens of milliseconds each. A notice
-// that only went out on the next heartbeat would blow this bound by two
-// orders of magnitude.
-const NOTICE_LATENCY_BOUND_MS = 700;
-
-test("a settle after a delivered task notifies the parent promptly, carrying the child's own result text", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
-    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
-    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
-    try {
-      const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
-      await s.emit("agent_end", agentEndEvent("the answer is 42"));
-      const t0 = Date.now();
-      await s.emit("agent_settled", {}, { isIdle: () => true });
-      const sent = await fx.waitForLog("parent-x", "notice");
-      const elapsed = Date.now() - t0;
-      assert.ok(sent.text.includes("the answer is 42"), `notice text ${JSON.stringify(sent.text)} must carry the child's own result`);
-      assert.ok(
-        elapsed < NOTICE_LATENCY_BOUND_MS,
-        `notice took ${elapsed}ms to be sent, want under ${NOTICE_LATENCY_BOUND_MS}ms - it must not wait on the heartbeat or any interval`,
-      );
-    } finally {
-      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
-      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
-    }
-  } finally {
-    fx.restore();
-  }
-});
-
-test("a settle in a session with no parent notifies nobody", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
-    const s = await startSession(fx);
-    await s.emit("agent_end", agentEndEvent("nobody is listening"));
-    await s.emit("agent_settled", {}, { isIdle: () => true });
-    // No parent to wait on a log entry for, so a fixed pause stands in for
-    // waitForLog's poll: long enough to catch a spurious send, short by
-    // this file's own standards.
-    await new Promise((r) => setTimeout(r, 200));
-    assert.equal(jsonLines(fx.logFile).length, 0, "a root session has nobody to notify and must send nothing");
-  } finally {
-    fx.restore();
-  }
-});
-
-test("a settle that follows no work (session start, before any task) sends no notice", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
-    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
-    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
-    try {
-      const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
-      // No agent_end at all: nothing has run an agent loop yet, matching
-      // what a real pi 0.85.1 does (_emitAgentSettled is only ever called
-      // from inside _runAgentPrompt, itself only entered by an actual
-      // prompt() call) - this settle has nothing to say.
-      await s.emit("agent_settled", {}, { isIdle: () => true });
-      await new Promise((r) => setTimeout(r, 200));
-      assert.equal(fx.lastLogFor("parent-x", "notice"), undefined, "a settle with no prior agent_end must send no notice");
-    } finally {
-      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
-      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
-    }
-  } finally {
-    fx.restore();
-  }
-});
-
-test("a second settle after follow-up work notifies again, with the new result", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
-    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
-    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
-    try {
-      const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
-
-      await s.emit("agent_end", agentEndEvent("first answer"));
-      await s.emit("agent_settled", {}, { isIdle: () => true });
-      const first = await fx.waitForLog("parent-x", "notice");
-      assert.ok(first.text.includes("first answer"));
-
-      // Follow-up work delivered to the same, still-running session, then a
-      // second settle: each completed turn is its own news to the parent,
-      // not a repeat of the first.
-      await s.emit("agent_end", agentEndEvent("second answer"));
-      await s.emit("agent_settled", {}, { isIdle: () => true });
-      await pollUntil(() => {
-        const entries = jsonLines(fx.logFile).filter((l) => l.to === "parent-x" && l.kind === "notice");
-        return entries.length >= 2;
-      }, 2000, "a second notice after follow-up work");
-      const second = last(jsonLines(fx.logFile).filter((l) => l.to === "parent-x" && l.kind === "notice"))!;
-      assert.ok(second.text.includes("second answer"), `second notice ${JSON.stringify(second.text)} must carry the new result, not the first`);
-    } finally {
-      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
-      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
-    }
-  } finally {
-    fx.restore();
-  }
-});
-
-// A turn-completion notice and a real shutdown's completion notice must
-// read differently to a parent: one means the run is still alive and
-// resumable, the other means it has ended. Both are sent to the same
-// parent in the same run here, so only the wording tells them apart.
-test("a turn-completion notice and a real shutdown's completion notice are distinguishable", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
-    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
-    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
-    try {
-      const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
-
-      await s.emit("agent_end", agentEndEvent("the turn's own answer"));
-      await s.emit("agent_settled", {}, { isIdle: () => true });
-      const turnNotice = await fx.waitForLog("parent-x", "notice");
-
-      await s.emit("session_shutdown");
-      await pollUntil(() => {
-        const entries = jsonLines(fx.logFile).filter((l) => l.to === "parent-x" && l.kind === "notice");
-        return entries.length >= 2;
-      }, 2000, "the shutdown's own completion notice");
-      const shutdownNotice = last(jsonLines(fx.logFile).filter((l) => l.to === "parent-x" && l.kind === "notice"))!;
-
-      assert.notEqual(turnNotice.text, shutdownNotice.text, "the two notices must not read identically");
-      assert.ok(!turnNotice.text.includes("(idle)") && !turnNotice.text.includes("(failed)"), "a turn notice must not claim the run has an ended status");
-      assert.ok(shutdownNotice.text.includes("(idle)"), "the shutdown notice keeps its own ended-status wording");
-    } finally {
-      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
-      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
     }
   } finally {
     fx.restore();

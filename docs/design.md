@@ -646,58 +646,74 @@ and carries the same requirement.
 
 ## Notifying the parent
 
-A subagent's completion notice used to be wired to `session_shutdown`
-alone. That is wrong for the common case: an interactive pi does not
-shut down when a turn ends, it goes idle and waits for more input, so a
-subagent that took a task, answered it and settled told its parent
-nothing until its process eventually exited - never, for a session that
-stays open to take more work. `spawn_subagent` is delegation; a parent
-that has to poll `kido agents` to learn a child answered defeats the
-point of the notice existing at all.
+A subagent used to notify its parent automatically, twice over:
+`sendTurnNotice` on every settled turn (`agent_settled` with
+`ctx.isIdle()` true), and `sendCompletionNotice` on `session_shutdown`.
+That was wrong: a settled turn can be triggered by anything, not only
+the delegated task - most sharply, a peer's `ask_agent` landing on this
+session's inbox and being answered settles a turn exactly the same way a
+delegated task finishing does. Only the subagent's own model knows
+whether a given turn actually completed the work its parent cares about,
+so automatic "a turn settled, tell the parent" logic cannot tell a real
+answer from work done for someone else - measured live: a subagent
+answered a sibling's `ask_agent` question, which settled a turn, which
+notified the parent with a report meant for the sibling instead.
 
-So there are two notices, not one, and they read differently on purpose.
-`sendCompletionNotice` (`session_shutdown`, gated on `isRunEnding` as
-before) still means the run itself has ended. `sendTurnNotice` fires on
-every *settled turn* - `agent_settled` with `ctx.isIdle()` true - and
-means the child is still alive, resumable, and may yet be given more
-work; its wording ("finished a turn", never a status in parentheses)
-keeps a parent from reading it as the run being over. It fires again for
-every later turn a follow-up produces: each is its own news, not a
-repeat.
+So notification is explicit: `notify_parent(summary)` is a tool, sent
+only when the model itself decides its work is done, over the identical
+`kido message --kind notice` path the automatic notices used - no second
+transport. Content is exactly what the model chooses to say, not
+extracted from `agent_end`'s message data (there is no need to; the
+model writes the summary itself), capped at 4000 bytes for the same
+reason the old automatic notice was: larger than the activity cap, since
+this is the child's actual work product and not a UI label, but far
+smaller than `MAX_PROMPT_BYTES`, since it is spliced whole into the
+parent's next turn as a followUp message rather than transported as an
+arbitrary payload. Refused, before anything is sent, for a session with
+no parent (no `KIDO_AGENT_PARENT_INSTANCE`) - a root session was not
+spawned, so there is nobody to tell, and the refusal says so rather than
+reading as a silent no-op.
 
-**Content, not just a heads-up.** The notice carries the child's own
-last answer, extracted from `agent_end`'s `event.messages` (the last
-assistant message with no error) since `agent_settled`'s own event
-carries no message data at all. Capped at 4000 bytes - larger than the
-activity cap, since this is the child's actual work product and not a
-UI label, but far smaller than `MAX_PROMPT_BYTES`, since it is spliced
-whole into the parent's next turn as a followUp message rather than
-transported as an arbitrary payload.
+**What this costs, deliberately.** A subagent that crashes, or is
+idle-reaped without ever calling `notify_parent`, now tells its parent
+nothing. Nothing here compensates for that: the run record still holds
+the outcome (`kido runs`), and a parent that needs to know a child's fate
+regardless of whether it reported can read that. Building a fallback
+notice for this case would recreate exactly the false-positive problem
+above - firing on a settle that says nothing true about the delegated
+work - for the sake of covering a case the run record already covers.
 
-**One trigger, not two.** pi-subagents, which drives its own hand-rolled
-child session loop in-process, tracks two independent signals for "the
-child is done" and takes whichever arrives first, because it needs a
-signal that survives a stuck hook in its own machinery. This extension
-only observes pi's public lifecycle, where `agent_end` fires once per
-low-level run and pi's own docs say explicitly that pi "may still
-auto-retry, auto-compact and retry, or continue with queued follow-up
-messages" afterward - it is not a completion signal by itself. Reading
-pi 0.85.1's own bundle confirms `agent_settled` is emitted exactly once,
-in the same `finally` block that ends that retry/compaction/follow-up
-loop, which this file already trusted for "idle" before this change. A
-second, independently timed trigger here would race that authoritative
-signal instead of covering a real gap in it, so content and completion
-come from two different events for a real reason (one has the text, the
-other has the truth), but only one of them decides a turn is over.
+**Telling a child this is its job.** Nothing else does, once the
+automatic notice is gone, so a standing instruction is appended to a
+subagent's system prompt on every turn (`before_agent_start`, gated on
+`KIDO_AGENT_PARENT_INSTANCE` exactly as the tool's own refusal is) rather
+than once into the task text `deliverTask` sends as the first message: a
+task is delivered once, and a `/reload`, a `kido spawn --resume`, or a
+parent's own later `message_agent` call producing a follow-up turn would
+all leave a one-shot instruction behind. Riding the system prompt keeps
+it alive for as long as the session is a subagent at all, at the cost of
+competing for the model's attention on every turn - kept to two
+sentences for that reason.
 
-**No notice with nothing to say.** The same source confirms
-`agent_settled` is only ever emitted from inside the loop a real
-`prompt()` call starts, so a settle at session start, before any task has
-run an agent loop at all, cannot fire it - not merely "is assumed not
-to", but structurally cannot. The extension still keeps its own guard
-for it: the last captured result text is consumed (reset to empty) the
-moment it is handed to the notice, so a settle with nothing new to report
-sends nothing.
+**The rendered side.** An inbound `notice` is sent as a custom message
+(`pi.sendMessage` with a `customType`, not `pi.sendUserMessage`) so it
+can render collapsed to one line - "notification from X - ctrl-o to
+expand" - with the full text behind pi's own `registerMessageRenderer`
+`options.expanded`, which is driven by pi's built-in ctrl-o and is not a
+keybinding this extension registers; a second extension bound to the same
+key would conflict, riding the existing flag does not. The collapse is a
+transcript-display concern only - the model still receives the full text,
+since a custom message participates in LLM context exactly as a plain
+user message did. Every notice collapses the same way regardless of
+whether its sender is actually a subagent: kind, not identity, is the
+sender's own choice (`kido message --kind notice` versus the default
+`--kind message`), and `from` is advisory in exactly the way the rest of
+the inbox protocol already treats it, so nothing here does an identity
+lookup to decide how to render. Delivery keeps the same `deliverAs:
+"followUp"` a plain message used, and does not omit `triggerTurn: true`:
+an idle parent must still be woken by a notice exactly as before, and
+`sendMessage`, unlike `sendUserMessage`, does not trigger a turn on its
+own.
 
 ## Run outcomes
 
