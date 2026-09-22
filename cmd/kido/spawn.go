@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -191,6 +192,20 @@ func spawnCmd(args []string) error {
 	return nil
 }
 
+// liveInstance reports whether some session in states reports instance as
+// its own and is still alive - the same reading internal/reap's rule 2
+// uses to decide a subagent's parent is gone, spelled out here so a
+// resume can refuse before creating a window rule 2 would only close
+// moments later.
+func liveInstance(states map[string]state.Session, instance string) bool {
+	for _, s := range states {
+		if s.Instance == instance && state.Alive(s.PID) {
+			return true
+		}
+	}
+	return false
+}
+
 // spawnResume implements `kido spawn --resume RUN_ID`: it creates a
 // detached window through the identical tmux.NewWindow / markSubagent
 // path a fresh spawn uses, but launches `pi --session RUN_ID` instead of
@@ -249,9 +264,23 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 	if parentInstance == "" {
 		parentInstance = self.Instance
 	}
+	// internal/reap's rule 2 closes any marked window whose child reports
+	// a ParentInstance that names nobody currently alive - it has no
+	// memory of history, so "never heard of that instance" and "that
+	// instance's process has since died" read identically to it, and
+	// KIDO_AGENT_PARENT_INSTANCE below is exactly what makes the resumed
+	// pi report one. A fresh spawn can never trigger this: its caller is
+	// always the live process asking for itself. --resume's whole point
+	// is letting a *different*, by-hand caller claim the parent edge, so
+	// an unverifiable value here is not a hypothetical - refusing before
+	// the window exists turns a silent close within moments (the run left
+	// recording a useless "died") into an actionable error up front.
 	depth := self.Depth + 1
 	if depth > maxDepth {
 		return fmt.Errorf("refusing to resume at depth %d: maximum nesting is %d (root 0, subagent 1, subagent 2)", depth, maxDepth)
+	}
+	if parentInstance != "" && !liveInstance(states, parentInstance) {
+		return fmt.Errorf("--parent-instance %q names no currently live agent; the resumed run would be reaped within moments as an orphan (internal/reap's rule 2) - omit --parent-pid/--parent-instance for a parentless resume, or give the instance of an agent that is actually running", parentInstance)
 	}
 
 	if len(command) == 0 {
@@ -259,6 +288,14 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 	}
 	if command[0] == "pi" {
 		command = append([]string{command[0], "--session", runID}, command[1:]...)
+		// A bare `--resume` with no `-- pi --model ...` used to come up on
+		// pi's default provider, which may have no API key configured -
+		// the run's own meta already remembers what it ran under, and a
+		// caller who wants something else still wins by naming --model
+		// explicitly in the command after --.
+		if meta.Model != "" && !slices.Contains(command[1:], "--model") {
+			command = append(command, "--model", meta.Model)
+		}
 	}
 
 	env := []string{

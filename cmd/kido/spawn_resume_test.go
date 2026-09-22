@@ -128,11 +128,22 @@ func TestSpawnResumeRefusesMissingSessionFile(t *testing.T) {
 func TestSpawnResumeContinuesRunRecord(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	withCallerDepth(t, 0)
 	sessDir := t.TempDir()
 	withPiSessionDir(t, sessDir)
 	writePiSessionFile(t, sessDir, "resume-run")
 	calls := withNewWindow(t, "@9", "%9", nil)
+
+	// --parent-instance must name somebody currently alive, or spawnResume
+	// now refuses before ever reaching newWindow - see liveInstance's own
+	// doc.
+	if err := state.Record("some-other-pane", state.Session{
+		Agent: state.AgentPi, Pane: "%other", PID: os.Getpid(), Status: state.Idle,
+		Instance: "new-parent",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	cwd := t.TempDir()
 	newDeadRun(t, "resume-run", cwd)
@@ -255,6 +266,116 @@ func TestSpawnResumeRespectsDepthCeiling(t *testing.T) {
 	}
 	if len(*calls) != 0 {
 		t.Errorf("newWindow was called %d times, want the refusal to happen before any tmux call", len(*calls))
+	}
+}
+
+// TestSpawnResumeRefusesAnUnverifiableParentInstance pins the fix for the
+// window that used to die within moments of a resume: internal/reap's
+// rule 2 closes any marked window whose child reports a ParentInstance
+// nobody currently alive claims as their own, and KIDO_AGENT_PARENT_INSTANCE
+// is exactly what makes a resumed pi report one. Refusing here, before the
+// window is ever created, replaces that silent near-instant close (the run
+// left recording a useless "died") with an error at spawn time.
+func TestSpawnResumeRefusesAnUnverifiableParentInstance(t *testing.T) {
+	withPanes(t, samePane)
+	t.Setenv("TMUX_PANE", "%1")
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	withCallerDepth(t, 0)
+	sessDir := t.TempDir()
+	withPiSessionDir(t, sessDir)
+	writePiSessionFile(t, sessDir, "orphan-run")
+	calls := withNewWindow(t, "@9", "%9", nil)
+
+	cwd := t.TempDir()
+	newDeadRun(t, "orphan-run", cwd)
+
+	err := spawnCmd([]string{
+		"--resume", "orphan-run",
+		"--parent-pid", "777", "--parent-instance", "nobody-is-this",
+	})
+	if err == nil {
+		t.Fatal("spawnCmd --resume with an unverifiable --parent-instance = nil error, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "nobody-is-this") || !strings.Contains(err.Error(), "no currently live agent") {
+		t.Errorf("error = %q, want it to name the instance and say nobody currently live claims it", err)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("newWindow was called %d times, want the refusal to happen before any tmux call", len(*calls))
+	}
+}
+
+// TestSpawnResumeDefaultsModelFromMeta: a bare `--resume` with no `-- pi
+// --model ...` used to come up on pi's default provider, which may have no
+// API key configured - the run's own meta already remembers what it ran
+// under.
+func TestSpawnResumeDefaultsModelFromMeta(t *testing.T) {
+	withPanes(t, samePane)
+	t.Setenv("TMUX_PANE", "%1")
+	withCallerDepth(t, 0)
+	sessDir := t.TempDir()
+	withPiSessionDir(t, sessDir)
+	writePiSessionFile(t, sessDir, "modeled-run")
+	calls := withNewWindow(t, "@9", "%9", nil)
+
+	cwd := t.TempDir()
+	if err := subrun.Create("modeled-run", "do the thing"); err != nil {
+		t.Fatal(err)
+	}
+	if err := subrun.WriteMeta(subrun.Meta{
+		ID: "modeled-run", Name: "kid", Depth: 1, Model: "claude-sonnet-5",
+		Window: "@1", Pane: "%1", PID: deadPID(t), Cwd: cwd, StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := subrun.RecordOutcome("modeled-run", subrun.Outcome{Result: subrun.Died, At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := spawnCmd([]string{"--resume", "modeled-run", "--parent-pid", "1"}); err != nil {
+		t.Fatalf("spawnCmd --resume = %v, want it to succeed", err)
+	}
+	call := (*calls)[0]
+	if !slices.Contains(call.command, "--model") || !slices.Contains(call.command, "claude-sonnet-5") {
+		t.Errorf("command = %v, want the run's own recorded model carried through", call.command)
+	}
+}
+
+// TestSpawnResumeExplicitModelWinsOverMeta: a caller naming its own --model
+// in the command after -- is not overridden by the run's recorded one.
+func TestSpawnResumeExplicitModelWinsOverMeta(t *testing.T) {
+	withPanes(t, samePane)
+	t.Setenv("TMUX_PANE", "%1")
+	withCallerDepth(t, 0)
+	sessDir := t.TempDir()
+	withPiSessionDir(t, sessDir)
+	writePiSessionFile(t, sessDir, "modeled-run-2")
+	calls := withNewWindow(t, "@9", "%9", nil)
+
+	cwd := t.TempDir()
+	if err := subrun.Create("modeled-run-2", "do the thing"); err != nil {
+		t.Fatal(err)
+	}
+	if err := subrun.WriteMeta(subrun.Meta{
+		ID: "modeled-run-2", Name: "kid", Depth: 1, Model: "claude-sonnet-5",
+		Window: "@1", Pane: "%1", PID: deadPID(t), Cwd: cwd, StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := subrun.RecordOutcome("modeled-run-2", subrun.Outcome{Result: subrun.Died, At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := spawnCmd([]string{
+		"--resume", "modeled-run-2", "--parent-pid", "1",
+		"--", "pi", "--model", "claude-opus-5",
+	}); err != nil {
+		t.Fatalf("spawnCmd --resume = %v, want it to succeed", err)
+	}
+	call := (*calls)[0]
+	got := slices.Contains(call.command, "claude-opus-5")
+	wantNotSonnet := !slices.Contains(call.command, "claude-sonnet-5")
+	if !got || !wantNotSonnet {
+		t.Errorf("command = %v, want the caller's own --model claude-opus-5 kept, meta's claude-sonnet-5 not also appended", call.command)
 	}
 }
 
