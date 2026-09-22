@@ -222,11 +222,13 @@ is a wedged peer, not a busy one.
 
 `ok` means the agent has the message and will see it at its next turn
 boundary. That is the only acknowledgement level: `message_agent`
-promises delivery, not action. Delivery into pi is always `followUp`,
-which queues behind the work the user is watching rather than redirecting
-the running turn the way `steer` would; when pi is not streaming the
-message triggers a new turn immediately regardless, so one call covers
-both cases with no window between a check and a send.
+promises delivery, not action. Delivery into pi is `followUp` for every
+kind but one, which queues behind the work the user is watching rather
+than redirecting the running turn the way `steer` would; when pi is not
+streaming the message triggers a new turn immediately regardless, so one
+call covers both cases with no window between a check and a send. A
+notice is the one exception, and steers instead - see "Notifying the
+parent" below for why.
 
 ### v0 and v1
 
@@ -652,6 +654,52 @@ resumer by the time it is run. `pi --fork <id>` stays the bare command it
 always was: forking into a standalone session, with no parent edge or run
 record of its own, is a different, legitimate thing.
 
+A bare `pi` (no `-- pi --model ...` given) carries the run's own recorded
+`Model` through as `--model`, unless the caller's own command already
+names one: measured live, a resumed run with no explicit model came up on
+pi's default provider, which may have no API key configured on the
+machine actually running it, and the run's meta already remembers what it
+ran under - there is no reason to make every resumer repeat it.
+
+**`--parent-instance` is refused, before the window exists, unless it
+names somebody currently alive.** internal/reap's rule 2 closes any
+marked window whose child reports a `ParentInstance` that no live record
+claims as its own `Instance` - it keeps no history, so "never heard of
+that instance" and "that instance's process has since died" read
+identically to it. A fresh spawn can never hit this: its caller is always
+the live pi process asking for itself, so the instance it hands over is
+definitionally live at that moment. `--resume` is different by design -
+it is exactly the mechanism that lets a *different*, by-hand caller claim
+the parent edge (the paragraph above) - which makes an unverifiable value
+here a real, not hypothetical, failure mode: measured live, `kido spawn
+--resume <id> --parent-pid <pid> --parent-instance <id>` created a window
+that was gone within about a second, with the run left recording a
+useless `died` outcome and no indication why. The read that would explain
+it (rule 2 firing) happens in a completely different process on its next
+sidebar poll, by which point the resume command has long since exited
+successfully - there was never going to be an error message for a human
+to see. Checking liveness with the same reading rule 2 itself uses,
+before the window is created, turns that silent, delayed close into an
+immediate, actionable refusal instead. A resumer with no state record, or
+one who omits the flags, is unaffected - an empty `--parent-instance`
+skips the check entirely and resumes parentless exactly as before.
+
+**`spawn_subagent(resume)`.** The tool mirrors the CLI: an optional
+`resume` parameter runs `kido spawn --resume <resume>` instead of a fresh
+spawn, passing this session's own `--parent-pid`/`--parent-instance`
+exactly as a fresh spawn does - which is always safe, since a live pi
+session calling its own tool is definitionally the live agent the refusal
+above is guarding against not having. `resume` combined with `task` or
+`name` is refused before anything is sent to kido, not silently resolved
+in either direction: a resumed run keeps its own original task and
+window name, so a call naming a new one is ambiguous about which the
+model actually wants, not a value to quietly drop. `model` and `tools`
+are not refused; given, they go after a `--` the same way a fresh spawn's
+do, overriding what `--resume` would otherwise default from the run's own
+meta (the paragraph above); omitted, nothing follows `--` at all and
+`kido spawn --resume` supplies its own default. `keepAlive` behaves
+identically either way.
+
 ## Interrupt and stop
 
 Two verbs, deliberately distinct. `interrupt` aborts the target's current
@@ -727,10 +775,19 @@ model writes the summary itself), capped at 4000 bytes for the same
 reason the old automatic notice was: larger than the activity cap, since
 this is the child's actual work product and not a UI label, but far
 smaller than `MAX_PROMPT_BYTES`, since it is spliced whole into the
-parent's next turn as a followUp message rather than transported as an
-arbitrary payload. Refused, before anything is sent, for a session with
-no parent (no `KIDO_AGENT_PARENT_INSTANCE`) - a root session was not
-spawned, so there is nobody to tell, and the refusal says so rather than
+parent's next turn as a message rather than transported as an arbitrary
+payload. The cap is enforced by truncating, in `capBytes`, and only
+there: the tool's own schema does not repeat it as a `maxLength`, because
+`maxLength` counts UTF-16 code units against a bound stated in bytes and
+rejects the whole call outright rather than truncating - measured live, a
+subagent with a genuinely long report got "summary must not have more
+than 4000 characters" back and had to redo the call. `set_status`'s
+`activity` had the identical defect (against `MAX_ACTIVITY_BYTES`) and
+the same fix; `status()?.setActivity` already truncated via `capBytes`
+regardless, so only the schema was wrong. Refused, before anything is
+sent, for a session with no parent (no `KIDO_AGENT_PARENT_INSTANCE`) - a
+root session was not spawned, so there is nobody to tell, and the refusal
+says so rather than
 reading as a silent no-op.
 
 **What this costs, deliberately.** A subagent that crashes, or is
@@ -768,11 +825,50 @@ whether its sender is actually a subagent: kind, not identity, is the
 sender's own choice (`kido message --kind notice` versus the default
 `--kind message`), and `from` is advisory in exactly the way the rest of
 the inbox protocol already treats it, so nothing here does an identity
-lookup to decide how to render. Delivery keeps the same `deliverAs:
-"followUp"` a plain message used, and does not omit `triggerTurn: true`:
-an idle parent must still be woken by a notice exactly as before, and
+lookup to decide how to render. `triggerTurn` is never omitted: an idle
+parent must still be woken by a notice exactly as before, and
 `sendMessage`, unlike `sendUserMessage`, does not trigger a turn on its
 own.
+
+**Visual arrival is immediate; model delivery steers.** These used to be
+one event - `deliverAs: "followUp"`, the same mode a plain message uses -
+and that was a defect measured live: two subagents both called
+`notify_parent` while their parent was mid-turn, and both notices sat
+invisible for several minutes, then both appeared together the instant
+the parent's turn happened to end, because `followUp` queues behind the
+running turn for both the transcript entry and the model text alike. The
+two are now split. The row a human sees is a `ctx.ui.setWidget` line -
+"notification from X" - set the moment the envelope is dispatched, before
+anything about the message is awaited; a pi widget sits in its own
+VStack beside the transcript's scroll view rather than inside it, so it
+renders regardless of what turn is in progress. Once the identical
+message actually reaches the transcript - `message_start`, matched by a
+`noticeId` minted alongside it - pi's own `registerMessageRenderer` is
+showing the permanent collapsed row and the widget's entry for that
+notice is removed. The text is sent to `sendMessage` exactly once either
+way; the widget is a stand-in for the wait, not a second copy, so a
+notice is never shown twice and never delivered to the model twice.
+
+Model delivery itself changed too, and only for this one kind: `deliverAs`
+is `"steer"`, not `"followUp"`. A parent that does not know a child is
+done cannot act on that - the entire reason to run work in a subagent is
+to keep going in parallel, and a parent whose own turn runs long (its own
+tool calls, orchestrating other children) would otherwise sit on a
+finished child's report for however long that takes, exactly the bug
+above. This does not knock the running turn off course the way an abort
+would: measured against pi 0.85.1's agent loop
+(`@earendil-works/pi-agent-core`'s `agent-loop.js`), a steered message is
+only ever drained between a completed turn's tool results and the next
+model call - `getSteeringMessages` is polled at `turn_end` and again at
+the top of the following iteration, never mid-tool-call - so it can never
+land between an assistant's tool call and that call's own result. The
+model decides whether to act on it now or keep going; that is the
+judgement an orchestrator is meant to make, and it cannot make it about
+text it has not seen. Plain messages and asks are deliberately left on
+`followUp`: an ask is answered synchronously by a `message_agent` call
+the model makes on its own schedule regardless of when the text arrives,
+and a plain message carries no analogous "the sender is now blocked
+waiting to hear back" urgency that a notice's whole purpose creates.
 
 ## Run outcomes
 

@@ -18,6 +18,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { Value } from "typebox/value";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -350,6 +351,10 @@ function createFakePi() {
   const delivered: Array<{ text: string; opts: unknown }> = [];
   const messages: Array<{ message: any; opts: unknown }> = [];
   const renderers = new Map<string, (message: any, options: any, theme: any) => unknown>();
+  // widgets is setWidget's own record, keyed the same way the real UI
+  // keys a widget: content undefined means "cleared", exactly as
+  // pi.ExtensionUIContext.setWidget itself treats it.
+  const widgets = new Map<string, { content: string[] | undefined; options?: unknown }>();
   const pi = {
     registerTool(tool: any) {
       tools.set(tool.name, tool);
@@ -375,7 +380,12 @@ function createFakePi() {
     for (const h of handlers.get(event) ?? []) results.push(await h(...args));
     return results;
   }
-  return { pi, tools, delivered, messages, renderers, emit };
+  const ui = {
+    setWidget(key: string, content: string[] | undefined, options?: unknown) {
+      widgets.set(key, { content, options });
+    },
+  };
+  return { pi, tools, delivered, messages, renderers, widgets, ui, emit };
 }
 
 // fakeTheme is the minimal Theme surface a message renderer reads: fg()
@@ -383,19 +393,20 @@ function createFakePi() {
 // on directly rather than through a colour-code-stripping helper.
 const fakeTheme = { fg: (_color: string, text: string) => text } as any;
 
-function fakeCtx(sessionId = "self-session") {
+function fakeCtx(sessionId = "self-session", ui?: unknown) {
   return {
     sessionManager: { getSessionId: () => sessionId, getSessionName: () => undefined },
     model: undefined,
     isIdle: () => true,
+    ui,
   };
 }
 
 async function startSession(fx: Fixture, sessionId?: string) {
-  const { pi, tools, delivered, messages, renderers, emit } = createFakePi();
+  const { pi, tools, delivered, messages, renderers, widgets, ui, emit } = createFakePi();
   loadExtensions(pi);
-  await emit("session_start", {}, fakeCtx(sessionId));
-  return { tools, delivered, messages, renderers, emit, inboxPath: fx.selfInboxPath() };
+  await emit("session_start", {}, fakeCtx(sessionId, ui));
+  return { tools, delivered, messages, renderers, widgets, emit, inboxPath: fx.selfInboxPath() };
 }
 
 // loadExtensions is what a pi host does with the pair: run both factories
@@ -415,10 +426,10 @@ function loadExtensions(pi: unknown): void {
 // freshExtensions below reloads both so those module-scope constants are
 // recomputed from whatever the environment holds at that moment.
 async function startSessionUsing(factory: (pi: unknown) => void, fx: Fixture, sessionId?: string) {
-  const { pi, tools, delivered, messages, renderers, emit } = createFakePi();
+  const { pi, tools, delivered, messages, renderers, widgets, ui, emit } = createFakePi();
   factory(pi);
-  await emit("session_start", {}, fakeCtx(sessionId));
-  return { tools, delivered, messages, renderers, emit, inboxPath: fx.selfInboxPath() };
+  await emit("session_start", {}, fakeCtx(sessionId, ui));
+  return { tools, delivered, messages, renderers, widgets, emit, inboxPath: fx.selfInboxPath() };
 }
 
 // freshExtensions reimports both extensions under a cache-busting
@@ -922,6 +933,103 @@ test("a notice from a nameless sender still renders sanely, collapsed and expand
   }
 });
 
+// The render path and the model path are different code paths (see the
+// user's own report: two subagents' notices sat invisible for minutes,
+// both appearing only when the parent's turn happened to end). This is
+// the render half in isolation: a widget row must appear the instant the
+// envelope lands, before pi ever gets around to actually delivering the
+// steered message to the model - nothing here waits on a turn ending,
+// because the fake host never ends one.
+test("an inbound notice renders a widget the instant it is received, not when it is later delivered", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const from = { session: "peer-a", name: "peer-a" };
+
+    await sendToInbox(s.inboxPath, envelope("notice", "build finished", { from }));
+
+    const widget = s.widgets.get("kido-notice-pending");
+    assert.ok(widget, "a widget was set for the pending notice");
+    assert.ok(widget!.content, "the widget has content, not a clear");
+    assert.ok(widget!.content!.some((line) => line.includes("peer-a")), "the widget row names the sender");
+
+    // The model-visible message was already handed to sendMessage in the
+    // very same call - the widget is in addition to that, not instead of
+    // it.
+    const sent = s.messages.find((m) => m.message.customType === "kido-notice");
+    assert.ok(sent, "the notice was also handed to sendMessage, unconditionally");
+  } finally {
+    fx.restore();
+  }
+});
+
+// A notice is the one envelope kind delivered by steer rather than
+// followUp (docs/design.md, "The inbox", carries the exception and why):
+// a parent whose own turn runs long must not sit on a finished child's
+// report until its turn happens to end, since that defeats doing the work
+// in a subagent at all. Plain messages and asks are the negative control -
+// they must stay on followUp, unchanged.
+test("a notice is delivered by steer, not followUp; plain messages and asks are unaffected", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const from = { session: "peer-a", name: "peer-a" };
+
+    await sendToInbox(s.inboxPath, envelope("notice", "build finished", { from }));
+    const sent = s.messages.find((m) => m.message.customType === "kido-notice");
+    assert.ok(sent, "the notice reached sendMessage");
+    assert.equal((sent!.opts as any).deliverAs, "steer", "a notice steers into the running turn rather than waiting for it to end");
+
+    await sendToInbox(s.inboxPath, envelope("message", "a plain message", { from }));
+    assert.ok(s.delivered.some((d) => d.text === "a plain message"), "a plain message still goes through sendUserMessage/deliver");
+
+    await sendToInbox(s.inboxPath, envelope("ask", "you there?", { id: "ask-y", from }));
+    assert.ok(s.delivered.some((d) => d.text.includes("you there?")), "an ask still goes through the same deliver() path as a plain message, unaffected by the notice-only steer change");
+  } finally {
+    fx.restore();
+  }
+});
+
+// The other half of the same defect: once the identical steered message
+// actually reaches the model (message_start, matched by the noticeId this
+// extension mints), the model has the full text exactly once, and the
+// stand-in widget row is removed rather than left to show a notice twice
+// over.
+test("a notice reaches the model exactly once, and its widget row is removed once delivery actually happens", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const from = { session: "peer-a", name: "peer-a" };
+
+    await sendToInbox(s.inboxPath, envelope("notice", "the whole result", { from }));
+    const noticeMessages = s.messages.filter((m) => m.message.customType === "kido-notice");
+    assert.equal(noticeMessages.length, 1, "the notice's text was sent to the model exactly once");
+    const sent = noticeMessages[0]!.message;
+    assert.equal(sent.content, "the whole result", "the model-visible text is the notice's full text, unchanged");
+    const noticeId = sent.details?.noticeId;
+    assert.ok(noticeId, "the message carries an id the widget half can be matched against");
+
+    assert.ok(s.widgets.get("kido-notice-pending")?.content, "the widget is still up before delivery actually happens");
+
+    // Simulate what a real pi host does once the steered message actually
+    // lands in the transcript: fires message_start with the same message
+    // this extension handed to sendMessage.
+    await s.emit("message_start", { message: { ...sent, role: "custom" } });
+
+    assert.equal(s.widgets.get("kido-notice-pending")?.content, undefined, "the widget is cleared once the real entry has taken over");
+
+    // A second, unrelated message_start (an outbound reply, say) must not
+    // resurrect or otherwise disturb an already-cleared widget.
+    await s.emit("message_start", { message: { role: "custom", customType: "some-other-type" } });
+    assert.equal(s.widgets.get("kido-notice-pending")?.content, undefined, "an unrelated message_start leaves the cleared widget alone");
+  } finally {
+    fx.restore();
+  }
+});
+
 // Part 3 of the notify_parent refactor: a spawned child must be told
 // reporting is its own job now that nothing does it automatically. Fires
 // on every prompt, not just the child's first, since a task delivered
@@ -1047,6 +1155,76 @@ test("spawn_subagent passes --model and --tools through to the child's pi invoca
     assert.ok(name, "a name was generated");
     assert.doesNotMatch(name!, /['"$#`\n\r]/, "a generated name avoids the characters tmux's own parsing cannot survive");
     assert.match(result.content[0].text, new RegExp(name!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  } finally {
+    fx.restore();
+  }
+});
+
+test("spawn_subagent(resume) calls kido spawn --resume with its own identity, and no task file", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    await pollUntil(() => fx.lastStatusArgs() !== undefined);
+    const ownInstance = argAfter(fx.lastStatusArgs(), "--instance");
+
+    const spawn = s.tools.get("spawn_subagent");
+    const result = await spawn.execute("c1", { resume: "run-abc" });
+    assert.match(result.content[0].text, /run-abc|fake-run-id/, "the run id is named in the result");
+
+    const spawnArgs = fx.lastSpawnArgs();
+    assert.ok(spawnArgs, "kido spawn was invoked");
+    assert.equal(argAfter(spawnArgs, "--resume"), "run-abc");
+    assert.equal(argAfter(spawnArgs, "--parent-pid"), String(process.pid), "carries its own identity through exactly as a fresh spawn does");
+    assert.equal(argAfter(spawnArgs, "--parent-instance"), ownInstance);
+    assert.ok(!spawnArgs!.includes("--task-file"), "a resume keeps its own original task; no task file is written for it");
+    assert.ok(!spawnArgs!.includes("--name"), "a resume keeps its own original window name");
+    // No model/tools override given: kido spawn --resume already carries
+    // the run's own recorded model forward on its own, so nothing after
+    // -- is needed here at all.
+    assert.ok(!spawnArgs!.includes("--"), "no command override is sent when neither model nor tools is given");
+  } finally {
+    fx.restore();
+  }
+});
+
+test("spawn_subagent(resume) with model/tools overrides them in the resumed pi's own command", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const spawn = s.tools.get("spawn_subagent");
+    await spawn.execute("c1", { resume: "run-abc", model: "claude-opus-5", tools: ["read"] });
+
+    const spawnArgs = fx.lastSpawnArgs()!;
+    const sepIndex = spawnArgs.indexOf("--");
+    assert.ok(sepIndex >= 0, "a command override follows -- when model/tools are given");
+    const command = spawnArgs.slice(sepIndex + 1);
+    assert.equal(command[0], "pi");
+    assert.equal(argAfter(command, "--model"), "claude-opus-5");
+    assert.equal(argAfter(command, "--tools"), "read");
+  } finally {
+    fx.restore();
+  }
+});
+
+test("spawn_subagent refuses resume combined with task or name, and refuses no task without resume, before calling kido", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const spawn = s.tools.get("spawn_subagent");
+
+    let result = await spawn.execute("c1", { resume: "run-abc", task: "a new task" });
+    assert.match(result.content[0].text, /resume and task cannot both be given/);
+
+    result = await spawn.execute("c2", { resume: "run-abc", name: "kid-1" });
+    assert.match(result.content[0].text, /resume and name cannot both be given/);
+
+    result = await spawn.execute("c3", {});
+    assert.match(result.content[0].text, /task is required unless resume is given/);
+
+    assert.equal(fx.lastSpawnArgs(), undefined, "kido spawn must not be invoked for any refused combination");
   } finally {
     fx.restore();
   }
@@ -1260,6 +1438,86 @@ test("notify_parent sends a notice to the resolved parent, carrying the given su
       if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
       else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
     }
+  } finally {
+    fx.restore();
+  }
+});
+
+// A model that ran notify_parent with a genuinely long report used to
+// get "summary must not have more than 4000 characters" back instead of
+// a notice sent - the schema's own maxLength rejected the call before
+// capBytes (below, in execute) ever ran, so the truncation the tool's own
+// description promises ("Capped at N bytes") was dead code. Fixed by
+// dropping the schema-level cap and leaving capBytes as the only
+// enforcement, so this checks the schema accepts what it used to reject
+// and the execute() still truncates.
+test("notify_parent's schema accepts a summary over the byte cap, and execute() truncates it rather than rejecting", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
+    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
+    try {
+      const factory = await freshExtensions();
+      const s = await startSessionUsing(factory, fx);
+      const tool = s.tools.get("notify_parent");
+      const longSummary = "x".repeat(4500);
+
+      assert.ok(
+        Value.Check(tool.parameters, { summary: longSummary }),
+        "the schema itself no longer rejects a call over 4000 characters - it is the tool's own capBytes that enforces the bound, by truncating",
+      );
+
+      const result = await tool.execute("call-1", { summary: longSummary });
+      assert.ok(result.content[0].text.length > 0, "the call succeeds rather than failing schema validation");
+      const sent = await fx.waitForLog("parent-x", "notice");
+      assert.equal(Buffer.byteLength(sent!.text, "utf8"), 4000, "the notice actually sent is truncated to the byte cap, not rejected");
+    } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+// set_status's schema had the identical defect (maxLength counting
+// characters against a byte-denominated cap the tool's own description
+// promises, and rejecting instead of truncating) - kido-status.ts's own
+// setActivity has always truncated via capBytes; only the schema was
+// wrong.
+test("set_status's schema accepts an activity over the byte cap, and setActivity truncates it", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const tool = s.tools.get("set_status");
+    const longActivity = "y".repeat(500);
+
+    assert.ok(
+      Value.Check(tool.parameters, { activity: longActivity }),
+      "the schema no longer rejects a call over 256 characters",
+    );
+
+    await tool.execute("call-1", { activity: longActivity });
+    // The most recent report is not necessarily this one: session_start's
+    // own "idle" report (empty activity) is still in flight, fired and
+    // forget, when this runs, and the two spawned processes can finish in
+    // either order - lastStatusArgs() picking whichever wrote last is a
+    // straight race. Both share status "idle", so search every "idle"
+    // report for the one carrying a non-empty --activity instead of
+    // trusting write order.
+    let report: string[] | undefined;
+    await pollUntil(() => {
+      report = fx.statusReportsWith("idle").find((args) => {
+        const i = args.indexOf("--activity");
+        return i >= 0 && args[i + 1] !== "";
+      });
+      return report !== undefined;
+    }, 2000, "a status report reflecting the activity");
+    const i = report!.indexOf("--activity");
+    assert.ok(i >= 0, "a status report carried the activity");
+    assert.equal(Buffer.byteLength(report![i + 1], "utf8"), 256, "the reported activity is truncated to the byte cap, not rejected");
   } finally {
     fx.restore();
   }

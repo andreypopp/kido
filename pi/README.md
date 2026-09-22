@@ -193,10 +193,21 @@ text rather than being dropped.
   waiting on that id. If none is (the asker already timed out, or the id
   is foreign), the answer is still delivered, as an ordinary message -
   never dropped.
-- `notice` - delivered as a custom message, rendered collapsed to one
-  line ("notification from X - ctrl-o to expand") with the full text
-  behind pi's own ctrl-o toggle; the model always sees the full text
-  regardless of how it renders.
+- `notice` - a "notification from X" row appears above the editor the
+  instant the envelope arrives (a `ctx.ui.setWidget` line, outside the
+  transcript entirely), before anything about it is delivered. The text
+  itself is sent as a custom message and steered into the model's current
+  turn (`deliverAs: "steer"`, not the `"followUp"` every other kind
+  uses) rather than waiting for the turn to end - a finished child a
+  parent does not know about defeats the point of spawning it. Once that
+  message actually reaches the transcript it renders collapsed
+  ("notification from X - ctrl-o to expand", full text behind pi's own
+  ctrl-o toggle) and the widget row for it is removed - the widget is a
+  stand-in for the wait, not a second copy, so a notice is shown once and
+  delivered to the model once. See docs/design.md, "Notifying the
+  parent", for why steer is safe here (it can only land between a
+  completed turn's tool results and the next model call, never mid-tool)
+  and why every other kind stays on followUp.
 - anything else - delivered anyway, marked as an unrecognised kind, so a
   typo or a newer kido talking to an older extension is visible rather
   than silently read as a plain message.

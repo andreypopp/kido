@@ -217,6 +217,36 @@ export default function (pi: ExtensionAPI) {
   let ctxAbort: (() => void) | null = null;
   let ctxShutdown: (() => void) | null = null;
 
+  // widgetUi is the raw pi.on("session_start") ctx.ui, captured directly
+  // (not through the seam's SessionContext, which is deliberately narrower
+  // - kido-status.ts's own use never needed a widget). Null until a
+  // session_start has fired, and re-captured on every one - a /reload
+  // hands out a fresh ctx and pi itself tears down the previous widgets
+  // (resetExtensionUI's own clearExtensionWidgets), so holding on to a
+  // stale ui would call setWidget on a UI nobody is drawing any more.
+  let widgetUi: { setWidget(key: string, content: string[] | undefined, options?: { placement?: "aboveEditor" | "belowEditor" }): void } | null = null;
+
+  // pendingNotices is the visual half of an inbound notice, kept separate
+  // from model delivery on purpose (see deliverNotice below): an id minted
+  // per envelope, live from the moment it arrives until the identical
+  // followUp message actually lands in the transcript (message_start
+  // fires with the same id in details.noticeId), at which point pi's own
+  // registerMessageRenderer takes over showing it and this entry is
+  // removed - the widget is a stand-in for the wait, not a second copy.
+  const pendingNotices = new Map<string, string>(); // notice id -> sender label
+
+  const NOTICE_WIDGET_KEY = "kido-notice-pending";
+
+  const renderNoticeWidget = (): void => {
+    if (!widgetUi) return;
+    if (pendingNotices.size === 0) {
+      widgetUi.setWidget(NOTICE_WIDGET_KEY, undefined);
+      return;
+    }
+    const lines = [...pendingNotices.values()].map((from) => `notification from ${from}`);
+    widgetUi.setWidget(NOTICE_WIDGET_KEY, lines);
+  };
+
   // How a waiting ask_agent ends. "The answer never came" and "there is
   // no longer anywhere for it to come to" are different things to tell a
   // model: only the first leaves an id a late reply can be surfaced
@@ -274,16 +304,58 @@ export default function (pi: ExtensionAPI) {
   // regardless of who sent it: kind, not identity, is what a sender chose
   // when it ran `kido message --kind notice` instead of the default
   // `--kind message`, and `from` is advisory anyway (docs/design.md, the
-  // inbox), so nothing here does a lookup to decide. deliverAs is
-  // unconditionally "followUp" and triggerTurn is true for the same
-  // reason kido-status.ts's own deliver() sends every prompt as a
-  // followUp: an idle parent must still be woken by a notice exactly as
-  // it was when this arrived as a plain user message.
+  // inbox), so nothing here does a lookup to decide.
+  //
+  // The two halves of "deliver a notice" run on purpose different
+  // schedules. Visual arrival is immediate: renderNoticeWidget puts a
+  // "notification from X" row up above the editor the instant this
+  // function runs, before anything is awaited, so a human watching sees
+  // it the moment the envelope lands rather than whenever the current
+  // turn happens to end.
+  //
+  // Model delivery changed, deliberately, from what every other envelope
+  // kind still uses: deliverAs is "steer", not "followUp". A notice is
+  // the one kind where a parent not knowing a child is done defeats the
+  // reason the child was spawned at all - the point of doing work in a
+  // subagent is to keep going in parallel, and a parent whose own turn
+  // runs long (its own tool calls, orchestrating other children) could
+  // otherwise sit on a finished child's report for however long that
+  // takes: measured live, two subagents' notices both sat invisible for
+  // several minutes and then landed together the instant the parent's
+  // turn happened to end, which is the followUp queueing this replaces.
+  // Steer does not knock the running turn off course the way an abort
+  // would: measured against pi 0.85.1's agent loop
+  // (@earendil-works/pi-agent-core's agent-loop.js), a steering message is
+  // only ever drained between a completed turn's tool results and the
+  // next model call (getSteeringMessages is polled at turn_end and at the
+  // top of the next iteration, never mid-tool-call), so it can never land
+  // between an assistant's tool call and that call's own result. The
+  // model decides whether to act on it now or keep going - the judgement
+  // an orchestrator is meant to make, just with the information in front
+  // of it instead of withheld until its own turn happens to end. Plain
+  // messages and asks stay on followUp: an ask is answered synchronously
+  // by a `message_agent` call the model makes on its own schedule
+  // regardless, and a plain message has no analogous "the sender is now
+  // blocked waiting to hear back" urgency. docs/design.md's "The inbox"
+  // section describes followUp as universal; this is the one documented
+  // exception.
+  //
+  // The two halves meet exactly once each: the widget's entry is removed
+  // when (and only when) the identical steered message actually reaches
+  // the transcript (the message_start listener below, matched by
+  // noticeId - fired identically whether the message arrived by steer or
+  // followUp, so nothing else here needed to change), so the model text
+  // is sent through sendMessage here and nowhere else - one wire call,
+  // one entry, one widget row that hands off to it rather than a second
+  // rendering of the same notice.
   const deliverNotice = (text: string, from: string): void => {
     clearIdleExit();
+    const noticeId = randomUUID();
+    pendingNotices.set(noticeId, from);
+    renderNoticeWidget();
     pi.sendMessage(
-      { customType: NOTICE_CUSTOM_TYPE, content: text, display: true, details: { from } },
-      { deliverAs: "followUp", triggerTurn: true },
+      { customType: NOTICE_CUSTOM_TYPE, content: text, display: true, details: { from, noticeId } },
+      { deliverAs: "steer", triggerTurn: true },
     );
   };
 
@@ -579,9 +651,14 @@ export default function (pi: ExtensionAPI) {
 
   const setStatusParams = Type.Object(
     {
+      // No maxLength here: it would count UTF-16 code units against a
+      // byte budget and reject a call the tool would otherwise happily
+      // truncate - status()?.setActivity (kido-status.ts) already enforces
+      // MAX_ACTIVITY_BYTES itself, in bytes, by truncating rather than
+      // refusing. The schema states the cap for the model to read; only
+      // one place enforces it.
       activity: Type.String({
         description: 'What you are doing right now ("refactoring internal/ui"), or "" to clear it. Capped at 256 bytes.',
-        maxLength: MAX_ACTIVITY_BYTES,
       }),
     },
     { additionalProperties: false },
@@ -808,9 +885,17 @@ export default function (pi: ExtensionAPI) {
 
   const spawnSubagentParams = Type.Object(
     {
-      task: Type.String({ description: "The task to give the new subagent, delivered as its first message." }),
+      task: Type.Optional(
+        Type.String({
+          description:
+            "The task to give the new subagent, delivered as its first message. Required unless resume is given - a resumed run keeps its own original task and refuses a new one.",
+        }),
+      ),
       name: Type.Optional(
-        Type.String({ description: "A name for the subagent's window and session; a name is generated when omitted." }),
+        Type.String({
+          description:
+            "A name for the subagent's window and session; a name is generated when omitted. Refused together with resume - a resumed run keeps its original window name.",
+        }),
       ),
       model: Type.Optional(Type.String({ description: "Model for the subagent to run." })),
       tools: Type.Optional(
@@ -824,6 +909,12 @@ export default function (pi: ExtensionAPI) {
             "Keep the subagent alive after it goes idle instead of letting it self-reap after a short timeout. For a deliberately long-lived helper; defaults to false.",
         }),
       ),
+      resume: Type.Optional(
+        Type.String({
+          description:
+            "Resume a dead or finished subagent by its own run id (from this tool's earlier result, or `kido runs`) instead of starting a new one, in its own new window. Refused together with task or name.",
+        }),
+      ),
     },
     { additionalProperties: false },
   );
@@ -831,13 +922,35 @@ export default function (pi: ExtensionAPI) {
     name: "spawn_subagent",
     label: "Spawn Subagent",
     description:
-      "Create a subagent in its own tmux window with a task. Returns its identity immediately without waiting for it to finish.",
-    promptSnippet: "spawn_subagent(task, name?, model?, tools?) - delegate a task to a new subagent in its own window",
+      "Create a subagent in its own tmux window with a task, or resume a dead or finished one by its run id. Returns its identity immediately without waiting for it to finish.",
+    promptSnippet:
+      "spawn_subagent(task, name?, model?, tools?, keepAlive?) or spawn_subagent(resume, model?, tools?, keepAlive?) - delegate a task to a new subagent, or resume a dead one, in its own window",
     parameters: spawnSubagentParams,
     async execute(_toolCallId, params) {
       const host = status();
       if (!host?.kidoPath()) {
         return { content: [{ type: "text", text: "kido is not available; cannot spawn a subagent" }], details: {} };
+      }
+      // resume keeps the run's own original task and window name - the same
+      // pair `kido spawn --resume` itself refuses alongside --task-file and
+      // --name - so a call naming both is ambiguous about which one the
+      // model actually wants and is refused rather than silently picking
+      // one.
+      if (params.resume) {
+        if (params.task) {
+          return {
+            content: [{ type: "text", text: "resume and task cannot both be given: a resumed run keeps its own original task" }],
+            details: {},
+          };
+        }
+        if (params.name) {
+          return {
+            content: [{ type: "text", text: "resume and name cannot both be given: a resumed run keeps its own original window name" }],
+            details: {},
+          };
+        }
+      } else if (!params.task) {
+        return { content: [{ type: "text", text: "task is required unless resume is given" }], details: {} };
       }
       const depth = (DEPTH ?? 0) + 1;
       if (depth > MAX_SPAWN_DEPTH) {
@@ -846,16 +959,46 @@ export default function (pi: ExtensionAPI) {
           details: {},
         };
       }
-      const name = params.name || safeSubagentName();
 
-      // Spelled once for both: pi's own --model/--tools constrain the
-      // child, kido spawn's identically named pair goes in the run record.
+      // Spelled once for both spawn and resume: pi's own --model/--tools
+      // constrain the child, kido spawn's identically named pair goes in
+      // the run record (spawn only - kido spawn --resume has no top-level
+      // --tools of its own, and only defaults --model from the run's own
+      // meta when neither this nor an explicit command overrides it).
       const modelAndTools = [
         ...(params.model ? ["--model", params.model] : []),
         ...(params.tools && params.tools.length > 0 ? ["--tools", params.tools.join(",")] : []),
       ];
-      const child = ["pi", "--name", name, ...modelAndTools];
       const keepAliveArgs = params.keepAlive ? ["--keep-alive"] : [];
+
+      if (params.resume) {
+        const args = [
+          "spawn",
+          "--resume",
+          params.resume,
+          "--parent-pid",
+          String(process.pid),
+          "--parent-instance",
+          host.instance(),
+          ...keepAliveArgs,
+        ];
+        // Only named after "--" if there is something to override - an
+        // absent --model already gets the run's own recorded one back from
+        // kido spawn --resume itself.
+        if (modelAndTools.length > 0) args.push("--", "pi", ...modelAndTools);
+        const res = await host.runKido(args, { timeoutMs: SPAWN_TIMEOUT_MS });
+        if ("error" in res) {
+          return { content: [{ type: "text", text: `could not resume ${params.resume}: ${res.error}` }], details: {} };
+        }
+        const [windowID, paneID, runID] = res.out.split(/\s+/);
+        return {
+          content: [{ type: "text", text: `resumed ${runID} (window ${windowID}, pane ${paneID})` }],
+          details: { window: windowID, pane: paneID, run: runID },
+        };
+      }
+
+      const name = params.name || safeSubagentName();
+      const child = ["pi", "--name", name, ...modelAndTools];
 
       // The task goes to kido spawn as text on stdin; kido decides it
       // becomes a file.
@@ -877,7 +1020,7 @@ export default function (pi: ExtensionAPI) {
           "--",
           ...child,
         ],
-        { input: params.task, timeoutMs: SPAWN_TIMEOUT_MS },
+        { input: params.task!, timeoutMs: SPAWN_TIMEOUT_MS },
       );
       if ("error" in res) {
         return { content: [{ type: "text", text: `could not spawn subagent: ${res.error}` }], details: {} };
@@ -957,9 +1100,14 @@ export default function (pi: ExtensionAPI) {
 
   const notifyParentParams = Type.Object(
     {
+      // No maxLength here, for the same reason set_status's schema has
+      // none: it is a character count checked against a byte budget, and
+      // typebox rejects the whole call on it rather than truncating -
+      // measured live, a model given a long report had to redo the call
+      // after "summary must not have more than N characters". capBytes
+      // below is the sole enforcement, and it truncates.
       summary: Type.String({
         description: `A short summary of the finished work to send to your parent. Capped at ${MAX_NOTICE_BYTES} bytes.`,
-        maxLength: MAX_NOTICE_BYTES,
       }),
     },
     { additionalProperties: false },
@@ -1008,6 +1156,34 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool(interruptSubagentTool);
   pi.registerTool(stopSubagentTool);
   pi.registerTool(notifyParentTool);
+
+  // Captured directly from pi, not through the seam: kido-status.ts's
+  // SessionContext deliberately does not carry ui (it never needed one),
+  // and a /reload fires session_start again with a fresh ctx, so this is
+  // re-captured exactly like ctxAbort/ctxShutdown above rather than read
+  // once. Registering a second "session_start" listener here is fine -
+  // pi calls every extension's registration for a given event, and this
+  // one only ever reads ctx, never races kido-status.ts's own.
+  pi.on("session_start", (_event: unknown, ctx: { ui?: typeof widgetUi }) => {
+    widgetUi = ctx.ui ?? null;
+  });
+
+  // The other end of deliverNotice's hand-off: once the identical
+  // followUp message actually reaches the transcript (matched by the
+  // noticeId minted there), pi's own registerMessageRenderer above is
+  // now showing it, so the stand-in widget row for that one notice is
+  // done its job. Filtered to our own custom type and a noticeId we
+  // actually minted, since message_start fires for every message this
+  // session sends or receives, ours included (an outbound message_agent
+  // reply, for one).
+  pi.on("message_start", (event: { message?: { role?: string; customType?: string; details?: { noticeId?: string } } }) => {
+    const m = event?.message;
+    if (m?.role !== "custom" || m.customType !== NOTICE_CUSTOM_TYPE) return;
+    const noticeId = m.details?.noticeId;
+    if (!noticeId || !pendingNotices.has(noticeId)) return;
+    pendingNotices.delete(noticeId);
+    renderNoticeWidget();
+  });
 
   // Every notice, whatever kind of sender wrote it, collapses to one line
   // by default; ctrl-o expansion is pi's own built-in toggle
@@ -1117,6 +1293,11 @@ export default function (pi: ExtensionAPI) {
     sessionStarting(ctx: SessionContext) {
       ctxAbort = () => ctx.abort();
       ctxShutdown = () => ctx.shutdown();
+      // A /reload's fresh ctx has already had pi clear the previous
+      // widgets out from under it (resetExtensionUI); drop our own record
+      // of what was pending so a later renderNoticeWidget call does not
+      // resurrect rows for notices this session no longer remembers.
+      pendingNotices.clear();
     },
     async sessionStarted(ctx: SessionContext) {
       startParentLivenessPoll(ctx.shutdown);
