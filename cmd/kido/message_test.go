@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -489,5 +490,69 @@ func TestMessageAskRefusalDoesNotPaste(t *testing.T) {
 	}
 	if calls := pastes(); len(calls) != 0 {
 		t.Fatalf("sendPrompt calls = %v, want none: a refusal must never paste", calls)
+	}
+}
+
+// TestMessageNoticeToADeadV1AgentDoesNotPaste is the case the
+// advertised-protocol check above cannot see: a target that reported
+// --inbox and --protocol 1 while it was alive and has since gone, leaving
+// a stale socket path in its record. It passes the Protocol >= V1 gate,
+// and deliverInboxOrPaste's answer to a socket nobody is listening on is
+// to paste into the pane - which, for an agent that is no longer running,
+// means typing the text at the shell the pane fell back to and pressing
+// Enter. For a notice that text is model-authored (a subagent's completion
+// notice is built from its own title and activity, pi/kido-status.ts), so
+// the paste would be a command line the model wrote, run in its parent's
+// pane. docs/subagents-plan.md's rule for a dead parent is that there is
+// nobody to tell; this pins that it is not told by send-keys instead.
+func TestMessageNoticeToADeadV1AgentDoesNotPaste(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%1")
+	withPanes(t, samePane)
+	pastes := withSendPrompt(t, nil)
+
+	// A path with nothing listening on it: exactly what a dead agent's
+	// record still names.
+	if err := state.Record("target", state.Session{
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle,
+		Inbox: filepath.Join(t.TempDir(), "gone.sock"), Protocol: msg.V1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, kind := range []string{"notice", "ask", "reply"} {
+		args := []string{"--kind", kind, "target"}
+		if kind == "reply" {
+			args = append([]string{"--reply-to", "ask-1"}, args...)
+		}
+		if code := message(args, strings.NewReader("touch /tmp/pwned")); code != 1 {
+			t.Errorf("message --kind %s = %d, want 1", kind, code)
+		}
+	}
+	if calls := pastes(); len(calls) != 0 {
+		t.Fatalf("sendPrompt calls = %v, want none: only a plain message may fall back to a paste", calls)
+	}
+}
+
+// TestMessageNoInboxStillPastes is the negative control for the test
+// above: the fallback itself must survive, since it is the only way an
+// agent without an inbox at all (Claude Code) is reachable.
+func TestMessageNoInboxStillPastes(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%1")
+	withPanes(t, samePane)
+	pastes := withSendPrompt(t, nil)
+
+	if err := state.Record("target", state.Session{
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle,
+		Inbox: filepath.Join(t.TempDir(), "gone.sock"), Protocol: msg.V1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if code := message([]string{"target"}, strings.NewReader("hello")); code != 0 {
+		t.Fatalf("message = %d, want 0", code)
+	}
+	if calls := pastes(); len(calls) != 1 {
+		t.Fatalf("sendPrompt calls = %v, want exactly one paste", calls)
 	}
 }

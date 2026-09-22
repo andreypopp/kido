@@ -32,14 +32,26 @@
  *
  * Tools:
  *   `list_agents()`, `set_status(activity)`, `message_agent(to, message,
- *   replyTo?)` and `ask_agent(to, question, timeoutMs?)` all shell out to
- *   kido (`kido agents --json`, `kido agent-status --activity`, `kido
- *   message [--kind K] [--reply-to] [--id] <to>`) the same way status
- *   reporting does. They register unconditionally at factory time - before
- *   session_start has resolved kido or a session id - and simply no-op at
- *   call time until those are known, since pi may run the factory in
- *   invocations that never start a session. What message_agent accepts and
- *   how kido resolves it is in pi/README.md.
+ *   replyTo?)`, `ask_agent(to, question, timeoutMs?)` and `spawn_subagent(task,
+ *   name?, model?, tools?)` all shell out to kido (`kido agents --json`,
+ *   `kido agent-status --activity`, `kido message [--kind K] [--reply-to]
+ *   [--id] <to>`, `kido spawn ...`) the same way status reporting does,
+ *   asynchronously so a slow or hung kido cannot block this process's
+ *   event loop - notably its own inbox, which must stay able to accept a
+ *   connection while a tool call is in flight. They register
+ *   unconditionally at factory time - before session_start has resolved
+ *   kido or a session id - and simply no-op at call time until those are
+ *   known, since pi may run the factory in invocations that never start a
+ *   session. What message_agent accepts and how kido resolves it is in
+ *   pi/README.md.
+ *
+ *   spawn_subagent writes its task to a temp file and returns as soon as
+ *   `kido spawn` has created the child's window - it does not wait for the
+ *   child to start, let alone finish. The child reads its task file (named
+ *   in $KIDO_AGENT_TASK_FILE) on session_start, delivers it as its first
+ *   message, and unlinks it; when it eventually shuts down it tells its
+ *   parent with a `notice` envelope, dropped silently if the parent is
+ *   gone. See docs/subagents-plan.md's Spawning section.
  *
  *   There is deliberately no `kido ask` CLI twin. ask_agent blocks the
  *   calling tool until a reply arrives on this session's own inbox, and
@@ -72,10 +84,11 @@
  */
 
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { accessSync, constants, unlinkSync } from "node:fs";
+import { accessSync, constants, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
+import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { Type } from "typebox";
 
@@ -91,6 +104,26 @@ const INSTANCE = randomUUID();
 const PARENT_PID = process.env.KIDO_AGENT_PARENT_PID ? Number(process.env.KIDO_AGENT_PARENT_PID) : undefined;
 const PARENT_INSTANCE = process.env.KIDO_AGENT_PARENT_INSTANCE || undefined;
 const DEPTH = process.env.KIDO_AGENT_DEPTH ? Number(process.env.KIDO_AGENT_DEPTH) : undefined;
+
+// The task text `kido spawn` left for us to deliver as our first message
+// (see docs/subagents-plan.md's Spawning section). Read once, in
+// session_start, and unlinked there - a /reload re-runs session_start, and
+// by then the file is already gone, so it is never delivered twice.
+const TASK_FILE = process.env.KIDO_AGENT_TASK_FILE || undefined;
+
+// decision 5 in docs/subagents-plan.md: root 0 -> subagent 1 -> subagent
+// 2. spawnCmd (cmd/kido/spawn.go) is the actual ceiling; this is only a
+// cheap early refusal that skips writing a task file and a subprocess for
+// a spawn that kido would refuse anyway.
+const MAX_SPAWN_DEPTH = 2;
+
+// How long spawn_subagent waits for `kido spawn` before treating it as
+// hung. A package variable, like inboxTimeout on the Go side, so a test
+// can shorten it rather than actually waiting out a real 5s to exercise
+// the timeout branch - set only via the environment, since this is read
+// once at module scope and freshKidoStatus() in the test suite reimports
+// the module to pick up a fresh value.
+const SPAWN_TIMEOUT_MS = Number(process.env.KIDO_SPAWN_TIMEOUT_MS) || 5000;
 
 // Cap for set_status's free text. The JSON schema says 256 too, but a
 // model is free to ignore it, and the sidebar has one row to draw this in.
@@ -114,6 +147,11 @@ function capBytes(text: string, max: number): string {
 }
 
 type Status = "running" | "waiting" | "compacting" | "idle";
+
+// RunKidoResult's error branch carries timedOut so a caller can tell a
+// definite failure (kido ran and said so, or never started) apart from a
+// run that was still in flight when this process gave up waiting on it.
+type RunKidoResult = { out: string } | { error: string; timedOut?: boolean };
 
 // Anything larger than this is dropped rather than buffered.
 const MAX_PROMPT_BYTES = 1024 * 1024;
@@ -195,24 +233,6 @@ function findKido(): string | null {
   return null;
 }
 
-// Where to bind is kido's decision, not ours: it owns the state-directory
-// precedence and the sun_path length budget. It exits non-zero (printing
-// nothing) when the path would not fit or the name is bad; then we simply run
-// without an inbox. Run synchronously: one fast subprocess, once per session
-// start.
-function askInboxPath(kido: string, name: string): string | null {
-  try {
-    const out = execFileSync(kido, ["inbox-path", name], {
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf8",
-      timeout: 2000, // a hung kido must not stall session start
-    }).trim();
-    return out && isAbsolute(out) ? out : null;
-  } catch {
-    return null; // no such subcommand, non-zero exit, timeout — no inbox
-  }
-}
-
 // resolveAgent applies the same addressing rules kido message's
 // resolveTarget (cmd/kido/message.go) does, over the agents ask_agent
 // already fetched: an exact, case-insensitive name, then an exact id, then
@@ -284,6 +304,29 @@ export default function (pi: ExtensionAPI) {
   // names it later has nothing to resolve, and per the plan's delivery
   // semantics is surfaced as an ordinary message rather than dropped
   // (see handleInboundReply).
+  //
+  // This map, not any count kept beside it, is also the cycle-refusal
+  // edge set (hasAskOutstandingTo below) - which needs an argument now
+  // that runKido no longer blocks the event loop: while `await
+  // runKido([...])` is pending in ask_agent below, this process is free to
+  // dispatch an inbound ask from the very target that send is addressed
+  // to, before the send's own kido subprocess has exited.
+  //
+  // It is still correct, because the write to this map
+  // (`pendingOutbound.set`, in ask_agent below) happens synchronously,
+  // before the `await` that starts the send - JS gives that whole
+  // synchronous prefix of an async function to run without yielding, so
+  // nothing else can observe the waiter as absent once ask_agent has been
+  // called. Any inbound ask arriving while the send is still in flight
+  // therefore already sees the edge. The reverse race - the outbound
+  // send's own "could not deliver" branch calling settle({gaveUp:
+  // "unsent"}) after a reply has already raced in and settled the same
+  // waiter - is harmless because settle is idempotent: it clears an
+  // already-cleared timer, deletes an already-deleted map entry, and
+  // resolves an already-resolved promise, all no-ops. See the
+  // "interleaving" test in kido-status.test.ts, which exercises the first
+  // half of this argument against a real socket rather than just arguing
+  // it in prose.
   const pendingOutbound = new Map<string, { targetSession: string; settle: (outcome: AskOutcome) => void }>();
 
   // abandonPending releases every waiting ask because this session's
@@ -462,12 +505,18 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  const startInbox = async (bin: string): Promise<void> => {
-    // Named after this process's pid, which is unique among live processes by
-    // construction: a leftover file at that path cannot belong to a running
-    // listener, so it is always safe to remove — no liveness probe needed.
-    const path = askInboxPath(bin, String(process.pid));
-    if (!path) return;
+  const startInbox = async (): Promise<void> => {
+    // Where to bind is kido's decision, not ours: it owns the
+    // state-directory precedence and the sun_path length budget, and exits
+    // non-zero when the path would not fit or the name is bad - then we
+    // simply run without an inbox. The name is this process's pid, which
+    // is unique among live processes by construction: a leftover file at
+    // that path cannot belong to a running listener, so it is always safe
+    // to remove — no liveness probe needed.
+    const asked = await runKido(["inbox-path", String(process.pid)], { timeoutMs: 2000 });
+    if ("error" in asked) return;
+    const path = asked.out;
+    if (!path || !isAbsolute(path)) return;
     try {
       unlinkSync(path);
     } catch {
@@ -552,36 +601,79 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // runKido is how every tool shells out: synchronously, since a tool call
-  // is allowed to block, with kido resolving both the caller (via
-  // $TMUX_PANE) and its tmux session from the inherited environment. On
-  // failure it yields the line kido printed on stderr rather than node's
-  // "Command failed", because that line - "no agent session matches ...",
-  // "ask refused" - is the only part a model can act on. Every outcome is
-  // a value, so no tool can leak an exception into pi.
-  const runKido = (args: string[], opts: { input?: string; timeoutMs: number }): { out: string } | { error: string } => {
-    if (!kido) return { error: "kido is not on PATH" };
-    try {
-      const out = execFileSync(kido, args, {
-        // Always a pipe, empty when there is nothing to send: the child
-        // sees EOF at once, as it would with an ignored stdin.
-        input: opts.input ?? "",
-        stdio: ["pipe", "pipe", "pipe"],
-        encoding: "utf8",
-        timeout: opts.timeoutMs,
+  // runKido is how every tool shells out: via spawn, awaited but never
+  // blocking the event loop. It used to run execFileSync, which parks the
+  // whole process for as long as kido takes - up to 5s for a slow ask or
+  // message - and while parked this process's own inbox listener cannot
+  // accept a connection at all. Composed with the 2s inboxTimeout on the
+  // sending side (cmd/kido/inbox.go), a peer's `kido message` arriving in
+  // that window would connect, write, and then hit its own read deadline
+  // with the message never acknowledged - lost, not merely delayed. See
+  // AGENTS.md and docs/subagents-plan.md's Spawning section, which is what
+  // multiplies inbox traffic and made this worth fixing now.
+  //
+  // kido resolves both the caller (via $TMUX_PANE) and its tmux session
+  // from the inherited environment. On failure it yields the line kido
+  // printed on stderr rather than node's "Command failed", because that
+  // line - "no agent session matches ...", "ask refused" - is the only
+  // part a model can act on. Every outcome is a value, so no tool can leak
+  // an exception into pi.
+  //
+  // Making this non-blocking reopens a window the cycle-refusal bookkeeping
+  // used to rely on being closed: see pendingOutbound's own comment and
+  // hasAskOutstandingTo above for why an inbound ask dispatched while an
+  // outbound send is still in flight is still handled correctly.
+  const runKido = (args: string[], opts: { input?: string; timeoutMs: number }): Promise<RunKidoResult> => {
+    if (!kido) return Promise.resolve({ error: "kido is not on PATH" });
+    return new Promise((resolve) => {
+      const child = spawn(kido as string, args, { stdio: ["pipe", "pipe", "pipe"] });
+      // Whoever gets there first wins, and the losers are no-ops: the
+      // timeout branch kills the child, so "close" fires after it and
+      // calls this again. Both halves are already idempotent - clearing a
+      // cleared timer does nothing, and a settled promise ignores a second
+      // resolve - so no "settled" flag is needed to keep them that way.
+      const finish = (result: RunKidoResult): void => {
+        clearTimeout(timer);
+        resolve(result);
+      };
+      const timer = setTimeout(() => {
+        child.kill();
+        // timedOut: true marks this outcome as unknown, not failed - kido
+        // may have already done its work (created a window, sent a
+        // message) and simply not answered in time. A caller that treats
+        // this the same as a definite failure (an exit code, ENOENT) can
+        // end up cleaning up after something that actually succeeded -
+        // see spawn_subagent's task-file handling.
+        finish({ error: `kido ${args[0]} timed out after ${opts.timeoutMs}ms`, timedOut: true });
+      }, opts.timeoutMs);
+      timer.unref(); // a hung kido must never hold pi's event loop open
+
+      const stdout: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      child.stdout?.on("data", (c: Buffer) => stdout.push(c));
+      child.stderr?.on("data", (c: Buffer) => stderr.push(c));
+      child.on("error", (err) => finish({ error: err instanceof Error ? err.message : String(err) }));
+      child.on("close", (code) => {
+        if (code === 0) {
+          finish({ out: Buffer.concat(stdout).toString("utf8").trim() });
+        } else {
+          const errText = Buffer.concat(stderr).toString("utf8").trim();
+          finish({ error: errText || `kido ${args[0]} exited with code ${code}` });
+        }
       });
-      return { out: out.trim() };
-    } catch (err) {
-      const stderr = (err as { stderr?: Buffer | string })?.stderr;
-      return { error: stderr ? stderr.toString().trim() : err instanceof Error ? err.message : String(err) };
-    }
+      // A child that exits before reading all of stdin (or exits and closes
+      // its end early) turns the write into EPIPE; unhandled, that is an
+      // uncaught exception on this process, not just a failed tool call.
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(opts.input ?? "");
+    });
   };
 
   // Both list_agents and ask_agent need the same list, read the same way -
   // and kido printing something unparseable is the same kind of failure to
   // them as kido not running at all, so it comes back as one.
-  const fetchAgents = (): { agents: AgentInfo[] } | { error: string } => {
-    const res = runKido(["agents", "--json"], { timeoutMs: 2000 });
+  const fetchAgents = async (): Promise<{ agents: AgentInfo[] } | { error: string }> => {
+    const res = await runKido(["agents", "--json"], { timeoutMs: 2000 });
     if ("error" in res) return res;
     try {
       return { agents: res.out ? JSON.parse(res.out) : [] };
@@ -598,7 +690,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "list_agents() - see every agent in this tmux session",
     parameters: listAgentsParams,
     async execute() {
-      const res = fetchAgents();
+      const res = await fetchAgents();
       // Any failure reads as an empty session rather than an error: there
       // is nothing the model can do about it, and "[]" is honest about
       // what it now knows.
@@ -665,7 +757,7 @@ export default function (pi: ExtensionAPI) {
       // would otherwise be parsed as a kido flag and reported as "flag
       // provided but not defined" rather than as no such agent.
       args.push("--", params.to);
-      const res = runKido(args, { input: params.message, timeoutMs: 5000 });
+      const res = await runKido(args, { input: params.message, timeoutMs: 5000 });
       if ("error" in res) {
         return { content: [{ type: "text", text: `could not message ${params.to}: ${res.error}` }], details: {} };
       }
@@ -706,7 +798,7 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text", text: "kido is not available; cannot ask other agents" }], details: {} };
       }
 
-      const listed = fetchAgents();
+      const listed = await fetchAgents();
       if ("error" in listed) {
         return { content: [{ type: "text", text: `could not list agents: ${listed.error}` }], details: {} };
       }
@@ -736,6 +828,34 @@ export default function (pi: ExtensionAPI) {
       if (!target.canMessage) {
         return {
           content: [{ type: "text", text: `${target.name || target.id} has no inbox; an ask cannot work over a paste, there is no way back` }],
+          details: {},
+        };
+      }
+
+      // inbox may have gone null - session_shutdown, or a /reload whose
+      // rebind failed - while the fetchAgents() call above was still in
+      // flight: that fetch is now async, so this function can be suspended
+      // right through a teardown that runs its own abandonPending (which
+      // can only abandon waiters already in pendingOutbound) before
+      // resuming here. Checked synchronously, with no await between the
+      // check and pendingOutbound.set below, so there is no further gap
+      // for abandonPending to miss: either this runs before that
+      // teardown's synchronous prefix (inbox nulled, abandonPending
+      // called) and the waiter it registers is caught by that
+      // abandonPending call, or it runs after and sees the null inbox
+      // already in place. A null inbox is the whole test: a shutdown nulls
+      // it before its first await, so there is no moment at which this
+      // session is on its way out but still looks open. A momentarily-null
+      // inbox during a reload that goes on to rebind successfully is
+      // refused the same conservative way - nothing here knows the rebind
+      // will succeed, and it is safer to refuse an ask than to register a
+      // waiter that might sit past a shutdown nobody told it about.
+      if (!inbox) {
+        return {
+          content: [{
+            type: "text",
+            text: `this session's inbox is unavailable; no reply from ${params.to} can be waited for`,
+          }],
           details: {},
         };
       }
@@ -770,7 +890,7 @@ export default function (pi: ExtensionAPI) {
       // one, per AGENTS.md's addressing-mismatch defect. Passing the id
       // already settled on removes the second resolution instead of
       // hoping the two rules keep agreeing.
-      const sent = runKido(["message", "--kind", "ask", "--id", id, "--", target.id], {
+      const sent = await runKido(["message", "--kind", "ask", "--id", id, "--", target.id], {
         input: params.question,
         timeoutMs: 5000,
       });
@@ -808,10 +928,116 @@ export default function (pi: ExtensionAPI) {
     },
   };
 
+  // safeSubagentName generates a name when spawn_subagent's caller does
+  // not give one: spawnCmd (cmd/kido/spawn.go) puts it on a tmux command
+  // line, so it must avoid the same characters tmuxConfUnsafe rejects
+  // there - trivially true of hex, but stated so nobody "improves" this
+  // into something that reads better and stops being safe.
+  const safeSubagentName = (): string => `sub-${randomUUID().slice(0, 8)}`;
+
+  const spawnSubagentParams = Type.Object(
+    {
+      task: Type.String({ description: "The task to give the new subagent, delivered as its first message." }),
+      name: Type.Optional(
+        Type.String({ description: "A name for the subagent's window and session; a name is generated when omitted." }),
+      ),
+      model: Type.Optional(Type.String({ description: "Model for the subagent to run." })),
+      tools: Type.Optional(
+        Type.Array(Type.String(), {
+          description: "Tool names the subagent may use - its capability ceiling. Omit to leave it at pi's default set.",
+        }),
+      ),
+    },
+    { additionalProperties: false },
+  );
+  const spawnSubagentTool: ToolDefinition<typeof spawnSubagentParams> = {
+    name: "spawn_subagent",
+    label: "Spawn Subagent",
+    description:
+      "Create a subagent in its own tmux window with a task. Returns its identity immediately without waiting for it to finish.",
+    promptSnippet: "spawn_subagent(task, name?, model?, tools?) - delegate a task to a new subagent in its own window",
+    parameters: spawnSubagentParams,
+    async execute(_toolCallId, params) {
+      if (!kido) {
+        return { content: [{ type: "text", text: "kido is not available; cannot spawn a subagent" }], details: {} };
+      }
+      const depth = (DEPTH ?? 0) + 1;
+      if (depth > MAX_SPAWN_DEPTH) {
+        return {
+          content: [{ type: "text", text: `already at the maximum subagent nesting depth (${MAX_SPAWN_DEPTH}); cannot spawn another` }],
+          details: {},
+        };
+      }
+      const name = params.name || safeSubagentName();
+
+      // The task is model-authored, arbitrary text - never a command-line
+      // argument, for the same reason kido spawn itself insists on a file
+      // (see AGENTS.md and docs/subagents-plan.md's Spawning section).
+      let taskFile: string;
+      try {
+        taskFile = join(tmpdir(), `kido-task-${process.pid}-${randomUUID()}.txt`);
+        writeFileSync(taskFile, params.task, { mode: 0o600 });
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `could not write task file: ${err instanceof Error ? err.message : String(err)}` }],
+          details: {},
+        };
+      }
+
+      const child = ["pi", "--name", name];
+      if (params.model) child.push("--model", params.model);
+      if (params.tools && params.tools.length > 0) child.push("--tools", params.tools.join(","));
+
+      const res = await runKido(
+        [
+          "spawn",
+          "--parent-pid",
+          String(process.pid),
+          "--parent-instance",
+          INSTANCE,
+          "--depth",
+          String(depth),
+          "--name",
+          name,
+          "--task-file",
+          taskFile,
+          "--",
+          ...child,
+        ],
+        { timeoutMs: SPAWN_TIMEOUT_MS },
+      );
+      if ("error" in res) {
+        // A definite failure (kido ran and said no, or never ran at all)
+        // means nothing was created, and the file is now nobody's to
+        // read - leaving it behind would just be a stray temp file with
+        // the task's own text in it. A timeout is not definite: kido may
+        // have finished creating the window just after this process gave
+        // up waiting, in which case a real child is about to read this
+        // file for its first task. Unlinking then would starve a live
+        // subagent with no way for anyone to notice; leaking the file is
+        // the smaller failure.
+        if (!res.timedOut) {
+          try {
+            unlinkSync(taskFile);
+          } catch {
+            // already gone
+          }
+        }
+        return { content: [{ type: "text", text: `could not spawn subagent: ${res.error}` }], details: {} };
+      }
+      const [windowID, paneID] = res.out.split(/\s+/);
+      return {
+        content: [{ type: "text", text: `spawned ${name} (window ${windowID}, pane ${paneID})` }],
+        details: { name, window: windowID, pane: paneID },
+      };
+    },
+  };
+
   pi.registerTool(listAgentsTool);
   pi.registerTool(setStatusTool);
   pi.registerTool(messageAgentTool);
   pi.registerTool(askAgentTool);
+  pi.registerTool(spawnSubagentTool);
 
   pi.on("session_start", async (_event, ctx) => {
     // Resource lookup belongs here, not in the factory: the factory may run in
@@ -825,7 +1051,7 @@ export default function (pi: ExtensionAPI) {
     // A session switch or /reload re-runs this: drop the old inbox first.
     stopInbox();
     try {
-      await startInbox(kido);
+      await startInbox();
     } catch {
       // no inbox; status reporting carries on regardless
     }
@@ -834,6 +1060,38 @@ export default function (pi: ExtensionAPI) {
     // One that failed leaves no inbox at all, and a waiter kept past that
     // would block on an answer that has nowhere to arrive.
     if (!inbox) abandonPending();
+
+    // Deliver the task kido spawn left us, the same way an inbox prompt
+    // is delivered - a subagent's first turn should read exactly like one
+    // handed to it by another agent, not like a special case. A /reload
+    // re-runs session_start, but by then the file is already unlinked, so
+    // this only ever fires once. A missing or unreadable file (no task,
+    // wrong permissions, someone already cleaned it up) is silently
+    // nothing to deliver, never a reason to fail startup.
+    //
+    // The unlink runs whether or not the read worked. Nothing ever reads
+    // this file again - session_start is the only reader and a /reload
+    // finds it gone - so a file left behind after a failed read is not a
+    // retry, just a stray temp file with a task's text in it that nobody
+    // will ever clean up. Unlinking needs write permission on the
+    // directory, not on the file, so the one case that actually leaks
+    // (a task file whose mode was cleared) is removable even though it
+    // was not readable.
+    if (TASK_FILE) {
+      let task = "";
+      try {
+        task = readFileSync(TASK_FILE, "utf8");
+      } catch {
+        // no task file, or it could not be read - nothing to deliver
+      }
+      try {
+        unlinkSync(TASK_FILE);
+      } catch {
+        // already gone, or not ours to remove
+      }
+      if (task.trim()) deliver(task);
+    }
+
     // Awaited before the first report so that report can carry --inbox.
     send("idle");
   });
@@ -879,12 +1137,40 @@ export default function (pi: ExtensionAPI) {
     send("idle", { ended: true });
   });
 
-  pi.on("session_shutdown", () => {
+  // sendCompletionNotice tells this session's parent, if it has one and
+  // kido still knows where it is, that this subagent is finishing. Only
+  // ever called from session_shutdown, before the removal report below:
+  // list_agents/kido agents must still resolve this session's own parent
+  // edge (self.parent) while it does, which needs this session's own
+  // record to still exist.
+  //
+  // A dead or unreachable parent - kido message failing however it fails,
+  // errInboxUnavailable or otherwise - is exactly the case docs/
+  // subagents-plan.md means by "nobody to tell": there is no distinct
+  // handling for it, the result is simply dropped, same as any other
+  // runKido failure here. Nothing in this function may throw past its own
+  // await, or a subagent's shutdown would fail on account of a parent
+  // that already exited.
+  const sendCompletionNotice = async (): Promise<void> => {
+    if (!kido || PARENT_INSTANCE === undefined) return; // not a subagent
+    const listed = await fetchAgents();
+    if ("error" in listed) return;
+    const self = listed.agents.find((a) => a.self);
+    if (!self || !self.parent) return; // kido no longer has a parent edge for this session
+    const text = `${title || "subagent"} finished` + (activity ? `: ${activity}` : "") + ` (${current})`;
+    await runKido(["message", "--kind", "notice", "--", self.parent], { input: text, timeoutMs: 3000 });
+  };
+
+  pi.on("session_shutdown", async () => {
+    // Both of these run before this handler's first await, so nothing else
+    // can run in between - which is what lets ask_agent's `!inbox` check
+    // stand in for "this session is shutting down".
     stopInbox();
     // Nothing is coming back this time, so no ask may be left waiting on
     // it - a tool call blocked on a five-minute timer is the last thing a
     // session on its way out should be holding.
     abandonPending();
+    await sendCompletionNotice();
     send("idle", { remove: true });
   });
 }

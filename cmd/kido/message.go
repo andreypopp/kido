@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -161,8 +162,33 @@ func message(args []string, stdin io.Reader) int {
 		payload = string(raw)
 	}
 
-	paste, err := deliverInboxOrPaste(target.Inbox, payload, target.Pane, text)
-	if err != nil {
+	// The advertised-protocol check above is not enough on its own: it
+	// reads a record written when the target was alive, and a target that
+	// advertised v1 and has since died still passes it. Only the delivery
+	// attempt finds the socket gone - and deliverInboxOrPaste answers that
+	// by pasting into the pane, which for an agent that is no longer there
+	// means typing the text at whatever shell the pane fell back to and
+	// pressing Enter. An ask, reply or notice must never take that path: it
+	// carries no kind and no id, and for a notice (the completion notice a
+	// subagent sends its parent, docs/subagents-plan.md's Lifecycle section)
+	// the text is model-authored, so the paste is a command line the model
+	// wrote. The plan's rule for that case is that there is nobody to tell,
+	// so say so and stop.
+	var paste bool
+	if kind != msg.KindMessage {
+		if err := deliverInbox(target.Inbox, payload); err != nil {
+			// errAskRefused and every post-connection failure keep their own
+			// wording: "ask refused" in particular is what pi's ask_agent
+			// reads back off stderr to tell a cycle refusal from a target
+			// that simply is not there.
+			if errors.Is(err, errInboxUnavailable) {
+				fmt.Fprintf(os.Stderr, "kido message: %s is not listening on its inbox; a %s cannot fall back to a paste\n", targetLabel(target), kind)
+			} else {
+				fmt.Fprintln(os.Stderr, "kido message:", err)
+			}
+			return 1
+		}
+	} else if paste, err = deliverInboxOrPaste(target.Inbox, payload, target.Pane, text); err != nil {
 		fmt.Fprintln(os.Stderr, "kido message:", err)
 		return 1
 	}

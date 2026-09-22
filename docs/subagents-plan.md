@@ -292,7 +292,7 @@ release the edge.
 ## Spawning
 
 ```
-kido spawn --parent-pid P --depth N --name NAME --task-file F [-- pi ...]
+kido spawn --parent-pid P --parent-instance I --name NAME --task-file F [--depth N] [-- pi ...]
 ```
 
 which runs:
@@ -300,9 +300,25 @@ which runs:
 ```
 tmux new-window -d -t <session> -n <name> -c <parent cwd> \
      -e KIDO_AGENT_PARENT_PID=P -e KIDO_AGENT_PARENT_INSTANCE=I \
-     -e KIDO_AGENT_DEPTH=N -e KIDO_AGENT_TASK_FILE=F \
+     -e KIDO_AGENT_DEPTH=<derived> -e KIDO_AGENT_TASK_FILE=F \
      -PF '#{window_id}' -- pi --name <name> [--model M] [--tools ...]
 ```
+
+`--depth` above is **not** where `<derived>` comes from. `--depth` is a
+claim about the caller's own depth, and a caller already at the ceiling
+could pass a smaller one and spawn without limit - which would defeat the
+ceiling entirely, since it would only ever be as real as the caller chose
+to make it. `kido spawn` derives the child's depth itself, as one more
+than the depth in the caller's own last-reported `state.Session` record
+(found via `$TMUX_PANE`), and refuses when that exceeds `maxDepth`. A
+caller with no record at all - a human running `kido spawn` by hand, or an
+agent that has not reported yet - is treated as depth 0, the same trust
+decision `state.Load` already makes for every other same-uid record (see
+Trust, above); it can only make a spawn's ceiling stricter, never looser.
+`--depth`, if given, is still accepted (pi's extension sends it, for its
+own early refusal - see below) but is never consulted for the child's
+actual depth, and an explicit negative value is refused rather than read
+as an omission.
 
 - `-e` is required: `new-window` runs the command with the server's and
   session's environment, **not** the caller's, so nothing is inherited.
@@ -381,7 +397,7 @@ kido agents [--session S] [--json]
 kido agent-status --activity TEXT --instance ID --parent-pid P --parent-instance ID --depth N --model NAME --protocol V
 kido message <to> [-]            # text on stdin
 kido ask <to> [--timeout D] [-]
-kido spawn --parent-pid P --depth N --name N --task-file F
+kido spawn --parent-pid P --parent-instance I --name N --task-file F [--depth N]
 kido close-window <id>           # linger helper, skips a focused window
 kido reap                        # cancel orphaned subagents
 ```
@@ -400,7 +416,8 @@ Unit:
 - `TestResolveTargetAmbiguous` — name/prefix precedence and the error
 - `TestAskRefusesAncestor` / `TestAskRefusesCycle` — and that a failed
   reply leaves the edge
-- `TestSpawnRefusedAtMaxDepth`
+- `TestSpawnRefusedAtMaxDepth`, and that a caller at the ceiling cannot
+  escape it by passing a smaller `--depth`
 - `TestSpawnRejectsUnsafeWindowName`
 - `TestParentLivenessSurvivesSessionIdChange` — the `/reload` case
 

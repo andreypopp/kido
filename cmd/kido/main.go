@@ -127,6 +127,9 @@ func main() {
 			os.Exit(prompt(os.Args[2:], os.Stdin))
 		case "message":
 			os.Exit(message(os.Args[2:], os.Stdin))
+		case "spawn":
+			dispatch("spawn", func() error { return spawnCmd(os.Args[2:]) })
+			return
 		}
 	}
 

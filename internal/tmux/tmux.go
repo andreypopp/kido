@@ -464,3 +464,45 @@ func SendPrompt(pane, text string) error {
 	_, err := run("send-keys", "-t", pane, "Enter")
 	return err
 }
+
+// newWindowArgs builds the new-window invocation NewWindow runs, split out
+// so it can be checked without a real tmux server: the flags are what a
+// subagent's window depends on (see docs/subagents-plan.md's Spawning
+// section and AGENTS.md), and getting one wrong is silent until a child
+// starts in the wrong place or with a bare environment.
+//
+//   - -d: the caller's own turn is not yanked to the new window.
+//   - -c: without it the new pane starts in the session's default
+//     directory, not the caller's own; snapshot.go relies on the same flag
+//     for the same reason.
+//   - -e: new-window otherwise runs command with the server's and
+//     session's own environment, not the caller's, so nothing - a child's
+//     parent identity, its task file - arrives any other way.
+//   - -P -F: the new ids come back synchronously, with no follow-up query.
+func newWindowArgs(session, name, cwd string, env, command []string) []string {
+	args := []string{
+		"new-window", "-d", "-P", "-F", "#{window_id}:#{pane_id}",
+		"-t", session + ":", "-n", name, "-c", cwd,
+	}
+	for _, kv := range env {
+		args = append(args, "-e", kv)
+	}
+	return append(args, command...)
+}
+
+// NewWindow creates a detached window in session running command (each
+// element execed directly, per newWindow's own comment in
+// e2e/harness_test.go - a single-word command instead runs through the
+// pane's shell), in cwd, with env (each "KEY=VALUE") set for that command
+// alone. It returns the new window and pane ids from the one call.
+func NewWindow(session, name, cwd string, env, command []string) (string, string, error) {
+	out, err := run(newWindowArgs(session, name, cwd, env, command)...)
+	if err != nil {
+		return "", "", err
+	}
+	windowID, paneID, ok := strings.Cut(out, ":")
+	if !ok {
+		return "", "", fmt.Errorf("new-window: unexpected output %q", out)
+	}
+	return windowID, paneID, nil
+}

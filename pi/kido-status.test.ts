@@ -14,7 +14,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
 import net from "node:net";
@@ -45,8 +45,11 @@ switch (args[0]) {
     process.stdout.write(file && fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "[]");
     process.exit(0);
   }
-  case "agent-status":
+  case "agent-status": {
+    const logFile = process.env.KIDO_FAKE_STATUS_LOG;
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
     process.exit(0);
+  }
   case "message": {
     let kind = "message", replyTo = "", id = "", to = null;
     for (let i = 1; i < args.length; i++) {
@@ -56,10 +59,33 @@ switch (args[0]) {
       else if (args[i] === "--") { to = args[i + 1]; break; }
     }
     const text = readStdin();
-    const logFile = process.env.KIDO_FAKE_LOG;
-    if (logFile) fs.appendFileSync(logFile, JSON.stringify({ kind, replyTo, id, to, text }) + "\\n");
-    process.stdout.write("delivered to " + to + " by inbox\\n");
-    process.exit(0);
+    const respond = () => {
+      const failed = !!(process.env.KIDO_FAKE_MESSAGE_FAIL_TO && to === process.env.KIDO_FAKE_MESSAGE_FAIL_TO);
+      // Logged either way: a test asserting a dropped delivery still needs
+      // to see the attempt was made, with the right kind and target.
+      const logFile = process.env.KIDO_FAKE_LOG;
+      if (logFile) fs.appendFileSync(logFile, JSON.stringify({ kind, replyTo, id, to, text, failed }) + "\\n");
+      if (failed) {
+        process.stderr.write("kido message: no agent listening on the inbox\\n");
+        process.exit(1);
+      }
+      process.stdout.write("delivered to " + to + " by inbox\\n");
+      process.exit(0);
+    };
+    const delay = Number(process.env.KIDO_FAKE_MESSAGE_DELAY_MS || 0);
+    if (delay > 0) setTimeout(respond, delay); else respond();
+    break;
+  }
+  case "spawn": {
+    const logFile = process.env.KIDO_FAKE_SPAWN_LOG;
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
+    const respond = () => {
+      process.stdout.write("@9 %9\\n");
+      process.exit(0);
+    };
+    const delay = Number(process.env.KIDO_FAKE_SPAWN_DELAY_MS || 0);
+    if (delay > 0) setTimeout(respond, delay); else respond();
+    break;
   }
   default:
     process.exit(1);
@@ -72,9 +98,28 @@ interface Fixture {
   inboxDir: string;
   setAgents(agents: unknown[]): void;
   setInboxFail(fail: boolean): void;
+  setMessageFailTo(to: string | undefined): void;
   selfInboxPath(): string;
-  lastLogFor(to: string, kind?: string): { id: string; replyTo: string; to: string; text: string } | undefined;
+  lastLogFor(to: string, kind?: string): { id: string; replyTo: string; to: string; text: string; failed?: boolean } | undefined;
+  lastSpawnArgs(): string[] | undefined;
+  lastStatusArgs(): string[] | undefined;
+  // waitForLog polls lastLogFor until it has a match (see pollUntil).
+  waitForLog(to: string, kind?: string, ms?: number): Promise<{ id: string; replyTo: string; to: string; text: string; failed?: boolean }>;
   restore(): void;
+}
+
+// jsonLines reads back one of the fake kido's JSONL logs; an empty file is
+// simply no entries. last is the most recent of them, or undefined.
+function jsonLines(file: string): any[] {
+  return readFileSync(file, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l));
+}
+
+function last<T>(items: T[]): T | undefined {
+  return items[items.length - 1];
 }
 
 function makeFixture(): Fixture {
@@ -86,23 +131,35 @@ function makeFixture(): Fixture {
   mkdirSync(inboxDir);
   const agentsFile = join(dir, "agents.json");
   const logFile = join(dir, "log.jsonl");
+  const spawnLogFile = join(dir, "spawn.jsonl");
+  const statusLogFile = join(dir, "status.jsonl");
   writeFileSync(agentsFile, "[]");
   writeFileSync(logFile, "");
+  writeFileSync(spawnLogFile, "");
+  writeFileSync(statusLogFile, "");
 
   const saved = {
     PATH: process.env.PATH,
     TMUX_PANE: process.env.TMUX_PANE,
     KIDO_FAKE_AGENTS_FILE: process.env.KIDO_FAKE_AGENTS_FILE,
     KIDO_FAKE_LOG: process.env.KIDO_FAKE_LOG,
+    KIDO_FAKE_SPAWN_LOG: process.env.KIDO_FAKE_SPAWN_LOG,
+    KIDO_FAKE_STATUS_LOG: process.env.KIDO_FAKE_STATUS_LOG,
     KIDO_FAKE_INBOX_DIR: process.env.KIDO_FAKE_INBOX_DIR,
     KIDO_FAKE_INBOX_FAIL: process.env.KIDO_FAKE_INBOX_FAIL,
+    KIDO_FAKE_MESSAGE_FAIL_TO: process.env.KIDO_FAKE_MESSAGE_FAIL_TO,
+    KIDO_FAKE_MESSAGE_DELAY_MS: process.env.KIDO_FAKE_MESSAGE_DELAY_MS,
   };
   process.env.PATH = binDir + delimiter + (saved.PATH ?? "");
   process.env.TMUX_PANE = "%1";
   process.env.KIDO_FAKE_AGENTS_FILE = agentsFile;
   process.env.KIDO_FAKE_LOG = logFile;
+  process.env.KIDO_FAKE_SPAWN_LOG = spawnLogFile;
+  process.env.KIDO_FAKE_STATUS_LOG = statusLogFile;
   process.env.KIDO_FAKE_INBOX_DIR = inboxDir;
   delete process.env.KIDO_FAKE_INBOX_FAIL;
+  delete process.env.KIDO_FAKE_MESSAGE_FAIL_TO;
+  delete process.env.KIDO_FAKE_MESSAGE_DELAY_MS;
 
   return {
     agentsFile,
@@ -115,20 +172,28 @@ function makeFixture(): Fixture {
       if (fail) process.env.KIDO_FAKE_INBOX_FAIL = "1";
       else delete process.env.KIDO_FAKE_INBOX_FAIL;
     },
-    // Named after this test process's own pid, exactly as askInboxPath
-    // does in kido-status.ts - the same reason a /reload rebinds at the
-    // same path.
+    setMessageFailTo(to) {
+      if (to) process.env.KIDO_FAKE_MESSAGE_FAIL_TO = to;
+      else delete process.env.KIDO_FAKE_MESSAGE_FAIL_TO;
+    },
+    lastSpawnArgs() {
+      return last(jsonLines(spawnLogFile));
+    },
+    lastStatusArgs() {
+      return last(jsonLines(statusLogFile));
+    },
+    // Named after this test process's own pid, exactly as startInbox asks
+    // kido for - the same reason a /reload rebinds at the same path.
     selfInboxPath() {
       return join(inboxDir, String(process.pid) + ".sock");
     },
     lastLogFor(to, kind) {
-      const lines = readFileSync(logFile, "utf8")
-        .trim()
-        .split("\n")
-        .filter(Boolean)
-        .map((l) => JSON.parse(l));
-      const matches = lines.filter((l) => l.to === to && (!kind || l.kind === kind));
-      return matches[matches.length - 1];
+      return last(jsonLines(logFile).filter((l) => l.to === to && (!kind || l.kind === kind)));
+    },
+    async waitForLog(to, kind, ms = 2000) {
+      let found: any;
+      await pollUntil(() => (found = this.lastLogFor(to, kind)) !== undefined, ms, `a log entry for ${JSON.stringify({ to, kind })}`);
+      return found;
     },
     restore() {
       for (const [k, v] of Object.entries(saved)) {
@@ -136,6 +201,16 @@ function makeFixture(): Fixture {
         else process.env[k] = v;
       }
       rmSync(dir, { recursive: true, force: true });
+      // spawn_subagent's task file goes in the OS temp directory, not in
+      // this fixture's own, because that is where a real subagent's does -
+      // and the fake `kido spawn` above, unlike a real child, never reads
+      // or unlinks it. Left alone, every run of this suite would add one
+      // per spawn to the user's /tmp for good. Matched on this process's
+      // own pid, which is what kido-status.ts puts in the name, so a
+      // concurrently running suite's files are not touched.
+      for (const f of readdirSync(tmpdir())) {
+        if (f.startsWith(`kido-task-${process.pid}-`)) rmSync(join(tmpdir(), f), { force: true });
+      }
     },
   };
 }
@@ -176,6 +251,43 @@ async function startSession(fx: Fixture, sessionId?: string) {
   (kidoStatus as (pi: unknown) => void)(pi);
   await emit("session_start", {}, fakeCtx(sessionId));
   return { tools, delivered, emit, inboxPath: fx.selfInboxPath() };
+}
+
+// startSessionUsing is startSession but for a factory that is not the
+// module's static default export - needed by tests that must vary
+// KIDO_AGENT_TASK_FILE or KIDO_AGENT_PARENT_INSTANCE, which kido-status.ts
+// reads once, at module scope, when it is first imported. freshKidoStatus
+// below reimports the module under a cache-busting specifier so those
+// module-scope constants are recomputed from whatever the environment
+// holds at that moment.
+async function startSessionUsing(factory: (pi: unknown) => void, fx: Fixture, sessionId?: string) {
+  const { pi, tools, delivered, emit } = createFakePi();
+  factory(pi);
+  await emit("session_start", {}, fakeCtx(sessionId));
+  return { tools, delivered, emit, inboxPath: fx.selfInboxPath() };
+}
+
+let freshImportCounter = 0;
+async function freshKidoStatus(): Promise<(pi: unknown) => void> {
+  const mod = await import(`./kido-status.ts?fresh=${process.pid}-${freshImportCounter++}`);
+  return mod.default as (pi: unknown) => void;
+}
+
+// pollUntil waits for a condition to become true, polling rather than
+// listening for anything: several assertions below observe work this
+// extension does fire-and-forget (a detached, unref'd status report) or
+// asynchronously via a real subprocess (runKido shells out via spawn, not
+// execFileSync), so there is no promise to await and no event to subscribe
+// to - only a file on disk to keep checking. In particular ask_agent's
+// execute() can return control to its caller before the fake kido
+// subprocess for the outbound send has appended its log entry.
+async function pollUntil(cond: () => boolean, ms = 2000, what = "a condition"): Promise<void> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    if (cond()) return;
+    if (Date.now() > deadline) throw new Error(`timed out after ${ms}ms waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
 }
 
 // sendToInbox plays a peer's half of the wire protocol: connect, write the
@@ -237,11 +349,11 @@ test("reply correlation: a foreign replyTo settles nothing and is surfaced; the 
     const ask = s.tools.get("ask_agent");
 
     const p1 = ask.execute("c1", { to: "peer-a", question: "q1" });
-    const ask1 = fx.lastLogFor("peer-a", "ask");
+    const ask1 = await fx.waitForLog("peer-a", "ask");
     assert.ok(ask1?.id, "ask 1 was sent with an id");
 
     const p2 = ask.execute("c2", { to: "peer-b", question: "q2" });
-    const ask2 = fx.lastLogFor("peer-b", "ask");
+    const ask2 = await fx.waitForLog("peer-b", "ask");
     assert.ok(ask2?.id && ask2.id !== ask1!.id, "ask 2 has its own id");
 
     const foreign = await sendToInbox(s.inboxPath, envelope("reply", "stray answer", { replyTo: "nope", from: { session: "someone-else" } }));
@@ -305,6 +417,10 @@ test("cycle refusal: an inbound ask from a session we're already asking is refus
     const s = await startSession(fx);
     const ask = s.tools.get("ask_agent");
     const p1 = ask.execute("c1", { to: "peer-a", question: "outbound q" }); // holds an edge to peer-a
+    // pendingOutbound.set runs strictly before the send that produces this
+    // log entry (see its own comment in kido-status.ts), so waiting for the
+    // entry is a safe way to know the edge is already registered.
+    await fx.waitForLog("peer-a", "ask");
 
     const refused = await sendToInbox(s.inboxPath, envelope("ask", "are you free?", { id: "inbound-1", from: { session: "peer-a", name: "peer-a" } }));
     assert.equal(refused, "refused");
@@ -331,7 +447,7 @@ test("the cycle edge is released by a correlated reply or a timeout, but not by 
     const ask = s.tools.get("ask_agent");
 
     const p1 = ask.execute("c1", { to: "peer-a", question: "q1" });
-    const sent1 = fx.lastLogFor("peer-a", "ask");
+    const sent1 = await fx.waitForLog("peer-a", "ask");
     await sendToInbox(s.inboxPath, envelope("reply", "not it", { replyTo: "wrong-id", from: { session: "peer-a" } }));
     assert.equal(
       await sendToInbox(s.inboxPath, envelope("ask", "still holding?", { id: "in-1", from: { session: "peer-a" } })),
@@ -372,7 +488,14 @@ test("abandonPending: session_shutdown and a failed rebind settle a waiting ask 
       const p = ask.execute("c1", { to: "peer-a", question: "q" });
       await s.emit("session_shutdown");
       const out = await settlesWithin(p, 500);
-      assert.match(out.content[0].text, /inbox closed/);
+      // Which message comes back depends on whether ask_agent had already
+      // registered its waiter (fetchAgents is async - see the `!inbox`
+      // check in kido-status.ts) by the time
+      // session_shutdown ran: either abandonPending caught an
+      // already-registered waiter, or the check turned away a
+      // registration that had not happened yet. Both are "gave up because
+      // of shutdown", never "will try again later".
+      assert.match(out.content[0].text, /inbox closed|inbox is unavailable/);
       assert.doesNotMatch(out.content[0].text, /will still arrive/, "must not promise a reply that can no longer land");
     }
 
@@ -384,7 +507,7 @@ test("abandonPending: session_shutdown and a failed rebind settle a waiting ask 
       fx.setInboxFail(true);
       await s.emit("session_start", {}, fakeCtx());
       const out = await settlesWithin(p, 500);
-      assert.match(out.content[0].text, /inbox closed/);
+      assert.match(out.content[0].text, /inbox closed|inbox is unavailable/);
       fx.setInboxFail(false);
     }
 
@@ -395,7 +518,7 @@ test("abandonPending: session_shutdown and a failed rebind settle a waiting ask 
       const s = await startSession(fx);
       const ask = s.tools.get("ask_agent");
       const p = ask.execute("c1", { to: "peer-a", question: "q" });
-      const sent = fx.lastLogFor("peer-a", "ask");
+      const sent = await fx.waitForLog("peer-a", "ask");
       await s.emit("session_start", {}, fakeCtx());
       const resp = await sendToInbox(s.inboxPath, envelope("reply", "still here", { replyTo: sent!.id, from: { session: "peer-a" } }));
       assert.equal(resp, "ok");
@@ -432,6 +555,298 @@ test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 r
 
     await sendToInbox(s.inboxPath, envelope("ping", "unknown kind text", { from }));
     assert.ok(s.delivered.some((d) => d.text.includes("unrecognised message kind") && d.text.includes("unknown kind text")));
+  } finally {
+    fx.restore();
+  }
+});
+
+// argAfter reads the value following a flag in an argv-shaped array, the
+// same way the args a fake kido logged are read back apart.
+function argAfter(args: string[] | undefined, flag: string): string | undefined {
+  if (!args) return undefined;
+  const i = args.indexOf(flag);
+  return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
+}
+
+test("spawn_subagent writes a task file and calls kido spawn with its own identity and depth+1, without waiting for the child", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    // send()'s agent-status report is fire-and-forget (a detached, unref'd
+    // subprocess), so there is nothing to await here but the file it
+    // eventually writes.
+    await pollUntil(() => fx.lastStatusArgs() !== undefined);
+    const ownInstance = argAfter(fx.lastStatusArgs(), "--instance");
+    assert.ok(ownInstance, "session_start reported its own --instance");
+
+    const spawn = s.tools.get("spawn_subagent");
+    const result = await spawn.execute("c1", { task: "go do the thing", name: "kid-1" });
+    assert.match(result.content[0].text, /kid-1/);
+
+    const spawnArgs = fx.lastSpawnArgs();
+    assert.ok(spawnArgs, "kido spawn was invoked");
+    assert.equal(argAfter(spawnArgs, "--parent-pid"), String(process.pid), "passes its own pid as --parent-pid");
+    assert.equal(argAfter(spawnArgs, "--parent-instance"), ownInstance, "passes its own --instance as --parent-instance");
+    assert.equal(argAfter(spawnArgs, "--depth"), "1", "a root agent (no KIDO_AGENT_DEPTH) spawns at depth+1 = 1");
+    assert.equal(argAfter(spawnArgs, "--name"), "kid-1");
+
+    const taskFile = argAfter(spawnArgs, "--task-file");
+    assert.ok(taskFile, "a task file path was passed");
+    assert.equal(readFileSync(taskFile!, "utf8"), "go do the thing", "the task's own text goes in the file, not on the command line");
+
+    const sepIndex = spawnArgs!.indexOf("--");
+    assert.ok(sepIndex >= 0, "the child command follows --");
+    assert.deepEqual(spawnArgs!.slice(sepIndex + 1), ["pi", "--name", "kid-1"]);
+  } finally {
+    fx.restore();
+  }
+});
+
+test("spawn_subagent passes --model and --tools through to the child's pi invocation, and generates a safe name when omitted", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const spawn = s.tools.get("spawn_subagent");
+    const result = await spawn.execute("c1", { task: "t", model: "anthropic/sonnet", tools: ["read", "bash"] });
+
+    const spawnArgs = fx.lastSpawnArgs()!;
+    const command = spawnArgs.slice(spawnArgs.indexOf("--") + 1);
+    assert.equal(command[0], "pi");
+    assert.equal(argAfter(command, "--model"), "anthropic/sonnet");
+    assert.equal(argAfter(command, "--tools"), "read,bash", "--tools is the capability ceiling handed to the child, comma-joined");
+
+    const name = argAfter(spawnArgs, "--name");
+    assert.ok(name, "a name was generated");
+    assert.doesNotMatch(name!, /['"$#`\n\r]/, "a generated name avoids the characters tmux's own parsing cannot survive");
+    assert.match(result.content[0].text, new RegExp(name!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  } finally {
+    fx.restore();
+  }
+});
+
+test("spawn_subagent is refused at the depth ceiling without writing a task file or calling kido", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const saved = process.env.KIDO_AGENT_DEPTH;
+    process.env.KIDO_AGENT_DEPTH = "2"; // already a subagent at the ceiling; +1 would be 3
+    try {
+      const factory = await freshKidoStatus();
+      const s = await startSessionUsing(factory, fx);
+      const spawn = s.tools.get("spawn_subagent");
+      const result = await spawn.execute("c1", { task: "t" });
+      assert.match(result.content[0].text, /maximum subagent nesting depth/);
+      assert.equal(fx.lastSpawnArgs(), undefined, "kido spawn must not be invoked for a refused depth");
+    } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_DEPTH;
+      else process.env.KIDO_AGENT_DEPTH = saved;
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+test("spawn_subagent does not unlink the task file when kido spawn merely times out", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const savedTimeout = process.env.KIDO_SPAWN_TIMEOUT_MS;
+    process.env.KIDO_SPAWN_TIMEOUT_MS = "300";
+    process.env.KIDO_FAKE_SPAWN_DELAY_MS = "2000"; // longer than the timeout: an in-flight, not a failed, spawn
+    try {
+      const factory = await freshKidoStatus();
+      const s = await startSessionUsing(factory, fx);
+      const spawn = s.tools.get("spawn_subagent");
+      const result = await spawn.execute("c1", { task: "go do the thing", name: "kid-1" });
+      assert.match(result.content[0].text, /timed out/);
+
+      const spawnArgs = fx.lastSpawnArgs();
+      assert.ok(spawnArgs, "kido spawn was invoked before the timeout fired");
+      const taskFile = argAfter(spawnArgs, "--task-file")!;
+      assert.equal(
+        existsSync(taskFile),
+        true,
+        "a spawn that only timed out may have actually succeeded, so its task file must not be deleted out from under a live child",
+      );
+    } finally {
+      delete process.env.KIDO_FAKE_SPAWN_DELAY_MS;
+      if (savedTimeout === undefined) delete process.env.KIDO_SPAWN_TIMEOUT_MS;
+      else process.env.KIDO_SPAWN_TIMEOUT_MS = savedTimeout;
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+test("a child started with KIDO_AGENT_TASK_FILE delivers its task as the first message and unlinks the file", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const taskFile = join(fx.inboxDir, "..", "task.txt");
+    writeFileSync(taskFile, "do the important thing");
+
+    const saved = process.env.KIDO_AGENT_TASK_FILE;
+    process.env.KIDO_AGENT_TASK_FILE = taskFile;
+    try {
+      const factory = await freshKidoStatus();
+      const s = await startSessionUsing(factory, fx);
+      assert.ok(
+        s.delivered.some((d) => d.text === "do the important thing"),
+        "the task reached the model as a user message, the same way an inbox prompt is delivered",
+      );
+      assert.equal(existsSync(taskFile), false, "the task file is unlinked once delivered");
+    } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_TASK_FILE;
+      else process.env.KIDO_AGENT_TASK_FILE = saved;
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+// An unreadable task file is the one case that used to leak: the read
+// threw, the unlink was never reached, and a file with the task's own text
+// in it stayed in the temp directory for good, since session_start is its
+// only reader and never runs against it twice.
+test("an unreadable KIDO_AGENT_TASK_FILE delivers nothing, breaks nothing, and leaves nothing behind", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const taskFile = join(fx.inboxDir, "..", "unreadable-task.txt");
+    writeFileSync(taskFile, "a task nobody can read");
+    chmodSync(taskFile, 0o000);
+
+    const saved = process.env.KIDO_AGENT_TASK_FILE;
+    process.env.KIDO_AGENT_TASK_FILE = taskFile;
+    try {
+      const factory = await freshKidoStatus();
+      const s = await startSessionUsing(factory, fx);
+      assert.ok(!s.delivered.some((d) => d.text.length > 0), "nothing is delivered from a file that could not be read");
+      assert.equal(existsSync(taskFile), false, "the task file is unlinked even when the read failed");
+    } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_TASK_FILE;
+      else process.env.KIDO_AGENT_TASK_FILE = saved;
+      if (existsSync(taskFile)) chmodSync(taskFile, 0o600);
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+test("a missing KIDO_AGENT_TASK_FILE does not break session_start", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const saved = process.env.KIDO_AGENT_TASK_FILE;
+    process.env.KIDO_AGENT_TASK_FILE = join(fx.inboxDir, "..", "no-such-task.txt");
+    try {
+      const factory = await freshKidoStatus();
+      const s = await startSessionUsing(factory, fx);
+      assert.ok(!s.delivered.some((d) => d.text.length > 0), "nothing spurious is delivered when the task file is absent");
+    } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_TASK_FILE;
+      else process.env.KIDO_AGENT_TASK_FILE = saved;
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+test("a completion notice addressed to a dead parent is dropped without failing session_shutdown", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "dead-parent", self: true, canMessage: true }]);
+    fx.setMessageFailTo("dead-parent");
+
+    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
+    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
+    try {
+      const factory = await freshKidoStatus();
+      const s = await startSessionUsing(factory, fx);
+      await assert.doesNotReject(s.emit("session_shutdown"), "a dead parent must never make shutdown itself fail");
+      const sent = fx.lastLogFor("dead-parent", "notice");
+      assert.ok(sent, "a notice to the parent was attempted");
+      assert.equal(sent!.failed, true, "the fake kido reports the same failure a dead parent's inbox would cause");
+    } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+test("a completion notice reaches a live parent", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+
+    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
+    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
+    try {
+      const factory = await freshKidoStatus();
+      const s = await startSessionUsing(factory, fx);
+      await s.emit("session_shutdown");
+      const sent = fx.lastLogFor("parent-x", "notice");
+      assert.ok(sent, "a notice was sent to the resolved parent");
+      assert.ok(sent!.text.length > 0, "the notice carries some result text");
+    } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+test("interleaving: an inbound ask from the same target is refused even while the outbound send to it is still in flight", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(twoPeers.slice(0, 2)); // self, peer-a
+    fx.setMessageFailTo(undefined);
+    process.env.KIDO_FAKE_MESSAGE_DELAY_MS = "800";
+    try {
+      const s = await startSession(fx);
+      const ask = s.tools.get("ask_agent");
+
+      // ask_agent's own kido message send is held for 800ms by the fake
+      // kido below - this only races at all because runKido shells out via
+      // spawn rather than execFileSync; the old blocking call could never
+      // let an inbound connection be dispatched before the send finished.
+      const p1 = ask.execute("c1", { to: "peer-a", question: "q1" });
+      // A fixed wait, not a poll on the agents-lookup subprocess's own log
+      // write: that write happens near the start of the child's short
+      // life, well before the parent's spawn 'close' event fires at the
+      // end of it, so watching for it is not a reliable proxy for
+      // "fetchAgents() has resolved in this process". 120ms comfortably
+      // covers one undelayed subprocess round trip (tens of ms, measured)
+      // while staying well short of the 800ms the outbound send itself is
+      // held up for below.
+      await new Promise((r) => setTimeout(r, 120));
+
+      // The load-bearing half of this test. "Refused" alone is true
+      // whether or not the send is still running: the waiter is not
+      // dropped until a reply or a timeout, so a runKido that blocked the
+      // event loop for the whole 800ms would finish the send first and
+      // still refuse afterwards - verified by making runKido
+      // execFileSync-based again, at which point everything below this
+      // line still passed. The fake kido appends its log entry in the same
+      // breath as its reply, so an absent entry here is the only available
+      // evidence that the send really had not finished yet.
+      const inFlight = fx.lastLogFor("peer-a", "ask") === undefined;
+      const refused = await sendToInbox(s.inboxPath, envelope("ask", "sneaky", { id: "race-1", from: { session: "peer-a" } }));
+      assert.ok(inFlight, "the outbound send must still be in flight when the inbound ask is dispatched, or this pins nothing");
+      assert.equal(refused, "refused", "the cycle edge is registered before the send resolves, not after");
+
+      const sent = await fx.waitForLog("peer-a", "ask");
+      await sendToInbox(s.inboxPath, envelope("reply", "done", { replyTo: sent.id, from: { session: "peer-a" } }));
+      const outcome = await p1;
+      assert.equal(outcome.content[0].text, "done");
+    } finally {
+      delete process.env.KIDO_FAKE_MESSAGE_DELAY_MS;
+    }
   } finally {
     fx.restore();
   }
