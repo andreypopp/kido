@@ -25,6 +25,11 @@ func TestStallRedrawsOnAQuietTick(t *testing.T) {
 	base := time.Unix(1700000000, 0)
 	clock := base
 
+	// state.Stalled now consults a wake marker on disk (see
+	// state.RecordPause); isolate it so this test's verdict cannot depend
+	// on whatever the machine running it happens to have recorded.
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+
 	saved := state.StallThreshold
 	state.StallThreshold = time.Minute
 	t.Cleanup(func() { state.StallThreshold = saved })

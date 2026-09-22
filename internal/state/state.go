@@ -176,8 +176,28 @@ func stallThresholdFromEnv(def time.Duration) time.Duration {
 // Never true for anything but Running: idle and waiting are legitimately
 // quiet, and a wedged agent by definition is not the one that would
 // report itself stalled, so kido has to notice on its own.
+//
+// The threshold is measured from s.TS, or from the last detected wake
+// (RecordPause), whichever is later. Without that, a machine that slept
+// wakes with every running agent's TS already older than StallThreshold -
+// wall clock advanced through the sleep, nothing else did - and every one
+// of them would read as stalled in the same tick, before any of them has
+// had a real chance to send a fresh heartbeat. Rebasing to the wake gives
+// each one a full StallThreshold from there instead; one that is
+// genuinely wedged is still caught, just one threshold later than usual.
+// The wake marker lives on disk rather than in any one process's memory
+// because this must read the same way from `kido agents` (a fresh process
+// per call, which ask_agent shells out to) as it does from the sidebar
+// that actually detected the pause.
 func Stalled(s Session, now time.Time) bool {
-	return s.Status == Running && now.Sub(s.TS) >= StallThreshold
+	if s.Status != Running {
+		return false
+	}
+	baseline := s.TS
+	if wake, ok, err := readPause(); err == nil && ok && wake.After(baseline) {
+		baseline = wake
+	}
+	return now.Sub(baseline) >= StallThreshold
 }
 
 // Dir returns the directory holding state files.

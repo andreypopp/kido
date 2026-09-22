@@ -818,23 +818,61 @@ always), not a copy of anything, so deleting the pointer would not free
 the space a cleanup would be chasing anyway. `internal/subrun`'s own
 package comment says so, so a later change does not "fix" it.
 
-## Known flaw: staleness cannot see a sleeping machine
+## Fixed: staleness could not see a sleeping machine
 
 Stall detection compares `now - TS` against a threshold, and `TS` is wall
 clock. A machine that sleeps advances wall clock without advancing any
-agent's work, so on wake every running agent is over the threshold at
-once, before any of them has missed a real heartbeat.
+agent's work, so on wake every running agent was over the threshold at
+once, before any of them had missed a real heartbeat.
 
 The sidebar's `!` is cosmetic and self-corrects, but `ask_agent` refuses
 to deliver to a stalled target, and the obvious next move a model makes
-on being told a child is stalled is to stop it. So a closed lid can
+on being told a child is stalled is to stop it. So a closed lid could
 cascade into killing a healthy subagent tree.
 
-The fix is to notice the gap rather than ignore it: kido polls every
-100ms, so a tick whose wall clock jumped minutes means the world paused,
-not that agents went quiet, and the staleness baseline should be rebased
-instead of every agent being declared stalled at once. A monotonic
-reference read alongside `TS` is enough to tell the two apart.
+**Detection.** `internal/ui`'s sidebar ticks continuously, so it is the
+only thing in kido positioned to notice a gap. `state.DetectPause(prev,
+now time.Time) bool` compares two readings taken across one tick: the
+wall clock's own account of the interval (`now.Round(0).Sub(prev.Round(0))`,
+which strips the monotonic reading first) against the monotonic clock's
+account of the same interval (`now.Sub(prev)`, which uses it - see the
+`time` package's own doc on monotonic clocks). On both macOS and Linux the
+monotonic reading does not advance across a suspend - confirmed against
+each runtime's own source rather than assumed: Linux's `nanotime` reads
+`CLOCK_MONOTONIC`, Darwin's reads `mach_absolute_time`, and both are
+defined not to include suspended time, unlike `CLOCK_BOOTTIME` or
+`mach_continuous_time`. A tick that was merely slow for a real, awake
+reason - a blocked tmux call, GC, scheduler jitter - advances both
+readings together, since the process kept running throughout it; only an
+actual suspend leaves the monotonic one behind. The wall account
+outrunning the monotonic one by more than `state.PauseSlack` (5s) is what
+`DetectPause` calls a sleep.
+
+**Rebasing.** `state.Stalled(s, now)` already compared `now` against
+`s.TS`; it now compares against `max(s.TS, wake)`, where `wake` is the
+most recent moment `DetectPause` fired. That gives every running agent a
+full `StallThreshold` measured from the wake rather than from its
+already-stale `TS` - not weaker, just later: an agent that really is
+wedged is still caught, one threshold after the machine woke instead of
+the instant it did. An agent that reports again after the wake is judged
+on its own fresh `TS` again, same as if nothing had ever paused.
+
+**Reaching `ask_agent`.** The wake moment can't live only in the
+sidebar's own memory: `ask_agent` shells out to `kido agents --json`, a
+fresh process per call, which has no tick of its own and so could never
+detect the gap itself. So `DetectPause` firing writes the wake to a small
+shared file in the state directory (`state.RecordPause`), and
+`state.Stalled` reads it back - which means both the sidebar and every
+fresh `kido agents` invocation, including the one `ask_agent` makes, see
+the same rebased verdict without pi's extension needing to know anything
+about sleep at all.
+
+**What this does not cover.** Detection needs a sidebar actually ticking
+at the moment the machine sleeps; a session with no sidebar running has
+nothing to notice the gap, and `ask_agent` against it is back to the
+original flaw. This is the same shape as every other gap in this
+document's Known-open and Open-risks sections: a real limit, written down
+rather than silently accepted.
 
 The same flaw applies to anything else that infers health from elapsed
 wall clock, and to any watcher that reports a stall through a channel

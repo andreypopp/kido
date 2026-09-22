@@ -488,7 +488,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// It is deliberately read before the tick is folded in, of the
 		// frame currently on screen.
 		pending := m.shellPending() || m.stallPending()
-		m.at = m.now()
+		now := m.now()
+		// A gap this wide between two ticks, with the wall clock having run
+		// ahead of the monotonic one, is the machine having slept through it
+		// (state.DetectPause) - not every running agent having gone quiet at
+		// once. Recording it rebases state.Stalled's baseline to the wake,
+		// on disk so `kido agents` (and so ask_agent, in a separate process)
+		// sees the same rebase this sidebar just detected.
+		if state.DetectPause(m.at, now) {
+			state.RecordPause(now) //nolint:errcheck // best effort; a failed write just costs one sidebar's detection reaching the others
+		}
+		m.at = now
 		m.snap = msg
 		m.track()
 		if !msg.same(was) || pending {
