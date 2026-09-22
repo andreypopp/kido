@@ -12,6 +12,7 @@ import (
 
 	"kido/internal/msg"
 	"kido/internal/state"
+	"kido/internal/subrun"
 	"kido/internal/tmux"
 )
 
@@ -110,6 +111,8 @@ func stopCmd(args []string) error {
 
 	// Both --force degrades below are the same act, and neither is an
 	// escalation: nothing was asked, so the pane is all there is.
+	// killTargetPane records the run's outcome itself, so neither degrade
+	// has to.
 	degrade := func() error {
 		if err := killTargetPane(target); err != nil {
 			return err
@@ -142,6 +145,19 @@ func stopCmd(args []string) error {
 		// turns out to be stale is functionally no inbox at all.
 		return degrade()
 	}
+
+	// Recorded as soon as the request is away, and not a line earlier:
+	// every refusal above returns with the run still running, and an
+	// outcome written before one of them would mark a live run stopped
+	// forever - O_EXCL means nothing can ever correct it. Written before
+	// the wait below rather than after it, because a child that does as it
+	// is asked reports Completed from its own session_shutdown a moment
+	// later, for a reason that was never really its own idea; RecordOutcome
+	// settles that race in favour of whoever wrote first, and the only
+	// thing between the send and here is an error comparison. A target
+	// with no run record (a root session, or one started outside kido
+	// spawn) has nowhere for this to land, and the error is ignored.
+	recordStopped(target)
 
 	deadline := time.Now().Add(stopEscalation)
 	for time.Now().Before(deadline) {
@@ -197,10 +213,40 @@ func killTargetPane(target state.Session) error {
 	if !ok {
 		return fmt.Errorf("no pane found for %s", targetLabel(target))
 	}
+	// D7: this guard cannot fire through kido stop today. controlTarget's
+	// resolveTarget refuses a target outside the caller's own tmux session,
+	// and the caller (a human at the CLI, or an agent - either way, self is
+	// its own pane in that same session) is never the target itself
+	// (target.Pane == self is refused earlier). So the caller's pane is
+	// always somewhere in the target's session: either in the target's own
+	// window, which makes LastPane false, or in a different window, which
+	// makes LastWindow false. One of the two always fails, so the && below
+	// is vacuously true - never both at once. It stays rather than being
+	// deleted because it is still correct defence against a future caller
+	// this file does not have yet (one that resolves a target without going
+	// through a live caller pane in the same session - e.g. a future
+	// cross-session admin path), and because killPane's own doc comment
+	// above promises this refusal exists; deleting it silently would make
+	// that comment a lie. docs/subagents-plan.md's Lifecycle section notes
+	// the same thing.
 	if tmux.LastWindow(panes, pane.WindowID) && tmux.LastPane(panes, pane.WindowID) {
 		return fmt.Errorf("%s is its session's only pane; killing it would destroy the session", targetLabel(target))
 	}
+	// After the refusal above, so a stop that did not happen leaves no
+	// outcome, and before the kill, so a child that catches the hangup and
+	// shuts down tidily cannot get Completed in first: kido stop is what
+	// ended this, whichever of stopCmd's two paths got here.
+	recordStopped(target)
 	return killPane(pane.PaneID)
+}
+
+// recordStopped marks target's run stopped, if it has one: target.ID is
+// a run id exactly when target is a subagent kido spawn created, since
+// that is the session id kido spawn told the child to use. Best-effort -
+// the common case is a target with no run record at all, and a failure to
+// write one is never a reason to fail a stop already under way.
+func recordStopped(target state.Session) {
+	subrun.RecordOutcome(target.ID, subrun.Outcome{Result: subrun.Stopped, At: time.Now()}) //nolint:errcheck // best effort
 }
 
 // controlTarget resolves interrupt/stop's argument the same way kido

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"kido/internal/state"
+	"kido/internal/subrun"
 	"kido/internal/tmux"
 )
 
@@ -35,6 +36,17 @@ func pane(paneID, windowID string) tmux.Pane {
 // marked is p with the @kido_subagent option kido spawn sets.
 func marked(p tmux.Pane) tmux.Pane {
 	p.Subagent = "parent=root-inst depth=1"
+	return p
+}
+
+// markedWithRun is marked, but with the "run=<id>" token a real kido
+// spawn always includes and tmux.SubagentRunID actually parses. Spelled
+// out rather than built with tmux.SubagentMark, so the parser is pinned
+// against a literal mark: building the input with the producer would let
+// both halves of the format drift together and still pass. The producer's
+// own half is pinned the same way, by TestSpawnMarksTheWindow.
+func markedWithRun(p tmux.Pane, runID string) tmux.Pane {
+	p.Subagent = "run=" + runID + " parent=root-inst depth=1"
 	return p
 }
 
@@ -157,4 +169,45 @@ func TestSweepReturnsAWindowOnce(t *testing.T) {
 		Instance: "child-inst", ParentInstance: "gone-inst"}
 	panes := []tmux.Pane{other, dead(marked(pane("%1", "@1")), 600)}
 	check(t, Sweep(panes, []state.Session{child}, now), []string{"@1"})
+}
+
+// TestSweepRecordsDiedForAWindowItCloses is docs/subagents-plan.md's Phase
+// 8: a run whose window a sweep collects with no outcome already
+// recorded is exactly the case Died exists for - the child never got a
+// chance to say anything about how it ended.
+func TestSweepRecordsDiedForAWindowItCloses(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	if err := subrun.Create("run-died", "x"); err != nil {
+		t.Fatal(err)
+	}
+	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-died"), 60)}
+	check(t, Sweep(panes, nil, now), []string{"@1"})
+
+	got, ok, err := subrun.ReadOutcome("run-died")
+	if err != nil || !ok {
+		t.Fatalf("ReadOutcome = %+v, %v, %v", got, ok, err)
+	}
+	if got.Result != subrun.Died {
+		t.Errorf("outcome = %q, want %q", got.Result, subrun.Died)
+	}
+}
+
+// TestSweepDoesNotOverwriteARecordedOutcome: a run that already told its
+// own story (Completed, say) must keep it even though the window a sweep
+// finds afterwards looks identical to one that just died.
+func TestSweepDoesNotOverwriteARecordedOutcome(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	if err := subrun.Create("run-done", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := subrun.RecordOutcome("run-done", subrun.Outcome{Result: subrun.Completed, At: now}); err != nil {
+		t.Fatal(err)
+	}
+	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-done"), 60)}
+	check(t, Sweep(panes, nil, now), []string{"@1"})
+
+	got, ok, err := subrun.ReadOutcome("run-done")
+	if err != nil || !ok || got.Result != subrun.Completed {
+		t.Errorf("outcome = %+v, %v, %v, want it to stay %q", got, ok, err, subrun.Completed)
+	}
 }

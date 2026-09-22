@@ -517,14 +517,25 @@ to go; if it has not, it kills the target's window instead of trusting
 that the request was received. Without this, `stop` is only reliable
 exactly when it is least needed.
 
-That kill refuses a session's only window, for the same reason
-`kido close-window` does: `kill-window` on the last window ends the
-session and detaches every client attached to it, which is never what
-stopping one agent asked for, and `--force` does not buy it. It does
-*not* refuse a focused window, and that difference is deliberate:
-`close-window` and the reap sweep act on their own initiative and must
-not take a screen away from a user who may be reading it, while a `stop`
-was asked for by name.
+That kill (of the target's own pane, not its window - killing the window
+would take every bystander pane sharing it down too) refuses a session's
+only pane, for the same reason `kido close-window` refuses a session's
+only window: destroying it ends the session and detaches every client
+attached to it, which is never what stopping one agent asked for, and
+`--force` does not buy it. It does *not* refuse a focused window, and
+that difference is deliberate: `close-window` and the reap sweep act on
+their own initiative and must not take a screen away from a user who may
+be reading it, while a `stop` was asked for by name.
+
+That guard cannot actually fire through `kido stop` today
+(`cmd/kido/control.go`'s `killTargetPane`, D7): `controlTarget` refuses a
+target outside the caller's own tmux session, and the caller's own pane
+is therefore always somewhere in that session, either in the target's
+window (so the target is not its window's only pane) or in another
+window (so the target's window is not the session's only one). It stays
+as defence for a future caller that reaches a target without a live
+caller pane in the same session, rather than being deleted just because
+nothing exercises it yet.
 
 **No inbox, no `stop` without saying so.** An agent with no inbox at all
 (Claude Code, or a pi whose socket bind failed) cannot be asked anything,
@@ -625,6 +636,9 @@ against a target that is never going to answer.
    select-row-to-switch.
 7. **Interrupt, stop, stall detection.** `kido interrupt`/`kido stop`,
    escalation, `state.Stalled`, `ask_agent` fail-fast.
+8. **A durable record of a run.** `internal/subrun`, `kido runs`, the run
+   id doubling as the child's own pi session id, and outcomes on every
+   exit path. See "A durable record of a run" below.
 
 ## Open risks
 
@@ -640,6 +654,191 @@ against a target that is never going to answer.
 - **Moving a child's window to another session** with `move-window` puts
   it outside the parent's scope and breaks `ask_agent`. Probably
   acceptable; say so explicitly rather than discovering it.
+- **A child that exits instantly loses its window.** `tmux.NewWindow`
+  sets `remain-on-exit` in a second tmux call, and the pane can be gone
+  first - measured at 20 out of 20 for `/bin/true`, so an unexec'able or
+  immediately-failing command is the *normal* case here, not the unlucky
+  one. The linger, the reap and the persisted `died` outcome all go with
+  it; the run record survives and still reads as `died` from
+  `EffectiveOutcome`'s guess. Every fix costs more than the gap - see
+  `NewWindow`'s own doc, which lists the three that were considered.
+- **A guessed `died` is not stable.** `EffectiveOutcome` asks whether
+  `Meta.PID` is alive, and `state.Alive` reports EPERM as alive; pids also
+  recycle, which a record that outlives a reboot invites. Both biases push
+  the same way - a long-finished run can read as `running` again - and
+  neither can invent a `died` for a run that is in fact alive.
+
+## A durable record of a run
+
+Today, when a subagent finishes, almost nothing survives it. The
+completion notice to the parent is a short lossy summary; `state.Load()`
+deletes the session record the moment its pid dies, so the subagent
+vanishes from `list_agents` with no trace; the window closes after its
+linger, taking its scrollback with it; and nothing distinguishes
+"finished cleanly" from "crashed" - both are simply absence. Meanwhile the
+child's own pi session file *does* persist (it runs plain `pi`), but kido
+records no pointer to it, so finding it later means guessing by timestamp
+and cwd.
+
+**A run directory per spawn**, under `<state>/runs/<run-id>/`, fixes
+this - deliberately outside `state.Session`. `state.Load()` deletes a
+dead-pid record on purpose (it is what cleans up the per-turn records
+pi's Claude bridge writes), and a record that outlives the process is the
+entire point here. `Load` already skips directory entries when it scans
+the state directory, so `runs/` is invisible to it for free; nothing may
+ever depend on that changing; internal/subrun's own package comment says
+so for the same reason.
+
+**The run id is the child's own pi session id.** `kido spawn` generates
+it and passes `--session-id <run-id>` when the command being launched is
+`pi` (checked literally, since the e2e suite's fake commands are not),
+which pi's own `--help` documents as "use exact project session ID,
+creating it if missing". Restarting a finished run is
+`pi --session <run-id>`; forking it is `pi --fork <run-id>` - but pi
+sessions are project-scoped, so either only resolves as given from the
+run's own cwd. Run from anywhere else, pi asks "Session found in
+different project... Fork into current directory? [y/N]" instead of just
+working, so `kido runs <run-id>` prints `cd <cwd> && pi --session
+<run-id>` (and the `--fork` equivalent) rather than the bare command - the
+only way to make the printed line actually copy-pasteable from anywhere,
+which is the whole point of printing one. No separate bookkeeping ever
+maps the run id to the session id, because there is only one id.
+A non-`pi` command (or a non-tmux-local backend, see "Deferred" below)
+has no session of its own to tie to it, so kido also sets
+`KIDO_AGENT_RUN_ID` in the child's environment unconditionally - the one
+case `--session-id` cannot cover.
+
+**Contents.** `meta.json` (parent instance, depth, window, pane, pid,
+cwd, model, tools, started-at, the name), `task` (the task text - see
+below) and, once the run ends, `outcome`. The directory and the task file
+are created *before* `tmux.NewWindow` is called, because the child may
+read its task the instant tmux starts it; `meta.json` is written once,
+after, since window/pane/pid are only known then
+(`internal/subrun.WriteMeta`). If window creation itself fails, the run is
+marked `failed` rather than left a silent, never-a-window mystery.
+
+**The task file moves into the run directory**, and stops being deleted.
+It used to live in the OS temp directory and be unlinked once delivered,
+as the signal that a later `/reload` (which re-runs `session_start`)
+should not deliver it again. Keeping the file - so `kido runs <run-id>`
+can show it later - meant that signal had to move to a sibling `delivered`
+marker file instead: written only once the read has actually succeeded,
+so a task that failed to read (bad permissions, a race) is still eligible
+on the next `/reload` rather than being marked delivered and never shown
+to the model at all.
+
+**Outcomes, recorded on every exit path**, each written by whichever code
+is actually positioned to know it happened:
+
+- **`completed` / `failed`** - the child's own verdict about itself,
+  written via a new CLI twin, `kido run-outcome --result completed|failed
+  <run-id>`, from the same `session_shutdown` handler that already sends
+  the parent its completion notice. `completed` if the session ended idle
+  (`agent_settled`'s own definition of finished on its own terms);
+  `failed` for anything else - waiting, compacting, still running - since
+  that is as finely as kido can tell from the outside what actually went
+  wrong. `run-outcome` refuses any other `--result`: `died` and `stopped`
+  are kido's own verdicts about a run from the outside, not something a
+  model-authored process gets to claim about itself, for the same reason
+  `kido message --from` is not offered - a caller cannot assert something
+  only kido itself is positioned to know. It is a verb of its own rather
+  than a flag on the `agent-status` report the child already makes on
+  every status change, because any spawned command can end, including one
+  that never reported an agent status in its life and has no business
+  claiming to.
+- **`died`** - written by a sweep (`internal/reap.Sweep`) that closes a
+  marked window with no outcome already recorded: the child never got a
+  chance to say anything about how it ended (SIGKILL, an OOM kill, a
+  crash). The run id travels to the sweep the same way the parent instance
+  already does - embedded in the `@kido_subagent` window option kido spawn
+  sets (`"run=<id> parent=<instance> depth=<depth>"`) - which is the one
+  token of that otherwise-free-text mark that `internal/reap` parses back
+  out.
+- **`stopped`** - written by `cmd/kido/control.go`'s `stopCmd` as soon as
+  the stop request is away, and by `killTargetPane` just after its own
+  last-window guard: whether the target goes quietly or has to be
+  escalated to a pane kill, `kido stop` is what ended it, and that must
+  win the race against the child's own `session_shutdown` reporting
+  `completed` a moment later for a reason that was never really its own
+  idea. Never a line earlier than that, though: `stop` has several
+  refusals (no inbox, or a stale one, without `--force`; a target outside
+  the caller's scope; a pane whose loss would take its session with it),
+  every one of which leaves the run running - and with `O_EXCL` an outcome
+  written before them could never be corrected.
+  `TestStopRefusedLeavesNoOutcome` pins it.
+
+All of this rests on **`RecordOutcome` writing once**, with `O_EXCL`: the
+first writer to observe how a run ended is definitionally the true story,
+and a later, cruder guess (a sweep's `died`) must never clobber it. This
+is also why `stopped` is written the moment `kido stop`'s request is away
+rather than after the target has answered: it must win that race
+deterministically rather than hope it finishes first.
+
+**A run whose outcome is never written is itself informative.** If no
+sweep or `kido stop` ever ran against it - no sidebar, nobody typed
+`kido reap` - the run directory just sits there with no outcome file,
+forever, and that is fine: `kido runs` still has something useful to say
+about it. `Meta.PID` (the child's own pid, taken from `tmux.NewWindow`'s
+now-three-part `-P -F` output - `#{window_id}:#{pane_id}:#{pane_pid}` -
+rather than the process-group leader `pane_current_command` would report,
+for the same reason AGENTS.md gives for preferring `#{alternate_on}`)
+lets `subrun.EffectiveOutcome` answer without any tmux session at all: no
+recorded outcome and a dead pid reads as `died`, a guess that is never
+persisted by the read itself - only a sweep, actually closing the run's
+window, earns the right to write that down. It is the same conclusion the
+sweep persists, reached differently (a dead pid rather than a window of
+`remain-on-exit` corpses), and it inherits what pid liveness cannot know -
+see "Open risks" above.
+
+**`kido runs [--json] [<run-id>]`** is the CLI twin, listing every run
+(id, name, parent, started, duration, outcome, cwd) most recent first, or
+showing one in detail: its task text and the exact `pi --session` /
+`pi --fork` command to resume or branch from it. Like every other tool
+here, it exists because the e2e harness cannot host a TypeScript
+extension, so anything living only in `kido-status.ts` would be
+untestable.
+
+**`spawn_subagent` returns the run id.** `list_agents` does not change: it
+keeps showing only live agents, and a finished run is never merged into
+it - `kido runs` is a different question ("what happened") from
+`list_agents`'s ("who is here now").
+
+**The task moves from a path to text at the tool boundary.**
+`spawn_subagent` used to write the task to a temp file itself and hand
+`kido spawn` its path; now it passes the task as text on `kido spawn`'s
+stdin (`--task-file -`), and kido is what decides that becomes a file -
+exactly the refactor the "Deferred" section below already called for,
+done now because Phase 8 needed kido to own the run directory anyway.
+`--task-file FILE` still works, for the CLI and the e2e suite.
+
+**No retention.** kido never prunes an old run directory, deliberately -
+the same as pi never pruning its own session files. A run record is a
+pointer to that session (its window, briefly; its pi session file,
+always), not a copy of anything, so deleting the pointer would not free
+the space a cleanup would be chasing anyway. `internal/subrun`'s own
+package comment says so, so a later change does not "fix" it.
+
+## Known flaw: staleness cannot see a sleeping machine
+
+Stall detection compares `now - TS` against a threshold, and `TS` is wall
+clock. A machine that sleeps advances wall clock without advancing any
+agent's work, so on wake every running agent is over the threshold at
+once, before any of them has missed a real heartbeat.
+
+The sidebar's `!` is cosmetic and self-corrects, but `ask_agent` refuses
+to deliver to a stalled target, and the obvious next move a model makes
+on being told a child is stalled is to stop it. So a closed lid can
+cascade into killing a healthy subagent tree.
+
+The fix is to notice the gap rather than ignore it: kido polls every
+100ms, so a tick whose wall clock jumped minutes means the world paused,
+not that agents went quiet, and the staleness baseline should be rebased
+instead of every agent being declared stalled at once. A monotonic
+reference read alongside `TS` is enough to tell the two apart.
+
+The same flaw applies to anything else that infers health from elapsed
+wall clock, and to any watcher that reports a stall through a channel
+the same event breaks.
 
 ## Deferred: subagents off this machine
 

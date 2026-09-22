@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +12,7 @@ import (
 	"testing"
 
 	"kido/internal/state"
+	"kido/internal/tmux"
 )
 
 // newWindowCall is one recorded call to the faked newWindow.
@@ -23,14 +27,16 @@ var marks map[string]string
 
 // withNewWindow points newWindow and markSubagent at fakes that record
 // their calls, so spawnCmd never talks to a real tmux server. newWindow
-// returns (windowID, paneID, err).
+// returns (windowID, paneID, a fixed fake pid, err).
+const fakePanePID = 42424242
+
 func withNewWindow(t *testing.T, windowID, paneID string, err error) *[]newWindowCall {
 	t.Helper()
 	prev, prevMark := newWindow, markSubagent
 	var calls []newWindowCall
-	newWindow = func(session, name, cwd string, env, command []string) (string, string, error) {
+	newWindow = func(session, name, cwd string, env, command []string) (string, string, int, error) {
 		calls = append(calls, newWindowCall{session, name, cwd, env, command})
-		return windowID, paneID, err
+		return windowID, paneID, fakePanePID, err
 	}
 	marks = map[string]string{}
 	markSubagent = func(windowID, info string) error {
@@ -44,6 +50,10 @@ func withNewWindow(t *testing.T, windowID, paneID string, err error) *[]newWindo
 // TestSpawnMarksTheWindow pins what makes a spawned window reapable at
 // all: without the @kido_subagent option (internal/reap) nothing will
 // ever close it, since a sweep refuses every window it did not create.
+// The run id in it is checked by reading it back with the parser a sweep
+// uses, which is the only thing holding the two ends of that mini-format
+// together (see tmux.SubagentMark); the consumer's own half is pinned
+// against a literal in internal/reap's tests.
 func TestSpawnMarksTheWindow(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -55,8 +65,12 @@ func TestSpawnMarksTheWindow(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := marks["@9"]; !strings.Contains(got, "abc") {
+	got := marks["@9"]
+	if !strings.Contains(got, "abc") {
 		t.Errorf("mark on @9 = %q, want it to name the parent instance", got)
+	}
+	if tmux.SubagentRunID(got) == "" {
+		t.Errorf("mark on @9 = %q, want a run= token a sweep can read back", got)
 	}
 }
 
@@ -335,9 +349,31 @@ func TestSpawnTaskNeverOnCommandLine(t *testing.T) {
 			t.Errorf("task text leaked into the tmux invocation: %q", arg)
 		}
 	}
-	if !slices.Contains(call.env, "KIDO_AGENT_TASK_FILE="+taskFile) {
-		t.Errorf("env = %v, want KIDO_AGENT_TASK_FILE=%s", call.env, taskFile)
+	// The task moves into the run's own directory (docs/subagents-plan.md's
+	// Phase 8 section): KIDO_AGENT_TASK_FILE no longer names the caller's
+	// own --task-file, but its content must still be exactly the task.
+	relocated := envValue(t, call.env, "KIDO_AGENT_TASK_FILE")
+	if relocated == taskFile {
+		t.Errorf("KIDO_AGENT_TASK_FILE = %s, want it relocated into the run directory, not the caller's own path", relocated)
 	}
+	got, err := os.ReadFile(relocated)
+	if err != nil || string(got) != taskText {
+		t.Errorf("relocated task file contents = %q, %v, want %q, nil", got, err, taskText)
+	}
+}
+
+// envValue returns the value of key=... in env, failing the test if key
+// is not present at all.
+func envValue(t *testing.T, env []string, key string) string {
+	t.Helper()
+	prefix := key + "="
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, prefix); ok {
+			return v
+		}
+	}
+	t.Fatalf("env %v missing %s", env, key)
+	return ""
 }
 
 // TestSpawnPassesParentAndDepth checks the full environment kido spawn
@@ -367,11 +403,13 @@ func TestSpawnPassesParentAndDepth(t *testing.T) {
 		"KIDO_AGENT_PARENT_PID=555",
 		"KIDO_AGENT_PARENT_INSTANCE=parent-inst",
 		"KIDO_AGENT_DEPTH=2", // caller reported depth 1, so the child is 2
-		"KIDO_AGENT_TASK_FILE=" + taskFile,
 	} {
 		if !slices.Contains(call.env, kv) {
 			t.Errorf("env = %v, missing %s", call.env, kv)
 		}
+	}
+	if got := envValue(t, call.env, "KIDO_AGENT_TASK_FILE"); got == taskFile {
+		t.Errorf("KIDO_AGENT_TASK_FILE = %s, want it relocated into the run directory, not the caller's own path", got)
 	}
 	if call.session != "$1" {
 		t.Errorf("session = %q, want %q (the caller's own)", call.session, "$1")
@@ -393,7 +431,91 @@ func TestSpawnDefaultsCommandToPi(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := (*calls)[0].command; !reflect.DeepEqual(got, []string{"pi"}) {
-		t.Errorf("command = %v, want [pi]", got)
+	// A plain "pi" command gets --session-id inserted, tying the run id to
+	// the child's own session from birth (see spawn.go's doc comment).
+	got := (*calls)[0].command
+	if len(got) != 3 || got[0] != "pi" || got[1] != "--session-id" || got[2] == "" {
+		t.Errorf("command = %v, want [pi --session-id <run-id>]", got)
+	}
+}
+
+// TestSpawnFailureIsAVisibleFailedRun: a spawn whose window creation fails
+// records that as the run's outcome, rather than leaving a caller of `kido
+// runs` to work out why a run has no window. Read back through listRuns
+// rather than subrun directly, because the meta file the failure path
+// writes is exactly what makes the outcome visible there - a run directory
+// without one is skipped, outcome and all.
+func TestSpawnFailureIsAVisibleFailedRun(t *testing.T) {
+	withPanes(t, samePane)
+	t.Setenv("TMUX_PANE", "%1")
+	withCallerDepth(t, 0)
+	withNewWindow(t, "", "", errors.New("no such session"))
+	if err := spawnCmd([]string{
+		"--parent-pid", "1", "--parent-instance", "x",
+		"--name", "kid", "--task-file", writeTaskFile(t, "task"),
+	}); err == nil {
+		t.Fatal("spawnCmd = nil, want the window creation failure")
+	}
+
+	var out bytes.Buffer
+	if err := listRuns(&out, true); err != nil {
+		t.Fatal(err)
+	}
+	var infos []RunInfo
+	if err := json.Unmarshal(out.Bytes(), &infos); err != nil {
+		t.Fatalf("runs --json: %v (%q)", err, out.String())
+	}
+	if len(infos) != 1 || infos[0].Outcome != "failed" {
+		t.Errorf("runs --json = %+v, want one failed run", infos)
+	}
+}
+
+// TestSpawnMarkFailureKillsTheWindowAndRecordsFailure is D5: a failed
+// markSubagent used to return the error with the window left up,
+// unmarked - which no sweep would ever find, since internal/reap only
+// ever touches a window carrying @kido_subagent. That is a permanent
+// leak, worse than the sibling newWindow-failure path just above, which
+// leaves no window behind at all. The fix kills the window rather than
+// strand it, and records the run as failed the same way that sibling
+// path does.
+func TestSpawnMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
+	withPanes(t, samePane)
+	t.Setenv("TMUX_PANE", "%1")
+	withCallerDepth(t, 0)
+	withNewWindow(t, "@9", "%9", nil)
+
+	prevKill := killWindow
+	var killed []string
+	killWindow = func(id string) error {
+		killed = append(killed, id)
+		return nil
+	}
+	t.Cleanup(func() { killWindow = prevKill })
+
+	prevMark := markSubagent
+	markSubagent = func(windowID, info string) error { return errors.New("option failed") }
+	t.Cleanup(func() { markSubagent = prevMark })
+
+	if err := spawnCmd([]string{
+		"--parent-pid", "1", "--parent-instance", "x",
+		"--name", "kid", "--task-file", writeTaskFile(t, "task"),
+	}); err == nil {
+		t.Fatal("spawnCmd = nil, want the mark failure")
+	}
+
+	if !slices.Contains(killed, "@9") {
+		t.Errorf("killWindow calls = %v, want @9 killed rather than left up unmarked", killed)
+	}
+
+	var out bytes.Buffer
+	if err := listRuns(&out, true); err != nil {
+		t.Fatal(err)
+	}
+	var infos []RunInfo
+	if err := json.Unmarshal(out.Bytes(), &infos); err != nil {
+		t.Fatalf("runs --json: %v (%q)", err, out.String())
+	}
+	if len(infos) != 1 || infos[0].Outcome != "failed" {
+		t.Errorf("runs --json = %+v, want one failed run", infos)
 	}
 }

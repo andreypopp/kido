@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"kido/internal/state"
+	"kido/internal/subrun"
 	"kido/internal/tmux"
 )
 
@@ -50,9 +51,10 @@ func graceFromEnv(def time.Duration) time.Duration {
 // of the pane list.
 type window struct {
 	id       string
-	marked   bool  // carries tmux.SubagentOption: a window kido spawn created
-	allDead  bool  // every pane of it is a remain-on-exit corpse
-	deadTime int64 // unix time the last of them died
+	marked   bool   // carries tmux.SubagentOption: a window kido spawn created
+	runID    string // the run id embedded in that mark, see tmux.SubagentRunID
+	allDead  bool   // every pane of it is a remain-on-exit corpse
+	deadTime int64  // unix time the last of them died
 	focused  bool
 }
 
@@ -102,6 +104,13 @@ func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) []string 
 			return
 		}
 		closing[id] = true
+		// Best-effort, and silently a no-op when it loses the race to an
+		// outcome the run already recorded for itself (RecordOutcome's
+		// O_EXCL) - the whole point of Died is to cover the run that never
+		// got to report anything, not to overwrite one that did.
+		if w.runID != "" {
+			subrun.RecordOutcome(w.runID, subrun.Outcome{Result: subrun.Died, At: now}) //nolint:errcheck // best effort
+		}
 		out = append(out, id)
 	}
 
@@ -149,6 +158,7 @@ func foldWindows(panes []tmux.Pane) ([]*window, map[string]*window, map[string]s
 		}
 		if p.Subagent != "" {
 			w.marked = true
+			w.runID = tmux.SubagentRunID(p.Subagent)
 		}
 		// A split window is finished only once all of it is: a subagent
 		// that split its own window and left something running in the

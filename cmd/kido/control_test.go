@@ -8,6 +8,7 @@ import (
 
 	"kido/internal/msg"
 	"kido/internal/state"
+	"kido/internal/subrun"
 	"kido/internal/testutil"
 	"kido/internal/tmux"
 )
@@ -72,12 +73,18 @@ func TestStopForceKillsInboxlessAgent(t *testing.T) {
 	}
 }
 
-// TestStopRefusesToKillASessionsOnlyWindow pins the guard killTargetPane
-// shares with closeWindowCmd: here the target's pane is also the only
-// pane of @1, which is $1's only window, so killing it would end the
-// session and detach every client attached to it - never what stopping
-// one agent asked for. --force is the strongest thing a caller can say
-// and it does not buy this.
+// TestStopRefusesToKillASessionsOnlyWindow: a target in a different tmux
+// session from the caller is refused by resolveTarget's own session
+// scope, before killTargetPane's last-pane guard ever runs - not because
+// of that guard, whatever the layout of $1 is. This is D7: the layout
+// below happens to be exactly the one the last-pane guard is about, which
+// invited the earlier, wrong belief that this test exercised it (see
+// TestStopRefusedLeavesNoOutcome's "the session's last window" subtest
+// below, which calls killTargetPane directly - the only way to actually
+// reach that guard, since controlTarget's own scope rule means a caller
+// and a target in the same tmux session always leaves the guard's `&&`
+// false). Kept anyway, because a cross-session target must still be
+// refused and --force must still not buy it, on its own merits.
 func TestStopRefusesToKillASessionsOnlyWindow(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -93,8 +100,12 @@ func TestStopRefusesToKillASessionsOnlyWindow(t *testing.T) {
 	if err := state.Record("target", state.Session{Pane: "%2", PID: os.Getpid(), Status: state.Idle}); err != nil {
 		t.Fatal(err)
 	}
-	if err := stopCmd([]string{"--force", "target"}); err == nil {
-		t.Fatal("stopCmd succeeded, want a refusal: %2 is @1's only pane, and @1 is $1's only window")
+	err := stopCmd([]string{"--force", "target"})
+	if err == nil {
+		t.Fatal("stopCmd succeeded, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "another tmux session") {
+		t.Errorf("error = %q, want the cross-session refusal, not the last-pane guard", err)
 	}
 	if calls := kills(); len(calls) != 0 {
 		t.Errorf("killPane calls = %v, want none", calls)
@@ -454,6 +465,103 @@ func TestInterruptRefusedAgainstInboxlessAgent(t *testing.T) {
 	if calls := kills(); len(calls) != 0 {
 		t.Errorf("killPane calls = %v, want none: interrupt never kills anything", calls)
 	}
+}
+
+// TestStopRefusedLeavesNoOutcome pins the ordering stopCmd's own comment
+// argues for: the Stopped outcome goes in only once the stop request is
+// actually away, because subrun.RecordOutcome writes once and for all
+// (O_EXCL), so an outcome written on a path that then refuses marks a run
+// that is still running happily as stopped forever, with nothing able to
+// correct it. Every refusal stop has is covered - each of these leaves the
+// target alive - and moving recordStopped back above the guards fails all
+// but the last of them.
+func TestStopRefusedLeavesNoOutcome(t *testing.T) {
+	// A run record whose id is the target's session id, which is what makes
+	// target.ID a run id at all (see recordStopped).
+	setup := func(t *testing.T, runID string, panes []tmux.Pane, target state.Session) {
+		t.Helper()
+		t.Setenv("KIDO_STATE_DIR", t.TempDir())
+		t.Setenv("TMUX_PANE", "%1")
+		withPanes(t, panes)
+		withKillPane(t)
+		if err := subrun.Create(runID, "do the thing"); err != nil {
+			t.Fatal(err)
+		}
+		if err := subrun.WriteMeta(subrun.Meta{ID: runID, PID: os.Getpid()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.Record(runID, target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	noOutcome := func(t *testing.T, runID string) {
+		t.Helper()
+		if o, ok, err := subrun.ReadOutcome(runID); ok || err != nil {
+			t.Errorf("ReadOutcome = %+v, %v, %v; a refused stop must leave the run with no outcome at all", o, ok, err)
+		}
+	}
+
+	twoWindows := []tmux.Pane{
+		{PaneID: "%1", SessionID: "$1", WindowID: "@1"},
+		{PaneID: "%2", SessionID: "$1", WindowID: "@2"},
+	}
+
+	t.Run("no inbox, no --force", func(t *testing.T) {
+		setup(t, "run-noinbox", twoWindows, state.Session{Pane: "%2", PID: os.Getpid(), Status: state.Idle})
+		if err := stopCmd([]string{"run-noinbox"}); err == nil {
+			t.Fatal("stopCmd succeeded, want the no-inbox refusal")
+		}
+		noOutcome(t, "run-noinbox")
+	})
+
+	t.Run("stale inbox, no --force", func(t *testing.T) {
+		setup(t, "run-stale", twoWindows, state.Session{
+			Pane: "%2", PID: os.Getpid(), Status: state.Idle,
+			Inbox: testutil.StaleSocket(t), Protocol: msg.V1,
+		})
+		if err := stopCmd([]string{"run-stale"}); err == nil {
+			t.Fatal("stopCmd succeeded, want the stale-inbox refusal")
+		}
+		noOutcome(t, "run-stale")
+	})
+
+	t.Run("not the caller's descendant", func(t *testing.T) {
+		in := testutil.StartInbox(t, "ok\n")
+		setup(t, "run-peer", controlTreePanes, state.Session{
+			Agent: state.AgentPi, Pane: "%3", PID: os.Getpid(), Status: state.Idle,
+			Instance: "peer-i", Inbox: in.Path, Protocol: msg.V1,
+		})
+		// The caller needs a record of its own for the descendant scope rule
+		// to apply at all (controlTarget).
+		if err := state.Record("caller", state.Session{
+			Agent: state.AgentPi, Pane: "%1", PID: os.Getpid(), Status: state.Idle, Instance: "caller-i",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := stopCmd([]string{"run-peer"}); err == nil {
+			t.Fatal("stopCmd succeeded against a non-descendant, want a refusal")
+		}
+		noOutcome(t, "run-peer")
+	})
+
+	// The session's-last-window refusal is checked against killTargetPane
+	// directly, not through stopCmd: a caller may only stop something in
+	// its own tmux session (resolveTarget), and a session holding the
+	// caller's pane too always has a second pane for the guard to spare -
+	// so the layout the guard is about is one stopCmd's own scope rule
+	// turns away first, with a different error. TestStopRefusesToKillA
+	// SessionsOnlyWindow above takes that earlier refusal for the same
+	// reason.
+	t.Run("the session's last window", func(t *testing.T) {
+		setup(t, "run-last", []tmux.Pane{
+			{PaneID: "%1", SessionID: "$2", WindowID: "@9"},
+			{PaneID: "%2", SessionID: "$1", WindowID: "@1"},
+		}, state.Session{Pane: "%2", PID: os.Getpid(), Status: state.Idle})
+		if err := killTargetPane(state.Session{ID: "run-last", Pane: "%2"}); err == nil {
+			t.Fatal("killTargetPane succeeded, want the last-window refusal")
+		}
+		noOutcome(t, "run-last")
+	})
 }
 
 func TestControlUsage(t *testing.T) {

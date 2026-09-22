@@ -15,9 +15,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, delimiter } from "node:path";
+import { join, delimiter, dirname } from "node:path";
 import net from "node:net";
 import kidoStatus, { isAncestor } from "./kido-status.ts";
 
@@ -79,14 +79,20 @@ switch (args[0]) {
   }
   case "spawn": {
     const logFile = process.env.KIDO_FAKE_SPAWN_LOG;
-    if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
+    const task = readStdin();
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify({ args, task }) + "\\n");
     const respond = () => {
-      process.stdout.write("@9 %9\\n");
+      process.stdout.write("@9 %9 fake-run-id\\n");
       process.exit(0);
     };
     const delay = Number(process.env.KIDO_FAKE_SPAWN_DELAY_MS || 0);
     if (delay > 0) setTimeout(respond, delay); else respond();
     break;
+  }
+  case "run-outcome": {
+    const logFile = process.env.KIDO_FAKE_RUN_OUTCOME_LOG;
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
+    process.exit(0);
   }
   case "close-window": {
     const logFile = process.env.KIDO_FAKE_CLOSE_WINDOW_LOG;
@@ -115,6 +121,8 @@ interface Fixture {
   selfInboxPath(): string;
   lastLogFor(to: string, kind?: string): { id: string; replyTo: string; to: string; text: string; failed?: boolean } | undefined;
   lastSpawnArgs(): string[] | undefined;
+  lastSpawnTask(): string | undefined;
+  lastRunOutcomeArgs(): string[] | undefined;
   waitForCloseWindow(ms?: number): Promise<string[]>;
   lastStatusArgs(): string[] | undefined;
   statusReportsWith(status: string): string[][];
@@ -151,12 +159,14 @@ function makeFixture(): Fixture {
   const closeWindowLogFile = join(dir, "close-window.jsonl");
   const statusLogFile = join(dir, "status.jsonl");
   const controlLogFile = join(dir, "control.jsonl");
+  const runOutcomeLogFile = join(dir, "run-outcome.jsonl");
   writeFileSync(agentsFile, "[]");
   writeFileSync(logFile, "");
   writeFileSync(spawnLogFile, "");
   writeFileSync(closeWindowLogFile, "");
   writeFileSync(statusLogFile, "");
   writeFileSync(controlLogFile, "");
+  writeFileSync(runOutcomeLogFile, "");
 
   const saved = {
     PATH: process.env.PATH,
@@ -167,6 +177,7 @@ function makeFixture(): Fixture {
     KIDO_FAKE_CLOSE_WINDOW_LOG: process.env.KIDO_FAKE_CLOSE_WINDOW_LOG,
     KIDO_FAKE_STATUS_LOG: process.env.KIDO_FAKE_STATUS_LOG,
     KIDO_FAKE_CONTROL_LOG: process.env.KIDO_FAKE_CONTROL_LOG,
+    KIDO_FAKE_RUN_OUTCOME_LOG: process.env.KIDO_FAKE_RUN_OUTCOME_LOG,
     KIDO_FAKE_INBOX_DIR: process.env.KIDO_FAKE_INBOX_DIR,
     KIDO_FAKE_INBOX_FAIL: process.env.KIDO_FAKE_INBOX_FAIL,
     KIDO_FAKE_MESSAGE_FAIL_TO: process.env.KIDO_FAKE_MESSAGE_FAIL_TO,
@@ -180,6 +191,7 @@ function makeFixture(): Fixture {
   process.env.KIDO_FAKE_CLOSE_WINDOW_LOG = closeWindowLogFile;
   process.env.KIDO_FAKE_STATUS_LOG = statusLogFile;
   process.env.KIDO_FAKE_CONTROL_LOG = controlLogFile;
+  process.env.KIDO_FAKE_RUN_OUTCOME_LOG = runOutcomeLogFile;
   process.env.KIDO_FAKE_INBOX_DIR = inboxDir;
   delete process.env.KIDO_FAKE_INBOX_FAIL;
   delete process.env.KIDO_FAKE_MESSAGE_FAIL_TO;
@@ -201,7 +213,13 @@ function makeFixture(): Fixture {
       else delete process.env.KIDO_FAKE_MESSAGE_FAIL_TO;
     },
     lastSpawnArgs() {
-      return last(jsonLines(spawnLogFile));
+      return last(jsonLines(spawnLogFile))?.args;
+    },
+    lastSpawnTask() {
+      return last(jsonLines(spawnLogFile))?.task;
+    },
+    lastRunOutcomeArgs() {
+      return last(jsonLines(runOutcomeLogFile));
     },
     async waitForCloseWindow(ms = 2000) {
       let found: string[] | undefined;
@@ -239,16 +257,6 @@ function makeFixture(): Fixture {
         else process.env[k] = v;
       }
       rmSync(dir, { recursive: true, force: true });
-      // spawn_subagent's task file goes in the OS temp directory, not in
-      // this fixture's own, because that is where a real subagent's does -
-      // and the fake `kido spawn` above, unlike a real child, never reads
-      // or unlinks it. Left alone, every run of this suite would add one
-      // per spawn to the user's /tmp for good. Matched on this process's
-      // own pid, which is what kido-status.ts puts in the name, so a
-      // concurrently running suite's files are not touched.
-      for (const f of readdirSync(tmpdir())) {
-        if (f.startsWith(`kido-task-${process.pid}-`)) rmSync(join(tmpdir(), f), { force: true });
-      }
     },
   };
 }
@@ -627,7 +635,7 @@ function argAfter(args: string[] | undefined, flag: string): string | undefined 
   return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
 }
 
-test("spawn_subagent writes a task file and calls kido spawn with its own identity and depth+1, without waiting for the child", async () => {
+test("spawn_subagent passes its task as text on stdin and calls kido spawn with its own identity and depth+1, without waiting for the child", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
@@ -642,6 +650,7 @@ test("spawn_subagent writes a task file and calls kido spawn with its own identi
     const spawn = s.tools.get("spawn_subagent");
     const result = await spawn.execute("c1", { task: "go do the thing", name: "kid-1" });
     assert.match(result.content[0].text, /kid-1/);
+    assert.equal(result.details.run, "fake-run-id", "the run id kido spawn printed is returned so the model can refer to it later");
 
     const spawnArgs = fx.lastSpawnArgs();
     assert.ok(spawnArgs, "kido spawn was invoked");
@@ -649,10 +658,8 @@ test("spawn_subagent writes a task file and calls kido spawn with its own identi
     assert.equal(argAfter(spawnArgs, "--parent-instance"), ownInstance, "passes its own --instance as --parent-instance");
     assert.equal(argAfter(spawnArgs, "--depth"), "1", "a root agent (no KIDO_AGENT_DEPTH) spawns at depth+1 = 1");
     assert.equal(argAfter(spawnArgs, "--name"), "kid-1");
-
-    const taskFile = argAfter(spawnArgs, "--task-file");
-    assert.ok(taskFile, "a task file path was passed");
-    assert.equal(readFileSync(taskFile!, "utf8"), "go do the thing", "the task's own text goes in the file, not on the command line");
+    assert.equal(argAfter(spawnArgs, "--task-file"), "-", "the task is passed as text on stdin, not as a file this tool manages");
+    assert.equal(fx.lastSpawnTask(), "go do the thing", "the task's own text goes on stdin, not on the command line");
 
     const sepIndex = spawnArgs!.indexOf("--");
     assert.ok(sepIndex >= 0, "the child command follows --");
@@ -707,7 +714,13 @@ test("spawn_subagent is refused at the depth ceiling without writing a task file
   }
 });
 
-test("spawn_subagent does not unlink the task file when kido spawn merely times out", async () => {
+// This case used to be about not unlinking a task file that a live child
+// might still be about to read - a risk that no longer exists now that
+// the task is text on stdin, not a file this tool owns. What remains
+// worth pinning is that a timeout is reported as a timeout, not folded
+// into a generic failure - see runKido's own doc on why that distinction
+// exists.
+test("spawn_subagent reports a kido spawn timeout as a timeout, not a generic failure", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
@@ -720,15 +733,7 @@ test("spawn_subagent does not unlink the task file when kido spawn merely times 
       const spawn = s.tools.get("spawn_subagent");
       const result = await spawn.execute("c1", { task: "go do the thing", name: "kid-1" });
       assert.match(result.content[0].text, /timed out/);
-
-      const spawnArgs = fx.lastSpawnArgs();
-      assert.ok(spawnArgs, "kido spawn was invoked before the timeout fired");
-      const taskFile = argAfter(spawnArgs, "--task-file")!;
-      assert.equal(
-        existsSync(taskFile),
-        true,
-        "a spawn that only timed out may have actually succeeded, so its task file must not be deleted out from under a live child",
-      );
+      assert.ok(fx.lastSpawnArgs(), "kido spawn was invoked before the timeout fired");
     } finally {
       delete process.env.KIDO_FAKE_SPAWN_DELAY_MS;
       if (savedTimeout === undefined) delete process.env.KIDO_SPAWN_TIMEOUT_MS;
@@ -739,7 +744,7 @@ test("spawn_subagent does not unlink the task file when kido spawn merely times 
   }
 });
 
-test("a child started with KIDO_AGENT_TASK_FILE delivers its task as the first message and unlinks the file", async () => {
+test("a child started with KIDO_AGENT_TASK_FILE delivers its task as the first message, keeps the file, and marks it delivered", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
@@ -755,7 +760,44 @@ test("a child started with KIDO_AGENT_TASK_FILE delivers its task as the first m
         s.delivered.some((d) => d.text === "do the important thing"),
         "the task reached the model as a user message, the same way an inbox prompt is delivered",
       );
-      assert.equal(existsSync(taskFile), false, "the task file is unlinked once delivered");
+      // Kept, not unlinked (docs/subagents-plan.md's Phase 8 section): the
+      // task file is the run's own permanent record, read back later by
+      // `kido runs <run-id>`. A sibling marker, not the file's absence, is
+      // what stops a later /reload from delivering it again.
+      assert.equal(existsSync(taskFile), true, "the task file survives delivery");
+      assert.equal(existsSync(join(dirname(taskFile), "delivered")), true, "a delivered marker is written");
+    } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_TASK_FILE;
+      else process.env.KIDO_AGENT_TASK_FILE = saved;
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+test("a /reload does not deliver an already-delivered task a second time", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const taskFile = join(fx.inboxDir, "..", "reload-task.txt");
+    writeFileSync(taskFile, "do the important thing");
+
+    const saved = process.env.KIDO_AGENT_TASK_FILE;
+    process.env.KIDO_AGENT_TASK_FILE = taskFile;
+    try {
+      const factory = await freshKidoStatus();
+      const s = await startSessionUsing(factory, fx);
+      assert.equal(s.delivered.filter((d) => d.text === "do the important thing").length, 1);
+
+      // A /reload re-runs session_start with a fresh ctx, but not the
+      // factory: the delivered marker, not the module's own state, is what
+      // must stop a second delivery.
+      await s.emit("session_start", {}, fakeCtx());
+      assert.equal(
+        s.delivered.filter((d) => d.text === "do the important thing").length,
+        1,
+        "the task must not be delivered again once its marker exists",
+      );
     } finally {
       if (saved === undefined) delete process.env.KIDO_AGENT_TASK_FILE;
       else process.env.KIDO_AGENT_TASK_FILE = saved;
@@ -783,7 +825,7 @@ test("an unreadable KIDO_AGENT_TASK_FILE delivers nothing, breaks nothing, and l
       const factory = await freshKidoStatus();
       const s = await startSessionUsing(factory, fx);
       assert.ok(!s.delivered.some((d) => d.text.length > 0), "nothing is delivered from a file that could not be read");
-      assert.equal(existsSync(taskFile), false, "the task file is unlinked even when the read failed");
+      assert.equal(existsSync(join(dirname(taskFile), "delivered")), false, "no marker is written for a read that failed, so a later /reload gets another try");
     } finally {
       if (saved === undefined) delete process.env.KIDO_AGENT_TASK_FILE;
       else process.env.KIDO_AGENT_TASK_FILE = saved;
@@ -859,6 +901,168 @@ test("session_shutdown schedules the window linger helper for a subagent", async
     }
   } finally {
     fx.restore();
+  }
+});
+
+test("session_shutdown records this run's own outcome as completed when it ends idle, or failed otherwise", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
+    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
+    try {
+      const factory = await freshKidoStatus();
+      const s = await startSessionUsing(factory, fx, "run-completed");
+      await s.emit("session_shutdown");
+      assert.deepEqual(fx.lastRunOutcomeArgs(), ["run-outcome", "--result", "completed", "--", "run-completed"]);
+    } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
+    }
+  } finally {
+    fx.restore();
+  }
+
+  const fx2 = makeFixture();
+  try {
+    fx2.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
+    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
+    try {
+      const factory = await freshKidoStatus();
+      const s = await startSessionUsing(factory, fx2, "run-failed");
+      await s.emit("ui_prompt_start"); // leaves current = "waiting", not idle
+      await s.emit("session_shutdown");
+      assert.deepEqual(fx2.lastRunOutcomeArgs(), ["run-outcome", "--result", "failed", "--", "run-failed"]);
+    } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
+    }
+  } finally {
+    fx2.restore();
+  }
+});
+
+// pi fires session_shutdown on /reload too (reason "reload"), with the
+// session carrying straight on in the same process - so an outcome
+// written there reports a live run as finished, and since RecordOutcome
+// is O_EXCL the run's real ending can never be recorded afterwards.
+// Measured against a real pi 0.85.1 subagent: a /reload left the run
+// reading "completed" while it was still in kido agents, and a later
+// kido stop was silently discarded.
+test("a session_shutdown that is a reload or a session replacement records no outcome", async () => {
+  for (const reason of ["reload", "new", "resume", "fork"]) {
+    const fx = makeFixture();
+    try {
+      fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+      const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
+      process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
+      try {
+        const factory = await freshKidoStatus();
+        const s = await startSessionUsing(factory, fx, `run-${reason}`);
+        await s.emit("session_shutdown", { type: "session_shutdown", reason });
+        assert.equal(fx.lastRunOutcomeArgs(), undefined, `a "${reason}" shutdown does not end the run`);
+      } finally {
+        if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+        else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
+      }
+    } finally {
+      fx.restore();
+    }
+  }
+
+  // The negative control: an explicit "quit" still records, so the guard
+  // above cannot pass by never recording anything at all.
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+    const saved = process.env.KIDO_AGENT_PARENT_INSTANCE;
+    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
+    try {
+      const factory = await freshKidoStatus();
+      const s = await startSessionUsing(factory, fx, "run-quit");
+      await s.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
+      assert.deepEqual(fx.lastRunOutcomeArgs(), ["run-outcome", "--result", "completed", "--", "run-quit"]);
+    } finally {
+      if (saved === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved;
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+test("session_shutdown never records an outcome for a root session", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx, "root-session");
+    await s.emit("session_shutdown");
+    assert.equal(fx.lastRunOutcomeArgs(), undefined, "a root session has no run record to write into");
+  } finally {
+    fx.restore();
+  }
+});
+
+// D4: the same reason/reload gate that keeps recordOwnOutcome from
+// recording a live run as finished must also keep sendCompletionNotice
+// from telling the parent the run finished and from scheduling the
+// child's own window to be closed out from under it ~30s later. Measured
+// against a real pi 0.85.1 subagent: typing /reload in a live subagent
+// left its window closed and only the parent row remaining in kido
+// agents, plus an orphaned `sh -c sleep ...` helper in `ps` on top of the
+// one the real ending later spawns.
+test("a reload shutdown schedules no linger and sends no completion notice; a quit does both", async () => {
+  const reload = makeFixture();
+  try {
+    reload.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@9" }]);
+    const saved = { INST: process.env.KIDO_AGENT_PARENT_INSTANCE, LINGER: process.env.KIDO_LINGER_SECONDS };
+    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
+    process.env.KIDO_LINGER_SECONDS = "0.05";
+    try {
+      const factory = await freshKidoStatus();
+      const s = await startSessionUsing(factory, reload);
+      await s.emit("session_shutdown", { type: "session_shutdown", reason: "reload" });
+      const closeWindowLog = await reload
+        .waitForCloseWindow(50)
+        .then(() => "called")
+        .catch(() => "not called");
+      assert.equal(closeWindowLog, "not called", "a reload must not schedule this session's own window to close");
+      assert.equal(reload.lastLogFor("parent-x", "notice"), undefined, "a reload must not tell the parent this subagent finished");
+    } finally {
+      if (saved.INST === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved.INST;
+      if (saved.LINGER === undefined) delete process.env.KIDO_LINGER_SECONDS;
+      else process.env.KIDO_LINGER_SECONDS = saved.LINGER;
+    }
+  } finally {
+    reload.restore();
+  }
+
+  // Negative control: an actual quit still does both, so the assertions
+  // above cannot pass by disabling the linger/notice outright.
+  const quit = makeFixture();
+  try {
+    quit.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@9" }]);
+    const saved = { INST: process.env.KIDO_AGENT_PARENT_INSTANCE, LINGER: process.env.KIDO_LINGER_SECONDS };
+    process.env.KIDO_AGENT_PARENT_INSTANCE = "parent-inst";
+    process.env.KIDO_LINGER_SECONDS = "0.05";
+    try {
+      const factory = await freshKidoStatus();
+      const s = await startSessionUsing(factory, quit);
+      await s.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
+      const args = await quit.waitForCloseWindow();
+      assert.deepEqual(args, ["close-window", "@9"], "a quit still schedules this session's own window to close");
+      const sent = quit.lastLogFor("parent-x", "notice");
+      assert.ok(sent, "a quit still tells the parent this subagent finished");
+    } finally {
+      if (saved.INST === undefined) delete process.env.KIDO_AGENT_PARENT_INSTANCE;
+      else process.env.KIDO_AGENT_PARENT_INSTANCE = saved.INST;
+      if (saved.LINGER === undefined) delete process.env.KIDO_LINGER_SECONDS;
+      else process.env.KIDO_LINGER_SECONDS = saved.LINGER;
+    }
+  } finally {
+    quit.restore();
   }
 });
 

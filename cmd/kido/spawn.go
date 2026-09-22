@@ -7,8 +7,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"kido/internal/state"
+	"kido/internal/subrun"
 	"kido/internal/tmux"
 )
 
@@ -18,9 +20,9 @@ import (
 // spawn another one.
 const maxDepth = 2
 
-// maxTaskBytes caps --task-file the same way the inbox caps a v0/v1
-// prompt (MAX_PROMPT_BYTES in pi/kido-status.ts): the two paths both end
-// up delivered as a session's first user message, so accepting more here
+// maxTaskBytes caps the task the same way the inbox caps a v0/v1 prompt
+// (MAX_PROMPT_BYTES in pi/kido-status.ts): the two paths both end up
+// delivered as a session's first user message, so accepting more here
 // than the inbox would ever accept is not generosity, it is a second
 // answer to "how big can a prompt be". The literal can't be shared across
 // Go and TypeScript, so it is restated, not imported.
@@ -44,23 +46,34 @@ var (
 )
 
 func spawnUsage() string {
-	return "usage: kido spawn --parent-pid PID --parent-instance ID --name NAME --task-file FILE [--depth N] [-- COMMAND...]"
+	return "usage: kido spawn --parent-pid PID --parent-instance ID --name NAME --task-file FILE|- [--depth N] [--model M] [--tools T,...] [-- COMMAND...]"
 }
 
 // spawnCmd implements `kido spawn`: it creates a detached window in the
 // caller's own tmux session (found from $TMUX_PANE) running COMMAND,
 // defaulting to `pi` when none is given, with KIDO_AGENT_* set in its
 // environment so the child can report its place in the spawn tree and
-// read its task. It prints the new window and pane ids, space-separated,
-// on success. See docs/subagents-plan.md's Spawning section.
+// read its task. It prints the new window id, pane id and run id,
+// space-separated, on success. See docs/subagents-plan.md's Spawning and
+// Phase 8 sections.
 //
 // The task text is never a command-line argument: it is model-authored,
 // arbitrary in shape, and the tmux command line nests three parsers (tmux,
 // sh, and tmux again for the eventual command) that no escape survives
-// (see AGENTS.md). --task-file names a file the child reads instead and
-// unlinks once delivered. The window name is model-authored too, but does
-// go on that command line, so it is checked with the same rule setup-tmux
-// applies to a path it writes into ~/.tmux.conf (tmuxConfUnsafe).
+// (see AGENTS.md). --task-file names a file to read it from, or "-" to
+// read it from stdin - kido, not the caller, decides it becomes a file on
+// disk (see docs/subagents-plan.md's "Deferred: subagents off this
+// machine" section), and that file lives inside the run's own directory
+// from the start rather than a temp file the caller manages. The window
+// name is model-authored too, but does go on that command line, so it is
+// checked with the same rule setup-tmux applies to a path it writes into
+// ~/.tmux.conf (tmuxConfUnsafe).
+//
+// The run id is generated here and doubles as the child's own pi session
+// id (--session-id is added to a "pi" command automatically, see below):
+// restarting a finished run is exactly `pi --session <run-id>`, and
+// forking it is `pi --fork <run-id>`, with no separate bookkeeping to
+// look either up.
 func spawnCmd(args []string) error {
 	fs := flag.NewFlagSet("spawn", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -74,7 +87,9 @@ func spawnCmd(args []string) error {
 	// ignored like an omitted one (D6).
 	claimedDepth := fs.Int("depth", -1, "the caller's own claimed depth; accepted but not trusted, see callerDepth")
 	name := fs.String("name", "", "window name, and (by convention) the child's own --name")
-	taskFile := fs.String("task-file", "", "file holding the task text to deliver as the child's first message")
+	taskFile := fs.String("task-file", "", `file holding the task text to deliver as the child's first message, or "-" for stdin`)
+	model := fs.String("model", "", "model the child will run, recorded in the run's meta for kido runs")
+	toolsFlag := fs.String("tools", "", "comma-separated tool allowlist the child will run, recorded in the run's meta for kido runs")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w\n%s", err, spawnUsage())
 	}
@@ -108,18 +123,14 @@ func spawnCmd(args []string) error {
 		return fmt.Errorf("refusing window name %q: %d bytes is over the %d byte limit", *name, len(*name), maxWindowNameLen)
 	}
 
-	// D12: a typo in --task-file would otherwise create the window anyway,
-	// leaving a child that reads nothing and starts with no task and no
-	// sign anything was lost.
-	fi, err := os.Stat(*taskFile)
+	task, err := readTask(*taskFile)
 	if err != nil {
-		return fmt.Errorf("--task-file %q: %w", *taskFile, err)
+		return err
 	}
-	if fi.IsDir() {
-		return fmt.Errorf("--task-file %q is a directory, not a task file", *taskFile)
-	}
-	if fi.Size() > maxTaskBytes {
-		return fmt.Errorf("--task-file %q is %d bytes, over the %d byte task limit", *taskFile, fi.Size(), maxTaskBytes)
+
+	var tools []string
+	if *toolsFlag != "" {
+		tools = strings.Split(*toolsFlag, ",")
 	}
 
 	command := fs.Args()
@@ -162,25 +173,110 @@ func spawnCmd(args []string) error {
 		return fmt.Errorf("refusing to spawn at depth %d: maximum nesting is %d (root 0, subagent 1, subagent 2)", depth, maxDepth)
 	}
 
+	runID := subrun.NewID()
+	if err := subrun.Create(runID, task); err != nil {
+		return err
+	}
+	meta := subrun.Meta{
+		ID: runID, Name: *name, ParentInstance: *parentInstance, Depth: depth,
+		Cwd: pane.CurrentPath, Model: *model, Tools: tools, StartedAt: time.Now(),
+	}
+
+	// A "pi" command gets --session-id inserted right after it, which is
+	// what ties the run id to the child's own session from birth (see the
+	// doc comment above) - a caller-overridden COMMAND (the e2e suite's
+	// fake binaries, mainly) is left exactly as given, since it has no pi
+	// session of its own to name.
+	if command[0] == "pi" {
+		command = append([]string{command[0], "--session-id", runID}, command[1:]...)
+	}
+
 	env := []string{
 		"KIDO_AGENT_PARENT_PID=" + strconv.Itoa(*parentPID),
 		"KIDO_AGENT_PARENT_INSTANCE=" + *parentInstance,
 		"KIDO_AGENT_DEPTH=" + strconv.Itoa(depth),
-		"KIDO_AGENT_TASK_FILE=" + *taskFile,
+		"KIDO_AGENT_TASK_FILE=" + subrun.TaskPath(runID),
+		// Set unconditionally, not just for a "pi" command: --session-id
+		// above already gives a spawned pi its run id as its own session id,
+		// but a child that is not pi (every e2e fake command, and any future
+		// non-tmux-local backend per the plan's "Deferred" section) has no
+		// other way to learn it, and self-reporting via `kido run-outcome`
+		// needs it.
+		"KIDO_AGENT_RUN_ID=" + runID,
 	}
-	windowID, paneID, err := newWindow(pane.SessionID, *name, pane.CurrentPath, env, command)
+	windowID, paneID, panePID, err := newWindow(pane.SessionID, *name, pane.CurrentPath, env, command)
 	if err != nil {
+		// Nothing to restart or fork ever existed, so say why rather than
+		// leave a caller of `kido runs` to guess at a run with no window and
+		// no outcome. The meta this would otherwise have skipped is written
+		// first: `kido runs` passes over a directory with no meta file, and
+		// would pass over this outcome with it.
+		subrun.WriteMeta(meta)                                                                                //nolint:errcheck // best effort
+		subrun.RecordOutcome(runID, subrun.Outcome{Result: subrun.Failed, Text: err.Error(), At: time.Now()}) //nolint:errcheck // best effort
+		return err
+	}
+	meta.Window, meta.Pane, meta.PID = windowID, paneID, panePID
+	if err := subrun.WriteMeta(meta); err != nil {
 		return err
 	}
 	// The mark is what makes this window reapable, and the only thing that
 	// does (internal/reap): it is how a sweep tells a window kido created
 	// from one the user did, long after every trace of the child is gone
-	// from kido's own state. A spawn whose mark failed is reported as a
-	// failure even though the window is up, because the alternative is a
-	// window nothing will ever collect.
-	if err := markSubagent(windowID, fmt.Sprintf("parent=%s depth=%d", *parentInstance, depth)); err != nil {
+	// from kido's own state. The run id embedded in it is what lets that
+	// same sweep record a run's outcome as Died without needing anything
+	// else kido knows about the child.
+	//
+	// D5: a failed mark used to return the error with the window left up,
+	// unmarked - and unmarked means uncollectable, forever: internal/reap's
+	// own rule (see docs/subagents-plan.md's Lifecycle section) is that a
+	// sweep only ever touches a window carrying @kido_subagent, precisely
+	// so it never closes one it did not create. No sweep, no `kido stop`,
+	// no human glancing at `kido agents` would ever connect that window
+	// back to this failed spawn - `kido runs` would show a run with no
+	// window and no outcome, and the window itself would sit there
+	// unexplained. The sibling failure just above (newWindow itself
+	// failing) already treats "could not get to a clean, recorded state"
+	// as a hard failure rather than something to leave for a human to
+	// puzzle over later, and a window nothing can ever find again is worse
+	// than no window at all, so this path matches it: kill the window
+	// rather than strand it, and record the run as failed the same way.
+	if err := markSubagent(windowID, tmux.SubagentMark(runID, *parentInstance, depth)); err != nil {
+		killWindow(windowID)                                                                                  //nolint:errcheck // best effort cleanup; the mark error is what matters
+		subrun.RecordOutcome(runID, subrun.Outcome{Result: subrun.Failed, Text: err.Error(), At: time.Now()}) //nolint:errcheck // best effort
 		return err
 	}
-	fmt.Printf("%s %s\n", windowID, paneID)
+	fmt.Printf("%s %s %s\n", windowID, paneID, runID)
 	return nil
+}
+
+// readTask reads the task text from path, or from stdin when path is "-".
+// D12/D9 apply either way: a missing or oversized task is refused before
+// any window is ever created, since the alternative is a child that reads
+// nothing and starts with no task and no sign anything was lost.
+func readTask(path string) (string, error) {
+	if path == "-" {
+		b, err := io.ReadAll(io.LimitReader(os.Stdin, maxTaskBytes+1))
+		if err != nil {
+			return "", fmt.Errorf("reading task from stdin: %w", err)
+		}
+		if len(b) > maxTaskBytes {
+			return "", fmt.Errorf("task on stdin is over the %d byte task limit", maxTaskBytes)
+		}
+		return string(b), nil
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("--task-file %q: %w", path, err)
+	}
+	if fi.IsDir() {
+		return "", fmt.Errorf("--task-file %q is a directory, not a task file", path)
+	}
+	if fi.Size() > maxTaskBytes {
+		return "", fmt.Errorf("--task-file %q is %d bytes, over the %d byte task limit", path, fi.Size(), maxTaskBytes)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("--task-file %q: %w", path, err)
+	}
+	return string(b), nil
 }

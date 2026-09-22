@@ -89,10 +89,10 @@ func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 
 	out := strings.TrimSpace(h.waitFileNonEmpty(outFile))
 	fields := strings.Fields(out)
-	if len(fields) != 2 {
-		t.Fatalf("kido spawn printed %q, want \"<window id> <pane id>\"", out)
+	if len(fields) != 3 {
+		t.Fatalf("kido spawn printed %q, want \"<window id> <pane id> <run id>\"", out)
 	}
-	windowID, paneID := fields[0], fields[1]
+	windowID, paneID, runID := fields[0], fields[1], fields[2]
 
 	if got := h.in("display-message", "-p", "-t", paneID, "#{session_name}"); got != "alpha" {
 		t.Errorf("spawned pane's session = %q, want %q", got, "alpha")
@@ -122,11 +122,23 @@ func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 		"KIDO_AGENT_PARENT_PID":      "424242",
 		"KIDO_AGENT_PARENT_INSTANCE": "parent-xyz",
 		"KIDO_AGENT_DEPTH":           "1",
-		"KIDO_AGENT_TASK_FILE":       taskFile,
 	} {
 		if got := envLine(env, k); got != want {
 			t.Errorf("spawned process's %s = %q, want %q (kido spawn's -e must reach it, not just the caller's own environment)", k, got, want)
 		}
+	}
+
+	// The task moves into the run's own directory (docs/subagents-plan.md's
+	// Phase 8 section): KIDO_AGENT_TASK_FILE no longer names the caller's
+	// own --task-file, and its content is the task, not the caller's file's
+	// path.
+	relocated := envLine(env, "KIDO_AGENT_TASK_FILE")
+	if relocated == "" || relocated == taskFile {
+		t.Errorf("KIDO_AGENT_TASK_FILE = %q, want it relocated into run %s's own directory", relocated, runID)
+	}
+	got, err := os.ReadFile(relocated)
+	if err != nil || string(got) != "do the thing" {
+		t.Errorf("relocated task file contents = %q, %v, want %q, nil", got, err, "do the thing")
 	}
 }
 

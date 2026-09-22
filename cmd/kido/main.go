@@ -142,6 +142,12 @@ func main() {
 		case "reap":
 			dispatch("reap", func() error { return reapCmd(os.Args[2:]) })
 			return
+		case "run-outcome":
+			dispatch("run-outcome", func() error { return runOutcomeCmd(os.Args[2:]) })
+			return
+		case "runs":
+			dispatch("runs", func() error { return runsCmd(os.Args[2:]) })
+			return
 		}
 	}
 

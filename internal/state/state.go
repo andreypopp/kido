@@ -266,6 +266,10 @@ func readFiles() ([]Session, error) {
 	}
 	var out []Session
 	for _, e := range entries {
+		// e.IsDir() is also what keeps internal/subrun's runs/ subdirectory
+		// invisible here, deliberately: a run record must outlive the
+		// process it describes, which is the opposite of what Load does to
+		// every dead-pid file below, and must never be read as one.
 		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
 			continue
 		}
