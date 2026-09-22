@@ -14,19 +14,11 @@ import (
 )
 
 // prompt implements `kido prompt [--window]`: it reads a prompt from
-// stdin (the whole input, with one trailing newline stripped) and sends
-// it to the one agent pane in scope: over the agent's inbox socket when it
-// reported one (see deliver and inbox.go), otherwise pasted into the pane
-// with Enter a moment later (see tmux.SendPrompt).
-//
-// With no flag, the scope is the caller's window, widening to the whole
-// session when the window has no Claude Code pane at all. --window (also
-// -window) pins the scope to the caller's window only, never widening.
-// The caller's own pane ($TMUX_PANE) is only ever a candidate when it is
-// itself an agent pane, since candidates are picked by state.IsAgentPane
-// and a plain shell pane never qualifies. An agent pane is any pane kido
-// badges in the sidebar - Claude Code or pi alike - and the messages speak
-// of "agent" rather than naming either one.
+// stdin (one trailing newline stripped) and sends it to the one agent
+// pane in scope, over its inbox when it reported one and pasted into the
+// pane otherwise. The scope is the caller's window, widening to the
+// session only when the window has no agent pane at all; --window never
+// widens. An agent pane is any pane state.IsAgentPane accepts.
 //
 // Returns the process exit code, printing any error to stderr itself.
 func prompt(args []string, stdin io.Reader) int {
@@ -60,19 +52,16 @@ func prompt(args []string, stdin io.Reader) int {
 	}
 
 	states, _ := state.Load()
-	// procs.Sweep() shells out to ps, so it is only worth the cost when it
-	// could actually change the answer (needsSweep). Otherwise pi stays
-	// nil, which state.IsAgentPane treats as "nothing known".
+	// procs.Sweep() shells out to ps, so only when it could change the
+	// answer; a nil map is "nothing known" to state.IsAgentPane.
 	var pi map[int]bool
 	if needsSweep(panes, states, self, false) {
 		pi = procs.Sweep().Pi
 	}
 	candidates := agentPanesIn(panes, states, pi, self, false)
 	if !window && len(candidates) == 0 {
-		// Widen to the session only when the window has none at all.
-		// Several panes in the window would also be several in the
-		// session, so exit 5 (ambiguous) must not change by widening;
-		// only the not-found case does.
+		// Only the not-found case widens: several in the window would
+		// also be several in the session, so exit 5 never changes.
 		if pi == nil && needsSweep(panes, states, self, true) {
 			pi = procs.Sweep().Pi
 		}
@@ -92,8 +81,7 @@ func prompt(args []string, stdin io.Reader) int {
 }
 
 // deliver hands text to the chosen agent and returns prompt's exit code,
-// printing any error itself. See deliverInboxOrPaste for the actual
-// inbox-or-paste rule, shared with kido message.
+// printing any error itself.
 func deliver(inbox, pane, text string) int {
 	if _, err := deliverInboxOrPaste(inbox, text, pane, text); err != nil {
 		fmt.Fprintln(os.Stderr, "kido prompt:", err)
@@ -103,22 +91,16 @@ func deliver(inbox, pane, text string) int {
 }
 
 // sendPrompt is tmux.SendPrompt, indirected so tests can check the paste
-// fallback fires without talking to a real tmux server - the same reason
-// listPanes is a variable.
+// fallback fires without a tmux server.
 var sendPrompt = tmux.SendPrompt
 
 // deliverInboxOrPaste hands a message to the agent listening on inbox,
-// falling back to a tmux paste of pasteText into pane only when the inbox
-// turns out unavailable (errInboxUnavailable) - never on any other error,
-// since the message may already have been delivered and resending would
-// double-send (see AGENTS.md). Each destination is followed by what it
-// receives, because the two payloads differ for kido message: the inbox
-// gets a v1 envelope when the target advertises one, but a paste always
-// types the raw text, since nothing on the receiving end of send-keys
-// parses JSON.
-//
-// paste reports which path was actually used, for a caller that wants to
-// say so (kido message's stdout).
+// falling back to a tmux paste of pasteText into pane only on
+// errInboxUnavailable: any other error means the message may already
+// have been delivered (docs/design.md, "Delivery, and when a paste is
+// allowed"). The two payloads differ for kido message: the inbox may get
+// a v1 envelope, a paste always types the raw text. paste reports which
+// path was used.
 func deliverInboxOrPaste(inbox, inboxPayload, pane, pasteText string) (paste bool, err error) {
 	if inbox != "" {
 		err := deliverInbox(inbox, inboxPayload)
@@ -126,7 +108,6 @@ func deliverInboxOrPaste(inbox, inboxPayload, pane, pasteText string) (paste boo
 		case err == nil:
 			return false, nil
 		case errors.Is(err, errInboxUnavailable):
-			// Nothing was sent; send-keys is still open.
 		default:
 			return false, err
 		}
@@ -176,12 +157,9 @@ func agentPanesIn(panes []tmux.Pane, states map[string]state.Session, pi map[int
 	return out
 }
 
-// needsSweep reports whether some in-scope pane's current command could be
-// pi and has not already reported a state record - i.e. whether
-// procs.Sweep() could change what agentPanesIn returns for this scope. A
-// pane already in states is decided without the process table; one that
-// has reported nothing and is not running a pi-shaped command can't be pi
-// either, by the same rule state.IsAgentPane and internal/ui's take() use.
+// needsSweep reports whether some in-scope pane's current command could
+// be pi and has not already reported a state record, i.e. whether
+// procs.Sweep() could change what agentPanesIn returns.
 func needsSweep(panes []tmux.Pane, states map[string]state.Session, self tmux.Pane, wholeSession bool) bool {
 	for _, p := range panes {
 		if !inScope(p, self, wholeSession) {

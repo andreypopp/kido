@@ -171,10 +171,9 @@ func TestSweepReturnsAWindowOnce(t *testing.T) {
 	check(t, Sweep(panes, []state.Session{child}, now), []string{"@1"})
 }
 
-// TestSweepRecordsDiedForAWindowItCloses is docs/subagents-plan.md's Phase
-// 8: a run whose window a sweep collects with no outcome already
-// recorded is exactly the case Died exists for - the child never got a
-// chance to say anything about how it ended.
+// TestSweepRecordsDiedForAWindowItCloses: a run whose window a sweep
+// collects with no outcome already recorded is exactly the case Died
+// exists for - the child never got a chance to say how it ended.
 func TestSweepRecordsDiedForAWindowItCloses(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	if err := subrun.Create("run-died", "x"); err != nil {

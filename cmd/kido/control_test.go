@@ -74,17 +74,12 @@ func TestStopForceKillsInboxlessAgent(t *testing.T) {
 }
 
 // TestStopRefusesToKillASessionsOnlyWindow: a target in a different tmux
-// session from the caller is refused by resolveTarget's own session
-// scope, before killTargetPane's last-pane guard ever runs - not because
-// of that guard, whatever the layout of $1 is. This is D7: the layout
-// below happens to be exactly the one the last-pane guard is about, which
-// invited the earlier, wrong belief that this test exercised it (see
-// TestStopRefusedLeavesNoOutcome's "the session's last window" subtest
-// below, which calls killTargetPane directly - the only way to actually
-// reach that guard, since controlTarget's own scope rule means a caller
-// and a target in the same tmux session always leaves the guard's `&&`
-// false). Kept anyway, because a cross-session target must still be
-// refused and --force must still not buy it, on its own merits.
+// session from the caller is refused by resolveTarget's session scope,
+// before killTargetPane's last-pane guard ever runs. The layout below is
+// the one that guard is about, but this test does not reach it (see
+// TestStopRefusedLeavesNoOutcome's "the session's last window" subtest,
+// which calls killTargetPane directly); it pins that a cross-session
+// target is refused and --force does not buy it.
 func TestStopRefusesToKillASessionsOnlyWindow(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -112,10 +107,9 @@ func TestStopRefusesToKillASessionsOnlyWindow(t *testing.T) {
 	}
 }
 
-// TestStopKillsOneOfTwoPanesInAWindow is D5's regression case: a window
-// with a bystander pane beside the target. An earlier draft of stopCmd
-// killed the whole window, which would have taken the bystander down
-// too; only the target's own pane may go.
+// TestStopKillsOneOfTwoPanesInAWindow: a window with a bystander pane
+// beside the target. Only the target's own pane may go; killing the
+// window would take the bystander with it.
 func TestStopKillsOneOfTwoPanesInAWindow(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -317,14 +311,13 @@ func TestStopNoEscalationWhenTargetGoes(t *testing.T) {
 }
 
 // TestStopEscalatesWhenTheTargetDoesNotAgree pins the case the escalation
-// exists for and an earlier draft got backwards: a wedged agent does not
-// answer "ok". It holds the connection open until the deadline, or it
-// answers something else, or its own scope check refuses - and in every
-// one of those the request was not agreed to, which is a reason to
-// escalate rather than to give up. Returning the send error here left
-// kido stop failing outright, with the window intact, exactly when it was
-// needed most; --force did not help, because that flag is about having no
-// inbox, not about an inbox that answered badly.
+// exists for: a wedged agent does not answer "ok". It holds the
+// connection open until the deadline, or answers something else, or its
+// own scope check refuses, and every one of those is a reason to
+// escalate rather than give up. Returning the send error instead leaves
+// kido stop failing outright, with the window intact, exactly when it is
+// needed most; --force does not help, because that flag is about having
+// no inbox, not about an inbox that answered badly.
 func TestStopEscalatesWhenTheTargetDoesNotAgree(t *testing.T) {
 	for _, reply := range []struct{ name, answer string }{
 		{"never answers", ""},
@@ -444,12 +437,9 @@ func TestInterruptRefusesSelf(t *testing.T) {
 	}
 }
 
-// TestInterruptRefusedAgainstInboxlessAgent pins a behaviour that was
-// already correct but untested: unlike stop, interrupt has no --force
-// degrade at all (docs/subagents-plan.md's "Interrupting and stopping a
-// subagent" section: "there is no destructive fallback that makes sense
-// for 'redirect this, do not kill it'"), so an agent with no inbox to
-// carry the request is simply refused, with nothing killed.
+// TestInterruptRefusedAgainstInboxlessAgent: unlike stop, interrupt has
+// no --force degrade at all, so an agent with no inbox to carry the
+// request is simply refused, with nothing killed.
 func TestInterruptRefusedAgainstInboxlessAgent(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -467,14 +457,12 @@ func TestInterruptRefusedAgainstInboxlessAgent(t *testing.T) {
 	}
 }
 
-// TestStopRefusedLeavesNoOutcome pins the ordering stopCmd's own comment
-// argues for: the Stopped outcome goes in only once the stop request is
-// actually away, because subrun.RecordOutcome writes once and for all
-// (O_EXCL), so an outcome written on a path that then refuses marks a run
-// that is still running happily as stopped forever, with nothing able to
-// correct it. Every refusal stop has is covered - each of these leaves the
-// target alive - and moving recordStopped back above the guards fails all
-// but the last of them.
+// TestStopRefusedLeavesNoOutcome pins the ordering in stopCmd: the Stopped
+// outcome goes in only once the stop request is actually away, because
+// subrun.RecordOutcome writes once and for all (O_EXCL), so an outcome
+// written on a path that then refuses marks a run that is still running
+// as stopped forever. Every refusal stop has is covered, and moving
+// recordStopped back above the guards fails all but the last of them.
 func TestStopRefusedLeavesNoOutcome(t *testing.T) {
 	// A run record whose id is the target's session id, which is what makes
 	// target.ID a run id at all (see recordStopped).

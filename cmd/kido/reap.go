@@ -8,18 +8,10 @@ import (
 	"kido/internal/state"
 )
 
-// reapCmd implements `kido reap`: one sweep of the window lifecycle's
-// backstop, by hand. The sweep itself is reap.Sweep, which the sidebar
-// runs on every poll (internal/ui) - that, not this command, is what
-// actually collects a subagent window in a live session, since nothing
-// invokes a command a human has to remember to type. This one exists so
-// the sweep has an entry point a test and an operator can drive directly,
-// and runs exactly the same rules.
-//
-// It reads with state.ReadAll rather than state.Load for the reason
-// ReadAll documents, though the difference no longer decides anything:
-// Sweep's first rule reads no record at all, and its second checks
-// liveness for itself.
+// reapCmd implements `kido reap`: one reap.Sweep by hand, for a test or
+// an operator; the sidebar's poll runs the same sweep continuously. It
+// reads with state.ReadAll so as not to delete the records it reasons
+// about, though Sweep checks liveness for itself either way.
 func reapCmd(args []string) error {
 	if len(args) != 0 {
 		return fmt.Errorf("usage: kido reap")

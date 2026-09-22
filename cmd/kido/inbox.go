@@ -13,21 +13,13 @@ import (
 	"kido/internal/state"
 )
 
-// An agent that can take a prompt as a real user message (pi, through its
-// kido extension) listens on a unix stream socket and reports its path
-// with `kido agent-status --inbox PATH`. This is the client side of that
-// protocol:
-//
-//   - one prompt per connection: connect, write the prompt as UTF-8 with
-//     no trailing newline and no framing, then half-close the write half
-//     so the reader sees EOF as the end of the message;
-//   - the agent answers "ok\n" and closes, or, for an ask envelope it is
-//     refusing to avoid a cycle (see AGENTS.md's Cycles section),
-//     "refused\n".
+// This file is the client side of the inbox protocol (docs/design.md,
+// "The inbox"): one message per connection, written whole, half-closed,
+// answered with "ok\n" or "refused\n".
 
-// inboxTimeout bounds the whole exchange, from write to reply. The agent
-// answers as soon as it has read the message, so anything slower than this
-// is a wedged peer, not a busy one. A variable so tests can shorten it.
+// inboxTimeout bounds the whole exchange, from connect to reply. The
+// agent answers as soon as it has read the message, so anything slower is
+// a wedged peer, not a busy one. A variable so tests can shorten it.
 var inboxTimeout = 2 * time.Second
 
 // sunPathMax is the largest unix socket path the kernel accepts (104 bytes
@@ -37,16 +29,10 @@ var inboxTimeout = 2 * time.Second
 const sunPathMax = 103
 
 // inboxPath is where an agent named name should put its inbox socket:
-// <state dir>/inbox/<name>.sock, absolute, with the directory created. It
-// backs `kido inbox-path <name>` so an agent's extension does not have to
-// reimplement state.Dir()'s precedence or guess kido's sun_path budget -
-// the same reason `kido debug-log` exists.
-//
-// A name with a path separator or a ".." in it is rejected: the name goes
-// straight into a file name, and an extension passing its session id has
-// no business reaching outside the inbox directory. A path too long for
-// sun_path is an error rather than a truncated path, so the caller can
-// simply do without an inbox instead of listening where kido cannot dial.
+// <state dir>/inbox/<name>.sock, absolute, with the directory created. A
+// name with a path separator or ".." is rejected, and a path too long for
+// sun_path is an error rather than a truncated path, so the caller does
+// without an inbox instead of listening where kido cannot dial.
 func inboxPath(name string) (string, error) {
 	switch {
 	case name == "":
@@ -62,17 +48,13 @@ func inboxPath(name string) (string, error) {
 	}
 	dir = filepath.Join(dir, "inbox")
 	path := filepath.Join(dir, name+".sock")
-	// Checked before anything is created, so a rejected name leaves no
-	// directory behind.
+	// Before anything is created, so a rejected name leaves nothing behind.
 	if len(path) > sunPathMax {
 		return "", fmt.Errorf("socket path is %d bytes, over the %d-byte limit: %s",
 			len(path), sunPathMax, path)
 	}
-	// The state directory keeps the mode its other writers use
-	// (state.Record, logHookEvent); only the inbox directory is private,
-	// since anyone who can write into it can impersonate an agent's
-	// socket. state.Load ignores directories, so this one is invisible to
-	// it.
+	// Only the inbox directory is private: anyone who can write into it
+	// can impersonate an agent's socket.
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return "", err
 	}
@@ -82,29 +64,20 @@ func inboxPath(name string) (string, error) {
 	return path, nil
 }
 
-// errInboxUnavailable reports that no agent is listening on the inbox, so
-// nothing was delivered and the caller may safely fall back to send-keys:
-// the socket path is empty or unusable, the file is missing, or it is a
-// stale socket a dead process left behind. Every failure from the moment
-// the connection is up is reported as itself instead, because the message
-// may already have arrived and a fallback would send it twice.
+// errInboxUnavailable reports that nothing was sent: the socket path is
+// empty or unusable, the file is missing, or it is a stale socket a dead
+// process left behind. It is the only error a paste may fall back on;
+// every failure after the connection is up is reported as itself, since
+// the message may already have arrived.
 var errInboxUnavailable = errors.New("no agent listening on the inbox")
 
 // errAskRefused reports that an ask was read and deliberately declined,
-// not merely undelivered: the target already has an ask outstanding to
-// the asker, and answering this one too would close a cycle. It is
-// distinct from errInboxUnavailable on purpose - deliverInboxOrPaste must
-// never fall back to a paste on this error, since nothing was
-// mis-delivered and pasting the question again would just hand the
-// target the same cycle it just refused.
+// not merely undelivered, so it must never fall back to a paste either.
 var errAskRefused = errors.New("ask refused: the target already has an ask outstanding to the asker")
 
 // deliverInbox sends text to the agent listening on the unix socket at
 // path and waits for its acknowledgement. A nil error means the agent has
-// the message. errInboxUnavailable (test with errors.Is) means the message
-// was never sent and send-keys is still open; any other error means the
-// exchange broke down after the connection was up, and the prompt must not
-// be sent again.
+// the message; test errInboxUnavailable with errors.Is.
 func deliverInbox(path, text string) error {
 	if path == "" {
 		return fmt.Errorf("%w: no socket path", errInboxUnavailable)
@@ -113,19 +86,16 @@ func deliverInbox(path, text string) error {
 		return fmt.Errorf("%w: socket path is %d bytes, over the %d-byte limit",
 			errInboxUnavailable, len(path), sunPathMax)
 	}
-	// One deadline for the whole exchange, connect included: it bounds the
-	// dial (a listener whose owner is wedged with a full accept backlog
-	// would otherwise block in connect(), before there is a connection to
-	// set a deadline on) and then the write and the read, so a peer that is
-	// slow to accept and slow to answer still costs one inboxTimeout in
-	// total rather than one per phase.
+	// One deadline for the whole exchange, connect included: a listener
+	// whose owner is wedged with a full accept backlog blocks in connect(),
+	// before there is a connection to set a deadline on.
 	deadline := time.Now().Add(inboxTimeout)
 	d := net.Dialer{Deadline: deadline}
 	c, err := d.Dial("unix", path)
 	if err != nil {
 		return fmt.Errorf("%w: %v", errInboxUnavailable, err)
 	}
-	conn := c.(*net.UnixConn) // a unix dial always yields one, and CloseWrite is the framing
+	conn := c.(*net.UnixConn) // CloseWrite is the framing
 	defer conn.Close()
 
 	if err := conn.SetDeadline(deadline); err != nil {

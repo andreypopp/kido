@@ -196,12 +196,11 @@ func TestReapNeverClosesASessionsLastWindow(t *testing.T) {
 	}
 }
 
-// TestFocusedWindowIsReapedOnceTheUserLeaves is what replaces the linger
-// helper's retry loop. The helper checks focus once and gives up, so a
-// user reading the window when it fires used to leak it for good. Now the
-// sweep runs on every sidebar poll with the same focus rule, so the
-// window is collected the moment they switch away - and not one moment
-// before.
+// TestFocusedWindowIsReapedOnceTheUserLeaves: the linger helper checks
+// focus once and gives up, so a user reading the window when it fires
+// would leak it for good without the sweep. The sweep runs on every
+// sidebar poll with the same focus rule, so the window is collected the
+// moment they switch away - and not one moment before.
 func TestFocusedWindowIsReapedOnceTheUserLeaves(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -233,8 +232,8 @@ func TestFocusedWindowIsReapedOnceTheUserLeaves(t *testing.T) {
 // one that still needs a state record: nothing in tmux knows who spawned
 // whom. The subagent here is perfectly healthy - its process is running,
 // its pane is not dead - and is closed because the agent that spawned it
-// is gone, which is the cancellation docs/subagents-plan.md's Lifecycle
-// section asks for when the in-process poll never gets to run.
+// is gone, which is the cancellation the sweep's second rule provides
+// when the in-process poll never gets to run.
 func TestSidebarCancelsSubagentOfDeadParent(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -258,8 +257,7 @@ func TestSidebarCancelsSubagentOfDeadParent(t *testing.T) {
 // TestCloseWindowLeavesFocusedWindowAlone checks `kido close-window`
 // against a real tmux server: a window the client has actually switched
 // to must be left open, since the user may have gone there to read a
-// finishing subagent's last screen (docs/subagents-plan.md's Lifecycle
-// section).
+// finishing subagent's last screen.
 func TestCloseWindowLeavesFocusedWindowAlone(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

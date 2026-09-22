@@ -61,7 +61,7 @@ func TestCloseWindowKillsUnfocused(t *testing.T) {
 // TestCloseWindowRefusesANonWindowID pins the hole the windowIDPattern
 // check closes: kill-window resolves any tmux target, so a window named
 // by anything but its id - a window name, an index, "session:window" -
-// used to slip past the focus check (which can only match a WindowID) and
+// would slip past the focus check (which can only match a WindowID) and
 // kill the very window the user was reading.
 func TestCloseWindowRefusesANonWindowID(t *testing.T) {
 	panes := []tmux.Pane{

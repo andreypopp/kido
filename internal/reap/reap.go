@@ -1,23 +1,8 @@
-// Package reap decides which subagent windows are finished with, and is
-// the backstop half of the window lifecycle in docs/subagents-plan.md.
-//
-// The primary mechanism is the linger helper a subagent spawns before it
-// exits (`kido close-window`, cmd/kido/closewindow.go). It never runs at
-// all when the subagent dies by SIGKILL or an OOM kill, and it skips a
-// window the user is reading, so something outside the subagent has to
-// sweep up after it. That sweep is Sweep, run from the sidebar's own poll
-// (internal/ui) and from `kido reap` (cmd/kido/reap.go).
-//
-// What a sweep may close is decided from tmux, not from kido's state
-// directory. An earlier design read the state record of a dead subagent
-// and closed the window its pane was in, which cannot work: internal/ui
-// calls state.Load every 100ms and Load deletes a dead-pid record as a
-// side effect of reading it, so with a sidebar running - the normal case
-// - the record is gone within a tick of the process dying, long before
-// any sweep sees it. The @kido_subagent window option kido spawn sets
-// (tmux.SubagentOption) has neither problem: it lives in the tmux server,
-// nothing races it away, and it can only ever name a window kido itself
-// created.
+// Package reap decides which subagent windows are finished with: the
+// backstop behind the linger helper (`kido close-window`), run from the
+// sidebar's poll (internal/ui) and from `kido reap`. What a sweep may
+// close is decided from tmux's @kido_subagent mark, never from a state
+// record; docs/design.md's "Window lifecycle" says why.
 package reap
 
 import (
@@ -31,13 +16,9 @@ import (
 )
 
 // Grace is how long a finished subagent's window is left alone before a
-// sweep may close it: the same read-it-before-it-goes window the linger
-// helper gives the user, since a sweep that fired the instant the pane
-// died would close windows out from under the linger it exists to back
-// up. Read from the environment because the two halves of the lifecycle
-// run in different processes - this one in the sidebar, the helper's own
-// delay in pi/kido-agents.ts, which reads the same variable - and a test
-// must be able to shorten both without waiting out a real 30 seconds.
+// sweep may close it: the same read window the linger helper gives the
+// user, read from the same KIDO_LINGER_SECONDS pi/kido-agents.ts reads,
+// so the two halves agree.
 var Grace = graceFromEnv(30 * time.Second)
 
 func graceFromEnv(def time.Duration) time.Duration {
@@ -59,55 +40,30 @@ type window struct {
 }
 
 // Sweep returns the windows that should be closed now, in the order they
-// appear in panes. sessions is every state record the caller has - live
-// ones at least; a caller reading through state.Load has only those, one
-// reading through state.ReadAll has the dead ones too, and both give the
-// same answers here because liveness is checked rather than assumed.
+// appear in panes. sessions may come from state.Load or state.ReadAll;
+// liveness is checked here rather than assumed, so both give the same
+// answer.
 //
-// Two rules, and both of them may only ever close a window carrying
-// tmux.SubagentOption:
+// Two rules, both restricted to a window carrying tmux.SubagentOption:
 //
-//  1. every pane of a marked window is dead and has been for Grace. The
-//     subagent is finished, by exit or by SIGKILL, and its window is the
-//     corpse remain-on-exit left behind. This rule reads no state record
-//     at all, which is what makes it work in a session with a sidebar
-//     running (see the package comment) and what makes it safe against
-//     pane ids: a state file outlives the tmux server that issued the
-//     pane id it names, and %0 on the next server belongs to somebody
-//     else entirely - but a window that is both marked and dead is this
-//     server's own answer about itself.
-//
+//  1. every pane of a marked window is dead and has been for Grace. This
+//     rule reads no state record at all.
 //  2. a live subagent whose parent is gone is cancelled by closing its
-//     window - a forced stop rather than the graceful shutdown the poll
-//     in pi/kido-agents.ts asks for, but the only lever a process outside
-//     pi has. This one needs the record, since nothing in tmux knows who
-//     spawned whom; the mark is what keeps a stale record naming a
-//     recycled pane id from closing an unrelated window.
+//     window.
 //
-// A window that is any client's current one is never closed by either
-// rule. The user may have switched to it to read the subagent's last
-// screen, which is exactly what `kido close-window` refuses for, and a
-// sweep that overrode that refusal would make it meaningless. Nothing is
-// lost by waiting: a sweep runs again on the next poll, so the window is
-// collected as soon as the user leaves it.
+// Neither rule closes a window that is any client's current one, or a
+// session's last window.
 func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) []string {
 	windows, byID, byPane := foldWindows(panes)
 
 	closing := map[string]bool{}
 	var out []string
-	// The guards every rule shares: a window nobody marked is not kido's
-	// to close, a window the user is reading is not closed out from under
-	// them, and a session's last window is not closed at all.
 	mark := func(id string) {
 		w, ok := byID[id]
 		if !ok || closing[id] || !w.marked || w.focused || tmux.LastWindow(panes, id) {
 			return
 		}
 		closing[id] = true
-		// Best-effort, and silently a no-op when it loses the race to an
-		// outcome the run already recorded for itself (RecordOutcome's
-		// O_EXCL) - the whole point of Died is to cover the run that never
-		// got to report anything, not to overwrite one that did.
 		if w.runID != "" {
 			subrun.RecordOutcome(w.runID, subrun.Outcome{Result: subrun.Died, At: now}) //nolint:errcheck // best effort
 		}
@@ -127,11 +83,9 @@ func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) []string 
 		}
 	}
 	for _, s := range sessions {
-		// A record with no ParentInstance is a root agent - the user's own
-		// pane - and is nobody's to cancel. A dead subagent is rule 1's
-		// business, and acting on its record here is what would let a
-		// state file left by a previous tmux server close a window by
-		// pane id alone.
+		// A dead subagent is rule 1's business: acting on its record here
+		// would let a state file left by a previous tmux server close a
+		// window by pane id alone.
 		if s.ParentInstance == "" || !state.Alive(s.PID) || live[s.ParentInstance] {
 			continue
 		}

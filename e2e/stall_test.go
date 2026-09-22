@@ -43,12 +43,11 @@ func (h *harness) stalledFor(session, id string) func() bool {
 	}
 }
 
-// TestAgentsShowsStalledAfterHeartbeatStops is D1/D2's end-to-end case:
+// TestAgentsShowsStalledAfterHeartbeatStops is the end-to-end stall case:
 // an agent that reports Running once and then goes silent - exactly what
 // a wedged pi with no heartbeat looks like from outside, and exactly what
-// pi/kido-status.ts's heartbeat exists to prevent for a healthy one (see
-// state.StallThreshold's doc). The harness shortens
-// KIDO_STALL_THRESHOLD_MS to 400ms for the whole suite.
+// pi/kido-status.ts's heartbeat exists to prevent for a healthy one. The
+// harness shortens KIDO_STALL_THRESHOLD_MS for the whole suite.
 func TestAgentsShowsStalledAfterHeartbeatStops(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

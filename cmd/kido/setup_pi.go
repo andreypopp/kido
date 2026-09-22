@@ -9,13 +9,8 @@ import (
 )
 
 // setupPi installs the pi extensions into pi's user extensions directory,
-// which pi discovers on startup with no further configuration. An
-// existing file is backed up next to it, the way setup-claude backs up
-// settings.json.
-//
-// Every file in pi.Extensions is installed, and each one independently: a
-// developer may well have pointed one of the two at a checkout, so the
-// symlink rule below is per file rather than per set.
+// which pi discovers on startup. An existing file is backed up next to
+// it. The symlink rule is applied per file, not per set.
 func setupPi() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -37,8 +32,7 @@ func setupPi() error {
 func installPiExtension(dir string, ext pi.Extension) error {
 	path := filepath.Join(dir, ext.Name)
 	// Writing follows a symlink, so a link pointing at a checkout would
-	// have this overwrite the source it was linked to. Leave it alone:
-	// whoever linked it wants their own copy to be the live one.
+	// overwrite the source it was linked to.
 	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		target, err := os.Readlink(path)
 		if err != nil {

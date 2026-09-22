@@ -167,14 +167,12 @@ func TestSpawnHostileTaskTextRoundTrip(t *testing.T) {
 	}
 }
 
-// TestMessageAddressingDashPrefixedTarget is phase-3 D3: a model-authored
-// target beginning with "-" must not be parsed as a kido flag. The fix
-// lives on the caller's side (pi/kido-agents.ts passes "--" before the
-// target), and nothing in this repo pinned that "--" actually does what
-// the fix assumes on kido's end. If message ever stopped relying on
-// flag.FlagSet's ordinary "--" handling - a hand-rolled arg scanner, say -
-// one of these would come back "flag provided but not defined" instead of
-// reaching the target.
+// TestMessageAddressingDashPrefixedTarget: a model-authored target
+// beginning with "-" must not be parsed as a kido flag. pi/kido-agents.ts
+// passes "--" before the target, and this pins that "--" does what that
+// assumes on kido's end: if message ever stopped relying on flag.FlagSet's
+// ordinary "--" handling, one of these would come back "flag provided but
+// not defined" instead of reaching the target.
 func TestMessageAddressingDashPrefixedTarget(t *testing.T) {
 	for _, target := range []string{"-weird", "--help", "-"} {
 		t.Run(target, func(t *testing.T) {

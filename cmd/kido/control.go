@@ -17,14 +17,8 @@ import (
 )
 
 // stopEscalation is how long kido stop waits, after asking a session to
-// stop over its inbox, for it to actually go before killing its window
-// instead. A wedged child will not answer - a real pi has sat alive and
-// blocked for hours after a laptop slept and its provider connection
-// died - so stop is only reliable when it does not just trust a request
-// was received. Read from the environment, the same reason
-// internal/reap.Grace is: a unit test can reassign the package variable
-// directly, but the e2e suite drives kido as a separately built binary,
-// and only the environment reaches that.
+// stop over its inbox, for it to actually go before killing its pane.
+// Overridable via KIDO_STOP_ESCALATION_MS for the e2e suite.
 var stopEscalation = escalationFromEnv(5 * time.Second)
 
 func escalationFromEnv(def time.Duration) time.Duration {
@@ -38,25 +32,16 @@ func escalationFromEnv(def time.Duration) time.Duration {
 // gone, while waiting out stopEscalation.
 var stopPollInterval = 100 * time.Millisecond
 
-// killPane is tmux.KillPane, indirected the same way killWindow
-// (closewindow.go) is, so a test can fake it instead of talking to a
-// real tmux server.
+// killPane is tmux.KillPane, indirected so a test can fake it.
 var killPane = tmux.KillPane
 
 func interruptUsage() string { return "usage: kido interrupt <agent>" }
 func stopUsage() string      { return "usage: kido stop <agent> [--force]" }
 
 // interruptCmd implements `kido interrupt <agent>`: abort the target's
-// current turn without ending its session, so it stays alive and idle,
-// ready for a corrected instruction. Delivered as a v1 "interrupt"
-// envelope over the target's inbox; pi's extension answers it with
-// ctx.abort() (see docs/subagents-plan.md and pi's "ctx.isIdle() /
-// ctx.abort() / ctx.hasPendingMessages()" section).
-//
-// Unlike kido stop, an interrupt has no escalation: aborting a turn is
-// meaningless to anything that cannot receive it, and there is no
-// destructive fallback that makes sense for "redirect this, do not kill
-// it" the way there is for "end this session".
+// current turn without ending its session, as a v1 "interrupt" envelope
+// over its inbox. Unlike stop it has no escalation: there is no
+// destructive fallback that means "redirect this, do not kill it".
 func interruptCmd(args []string) error {
 	fs := flag.NewFlagSet("interrupt", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -78,21 +63,11 @@ func interruptCmd(args []string) error {
 	return nil
 }
 
-// stopCmd implements `kido stop <agent> [--force]`: end the target's
-// session outright. It asks over the inbox first, exactly like interrupt,
-// then waits up to stopEscalation for the session's own record to go
-// (pi's session_shutdown handler removes it, the same teardown phase 6
-// built for a normal exit - see docs/subagents-plan.md's Lifecycle
-// section) and kills its window if it has not.
-//
-// An agent with no inbox at all cannot be asked anything, so stopping one
-// degrades straight to killing its pane - destructive and irreversible,
-// the opposite of kido message's paste fallback, where degrading silently
-// was the whole point (an agent that cannot speak the inbox protocol
-// still gets its prompt some other way). Here there is no gentler "some
-// other way": killing the window ends the session outright with no
-// chance for the agent to clean up, so it is refused unless --force says
-// the caller means it.
+// stopCmd implements `kido stop <agent> [--force]`: ask over the inbox,
+// wait up to stopEscalation for the session's record to go, and kill its
+// pane if it has not. A target that cannot be asked at all degrades
+// straight to the kill, which needs --force. docs/design.md, "Interrupt
+// and stop".
 func stopCmd(args []string) error {
 	fs := flag.NewFlagSet("stop", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -109,10 +84,7 @@ func stopCmd(args []string) error {
 		return err
 	}
 
-	// Both --force degrades below are the same act, and neither is an
-	// escalation: nothing was asked, so the pane is all there is.
-	// killTargetPane records the run's outcome itself, so neither degrade
-	// has to.
+	// killTargetPane records the run's outcome itself.
 	degrade := func() error {
 		if err := killTargetPane(target); err != nil {
 			return err
@@ -128,35 +100,19 @@ func stopCmd(args []string) error {
 		return degrade()
 	}
 
-	// sendErr is carried past this switch rather than returned, because
-	// "the target did not agree to stop" is the escalation's whole reason
-	// for existing, not a reason to give up: a wedged agent answers late,
-	// wrongly, or not at all, and an earlier draft that returned here left
-	// stop failing outright in exactly the case it was written for. Only
-	// errInboxUnavailable is different - nothing was asked and nothing
-	// ever could be, which is the same position as having no inbox at all
-	// and carries the same --force requirement.
+	// A send error other than errInboxUnavailable is a reason to escalate,
+	// not to give up: a wedged agent answers late, wrongly, or not at all.
 	sendErr := sendControl(target, states, msg.KindStop)
 	if errors.Is(sendErr, errInboxUnavailable) {
 		if !*force {
 			return fmt.Errorf("%s could not be asked to stop (%v); pass --force to kill its window instead", targetLabel(target), sendErr)
 		}
-		// Same degrade as the no-inbox case above: a recorded socket that
-		// turns out to be stale is functionally no inbox at all.
 		return degrade()
 	}
 
-	// Recorded as soon as the request is away, and not a line earlier:
-	// every refusal above returns with the run still running, and an
-	// outcome written before one of them would mark a live run stopped
-	// forever - O_EXCL means nothing can ever correct it. Written before
-	// the wait below rather than after it, because a child that does as it
-	// is asked reports Completed from its own session_shutdown a moment
-	// later, for a reason that was never really its own idea; RecordOutcome
-	// settles that race in favour of whoever wrote first, and the only
-	// thing between the send and here is an error comparison. A target
-	// with no run record (a root session, or one started outside kido
-	// spawn) has nowhere for this to land, and the error is ignored.
+	// After every refusal (an outcome is O_EXCL and could never be
+	// corrected) and before the wait (so it wins against the child's own
+	// Completed a moment later).
 	recordStopped(target)
 
 	deadline := time.Now().Add(stopEscalation)
@@ -168,9 +124,6 @@ func stopCmd(args []string) error {
 		time.Sleep(stopPollInterval)
 	}
 
-	// why says what the wait was waiting on, so a kill that followed a
-	// refused or unanswered request does not read as though the target had
-	// simply taken too long over one it accepted.
 	why := fmt.Sprintf("did not stop within %s", stopEscalation)
 	if sendErr != nil {
 		why = fmt.Sprintf("did not accept the stop request (%v) and was still there after %s", sendErr, stopEscalation)
@@ -182,28 +135,11 @@ func stopCmd(args []string) error {
 	return nil
 }
 
-// killTargetPane kills target's own pane, not its window - the escalation
-// stopCmd falls back to, and the forced degrade for an inbox-less or
-// unreachable target. Killing the window, as an earlier draft did, would
-// take every bystander pane sharing it down too; a stop was asked against
-// one agent, not against whatever else happens to share its window. It
-// reports what happened through its error alone; the caller says which of
-// the two paths it was, since "killed" and "did not stop in time, so
-// killed" are different things to tell a human.
-//
-// Killing a window's last pane closes the window as tmux's own
-// consequence, so the guard closeWindowCmd applies to a whole window
-// still has to apply here: a target whose pane is the only one in its
-// session's only window is refused, for the same reason - kill-window (or
-// this pane kill's equivalent effect) on the last window ends the session
-// itself and every client attached to it, which is never what stopping
-// one agent asked for. A pane sharing its window with another is never
-// refused on this basis, whatever else is true of the window: killing it
-// leaves the window, and the session, standing. The focused-window
-// refusal close-window and the reap sweep share is deliberately not
-// repeated here - those two act on their own initiative and must not take
-// a screen away from a user who may be reading it, while a stop was asked
-// for by name and against a pane that is still alive.
+// killTargetPane kills target's own pane, not its window, so a bystander
+// pane sharing the window survives. It refuses a pane that is the only
+// one in its session's only window, since killing it would end the
+// session; it deliberately does not refuse a focused window, because a
+// stop was asked for by name. The caller says which path got here.
 func killTargetPane(target state.Session) error {
 	panes, err := listPanes()
 	if err != nil {
@@ -213,50 +149,29 @@ func killTargetPane(target state.Session) error {
 	if !ok {
 		return fmt.Errorf("no pane found for %s", targetLabel(target))
 	}
-	// D7: this guard cannot fire through kido stop today. controlTarget's
-	// resolveTarget refuses a target outside the caller's own tmux session,
-	// and the caller (a human at the CLI, or an agent - either way, self is
-	// its own pane in that same session) is never the target itself
-	// (target.Pane == self is refused earlier). So the caller's pane is
-	// always somewhere in the target's session: either in the target's own
-	// window, which makes LastPane false, or in a different window, which
-	// makes LastWindow false. One of the two always fails, so the && below
-	// is vacuously true - never both at once. It stays rather than being
-	// deleted because it is still correct defence against a future caller
-	// this file does not have yet (one that resolves a target without going
-	// through a live caller pane in the same session - e.g. a future
-	// cross-session admin path), and because killPane's own doc comment
-	// above promises this refusal exists; deleting it silently would make
-	// that comment a lie. docs/subagents-plan.md's Lifecycle section notes
-	// the same thing.
+	// This guard cannot fire through kido stop today: controlTarget keeps
+	// the caller's own pane in the target's session, so one of the two is
+	// always false. It stays as defence for a future caller that reaches a
+	// target without a live caller pane in the same session.
 	if tmux.LastWindow(panes, pane.WindowID) && tmux.LastPane(panes, pane.WindowID) {
 		return fmt.Errorf("%s is its session's only pane; killing it would destroy the session", targetLabel(target))
 	}
-	// After the refusal above, so a stop that did not happen leaves no
-	// outcome, and before the kill, so a child that catches the hangup and
-	// shuts down tidily cannot get Completed in first: kido stop is what
-	// ended this, whichever of stopCmd's two paths got here.
+	// After the refusal, before the kill (see stopCmd).
 	recordStopped(target)
 	return killPane(pane.PaneID)
 }
 
 // recordStopped marks target's run stopped, if it has one: target.ID is
-// a run id exactly when target is a subagent kido spawn created, since
-// that is the session id kido spawn told the child to use. Best-effort -
-// the common case is a target with no run record at all, and a failure to
-// write one is never a reason to fail a stop already under way.
+// a run id exactly when kido spawn created the target. Best-effort, since
+// the common case is a target with no run record at all.
 func recordStopped(target state.Session) {
 	subrun.RecordOutcome(target.ID, subrun.Outcome{Result: subrun.Stopped, At: time.Now()}) //nolint:errcheck // best effort
 }
 
-// controlTarget resolves interrupt/stop's argument the same way kido
-// message's resolveTarget does, and enforces their shared scope rule: a
-// caller that is itself an agent (one with its own state record) may only
-// reach its own descendants, so a confused peer cannot interrupt or stop
-// something unrelated to it; a human at the CLI, who has no such record,
-// may act on anything. This is not a security boundary - trust is
-// uid-scoped and `from` is advisory, as AGENTS.md records - it exists
-// only to keep an agent inside the part of the tree it owns.
+// controlTarget resolves interrupt/stop's argument the way kido message
+// does and enforces their shared scope rule: a caller with a state record
+// of its own may only reach its descendants; a human at the CLI, who has
+// none, may act on anything.
 func controlTarget(to string) (target state.Session, states map[string]state.Session, err error) {
 	states, err = state.Load()
 	if err != nil {
@@ -277,7 +192,7 @@ func controlTarget(to string) (target state.Session, states map[string]state.Ses
 
 	callerRecord, isAgent := states[self]
 	if !isAgent {
-		return target, states, nil // a human at the CLI may act on anything
+		return target, states, nil
 	}
 	callerPane, ok := findPane(panes, self)
 	if !ok {
@@ -292,19 +207,8 @@ func controlTarget(to string) (target state.Session, states map[string]state.Ses
 
 // sendControl delivers a control-kind envelope (interrupt or stop) to
 // target's inbox, gated on the same v1 advertisement kido message
-// requires for any non-message kind: a target that has not advertised
-// protocol 1 only ever speaks v0 raw text, which has nowhere to carry a
-// kind, and a receiver that has not been upgraded past v0 would show the
-// model the envelope's literal JSON as its next prompt.
-//
-// There is deliberately no protocol 2 or version gate specific to
-// interrupt/stop: kido runs on one machine with the binary and the
-// extension upgraded together, so a version negotiation here would be
-// ceremony over a risk that does not exist for stop (a stale extension
-// that does not recognise the kind still leaves the session alive, and
-// stopCmd's escalation kills its window regardless) and that this v1
-// gate already covers for interrupt (a target that has never spoken v1 is
-// refused outright, the same as for ask/reply/notice).
+// requires for any non-message kind. There is deliberately no version
+// gate beyond that (docs/design.md, "v0 and v1").
 func sendControl(target state.Session, states map[string]state.Session, kind msg.Kind) error {
 	if target.Inbox == "" {
 		return fmt.Errorf("%w: %s has no inbox", errInboxUnavailable, targetLabel(target))
@@ -317,11 +221,8 @@ func sendControl(target state.Session, states map[string]state.Session, kind msg
 	if err != nil {
 		return err
 	}
-	// "refused" on the wire means "read, and deliberately declined", which
-	// for a control kind is the receiver's own scope check saying no - not
-	// the ask-cycle rule errAskRefused's text describes. Reported as what
-	// it actually is, or a refused interrupt explains itself with a
-	// sentence about outstanding asks.
+	// "refused" for a control kind is the receiver's scope check saying
+	// no, not the ask-cycle rule errAskRefused's text describes.
 	if err := deliverInbox(target.Inbox, string(raw)); err != nil {
 		if errors.Is(err, errAskRefused) {
 			return fmt.Errorf("%s refused the %s", targetLabel(target), kind)

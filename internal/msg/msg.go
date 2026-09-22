@@ -14,9 +14,7 @@ import (
 // V1 is the only envelope version kido speaks so far.
 const V1 = 1
 
-// Kind is what an envelope carries. ask/reply/notice are defined now so
-// the wire shape does not need to change again, but only kind "message"
-// has a sender in this phase - kido message is its only producer.
+// Kind is what an envelope carries.
 type Kind string
 
 const (
@@ -28,10 +26,8 @@ const (
 	KindStop      Kind = "stop"      // end the receiver's session
 )
 
-// From identifies who sent an envelope. It is advisory, not authenticated
-// - trust is uid-scoped by the inbox directory's mode, not by this field
-// (see AGENTS.md) - so a sender fills it from its own state.Session record
-// rather than anything the receiver can verify.
+// From identifies who sent an envelope. It is advisory, not
+// authenticated: a sender fills it from its own state.Session record.
 type From struct {
 	Session string `json:"session"`
 	Name    string `json:"name,omitempty"`
@@ -51,11 +47,9 @@ type Envelope struct {
 }
 
 // Parse reports whether raw is a v1 envelope: a JSON object carrying both
-// "v" and "kind". Anything else - text that isn't JSON, a JSON array or
-// scalar, or an object missing either key - is v0 raw prompt text, not an
-// envelope, even though it happens to parse as JSON. That last case is the
-// one that matters: a user prompt that is itself a JSON object must not be
-// swallowed as a control message.
+// "v" and "kind". Anything else, including a JSON object missing either
+// key, is v0 raw prompt text; a user prompt that is itself a JSON object
+// must not be swallowed as a control message.
 func Parse(raw []byte) (Envelope, bool) {
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &probe); err != nil {

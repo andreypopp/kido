@@ -1,10 +1,5 @@
 // Package tree holds the parent-first walk behind both `kido agents`
-// (orderTree, cmd/kido/agents.go) and the sidebar's window tree
-// (orderWindowsByTree, internal/ui). The two walks differ only in what
-// they call an id and how they break ties between siblings, which is
-// what Order's two function arguments are for - and cmd/kido is package
-// main and cannot be imported, so the half they share lives here rather
-// than in either of them.
+// (cmd/kido/agents.go) and the sidebar's window tree (internal/ui).
 package tree
 
 // Order returns items parent-first: every item follows the one whose id
@@ -16,13 +11,9 @@ package tree
 // returns "" for a root, and a parent naming no item in items is a root
 // too.
 //
-// Every item comes out exactly once, tree or no tree. A walk from the
-// roots alone reaches no item whose parent chain closes a cycle, and a
-// cycle is reachable: a bug in a reporting agent (or a bare-metal replay
-// of an old state file) can name a parent that is one of its own
-// descendants, or itself. Anything the walk missed is therefore emitted
-// afterwards as a root - a nonsense edge costs an item its place in the
-// tree and nothing else, it is never dropped from the list.
+// Every item comes out exactly once, tree or no tree: anything a walk
+// from the roots missed (a cycle) is emitted afterwards as a root, so a
+// nonsense edge costs an item its place in the tree and nothing else.
 func Order[T any](items []T, id func(T) string, parent func(T) string) []T {
 	index := make(map[string]int, len(items))
 	for i, it := range items {
@@ -32,8 +23,7 @@ func Order[T any](items []T, id func(T) string, parent func(T) string) []T {
 	children := map[int][]int{} // parent's index, or root -> child indices
 	for i, it := range items {
 		p := root
-		// A self-edge is the one answer that is certainly wrong, so it is
-		// read as "no parent" rather than as a one-item cycle.
+		// A self-edge is read as "no parent" rather than as a one-item cycle.
 		if j, ok := index[parent(it)]; ok && j != i {
 			p = j
 		}

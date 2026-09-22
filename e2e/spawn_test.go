@@ -60,8 +60,8 @@ func envLine(envOutput, key string) string {
 // TestSpawnCreatesWindowInCallerSession drives `kido spawn` the way
 // spawn_subagent (pi/kido-agents.ts) does, with a fake command standing in
 // for pi, and checks everything that only exists because `kido spawn` is
-// a testable command in its own right (see AGENTS.md and
-// docs/subagents-plan.md's Spawning section): the new window lands in the
+// a testable command in its own right (docs/design.md, "Spawning"): the
+// new window lands in the
 // caller's own session, keeps the caller's own turn (-d), starts in the
 // caller's own directory (-c), is named as asked, and the spawned process
 // actually sees the KIDO_AGENT_* variables in its environment (-e) - not
@@ -128,10 +128,9 @@ func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 		}
 	}
 
-	// The task moves into the run's own directory (docs/subagents-plan.md's
-	// Phase 8 section): KIDO_AGENT_TASK_FILE no longer names the caller's
-	// own --task-file, and its content is the task, not the caller's file's
-	// path.
+	// The task lives in the run's own directory: KIDO_AGENT_TASK_FILE does
+	// not name the caller's --task-file, and its content is the task, not
+	// the caller's file's path.
 	relocated := envLine(env, "KIDO_AGENT_TASK_FILE")
 	if relocated == "" || relocated == taskFile {
 		t.Errorf("KIDO_AGENT_TASK_FILE = %q, want it relocated into run %s's own directory", relocated, runID)
@@ -162,7 +161,7 @@ func (h *harness) activeWindowID(session string) string {
 // (TestSpawnRefusedAtMaxDepth). The caller's depth is recorded first with
 // a real `kido agent-status` call, exactly as pi's own status reporting
 // would - kido spawn derives the child's depth from that record, not from
-// --depth (D5 in the adversarial pass), so this also stands in for "a
+// --depth, so this also stands in for "a
 // caller at the ceiling cannot escape by passing a smaller --depth": the
 // spawn below claims --depth 1, which would be allowed if trusted.
 func TestSpawnRefusesDepthBeyondCeiling(t *testing.T) {

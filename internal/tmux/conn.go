@@ -160,7 +160,7 @@ func (c *Conn) ClientState(client string) (session string, focused bool, err err
 func (c *Conn) Follow(session string) error {
 	ch := c.child()
 	if ch == nil {
-		return ErrNotConnected // Run would say the same; take() ignores it either way
+		return ErrNotConnected
 	}
 	if ch.attached() == session {
 		return nil

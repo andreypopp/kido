@@ -121,8 +121,8 @@ func TestRecordPauseKeepsTheLatest(t *testing.T) {
 	}
 }
 
-// TestStalledCrossProcess is requirement 3 and the plan's testing note:
-// the rebased verdict must reach a process that never itself detected the
+// TestStalledCrossProcess: the rebased verdict must reach a process that
+// never itself detected the
 // pause - ask_agent shells out to a fresh `kido agents`, once per call -
 // so it has to be readable from disk by a second process, not just held
 // in the sidebar's memory. It drives the standard Go "helper process"

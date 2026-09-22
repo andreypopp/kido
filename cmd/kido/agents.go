@@ -31,16 +31,10 @@ type AgentInfo struct {
 	Cwd        string `json:"cwd"`
 	CanMessage bool   `json:"canMessage"`
 	Model      string `json:"model"`
-	// SinceReport is seconds since the session's last report
-	// (state.Session.TS), derived at list time rather than stored: it is
-	// only ever meaningful as of now. It measures staleness, not idle time -
-	// a session reporting Running has a SinceReport too, and that is exactly
-	// what Stalled is derived from.
+	// SinceReport is seconds since the session's last report. It measures
+	// staleness, not idle time: a session reporting Running has one too.
 	SinceReport int `json:"sinceReport"`
-	// Stalled is state.Stalled(s, now): the session claims to be running
-	// but has gone quiet for longer than state.StallThreshold, kido's own
-	// guess that it is wedged rather than merely busy. ask_agent refuses a
-	// stalled target immediately instead of waiting out its own timeout.
+	// Stalled is state.Stalled(s, now).
 	Stalled bool `json:"stalled"`
 }
 
@@ -93,9 +87,7 @@ func agentsCmd(args []string) error {
 
 // buildAgents assembles the AgentInfo rows for kido agents and pi's
 // list_agents tool: every live state.Session whose pane is currently in
-// session (sessionsInSession, which explains why the pane list rather
-// than the record decides that), decorated with the tmux.Pane a fresh
-// ListPanes gave it.
+// session, decorated with its tmux.Pane.
 func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, self string) []AgentInfo {
 	byPane := paneIndex(panes)
 	scoped := sessionsInSession(states, panes, session)
@@ -132,17 +124,9 @@ func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, se
 	return out
 }
 
-// orderTree sorts scoped parent-first, then by report time within each
-// parent (state.Session records no start time of its own, so TS - the
-// time of its last report - is the best available proxy for spawn order),
-// so the result reads as a tree: every subagent follows its parent, and
-// siblings appear oldest first.
-//
-// Sorting the whole list before the walk is what puts siblings oldest
-// first: tree.Order buckets children in the order it receives them, and
-// emits whatever the walk missed - a cycle - in that same order, which is
-// the invariant that list_agents shows every agent in the session even
-// when the tree it draws them in is nonsense.
+// orderTree sorts scoped parent-first, siblings oldest report first (a
+// Session records no start time, so TS is the proxy for spawn order).
+// tree.Order keeps the order it receives, so the sort comes first.
 func orderTree(scoped []state.Session, byInstance map[string]string) []state.Session {
 	sorted := append([]state.Session(nil), scoped...)
 	sort.SliceStable(sorted, func(i, j int) bool { return olderFirst(sorted[i], sorted[j]) })
@@ -152,23 +136,11 @@ func orderTree(scoped []state.Session, byInstance map[string]string) []state.Ses
 }
 
 // isAncestor reports whether ancestorID is an ancestor of targetID within
-// agents, walking each agent's Parent edge - the same walk
-// pi/kido-agents.ts's own isAncestor does on the extension side, kept in
-// step because both enforce the same rule: ask_agent refuses to ask an
-// ancestor, and kido interrupt/stop refuse to act on anything but a
-// descendant, so the parent stays free to orchestrate and a confused
-// descendant or peer cannot reach past or around it. seen guards a
-// corrupt or cyclic parent chain from looping forever, the same concern
-// orderTree has on the reporting side.
-//
-// Refuses ancestorID == targetID outright rather than walking for it: a
-// record whose own Parent field named itself would otherwise make this
-// true (the walk starts at that record's Parent, which is itself, and the
-// first comparison matches). Nothing writes such a record today - a
-// session's Parent always names a different process, the one that
-// spawned it - so this is a belt-and-braces refusal for corrupted state
-// rather than a case kido produces, and the worst outcome it prevents is
-// a session stopping itself.
+// agents, walking each agent's Parent edge; pi/kido-agents.ts's
+// isAncestor is the same walk and the two are kept in step. seen guards
+// a cyclic parent chain. ancestorID == targetID is refused outright: a
+// corrupt record naming itself as its parent would otherwise match on the
+// first comparison and let a session stop itself.
 func isAncestor(agents []AgentInfo, ancestorID, targetID string) bool {
 	if ancestorID == targetID {
 		return false
@@ -189,9 +161,7 @@ func isAncestor(agents []AgentInfo, ancestorID, targetID string) bool {
 	return false
 }
 
-// paneIndex is panes indexed by PaneID, the lookup buildAgents,
-// sessionsInSession and matchTarget all need to turn a state.Session's
-// pane into the tmux.Pane it currently lives in.
+// paneIndex is panes indexed by PaneID.
 func paneIndex(panes []tmux.Pane) map[string]tmux.Pane {
 	byPane := map[string]tmux.Pane{}
 	for _, p := range panes {
@@ -201,11 +171,8 @@ func paneIndex(panes []tmux.Pane) map[string]tmux.Pane {
 }
 
 // displayName is the name a session shows in kido agents and list_agents:
-// its reported Title, falling back to its pane's title when it has not set
-// one. matchTarget (message.go) applies the exact same fallback, so a name
-// this function produces is always one matchTarget can resolve back - the
-// two must not drift, or a name read off list_agents would be refused by
-// kido message.
+// its reported Title, falling back to its pane's title. matchTarget
+// (message.go) resolves by the same name, so the two must not drift.
 func displayName(s state.Session, byPane map[string]tmux.Pane) string {
 	if s.Title != "" {
 		return s.Title
@@ -213,17 +180,9 @@ func displayName(s state.Session, byPane map[string]tmux.Pane) string {
 	return byPane[s.Pane].Title
 }
 
-// parentID resolves s's parent to an agent id, "" for a root: the
-// instance it reported as ParentInstance, looked up among the agents in
-// scope. Matched on Instance rather than ParentPID: a pid can be reused
-// by an unrelated process, and alive() cannot tell the difference, so a
-// pid-keyed edge could name a live agent that is not actually the parent.
-// An instance string is generated once per process and never reused, so
-// it cannot collide that way (see state.Session.Instance).
-//
-// An agent that came out as its own parent - a bogus ParentInstance
-// naming the record that now holds it - is reported as a root instead,
-// since a self-edge is the one answer that is certainly wrong.
+// parentID resolves s's parent to an agent id, "" for a root, by
+// ParentInstance looked up among the agents in scope. A self-edge is
+// reported as a root.
 func parentID(s state.Session, byInstance map[string]string) string {
 	if id := byInstance[s.ParentInstance]; id != s.ID {
 		return id
@@ -250,12 +209,10 @@ func printAgents(w io.Writer, agents []AgentInfo) error {
 	return tw.Flush()
 }
 
-// olderFirst orders two records by when they last reported, falling back
-// to the session id. The ids only ever break a tie, but records are
-// gathered by ranging a map and two agents reporting inside the same
-// clock tick are not rare, so without the tiebreak the list - and the
-// sidebar tree built from it - would reorder between two calls that saw
-// exactly the same state.
+// olderFirst orders two records by when they last reported, with the
+// session id as a tiebreak: records come from ranging a map, so without
+// it two agents reporting in the same clock tick would reorder between
+// two calls that saw the same state.
 func olderFirst(a, b state.Session) bool {
 	if a.TS.Equal(b.TS) {
 		return a.ID < b.ID

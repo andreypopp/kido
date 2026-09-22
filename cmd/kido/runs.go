@@ -15,16 +15,12 @@ import (
 )
 
 // RunInfo is one row of `kido runs`, and the shape a --json list prints.
-// Outcome is "running" rather than empty when the run has not finished -
-// subrun.EffectiveOutcome's ok=false case - so a reader never has to treat
-// an empty string as a fourth outcome.
+// Outcome is "running" rather than empty when the run has not finished.
 //
-// OutcomeAt is a pointer so omitempty can actually omit it: a time.Time is
-// a struct, which omitempty never elides, so as a value it printed
-// "0001-01-01T00:00:00Z" for every running run and for every died a read
-// merely guessed at - a timestamp a JSON reader has no way to tell from a
-// real one. Absent means "no recorded end time", which is both of those
-// cases.
+// OutcomeAt is a pointer so omitempty can actually omit it: encoding/json
+// never elides a struct, so a time.Time value printed "0001-01-01" for
+// every running run and every guessed died. Absent means "no recorded
+// end time".
 type RunInfo struct {
 	ID             string     `json:"id"`
 	Name           string     `json:"name"`
@@ -44,23 +40,14 @@ func runsUsage() string {
 }
 
 // shellQuote wraps s for a POSIX shell: single-quoted, with any embedded
-// single quote closed, escaped and reopened. It is only ever used to build
-// the resume/fork command showRun prints, which must stay copy-pasteable
-// into any shell regardless of what the run's cwd contains.
+// single quote closed, escaped and reopened.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // runsCmd implements `kido runs [--json] [<run-id>]`: every run kido
-// spawn has ever created, most recent first, or one shown in detail -
-// with its task text and the exact `pi --session`/`pi --fork` command to
-// resume or branch from it, since the run id is that child's own pi
-// session id by construction (cmd/kido/spawn.go's --session-id).
-//
-// This is the CLI twin list_agents and the other tools already have one
-// of, and for the same reason: the e2e harness cannot host a TypeScript
-// extension, so anything living only in pi/kido-agents.ts would be
-// untestable there.
+// spawn has ever created, most recent first, or one shown in detail with
+// its task text and the command to resume or fork it.
 func runsCmd(args []string) error {
 	fs := flag.NewFlagSet("runs", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -82,22 +69,9 @@ func runOutcomeUsage() string {
 }
 
 // runOutcomeCmd implements `kido run-outcome`: a run's own child reports
-// how it ended, at the same moment it already sends its parent a
-// completion notice (pi/kido-agents.ts's sendCompletionNotice). <run-id>
-// is that child's own pi session id - which is the run id, by
-// construction (see cmd/kido/spawn.go's --session-id) - so this needs no
-// separate lookup, just what the child already knows about itself. It is
-// its own verb rather than a flag on the agent-status report the child
-// already makes on every status change because the two have different
-// callers: any spawned command can end, including one that never reported
-// an agent status in its life and has no business claiming to.
-//
-// --result only ever accepts completed or failed: Died and Stopped are
-// kido's own verdicts about a run from the outside (internal/reap, kido
-// stop), not something a model-authored process gets to claim about
-// itself, the same reason `kido message --from` is not offered - a
-// caller must not be able to assert something only kido itself is
-// positioned to know.
+// how it ended. --result accepts only completed or failed; died and
+// stopped are kido's verdicts from the outside (docs/design.md, "Run
+// outcomes").
 func runOutcomeCmd(args []string) error {
 	fs := flag.NewFlagSet("run-outcome", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -130,8 +104,7 @@ func loadRunInfo(id string) (RunInfo, error) {
 		return RunInfo{}, err
 	} else if ok {
 		info.Outcome, info.OutcomeText = string(o.Result), o.Text
-		// A guessed Died carries no At at all (subrun.EffectiveOutcome never
-		// invents one), so it stays absent rather than becoming a zero time.
+		// A guessed Died carries no At.
 		if !o.At.IsZero() {
 			at := o.At
 			info.OutcomeAt = &at
@@ -149,7 +122,7 @@ func listRuns(w io.Writer, asJSON bool) error {
 	for _, id := range ids {
 		info, err := loadRunInfo(id)
 		if err != nil {
-			continue // a run directory that lost its meta file has nothing to report
+			continue // no meta file: nothing to report
 		}
 		infos = append(infos, info)
 	}
@@ -162,11 +135,8 @@ func listRuns(w io.Writer, asJSON bool) error {
 	fmt.Fprintln(tw, "ID\tNAME\tPARENT\tSTARTED\tDURATION\tOUTCOME\tCWD")
 	now := time.Now()
 	for _, info := range infos {
-		// A run still going is timed against now; one that ended at a known
-		// time against that. A run that ended at an unknown one - the died
-		// EffectiveOutcome guessed from a dead pid, which has no At - gets no
-		// duration at all, since timing it against now would print a finished
-		// run's duration still counting up on every invocation.
+		// A guessed died has no end time, and timing it against now would
+		// print a finished run's duration still counting up.
 		duration := "-"
 		switch {
 		case info.OutcomeAt != nil:
@@ -191,18 +161,9 @@ func showRun(w io.Writer, id string, asJSON bool) error {
 		task = ""
 	}
 
-	// The run id is the child's own pi session id by construction
-	// (cmd/kido/spawn.go's --session-id), so resuming or forking a finished
-	// run needs no lookup - which is the whole reason a run record is worth
-	// keeping, and so is spelled out rather than left for the reader to
-	// assemble.
-	//
-	// D6: pi sessions are project-scoped, and `pi --session <id>` alone only
-	// resolves from the run's own cwd - run from anywhere else, pi asks
-	// "Session found in different project... Fork into current directory?
-	// [y/N]", which is not what a copy-pasted "resume" command should ever
-	// do unattended. `cd <cwd> &&` in front of it is what actually makes it
-	// work from anywhere, and is still one copy-pasteable line.
+	// pi sessions are project-scoped: run from any other directory,
+	// `pi --session <id>` asks "Session found in different project...
+	// Fork into current directory? [y/N]" instead of resuming.
 	resume := "cd " + shellQuote(info.Cwd) + " && pi --session " + id
 	fork := "cd " + shellQuote(info.Cwd) + " && pi --fork " + id
 

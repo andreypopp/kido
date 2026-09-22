@@ -24,8 +24,7 @@ import (
 )
 
 // debugFlag parses a command's args for its one boolean --debug flag,
-// erroring on anything else (an unknown flag, a positional argument), the
-// same shape as prompt's flag.NewFlagSet.
+// erroring on anything else.
 func debugFlag(cmd string, args []string) (bool, error) {
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -40,10 +39,9 @@ func debugFlag(cmd string, args []string) (bool, error) {
 }
 
 // dispatch runs fn for a subcommand named name, printing "kido <name>:
-// <err>" to stderr and exiting 1 on failure. It is the shape shared by
-// every subcommand except hook, which must never fail the caller, and
-// prompt, which returns its own exit codes - both stay as their own cases
-// below.
+// <err>" to stderr and exiting 1 on failure. hook (which must never fail
+// the caller) and prompt/message (which return their own exit codes) do
+// not go through it.
 func dispatch(name string, fn func() error) {
 	if err := fn(); err != nil {
 		fmt.Fprintln(os.Stderr, "kido "+name+":", err)
@@ -161,9 +159,8 @@ func main() {
 		os.Exit(1)
 	}
 	// The fork sets TMUX_SIDE_CLIENT only in the environment of the
-	// side-status-command job (status.c, status_side_start). Its absence is
-	// therefore exactly "kido was not started as a side column": a popup, or
-	// a plain pane. See ui.Options.Standalone.
+	// side-status-command job (status.c, status_side_start), so its absence
+	// is exactly "not started as a side column". See ui.Options.Standalone.
 	side := os.Getenv("TMUX_SIDE_CLIENT")
 	opts.Standalone = side == ""
 	if opts.Client == "" {
@@ -402,13 +399,9 @@ type agentReport struct {
 	Model          string
 }
 
-// recordSession builds and writes the state.Session for one agent report:
-// the pane ($TMUX_PANE) and the pid the caller supplies (procs.ReporterPID,
-// walked past a wrapping shell or not depending on which path can be
-// behind one), e's status, e's end time (via endedAt) when e.Ended, e's
-// background wait, and r's fields. Shared by runHook and agentStatus,
-// which differ only in which agent, pid, effect and report they supply
-// (Claude Code reports a zero agentReport).
+// recordSession builds and writes a whole fresh state.Session for one
+// agent report; anything not in e or r is blank unless the caller carried
+// it forward.
 func recordSession(agent, sessionID string, pid int, e hook.Effect, r agentReport) error {
 	now := time.Now().UTC()
 	s := state.Session{
@@ -466,65 +459,16 @@ func agentStatusUsage() string {
 }
 
 // agentStatus implements `kido agent-status`, how an agent that is not
-// Claude Code reports itself to the sidebar: the same record `kido hook`
-// writes for Claude Code, from plain arguments rather than a hook payload.
-// It is meant to be run from inside the agent's own pane, whose id it takes
-// from $TMUX_PANE, and it records the calling agent's pid so the record
-// goes stale when the agent dies.
+// Claude Code reports itself: the same record `kido hook` writes, from
+// plain arguments. It runs from inside the agent's own pane ($TMUX_PANE)
+// and records the calling agent's pid so the record goes stale when the
+// agent dies.
 //
-// --status is the agent's new status; --ended says a turn just finished
-// (meaningful with idle: it is what makes the sidebar show the pane as done
-// until the user visits it); --remove deletes the record, for shutdown.
-// --title is the session's name, shown as the pane's label in place of the
-// pane title kido would otherwise strip a marker off (see internal/ui);
-// when omitted, the previously recorded title (if any) is kept rather than
-// blanked, since an extension's coalescing may not re-send it every time.
-//
-// --inbox is the path of a unix socket the agent listens on for prompts,
-// speaking kido's own line protocol and no other (see cmd/kido/inbox.go).
-// `kido prompt` then delivers over it instead of typing into the pane;
-// `kido inbox-path NAME` says where to put the socket. It is carried
-// across calls that omit it the way
-// --title is, but unlike --title an explicit empty value clears it:
-// `--inbox ""` is how an agent says its socket is gone, and a stale path
-// would otherwise keep kido dialling a socket nobody is listening on. That
-// is why presence is read from fs.Visit rather than from the value.
-//
-// --protocol is the highest inbox envelope version (internal/msg) the
-// agent understands, carried forward the same way as --inbox and for the
-// same reason: a sender that sees no advertised version must fall back to
-// v0 raw text rather than deliver a v1 envelope an unupgraded receiver
-// would show the user verbatim. Presence, not value, decides carry-forward,
-// so `--protocol 0` explicitly clears it exactly as `--inbox ""` clears
-// the socket path.
-//
-// --activity is free text describing what the agent is doing ("refactoring
-// internal/ui"), shown in the sidebar after the status. It follows the same
-// carry-forward rule as --inbox - presence, not value, decides it - because
-// an extension's coalescing may report a fresh status without re-sending
-// the activity that still applies; `--activity ""` is how it is cleared.
-// It is the one field a model writes directly, so it is sanitised on the
-// way in rather than trusted at either place it is drawn: see oneLine.
-//
-// --instance is an opaque id the agent generates once per process and
-// reports on every call - it identifies the process, not the session, so
-// it does not change across /resume or /reload the way a session id can.
-//
-// --parent-pid, --parent-instance and --depth describe a subagent's place
-// in the spawn tree: the pid and instance id of the agent that spawned
-// this one (zero/empty for a root agent), and its depth in that tree.
-// Unlike --title, --inbox and --protocol these need no carry-forward -
-// the agent reads them from its own environment (KIDO_AGENT_PARENT_PID,
-// KIDO_AGENT_PARENT_INSTANCE, KIDO_AGENT_DEPTH) and can report them fresh
-// on every call - so they are recorded exactly as given, defaulting to
-// zero. A parent edge is matched on ParentInstance, not ParentPID: see
-// cmd/kido/agents.go's parentID.
-//
-// --model is the name of the model the agent is currently running,
-// shown in the sidebar. It follows the same carry-forward rule as
-// --activity - presence, not value, decides it - since an extension's
-// coalescing may report a fresh status without re-sending a model that
-// has not changed.
+// Which fields are carried forward from the previous record when omitted
+// is decided per field, by the flag's presence (fs.Visit) rather than its
+// value, so an explicit empty value clears: docs/design.md, "Reporting,
+// and what is carried forward". --title is the exception: an empty title
+// keeps the old one.
 func agentStatus(args []string) error {
 	fs := flag.NewFlagSet("agent-status", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -597,20 +541,13 @@ func agentStatus(args []string) error {
 
 // maxActivity caps what --activity records. The extension caps it too,
 // but a model is free to ignore the schema and any same-uid process can
-// run `kido agent-status`, so the cap that matters is the one here.
+// run `kido agent-status`, so the cap that matters is this one.
 const maxActivity = 256
 
-// oneLine is what makes model-authored free text safe to put in a state
-// record: control characters become spaces and the result is cut to max
-// bytes on a rune boundary.
-//
-// The sidebar draws one row per pane and View() budgets one terminal line
-// per row, so a newline in the activity draws a line the row accounting
-// does not know about and pushes everything below it down; an escape
-// sequence would colour the rest of the column. `kido agents` prints a
-// tab-separated table, which a tab or a newline breaks the same way. All
-// of that is cheaper to prevent at the one place a Session is built from
-// arguments than to defend at each of the two places one is drawn.
+// oneLine makes model-authored free text safe to put in a state record:
+// control characters become spaces and the result is cut to max bytes on
+// a rune boundary. The sidebar budgets one terminal line per row and
+// `kido agents` prints a tab-separated table, and neither defends itself.
 func oneLine(s string, max int) string {
 	s = strings.Map(func(r rune) rune {
 		if r == utf8.RuneError || unicode.IsControl(r) {

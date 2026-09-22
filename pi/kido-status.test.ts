@@ -517,7 +517,7 @@ test("cycle refusal: an inbound ask from a session we're already asking is refus
     const ask = s.tools.get("ask_agent");
     const p1 = ask.execute("c1", { to: "peer-a", question: "outbound q" }); // holds an edge to peer-a
     // pendingOutbound.set runs strictly before the send that produces this
-    // log entry (see its own comment in kido-status.ts), so waiting for the
+    // log entry (see its comment in kido-agents.ts), so waiting for the
     // entry is a safe way to know the edge is already registered.
     await fx.waitForLog("peer-a", "ask");
 
@@ -784,12 +784,9 @@ test("spawn_subagent is refused at the depth ceiling without writing a task file
   }
 });
 
-// This case used to be about not unlinking a task file that a live child
-// might still be about to read - a risk that no longer exists now that
-// the task is text on stdin, not a file this tool owns. What remains
-// worth pinning is that a timeout is reported as a timeout, not folded
-// into a generic failure - see runKido's own doc on why that distinction
-// exists.
+// A timeout is reported as a timeout, not folded into a generic failure:
+// kido may already have done its work, and a caller that treats the two
+// alike can end up cleaning up after something that succeeded.
 test("spawn_subagent reports a kido spawn timeout as a timeout, not a generic failure", async () => {
   const fx = makeFixture();
   try {
@@ -830,10 +827,10 @@ test("a child started with KIDO_AGENT_TASK_FILE delivers its task as the first m
         s.delivered.some((d) => d.text === "do the important thing"),
         "the task reached the model as a user message, the same way an inbox prompt is delivered",
       );
-      // Kept, not unlinked (docs/subagents-plan.md's Phase 8 section): the
-      // task file is the run's own permanent record, read back later by
-      // `kido runs <run-id>`. A sibling marker, not the file's absence, is
-      // what stops a later /reload from delivering it again.
+      // Kept, not unlinked: the task file is the run's own permanent
+      // record, read back later by `kido runs <run-id>`. A sibling marker,
+      // not the file's absence, is what stops a later /reload from
+      // delivering it again.
       assert.equal(existsSync(taskFile), true, "the task file survives delivery");
       assert.equal(existsSync(join(dirname(taskFile), "delivered")), true, "a delivered marker is written");
     } finally {
@@ -877,10 +874,8 @@ test("a /reload does not deliver an already-delivered task a second time", async
   }
 });
 
-// An unreadable task file is the one case that used to leak: the read
-// threw, the unlink was never reached, and a file with the task's own text
-// in it stayed in the temp directory for good, since session_start is its
-// only reader and never runs against it twice.
+// An unreadable task file must leave no delivered marker, so a later
+// /reload gets another try rather than never showing the task at all.
 test("an unreadable KIDO_AGENT_TASK_FILE delivers nothing, breaks nothing, and leaves nothing behind", async () => {
   const fx = makeFixture();
   try {
@@ -1074,7 +1069,7 @@ test("session_shutdown never records an outcome for a root session", async () =>
   }
 });
 
-// D4: the same reason/reload gate that keeps recordOwnOutcome from
+// The same reason/reload gate that keeps recordOwnOutcome from
 // recording a live run as finished must also keep sendCompletionNotice
 // from telling the parent the run finished and from scheduling the
 // child's own window to be closed out from under it ~30s later. Measured
@@ -1536,8 +1531,8 @@ test("interrupt and stop are refused when the sender's id matches no agent kido 
   }
 });
 
-// docs/subagents-plan.md: an interrupt leaves the session alive and able
-// to take a following message, which is more than "shutdown was not
+// An interrupt leaves the session alive and able to take a following
+// message, which is more than "shutdown was not
 // called" - the inbox itself must still be answering. And an interrupt of
 // an idle agent (the shape here: session_start with no turn begun) must
 // be harmless, not refused or treated specially just because there was
@@ -1564,10 +1559,9 @@ test("an interrupt of an idle agent is harmless, and the session still answers a
 // A person running `kido interrupt`/`kido stop` by hand has no state
 // record, so kido has no session id to put in the envelope's `from` - and
 // the scope rule deliberately lets that caller reach anything
-// (docs/subagents-plan.md's Scope section, cmd/kido/control.go's own
-// isAgent check). Matching only on `from.session` refused them here, so
-// the two enforcement layers disagreed precisely where the plan is most
-// explicit and a human's stop could not stop anything. Recognised by the
+// (cmd/kido/control.go's isAgent check). Matching only on `from.session`
+// would refuse them here, so the two enforcement layers would disagree
+// and a human's stop could not stop anything. Recognised by the
 // empty session *and* a pane no agent occupies, so an agent that simply
 // omits its session id is still held to the descendant rule.
 test("a control envelope from a human at the CLI is honoured; one merely missing a session id is not", async () => {

@@ -20,10 +20,8 @@ func snapshot(w io.Writer) error {
 		return err
 	}
 	states, _ := state.Load()
-	// snapshot runs once and exits, unlike the sidebar's repeated polling, so
-	// the cost of a process-table scan here is a one-off: it is what lets an
-	// unreported pi pane (pane_current_command is just "node", see
-	// procs.MaybePi) be told apart from a plain shell.
+	// A one-off process-table scan tells an unreported pi pane (which
+	// tmux reports as "node") from a plain shell.
 	piPanes := procs.Sweep().Pi
 	q := tmux.Quote
 
@@ -72,22 +70,11 @@ func snapshot(w io.Writer) error {
 	return nil
 }
 
-// paneCommand picks the command, if any, snapshot's script should send into
-// the pane it just recreated to put its agent back where it was. states is
-// keyed by pane id the way state.Load returns it, and is the primary source
-// for what a pane is running: a pane's recorded Session names both the
-// agent (claude or pi) and, as its key, that agent's own session id, the
-// same way the Claude Code path always worked. A pane with no record falls
-// back to what can be told from its foreground command alone -
-// pane_current_command "claude" for Claude Code - or, for pi, from piPanes
-// (procs.Sweep().Pi, keyed by pane pid). A pane that matches none of this
-// (a plain shell, or any other program) gets no command at all.
-//
-// The new pane already starts in the recreated pane's directory (the
-// new-session/new-window/split-window call above always passes -c), which
-// is what a resumed pi session needs: pi namespaces sessions by working
-// directory, so resuming the wrong one would either fail to find the id or
-// (with --session-id) silently create it fresh in the wrong project.
+// paneCommand picks the command, if any, snapshot's script should send
+// into the pane it just recreated: from the pane's state record when it
+// has one, else from its foreground command or the process sweep. The
+// script always passes -c, which a resumed pi session needs: pi
+// namespaces sessions by working directory.
 func paneCommand(p tmux.Pane, states map[string]state.Session, piPanes map[int]bool) string {
 	if st, ok := states[p.PaneID]; ok {
 		switch st.Agent {
@@ -95,10 +82,8 @@ func paneCommand(p tmux.Pane, states map[string]state.Session, piPanes map[int]b
 			if st.ID == "" {
 				return "pi"
 			}
-			// --session resumes the exact session file (by path, exact id,
-			// or partial uuid); --session-id would instead create the id if
-			// it does not already exist, which is wrong when recreating a
-			// session snapshot knows existed.
+			// --session resumes an existing session; --session-id would
+			// create it if missing.
 			return "pi --session " + st.ID
 		case state.AgentClaude:
 			if st.ID != "" {
@@ -106,8 +91,6 @@ func paneCommand(p tmux.Pane, states map[string]state.Session, piPanes map[int]b
 			}
 			return "claude --continue"
 		}
-		// An agent kido does not otherwise recognise: fall through to what
-		// the pane's own command or the process sweep can tell.
 	}
 	if p.CurrentCommand == "claude" {
 		return "claude --continue"

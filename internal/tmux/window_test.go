@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// TestNewWindowArgsHasRequiredFlags pins the flags docs/subagents-plan.md
-// and AGENTS.md call out as load-bearing: -d, -c and one -e per env pair
+// TestNewWindowArgsHasRequiredFlags pins the flags docs/design.md's
+// Spawning section calls load-bearing: -d, -c and one -e per env pair
 // must all be present, since a subagent whose window is missing any of
 // them starts in the wrong place, with the wrong environment, or steals
 // the caller's own turn.

@@ -103,23 +103,17 @@ type Pane struct {
 	CommandStatus   int
 	CommandStatusOK bool
 	CommandEndTime  int64
-	// Dead is tmux's own #{pane_dead}: the pane's command has exited and
-	// remain-on-exit kept the pane - and with it the window - on screen
-	// anyway. DeadTime is when it exited, in unix seconds, and is fixed
-	// from then on: unlike pane_command_duration neither field ticks, so
-	// neither defeats the snapshot change-detection.
+	// Dead is tmux's own #{pane_dead}: the command has exited and
+	// remain-on-exit kept the pane on screen. DeadTime is when it exited,
+	// in unix seconds; unlike pane_command_duration neither field ticks.
 	Dead     bool
 	DeadTime int64
 	// Subagent is the @kido_subagent window option kido spawn sets on a
 	// window of its own making, read through the pane because one
-	// list-panes is the only listing kido takes. It is what tells a window
-	// kido spawned from every other window on the server; see
-	// internal/reap.
+	// list-panes is the only listing kido takes.
 	Subagent string
 	// SessionAttached is whether any client is attached to this pane's
-	// session. With Active - window_active && pane_active, so a session's
-	// current pane - it is what WindowFocused means by a window somebody
-	// is looking at.
+	// session; see Watched.
 	SessionAttached bool
 	Title           string
 }
@@ -169,9 +163,6 @@ var paneFormat = strings.Join([]string{
 	"#{pane_last_prompt_time}",
 	"#{pane_command_status}",
 	"#{pane_command_end_time}",
-	// Window lifecycle: a pane remain-on-exit left behind, when it died,
-	// whether anyone is attached to look at it, and the mark kido spawn
-	// puts on a window of its own making.
 	"#{pane_dead}",
 	"#{pane_dead_time}",
 	"#{session_attached}",
@@ -180,20 +171,14 @@ var paneFormat = strings.Join([]string{
 }, sep)
 
 // SubagentOption is the tmux window option kido spawn sets on a window it
-// creates, and the only thing that marks a window as kido's to close (see
-// internal/reap). A window option rather than a field of the state
-// record: it lives in the tmux server, so it outlives the agent whose
-// window it is, state.Load's dead-pid sweep cannot delete it, and it
-// names a window that exists now rather than a pane id some later server
-// may have handed to somebody else.
-
+// creates, and the only thing that marks a window as kido's to close
+// (docs/design.md, "Window options, for facts that must survive kido's
+// own cleanup").
 const SubagentOption = "@kido_subagent"
 
-// paneFields is the number of #{...} entries paneFormat asks tmux for.
-// parsePanes' SplitN count and len(f) guard must both use it: AGENTS.md's
-// rule for adding a field is exactly that the two stay together, and a
-// literal repeated in two places is how they drift apart unnoticed (see
-// TestPaneFieldsMatchParsePanes).
+// paneFields is the number of #{...} entries paneFormat asks tmux for;
+// parsePanes' SplitN count and len(f) guard both use it so the two cannot
+// drift apart (TestPaneFieldsMatchParsePanes).
 const paneFields = 23
 
 // parsePanes turns list-panes output lines into panes. Shared by the exec
@@ -511,19 +496,11 @@ func SendPrompt(pane, text string) error {
 }
 
 // newWindowArgs builds the new-window invocation NewWindow runs, split out
-// so it can be checked without a real tmux server: the flags are what a
-// subagent's window depends on (see docs/subagents-plan.md's Spawning
-// section and AGENTS.md), and getting one wrong is silent until a child
-// starts in the wrong place or with a bare environment.
-//
-//   - -d: the caller's own turn is not yanked to the new window.
-//   - -c: without it the new pane starts in the session's default
-//     directory, not the caller's own; snapshot.go relies on the same flag
-//     for the same reason.
-//   - -e: new-window otherwise runs command with the server's and
-//     session's own environment, not the caller's, so nothing - a child's
-//     parent identity, its task file - arrives any other way.
-//   - -P -F: the new ids come back synchronously, with no follow-up query.
+// so it can be checked without a tmux server. -d keeps the caller's turn
+// where it is; -c is needed because the new pane otherwise starts in the
+// session's default directory; -e because new-window otherwise runs
+// command with the server's environment, not the caller's; -P -F returns
+// the new ids synchronously.
 func newWindowArgs(session, name, cwd string, env, command []string) []string {
 	args := []string{
 		"new-window", "-d", "-P", "-F", "#{window_id}:#{pane_id}:#{pane_pid}",
@@ -536,41 +513,21 @@ func newWindowArgs(session, name, cwd string, env, command []string) []string {
 }
 
 // NewWindow creates a detached window in session running command (each
-// element execed directly, per newWindow's own comment in
-// e2e/harness_test.go - a single-word command instead runs through the
-// pane's shell), in cwd, with env (each "KEY=VALUE") set for that command
-// alone. It returns the new window and pane ids, and the pid of command
-// itself (the exec'd process, not a wrapping shell - see the comment
-// above), from the one call. kido spawn (internal/subrun's Meta.PID)
-// keeps that pid to answer "is this run still alive" without a live tmux
-// session to ask, which is what lets `kido runs` work after the window -
-// or the whole server - is gone.
+// element execed directly; tmux routes a single-word command through the
+// pane's shell instead), in cwd, with env (each "KEY=VALUE") set for that
+// command alone. It returns the new window and pane ids and the pid of
+// the exec'd command itself, and turns on remain-on-exit for the window.
 //
-// remain-on-exit is turned on for the new window before returning: a
-// subagent's window (the only caller today, kido spawn) must survive its
-// own command exiting, both for the ~30s the linger helper gives the user
-// to read its last screen and for `kido reap` to find and close it
-// afterward if the helper never ran at all - a window that vanished the
-// instant its command exited would leave nothing for either to act on.
-//
-// It is set by a second tmux call, and a command that exits fast enough
-// beats it every time: measured against the fork, a window running
-// /bin/true was gone before the option landed in 20 attempts out of 20.
-// So the case this most wants to preserve - a child that failed
-// immediately, including one tmux could not exec at all - is exactly the
-// one that loses its window, its last screen, and the sweep that would
-// have recorded the run as died. What survives is the run record itself
-// (internal/subrun), whose meta carries the pid, so `kido runs` still
-// reports that run as died from EffectiveOutcome's own read-time guess.
-// The fixes all cost more than the gap: folding the option into one tmux
-// invocation means naming the new window before its id is known, and
+// remain-on-exit is set by a second tmux call, and a command that exits
+// fast enough beats it every time: measured against the fork, a window
+// running /bin/true was gone before the option landed in 20 attempts out
+// of 20. The fixes all cost more than the gap: folding the option into
+// one invocation means naming the window before its id is known, and
 // `-t '{end}'` is only usually right (new-window takes the lowest free
-// index, and two spawns can race), so it would sometimes set the option
-// on an innocent window instead; setting it from inside a shell wrapper
-// around command reintroduces the three-parser quoting hazard AGENTS.md
-// refuses elsewhere; and creating the window empty, setting the option,
-// then respawn-pane'ing into it orders things correctly but costs two
-// more round-trips and a second query for the new pid.
+// index, and two spawns can race); a shell wrapper reintroduces the
+// three-parser quoting hazard; creating the window empty and
+// respawn-pane'ing into it costs two more round-trips and a second query
+// for the pid.
 func NewWindow(session, name, cwd string, env, command []string) (windowID, paneID string, panePID int, err error) {
 	out, err := run(newWindowArgs(session, name, cwd, env, command)...)
 	if err != nil {
@@ -598,14 +555,9 @@ func NewWindow(session, name, cwd string, env, command []string) (windowID, pane
 func (p Pane) Watched() bool { return p.Active && p.SessionAttached }
 
 // WindowFocused reports whether windowID holds such a pane, which for a
-// window means the user is reading it.
-//
-// It answers from the pane list alone, with no list-clients call of its
-// own, because both callers ask on a schedule: `kido close-window` once
-// per finishing subagent, and the sidebar's reaper (internal/reap) on
-// every poll. One definition of focus for both is also the point - a
-// window the linger helper refuses to close must be one the reaper
-// refuses to close, or the refusal buys the user nothing.
+// window means the user is reading it. It answers from the pane list
+// alone, and is the one definition of focus the linger helper and the
+// reaper share: a window one refuses to close, the other must too.
 func WindowFocused(panes []Pane, windowID string) bool {
 	for _, p := range panes {
 		if p.WindowID == windowID && p.Watched() {
@@ -616,10 +568,7 @@ func WindowFocused(panes []Pane, windowID string) bool {
 }
 
 // LastWindow reports whether windowID is the only window of its session.
-// Closing it would destroy the session - taking every pane in it, and
-// detaching every client attached to it - so neither `kido close-window`
-// nor the reaper (internal/reap) ever does, whatever else they think of
-// the window.
+// Closing it would destroy the session and detach every client.
 func LastWindow(panes []Pane, windowID string) bool {
 	session := ""
 	for _, p := range panes {
@@ -640,12 +589,8 @@ func LastWindow(panes []Pane, windowID string) bool {
 	return len(windows) <= 1
 }
 
-// LastPane reports whether windowID has exactly one pane. Combined with
-// LastWindow, this is the guard killTargetPane (cmd/kido/control.go)
-// needs: killing a window's only pane closes the window as tmux's own
-// side effect, so that is only dangerous when the window is also its
-// session's only one - a window sharing its pane with another loses
-// nothing by it.
+// LastPane reports whether windowID has exactly one pane. Killing a
+// window's only pane closes the window as tmux's own side effect.
 func LastPane(panes []Pane, windowID string) bool {
 	n := 0
 	for _, p := range panes {
@@ -656,35 +601,25 @@ func LastPane(panes []Pane, windowID string) bool {
 	return n <= 1
 }
 
-// KillWindow destroys windowID. A window that is already gone - closed by
-// its own linger helper, or by another kido's reaper a moment earlier -
-// is an error from tmux and nothing more: every caller here is one of
-// several processes racing to close the same window, and losing that race
-// is the expected outcome, not a failure.
+// KillWindow destroys windowID. A window that is already gone is an
+// error from tmux and nothing more; every caller is one of several
+// processes racing to close the same window.
 func KillWindow(windowID string) error {
 	_, err := run("kill-window", "-t", windowID)
 	return err
 }
 
-// KillPane destroys paneID, leaving any other pane in its window alone -
-// unlike KillWindow, which takes every pane in the window with it.
-// Killing a window's last pane closes the window as tmux's own
-// consequence of that, not anything this function does differently.
+// KillPane destroys paneID, leaving any other pane in its window alone.
 func KillPane(paneID string) error {
 	_, err := run("kill-pane", "-t", paneID)
 	return err
 }
 
 // SubagentMark and SubagentRunID are the two halves of the mark's value,
-// kept together here - next to the option name itself - so the one token
-// anything parses cannot drift away from the code that writes it: the
-// producer is kido spawn and the consumer is internal/reap's sweep, and
-// they have no other file in common.
-//
-// The rest is free text for a human reading `tmux show-options -w`. A
-// missing or malformed "run=" token (an older kido's mark, or one
-// hand-set by a test) yields "", and a sweep still works without it - it
-// just has nothing to record an outcome against.
+// kept together so the one token anything parses cannot drift from the
+// code that writes it. The rest is free text for a human reading `tmux
+// show-options -w`. A missing "run=" token yields "", and a sweep still
+// works without it.
 func SubagentMark(runID, parentInstance string, depth int) string {
 	return fmt.Sprintf("run=%s parent=%s depth=%d", runID, parentInstance, depth)
 }
@@ -698,11 +633,7 @@ func SubagentRunID(info string) string {
 	return ""
 }
 
-// MarkSubagent sets SubagentOption on windowID to info, which is how kido
-// spawn tells the reaper that this window is one it created and may close
-// (see internal/reap). info is what SubagentMark builds; internal/reap
-// reads the run id back out of it to record a run's outcome as Died when
-// it closes the window without one already recorded.
+// MarkSubagent sets SubagentOption on windowID to info (SubagentMark).
 func MarkSubagent(windowID, info string) error {
 	_, err := run("set-option", "-w", "-t", windowID, SubagentOption, info)
 	return err

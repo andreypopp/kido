@@ -338,23 +338,10 @@ func listPanes(conn *tmux.Conn) ([]tmux.Pane, error) {
 var killWindow = tmux.KillWindow
 
 // reapSubagentWindows closes the subagent windows this snapshot shows as
-// finished. The sidebar's poll is where docs/subagents-plan.md always
-// said the backstop lives, and it is the only place it can live: a
-// subagent killed outright never runs its own linger helper, and `kido
-// reap` is a command nothing invokes on its own.
-//
-// It is called from take, on the snapshot goroutine, and deliberately not
-// from state.Load: `kido prompt` calls Load too, and a state directory
-// read has no business closing a window as a side effect. take is shared
-// with the standalone picker, which therefore sweeps as well - it is a
-// kido poll like any other, and a second one running is exactly as
-// harmless as a second sidebar.
-//
-// Several sidebars may be doing this at once - one per client - and each
-// will happily ask tmux to close a window another already closed. That
-// costs an error nobody reads, which is why the result is dropped rather
-// than reported: there is no reading of "this window is gone" that a
-// reaper should treat as a problem.
+// finished. Called from take, on the snapshot goroutine, and deliberately
+// not from state.Load, which `kido prompt` calls too. The standalone
+// picker shares take and so sweeps as well; a second poll is as harmless
+// as a second sidebar.
 func reapSubagentWindows(panes []tmux.Pane, states map[string]state.Session) {
 	if len(panes) == 0 {
 		return
@@ -404,26 +391,18 @@ func (a snapshot) same(b snapshot) bool {
 		maps.Equal(a.ssh, b.ssh) && maps.Equal(a.pi, b.pi)
 }
 
-// sameStates is maps.Equal for state.Session, except that state.Session.TS
-// is compared through drawnSession rather than directly - the Session
-// analogue of samePanes/drawnPart's exclusion rule, needed for the same
-// reason: pi/kido-status.ts now re-reports a running session's unchanged
-// status every HEARTBEAT_MS purely to keep TS fresh for state.Stalled (see
-// its doc), and without this every running agent would force a full
-// sidebar rebuild on that timer alone.
+// sameStates is maps.Equal for state.Session with TS excluded through
+// drawnSession, the Session analogue of samePanes/drawnPart: the
+// heartbeat changes TS every ~30s with nothing else moving, and would
+// otherwise force a rebuild per running agent on that timer.
 func sameStates(a, b map[string]state.Session) bool {
 	return maps.EqualFunc(a, b, func(x, y state.Session) bool {
 		return drawnSession(x) == drawnSession(y)
 	})
 }
 
-// drawnSession is s without TS, the one field that changes on a heartbeat
-// re-report while nothing else about the session does. Zeroing it means a
-// TS-only change no longer forces a redraw; it is not the same as TS
-// reaching no row at all, since stallPending (below) still reads TS
-// directly, off kido's own clock, to catch a session crossing
-// state.StallThreshold on an otherwise quiet tick - the one thing TS is
-// allowed to drive on screen, and it still will.
+// drawnSession is s without TS. TS still reaches one row, the stalled
+// indicator, and stallPending reads it directly for that.
 func drawnSession(s state.Session) state.Session {
 	s.TS = time.Time{}
 	return s
@@ -489,12 +468,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// frame currently on screen.
 		pending := m.shellPending() || m.stallPending()
 		now := m.now()
-		// A gap this wide between two ticks, with the wall clock having run
-		// ahead of the monotonic one, is the machine having slept through it
-		// (state.DetectPause) - not every running agent having gone quiet at
-		// once. Recording it rebases state.Stalled's baseline to the wake,
-		// on disk so `kido agents` (and so ask_agent, in a separate process)
-		// sees the same rebase this sidebar just detected.
+		// The sidebar is the only thing in kido that ticks continuously,
+		// so it is what notices a sleep and rebases state.Stalled, on
+		// disk so `kido agents` sees the same rebase.
 		if state.DetectPause(m.at, now) {
 			state.RecordPause(now) //nolint:errcheck // best effort; a failed write just costs one sidebar's detection reaching the others
 		}
@@ -748,15 +724,11 @@ func (m *model) observe(prev shellPhase, running bool) shellPhase {
 	}
 }
 
-// stallPending reports whether any Running session's state.Stalled verdict
-// would read differently right now than it did as of the frame on screen
-// (m.at): a session going stalled is driven purely by kido's own clock,
-// with nothing in the tmux/state snapshot moving, so without this a
-// session that crossed state.StallThreshold in a quiet tick would freeze
-// as "running" until something unrelated changed the snapshot. Comparing
-// against a freshly read now, rather than watching every Running session
-// on every tick the way shellPending watches its own transient windows,
-// costs nothing extra for a session nowhere near the threshold.
+// stallPending reports whether any Running session's state.Stalled
+// verdict would read differently now than it did as of the frame on
+// screen (m.at). A session going stalled is driven purely by kido's own
+// clock, so without this one crossing the threshold in a quiet tick
+// would freeze as "running" until something unrelated changed.
 func (m *model) stallPending() bool {
 	now := m.now()
 	for _, s := range m.snap.states {
@@ -1053,10 +1025,8 @@ func indicator(s state.Status) string {
 func indicatorDone() string   { return stDone.Render("✓") }
 func indicatorFailed() string { return stErr.Render("▌") }
 
-// indicatorStalled marks a session that claims Running but has gone quiet
-// past state.StallThreshold (state.Stalled) - kido's own guess that it is
-// wedged rather than merely busy, drawn the same on-demand way as
-// indicatorDone and indicatorFailed.
+// indicatorStalled marks a session state.Stalled reports as wedged,
+// rendered on demand for the same reason as indicatorDone.
 func indicatorStalled() string { return stStalled.Render("!") }
 
 // field is the indicator column: one glyph and one space, or two spaces
@@ -1181,10 +1151,7 @@ func (m *model) paneLabel(p tmux.Pane) string {
 }
 
 // windowAgent is the state record of whichever pane of w has a place in
-// the spawn tree - a spawned window holds exactly one such pane. A window
-// with none comes back as the zero Session: an ordinary shell window, or
-// an agent that has not reported yet, is never anyone's child and never
-// has children of its own.
+// the spawn tree, or the zero Session for a window with none.
 func windowAgent(w []tmux.Pane, states map[string]state.Session) state.Session {
 	for _, p := range w {
 		if s, ok := states[p.PaneID]; ok && (s.Instance != "" || s.ParentInstance != "") {
@@ -1196,24 +1163,11 @@ func windowAgent(w []tmux.Pane, states map[string]state.Session) state.Session {
 
 // orderWindowsByTree reorders a session's windows so a subagent's window
 // follows the window of whatever agent spawned it, recursively, and
-// returns how deep each window sits in that tree - the sidebar tree in
-// docs/subagents-plan.md's Sidebar section. It is tree.Order keyed by
-// window id, so everything that is not part of any tree keeps tmux's own
-// window order, and a bogus ParentInstance naming a window's own
-// descendant (or itself) costs that window its place in the tree and
-// nothing more - the same guarantee orderTree (cmd/kido/agents.go) makes
-// for kido agents.
-//
-// The indent comes from this walk and not from the agent's own reported
-// Depth, which is the only way the two can agree. Depth is what a record
-// says about itself: a subagent whose parent is in another session, or
-// gone, reports depth 1 all the same and used to be drawn indented under
-// whatever row happened to precede it - a parent it has no edge to. Here
-// a window is only ever indented under a window actually above it in this
-// session's tree.
+// returns how deep each window sits in that tree. The depth comes from
+// this walk, never from the agent's reported Depth: a subagent whose
+// parent is in another session, or gone, still reports depth 1, and must
+// not be indented under a row it has no edge to.
 func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) ([][]tmux.Pane, map[string]int) {
-	// tmux.Session groups panes by window, so Windows[i][0] always exists
-	// and names the window they are in.
 	byInstance := map[string]string{} // instance -> window id of the window holding it
 	for _, w := range windows {
 		if inst := windowAgent(w, states).Instance; inst != "" {
@@ -1225,10 +1179,9 @@ func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) 
 		func(w []tmux.Pane) string { return w[0].WindowID },
 		parentOf)
 
-	// One pass over the ordered result is enough, and is also what keeps a
-	// cycle from recursing: Order emits a window after its parent, or - if
-	// the parent chain closes a ring, or names nothing in this session -
-	// as a root with no parent yet seen, which is a depth of 0.
+	// Order emits a window after its parent, or as a root with no parent
+	// yet seen (a ring, or a parent outside this session), so one pass
+	// suffices and a cycle cannot recurse.
 	depth := make(map[string]int, len(ordered))
 	for _, w := range ordered {
 		if d, ok := depth[parentOf(w)]; ok {
@@ -1311,11 +1264,8 @@ func (m *model) rebuild() {
 
 		ordered, depth := orderWindowsByTree(s.Windows, m.snap.states)
 		for _, panes := range ordered {
-			// One indent for the whole window, not one per pane: the
-			// ┌/├/└ glyphs join a window's panes into a column, and
-			// indenting only the pane that happens to hold the agent
-			// record would break that column apart - a split subagent
-			// window drew its ┌ two columns right of its own └.
+			// One indent for the whole window: the ┌/├/└ glyphs join its
+			// panes into a column.
 			indent := strings.Repeat("  ", depth[panes[0].WindowID])
 			for i, p := range panes {
 				m.rows = append(m.rows, row{

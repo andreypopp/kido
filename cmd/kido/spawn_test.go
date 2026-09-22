@@ -75,8 +75,8 @@ func TestSpawnMarksTheWindow(t *testing.T) {
 }
 
 // writeTaskFile returns a path to a real, readable file under maxTaskBytes,
-// which every spawnCmd call needs now that --task-file existence and size
-// are checked (D12, D9).
+// which every spawnCmd call needs since --task-file existence and size
+// are checked.
 func writeTaskFile(t *testing.T, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "task.txt")
@@ -120,11 +120,10 @@ func TestSpawnRefusedAtMaxDepth(t *testing.T) {
 	}
 }
 
-// TestSpawnCannotEscapeCeilingWithSmallerDepth is D5: a caller already at
-// the ceiling used to be able to pass a smaller --depth and spawn anyway,
-// since --depth was trusted as the caller's own claim about itself. It
-// must not matter what --depth says; only the caller's own state record
-// does.
+// TestSpawnCannotEscapeCeilingWithSmallerDepth: a caller already at the
+// ceiling passes a smaller --depth. It must not matter what --depth says;
+// only the caller's own state record does, or the ceiling is only as real
+// as the caller chooses to make it.
 func TestSpawnCannotEscapeCeilingWithSmallerDepth(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -204,9 +203,8 @@ func TestSpawnRejectsUnsafeName(t *testing.T) {
 	}
 }
 
-// TestSpawnRejectsLongName is D13: the window name has no cap otherwise,
-// even though the tmuxConfUnsafe check already rejects the characters
-// that would make one dangerous.
+// TestSpawnRejectsLongName: the tmuxConfUnsafe check rejects dangerous
+// characters but does not cap length.
 func TestSpawnRejectsLongName(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -243,9 +241,9 @@ func TestSpawnAllowsSpaceInName(t *testing.T) {
 	}
 }
 
-// TestSpawnMissingTaskFile is D12: a typo in --task-file used to create
-// the window anyway, leaving a child with no task and no sign anything
-// was lost.
+// TestSpawnMissingTaskFile: a typo in --task-file must not create the
+// window, which would leave a child with no task and no sign anything was
+// lost.
 func TestSpawnMissingTaskFile(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -263,9 +261,8 @@ func TestSpawnMissingTaskFile(t *testing.T) {
 	}
 }
 
-// TestSpawnRejectsOversizedTaskFile is D9: the inbox drops a payload over
-// MAX_PROMPT_BYTES, but the task-file path had no matching cap at either
-// end.
+// TestSpawnRejectsOversizedTaskFile: the inbox drops a payload over
+// MAX_PROMPT_BYTES, and the task-file path must apply the same cap.
 func TestSpawnRejectsOversizedTaskFile(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -302,8 +299,8 @@ func TestSpawnAllowsTaskFileAtCap(t *testing.T) {
 	}
 }
 
-// TestSpawnRejectsNegativeDepth is D6: an explicit wrong --depth is not
-// the same as an omitted one, and must not be reported as "required".
+// TestSpawnRejectsNegativeDepth: an explicit wrong --depth is not the
+// same as an omitted one, and must not be reported as "required".
 func TestSpawnRejectsNegativeDepth(t *testing.T) {
 	calls := withNewWindow(t, "@1", "%1", nil)
 	err := spawnCmd([]string{
@@ -349,9 +346,9 @@ func TestSpawnTaskNeverOnCommandLine(t *testing.T) {
 			t.Errorf("task text leaked into the tmux invocation: %q", arg)
 		}
 	}
-	// The task moves into the run's own directory (docs/subagents-plan.md's
-	// Phase 8 section): KIDO_AGENT_TASK_FILE no longer names the caller's
-	// own --task-file, but its content must still be exactly the task.
+	// The task lives in the run's own directory: KIDO_AGENT_TASK_FILE does
+	// not name the caller's --task-file, but its content must still be
+	// exactly the task.
 	relocated := envValue(t, call.env, "KIDO_AGENT_TASK_FILE")
 	if relocated == taskFile {
 		t.Errorf("KIDO_AGENT_TASK_FILE = %s, want it relocated into the run directory, not the caller's own path", relocated)
@@ -470,14 +467,11 @@ func TestSpawnFailureIsAVisibleFailedRun(t *testing.T) {
 	}
 }
 
-// TestSpawnMarkFailureKillsTheWindowAndRecordsFailure is D5: a failed
-// markSubagent used to return the error with the window left up,
-// unmarked - which no sweep would ever find, since internal/reap only
-// ever touches a window carrying @kido_subagent. That is a permanent
-// leak, worse than the sibling newWindow-failure path just above, which
-// leaves no window behind at all. The fix kills the window rather than
-// strand it, and records the run as failed the same way that sibling
-// path does.
+// TestSpawnMarkFailureKillsTheWindowAndRecordsFailure: a failed
+// markSubagent must not leave the window up unmarked, which no sweep
+// would ever find since internal/reap only touches a window carrying
+// @kido_subagent. It kills the window and records the run as failed, the
+// same as the newWindow-failure path.
 func TestSpawnMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")

@@ -64,21 +64,14 @@ type Session struct {
 	// reported one; the UI falls back to the pane title in that case.
 	Title string `json:"title,omitempty"`
 	// Inbox is the path of a unix socket that speaks kido's own inbox
-	// protocol (see cmd/kido/inbox.go), reported with --inbox (kido
-	// agent-status). It is not a general "send a message here" address:
-	// an agent with a socket of its own that frames messages differently
-	// (Claude Code's per-session socket, for one) cannot be named here.
-	// Empty for Claude Code and for any agent that has no kido inbox;
-	// `kido prompt` then types the prompt into the pane with send-keys
-	// instead.
+	// protocol (see cmd/kido/inbox.go). It is not a general "send a
+	// message here" address: an agent with a socket of its own that frames
+	// messages differently (Claude Code's per-session socket, for one)
+	// cannot be named here. Empty for any agent without a kido inbox.
 	Inbox string `json:"inbox,omitempty"`
 	// Protocol is the highest inbox envelope version (see internal/msg) the
-	// agent's inbox understands, reported with --protocol (kido
-	// agent-status). Zero means either no inbox or an inbox that has not
-	// advertised a version, and a sender must treat both the same way: send
-	// v0 raw text, since a v1 envelope delivered to an unupgraded receiver
-	// would arrive as the user's literal prompt. Carried forward like
-	// Inbox - see agentStatus's --protocol doc.
+	// agent's inbox understands. Zero means either no inbox or one that has
+	// not advertised a version; a sender treats both as v0.
 	Protocol int `json:"protocol,omitempty"`
 	// When the last turn ended (Stop or equivalent); zero if the session
 	// is idle for another reason, such as having just started.
@@ -95,72 +88,30 @@ type Session struct {
 	Background bool `json:"background,omitempty"`
 	// Activity is free text the agent sets ("refactoring internal/ui").
 	// Unlike Status it is not a closed vocabulary and does not drive
-	// colour. Carried forward like Inbox - see agentStatus's --activity
-	// doc.
+	// colour.
 	Activity string `json:"activity,omitempty"`
 	// Instance is an opaque id an agent generates once per process and
-	// reports on every status call (see msg.NewID). It, not the pid, is
-	// what a child names as its ParentInstance: a pid can be recycled,
-	// and alive() cannot tell a live process from a dead one it reused -
-	// it reports EPERM as alive, so a recycled pid belonging to another
-	// user reads as a living parent. An instance string cannot collide
-	// that way.
+	// reports on every status call. It, not the pid, is what a child names
+	// as its ParentInstance (docs/design.md, Identity).
 	Instance string `json:"instance,omitempty"`
-	// ParentPID is the pid of the agent that spawned this one, kept only
-	// so a later phase can poll it for liveness - it is no longer how a
-	// parent edge is matched (see cmd/kido/agents.go's parentID).
-	// ParentInstance is that parent's own Instance, passed to the child
-	// via the environment, and is what parentID actually matches on.
-	//
-	// The plan this replaced paired ParentPID with the parent's start
-	// time, on the theory that a start time would guard pid reuse the way
-	// alive() cannot. That field was never implementable: nothing in
-	// Session holds an agent's own start time to compare it against, so
-	// it stayed zero in every file kido ever wrote. ParentInstance guards
-	// the same case and is simpler: no clock to read, no field to add
-	// just to have something to compare.
+	// ParentPID is the pid of the agent that spawned this one, used only
+	// as a first liveness check; a parent edge is matched on
+	// ParentInstance, that parent's own Instance.
 	ParentPID      int    `json:"parentPid,omitempty"`
 	ParentInstance string `json:"parentInstance,omitempty"`
 	// Depth is 0 for a root agent, 1 for its subagent, 2 for that
-	// subagent's. Reported fresh on every call, from the agent's own
-	// environment - unlike Activity there is nothing to carry forward.
+	// subagent's.
 	Depth int `json:"depth,omitempty"`
 	// Model is the name of the model the agent is currently running,
-	// e.g. "claude-sonnet-5". Carried forward like Inbox and Activity -
-	// see agentStatus's --model doc - since an extension's coalescing may
-	// report a fresh status without re-sending a model that has not
-	// changed.
+	// e.g. "claude-sonnet-5".
 	Model string `json:"model,omitempty"`
 }
 
 // StallThreshold is how long a session may claim Running without a fresh
-// report before kido treats it as stalled rather than merely busy: a
-// wedged agent (a dead network connection, a hung event loop) sits at
-// running forever with no completion event to say otherwise, and a
-// blocked ask_agent has no cheaper way to notice than this.
-//
-// Status reports do NOT fire on every tool call the way an earlier draft
-// of this comment claimed: send() in pi/kido-status.ts coalesces a report
-// away whenever its key (status/title/activity/model/ended/remove)
-// matches the last one sent, and agent_start, turn_start,
-// tool_execution_start and tool_call all send the identical "running"
-// key - so in a real session only the first of them ever reaches kido,
-// and TS then records the start of the current turn, not the time since
-// the agent last did something. A turn has no upper bound, so that made
-// this threshold unfixable by raising it: a healthy pi minutes into one
-// long turn would still cross it. pi/kido-status.ts now re-sends a
-// running session's status every ~30s (HEARTBEAT_MS there) purely to keep
-// TS fresh, bypassing the coalescing key, so TS is a real "last seen"
-// heartbeat again and three minutes - six missed heartbeats - is a
-// deliberate margin against one or two dropped or delayed reports, not
-// against turn length. It still leaves most of ask_agent's five-minute
-// default timeout for a genuinely busy target to actually answer. A
-// package variable so a test can shorten it, and overridable via
-// KIDO_STALL_THRESHOLD_MS the same way KIDO_STOP_ESCALATION_MS
-// (cmd/kido/control.go) and KIDO_LINGER_SECONDS (internal/reap) are: a
-// unit test can reassign the package variable directly, but the e2e
-// suite drives kido as a separately built binary, and only the
-// environment reaches that.
+// report before Stalled treats it as wedged rather than busy: six of the
+// ~30s heartbeats pi/kido-status.ts sends while running (docs/design.md,
+// Heartbeat and staleness). Overridable via KIDO_STALL_THRESHOLD_MS for
+// the e2e suite, which drives a separately built binary.
 var StallThreshold = stallThresholdFromEnv(3 * time.Minute)
 
 func stallThresholdFromEnv(def time.Duration) time.Duration {
@@ -171,24 +122,9 @@ func stallThresholdFromEnv(def time.Duration) time.Duration {
 }
 
 // Stalled reports whether s claims to be running but has gone quiet for
-// longer than StallThreshold - a derived read the same way ShellStatus
-// derives a shell's state from timestamps rather than trusting a flag.
-// Never true for anything but Running: idle and waiting are legitimately
-// quiet, and a wedged agent by definition is not the one that would
-// report itself stalled, so kido has to notice on its own.
-//
-// The threshold is measured from s.TS, or from the last detected wake
-// (RecordPause), whichever is later. Without that, a machine that slept
-// wakes with every running agent's TS already older than StallThreshold -
-// wall clock advanced through the sleep, nothing else did - and every one
-// of them would read as stalled in the same tick, before any of them has
-// had a real chance to send a fresh heartbeat. Rebasing to the wake gives
-// each one a full StallThreshold from there instead; one that is
-// genuinely wedged is still caught, just one threshold later than usual.
-// The wake marker lives on disk rather than in any one process's memory
-// because this must read the same way from `kido agents` (a fresh process
-// per call, which ask_agent shells out to) as it does from the sidebar
-// that actually detected the pause.
+// longer than StallThreshold, measured from s.TS or from the last
+// recorded wake (RecordPause), whichever is later. Never true for
+// anything but Running.
 func Stalled(s Session, now time.Time) bool {
 	if s.Status != Running {
 		return false
@@ -213,22 +149,10 @@ func Dir() string {
 }
 
 // Load reads every state file whose agent process is still alive, keyed
-// by pane id. A file found to belong to a dead process is removed rather
-// than merely skipped: pi's headless Claude Code bridge (pi-claude-bridge)
-// writes one such file per turn, and without this they never go away.
-// Deletion only ever targets a file whose recorded pid is not alive, so a
-// hook or agent-status call concurrently writing a fresh file for a live
-// session is never touched; a removal error (the file is already gone, or
-// a race with another sweep) is not fatal.
-//
-// Several files can claim the same pane, and the winner must not depend on
-// which one was written last: pi runs Claude Code inside its own pane
-// (pi-claude-bridge, headless, inheriting TMUX_PANE), so that inner Claude
-// Code's hooks write a claude record for a pane that is really a pi pane,
-// and the two keep overwriting each other as both agents work. The outer
-// agent is what the pane is, so the outer agent wins the pane (pi beats
-// claude; see beats) and only records of the same standing are compared by
-// time.
+// by pane id. A file belonging to a dead process is removed rather than
+// skipped, and when several files claim one pane the outer agent wins
+// regardless of timestamp (see beats). Both policies are explained in
+// docs/design.md, "Who is authoritative for what".
 func Load() (map[string]Session, error) {
 	files, err := readFiles()
 	if err != nil {
@@ -248,18 +172,10 @@ func Load() (map[string]Session, error) {
 }
 
 // ReadAll reads every state file exactly as recorded, keyed by session id
-// rather than pane, and without either of Load's side effects: it neither
+// rather than pane, without either of Load's side effects: it neither
 // deletes a dead-pid file nor keeps only one record per pane. `kido reap`
-// (cmd/kido/reap.go) is its one caller, because a command whose whole
-// purpose is to reason about agents that have died should not be the
-// thing that deletes the evidence.
-//
-// It is not what makes reap work, and an earlier design that thought it
-// was did not: internal/ui calls Load every 100ms, so with a sidebar
-// running the record of a dead subagent is gone within a tick however
-// reap itself reads. What a sweep acts on is the tmux window (see
-// internal/reap); the records only answer who spawned whom, and that
-// answer is the same either way.
+// is its one caller; a command that reasons about dead agents should not
+// be what deletes the evidence.
 func ReadAll() (map[string]Session, error) {
 	files, err := readFiles()
 	if err != nil {
@@ -273,8 +189,7 @@ func ReadAll() (map[string]Session, error) {
 }
 
 // readFiles reads every well-formed state file in Dir, normalising Agent
-// but applying none of Load's filtering - shared by Load and ReadAll,
-// which differ only in what they do with a dead-pid record.
+// but applying none of Load's filtering.
 func readFiles() ([]Session, error) {
 	dir := Dir()
 	entries, err := os.ReadDir(dir)
@@ -286,10 +201,8 @@ func readFiles() ([]Session, error) {
 	}
 	var out []Session
 	for _, e := range entries {
-		// e.IsDir() is also what keeps internal/subrun's runs/ subdirectory
-		// invisible here, deliberately: a run record must outlive the
-		// process it describes, which is the opposite of what Load does to
-		// every dead-pid file below, and must never be read as one.
+		// Skipping directories is what keeps runs/ and inbox/ invisible to
+		// Load; nothing may come to depend on that changing (docs/design.md).
 		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
 			continue
 		}
@@ -318,15 +231,13 @@ func agentOf(agent string) string {
 }
 
 // outer reports whether agent is the outer agent of a pane it shares with
-// Claude Code: pi runs Claude Code inside itself (pi-claude-bridge), so a pi
-// record always wins a pane over a claude one, whatever the other wrote
-// last. An unknown agent is treated as outer too, since a bare claude
-// record is the one kido knows can come from the inside.
+// Claude Code: pi runs Claude Code inside itself, so a pi record always
+// wins a pane over a claude one. An unknown agent is treated as outer too,
+// since a bare claude record is the one kido knows can come from inside.
 //
-// This is a two-agent test, not a general ranking: it is correct only
-// because the nested agent is always Claude Code. Two non-Claude agents
+// This is a two-agent test, not a general ranking: two non-Claude agents
 // nested in one pane would both report "outer" and fall through to beats'
-// timestamp comparison, reintroducing the flip-flop Load's doc warns about.
+// timestamp comparison, flip-flopping the pane between them.
 func outer(agent string) bool {
 	return agentOf(agent) != AgentClaude
 }
@@ -373,10 +284,8 @@ func alive(pid int) bool {
 	return err == nil || err == syscall.EPERM
 }
 
-// Alive is alive, exported for kido reap (cmd/kido/reap.go): the one
-// caller outside this package that must apply the same liveness test Load
-// applies internally, rather than a second opinion about what a live pid
-// means.
+// Alive is alive, exported so callers outside the package apply the same
+// liveness test Load does rather than a second opinion.
 func Alive(pid int) bool { return alive(pid) }
 
 // Record writes the state file for session id atomically.

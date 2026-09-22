@@ -64,7 +64,7 @@ func (h *harness) runOutcome(runID string) string {
 
 // TestRunRecordSurvivesReapAsDied spawns a child that never reports an
 // outcome for itself and is killed outright - the SIGKILL / OOM case
-// docs/subagents-plan.md's Phase 8 section calls Died - and checks that
+// subrun calls Died - and checks that
 // the run record is still readable, with that outcome, once the sidebar's
 // own sweep has collected its window. This is the point of the whole
 // design: the outcome must survive the window closing, not just the pane

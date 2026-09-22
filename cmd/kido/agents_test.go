@@ -13,7 +13,7 @@ import (
 // isAncestor: without it, a corrupted record whose own Parent field named
 // itself would make isAncestor(agents, X, X) true, and control.go's
 // descendant-only check would let a session's stop/interrupt of itself
-// through on that basis (see the function's own doc).
+// through on that basis.
 func TestIsAncestorRefusesSelfEdge(t *testing.T) {
 	agents := []AgentInfo{
 		{ID: "x", Parent: "x"}, // corrupted: names itself as its own parent

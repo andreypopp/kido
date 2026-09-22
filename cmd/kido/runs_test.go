@@ -66,12 +66,11 @@ func TestRunsListsAndShows(t *testing.T) {
 	}
 }
 
-// TestRunsResumeCommandWorksFromAnyDirectory is D6: pi sessions are
+// TestRunsResumeCommandWorksFromAnyDirectory: pi sessions are
 // project-scoped, so `pi --session <id>` alone only resolves from the
-// run's own cwd - run anywhere else, pi asks to fork into the current
-// directory instead, which is not what a copy-pasted "resume" command
-// should silently do. The printed command must `cd` into the run's own
-// cwd first, so it actually works verbatim from anywhere.
+// run's own cwd; run anywhere else, pi asks to fork into the current
+// directory instead. The printed command must `cd` into the run's own
+// cwd first, so it works verbatim from anywhere.
 func TestRunsResumeCommandWorksFromAnyDirectory(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	newRun(t, subrun.Meta{ID: "run-b", Name: "kid", ParentInstance: "root", Depth: 1,

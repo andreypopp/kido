@@ -127,11 +127,11 @@ func TestMessageResolveByName(t *testing.T) {
 	}
 }
 
-// TestMessageResolveByPaneTitleFallback checks defect D3: buildAgents
-// (agents.go) names a session with no reported Title after its pane's
-// title, and that is exactly the name a model reads off list_agents /
-// kido agents. matchTarget must accept that same name, or kido message
-// refuses a target by the very name kido agents just showed for it.
+// TestMessageResolveByPaneTitleFallback: buildAgents (agents.go) names a
+// session with no reported Title after its pane's title, and that is the
+// name a model reads off list_agents. matchTarget must accept that same
+// name, or kido message refuses a target by the very name kido agents
+// just showed for it.
 func TestMessageResolveByPaneTitleFallback(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -503,8 +503,8 @@ func TestMessageAskRefusalDoesNotPaste(t *testing.T) {
 // Enter. For a notice that text is model-authored (a subagent's completion
 // notice is built from its own title and activity, pi/kido-agents.ts), so
 // the paste would be a command line the model wrote, run in its parent's
-// pane. docs/subagents-plan.md's rule for a dead parent is that there is
-// nobody to tell; this pins that it is not told by send-keys instead.
+// pane. The rule for a dead parent is that there is nobody to tell; this
+// pins that it is not told by send-keys instead.
 func TestMessageNoticeToADeadV1AgentDoesNotPaste(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
