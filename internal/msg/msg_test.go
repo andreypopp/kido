@@ -1,6 +1,49 @@
 package msg
 
-import "testing"
+import (
+	"encoding/json"
+	"os"
+	"testing"
+)
+
+// discriminatorCase is one row of testdata/discriminator.json: a raw wire
+// payload and the v0/v1 verdict Parse must reach for it.
+type discriminatorCase struct {
+	Name string `json:"name"`
+	Raw  string `json:"raw"`
+	OK   bool   `json:"ok"`
+}
+
+// TestParseAgreesWithSharedDiscriminatorTable drives Parse over
+// testdata/discriminator.json, the 11-payload matrix proven to agree
+// between Parse and pi/kido-status.ts's parseEnvelope (a TypeScript test
+// drives the same file - see its test for "discriminator.json"). msg.Parse
+// and parseEnvelope are two implementations of one rule, and the whole
+// v0/v1 contract rests on them never drifting apart: a payload one side
+// calls an envelope and the other calls raw text is exactly how a user's
+// prompt gets swallowed as a control message, or a control message
+// reaches the user as literal text. Editing this fixture without updating
+// the TypeScript side breaks that guarantee silently; keeping both sides
+// reading the same file is what closes that gap.
+func TestParseAgreesWithSharedDiscriminatorTable(t *testing.T) {
+	raw, err := os.ReadFile("testdata/discriminator.json")
+	if err != nil {
+		t.Fatalf("reading testdata/discriminator.json: %v", err)
+	}
+	var cases []discriminatorCase
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatalf("parsing testdata/discriminator.json: %v", err)
+	}
+	if len(cases) != 11 {
+		t.Fatalf("got %d cases, want the full 11-payload matrix", len(cases))
+	}
+	for _, c := range cases {
+		_, ok := Parse([]byte(c.Raw))
+		if ok != c.OK {
+			t.Errorf("%s: Parse(%q) ok = %v, want %v", c.Name, c.Raw, ok, c.OK)
+		}
+	}
+}
 
 // TestParseEnvelope checks the v1/v0 split: an envelope needs both "v" and
 // "kind", and anything else - including a JSON object that just happens to

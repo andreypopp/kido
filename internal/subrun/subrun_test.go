@@ -146,6 +146,40 @@ func TestListReturnsRunDirectories(t *testing.T) {
 	}
 }
 
+// TestReadMetaMissingTruncatedOrMalformed pins loadRunInfo's (cmd/kido/runs.go)
+// only defence against a run directory that is not what it should be: a
+// run whose window was still being created when kido crashed (no
+// meta.json yet), a meta.json cut off mid-write by the same crash, and
+// one that is syntactically valid JSON but not a Meta at all. `kido runs`
+// depends on all three returning a plain error rather than panicking,
+// since one bad run directory must not take the whole listing down with
+// it.
+func TestReadMetaMissingTruncatedOrMalformed(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	if err := Create("run-bad", "x"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ReadMeta("run-bad"); err == nil {
+		t.Error("ReadMeta with no meta.json written yet = nil error, want one")
+	}
+
+	mp := filepath.Join(Dir(), "run-bad", "meta.json")
+	if err := os.WriteFile(mp, []byte(`{"id":"run-bad","name":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadMeta("run-bad"); err == nil {
+		t.Error("ReadMeta on truncated JSON = nil error, want one")
+	}
+
+	if err := os.WriteFile(mp, []byte(`["not", "an", "object"]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadMeta("run-bad"); err == nil {
+		t.Error("ReadMeta on a JSON array = nil error, want one")
+	}
+}
+
 // TestRefusesTraversingID pins checkID: `kido run-outcome <id>` takes its
 // run id from the child, which is a model-authored process, so an id that
 // escapes Dir must be refused rather than resolved. Measured before the

@@ -1,0 +1,13 @@
+[
+  {"name": "plain text", "raw": "hello there", "ok": false},
+  {"name": "json array", "raw": "[\"v\",\"kind\"]", "ok": false},
+  {"name": "json scalar", "raw": "42", "ok": false},
+  {"name": "null", "raw": "null", "ok": false},
+  {"name": "true", "raw": "true", "ok": false},
+  {"name": "empty string", "raw": "", "ok": false},
+  {"name": "object missing kind", "raw": "{\"v\":1,\"text\":\"hi\"}", "ok": false},
+  {"name": "object missing v", "raw": "{\"kind\":\"message\",\"text\":\"hi\"}", "ok": false},
+  {"name": "object with neither", "raw": "{\"text\":\"hi\",\"title\":\"a plan\"}", "ok": false},
+  {"name": "full envelope", "raw": "{\"v\":1,\"kind\":\"message\",\"id\":\"x\",\"from\":{\"session\":\"s1\"},\"text\":\"hi\"}", "ok": true},
+  {"name": "v and kind only", "raw": "{\"v\":1,\"kind\":\"message\"}", "ok": true}
+]

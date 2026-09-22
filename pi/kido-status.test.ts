@@ -19,7 +19,8 @@ import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync,
 import { tmpdir } from "node:os";
 import { join, delimiter, dirname } from "node:path";
 import net from "node:net";
-import kidoStatus, { isAncestor } from "./kido-status.ts";
+import { fileURLToPath } from "node:url";
+import kidoStatus, { isAncestor, parseEnvelope } from "./kido-status.ts";
 
 // The fake kido binary. Written to disk once per fixture so it can be
 // found on PATH as a file literally named "kido" - findKido() joins a
@@ -573,6 +574,23 @@ test("abandonPending: session_shutdown and a failed rebind settle a waiting ask 
     }
   } finally {
     fx.restore();
+  }
+});
+
+// parseEnvelope mirrors internal/msg.Parse: the same v0/v1 discriminator
+// rule implemented twice, once in Go and once here. A disagreement
+// between the two is how a user's prompt gets silently swallowed as a
+// control message (or the reverse: a real envelope treated as raw text).
+// Driven from internal/msg/testdata/discriminator.json, the fixture
+// internal/msg's own discriminator table test drives, so the two suites
+// cannot drift apart by someone editing only one list.
+test("parseEnvelope agrees with internal/msg.Parse's v0/v1 discriminator table", () => {
+  const fixturePath = join(dirname(fileURLToPath(import.meta.url)), "..", "internal", "msg", "testdata", "discriminator.json");
+  const cases: { name: string; raw: string; ok: boolean }[] = JSON.parse(readFileSync(fixturePath, "utf8"));
+  assert.ok(cases.length >= 11, `expected at least 11 cases in the shared fixture, got ${cases.length}`);
+  for (const c of cases) {
+    const got = parseEnvelope(c.raw) !== null;
+    assert.equal(got, c.ok, `${c.name}: parseEnvelope(${JSON.stringify(c.raw)}) ok = ${got}, want ${c.ok}`);
   }
 });
 
@@ -1366,6 +1384,38 @@ test("isAncestor refuses a self-edge, even with a corrupted self-parent record",
   assert.equal(isAncestor([self], self, self), false);
 });
 
+// isAncestor's `seen` set is what stands between a corrupted parent chain
+// and a hang: internal/tree's own cycle safety (AGENTS.md) has a Go twin,
+// but nothing here pinned the TS walk directly. Without `seen`, a genuine
+// cycle among records none of which is self would loop forever instead of
+// eventually returning false.
+test("isAncestor terminates on a parent cycle that never reaches self", () => {
+  const a = { id: "a", name: "a", parent: "b", pane: "%1", self: false, canMessage: true, window: "@1", stalled: false, sinceReport: 0 };
+  const b = { id: "b", name: "b", parent: "a", pane: "%2", self: false, canMessage: true, window: "@2", stalled: false, sinceReport: 0 };
+  const self = { id: "self", name: "self", parent: "", pane: "%3", self: true, canMessage: true, window: "@3", stalled: false, sinceReport: 0 };
+  assert.equal(isAncestor([self, a, b], self, a), false);
+  assert.equal(isAncestor([self, a, b], self, b), false);
+});
+
+// A dangling parent id - one that names no agent in the list at all, the
+// shape a race between a spawn and an exit can leave behind - must end
+// the walk rather than loop on `cur` never changing.
+test("isAncestor terminates when a parent names nobody in the list", () => {
+  const orphan = { id: "orphan", name: "orphan", parent: "ghost-parent", pane: "%1", self: false, canMessage: true, window: "@1", stalled: false, sinceReport: 0 };
+  const self = { id: "self", name: "self", parent: "", pane: "%2", self: true, canMessage: true, window: "@2", stalled: false, sinceReport: 0 };
+  assert.equal(isAncestor([self, orphan], self, orphan), false);
+});
+
+// isAncestor must also find self two levels up, not merely the immediate
+// parent - the shape a grandparent's `kido interrupt grandchild` relies
+// on.
+test("isAncestor finds a two-level ancestor", () => {
+  const grand = { id: "grand", name: "grand", parent: "", pane: "%1", self: true, canMessage: true, window: "@1", stalled: false, sinceReport: 0 };
+  const mid = { id: "mid", name: "mid", parent: "grand", pane: "%2", self: false, canMessage: true, window: "@2", stalled: false, sinceReport: 0 };
+  const child = { id: "child", name: "child", parent: "mid", pane: "%3", self: false, canMessage: true, window: "@3", stalled: false, sinceReport: 0 };
+  assert.equal(isAncestor([grand, mid, child], grand, child), true);
+});
+
 test("an interrupt envelope from an ancestor calls ctx.abort() and does not shut the session down", async () => {
   const fx = makeFixture();
   try {
@@ -1408,6 +1458,52 @@ test("interrupt and stop are both refused, and neither abort nor shutdown is cal
 
     assert.equal(s.aborts(), 0);
     assert.equal(s.shutdowns(), 0);
+  } finally {
+    fx.restore();
+  }
+});
+
+// A control envelope naming a session id that is not in kido's agents
+// list at all - not a peer, not a descendant, just unknown - must be
+// refused the same way a peer is. isAncestor's `byId.get(cur)?.parent`
+// already tolerates a missing sender, but handleInboundControl's own
+// `listed.agents.find((a) => a.id === env.from.session)` lookup is a
+// second, independent place this could be gotten wrong: nothing stops a
+// forged envelope from naming an id that never existed.
+test("interrupt and stop are refused when the sender's id matches no agent kido knows about", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(controlTree);
+    const s = await startWithControlSpies(fx);
+
+    const resp = await sendToInbox(s.inboxPath, envelope("interrupt", "", { from: { session: "no-such-id", name: "ghost" } }));
+    assert.equal(resp, "refused");
+    assert.equal(s.aborts(), 0);
+  } finally {
+    fx.restore();
+  }
+});
+
+// docs/subagents-plan.md: an interrupt leaves the session alive and able
+// to take a following message, which is more than "shutdown was not
+// called" - the inbox itself must still be answering. And an interrupt of
+// an idle agent (the shape here: session_start with no turn begun) must
+// be harmless, not refused or treated specially just because there was
+// nothing to abort.
+test("an interrupt of an idle agent is harmless, and the session still answers a following message", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(controlTree);
+    const s = await startWithControlSpies(fx);
+
+    const resp = await sendToInbox(s.inboxPath, envelope("interrupt", "", { from: { session: "root-1", name: "root-1" } }));
+    assert.equal(resp, "ok");
+    assert.equal(s.aborts(), 1);
+    assert.equal(s.shutdowns(), 0);
+
+    const followUp = await sendToInbox(s.inboxPath, envelope("message", "still there?", { from: { session: "root-1", name: "root-1" } }));
+    assert.equal(followUp, "ok");
+    assert.ok(s.delivered.some((d) => d.text === "still there?"), "the session must still accept a message after an interrupt");
   } finally {
     fx.restore();
   }

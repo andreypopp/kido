@@ -190,7 +190,7 @@ func TestSpawnUnreportedCallerIsDepthZero(t *testing.T) {
 
 func TestSpawnRejectsUnsafeName(t *testing.T) {
 	calls := withNewWindow(t, "@1", "%1", nil)
-	for _, name := range []string{`kid"s`, "kid$x", "kid#x", "kid`x", "kid\\x", "kid'x", "kid\nx"} {
+	for _, name := range []string{`kid"s`, "kid$x", "kid#x", "kid`x", "kid\\x", "kid'x", "kid\nx", "kid\rx"} {
 		err := spawnCmd([]string{
 			"--parent-pid", "123", "--parent-instance", "abc",
 			"--name", name, "--task-file", "/tmp/task",

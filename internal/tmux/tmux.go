@@ -189,13 +189,20 @@ var paneFormat = strings.Join([]string{
 
 const SubagentOption = "@kido_subagent"
 
+// paneFields is the number of #{...} entries paneFormat asks tmux for.
+// parsePanes' SplitN count and len(f) guard must both use it: AGENTS.md's
+// rule for adding a field is exactly that the two stay together, and a
+// literal repeated in two places is how they drift apart unnoticed (see
+// TestPaneFieldsMatchParsePanes).
+const paneFields = 23
+
 // parsePanes turns list-panes output lines into panes. Shared by the exec
 // and control-mode paths, which ask for the same format.
 func parsePanes(lines []string) []Pane {
 	var panes []Pane
 	for _, line := range lines {
-		f := strings.SplitN(line, sep, 23)
-		if len(f) < 23 {
+		f := strings.SplitN(line, sep, paneFields)
+		if len(f) < paneFields {
 			continue
 		}
 		p := Pane{SessionName: f[0], SessionID: f[1], WindowID: f[4], WindowName: f[5], WindowLayout: f[6],
