@@ -65,8 +65,16 @@ jobs:
       - name: Check tmux fork
         run: $HOME/tmux-side/bin/tmux -V
 
+      # test-ts.sh needs unflagged TypeScript, stable from node 22.18/23.6
+      # on, and skips cleanly when it is older. A runner's preinstalled node
+      # is whatever it happens to be, so pin one and demand the suite runs.
+      - name: Set up node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.18'
+
       - name: Unit tests
-        run: make test
+        run: KIDO_TS_TEST_REQUIRED=1 make test
 
       - name: E2E tests
         run: KIDO_TMUX=$HOME/tmux-side/bin/tmux KIDO_E2E_REQUIRED=1 make e2e
