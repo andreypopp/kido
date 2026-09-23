@@ -273,3 +273,43 @@ func TestValidStatus(t *testing.T) {
 		}
 	}
 }
+
+// A session Stop parked on background work claims running and then goes
+// quiet by design: Claude Code emits nothing while a background shell
+// runs, so its record cannot be refreshed and would cross the threshold
+// three minutes after every backgrounded turn. The exemption is on the
+// flag, not on the clock, so it holds however long the work takes.
+func TestStalledIgnoresASessionParkedOnBackgroundWork(t *testing.T) {
+	saved := StallThreshold
+	StallThreshold = time.Minute
+	t.Cleanup(func() { StallThreshold = saved })
+
+	reported := time.Unix(1700000000, 0)
+	quiet := Session{Status: Running, TS: reported, Background: true}
+	busy := Session{Status: Running, TS: reported}
+
+	for _, after := range []time.Duration{2 * time.Minute, 24 * time.Hour} {
+		now := reported.Add(after)
+		if StalledSince(quiet, time.Time{}, now) {
+			t.Errorf("%v after its last report, a session parked on background work is stalled", after)
+		}
+		if !StalledSince(busy, time.Time{}, now) {
+			t.Errorf("%v after its last report, an ordinary running session is not stalled", after)
+		}
+	}
+}
+
+// The exemption must not swallow the case it looks like: once the work
+// ends, the flag is gone from the next record, and an agent that then
+// falls silent is stalled on the usual clock.
+func TestStalledResumesOnceBackgroundWorkIsDone(t *testing.T) {
+	saved := StallThreshold
+	StallThreshold = time.Minute
+	t.Cleanup(func() { StallThreshold = saved })
+
+	reported := time.Unix(1700000000, 0)
+	s := Session{Status: Running, TS: reported}
+	if !StalledSince(s, time.Time{}, reported.Add(2*time.Minute)) {
+		t.Error("a running session with no background flag is not stalled")
+	}
+}

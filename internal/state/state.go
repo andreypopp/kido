@@ -126,6 +126,17 @@ func stallThresholdFromEnv(def time.Duration) time.Duration {
 // last recorded wake (RecordPause), zero if none - whichever is later.
 // Never true for anything but Running.
 //
+// Never true either for a session parked on background work. Staleness
+// asks whether an agent that should be reporting has stopped, and the
+// threshold is six of the thirty-second heartbeats pi sends while it
+// runs. A session Stop parked with work outstanding has no such clock:
+// its main loop has ended, Claude Code emits nothing while a background
+// shell runs, and the next event may be the user's own next prompt. The
+// verdict there is not uncertain but wrong every time, three minutes
+// after every backgrounded turn. Detecting background work that has
+// genuinely wedged needs evidence of the work itself, which is a
+// different signal from the one this function reads.
+//
 // The baseline is a parameter because a caller that asks about many
 // sessions, or about one session at two instants, must use one reading
 // of it for all of them: the sidebar compares this verdict at two times
@@ -134,7 +145,7 @@ func stallThresholdFromEnv(def time.Duration) time.Duration {
 // it meaningless. Reading the marker per call also put a file open in
 // the sidebar's 100ms path for a value that changes once per suspend.
 func StalledSince(s Session, wake, now time.Time) bool {
-	if s.Status != Running {
+	if s.Status != Running || s.Background {
 		return false
 	}
 	baseline := s.TS

@@ -1185,6 +1185,18 @@ it leaves most of an ask's default timeout for a genuinely busy target.
 `ask_agent` reads the stalled flag off the agent list it already fetches
 and refuses a stalled target immediately.
 
+A session parked on background work is exempt. Claude Code's `Stop`
+fires with `background_tasks` outstanding, kido records `running` with
+`Background` set, and then nothing is emitted at all while a background
+shell runs: the main loop has stopped, and the next event may be the
+user's next prompt. There is no heartbeat to miss, so the threshold
+would not be measuring a dropped report but the absence of any reporter,
+and it would fire three minutes after every backgrounded turn. The
+exemption is on the flag rather than on a longer clock, because the wait
+has no upper bound either. It costs the ability to notice background
+work that has genuinely wedged, which this signal could never see
+anyway: that needs evidence of the work itself, not of the agent.
+
 The heartbeat changes one field on every tick with nothing else about
 the session changing, and the sidebar compares records to decide whether
 to redraw. It therefore compares sessions with the timestamp zeroed, so
