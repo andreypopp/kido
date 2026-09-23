@@ -107,7 +107,7 @@ tool and is spelled as it reads.
 ## The tmux fork
 
 kido only runs under [andreypopp/tmux](https://github.com/andreypopp/tmux),
-branch `side-pane` (`tmux -V` prints `next-3.9`). Build one with
+at the revision the Homebrew tap pins (`tmux -V` prints `next-3.9`). Build one with
 `scripts/install-tmux-fork.sh <prefix>`. The fork is
 [PR tmux/tmux#5468](https://github.com/tmux/tmux/pull/5468) (side status)
 plus a `side-status-command` patch.
@@ -323,7 +323,9 @@ halves disagreeing about when a window is finished with. The full list is
 under "Knobs" in docs/design.md.
 
 CI runs both suites on Ubuntu and macOS for every push to `main` and every
-PR, building the fork from the live `side-pane` SHA (cached by that SHA,
+PR, building the fork at the revision `andreypopp/homebrew-tap`'s tmux
+formula pins - resolved via `scripts/install-tmux-fork.sh --print-revision`,
+so CI and `brew install` build the same commit - and cached by that SHA,
 with `cache/restore` + `cache/save` split so a failing job still saves the
 build it paid for).
 
@@ -532,6 +534,15 @@ build it paid for).
   log ending mid-character is an ordinary build log, and without the
   rune-boundary trim it costs the run the one notice it gets. Reads as a
   tidiness check; is not one.
+- **`TestRenderLiveMarkedPaneWithNoRecordShowsRunning`** and its negative
+  control **`TestRenderDeadMarkedPaneWithNoRecordStaysTombstone`** — a
+  marked pane with no state record used to render as finished for its
+  whole life regardless of `p.Dead`, which is wrong for any process that
+  never writes a record (a plain bash run) and briefly wrong for every
+  agent run (the window between `new-window` and its first report). The
+  label keys on `p.Dead` now, not on record-absence alone; the negative
+  control is what stops a fix that renders every such pane as running
+  from passing the positive case too.
 - **`TestAgentAliveSurvivesAPaneCollisionOnTheParent`** — the reaper's
   collision test in the second place that asked the same question. Its
   negative control runs `buildAgents` over the per-pane view and asserts
