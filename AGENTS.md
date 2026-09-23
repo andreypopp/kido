@@ -685,6 +685,42 @@ build it paid for).
 - **`setup-pi` leaves a symlink alone** so a dev can point that name at a
   checkout; only a real file is backed up and replaced.
 
+## Working here as a spawned agent
+
+These apply to every agent kido spawns into this repo, and a brief does
+not repeat them.
+
+- **Do the task yourself.** Do not spawn subagents, and do not call
+  `ask_agent`; nobody is waiting to be asked. Forwarding a brief down a
+  level is not parallelization.
+- **No git writes.** No commit, push, reset, add, checkout or stash. The
+  top-level session commits. Leave work uncommitted. For a revert test,
+  copy the file to `/tmp`, never `git stash`.
+- **Other agents' uncommitted changes are expected.** Work runs in
+  parallel; the brief says which files are yours. Do not revert, clean
+  or fix anything outside them - report it instead.
+- **You are inside the user's live tmux server.** `kill-server` without
+  `-L` or `-S` naming your own socket kills it. Start every test server
+  on its own socket (`tmux -L t-$$`), end it with `kill-session`, and
+  never touch `~/bin/tmux`, `/opt/homebrew/bin/tmux` or the running
+  server.
+- **Every wait has a deadline.** No open-ended polling in code or in
+  your own shell.
+- **Verification is yours; it is not re-run.** One pre-fix proof: the
+  test for the behaviour the change exists for, run against a `/tmp`
+  copy without the change, its failure quoted verbatim. Not one per
+  behaviour - ten reverts is an afternoon. Then, once:
+
+      env -u KIDO_AGENT_PARENT_INSTANCE -u KIDO_AGENT_DEPTH -u KIDO_AGENT_TASK_FILE -u KIDO_AGENT_PARENT_PID -u TMUX_PANE KIDO_TS_TEST_REQUIRED=1 make test
+      env -u KIDO_AGENT_PARENT_INSTANCE -u KIDO_AGENT_DEPTH -u KIDO_AGENT_TASK_FILE -u KIDO_AGENT_PARENT_PID -u TMUX_PANE KIDO_E2E_REQUIRED=1 KIDO_TMUX=$HOME/bin/tmux make e2e
+
+  No loops, no second tmux build. Report PASS/FAIL/SKIP as printed; a
+  failure in a file you do not own is reported, not fixed.
+- **Docs are not per task.** Do not edit `docs/` or this file unless the
+  brief assigns them. Put any prose a change deserves in your report.
+- **Report through `notify_parent`, under 4000 characters**, leading
+  with what was built and the pre-fix failures.
+
 ## Releasing
 
 The repo carries **no version and no tags, deliberately**. Versioning
