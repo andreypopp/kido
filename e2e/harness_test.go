@@ -32,12 +32,12 @@ import (
 )
 
 var (
-	tmuxBin    string // patched tmux, or "" when unusable
-	tmuxWhy    string // why it is unusable
-	kidoBin    string // freshly built kido
-	claudeBin  string // a binary named "claude" that just sleeps
-	nodeBin    string // the same binary named "node", for a pi pane
-	fakeBinDir string // holds kidoBin, claudeBin, nodeBin and a fake "pi"
+	tmuxBin   string // patched tmux, or "" when unusable
+	tmuxWhy   string // why it is unusable
+	kidoBin   string // freshly built kido
+	claudeBin string // a binary named "claude" that just sleeps
+	nodeBin   string // the same binary named "node", for a pi pane
+	piBinDir  string // a directory holding one binary, named "pi"
 )
 
 const (
@@ -66,30 +66,37 @@ func setup(m *testing.M) (int, error) {
 		return 0, err
 	}
 	defer os.RemoveAll(dir)
-	fakeBinDir = dir
 
 	kidoBin = filepath.Join(dir, "kido")
 	if out, err := exec.Command("go", "build", "-o", kidoBin, "kido/cmd/kido").CombinedOutput(); err != nil {
 		return 0, fmt.Errorf("go build kido: %v\n%s", err, out)
 	}
-	if claudeBin, err = buildFakeAgent(dir, "claude"); err != nil {
+	if claudeBin, err = buildFakeAgent(dir, dir, "claude"); err != nil {
 		return 0, err
 	}
 	// pi is a bash shim around node, so tmux reports a pi pane as "node".
 	// A pane running this one is a pi pane to kido only through what pi
 	// reports with `kido agent-status`, which is what the tests drive.
-	if nodeBin, err = buildFakeAgent(dir, "node"); err != nil {
+	if nodeBin, err = buildFakeAgent(dir, dir, "node"); err != nil {
 		return 0, err
 	}
 	// A resume that names no command defaults to "pi" (spawn_subagent.go),
 	// which is where the tool allowlist is spelled onto the command line -
-	// so the fixture needs the literal name "pi" to resolve, not a fake
-	// standing in under some other name. Real pi is not installed in CI;
-	// putting this fake on PATH ahead of it (cleanEnv) means the pane
-	// outlives the second `remain-on-exit` tmux call regardless of whether
-	// the real thing is installed, rather than only on a machine that
-	// happens to have it.
-	if _, err = buildFakeAgent(dir, "pi"); err != nil {
+	// so that one fixture needs the literal name "pi" to resolve, not a
+	// fake standing in under some other name. The only way to make a name
+	// resolve is to put its directory on a PATH, so this fake gets a
+	// directory holding nothing else: a directory holding the others too
+	// would shadow whatever real "node", "claude" or "kido" is installed
+	// on the machine running the suite, for every pane that inherits that
+	// PATH, and a shell startup file that runs one of those names (nvm's,
+	// on a GitHub Ubuntu runner, runs `node -v`) would hang on a fake that
+	// never exits. TestSpawnResumeCarriesToolsOntoThePiCommandLine puts
+	// this directory on its own server's PATH and nobody else's.
+	piBinDir = filepath.Join(dir, "pi-bin")
+	if err := os.MkdirAll(piBinDir, 0o755); err != nil {
+		return 0, err
+	}
+	if _, err = buildFakeAgent(dir, piBinDir, "pi"); err != nil {
 		return 0, err
 	}
 	tmuxBin, tmuxWhy = findTmux()
@@ -109,8 +116,8 @@ func setup(m *testing.M) (int, error) {
 // screen to notice a dismissed prompt (internal/ui/screen.go). The fake
 // starts showing a question dialog, "busy" switches to the input box with
 // work still in flight, and "esc" to the input box with nothing running.
-func buildFakeAgent(dir, name string) (string, error) {
-	src := filepath.Join(dir, "fakeagent-"+name)
+func buildFakeAgent(srcRoot, outDir, name string) (string, error) {
+	src := filepath.Join(srcRoot, "fakeagent-"+name)
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		return "", err
 	}
@@ -154,7 +161,7 @@ func main() {
 	}
 	// Building a named file needs no go.mod: the source imports only the
 	// standard library.
-	out := filepath.Join(dir, name)
+	out := filepath.Join(outDir, name)
 	cmd := exec.Command("go", "build", "-o", out, "main.go")
 	cmd.Dir = src
 	if b, err := cmd.CombinedOutput(); err != nil {
@@ -167,17 +174,6 @@ func main() {
 // KIDO_AGENT_* removed, plus extra. Everything the harness spawns gets
 // it: KIDO_TMUX would otherwise reach kido through the tmux servers it
 // starts, and kido must resolve the tmux binary on its own.
-// pathPrefix puts fakeBinDir ahead of PATH, so a bare "pi" on any command
-// line this harness types into a pane resolves to the fake agent built
-// alongside "claude" and "node", rather than requiring pi to be installed
-// on the machine running the suite.
-func pathPrefix(kv string) string {
-	if rest, ok := strings.CutPrefix(kv, "PATH="); ok {
-		return "PATH=" + fakeBinDir + string(os.PathListSeparator) + rest
-	}
-	return kv
-}
-
 func cleanEnv(extra ...string) []string {
 	env := make([]string, 0, len(os.Environ())+len(extra))
 	for _, kv := range os.Environ() {
@@ -188,7 +184,7 @@ func cleanEnv(extra ...string) []string {
 		// new-window gives a spawned child. A test asserting a child has no
 		// parent edge would then be answered by the developer's own.
 		if !strings.HasPrefix(kv, "KIDO_TMUX=") && !strings.HasPrefix(kv, "KIDO_AGENT_") {
-			env = append(env, pathPrefix(kv))
+			env = append(env, kv)
 		}
 	}
 	return append(env, extra...)
@@ -262,6 +258,22 @@ var sanitize = regexp.MustCompile(`[^A-Za-z0-9]+`)
 // -interval makes a test prove that an update came from tmux's control-mode
 // notifications rather than from the next poll.
 func start(t *testing.T, session string, kidoArgs ...string) *harness {
+	t.Helper()
+	return startPathPrefix(t, session, "", kidoArgs...)
+}
+
+// startPathPrefix is start with pathDir ahead of PATH for the inner tmux
+// server, so that a pane command given as a bare name resolves there. The
+// server's own environment is the only place that works: tmux looks a
+// pane's command up in the environment of the server process, not in the
+// session environment it hands the child, so `set-environment PATH` on a
+// running server does not find it.
+//
+// It is a whole harness's PATH, so a fake put there shadows that name for
+// every pane of that test - including the shells the test types into,
+// whose startup files run commands of their own. Pass a directory holding
+// only the name being faked.
+func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) *harness {
 	t.Helper()
 	requireTmux(t)
 
@@ -364,6 +376,9 @@ bind-key k if-shell -F '#{m:*side-status-focus*,#{client_flags}}' \
 	h.must(h.tmux(h.outer, "set-option", "-g", "remain-on-exit", "on"))
 	inner := fmt.Sprintf("unset TMUX; exec %q -L %s -f %q new-session -s %s -c %q",
 		tmuxBin, h.inner, conf, session, h.dir)
+	if pathDir != "" {
+		inner = fmt.Sprintf("PATH=%q:$PATH; export PATH; ", pathDir) + inner
+	}
 	h.must(h.tmux(h.outer, "new-window", "-d", "-t", "host", "-n", "side", inner))
 
 	h.waitFor(func() bool { return hasLine(h.sidebar(), session) }, settle,

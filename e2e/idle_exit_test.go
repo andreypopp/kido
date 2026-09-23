@@ -242,16 +242,20 @@ func TestSpawnResumeCarriesKeepAlive(t *testing.T) {
 // widened it without anyone asking.
 //
 // The allowlist is spelled onto the command line only when the command is
-// literally `pi` (a command given after `--` is passed through exactly as
-// written), so this resume names none, and pi is not installed in CI - the
-// pane dies at once and remain-on-exit keeps the window. That is what
-// makes `pane_start_command` readable, and it is the better witness
-// anyway: tmux's own record of the argv it was handed, past kido's
-// command-line construction and tmux's parsers, rather than what kido
-// believed it passed.
+// literally `pi`, so this resume names none - which leaves the pane's
+// fate to whether that bare name resolves on the machine running the
+// suite. Where it does not, the pane exits before kido's second tmux call
+// sets remain-on-exit and the window is gone with it (the race noted in
+// internal/tmux/tmux.go), so the resume fails outright. Hence the fake pi
+// below, on this server's PATH alone: a live pane, whatever is installed.
+//
+// `pane_start_command` is read rather than anything the child reports,
+// because it is the better witness either way: tmux's own record of the
+// argv it was handed, past kido's command-line construction and tmux's
+// parsers, rather than what kido believed it passed.
 func TestSpawnResumeCarriesToolsOntoThePiCommandLine(t *testing.T) {
 	t.Parallel()
-	h := start(t, "alpha")
+	h := startPathPrefix(t, "alpha", piBinDir)
 
 	runID, sessDir := h.spawnRecordedRun("tools-carry-e2e")
 

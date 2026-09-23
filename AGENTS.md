@@ -363,10 +363,17 @@ build it paid for).
   `windows = "bash\norphan-e2e"`, the orphan itself.
 - **`TestSpawnResumeCarriesToolsOntoThePiCommandLine`** (e2e) reads
   `#{pane_start_command}` rather than a child's own report, because the
-  allowlist is only spelled out when the command is literally `pi` and pi
-  is not installed in CI: the pane dies at once, `remain-on-exit` keeps
-  the window, and tmux's record of the argv it was handed is a better
-  witness than kido's belief about what it passed. Its sibling,
+  allowlist is only spelled out when the command is literally `pi`, and
+  tmux's record of the argv it was handed is a better witness than kido's
+  belief about what it passed. It is the one test given a PATH of its own
+  (`startPathPrefix`), holding a fake `pi` and nothing else: pi is not
+  installed in CI, the pane would exit before the second tmux call sets
+  `remain-on-exit`, and the window would be gone. That prefix went on
+  every pane's PATH once, which put a fake `node` that never exits ahead
+  of the real one - enough for a login shell sourcing nvm to hang at
+  startup and take twenty-two tests with it, all of them ones that type
+  into a shell. A fake on a shared PATH shadows that name for every
+  startup file too, not only for the command you meant. Its sibling,
   `TestSpawnResumeCarriesKeepAlive`, does have a live child and reads the
   environment from it; neither names the flag it asserts on the resume
   command line, which is the whole point — it can only come from the run.
