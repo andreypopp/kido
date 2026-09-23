@@ -1,27 +1,56 @@
 #!/bin/sh
-# Build and install the andreypopp/tmux fork (branch side-pane) into the
-# prefix given as $1. Used by CI (.github/workflows/ci.yml) and by humans
-# setting up a local build of the fork kido runs inside.
+# Build and install the andreypopp/tmux fork into the prefix given as $1, at
+# the revision the Homebrew tap pins (or the revision given as $2). Used by
+# CI (.github/workflows/ci.yml) and by humans setting up a local build of the
+# fork kido runs inside.
 #
-# Usage: scripts/install-tmux-fork.sh <prefix>
+# Usage: scripts/install-tmux-fork.sh <prefix> [revision]
+#        scripts/install-tmux-fork.sh --print-revision
 #
-# Requires: git, sh, a C toolchain, bison, autoconf, automake, pkg-config,
-# and the libevent/ncurses/utf8proc development headers.
+# With no revision, reads the tap's pinned revision so a plain
+# `scripts/install-tmux-fork.sh <prefix>` builds the same commit
+# `brew install andreypopp/tap/tmux` would. --print-revision only resolves
+# and prints that SHA, without cloning or building anything.
+#
+# Requires: git, curl, sh, a C toolchain, bison, autoconf, automake,
+# pkg-config, and the libevent/ncurses/utf8proc development headers.
 
 set -eu
 
-prefix=${1:?"usage: $0 <prefix>"}
+tap_formula_url="https://raw.githubusercontent.com/andreypopp/homebrew-tap/main/Formula/tmux.rb"
+
+resolve_revision() {
+	formula=$(curl -fsSL "$tap_formula_url")
+	revision=$(printf '%s\n' "$formula" | sed -n 's/.*revision: *"\([0-9a-fA-F]*\)".*/\1/p' | head -n1)
+	case "$revision" in
+	[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
+	*)
+		echo "install-tmux-fork.sh: could not extract a 40-hex revision from $tap_formula_url" >&2
+		exit 1
+		;;
+	esac
+	printf '%s\n' "$revision"
+}
+
+if [ "${1:-}" = "--print-revision" ]; then
+	resolve_revision
+	exit 0
+fi
+
+prefix=${1:?"usage: $0 <prefix> [revision]"}
+revision=${2:-$(resolve_revision)}
 
 repo_url="https://github.com/andreypopp/tmux.git"
-branch="side-pane"
 
 workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT INT TERM
 
-echo "==> cloning $repo_url (branch $branch) into $workdir" >&2
-git clone --depth 1 --branch "$branch" "$repo_url" "$workdir/tmux"
-
+echo "==> fetching $repo_url at $revision into $workdir" >&2
+git init -q "$workdir/tmux"
 cd "$workdir/tmux"
+git remote add origin "$repo_url"
+git fetch --depth 1 origin "$revision"
+git checkout -q FETCH_HEAD
 
 # On macOS, Homebrew's ncurses is keg-only (not linked into
 # /opt/homebrew/lib/pkgconfig), so pkg-config falls back to the ancient

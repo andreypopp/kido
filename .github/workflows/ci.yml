@@ -39,7 +39,7 @@ jobs:
       - name: Resolve tmux fork revision
         id: tmux-fork
         run: |
-          sha=$(git ls-remote https://github.com/andreypopp/tmux.git refs/heads/side-pane | cut -f1)
+          sha=$(./scripts/install-tmux-fork.sh --print-revision)
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       # restore/save rather than actions/cache: a failing job must still
@@ -53,7 +53,7 @@ jobs:
 
       - name: Build and install tmux fork
         if: steps.tmux-cache.outputs.cache-hit != 'true'
-        run: ./scripts/install-tmux-fork.sh "$HOME/tmux-side"
+        run: ./scripts/install-tmux-fork.sh "$HOME/tmux-side" "${{ steps.tmux-fork.outputs.sha }}"
 
       - name: Save tmux fork build
         if: steps.tmux-cache.outputs.cache-hit != 'true'
