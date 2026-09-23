@@ -34,7 +34,7 @@ var subcommands = []string{
 	"inbox-path", "snapshot", "switch-session", "switch-window", "prompt",
 	"message_agent", "ask_agent", "notify_parent", "steer_subagent",
 	"interrupt_subagent", "stop_subagent", "spawn_subagent", "close-window",
-	"window-focused", "reap", "run-outcome", "runs",
+	"window-focused", "reap", "run-outcome", "runs", "ssh",
 }
 
 // suggestSubcommand returns the known subcommand that most plainly shares
@@ -213,6 +213,9 @@ func main() {
 			return
 		case "runs":
 			dispatch("runs", func() error { return runsCmd(os.Args[2:]) })
+			return
+		case "ssh":
+			dispatch("ssh", func() error { return sshCmd(os.Args[2:]) })
 			return
 		default:
 			// A leading flag (bare `kido -client NAME`, or any other flag)

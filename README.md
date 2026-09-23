@@ -104,6 +104,35 @@ oldest first, each session's windows in tmux's order. Advancing past a
 session's last window moves to the next session, where tmux's own
 `next-window` wraps inside one session.
 
+### `kido ssh [ssh args...] destination`
+
+ssh, with the remote zsh primed to report to the sidebar: the row then
+shows what the shell on the far side is running, on a host where nothing
+is installed.
+
+```sh
+kido ssh deploy@build-box
+kido ssh -o BatchMode=yes -p 2222 build-box
+```
+
+The arguments are ssh's own and are passed through in order. kido sends a
+small bootstrap as the remote command, which decodes the shell
+integration into a temporary directory, points `ZDOTDIR` at it and execs
+the login shell; that directory's `.zshenv` hands `ZDOTDIR` straight back
+before the real dotfiles are read and then deletes itself, so the remote
+`$HOME` is never touched and nothing outlives the session.
+
+Only zsh is primed. Anything kido cannot prime - a remote command of your
+own, no terminal, no zsh on the far side, a remote with no `base64`, an
+option meaning there is no login shell in this connection - is a plain
+ssh session, unchanged. `kido ssh host` is never worse than `ssh host`.
+
+The payload rides in the ssh command line, where the remote's `ps` can
+read it. It is a public shell script with no secrets in it, which is what
+makes that acceptable; the alternative channel is the interactive
+session's own stdin. The remote also self-reports, which is a weaker
+claim than the local process table kido reads for everything else.
+
 ### `kido prompt [--window]`
 
 Reads a prompt from stdin and sends it to the one agent pane in scope.
@@ -182,6 +211,11 @@ while a command runs, then, until you visit the pane, green `✓` if the last
 one exited zero or red `▌` if it exited nonzero. A shell without the
 integration has no indicator column. A program that has taken the
 terminal (an editor, a pager, an `ssh` shell) shows no indicator.
+
+An `ssh` pane is the exception: once its far side marks a prompt, the row
+shows the remote shell's commands with the same indicators, beside the
+destination. That needs the integration on the remote, which `kido ssh`
+supplies for a host that does not have it.
 
 Claude Code reports through `kido hook`. Dismissing a question or denying a
 permission fires no hook, so kido reads the pane and returns it to idle

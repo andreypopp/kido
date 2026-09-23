@@ -1409,6 +1409,89 @@ sorts by report time first, with the id as a tiebreak because two agents
 reporting inside one clock tick would otherwise reorder between two calls
 that saw the same state.
 
+## Priming a remote shell
+
+An `ssh` pane reports what the far side is doing only because the far
+side says so: tmux parses OSC 133 off the pane's output stream and never
+learns the markers crossed a network, and `observeRemote` (internal/ui)
+latches a pane once its far side marks a prompt later than the local
+shell marked the ssh as started. All of that needs the remote shell to
+source `shell/zsh/integration.zsh`. On a host where nobody has installed
+anything the pane stays silent for the life of the connection.
+
+`kido ssh` is that host's answer: it sends the integration along with the
+connection. The design is kitty's ssh kitten, cut down to the one thing
+kido needs.
+
+**What is sent.** The integration is embedded in the binary (`kido/shell`)
+and base64'd into a POSIX sh bootstrap, which goes to ssh as the remote
+command. kitty does the opposite - a small bootstrap in argv that asks
+the terminal for the heavy payload over a DCS escape, gated by a one-time
+password - and that channel cannot work here: it needs a kitty-aware
+emulator at the local end, and kido's local end is tmux inside whatever
+terminal the user has. Argv is affordable because the payload is one
+~1.5K file where kitty's is ~127K plus terminfo. stdin is not an option
+at all: the interactive session needs it.
+
+**What that costs, said plainly.** Anything in an ssh command line is
+visible in the remote's `ps`. The payload is a public shell script with
+no secrets in it, so argv is acceptable - a reason, not an oversight; a
+payload that ever carried a secret would need a different channel.
+Separately, everything the sidebar then shows about that pane is the
+remote end's own report, which is a weaker claim than the local process
+table kido reads for everything else: a host can say whatever it likes
+about what it is running.
+
+**The ZDOTDIR swap.** The bootstrap decodes the integration into a fresh
+`mktemp -d`, writes a `.zshenv` beside it, points `ZDOTDIR` at that
+directory and execs the login shell. zsh looks `$ZDOTDIR` up again for
+each startup file, so that `.zshenv` - which runs first - restores
+`ZDOTDIR` before anything else is read, and `.zprofile`, `.zshrc` and
+`.zlogin` come from the user's real dotfiles directory. A `ZDOTDIR` the
+user already had is carried across in `KIDO_ORIG_ZDOTDIR` and put back;
+otherwise `ZDOTDIR` is unset again. The remote `$HOME` is never written
+to, and nothing is installed there.
+
+The swap only happens when the user already has zsh dotfiles, which is
+kitty's care and worth keeping: a zsh with none is about to run
+`zsh-newuser-install`, and a `ZDOTDIR` pointing at kido's directory would
+quietly suppress it.
+
+**Nothing persists.** kido's payload is small enough to resend on every
+connection, so unlike kitty - which caches under
+`~/.local/share/kitty-ssh-kitten` - it leaves nothing behind. The
+`.zshenv` reads the integration into a parameter and removes the whole
+directory as it goes (unlinking a file zsh still has open is harmless),
+and the bootstrap's `trap ... EXIT` covers every path that returns
+instead of exec'ing - a trap cannot fire after an `exec`, which is why
+the cleanup cannot live there alone.
+
+The integration itself is sourced at the first `precmd` rather than in
+the `.zshenv`, again as kitty does it: a `.zshrc` that replaces
+`precmd_functions` wholesale, or prints its own OSC 133, would otherwise
+land on top of hooks registered before it ran.
+
+**Degrade, never break.** `kido ssh host` may not be worse than
+`ssh host`. kido passes the command line through untouched - no `-t`, no
+remote command - unless it is the one shape it can prime: a destination,
+no remote command of the user's own, a local tty, and no option saying
+this connection has no login shell in it (`-N`, `-T`, `-W`, `-f`, `-n`,
+`-s`, `-O`, `-Q`, `-V`, `-G`). When it does prime it adds `-t`, because
+ssh allocates no tty for a command and the shell being asked for is an
+interactive one. On the remote side every failure ends in the same login
+shell unprimed: a login shell that is not zsh, no `mktemp` or `base64`,
+a directory that cannot be made, a payload that will not decode. kido
+execs ssh rather than wrapping it, so signals, the exit status and the
+tty behave as they would with no kido in front of them.
+
+The remote login shell is read from `$SHELL`, which sshd sets from the
+password database, so detection costs no extra round trip. Only zsh is
+primed.
+
+Deliberately not built: terminfo shipping or compilation, a kido binary
+on the remote, ControlMaster sharing, askpass, bash and fish. kitty needs
+those; a shell that only has to emit four escape sequences does not.
+
 ## Knobs
 
 Every duration a test has to shorten is a package variable, and the ones
@@ -1440,6 +1523,11 @@ up through `globalThis` and serve a session neither started.
 - A child that exits before `remain-on-exit` lands loses its window and
   its last screen; only the run record remains.
 - Pause detection needs a sidebar ticking when the machine sleeps.
+- A `kido ssh` session killed between the `exec` and the remote zsh
+  reading the `.zshenv` leaves its temporary directory behind: the trap
+  is gone with the exec and the cleanup has not run yet. It is one
+  empty-ish directory under the remote's `$TMPDIR`, and the window is a
+  few milliseconds wide.
 - Everything assumes one machine: a shared filesystem for the state
   directory, the sockets and the task file; a shared pid namespace; and
   a kido binary beside every agent. Remote subagents would invert
