@@ -8,24 +8,19 @@ import (
 	"testing"
 )
 
-// clientWindow returns the client's current session (via list-clients) and,
-// within it, the name of that session's active window (via list-windows):
-// the window a client displays is the one its session currently has active,
-// there being no separate per-client notion of "current window".
+// clientWindow returns the client's current session and the name of the
+// window it displays, both read in one query against the client itself.
+// Asking for the session's active window by name instead would reproduce
+// the very bug some of these tests cover: tmux splits a target on "." and
+// ":", so a session named "team.build" is not found by name.
 func (h *harness) clientWindow() (session, window string) {
 	h.t.Helper()
-	session = h.clientSession()
-	if session == "" {
+	out := h.in("display-message", "-p", "-t", h.client, "#{client_session}\t#{window_name}")
+	session, window, ok := strings.Cut(strings.TrimSpace(out), "\t")
+	if !ok {
 		return "", ""
 	}
-	out := h.in("list-windows", "-t", session, "-F", "#{window_active}\t#{window_name}")
-	for _, line := range strings.Split(out, "\n") {
-		active, name, ok := strings.Cut(line, "\t")
-		if ok && active == "1" {
-			return session, name
-		}
-	}
-	return session, ""
+	return session, window
 }
 
 // waitWindow waits until the client sits on session's window named window.
@@ -321,4 +316,38 @@ func TestSwitchWindowAllSubagentWindows(t *testing.T) {
 	h.waitWindow("a", "a0")
 	h.runSwitchWindow("prev")
 	h.waitWindow("a", "a0")
+}
+
+// A session name containing a dot is the case tmux's target parser gets
+// wrong: `switch-client -t team.build` splits the name and looks for pane
+// "build" of window "team", so the switch fails with "can't find pane"
+// and the key does nothing. Both switch commands therefore target a
+// session by its id. The dotted session is created second so it is not
+// the one the client starts on, and both directions are walked: next into
+// it, prev back out.
+func TestSwitchWindowIntoADottedSessionName(t *testing.T) {
+	h := start(t, "plain")
+	h.renameWindow("plain", 0, "p0")
+	h.newSessionSpaced("team.build")
+	h.renameWindow("team.build", 0, "t0")
+
+	h.selectWindow("plain", "p0")
+	h.runSwitchWindow("next")
+	h.waitWindow("team.build", "t0")
+
+	h.runSwitchWindow("prev")
+	h.waitWindow("plain", "p0")
+}
+
+// switch-session targets a session by name too, and breaks the same way.
+func TestSwitchSessionIntoADottedSessionName(t *testing.T) {
+	h := start(t, "plain")
+	h.newSessionSpaced("team.build")
+
+	h.waitSession("plain")
+	h.runSwitchSession("next")
+	h.waitSession("team.build")
+
+	h.runSwitchSession("prev")
+	h.waitSession("plain")
 }

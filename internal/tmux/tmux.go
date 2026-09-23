@@ -217,7 +217,13 @@ func parsePanes(lines []string) []Pane {
 // them: Windows[i] is one window's panes in pane order, so Windows[i][0]
 // identifies the window (SessionName, WindowID).
 type Session struct {
-	Name    string
+	Name string
+	// ID is the session id ("$3"), and it is what every command that
+	// targets this session must pass. A name goes through tmux's target
+	// parser, which splits on "." and ":" before it ever compares names,
+	// so a session called "team.build" is looked for as pane "build" of
+	// window "team" and not found. An id has neither character.
+	ID      string
 	Windows [][]Pane
 }
 
@@ -237,7 +243,7 @@ func OrderSessions(panes []Pane) []Session {
 	for _, p := range panes {
 		g, ok := bySess[p.SessionName]
 		if !ok {
-			g = &group{created: p.SessionCreated, sess: Session{Name: p.SessionName}}
+			g = &group{created: p.SessionCreated, sess: Session{Name: p.SessionName, ID: p.SessionID}}
 			bySess[p.SessionName] = g
 			order = append(order, g)
 		}
@@ -336,7 +342,7 @@ func SwitchSession(client string, next bool) error {
 	}
 	target := sessions[(i+delta+len(sessions))%len(sessions)]
 
-	_, err = run("switch-client", "-c", client, "-t", target.Name)
+	_, err = run("switch-client", "-c", client, "-t", target.ID)
 	return err
 }
 
@@ -413,7 +419,7 @@ func SwitchWindow(client string, next bool) error {
 	}
 	target := windows[found][0]
 
-	_, err = run("switch-client", "-c", client, "-t", target.SessionName, ";",
+	_, err = run("switch-client", "-c", client, "-t", target.SessionID, ";",
 		"select-window", "-t", target.WindowID)
 	return err
 }
