@@ -9,12 +9,15 @@ kido's own design decisions - which store is authoritative for what, the
 inbox protocol, addressing, the ask/reply cycle rule, spawning and the
 window lifecycle, run outcomes, the heartbeat, and the seam between the
 two pi extensions - live in [docs/design.md](docs/design.md), the design
-as built. Read it before changing any of that; the code's comments no
-longer repeat it.
+as built, with the subagent side of it in
+[docs/design-subagents.md](docs/design-subagents.md). Read them before
+changing any of that; the code's comments no longer repeat it, and
+neither does this file.
 
 ## Layout
 
-    cmd/kido/          subcommand dispatch (main.go), setup-*, prompt, snapshot, inbox
+    cmd/kido/          subcommand dispatch (main.go), setup-*, prompt, message,
+                       spawn, stop/interrupt, reap, runs, snapshot, inbox
     internal/ui/       the Bubble Tea model, rendering, shell-status debounce
     internal/tmux/     pane listing and formats (tmux.go), control-mode client (conn.go)
     internal/state/    one JSON file per agent session, keyed by pane
@@ -92,8 +95,13 @@ Three rules:
 - `pane_command_duration` is deliberately **absent**: it ticks every
   second and would defeat snapshot change-detection, redrawing the sidebar
   once a second forever.
-- Adding a field means updating the `SplitN` count and the `len(f)` guard
-  in `parsePanes` together.
+- Adding a field means bumping `paneFields`, the one constant the
+  `SplitN` count and the `len(f)` guard in `parsePanes` both read.
+  `TestPaneFormatFieldCountMatchesConstant` pins the two together, and
+  `TestPaneFormatFixtureFromFormat` exists because `TestParsePanes` alone
+  would not: its fixture is hand-typed, so a new field left out of it
+  keeps every parse test green while real output loses a field into
+  `pane_title`.
 
 `pane_command_status` prints **empty**, not `0`, when unset — hence the
 separate `CommandStatusOK` bool. `TestParsePanesEmptyCommandStatus` pins
@@ -141,10 +149,17 @@ resolved by policy instead:
   timestamp (`outer()`, `beats()`): pi runs Claude Code inside its own
   pane, and the inner one's hooks would otherwise fight pi's reports.
   `outer()` treats anything not literally `"claude"` as outer, so two
-  non-Claude agents in one pane would flip-flop — an unenforced
-  precondition with no test.
+  non-Claude records on one pane fall through to the timestamp and the
+  winner flips — which happens: a headless `pi --print` inherits
+  `TMUX_PANE` from the pane it was launched in.
+  `TestLoadTwoOuterRecordsOnOnePaneFlipByTimestamp` records the flip as
+  known and accepted rather than fixing it: an agent's own record
+  legitimately changes on its pane and must win when it does, and nothing
+  in the comparison can tell that from an intruder. What used to make the
+  flip destructive — the reaper closing a parent's children the tick its
+  record vanished — is handled in `internal/reap` instead.
 
-`kido prompt` prefers the recorded inbox socket (pi's extension binds one)
+`kido prompt` prefers the recorded inbox socket (`kido-status.ts` binds one)
 and falls back to a tmux paste **only** on `errInboxUnavailable`. Any
 other socket error returns immediately without a fallback: the message may
 already have been delivered, and re-sending would double-send.
@@ -187,19 +202,30 @@ in place.
 
 ## Tests
 
-    make test    go vet ./... and the unit tests (cmd/..., internal/...)
+    make test    go vet ./..., the unit tests (cmd/..., internal/...),
+                 and scripts/test-ts.sh: one node suite for both pi extensions
     make e2e     go test ./e2e/ -count=1 -v
     make install binary to $BIN (default ~/.local/bin), shared files to $BIN/../share/kido
 
 `make e2e` needs the fork on `PATH` or at `KIDO_TMUX=/path/to/tmux` and
 **skips** without it; `KIDO_E2E_REQUIRED=1` fails instead, which is what
-CI uses so a broken fork build cannot pass as a skip. The harness
-(`e2e/harness_test.go`) nests two tmux servers — an outer one hosting a
-pty, the inner one under test with kido as its `side-status-command` — and
-reads the sidebar back with `capture-pane`. It builds fake `claude` and
-`node` binaries that reproduce the real agents' screens. `settle = 5s` is
-the only timeout; every wait helper polls at 100ms, matching kido's
-default tick.
+CI uses so a broken fork build cannot pass as a skip. The TypeScript suite
+has the same shape — it skips without a node new enough to run `.ts`
+unflagged, and `KIDO_TS_TEST_REQUIRED=1` fails instead, which CI sets
+for the same reason, having pinned a node rather than trusting whatever
+the runner ships. The
+harness (`e2e/harness_test.go`) nests two tmux servers — an outer one
+hosting a pty, the inner one under test with kido as its
+`side-status-command` — and reads the sidebar back with `capture-pane`.
+It builds fake `claude` and `node` binaries that reproduce the real
+agents' screens. `settle = 5s` is the only wait; every wait helper polls
+at 100ms, matching kido's default tick. Every grace period kido reads
+(the linger, the orphan debounce, stop escalation, the stall threshold)
+is shortened through the environment the inner server exports, and only
+there: the sweep in the sidebar and the helper the extension runs read
+the same variable, so shortening one in-process would leave the two
+halves disagreeing about when a window is finished with. The full list is
+under "Knobs" in docs/design.md.
 
 CI runs both suites on Ubuntu and macOS for every push to `main` and every
 PR, building the fork from the live `side-pane` SHA (cached by that SHA,
@@ -214,6 +240,13 @@ build it paid for).
   `shellIndicator` still passes and the row freezes on screen, because
   `rebuild` is never called. Debounce deadlines are driven by kido's own
   clock, so a tick where tmux reports nothing new must still redraw.
+  `TestStallRedrawsOnAQuietTick` pins the same trap for `stallPending`: a
+  wedged agent is exactly a pane about which tmux has nothing new to say.
+- **`TestSnapshotSameIgnoresHeartbeatTS`** — a running pi session re-sends
+  its unchanged status every heartbeat purely to keep `TS` fresh for
+  `state.Stalled`. Without the exclusion in `sameStates` that alone
+  rebuilds the sidebar on every agent's heartbeat, the objection above to
+  `pane_command_duration` in another form.
 - **`TestInteractiveLeavesNoHold`** — quitting nvim used to flash the row
   green for ~300ms. Negative control included.
 - **`TestShellOutcome`** — two cases keyed to exact tmux/zsh quirks: the
@@ -228,6 +261,38 @@ build it paid for).
 - **`TestLoadAgentPrecedence`** — pi wins over Claude Code for the same
   pane regardless of timestamp, since pi runs Claude Code inside its own
   pane.
+- **`TestSweepDoesNotActOnASingleMiss`** and
+  **`TestSweepNeverActsOnAPaneCollisionAlone`** — the orphan rule closes a
+  window, which kills the process in it, and it once acted on one reading
+  taken every 100ms. The same-pane flip above evicts a live parent's
+  record for a tick or few, so a single miss must close nothing, and the
+  pid the child recorded at spawn (`ParentPID`) must veto the clock on its
+  own, since it does not depend on which record `Load` returns. Collapsing
+  the two signals into one, or the grace into an immediate check, passes
+  every other reaper test. `TestSidebarSurvivesATransientParentPaneCollision`
+  (e2e) is the same incident end to end.
+- **`TestBuildAgentsRecycledPIDNoEdge`** — the parent edge in `kido
+  agents` matches on `ParentInstance`, not `ParentPID`, because `alive()`
+  reports `EPERM` as alive and cannot tell a recycled pid from the
+  parent. The reaper's pid fallback above is deliberately the opposite
+  choice: there a recycled pid leaves a window open, which is the safe
+  direction for something irreversible.
+- **`TestLeakCheckCatchesAccumulation`** (e2e) — the harness's control-
+  client leak check asks the test's own server for its clients, after a
+  version that scanned the whole machine failed on whatever else was
+  running. Its companion, `TestLeakCheckIgnoresUnrelatedServer`, pins the
+  scoping; this one proves the check can still fail at all. The older
+  assertion — kill the server, wait for the clients to exit — could not,
+  because the server's death closes their pipes regardless.
+- **`pi/kido-status.test.ts`, the parent-liveness poll** — `setInterval`
+  fires on schedule whether or not the last callback's async work has
+  finished, so `pollInFlight` stops two overlapping readings counting as
+  the two consecutive misses the debounce wants. Without the guard the
+  only failing test is the one driven by the fake agent list's call
+  sequence; the rest pass on a quiet machine and flake on a loaded one.
+  The `set_status` test in the same file reads the report it means rather
+  than the last one to arrive, for the same reason: a session emits its
+  own report at start, and nothing orders the two.
 
 ### Other traps
 
@@ -245,7 +310,18 @@ build it paid for).
   routes through it; a new pane kind that forgets it misaligns the whole
   column. A shell with no OSC 133 integration deliberately gets *no*
   field at all — the missing offset is the tell that kido knows nothing
-  about that pane.
+  about that pane. Anything drawn to the *left* of a label has to fit in
+  the space already accounted for: the sibling-group glyph replaces that
+  row's bracket rather than adding a column, because a first draft added
+  one and every label below shifted by two cells.
+- **A standalone kido infers its client by counting, and the count is
+  wrong without a filter.** `#{client_name}` asked from inside a popup is
+  unanswerable — a popup is not a client, and the answer has changed
+  between measurements. `tmux.ResolveClient` asks who is attached to the
+  pane's session instead, ignoring kido's own control-mode connections:
+  there is one per real client, so counting them makes every session look
+  ambiguous. Control mode is read from its own boolean, not from an empty
+  tty, which a read-only client also has.
 - **`Conn.Run` kills and re-dials on any timeout**, on the theory that a
   missed reply means the stream is out of step. One slow command costs a
   full reconnect.
@@ -302,3 +378,10 @@ reference:
   that *has* the integration installed reports nothing. Gating the
   suppression on `LastPromptTime > CommandStartTime` — a prompt marker
   arriving after the ssh launch came from the far side — would fix it.
+
+The limits of the subagent system — a child moved to another session, a
+blocked ask holding a whole turn, a child that exits before its window
+is kept and leaves only its run record — are design limits, listed as
+such under "Known limits" in docs/design.md. A child that crashes without
+calling `notify_parent` tells its parent nothing, by the same design;
+the run record is what is left.
