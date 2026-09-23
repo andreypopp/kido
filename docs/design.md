@@ -1342,8 +1342,8 @@ three-pane window with a subagent hanging off its middle pane reads as
 one bracket with an indented block inside it:
 
     ┌ zsh
-    ├ ▌ orchestrator
-    │ ┌ ▌ subagent
+    ├■ orchestrator
+    │ ┌■ subagent
     │ └ zsh
     └ zsh
 

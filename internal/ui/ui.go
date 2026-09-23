@@ -193,7 +193,7 @@ const shellRunDelay = 200 * time.Millisecond
 // hold can only lengthen a green that is already on screen, never create
 // one; and only when shellOutcome has nothing to show, which is precisely
 // when the user is sitting in that pane. Everywhere else the ✓ or the red
-// ▌ replaces the green at once.
+// ■ replaces the green at once.
 const shellRunHold = 500 * time.Millisecond
 
 // procsProbe is the shortest gap between two reads of the process table.
@@ -944,7 +944,7 @@ func (m *model) shellOutcome(p tmux.Pane) (status int, ok bool) {
 //  2. otherwise the outcome shows: at once when the command has just
 //     finished, and carried unchanged through a run too young to be drawn
 //     rather than blanking for 200ms. No hold, no delay - this is the pane
-//     the user is not looking at, and a ✓ or a red ▌ landing a tick late
+//     the user is not looking at, and a ✓ or a red ■ landing a tick late
 //     there would be a lie about what the pane is doing now;
 //  3. otherwise a run that was drawn and has just stopped keeps its green
 //     for shellRunHold. Step 2 having found nothing means the user is
@@ -1140,7 +1140,7 @@ var indicators = map[state.Status]struct {
 	style lipgloss.Style
 	glyph string
 }{
-	state.Running:    {stRunning, "▌"},
+	state.Running:    {stRunning, "■"},
 	state.Waiting:    {stWaiting, "◆"},
 	state.Compacting: {stCompact, "◌"},
 	state.Idle:       {},
@@ -1161,7 +1161,7 @@ func indicator(s state.Status) string {
 // indicatorFailed a shell whose last command exited nonzero, likewise not
 // yet looked at. Both are rendered on demand, for the reason above.
 func indicatorDone() string   { return stDone.Render("✓") }
-func indicatorFailed() string { return stErr.Render("▌") }
+func indicatorFailed() string { return stErr.Render("■") }
 
 // indicatorGone marks a lingering subagent window: its process is dead and
 // its record is already gone, so field("") - the "kido knows nothing about
@@ -1171,7 +1171,7 @@ func indicatorFailed() string { return stErr.Render("▌") }
 // indicatorDone uses for a live agent's finished turn, dimmed instead of
 // green-bold: the two are the same claim, "this went well", at different
 // strengths, which is the axis every other pair in this table already uses
-// to tell live from gone (compare indicatorFailed's ▌ to a shell's own dim
+// to tell live from gone (compare indicatorFailed's ■ to a shell's own dim
 // stems). Anything that did not finish cleanly - failed, died, or a run
 // somebody stopped before it was done, none of which is a claim of success
 // - keeps ×, and so does a window whose outcome has not landed yet: it is
@@ -1193,6 +1193,14 @@ func indicatorStalled() string { return stStalled.Render("!") }
 // whatever the pane is doing. Agent rows and shell rows with OSC 133 both
 // go through it; a shell without the integration gets no field at all, and
 // the missing offset is the tell that kido knows nothing about it.
+//
+// appendWindows no longer puts a space of its own between the tree glyph
+// and this field - field's own leading character (the indicator, or the
+// first of its two filler spaces) sits directly against the tree glyph -
+// so a running agent reads "└■ title", not "└ ■ title". A pane with no
+// field at all (see paneLabel's no-OSC-133 branch) supplies that one
+// separating space itself, since it never calls field and would otherwise
+// jam its text against the glyph.
 func field(ind string) string {
 	if ind == "" {
 		return "  "
@@ -1306,9 +1314,11 @@ func (m *model) paneLabel(p tmux.Pane) string {
 		// by `kido setup-zsh`) gets the same indicators an agent pane
 		// has: running, done, or the last command having failed. A shell
 		// without it says nothing, and its row stays exactly as it always
-		// was, field and all.
+		// was, field and all - which means it never calls field() and so
+		// must add its own separating space now that appendWindows no
+		// longer supplies one ahead of every label indiscriminately.
 		if _, ok := p.ShellStatus(); !ok {
-			return text
+			return " " + text
 		}
 		if m.interactivePane(p) {
 			// The field stays, so the row still lines up with the other
@@ -1503,8 +1513,13 @@ func (m *model) appendWindows(placements []windowPlacement) {
 					g, nested = lead, cont
 				}
 			}
+			// No space of our own between g and the label: field()
+			// supplies it (as part of the indicator, or its two-space
+			// filler), and the one pane kind with no field at all
+			// (paneLabel's no-OSC-133 branch) supplies its own so it
+			// does not jam against g.
 			m.rows = append(m.rows, row{
-				text:   amb + g + " " + m.paneLabel(p),
+				text:   amb + g + m.paneLabel(p),
 				paneID: p.PaneID,
 			})
 			kids := byAnchor[p.PaneID]

@@ -127,8 +127,35 @@ func TestRenderNestsUnderTheParentPane(t *testing.T) {
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"┌ ▌ orchestrator",
-		"│ └ ▌ subagent",
+		"┌■ orchestrator",
+		"│ └■ subagent",
+		"└ zsh",
+	})
+}
+
+// TestRenderFieldCasesAlignBesideEachOther pins all three of field()'s
+// cases in one screen, since that is exactly where the single-space
+// change (one space between the tree glyph and the label, not two) is
+// easiest to get wrong: an indicator glyph sitting flush against its tree
+// glyph, a known pane with nothing to say keeping the same two-column
+// width so its title still lines up with the indicator row above it, and
+// a shell with no OSC 133 integration at all getting no field - so its
+// title starts one column earlier than the other two, which is the tell,
+// not a bug.
+func TestRenderFieldCasesAlignBesideEachOther(t *testing.T) {
+	panes := []tmux.Pane{
+		agentPane("@1", "%1", "orchestrator"),
+		{SessionName: "sess", WindowID: "@1", PaneID: "%2", Title: "idle-agent"},
+		shellPane("@1", "%3"),
+	}
+	states := map[string]state.Session{
+		"%1": agentState("root-inst", "", "orchestrator"),
+		"%2": {Agent: state.AgentPi, Status: state.Idle, Title: "idle-agent", Instance: "idle-inst", TS: testAt},
+	}
+	wantRows(t, renderRows(panes, states), []string{
+		"sess",
+		"┌■ orchestrator",
+		"├  idle-agent",
 		"└ zsh",
 	})
 }
@@ -153,10 +180,10 @@ func TestRenderGroupsSiblingSubagents(t *testing.T) {
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"┌ ▌ orchestrator",
-		"│ ├ ▌ subagent-a",
-		"│ ├ ▌ subagent-b",
-		"│ └ ▌ subagent-c",
+		"┌■ orchestrator",
+		"│ ├■ subagent-a",
+		"│ ├■ subagent-b",
+		"│ └■ subagent-c",
 		"└ zsh",
 	})
 }
@@ -180,10 +207,10 @@ func TestRenderGroupsSiblingSubagentsWithTheirOwnShells(t *testing.T) {
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"· ▌ orchestrator",
-		"  ├ ▌ subagent-a",
+		"·■ orchestrator",
+		"  ├■ subagent-a",
 		"  │ └ zsh",
-		"  └ ▌ subagent-b",
+		"  └■ subagent-b",
 	})
 }
 
@@ -211,12 +238,12 @@ func TestRenderGroupsSiblingSubagentsAtDepthTwo(t *testing.T) {
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"· ▌ root",
-		"  ├ ▌ subagent-a",
-		"  │ └ ▌ grandkid-a1",
-		"  └ ▌ subagent-b",
-		"    ├ ▌ grandkid-b1",
-		"    └ ▌ grandkid-b2",
+		"·■ root",
+		"  ├■ subagent-a",
+		"  │ └■ grandkid-a1",
+		"  └■ subagent-b",
+		"    ├■ grandkid-b1",
+		"    └■ grandkid-b2",
 	})
 }
 
@@ -236,9 +263,9 @@ func TestRenderGroupsSiblingSubagentsWithADeadOne(t *testing.T) {
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"· ▌ orchestrator",
-		"  ├ ▌ subagent-a",
-		"  └ × subagent-b",
+		"·■ orchestrator",
+		"  ├■ subagent-a",
+		"  └× subagent-b",
 	})
 }
 
@@ -258,8 +285,8 @@ func TestRenderMultipleTopLevelAgentsInOneWindow(t *testing.T) {
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"┌ ▌ first",
-		"└ ▌ second",
+		"┌■ first",
+		"└■ second",
 	})
 }
 
@@ -286,8 +313,8 @@ func TestRenderKeepsTheColumnAcrossANestedChild(t *testing.T) {
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
 		"┌ zsh",
-		"├ ▌ orchestrator",
-		"│ └ ▌ subagent",
+		"├■ orchestrator",
+		"│ └■ subagent",
 		"│   └ zsh",
 		"└ zsh",
 	})
@@ -309,8 +336,8 @@ func TestRenderStopsTheStemAtTheLastPane(t *testing.T) {
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
 		"┌ zsh",
-		"└ ▌ orchestrator",
-		"  └ ▌ subagent",
+		"└■ orchestrator",
+		"  └■ subagent",
 	})
 }
 
@@ -332,9 +359,9 @@ func TestRenderNestsRecursively(t *testing.T) {
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"· ▌ root",
-		"  └ ▌ kid",
-		"    └ ▌ grandkid",
+		"·■ root",
+		"  └■ kid",
+		"    └■ grandkid",
 	})
 }
 
@@ -354,8 +381,8 @@ func TestRenderDrawsAnOrphanAsARoot(t *testing.T) {
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"· ▌ unrelated",
-		"· ▌ orphan",
+		"·■ unrelated",
+		"·■ orphan",
 	})
 }
 
@@ -374,10 +401,10 @@ func TestRenderDropsNobodyInACycle(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("rows = %q, want the session and both agents", rows)
 	}
-	if rows[1] != "· ▌ a" {
+	if rows[1] != "·■ a" {
 		t.Errorf("rows[1] = %q, want the first member of the ring drawn as a root", rows[1])
 	}
-	if rows[2] != "  └ ▌ b" && rows[2] != "· ▌ b" {
+	if rows[2] != "  └■ b" && rows[2] != "·■ b" {
 		t.Errorf("rows[2] = %q, want the other member drawn somewhere", rows[2])
 	}
 }
@@ -407,10 +434,10 @@ func TestRenderIsDeterministic(t *testing.T) {
 	}
 	wantRows(t, want, []string{
 		"sess",
-		"┌ ▌ root",
-		"│ ├ ▌ kid-a",
-		"│ └ ▌ kid-b",
-		"│   └ ▌ grandkid",
+		"┌■ root",
+		"│ ├■ kid-a",
+		"│ └■ kid-b",
+		"│   └■ grandkid",
 		"└ zsh",
 	})
 }
@@ -628,13 +655,13 @@ func TestRenderNestsADeadSubagentForTheWholeLinger(t *testing.T) {
 		"%22": agentState("root-inst", "", "orchestrator"),
 	}
 	// Before the fix this rendered as two flush-left rows: "sess",
-	// "· ▌ orchestrator", "· " (the dead pane un-nested at the left
+	// "·■ orchestrator", "· " (the dead pane un-nested at the left
 	// margin, no longer indented under its parent) - exactly during the
 	// window the user is most likely to be looking at it to read its last
 	// screen.
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"· ▌ orchestrator",
+		"·■ orchestrator",
 		"  └ ",
 	})
 }
@@ -680,7 +707,7 @@ func TestRenderLingeringSubagentShowsItsOwnName(t *testing.T) {
 	rows := renderRows(panes, nil)
 	wantRows(t, rows, []string{
 		"sess",
-		"· × fix the flaky test",
+		"·× fix the flaky test",
 	})
 }
 
@@ -696,7 +723,7 @@ func TestRenderLingeringSubagentLooksDead(t *testing.T) {
 	if !strings.Contains(row, "×") {
 		t.Fatalf("row = %q, want the dead glyph ×", row)
 	}
-	for _, live := range []string{"▌", "◆", "◌", "✓", "!"} {
+	for _, live := range []string{"■", "◆", "◌", "✓", "!"} {
 		if strings.Contains(row, live) {
 			t.Errorf("row = %q, contains %q, a live status glyph", row, live)
 		}
@@ -712,7 +739,7 @@ func TestRenderLingeringSubagentShowsOutcome(t *testing.T) {
 	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
 	wantRows(t, renderRows(panes, nil), []string{
 		"sess",
-		"· ✓ subagent  completed",
+		"·✓ subagent  completed",
 	})
 }
 
@@ -798,8 +825,8 @@ func TestRenderLiveSubagentUnaffectedByLingering(t *testing.T) {
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"┌ ▌ orchestrator",
-		"│ └ ▌ subagent",
+		"┌■ orchestrator",
+		"│ └■ subagent",
 		"└ zsh",
 	})
 }
@@ -871,7 +898,7 @@ func TestRenderLingeringSubagentStillNests(t *testing.T) {
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"· ▌ orchestrator",
-		"  └ × subagent",
+		"·■ orchestrator",
+		"  └× subagent",
 	})
 }
