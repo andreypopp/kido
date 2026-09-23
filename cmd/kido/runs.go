@@ -24,6 +24,7 @@ import (
 type RunInfo struct {
 	ID             string     `json:"id"`
 	Name           string     `json:"name"`
+	Kind           string     `json:"kind"`
 	ParentInstance string     `json:"parentInstance,omitempty"`
 	Depth          int        `json:"depth"`
 	Cwd            string     `json:"cwd"`
@@ -97,7 +98,8 @@ func loadRunInfo(id string) (RunInfo, error) {
 		return RunInfo{}, err
 	}
 	info := RunInfo{
-		ID: id, Name: meta.Name, ParentInstance: meta.ParentInstance, Depth: meta.Depth,
+		ID: id, Name: meta.Name, Kind: string(meta.EffectiveKind()),
+		ParentInstance: meta.ParentInstance, Depth: meta.Depth,
 		Cwd: meta.Cwd, Model: meta.Model, Tools: meta.Tools, KeepAlive: meta.KeepAlive,
 		StartedAt: meta.StartedAt, Outcome: "running",
 	}
@@ -199,6 +201,7 @@ func showRun(w io.Writer, id string, asJSON bool) error {
 
 	fmt.Fprintf(w, "id:       %s\n", info.ID)
 	fmt.Fprintf(w, "name:     %s\n", info.Name)
+	fmt.Fprintf(w, "kind:     %s\n", info.Kind)
 	fmt.Fprintf(w, "parent:   %s\n", info.ParentInstance)
 	fmt.Fprintf(w, "depth:    %d\n", info.Depth)
 	fmt.Fprintf(w, "cwd:      %s\n", info.Cwd)

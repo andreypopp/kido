@@ -52,6 +52,80 @@ func TestCreateWritesMetaAndTask(t *testing.T) {
 	}
 }
 
+// TestKindRoundTripsAndDefaultsToAgent pins both halves of Meta.Kind: a
+// bash run's kind survives the meta file, and a run recorded before the
+// field existed - every agent run written so far - still reads back as
+// an agent rather than as the empty string, which is what `kido runs`
+// and the sweep would otherwise have to guess about.
+func TestKindRoundTripsAndDefaultsToAgent(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	for _, c := range []struct {
+		id      string
+		written Kind
+		want    Kind
+	}{
+		{"run-bash", KindBash, KindBash},
+		{"run-agent", KindAgent, KindAgent},
+		{"run-old", "", KindAgent},
+	} {
+		if err := Create(c.id, "x"); err != nil {
+			t.Fatal(err)
+		}
+		if err := WriteMeta(Meta{ID: c.id, Name: c.id, Kind: c.written}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := ReadMeta(c.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Kind != c.written {
+			t.Errorf("ReadMeta(%q).Kind = %q, want the written %q", c.id, got.Kind, c.written)
+		}
+		if got.EffectiveKind() != c.want {
+			t.Errorf("ReadMeta(%q).EffectiveKind() = %q, want %q", c.id, got.EffectiveKind(), c.want)
+		}
+	}
+}
+
+// TestCommandRoundTrips pins the wrapper's input. The command is
+// model-authored text that reaches `kido async-run` as a file rather
+// than a command line, so what matters is that the argv comes back
+// exactly as given - quotes, newlines and all - and that an empty one is
+// an error instead of an empty exec.
+func TestCommandRoundTrips(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	id := "run-cmd"
+	if err := Create(id, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadCommand(id); err == nil {
+		t.Error("ReadCommand with no command written = nil error, want one")
+	}
+	argv := []string{"bash", "-c", "echo 'it\"s' $HOME `date`\nexit 3"}
+	if err := WriteCommand(id, argv); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadCommand(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(argv) {
+		t.Fatalf("ReadCommand = %q, want %q", got, argv)
+	}
+	for i := range argv {
+		if got[i] != argv[i] {
+			t.Errorf("ReadCommand()[%d] = %q, want %q", i, got[i], argv[i])
+		}
+	}
+
+	if err := WriteCommand(id, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ReadCommand(id); err == nil {
+		t.Errorf("ReadCommand of an empty command = %q, nil, want an error", got)
+	}
+}
+
 func TestRecordOutcomeOnce(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	id := "run-3"

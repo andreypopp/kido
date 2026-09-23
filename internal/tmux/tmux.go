@@ -665,9 +665,32 @@ func NewWindow(session, name, cwd string, env, command []string) (windowID, pane
 		return "", "", 0, fmt.Errorf("new-window: unexpected pane_pid %q", parts[2])
 	}
 	if _, err := run("set-window-option", "-t", windowID, "remain-on-exit", "on"); err != nil {
+		// Losing the race above is not a failure to create the window: the
+		// command ran, and what it cost is the corpse on screen. A window
+		// tmux can no longer find is exactly that case, and reporting it as
+		// an error would make every fast-exiting command - the typo, the
+		// `true` - look like a window that was never made.
+		if !WindowExists(windowID) {
+			return windowID, paneID, pid, nil
+		}
 		return "", "", 0, err
 	}
 	return windowID, paneID, pid, nil
+}
+
+// WindowExists reports whether the server still has windowID. It answers
+// the one question that tells a tmux command failing because the server
+// is unreachable from one failing because the window it named has since
+// closed - which, for a window holding a command of its own, is an
+// ordinary ending rather than an error.
+//
+// The answer is the id it echoes back, not the exit status: measured on
+// the fork, `display-message -p -t @1 '#{window_id}'` for a window that
+// has closed exits 0 and prints an empty line, where `set-window-option
+// -t @1` on the same window fails with "no such window: @1".
+func WindowExists(windowID string) bool {
+	out, err := run("display-message", "-p", "-t", windowID, "#{window_id}")
+	return err == nil && out == windowID
 }
 
 // Watched reports whether p is a pane somebody is looking at right now:

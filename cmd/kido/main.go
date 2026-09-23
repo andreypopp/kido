@@ -33,7 +33,8 @@ var subcommands = []string{
 	"agent-status", "set_status", "list_agents", "agent-alive", "debug-log",
 	"inbox-path", "snapshot", "switch-session", "switch-window", "prompt",
 	"message_agent", "ask_agent", "notify_parent", "steer_subagent",
-	"interrupt_subagent", "stop_subagent", "spawn_subagent", "close-window",
+	"interrupt_subagent", "stop_subagent", "spawn_subagent", "async_bash",
+	"async-run", "close-window",
 	"window-focused", "reap", "run-outcome", "runs", "ssh",
 }
 
@@ -199,6 +200,11 @@ func main() {
 		case "spawn_subagent":
 			dispatch("spawn_subagent", func() error { return spawnSubagentCmd(os.Args[2:]) })
 			return
+		case "async_bash":
+			dispatch("async_bash", func() error { return asyncBashCmd(os.Args[2:]) })
+			return
+		case "async-run":
+			os.Exit(asyncRunCmd(os.Args[2:]))
 		case "close-window":
 			dispatch("close-window", func() error { return closeWindowCmd(os.Args[2:]) })
 			return

@@ -40,6 +40,18 @@ func dirFor(id string) string { return filepath.Join(Dir(), id) }
 // that; no Go code reads the marker).
 func TaskPath(id string) string { return filepath.Join(dirFor(id), "task") }
 
+// CommandPath is the argv `kido async-run` execs, written by `kido
+// async_bash` before the window exists for the reason the task text is:
+// the wrapper may already be running before the meta file lands, and
+// model-authored text must reach it as a file rather than as a command
+// line.
+func CommandPath(id string) string { return filepath.Join(dirFor(id), "command") }
+
+// OutputPath is where a bash run's stdout and stderr are teed. It is the
+// whole of what the run said; the completion notice carries only its
+// tail.
+func OutputPath(id string) string { return filepath.Join(dirFor(id), "output") }
+
 func metaPath(id string) string    { return filepath.Join(dirFor(id), "meta.json") }
 func outcomePath(id string) string { return filepath.Join(dirFor(id), "outcome") }
 func screenPath(id string) string  { return filepath.Join(dirFor(id), "screen") }
@@ -58,6 +70,7 @@ func NewID() string { return msg.NewID() }
 type Meta struct {
 	ID             string   `json:"id"`
 	Name           string   `json:"name"`
+	Kind           Kind     `json:"kind,omitempty"`
 	ParentInstance string   `json:"parentInstance,omitempty"`
 	Depth          int      `json:"depth"`
 	Window         string   `json:"window"`
@@ -73,6 +86,27 @@ type Meta struct {
 	// back holding all of them.
 	KeepAlive bool      `json:"keepAlive,omitempty"`
 	StartedAt time.Time `json:"startedAt"`
+}
+
+// Kind is what a run's window holds. It is omitted from an agent run's
+// meta file, so every run recorded before bash runs existed reads back
+// as KindAgent (see EffectiveKind).
+type Kind string
+
+const (
+	// KindAgent is a `kido spawn_subagent` run: a pi session with a task.
+	KindAgent Kind = "agent"
+	// KindBash is a `kido async_bash` run: a command under `kido async-run`,
+	// which reports the run's ending itself.
+	KindBash Kind = "bash"
+)
+
+// EffectiveKind is m's kind with the empty value read as KindAgent.
+func (m Meta) EffectiveKind() Kind {
+	if m.Kind == "" {
+		return KindAgent
+	}
+	return m.Kind
 }
 
 // Result is how a run ended.
@@ -108,6 +142,41 @@ func Create(id, task string) error {
 		return err
 	}
 	return os.WriteFile(TaskPath(id), []byte(task), 0o600)
+}
+
+// WriteCommand records the argv id's window runs, as `kido async-run`
+// will exec it: the shape written is the shape run, so the file is not a
+// rendering of a command line but the command line itself.
+func WriteCommand(id string, argv []string) error {
+	if err := checkID(id); err != nil {
+		return err
+	}
+	b, err := json.Marshal(argv)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(CommandPath(id), b, 0o600)
+}
+
+// ReadCommand reads back what WriteCommand wrote. An empty argv is an
+// error rather than an empty exec: there is nothing to run and nothing
+// truthful to report about having run it.
+func ReadCommand(id string) ([]string, error) {
+	if err := checkID(id); err != nil {
+		return nil, err
+	}
+	b, err := os.ReadFile(CommandPath(id))
+	if err != nil {
+		return nil, err
+	}
+	var argv []string
+	if err := json.Unmarshal(b, &argv); err != nil {
+		return nil, err
+	}
+	if len(argv) == 0 {
+		return nil, fmt.Errorf("run %q: command file names no command", id)
+	}
+	return argv, nil
 }
 
 // WriteMeta writes m's run's meta file. Called once, by kido spawn_subagent, after

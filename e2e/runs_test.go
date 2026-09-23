@@ -14,8 +14,10 @@ import (
 // runInfo mirrors cmd/kido/runs.go's RunInfo, just the fields these tests
 // read.
 type runInfo struct {
-	ID      string `json:"id"`
-	Outcome string `json:"outcome"`
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	Outcome     string `json:"outcome"`
+	OutcomeText string `json:"outcomeText"`
 }
 
 // spawnRun drives `kido spawn_subagent` with a fake command, exactly as runSpawn

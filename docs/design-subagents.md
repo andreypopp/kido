@@ -177,6 +177,8 @@ created so the child can read its task the instant tmux starts it:
   is there at all (design.md, "Idle self-exit, and resuming a run");
 - `outcome`, once the run has ended: `completed` or `failed` from the
   child itself, `died` from a sweep, `stopped` from `kido stop_subagent`;
+- `command` and `output`, for a bash run only: the argv the wrapper
+  execs and everything the command wrote (see "An async bash run");
 - `screen`, the window's last screen and a bounded tail of scrollback,
   captured by the sweep before it closes the window.
 
@@ -321,6 +323,86 @@ identity, and refuses `task` or `name` alongside `resume` rather than
 guessing which the model wanted. `pi --fork <run-id>` stays a bare
 command; a fork is a standalone session with no record.
 
+## An async bash run
+
+`kido async_bash [--name NAME] -- COMMAND...` runs a command in a
+detached window of its own and tells the caller once it has ended. It is
+structurally a spawn whose child is a command rather than a pi session:
+the same `createRunWindow`, the same `runEnv`, the same `@kido_subagent`
+mark, the same run record and the same sweep. `meta.json` carries a
+`kind` - `agent` or `bash`, absent meaning `agent` - and that is the
+whole of what distinguishes the two records.
+
+One word after `--` is a shell command line and is run under `bash -c`,
+which is the shape a model writes ("make -j8 && ./run"); several words
+are an argv and are exec'd as given. Either way what will run is written
+to the run's `command` file before the window exists, and the window's
+own command line is only ever `kido async-run --run-id ID --name NAME` -
+model-authored text never reaches tmux's parser. `--name` is optional;
+without one the window is named after the first word of the command.
+
+The parent is the caller's own state record, found from `$TMUX_PANE`,
+rather than a flag: this command is run by whoever is at the pane, and
+that record is the only honest answer to who should be told. A caller
+with no record - a human's shell - has no parent, and the run then
+records its outcome and tells nobody. The depth ceiling a spawn is held
+to does not apply, since a bash run starts no agents: an agent at the
+ceiling may still run a build.
+
+**The wrapper.** `kido async-run` is the window's command and the whole
+of the completion mechanism. It reads the run's argv, runs it with stdout
+and stderr teed to the run's `output` file and to the pane, waits, and
+learns the exit status from `wait(2)` rather than from anything tmux
+observed. Then, in this order and never concurrently:
+
+1. the outcome: `completed` for exit 0, `failed` otherwise, with the
+   status as its text ("exit status 3", "signal: killed");
+2. the completion notice, once, to the parent - the same
+   `kido notify_parent` path a spawned child reports home on, which reads
+   the parent edge out of the environment and needs no record of its own.
+
+Everything is reported **before this process exits**, which is what makes
+the feature independent of the window surviving. tmux sets
+`remain-on-exit` in a second call after `new-window` and a fast command
+beats it every time, so a window running `true` is usually gone before
+kido can finish creating it; the run record and the notice are already
+written, and what the race costs is the corpse on screen. Finding the
+window gone is therefore not a creation failure: the mark is skipped, no
+outcome is recorded over the command's own, and the ids are printed as
+usual.
+
+The notice names the run itself:
+
+    async run "build" failed: exit status 3
+    run: 6f1c...
+    output: <state>/runs/6f1c.../output
+    --- last 4000 bytes of output (12034 omitted) ---
+    ...
+
+It has to. A bash run writes no state record, so the receiving side has
+nothing to label the sender with and falls back to the pane id - a parent
+reading "notification from %47". The output file is the source of truth
+and is never truncated; the notice carries its last 4000 bytes, the tail
+rather than the head because what a failure has to say, it says last, cut
+back to a whole rune so a log ending mid-character cannot cost the run
+its only notice.
+
+**Exactly one ending.** The winner of the outcome write is the sender of
+the notice. `RecordOutcome` is already a once-only, crash-safe arbiter of
+exactly this question (O_EXCL), so a wrapper that finds an outcome
+already there - a sweep's `died`, a `kido stop_subagent`'s `stopped` -
+keeps that story and says nothing. A wrapper being killed is the one
+ending nobody else is watching for, so `SIGTERM`, `SIGHUP` and `SIGINT`
+are passed on to the command and then reported as `failed` on the
+wrapper's own way out; `SIGKILL` is not survivable and leaves the run to
+the sweep.
+
+A bash run is deliberately not an agent. It has no state record, so it is
+not in `kido list_agents`, cannot be addressed by `message_agent` or
+`ask_agent`, and has no status to report - there is nothing there to
+answer. What it has is the run record, which is already the store for
+facts that outlive a process, and `kido runs` shows it like any other.
+
 ## A human at a shell
 
 The commands are the tools' commands, but nothing stops a human from
@@ -426,7 +508,13 @@ window aged out.
 - `--resume` does not honour pi's own `sessionDir` setting when looking
   for the session file.
 - A child that exits before `remain-on-exit` is set loses its window
-  and its last screen; only the run record remains.
+  and its last screen; only the run record remains. For a bash run that
+  is only the screen: the wrapper has already recorded and reported.
+- An ending only a sweep observes goes unreported: rule 1 records `died`
+  and tells nobody, so a run whose wrapper was `SIGKILL`ed leaves a
+  waiting parent with no notice. The orphan rule does not reach a bash
+  run either - rule 2 reads state records, and a bash run has none - so
+  a run whose parent has died keeps going until the command ends.
 - A subagent's window moved to another tmux session is outside its
   parent's scope and cannot be reached.
 - Everything assumes one machine: shared filesystem, shared pid

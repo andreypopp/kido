@@ -73,6 +73,7 @@ the copy is the one that drifts.
     cmd/kido/          subcommand dispatch (main.go), setup-*, prompt,
                        message_agent (also ask_agent and notify_parent),
                        set_status, list_agents, spawn_subagent,
+                       async_bash and its async-run wrapper,
                        steer/stop/interrupt_subagent, reap, runs,
                        snapshot, inbox
     internal/ui/       the Bubble Tea model, rendering, shell-status debounce
@@ -98,7 +99,10 @@ mapping. A new tool brings a subcommand spelled the same way; a
 subcommand nobody's tool calls is named however it reads best. These are
 strings handed to a subprocess, so a divergence is a silent runtime
 failure rather than a build one - and there are no aliases to fall back
-on, deliberately.
+on, deliberately. `async_bash` is spelled with the tool's underscore
+before the tool exists, because renaming a command once something calls
+it is the harder half of that rule; its wrapper, `async-run`, is nobody's
+tool and is spelled as it reads.
 
 ## The tmux fork
 
@@ -495,6 +499,39 @@ build it paid for).
   idle lands whenever it lands, and on a loaded runner that is after the
   first window closes — which is how the old test failed on CI while
   passing everywhere else.
+- **`TestAsyncRunReportsBeforeItExits`** — the whole argument for a
+  wrapper over reading the dead pane, in one assertion: the outcome and
+  the notice are on disk by the time the call returns, so the window is
+  free to lose the `remain-on-exit` race. Its e2e twin,
+  `TestAsyncBashThatExitsInstantlyStillNotifiesOnce`, runs the command
+  that actually loses it (`true`) and logs which windows survived rather
+  than asserting on them — the race is tmux's to win or lose, and
+  asserting either way would pin the wrong thing. Run against a
+  `#{pane_dead_status}` implementation both fail, which is what gives
+  them teeth.
+- **`TestSpawnMarkFailureOnAVanishedWindowIsNotAFailure`** — the negative
+  control that makes `TestSpawnMarkFailureKillsTheWindowAndRecordsFailure`
+  a rule about *mark failures* rather than about everything that can go
+  wrong after `new-window`. It asserts two absences — no window killed,
+  no outcome written — because a command that beat remain-on-exit has
+  neither a window to kill nor a story anyone else may tell. Collapse the
+  two cases back into one and `kido async_bash -- true` answers "tmux
+  set-window-option -t @1 remain-on-exit on: exit status 1" over an
+  outcome its own wrapper had already recorded truthfully.
+- **`TestAsyncRunLeavesAnOutcomeItDidNotWin`** — what it asserts is
+  silence, so the second half of the same function is the test: the same
+  wrapper, the same unresolvable parent, an outcome race it wins, and the
+  send path complaining out loud. Without it every assertion passes
+  against a wrapper that never notifies at all. Its e2e siblings watch an
+  inbox over a *span* for the same reason `stays` does — one notice and
+  the first of two are identical at any instant, and so are "nothing yet"
+  and "nothing ever" (`TestAsyncBashStillRunningSaysNothing`,
+  `TestAsyncBashWithNoParentStillRecordsItsOutcome`).
+- **`TestAsyncNoticeTailIsValidUTF8`** — the cut is at a byte offset, and
+  the send path refuses a message that is not valid UTF-8 outright. A
+  log ending mid-character is an ordinary build log, and without the
+  rune-boundary trim it costs the run the one notice it gets. Reads as a
+  tidiness check; is not one.
 - **`TestAgentAliveSurvivesAPaneCollisionOnTheParent`** — the reaper's
   collision test in the second place that asked the same question. Its
   negative control runs `buildAgents` over the per-pane view and asserts

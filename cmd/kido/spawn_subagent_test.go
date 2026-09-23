@@ -36,7 +36,7 @@ const fakePanePID = 42424242
 
 func withNewWindow(t *testing.T, windowID, paneID string, err error) *[]newWindowCall {
 	t.Helper()
-	prev, prevMark := newWindow, markSubagent
+	prev, prevMark, prevExists := newWindow, markSubagent, windowExists
 	var calls []newWindowCall
 	newWindow = func(session, name, cwd string, env, command []string) (string, string, int, error) {
 		calls = append(calls, newWindowCall{session, name, cwd, env, command})
@@ -47,7 +47,11 @@ func withNewWindow(t *testing.T, windowID, paneID string, err error) *[]newWindo
 		marks[windowID] = info
 		return nil
 	}
-	t.Cleanup(func() { newWindow, markSubagent = prev, prevMark })
+	// The window a fake newWindow returned is in no tmux server, so the
+	// question createRunWindow asks about it on a failure has to be
+	// answered here too; the ordinary answer is that it is still there.
+	windowExists = func(string) bool { return true }
+	t.Cleanup(func() { newWindow, markSubagent, windowExists = prev, prevMark, prevExists })
 	return &calls
 }
 
@@ -598,6 +602,69 @@ func TestSpawnMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
 	}
 	if len(infos) != 1 || infos[0].Outcome != "failed" {
 		t.Errorf("runs --json = %+v, want one failed run", infos)
+	}
+}
+
+// TestSpawnMarkFailureOnAVanishedWindowIsNotAFailure is the negative
+// control for the test above, and the case that made the distinction
+// necessary: tmux sets remain-on-exit in a second call after new-window,
+// and a command that exits fast enough beats it, taking the window with
+// it. Everything after new-window then fails - the option, then the
+// mark - for a window that did its job and ended.
+//
+// Measured before the two were told apart, `kido async_bash -- true`
+// answered "kido async_bash: tmux set-window-option -t @1 remain-on-exit
+// on: exit status 1" and recorded the run failed, over the outcome the
+// command's own wrapper had already recorded truthfully. So what this
+// asserts is the absence of the two things a real mark failure does:
+// killing a window (there is none to kill) and writing an outcome (the
+// run's own is the true one).
+func TestSpawnMarkFailureOnAVanishedWindowIsNotAFailure(t *testing.T) {
+	withPanes(t, samePane)
+	t.Setenv("TMUX_PANE", "%1")
+	withCallerDepth(t, 0)
+	withNewWindow(t, "@9", "%9", nil)
+
+	prevKill := killWindow
+	var killed []string
+	killWindow = func(id string) error {
+		killed = append(killed, id)
+		return nil
+	}
+	t.Cleanup(func() { killWindow = prevKill })
+
+	prevMark, prevExists := markSubagent, windowExists
+	markSubagent = func(windowID, info string) error { return errors.New("cannot find window @9") }
+	windowExists = func(string) bool { return false }
+	t.Cleanup(func() { markSubagent, windowExists = prevMark, prevExists })
+
+	var err error
+	out := captureStdout(t, func() {
+		err = spawnSubagentCmd([]string{
+			"--parent-pid", "1", "--parent-instance", testParentInstance,
+			"--name", "kid", "--task-file", writeTaskFile(t, "task"),
+		})
+	})
+	if err != nil {
+		t.Fatalf("spawnSubagentCmd = %v, want a window that has already ended reported as the ordinary ending it is", err)
+	}
+	if fields := strings.Fields(out); len(fields) != 3 || fields[0] != "@9" || fields[1] != "%9" {
+		t.Errorf("stdout = %q, want the window, pane and run ids the caller parses", out)
+	}
+	if len(killed) != 0 {
+		t.Errorf("killWindow calls = %v, want none: the window is already gone", killed)
+	}
+
+	var buf bytes.Buffer
+	if err := listRuns(&buf, true); err != nil {
+		t.Fatal(err)
+	}
+	var infos []RunInfo
+	if err := json.Unmarshal(buf.Bytes(), &infos); err != nil {
+		t.Fatalf("runs --json: %v (%q)", err, buf.String())
+	}
+	if len(infos) != 1 || infos[0].Outcome == "failed" {
+		t.Errorf("runs --json = %+v, want the run left for its own command to describe rather than recorded failed here", infos)
 	}
 }
 

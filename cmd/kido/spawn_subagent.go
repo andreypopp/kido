@@ -34,6 +34,7 @@ const maxWindowNameLen = 64
 var (
 	newWindow    = tmux.NewWindow
 	markSubagent = tmux.MarkSubagent
+	windowExists = tmux.WindowExists
 )
 
 func spawnUsage() string {
@@ -171,7 +172,7 @@ func spawnSubagentCmd(args []string) error {
 		return err
 	}
 	meta := subrun.Meta{
-		ID: runID, Name: *name, ParentInstance: *parentInstance, Depth: depth,
+		ID: runID, Name: *name, Kind: subrun.KindAgent, ParentInstance: *parentInstance, Depth: depth,
 		Cwd: pane.CurrentPath, Model: *model, Tools: tools, KeepAlive: *keepAlive,
 		StartedAt: time.Now(),
 	}
@@ -265,6 +266,18 @@ func createRunWindow(meta subrun.Meta, sessionID string, env, command []string) 
 		return err
 	}
 	if err := markSubagent(windowID, tmux.SubagentMark(meta.ID, meta.ParentInstance, meta.Depth)); err != nil {
+		// A window that has already closed cannot be marked and does not
+		// need to be: the mark is what makes a window reapable, and there
+		// is nothing left to reap. The command in it ran, so how it ended
+		// is its own to report (`kido async-run` does, and a run that
+		// reports nothing is guessed died from its pid), which is why no
+		// outcome is recorded here either. Otherwise a creation error is
+		// the standing answer for every command fast enough to beat
+		// remain-on-exit, which is every typo.
+		if !windowExists(windowID) {
+			fmt.Printf("%s %s %s\n", windowID, paneID, meta.ID)
+			return nil
+		}
 		killWindow(windowID)                                                                                    //nolint:errcheck // best effort cleanup; the mark error is what matters
 		subrun.RecordOutcome(meta.ID, subrun.Outcome{Result: subrun.Failed, Text: err.Error(), At: time.Now()}) //nolint:errcheck // best effort
 		return err
