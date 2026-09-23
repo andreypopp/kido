@@ -1,11 +1,12 @@
 # kido's design, as built
 
 This is how kido works and why it is built that way. It is the companion
-to [subagents-plan.md](subagents-plan.md), which records what was decided
-and in what order; this document records what stands. AGENTS.md carries
-the things kido cannot change (the tmux fork, what Claude Code and pi
-actually report) and the traps a plausible change would fall into. Those
-are not repeated here.
+to [design-subagents.md](design-subagents.md), which follows one subagent
+from spawn to sweep and refers back here for the mechanisms it rides on;
+this document records those mechanisms. AGENTS.md carries the things
+kido cannot change (the tmux fork, what Claude Code and pi actually
+report) and the traps a plausible change would fall into. Those are not
+repeated here.
 
 The shape in one paragraph: tmux owns the topology. Agents report what
 only they know into a directory of state files. pi's extension binds a
