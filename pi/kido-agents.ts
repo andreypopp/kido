@@ -181,6 +181,12 @@ const STOP_TIMEOUT_MS = Number(process.env.KIDO_STOP_TIMEOUT_MS) || 8000;
 // round-trip.
 const DEFAULT_ASK_TIMEOUT_MS = 5 * 60 * 1000;
 
+// How often a waiting ask re-reads whether its target is still running.
+// Nothing pushes a death at the asker, and an answer can only come from a
+// process that still exists, so this is the one thing standing between a
+// target dying mid-wait and the asker sitting out its whole timeoutMs.
+const ASK_LIVENESS_POLL_MS = Number(process.env.KIDO_ASK_POLL_MS) || 5000;
+
 // The custom message type an inbound notice is delivered as, matched by
 // registerMessageRenderer below.
 const NOTICE_CUSTOM_TYPE = "kido-notice";
@@ -297,7 +303,7 @@ export default function (pi: ExtensionAPI) {
   // against.
   type AskOutcome =
     | { reply: string }
-    | { gaveUp: "timeout" | "inbox" | "unsent" };
+    | { gaveUp: "timeout" | "inbox" | "unsent" | "gone" | "aborted" };
 
   // Asks this session has sent and is still waiting on, keyed by the
   // ask's own id. Whichever comes first (a matching reply, the timeout,
@@ -837,7 +843,7 @@ export default function (pi: ExtensionAPI) {
       "Ask another agent a question and block until it replies - one full turn of the target's latency, not a round-trip, since a busy target does not see the question until it would otherwise have stopped. Refused for an ancestor, a target outside this tmux session, one with no inbox, or yourself.",
     promptSnippet: "ask_agent(to, question, timeoutMs?) - ask another agent a question and wait for its reply",
     parameters: askAgentParams,
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const host = status();
       if (!host?.kidoPath()) {
         return { content: [{ type: "text", text: "kido is not available; cannot ask other agents" }], details: {} };
@@ -930,17 +936,29 @@ export default function (pi: ExtensionAPI) {
       // and cancels the timer itself. Registered before the send, so a
       // reply cannot race past it.
       let deliverReply: (outcome: AskOutcome) => void = () => {};
+      let watch: NodeJS.Timeout | null = null;
       const reply = new Promise<AskOutcome>((resolve) => {
         deliverReply = resolve;
       });
+      let settled = false;
+      const onAbort = () => settle({ gaveUp: "aborted" });
       const settle = (outcome: AskOutcome): void => {
+        settled = true;
         clearTimeout(timer);
+        if (watch) clearInterval(watch);
+        signal?.removeEventListener("abort", onAbort);
         pendingOutbound.delete(id);
         deliverReply(outcome);
       };
       const timer = setTimeout(() => settle({ gaveUp: "timeout" }), timeoutMs);
       timer.unref(); // a wait must never hold pi's event loop open
       pendingOutbound.set(id, { targetSession: target.id, settle });
+      // pi hands every tool the turn's AbortSignal, and Esc aborts it. A
+      // wait that ignores it is a turn the human cannot end, since pi's
+      // own abort path waits for the tool call to return. Listening is
+      // enough: addEventListener on an already-aborted signal never fires,
+      // but pi does not call a tool whose signal is already aborted.
+      signal?.addEventListener("abort", onAbort, { once: true });
 
       // target.id, not params.to: passing the resolved id removes a second
       // resolution inside kido ask_agent that could disagree with this one.
@@ -953,9 +971,54 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text", text: `could not ask ${params.to}: ${sent.error}` }], details: {} };
       }
 
+      // The precheck above only rules out a target that was already gone.
+      // One that dies while this waits - the ordinary case of a child that
+      // finishes and exits without replying - leaves nothing to release
+      // the waiter, since the answer could only have come from that
+      // process. Same reading as the precheck: a definite "false" settles,
+      // an unanswerable kido never does. Unref'd, so a wait still never
+      // holds pi's event loop open, and guarded against a reading that
+      // outlives its own tick, since setInterval fires whether or not the
+      // last callback finished.
+      // Not started once the wait is already over: an abort or a timeout
+      // during the send settles before this point is reached, and an
+      // interval armed after its own settle is one nothing will ever
+      // clear.
+      if (target.instance && !settled) {
+        const instance = target.instance;
+        let reading = false;
+        watch = setInterval(() => {
+          if (reading) return;
+          reading = true;
+          host.runKido(["agent-alive", instance], { timeoutMs: 2000 }).then((res) => {
+            reading = false;
+            if (!("error" in res) && res.out === "false") settle({ gaveUp: "gone" });
+          });
+        }, ASK_LIVENESS_POLL_MS);
+        watch.unref();
+      }
+
       const outcome = await reply;
       if ("reply" in outcome) {
         return { content: [{ type: "text", text: outcome.reply }], details: {} };
+      }
+      if (outcome.gaveUp === "aborted") {
+        return {
+          content: [{
+            type: "text",
+            text: `the ask to ${params.to} was interrupted (ask id ${id}); a later reply naming this id will still arrive as a message`,
+          }],
+          details: {},
+        };
+      }
+      if (outcome.gaveUp === "gone") {
+        return {
+          content: [{
+            type: "text",
+            text: `${target.name || target.id} stopped running before answering (ask id ${id}); no reply can come from it now`,
+          }],
+          details: {},
+        };
       }
       if (outcome.gaveUp === "inbox") {
         return {

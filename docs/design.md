@@ -484,6 +484,51 @@ whole test for "this session is shutting down". A momentarily closed
 inbox during a reload that goes on to succeed is refused the same
 conservative way.
 
+### When the target goes away
+
+An answer can only come from the process that was asked, so a target
+that stops running is the end of that ask however it stopped. Refusing
+before the send covers only a target already gone; a target alive at
+that moment and dead a second later left the asker sitting out its whole
+`timeoutMs`, which is minutes of a parent's attention spent on an answer
+that can no longer exist. The three reports this came from were a child
+that finished its work and exited without replying, a child killed with
+`stop_subagent`, and a repeat of the first.
+
+So a waiting ask keeps asking `kido agent-alive <instance>` - the same
+one-bit question, on the same terms, as the parent-liveness poll in the
+status extension: a definite `false` settles the waiter, and an
+unanswerable kido says nothing either way and never gives up. The
+interval is `KIDO_ASK_POLL_MS`, five seconds by default, with a reading
+never overlapping its predecessor (`setInterval` fires whether or not
+the last callback finished) and the timer unref'd, so a wait still never
+holds pi's event loop open. A target with no instance id is not polled
+at all; there is nothing to ask about.
+
+The alternatives were both worse. Having the child's `notify_parent`
+settle a parent's pending ask means inferring a `replyTo` the child
+never named, which is the guess commit 5dc56f1 removed in the other
+direction - a notice is not an answer, and a child that finished after
+being asked something else would have its summary delivered as the reply
+to that question. Having a shutting-down child refuse its unanswered
+asks on the wire needs a `refused` envelope kind that does not exist
+(`internal/msg` has message, ask, reply, notice, steer, interrupt,
+stop), and buys nothing the poll does not already cover: a killed or
+crashed child can no more refuse on the wire than it can call
+`notify_parent`, which was two of the three reports. One mechanism reads
+the one fact that is true in every case - the process is gone - so
+there is no second one to keep in step.
+
+### When the human interrupts
+
+pi passes each tool's `execute` the turn's `AbortSignal`, and pressing
+Esc aborts it. An ask that ignored it could not be interrupted at all,
+because pi's own abort path waits for the running tool call to return:
+the wait it was told to abandon was the thing holding it. So the signal
+settles the waiter like any other outcome, dropping the pending entry
+and its cycle edge, and the ask id is reported the way a timeout's is -
+a reply that arrives afterwards is still delivered as a message.
+
 ## Spawning
 
 `kido spawn_subagent` creates a detached window in the caller's own tmux
@@ -1502,7 +1547,7 @@ extension's helper, so they agree), `KIDO_IDLE_EXIT_SECONDS` (the idle
 self-exit timer, a different figure that stacks with `KIDO_LINGER_SECONDS`
 rather than sharing it - see "Idle self-exit, and resuming a run"),
 `KIDO_STALL_THRESHOLD_MS`, `KIDO_STOP_ESCALATION_MS`,
-`KIDO_HEARTBEAT_MS`, `KIDO_PARENT_POLL_MS`,
+`KIDO_HEARTBEAT_MS`, `KIDO_PARENT_POLL_MS`, `KIDO_ASK_POLL_MS`,
 `KIDO_SPAWN_TIMEOUT_MS` and `KIDO_STOP_TIMEOUT_MS`. The extension reads
 its own once at module scope, so its test suite re-imports both files
 under a cache-busting specifier to pick up a fresh value, and re-imports

@@ -21,7 +21,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Value } from "typebox/value";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, delimiter, dirname } from "node:path";
 import net from "node:net";
@@ -62,6 +62,17 @@ switch (args[0]) {
     // "0" (gone), or "fail" for a kido that cannot answer at all.
     const logFile = process.env.KIDO_FAKE_PARENT_ALIVE_LOG;
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
+    // Named instances answer "false" whatever the global mode says, and a
+    // test can add one mid-run, which is how a target dies while an asker
+    // is already waiting on it.
+    const deadFile = process.env.KIDO_FAKE_DEAD_FILE;
+    if (deadFile && fs.existsSync(deadFile)) {
+      const dead = fs.readFileSync(deadFile, "utf8").split("\\n").filter(Boolean);
+      if (dead.includes(args[1])) {
+        process.stdout.write("false\\n");
+        process.exit(0);
+      }
+    }
     const mode = process.env.KIDO_FAKE_PARENT_ALIVE ?? "1";
     const respond = () => {
       if (mode === "fail") {
@@ -172,6 +183,10 @@ interface Fixture {
   inboxDir: string;
   setAgents(agents: unknown[]): void;
   setParentAlive(mode: "alive" | "gone" | "fail"): void;
+  // killInstance kills one named instance without touching what every
+  // other instance answers, and takes effect mid-run: the fake kido reads
+  // the file on every call.
+  killInstance(instance: string): void;
   setParentAliveDelay(ms: number): void;
   parentAliveCalls(): string[][];
   setInboxFail(fail: boolean): void;
@@ -227,6 +242,8 @@ function makeFixture(): Fixture {
   const runOutcomeLogFile = join(dir, "run-outcome.jsonl");
   const agentsCallLogFile = join(dir, "agents-calls.jsonl");
   const parentAliveLogFile = join(dir, "parent-alive.jsonl");
+  const deadInstancesFile = join(dir, "dead-instances");
+  writeFileSync(deadInstancesFile, "");
   writeFileSync(agentsFile, "[]");
   writeFileSync(logFile, "");
   writeFileSync(spawnLogFile, "");
@@ -255,6 +272,7 @@ function makeFixture(): Fixture {
     KIDO_FAKE_PARENT_ALIVE_LOG: process.env.KIDO_FAKE_PARENT_ALIVE_LOG,
     KIDO_FAKE_PARENT_ALIVE: process.env.KIDO_FAKE_PARENT_ALIVE,
     KIDO_FAKE_PARENT_ALIVE_DELAY_MS: process.env.KIDO_FAKE_PARENT_ALIVE_DELAY_MS,
+    KIDO_FAKE_DEAD_FILE: process.env.KIDO_FAKE_DEAD_FILE,
     KIDO_FAKE_WINDOW_FOCUSED_LOG: process.env.KIDO_FAKE_WINDOW_FOCUSED_LOG,
     KIDO_FAKE_WINDOW_FOCUSED: process.env.KIDO_FAKE_WINDOW_FOCUSED,
     KIDO_FAKE_INBOX_DIR: process.env.KIDO_FAKE_INBOX_DIR,
@@ -274,6 +292,7 @@ function makeFixture(): Fixture {
   process.env.KIDO_FAKE_RUN_OUTCOME_LOG = runOutcomeLogFile;
   process.env.KIDO_FAKE_AGENTS_CALL_LOG = agentsCallLogFile;
   process.env.KIDO_FAKE_PARENT_ALIVE_LOG = parentAliveLogFile;
+  process.env.KIDO_FAKE_DEAD_FILE = deadInstancesFile;
   delete process.env.KIDO_FAKE_PARENT_ALIVE; // default: the parent is alive
   delete process.env.KIDO_FAKE_PARENT_ALIVE_DELAY_MS;
   process.env.KIDO_FAKE_WINDOW_FOCUSED_LOG = windowFocusedLogFile;
@@ -297,6 +316,9 @@ function makeFixture(): Fixture {
     setParentAlive(mode) {
       if (mode === "alive") delete process.env.KIDO_FAKE_PARENT_ALIVE;
       else process.env.KIDO_FAKE_PARENT_ALIVE = mode === "gone" ? "0" : "fail";
+    },
+    killInstance(instance) {
+      appendFileSync(deadInstancesFile, instance + "\n");
     },
     setParentAliveDelay(ms) {
       if (ms > 0) process.env.KIDO_FAKE_PARENT_ALIVE_DELAY_MS = String(ms);
@@ -2738,6 +2760,152 @@ test("ask_agent refuses a target that is not alive, promptly and without sending
       fx.parentAliveCalls().some((args) => args.includes("peer-a-instance")),
       "the resolved target's own instance id was queried, not its session id",
     );
+  } finally {
+    fx.restore();
+  }
+});
+
+// withAskPollEnv sets the interval a waiting ask re-reads its target's
+// liveness on. It is read once at module scope, so every case using it
+// goes through freshExtensions() to pick it up (see withParentEnv).
+async function withAskPollEnv<T>(pollMs: number, fn: () => Promise<T>): Promise<T> {
+  const saved = process.env.KIDO_ASK_POLL_MS;
+  process.env.KIDO_ASK_POLL_MS = String(pollMs);
+  try {
+    return await fn();
+  } finally {
+    if (saved === undefined) delete process.env.KIDO_ASK_POLL_MS;
+    else process.env.KIDO_ASK_POLL_MS = saved;
+  }
+}
+
+// The three cases below are about one thing: an ask that will never be
+// answered has to end anyway, and end *promptly*. Each asserts settling
+// well inside a timeoutMs generous enough that reaching it would be the
+// bug - the failure being fixed is not a wrong message, it is no
+// resolution arriving at all.
+test("ask_agent releases its waiter when the target dies mid-wait, long before the timeout", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([
+      { id: "self", name: "self", parent: "", self: true, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, instance: "peer-a-instance" },
+    ]);
+    await withAskPollEnv(50, async () => {
+      const factory = await freshExtensions();
+      const s = await startSessionUsing(factory, fx);
+      const ask = s.tools.get("ask_agent");
+
+      const p = ask.execute("c1", { to: "peer-a", question: "q", timeoutMs: 600000 });
+      // The target was alive at the precheck: the ask really went out.
+      const sent = await fx.waitForLog("peer-a", "ask");
+      assert.equal(await pendingState(p), "pending", "a live target is still being waited for");
+
+      fx.killInstance("peer-a-instance");
+      const result = await settlesWithin(p, 3000);
+      assert.match(result.content[0].text, /stopped running before answering/);
+      assert.ok(result.content[0].text.includes(sent!.id), "the error names the ask id");
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
+test("a waiting ask honours pi's abort signal, so the turn can be interrupted", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(twoPeers);
+    const s = await startSession(fx);
+    const ask = s.tools.get("ask_agent");
+
+    const ac = new AbortController();
+    const p = ask.execute("c1", { to: "peer-a", question: "q", timeoutMs: 600000 }, ac.signal);
+    const sent = await fx.waitForLog("peer-a", "ask");
+    assert.equal(await pendingState(p), "pending", "nothing has interrupted it yet");
+
+    ac.abort();
+    const result = await settlesWithin(p, 1000);
+    assert.match(result.content[0].text, /interrupted/);
+
+    // The waiter is gone, not merely unawaited: a reply naming that id now
+    // arrives the way any unmatched reply does, as a message to the model.
+    const resp = await sendToInbox(s.inboxPath, envelope("reply", "late answer", { replyTo: sent!.id, from: { session: "peer-a", name: "peer-a" } }));
+    assert.equal(resp, "ok");
+    assert.ok(
+      s.delivered.some((d) => d.text.includes("late answer")),
+      "an abandoned ask leaves no waiter behind for a later reply to settle",
+    );
+  } finally {
+    fx.restore();
+  }
+});
+
+// The abort can also land while the outbound send is still in flight,
+// which is the one ordering where the wait is over before the liveness
+// watch is armed. An interval started after its own settle is one
+// nothing will ever clear: the readings simply never stop.
+test("an ask aborted while its send is in flight leaves no liveness watch running", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([
+      { id: "self", name: "self", parent: "", self: true, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, instance: "peer-a-instance" },
+    ]);
+    process.env.KIDO_FAKE_MESSAGE_DELAY_MS = "400";
+    await withAskPollEnv(50, async () => {
+      const factory = await freshExtensions();
+      const s = await startSessionUsing(factory, fx);
+      const ask = s.tools.get("ask_agent");
+
+      const ac = new AbortController();
+      const p = ask.execute("c1", { to: "peer-a", question: "q", timeoutMs: 600000 }, ac.signal);
+      await new Promise((r) => setTimeout(r, 100)); // still inside the send
+      ac.abort();
+      // Not instant, unlike the case above: execute cannot return before
+      // the send it is awaiting does, and that await is capped at 5s.
+      const result = await settlesWithin(p, 3000);
+      assert.match(result.content[0].text, /interrupted/);
+
+      const readings = () => fx.parentAliveCalls().filter((args) => args.includes("peer-a-instance")).length;
+      await pollForStable(readings, 400, 3000, "the liveness readings for an abandoned ask to stop");
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
+// The negative control for both of the above, and the more important half
+// of the pair: giving up on a healthy target that is merely slow would be
+// worse than the hang. The wait outlives many liveness readings and an
+// abort signal that is never fired, and still ends with the target's own
+// answer.
+test("a live target that takes its time is still waited for, and its reply is what arrives", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([
+      { id: "self", name: "self", parent: "", self: true, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, instance: "peer-a-instance" },
+    ]);
+    await withAskPollEnv(50, async () => {
+      const factory = await freshExtensions();
+      const s = await startSessionUsing(factory, fx);
+      const ask = s.tools.get("ask_agent");
+
+      const ac = new AbortController();
+      const p = ask.execute("c1", { to: "peer-a", question: "q", timeoutMs: 600000 }, ac.signal);
+      const sent = await fx.waitForLog("peer-a", "ask");
+
+      await new Promise((r) => setTimeout(r, 600));
+      assert.equal(await pendingState(p), "pending", "a slow but live target must still be waited for");
+      assert.ok(
+        fx.parentAliveCalls().filter((args) => args.includes("peer-a-instance")).length >= 3,
+        "several liveness readings came back alive and none of them gave up",
+      );
+
+      const resp = await sendToInbox(s.inboxPath, envelope("reply", "the slow answer", { replyTo: sent!.id, from: { session: "peer-a", name: "peer-a" } }));
+      assert.equal(resp, "ok");
+      assert.equal((await settlesWithin(p, 2000)).content[0].text, "the slow answer");
+    });
   } finally {
     fx.restore();
   }

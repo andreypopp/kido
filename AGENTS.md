@@ -402,6 +402,25 @@ build it paid for).
   produced the rule; delete the Go half and the fixture pins nothing but
   itself. Same shape, and same reason, as
   `internal/msg/testdata/discriminator.json`.
+- **`pi/kido-status.test.ts`, the four ask_agent release cases** — each
+  asserts the call *settles promptly* against a `timeoutMs` of ten
+  minutes, because the defect was never a wrong message: it was that no
+  resolution arrived at all, and every one of them passes trivially if
+  the assertion is narrowed to what the text says. The abort case is the
+  only one the liveness poll does not carry (its target is alive
+  throughout), and its last assertion is the one with teeth — a reply
+  naming that id is delivered as a message, which is how the pending
+  entry is shown to be gone rather than merely unawaited. Its sibling
+  aborts while the send is still in flight, the one ordering where the
+  wait ends before the liveness watch is armed, and what it asserts is
+  that the readings *stop*: an interval started after its own settle is
+  one nothing will ever clear, and it is invisible to every assertion
+  about the returned text. The last is
+  the negative control the others are unsafe without: a live target
+  that is merely slow is still waited for, through many liveness
+  readings and an abort signal that never fires, and the answer that
+  arrives is its own. A fix that gave up on a slow healthy target would
+  be worse than the hang, and only that case can report it.
 - **`TestSSHWithoutRemoteIntegrationStaysQuiet`** — the negative control
   the ssh gate is only safe with. `observeRemote` latches, so a wrong
   reading is permanent for that session, and the row it produces is a
