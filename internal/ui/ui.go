@@ -540,7 +540,7 @@ func samePanes(a, b []tmux.Pane) bool {
 // would risk a stale pane list reaching the reaper. Subagent is left in
 // for a stronger reason now: orderWindowsByTree reads it to place a
 // window once its agent record is gone, so a change to it must redraw
-// too. In practice it never changes after kido spawn sets it once at
+// too. In practice it never changes after kido spawn_subagent sets it once at
 // window creation, and a window's first appearance already forces a
 // rebuild on its own, but excluding it here would be the same silent
 // staleness this comment warns about for the others.
@@ -570,7 +570,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		now := m.now()
 		// The sidebar is the only thing in kido that ticks continuously,
 		// so it is what notices a sleep and rebases state.Stalled, on
-		// disk so `kido agents` sees the same rebase.
+		// disk so `kido list_agents` sees the same rebase.
 		if state.DetectPause(m.at, now) {
 			state.RecordPause(now) //nolint:errcheck // best effort; a failed write just costs one sidebar's detection reaching the others
 		}
@@ -1390,7 +1390,7 @@ func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) 
 			// lingers for the sweep. The mark outlives the record, so fall
 			// back to it. A window with any record instead follows the
 			// record even when it disagrees with the mark: a live subagent
-			// can move or be reparented (kido spawn --resume), and the mark
+			// can move or be reparented (kido spawn_subagent --resume), and the mark
 			// is written once at window creation and never rewritten to
 			// match.
 			parentInstance = markParentOf(w)

@@ -11,7 +11,7 @@ import (
 // it takes no arguments.
 func TestReapClosesWhatTheSweepNames(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	// A finished subagent window - marked by kido spawn, its pane a
+	// A finished subagent window - marked by kido spawn_subagent, its pane a
 	// remain-on-exit corpse well past the linger - and a second window so
 	// the session survives losing it.
 	panes := []tmux.Pane{

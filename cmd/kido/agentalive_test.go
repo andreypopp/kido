@@ -15,7 +15,7 @@ import (
 // rather than avoid. A second live agent claiming the parent's own pane -
 // a `pi --print` that inherited TMUX_PANE - wins that pane in
 // state.Load's per-pane view, and the parent's record is then not in the
-// answer at all. The child read that view (through `kido agents --json`)
+// answer at all. The child read that view (through `kido list_agents --json`)
 // and could only conclude it might be an orphan.
 //
 // It is the same shape as internal/reap's
@@ -23,7 +23,7 @@ import (
 // records go through real state files, so the contract between the two
 // packages is what is under test rather than a hand-built slice agreeing
 // with itself, and the lossy view is exercised as a negative control. If
-// `kido agents` stopped losing the parent this test would no longer be
+// `kido list_agents` stopped losing the parent this test would no longer be
 // about anything.
 //
 // One reading decides it, exactly as the poll now does: there is no
@@ -75,7 +75,7 @@ func TestAgentAliveSurvivesAPaneCollisionOnTheParent(t *testing.T) {
 	}
 	for _, a := range buildAgents(byPane, panes, "$1", "%1") {
 		if a.ID == "child" && a.Parent != "" {
-			t.Fatalf("kido agents resolved the child's parent as %q; the control no longer reproduces the loss", a.Parent)
+			t.Fatalf("kido list_agents resolved the child's parent as %q; the control no longer reproduces the loss", a.Parent)
 		}
 	}
 }

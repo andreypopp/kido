@@ -61,7 +61,7 @@ function status(): StatusHost | null {
 
 // Read again here rather than shared across the seam: constants of this
 // process, so two readers cannot disagree. The instance id, which is
-// generated, comes from the host instead. What kido spawn set for a child
+// generated, comes from the host instead. What kido spawn_subagent set for a child
 // is not the same as what this process is - see ownRunID below.
 const PARENT_PID = process.env.KIDO_AGENT_PARENT_PID ? Number(process.env.KIDO_AGENT_PARENT_PID) : undefined;
 const PARENT_INSTANCE = process.env.KIDO_AGENT_PARENT_INSTANCE || undefined;
@@ -136,7 +136,7 @@ function capBytes(text: string, max: number): string {
   return out;
 }
 
-// The task text `kido spawn` left for us to deliver as our first message.
+// The task text `kido spawn_subagent` left for us to deliver as our first message.
 const TASK_FILE = process.env.KIDO_AGENT_TASK_FILE || undefined;
 
 // spawnCmd (cmd/kido/spawn.go) is the actual ceiling; this is only a cheap
@@ -166,13 +166,13 @@ const IDLE_EXIT_MS = (Number(process.env.KIDO_IDLE_EXIT_SECONDS) || 30) * 1000;
 
 // KEEP_ALIVE opts a child out of idle self-exit entirely, for a
 // deliberately long-lived helper (spawn_subagent's keepAlive argument,
-// plumbed through as KIDO_AGENT_KEEP_ALIVE by kido spawn --keep-alive).
+// plumbed through as KIDO_AGENT_KEEP_ALIVE by kido spawn_subagent --keep-alive).
 const KEEP_ALIVE = process.env.KIDO_AGENT_KEEP_ALIVE === "1";
 
-// How long spawn_subagent waits for `kido spawn` before treating it as hung.
+// How long spawn_subagent waits for `kido spawn_subagent` before treating it as hung.
 const SPAWN_TIMEOUT_MS = Number(process.env.KIDO_SPAWN_TIMEOUT_MS) || 5000;
 
-// How long stop_subagent waits for `kido stop`. kido stop can itself
+// How long stop_subagent waits for `kido stop_subagent`, which can itself
 // block for stopEscalation (cmd/kido/control.go, default 5s), so this
 // must comfortably exceed that.
 const STOP_TIMEOUT_MS = Number(process.env.KIDO_STOP_TIMEOUT_MS) || 8000;
@@ -199,8 +199,8 @@ const NOTIFY_PARENT_INSTRUCTION =
   "You were spawned as a subagent. When your work is done, or you are blocked and cannot make further progress, call notify_parent with a short summary - your parent is not watching this session and will learn nothing otherwise. " +
   "When you reply to another agent's question with message_agent, that call is the entire response - end the turn there, with no summary or sign-off after it.";
 
-// AgentInfo mirrors cmd/kido/agents.go's AgentInfo, what `kido agents
-// --json` prints. Only the fields read here are declared.
+// AgentInfo mirrors cmd/kido/list_agents.go's AgentInfo, what `kido
+// list_agents --json` prints. Only the fields read here are declared.
 interface AgentInfo {
   id: string;
   name: string;
@@ -213,8 +213,8 @@ interface AgentInfo {
   sinceReport: number;
 }
 
-// resolveAgent applies the same addressing rules kido message's
-// resolveTarget (cmd/kido/message.go) does: an exact, case-insensitive
+// resolveAgent applies the same addressing rules kido message_agent's
+// resolveTarget (cmd/kido/message_agent.go) does: an exact, case-insensitive
 // name, then an exact id, then a unique id prefix, each erroring on its
 // own ambiguity rather than falling through.
 export function resolveAgent(agents: AgentInfo[], to: string): { agent?: AgentInfo; error?: string } {
@@ -343,9 +343,9 @@ export default function (pi: ExtensionAPI) {
   // while the model still sees the notice's full text - collapsing is a
   // transcript-display concern only. Every notice collapses the same way
   // regardless of who sent it: kind, not identity, is what a sender chose
-  // when it ran `kido message --kind notice` instead of the default
-  // `--kind message`, and `from` is advisory anyway (docs/design.md, the
-  // inbox), so nothing here does a lookup to decide.
+  // when it ran `kido notify_parent` instead of `kido message_agent`,
+  // and `from` is advisory anyway (docs/design.md, the inbox), so
+  // nothing here does a lookup to decide.
   //
   // The two halves of "deliver a notice" run on purpose different
   // schedules. Visual arrival is immediate: renderNoticeWidget puts a
@@ -410,7 +410,7 @@ export default function (pi: ExtensionAPI) {
   // target from this pane at the moment a reply is actually sent (see
   // resolveReplyTarget) - the instance id is the other value a reload
   // cannot change, but kido's addressing has nothing that resolves one,
-  // while every pane is already in `kido agents --json`. Entries are
+  // while every pane is already in `kido list_agents --json`. Entries are
   // removed once a reply consumes them; a never-answered ask leaves one
   // behind for this session's lifetime, the same bound as an unanswered
   // ask's own wire round trip already accepts.
@@ -535,7 +535,7 @@ export default function (pi: ExtensionAPI) {
   const fetchAgents = async (): Promise<{ agents: AgentInfo[] } | { error: string }> => {
     const host = status();
     if (!host) return { error: "kido-status.ts is not loaded" };
-    const res = await host.runKido(["agents", "--json"], { timeoutMs: 2000 });
+    const res = await host.runKido(["list_agents", "--json"], { timeoutMs: 2000 });
     if ("error" in res) return res;
     try {
       return { agents: res.out ? JSON.parse(res.out) : [] };
@@ -547,7 +547,7 @@ export default function (pi: ExtensionAPI) {
   // parentInRegistry asks kido whether PARENT_INSTANCE is still running:
   // true, false, or null for "no answer", which is not evidence either
   // way. `kido agent-alive` reads every live state record and answers
-  // that one bit. It is deliberately not `kido agents --json`, which the
+  // that one bit. It is deliberately not `kido list_agents --json`, which the
   // poll used to read: that is a display command, and it both scopes
   // itself to the caller's tmux session and collapses its result to one
   // record per pane. A `pi --print` started inside the parent's pane
@@ -642,7 +642,7 @@ export default function (pi: ExtensionAPI) {
   // windowFocused asks kido whether this session's own window is the one
   // some client is currently looking at - the same test close-window and
   // the sweep (internal/reap) use, via a dedicated kido subcommand rather
-  // than fetchAgents, since kido agents --json carries no focus field.
+  // than fetchAgents, since kido list_agents --json carries no focus field.
   const windowFocused = async (windowID: string): Promise<boolean> => {
     const host = status();
     if (!host?.kidoPath()) return false; // no kido, no way to check; do not block on a guess either way
@@ -742,9 +742,10 @@ export default function (pi: ExtensionAPI) {
       if (!host?.kidoPath()) {
         return { content: [{ type: "text", text: "kido is not available; cannot message other agents" }], details: {} };
       }
-      const args = ["message"];
-      // A reply is correlated on kind "reply", not on --reply-to alone.
-      if (params.replyTo) args.push("--kind", "reply", "--reply-to", params.replyTo);
+      const args = ["message_agent"];
+      // --reply-to alone makes it a reply; kido derives the kind the wire
+      // correlates on from the flag, since nothing else it could mean.
+      if (params.replyTo) args.push("--reply-to", params.replyTo);
       // Captured before resolveReplyTarget consumes the entry: this is the
       // tool result's own chance to say STOP_AFTER_ASK_REPLY, and the
       // strongest of the three places it is repeated (see
@@ -767,7 +768,7 @@ export default function (pi: ExtensionAPI) {
       if ("error" in res) {
         return { content: [{ type: "text", text: `could not message ${params.to}: ${res.error}` }], details: {} };
       }
-      // kido message says whether it delivered by inbox or pasted.
+      // kido message_agent says whether it delivered by inbox or pasted.
       const delivered = res.out || `message delivered to ${params.to}`;
       return {
         content: [{ type: "text", text: wasPendingAsk ? `${delivered} ${STOP_AFTER_ASK_REPLY}` : delivered }],
@@ -815,7 +816,7 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text", text: "could not find this agent among kido's agents; cannot ask" }], details: {} };
       }
 
-      // kido agents --json is already scoped to this tmux session, so a
+      // kido list_agents --json is already scoped to this tmux session, so a
       // target outside it simply does not resolve here.
       const { agent: target, error } = resolveAgent(agents, params.to);
       if (!target) {
@@ -887,8 +888,8 @@ export default function (pi: ExtensionAPI) {
       pendingOutbound.set(id, { targetSession: target.id, settle });
 
       // target.id, not params.to: passing the resolved id removes a second
-      // resolution inside kido message that could disagree with this one.
-      const sent = await host.runKido(["message", "--kind", "ask", "--id", id, "--", target.id], {
+      // resolution inside kido ask_agent that could disagree with this one.
+      const sent = await host.runKido(["ask_agent", "--id", id, "--", target.id], {
         input: params.question,
         timeoutMs: 5000,
       });
@@ -974,7 +975,7 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text", text: "kido is not available; cannot spawn a subagent" }], details: {} };
       }
       // resume keeps the run's own original task and window name - the same
-      // pair `kido spawn --resume` itself refuses alongside --task-file and
+      // pair `kido spawn_subagent --resume` itself refuses alongside --task-file and
       // --name - so a call naming both is ambiguous about which one the
       // model actually wants and is refused rather than silently picking
       // one.
@@ -1003,8 +1004,8 @@ export default function (pi: ExtensionAPI) {
       }
 
       // Spelled once for both spawn and resume: pi's own --model/--tools
-      // constrain the child, kido spawn's identically named pair goes in
-      // the run record (spawn only - kido spawn --resume has no top-level
+      // constrain the child, kido spawn_subagent's identically named pair
+      // goes in the run record (spawn only - --resume has no top-level
       // --tools of its own, and only defaults --model from the run's own
       // meta when neither this nor an explicit command overrides it).
       const modelAndTools = [
@@ -1015,7 +1016,7 @@ export default function (pi: ExtensionAPI) {
 
       if (params.resume) {
         const args = [
-          "spawn",
+          "spawn_subagent",
           "--resume",
           params.resume,
           "--parent-pid",
@@ -1026,7 +1027,7 @@ export default function (pi: ExtensionAPI) {
         ];
         // Only named after "--" if there is something to override - an
         // absent --model already gets the run's own recorded one back from
-        // kido spawn --resume itself.
+        // kido spawn_subagent --resume itself.
         if (modelAndTools.length > 0) args.push("--", "pi", ...modelAndTools);
         const res = await host.runKido(args, { timeoutMs: SPAWN_TIMEOUT_MS });
         if ("error" in res) {
@@ -1042,11 +1043,11 @@ export default function (pi: ExtensionAPI) {
       const name = params.name || safeSubagentName();
       const child = ["pi", "--name", name, ...modelAndTools];
 
-      // The task goes to kido spawn as text on stdin; kido decides it
+      // The task goes to kido spawn_subagent as text on stdin; kido decides it
       // becomes a file.
       const res = await host.runKido(
         [
-          "spawn",
+          "spawn_subagent",
           "--parent-pid",
           String(process.pid),
           "--parent-instance",
@@ -1095,7 +1096,7 @@ export default function (pi: ExtensionAPI) {
       if (!host?.kidoPath()) {
         return { content: [{ type: "text", text: "kido is not available; cannot interrupt other agents" }], details: {} };
       }
-      const res = await host.runKido(["interrupt", "--", params.to], { timeoutMs: 5000 });
+      const res = await host.runKido(["interrupt_subagent", "--", params.to], { timeoutMs: 5000 });
       if ("error" in res) {
         return { content: [{ type: "text", text: `could not interrupt ${params.to}: ${res.error}` }], details: {} };
       }
@@ -1129,7 +1130,7 @@ export default function (pi: ExtensionAPI) {
       if (!host?.kidoPath()) {
         return { content: [{ type: "text", text: "kido is not available; cannot stop other agents" }], details: {} };
       }
-      const args = ["stop"];
+      const args = ["stop_subagent"];
       if (params.force) args.push("--force");
       args.push("--", params.to);
       const res = await host.runKido(args, { timeoutMs: STOP_TIMEOUT_MS });
@@ -1175,16 +1176,14 @@ export default function (pi: ExtensionAPI) {
       if (!host?.kidoPath()) {
         return { content: [{ type: "text", text: "kido is not available; cannot notify the parent" }], details: {} };
       }
-      const listed = await fetchAgents();
-      if ("error" in listed) {
-        return { content: [{ type: "text", text: `could not list agents: ${listed.error}` }], details: {} };
-      }
-      const self = listed.agents.find((a) => a.self);
-      if (!self || !self.parent) {
-        return { content: [{ type: "text", text: "could not resolve this session's parent; nothing sent" }], details: {} };
-      }
+      // No target, and nothing listed to find one: `kido notify_parent`
+      // reads the parent edge out of KIDO_AGENT_PARENT_INSTANCE, the same
+      // environment this file's own PARENT_INSTANCE comes from. This used
+      // to fetch every agent, find its own row and read `parent` off it -
+      // a whole subprocess and a tmux pane listing to recover something
+      // kido had handed the process at spawn.
       const text = capBytes(params.summary, MAX_NOTICE_BYTES);
-      const res = await host.runKido(["message", "--kind", "notice", "--", self.parent], { input: text, timeoutMs: 5000 });
+      const res = await host.runKido(["notify_parent"], { input: text, timeoutMs: 5000 });
       if ("error" in res) {
         return { content: [{ type: "text", text: `could not notify parent: ${res.error}` }], details: {} };
       }
@@ -1260,7 +1259,7 @@ export default function (pi: ExtensionAPI) {
     return { systemPrompt: `${event.systemPrompt}\n\n${NOTIFY_PARENT_INSTRUCTION}` };
   });
 
-  // deliverTask hands the model the task kido spawn left for us, the same
+  // deliverTask hands the model the task kido spawn_subagent left for us, the same
   // way an inbox prompt is delivered. A missing or unreadable file is
   // nothing to deliver, never a reason to fail startup. The task file is
   // never unlinked (it is the run's record); the sibling "delivered"

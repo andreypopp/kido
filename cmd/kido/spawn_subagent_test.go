@@ -27,7 +27,7 @@ type newWindowCall struct {
 var marks map[string]string
 
 // withNewWindow points newWindow and markSubagent at fakes that record
-// their calls, so spawnCmd never talks to a real tmux server. newWindow
+// their calls, so spawnSubagentCmd never talks to a real tmux server. newWindow
 // returns (windowID, paneID, a fixed fake pid, err).
 const fakePanePID = 42424242
 
@@ -48,7 +48,7 @@ func withNewWindow(t *testing.T, windowID, paneID string, err error) *[]newWindo
 	return &calls
 }
 
-// captureStdout returns what f wrote to os.Stdout. The line kido spawn
+// captureStdout returns what f wrote to os.Stdout. The line kido spawn_subagent
 // prints is parsed by pi/kido-agents.ts, so it is contract rather than
 // logging and has to be read back verbatim.
 func captureStdout(t *testing.T, f func()) string {
@@ -84,7 +84,7 @@ func TestSpawnPrintsWindowPaneRun(t *testing.T) {
 
 	var err error
 	out := captureStdout(t, func() {
-		err = spawnCmd([]string{
+		err = spawnSubagentCmd([]string{
 			"--parent-pid", "1", "--parent-instance", "x",
 			"--name", "kid", "--task-file", writeTaskFile(t, "task"),
 		})
@@ -116,7 +116,7 @@ func TestSpawnMarksTheWindow(t *testing.T) {
 	t.Setenv("TMUX_PANE", "%1")
 	withCallerDepth(t, 0)
 	withNewWindow(t, "@9", "%9", nil)
-	if err := spawnCmd([]string{
+	if err := spawnSubagentCmd([]string{
 		"--parent-pid", "123", "--parent-instance", "abc",
 		"--name", "kid", "--task-file", writeTaskFile(t, "x"),
 	}); err != nil {
@@ -132,7 +132,7 @@ func TestSpawnMarksTheWindow(t *testing.T) {
 }
 
 // writeTaskFile returns a path to a real, readable file under maxTaskBytes,
-// which every spawnCmd call needs since --task-file existence and size
+// which every spawnSubagentCmd call needs since --task-file existence and size
 // are checked.
 func writeTaskFile(t *testing.T, contents string) string {
 	t.Helper()
@@ -144,7 +144,7 @@ func writeTaskFile(t *testing.T, contents string) string {
 }
 
 // withCallerDepth records a state.Session for the caller pane (%1, in
-// samePane) reporting depth, so spawnCmd's derivation of the child's depth
+// samePane) reporting depth, so spawnSubagentCmd's derivation of the child's depth
 // from the caller's own record (see spawn.go) has something to read.
 func withCallerDepth(t *testing.T, depth int) {
 	t.Helper()
@@ -162,12 +162,12 @@ func TestSpawnRefusedAtMaxDepth(t *testing.T) {
 	withCallerDepth(t, maxDepth) // caller is already at the ceiling
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, "do the thing")
-	err := spawnCmd([]string{
+	err := spawnSubagentCmd([]string{
 		"--parent-pid", "123", "--parent-instance", "abc",
 		"--name", "kid", "--task-file", taskFile,
 	})
 	if err == nil {
-		t.Fatal("spawnCmd for a caller at the ceiling = nil error, want a refusal")
+		t.Fatal("spawnSubagentCmd for a caller at the ceiling = nil error, want a refusal")
 	}
 	if !strings.Contains(err.Error(), "maximum nesting") {
 		t.Errorf("error = %q, want it to name the depth ceiling", err)
@@ -187,12 +187,12 @@ func TestSpawnCannotEscapeCeilingWithSmallerDepth(t *testing.T) {
 	withCallerDepth(t, maxDepth)
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, "do the thing")
-	err := spawnCmd([]string{
+	err := spawnSubagentCmd([]string{
 		"--parent-pid", "123", "--parent-instance", "abc",
 		"--depth", "1", "--name", "kid", "--task-file", taskFile,
 	})
 	if err == nil {
-		t.Fatal("spawnCmd with a forged smaller --depth = nil error, want a refusal")
+		t.Fatal("spawnSubagentCmd with a forged smaller --depth = nil error, want a refusal")
 	}
 	if !strings.Contains(err.Error(), "maximum nesting") {
 		t.Errorf("error = %q, want it to name the depth ceiling", err)
@@ -208,12 +208,12 @@ func TestSpawnAllowsMaxDepth(t *testing.T) {
 	withCallerDepth(t, maxDepth-1) // one below the ceiling, so the child lands exactly on it
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, "do the thing")
-	err := spawnCmd([]string{
+	err := spawnSubagentCmd([]string{
 		"--parent-pid", "123", "--parent-instance", "abc",
 		"--name", "kid", "--task-file", taskFile,
 	})
 	if err != nil {
-		t.Fatalf("spawnCmd landing exactly on the ceiling = %v, want it allowed", err)
+		t.Fatalf("spawnSubagentCmd landing exactly on the ceiling = %v, want it allowed", err)
 	}
 	if len(*calls) != 1 {
 		t.Fatalf("newWindow called %d times, want 1", len(*calls))
@@ -224,7 +224,7 @@ func TestSpawnAllowsMaxDepth(t *testing.T) {
 }
 
 // TestSpawnUnreportedCallerIsDepthZero is the documented fallback for a
-// caller with no state record at all (a human running kido spawn by hand,
+// caller with no state record at all (a human running kido spawn_subagent by hand,
 // or an agent that has not reported yet): treated as depth 0, so its
 // child lands at depth 1.
 func TestSpawnUnreportedCallerIsDepthZero(t *testing.T) {
@@ -233,11 +233,11 @@ func TestSpawnUnreportedCallerIsDepthZero(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir()) // empty: no record for the caller
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, "do the thing")
-	if err := spawnCmd([]string{
+	if err := spawnSubagentCmd([]string{
 		"--parent-pid", "123", "--parent-instance", "abc",
 		"--name", "kid", "--task-file", taskFile,
 	}); err != nil {
-		t.Fatalf("spawnCmd with no caller record = %v, want it allowed at depth 0", err)
+		t.Fatalf("spawnSubagentCmd with no caller record = %v, want it allowed at depth 0", err)
 	}
 	if got := (*calls)[0].env; !slices.Contains(got, "KIDO_AGENT_DEPTH=1") {
 		t.Errorf("env = %v, want KIDO_AGENT_DEPTH=1", got)
@@ -247,12 +247,12 @@ func TestSpawnUnreportedCallerIsDepthZero(t *testing.T) {
 func TestSpawnRejectsUnsafeName(t *testing.T) {
 	calls := withNewWindow(t, "@1", "%1", nil)
 	for _, name := range []string{`kid"s`, "kid$x", "kid#x", "kid`x", "kid\\x", "kid'x", "kid\nx", "kid\rx"} {
-		err := spawnCmd([]string{
+		err := spawnSubagentCmd([]string{
 			"--parent-pid", "123", "--parent-instance", "abc",
 			"--name", name, "--task-file", "/tmp/task",
 		})
 		if err == nil {
-			t.Errorf("spawnCmd with name %q = nil error, want a refusal", name)
+			t.Errorf("spawnSubagentCmd with name %q = nil error, want a refusal", name)
 		}
 	}
 	if len(*calls) != 0 {
@@ -268,12 +268,12 @@ func TestSpawnRejectsLongName(t *testing.T) {
 	withCallerDepth(t, 0)
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, "task")
-	err := spawnCmd([]string{
+	err := spawnSubagentCmd([]string{
 		"--parent-pid", "123", "--parent-instance", "abc",
 		"--name", strings.Repeat("x", maxWindowNameLen+1), "--task-file", taskFile,
 	})
 	if err == nil {
-		t.Fatal("spawnCmd with an over-long name = nil error, want a refusal")
+		t.Fatal("spawnSubagentCmd with an over-long name = nil error, want a refusal")
 	}
 	if len(*calls) != 0 {
 		t.Errorf("newWindow was called %d times for an over-long name, want 0", len(*calls))
@@ -286,12 +286,12 @@ func TestSpawnAllowsSpaceInName(t *testing.T) {
 	withCallerDepth(t, 0)
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, "task")
-	err := spawnCmd([]string{
+	err := spawnSubagentCmd([]string{
 		"--parent-pid", "1", "--parent-instance", "x",
 		"--name", "kid one", "--task-file", taskFile,
 	})
 	if err != nil {
-		t.Fatalf("spawnCmd with a space in the name = %v, want it allowed", err)
+		t.Fatalf("spawnSubagentCmd with a space in the name = %v, want it allowed", err)
 	}
 	if len(*calls) != 1 {
 		t.Fatalf("newWindow called %d times, want 1", len(*calls))
@@ -306,12 +306,12 @@ func TestSpawnMissingTaskFile(t *testing.T) {
 	t.Setenv("TMUX_PANE", "%1")
 	withCallerDepth(t, 0)
 	calls := withNewWindow(t, "@1", "%1", nil)
-	err := spawnCmd([]string{
+	err := spawnSubagentCmd([]string{
 		"--parent-pid", "1", "--parent-instance", "x",
 		"--name", "kid", "--task-file", filepath.Join(t.TempDir(), "does-not-exist.txt"),
 	})
 	if err == nil {
-		t.Fatal("spawnCmd with a missing --task-file = nil error, want a refusal")
+		t.Fatal("spawnSubagentCmd with a missing --task-file = nil error, want a refusal")
 	}
 	if len(*calls) != 0 {
 		t.Errorf("newWindow was called %d times for a missing task file, want 0", len(*calls))
@@ -326,12 +326,12 @@ func TestSpawnRejectsOversizedTaskFile(t *testing.T) {
 	withCallerDepth(t, 0)
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, strings.Repeat("x", maxTaskBytes+1))
-	err := spawnCmd([]string{
+	err := spawnSubagentCmd([]string{
 		"--parent-pid", "1", "--parent-instance", "x",
 		"--name", "kid", "--task-file", taskFile,
 	})
 	if err == nil {
-		t.Fatal("spawnCmd with an oversized task file = nil error, want a refusal")
+		t.Fatal("spawnSubagentCmd with an oversized task file = nil error, want a refusal")
 	}
 	if len(*calls) != 0 {
 		t.Errorf("newWindow was called %d times for an oversized task file, want 0", len(*calls))
@@ -344,12 +344,12 @@ func TestSpawnAllowsTaskFileAtCap(t *testing.T) {
 	withCallerDepth(t, 0)
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, strings.Repeat("x", maxTaskBytes))
-	err := spawnCmd([]string{
+	err := spawnSubagentCmd([]string{
 		"--parent-pid", "1", "--parent-instance", "x",
 		"--name", "kid", "--task-file", taskFile,
 	})
 	if err != nil {
-		t.Fatalf("spawnCmd with a task file exactly at the cap = %v, want it allowed", err)
+		t.Fatalf("spawnSubagentCmd with a task file exactly at the cap = %v, want it allowed", err)
 	}
 	if len(*calls) != 1 {
 		t.Fatalf("newWindow called %d times, want 1", len(*calls))
@@ -360,12 +360,12 @@ func TestSpawnAllowsTaskFileAtCap(t *testing.T) {
 // same as an omitted one, and must not be reported as "required".
 func TestSpawnRejectsNegativeDepth(t *testing.T) {
 	calls := withNewWindow(t, "@1", "%1", nil)
-	err := spawnCmd([]string{
+	err := spawnSubagentCmd([]string{
 		"--parent-pid", "1", "--parent-instance", "x",
 		"--depth", "-1", "--name", "kid", "--task-file", "/tmp/task",
 	})
 	if err == nil {
-		t.Fatal("spawnCmd with --depth -1 = nil error, want a refusal")
+		t.Fatal("spawnSubagentCmd with --depth -1 = nil error, want a refusal")
 	}
 	if strings.Contains(err.Error(), "is required") {
 		t.Errorf("error = %q, an explicit negative --depth is a wrong value, not an omission", err)
@@ -387,7 +387,7 @@ func TestSpawnTaskNeverOnCommandLine(t *testing.T) {
 	const taskText = "secret task text, arbitrary shape\nwith a newline and $(a shell metachar)"
 	taskFile := writeTaskFile(t, taskText)
 
-	if err := spawnCmd([]string{
+	if err := spawnSubagentCmd([]string{
 		"--parent-pid", "123", "--parent-instance", "abc",
 		"--name", "kid", "--task-file", taskFile,
 	}); err != nil {
@@ -430,7 +430,7 @@ func envValue(t *testing.T, env []string, key string) string {
 	return ""
 }
 
-// TestSpawnPassesParentAndDepth checks the full environment kido spawn
+// TestSpawnPassesParentAndDepth checks the full environment kido spawn_subagent
 // sets, the target session (the caller's own, not any other), and that a
 // command given after -- is passed through unmodified.
 func TestSpawnPassesParentAndDepth(t *testing.T) {
@@ -440,7 +440,7 @@ func TestSpawnPassesParentAndDepth(t *testing.T) {
 	calls := withNewWindow(t, "@2", "%3", nil)
 
 	taskFile := writeTaskFile(t, "task")
-	err := spawnCmd([]string{
+	err := spawnSubagentCmd([]string{
 		"--parent-pid", "555", "--parent-instance", "parent-inst",
 		"--name", "kid", "--task-file", taskFile,
 		"--", "fakepi", "--flag",
@@ -479,7 +479,7 @@ func TestSpawnDefaultsCommandToPi(t *testing.T) {
 	withCallerDepth(t, 0)
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, "task")
-	if err := spawnCmd([]string{
+	if err := spawnSubagentCmd([]string{
 		"--parent-pid", "1", "--parent-instance", "x",
 		"--name", "kid", "--task-file", taskFile,
 	}); err != nil {
@@ -504,11 +504,11 @@ func TestSpawnFailureIsAVisibleFailedRun(t *testing.T) {
 	t.Setenv("TMUX_PANE", "%1")
 	withCallerDepth(t, 0)
 	withNewWindow(t, "", "", errors.New("no such session"))
-	if err := spawnCmd([]string{
+	if err := spawnSubagentCmd([]string{
 		"--parent-pid", "1", "--parent-instance", "x",
 		"--name", "kid", "--task-file", writeTaskFile(t, "task"),
 	}); err == nil {
-		t.Fatal("spawnCmd = nil, want the window creation failure")
+		t.Fatal("spawnSubagentCmd = nil, want the window creation failure")
 	}
 
 	var out bytes.Buffer
@@ -547,11 +547,11 @@ func TestSpawnMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
 	markSubagent = func(windowID, info string) error { return errors.New("option failed") }
 	t.Cleanup(func() { markSubagent = prevMark })
 
-	if err := spawnCmd([]string{
+	if err := spawnSubagentCmd([]string{
 		"--parent-pid", "1", "--parent-instance", "x",
 		"--name", "kid", "--task-file", writeTaskFile(t, "task"),
 	}); err == nil {
-		t.Fatal("spawnCmd = nil, want the mark failure")
+		t.Fatal("spawnSubagentCmd = nil, want the mark failure")
 	}
 
 	if !slices.Contains(killed, "@9") {

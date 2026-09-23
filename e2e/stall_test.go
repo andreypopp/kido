@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// stallAgent is a minimal decode of one `kido agents --json` row - just
+// stallAgent is a minimal decode of one `kido list_agents --json` row - just
 // the fields these tests need, not the whole of cmd/kido.AgentInfo.
 type stallAgent struct {
 	ID      string `json:"id"`
@@ -17,17 +17,17 @@ type stallAgent struct {
 	Stalled bool   `json:"stalled"`
 }
 
-// agentsJSON runs `kido agents --json` in a fresh window of session and
+// agentsJSON runs `kido list_agents --json` in a fresh window of session and
 // decodes it. runKido's output file also carries a trailing "rc=" line
 // (see its own doc), which is not part of the JSON kido wrote, so only
 // the first line is decoded.
 func (h *harness) agentsJSON(session string) []stallAgent {
 	h.t.Helper()
-	out := h.runKido(session, "agents.out", "agents", "--json")
+	out := h.runKido(session, "agents.out", "list_agents", "--json")
 	line, _, _ := strings.Cut(out, "\n")
 	var agents []stallAgent
 	if err := json.Unmarshal([]byte(line), &agents); err != nil {
-		h.t.Fatalf("kido agents --json: %v\n%s", err, out)
+		h.t.Fatalf("kido list_agents --json: %v\n%s", err, out)
 	}
 	return agents
 }

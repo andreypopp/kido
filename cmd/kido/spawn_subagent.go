@@ -37,19 +37,19 @@ var (
 )
 
 func spawnUsage() string {
-	return "usage: kido spawn --parent-pid PID --parent-instance ID --name NAME --task-file FILE|- [--depth N] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
-		"   or: kido spawn --resume RUN_ID [--parent-pid PID --parent-instance ID] [--keep-alive] [-- COMMAND...]"
+	return "usage: kido spawn_subagent --parent-pid PID --parent-instance ID --name NAME --task-file FILE|- [--depth N] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
+		"   or: kido spawn_subagent --resume RUN_ID [--parent-pid PID --parent-instance ID] [--keep-alive] [-- COMMAND...]"
 }
 
-// spawnCmd implements `kido spawn`: it creates a detached window in the
+// spawnSubagentCmd implements `kido spawn_subagent`: it creates a detached window in the
 // caller's own tmux session (found from $TMUX_PANE) running COMMAND,
 // defaulting to `pi`, with KIDO_AGENT_* set in its environment, and
 // prints the new window id, pane id and run id, space-separated. The
 // task goes in a file in the run's directory, never on the command line;
 // the window name does go on the command line and is checked with
 // tmuxConfUnsafe. See docs/design.md, "Spawning".
-func spawnCmd(args []string) error {
-	fs := flag.NewFlagSet("spawn", flag.ContinueOnError)
+func spawnSubagentCmd(args []string) error {
+	fs := flag.NewFlagSet("spawn_subagent", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	parentPID := fs.Int("parent-pid", 0, "pid of the agent spawning this one")
 	parentInstance := fs.String("parent-instance", "", "Instance of the agent spawning this one")
@@ -254,12 +254,12 @@ func liveInstance(states map[string]state.Session, instance string) bool {
 	return false
 }
 
-// spawnResume implements `kido spawn --resume RUN_ID`: it creates a
+// spawnResume implements `kido spawn_subagent --resume RUN_ID`: it creates a
 // detached window through the identical tmux.NewWindow / markSubagent
 // path a fresh spawn uses, but launches `pi --session RUN_ID` instead of
 // minting a new one, and continues run id's existing run record instead
 // of creating a second one - its task, its history and its id stay
-// (docs/design.md, "kido spawn --resume"). command is fs.Args(): the
+// (docs/design.md, "kido spawn_subagent --resume"). command is fs.Args(): the
 // COMMAND after "--", defaulting to plain pi exactly as a fresh spawn
 // does.
 func spawnResume(runID string, parentPID int, parentInstance string, command []string, keepAlive bool) error {
@@ -272,7 +272,7 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 	// and has recorded nothing about itself yet - the one case resuming
 	// makes no sense, since the run's own process already holds the
 	// session. Any recorded outcome, whatever it says, means the pid is
-	// gone (or kido stop said so), and resuming is what this command is for.
+	// gone (or kido stop_subagent said so), and resuming is what this command is for.
 	if _, ok, err := subrun.EffectiveOutcome(runID, meta.PID); err != nil {
 		return err
 	} else if !ok {

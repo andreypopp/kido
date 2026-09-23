@@ -29,7 +29,7 @@ func (h *harness) wedgedChild(session, sessionID string) (paneID, windowID strin
 	return paneID, windowID
 }
 
-// TestStopKillsAWedgedChildAfterEscalation drives `kido stop` against a
+// TestStopKillsAWedgedChildAfterEscalation drives `kido stop_subagent` against a
 // target that acknowledges the request over its inbox but never actually
 // goes: exactly the case stopCmd's escalation exists for (see
 // cmd/kido/control.go). The harness sets KIDO_STOP_ESCALATION_MS to 300ms
@@ -40,12 +40,12 @@ func TestStopKillsAWedgedChildAfterEscalation(t *testing.T) {
 
 	_, windowID := h.wedgedChild("alpha", "wedged-e2e")
 
-	out := h.runKido("alpha", "stop.out", "stop", "wedged-e2e")
+	out := h.runKido("alpha", "stop.out", "stop_subagent", "wedged-e2e")
 	if !strings.Contains(out, "killed") {
-		t.Errorf("kido stop output = %q, want it to say the window was killed", out)
+		t.Errorf("kido stop_subagent output = %q, want it to say the window was killed", out)
 	}
 	if !strings.Contains(out, "rc=0") {
-		t.Errorf("kido stop output = %q, want a successful exit: the escalation itself is not a failure", out)
+		t.Errorf("kido stop_subagent output = %q, want a successful exit: the escalation itself is not a failure", out)
 	}
 	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
 		msgf("window %s to be killed after the escalation timeout", windowID))
@@ -66,12 +66,12 @@ func TestStopDoesNotKillAHealthyChild(t *testing.T) {
 		h.agentStatus("healthy-e2e", paneID, "pi", "idle", "--remove")
 	}()
 
-	out := h.runKido("alpha", "stop.out", "stop", "healthy-e2e")
+	out := h.runKido("alpha", "stop.out", "stop_subagent", "healthy-e2e")
 	if !strings.Contains(out, "rc=0") {
-		t.Fatalf("kido stop output = %q, want a successful exit", out)
+		t.Fatalf("kido stop_subagent output = %q, want a successful exit", out)
 	}
 	if strings.Contains(out, "killed") {
-		t.Errorf("kido stop output = %q, want no escalation: the target stopped in time", out)
+		t.Errorf("kido stop_subagent output = %q, want no escalation: the target stopped in time", out)
 	}
 	h.stays(func() bool { return h.windowExists(windowID) },
 		"a healthy child's window must never be killed")

@@ -61,9 +61,9 @@ func TestSpawnResumeRefusesUnknownRunID(t *testing.T) {
 	withCallerDepth(t, 0)
 	calls := withNewWindow(t, "@9", "%9", nil)
 
-	err := spawnCmd([]string{"--resume", "no-such-run"})
+	err := spawnSubagentCmd([]string{"--resume", "no-such-run"})
 	if err == nil {
-		t.Fatal("spawnCmd --resume with an unknown run id = nil error, want a refusal")
+		t.Fatal("spawnSubagentCmd --resume with an unknown run id = nil error, want a refusal")
 	}
 	if !strings.Contains(err.Error(), "no-such-run") {
 		t.Errorf("error = %q, want it to name the run id", err)
@@ -88,9 +88,9 @@ func TestSpawnResumeRefusesLiveRun(t *testing.T) {
 	}
 	// No outcome recorded, and Meta.PID is this very test process: alive.
 
-	err := spawnCmd([]string{"--resume", "live-run"})
+	err := spawnSubagentCmd([]string{"--resume", "live-run"})
 	if err == nil {
-		t.Fatal("spawnCmd --resume on a live run = nil error, want a refusal")
+		t.Fatal("spawnSubagentCmd --resume on a live run = nil error, want a refusal")
 	}
 	if !strings.Contains(err.Error(), "still running") {
 		t.Errorf("error = %q, want it to say the run is still running", err)
@@ -110,9 +110,9 @@ func TestSpawnResumeRefusesMissingSessionFile(t *testing.T) {
 	cwd := t.TempDir()
 	newDeadRun(t, "gone-run", cwd)
 
-	err := spawnCmd([]string{"--resume", "gone-run"})
+	err := spawnSubagentCmd([]string{"--resume", "gone-run"})
 	if err == nil {
-		t.Fatal("spawnCmd --resume with no pi session file = nil error, want a refusal")
+		t.Fatal("spawnSubagentCmd --resume with no pi session file = nil error, want a refusal")
 	}
 	if !strings.Contains(err.Error(), "no pi session file") {
 		t.Errorf("error = %q, want it to say no pi session file was found", err)
@@ -160,11 +160,11 @@ func TestSpawnResumeContinuesRunRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := spawnCmd([]string{
+	if err := spawnSubagentCmd([]string{
 		"--resume", "resume-run",
 		"--parent-pid", "777", "--parent-instance", "new-parent",
 	}); err != nil {
-		t.Fatalf("spawnCmd --resume = %v, want it to succeed", err)
+		t.Fatalf("spawnSubagentCmd --resume = %v, want it to succeed", err)
 	}
 
 	if len(*calls) != 1 {
@@ -232,8 +232,8 @@ func TestSpawnResumeDefaultsParentFromCallersOwnRecord(t *testing.T) {
 	cwd := t.TempDir()
 	newDeadRun(t, "resume-defaulted", cwd)
 
-	if err := spawnCmd([]string{"--resume", "resume-defaulted"}); err != nil {
-		t.Fatalf("spawnCmd --resume with no parent flags = %v, want it allowed, defaulting from the caller's own record", err)
+	if err := spawnSubagentCmd([]string{"--resume", "resume-defaulted"}); err != nil {
+		t.Fatalf("spawnSubagentCmd --resume with no parent flags = %v, want it allowed, defaulting from the caller's own record", err)
 	}
 	call := (*calls)[0]
 	if got := envValue(t, call.env, "KIDO_AGENT_PARENT_PID"); got != strconv.Itoa(os.Getpid()) {
@@ -256,12 +256,12 @@ func TestSpawnResumeRespectsDepthCeiling(t *testing.T) {
 	cwd := t.TempDir()
 	newDeadRun(t, "deep-run", cwd)
 
-	err := spawnCmd([]string{
+	err := spawnSubagentCmd([]string{
 		"--resume", "deep-run",
 		"--parent-pid", "1", "--parent-instance", "p",
 	})
 	if err == nil {
-		t.Fatal("spawnCmd --resume for a caller at the ceiling = nil error, want a refusal")
+		t.Fatal("spawnSubagentCmd --resume for a caller at the ceiling = nil error, want a refusal")
 	}
 	if !strings.Contains(err.Error(), "maximum nesting") {
 		t.Errorf("error = %q, want it to name the depth ceiling", err)
@@ -291,12 +291,12 @@ func TestSpawnResumeRefusesAnUnverifiableParentInstance(t *testing.T) {
 	cwd := t.TempDir()
 	newDeadRun(t, "orphan-run", cwd)
 
-	err := spawnCmd([]string{
+	err := spawnSubagentCmd([]string{
 		"--resume", "orphan-run",
 		"--parent-pid", "777", "--parent-instance", "nobody-is-this",
 	})
 	if err == nil {
-		t.Fatal("spawnCmd --resume with an unverifiable --parent-instance = nil error, want a refusal")
+		t.Fatal("spawnSubagentCmd --resume with an unverifiable --parent-instance = nil error, want a refusal")
 	}
 	if !strings.Contains(err.Error(), "nobody-is-this") || !strings.Contains(err.Error(), "no currently live agent") {
 		t.Errorf("error = %q, want it to name the instance and say nobody currently live claims it", err)
@@ -333,8 +333,8 @@ func TestSpawnResumeDefaultsModelFromMeta(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := spawnCmd([]string{"--resume", "modeled-run", "--parent-pid", "1"}); err != nil {
-		t.Fatalf("spawnCmd --resume = %v, want it to succeed", err)
+	if err := spawnSubagentCmd([]string{"--resume", "modeled-run", "--parent-pid", "1"}); err != nil {
+		t.Fatalf("spawnSubagentCmd --resume = %v, want it to succeed", err)
 	}
 	call := (*calls)[0]
 	if !slices.Contains(call.command, "--model") || !slices.Contains(call.command, "claude-sonnet-5") {
@@ -367,11 +367,11 @@ func TestSpawnResumeExplicitModelWinsOverMeta(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := spawnCmd([]string{
+	if err := spawnSubagentCmd([]string{
 		"--resume", "modeled-run-2", "--parent-pid", "1",
 		"--", "pi", "--model", "claude-opus-5",
 	}); err != nil {
-		t.Fatalf("spawnCmd --resume = %v, want it to succeed", err)
+		t.Fatalf("spawnSubagentCmd --resume = %v, want it to succeed", err)
 	}
 	call := (*calls)[0]
 	got := slices.Contains(call.command, "claude-opus-5")
@@ -404,7 +404,7 @@ func TestSpawnResumePrintsWindowPaneRun(t *testing.T) {
 
 	var err error
 	out := captureStdout(t, func() {
-		err = spawnCmd([]string{"--resume", "printed-run", "--parent-pid", "1"})
+		err = spawnSubagentCmd([]string{"--resume", "printed-run", "--parent-pid", "1"})
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -435,8 +435,8 @@ func TestSpawnResumeMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
 	markSubagent = func(windowID, info string) error { return errors.New("option failed") }
 	t.Cleanup(func() { markSubagent = prevMark })
 
-	if err := spawnCmd([]string{"--resume", "unmarkable-run", "--parent-pid", "1"}); err == nil {
-		t.Fatal("spawnCmd --resume = nil, want the mark failure")
+	if err := spawnSubagentCmd([]string{"--resume", "unmarkable-run", "--parent-pid", "1"}); err == nil {
+		t.Fatal("spawnSubagentCmd --resume = nil, want the mark failure")
 	}
 	if !slices.Contains(killed, "@9") {
 		t.Errorf("killWindow calls = %v, want @9 killed rather than left up unmarked", killed)
@@ -463,8 +463,8 @@ func TestSpawnResumeWindowFailureIsAVisibleFailedRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := spawnCmd([]string{"--resume", "windowless-run", "--parent-pid", "1"}); err == nil {
-		t.Fatal("spawnCmd --resume = nil, want the window creation failure")
+	if err := spawnSubagentCmd([]string{"--resume", "windowless-run", "--parent-pid", "1"}); err == nil {
+		t.Fatal("spawnSubagentCmd --resume = nil, want the window creation failure")
 	}
 	if out, ok, err := subrun.ReadOutcome("windowless-run"); err != nil || !ok || out.Result != subrun.Failed {
 		t.Errorf("ReadOutcome = %+v, %v, %v, want a recorded failure", out, ok, err)
@@ -484,8 +484,8 @@ func TestSpawnResumeRefusesNameAndTaskFile(t *testing.T) {
 		{"--resume", "x", "--name", "kid"},
 		{"--resume", "x", "--task-file", "/tmp/task"},
 	} {
-		if err := spawnCmd(args); err == nil {
-			t.Errorf("spawnCmd(%v) = nil error, want --resume and %s refused together", args, args[2])
+		if err := spawnSubagentCmd(args); err == nil {
+			t.Errorf("spawnSubagentCmd(%v) = nil error, want --resume and %s refused together", args, args[2])
 		}
 	}
 	if len(*calls) != 0 {

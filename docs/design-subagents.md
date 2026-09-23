@@ -12,24 +12,45 @@ what kido cannot change.
 
 ## The tools, and their commands
 
-Every tool shells out to a `kido` subcommand, so the e2e suite, which
-cannot host a TypeScript extension, drives the same paths through fake
+Every tool shells out to a `kido` subcommand **of the same name**, so
+there is one vocabulary rather than two, and the e2e suite - which
+cannot host a TypeScript extension - drives the same paths through fake
 agent binaries.
 
 | tool | command |
 |---|---|
-| `list_agents()` | `kido agents --json` |
-| `set_status(activity)` | `kido agent-status --activity` |
-| `message_agent(to, message, replyTo?)` | `kido message [--kind reply --reply-to ID] -- <to>` |
-| `ask_agent(to, question, timeoutMs?)` | `kido message --kind ask --id ID -- <to>` |
-| `spawn_subagent(task, name?, model?, tools?, keepAlive?)` | `kido spawn` |
-| `spawn_subagent(resume, model?, tools?, keepAlive?)` | `kido spawn --resume` |
-| `interrupt_subagent(to)` | `kido interrupt -- <to>` |
-| `stop_subagent(to, force?)` | `kido stop [--force] -- <to>` |
-| `notify_parent(summary)` | `kido message --kind notice -- <parent>` |
+| `list_agents()` | `kido list_agents --json` |
+| `set_status(activity)` | `kido set_status -- <activity>` |
+| `message_agent(to, message, replyTo?)` | `kido message_agent [--reply-to ID] -- <to>` |
+| `ask_agent(to, question, timeoutMs?)` | `kido ask_agent --id ID -- <to>` |
+| `spawn_subagent(task, name?, model?, tools?, keepAlive?)` | `kido spawn_subagent` |
+| `spawn_subagent(resume, model?, tools?, keepAlive?)` | `kido spawn_subagent --resume` |
+| `interrupt_subagent(to)` | `kido interrupt_subagent -- <to>` |
+| `stop_subagent(to, force?)` | `kido stop_subagent [--force] -- <to>` |
+| `notify_parent(summary)` | `kido notify_parent` |
 
-There is no `kido ask`: the answer arrives on the asker's own inbox,
-and only a long-lived process has one (design.md, "Ask and reply").
+The rule runs one way only: a tool names its command, while a subcommand
+that is nobody's tool keeps whatever name fits it - `hook`, the
+`setup-*` commands, `agent-alive`, `prompt`, `snapshot`, `reap`, `runs`
+and the rest. `kido agent-status` is the sharpest case and keeps its own
+name too: it reports a session's whole state on every turn, of which
+`set_status`'s activity is one flag of fourteen, so the narrow tool got a
+narrow command of its own (design.md, "Reporting, and what is carried
+forward") rather than the report being renamed after it.
+
+Three of the commands above used to be one, `kido message --kind K`.
+Splitting it dropped `--kind` from the surface entirely: the command is
+the kind. `message_agent --reply-to ID` is a reply - the old spelling
+wanted `--kind reply --reply-to ID`, one fact stated twice - `ask_agent`
+is an ask, `notify_parent` is a notice. The wire is untouched: an
+envelope still carries all four kinds and a reply is still correlated on
+`kind: "reply"` (design.md, "v0 and v1").
+
+`kido ask_agent` sends and returns rather than waiting: the answer
+arrives on the asker's own inbox, and only a long-lived process has one
+(design.md, "Ask and reply"). `kido notify_parent` takes no target at
+all, reading the parent edge out of `KIDO_AGENT_PARENT_INSTANCE`
+(design.md, "Notifying the parent").
 Tools register unconditionally and report kido as unavailable until a
 session has resolved it. `set_status` and `notify_parent` cap their
 text by truncating, at 256 and 4000 bytes, and their schemas do not
@@ -45,7 +66,7 @@ tmux session are not listed, and nothing here can reach them.
 
 ## What a child is given
 
-`kido spawn` reads the caller's pane from `$TMUX_PANE`, and from it the
+`kido spawn_subagent` reads the caller's pane from `$TMUX_PANE`, and from it the
 tmux session, the working directory, and the caller's own state record.
 It creates a detached window in that session, named as asked, at the
 caller's directory, running the command after `--` or plain `pi`. When
@@ -105,7 +126,7 @@ created so the child can read its task the instant tmux starts it:
 - `meta.json`, the name, parent instance, depth, window, pane, pid,
   cwd, model, tools and start time;
 - `outcome`, once the run has ended: `completed` or `failed` from the
-  child itself, `died` from a sweep, `stopped` from `kido stop`;
+  child itself, `died` from a sweep, `stopped` from `kido stop_subagent`;
 - `screen`, the window's last screen and a bounded tail of scrollback,
   captured by the sweep before it closes the window.
 
@@ -148,7 +169,8 @@ through the same path a normal exit takes.
 
 **Reporting.** Nothing reports for the child. It calls `notify_parent`
 itself, once, when its model judges the work done; the summary goes to
-the parent as a `notice` envelope and nowhere else. An automatic notice
+the parent as a `notice` envelope and nowhere else, addressed to the
+instance in its own environment rather than to anything it looked up. An automatic notice
 on every settled turn was removed, because a turn settles for reasons
 that are not the task - most sharply, answering a sibling's `ask_agent`
 settled a turn and sent the parent a report meant for the sibling
@@ -215,7 +237,7 @@ nothing needs a second sweep any more.
 
 ## Resuming a run
 
-`kido spawn --resume <run-id>` puts a finished or dead run back in a
+`kido spawn_subagent --resume <run-id>` puts a finished or dead run back in a
 window: `pi --session <run-id>` at the run's own directory, under the
 run's original name, with the model its meta recorded unless the
 command after `--` names one, through the same window creation and

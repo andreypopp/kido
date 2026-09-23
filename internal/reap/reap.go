@@ -34,7 +34,7 @@ func graceFromEnv(def time.Duration) time.Duration {
 type window struct {
 	id       string
 	paneIDs  []string // every pane in the window, in list-panes order
-	marked   bool     // carries tmux.SubagentOption: a window kido spawn created
+	marked   bool     // carries tmux.SubagentOption: a window kido spawn_subagent created
 	runID    string   // the run id embedded in that mark, see tmux.SubagentRunID
 	allDead  bool     // every pane of it is a remain-on-exit corpse
 	deadTime int64    // unix time the last of them died
@@ -125,7 +125,7 @@ func captureScreen(w *window) {
 // session's last window.
 func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) []string {
 	if !anyMarked(panes) {
-		// Nothing kido spawn created is on screen, so neither rule can
+		// Nothing kido spawn_subagent created is on screen, so neither rule can
 		// close anything. The common case on a machine with no subagents
 		// running, and this runs on every sidebar tick.
 		return nil
@@ -177,7 +177,7 @@ func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) []string 
 	return out
 }
 
-// anyMarked reports whether any pane belongs to a window kido spawn
+// anyMarked reports whether any pane belongs to a window kido spawn_subagent
 // created, the precondition both rules share.
 func anyMarked(panes []tmux.Pane) bool {
 	for _, p := range panes {

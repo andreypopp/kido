@@ -50,7 +50,7 @@ about an agent after it has died cannot read its record, because there
 will not be one.
 
 **Window options, for facts that must survive kido's own cleanup.**
-`kido spawn` sets `@kido_subagent` on the window it creates. The option
+`kido spawn_subagent` sets `@kido_subagent` on the window it creates. The option
 lives in the tmux server: nothing races it away, it names a window that
 exists now rather than a pane id some later server may hand to somebody
 else, and it can only ever be on a window kido itself made. It is the
@@ -141,10 +141,10 @@ deletes a record whose pid is dead - leaves behind forever, claiming the
 same pane alongside the fresh record under the new id.
 
 **What the child asks, and of what.** `parentIsAlive()` used to read
-`kido agents --json` and look for a `parent` on its own row, and carried
+`kido list_agents --json` and look for a `parent` on its own row, and carried
 a two-poll debounce (`missedParentPolls`) because that reading could be
 wrong. It was the orphan sweep's defect in the one place the sweep's fix
-did not reach: `kido agents` is a display, and `state.Load`'s per-pane
+did not reach: `kido list_agents` is a display, and `state.Load`'s per-pane
 view is right for a display and wrong here. A `pi --print` started inside
 the parent's pane wins that pane, and the parent's record is then not in
 the answer at all - as is the child's own row, if something shells out to
@@ -157,7 +157,7 @@ The question now has a command of its own, `kido agent-alive
 collapsed - and prints `true` or `false`. A pane collision settles who
 owns a pane, which this never asks, so the answer cannot be disturbed and
 one reading decides: the debounce is deleted. It is a separate
-subcommand rather than a flag on `kido agents` because it shares nothing
+subcommand rather than a flag on `kido list_agents` because it shares nothing
 with that command but a prefix - no pane listing, no session scoping, no
 per-pane collapse - and a display growing a second meaning is how the
 defect got here. Dropping the pane listing also drops a tmux round trip
@@ -199,23 +199,36 @@ field, and by the flag's presence rather than its value:
 - Inbox, protocol, activity, model: omitted keeps the old value, an
   explicit empty value clears it. `--inbox ""` is how an agent says its
   socket is gone, and a stale path would otherwise keep kido dialling a
-  socket nobody listens on; `--activity ""` is how `set_status("")`
-  clears the activity rather than being read as an omission.
+  socket nobody listens on; `--activity ""` clears the activity rather
+  than being read as an omission, which is what carries an activity a
+  `kido set_status` set through every later report.
 - Instance, parent pid, parent instance, depth: never carried forward.
   The agent knows them from its own environment and reports them fresh
   on every call, which is cheaper than carry-forward and more robust
   than walking the parent chain, which fails as soon as one intermediate
   record is gone.
 
+`kido set_status -- <activity>` is the same field by a narrower door:
+the one command behind the `set_status` tool, which finds the calling
+session by its pane and writes that field and nothing else. It is not a
+rename of `agent-status`, which reports everything about a session on
+every turn and is how `--activity` normally arrives; naming a
+fourteen-flag report after one narrow tool would be the wrong way round.
+Writing the previous record back with one field replaced, rather than
+building a fresh one, is what keeps the status, the turn's end time, the
+background flag and `TS` - which staleness is measured from - out of a
+command that is only about a label.
+
 Activity is the one field a model writes directly into a state record,
-so it is sanitised once, on the way in: control characters become spaces
-and the result is cut at 256 bytes on a rune boundary. The sidebar
-budgets one terminal line per row and `kido agents` prints a tab-separated
+so it is sanitised once, on the way in, by both commands: control
+characters become spaces and the result is cut at 256 bytes on a rune
+boundary. The sidebar
+budgets one terminal line per row and `kido list_agents` prints a tab-separated
 table, and defending each of those against a newline is more work than
 refusing one at the single place a record is built from arguments. The
 extension caps the same text too, but a model is free to ignore a schema
-and any same-uid process can run `kido agent-status`, so the cap that
-counts is kido's.
+and any same-uid process can run either command, so the cap that counts
+is kido's.
 
 The extension coalesces reports: one whose key (status, title, activity,
 model, ended, remove) matches the last one sent is dropped. Activity and
@@ -272,7 +285,8 @@ happens to be a JSON object: it must not be swallowed as a control
 message. The rule is implemented twice, in Go and in the extension, and
 both are driven from the same fixture table so they cannot drift.
 
-The reverse direction is the one that bites. A new `kido message` talking
+The reverse direction is the one that bites. A new `kido message_agent`
+talking
 to an unupgraded extension would deliver an envelope's literal JSON as
 the user's prompt. So the receiver advertises what it speaks, with
 `--protocol 1` alongside `--inbox`, and a sender that sees no advertised
@@ -292,7 +306,7 @@ The sender field is advisory. Trust is uid-scoped and enforced by the
 inbox directory's mode; state records are `0644` files in a `0755`
 directory, so any same-uid process can already write a record claiming
 to be any agent, and a peer-credential check would buy nothing. That is
-also why `kido message` offers no `--from`: the sender is whatever the
+also why the sending commands offer no `--from`: the sender is whatever the
 calling process's own record says, found by its pane, and a caller with
 no record sends only its pane.
 
@@ -308,7 +322,7 @@ a retry would deliver it twice.
 The paste fallback, which types the text into the pane with a bracketed
 paste and a separate Enter, fires only on `errInboxUnavailable`. That is
 what makes an agent with no inbox at all (Claude Code, or a pi whose bind
-failed) reachable by `kido prompt` and by a plain `kido message`, and it
+failed) reachable by `kido prompt` and by a plain `kido message_agent`, and it
 is the only reason the v0 path survives. A refusal (`errAskRefused`) is
 not a delivery failure either: the question was read and deliberately
 declined, and pasting it again would hand the target the same cycle it
@@ -334,9 +348,10 @@ depending on whether the target happened to have an inbox.
 
 ## Addressing
 
-The tmux session is the visibility boundary. `kido agents` lists every
-agent whose pane is currently in the caller's session, and `kido message`,
-`interrupt` and `stop` resolve their target within that same scope. A
+The tmux session is the visibility boundary. `kido list_agents` lists every
+agent whose pane is currently in the caller's session, and
+`kido message_agent`, `ask_agent`, `interrupt_subagent` and
+`stop_subagent` resolve their target within that same scope. A
 target that exists but sits in another session is reported as such, not
 as "not found"; an ambiguity out there is reported as an ambiguity rather
 than as a single match with an empty id.
@@ -344,22 +359,23 @@ than as a single match with an empty id.
 Within scope the rules run in order, and each errors on its own
 ambiguity rather than falling through to guess with a different rule:
 an exact case-insensitive name, then an exact session id, then a unique
-id prefix. The name a session is matched by is the same one `kido agents`
+id prefix. The name a session is matched by is the same one `kido list_agents`
 displays for it, its reported title falling back to its pane's title, so
 a name read off `list_agents` can always be resolved back. Refusal over
 guessing is the stance throughout: `replyTo` is never inferred even when
 exactly one ask from the target is pending, because guessing wrong does
 not fail safe, it resolves the wrong pending ask on the far side and
 hands one question's answer to another. `ask_agent` resolves the target
-once in the extension and passes the resolved id to `kido message`, so
+once in the extension and passes the resolved id to `kido ask_agent`, so
 a second resolution inside kido cannot disagree with the first.
 
 ## Ask and reply
 
 An ask blocks the calling tool until the answer arrives on the asker's
-own inbox. That is why there is no `kido ask`: a short-lived CLI process
+own inbox. That is why `kido ask_agent` sends and returns rather than
+waiting: a short-lived CLI process
 has no inbox to receive a reply on, only a long-lived extension does. The
-extension sends the question with `kido message --kind ask`, assigning
+extension sends the question with `kido ask_agent`, assigning
 the envelope id itself so it can register a waiter before the send, and
 the answer comes back later as a separate `reply` envelope naming that
 id. The wire `ok` for an ask means received, not answered: a model turn
@@ -377,7 +393,7 @@ stays a valid correlation for that.
 
 A subagent may not ask an ancestor, so the parent stays free to
 orchestrate; that rule is walked on the extension side from the parent
-field `kido agents` reports. Asks still run parent to child and between
+field `kido list_agents` reports. Asks still run parent to child and between
 peers, so two peers can block on each other. The rule for that is kept
 in memory, in each extension: an inbound ask from a session this one is
 holding an outstanding ask to is answered `refused` on the wire, and is
@@ -417,7 +433,7 @@ conservative way.
 
 ## Spawning
 
-`kido spawn` creates a detached window in the caller's own tmux session,
+`kido spawn_subagent` creates a detached window in the caller's own tmux session,
 running `pi` by default, with the child's place in the tree and its task
 in the environment. Three `new-window` flags are load-bearing: `-d` so
 the caller's turn is not yanked to the new window; `-c` because the child
@@ -432,7 +448,7 @@ escape survives. It goes in a file inside the run's own directory, named
 in `KIDO_AGENT_TASK_FILE`, which the child reads on `session_start` and
 delivers as its first user message, the same way an inbox prompt is
 delivered. At the tool boundary the task is text: `spawn_subagent` hands
-it to `kido spawn` on stdin, and kido is what decides it becomes a file,
+it to `kido spawn_subagent` on stdin, and kido is what decides it becomes a file,
 so another backend could write it inside a sandbox instead. The window
 name is model-authored too and does go on the command line, so it is
 refused if it contains any character the setup-tmux path check refuses,
@@ -456,7 +472,7 @@ stricter than a real record would, never looser. An explicit negative
 
 ### The run id is the child's session id
 
-`kido spawn` mints the run id and, when the command is literally `pi`,
+`kido spawn_subagent` mints the run id and, when the command is literally `pi`,
 inserts `--session-id <run-id>` after it, which pi documents as "use
 exact project session ID, creating it if missing". Restarting a finished
 run is `pi --session <run-id>` and forking it is `pi --fork <run-id>`,
@@ -598,9 +614,9 @@ to it), but two screen captures of one window do not - rule 1's panes are
 already dead and frozen, so both captures read the same thing, and rule
 2's pane is still live, so a later capture is only ever more complete,
 never a worse answer competing with a better one. O_EXCL here would also
-have permanently stranded `kido spawn --resume`: nothing besides a sweep
+have permanently stranded `kido spawn_subagent --resume`: nothing besides a sweep
 ever writes this file, so a first attempt's screen would outlive every
-subsequent attempt with no way to write a fresh one. `kido spawn --resume`
+subsequent attempt with no way to write a fresh one. `kido spawn_subagent --resume`
 clears it instead (`subrun.ClearScreen`, alongside `ClearOutcome`), so a
 run mid-second-attempt shows no screen rather than the first attempt's
 stale one. `kido runs <id>` prints it when present, since a screen nobody
@@ -685,11 +701,11 @@ two into one knob: they run in different processes, guard different
 things (a live child deciding to leave, versus a dead child's corpse
 waiting to be swept), and read from different environment variables.
 
-**`kido spawn --resume <run-id>`.** Once idle children are routinely
+**`kido spawn_subagent --resume <run-id>`.** Once idle children are routinely
 reaped, resuming one becomes the normal way to keep working with it, and
 a bare `pi --session <id>` (what `kido runs` used to print) comes back an
 orphan: no parent edge, no `@kido_subagent` mark, not a descendant for
-stop/ask scoping, and - worse - a *second* run record, since `kido spawn`
+stop/ask scoping, and - worse - a *second* run record, since `kido spawn_subagent`
 normally mints a fresh run id from the command line it is given and a
 bare `pi` was never given one at all. `--resume` instead runs through the
 identical window-creation path (`tmux.NewWindow`, the mark) a fresh spawn
@@ -729,7 +745,7 @@ own reported pid and instance, the same source depth already reads, so a
 human with no state record resumes into a parentless (root-like) session
 that will not self-reap, while another agent resuming becomes the run's
 new parent without having to be named up front - which is what lets `kido
-runs <id>` print a single, parent-free `kido spawn --resume <id>` line
+runs <id>` print a single, parent-free `kido spawn_subagent --resume <id>` line
 that works from anywhere `cd`'d into the run's own cwd, rather than a
 line baked with somebody's identity that may no longer be the right
 resumer by the time it is run. `pi --fork <id>` stays the bare command it
@@ -753,7 +769,7 @@ the live pi process asking for itself, so the instance it hands over is
 definitionally live at that moment. `--resume` is different by design -
 it is exactly the mechanism that lets a *different*, by-hand caller claim
 the parent edge (the paragraph above) - which makes an unverifiable value
-here a real, not hypothetical, failure mode: measured live, `kido spawn
+here a real, not hypothetical, failure mode: measured live, `kido spawn_subagent
 --resume <id> --parent-pid <pid> --parent-instance <id>` created a window
 that was gone within about a second, with the run left recording a
 useless `died` outcome and no indication why. The read that would explain
@@ -767,7 +783,7 @@ one who omits the flags, is unaffected - an empty `--parent-instance`
 skips the check entirely and resumes parentless exactly as before.
 
 **`spawn_subagent(resume)`.** The tool mirrors the CLI: an optional
-`resume` parameter runs `kido spawn --resume <resume>` instead of a fresh
+`resume` parameter runs `kido spawn_subagent --resume <resume>` instead of a fresh
 spawn, passing this session's own `--parent-pid`/`--parent-instance`
 exactly as a fresh spawn does - which is always safe, since a live pi
 session calling its own tool is definitionally the live agent the refusal
@@ -779,7 +795,7 @@ model actually wants, not a value to quietly drop. `model` and `tools`
 are not refused; given, they go after a `--` the same way a fresh spawn's
 do, overriding what `--resume` would otherwise default from the run's own
 meta (the paragraph above); omitted, nothing follows `--` at all and
-`kido spawn --resume` supplies its own default. `keepAlive` behaves
+`kido spawn_subagent --resume` supplies its own default. `keepAlive` behaves
 identically either way.
 
 ## Interrupt and stop
@@ -850,7 +866,7 @@ notified the parent with a report meant for the sibling instead.
 
 So notification is explicit: `notify_parent(summary)` is a tool, sent
 only when the model itself decides its work is done, over the identical
-`kido message --kind notice` path the automatic notices used - no second
+`notice` envelope path the automatic notices used - no second
 transport. Content is exactly what the model chooses to say, not
 extracted from `agent_end`'s message data (there is no need to; the
 model writes the summary itself), capped at 4000 bytes for the same
@@ -872,6 +888,22 @@ the child's session id") - it was not spawned, so there is nobody of its
 own to tell, and the refusal says so rather than reading as a silent
 no-op.
 
+**Who the parent is, and who reads it.** `kido notify_parent` takes no
+target at all: it reads `KIDO_AGENT_PARENT_INSTANCE` from its own
+environment - the parent edge `kido spawn_subagent` put there, inherited
+through the child's pi and on into everything the child runs - and
+resolves that instance against `state.LoadLive`, the same registry and
+the same question `kido agent-alive` asks. The tool used to do this the
+long way round: list every agent, find its own row, read `parent` off it,
+and hand that back to kido to address. That was a display asked for a
+fact kido had already handed the process, and it had the per-pane view's
+weakness in it - a `pi --print` in the parent's pane takes that pane and
+the parent's own record falls out of the answer, which is the same defect
+that was fixed in the liveness poll and in the orphan sweep. An absent
+variable is a root session, refused in the command as well as in the
+tool; an instance no live record claims is a parent that has since
+exited, and is an error rather than a fallback to anything.
+
 **What this costs, deliberately.** A subagent that crashes, or is
 idle-reaped without ever calling `notify_parent`, now tells its parent
 nothing. Nothing here compensates for that: the run record still holds
@@ -886,7 +918,7 @@ automatic notice is gone, so a standing instruction is appended to a
 subagent's system prompt on every turn (`before_agent_start`, gated on
 the same identity test as the tool's own refusal) rather
 than once into the task text `deliverTask` sends as the first message: a
-task is delivered once, and a `/reload`, a `kido spawn --resume`, or a
+task is delivered once, and a `/reload`, a `kido spawn_subagent --resume`, or a
 parent's own later `message_agent` call producing a follow-up turn would
 all leave a one-shot instruction behind. Riding the system prompt keeps
 it alive for as long as the session is a subagent at all, at the cost of
@@ -904,8 +936,8 @@ transcript-display concern only - the model still receives the full text,
 since a custom message participates in LLM context exactly as a plain
 user message did. Every notice collapses the same way regardless of
 whether its sender is actually a subagent: kind, not identity, is the
-sender's own choice (`kido message --kind notice` versus the default
-`--kind message`), and `from` is advisory in exactly the way the rest of
+sender's own choice (`kido notify_parent` versus `kido message_agent`),
+and `from` is advisory in exactly the way the rest of
 the inbox protocol already treats it, so nothing here does an identity
 lookup to decide how to render. `triggerTurn` is never omitted: an idle
 parent must still be woken by a notice exactly as before, and
@@ -966,7 +998,7 @@ there is no `--from`. It is its own verb rather than a flag on the status
 report because any spawned command can end, including one that never
 reported a status in its life. `died` is written by a sweep closing a
 marked window with no outcome recorded: the child never got to say
-anything. `stopped` is written by `kido stop`.
+anything. `stopped` is written by `kido stop_subagent`.
 
 **Written once.** `RecordOutcome` opens with `O_EXCL` and refuses to
 overwrite. Several exit paths race to describe the same run, and the
@@ -1092,7 +1124,7 @@ separate reads would answer those two instants from different
 baselines, which is not a comparison of anything. It also kept a file
 open per session in the 100ms path for a value that changes once per
 suspend. `state.Stalled` is the one-shot wrapper that reads the marker
-itself, for `kido agents` and anything else that asks once and exits.
+itself, for `kido list_agents` and anything else that asks once and exits.
 
 The marker is on disk rather than in the sidebar's memory because `kido
 agents` is a fresh process per call, with no tick of its own, and it is what
@@ -1231,13 +1263,13 @@ The walk also draws as a
 root anything whose anchor row never appeared, for the same reason the
 ordering emits what it missed: a dropped row is an agent nobody can see.
 
-Both walks, the sidebar's and `kido agents`', share one parent-first
+Both walks, the sidebar's and `kido list_agents`', share one parent-first
 ordering that emits every item exactly once, tree or no tree. A cycle is
 reachable through a bug in a reporting agent or a replayed old state
 file, and a walk from the roots alone would never reach a ring; whatever
 the walk missed is emitted afterwards as a root, so a nonsense edge costs
 an item its place in the tree and nothing else. A self-edge is read as
-"no parent". Siblings keep the order they arrived in, so `kido agents`
+"no parent". Siblings keep the order they arrived in, so `kido list_agents`
 sorts by report time first, with the id as a tiebreak because two agents
 reporting inside one clock tick would otherwise reorder between two calls
 that saw the same state.

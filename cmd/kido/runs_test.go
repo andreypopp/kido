@@ -23,7 +23,7 @@ func deadPID(t *testing.T) int {
 	return cmd.Process.Pid
 }
 
-// newRun creates a run record the way kido spawn does, in two calls, and
+// newRun creates a run record the way kido spawn_subagent does, in two calls, and
 // returns the buffer helpers below something to read back.
 func newRun(t *testing.T, meta subrun.Meta, task string) {
 	t.Helper()
@@ -59,7 +59,7 @@ func TestRunsListsAndShows(t *testing.T) {
 	if err := showRun(&show, "run-a", false); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"do the thing", "kido spawn --resume run-a", "pi --fork run-a", "completed"} {
+	for _, want := range []string{"do the thing", "kido spawn_subagent --resume run-a", "pi --fork run-a", "completed"} {
 		if !strings.Contains(show.String(), want) {
 			t.Errorf("kido runs run-a output = %q, want it to contain %q", show.String(), want)
 		}
@@ -80,7 +80,7 @@ func TestRunsResumeCommandWorksFromAnyDirectory(t *testing.T) {
 	if err := showRun(&show, "run-b", false); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"cd '/tmp/some project' && kido spawn --resume run-b", "cd '/tmp/some project' && pi --fork run-b"} {
+	for _, want := range []string{"cd '/tmp/some project' && kido spawn_subagent --resume run-b", "cd '/tmp/some project' && pi --fork run-b"} {
 		if !strings.Contains(show.String(), want) {
 			t.Errorf("kido runs run-b output = %q, want it to contain %q", show.String(), want)
 		}

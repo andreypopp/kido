@@ -170,13 +170,13 @@ func showRun(w io.Writer, id string, asJSON bool) error {
 
 	// A bare `pi --session <id>` comes back an orphan: no parent edge, no
 	// @kido_subagent mark, not a descendant for stop/ask scoping, and a
-	// fresh run record that abandons this one's history. `kido spawn
+	// fresh run record that abandons this one's history. `kido spawn_subagent
 	// --resume` goes through the same window-creation path a fresh spawn
 	// uses instead, and continues this run rather than starting another
 	// (cmd/kido/spawn.go's spawnResume). pi sessions are project-scoped, so
 	// the `cd` prefix stays even though spawnResume itself reads the run's
 	// own cwd from its meta rather than trusting the invoking shell's.
-	resume := "cd " + shellQuote(info.Cwd) + " && kido spawn --resume " + id
+	resume := "cd " + shellQuote(info.Cwd) + " && kido spawn_subagent --resume " + id
 	// `pi --fork` stays bare: forking into a standalone session, with no
 	// parent edge or run record of its own, is a different, legitimate
 	// thing from resuming this run.

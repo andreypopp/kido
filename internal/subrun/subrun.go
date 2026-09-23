@@ -1,4 +1,4 @@
-// Package subrun is the durable record of one `kido spawn`: a directory
+// Package subrun is the durable record of one `kido spawn_subagent`: a directory
 // under <state>/runs/<run-id> holding the task text, a meta file
 // describing the spawn, and - once the run ends - an outcome. It is
 // deliberately not a state.Session, which is deleted the moment its pid
@@ -34,7 +34,7 @@ func Dir() string { return filepath.Join(state.Dir(), "runs") }
 func dirFor(id string) string { return filepath.Join(Dir(), id) }
 
 // TaskPath is the file a spawned child reads its task from, and the one
-// kido spawn sets as KIDO_AGENT_TASK_FILE. Nothing here ever removes it.
+// kido spawn_subagent sets as KIDO_AGENT_TASK_FILE. Nothing here ever removes it.
 // The child writes a sibling "delivered" marker beside it once it has
 // handed the text to the model (pi/kido-agents.ts owns both halves of
 // that; no Go code reads the marker).
@@ -76,7 +76,7 @@ const (
 	// Died is written by a sweep (internal/reap) closing a marked window
 	// with no outcome recorded.
 	Died Result = "died"
-	// Stopped is written by `kido stop` (cmd/kido/control.go).
+	// Stopped is written by `kido stop_subagent` (cmd/kido/control.go).
 	Stopped Result = "stopped"
 )
 
@@ -100,7 +100,7 @@ func Create(id, task string) error {
 	return os.WriteFile(TaskPath(id), []byte(task), 0o600)
 }
 
-// WriteMeta writes m's run's meta file. Called once, by kido spawn, after
+// WriteMeta writes m's run's meta file. Called once, by kido spawn_subagent, after
 // tmux.NewWindow has returned the window, pane and pid that complete it;
 // `kido runs` skips a run with no meta file.
 func WriteMeta(m Meta) error {
@@ -159,7 +159,7 @@ func RecordOutcome(id string, o Outcome) error {
 }
 
 // ClearOutcome removes id's recorded outcome, if any, so a later
-// RecordOutcome can write a fresh one. Its only caller is `kido spawn
+// RecordOutcome can write a fresh one. Its only caller is `kido spawn_subagent
 // --resume`: resuming a run is a deliberate act telling kido the run is
 // alive again, not one more exit path racing to describe how it ended,
 // so it does not compete with RecordOutcome's "first writer wins" rule -
@@ -181,7 +181,7 @@ func ClearOutcome(id string) error {
 // the same frozen dead panes twice, and rule 2's live capture only gets
 // more complete the later it runs - so refusing a second write the way
 // RecordOutcome does would just let a losing-race capture pin a run to a
-// worse screen forever, and would permanently strand `kido spawn --resume`
+// worse screen forever, and would permanently strand `kido spawn_subagent --resume`
 // after its first attempt, since nothing else ever removes this file.
 // Written temp-then-rename, the way state.Record is, so a reader never
 // sees a partial write and two racing writers never corrupt one another;
@@ -198,7 +198,7 @@ func WriteScreen(id string, data []byte) error {
 }
 
 // ClearScreen removes id's captured screen, if any, the same way
-// ClearOutcome clears an outcome: `kido spawn --resume`'s only caller,
+// ClearOutcome clears an outcome: `kido spawn_subagent --resume`'s only caller,
 // so that a screen captured for the run's first attempt is not shown
 // under `kido runs <id>` as though it were the resumed attempt's own,
 // for however long the resumed attempt takes to end and capture a new

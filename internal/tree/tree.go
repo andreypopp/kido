@@ -1,11 +1,11 @@
-// Package tree holds the parent-first walk behind both `kido agents`
+// Package tree holds the parent-first walk behind both `kido list_agents`
 // (cmd/kido/agents.go) and the sidebar's window tree (internal/ui).
 package tree
 
 // Order returns items parent-first: every item follows the one whose id
 // its parent names, recursively. Siblings, roots, and anything not part
 // of a tree at all keep the order they arrived in, so a caller wanting a
-// particular sibling order (oldest-report-first, for kido agents; tmux's
+// particular sibling order (oldest-report-first, for kido list_agents; tmux's
 // own window order, for the sidebar) sorts its input first rather than
 // telling Order about it. id must be unique and non-empty; parent
 // returns "" for a root, and a parent naming no item in items is a root

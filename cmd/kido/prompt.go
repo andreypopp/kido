@@ -92,7 +92,7 @@ var sendPrompt = tmux.SendPrompt
 // falling back to a tmux paste of pasteText into pane only on
 // errInboxUnavailable: any other error means the message may already
 // have been delivered (docs/design.md, "Delivery, and when a paste is
-// allowed"). The two payloads differ for kido message: the inbox may get
+// allowed"). The two payloads differ for kido message_agent: the inbox may get
 // a v1 envelope, a paste always types the raw text. paste reports which
 // path was used.
 func deliverInboxOrPaste(inbox, inboxPayload, pane, pasteText string) (paste bool, err error) {

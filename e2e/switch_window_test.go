@@ -58,7 +58,7 @@ func (h *harness) addWindow(session, name string) {
 }
 
 // markSubagent marks session's window (by name) with @kido_subagent - the
-// tmux window option `kido spawn` sets and the only thing
+// tmux window option `kido spawn_subagent` sets and the only thing
 // internal/tmux.SwitchWindow (and internal/reap.Sweep, for the same
 // reason) trusts to know a window is a subagent's. No status record is
 // involved: a live plain shell pane with the mark looks to switch-window

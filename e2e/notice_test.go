@@ -17,16 +17,21 @@ import (
 // is TS's to prove, against a real extension, since this harness cannot
 // host one. What e2e can and must prove is the other half of the path -
 // a notice a child actually sends reaching its parent's inbox promptly -
-// with a fake spawned command that calls `kido message --kind notice`
-// itself, standing in for pi's own extension the way every other e2e
-// subagent test stands a fake command in for pi.
+// with a fake spawned command that calls `kido notify_parent` itself,
+// standing in for pi's own extension the way every other e2e subagent
+// test stands a fake command in for pi.
+//
+// It is also where the whole of notify_parent's addressing is exercised:
+// the child names nobody, so the parent it reaches can only have come
+// from the KIDO_AGENT_PARENT_INSTANCE `kido spawn_subagent` put in the
+// window's environment two processes earlier.
 func TestSpawnedChildNoticeReachesParentInboxQuickly(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	// The parent: a real inbox, and a state record advertising it, so
-	// `kido message` can resolve "parent-notice-e2e" and deliver over the
-	// socket rather than falling back to a paste.
+	// The parent: a real inbox, and a state record advertising it under
+	// the instance the child's environment will name, so the notice goes
+	// over the socket rather than falling back to a paste.
 	in := testutil.StartInbox(t, "ok\n")
 	parentPane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 	h.agentStatus("parent-notice-e2e", parentPane, "pi", "idle",
@@ -39,17 +44,17 @@ func TestSpawnedChildNoticeReachesParentInboxQuickly(t *testing.T) {
 	outFile := filepath.Join(h.dir, "spawn.out")
 
 	// The fake child: reports itself as a subagent of the parent above
-	// (as kido-status.ts's session_start would), then sends its own
-	// completion notice exactly as sendTurnNotice/sendCompletionNotice do
-	// - a `kido message --kind notice` call - before settling into a long
-	// sleep so the window stays open for the assertions below.
+	// (as kido-status.ts's session_start would), then reports home exactly
+	// as pi's notify_parent tool does - naming no target at all - before
+	// settling into a long sleep so the window stays open for the
+	// assertions below.
 	child := fmt.Sprintf(
 		"%s agent-status --agent pi --session child-notice-e2e --status idle "+
 			"--instance child-notice-e2e-inst --parent-instance parent-notice-e2e-inst; "+
-			"printf \"the answer is 42\" | %s message --kind notice -- parent-notice-e2e; "+
+			"printf \"the answer is 42\" | %s notify_parent; "+
 			"exec sleep 300",
 		kidoBin, kidoBin)
-	cmd := fmt.Sprintf("%s spawn --parent-pid 1 --parent-instance parent-notice-e2e-inst --name kid-notice-e2e --task-file %s -- /bin/sh -c %s > %s 2>&1",
+	cmd := fmt.Sprintf("%s spawn_subagent --parent-pid 1 --parent-instance parent-notice-e2e-inst --name kid-notice-e2e --task-file %s -- /bin/sh -c %s > %s 2>&1",
 		kidoBin, taskFile, shellQuote(child), outFile)
 
 	t0 := time.Now()

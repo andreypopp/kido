@@ -131,7 +131,7 @@ func TestParsePanesEmptyCommandStatus(t *testing.T) {
 }
 
 // TestParsePanesDeadSubagent covers the fields the window lifecycle reads
-// (internal/reap): a remain-on-exit corpse in a window kido spawn marked.
+// (internal/reap): a remain-on-exit corpse in a window kido spawn_subagent marked.
 // They sit before pane_title, which stays last because it may contain
 // anything - including the separator this format is joined with.
 func TestParsePanesDeadSubagent(t *testing.T) {
@@ -146,7 +146,7 @@ func TestParsePanesDeadSubagent(t *testing.T) {
 		t.Errorf("got dead=%v at %d, want a pane dead since 1700000200", p[0].Dead, p[0].DeadTime)
 	}
 	if p[0].Subagent != "parent=abc depth=1" {
-		t.Errorf("got %s = %q, want the mark kido spawn set", SubagentOption, p[0].Subagent)
+		t.Errorf("got %s = %q, want the mark kido spawn_subagent set", SubagentOption, p[0].Subagent)
 	}
 	if p[0].Title != "kid" {
 		t.Errorf("got title %q, want the last field", p[0].Title)

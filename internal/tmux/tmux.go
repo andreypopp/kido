@@ -108,7 +108,7 @@ type Pane struct {
 	// in unix seconds; unlike pane_command_duration neither field ticks.
 	Dead     bool
 	DeadTime int64
-	// Subagent is the @kido_subagent window option kido spawn sets on a
+	// Subagent is the @kido_subagent window option kido spawn_subagent sets on a
 	// window of its own making, read through the pane because one
 	// list-panes is the only listing kido takes.
 	Subagent string
@@ -170,7 +170,7 @@ var paneFormat = strings.Join([]string{
 	"#{pane_title}",
 }, sep)
 
-// SubagentOption is the tmux window option kido spawn sets on a window it
+// SubagentOption is the tmux window option kido spawn_subagent sets on a window it
 // creates, and the only thing that marks a window as kido's to close
 // (docs/design.md, "Window options, for facts that must survive kido's
 // own cleanup").

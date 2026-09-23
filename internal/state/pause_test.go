@@ -160,7 +160,7 @@ func TestRecordPauseKeepsTheLatest(t *testing.T) {
 
 // TestStalledCrossProcess: the rebased verdict must reach a process that
 // never itself detected the
-// pause - ask_agent shells out to a fresh `kido agents`, once per call -
+// pause - ask_agent shells out to a fresh `kido list_agents`, once per call -
 // so it has to be readable from disk by a second process, not just held
 // in the sidebar's memory. It drives the standard Go "helper process"
 // pattern (re-exec this same test binary in a subprocess) rather than

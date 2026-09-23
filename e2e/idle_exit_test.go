@@ -36,7 +36,7 @@ func firstLine(s string) string {
 	return strings.SplitN(strings.TrimSpace(s), "\n", 2)[0]
 }
 
-// TestSpawnKeepAliveSetsEnv checks that `kido spawn --keep-alive` reaches
+// TestSpawnKeepAliveSetsEnv checks that `kido spawn_subagent --keep-alive` reaches
 // the child's environment as KIDO_AGENT_KEEP_ALIVE=1, the one thing
 // pi/kido-agents.ts reads to opt a subagent out of idle self-exit.
 func TestSpawnKeepAliveSetsEnv(t *testing.T) {
@@ -62,7 +62,7 @@ func TestSpawnKeepAliveSetsEnv(t *testing.T) {
 	}
 }
 
-// TestSpawnResumeRecreatesWindowBoundToSameRun drives `kido spawn
+// TestSpawnResumeRecreatesWindowBoundToSameRun drives `kido spawn_subagent
 // --resume` against a real server: a run whose window has already died
 // and been swept (outcome "died") gets a brand new window, marked for the
 // same run id, with the stale outcome cleared so the run reads as running
@@ -104,7 +104,7 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 	outFile := filepath.Join(h.dir, "resume.out")
 	envFile := filepath.Join(h.dir, "resume.env")
 	fake := shellQuote(fmt.Sprintf("env > %s; sleep 300", envFile))
-	cmd := fmt.Sprintf("PI_CODING_AGENT_SESSION_DIR=%s %s spawn --resume %s -- /bin/sh -c %s > %s 2>&1",
+	cmd := fmt.Sprintf("PI_CODING_AGENT_SESSION_DIR=%s %s spawn_subagent --resume %s -- /bin/sh -c %s > %s 2>&1",
 		shellQuote(sessDir), kidoBin, runID, fake, outFile)
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")
@@ -112,11 +112,11 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 	out := strings.TrimSpace(h.waitFileNonEmpty(outFile))
 	fields := strings.Fields(out)
 	if len(fields) != 3 {
-		t.Fatalf("kido spawn --resume printed %q, want \"<window id> <pane id> <run id>\"", out)
+		t.Fatalf("kido spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", out)
 	}
 	newWindowID, gotRunID := fields[0], fields[2]
 	if gotRunID != runID {
-		t.Errorf("kido spawn --resume printed run id %q, want the original %q", gotRunID, runID)
+		t.Errorf("kido spawn_subagent --resume printed run id %q, want the original %q", gotRunID, runID)
 	}
 	if newWindowID == windowID {
 		t.Errorf("resumed window id %s must be a new window, not the swept original", newWindowID)
@@ -161,8 +161,8 @@ func TestSpawnResumeRefusesLiveRun(t *testing.T) {
 	runID, windowID := h.spawnRun("live-src", "exec sleep 300")
 	t.Cleanup(func() { h.in("kill-window", "-t", windowID) })
 
-	out := h.runKido("alpha", "resume-live.out", "spawn", "--resume", runID)
+	out := h.runKido("alpha", "resume-live.out", "spawn_subagent", "--resume", runID)
 	if !strings.Contains(out, "still running") {
-		t.Errorf("kido spawn --resume on a live run = %q, want a refusal naming it still running", out)
+		t.Errorf("kido spawn_subagent --resume on a live run = %q, want a refusal naming it still running", out)
 	}
 }

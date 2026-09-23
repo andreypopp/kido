@@ -16,17 +16,19 @@ neither does this file.
 
 ## Layout
 
-    cmd/kido/          subcommand dispatch (main.go), setup-*, prompt, message,
-                       spawn, stop/interrupt, reap, runs, snapshot, inbox
+    cmd/kido/          subcommand dispatch (main.go), setup-*, prompt,
+                       message_agent (also ask_agent and notify_parent),
+                       set_status, list_agents, spawn_subagent,
+                       stop/interrupt, reap, runs, snapshot, inbox
     internal/ui/       the Bubble Tea model, rendering, shell-status debounce
     internal/tmux/     pane listing and formats (tmux.go), control-mode client (conn.go)
     internal/state/    one JSON file per agent session, keyed by pane
     internal/hook/     Claude Code hook event -> status table
     internal/procs/    process-tree scan: agent panes, ssh destinations
     internal/msg/      the inbox wire protocol: v0 raw prompt, v1 envelope
-    internal/tree/     the parent-first walk behind `kido agents` and the sidebar
+    internal/tree/     the parent-first walk behind `kido list_agents` and the sidebar
     internal/reap/     which subagent windows are finished with, and when
-    internal/subrun/   the durable record of one `kido spawn`
+    internal/subrun/   the durable record of one `kido spawn_subagent`
     internal/testutil/ test scaffolding shared by more than one package
     shell/zsh/         the OSC 133 integration sourced from ~/.zshrc
     tmux/              kido-side.tmux, sourced from ~/.tmux.conf
@@ -34,6 +36,14 @@ neither does this file.
     e2e/               tests driving kido inside a real tmux server
 
 `go build ./cmd/kido`; module name is `kido`, no external build steps.
+
+Every subagent tool in `pi/` invokes the subcommand of its own name, and
+the table in [docs/design-subagents.md](docs/design-subagents.md) is that
+mapping. A new tool brings a subcommand spelled the same way; a
+subcommand nobody's tool calls is named however it reads best. These are
+strings handed to a subprocess, so a divergence is a silent runtime
+failure rather than a build one - and there are no aliases to fall back
+on, deliberately.
 
 ## The tmux fork
 
@@ -290,7 +300,7 @@ build it paid for).
   it. Reaching for the file inside would put an open in the 100ms path
   and let `stallPending`'s two instants be judged from two baselines.
 - **`TestBuildAgentsRecycledPIDNoEdge`** — the parent edge in `kido
-  agents` matches on `ParentInstance`, not `ParentPID`, because `alive()`
+  list_agents` matches on `ParentInstance`, not `ParentPID`, because `alive()`
   reports `EPERM` as alive and cannot tell a recycled pid from the
   parent. Nothing in the reaper consults a pid any more either, which is
   what removed the matching known limit.

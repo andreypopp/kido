@@ -13,7 +13,7 @@ import (
 )
 
 // withStdinBytes points os.Stdin at data for the duration of the test, so
-// spawnCmd's --task-file - path (reading the task from stdin) can be
+// spawnSubagentCmd's --task-file - path (reading the task from stdin) can be
 // exercised without a real pipe or subprocess.
 func withStdinBytes(t *testing.T, data []byte) {
 	t.Helper()
@@ -69,13 +69,13 @@ func TestSpawnHostileWindowNameMatrix(t *testing.T) {
 			calls := withNewWindow(t, "@1", "%1", nil)
 			taskFile := writeTaskFile(t, "task")
 
-			err := spawnCmd([]string{
+			err := spawnSubagentCmd([]string{
 				"--parent-pid", "1", "--parent-instance", "x",
 				"--name", c.name, "--task-file", taskFile,
 			})
 			if c.refuse {
 				if err == nil {
-					t.Fatalf("spawnCmd with name %q = nil error, want a refusal", c.name)
+					t.Fatalf("spawnSubagentCmd with name %q = nil error, want a refusal", c.name)
 				}
 				if len(*calls) != 0 {
 					t.Errorf("newWindow was called %d times, want the refusal to happen before any tmux call", len(*calls))
@@ -83,7 +83,7 @@ func TestSpawnHostileWindowNameMatrix(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("spawnCmd with name %q = %v, want it allowed", c.name, err)
+				t.Fatalf("spawnSubagentCmd with name %q = %v, want it allowed", c.name, err)
 			}
 			if len(*calls) != 1 || (*calls)[0].name != c.wantLiteral {
 				t.Errorf("newWindow calls = %v, want one call naming %q literally", *calls, c.wantLiteral)
@@ -94,7 +94,7 @@ func TestSpawnHostileWindowNameMatrix(t *testing.T) {
 
 // TestSpawnHostileTaskTextRoundTrip is p5v item 2's task-text half: the
 // verifier proved a hostile task survives the whole chain (extension
-// write -> kido spawn -> child read) byte for byte; this pins kido's own
+// write -> kido spawn_subagent -> child read) byte for byte; this pins kido's own
 // half of that chain, both when --task-file names a file and when it is
 // "-" (stdin). If readTask or the env plumbing that carries
 // KIDO_AGENT_TASK_FILE ever quoted, trimmed, re-encoded, or otherwise
@@ -127,7 +127,7 @@ func TestSpawnHostileTaskTextRoundTrip(t *testing.T) {
 			if err := os.WriteFile(taskFile, c.task, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if err := spawnCmd([]string{
+			if err := spawnSubagentCmd([]string{
 				"--parent-pid", "1", "--parent-instance", "x",
 				"--name", "kid", "--task-file", taskFile,
 			}); err != nil {
@@ -149,7 +149,7 @@ func TestSpawnHostileTaskTextRoundTrip(t *testing.T) {
 			calls := withNewWindow(t, "@1", "%1", nil)
 			withStdinBytes(t, c.task)
 
-			if err := spawnCmd([]string{
+			if err := spawnSubagentCmd([]string{
 				"--parent-pid", "1", "--parent-instance", "x",
 				"--name", "kid", "--task-file", "-",
 			}); err != nil {
@@ -170,9 +170,9 @@ func TestSpawnHostileTaskTextRoundTrip(t *testing.T) {
 // TestMessageAddressingDashPrefixedTarget: a model-authored target
 // beginning with "-" must not be parsed as a kido flag. pi/kido-agents.ts
 // passes "--" before the target, and this pins that "--" does what that
-// assumes on kido's end: if message ever stopped relying on flag.FlagSet's
-// ordinary "--" handling, one of these would come back "flag provided but
-// not defined" instead of reaching the target.
+// assumes on kido's end: if message_agent ever stopped relying on
+// flag.FlagSet's ordinary "--" handling, one of these would come back
+// "flag provided but not defined" instead of reaching the target.
 func TestMessageAddressingDashPrefixedTarget(t *testing.T) {
 	for _, target := range []string{"-weird", "--help", "-"} {
 		t.Run(target, func(t *testing.T) {
@@ -187,9 +187,9 @@ func TestMessageAddressingDashPrefixedTarget(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			code := message([]string{"--", target}, strings.NewReader("hi"))
+			code := messageAgentCmd([]string{"--", target}, strings.NewReader("hi"))
 			if code != 0 {
-				t.Fatalf("message -- %q = %d, want 0", target, code)
+				t.Fatalf("message_agent -- %q = %d, want 0", target, code)
 			}
 			if msgs := in.Received(); len(msgs) != 1 {
 				t.Fatalf("server got %q, want one message", msgs)

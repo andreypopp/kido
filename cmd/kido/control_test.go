@@ -15,7 +15,7 @@ import (
 
 // withKillPane replaces killPane with a fake that records its calls
 // instead of talking to a real tmux server, the same pattern
-// withSendPrompt (message_test.go) uses for sendPrompt - what stopCmd's
+// withSendPrompt (message_test.go) uses for sendPrompt - what stopSubagentCmd's
 // degrade and escalation actually call (see cmd/kido/control.go's
 // killTargetPane).
 func withKillPane(t *testing.T) func() []string {
@@ -43,8 +43,8 @@ func TestStopNoForceRefusedAgainstInboxlessAgent(t *testing.T) {
 	if err := state.Record("target", state.Session{Pane: "%2", PID: os.Getpid(), Status: state.Idle}); err != nil {
 		t.Fatal(err)
 	}
-	if err := stopCmd([]string{"target"}); err == nil {
-		t.Fatal("stopCmd succeeded, want a refusal: target has no inbox and --force was not given")
+	if err := stopSubagentCmd([]string{"target"}); err == nil {
+		t.Fatal("stopSubagentCmd succeeded, want a refusal: target has no inbox and --force was not given")
 	}
 	if calls := kills(); len(calls) != 0 {
 		t.Errorf("killPane calls = %v, want none without --force", calls)
@@ -65,8 +65,8 @@ func TestStopForceKillsInboxlessAgent(t *testing.T) {
 	if err := state.Record("target", state.Session{Pane: "%2", PID: os.Getpid(), Status: state.Idle}); err != nil {
 		t.Fatal(err)
 	}
-	if err := stopCmd([]string{"--force", "target"}); err != nil {
-		t.Fatalf("stopCmd = %v, want success", err)
+	if err := stopSubagentCmd([]string{"--force", "target"}); err != nil {
+		t.Fatalf("stopSubagentCmd = %v, want success", err)
 	}
 	if calls := kills(); len(calls) != 1 || calls[0] != "%2" {
 		t.Errorf("killPane calls = %v, want exactly one call for %%2", calls)
@@ -95,9 +95,9 @@ func TestStopRefusesToKillASessionsOnlyWindow(t *testing.T) {
 	if err := state.Record("target", state.Session{Pane: "%2", PID: os.Getpid(), Status: state.Idle}); err != nil {
 		t.Fatal(err)
 	}
-	err := stopCmd([]string{"--force", "target"})
+	err := stopSubagentCmd([]string{"--force", "target"})
 	if err == nil {
-		t.Fatal("stopCmd succeeded, want a refusal")
+		t.Fatal("stopSubagentCmd succeeded, want a refusal")
 	}
 	if !strings.Contains(err.Error(), "another tmux session") {
 		t.Errorf("error = %q, want the cross-session refusal, not the last-pane guard", err)
@@ -123,8 +123,8 @@ func TestStopKillsOneOfTwoPanesInAWindow(t *testing.T) {
 	if err := state.Record("target", state.Session{Pane: "%2", PID: os.Getpid(), Status: state.Idle}); err != nil {
 		t.Fatal(err)
 	}
-	if err := stopCmd([]string{"--force", "target"}); err != nil {
-		t.Fatalf("stopCmd = %v, want success: @2 has a second pane, so it is not $1's only surviving window", err)
+	if err := stopSubagentCmd([]string{"--force", "target"}); err != nil {
+		t.Fatalf("stopSubagentCmd = %v, want success: @2 has a second pane, so it is not $1's only surviving window", err)
 	}
 	if calls := kills(); len(calls) != 1 || calls[0] != "%2" {
 		t.Errorf("killPane calls = %v, want exactly one call for %%2, and %%3 left alone", calls)
@@ -173,11 +173,11 @@ func TestInterruptRefusesNonDescendant(t *testing.T) {
 	in := testutil.StartInbox(t, "ok\n")
 	recordControlTree(t, in)
 
-	if err := interruptCmd([]string{"peer"}); err == nil {
-		t.Fatal("interruptCmd succeeded against a non-descendant, want a refusal")
+	if err := interruptSubagentCmd([]string{"peer"}); err == nil {
+		t.Fatal("interruptSubagentCmd succeeded against a non-descendant, want a refusal")
 	}
-	if err := interruptCmd([]string{"child"}); err != nil {
-		t.Fatalf("interruptCmd against an actual descendant = %v, want success", err)
+	if err := interruptSubagentCmd([]string{"child"}); err != nil {
+		t.Fatalf("interruptSubagentCmd against an actual descendant = %v, want success", err)
 	}
 }
 
@@ -188,8 +188,8 @@ func TestStopRefusesNonDescendant(t *testing.T) {
 	in := testutil.StartInbox(t, "ok\n")
 	recordControlTree(t, in)
 
-	if err := stopCmd([]string{"peer"}); err == nil {
-		t.Fatal("stopCmd succeeded against a non-descendant, want a refusal")
+	if err := stopSubagentCmd([]string{"peer"}); err == nil {
+		t.Fatal("stopSubagentCmd succeeded against a non-descendant, want a refusal")
 	}
 }
 
@@ -208,8 +208,8 @@ func TestInterruptHumanCallerUnrestricted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := interruptCmd([]string{"peer"}); err != nil {
-		t.Fatalf("interruptCmd from an unscoped human caller = %v, want success", err)
+	if err := interruptSubagentCmd([]string{"peer"}); err != nil {
+		t.Fatalf("interruptSubagentCmd from an unscoped human caller = %v, want success", err)
 	}
 }
 
@@ -227,8 +227,8 @@ func TestInterruptSendsEnvelope(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := interruptCmd([]string{"target"}); err != nil {
-		t.Fatalf("interruptCmd = %v, want success", err)
+	if err := interruptSubagentCmd([]string{"target"}); err != nil {
+		t.Fatalf("interruptSubagentCmd = %v, want success", err)
 	}
 	msgs := in.Received()
 	if len(msgs) != 1 {
@@ -240,7 +240,7 @@ func TestInterruptSendsEnvelope(t *testing.T) {
 	}
 }
 
-// TestStopEscalatesToKillingWindow checks the escalation stopCmd's own
+// TestStopEscalatesToKillingWindow checks the escalation stopSubagentCmd's own
 // doc describes: a target that acknowledges the inbox message ("ok\n")
 // but whose record never goes (nothing ever calls state.Remove or lets
 // its pid die, exactly as a wedged extension would leave it) has its
@@ -266,8 +266,8 @@ func TestStopEscalatesToKillingWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := stopCmd([]string{"target"}); err != nil {
-		t.Fatalf("stopCmd = %v, want success (escalated)", err)
+	if err := stopSubagentCmd([]string{"target"}); err != nil {
+		t.Fatalf("stopSubagentCmd = %v, want success (escalated)", err)
 	}
 	if calls := kills(); len(calls) != 1 || calls[0] != "%2" {
 		t.Errorf("killPane calls = %v, want exactly one call for %%2", calls)
@@ -302,8 +302,8 @@ func TestStopNoEscalationWhenTargetGoes(t *testing.T) {
 		state.Remove("target") //nolint:errcheck
 	}()
 
-	if err := stopCmd([]string{"target"}); err != nil {
-		t.Fatalf("stopCmd = %v, want success", err)
+	if err := stopSubagentCmd([]string{"target"}); err != nil {
+		t.Fatalf("stopSubagentCmd = %v, want success", err)
 	}
 	if calls := kills(); len(calls) != 0 {
 		t.Errorf("killPane calls = %v, want none: the target stopped in time", calls)
@@ -315,7 +315,7 @@ func TestStopNoEscalationWhenTargetGoes(t *testing.T) {
 // connection open until the deadline, or answers something else, or its
 // own scope check refuses, and every one of those is a reason to
 // escalate rather than give up. Returning the send error instead leaves
-// kido stop failing outright, with the window intact, exactly when it is
+// kido stop_subagent failing outright, with the window intact, exactly when it is
 // needed most; --force does not help, because that flag is about having
 // no inbox, not about an inbox that answered badly.
 func TestStopEscalatesWhenTheTargetDoesNotAgree(t *testing.T) {
@@ -346,8 +346,8 @@ func TestStopEscalatesWhenTheTargetDoesNotAgree(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if err := stopCmd([]string{"target"}); err != nil {
-				t.Fatalf("stopCmd = %v, want success (escalated)", err)
+			if err := stopSubagentCmd([]string{"target"}); err != nil {
+				t.Fatalf("stopSubagentCmd = %v, want success (escalated)", err)
 			}
 			if calls := kills(); len(calls) != 1 || calls[0] != "%2" {
 				t.Errorf("killPane calls = %v, want exactly one call for %%2", calls)
@@ -381,8 +381,8 @@ func TestStopStaleInboxStillNeedsForce(t *testing.T) {
 
 	t.Run("without --force", func(t *testing.T) {
 		kills := setup(t)
-		if err := stopCmd([]string{"target"}); err == nil {
-			t.Fatal("stopCmd succeeded, want a refusal: the inbox is stale and --force was not given")
+		if err := stopSubagentCmd([]string{"target"}); err == nil {
+			t.Fatal("stopSubagentCmd succeeded, want a refusal: the inbox is stale and --force was not given")
 		}
 		if calls := kills(); len(calls) != 0 {
 			t.Errorf("killPane calls = %v, want none without --force", calls)
@@ -390,8 +390,8 @@ func TestStopStaleInboxStillNeedsForce(t *testing.T) {
 	})
 	t.Run("with --force", func(t *testing.T) {
 		kills := setup(t)
-		if err := stopCmd([]string{"--force", "target"}); err != nil {
-			t.Fatalf("stopCmd = %v, want success", err)
+		if err := stopSubagentCmd([]string{"--force", "target"}); err != nil {
+			t.Fatalf("stopSubagentCmd = %v, want success", err)
 		}
 		if calls := kills(); len(calls) != 1 || calls[0] != "%2" {
 			t.Errorf("killPane calls = %v, want exactly one call for %%2", calls)
@@ -401,7 +401,7 @@ func TestStopStaleInboxStillNeedsForce(t *testing.T) {
 
 // TestControlErrorsAreNotDoublePrefixed pins that these commands leave the
 // "kido <verb>: " prefix to dispatch (main.go), which adds it to every
-// error it prints. Saying it here too printed "kido stop: kido stop: ..."
+// error it prints. Saying it here too printed "kido stop_subagent: kido stop_subagent: ..."
 // at the terminal.
 func TestControlErrorsAreNotDoublePrefixed(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
@@ -411,7 +411,7 @@ func TestControlErrorsAreNotDoublePrefixed(t *testing.T) {
 	recordControlTree(t, in)
 
 	for _, args := range [][]string{{"peer"}, {"caller"}} {
-		for verb, run := range map[string]func([]string) error{"interrupt": interruptCmd, "stop": stopCmd} {
+		for verb, run := range map[string]func([]string) error{"interrupt_subagent": interruptSubagentCmd, "stop_subagent": stopSubagentCmd} {
 			err := run(args)
 			if err == nil {
 				t.Fatalf("%s %v succeeded, want a refusal", verb, args)
@@ -424,7 +424,7 @@ func TestControlErrorsAreNotDoublePrefixed(t *testing.T) {
 }
 
 // TestInterruptRefusesSelf and TestStopRefusesSelf pin that a caller
-// cannot target its own pane, matching kido message's own rule.
+// cannot target its own pane, matching kido message_agent's own rule.
 func TestInterruptRefusesSelf(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -432,8 +432,8 @@ func TestInterruptRefusesSelf(t *testing.T) {
 	if err := state.Record("me", state.Session{Pane: "%1", PID: os.Getpid(), Status: state.Idle, Title: "Self"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := interruptCmd([]string{"Self"}); err == nil {
-		t.Fatal("interruptCmd against self succeeded, want a refusal")
+	if err := interruptSubagentCmd([]string{"Self"}); err == nil {
+		t.Fatal("interruptSubagentCmd against self succeeded, want a refusal")
 	}
 }
 
@@ -449,15 +449,15 @@ func TestInterruptRefusedAgainstInboxlessAgent(t *testing.T) {
 	if err := state.Record("target", state.Session{Pane: "%2", PID: os.Getpid(), Status: state.Idle}); err != nil {
 		t.Fatal(err)
 	}
-	if err := interruptCmd([]string{"target"}); err == nil {
-		t.Fatal("interruptCmd succeeded, want a refusal: target has no inbox and interrupt has no --force degrade")
+	if err := interruptSubagentCmd([]string{"target"}); err == nil {
+		t.Fatal("interruptSubagentCmd succeeded, want a refusal: target has no inbox and interrupt has no --force degrade")
 	}
 	if calls := kills(); len(calls) != 0 {
 		t.Errorf("killPane calls = %v, want none: interrupt never kills anything", calls)
 	}
 }
 
-// TestStopRefusedLeavesNoOutcome pins the ordering in stopCmd: the Stopped
+// TestStopRefusedLeavesNoOutcome pins the ordering in stopSubagentCmd: the Stopped
 // outcome goes in only once the stop request is actually away, because
 // subrun.RecordOutcome writes once and for all (O_EXCL), so an outcome
 // written on a path that then refuses marks a run that is still running
@@ -496,8 +496,8 @@ func TestStopRefusedLeavesNoOutcome(t *testing.T) {
 
 	t.Run("no inbox, no --force", func(t *testing.T) {
 		setup(t, "run-noinbox", twoWindows, state.Session{Pane: "%2", PID: os.Getpid(), Status: state.Idle})
-		if err := stopCmd([]string{"run-noinbox"}); err == nil {
-			t.Fatal("stopCmd succeeded, want the no-inbox refusal")
+		if err := stopSubagentCmd([]string{"run-noinbox"}); err == nil {
+			t.Fatal("stopSubagentCmd succeeded, want the no-inbox refusal")
 		}
 		noOutcome(t, "run-noinbox")
 	})
@@ -507,8 +507,8 @@ func TestStopRefusedLeavesNoOutcome(t *testing.T) {
 			Pane: "%2", PID: os.Getpid(), Status: state.Idle,
 			Inbox: testutil.StaleSocket(t), Protocol: msg.V1,
 		})
-		if err := stopCmd([]string{"run-stale"}); err == nil {
-			t.Fatal("stopCmd succeeded, want the stale-inbox refusal")
+		if err := stopSubagentCmd([]string{"run-stale"}); err == nil {
+			t.Fatal("stopSubagentCmd succeeded, want the stale-inbox refusal")
 		}
 		noOutcome(t, "run-stale")
 	})
@@ -526,17 +526,17 @@ func TestStopRefusedLeavesNoOutcome(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := stopCmd([]string{"run-peer"}); err == nil {
-			t.Fatal("stopCmd succeeded against a non-descendant, want a refusal")
+		if err := stopSubagentCmd([]string{"run-peer"}); err == nil {
+			t.Fatal("stopSubagentCmd succeeded against a non-descendant, want a refusal")
 		}
 		noOutcome(t, "run-peer")
 	})
 
 	// The session's-last-window refusal is checked against killTargetPane
-	// directly, not through stopCmd: a caller may only stop something in
+	// directly, not through stopSubagentCmd: a caller may only stop something in
 	// its own tmux session (resolveTarget), and a session holding the
 	// caller's pane too always has a second pane for the guard to spare -
-	// so the layout the guard is about is one stopCmd's own scope rule
+	// so the layout the guard is about is one stopSubagentCmd's own scope rule
 	// turns away first, with a different error. TestStopRefusesToKillA
 	// SessionsOnlyWindow above takes that earlier refusal for the same
 	// reason.
@@ -553,10 +553,10 @@ func TestStopRefusedLeavesNoOutcome(t *testing.T) {
 }
 
 func TestControlUsage(t *testing.T) {
-	if err := interruptCmd(nil); err == nil || !strings.Contains(err.Error(), "usage") {
-		t.Errorf("interruptCmd(nil) = %v, want a usage error", err)
+	if err := interruptSubagentCmd(nil); err == nil || !strings.Contains(err.Error(), "usage") {
+		t.Errorf("interruptSubagentCmd(nil) = %v, want a usage error", err)
 	}
-	if err := stopCmd(nil); err == nil || !strings.Contains(err.Error(), "usage") {
-		t.Errorf("stopCmd(nil) = %v, want a usage error", err)
+	if err := stopSubagentCmd(nil); err == nil || !strings.Contains(err.Error(), "usage") {
+		t.Errorf("stopSubagentCmd(nil) = %v, want a usage error", err)
 	}
 }

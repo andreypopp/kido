@@ -16,7 +16,7 @@ import (
 	"kido/internal/tmux"
 )
 
-// stopEscalation is how long kido stop waits, after asking a session to
+// stopEscalation is how long kido stop_subagent waits, after asking a session to
 // stop over its inbox, for it to actually go before killing its pane.
 // Overridable via KIDO_STOP_ESCALATION_MS for the e2e suite.
 var stopEscalation = escalationFromEnv(5 * time.Second)
@@ -35,15 +35,15 @@ var stopPollInterval = 100 * time.Millisecond
 // killPane is tmux.KillPane, indirected so a test can fake it.
 var killPane = tmux.KillPane
 
-func interruptUsage() string { return "usage: kido interrupt <agent>" }
-func stopUsage() string      { return "usage: kido stop <agent> [--force]" }
+func interruptUsage() string { return "usage: kido interrupt_subagent -- <agent>" }
+func stopUsage() string      { return "usage: kido stop_subagent [--force] -- <agent>" }
 
-// interruptCmd implements `kido interrupt <agent>`: abort the target's
+// interruptSubagentCmd implements `kido interrupt_subagent -- <agent>`: abort the target's
 // current turn without ending its session, as a v1 "interrupt" envelope
 // over its inbox. Unlike stop it has no escalation: there is no
 // destructive fallback that means "redirect this, do not kill it".
-func interruptCmd(args []string) error {
-	fs := flag.NewFlagSet("interrupt", flag.ContinueOnError)
+func interruptSubagentCmd(args []string) error {
+	fs := flag.NewFlagSet("interrupt_subagent", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w\n%s", err, interruptUsage())
@@ -63,13 +63,13 @@ func interruptCmd(args []string) error {
 	return nil
 }
 
-// stopCmd implements `kido stop <agent> [--force]`: ask over the inbox,
+// stopSubagentCmd implements `kido stop_subagent [--force] -- <agent>`: ask over the inbox,
 // wait up to stopEscalation for the session's record to go, and kill its
 // pane if it has not. A target that cannot be asked at all degrades
 // straight to the kill, which needs --force. docs/design.md, "Interrupt
 // and stop".
-func stopCmd(args []string) error {
-	fs := flag.NewFlagSet("stop", flag.ContinueOnError)
+func stopSubagentCmd(args []string) error {
+	fs := flag.NewFlagSet("stop_subagent", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	force := fs.Bool("force", false, "kill the target's window directly when it has no inbox to ask nicely over")
 	if err := fs.Parse(args); err != nil {
@@ -149,7 +149,7 @@ func killTargetPane(target state.Session) error {
 	if !ok {
 		return fmt.Errorf("no pane found for %s", targetLabel(target))
 	}
-	// This guard cannot fire through kido stop today: controlTarget keeps
+	// This guard cannot fire through kido stop_subagent today: controlTarget keeps
 	// the caller's own pane in the target's session, so one of the two is
 	// always false. It stays as defence for a future caller that reaches a
 	// target without a live caller pane in the same session.
@@ -162,14 +162,14 @@ func killTargetPane(target state.Session) error {
 }
 
 // recordStopped marks target's run stopped, if it has one: target.ID is
-// a run id exactly when kido spawn created the target. Best-effort, since
+// a run id exactly when kido spawn_subagent created the target. Best-effort, since
 // the common case is a target with no run record at all.
 func recordStopped(target state.Session) {
 	subrun.RecordOutcome(target.ID, subrun.Outcome{Result: subrun.Stopped, At: time.Now()}) //nolint:errcheck // best effort
 }
 
-// controlTarget resolves interrupt/stop's argument the way kido message
-// does and enforces their shared scope rule: a caller with a state record
+// controlTarget resolves interrupt/stop's argument the way kido
+// message_agent does and enforces their shared scope rule: a caller with a state record
 // of its own may only reach its descendants; a human at the CLI, who has
 // none, may act on anything.
 func controlTarget(to string) (target state.Session, states map[string]state.Session, err error) {
@@ -206,7 +206,7 @@ func controlTarget(to string) (target state.Session, states map[string]state.Ses
 }
 
 // sendControl delivers a control-kind envelope (interrupt or stop) to
-// target's inbox, gated on the same v1 advertisement kido message
+// target's inbox, gated on the same v1 advertisement message_agent
 // requires for any non-message kind. There is deliberately no version
 // gate beyond that (docs/design.md, "v0 and v1").
 func sendControl(target state.Session, states map[string]state.Session, kind msg.Kind) error {

@@ -79,7 +79,7 @@ func TestRecordOutcomeOnce(t *testing.T) {
 // own O_EXCL discipline on purpose: unlike an outcome, two captures of
 // one run's screen carry no precedence to defend (docs/design.md, "The
 // screen capture"), and refusing a second write would have permanently
-// stranded `kido spawn --resume`, whose only defence against a stale
+// stranded `kido spawn_subagent --resume`, whose only defence against a stale
 // screen is overwriting it with a fresh capture (or ClearScreen, see
 // TestClearScreen below).
 func TestWriteScreenLastWriterWins(t *testing.T) {

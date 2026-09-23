@@ -1,0 +1,10 @@
+[
+  "list_agents",
+  "set_status",
+  "message_agent",
+  "ask_agent",
+  "spawn_subagent",
+  "interrupt_subagent",
+  "stop_subagent",
+  "notify_parent"
+]

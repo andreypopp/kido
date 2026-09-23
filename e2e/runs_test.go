@@ -18,22 +18,22 @@ type runInfo struct {
 	Outcome string `json:"outcome"`
 }
 
-// spawnRun drives `kido spawn` with a fake command, exactly as runSpawn
-// does, but returns the run id kido spawn's third output field now
+// spawnRun drives `kido spawn_subagent` with a fake command, exactly as runSpawn
+// does, but returns the run id kido spawn_subagent's third output field now
 // carries and lets the caller supply the fake command's script directly -
 // runSpawn's own fixed "env; pwd; sleep" script does not exit on its own,
 // which every test here needs control over.
 func (h *harness) spawnRun(name, script string) (runID, windowID string) {
 	h.t.Helper()
 	outFile := filepath.Join(h.dir, name+".out")
-	cmd := fmt.Sprintf("%s spawn --parent-pid 1 --parent-instance root-inst --name %s --task-file %s -- /bin/sh -c %s > %s 2>&1",
+	cmd := fmt.Sprintf("%s spawn_subagent --parent-pid 1 --parent-instance root-inst --name %s --task-file %s -- /bin/sh -c %s > %s 2>&1",
 		kidoBin, name, h.writeTaskFile(name), shellQuote(script), outFile)
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")
 	out := strings.TrimSpace(h.waitFileNonEmpty(outFile))
 	fields := strings.Fields(out)
 	if len(fields) != 3 {
-		h.t.Fatalf("kido spawn printed %q, want \"<window id> <pane id> <run id>\"", out)
+		h.t.Fatalf("kido spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", out)
 	}
 	return fields[2], fields[0]
 }
@@ -138,7 +138,7 @@ func TestRunScreenCapturedOnReap(t *testing.T) {
 	}
 }
 
-// TestStopRecordsStoppedOutcome checks that `kido stop`, ending a wedged
+// TestStopRecordsStoppedOutcome checks that `kido stop_subagent`, ending a wedged
 // child by escalating to a window kill, records the run's outcome as
 // Stopped rather than leaving the sweep to call it Died a moment later -
 // the two would otherwise be indistinguishable once the window is gone.
@@ -155,9 +155,9 @@ func TestStopRecordsStoppedOutcome(t *testing.T) {
 	in := testutil.StartInbox(h.t, "ok\n")
 	h.agentStatus(runID, paneID, "pi", "idle", "--instance", runID+"-inst", "--inbox", in.Path, "--protocol", "1")
 
-	out := h.runKido("alpha", "stop.out", "stop", runID)
+	out := h.runKido("alpha", "stop.out", "stop_subagent", runID)
 	if !strings.Contains(out, "killed") {
-		t.Fatalf("kido stop output = %q, want the escalation to kill the wedged child's window", out)
+		t.Fatalf("kido stop_subagent output = %q, want the escalation to kill the wedged child's window", out)
 	}
 	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
 		msgf("window %s to be killed by the stop escalation", windowID))

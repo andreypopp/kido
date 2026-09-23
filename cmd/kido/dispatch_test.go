@@ -66,10 +66,10 @@ func runDispatchTest(t *testing.T, args ...string) (stderr string, code int) {
 // TestUnknownSubcommandNamesTheRealOnes pins DEFECT 1: an unrecognised
 // subcommand used to fall through to the interactive UI, which then
 // complained about a missing tmux client - actively misleading, since the
-// real problem (a typo, or the pi tool `list_agents` vs. the subcommand
-// `agents`) had nothing to do with tmux. Reverting the default case in
-// main's switch (or the unknownSubcommand call it makes) turns this back
-// into "kido: must run inside tmux", which is what this test would show.
+// real problem (a typo, or a name that is not a subcommand) had nothing
+// to do with tmux. Reverting the default case in main's switch (or the
+// unknownSubcommand call it makes) turns this back into "kido: must run
+// inside tmux", which is what this test would show.
 func TestUnknownSubcommandNamesTheRealOnes(t *testing.T) {
 	stderr, code := runDispatchTest(t, "bogus-command")
 	if code != 1 {
@@ -78,7 +78,7 @@ func TestUnknownSubcommandNamesTheRealOnes(t *testing.T) {
 	if !strings.Contains(stderr, `unknown subcommand "bogus-command"`) {
 		t.Errorf("stderr = %q, want it to name the unrecognised subcommand", stderr)
 	}
-	if !strings.Contains(stderr, "agents") {
+	if !strings.Contains(stderr, "list_agents") {
 		t.Errorf("stderr = %q, want the real subcommands listed", stderr)
 	}
 	if strings.Contains(stderr, "did you mean") {
@@ -86,15 +86,21 @@ func TestUnknownSubcommandNamesTheRealOnes(t *testing.T) {
 	}
 }
 
-// TestUnknownSubcommandSuggestsNearMiss covers the exact defect report:
-// the pi TOOL is named list_agents, but the SUBCOMMAND is `agents`.
+// TestUnknownSubcommandSuggestsNearMiss used to run `kido list_agents`,
+// the defect report's own case: the pi TOOL was list_agents and the
+// SUBCOMMAND was `agents`, so the tool's name was a near miss to be
+// suggested against. That premise is gone - every tool now invokes a
+// subcommand of its own name, and `kido list_agents` is the real command
+// - so the case that replaces it is the one that mismatch became: the
+// OLD name, typed by hand or by something that remembers it, for a
+// command that has since grown a suffix.
 func TestUnknownSubcommandSuggestsNearMiss(t *testing.T) {
-	stderr, code := runDispatchTest(t, "list_agents")
+	stderr, code := runDispatchTest(t, "agents")
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1 (stderr: %s)", code, stderr)
 	}
-	if !strings.Contains(stderr, `did you mean "agents"?`) {
-		t.Errorf("stderr = %q, want a suggestion of agents", stderr)
+	if !strings.Contains(stderr, `did you mean "list_agents"?`) {
+		t.Errorf("stderr = %q, want a suggestion of list_agents", stderr)
 	}
 }
 
@@ -153,7 +159,16 @@ func TestSuggestSubcommand(t *testing.T) {
 		name string
 		want string
 	}{
-		{"list_agents", "agents"},
+		// Every former name of a renamed command, which is what a near
+		// miss now looks like. Each is shorter than the command it means,
+		// the opposite of the shape suggestSubcommand originally matched.
+		{"agents", "list_agents"},
+		{"message", "message_agent"},
+		{"spawn", "spawn_subagent"},
+		{"stop", "stop_subagent"},
+		{"interrupt", "interrupt_subagent"},
+		// And an ordinary typo, still matched the long way round.
+		{"run-outcomes", "run-outcome"},
 		{"bogus-command", ""},
 	}
 	for _, c := range cases {

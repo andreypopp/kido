@@ -29,7 +29,7 @@ func (h *harness) windowID(paneID string) string {
 }
 
 // subagentWindow opens a window in session that looks to kido exactly
-// like one `kido spawn` created: marked with @kido_subagent, keeping its
+// like one `kido spawn_subagent` created: marked with @kido_subagent, keeping its
 // pane after the command exits (remain-on-exit, which tmux.NewWindow sets
 // for the same reason), and running a command that reports itself as a
 // subagent through `kido agent-status` before becoming a long sleep.
@@ -169,7 +169,7 @@ func TestReapLeavesUnmarkedWindowAlone(t *testing.T) {
 		t.Errorf("kido reap output = %q, want a clean exit", out)
 	}
 	h.stays(func() bool { return h.windowExists(windowID) },
-		"an unmarked window was closed: only a window kido spawn marked may be reaped")
+		"an unmarked window was closed: only a window kido spawn_subagent marked may be reaped")
 }
 
 // TestReapNeverClosesASessionsLastWindow: closing it destroys the session

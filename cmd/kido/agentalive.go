@@ -12,8 +12,8 @@ import (
 // only caller - a subagent asking, every few seconds, whether the parent
 // that spawned it is still there (docs/design.md, "Identity").
 //
-// It is its own subcommand rather than a flag on `kido agents` because it
-// is a different question asked of a different reading. `kido agents` is
+// It is its own subcommand rather than a flag on `kido list_agents` because it
+// is a different question asked of a different reading. `kido list_agents` is
 // a display: it lists panes to scope itself to one tmux session and
 // collapses the result to one record per pane, both of which are right
 // for something a human or the sidebar looks at and wrong here. A pane

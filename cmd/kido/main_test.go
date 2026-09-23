@@ -523,7 +523,7 @@ func TestAgentStatusModel(t *testing.T) {
 // draws it assume one line of printable characters: the sidebar budgets
 // one terminal line per pane row, so a newline draws a line the row
 // accounting knows nothing about and shifts everything below it, and an
-// escape sequence would colour the rest of the column; `kido agents`
+// escape sequence would colour the rest of the column; `kido list_agents`
 // prints a tab-separated table a tab would split. The byte cap is cut on
 // a rune boundary, so a capped multi-byte string is still valid UTF-8.
 func TestAgentStatusActivityIsOneLine(t *testing.T) {

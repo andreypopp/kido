@@ -30,29 +30,34 @@ import (
 // added to the switch and forgotten here just gets a plainer error.
 var subcommands = []string{
 	"hook", "setup-pi", "setup-zsh", "setup-tmux", "setup-claude",
-	"agent-status", "agents", "agent-alive", "debug-log", "inbox-path", "snapshot",
-	"switch-session", "switch-window", "prompt", "message", "interrupt",
-	"stop", "spawn", "close-window", "window-focused", "reap",
-	"run-outcome", "runs",
+	"agent-status", "set_status", "list_agents", "agent-alive", "debug-log",
+	"inbox-path", "snapshot", "switch-session", "switch-window", "prompt",
+	"message_agent", "ask_agent", "notify_parent", "interrupt_subagent",
+	"stop_subagent", "spawn_subagent", "close-window", "window-focused",
+	"reap", "run-outcome", "runs",
 }
 
-// suggestSubcommand returns the known subcommand name's letters most
-// plainly appear within, in order, or "" when none do. Pattern and data
-// are backwards from fuzzy's usual filter-as-you-type use: here name is
-// the (long, wrong) thing the user typed and cmd is the (short, real)
-// thing it should have been, so fuzzy.Find(cmd, []string{name}) asks
-// whether cmd's letters occur in name in order - which is exactly what
-// catches list_agents, the pi tool name, containing agents, the
-// subcommand it should have invoked.
+// suggestSubcommand returns the known subcommand that most plainly shares
+// its letters, in order, with what the user typed, or "" when none does.
+// It matches in both directions, because a near miss comes in both
+// shapes: what was typed can be longer than the subcommand it meant
+// (fuzzy.Find(cmd, [name]) - does cmd's spelling occur inside name) or
+// shorter (fuzzy.Find(name, [cmd])). Only the first direction existed
+// when every subagent tool's name was longer than its command's; now that
+// the two vocabularies are one, the near miss that remains is the
+// opposite shape - the old, short name (`agents`, `message`, `spawn`) for
+// a command that has since grown a suffix - and it needs the second.
 func suggestSubcommand(name string) string {
 	best, bestScore := "", 0
 	for _, cmd := range subcommands {
-		matches := fuzzy.Find(cmd, []string{name})
-		if len(matches) == 0 {
-			continue
+		score, ok := 0, false
+		for _, m := range [][2]string{{cmd, name}, {name, cmd}} {
+			if matches := fuzzy.Find(m[0], []string{m[1]}); len(matches) > 0 && (!ok || matches[0].Score > score) {
+				score, ok = matches[0].Score, true
+			}
 		}
-		if best == "" || matches[0].Score > bestScore {
-			best, bestScore = cmd, matches[0].Score
+		if ok && (best == "" || score > bestScore) {
+			best, bestScore = cmd, score
 		}
 	}
 	return best
@@ -88,8 +93,8 @@ func debugFlag(cmd string, args []string) (bool, error) {
 
 // dispatch runs fn for a subcommand named name, printing "kido <name>:
 // <err>" to stderr and exiting 1 on failure. hook (which must never fail
-// the caller) and prompt/message (which return their own exit codes) do
-// not go through it.
+// the caller) and prompt and the message-sending commands (which return
+// their own exit codes) do not go through it.
 func dispatch(name string, fn func() error) {
 	if err := fn(); err != nil {
 		fmt.Fprintln(os.Stderr, "kido "+name+":", err)
@@ -142,8 +147,11 @@ func main() {
 		case "agent-status":
 			dispatch("agent-status", func() error { return agentStatus(os.Args[2:]) })
 			return
-		case "agents":
-			dispatch("agents", func() error { return agentsCmd(os.Args[2:]) })
+		case "set_status":
+			dispatch("set_status", func() error { return setStatusCmd(os.Args[2:]) })
+			return
+		case "list_agents":
+			dispatch("list_agents", func() error { return listAgentsCmd(os.Args[2:]) })
 			return
 		case "agent-alive":
 			dispatch("agent-alive", func() error { return agentAliveCmd(os.Args[2:]) })
@@ -174,16 +182,20 @@ func main() {
 			return
 		case "prompt":
 			os.Exit(prompt(os.Args[2:], os.Stdin))
-		case "message":
-			os.Exit(message(os.Args[2:], os.Stdin))
-		case "interrupt":
-			dispatch("interrupt", func() error { return interruptCmd(os.Args[2:]) })
+		case "message_agent":
+			os.Exit(messageAgentCmd(os.Args[2:], os.Stdin))
+		case "ask_agent":
+			os.Exit(askAgentCmd(os.Args[2:], os.Stdin))
+		case "notify_parent":
+			os.Exit(notifyParentCmd(os.Args[2:], os.Stdin))
+		case "interrupt_subagent":
+			dispatch("interrupt_subagent", func() error { return interruptSubagentCmd(os.Args[2:]) })
 			return
-		case "stop":
-			dispatch("stop", func() error { return stopCmd(os.Args[2:]) })
+		case "stop_subagent":
+			dispatch("stop_subagent", func() error { return stopSubagentCmd(os.Args[2:]) })
 			return
-		case "spawn":
-			dispatch("spawn", func() error { return spawnCmd(os.Args[2:]) })
+		case "spawn_subagent":
+			dispatch("spawn_subagent", func() error { return spawnSubagentCmd(os.Args[2:]) })
 			return
 		case "close-window":
 			dispatch("close-window", func() error { return closeWindowCmd(os.Args[2:]) })
@@ -203,10 +215,11 @@ func main() {
 		default:
 			// A leading flag (bare `kido -client NAME`, or any other flag)
 			// falls through to the interactive UI below, same as always.
-			// Anything else is a typo or a wrong name - the pi tool is
-			// called list_agents, the subcommand is `agents`, and the old
+			// Anything else is a typo or an old name - every subagent tool
+			// now names the subcommand it invokes, so what reaches here is
+			// most often a command's former spelling - and the old
 			// fallthrough reported a misleading tmux-client error instead
-			// of naming the mismatch - so say so instead of guessing at a
+			// of naming the mismatch, so say so instead of guessing at a
 			// client.
 			if !strings.HasPrefix(os.Args[1], "-") {
 				unknownSubcommand(os.Args[1])
@@ -617,15 +630,16 @@ func agentStatus(args []string) error {
 	return recordSession(*agent, *session, procs.ReporterPID(false), e, r)
 }
 
-// maxActivity caps what --activity records. The extension caps it too,
-// but a model is free to ignore the schema and any same-uid process can
-// run `kido agent-status`, so the cap that matters is this one.
+// maxActivity caps the activity both `kido agent-status --activity` and
+// `kido set_status` record. The extension caps it too, but a model is
+// free to ignore the schema and any same-uid process can run either
+// command, so the cap that matters is this one.
 const maxActivity = 256
 
 // oneLine makes model-authored free text safe to put in a state record:
 // control characters become spaces and the result is cut to max bytes on
 // a rune boundary. The sidebar budgets one terminal line per row and
-// `kido agents` prints a tab-separated table, and neither defends itself.
+// `kido list_agents` prints a tab-separated table, and neither defends itself.
 func oneLine(s string, max int) string {
 	s = strings.Map(func(r rune) rune {
 		if r == utf8.RuneError || unicode.IsControl(r) {

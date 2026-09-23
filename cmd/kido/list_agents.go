@@ -15,8 +15,8 @@ import (
 	"kido/internal/tree"
 )
 
-// AgentInfo is one row of `kido agents`, and what pi's list_agents tool
-// reports verbatim as JSON.
+// AgentInfo is one row of `kido list_agents`, and what pi's list_agents
+// tool reports verbatim as JSON.
 type AgentInfo struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
@@ -38,23 +38,23 @@ type AgentInfo struct {
 	Stalled bool `json:"stalled"`
 }
 
-func agentsUsage() string {
-	return "usage: kido agents [--session ID] [--json]"
+func listAgentsUsage() string {
+	return "usage: kido list_agents [--session ID] [--json]"
 }
 
-// agentsCmd implements `kido agents [--session ID] [--json]`: every agent
-// in a tmux session, defaulting to the session holding the caller's own
-// pane ($TMUX_PANE).
-func agentsCmd(args []string) error {
-	fs := flag.NewFlagSet("agents", flag.ContinueOnError)
+// listAgentsCmd implements `kido list_agents [--session ID] [--json]`:
+// every agent in a tmux session, defaulting to the session holding the
+// caller's own pane ($TMUX_PANE).
+func listAgentsCmd(args []string) error {
+	fs := flag.NewFlagSet("list_agents", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	session := fs.String("session", "", "tmux session id to list; defaults to the caller's own session")
 	asJSON := fs.Bool("json", false, "print JSON instead of a table")
 	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("%w\n%s", err, agentsUsage())
+		return fmt.Errorf("%w\n%s", err, listAgentsUsage())
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("unknown argument %q\n%s", fs.Arg(0), agentsUsage())
+		return fmt.Errorf("unknown argument %q\n%s", fs.Arg(0), listAgentsUsage())
 	}
 
 	panes, err := listPanes()
@@ -72,7 +72,7 @@ func agentsCmd(args []string) error {
 	if target == "" {
 		p, ok := findPane(panes, self)
 		if !ok {
-			return fmt.Errorf("no tmux session for pane %q; pass --session\n%s", self, agentsUsage())
+			return fmt.Errorf("no tmux session for pane %q; pass --session\n%s", self, listAgentsUsage())
 		}
 		target = p.SessionID
 	}
@@ -84,7 +84,7 @@ func agentsCmd(args []string) error {
 	return printAgents(os.Stdout, agents)
 }
 
-// buildAgents assembles the AgentInfo rows for kido agents and pi's
+// buildAgents assembles the AgentInfo rows for kido list_agents and pi's
 // list_agents tool: every live state.Session whose pane is currently in
 // session, decorated with its tmux.Pane.
 func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, self string) []AgentInfo {
@@ -169,9 +169,9 @@ func paneIndex(panes []tmux.Pane) map[string]tmux.Pane {
 	return byPane
 }
 
-// displayName is the name a session shows in kido agents and list_agents:
+// displayName is the name a session shows in kido list_agents:
 // its reported Title, falling back to its pane's title. matchTarget
-// (message.go) resolves by the same name, so the two must not drift.
+// (message_agent.go) resolves by the same name, so the two must not drift.
 func displayName(s state.Session, byPane map[string]tmux.Pane) string {
 	if s.Title != "" {
 		return s.Title

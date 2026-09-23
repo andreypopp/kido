@@ -10,7 +10,7 @@ import (
 
 // runSpawn types a shell command line into the client's active pane (the
 // session's plain shell, exactly as runPrompt does for kido prompt) that
-// runs `kido spawn` with the given extra args and a fake command, so
+// runs `kido spawn_subagent` with the given extra args and a fake command, so
 // KIDO_AGENT_* and the new window's cwd can be checked by reading a file
 // the fake command writes on start rather than by talking to a
 // TypeScript pi extension the e2e suite cannot host. Its own stdout
@@ -23,7 +23,7 @@ import (
 func (h *harness) runSpawn(outFile, envFile string, args ...string) {
 	h.t.Helper()
 	fake := shellQuote(fmt.Sprintf("env > %s; pwd >> %s; sleep 300", envFile, envFile))
-	cmd := fmt.Sprintf("%s spawn %s -- /bin/sh -c %s > %s 2>&1",
+	cmd := fmt.Sprintf("%s spawn_subagent %s -- /bin/sh -c %s > %s 2>&1",
 		kidoBin, strings.Join(args, " "), fake, outFile)
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")
@@ -57,15 +57,15 @@ func envLine(envOutput, key string) string {
 	return ""
 }
 
-// TestSpawnCreatesWindowInCallerSession drives `kido spawn` the way
+// TestSpawnCreatesWindowInCallerSession drives `kido spawn_subagent` the way
 // spawn_subagent (pi/kido-agents.ts) does, with a fake command standing in
-// for pi, and checks everything that only exists because `kido spawn` is
+// for pi, and checks everything that only exists because `kido spawn_subagent` is
 // a testable command in its own right (docs/design.md, "Spawning"): the
 // new window lands in the
 // caller's own session, keeps the caller's own turn (-d), starts in the
 // caller's own directory (-c), is named as asked, and the spawned process
 // actually sees the KIDO_AGENT_* variables in its environment (-e) - not
-// merely that kido spawn believes it passed them.
+// merely that kido spawn_subagent believes it passed them.
 func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -90,7 +90,7 @@ func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 	out := strings.TrimSpace(h.waitFileNonEmpty(outFile))
 	fields := strings.Fields(out)
 	if len(fields) != 3 {
-		t.Fatalf("kido spawn printed %q, want \"<window id> <pane id> <run id>\"", out)
+		t.Fatalf("kido spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", out)
 	}
 	windowID, paneID, runID := fields[0], fields[1], fields[2]
 
@@ -103,7 +103,7 @@ func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 
 	// -d: the caller's own client is not yanked to the new window.
 	if got := h.activeWindowID("alpha"); got != activeBefore {
-		t.Errorf("active window changed from %s to %s; kido spawn must pass -d", activeBefore, got)
+		t.Errorf("active window changed from %s to %s; kido spawn_subagent must pass -d", activeBefore, got)
 	}
 
 	env := h.waitFileNonEmpty(envFile)
@@ -124,7 +124,7 @@ func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 		"KIDO_AGENT_DEPTH":           "1",
 	} {
 		if got := envLine(env, k); got != want {
-			t.Errorf("spawned process's %s = %q, want %q (kido spawn's -e must reach it, not just the caller's own environment)", k, got, want)
+			t.Errorf("spawned process's %s = %q, want %q (kido spawn_subagent's -e must reach it, not just the caller's own environment)", k, got, want)
 		}
 	}
 
@@ -160,7 +160,7 @@ func (h *harness) activeWindowID(session string) string {
 // inside a real tmux server rather than the fake-newWindow unit test
 // (TestSpawnRefusedAtMaxDepth). The caller's depth is recorded first with
 // a real `kido agent-status` call, exactly as pi's own status reporting
-// would - kido spawn derives the child's depth from that record, not from
+// would - kido spawn_subagent derives the child's depth from that record, not from
 // --depth, so this also stands in for "a
 // caller at the ceiling cannot escape by passing a smaller --depth": the
 // spawn below claims --depth 1, which would be allowed if trusted.
@@ -177,17 +177,17 @@ func TestSpawnRefusesDepthBeyondCeiling(t *testing.T) {
 	}
 	cmd := fmt.Sprintf(
 		"%s agent-status --agent pi --session caller-e2e --status idle --depth %d && "+
-			"%s spawn --parent-pid 1 --parent-instance p --depth 1 --name kid --task-file %s > %s 2>&1; echo rc=$? >> %s",
+			"%s spawn_subagent --parent-pid 1 --parent-instance p --depth 1 --name kid --task-file %s > %s 2>&1; echo rc=$? >> %s",
 		kidoBin, maxDepthForTest, kidoBin, taskFile, outFile, outFile)
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")
 
 	out := h.waitFileNonEmpty(outFile)
 	if !strings.Contains(out, "maximum nesting") {
-		t.Errorf("kido spawn output = %q, want a refusal naming the depth ceiling", out)
+		t.Errorf("kido spawn_subagent output = %q, want a refusal naming the depth ceiling", out)
 	}
 	if !strings.Contains(out, "rc=1") {
-		t.Errorf("kido spawn output = %q, want a non-zero exit", out)
+		t.Errorf("kido spawn_subagent output = %q, want a non-zero exit", out)
 	}
 
 	after := len(strings.Split(h.in("list-windows", "-t", "alpha", "-F", "#{window_id}"), "\n"))

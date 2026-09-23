@@ -33,7 +33,7 @@ func TestAgentsCmdDefaultsToTheCallersSession(t *testing.T) {
 	}
 
 	var err error
-	out := captureStdout(t, func() { err = agentsCmd([]string{"--json"}) })
+	out := captureStdout(t, func() { err = listAgentsCmd([]string{"--json"}) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestAgentsCmdDefaultsToTheCallersSession(t *testing.T) {
 
 	// An explicit --session reaches the other one, so the filtering above
 	// is the default rather than the only answer available.
-	out = captureStdout(t, func() { err = agentsCmd([]string{"--json", "--session", "$2"}) })
+	out = captureStdout(t, func() { err = listAgentsCmd([]string{"--json", "--session", "$2"}) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,14 +68,14 @@ func TestAgentsCmdWithNoCallerPane(t *testing.T) {
 	t.Setenv("TMUX_PANE", "")
 	withPanes(t, []tmux.Pane{{PaneID: "%1", SessionID: "$1", WindowID: "@1"}})
 
-	err := agentsCmd([]string{"--json"})
+	err := listAgentsCmd([]string{"--json"})
 	if err == nil {
 		t.Fatal("agents with no caller pane = nil error, want a refusal")
 	}
 	if !strings.Contains(err.Error(), "pass --session") {
 		t.Errorf("error = %q, want it to point at --session", err)
 	}
-	out := captureStdout(t, func() { err = agentsCmd([]string{"--json", "--session", "$1"}) })
+	out := captureStdout(t, func() { err = listAgentsCmd([]string{"--json", "--session", "$1"}) })
 	if err != nil {
 		t.Fatalf("agents --session from outside tmux = %v, want it answered", err)
 	}

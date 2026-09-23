@@ -35,7 +35,7 @@ func pane(paneID, windowID string) tmux.Pane {
 	return tmux.Pane{PaneID: paneID, WindowID: windowID, SessionID: "$0"}
 }
 
-// marked is p with the @kido_subagent option kido spawn sets.
+// marked is p with the @kido_subagent option kido spawn_subagent sets.
 func marked(p tmux.Pane) tmux.Pane {
 	p.Subagent = "parent=root-inst depth=1"
 	return p
@@ -96,7 +96,7 @@ func TestSweepWaitsOutTheGrace(t *testing.T) {
 // TestSweepNeverTouchesAnUnmarkedWindow is the guard against the failure
 // the mark was introduced for: a stale state file from a previous tmux
 // server names %0, a pane id this server has since handed to somebody
-// else's shell. Only a window kido spawn marked may ever be closed, so
+// else's shell. Only a window kido spawn_subagent marked may ever be closed, so
 // neither rule can reach it - and with no mark anywhere in the pane
 // list, Sweep says so without folding the windows at all.
 func TestSweepNeverTouchesAnUnmarkedWindow(t *testing.T) {

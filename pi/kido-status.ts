@@ -63,7 +63,7 @@ import { delimiter, isAbsolute, join } from "node:path";
 const INSTANCE_SLOT = Symbol.for("kido.pi.extension.instance");
 const INSTANCE = ((globalThis as unknown as Record<symbol, string | undefined>)[INSTANCE_SLOT] ??= randomUUID());
 
-// Set by `kido spawn` in a subagent's environment; absent for a root
+// Set by `kido spawn_subagent` in a subagent's environment; absent for a root
 // session. kido-agents.ts reads the same three itself.
 const PARENT_PID = process.env.KIDO_AGENT_PARENT_PID ? Number(process.env.KIDO_AGENT_PARENT_PID) : undefined;
 const PARENT_INSTANCE = process.env.KIDO_AGENT_PARENT_INSTANCE || undefined;
@@ -517,8 +517,15 @@ export default function (pi: ExtensionAPI) {
     status: () => current,
     inboxOpen: () => inbox !== null,
     setActivity: (text: string) => {
+      // Two writes of one fact, and both are needed. `kido set_status` is
+      // the narrow command behind the narrow tool, and it updates the
+      // record without disturbing anything else on it; the local variable
+      // is what every later `kido agent-status` report carries, and
+      // leaving it stale would have the next report clear the activity
+      // this one just set. Fire-and-forget, as this has always been: the
+      // model is told "ok" before any subprocess could answer.
       activity = capBytes(text, MAX_ACTIVITY_BYTES);
-      send(current);
+      if (kido) spawnDetached(kido, ["set_status", "--", activity]);
     },
     deliver,
     runKido,

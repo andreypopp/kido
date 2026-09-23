@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,7 @@ import (
 )
 
 // withPanes points listPanes at a fixed list for the duration of the test,
-// so message never talks to a real tmux server.
+// so the message-sending commands never talk to a real tmux server.
 func withPanes(t *testing.T, panes []tmux.Pane) {
 	t.Helper()
 	prev := listPanes
@@ -61,8 +62,8 @@ func TestMessageV0RawText(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := message([]string{"target"}, strings.NewReader("hello there")); code != 0 {
-		t.Fatalf("message = %d, want 0", code)
+	if code := messageAgentCmd([]string{"target"}, strings.NewReader("hello there")); code != 0 {
+		t.Fatalf("message_agent = %d, want 0", code)
 	}
 	msgs := in.Received()
 	if len(msgs) != 1 || msgs[0] != "hello there" {
@@ -70,9 +71,12 @@ func TestMessageV0RawText(t *testing.T) {
 	}
 }
 
-// TestMessageV1Envelope checks that a target advertising protocol 1 gets a
-// v1 JSON envelope with kind "message" and the text intact, and that
-// --reply-to lands in the envelope's ReplyTo.
+// TestMessageV1Envelope checks that a target advertising protocol 1 gets
+// a v1 JSON envelope with the text intact, and the reply rule the split
+// command surface introduced: --reply-to alone makes it a reply, both in
+// the envelope's kind and in its ReplyTo. There used to be a --kind flag
+// as well, and `--kind reply --reply-to ID` was the only correct
+// spelling of one thing.
 func TestMessageV1Envelope(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -85,8 +89,8 @@ func TestMessageV1Envelope(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := message([]string{"--reply-to", "ask-1", "target"}, strings.NewReader("hi there")); code != 0 {
-		t.Fatalf("message = %d, want 0", code)
+	if code := messageAgentCmd([]string{"--reply-to", "ask-1", "target"}, strings.NewReader("hi there")); code != 0 {
+		t.Fatalf("message_agent = %d, want 0", code)
 	}
 	msgs := in.Received()
 	if len(msgs) != 1 {
@@ -96,11 +100,139 @@ func TestMessageV1Envelope(t *testing.T) {
 	if !ok {
 		t.Fatalf("payload %q did not parse as a v1 envelope", msgs[0])
 	}
-	if env.Kind != msg.KindMessage || env.Text != "hi there" || env.ID == "" {
-		t.Errorf("envelope = %+v, want kind message, text %q, a non-empty id", env, "hi there")
+	if env.Kind != msg.KindReply || env.Text != "hi there" || env.ID == "" {
+		t.Errorf("envelope = %+v, want kind reply, text %q, a non-empty id", env, "hi there")
 	}
 	if env.ReplyTo != "ask-1" {
 		t.Errorf("envelope.ReplyTo = %q, want %q", env.ReplyTo, "ask-1")
+	}
+}
+
+// TestMessageV1PlainKind is the other half of the rule above: without
+// --reply-to the same command sends a plain message, correlating nothing.
+func TestMessageV1PlainKind(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%1")
+	withPanes(t, samePane)
+
+	in := testutil.StartInbox(t, "ok\n")
+	if err := state.Record("target", state.Session{
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path, Protocol: msg.V1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := messageAgentCmd([]string{"target"}, strings.NewReader("hi there")); code != 0 {
+		t.Fatalf("message_agent = %d, want 0", code)
+	}
+	msgs := in.Received()
+	if len(msgs) != 1 {
+		t.Fatalf("server got %d messages, want 1: %q", len(msgs), msgs)
+	}
+	env, ok := msg.Parse([]byte(msgs[0]))
+	if !ok {
+		t.Fatalf("payload %q did not parse as a v1 envelope", msgs[0])
+	}
+	if env.Kind != msg.KindMessage || env.ReplyTo != "" {
+		t.Errorf("envelope = %+v, want kind message and no ReplyTo", env)
+	}
+}
+
+// TestNotifyParentSendsToTheInstanceInTheEnvironment pins what makes
+// `kido notify_parent` take no target at all: the parent comes from
+// KIDO_AGENT_PARENT_INSTANCE, matched against the live registry. The
+// only record here is reachable by nothing else - its pane is in another
+// tmux session, where resolveTarget's scope would refuse it, and no
+// name or id argument is given - so a delivery can only have come from
+// the instance in the environment. That is also the negative control
+// for the round trip this replaced: pi's notify_parent used to read its
+// own row out of the agent list, and the agent list cannot see this
+// target.
+func TestNotifyParentSendsToTheInstanceInTheEnvironment(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%1")
+	withPanes(t, []tmux.Pane{
+		{PaneID: "%1", SessionID: "$1"},
+		{PaneID: "%9", SessionID: "$2"},
+	})
+
+	in := testutil.StartInbox(t, "ok\n")
+	if err := state.Record("parent", state.Session{
+		Pane: "%9", PID: os.Getpid(), Status: state.Idle, Instance: "parent-inst",
+		Inbox: in.Path, Protocol: msg.V1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "parent-inst")
+	if code := notifyParentCmd(nil, strings.NewReader("the answer is 42")); code != 0 {
+		t.Fatalf("notify_parent = %d, want 0", code)
+	}
+	msgs := in.Received()
+	if len(msgs) != 1 {
+		t.Fatalf("parent inbox got %q, want one envelope", msgs)
+	}
+	env, ok := msg.Parse([]byte(msgs[0]))
+	if !ok {
+		t.Fatalf("payload %q did not parse as a v1 envelope", msgs[0])
+	}
+	if env.Kind != msg.KindNotice || env.Text != "the answer is 42" {
+		t.Errorf("envelope = %+v, want kind notice carrying the summary", env)
+	}
+}
+
+// TestNotifyParentWithoutAParentRefuses: a root session has no parent to
+// tell, which must read as a refusal rather than a silent success - and
+// must send nothing, even though a perfectly addressable agent is sitting
+// there with an inbox. The second case pins that the parent is never an
+// argument: naming one is a usage error, not an address.
+func TestNotifyParentWithoutAParentRefuses(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%1")
+	withPanes(t, samePane)
+	pastes := withSendPrompt(t, errors.New("sendPrompt must not be called"))
+
+	in := testutil.StartInbox(t, "ok\n")
+	if err := state.Record("peer", state.Session{
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Instance: "peer-inst",
+		Inbox: in.Path, Protocol: msg.V1, Title: "peer",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "")
+	if code := notifyParentCmd(nil, strings.NewReader("nobody to tell")); code != 1 {
+		t.Errorf("notify_parent with no parent in the environment = %d, want 1", code)
+	}
+
+	t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "peer-inst")
+	if code := notifyParentCmd([]string{"peer"}, strings.NewReader("named a target")); code != 1 {
+		t.Errorf("notify_parent with an argument = %d, want 1", code)
+	}
+
+	if msgs := in.Received(); len(msgs) != 0 {
+		t.Errorf("inbox got %q, want nothing sent", msgs)
+	}
+	if calls := pastes(); len(calls) != 0 {
+		t.Errorf("sendPrompt calls = %v, want none", calls)
+	}
+}
+
+// TestNotifyParentGoneParent: the instance in the environment naming
+// nobody live is the ordinary case of a parent that has since exited, and
+// is an error naming the instance rather than a fallback to anything.
+func TestNotifyParentGoneParent(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%1")
+	withPanes(t, samePane)
+	pastes := withSendPrompt(t, errors.New("sendPrompt must not be called"))
+
+	t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "long-gone")
+	if code := notifyParentCmd(nil, strings.NewReader("anybody there?")); code != 1 {
+		t.Error("notify_parent to a gone parent = 0, want 1")
+	}
+	if calls := pastes(); len(calls) != 0 {
+		t.Errorf("sendPrompt calls = %v, want none", calls)
 	}
 }
 
@@ -119,7 +251,7 @@ func TestMessageResolveByName(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := message([]string{"worker-2"}, strings.NewReader("x")); code != 0 {
+	if code := messageAgentCmd([]string{"worker-2"}, strings.NewReader("x")); code != 0 {
 		t.Errorf("code = %d, want 0", code)
 	}
 	if msgs := in.Received(); len(msgs) != 1 {
@@ -130,7 +262,7 @@ func TestMessageResolveByName(t *testing.T) {
 // TestMessageResolveByPaneTitleFallback: buildAgents (agents.go) names a
 // session with no reported Title after its pane's title, and that is the
 // name a model reads off list_agents. matchTarget must accept that same
-// name, or kido message refuses a target by the very name kido agents
+// name, or kido message_agent refuses a target by the very name kido list_agents
 // just showed for it.
 func TestMessageResolveByPaneTitleFallback(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
@@ -147,8 +279,8 @@ func TestMessageResolveByPaneTitleFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := message([]string{"worker-2"}, strings.NewReader("hi")); code != 0 {
-		t.Fatalf("code = %d, want 0: worker-2 is the name kido agents shows for this session", code)
+	if code := messageAgentCmd([]string{"worker-2"}, strings.NewReader("hi")); code != 0 {
+		t.Fatalf("code = %d, want 0: worker-2 is the name kido list_agents shows for this session", code)
 	}
 	if msgs := in.Received(); len(msgs) != 1 {
 		t.Fatalf("server got %q, want one message", msgs)
@@ -184,19 +316,19 @@ func TestMessageResolveAmbiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := message([]string{"abc123"}, strings.NewReader("x")); code != 0 {
+	if code := messageAgentCmd([]string{"abc123"}, strings.NewReader("x")); code != 0 {
 		t.Errorf("exact id: code = %d, want 0", code)
 	}
-	if code := message([]string{"abc"}, strings.NewReader("x")); code != 0 {
+	if code := messageAgentCmd([]string{"abc"}, strings.NewReader("x")); code != 0 {
 		t.Errorf("unique prefix: code = %d, want 0", code)
 	}
-	if code := message([]string{"ab"}, strings.NewReader("x")); code == 0 {
+	if code := messageAgentCmd([]string{"ab"}, strings.NewReader("x")); code == 0 {
 		t.Error("ambiguous id prefix: code = 0, want an error")
 	}
-	if code := message([]string{"nope"}, strings.NewReader("x")); code == 0 {
+	if code := messageAgentCmd([]string{"nope"}, strings.NewReader("x")); code == 0 {
 		t.Error("no match: code = 0, want an error")
 	}
-	if code := message([]string{"scout"}, strings.NewReader("x")); code == 0 {
+	if code := messageAgentCmd([]string{"scout"}, strings.NewReader("x")); code == 0 {
 		t.Error("ambiguous name: code = 0, want an error")
 	}
 }
@@ -219,7 +351,7 @@ func TestMessageOutOfSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code := message([]string{"elsewhere"}, strings.NewReader("x"))
+	code := messageAgentCmd([]string{"elsewhere"}, strings.NewReader("x"))
 	if code == 0 {
 		t.Fatal("code = 0, want an error: elsewhere is in another session")
 	}
@@ -240,7 +372,7 @@ func TestMessageNoInboxPastes(t *testing.T) {
 	if err := state.Record("target", state.Session{Pane: "%2", PID: os.Getpid(), Status: state.Idle}); err != nil {
 		t.Fatal(err)
 	}
-	if code := message([]string{"target"}, strings.NewReader("hi claude")); code != 0 {
+	if code := messageAgentCmd([]string{"target"}, strings.NewReader("hi claude")); code != 0 {
 		t.Fatalf("code = %d, want 0", code)
 	}
 	calls := pastes()
@@ -268,7 +400,7 @@ func TestMessageInboxHardErrorNoFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := message([]string{"target"}, strings.NewReader("x")); code == 0 {
+	if code := messageAgentCmd([]string{"target"}, strings.NewReader("x")); code == 0 {
 		t.Fatal("code = 0, want an error: the inbox failure must not be swallowed")
 	}
 	if calls := pastes(); len(calls) != 0 {
@@ -279,7 +411,7 @@ func TestMessageInboxHardErrorNoFallback(t *testing.T) {
 // TestMessageEmptyStdin checks that empty input is rejected before kido
 // resolves a target at all.
 func TestMessageEmptyStdin(t *testing.T) {
-	if code := message([]string{"whoever"}, strings.NewReader("")); code != 1 {
+	if code := messageAgentCmd([]string{"whoever"}, strings.NewReader("")); code != 1 {
 		t.Errorf("code = %d, want 1", code)
 	}
 }
@@ -287,10 +419,10 @@ func TestMessageEmptyStdin(t *testing.T) {
 // TestMessageUsage checks argument-count errors: no target and more than
 // one positional argument are both rejected.
 func TestMessageUsage(t *testing.T) {
-	if code := message(nil, strings.NewReader("x")); code != 1 {
+	if code := messageAgentCmd(nil, strings.NewReader("x")); code != 1 {
 		t.Errorf("no target: code = %d, want 1", code)
 	}
-	if code := message([]string{"a", "b"}, strings.NewReader("x")); code != 1 {
+	if code := messageAgentCmd([]string{"a", "b"}, strings.NewReader("x")); code != 1 {
 		t.Errorf("two targets: code = %d, want 1", code)
 	}
 }
@@ -341,7 +473,7 @@ func TestMessageRefusesSelf(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if code := message([]string{"Self"}, strings.NewReader("talking to myself")); code != 1 {
+	if code := messageAgentCmd([]string{"Self"}, strings.NewReader("talking to myself")); code != 1 {
 		t.Fatalf("code = %d, want 1", code)
 	}
 	if calls := pastes(); len(calls) != 0 {
@@ -364,7 +496,7 @@ func TestMessageRefusesInvalidUTF8(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if code := message([]string{"Alpha"}, strings.NewReader("bad:\xff\xfe:end")); code != 1 {
+	if code := messageAgentCmd([]string{"Alpha"}, strings.NewReader("bad:\xff\xfe:end")); code != 1 {
 		t.Fatalf("code = %d, want 1", code)
 	}
 	if calls := pastes(); len(calls) != 0 {
@@ -372,11 +504,11 @@ func TestMessageRefusesInvalidUTF8(t *testing.T) {
 	}
 }
 
-// TestMessageKindAsk checks that --kind ask sends an ask envelope with no
+// TestAskAgent checks that `kido ask_agent` sends an ask envelope with no
 // ReplyTo, and that the caller-supplied --id, not a generated one, is
 // what ends up on the wire - ask_agent (pi/kido-agents.ts) must know the
 // id before sending, to register what it is waiting for.
-func TestMessageKindAsk(t *testing.T) {
+func TestAskAgent(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
 	withPanes(t, samePane)
@@ -388,8 +520,8 @@ func TestMessageKindAsk(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := message([]string{"--kind", "ask", "--id", "ask-7", "target"}, strings.NewReader("are you done?")); code != 0 {
-		t.Fatalf("message = %d, want 0", code)
+	if code := askAgentCmd([]string{"--id", "ask-7", "target"}, strings.NewReader("are you done?")); code != 0 {
+		t.Fatalf("ask_agent = %d, want 0", code)
 	}
 	msgs := in.Received()
 	if len(msgs) != 1 {
@@ -404,19 +536,24 @@ func TestMessageKindAsk(t *testing.T) {
 	}
 }
 
-// TestMessageKindRejected checks the flag combinations message refuses
-// before it delivers anything at all - each case is a rule about what a
-// kind means, and a live target is recorded for every one of them so a
-// pass cannot come from the target being unresolvable instead.
-func TestMessageKindRejected(t *testing.T) {
+// TestMessageKindCannotBeMisstated is what is left of a table that used
+// to reject three ways of naming a kind wrongly (a reply with no
+// --reply-to, an ask with one, a --kind nobody defines). The kind is no
+// longer said out loud at all: it comes from which command was run, so
+// the only spelling those rules still have is a flag on a command that
+// does not define it, and flag.FlagSet refuses that before anything is
+// resolved or delivered. A live target is recorded anyway, so a pass
+// cannot come from the target being unresolvable instead.
+func TestMessageKindCannotBeMisstated(t *testing.T) {
 	cases := []struct {
 		name string
+		run  func([]string, io.Reader) int
 		args []string
 		why  string
 	}{
-		{"reply without reply-to", []string{"--kind", "reply", "target"}, "a reply must name the ask it answers"},
-		{"ask with reply-to", []string{"--kind", "ask", "--reply-to", "x", "target"}, "an ask starts a new correlation, it does not answer one"},
-		{"unknown kind", []string{"--kind", "bogus", "target"}, "only the four kinds in msg.Kind exist"},
+		{"ask with reply-to", askAgentCmd, []string{"--reply-to", "x", "target"}, "an ask starts a new correlation, it does not answer one"},
+		{"message with an id", messageAgentCmd, []string{"--id", "x", "target"}, "only an ask assigns its own id, so its waiter can be registered first"},
+		{"kind named explicitly", messageAgentCmd, []string{"--kind", "reply", "target"}, "the command is the kind; --kind no longer exists"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -428,7 +565,7 @@ func TestMessageKindRejected(t *testing.T) {
 			if err := state.Record("target", state.Session{Pane: "%2", PID: os.Getpid(), Status: state.Idle}); err != nil {
 				t.Fatal(err)
 			}
-			if code := message(c.args, strings.NewReader("x")); code != 1 {
+			if code := c.run(c.args, strings.NewReader("x")); code != 1 {
 				t.Fatalf("code = %d, want 1: %s", code, c.why)
 			}
 			if calls := pastes(); len(calls) != 0 {
@@ -454,7 +591,7 @@ func TestMessageKindNonMessageRequiresV1(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if code := message([]string{"--kind", "ask", "target"}, strings.NewReader("x")); code != 1 {
+	if code := askAgentCmd([]string{"target"}, strings.NewReader("x")); code != 1 {
 		t.Fatalf("code = %d, want 1", code)
 	}
 	if calls := pastes(); len(calls) != 0 {
@@ -484,7 +621,7 @@ func TestMessageAskRefusalDoesNotPaste(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code := message([]string{"--kind", "ask", "--id", "ask-9", "target"}, strings.NewReader("are you done?"))
+	code := askAgentCmd([]string{"--id", "ask-9", "target"}, strings.NewReader("are you done?"))
 	if code == 0 {
 		t.Fatal("code = 0, want an error: the ask was refused")
 	}
@@ -512,21 +649,26 @@ func TestMessageNoticeToADeadV1AgentDoesNotPaste(t *testing.T) {
 	pastes := withSendPrompt(t, nil)
 
 	// A path with nothing listening on it: exactly what a dead agent's
-	// record still names.
+	// record still names. The instance is what makes the same record the
+	// parent notify_parent resolves out of the environment.
 	if err := state.Record("target", state.Session{
-		Pane: "%2", PID: os.Getpid(), Status: state.Idle,
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Instance: "target-inst",
 		Inbox: filepath.Join(t.TempDir(), "gone.sock"), Protocol: msg.V1,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	for _, kind := range []string{"notice", "ask", "reply"} {
-		args := []string{"--kind", kind, "target"}
-		if kind == "reply" {
-			args = append([]string{"--reply-to", "ask-1"}, args...)
-		}
-		if code := message(args, strings.NewReader("touch /tmp/pwned")); code != 1 {
-			t.Errorf("message --kind %s = %d, want 1", kind, code)
+	t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "target-inst")
+	sends := map[string]func() int{
+		"notice": func() int { return notifyParentCmd(nil, strings.NewReader("touch /tmp/pwned")) },
+		"ask":    func() int { return askAgentCmd([]string{"target"}, strings.NewReader("touch /tmp/pwned")) },
+		"reply": func() int {
+			return messageAgentCmd([]string{"--reply-to", "ask-1", "target"}, strings.NewReader("touch /tmp/pwned"))
+		},
+	}
+	for kind, run := range sends {
+		if code := run(); code != 1 {
+			t.Errorf("a %s to a dead v1 agent = %d, want 1", kind, code)
 		}
 	}
 	if calls := pastes(); len(calls) != 0 {
@@ -549,7 +691,7 @@ func TestMessageNoInboxStillPastes(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if code := message([]string{"target"}, strings.NewReader("hello")); code != 0 {
+	if code := messageAgentCmd([]string{"target"}, strings.NewReader("hello")); code != 0 {
 		t.Fatalf("message = %d, want 0", code)
 	}
 	if calls := pastes(); len(calls) != 1 {

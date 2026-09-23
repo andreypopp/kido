@@ -94,7 +94,7 @@ func agentState(inst, parent, title string) state.Session {
 
 // deadSubagentPane is a finished subagent's window as the sweep sees it
 // during its linger: its record is gone (nothing in states names its
-// pane), but the window mark kido spawn wrote survives, since only the
+// pane), but the window mark kido spawn_subagent wrote survives, since only the
 // state record and the mark's own "run=" prefix are removed by
 // kido agent-status --remove.
 func deadSubagentPane(w, pane, parentInstance string) tmux.Pane {
@@ -552,7 +552,7 @@ func TestOrderWindowsByTreeFallsBackToMarkWhenRecordGone(t *testing.T) {
 // TestOrderWindowsByTreeRecordBeatsStaleMark checks requirement 1: the
 // record stays authoritative whenever it exists, even one that disagrees
 // with the mark - a live subagent moved or reparented by
-// kido spawn --resume, whose window mark was written once at creation
+// kido spawn_subagent --resume, whose window mark was written once at creation
 // and is never rewritten to match.
 func TestOrderWindowsByTreeRecordBeatsStaleMark(t *testing.T) {
 	windows := [][]tmux.Pane{
