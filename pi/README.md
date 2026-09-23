@@ -43,9 +43,9 @@ inside the pi process, which lives in the tmux pane.
 and reported on every call, so kido can tell this process from another one
 reusing its pid. `--parent-pid`, `--parent-instance` and `--depth` are read
 once from `KIDO_AGENT_PARENT_PID`, `KIDO_AGENT_PARENT_INSTANCE` and
-`KIDO_AGENT_DEPTH`, which `kido spawn_subagent` sets in a subagent's environment (see
-docs/design-subagents.md, "What a child is given"); absent for a root
-session.
+`KIDO_AGENT_DEPTH`, which `kido spawn_subagent` sets in a subagent's
+environment (see docs/design-subagents.md, "What a child is given");
+absent for a root session.
 
 Those variables are inherited by anything the session starts, so they are
 not on their own what makes this process a subagent: everything that acts
@@ -175,8 +175,9 @@ nothing useful until a session has started and kido has been found:
   `kido ask_agent --id <id> -- <to>`, then blocks the tool call until a
   matching `reply` envelope arrives at this session's own inbox - which is
   also why `kido ask_agent` itself only sends: a short-lived subprocess
-  has no inbox of its own to receive the answer on. Default timeout is 5 minutes; a timeout returns
-  an error naming the ask's id, and a reply that arrives after the timeout
+  has no inbox of its own to receive the answer on. Default timeout is 5
+  minutes; a timeout returns an error naming the ask's id, and a reply
+  that arrives after the timeout
   still reaches the model, as an ordinary message (see Inbox dispatch,
   below). A wait also ends early, with a different error, if this
   session's inbox goes away under it - `session_shutdown`, or a `/reload`
@@ -249,28 +250,30 @@ instead of `ok` - a distinct answer kido's `deliverInbox` reports as its
 own error, never triggering the send-keys paste fallback, since nothing
 was mis-delivered. A refused ask is not delivered to the model at all.
 
-- `interrupt_subagent(to)` runs `kido interrupt_subagent -- <to>`, which delivers an
-  `interrupt` envelope; this session answers one addressed to it with
-  `ctx.abort()`, aborting the current turn without ending the session.
-- `stop_subagent(to, force?)` runs `kido stop_subagent [--force] -- <to>`, which
-  delivers a `stop` envelope; this session answers one addressed to it
+- `interrupt_subagent(to)` runs `kido interrupt_subagent -- <to>`, which
+  delivers an `interrupt` envelope; this session answers one addressed to
+  it with `ctx.abort()`, aborting the current turn without ending the
+  session.
+- `stop_subagent(to, force?)` runs `kido stop_subagent [--force] -- <to>`,
+  which delivers a `stop` envelope; this session answers one addressed to it
   with `ctx.shutdown()`, the same teardown a normal exit runs
   (`session_shutdown`: inbox closed, record removed, own window's linger
-  scheduled). `kido stop_subagent` escalates to killing the target's pane if it
-  does not go within a few seconds - see docs/design.md, "Interrupt and
+  scheduled). `kido stop_subagent` escalates to killing the target's pane
+  if it does not go within a few seconds - see docs/design.md, "Interrupt and
   stop".
 - `notify_parent(summary)` runs `kido notify_parent`, piping `summary` on
   stdin and naming no target: the command reads the parent out of
   `KIDO_AGENT_PARENT_INSTANCE` in its own environment. Refused, before
   anything is sent, for a session with no parent - a root session was not
   spawned, so there is nobody to tell, and both the tool and the command
-  say so. Call this once, when the model itself judges its
-  delegated work is actually done; nothing calls it automatically (see
+  say so. Call this once, when the model itself judges its delegated work
+  is actually done; nothing calls it automatically (see
   "Notices to a parent" above).
 
 Both are refused - on the wire, as `refused` - unless the sender can be
 verified as an ancestor of this session (the same ancestor walk
 `ask_agent`'s own refusal uses, in the opposite direction): a caller may
-only interrupt or stop its own descendants. `kido interrupt_subagent`/`kido stop_subagent`
-already enforce this before ever sending the envelope; this session
+only interrupt or stop its own descendants. `kido interrupt_subagent` and
+`kido stop_subagent` already enforce this before ever sending the
+envelope; this session
 checks it again on receipt, since `from` is advisory.

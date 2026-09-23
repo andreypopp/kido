@@ -22,6 +22,7 @@ const (
 	KindAsk       Kind = "ask"       // a question expecting a reply envelope
 	KindReply     Kind = "reply"     // the answer to an earlier ask, by ReplyTo
 	KindNotice    Kind = "notice"    // informational, no reply expected
+	KindSteer     Kind = "steer"     // a course correction, delivered into the receiver's running turn
 	KindInterrupt Kind = "interrupt" // abort the receiver's current turn; it stays alive
 	KindStop      Kind = "stop"      // end the receiver's session
 )

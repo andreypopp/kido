@@ -26,7 +26,7 @@ neither does this file.
     internal/hook/     Claude Code hook event -> status table
     internal/procs/    process-tree scan: agent panes, ssh destinations
     internal/msg/      the inbox wire protocol: v0 raw prompt, v1 envelope
-    internal/tree/     the parent-first walk behind `kido list_agents` and the sidebar
+    internal/tree/     the parent-first walk behind list_agents and the sidebar
     internal/reap/     which subagent windows are finished with, and when
     internal/subrun/   the durable record of one `kido spawn_subagent`
     internal/testutil/ test scaffolding shared by more than one package
@@ -270,6 +270,15 @@ build it paid for).
   both lines run either way once Enter fires, so only "the second line
   reached the prompt before the first one's output" distinguishes a paste
   from typed keys.
+- **`TestEveryToolHasASubcommandOfItsName`** and its TypeScript twin —
+  one list, `pi/testdata/tools.json`, checked from both sides: pi's suite
+  asserts the registered tools are exactly those names, this one asserts
+  each is in `subcommands`. Either half alone is decoration. Delete the
+  TypeScript half and a tool added with no subcommand passes, which is
+  the drift the pair exists to catch and the exact confusion that
+  produced the rule; delete the Go half and the fixture pins nothing but
+  itself. Same shape, and same reason, as
+  `internal/msg/testdata/discriminator.json`.
 - **`TestParseGuardLookalike`** — command output resembling a control-mode
   guard line must not be read as `%end`.
 - **`TestLoadAgentPrecedence`** — pi wins over Claude Code for the same
@@ -300,8 +309,8 @@ build it paid for).
   it. Reaching for the file inside would put an open in the 100ms path
   and let `stallPending`'s two instants be judged from two baselines.
 - **`TestBuildAgentsRecycledPIDNoEdge`** — the parent edge in `kido
-  list_agents` matches on `ParentInstance`, not `ParentPID`, because `alive()`
-  reports `EPERM` as alive and cannot tell a recycled pid from the
+  list_agents` matches on `ParentInstance`, not `ParentPID`, because
+  `alive()` reports `EPERM` as alive and cannot tell a recycled pid from the
   parent. Nothing in the reaper consults a pid any more either, which is
   what removed the matching known limit.
 - **`TestLeakCheckCatchesAccumulation`** (e2e) — the harness's control-

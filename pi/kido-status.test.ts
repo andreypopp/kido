@@ -881,6 +881,45 @@ test("abandonPending: session_shutdown and a failed rebind settle a waiting ask 
   }
 });
 
+// The extension's end of "each tool gets its own subcommand"
+// (docs/design-subagents.md, "The tools, and their commands"). This half
+// asserts the registered tools are exactly the names in
+// pi/testdata/tools.json; cmd/kido's own
+// TestEveryToolHasASubcommandOfItsName asserts every name in that file is
+// a kido subcommand. Split that way because the drift worth catching is a
+// tool added here - which this test fails until the fixture names it, and
+// the Go test then fails until kido has the subcommand. A Go-side list of
+// tool names on its own would never notice, since nobody adding a tool to
+// this file has a reason to go and edit one.
+//
+// Registration is unconditional at factory time, so a plain session sees
+// every tool; nothing here depends on a session having resolved kido.
+test("the registered tools are exactly the shared list both suites check subcommand parity against", async () => {
+  const fx = makeFixture();
+  try {
+    const s = await startSession(fx);
+    const fixturePath = join(dirname(fileURLToPath(import.meta.url)), "testdata", "tools.json");
+    const expected: string[] = JSON.parse(readFileSync(fixturePath, "utf8"));
+    const registered = [...s.tools.keys()];
+
+    const missing = expected.filter((name) => !registered.includes(name));
+    const extra = registered.filter((name) => !expected.includes(name));
+    assert.deepEqual(
+      missing,
+      [],
+      `pi/testdata/tools.json names ${JSON.stringify(missing)}, but no tool registers ${missing.length === 1 ? "it" : "them"}`,
+    );
+    assert.deepEqual(
+      extra,
+      [],
+      `${JSON.stringify(extra)} ${extra.length === 1 ? "is" : "are"} registered but not in pi/testdata/tools.json, ` +
+        "so nothing checks that a kido subcommand of that name exists - add it to the fixture and give it a subcommand",
+    );
+  } finally {
+    fx.restore();
+  }
+});
+
 // parseEnvelope mirrors internal/msg.Parse: the same v0/v1 discriminator
 // rule implemented twice, once in Go and once here. A disagreement
 // between the two is how a user's prompt gets silently swallowed as a

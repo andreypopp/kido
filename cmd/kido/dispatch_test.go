@@ -89,11 +89,14 @@ func TestUnknownSubcommandNamesTheRealOnes(t *testing.T) {
 // TestUnknownSubcommandSuggestsNearMiss used to run `kido list_agents`,
 // the defect report's own case: the pi TOOL was list_agents and the
 // SUBCOMMAND was `agents`, so the tool's name was a near miss to be
-// suggested against. That premise is gone - every tool now invokes a
-// subcommand of its own name, and `kido list_agents` is the real command
-// - so the case that replaces it is the one that mismatch became: the
-// OLD name, typed by hand or by something that remembers it, for a
-// command that has since grown a suffix.
+// suggested against. That premise is gone, and the thing worth pinning
+// about it moved: that a tool's name and its command's cannot differ at
+// all is now TestEveryToolHasASubcommandOfItsName's, mechanically, and a
+// suggestion is a poor substitute for a name that is simply right.
+// What remains here is the suggestion's own job, genuine typos - of
+// which the likeliest is the shape the rename created: the OLD name,
+// typed by hand or by something that remembers it, for a command that
+// has since grown a suffix.
 func TestUnknownSubcommandSuggestsNearMiss(t *testing.T) {
 	stderr, code := runDispatchTest(t, "agents")
 	if code != 1 {

@@ -49,9 +49,10 @@ func TestEveryToolHasASubcommandOfItsName(t *testing.T) {
 
 	for _, tool := range tools {
 		if !slices.Contains(subcommands, tool) {
-			t.Errorf("tool %q (registered in pi/kido-agents.ts) has no kido subcommand named %q; "+
-				"every tool invokes the subcommand it is named after, so add the subcommand or rename the tool",
-				tool, tool)
+			t.Errorf("tool %q (named in %s, which pi's own suite pins against the tools it registers) "+
+				"has no kido subcommand %q; every tool invokes the subcommand it is named after, so add "+
+				"the subcommand, rename the tool, or drop the name from the fixture if no tool has it",
+				tool, toolsFixture, tool)
 		}
 	}
 }

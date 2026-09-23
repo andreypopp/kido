@@ -66,15 +66,14 @@ tmux session are not listed, and nothing here can reach them.
 
 ## What a child is given
 
-`kido spawn_subagent` reads the caller's pane from `$TMUX_PANE`, and from it the
-tmux session, the working directory, and the caller's own state record.
+`kido spawn_subagent` reads the caller's pane from `$TMUX_PANE`, and from it
+the tmux session, the working directory, and the caller's own state record.
 It creates a detached window in that session, named as asked, at the
-caller's directory, running the command after `--` or plain `pi`. When
-the command is literally `pi`, `--session-id <run-id>` is inserted after
-it, so the run id is the child's pi session id and there is no mapping
-to keep. The extension adds `--name`, and passes `--model` and `--tools`
-through when given; a narrow toolset is the blast-radius bound the
-depth ceiling is not.
+caller's directory, running the command after `--` or plain `pi`. When the
+command is literally `pi`, `--session-id <run-id>` is inserted after it, so
+the run id is the child's pi session id and there is no mapping to keep. The
+extension adds `--name`, and passes `--model` and `--tools` through when
+given; a narrow toolset is the blast-radius bound the depth ceiling is not.
 
 The environment is the only channel, because `new-window` runs its
 command with the server's environment, not the caller's:
@@ -170,10 +169,11 @@ through the same path a normal exit takes.
 **Reporting.** Nothing reports for the child. It calls `notify_parent`
 itself, once, when its model judges the work done; the summary goes to
 the parent as a `notice` envelope and nowhere else, addressed to the
-instance in its own environment rather than to anything it looked up. An automatic notice
-on every settled turn was removed, because a turn settles for reasons
-that are not the task - most sharply, answering a sibling's `ask_agent`
-settled a turn and sent the parent a report meant for the sibling
+instance in its own environment rather than to anything it looked up.
+An automatic notice on every settled turn was removed, because a turn
+settles for reasons that are not the task - most sharply, answering a
+sibling's `ask_agent` settled a turn and sent the parent a report meant
+for the sibling
 (design.md, "Notifying the parent"). The price is stated there and
 stands here: a child that crashes, or is reaped without ever calling
 the tool, tells its parent nothing, and the run record is what is left.
@@ -237,14 +237,14 @@ nothing needs a second sweep any more.
 
 ## Resuming a run
 
-`kido spawn_subagent --resume <run-id>` puts a finished or dead run back in a
-window: `pi --session <run-id>` at the run's own directory, under the
-run's original name, with the model its meta recorded unless the
-command after `--` names one, through the same window creation and
-mark as a fresh spawn. The run record continues rather than doubling;
-its old outcome and screen are cleared. It refuses a run still alive,
-one with no pi session file, and one whose pi session lives under a
-`sessionDir` setting kido does not read.
+`kido spawn_subagent --resume <run-id>` puts a finished or dead run back in
+a window: `pi --session <run-id>` at the run's own directory, under the
+run's original name, with the model its meta recorded unless the command
+after `--` names one, through the same window creation and mark as a fresh
+spawn. The run record continues rather than doubling; its old outcome and
+screen are cleared. It refuses a run still alive, one with no pi session
+file, and one whose pi session lives under a `sessionDir` setting kido does
+not read.
 
 The parent edge is whoever resumes. Given `--parent-pid` and
 `--parent-instance`, they are used; omitted, they default to the
