@@ -10,8 +10,10 @@ import (
 
 // reapCmd implements `kido reap`: one reap.Sweep by hand, for a test or
 // an operator; the sidebar's poll runs the same sweep continuously. It
-// reads with state.ReadAll so as not to delete the records it reasons
-// about, though Sweep checks liveness for itself either way.
+// reads with state.ReadAll for two reasons: it does not delete the
+// records it reasons about, and it collapses nothing, which is what the
+// orphan rule requires - a per-pane view can drop the very record that
+// proves a parent is alive (internal/reap, Sweep).
 func reapCmd(args []string) error {
 	if len(args) != 0 {
 		return fmt.Errorf("usage: kido reap")

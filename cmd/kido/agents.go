@@ -57,7 +57,7 @@ func agentsCmd(args []string) error {
 		return fmt.Errorf("unknown argument %q\n%s", fs.Arg(0), agentsUsage())
 	}
 
-	panes, err := tmux.ListPanes()
+	panes, err := listPanes()
 	if err != nil {
 		return err
 	}
@@ -65,17 +65,16 @@ func agentsCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+	// --session is answered even from outside tmux, where there is no
+	// caller pane to default from; only the defaulting needs one.
 	self := os.Getenv("TMUX_PANE")
 	target := *session
 	if target == "" {
-		for _, p := range panes {
-			if p.PaneID == self {
-				target = p.SessionID
-			}
-		}
-		if target == "" {
+		p, ok := findPane(panes, self)
+		if !ok {
 			return fmt.Errorf("no tmux session for pane %q; pass --session\n%s", self, agentsUsage())
 		}
+		target = p.SessionID
 	}
 	agents := buildAgents(states, panes, target, self)
 

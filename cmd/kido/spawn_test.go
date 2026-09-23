@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -45,6 +46,62 @@ func withNewWindow(t *testing.T, windowID, paneID string, err error) *[]newWindo
 	}
 	t.Cleanup(func() { newWindow, markSubagent = prev, prevMark })
 	return &calls
+}
+
+// captureStdout returns what f wrote to os.Stdout. The line kido spawn
+// prints is parsed by pi/kido-agents.ts, so it is contract rather than
+// logging and has to be read back verbatim.
+func captureStdout(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = prev }()
+	f()
+	os.Stdout = prev
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
+// TestSpawnPrintsWindowPaneRun pins the one line spawn writes to stdout:
+// pi/kido-agents.ts splits it on spaces to learn what it has just
+// created, and a reordered or extra field would be read as garbage by a
+// parser that lives outside this repo's tests.
+func TestSpawnPrintsWindowPaneRun(t *testing.T) {
+	withPanes(t, samePane)
+	t.Setenv("TMUX_PANE", "%1")
+	withCallerDepth(t, 0)
+	withNewWindow(t, "@9", "%9", nil)
+
+	var err error
+	out := captureStdout(t, func() {
+		err = spawnCmd([]string{
+			"--parent-pid", "1", "--parent-instance", "x",
+			"--name", "kid", "--task-file", writeTaskFile(t, "task"),
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(out, "\n") || strings.Count(out, "\n") != 1 {
+		t.Fatalf("stdout = %q, want exactly one newline-terminated line", out)
+	}
+	fields := strings.Fields(out)
+	if len(fields) != 3 || fields[0] != "@9" || fields[1] != "%9" {
+		t.Fatalf("stdout = %q, want \"@9 %%9 <run-id>\"", out)
+	}
+	if got := tmux.SubagentRunID(marks["@9"]); got != fields[2] {
+		t.Errorf("stdout run id %q, mark's run id %q; the two name the same run", fields[2], got)
+	}
 }
 
 // TestSpawnMarksTheWindow pins what makes a spawned window reapable at

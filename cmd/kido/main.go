@@ -30,7 +30,7 @@ import (
 // added to the switch and forgotten here just gets a plainer error.
 var subcommands = []string{
 	"hook", "setup-pi", "setup-zsh", "setup-tmux", "setup-claude",
-	"agent-status", "agents", "debug-log", "inbox-path", "snapshot",
+	"agent-status", "agents", "agent-alive", "debug-log", "inbox-path", "snapshot",
 	"switch-session", "switch-window", "prompt", "message", "interrupt",
 	"stop", "spawn", "close-window", "window-focused", "reap",
 	"run-outcome", "runs",
@@ -144,6 +144,9 @@ func main() {
 			return
 		case "agents":
 			dispatch("agents", func() error { return agentsCmd(os.Args[2:]) })
+			return
+		case "agent-alive":
+			dispatch("agent-alive", func() error { return agentAliveCmd(os.Args[2:]) })
 			return
 		case "debug-log":
 			fmt.Println(filepath.Join(state.Dir(), "debug.log"))
@@ -589,23 +592,25 @@ func agentStatus(args []string) error {
 		Depth:          *depth,
 		Model:          *model,
 	}
-	if r.Title == "" || !given["inbox"] || !given["protocol"] || !given["activity"] || !given["model"] {
-		if prev, ok, _ := state.Get(*session); ok {
-			if r.Title == "" {
-				r.Title = prev.Title
-			}
-			if !given["inbox"] {
-				r.Inbox = prev.Inbox
-			}
-			if !given["protocol"] {
-				r.Protocol = prev.Protocol
-			}
-			if !given["activity"] {
-				r.Activity = prev.Activity
-			}
-			if !given["model"] {
-				r.Model = prev.Model
-			}
+	// The previous record is read unconditionally: the extension reports
+	// --inbox/--protocol once and carries nothing else forward itself, so
+	// a report with nothing to carry over essentially never arrives and a
+	// guard restating each condition below would only duplicate them.
+	if prev, ok, _ := state.Get(*session); ok {
+		if r.Title == "" {
+			r.Title = prev.Title
+		}
+		if !given["inbox"] {
+			r.Inbox = prev.Inbox
+		}
+		if !given["protocol"] {
+			r.Protocol = prev.Protocol
+		}
+		if !given["activity"] {
+			r.Activity = prev.Activity
+		}
+		if !given["model"] {
+			r.Model = prev.Model
 		}
 	}
 	e := hook.Effect{Status: state.Status(*status), Ended: *ended}

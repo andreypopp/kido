@@ -8,11 +8,15 @@ import (
 	"kido/internal/tmux"
 )
 
-// windowIDPattern is what close-window accepts, and nothing else: the
-// focus check compares the argument against tmux.Pane.WindowID, while
-// kill-window resolves any tmux target syntax, so any other spelling
-// passes the check (matching no pane) and then kills a window that may be
-// the one the user is reading.
+// windowIDPattern is the only spelling of a window id the commands that
+// take one accept. close-window is why it is strict: its focus check
+// compares the argument against tmux.Pane.WindowID, while kill-window
+// resolves any tmux target syntax, so any other spelling passes the check
+// (matching no pane) and then kills a window that may be the one the user
+// is reading. window-focused passes its argument to no tmux target and so
+// has no such hazard, but @N is the only shape tmux.Pane.WindowID ever
+// takes, and refusing anything else fails loudly instead of always
+// answering "false".
 var windowIDPattern = regexp.MustCompile(`^@[0-9]+$`)
 
 // killWindow is tmux.KillWindow, indirected so tests never talk to a tmux

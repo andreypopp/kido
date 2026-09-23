@@ -117,14 +117,9 @@ func spawnCmd(args []string) error {
 		command = []string{"pi"}
 	}
 
-	caller := os.Getenv("TMUX_PANE")
-	panes, err := listPanes()
+	pane, _, err := callerPane()
 	if err != nil {
 		return err
-	}
-	pane, ok := findPane(panes, caller)
-	if !ok {
-		return fmt.Errorf("pane %q not found", caller)
 	}
 
 	// The child's depth is derived from the caller's own state record, not
@@ -135,8 +130,7 @@ func spawnCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	callerDepth := states[caller].Depth
-	depth := callerDepth + 1
+	depth := states[pane.PaneID].Depth + 1
 	if depth > maxDepth {
 		return fmt.Errorf("refusing to spawn at depth %d: maximum nesting is %d (root 0, subagent 1, subagent 2)", depth, maxDepth)
 	}
@@ -156,39 +150,93 @@ func spawnCmd(args []string) error {
 		command = append([]string{command[0], "--session-id", runID}, command[1:]...)
 	}
 
+	return createRunWindow(meta, pane.SessionID, runEnv(runID, *parentPID, *parentInstance, depth, *keepAlive), command)
+}
+
+// callerPane resolves the pane kido was run from - $TMUX_PANE, which tmux
+// sets in every process it starts - against tmux's own pane list, which
+// it returns alongside. A command that acts "here" rather than on a named
+// target needs both: the pane says which session and which directory, the
+// list is what everything else is looked up in.
+func callerPane() (tmux.Pane, []tmux.Pane, error) {
+	panes, err := listPanes()
+	if err != nil {
+		return tmux.Pane{}, nil, err
+	}
+	caller := os.Getenv("TMUX_PANE")
+	pane, ok := findPane(panes, caller)
+	if !ok {
+		return tmux.Pane{}, panes, fmt.Errorf("pane %q not found", caller)
+	}
+	return pane, panes, nil
+}
+
+// runEnv is the KIDO_AGENT_* environment a run's window is created with,
+// the only channel a child has: new-window runs its command with the tmux
+// server's environment, not the caller's. A resume leaves the parent edge
+// out when there is nobody to name - a run resumed from a bare human
+// shell has no current parent - so an empty pid or instance is omitted
+// rather than reported as zero, which internal/reap would read as an
+// orphan's.
+func runEnv(runID string, parentPID int, parentInstance string, depth int, keepAlive bool) []string {
 	env := []string{
-		"KIDO_AGENT_PARENT_PID=" + strconv.Itoa(*parentPID),
-		"KIDO_AGENT_PARENT_INSTANCE=" + *parentInstance,
-		"KIDO_AGENT_DEPTH=" + strconv.Itoa(depth),
 		"KIDO_AGENT_TASK_FILE=" + subrun.TaskPath(runID),
 		// Unconditional: a child that is not pi has no --session-id to learn
 		// the run id from, and `kido run-outcome` needs it.
 		"KIDO_AGENT_RUN_ID=" + runID,
+		"KIDO_AGENT_DEPTH=" + strconv.Itoa(depth),
 	}
-	if *keepAlive {
+	if parentPID > 0 {
+		env = append(env, "KIDO_AGENT_PARENT_PID="+strconv.Itoa(parentPID))
+	}
+	if parentInstance != "" {
+		env = append(env, "KIDO_AGENT_PARENT_INSTANCE="+parentInstance)
+	}
+	if keepAlive {
 		env = append(env, "KIDO_AGENT_KEEP_ALIVE=1")
 	}
-	windowID, paneID, panePID, err := newWindow(pane.SessionID, *name, pane.CurrentPath, env, command)
+	return env
+}
+
+// createRunWindow is the tail both a fresh spawn and a resume end in:
+// create the detached window in sessionID, stamp what tmux answered into
+// meta, mark the window as a subagent's and print what was created. meta
+// arrives fully assembled - its Name and Cwd are what the window is made
+// with - and the caller is finished once this returns.
+//
+// The mark is the only thing that makes the window reapable: the sweep,
+// the sidebar's tree and the window-cycling keys all key off it, so an
+// unmarked window is uncollectable forever and a failed mark kills the
+// window rather than strand it. Both failures record the run failed,
+// since an error returned here is all the caller ever sees of it.
+//
+// The line printed is contract: pi/kido-agents.ts parses the window id,
+// pane id and run id back out of stdout.
+func createRunWindow(meta subrun.Meta, sessionID string, env, command []string) error {
+	windowID, paneID, panePID, err := newWindow(sessionID, meta.Name, meta.Cwd, env, command)
 	if err != nil {
-		// The meta is written first: `kido runs` passes over a directory
-		// with no meta file, and would pass over this outcome with it.
-		subrun.WriteMeta(meta)                                                                                //nolint:errcheck // best effort
-		subrun.RecordOutcome(runID, subrun.Outcome{Result: subrun.Failed, Text: err.Error(), At: time.Now()}) //nolint:errcheck // best effort
+		// A meta has to exist before the outcome, or the outcome is
+		// invisible: `kido runs` passes over a run directory that has no
+		// meta file. A fresh spawn has none yet, so this is where it gets
+		// one; a resume's is already on disk and is left exactly as it was,
+		// since this attempt never got as far as a window and has nothing
+		// truer to say about the run than the last attempt already recorded.
+		if _, err := subrun.ReadMeta(meta.ID); err != nil {
+			subrun.WriteMeta(meta) //nolint:errcheck // best effort
+		}
+		subrun.RecordOutcome(meta.ID, subrun.Outcome{Result: subrun.Failed, Text: err.Error(), At: time.Now()}) //nolint:errcheck // best effort
 		return err
 	}
 	meta.Window, meta.Pane, meta.PID = windowID, paneID, panePID
 	if err := subrun.WriteMeta(meta); err != nil {
 		return err
 	}
-	// The mark is the only thing that makes this window reapable. An
-	// unmarked window would be uncollectable forever, so a failed mark
-	// kills the window rather than strand it.
-	if err := markSubagent(windowID, tmux.SubagentMark(runID, *parentInstance, depth)); err != nil {
-		killWindow(windowID)                                                                                  //nolint:errcheck // best effort cleanup; the mark error is what matters
-		subrun.RecordOutcome(runID, subrun.Outcome{Result: subrun.Failed, Text: err.Error(), At: time.Now()}) //nolint:errcheck // best effort
+	if err := markSubagent(windowID, tmux.SubagentMark(meta.ID, meta.ParentInstance, meta.Depth)); err != nil {
+		killWindow(windowID)                                                                                    //nolint:errcheck // best effort cleanup; the mark error is what matters
+		subrun.RecordOutcome(meta.ID, subrun.Outcome{Result: subrun.Failed, Text: err.Error(), At: time.Now()}) //nolint:errcheck // best effort
 		return err
 	}
-	fmt.Printf("%s %s %s\n", windowID, paneID, runID)
+	fmt.Printf("%s %s %s\n", windowID, paneID, meta.ID)
 	return nil
 }
 
@@ -235,14 +283,9 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 		return fmt.Errorf("run %q: no pi session file found under %s; nothing to resume", runID, piSessionDir(meta.Cwd))
 	}
 
-	caller := os.Getenv("TMUX_PANE")
-	panes, err := listPanes()
+	pane, _, err := callerPane()
 	if err != nil {
 		return err
-	}
-	pane, ok := findPane(panes, caller)
-	if !ok {
-		return fmt.Errorf("pane %q not found", caller)
 	}
 
 	// A caller with no state record - a bare human shell - gets no parent
@@ -257,7 +300,7 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 	if err != nil {
 		return err
 	}
-	self := states[caller]
+	self := states[pane.PaneID]
 	if parentPID == 0 {
 		parentPID = self.PID
 	}
@@ -298,21 +341,6 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 		}
 	}
 
-	env := []string{
-		"KIDO_AGENT_TASK_FILE=" + subrun.TaskPath(runID),
-		"KIDO_AGENT_RUN_ID=" + runID,
-	}
-	if parentPID > 0 {
-		env = append(env, "KIDO_AGENT_PARENT_PID="+strconv.Itoa(parentPID))
-	}
-	if parentInstance != "" {
-		env = append(env, "KIDO_AGENT_PARENT_INSTANCE="+parentInstance)
-	}
-	env = append(env, "KIDO_AGENT_DEPTH="+strconv.Itoa(depth))
-	if keepAlive {
-		env = append(env, "KIDO_AGENT_KEEP_ALIVE=1")
-	}
-
 	// A resumed run is running again: its old outcome, if any, no longer
 	// describes it, and RecordOutcome's O_EXCL would otherwise refuse every
 	// exit path that follows this one. Cleared before any of those paths
@@ -328,28 +356,13 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 		return err
 	}
 
-	// The window is created at the run's own cwd, not the caller's: pi
-	// sessions are project-scoped, and `pi --session` run from any other
-	// directory asks to fork into the current one instead of resuming.
-	windowID, paneID, panePID, err := newWindow(pane.SessionID, meta.Name, meta.Cwd, env, command)
-	if err != nil {
-		subrun.RecordOutcome(runID, subrun.Outcome{Result: subrun.Failed, Text: err.Error(), At: time.Now()}) //nolint:errcheck // best effort
-		return err
-	}
-	meta.Window, meta.Pane, meta.PID = windowID, paneID, panePID
+	// The parent edge the resume claims is the run's from here on, and
+	// meta.Cwd is left as the run's own: pi sessions are project-scoped,
+	// and `pi --session` run from any other directory asks to fork into
+	// the current one instead of resuming, so the window is created there
+	// rather than at the caller's.
 	meta.ParentInstance, meta.Depth = parentInstance, depth
-	if err := subrun.WriteMeta(meta); err != nil {
-		return err
-	}
-	// The mark is the only thing that makes this window reapable, exactly
-	// as for a fresh spawn.
-	if err := markSubagent(windowID, tmux.SubagentMark(runID, parentInstance, depth)); err != nil {
-		killWindow(windowID)                                                                                  //nolint:errcheck // best effort cleanup; the mark error is what matters
-		subrun.RecordOutcome(runID, subrun.Outcome{Result: subrun.Failed, Text: err.Error(), At: time.Now()}) //nolint:errcheck // best effort
-		return err
-	}
-	fmt.Printf("%s %s %s\n", windowID, paneID, runID)
-	return nil
+	return createRunWindow(meta, pane.SessionID, runEnv(runID, parentPID, parentInstance, depth, keepAlive), command)
 }
 
 // piSessionDir mirrors pi 0.85.1's own getDefaultSessionDirPath

@@ -1,13 +1,88 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"kido/internal/state"
 	"kido/internal/tmux"
 )
+
+// TestAgentsCmdDefaultsToTheCallersSession drives the command itself,
+// not buildAgents: the scoping it applies is chosen here, from $TMUX_PANE
+// against tmux's pane list, and an agent in another tmux session is one
+// nothing in this one can reach.
+func TestAgentsCmdDefaultsToTheCallersSession(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%1")
+	withPanes(t, []tmux.Pane{
+		{PaneID: "%1", SessionID: "$1", WindowID: "@1"},
+		{PaneID: "%9", SessionID: "$2", WindowID: "@9"},
+	})
+	for _, s := range []state.Session{
+		{ID: "here", Pane: "%1", PID: os.Getpid(), Agent: state.AgentPi, Status: state.Idle},
+		{ID: "elsewhere", Pane: "%9", PID: os.Getpid(), Agent: state.AgentPi, Status: state.Idle},
+	} {
+		if err := state.Record(s.ID, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var err error
+	out := captureStdout(t, func() { err = agentsCmd([]string{"--json"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []AgentInfo
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("agents --json: %v (%q)", err, out)
+	}
+	if len(got) != 1 || got[0].ID != "here" || !got[0].Self {
+		t.Fatalf("agents --json = %+v, want only the caller's own session's agent, marked self", got)
+	}
+
+	// An explicit --session reaches the other one, so the filtering above
+	// is the default rather than the only answer available.
+	out = captureStdout(t, func() { err = agentsCmd([]string{"--json", "--session", "$2"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = nil
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("agents --json --session $2: %v (%q)", err, out)
+	}
+	if len(got) != 1 || got[0].ID != "elsewhere" || got[0].Self {
+		t.Fatalf("agents --json --session $2 = %+v, want only the other session's agent", got)
+	}
+}
+
+// TestAgentsCmdWithNoCallerPane: run from outside tmux, or from a pane
+// tmux no longer knows, there is no session to default to. It says so
+// rather than guessing at one, and --session is still answered.
+func TestAgentsCmdWithNoCallerPane(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "")
+	withPanes(t, []tmux.Pane{{PaneID: "%1", SessionID: "$1", WindowID: "@1"}})
+
+	err := agentsCmd([]string{"--json"})
+	if err == nil {
+		t.Fatal("agents with no caller pane = nil error, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "pass --session") {
+		t.Errorf("error = %q, want it to point at --session", err)
+	}
+	out := captureStdout(t, func() { err = agentsCmd([]string{"--json", "--session", "$1"}) })
+	if err != nil {
+		t.Fatalf("agents --session from outside tmux = %v, want it answered", err)
+	}
+	if strings.TrimSpace(out) == "" {
+		t.Error("agents --json --session $1 printed nothing, want a JSON list")
+	}
+}
 
 // TestIsAncestorRefusesSelfEdge pins the explicit refusal at the top of
 // isAncestor: without it, a corrupted record whose own Parent field named

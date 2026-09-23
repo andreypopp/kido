@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -376,6 +378,103 @@ func TestSpawnResumeExplicitModelWinsOverMeta(t *testing.T) {
 	wantNotSonnet := !slices.Contains(call.command, "claude-sonnet-5")
 	if !got || !wantNotSonnet {
 		t.Errorf("command = %v, want the caller's own --model claude-opus-5 kept, meta's claude-sonnet-5 not also appended", call.command)
+	}
+}
+
+// withResumableRun is the whole setup a resume success path needs: a
+// dead run with a pi session file beside it, at a cwd of its own.
+func withResumableRun(t *testing.T, id string) {
+	t.Helper()
+	withPanes(t, samePane)
+	t.Setenv("TMUX_PANE", "%1")
+	withCallerDepth(t, 0)
+	sessDir := t.TempDir()
+	withPiSessionDir(t, sessDir)
+	writePiSessionFile(t, sessDir, id)
+	newDeadRun(t, id, t.TempDir())
+}
+
+// TestSpawnResumePrintsWindowPaneRun: a resume is spawn_subagent's other
+// entry point and its caller parses the same line, so the resume path
+// owes stdout the same three fields - with the run id it continued, not
+// a new one.
+func TestSpawnResumePrintsWindowPaneRun(t *testing.T) {
+	withResumableRun(t, "printed-run")
+	withNewWindow(t, "@9", "%9", nil)
+
+	var err error
+	out := captureStdout(t, func() {
+		err = spawnCmd([]string{"--resume", "printed-run", "--parent-pid", "1"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "@9 %9 printed-run\n" {
+		t.Errorf("stdout = %q, want %q", out, "@9 %9 printed-run\n")
+	}
+}
+
+// TestSpawnResumeMarkFailureKillsTheWindowAndRecordsFailure is the fresh
+// spawn's own mark-failure test applied to the path nobody exercises by
+// hand: an unmarked window is invisible to internal/reap and so would
+// never be closed by anything, and a resume creates exactly the same kind
+// of window.
+func TestSpawnResumeMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
+	withResumableRun(t, "unmarkable-run")
+	withNewWindow(t, "@9", "%9", nil)
+
+	prevKill := killWindow
+	var killed []string
+	killWindow = func(id string) error {
+		killed = append(killed, id)
+		return nil
+	}
+	t.Cleanup(func() { killWindow = prevKill })
+
+	prevMark := markSubagent
+	markSubagent = func(windowID, info string) error { return errors.New("option failed") }
+	t.Cleanup(func() { markSubagent = prevMark })
+
+	if err := spawnCmd([]string{"--resume", "unmarkable-run", "--parent-pid", "1"}); err == nil {
+		t.Fatal("spawnCmd --resume = nil, want the mark failure")
+	}
+	if !slices.Contains(killed, "@9") {
+		t.Errorf("killWindow calls = %v, want @9 killed rather than left up unmarked", killed)
+	}
+	// The resume cleared the old outcome on its way through, so a failure
+	// recorded here is the only thing left saying what became of the run.
+	if out, ok, err := subrun.ReadOutcome("unmarkable-run"); err != nil || !ok || out.Result != subrun.Failed {
+		t.Errorf("ReadOutcome = %+v, %v, %v, want a recorded failure", out, ok, err)
+	}
+}
+
+// TestSpawnResumeWindowFailureIsAVisibleFailedRun: the resume cleared the
+// run's previous outcome before asking tmux for a window, so a window it
+// never got has to be recorded, or the run reads as running forever. The
+// meta, though, is left alone: a fresh spawn writes one here because it
+// has none and the outcome would be invisible without it, while an
+// attempt that never reached tmux has nothing truer to say about the run
+// than what the last attempt recorded.
+func TestSpawnResumeWindowFailureIsAVisibleFailedRun(t *testing.T) {
+	withResumableRun(t, "windowless-run")
+	withNewWindow(t, "", "", errors.New("no such session"))
+	before, err := subrun.ReadMeta("windowless-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := spawnCmd([]string{"--resume", "windowless-run", "--parent-pid", "1"}); err == nil {
+		t.Fatal("spawnCmd --resume = nil, want the window creation failure")
+	}
+	if out, ok, err := subrun.ReadOutcome("windowless-run"); err != nil || !ok || out.Result != subrun.Failed {
+		t.Errorf("ReadOutcome = %+v, %v, %v, want a recorded failure", out, ok, err)
+	}
+	after, err := subrun.ReadMeta("windowless-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("meta = %+v, want it untouched at %+v by an attempt that never got a window", after, before)
 	}
 }
 

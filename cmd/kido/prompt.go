@@ -39,15 +39,9 @@ func prompt(args []string, stdin io.Reader) int {
 		return 1
 	}
 
-	caller := os.Getenv("TMUX_PANE")
-	panes, err := tmux.ListPanes()
+	self, panes, err := callerPane()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "kido prompt:", err)
-		return 1
-	}
-	self, ok := findPane(panes, caller)
-	if !ok {
-		fmt.Fprintf(os.Stderr, "kido prompt: pane %q not found\n", caller)
 		return 1
 	}
 
