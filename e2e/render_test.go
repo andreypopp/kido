@@ -158,7 +158,21 @@ func TestShellStatusRow(t *testing.T) {
 
 	h.in("send-keys", "-t", pane, "sleep 5", "Enter")
 	h.waitPaneCommand(pane, "sleep")
-	h.waitZshRow("╶◼ sleep", "")
+	// A patched tmux reports the command line the shell marked with its
+	// 133;C, and the row shows that in place of #{pane_current_command}
+	// - "sleep 5", not "sleep" - the same replacement ssh_remote_test.go
+	// pins for a remote command. An unpatched tmux expands the format to
+	// empty, which is also what a pane that never reported one looks
+	// like, so the row stays what it always was.
+	// Read once rather than poll: zsh's preexec fires the 133;C before the
+	// command itself runs, so waitPaneCommand above has already ordered this
+	// after it. Polling would wait out the whole settle on a tmux that never
+	// fills the field, and the sleep being measured would end inside that wait.
+	sleepRow := "╶◼ sleep"
+	if h.in("display-message", "-p", "-t", pane, "#{pane_command_line}") != "" {
+		sleepRow = "╶◼ sleep 5"
+	}
+	h.waitZshRow(sleepRow, "")
 
 	// The sleep exits zero, and the client never left home, so it settles
 	// on the checkmark, not blank - this is just a sync point before the

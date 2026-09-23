@@ -1368,6 +1368,23 @@ func (m *model) remoteCommand(p tmux.Pane) string {
 	return p.CommandLine
 }
 
+// localCommand is the command line a local (non-ssh) integrated shell is
+// running right now, or "" when there is none to show - no integration,
+// idle, or the program has taken the terminal (interactivePane). It
+// replaces #{pane_current_command} rather than qualifying it: the shell
+// reported it is authoritative where pane_current_command only infers
+// the process-group leader, and there is no host to disambiguate as
+// there is for ssh.
+func (m *model) localCommand(p tmux.Pane) string {
+	if p.CommandLine == "" || m.interactivePane(p) {
+		return ""
+	}
+	if running, ok := p.ShellStatus(); !ok || !running {
+		return ""
+	}
+	return p.CommandLine
+}
+
 // paneLabel is the row text for a pane: its foreground command, or an
 // agent pane's session title, both behind the same two-column indicator
 // field. Which agent it is makes no difference to the row.
@@ -1383,6 +1400,8 @@ func (m *model) paneLabel(p tmux.Pane) string {
 			if cmd := m.remoteCommand(p); cmd != "" {
 				text += stProc.Render(": ") + cmd
 			}
+		} else if cmd := m.localCommand(p); cmd != "" {
+			text = stProc.Render(cmd)
 		}
 		// A shell with kido's OSC 133 integration (shell/zsh, installed
 		// by `kido setup-zsh`) gets the same indicators an agent pane
