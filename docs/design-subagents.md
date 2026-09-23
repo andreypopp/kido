@@ -228,9 +228,32 @@ An automatic notice on every settled turn was removed, because a turn
 settles for reasons that are not the task - most sharply, answering a
 sibling's `ask_agent` settled a turn and sent the parent a report meant
 for the sibling
-(design.md, "Notifying the parent"). The price is stated there and
-stands here: a child that crashes, or is reaped without ever calling
-the tool, tells its parent nothing, and the run record is what is left.
+(design.md, "Notifying the parent").
+
+What the child says about its work is therefore still its own to say.
+But an **ending** is not a judgement, and a child that ends without ever
+calling the tool now produces exactly one notice saying so - naming the
+run, the outcome recorded for it, the run id and `spawn_subagent(resume:)` to
+pick it up. It claims nothing about the work; it says only that the run
+ended and nothing was said about it, which is a fact any observer can
+establish. The parent used to learn nothing at all here, and a parent
+that had dispatched work and gone quiet waiting for a report waited for
+one that was never coming.
+
+Two observers can send it, and they are the two ways a run can end
+silently:
+
+- the child's own shutdown - an idle self-exit, a quit, a lost parent -
+  when `notify_parent` was not called in this session. It is sent from
+  where the outcome is recorded, `kido run-outcome --unreported`;
+- a sweep, for a run whose window is gone or dead with no outcome
+  recorded at all: the crash, the kill, the window closed by hand.
+
+Which of them speaks is settled the way every other ending is, by the
+O_EXCL outcome write ("Exactly one ending", below), so a run stopped
+from outside - whose stopper has already spoken, and whose outcome is
+already on disk - produces nothing extra when its child gets round to
+shutting down.
 
 On the parent's side a notice is rendered the moment it lands, as a
 `notification from <name>` line above the editor, and separately
@@ -250,11 +273,33 @@ some client is looking at is not taken
 away; the timer re-arms and tries again later. A root session, one with
 no parent in its environment, never arms it.
 
+**A session with a live child of its own is not idle**, however quiet it
+has been. "I have spawned it and I am waiting for its report" settles a
+turn exactly as finished work does, and the clock could not tell them
+apart: a parent shut itself down thirty seconds after spawning, and the
+orphan rule then closed the child it was waiting for, mid-work. So the
+timer asks `kido children-alive <instance>` first and re-arms if the
+answer is yes, exactly as it does for a focused window. The last child
+ending resumes the clock, as does that child's notice, which is new work
+like any other.
+
+The reading is of the **run records**, not of anything the session
+remembers: a run whose meta names this instance as its parent and which
+has not ended - no outcome recorded, and a pid still alive, which is what
+`kido runs` shows as running. A child outlives the turn that spawned it
+and a `/reload` forgets everything in memory, while the record is the
+durable half and is where a parent edge lives. A child whose process is
+gone but whose outcome has not landed yet reads as ended, which is the
+safe direction: a parent held open by a corpse would never go idle again.
+kido being unreachable reads the same way, leaving the behaviour the
+clock had before there was a query at all.
+
 **Shutdown.** Whether it quit, self-exited, was stopped, or lost its
 parent, the child runs one teardown: the parent poll and idle timer
 stop, every waiting ask is released, the inbox closes, the outcome is
-recorded (`completed` if the session was idle, else `failed`), the
-record is removed, and a detached helper is spawned to run
+recorded (`completed` if the session was idle, else `failed`, and
+`--unreported` alongside it if the session never called `notify_parent`),
+the record is removed, and a detached helper is spawned to run
 `kido close-window` after the linger. A `/reload` runs the same handler
 and does none of the run-ending parts, since the run carries on.
 
@@ -434,14 +479,13 @@ away: those leave a marked window with dead panes and no outcome, which
 is exactly what rule 1 finds. It used to record `died` and say nothing,
 and the parent of a killed build waited forever.
 
-Only a **bash** run is spoken for this way. An agent's completion is a
-judgement only the model can make, and a child that crashes without
-calling `notify_parent` deliberately tells its parent nothing
-(design.md, "Notifying the parent"); a bash process's completion is an
-exit code. The two are not the same case and do not share a rule - an
-agent run still records `died` and still sends nothing. A run with no
-parent instance is told to nobody either way, which is what `kido
-async_bash` typed at a human's shell produces.
+Both kinds of run are spoken for this way, but not with the same claim.
+A bash process's completion is an exit code, and the notice reports it;
+an agent's completion is a judgement only the model can make, so the
+notice for an agent run reports only that the run ended and nobody spoke
+for it ("Reporting", above) - the outcome recorded is still the `died`
+it always was. A run with no parent instance is told to nobody either
+way, which is what `kido async_bash` typed at a human's shell produces.
 
 The three observers share one notice builder (`cmd/kido`'s
 `asyncNotice`), so a parent cannot tell how its build ended by which
@@ -646,8 +690,10 @@ window aged out.
 ## Limits
 
 - A child that crashes or is reaped before calling `notify_parent`
-  tells its parent nothing. The run record and the captured screen are
-  what remain.
+  tells its parent that it ended and nothing else: one notice with the
+  run's name, its outcome, its id and how to resume it. Nothing
+  reconstructs what the work had reached - the run record and the
+  captured screen are what remain of that.
 - A child that is shutting down on its own notice when its parent dies
   can have its window closed mid-exit and be recorded as `died` rather
   than recording its own outcome. Whatever it managed to write first
@@ -678,11 +724,9 @@ window aged out.
   is only the screen: the wrapper has already recorded and reported. For
   an agent run the spawn itself reports the failure, which is the whole
   account of it there will be.
-- An ending only a sweep observes goes unreported: rule 1 records `died`
-  and tells nobody, so a run whose wrapper was `SIGKILL`ed leaves a
-  waiting parent with no notice. The orphan rule does not reach a bash
-  run either - rule 2 reads state records, and a bash run has none - so
-  a run whose parent has died keeps going until the command ends.
+- The orphan rule does not reach a bash run - rule 2 reads state
+  records, and a bash run has none - so a run whose parent has died
+  keeps going until the command ends.
 - A subagent's window moved to another tmux session is outside its
   parent's scope and cannot be reached.
 - Everything assumes one machine: shared filesystem, shared pid

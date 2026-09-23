@@ -149,8 +149,8 @@ func reportAsyncRun(runID, name string, result subrun.Result, status string, uns
 		}
 		return
 	}
-	asyncNotice{
-		runID: runID, name: name,
+	endingNotice{
+		runID: runID, name: name, kind: subrun.KindBash,
 		parentInstance: os.Getenv("KIDO_AGENT_PARENT_INSTANCE"),
 		result:         result, text: status, unstreamed: unstreamed,
 	}.send("async-run")

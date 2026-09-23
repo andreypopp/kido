@@ -811,6 +811,14 @@ export default function (pi: ExtensionAPI) {
     pollInFlight = false;
   };
 
+  // reportedToParent records that this run has spoken for itself, which
+  // is what its ending is judged against: a child that never called the
+  // tool has its silence reported for it (see endOwnRun). Module state
+  // rather than a fact on disk because it is a fact about this process's
+  // own conversation, and it survives a /reload for the same reason the
+  // run does - the session carries straight on in the same process.
+  let reportedToParent = false;
+
   // idleExitTimer is the idle self-exit clock: armed on every settled turn
   // (turnEnded), cleared by any sign of new work (workStarted). Only a
   // child arms it at all (see armIdleExit's own gate).
@@ -834,6 +842,21 @@ export default function (pi: ExtensionAPI) {
     return "out" in res && res.out.trim() === "true";
   };
 
+  // hasLiveChildren asks kido whether any run this session started is
+  // still going. The reading is of the run records, not of anything this
+  // process remembers: a child outlives the turn that spawned it and a
+  // /reload forgets everything in memory, while the record carries the
+  // parent edge and the outcome for as long as the run exists. An
+  // unreachable kido answers false, the same direction every other
+  // unavailable-kido path takes - the idle clock is the behaviour this
+  // session had before there was a query at all.
+  const hasLiveChildren = async (): Promise<boolean> => {
+    const host = status();
+    if (!host?.kidoPath()) return false;
+    const res = await host.runKido(["children-alive", host.instance()], { timeoutMs: 2000 });
+    return "out" in res && res.out.trim() === "true";
+  };
+
   // armIdleExit starts (or restarts) the idle-to-self-shutdown clock. Only
   // a child arms it (isSubagent, exactly as notify_parent's own refusal
   // check), and only when it has not opted out with keepAlive. Unref'd so
@@ -843,6 +866,16 @@ export default function (pi: ExtensionAPI) {
     if (!isSubagent() || KEEP_ALIVE) return;
     clearIdleExit();
     idleExitTimer = setTimeout(async () => {
+      // A session with a child of its own still running is not idle,
+      // however quiet it has been: "I have spawned it and I am waiting for
+      // its report" settles a turn exactly as finished work does, and
+      // exiting there orphans the child, which the sweep then closes
+      // mid-work. The clock re-arms, so the last child ending resumes it -
+      // as does the child's notice, which is new work like any other.
+      if (await hasLiveChildren()) {
+        armIdleExit(shutdown);
+        return;
+      }
       const listed = await fetchAgents();
       const self = "agents" in listed ? listed.agents.find((a) => a.self) : undefined;
       // A window a client is currently looking at is not reaped out from
@@ -1539,6 +1572,7 @@ export default function (pi: ExtensionAPI) {
       if ("error" in res) {
         return { content: [{ type: "text", text: `could not notify parent: ${res.error}` }], details: {} };
       }
+      reportedToParent = true;
       return { content: [{ type: "text", text: res.out || "notified parent" }], details: {} };
     },
   };
@@ -1696,9 +1730,12 @@ export default function (pi: ExtensionAPI) {
   // a reload recording "completed" leaves the run's real ending
   // unrecordable, and an ungated linger, measured against pi 0.85.1,
   // closed a live subagent's window out from under it ~30s after a
-  // /reload. The run's ending is no longer reported to the parent here at
-  // all (docs/design.md, "Notifying the parent"): a subagent calls
-  // notify_parent itself, on its own judgement.
+  // /reload. What this session has to say about its work is still
+  // notify_parent's alone, on the model's own judgement (docs/design.md,
+  // "Notifying the parent"); --unreported claims nothing about the work
+  // and only asks kido to tell the parent that the run ended with nothing
+  // said about it, which is what an idle self-exit or a crash used to
+  // leave a waiting parent to guess at.
   const endOwnRun = async (reason?: string): Promise<void> => {
     const host = status();
     const runID = ownRunID();
@@ -1706,7 +1743,9 @@ export default function (pi: ExtensionAPI) {
     // The run id is this session's id verbatim; "idle" is the only status
     // a turn finishes on, so anything else at shutdown is a failure.
     const result = host.status() === "idle" ? "completed" : "failed";
-    await host.runKido(["run-outcome", "--result", result, "--", runID], { timeoutMs: 3000 });
+    const args = ["run-outcome", "--result", result];
+    if (!reportedToParent) args.push("--unreported");
+    await host.runKido([...args, "--", runID], { timeoutMs: 3000 });
     const listed = await fetchAgents();
     if ("error" in listed) return;
     const self = listed.agents.find((a) => a.self);

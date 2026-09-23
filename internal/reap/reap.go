@@ -99,14 +99,14 @@ func captureScreen(w *window) {
 	subrun.WriteScreen(w.runID, data) //nolint:errcheck // best effort, see doc comment
 }
 
-// Notice is a bash run whose ending a sweep discovered and won the
-// outcome write for: nobody else is going to speak for it, so the
-// caller has to tell its parent. Sweep returns these rather than
-// sending anything, because a notice travels over an agent's inbox
-// socket and this package has no business knowing that; what a window
-// sweep can know is that a run ended with nothing said about it, which
-// is the whole of what a Notice carries. cmd/kido's asyncNotice turns
-// one into the text a parent reads.
+// Notice is a run whose ending a sweep discovered and won the outcome
+// write for: nobody else is going to speak for it, so the caller has to
+// tell its parent. Sweep returns these rather than sending anything,
+// because a notice travels over an agent's inbox socket and this package
+// has no business knowing that; what a window sweep can know is that a
+// run ended with nothing said about it, which is the whole of what a
+// Notice carries. cmd/kido's endingNotice turns one into the text a
+// parent reads.
 type Notice struct {
 	Meta    subrun.Meta
 	Outcome subrun.Outcome
@@ -121,8 +121,8 @@ type Notice struct {
 const sweptText = "ended without its wrapper reporting"
 
 // Sweep returns the windows that should be closed now, in the order they
-// appear in panes, and the bash runs whose parents this sweep is now
-// obliged to notify (see Notice).
+// appear in panes, and the runs whose parents this sweep is now obliged
+// to notify (see Notice).
 //
 // sessions must be every live record, one entry per agent session:
 // state.LoadLive or state.ReadAll. It may not be a per-pane view
@@ -215,16 +215,15 @@ func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) ([]string
 // observer that loses it to another returns false and stays quiet, and
 // exactly one observer of any ending ever speaks.
 //
-// Only a bash run is spoken for. An agent's completion is a judgement
-// only the model can make, and docs/design.md is deliberate that a
-// subagent which crashes without calling notify_parent tells its parent
-// nothing; a bash run's completion is an exit code, and the two are not
-// the same case. A run nobody started is told to nobody either way.
+// Both kinds of run are spoken for. What the notice claims is only that
+// the run ended and nothing was said about it - never a verdict on an
+// agent's work, which is a judgement only the model can make and which
+// is why notify_parent exists. A run nobody started is told to nobody.
 func RecordEnding(meta subrun.Meta, o subrun.Outcome) (Notice, bool) {
 	if err := subrun.RecordOutcome(meta.ID, o); err != nil {
 		return Notice{}, false //nolint:nilerr // losing the write is the ordinary case, not a failure
 	}
-	if meta.EffectiveKind() != subrun.KindBash || meta.ParentInstance == "" {
+	if meta.ParentInstance == "" {
 		return Notice{}, false
 	}
 	return Notice{Meta: meta, Outcome: o}, true
@@ -233,7 +232,8 @@ func RecordEnding(meta subrun.Meta, o subrun.Outcome) (Notice, bool) {
 // recordEnding is RecordEnding for the run in a window a sweep is about
 // to close: the sweep is the observer that has to guess what happened,
 // and what it may guess depends on the kind. A bash run ended without
-// its wrapper reporting; an agent run keeps the Died it always got.
+// its wrapper reporting; an agent run keeps the Died it always got, and
+// the notice says only that nobody reported it.
 func recordEnding(runID string, now time.Time) (Notice, bool) {
 	meta, err := subrun.ReadMeta(runID)
 	if err != nil {

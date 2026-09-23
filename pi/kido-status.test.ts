@@ -86,6 +86,15 @@ switch (args[0]) {
     if (delay > 0) setTimeout(respond, delay); else respond();
     break;
   }
+  case "children-alive": {
+    // The idle self-exit clock's whole query: has this session got a run
+    // of its own that has not ended. KIDO_FAKE_CHILDREN_ALIVE is "1" for
+    // a live child, and anything else (the default) for none.
+    const logFile = process.env.KIDO_FAKE_CHILDREN_ALIVE_LOG;
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
+    process.stdout.write((process.env.KIDO_FAKE_CHILDREN_ALIVE === "1" ? "true" : "false") + "\\n");
+    process.exit(0);
+  }
   case "agent-status": {
     const logFile = process.env.KIDO_FAKE_STATUS_LOG;
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
@@ -203,6 +212,8 @@ interface Fixture {
   setMessageFailTo(to: string | undefined): void;
   setWindowFocused(focused: boolean): void;
   windowFocusedCallCount(): number;
+  setChildrenAlive(alive: boolean): void;
+  childrenAliveCalls(): string[][];
   selfInboxPath(): string;
   lastLogFor(to: string, kind?: string): { id: string; replyTo: string; to: string; text: string; failed?: boolean } | undefined;
   lastSpawnArgs(): string[] | undefined;
@@ -271,6 +282,8 @@ function makeFixture(): Fixture {
   writeFileSync(parentAliveLogFile, "");
   const windowFocusedLogFile = join(dir, "window-focused.jsonl");
   writeFileSync(windowFocusedLogFile, "");
+  const childrenAliveLogFile = join(dir, "children-alive.jsonl");
+  writeFileSync(childrenAliveLogFile, "");
 
   const saved = {
     PATH: process.env.PATH,
@@ -292,6 +305,8 @@ function makeFixture(): Fixture {
     KIDO_FAKE_DEAD_FILE: process.env.KIDO_FAKE_DEAD_FILE,
     KIDO_FAKE_WINDOW_FOCUSED_LOG: process.env.KIDO_FAKE_WINDOW_FOCUSED_LOG,
     KIDO_FAKE_WINDOW_FOCUSED: process.env.KIDO_FAKE_WINDOW_FOCUSED,
+    KIDO_FAKE_CHILDREN_ALIVE_LOG: process.env.KIDO_FAKE_CHILDREN_ALIVE_LOG,
+    KIDO_FAKE_CHILDREN_ALIVE: process.env.KIDO_FAKE_CHILDREN_ALIVE,
     KIDO_FAKE_INBOX_DIR: process.env.KIDO_FAKE_INBOX_DIR,
     KIDO_FAKE_INBOX_FAIL: process.env.KIDO_FAKE_INBOX_FAIL,
     KIDO_FAKE_MESSAGE_FAIL_TO: process.env.KIDO_FAKE_MESSAGE_FAIL_TO,
@@ -316,6 +331,8 @@ function makeFixture(): Fixture {
   delete process.env.KIDO_FAKE_PARENT_ALIVE_DELAY_MS;
   process.env.KIDO_FAKE_WINDOW_FOCUSED_LOG = windowFocusedLogFile;
   delete process.env.KIDO_FAKE_WINDOW_FOCUSED; // default: not focused
+  process.env.KIDO_FAKE_CHILDREN_ALIVE_LOG = childrenAliveLogFile;
+  delete process.env.KIDO_FAKE_CHILDREN_ALIVE; // default: this session started nothing
   process.env.KIDO_FAKE_INBOX_DIR = inboxDir;
   delete process.env.KIDO_FAKE_INBOX_FAIL;
   delete process.env.KIDO_FAKE_MESSAGE_FAIL_TO;
@@ -360,6 +377,13 @@ function makeFixture(): Fixture {
     },
     windowFocusedCallCount() {
       return jsonLines(windowFocusedLogFile).length;
+    },
+    setChildrenAlive(alive) {
+      if (alive) process.env.KIDO_FAKE_CHILDREN_ALIVE = "1";
+      else delete process.env.KIDO_FAKE_CHILDREN_ALIVE;
+    },
+    childrenAliveCalls() {
+      return jsonLines(childrenAliveLogFile);
     },
     lastSpawnArgs() {
       return last(jsonLines(spawnLogFile))?.args;
@@ -1986,6 +2010,9 @@ test("session_shutdown schedules the window linger helper for a subagent", async
   }
 });
 
+// --unreported rides both results here because neither of these sessions
+// ever called notify_parent; which flag is passed is the other test's
+// subject ("a child that never called notify_parent...").
 test("session_shutdown records this run's own outcome as completed when it ends idle, or failed otherwise", async () => {
   const fx = makeFixture();
   try {
@@ -1994,7 +2021,7 @@ test("session_shutdown records this run's own outcome as completed when it ends 
       const factory = await freshExtensions();
       const s = await startSessionUsing(factory, fx, "run-completed");
       await s.emit("session_shutdown");
-      assert.deepEqual(fx.lastRunOutcomeArgs(), ["run-outcome", "--result", "completed", "--", "run-completed"]);
+      assert.deepEqual(fx.lastRunOutcomeArgs(), ["run-outcome", "--result", "completed", "--unreported", "--", "run-completed"]);
     });
   } finally {
     fx.restore();
@@ -2008,7 +2035,7 @@ test("session_shutdown records this run's own outcome as completed when it ends 
       const s = await startSessionUsing(factory, fx2, "run-failed");
       await s.emit("ui_prompt_start"); // leaves current = "waiting", not idle
       await s.emit("session_shutdown");
-      assert.deepEqual(fx2.lastRunOutcomeArgs(), ["run-outcome", "--result", "failed", "--", "run-failed"]);
+      assert.deepEqual(fx2.lastRunOutcomeArgs(), ["run-outcome", "--result", "failed", "--unreported", "--", "run-failed"]);
     });
   } finally {
     fx2.restore();
@@ -2047,7 +2074,7 @@ test("a session_shutdown that is a reload or a session replacement records no ou
       const factory = await freshExtensions();
       const s = await startSessionUsing(factory, fx, "run-quit");
       await s.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
-      assert.deepEqual(fx.lastRunOutcomeArgs(), ["run-outcome", "--result", "completed", "--", "run-quit"]);
+      assert.deepEqual(fx.lastRunOutcomeArgs(), ["run-outcome", "--result", "completed", "--unreported", "--", "run-quit"]);
     });
   } finally {
     fx.restore();
@@ -3307,6 +3334,84 @@ test("idle self-exit: a focused window re-arms instead of shutting down, then ex
     });
   } finally {
     fx.restore();
+  }
+});
+
+// idle self-exit and live children. The incident: a parent spawned a
+// child, said "I'll wait for its report", and settled the turn - which
+// is exactly what a finished session looks like. Thirty seconds later it
+// exited, and the orphan rule closed the child's window mid-work. The
+// clock now asks kido whether any run of this session's own is still
+// going, and a session with one is not idle however long it has been
+// quiet.
+test("idle self-exit: a live child run re-arms the clock, and the session exits once that child has ended", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
+    fx.setChildrenAlive(true);
+    await withParentEnv(process.pid, "parent-inst", 5000, async () => {
+      await withIdleExitEnv(0.05, false, async () => {
+        const factory = await freshExtensions();
+        const s = await startWithShutdownSpy(factory);
+        await s.emit("agent_settled", {}, { isIdle: () => true });
+        // Generous relative to the 50ms interval, since each re-arm costs
+        // a fake-kido subprocess start: the point is to observe several.
+        await new Promise((r) => setTimeout(r, 600));
+        assert.equal(s.shutdowns(), 0, "a session waiting on a child it spawned is not idle");
+        assert.ok(
+          fx.childrenAliveCalls().length >= 2,
+          `children-alive was asked ${fx.childrenAliveCalls().length} times, want re-arming to have asked more than once`,
+        );
+
+        // The negative control, and the half that keeps idle self-exit
+        // working at all: the last child ends and the clock resumes.
+        fx.setChildrenAlive(false);
+        await pollUntil(() => s.shutdowns() > 0, 2000, "ctx.shutdown() once the child has ended");
+      });
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
+// A child that ends without ever calling notify_parent owes its parent
+// one notice saying so - the ending was silent, and a parent that
+// dispatched work learnt nothing from a child that idled out. The flag
+// is what kido reads; the outcome write decides whether it is acted on.
+test("a child that never called notify_parent flags its silence as it ends, and one that did does not", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+    await asSubagent("run-silent", async () => {
+      const factory = await freshExtensions();
+      const s = await startSessionUsing(factory, fx, "run-silent");
+      await s.emit("session_shutdown");
+      assert.deepEqual(fx.lastRunOutcomeArgs(), [
+        "run-outcome", "--result", "completed", "--unreported", "--", "run-silent",
+      ], "a silent child asks kido to speak for it");
+    });
+  } finally {
+    fx.restore();
+  }
+
+  // The negative control: a child that reported has already said what it
+  // had to say, and a second notice on the way out is the parent hearing
+  // about one run twice. Nothing differs here but the tool call.
+  const fx2 = makeFixture();
+  try {
+    fx2.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+    await asSubagent("run-spoke", async () => {
+      const factory = await freshExtensions();
+      const s = await startSessionUsing(factory, fx2, "run-spoke");
+      const res = await s.tools.get("notify_parent").execute("c1", { summary: "done: the tty fix landed" });
+      assert.match(res.content[0].text, /delivered/, "the report itself has to have gone out");
+      await s.emit("session_shutdown");
+      assert.deepEqual(fx2.lastRunOutcomeArgs(), [
+        "run-outcome", "--result", "completed", "--", "run-spoke",
+      ], "a child that reported must not have a second ending sent for it");
+    });
+  } finally {
+    fx2.restore();
   }
 });
 

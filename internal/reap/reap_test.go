@@ -507,32 +507,69 @@ func TestSweepNotifiesOnceUnderTwoObservers(t *testing.T) {
 	}
 }
 
-// TestSweepNotifiesOnlyForBashRuns is design.md's deliberate cost, which
-// this feature would otherwise revert in passing: a subagent that
-// crashes without calling notify_parent tells its parent nothing,
-// because an agent's completion is a judgement only the model can make
-// and a fabricated notice is a false positive. A bash run's completion
-// is an exit code. The two are not the same case and must not share a
-// rule - and an agent run keeps the died it always got, rather than
-// picking up the failed a bash run now gets.
-func TestSweepNotifiesOnlyForBashRuns(t *testing.T) {
+// agentRun writes the meta a `kido spawn_subagent` window's run has: no
+// kind at all, which every reader takes as an agent run, and a parent to
+// tell.
+func agentRun(t *testing.T, id, name, parent string) {
+	t.Helper()
+	if err := subrun.Create(id, "do a thing"); err != nil {
+		t.Fatal(err)
+	}
+	if err := subrun.WriteMeta(subrun.Meta{ID: id, Name: name, ParentInstance: parent}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSweepNotifiesForAnAgentRunNobodyReported: a child's window found
+// gone or dead with no outcome recorded is a child that never reported,
+// and its parent is told so. This inverts what the sweep used to do -
+// record died and say nothing - which left a parent that had dispatched
+// work waiting on a child that no longer existed. The notice is not a
+// verdict on the work: it says only that the run ended and nothing was
+// said about it, which is the one thing a window sweep can know.
+func TestSweepNotifiesForAnAgentRunNobodyReported(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	if err := subrun.Create("run-agent", "do a thing"); err != nil {
-		t.Fatal(err)
-	}
-	if err := subrun.WriteMeta(subrun.Meta{ID: "run-agent", Name: "kid",
-		ParentInstance: "root-inst"}); err != nil {
-		t.Fatal(err)
-	}
+	agentRun(t, "run-agent", "kid", "root-inst")
 	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-agent"), 60)}
 
 	closing, got := Sweep(panes, nil, now)
 	check(t, closing, []string{"@1"})
-	if len(got) != 0 {
-		t.Errorf("Sweep returned %+v for an agent run, want silence", got)
+	if len(got) != 1 {
+		t.Fatalf("Sweep returned %d notices for an unreported agent run, want exactly 1: %+v", len(got), got)
+	}
+	if got[0].Meta.Name != "kid" || got[0].Meta.ParentInstance != "root-inst" {
+		t.Errorf("notice names %+v, want the run's own name and parent", got[0].Meta)
+	}
+	if got[0].Outcome.Result != subrun.Died {
+		t.Errorf("notice carries %+v, want the %q an agent run has always been recorded with", got[0].Outcome, subrun.Died)
 	}
 	if o, _, _ := subrun.ReadOutcome("run-agent"); o.Result != subrun.Died {
 		t.Errorf("agent run's outcome = %q, want it to stay %q", o.Result, subrun.Died)
+	}
+}
+
+// TestSweepSaysNothingForAnAgentRunThatReported is the negative control
+// the test above is unsafe without, and it is the same one a bash run
+// has: a child that reported recorded its own outcome on the way out,
+// and the window the sweep then finds is indistinguishable from the one
+// above. Only the O_EXCL outcome write tells them apart, so a sweep that
+// notified unconditionally would pass every assertion in the positive
+// half and tell the parent about one ending twice.
+func TestSweepSaysNothingForAnAgentRunThatReported(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	agentRun(t, "run-said", "kid", "root-inst")
+	if err := subrun.RecordOutcome("run-said", subrun.Outcome{Result: subrun.Completed, At: now}); err != nil {
+		t.Fatal(err)
+	}
+	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-said"), 60)}
+
+	closing, got := Sweep(panes, nil, now)
+	check(t, closing, []string{"@1"})
+	if len(got) != 0 {
+		t.Errorf("Sweep returned %+v, want nothing: this run's own child already spoke for it", got)
+	}
+	if o, _, _ := subrun.ReadOutcome("run-said"); o.Result != subrun.Completed {
+		t.Errorf("outcome = %+v, want the child's own story to stand", o)
 	}
 }
 

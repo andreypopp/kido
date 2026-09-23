@@ -635,6 +635,18 @@ build it paid for).
   label keys on `p.Dead` now, not on record-absence alone; the negative
   control is what stops a fix that renders every such pane as running
   from passing the positive case too.
+- **`TestChildrenAliveReadsTheRunRecords`** — the live-child reading that
+  holds a parent open is kido's, not the extension's: `kido children-alive`
+  reads the run records, the durable half, because a child outlives the
+  turn that spawned it and a `/reload` forgets memory. A dead pid with no
+  outcome counts as ended, in the direction that lets a parent go idle
+  rather than one that holds it open on a corpse forever.
+- **`TestSweepSaysNothingForAnAgentRunThatReported`** and
+  **`TestRunOutcomeWithoutUnreportedSaysNothing`** — what makes "exactly one
+  notice per ending" a rule rather than "notify always": each is the
+  positive case's window with only the outcome on disk, or only the flag,
+  different. Without them a sweep or a shutdown that always notified would
+  pass every other test and the parent would hear each ending twice.
 - **`TestAgentAliveSurvivesAPaneCollisionOnTheParent`** — the reaper's
   collision test in the second place that asked the same question. Its
   negative control runs `buildAgents` over the per-pane view and asserts

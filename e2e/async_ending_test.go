@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -180,4 +182,64 @@ func TestStopSpeaksForAWrapperThatCannot(t *testing.T) {
 	if info.Outcome != "stopped" || !strings.Contains(info.OutcomeText, "stop_subagent") {
 		t.Errorf("kido runs reports %q/%q, want stopped with the stop naming itself", info.Outcome, info.OutcomeText)
 	}
+}
+
+// TestReapedAgentRunTellsItsParentNobodyReported is the agent twin of
+// TestKilledWrapperIsReportedByWhoeverFindsIt, and the end-to-end half
+// of the incident this rule comes from: a child was closed mid-work and
+// the parent that had dispatched it learnt nothing, because the sweep
+// recorded `died` and deliberately said nothing. A child's report is
+// still its own to make - this notice claims nothing about the work,
+// only that the run ended with nothing said about it.
+//
+// The child here is a plain sleep with no kido in it at all, which is
+// exactly a child that never reached notify_parent. As in the bash twin
+// nothing is hidden: the session's own sidebar sweeps throughout and
+// `kido reap` is typed over the top, so two real observers race for one
+// ending and the outcome write settles which of them speaks. One notice
+// is the assertion, watched over a span.
+func TestReapedAgentRunTellsItsParentNobodyReported(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	in := h.asyncParent("alpha", "parent-silent-e2e")
+
+	taskFile := filepath.Join(h.dir, "silent-task.txt")
+	if err := os.WriteFile(taskFile, []byte("do the thing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outFile := filepath.Join(h.dir, "spawn-silent.out")
+	h.runSpawn(outFile, filepath.Join(h.dir, "silent.env"),
+		"--parent-pid", "424242",
+		"--parent-instance", "parent-silent-e2e-inst",
+		"--depth", "1",
+		"--name", "silent-e2e",
+		"--task-file", taskFile,
+	)
+	fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
+	if len(fields) != 3 {
+		t.Fatalf("kido spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", fields)
+	}
+	paneID, runID := fields[1], fields[2]
+
+	h.stableCount(in, 0, "a child still working has no ending to report")
+	h.killPane(paneID)
+
+	// The linger the harness runs with is 1s; rule 1 leaves a dead window
+	// alone until it has passed.
+	time.Sleep(1200 * time.Millisecond)
+	if out := h.runKido("alpha", "reap-silent.out", "reap"); !strings.Contains(out, "rc=0") {
+		t.Fatalf("kido reap output = %q, want a clean exit", out)
+	}
+
+	h.waitFor(func() bool { return len(in.Received()) > 0 }, 2*time.Second,
+		msgf("the parent to be told about a child that ended without reporting"))
+	got := in.Received()[0]
+	for _, want := range []string{`"kind":"notice"`, "silent-e2e", "without reporting", "died", runID} {
+		if !strings.Contains(got, want) {
+			t.Errorf("notice = %q, want it to carry %q", got, want)
+		}
+	}
+
+	h.runKido("alpha", "reap-silent-2.out", "reap")
+	h.stableCount(in, 1, "one ending, one notice, however many observers find it")
 }

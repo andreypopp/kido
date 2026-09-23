@@ -193,3 +193,131 @@ func TestReapSaysNothingForARunItsWrapperReported(t *testing.T) {
 		t.Errorf("outcome = %+v, want the wrapper's own story to stand", o)
 	}
 }
+
+// startedAgentRun writes the run `kido spawn_subagent` would have left
+// behind: no kind at all, which every reader takes as an agent run, and a
+// parent to tell.
+func startedAgentRun(t *testing.T, name, parent string) subrun.Meta {
+	t.Helper()
+	id := subrun.NewID()
+	if err := subrun.Create(id, "do a thing"); err != nil {
+		t.Fatal(err)
+	}
+	meta := subrun.Meta{ID: id, Name: name, ParentInstance: parent,
+		Pane: "%9", Window: "@9", StartedAt: time.Now()}
+	if err := subrun.WriteMeta(meta); err != nil {
+		t.Fatal(err)
+	}
+	return meta
+}
+
+// TestReapNotifiesForAnAgentRunNobodyReported is the sweep's half of
+// "a child that ends without reporting says so anyway", end to end from
+// the command an operator types. The child never ran at all here, which
+// is the scenario: killed, reaped, or crashed before it reached
+// notify_parent, it left a marked window and nothing else.
+func TestReapNotifiesForAnAgentRunNobodyReported(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	in := noticeParent(t, "root-inst")
+	meta := startedAgentRun(t, "ttyfix", "root-inst")
+	withPanes(t, deadRunWindow(meta.ID))
+	withKillWindow(t)
+
+	captureStdout(t, func() {
+		if err := reapCmd(nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	got := envelopes(t, in)
+	if len(got) != 1 {
+		t.Fatalf("parent received %d envelopes, want exactly 1: %+v", len(got), got)
+	}
+	if got[0].From.Name != "ttyfix" {
+		t.Errorf("notice is from %+v, want it to name the run", got[0].From)
+	}
+	for _, want := range []string{"ttyfix", "without reporting", string(subrun.Died), meta.ID, "spawn_subagent(resume: \"" + meta.ID + "\")"} {
+		if !strings.Contains(got[0].Text, want) {
+			t.Errorf("notice text = %q, want it to carry %q", got[0].Text, want)
+		}
+	}
+}
+
+// TestRunOutcomeUnreportedNotifiesTheParent is the child's own half: a
+// session shutting down without having called notify_parent records its
+// outcome and, from the same write, tells its parent that is all there
+// is going to be. Before this an idle self-exit was silent, and a parent
+// that had dispatched work learnt nothing from a child that simply timed
+// itself out.
+func TestRunOutcomeUnreportedNotifiesTheParent(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	in := noticeParent(t, "root-inst")
+	meta := startedAgentRun(t, "ttyfix", "root-inst")
+
+	if err := runOutcomeCmd([]string{"--result", "completed", "--unreported", meta.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := envelopes(t, in)
+	if len(got) != 1 {
+		t.Fatalf("parent received %d envelopes, want exactly 1: %+v", len(got), got)
+	}
+	if got[0].Kind != msg.KindNotice || got[0].From.Name != "ttyfix" {
+		t.Errorf("envelope = %+v, want a notice from the run", got[0])
+	}
+	for _, want := range []string{"ttyfix", "without reporting", string(subrun.Completed), meta.ID, "spawn_subagent(resume: \"" + meta.ID + "\")"} {
+		if !strings.Contains(got[0].Text, want) {
+			t.Errorf("notice text = %q, want it to carry %q", got[0].Text, want)
+		}
+	}
+	if o, ok, _ := subrun.ReadOutcome(meta.ID); !ok || o.Result != subrun.Completed {
+		t.Errorf("outcome = %+v (recorded %v), want the child's own %q", o, ok, subrun.Completed)
+	}
+}
+
+// TestRunOutcomeWithoutUnreportedSaysNothing is the negative control the
+// test above is worthless without: a child that did call notify_parent
+// has already told its parent what it had to say, and a second notice on
+// the way out is the parent hearing about one run twice. The only thing
+// that differs here is the flag, and the outcome is recorded either way.
+func TestRunOutcomeWithoutUnreportedSaysNothing(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	in := noticeParent(t, "root-inst")
+	meta := startedAgentRun(t, "ttyfix", "root-inst")
+
+	if err := runOutcomeCmd([]string{"--result", "completed", meta.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := in.Received(); len(got) != 0 {
+		t.Errorf("parent received %q, want nothing: this child reported for itself", got)
+	}
+	if o, ok, _ := subrun.ReadOutcome(meta.ID); !ok || o.Result != subrun.Completed {
+		t.Errorf("outcome = %+v (recorded %v), want it recorded regardless of the notice", o, ok)
+	}
+}
+
+// TestRunOutcomeUnreportedThatLosesTheWriteSaysNothing: the arbiter is
+// the outcome write and nothing else here either. A run stopped from
+// outside already has its `stopped` on disk and its stopper has already
+// spoken, so the child's own shutdown - which reports the same ending a
+// beat later - finds the write taken and stays quiet.
+func TestRunOutcomeUnreportedThatLosesTheWriteSaysNothing(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	in := noticeParent(t, "root-inst")
+	meta := startedAgentRun(t, "ttyfix", "root-inst")
+	if err := subrun.RecordOutcome(meta.ID, subrun.Outcome{Result: subrun.Stopped, At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runOutcomeCmd([]string{"--result", "completed", "--unreported", meta.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := in.Received(); len(got) != 0 {
+		t.Errorf("parent received %q, want nothing: this ending was already spoken for", got)
+	}
+	if o, _, _ := subrun.ReadOutcome(meta.ID); o.Result != subrun.Stopped {
+		t.Errorf("outcome = %+v, want the first writer's story to stand", o)
+	}
+}

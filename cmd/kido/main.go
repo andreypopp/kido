@@ -31,7 +31,7 @@ import (
 // added to the switch and forgotten here just gets a plainer error.
 var subcommands = []string{
 	"hook", "setup-pi", "setup-zsh", "setup-tmux", "setup-claude",
-	"agent-status", "set_status", "list_agents", "agent-alive", "debug-log",
+	"agent-status", "set_status", "list_agents", "agent-alive", "children-alive", "debug-log",
 	"inbox-path", "snapshot", "switch-session", "switch-window", "prompt",
 	"message_agent", "ask_agent", "notify_parent", "steer_subagent",
 	"interrupt_subagent", "stop_subagent", "spawn_subagent", "async_bash",
@@ -157,6 +157,8 @@ func main() {
 			return
 		case "agent-alive":
 			dispatch("agent-alive", func() error { return agentAliveCmd(os.Args[2:]) })
+		case "children-alive":
+			dispatch("children-alive", func() error { return childrenAliveCmd(os.Args[2:]) })
 			return
 		case "debug-log":
 			fmt.Println(filepath.Join(state.Dir(), "debug.log"))

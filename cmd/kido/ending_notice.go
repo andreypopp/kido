@@ -16,21 +16,25 @@ import (
 // last.
 const maxNoticeTailBytes = 4000
 
-// asyncNotice is one bash run's ending as its parent is told it.
+// endingNotice is one run's ending as its parent is told it.
 //
-// Three observers can be the one to send it - the run's own wrapper
-// (async_run.go), a sweep that found the window already gone
+// For a bash run, three observers can be the one to send it - the run's
+// own wrapper (async_run.go), a sweep that found the window already gone
 // (internal/reap, through reapCmd and internal/ui) and `kido
-// stop_subagent` - and which of them speaks is settled by
-// subrun.RecordOutcome's O_EXCL write, never here. One shape for all
-// three, because a parent must not be able to tell how its build ended
-// by which process happened to notice.
-type asyncNotice struct {
+// stop_subagent`; for an agent run, the sweep and the child's own
+// shutdown (`kido run-outcome --unreported`). Which of them speaks is
+// settled by subrun.RecordOutcome's O_EXCL write, never here. One shape
+// for all of them, because a parent must not be able to tell how its run
+// ended by which process happened to notice.
+type endingNotice struct {
 	runID          string
 	name           string
 	parentInstance string
-	result         subrun.Result
-	text           string
+	// kind is the run's kind, the zero value read as an agent run exactly
+	// as subrun.Meta.EffectiveKind reads an absent one.
+	kind   subrun.Kind
+	result subrun.Result
+	text   string
 	// unstreamed is how many of the run's output lines never reached the
 	// parent while it ran (--stream only; zero for every other sender and
 	// every other observer of an ending). Reported because a model that
@@ -41,11 +45,12 @@ type asyncNotice struct {
 
 // noticeFor is the notice for a run a sweep has just recorded the ending
 // of.
-func noticeFor(n reap.Notice) asyncNotice {
-	return asyncNotice{
+func noticeFor(n reap.Notice) endingNotice {
+	return endingNotice{
 		runID:          n.Meta.ID,
 		name:           n.Meta.Name,
 		parentInstance: n.Meta.ParentInstance,
+		kind:           n.Meta.EffectiveKind(),
 		result:         n.Outcome.Result,
 		text:           n.Outcome.Text,
 	}
@@ -61,7 +66,7 @@ func runLabel(name, id string) string {
 	return name
 }
 
-func (n asyncNotice) label() string { return runLabel(n.name, n.runID) }
+func (n endingNotice) label() string { return runLabel(n.name, n.runID) }
 
 // send delivers n to the run's parent, as a notice envelope over its
 // inbox. cmd names the calling subcommand, for whatever send prints to
@@ -71,7 +76,7 @@ func (n asyncNotice) label() string { return runLabel(n.name, n.runID) }
 // A run nobody started has nobody to tell - a `kido async_bash` typed at
 // a human's shell has no parent instance at all - and notify_parent's own
 // refusal would only print to a pane that is about to close.
-func (n asyncNotice) send(cmd string) {
+func (n endingNotice) send(cmd string) {
 	if n.parentInstance == "" {
 		return
 	}
@@ -84,7 +89,10 @@ func (n asyncNotice) send(cmd string) {
 
 // body is the notice text: what ended, how, and the last of what it
 // said.
-func (n asyncNotice) body() string {
+func (n endingNotice) body() string {
+	if n.kind != subrun.KindBash {
+		return n.agentBody()
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "async run %q %s: %s\n", n.label(), n.result, n.text)
 	fmt.Fprintf(&b, "run: %s\n", n.runID)
@@ -103,6 +111,23 @@ func (n asyncNotice) body() string {
 	default:
 		fmt.Fprintf(&b, "--- output ---\n%s", tail)
 	}
+	return b.String()
+}
+
+// agentBody is the notice for a subagent run that ended without its
+// child ever calling notify_parent. It claims nothing about the work:
+// the first line is the only verdict there is - the run ended and
+// nobody spoke for it - and the rest is what a parent needs to do
+// something about that, the run id and the session to pick up where it
+// stopped.
+func (n endingNotice) agentBody() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "subagent %q %s without reporting: it never called notify_parent, so this is the whole account of it\n", n.label(), n.result)
+	if n.text != "" {
+		fmt.Fprintf(&b, "detail: %s\n", n.text)
+	}
+	fmt.Fprintf(&b, "run: %s\n", n.runID)
+	fmt.Fprintf(&b, "resume: spawn_subagent(resume: %q)\n", n.runID)
 	return b.String()
 }
 

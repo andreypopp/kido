@@ -11,6 +11,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"kido/internal/reap"
 	"kido/internal/subrun"
 )
 
@@ -67,18 +68,26 @@ func runsCmd(args []string) error {
 }
 
 func runOutcomeUsage() string {
-	return "usage: kido run-outcome --result completed|failed [--text TEXT] <run-id>"
+	return "usage: kido run-outcome --result completed|failed [--text TEXT] [--unreported] <run-id>"
 }
 
 // runOutcomeCmd implements `kido run-outcome`: a run's own child reports
 // how it ended. --result accepts only completed or failed; died and
 // stopped are kido's verdicts from the outside (docs/design.md, "Run
 // outcomes").
+//
+// --unreported says the child is ending without ever having called
+// notify_parent, and asks for the one notice that fact is owed. It goes
+// through reap.RecordEnding rather than writing the outcome directly,
+// because the outcome write is what decides who speaks: a run already
+// spoken for from outside - stopped, or swept - has had its parent told
+// once already, and this call then records nothing and says nothing.
 func runOutcomeCmd(args []string) error {
 	fs := flag.NewFlagSet("run-outcome", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	result := fs.String("result", "", "completed or failed")
 	text := fs.String("text", "", "optional detail")
+	unreported := fs.Bool("unreported", false, "the child never called notify_parent: tell its parent so")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w\n%s", err, runOutcomeUsage())
 	}
@@ -89,7 +98,20 @@ func runOutcomeCmd(args []string) error {
 	if r != subrun.Completed && r != subrun.Failed {
 		return fmt.Errorf("--result must be %q or %q\n%s", subrun.Completed, subrun.Failed, runOutcomeUsage())
 	}
-	return subrun.RecordOutcome(fs.Arg(0), subrun.Outcome{Result: r, Text: *text, At: time.Now()})
+	o := subrun.Outcome{Result: r, Text: *text, At: time.Now()}
+	if !*unreported {
+		return subrun.RecordOutcome(fs.Arg(0), o)
+	}
+	meta, err := subrun.ReadMeta(fs.Arg(0))
+	if err != nil {
+		// No meta file is a run nothing knows the parent of, so there is
+		// nobody to tell; the outcome is still this child's to record.
+		return subrun.RecordOutcome(fs.Arg(0), o)
+	}
+	if n, won := reap.RecordEnding(meta, o); won {
+		noticeFor(n).send("run-outcome")
+	}
+	return nil
 }
 
 func loadRunInfo(id string) (RunInfo, error) {

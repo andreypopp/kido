@@ -818,6 +818,15 @@ must never reap itself. `spawn_subagent` also takes a
 `keepAlive` boolean, plumbed through as `KIDO_AGENT_KEEP_ALIVE`, for a
 deliberately long-lived helper that opts out of self-reaping entirely.
 
+**A session with a live child of its own is not idle.** Waiting for a
+child's report settles a turn exactly as finished work does, so before
+shutting down the timer asks `kido children-alive <instance>` - are any
+of this instance's runs still going, read from the run records, which
+are where a parent edge outlives a turn - and re-arms if any are. A
+parent that exited here took its child with it: the orphan rule closed
+the window of the very child it had been waiting for
+(design-subagents.md, "Idle self-exit").
+
 **A window a client is looking at is not reaped out from under them.**
 Before shutting down, the timer asks `kido window-focused <id>` - the
 same `tmux.WindowFocused` test `kido close-window` and the sweep already
@@ -1068,14 +1077,18 @@ variable is a root session, refused in the command as well as in the
 tool; an instance no live record claims is a parent that has since
 exited, and is an error rather than a fallback to anything.
 
-**What this costs, deliberately.** A subagent that crashes, or is
-idle-reaped without ever calling `notify_parent`, now tells its parent
-nothing. Nothing here compensates for that: the run record still holds
-the outcome (`kido runs`), and a parent that needs to know a child's fate
-regardless of whether it reported can read that. Building a fallback
-notice for this case would recreate exactly the false-positive problem
-above - firing on a settle that says nothing true about the delegated
-work - for the sake of covering a case the run record already covers.
+**What this costs, and what covers it.** A subagent that crashes, or is
+idle-reaped without ever calling `notify_parent`, has nothing to say
+about its work, and nothing here invents any: a fallback *report* would
+recreate exactly the false-positive problem above, firing on a settle
+that says nothing true about the delegated work. What such a run does
+now produce is one notice about its **ending** - the run's name, the
+outcome recorded for it, the run id and how to resume it - sent by
+whichever observer won the outcome write, the child's own shutdown or a
+sweep (design-subagents.md, "Reporting"). An ending is not a judgement,
+so no observer has to make one; and a parent waiting on a child that has
+stopped existing is a wait that never ends, which is worse than a thin
+notice.
 
 **Telling a child this is its job.** Nothing else does, once the automatic
 notice is gone, so a standing instruction is appended to a subagent's system
