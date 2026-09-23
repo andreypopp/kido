@@ -462,6 +462,20 @@ build it paid for).
   calls. The `set_status` test in the same file reads the report it means
   rather than the last one to arrive, for a related reason: a session
   emits its own report at start, and nothing orders the two.
+- **`pi/kido-status.test.ts`, the heartbeat stopping** — counts *every*
+  report, not the `running` ones, and that is the whole test. `send()`
+  sets `current` before it calls `stopHeartbeat()`, so a heartbeat that
+  failed to stop goes on re-sending **`idle`** — and its heartbeat flag
+  bypasses the coalescing that would otherwise drop an unchanged report.
+  A count filtered to `running` therefore cannot move however broken the
+  stop is: the test this replaced passed against a `stopHeartbeat` edited
+  to return immediately. Narrowing the count back to the status the test
+  is named after is the one change that silently empties it. It also
+  polls for a value that stays put rather than sampling twice a fixed
+  distance apart, because a spawn already in flight when the session went
+  idle lands whenever it lands, and on a loaded runner that is after the
+  first window closes — which is how the old test failed on CI while
+  passing everywhere else.
 - **`TestAgentAliveSurvivesAPaneCollisionOnTheParent`** — the reaper's
   collision test in the second place that asked the same question. Its
   negative control runs `buildAgents` over the per-pane view and asserts

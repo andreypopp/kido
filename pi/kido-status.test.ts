@@ -187,6 +187,7 @@ interface Fixture {
   lastStatusArgs(): string[] | undefined;
   setStatusCalls(): string[][];
   statusReportsWith(status: string): string[][];
+  statusReportCount(): number;
   statusReportsWithRemove(): string[][];
   agentsCallCount(): number;
   lastControlArgs(): string[] | undefined;
@@ -347,6 +348,12 @@ function makeFixture(): Fixture {
     },
     statusReportsWithRemove() {
       return jsonLines(statusLogFile).filter((args: string[]) => args.includes("--remove"));
+    },
+    // Unfiltered by status, unlike statusReportsWith: a heartbeat that kept
+    // firing after idle would report the now-current status ("idle"), not
+    // "running", so a check scoped to one status would miss it.
+    statusReportCount() {
+      return jsonLines(statusLogFile).length;
     },
     agentsCallCount() {
       return jsonLines(agentsCallLogFile).length;
@@ -562,6 +569,30 @@ async function pollUntil(cond: () => boolean, ms = 2000, what = "a condition"): 
     if (cond()) return;
     if (Date.now() > deadline) throw new Error(`timed out after ${ms}ms waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+// pollForStable waits for `read()` to stop changing for a full `quietMs`
+// window, not merely for two samples some fixed delay apart to happen to
+// match - a late-arriving in-flight call can land at any point on a loaded
+// runner, so only "nothing changed for a whole quiet window" tells a drain
+// apart from a heartbeat that is still running. A source that never goes
+// quiet (the negative control this exists for) times out instead of
+// returning a false-stable reading.
+async function pollForStable(read: () => number, quietMs: number, timeoutMs: number, what: string): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  let last = read();
+  let lastChange = Date.now();
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 20));
+    const cur = read();
+    if (cur !== last) {
+      last = cur;
+      lastChange = Date.now();
+    } else if (Date.now() - lastChange >= quietMs) {
+      return last;
+    }
+    if (Date.now() > deadline) throw new Error(`timed out after ${timeoutMs}ms waiting for ${what} to stabilise (stuck growing, last count ${last})`);
   }
 }
 
@@ -2302,16 +2333,24 @@ test("the heartbeat stops once the session is no longer running", async () => {
       await pollUntil(() => fx.statusReportsWith("running").length >= 2, 2000, "a heartbeat re-report");
       await s.emit("agent_settled", {}, { isIdle: () => true }); // the true idle signal; see the handler in kido-status.ts
       // Each spawnDetached call already made before the stop still lands in
-      // the log asynchronously, so the count can grow briefly after this
-      // point regardless; what must not happen is it growing forever. Two
-      // readings several intervals apart, equal to each other, is that
-      // proof without racing the exact moment the last in-flight spawn
-      // lands.
-      await new Promise((r) => setTimeout(r, 200));
-      const a = fx.statusReportsWith("running").length;
-      await new Promise((r) => setTimeout(r, 200));
-      const b = fx.statusReportsWith("running").length;
-      assert.equal(b, a, "the running report count must stabilise once the session went idle, not keep growing");
+      // the log asynchronously, so the count can keep growing briefly after
+      // this point regardless - a fixed "sleep, then sleep again" window is
+      // exactly what a loaded CI runner can beat, by letting a late arrival
+      // land in the second window rather than the first. Poll for a window
+      // with NO growth at all instead: a stopped heartbeat produces one, an
+      // unstopped 15ms one never does, which a fixed pair of samples cannot
+      // tell apart from "stopped, but slow to drain". The count is every
+      // report regardless of status, not just "running": send() flips
+      // `current` to "idle" before stopHeartbeat() runs, so a heartbeat
+      // that failed to stop would keep resending "idle" (its opts.heartbeat
+      // flag bypasses the coalescing that would otherwise drop an identical
+      // repeat) - a check scoped to "running" would not see that at all.
+      await pollForStable(
+        () => fx.statusReportCount(),
+        200,
+        3000,
+        "the status report count",
+      );
       await s.emit("session_shutdown");
     });
   } finally {
