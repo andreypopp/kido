@@ -32,11 +32,12 @@ import (
 )
 
 var (
-	tmuxBin   string // patched tmux, or "" when unusable
-	tmuxWhy   string // why it is unusable
-	kidoBin   string // freshly built kido
-	claudeBin string // a binary named "claude" that just sleeps
-	nodeBin   string // the same binary named "node", for a pi pane
+	tmuxBin    string // patched tmux, or "" when unusable
+	tmuxWhy    string // why it is unusable
+	kidoBin    string // freshly built kido
+	claudeBin  string // a binary named "claude" that just sleeps
+	nodeBin    string // the same binary named "node", for a pi pane
+	fakeBinDir string // holds kidoBin, claudeBin, nodeBin and a fake "pi"
 )
 
 const (
@@ -65,6 +66,7 @@ func setup(m *testing.M) (int, error) {
 		return 0, err
 	}
 	defer os.RemoveAll(dir)
+	fakeBinDir = dir
 
 	kidoBin = filepath.Join(dir, "kido")
 	if out, err := exec.Command("go", "build", "-o", kidoBin, "kido/cmd/kido").CombinedOutput(); err != nil {
@@ -77,6 +79,17 @@ func setup(m *testing.M) (int, error) {
 	// A pane running this one is a pi pane to kido only through what pi
 	// reports with `kido agent-status`, which is what the tests drive.
 	if nodeBin, err = buildFakeAgent(dir, "node"); err != nil {
+		return 0, err
+	}
+	// A resume that names no command defaults to "pi" (spawn_subagent.go),
+	// which is where the tool allowlist is spelled onto the command line -
+	// so the fixture needs the literal name "pi" to resolve, not a fake
+	// standing in under some other name. Real pi is not installed in CI;
+	// putting this fake on PATH ahead of it (cleanEnv) means the pane
+	// outlives the second `remain-on-exit` tmux call regardless of whether
+	// the real thing is installed, rather than only on a machine that
+	// happens to have it.
+	if _, err = buildFakeAgent(dir, "pi"); err != nil {
 		return 0, err
 	}
 	tmuxBin, tmuxWhy = findTmux()
@@ -154,6 +167,17 @@ func main() {
 // KIDO_AGENT_* removed, plus extra. Everything the harness spawns gets
 // it: KIDO_TMUX would otherwise reach kido through the tmux servers it
 // starts, and kido must resolve the tmux binary on its own.
+// pathPrefix puts fakeBinDir ahead of PATH, so a bare "pi" on any command
+// line this harness types into a pane resolves to the fake agent built
+// alongside "claude" and "node", rather than requiring pi to be installed
+// on the machine running the suite.
+func pathPrefix(kv string) string {
+	if rest, ok := strings.CutPrefix(kv, "PATH="); ok {
+		return "PATH=" + fakeBinDir + string(os.PathListSeparator) + rest
+	}
+	return kv
+}
+
 func cleanEnv(extra ...string) []string {
 	env := make([]string, 0, len(os.Environ())+len(extra))
 	for _, kv := range os.Environ() {
@@ -164,7 +188,7 @@ func cleanEnv(extra ...string) []string {
 		// new-window gives a spawned child. A test asserting a child has no
 		// parent edge would then be answered by the developer's own.
 		if !strings.HasPrefix(kv, "KIDO_TMUX=") && !strings.HasPrefix(kv, "KIDO_AGENT_") {
-			env = append(env, kv)
+			env = append(env, pathPrefix(kv))
 		}
 	}
 	return append(env, extra...)
