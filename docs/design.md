@@ -292,9 +292,9 @@ was alive still passes the protocol check, because that check reads a
 record written when it was alive; only the dial finds the socket gone,
 and the fallback's answer to that would be to type model-authored text
 at whatever shell the pane fell back to and press Enter. For a
-subagent's completion notice that is a command line the model wrote,
-run in its parent's pane. The rule for a dead parent is that there is
-nobody to tell.
+subagent's `notify_parent` summary that is a command line the model
+wrote, run in its parent's pane. The rule for a dead parent is that
+there is nobody to tell.
 
 Two more refusals happen before anything is sent. A message to the
 sender's own pane is refused, because `list_agents` reports the caller
@@ -506,6 +506,22 @@ closes a window that is any client's current one or a session's last
 window; nothing is lost by waiting, since the sweep runs again next tick.
 A split window is finished only once all of it is.
 
+The second rule does not fire on one reading. "Gone" means two things
+at once: no live record claims the parent instance as its own, and the
+parent pid the child recorded at spawn is dead too. Either reading
+saying alive is enough, and a parent that is alive by either never
+starts a clock. Both have to agree, continuously, for `OrphanGrace`
+(fifteen seconds, `KIDO_ORPHAN_SECONDS`) before the window is closed.
+One reading used to be enough, and one bad reading was easy to make: a
+`pi --print` started inside an agent's pane inherits that pane, its
+record wins the pane for as long as it reports, and the real parent is
+absent from the map, so its children were killed at once with no chance
+to record anything. The grace is longer than the child's own two-poll
+notice so a child that is going to exit cleanly gets to, and its
+outcome is its own rather than a sweep's `died`. The clock is state in
+the sweeping process, which is why a one-shot `kido reap` can never
+apply this rule: it observes once, and only ever collects dead windows.
+
 **The screen capture.** The sweep is the only thing that ever sees a
 marked window's dead pane before closing it destroys that screen for
 good, so it is also where a crash gets its one chance at a diagnosis: for
@@ -565,20 +581,21 @@ agents. The fix is to reap it: a subagent idle for `KIDO_IDLE_EXIT_SECONDS`
 two are not one figure) calls pi's own `shutdown` on itself.
 
 **One signal, reused.** The timer arms from the same `agent_settled` /
-`ctx.isIdle()` event Phase 12's turn notice already trusted for "the turn
-is truly over" ("Notifying the parent", above) - not a second,
-independently timed one. It arms on *every* settle, not only one with new
-result text to report: a settle with nothing to say is still idle. Any
-sign of new work - `turn_start` and the rest of the `running` family, or a
-message about to be delivered to the model - cancels and restarts it, so
-this is idle-for-30s, not 30s-since-the-first-settle: a child being
-actively used stays up.
+`ctx.isIdle()` event the status report already trusts for "the turn is
+truly over" - the `turnEnded` hook, whose only job this is now that the
+automatic turn notice is gone ("Notifying the parent", below) - not a
+second, independently timed one. It arms on *every* settle, not only one
+with new result text to report: a settle with nothing to say is still
+idle. Any sign of new work - `turn_start` and the rest of the `running`
+family, or a message about to be delivered to the model - cancels and
+restarts it, so this is idle-for-30s, not 30s-since-the-first-settle: a
+child being actively used stays up.
 
 **Only a child arms it**, gated on `KIDO_AGENT_PARENT_INSTANCE` exactly as
-the turn notice is: a root session - a human's own interactive pi - must
-never reap itself. `spawn_subagent` also takes a `keepAlive` boolean,
-plumbed through as `KIDO_AGENT_KEEP_ALIVE`, for a deliberately long-lived
-helper that opts out of self-reaping entirely.
+`notify_parent`'s own refusal is: a root session - a human's own
+interactive pi - must never reap itself. `spawn_subagent` also takes a
+`keepAlive` boolean, plumbed through as `KIDO_AGENT_KEEP_ALIVE`, for a
+deliberately long-lived helper that opts out of self-reaping entirely.
 
 **A window a client is looking at is not reaped out from under them.**
 Before shutting down, the timer asks `kido window-focused <id>` - the
@@ -776,7 +793,7 @@ model writes the summary itself), capped at 4000 bytes for the same
 reason the old automatic notice was: larger than the activity cap, since
 this is the child's actual work product and not a UI label, but far
 smaller than `MAX_PROMPT_BYTES`, since it is spliced whole into the
-parent's next turn as a message rather than transported as an arbitrary
+parent's context as a message rather than transported as an arbitrary
 payload. The cap is enforced by truncating, in `capBytes`, and only
 there: the tool's own schema does not repeat it as a `maxLength`, because
 `maxLength` counts UTF-16 code units against a bound stated in bytes and
@@ -875,8 +892,8 @@ waiting to hear back" urgency that a notice's whole purpose creates.
 
 An outcome is written by whichever code is positioned to know how the
 run ended. `completed` and `failed` are the child's own verdict, reported
-through `kido run-outcome` from the same shutdown handler that sends the
-parent its completion notice: `completed` if the session ended idle,
+through `kido run-outcome` from the same shutdown handler that schedules
+the child's own window linger: `completed` if the session ended idle,
 `failed` for anything else, since that is as finely as kido can tell from
 the outside. `run-outcome` accepts nothing else, because `died` and
 `stopped` are kido's verdicts from the outside and a model-authored
@@ -904,9 +921,8 @@ ordering everywhere else:
   for a reload too, with the session carrying straight on in the same
   process; an outcome written there reports a live run as finished, and
   the run's real ending, an hour later, would then be silently discarded.
-  The same gate keeps a reload from telling the parent the child finished
-  and from scheduling the child's own window to be closed out from under
-  it.
+  The same gate keeps a reload from scheduling the child's own window to
+  be closed out from under it.
 - `kido runs` guesses `died` for a run with no outcome and a dead pid,
   and never persists the guess: a read-only report should not write on
   every invocation, and only a sweep actually closing the run's window
@@ -1019,11 +1035,11 @@ the inbox server with plain v0 delivery; the inbox is status-side because
 it predates all the agent work and exists so `kido prompt` can hand a
 prompt to a session nobody is typing into. `kido-agents.ts` is the tools,
 envelope dispatch beyond a plain prompt, the ask bookkeeping and cycle
-edge, task delivery, the turn and completion notices, outcome reporting,
-and the parent-liveness poll. They are two files because they are two jobs, and
-either loads alone and degrades: without the agent half an envelope's
-text is delivered as a plain prompt, without the status half every tool
-reports kido as unavailable.
+edge, task delivery, the idle self-exit timer, outcome reporting, the
+window linger, and the parent-liveness poll. They are two files because
+they are two jobs, and either loads alone and degrades: without the
+agent half an envelope's text is delivered as a plain prompt, without
+the status half every tool reports kido as unavailable.
 
 The inbox is the one thing that could not simply be split: the agent
 half needs it to dispatch what arrives and to refuse an ask when there is
@@ -1068,13 +1084,15 @@ in `session_start` so a `/reload`'s fresh context replaces the old one
 even in a session with no kido; the parent poll and task delivery run
 after the inbox is bound (so a task's first turn can already be answered)
 and before the first report (which is what carries `--inbox`); on
-shutdown the outcome and the completion notice go out after the inbox is
-down and before the removal report, so kido still resolves this session's
-parent edge and window while they run; and a turn notice
-("Notifying the parent", above) goes out from `agent_settled`, driven
-through the same hook mechanism rather than the agent half registering
-its own `pi.on("agent_settled", ...)` handler, for the same ordering
-reason.
+shutdown the outcome is recorded and the window linger scheduled after
+the inbox is down and before the removal report, so kido still resolves
+this session's parent edge and window while they run; and the idle
+self-exit timer ("Idle self-exit, and resuming a run", above) is armed
+from `agent_settled`, driven through the same hook mechanism rather than
+the agent half registering its own `pi.on("agent_settled", ...)`
+handler, for the same ordering reason. Nothing goes to the parent from
+any of these points: a subagent reports by calling `notify_parent`, on
+its own judgement.
 
 `runKido` is asynchronous, via `spawn`, never `execFileSync`. A blocking
 call parks the whole process for as long as kido takes, up to five
@@ -1114,6 +1132,16 @@ The stem stops where the parent has no rows left below it, so a child of
 a window's last pane hangs free instead of dangling a line into empty
 space.
 
+Several windows anchored to the same pane are a second, inner bracket
+the same way: each sibling's first row takes a ├, the last a └, in place
+of the dot or ┌ that window would otherwise open with, so a parent with
+three children reads as one group rather than a run of identical dots
+that says nothing about them belonging together. The group glyph only
+ever replaces a window's first glyph, never adds a column beside it, so
+a two-pane sibling still closes its own bracket on its second row. A
+lone child gets no group glyph at all, as above: a group of one has no
+sibling to be told apart from.
+
 The price is that a window hoisted under a parent's pane is no longer in
 tmux's own window order: a subagent's window can sit above a
 lower-numbered one, and a parent's later panes sit below a whole foreign
@@ -1147,9 +1175,10 @@ reaches it: `KIDO_LINGER_SECONDS` (read by both the sweep and the
 extension's helper, so they agree), `KIDO_IDLE_EXIT_SECONDS` (the idle
 self-exit timer, a different figure that stacks with `KIDO_LINGER_SECONDS`
 rather than sharing it - see "Idle self-exit, and resuming a run"),
-`KIDO_STALL_THRESHOLD_MS`, `KIDO_STOP_ESCALATION_MS`, `KIDO_HEARTBEAT_MS`,
-`KIDO_PARENT_POLL_MS`, `KIDO_SPAWN_TIMEOUT_MS` and `KIDO_STOP_TIMEOUT_MS`.
-The extension reads
+`KIDO_ORPHAN_SECONDS` (how long the sweep's orphan rule must see a parent
+gone before it acts - see "Window lifecycle"), `KIDO_STALL_THRESHOLD_MS`,
+`KIDO_STOP_ESCALATION_MS`, `KIDO_HEARTBEAT_MS`, `KIDO_PARENT_POLL_MS`,
+`KIDO_SPAWN_TIMEOUT_MS` and `KIDO_STOP_TIMEOUT_MS`. The extension reads
 its own once at module scope, so its test suite re-imports both files
 under a cache-busting specifier to pick up a fresh value, and re-imports
 both together, because a fresh half and a cached half would silently pair

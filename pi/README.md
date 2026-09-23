@@ -44,7 +44,8 @@ and reported on every call, so kido can tell this process from another one
 reusing its pid. `--parent-pid`, `--parent-instance` and `--depth` are read
 once from `KIDO_AGENT_PARENT_PID`, `KIDO_AGENT_PARENT_INSTANCE` and
 `KIDO_AGENT_DEPTH`, which `kido spawn` sets in a subagent's environment (see
-`docs/subagents-plan.md`); absent for a root session.
+docs/design-subagents.md, "What a child is given"); absent for a root
+session.
 
 ## Install
 
@@ -243,14 +244,15 @@ was mis-delivered. A refused ask is not delivered to the model at all.
   delivers a `stop` envelope; this session answers one addressed to it
   with `ctx.shutdown()`, the same teardown a normal exit runs
   (`session_shutdown`: inbox closed, record removed, own window's linger
-  scheduled). `kido stop` escalates to killing the target's window if it
-  does not go within a few seconds - see `docs/subagents-plan.md`.
+  scheduled). `kido stop` escalates to killing the target's pane if it
+  does not go within a few seconds - see docs/design.md, "Interrupt and
+  stop".
 - `notify_parent(summary)` runs `kido message --kind notice <parent>`,
   piping `summary` on stdin. Refused, before anything is sent, for a
   session with no parent - a root session was not spawned, so there is
   nobody to tell. Call this once, when the model itself judges its
   delegated work is actually done; nothing calls it automatically (see
-  "Notices to a parent" below).
+  "Notices to a parent" above).
 
 Both are refused - on the wire, as `refused` - unless the sender can be
 verified as an ancestor of this session (the same ancestor walk
