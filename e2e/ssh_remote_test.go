@@ -80,6 +80,18 @@ func TestSSHRemoteShellStatus(t *testing.T) {
 	h.in("send-keys", "-t", pane, fmt.Sprintf("ssh -tt %s localhost %q",
 		strings.Join(sshOpts, " "), "ZDOTDIR="+zdot+" exec "+zsh+" -i"), "Enter")
 	h.waitPaneCommand(pane, "ssh")
+	// Whether a running row also names the command the far side is
+	// running depends on the tmux under test: one without the
+	// pane_command_line patch expands the name to empty. The local shell
+	// has just marked this ssh as started with kido's own integration, so
+	// its command line is there to read on a tmux that keeps one.
+	withCmd := h.in("display-message", "-p", "-t", pane, "#{pane_command_line}") != ""
+	running := func(row, cmd string) string {
+		if withCmd {
+			return row + ": " + cmd
+		}
+		return row
+	}
 	// The far side has reached a prompt: the row is an idle integrated
 	// shell's, in the field, and still names the destination.
 	h.waitZshRow("╶  ssh localhost", "")
@@ -101,7 +113,7 @@ func TestSSHRemoteShellStatus(t *testing.T) {
 	// foreground process is still ssh; the only thing that moves is the
 	// OSC 133 state the remote shell writes down the connection.
 	h.in("send-keys", "-t", pane, "sleep 3", "Enter")
-	h.waitZshRow("╶◼ ssh localhost", "")
+	h.waitZshRow(running("╶◼ ssh localhost", "sleep 3"), "")
 
 	// It exits zero on the far side, with the client in another window,
 	// so the remote exit status reaches the row too.

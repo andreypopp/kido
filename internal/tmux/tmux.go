@@ -103,6 +103,13 @@ type Pane struct {
 	CommandStatus   int
 	CommandStatusOK bool
 	CommandEndTime  int64
+	// CommandLine is the command line the shell reported with its 133;C,
+	// empty for a shell that reports none. tmux keeps it until the next
+	// 133;C, so it still names the last command while the pane is idle.
+	// tmux sanitises it: control bytes are dropped and "#(" is rewritten,
+	// so it can carry neither the format separator nor a format
+	// substitution.
+	CommandLine string
 	// Dead is tmux's own #{pane_dead}: the command has exited and
 	// remain-on-exit kept the pane on screen. DeadTime is when it exited,
 	// in unix seconds; unlike pane_command_duration neither field ticks.
@@ -163,6 +170,7 @@ var paneFormat = strings.Join([]string{
 	"#{pane_last_prompt_time}",
 	"#{pane_command_status}",
 	"#{pane_command_end_time}",
+	"#{pane_command_line}",
 	"#{pane_dead}",
 	"#{pane_dead_time}",
 	"#{session_attached}",
@@ -179,7 +187,7 @@ const SubagentOption = "@kido_subagent"
 // paneFields is the number of #{...} entries paneFormat asks tmux for;
 // parsePanes' SplitN count and len(f) guard both use it so the two cannot
 // drift apart (TestPaneFieldsMatchParsePanes).
-const paneFields = 23
+const paneFields = 24
 
 // parsePanes turns list-panes output lines into panes. Shared by the exec
 // and control-mode paths, which ask for the same format.
@@ -193,9 +201,9 @@ func parsePanes(lines []string) []Pane {
 		p := Pane{SessionName: f[0], SessionID: f[1], WindowID: f[4], WindowName: f[5], WindowLayout: f[6],
 			PaneID: f[7], Active: f[8] == "1", CurrentCommand: f[10],
 			CurrentPath: f[11], AlternateOn: f[12] == "1",
-			CommandRunning: f[13] == "1", Dead: f[18] == "1",
-			SessionAttached: f[20] != "" && f[20] != "0",
-			Subagent:        f[21], Title: f[22]}
+			CommandRunning: f[13] == "1", CommandLine: f[18], Dead: f[19] == "1",
+			SessionAttached: f[21] != "" && f[21] != "0",
+			Subagent:        f[22], Title: f[23]}
 		p.SessionCreated, _ = strconv.ParseInt(f[2], 10, 64)
 		p.WindowIndex, _ = strconv.Atoi(f[3])
 		p.PanePID, _ = strconv.Atoi(f[9])
@@ -207,7 +215,7 @@ func parsePanes(lines []string) []Pane {
 			p.CommandStatus, p.CommandStatusOK = n, true
 		}
 		p.CommandEndTime, _ = strconv.ParseInt(f[17], 10, 64)
-		p.DeadTime, _ = strconv.ParseInt(f[19], 10, 64)
+		p.DeadTime, _ = strconv.ParseInt(f[20], 10, 64)
 		panes = append(panes, p)
 	}
 	return panes

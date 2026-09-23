@@ -122,8 +122,24 @@ picker (`opts.Standalone` in `main()`). Keyboard focus is the client flag
 | sequence | effect |
 |---|---|
 | `A`, `N` | `wp->last_prompt_time = time(NULL)`, fires `pane-shell-prompt` |
-| `C` | sets `PANE_CMDRUNNING`, `cmd_start_time`, **`cmd_status = -1`**, fires `pane-command-started` |
+| `C` | sets `PANE_CMDRUNNING`, `cmd_start_time`, **`cmd_status = -1`**, stores the `cmdline=` parameter as `#{pane_command_line}`, fires `pane-command-started` |
 | `D[;status]` | clears `PANE_CMDRUNNING`, sets `cmd_end_time`/`cmd_status`, fires `pane-command-finished` |
+
+`#{pane_command_line}` is newer than the rest of the table and not in
+every build of the fork. A tmux without it expands the name to the empty
+string - not an error, and not the literal text - so the field costs an
+unpatched tmux nothing but a blank value, which is also what a shell that
+reports no command line looks like. That is the probe an e2e test asserting
+on it gates itself with (`TestSSHRowShowsRemoteCommandLine`), and it is why
+no row may require the value to draw.
+
+tmux stores the value through `clean_name()`: control bytes are dropped and
+`#(` is rewritten to `_(`, so a command line can carry neither the `\x1f`
+the pane format is joined with nor a format substitution. `shell/zsh`
+therefore sends the command line **verbatim** apart from stripping control
+characters; anything it escaped would be escaped a second time there and
+reach the sidebar unreadable (kitty's `%q` convention works only because
+kitty decodes it again).
 
 Three consequences worth holding on to:
 

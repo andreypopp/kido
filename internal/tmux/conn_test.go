@@ -94,7 +94,7 @@ func TestQuote(t *testing.T) {
 func TestParsePanes(t *testing.T) {
 	line := strings.Join([]string{"work", "$1", "1700000000", "2", "@7", "win", "layout",
 		"%3", "1", "4242", "claude", "/tmp", "0", "1", "1700000100", "1700000050",
-		"2", "1700000090", "0", "", "1", "", "✳ Title"}, sep)
+		"2", "1700000090", "make test", "0", "", "1", "", "✳ Title"}, sep)
 	p := parsePanes([]string{line, "junk"})
 	if len(p) != 1 {
 		t.Fatalf("got %d panes, want 1", len(p))
@@ -104,7 +104,7 @@ func TestParsePanes(t *testing.T) {
 		PanePID: 4242, CurrentCommand: "claude", CurrentPath: "/tmp",
 		CommandRunning: true, CommandStartTime: 1700000100, LastPromptTime: 1700000050,
 		CommandStatus: 2, CommandStatusOK: true, CommandEndTime: 1700000090,
-		SessionAttached: true, Title: "✳ Title"}
+		CommandLine: "make test", SessionAttached: true, Title: "✳ Title"}
 	if p[0] != want {
 		t.Errorf("got %+v, want %+v", p[0], want)
 	}
@@ -116,7 +116,7 @@ func TestParsePanes(t *testing.T) {
 func TestParsePanesEmptyCommandStatus(t *testing.T) {
 	line := strings.Join([]string{"work", "$1", "1700000000", "2", "@7", "win", "layout",
 		"%3", "0", "4242", "zsh", "/tmp", "1", "0", "", "1700000050",
-		"", "", "0", "", "0", "", "zsh"}, sep)
+		"", "", "", "0", "", "0", "", "zsh"}, sep)
 	p := parsePanes([]string{line})
 	if len(p) != 1 {
 		t.Fatalf("got %d panes, want 1", len(p))
@@ -137,7 +137,7 @@ func TestParsePanesEmptyCommandStatus(t *testing.T) {
 func TestParsePanesDeadSubagent(t *testing.T) {
 	line := strings.Join([]string{"work", "$1", "1700000000", "2", "@7", "kid", "layout",
 		"%3", "0", "4242", "", "/tmp", "0", "0", "", "",
-		"", "", "1", "1700000200", "1", "parent=abc depth=1", "kid"}, sep)
+		"", "", "", "1", "1700000200", "1", "parent=abc depth=1", "kid"}, sep)
 	p := parsePanes([]string{line})
 	if len(p) != 1 {
 		t.Fatalf("got %d panes, want 1", len(p))

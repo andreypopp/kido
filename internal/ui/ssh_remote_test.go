@@ -131,6 +131,65 @@ func TestSSHWithoutRemoteIntegrationStaysQuiet(t *testing.T) {
 	}
 }
 
+// TestSSHRowShowsRemoteCommand covers the label an interactive ssh pane
+// gets once its far side reports: the destination, then the command line
+// the remote shell marked with its 133;C. Before the far side has been
+// seen, the pane's command line is the local shell's - the ssh invocation
+// itself - and the row must stay exactly what it was.
+func TestSSHRowShowsRemoteCommand(t *testing.T) {
+	base := time.Unix(1700000000, 0)
+	clock := base
+	m := sshModel(&clock)
+
+	// The local shell running ssh. tmux has its command line, which names
+	// the destination a second time and nothing else.
+	local := sshPane(base.Unix()-1, base.Unix(), true, -1)
+	local.CommandLine = "ssh " + sshHost
+	m.sshTick(local)
+	if got, want := m.paneLabel(local), field("")+"ssh "+sshHost; got != want {
+		t.Errorf("label = %q, want %q: the local ssh command line is not the far side's", got, want)
+	}
+
+	// The far side's first prompt, and then a remote command.
+	clock = clock.Add(time.Second)
+	m.sshTick(sshPane(base.Unix()+1, base.Unix(), false, -1))
+	clock = clock.Add(time.Second)
+	run := sshPane(base.Unix()+1, base.Unix()+2, true, -1)
+	run.CommandLine = "sleep 45"
+	m.sshTick(run)
+	if got, want := m.paneLabel(run), "ssh "+sshHost+": sleep 45"; !strings.Contains(got, want) {
+		t.Errorf("label = %q, want it to contain %q", got, want)
+	}
+
+	// It finishes. tmux keeps the command line until the next 133;C, so
+	// only the shell status tells an idle pane from a busy one.
+	clock = clock.Add(time.Second)
+	done := sshPane(base.Unix()+4, base.Unix()+2, false, 0)
+	done.CommandLine = "sleep 45"
+	m.sshTick(done)
+	if got := m.paneLabel(done); strings.Contains(got, "sleep 45") {
+		t.Errorf("label = %q, want no command line while the far side is idle", got)
+	}
+}
+
+// TestSSHRowWithoutCommandLineIsUnchanged is what every tmux without the
+// pane_command_line patch reports: an unknown format name expands to
+// empty, so the field arrives blank on a pane that is in every other way
+// a reporting far side running a command. The row must be exactly the one
+// kido drew before the field existed.
+func TestSSHRowWithoutCommandLineIsUnchanged(t *testing.T) {
+	base := time.Unix(1700000000, 0)
+	clock := base
+	m := sshModel(&clock)
+	m.sshTick(sshPane(base.Unix()+1, base.Unix(), false, -1))
+	clock = clock.Add(time.Second)
+	run := sshPane(base.Unix()+1, base.Unix()+2, true, -1)
+	m.sshTick(run)
+	if got, want := m.paneLabel(run), field(m.shellIndicator(m.phases["%1"]))+"ssh "+sshHost; got != want {
+		t.Errorf("label = %q, want %q", got, want)
+	}
+}
+
 // TestSSHRemoteSameSecondPrompt pins the cost of reading the prompt time
 // strictly: a connection fast enough to reach its first remote prompt in
 // the second the ssh started in says nothing tmux can report, so that

@@ -1349,6 +1349,25 @@ func (m *model) lingeringLabel(p tmux.Pane) (string, bool) {
 	return label, true
 }
 
+// remoteCommand is the command line the far side of an interactive ssh
+// pane is running right now, or "" when there is none to show.
+//
+// The gate is the same latch interactivePane reads: before the far side
+// has been seen marking a prompt the pane's #{pane_command_line} is the
+// local shell's own - the ssh invocation itself - which would draw the
+// destination twice and say nothing. tmux keeps the value after the
+// command ends, so an idle pane is excluded by the shell status rather
+// than by the field being empty.
+func (m *model) remoteCommand(p tmux.Pane) string {
+	if !m.sshInteractive(p) || m.interactivePane(p) {
+		return ""
+	}
+	if running, ok := p.ShellStatus(); !ok || !running {
+		return ""
+	}
+	return p.CommandLine
+}
+
 // paneLabel is the row text for a pane: its foreground command, or an
 // agent pane's session title, both behind the same two-column indicator
 // field. Which agent it is makes no difference to the row.
@@ -1361,6 +1380,9 @@ func (m *model) paneLabel(p tmux.Pane) string {
 		text := stProc.Render(p.CurrentCommand)
 		if sess, ok := m.snap.ssh[p.PanePID]; ok {
 			text = stProc.Render("ssh ") + sess.Host
+			if cmd := m.remoteCommand(p); cmd != "" {
+				text += stProc.Render(": ") + cmd
+			}
 		}
 		// A shell with kido's OSC 133 integration (shell/zsh, installed
 		// by `kido setup-zsh`) gets the same indicators an agent pane

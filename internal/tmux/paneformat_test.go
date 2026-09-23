@@ -42,9 +42,9 @@ func TestPaneFormatFieldCountMatchesConstant(t *testing.T) {
 // TestPaneFormatFixtureFromFormat generates its parse fixture from
 // paneFormat itself, rather than a hand-written slice like TestParsePanes
 // does, and asserts every field lands in the struct member parsePanes says
-// it should. TestParsePanes' own fixture is 23 hand-typed values: if
-// someone adds a 24th field to paneFormat and forgets to update SplitN and
-// the len(f) guard together, that fixture still has 23 elements and every
+// it should. TestParsePanes' own fixture is hand-typed: if someone adds a
+// field to paneFormat and forgets to update SplitN and
+// the len(f) guard together, that fixture is one element short and every
 // existing parse test stays green while real tmux output silently loses a
 // field into pane_title. Driving the fixture from paneFormat's own field
 // count is what catches that drift immediately instead.
@@ -71,9 +71,9 @@ func TestPaneFormatFixtureFromFormat(t *testing.T) {
 	values[15] = strconv.Itoa(1000000 + 15) // pane_last_prompt_time
 	values[16] = strconv.Itoa(16)           // pane_command_status
 	values[17] = strconv.Itoa(1000000 + 17) // pane_command_end_time
-	values[18] = "1"                        // pane_dead
-	values[19] = strconv.Itoa(1000000 + 19) // pane_dead_time
-	values[20] = "1"                        // session_attached
+	values[19] = "1"                        // pane_dead
+	values[20] = strconv.Itoa(1000000 + 20) // pane_dead_time
+	values[21] = "1"                        // session_attached
 
 	line := strings.Join(values, sep)
 	p := parsePanes([]string{line})
@@ -89,8 +89,9 @@ func TestPaneFormatFixtureFromFormat(t *testing.T) {
 		CurrentCommand: values[10], CurrentPath: values[11], AlternateOn: true,
 		CommandRunning: true, CommandStartTime: 1000014, LastPromptTime: 1000015,
 		CommandStatus: 16, CommandStatusOK: true, CommandEndTime: 1000017,
-		Dead: true, DeadTime: 1000019, SessionAttached: true,
-		Subagent: values[21], Title: values[22],
+		CommandLine: values[18],
+		Dead:        true, DeadTime: 1000020, SessionAttached: true,
+		Subagent: values[22], Title: values[23],
 	}
 	if got != want {
 		t.Errorf("got %+v, want %+v", got, want)
