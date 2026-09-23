@@ -1106,15 +1106,19 @@ func continuation(i, n int) string {
 }
 
 // groupGlyph is glyph's counterpart one level up: not a window's own
-// panes, but several subagent windows anchored to the same parent pane.
+// panes, but the subagent window(s) anchored to one parent pane.
 // Anchored siblings share one visual group - tree(1)'s ├/└, never ┌ - so
-// ownership reads at a glance instead of as a run of identical dots. A
-// lone child (n==1) gets no group glyph at all: appendWindows leaves it
-// to glyph exactly as before, since a group of one has no sibling to
-// distinguish it from and the dot or bracket it already draws says
-// everything a group marker would. A group's own continuation is
-// continuation itself - what stands below a ├ is a │ for the same reason
-// one level down, so there is nothing to specialise.
+// ownership reads at a glance instead of as a run of identical dots. It
+// applies even to a group of one: for a subagent row, which child you are
+// is more useful than how many panes your own window has, so the sibling
+// glyph displaces row 0's window bracket in the lone case too, same as it
+// does for a real group. The cost is that a lone child with several panes
+// of its own loses the ┌…└ span on row 0 - the group glyph, not glyph,
+// draws that row - but a sibling of its own still gets its own └ on the
+// row below, exactly as row 1 of a two-pane sibling in a larger group
+// does; groupGlyph never touches any row but row 0. A group's own
+// continuation is continuation itself - what stands below a ├ is a │ for
+// the same reason one level down, so there is nothing to specialise.
 func groupGlyph(i, n int) string {
 	if i == n-1 {
 		return stDim.Render("└")
@@ -1437,17 +1441,17 @@ func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) 
 // what it is. The stem stops as soon as the parent has no rows left
 // below, so a child of the last pane hangs free.
 //
-// Several windows anchored to the same pane - a parent with more than one
-// live subagent - are a second, inner bracket the same way: a ├/└ group
-// glyph marks each sibling's own first row, in place of that window's own
-// ┌ (glyph would otherwise draw the same dot or bracket-open on every
-// sibling, with nothing to say they belong together). The group glyph
-// only ever replaces a window's row-0 glyph, never adds a column next to
-// it, so a two-pane sibling's own closing row still carries its own
-// └ - the group and the window brackets compose exactly like the outer
-// window bracket and a nested child already do, one level further in.
-// depth > 1 is the same recursion again: a subagent's own subagents are
-// just another anchor lookup, off its own first pane.
+// A window anchored to a pane - a subagent spawned from it, whether or
+// not it has siblings - gets a ├/└ group glyph on its own first row, in
+// place of that window's own glyph (which would otherwise draw a dot or
+// ┌ indistinguishable from any other one-pane window, with nothing to
+// say this one is a subagent's). The group glyph only ever replaces a
+// window's row-0 glyph, never adds a column next to it, so a multi-pane
+// subagent's own closing row still carries its own └ - the group and the
+// window brackets compose exactly like the outer window bracket and a
+// nested child already do, one level further in. depth > 1 is the same
+// recursion again: a subagent's own subagents are just another anchor
+// lookup, off its own first pane.
 //
 // The price is that a window hoisted under a parent's pane no longer
 // appears in tmux's own window order - a subagent's window can sit above
@@ -1493,10 +1497,6 @@ func (m *model) appendWindows(placements []windowPlacement) {
 				paneID: p.PaneID,
 			})
 			kids := byAnchor[p.PaneID]
-			if len(kids) == 1 {
-				emit(kids[0], nested, nested, "")
-				continue
-			}
 			for gi, k := range kids {
 				emit(k, nested, nested+continuation(gi, len(kids))+" ", groupGlyph(gi, len(kids)))
 			}

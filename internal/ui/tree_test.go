@@ -128,7 +128,7 @@ func TestRenderNestsUnderTheParentPane(t *testing.T) {
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
 		"┌ ▌ orchestrator",
-		"│ · ▌ subagent",
+		"│ └ ▌ subagent",
 		"└ zsh",
 	})
 }
@@ -188,10 +188,10 @@ func TestRenderGroupsSiblingSubagentsWithTheirOwnShells(t *testing.T) {
 }
 
 // TestRenderGroupsSiblingSubagentsAtDepthTwo is the sketch generalised one
-// level further: subagent-a is itself a group of one (a lone grandchild,
-// no group glyph of its own) hanging off the group's own │ continuation,
-// and subagent-b's grandchildren form a group of their own, nested inside
-// a group nested inside a group.
+// level further: subagent-a has a lone grandchild of its own, which gets
+// a group glyph too (a group of one), hanging off the group's own │
+// continuation, and subagent-b's grandchildren form a group of their
+// own, nested inside a group nested inside a group.
 func TestRenderGroupsSiblingSubagentsAtDepthTwo(t *testing.T) {
 	panes := []tmux.Pane{
 		agentPane("@1", "%1", "root"),
@@ -213,7 +213,7 @@ func TestRenderGroupsSiblingSubagentsAtDepthTwo(t *testing.T) {
 		"sess",
 		"· ▌ root",
 		"  ├ ▌ subagent-a",
-		"  │ · ▌ grandkid-a1",
+		"  │ └ ▌ grandkid-a1",
 		"  └ ▌ subagent-b",
 		"    ├ ▌ grandkid-b1",
 		"    └ ▌ grandkid-b2",
@@ -267,7 +267,10 @@ func TestRenderMultipleTopLevelAgentsInOneWindow(t *testing.T) {
 // awkward: a three-pane window with a subagent hanging off its middle
 // pane. The parent's column is carried down the left of the child's rows
 // with a stem, so the bracket still reads as one window with a block
-// nested inside it.
+// nested inside it. The child is also the lone-child-with-two-panes case:
+// its group glyph (a group of one) takes over row 0 in place of its own
+// ┌, but its second pane still closes the window with its own └, one
+// column further in than a real group's sibling stem would put it.
 func TestRenderKeepsTheColumnAcrossANestedChild(t *testing.T) {
 	panes := []tmux.Pane{
 		shellPane("@13", "%10"),
@@ -284,8 +287,8 @@ func TestRenderKeepsTheColumnAcrossANestedChild(t *testing.T) {
 		"sess",
 		"┌ zsh",
 		"├ ▌ orchestrator",
-		"│ ┌ ▌ subagent",
-		"│ └ zsh",
+		"│ └ ▌ subagent",
+		"│   └ zsh",
 		"└ zsh",
 	})
 }
@@ -307,7 +310,7 @@ func TestRenderStopsTheStemAtTheLastPane(t *testing.T) {
 		"sess",
 		"┌ zsh",
 		"└ ▌ orchestrator",
-		"  · ▌ subagent",
+		"  └ ▌ subagent",
 	})
 }
 
@@ -330,8 +333,8 @@ func TestRenderNestsRecursively(t *testing.T) {
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
 		"· ▌ root",
-		"  · ▌ kid",
-		"    · ▌ grandkid",
+		"  └ ▌ kid",
+		"    └ ▌ grandkid",
 	})
 }
 
@@ -374,7 +377,7 @@ func TestRenderDropsNobodyInACycle(t *testing.T) {
 	if rows[1] != "· ▌ a" {
 		t.Errorf("rows[1] = %q, want the first member of the ring drawn as a root", rows[1])
 	}
-	if rows[2] != "  · ▌ b" && rows[2] != "· ▌ b" {
+	if rows[2] != "  └ ▌ b" && rows[2] != "· ▌ b" {
 		t.Errorf("rows[2] = %q, want the other member drawn somewhere", rows[2])
 	}
 }
@@ -407,7 +410,7 @@ func TestRenderIsDeterministic(t *testing.T) {
 		"┌ ▌ root",
 		"│ ├ ▌ kid-a",
 		"│ └ ▌ kid-b",
-		"│   · ▌ grandkid",
+		"│   └ ▌ grandkid",
 		"└ zsh",
 	})
 }
@@ -632,7 +635,7 @@ func TestRenderNestsADeadSubagentForTheWholeLinger(t *testing.T) {
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
 		"· ▌ orchestrator",
-		"  · ",
+		"  └ ",
 	})
 }
 
@@ -744,7 +747,7 @@ func TestRenderLiveSubagentUnaffectedByLingering(t *testing.T) {
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
 		"┌ ▌ orchestrator",
-		"│ · ▌ subagent",
+		"│ └ ▌ subagent",
 		"└ zsh",
 	})
 }
@@ -817,6 +820,6 @@ func TestRenderLingeringSubagentStillNests(t *testing.T) {
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
 		"· ▌ orchestrator",
-		"  · × subagent",
+		"  └ × subagent",
 	})
 }
