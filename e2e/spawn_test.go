@@ -79,6 +79,7 @@ func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 
 	activeBefore := h.activeWindowID("alpha")
 
+	h.liveParent("alpha", "parent-xyz")
 	h.runSpawn(outFile, envFile,
 		"--parent-pid", "424242",
 		"--parent-instance", "parent-xyz",
@@ -200,3 +201,81 @@ func TestSpawnRefusesDepthBeyondCeiling(t *testing.T) {
 // so the e2e binary (built fresh by `go build`, not linked against the
 // cmd/kido package) does not need an import for one constant.
 const maxDepthForTest = 2
+
+// TestSpawnNoParentIsNotReaped is the parentless spawn end to end, which
+// is the only way to see the claim the flag actually makes: the unit test
+// hands reap.Sweep a fixture, while here a real sidebar sweeps every
+// 100ms with the harness's one-second linger, and `kido reap` is run on
+// top of it for the one-shot path. A human at a shell has no agent
+// identity to hand over, and before --no-parent there was no way through
+// this command at all - naming a real agent makes the child that agent's,
+// and inventing one leaves an orphan the sweep closes within seconds.
+//
+// The child reports itself the way the absence of
+// KIDO_AGENT_PARENT_INSTANCE leaves it: a live subagent record naming no
+// parent. That is the record rule 2 reads, and its first clause is what
+// exempts it.
+func TestSpawnNoParentIsNotReaped(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+
+	taskFile := filepath.Join(h.dir, "task.txt")
+	if err := os.WriteFile(taskFile, []byte("stand alone"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outFile := filepath.Join(h.dir, "spawn.out")
+	envFile := filepath.Join(h.dir, "child.env")
+
+	h.runSpawn(outFile, envFile, "--no-parent", "--name", "loner-e2e", "--task-file", taskFile)
+
+	out := strings.TrimSpace(h.waitFileNonEmpty(outFile))
+	fields := strings.Fields(out)
+	if len(fields) != 3 {
+		t.Fatalf("kido spawn_subagent --no-parent printed %q, want \"<window id> <pane id> <run id>\"", out)
+	}
+	windowID, paneID := fields[0], fields[1]
+
+	env := h.waitFileNonEmpty(envFile)
+	for _, k := range []string{"KIDO_AGENT_PARENT_PID", "KIDO_AGENT_PARENT_INSTANCE"} {
+		if got := envLine(env, k); got != "" {
+			t.Errorf("spawned process's %s = %q, want it unset: the child is owned by nobody", k, got)
+		}
+	}
+
+	h.agentStatus("loner-e2e", paneID, "pi", "idle", "--instance", "loner-e2e-inst")
+	if out := h.runKido("alpha", "reap.out", "reap"); !strings.Contains(out, "rc=0") {
+		t.Errorf("kido reap output = %q, want a clean exit", out)
+	}
+	h.stays(func() bool { return h.windowExists(windowID) },
+		"a child spawned with --no-parent was closed as an orphan; an empty parent edge is exempt from rule 2")
+}
+
+// TestSpawnFabricatedParentIsRefusedUpFront is the other half of the pair
+// above, and what makes rule 2's exemption a decision rather than an
+// accident: the same record-less shell, the same command, one flag
+// different. `--no-parent` makes a window the sweep declines to touch; an
+// invented `--parent-instance` makes no window at all, because the child
+// it would create is one the sweep collects within seconds - and the read
+// that would explain that runs in another process, after this command has
+// already exited successfully, so there was never going to be an error
+// for anyone to see. Refusing before the window exists is what turns that
+// silent, delayed close into something the caller is told about.
+func TestSpawnFabricatedParentIsRefusedUpFront(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+
+	out := h.runKido("alpha", "fabricated.out", "spawn_subagent",
+		"--parent-pid", "1", // init, so the pid itself is alive and cannot be what refuses
+		"--parent-instance", "nobody-is-this",
+		"--name", "orphan-e2e", "--task-file", h.writeTaskFile("orphan-e2e"))
+
+	if !strings.Contains(out, "rc=1") {
+		t.Errorf("kido spawn_subagent with a fabricated parent = %q, want rc=1", out)
+	}
+	if !strings.Contains(out, "nobody-is-this") || !strings.Contains(out, "--no-parent") {
+		t.Errorf("output = %q, want it to name the instance and point at --no-parent", out)
+	}
+	if got := h.in("list-windows", "-a", "-F", "#{window_name}"); strings.Contains(got, "orphan-e2e") {
+		t.Errorf("windows = %q, want no window created for a refused spawn", got)
+	}
+}

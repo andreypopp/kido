@@ -25,6 +25,7 @@ type runInfo struct {
 // which every test here needs control over.
 func (h *harness) spawnRun(name, script string) (runID, windowID string) {
 	h.t.Helper()
+	h.liveParent("alpha", "root-inst")
 	outFile := filepath.Join(h.dir, name+".out")
 	cmd := fmt.Sprintf("%s spawn_subagent --parent-pid 1 --parent-instance root-inst --name %s --task-file %s -- /bin/sh -c %s > %s 2>&1",
 		kidoBin, name, h.writeTaskFile(name), shellQuote(script), outFile)

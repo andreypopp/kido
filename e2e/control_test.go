@@ -4,29 +4,18 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"kido/internal/testutil"
 )
 
-// wedgedChild sets up a window in session that looks to kido exactly like
-// a live pi subagent with an inbox: a real long-running pane, and a state
-// record (via h.agentStatus, run out of band so its pid is this test
-// binary's own and stays alive for the whole test - liveParent,
-// reap_test.go, is the same trick) naming a real unix socket that
-// answers "ok\n" to anything written to it and otherwise does nothing -
-// standing in for a pi extension that received the request but never
-// acted on it, wedged the way a real one was once observed to be for
-// hours after a laptop slept and its provider connection died.
+// wedgedChild is agentWithInbox (harness_test.go) read as one particular
+// thing: an inbox that answers "ok" to anything and then does nothing is
+// a pi extension that received the request but never acted on it, wedged
+// the way a real one was once observed to be for hours after a laptop
+// slept and its provider connection died. The socket itself is of no
+// interest here - what the target failed to do with the request is.
 func (h *harness) wedgedChild(session, sessionID string) (paneID, windowID string) {
 	h.t.Helper()
-	paneID = h.newWindow(session, "", "sh", "-c", "exec sleep 300")
-	h.waitPaneCommand(paneID, "sleep")
-	windowID = h.windowID(paneID)
-
-	in := testutil.StartInbox(h.t, "ok\n")
-	h.agentStatus(sessionID, paneID, "pi", "idle",
-		"--instance", sessionID+"-inst", "--inbox", in.Path, "--protocol", "1")
-	return paneID, windowID
+	_, paneID = h.agentWithInbox(session, sessionID)
+	return paneID, h.windowID(paneID)
 }
 
 // TestStopKillsAWedgedChildAfterEscalation drives `kido stop_subagent` against a

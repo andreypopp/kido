@@ -50,6 +50,7 @@ func TestSpawnKeepAliveSetsEnv(t *testing.T) {
 	outFile := filepath.Join(h.dir, "spawn.out")
 	envFile := filepath.Join(h.dir, "child.env")
 
+	h.liveParent("alpha", "p")
 	h.runSpawn(outFile, envFile,
 		"--parent-pid", "1", "--parent-instance", "p",
 		"--name", "kid-keepalive", "--task-file", taskFile,
@@ -164,5 +165,111 @@ func TestSpawnResumeRefusesLiveRun(t *testing.T) {
 	out := h.runKido("alpha", "resume-live.out", "spawn_subagent", "--resume", runID)
 	if !strings.Contains(out, "still running") {
 		t.Errorf("kido spawn_subagent --resume on a live run = %q, want a refusal naming it still running", out)
+	}
+}
+
+// spawnRecordedRun is the fixture the two carry tests below share: a run
+// spawned with a tool allowlist and keepAlive, then ended so it can be
+// resumed at all. It returns the run's id and the directory holding the
+// pi session file `--resume` insists on (spawn_subagent.go's
+// piSessionFileExists), which the caller passes back in through
+// PI_CODING_AGENT_SESSION_DIR.
+//
+// What the first attempt actually ran does not matter here - only what
+// the run recorded - so it is the same fake command every other spawn
+// test uses.
+func (h *harness) spawnRecordedRun(name string) (runID, sessDir string) {
+	h.t.Helper()
+	h.liveParent("alpha", "root-inst")
+	outFile := filepath.Join(h.dir, name+"-spawn.out")
+	h.sendLiteral(fmt.Sprintf(
+		"%s spawn_subagent --parent-pid 1 --parent-instance root-inst --name %s "+
+			"--task-file %s --tools read,bash --keep-alive -- /bin/sh -c %s > %s 2>&1",
+		kidoBin, name, h.writeTaskFile(name), shellQuote("exec sleep 300"), outFile))
+	h.sendKeys("Enter")
+	fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
+	if len(fields) != 3 {
+		h.t.Fatalf("kido spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", fields)
+	}
+	windowID, runID := fields[0], fields[2]
+
+	// Resuming a live run is refused, so the first attempt has to be over:
+	// kill it and let the sweep close its window and record the outcome.
+	h.killPane(h.in("list-panes", "-t", windowID, "-F", "#{pane_id}"))
+	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
+		msgf("the sweep to close window %s", windowID))
+
+	sessDir = filepath.Join(h.dir, name+"-sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessDir, "2026-01-01T00-00-00-000Z_"+runID+".jsonl"), []byte("{}"), 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+	return runID, sessDir
+}
+
+// TestSpawnResumeCarriesKeepAlive: a deliberately long-lived helper that
+// came back arming the thirty-second idle timer it was spawned to opt out
+// of was not the helper that was spawned. The unit test reads the
+// environment kido asked tmux for; here the resumed child reports what it
+// actually got, and nothing on the resume command line says keepAlive -
+// it can only have come from the run's own record.
+func TestSpawnResumeCarriesKeepAlive(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+
+	runID, sessDir := h.spawnRecordedRun("keepalive-carry-e2e")
+
+	outFile := filepath.Join(h.dir, "resume.out")
+	envFile := filepath.Join(h.dir, "resume.env")
+	fake := shellQuote(fmt.Sprintf("env > %s; sleep 300", envFile))
+	h.sendLiteral(fmt.Sprintf("PI_CODING_AGENT_SESSION_DIR=%s %s spawn_subagent --resume %s -- /bin/sh -c %s > %s 2>&1",
+		shellQuote(sessDir), kidoBin, runID, fake, outFile))
+	h.sendKeys("Enter")
+	if out := strings.TrimSpace(h.waitFileNonEmpty(outFile)); len(strings.Fields(out)) != 3 {
+		t.Fatalf("kido spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", out)
+	}
+
+	if got := envLine(h.waitFileNonEmpty(envFile), "KIDO_AGENT_KEEP_ALIVE"); got != "1" {
+		t.Errorf("resumed child's KIDO_AGENT_KEEP_ALIVE = %q, want %q from the run's own record", got, "1")
+	}
+}
+
+// TestSpawnResumeCarriesToolsOntoThePiCommandLine is the other half, and
+// the more important one: a narrow toolset is the blast-radius bound the
+// depth ceiling is not, and a resume that quietly handed the full set back
+// widened it without anyone asking.
+//
+// The allowlist is spelled onto the command line only when the command is
+// literally `pi` (a command given after `--` is passed through exactly as
+// written), so this resume names none, and pi is not installed in CI - the
+// pane dies at once and remain-on-exit keeps the window. That is what
+// makes `pane_start_command` readable, and it is the better witness
+// anyway: tmux's own record of the argv it was handed, past kido's
+// command-line construction and tmux's parsers, rather than what kido
+// believed it passed.
+func TestSpawnResumeCarriesToolsOntoThePiCommandLine(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+
+	runID, sessDir := h.spawnRecordedRun("tools-carry-e2e")
+
+	outFile := filepath.Join(h.dir, "resume.out")
+	h.sendLiteral(fmt.Sprintf("PI_CODING_AGENT_SESSION_DIR=%s %s spawn_subagent --resume %s > %s 2>&1",
+		shellQuote(sessDir), kidoBin, runID, outFile))
+	h.sendKeys("Enter")
+	fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
+	if len(fields) != 3 {
+		t.Fatalf("kido spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", fields)
+	}
+	newWindowID := fields[0]
+
+	started := h.in("display-message", "-p", "-t", newWindowID, "#{pane_start_command}")
+	if !strings.Contains(started, "--tools read,bash") {
+		t.Errorf("resumed pane's command = %q, want the run's own recorded tool allowlist back", started)
+	}
+	if !strings.Contains(started, "--session "+runID) {
+		t.Errorf("resumed pane's command = %q, want it to resume the run's own session", started)
 	}
 }

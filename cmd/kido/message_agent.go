@@ -57,6 +57,9 @@ func messageAgentCmd(args []string, stdin io.Reader) int {
 // nothing here waits for the answer, which arrives on the asker's own
 // inbox and so only reaches a long-lived process (docs/design.md, "Ask
 // and reply").
+//
+// Because the answer comes back that way and no other, a caller with no
+// inbox is refused rather than delivered: see senderCanBeRepliedTo.
 func askAgentCmd(args []string, stdin io.Reader) int {
 	const cmd = "ask_agent"
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
@@ -70,7 +73,7 @@ func askAgentCmd(args []string, stdin io.Reader) int {
 		fmt.Fprintln(os.Stderr, "usage: kido ask_agent [--id ID] -- <to>")
 		return 1
 	}
-	return send(cmd, sendSpec{kind: msg.KindAsk, to: fs.Arg(0), id: *idFlag}, stdin)
+	return send(cmd, sendSpec{kind: msg.KindAsk, to: fs.Arg(0), id: *idFlag, needsReplyPath: true}, stdin)
 }
 
 // notifyParentCmd implements `kido notify_parent`: it sends stdin to the
@@ -111,6 +114,10 @@ type sendSpec struct {
 	replyTo         string
 	id              string
 	descendantsOnly bool
+	// needsReplyPath holds the send to a caller that can actually receive
+	// the answer it is demanding (senderCanBeRepliedTo). Only an ask sets
+	// it: every other kind is one-way and correlates nothing.
+	needsReplyPath bool
 }
 
 // send is the body every message-sending command shares: read the text,
@@ -154,6 +161,14 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 		return fail(err)
 	}
 	self := os.Getenv("TMUX_PANE")
+
+	// Before anything is resolved, let alone sent: an ask whose caller
+	// cannot be answered is refused rather than delivered.
+	if spec.needsReplyPath {
+		if err := senderCanBeRepliedTo(states, self); err != nil {
+			return fail(err)
+		}
+	}
 
 	var target state.Session
 	if spec.parentInstance != "" {
@@ -228,6 +243,33 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 		fmt.Printf("delivered to %s by inbox\n", targetLabel(target))
 	}
 	return 0
+}
+
+// senderCanBeRepliedTo reports whether an answer to an ask sent from pane
+// could actually get back to it. The test is the one send already applies
+// to the recipient of any non-message envelope, turned on the sender,
+// because that is literally what a reply is: a live state record for the
+// pane (so `kido message_agent -- <asker>` can resolve it at all) whose
+// Inbox is bound and whose Protocol is v1 (so a "reply" envelope, which
+// never falls back to a paste, has somewhere to land).
+//
+// Measured from a bare shell, an ask without this really did arrive: the
+// target spent a turn's attention on a question, then found the asker
+// unaddressable ("no agent session matches %47") and was left holding a
+// pending ask it could never discharge. A question with nowhere to send
+// the answer is a one-way interrupt wearing a question's costume, so it
+// is refused the way `kido notify_parent` refuses a root session - and
+// the refusal names the thing a shell actually wants.
+func senderCanBeRepliedTo(states map[string]state.Session, pane string) error {
+	const alternative = "use kido message_agent instead, which is one-way and needs no reply"
+	self, ok := states[pane]
+	if !ok {
+		return fmt.Errorf("no live agent session on this pane (%s), so an answer could not be addressed back here; nothing sent - %s", pane, alternative)
+	}
+	if self.Inbox == "" || self.Protocol < msg.V1 {
+		return fmt.Errorf("%s has no v1 inbox for an answer to arrive on, and only a long-lived process has one; nothing sent - %s", targetLabel(self), alternative)
+	}
+	return nil
 }
 
 // targetLabel names a session for a human (or a model) reading a send's

@@ -90,10 +90,11 @@ envelope still carries all four kinds and a reply is still correlated on
 `kind: "reply"` (design.md, "v0 and v1").
 
 `kido ask_agent` sends and returns rather than waiting: the answer
-arrives on the asker's own inbox, and only a long-lived process has one
-(design.md, "Ask and reply"). `kido notify_parent` takes no target at
-all, reading the parent edge out of `KIDO_AGENT_PARENT_INSTANCE`
-(design.md, "Notifying the parent").
+arrives on the asker's own inbox, and only a long-lived process has one -
+so a caller without one is refused outright rather than delivered, and
+told to use `message_agent` instead (design.md, "Ask and reply").
+`kido notify_parent` takes no target at all, reading the parent edge out
+of `KIDO_AGENT_PARENT_INSTANCE` (design.md, "Notifying the parent").
 Tools register unconditionally and report kido as unavailable until a
 session has resolved it. `set_status` and `notify_parent` cap their
 text by truncating, at 256 and 4000 bytes, and their schemas do not
@@ -129,6 +130,11 @@ command with the server's environment, not the caller's:
 | `KIDO_AGENT_TASK_FILE` | the task text, in the run's directory |
 | `KIDO_AGENT_RUN_ID` | the run id, which for a pi child is also the session id it must prove it holds |
 | `KIDO_AGENT_KEEP_ALIVE` | `1` when spawned with `keepAlive` |
+
+Every row of that table is absent for a `--no-parent` spawn's parent
+edge: the two parent variables are not set at all rather than set empty,
+since their presence is what the child's own subagent test reads
+("A human at a shell", below).
 
 None of it is proof. The environment is inherited by everything the
 child's own process starts, so a pi run from inside a subagent's pane
@@ -166,7 +172,9 @@ created so the child can read its task the instant tmux starts it:
 - `delivered`, written by the child after it has read the task, so a
   `/reload` does not deliver it twice;
 - `meta.json`, the name, parent instance, depth, window, pane, pid,
-  cwd, model, tools and start time;
+  cwd, model, tools, `keepAlive` and start time - everything a spawn was
+  given that a resume has to start it with again, which is why `keepAlive`
+  is there at all (design.md, "Idle self-exit, and resuming a run");
 - `outcome`, once the run has ended: `completed` or `failed` from the
   child itself, `died` from a sweep, `stopped` from `kido stop_subagent`;
 - `screen`, the window's last screen and a bounded tail of scrollback,
@@ -296,11 +304,16 @@ screen are cleared. It refuses a run still alive, one with no pi session
 file, and one whose pi session lives under a `sessionDir` setting kido does
 not read.
 
+The run comes back as what it was: its recorded model, tool allowlist and
+`keepAlive`, unless the caller overrides them after `--` (design.md,
+"Idle self-exit, and resuming a run").
+
 The parent edge is whoever resumes. Given `--parent-pid` and
 `--parent-instance`, they are used; omitted, they default to the
 caller's own record, so an agent resuming becomes the run's new parent
 and a human at a bare shell resumes a parentless session that will not
-self-exit. A named instance must belong to a live agent, checked before
+self-exit. `--no-parent` asks for that outright, so an agent that does
+have a record can hand a run over instead of adopting it. A named instance must belong to a live agent, checked before
 the window exists: the sweep keeps no history, and a stale edge would
 have the window closed as an orphan within seconds with nothing to say
 why. `spawn_subagent(resume)` always passes the caller's own live
@@ -308,17 +321,72 @@ identity, and refuses `task` or `name` alongside `resume` rather than
 guessing which the model wanted. `pi --fork <run-id>` stays a bare
 command; a fork is a standalone session with no record.
 
+## A human at a shell
+
+The commands are the tools' commands, but nothing stops a human from
+running them, and doing so is a supported path rather than an accident.
+What a bare shell has is a pane with no state record: no inbox, no
+instance, no parent, depth 0. Every difference follows from that one
+fact.
+
+What works:
+
+- `kido message_agent` - the one-way send, which needs nothing of the
+  sender. An agent with an inbox gets a real user message; one without
+  gets a paste.
+- `kido spawn_subagent --no-parent` - a standalone agent in a window,
+  owned by nobody (design.md, "A parentless spawn, and a parent that
+  must exist"). Naming a live agent with `--parent-pid`/`--parent-instance`
+  works too and makes the child that agent's; naming a dead or invented
+  one is refused, not spawned.
+- `kido spawn_subagent --resume <id>` - parentless by default from an
+  untracked pane, and `--no-parent` from a tracked one. The line
+  `kido runs <id>` prints is exactly this.
+- `kido steer_subagent`, `interrupt_subagent`, `stop_subagent` - a caller
+  with no record is nobody's ancestor, and is allowed to act on anything
+  rather than nothing (design.md, "Steer, interrupt and stop").
+- `kido list_agents`, `kido runs`, `kido reap` - all read-only or
+  read-mostly, and none of them ask who is calling.
+
+What is refused, each naming what to do instead:
+
+- `kido ask_agent` - the answer can only arrive on the asker's inbox, and
+  a shell has none. This used to deliver, interrupting the target with a
+  question it could not answer.
+- `kido notify_parent` - a shell was not spawned, so there is nobody to
+  tell.
+- `kido set_status` - there is no record to set an activity on.
+
+The one thing to know about the child of a `--no-parent` spawn is that
+nothing will ever collect it: no idle self-exit, no orphan rule, no
+report home. It is the user's window to close.
+
 ## In the sidebar
 
 A subagent's window is drawn indented under the pane that spawned it,
 not after that agent's whole window, with the parent window's bracket
-carried down a `│` stem beside it. Several children of one pane are
-grouped with `├` and `└` on their first rows, so ownership reads at a
-glance; a lone child keeps its own dot. The anchor is the parent edge
+carried down a `│` stem beside it. Children of one pane are grouped with
+`├` and `└` on their first rows, so ownership reads at a glance - an only
+child included, which gets a `└` rather than its own dot: on a subagent's
+row, which child you are is worth more than how many panes your own
+window has, the same trade grouping already made. A multi-pane subagent
+window still closes with its own `└` on the row below, now one column
+further in. A one-pane window that is nobody's child keeps its dot; only
+an anchored window is affected. The anchor is the parent edge
 the walk found, from the child's record while it exists and from the
 mark's `parent=` token once the record is gone, so a finished child
 stays nested while its window lingers. A child whose parent is in
 another session, or gone, is drawn as a root.
+
+A lingering window carries its run's verdict in the field column: a
+dimmed `✓` for a run that completed, and a dimmed `×` for every other
+outcome - `failed`, `died`, and `stopped` too, since ending something on
+purpose did not fail but did not finish the work either. A window whose
+outcome has not landed yet keeps the `×`: the outcome arriving is what
+turns that row from a name into a verdict, and claiming success a tick
+early is the one lie this column could tell. Why the dim `✓` does not
+collide with the green one a live agent gets for a finished turn is on
+`indicatorGone` (internal/ui), which owns the argument.
 
 The cost is that hoisted windows leave tmux's own order. Shift-Up and
 Shift-Down skip any marked window, dead or alive, so the keys cycle the
@@ -337,6 +405,14 @@ window aged out.
   than recording its own outcome. Whatever it managed to write first
   wins (`RecordOutcome` is O_EXCL).
 - Nesting stops at depth 2 and no flag raises it.
+- A `--no-parent` child is nobody's to collect: no idle self-exit, no
+  orphan rule, no report home. Its window is the user's to close. Its
+  depth is still derived from whoever spawned it, so a parentless child
+  of an agent at depth 1 sits at 2 and can spawn nothing itself.
+- `kido ask_agent` cannot be used from a shell at all, by design: there
+  is nowhere for the answer to arrive. A human wanting a round trip has
+  to be a long-lived process, or use `message_agent` and read the reply
+  on screen.
 - A blocked `ask_agent` holds the asker's whole turn. The wait is not
   one turn of the target's latency but however long the target takes to
   reach the end of whatever it is already doing, plus a turn: an ask is

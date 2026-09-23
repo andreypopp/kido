@@ -170,12 +170,20 @@ nothing useful until a session has started and kido has been found:
   which happened and to whom, and the tool relays that back verbatim.
   `replyTo`, when given, is what makes it a reply - kido derives the
   envelope kind from the flag - so the receiver's dispatch (below) can
-  correlate it with a pending `ask_agent`.
+  correlate it with a pending `ask_agent`. The message waits for the
+  receiver's current turn to end, which the tool's own description says
+  out loud and which is the whole reason `steer_subagent` exists.
+  Descriptions are read by a model every time it chooses a tool, so a
+  cost that decides between two tools belongs in one.
 - `ask_agent(to, question, timeoutMs?)` runs
   `kido ask_agent --id <id> -- <to>`, then blocks the tool call until a
   matching `reply` envelope arrives at this session's own inbox - which is
-  also why `kido ask_agent` itself only sends: a short-lived subprocess
-  has no inbox of its own to receive the answer on. Default timeout is 5
+  also why `kido ask_agent` itself only sends, and why it refuses a
+  caller that has no inbox rather than delivering a question nobody
+  could answer: a short-lived subprocess has no inbox of its own to
+  receive the answer on (docs/design.md, "Ask and reply"). This tool is
+  unaffected - the session binds an inbox before it can register a
+  waiter at all. Default timeout is 5
   minutes; a timeout returns an error naming the ask's id, and a reply
   that arrives after the timeout
   still reaches the model, as an ordinary message (see Inbox dispatch,

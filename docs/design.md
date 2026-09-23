@@ -411,6 +411,29 @@ the answer comes back later as a separate `reply` envelope naming that
 id. The wire `ok` for an ask means received, not answered: a model turn
 takes minutes and the two-second inbox timeout must not cover it.
 
+**A caller with no inbox is refused, rather than delivered.** Since the
+answer comes back on the asker's own inbox and no other way, a caller
+without one is asking a question nothing can answer. Measured from a bare
+shell, `echo hi | kido ask_agent --id t1 -- <agent>` reported "delivered"
+and really was: the target spent a turn's attention on the question and
+then could not reply at all, since the asker was not even addressable
+(`kido message_agent: no agent session matches "%47"`), leaving it holding
+a pending ask it could never discharge. That is a one-way interrupt
+wearing a question's costume. `kido ask_agent` therefore refuses before
+resolving the target, the way `kido notify_parent` refuses a root session,
+and the refusal names `message_agent` - the one-way send a shell actually
+wanted.
+
+The test is the one `send` already applies to the *recipient* of any
+non-message envelope, turned on the sender, because a reply is exactly
+such an envelope: the caller's pane must have a live state record (so
+`kido message_agent -- <asker>` can resolve it at all) whose `Inbox` is
+bound and whose `Protocol` is v1 (so a `reply`, which never falls back to
+a paste, has somewhere to land). Nothing weaker would do: a record with no
+inbox is a Claude Code session, reachable only by paste, and a paste is
+not a reply. The extension's own `ask_agent` is unaffected - it binds an
+inbox before it can register a waiter at all.
+
 Expect one full turn of latency, not a round-trip. Delivery is
 `followUp`, so the question waits for the target's whole current turn,
 and the answer requires its model to decide to call `message_agent`. The
@@ -483,6 +506,42 @@ file, so another backend could write it inside a sandbox instead. The window
 name is model-authored too and does go on the command line, so it is refused
 if it contains any character the setup-tmux path check refuses, and refused
 over 64 bytes rather than quietly mangled.
+
+### A parentless spawn, and a parent that must exist
+
+A fresh spawn used to *require* `--parent-pid` and `--parent-instance`, so
+a human at a shell could not start a standalone agent at all: the only
+ways through were to pass a real agent's identity, which makes the child
+that agent's, or to invent one - which was accepted, only `--resume`
+checking liveness - leaving an orphan that the sweep's rule 2 closed on
+its next pass. Both are wrong answers to "start me an agent in a window".
+
+The third thing is coherent and already contemplated everywhere else: an
+empty `ParentInstance` is exempt from rule 2 by the first clause of its
+own condition, a child with no `KIDO_AGENT_PARENT_INSTANCE` fails the
+subagent test and so arms no idle timer and cannot call `notify_parent`,
+and `--resume` has always defaulted to it for a caller with no record. So
+a fresh spawn takes `--no-parent`: an agent in a window, owned by nobody,
+that nothing will collect and that reports to nobody. It works on
+`--resume` too, where it drops the caller's own edge rather than
+defaulting to it.
+
+**Why a flag and not an empty `--parent-instance`.** The two failures are
+not alike. A script whose `$INSTANCE` came out empty meant to name a
+parent and has lost it, and silently spawning an uncollectable window for
+it is the wrong reading of that; a flag cannot be arrived at by accident.
+The tool never passes it - a live pi session spawning names itself - so
+this is a human's entrance only, which is the whole population that can
+make the mistake.
+
+**And the instance named must be alive.** With `--no-parent` spelling the
+honest case, a `--parent-instance` nobody claims is a mistake rather than
+a spelling of it, and is refused before the window exists - the same
+reading, from the same registry, that `--resume` has checked since the
+resume path created windows that died within a second (below). The check
+takes the whole live slice rather than the pane-keyed view, for the reason
+the sweep does: a parent's own record is exactly the one a pane collision
+drops.
 
 ### The depth ceiling is derived
 
@@ -747,6 +806,17 @@ fresh spawn uses, but:
   its task, its history and its id stay, since `subrun.ReadMeta` is what
   supplies the window's name and cwd and nothing about the task file or
   its `delivered` marker is touched;
+- launches it with what the run was *spawned* with: its model, its tool
+  allowlist and its `keepAlive`, all recorded in the meta for exactly
+  this. Two of those were being handed to the child through the
+  environment and the command line and then forgotten, so a resumed
+  keepAlive helper armed the thirty-second idle timer it had been spawned
+  to opt out of, and a resumed tool-restricted child got the full toolset
+  back - the worse of the two, since a narrow toolset is the blast-radius
+  bound the depth ceiling is not. An explicit `--keep-alive`, or a command
+  naming its own `--model`/`--tools`, still wins; the recorded value is
+  the default, not a ceiling. There is deliberately no way to turn
+  `keepAlive` back *off* on a resume, the same asymmetry `--model` has;
 - writes the *new* window, pane, pid and parent edge into that same meta
   file - `WriteMeta` is only documented as being called once by a fresh
   spawn, not enforced to be, and a resumed run's living facts have
@@ -770,7 +840,8 @@ walk pi's own per-project `sessionDir` setting, a known gap). The depth
 ceiling still applies, derived from the *resumer's* own caller record
 exactly as a fresh spawn's is - resuming does not bypass it.
 `--parent-pid`/`--parent-instance` are optional for `--resume` alone (a
-fresh spawn still requires them): omitted, they default to the caller's own
+fresh spawn still requires them, or `--no-parent` in their place - see "A
+parentless spawn, and a parent that must exist"): omitted, they default to the caller's own
 reported pid and instance, the same source depth already reads, so a human
 with no state record resumes into a parentless (root-like) session that will
 not self-reap, while another agent resuming becomes the run's new parent
@@ -793,9 +864,9 @@ ran under - there is no reason to make every resumer repeat it.
 somebody currently alive.** internal/reap's rule 2 closes any marked window
 whose child reports a `ParentInstance` that no live record claims as its own
 `Instance` - it keeps no history, so "never heard of that instance" and
-"that instance's process has since died" read identically to it. A fresh
-spawn can never hit this: its caller is always the live pi process asking
-for itself, so the instance it hands over is definitionally live at that
+"that instance's process has since died" read identically to it. The tool
+can never hit this: its caller is always the live pi process asking for
+itself, so the instance it hands over is definitionally live at that
 moment. `--resume` is different by design - it is exactly the mechanism that
 lets a *different*, by-hand caller claim the parent edge (the paragraph
 above) - which makes an unverifiable value here a real, not hypothetical,
@@ -1333,6 +1404,11 @@ up through `globalThis` and serve a session neither started.
 
 ## Known limits
 
+- A child spawned with `--no-parent` is nobody's to collect: it arms no
+  idle timer, `notify_parent` has no target, and no sweep rule applies to
+  it while it lives. Closing its window is the user's own job. That is
+  the point of the flag rather than a shortcoming of it, but it is the
+  one kind of agent kido will never tidy up.
 - A subagent moved to another session with `move-window` is outside its
   parent's scope and cannot be asked.
 - A blocked `ask_agent` holds a whole pi turn, for one turn of the

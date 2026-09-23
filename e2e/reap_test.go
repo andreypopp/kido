@@ -59,6 +59,12 @@ func (h *harness) subagentWindow(session, name, sessionID, instance, parentInsta
 // subagent is also an orphan, its window satisfies the dead-parent rule
 // as well as the finished rule, and the test passes on whichever fires
 // first - which is how the first draft of these tests passed.
+//
+// Every test that spawns through `kido spawn_subagent` with an invented
+// parent needs one too, and for a related reason made into a refusal:
+// kido now checks the instance names somebody alive before it creates
+// the window (cmd/kido/spawn_subagent.go's liveInstance), rather than
+// leaving the child to be closed by rule 2 seconds later.
 func (h *harness) liveParent(session, instance string) {
 	h.t.Helper()
 	pane := h.in("display-message", "-p", "-t", session+":", "#{pane_id}")

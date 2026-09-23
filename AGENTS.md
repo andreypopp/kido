@@ -232,6 +232,12 @@ the runner ships. The
 harness (`e2e/harness_test.go`) nests two tmux servers — an outer one
 hosting a pty, the inner one under test with kido as its
 `side-status-command` — and reads the sidebar back with `capture-pane`.
+`cleanEnv` strips `KIDO_AGENT_*` along with `KIDO_TMUX`, because the
+suite is routinely run from inside a tracked agent's pane: everything the
+harness starts inherits that agent's parent edge, the inner tmux server
+included, and the server's environment is what `new-window` gives a
+spawned child - so a test asking whether a `--no-parent` child has a
+parent edge would be answered by the developer's own.
 It builds fake `claude` and `node` binaries that reproduce the real
 agents' screens. `settle = 5s` is the only wait; every wait helper polls
 at 100ms, matching kido's default tick. Every grace period kido reads
@@ -271,6 +277,45 @@ build it paid for).
   both lines run either way once Enter fires, so only "the second line
   reached the prompt before the first one's output" distinguishes a paste
   from typed keys.
+- **`TestAskAgentRefusesACallerWithNoReplyPath`** — the assertion that
+  carries the test is the last one: the target's inbox got *nothing*. A
+  refusal that returned an error and still delivered would satisfy every
+  other assertion, and delivering is the bug itself — a question that
+  spent a turn of the target's attention and then could not be answered,
+  the asker not even being addressable. Its negative control,
+  `TestAskAgentFromAnAgentWithAnInboxStillSends`, is there because a gate
+  on the sender could as easily swallow the only caller `ask_agent` was
+  ever for. Its e2e twin,
+  `TestAskFromAShellRefusesAndLeavesTheTargetUndisturbed`, asserts the
+  same thing about the *target* - its inbox got nothing and its pane was
+  not typed into - because that is where the claim lives, and run against
+  the pre-fix binary it reproduces the original report exactly:
+  "delivered to ask-target-e2e by inbox", rc=0, question in the inbox.
+  `TestMessageFromAShellReachesTheAgent` and
+  `TestSteerFromAShellIsNotHeldToTheDescendantRule` are its positive
+  controls, and are not decoration: without them both refusals would pass
+  on a kido where *everything* from a shell was broken, which is the one
+  failure a negative-only test cannot report.
+- **`TestSpawnNoParentIsNotReaped`** — drives a real `reap.Sweep` instead
+  of asserting `meta.ParentInstance == ""`: the sweep is the reader whose
+  verdict `--no-parent` is claiming, and the field on its own pins
+  nothing. Point the record's parent at a name nobody claims and the same
+  sweep closes the window, which is what gives it teeth. Its e2e twin is
+  the same claim with a live sidebar and `kido reap` over the top, and is
+  paired there with `TestSpawnFabricatedParentIsRefusedUpFront`: one flag
+  apart, one makes a window the sweep declines to touch and the other
+  makes no window at all. Without the pair the exemption reads as
+  incidental — on the pre-fix binary the second test is what prints
+  `windows = "bash\norphan-e2e"`, the orphan itself.
+- **`TestSpawnResumeCarriesToolsOntoThePiCommandLine`** (e2e) reads
+  `#{pane_start_command}` rather than a child's own report, because the
+  allowlist is only spelled out when the command is literally `pi` and pi
+  is not installed in CI: the pane dies at once, `remain-on-exit` keeps
+  the window, and tmux's record of the argv it was handed is a better
+  witness than kido's belief about what it passed. Its sibling,
+  `TestSpawnResumeCarriesKeepAlive`, does have a live child and reads the
+  environment from it; neither names the flag it asserts on the resume
+  command line, which is the whole point — it can only come from the run.
 - **`TestEveryToolHasASubcommandOfItsName`** and its TypeScript twin —
   one list, `pi/testdata/tools.json`, checked from both sides: pi's suite
   asserts the registered tools are exactly those names, this one asserts

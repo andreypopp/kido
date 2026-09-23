@@ -49,20 +49,30 @@ func screenPath(id string) string  { return filepath.Join(dirFor(id), "screen") 
 // msg.NewID's hex alphabet satisfies both.
 func NewID() string { return msg.NewID() }
 
-// Meta is a run's own facts, fixed at spawn time and never rewritten
-// (WriteMeta is called exactly once).
+// Meta is a run's own facts, written once by a fresh spawn. A resume
+// rewrites the ones that have actually changed - the window, pane and
+// pid it now lives in, the parent edge whoever resumed it claims, and
+// the keepAlive that attempt is running under - and leaves the rest,
+// which is what makes it one run rather than two (docs/design.md, "Idle
+// self-exit, and resuming a run").
 type Meta struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	ParentInstance string    `json:"parentInstance,omitempty"`
-	Depth          int       `json:"depth"`
-	Window         string    `json:"window"`
-	Pane           string    `json:"pane"`
-	PID            int       `json:"pid"` // the child process's pid, for EffectiveOutcome's liveness guess
-	Cwd            string    `json:"cwd"`
-	Model          string    `json:"model,omitempty"`
-	Tools          []string  `json:"tools,omitempty"`
-	StartedAt      time.Time `json:"startedAt"`
+	ID             string   `json:"id"`
+	Name           string   `json:"name"`
+	ParentInstance string   `json:"parentInstance,omitempty"`
+	Depth          int      `json:"depth"`
+	Window         string   `json:"window"`
+	Pane           string   `json:"pane"`
+	PID            int      `json:"pid"` // the child process's pid, for EffectiveOutcome's liveness guess
+	Cwd            string   `json:"cwd"`
+	Model          string   `json:"model,omitempty"`
+	Tools          []string `json:"tools,omitempty"`
+	// KeepAlive is the --keep-alive the run was spawned with. Recorded, like
+	// Model and Tools, because a resume has to start the run it was rather
+	// than a default one: a helper spawned to stay up came back arming a
+	// thirty-second idle timer, and a child narrowed to a few tools came
+	// back holding all of them.
+	KeepAlive bool      `json:"keepAlive,omitempty"`
+	StartedAt time.Time `json:"startedAt"`
 }
 
 // Result is how a run ended.

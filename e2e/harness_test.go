@@ -27,6 +27,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
+
+	"kido/internal/testutil"
 )
 
 var (
@@ -148,14 +150,20 @@ func main() {
 	return out, nil
 }
 
-// cleanEnv is this process's environment with KIDO_TMUX removed, plus
-// extra. Everything the harness spawns gets it: KIDO_TMUX would otherwise
-// reach kido through the tmux servers it starts, and kido must resolve the
-// tmux binary on its own.
+// cleanEnv is this process's environment with KIDO_TMUX and every
+// KIDO_AGENT_* removed, plus extra. Everything the harness spawns gets
+// it: KIDO_TMUX would otherwise reach kido through the tmux servers it
+// starts, and kido must resolve the tmux binary on its own.
 func cleanEnv(extra ...string) []string {
 	env := make([]string, 0, len(os.Environ())+len(extra))
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "KIDO_TMUX=") {
+		// KIDO_AGENT_* goes too, and not only for tidiness: the suite is
+		// routinely run from inside a tracked agent's pane, which carries a
+		// whole parent edge, and everything this harness starts inherits it -
+		// including the inner tmux server, whose own environment is what
+		// new-window gives a spawned child. A test asserting a child has no
+		// parent edge would then be answered by the developer's own.
+		if !strings.HasPrefix(kv, "KIDO_TMUX=") && !strings.HasPrefix(kv, "KIDO_AGENT_") {
 			env = append(env, kv)
 		}
 	}
@@ -897,6 +905,45 @@ func (h *harness) agentStatus(sessionID, pane, agent, status string, extra ...st
 	if out, err := cmd.CombinedOutput(); err != nil {
 		h.t.Fatalf("kido agent-status %s: %v\n%s", status, err, out)
 	}
+}
+
+// agentWithInbox sets up a window in session that looks to kido exactly
+// like a live pi session with an inbox: a real long-running pane, and a
+// state record (via agentStatus, run out of band so its pid is this test
+// binary's own and stays alive for the whole test - liveParent, above, is
+// the same trick) naming a real unix socket that answers "ok\n" to
+// anything written to it and otherwise does nothing.
+//
+// The inbox is returned because it is the only place a delivery can be
+// observed from outside the target: what it received, and what it did
+// not. A test about a message never being sent has nowhere else to look.
+func (h *harness) agentWithInbox(session, sessionID string) (*testutil.Inbox, string) {
+	h.t.Helper()
+	paneID := h.newWindow(session, "", "sh", "-c", "exec sleep 300")
+	h.waitPaneCommand(paneID, "sleep")
+	in := testutil.StartInbox(h.t, "ok\n")
+	h.agentStatus(sessionID, paneID, "pi", "idle",
+		"--instance", sessionID+"-inst", "--inbox", in.Path, "--protocol", "1")
+	return in, paneID
+}
+
+// waitFileContains waits until path holds sub, then returns its whole
+// contents. Every "run kido and read its output" helper here ends its
+// script with an "rc=<code>" line, and waiting for that is what tells a
+// finished command from a half-written file: waitFileNonEmpty can return
+// between the command's own output and its exit code.
+func (h *harness) waitFileContains(path, sub string) string {
+	h.t.Helper()
+	var content []byte
+	h.waitFor(func() bool {
+		b, err := os.ReadFile(path)
+		if err != nil || !strings.Contains(string(b), sub) {
+			return false
+		}
+		content = b
+		return true
+	}, settle, msgf("%s to contain %q", path, sub))
+	return string(content)
 }
 
 // piPane opens a window in session running the fake agent named "node",

@@ -762,8 +762,14 @@ export default function (pi: ExtensionAPI) {
   const messageAgentTool: ToolDefinition<typeof messageAgentParams> = {
     name: "message_agent",
     label: "Message Agent",
+    // The waiting clause is the cost a caller needs at the moment it
+    // chooses, which is here and not in the system prompt: a model
+    // reaching for "send my subagent a correction" reads this as the
+    // general-purpose choice, with nothing saying the message sits queued
+    // until the work it meant to redirect is already done. steer's own
+    // description names this one for the same reason, the other way round.
     description:
-      "Send a message to another agent in this tmux session, addressed by name, session id, or a unique id prefix.",
+      "Send a message to another agent in this tmux session, addressed by name, session id, or a unique id prefix. It waits for the receiver to finish its current turn; use steer_subagent for a correction that is useless once the work is done.",
     promptSnippet: "message_agent(to, message, replyTo?) - send a message to another agent in this tmux session",
     parameters: messageAgentParams,
     async execute(_toolCallId, params) {
@@ -825,7 +831,7 @@ export default function (pi: ExtensionAPI) {
     name: "ask_agent",
     label: "Ask Agent",
     description:
-      "Ask another agent a question and block until it replies. Refused for an ancestor, a target outside this tmux session, one with no inbox, or yourself.",
+      "Ask another agent a question and block until it replies - one full turn of the target's latency, not a round-trip, since a busy target does not see the question until it would otherwise have stopped. Refused for an ancestor, a target outside this tmux session, one with no inbox, or yourself.",
     promptSnippet: "ask_agent(to, question, timeoutMs?) - ask another agent a question and wait for its reply",
     parameters: askAgentParams,
     async execute(_toolCallId, params) {

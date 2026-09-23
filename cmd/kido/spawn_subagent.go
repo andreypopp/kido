@@ -38,7 +38,8 @@ var (
 
 func spawnUsage() string {
 	return "usage: kido spawn_subagent --parent-pid PID --parent-instance ID --name NAME --task-file FILE|- [--depth N] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
-		"   or: kido spawn_subagent --resume RUN_ID [--parent-pid PID --parent-instance ID] [--keep-alive] [-- COMMAND...]"
+		"   or: kido spawn_subagent --no-parent --name NAME --task-file FILE|- [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
+		"   or: kido spawn_subagent --resume RUN_ID [--parent-pid PID --parent-instance ID | --no-parent] [--keep-alive] [-- COMMAND...]"
 }
 
 // spawnSubagentCmd implements `kido spawn_subagent`: it creates a detached window in the
@@ -63,6 +64,15 @@ func spawnSubagentCmd(args []string) error {
 	toolsFlag := fs.String("tools", "", "comma-separated tool allowlist the child will run, recorded in the run's meta for kido runs")
 	resumeID := fs.String("resume", "", "resume an existing run's own session instead of starting a new one")
 	keepAlive := fs.Bool("keep-alive", false, "the child does not self-reap after going idle (KIDO_AGENT_KEEP_ALIVE)")
+	// --no-parent is the whole surface for a child owned by nobody, and it
+	// is a flag rather than an empty --parent-instance because the two
+	// failures are not alike: a script whose $INSTANCE came out empty means
+	// to name a parent and has lost it, and silently spawning an
+	// uncollectable window for it would be the wrong reading. A flag cannot
+	// be arrived at by accident. spawn_subagent the tool never passes it -
+	// a pi session spawning always names itself - so this is a human's
+	// entrance only.
+	noParent := fs.Bool("no-parent", false, "spawn with no parent edge at all: the child reports to nobody, arms no idle timer, and is never reaped as an orphan")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w\n%s", err, spawnUsage())
 	}
@@ -73,12 +83,15 @@ func spawnSubagentCmd(args []string) error {
 		}
 	})
 	resuming := *resumeID != ""
+	parentGiven := *parentPID > 0 || *parentInstance != ""
 
 	switch {
-	case !resuming && *parentPID <= 0:
-		return fmt.Errorf("--parent-pid is required\n%s", spawnUsage())
-	case !resuming && *parentInstance == "":
-		return fmt.Errorf("--parent-instance is required\n%s", spawnUsage())
+	case *noParent && parentGiven:
+		return fmt.Errorf("--no-parent contradicts --parent-pid/--parent-instance; pass one or the other\n%s", spawnUsage())
+	case !resuming && !*noParent && *parentPID <= 0:
+		return fmt.Errorf("--parent-pid is required (or --no-parent for a child owned by nobody)\n%s", spawnUsage())
+	case !resuming && !*noParent && *parentInstance == "":
+		return fmt.Errorf("--parent-instance is required (or --no-parent for a child owned by nobody)\n%s", spawnUsage())
 	case depthGiven && *claimedDepth < 0:
 		return fmt.Errorf("--depth must not be negative\n%s", spawnUsage())
 	case !resuming && *name == "":
@@ -92,7 +105,7 @@ func spawnSubagentCmd(args []string) error {
 	}
 
 	if resuming {
-		return spawnResume(*resumeID, *parentPID, *parentInstance, fs.Args(), *keepAlive)
+		return spawnResume(*resumeID, *parentPID, *parentInstance, fs.Args(), *keepAlive, *noParent)
 	}
 
 	if i := strings.IndexAny(*name, tmuxConfUnsafe); i >= 0 {
@@ -126,13 +139,31 @@ func spawnSubagentCmd(args []string) error {
 	// from --depth, which a caller at the ceiling could understate. A
 	// caller with no record is depth 0, which can only make the ceiling
 	// stricter (docs/design.md, "The depth ceiling is derived").
-	states, err := state.Load()
+	//
+	// One read, two views of it: the pane-keyed one settles who owns the
+	// caller's pane, and the whole live slice answers "is this instance
+	// running anywhere" for liveInstance below - a parent's own record is
+	// exactly the one a pane collision drops from the per-pane view
+	// (AGENTS.md, "Agent state").
+	live, err := state.LoadLive()
 	if err != nil {
 		return err
 	}
+	states := state.ByPane(live)
 	depth := states[pane.PaneID].Depth + 1
 	if depth > maxDepth {
 		return fmt.Errorf("refusing to spawn at depth %d: maximum nesting is %d (root 0, subagent 1, subagent 2)", depth, maxDepth)
+	}
+	// A made-up parent edge used to be accepted here and cost the child its
+	// window moments later: internal/reap's rule 2 closes any marked window
+	// whose child names a ParentInstance no live record claims, and it keeps
+	// no history, so an invented instance and one whose process has died
+	// read identically to it - there was never going to be an error message
+	// for the human to see. The tool cannot trip this, since a pi session
+	// spawning names itself; a human at a shell could, and --no-parent is
+	// now the honest spelling of what they were reaching for.
+	if *parentInstance != "" && !liveInstance(live, *parentInstance) {
+		return fmt.Errorf("--parent-instance %q names no currently live agent; the child would be closed within moments as an orphan (internal/reap's rule 2) - pass --no-parent for a child owned by nobody, or name an agent that is actually running", *parentInstance)
 	}
 
 	runID := subrun.NewID()
@@ -141,7 +172,8 @@ func spawnSubagentCmd(args []string) error {
 	}
 	meta := subrun.Meta{
 		ID: runID, Name: *name, ParentInstance: *parentInstance, Depth: depth,
-		Cwd: pane.CurrentPath, Model: *model, Tools: tools, StartedAt: time.Now(),
+		Cwd: pane.CurrentPath, Model: *model, Tools: tools, KeepAlive: *keepAlive,
+		StartedAt: time.Now(),
 	}
 
 	// The run id is the child's own pi session id; any other command has
@@ -173,11 +205,12 @@ func callerPane() (tmux.Pane, []tmux.Pane, error) {
 
 // runEnv is the KIDO_AGENT_* environment a run's window is created with,
 // the only channel a child has: new-window runs its command with the tmux
-// server's environment, not the caller's. A resume leaves the parent edge
-// out when there is nobody to name - a run resumed from a bare human
-// shell has no current parent - so an empty pid or instance is omitted
-// rather than reported as zero, which internal/reap would read as an
-// orphan's.
+// server's environment, not the caller's. The parent edge is left out
+// when there is nobody to name - a --no-parent spawn, or a run resumed
+// from a bare human shell - so an empty pid or instance is omitted rather
+// than reported as zero or empty: the child's own subagent test reads
+// whether the variable is there at all, and internal/reap would read a
+// zero as an orphan's.
 func runEnv(runID string, parentPID int, parentInstance string, depth int, keepAlive bool) []string {
 	env := []string{
 		"KIDO_AGENT_TASK_FILE=" + subrun.TaskPath(runID),
@@ -243,10 +276,14 @@ func createRunWindow(meta subrun.Meta, sessionID string, env, command []string) 
 // liveInstance reports whether some session in states reports instance as
 // its own and is still alive - the same reading internal/reap's rule 2
 // uses to decide a subagent's parent is gone, spelled out here so a
-// resume can refuse before creating a window rule 2 would only close
+// spawn can refuse before creating a window rule 2 would only close
 // moments later.
-func liveInstance(states map[string]state.Session, instance string) bool {
-	for _, s := range states {
+//
+// It takes the whole live slice rather than the pane-keyed map for the
+// reason the sweep does: the question is whether an instance is running
+// anywhere, and a pane collision drops a record from the per-pane view.
+func liveInstance(sessions []state.Session, instance string) bool {
+	for _, s := range sessions {
 		if s.Instance == instance && state.Alive(s.PID) {
 			return true
 		}
@@ -262,7 +299,7 @@ func liveInstance(states map[string]state.Session, instance string) bool {
 // (docs/design.md, "kido spawn_subagent --resume"). command is fs.Args(): the
 // COMMAND after "--", defaulting to plain pi exactly as a fresh spawn
 // does.
-func spawnResume(runID string, parentPID int, parentInstance string, command []string, keepAlive bool) error {
+func spawnResume(runID string, parentPID int, parentInstance string, command []string, keepAlive, noParent bool) error {
 	meta, err := subrun.ReadMeta(runID)
 	if err != nil {
 		return fmt.Errorf("run %q: %w", runID, err)
@@ -295,17 +332,21 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 	// that does have a record (another agent, or `kido runs`'s printed
 	// resume line run from inside a kido-tracked pane) becomes the run's
 	// new parent without --parent-pid/--parent-instance having to name it.
-	// Given explicitly, those flags still win, the same as a fresh spawn.
-	states, err := state.Load()
+	// Given explicitly, those flags still win, the same as a fresh spawn,
+	// and --no-parent asks for a parentless resume outright: an agent that
+	// does have a record can hand over a run it does not want to own.
+	live, err := state.LoadLive()
 	if err != nil {
 		return err
 	}
-	self := states[pane.PaneID]
-	if parentPID == 0 {
-		parentPID = self.PID
-	}
-	if parentInstance == "" {
-		parentInstance = self.Instance
+	self := state.ByPane(live)[pane.PaneID]
+	if !noParent {
+		if parentPID == 0 {
+			parentPID = self.PID
+		}
+		if parentInstance == "" {
+			parentInstance = self.Instance
+		}
 	}
 	// internal/reap's rule 2 closes any marked window whose child reports
 	// a ParentInstance that names nobody currently alive - it has no
@@ -322,7 +363,7 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 	if depth > maxDepth {
 		return fmt.Errorf("refusing to resume at depth %d: maximum nesting is %d (root 0, subagent 1, subagent 2)", depth, maxDepth)
 	}
-	if parentInstance != "" && !liveInstance(states, parentInstance) {
+	if parentInstance != "" && !liveInstance(live, parentInstance) {
 		return fmt.Errorf("--parent-instance %q names no currently live agent; the resumed run would be reaped within moments as an orphan (internal/reap's rule 2) - omit --parent-pid/--parent-instance for a parentless resume, or give the instance of an agent that is actually running", parentInstance)
 	}
 
@@ -339,7 +380,21 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 		if meta.Model != "" && !slices.Contains(command[1:], "--model") {
 			command = append(command, "--model", meta.Model)
 		}
+		// The tool allowlist comes back for the same reason the model does,
+		// and more urgently: a narrow toolset is the blast-radius bound the
+		// depth ceiling is not, and a resume that quietly handed the full set
+		// back widened it without anyone asking. A command naming its own
+		// --tools still wins.
+		if len(meta.Tools) > 0 && !slices.Contains(command[1:], "--tools") {
+			command = append(command, "--tools", strings.Join(meta.Tools, ","))
+		}
 	}
+	// keepAlive is the run's own too: a deliberately long-lived helper that
+	// came back arming a thirty-second idle timer was not the helper that
+	// was spawned. An explicit --keep-alive still wins, and there is no way
+	// to turn it back off, which is the same asymmetry --model has - the
+	// recorded value is the default, not a ceiling.
+	keepAlive = keepAlive || meta.KeepAlive
 
 	// A resumed run is running again: its old outcome, if any, no longer
 	// describes it, and RecordOutcome's O_EXCL would otherwise refuse every
@@ -361,7 +416,7 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 	// and `pi --session` run from any other directory asks to fork into
 	// the current one instead of resuming, so the window is created there
 	// rather than at the caller's.
-	meta.ParentInstance, meta.Depth = parentInstance, depth
+	meta.ParentInstance, meta.Depth, meta.KeepAlive = parentInstance, depth, keepAlive
 	return createRunWindow(meta, pane.SessionID, runEnv(runID, parentPID, parentInstance, depth, keepAlive), command)
 }
 

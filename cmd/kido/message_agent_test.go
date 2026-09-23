@@ -38,6 +38,22 @@ func withSendPrompt(t *testing.T, err error) func() []string {
 	return func() []string { return calls }
 }
 
+// withAskingCaller records a live agent session for the caller pane (%1,
+// in samePane) with a v1 inbox of its own. kido ask_agent refuses to
+// deliver a question from a caller that could not receive the answer
+// (senderCanBeRepliedTo), so every ask test needs one; none of the
+// one-way kinds do.
+func withAskingCaller(t *testing.T) {
+	t.Helper()
+	in := testutil.StartInbox(t, "ok\n")
+	if err := state.Record("caller", state.Session{
+		Agent: state.AgentPi, Pane: "%1", PID: os.Getpid(), Status: state.Idle,
+		Title: "asker", Inbox: in.Path, Protocol: msg.V1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // samePane is the one-session pane fixture most of these tests use: the
 // caller at %1 and every target somewhere in the same session, "$1".
 var samePane = []tmux.Pane{
@@ -512,6 +528,7 @@ func TestAskAgent(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
 	withPanes(t, samePane)
+	withAskingCaller(t)
 
 	in := testutil.StartInbox(t, "ok\n")
 	if err := state.Record("target", state.Session{
@@ -583,6 +600,9 @@ func TestMessageKindNonMessageRequiresV1(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
 	withPanes(t, samePane)
+	// The caller can be replied to, so the refusal under test is the
+	// target's missing v1 and not the asker's own.
+	withAskingCaller(t)
 	pastes := withSendPrompt(t, errors.New("sendPrompt must not be called"))
 
 	in := testutil.StartInbox(t, "ok\n")
@@ -612,6 +632,7 @@ func TestMessageAskRefusalDoesNotPaste(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
 	withPanes(t, samePane)
+	withAskingCaller(t)
 	pastes := withSendPrompt(t, errors.New("sendPrompt must not be called"))
 
 	in := testutil.StartInbox(t, "refused\n")
@@ -646,6 +667,7 @@ func TestMessageNoticeToADeadV1AgentDoesNotPaste(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
 	withPanes(t, samePane)
+	withAskingCaller(t) // the ask below must fail on the target, not on itself
 	pastes := withSendPrompt(t, nil)
 
 	// A path with nothing listening on it: exactly what a dead agent's
@@ -696,5 +718,124 @@ func TestMessageNoInboxStillPastes(t *testing.T) {
 	}
 	if calls := pastes(); len(calls) != 1 {
 		t.Fatalf("sendPrompt calls = %v, want exactly one paste", calls)
+	}
+}
+
+// captureStderr returns what f wrote to os.Stderr. Every send prints its
+// refusal there and nowhere else, so a test about what a refusal tells
+// the caller has to read it back.
+func captureStderr(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = prev }()
+	f()
+	os.Stderr = prev
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
+// TestAskAgentRefusesACallerWithNoReplyPath: an ask demands a correlated
+// answer, and the answer arrives on the asker's own inbox or not at all.
+// Measured from a bare shell, an ask without this check really was
+// delivered - the target spent a turn's attention on the question, then
+// found the asker unaddressable ("no agent session matches %47") and was
+// left holding a pending ask it could never discharge. So the refusal has
+// to happen here, before anything is sent, and it has to name
+// message_agent, which is what a shell actually wanted.
+//
+// The two callers below are the two ways to have no reply path: no state
+// record at all (a human at a shell), and a record with no kido inbox (a
+// Claude Code session, reachable only by paste - and a reply never
+// pastes). The third assertion is the point of the test: the target's
+// inbox got nothing.
+func TestAskAgentRefusesACallerWithNoReplyPath(t *testing.T) {
+	cases := []struct {
+		name  string
+		setUp func(t *testing.T)
+	}{
+		{"no record for the caller's pane", func(*testing.T) {}},
+		{"a record with no inbox", func(t *testing.T) {
+			if err := state.Record("caller", state.Session{
+				Agent: state.AgentClaude, Pane: "%1", PID: os.Getpid(), Status: state.Idle,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("KIDO_STATE_DIR", t.TempDir())
+			t.Setenv("TMUX_PANE", "%1")
+			withPanes(t, samePane)
+			pastes := withSendPrompt(t, errors.New("sendPrompt must not be called"))
+			c.setUp(t)
+
+			in := testutil.StartInbox(t, "ok\n")
+			if err := state.Record("target", state.Session{
+				Agent: state.AgentPi, Pane: "%2", PID: os.Getpid(), Status: state.Idle,
+				Title: "victim", Inbox: in.Path, Protocol: msg.V1,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			var code int
+			stderr := captureStderr(t, func() {
+				code = askAgentCmd([]string{"--id", "t1", "victim"}, strings.NewReader("are you done?"))
+			})
+			if code != 1 {
+				t.Fatalf("ask_agent = %d, want 1: the caller cannot be answered", code)
+			}
+			if !strings.Contains(stderr, "kido message_agent") {
+				t.Errorf("stderr = %q, want it to point at kido message_agent", stderr)
+			}
+			if msgs := in.Received(); len(msgs) != 0 {
+				t.Errorf("target's inbox got %q, want nothing: an unanswerable question must not interrupt anyone", msgs)
+			}
+			if calls := pastes(); len(calls) != 0 {
+				t.Errorf("sendPrompt calls = %v, want none", calls)
+			}
+		})
+	}
+}
+
+// TestAskAgentFromAnAgentWithAnInboxStillSends is the negative control
+// for the refusal above: the normal path is an extension asking on behalf
+// of a session whose inbox is bound, and a check that swallowed that
+// would take ask_agent away from the only caller it was ever for.
+// (TestAskAgent covers the envelope itself; this one is about the gate.)
+func TestAskAgentFromAnAgentWithAnInboxStillSends(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%1")
+	withPanes(t, samePane)
+	withAskingCaller(t)
+
+	in := testutil.StartInbox(t, "ok\n")
+	if err := state.Record("target", state.Session{
+		Agent: state.AgentPi, Pane: "%2", PID: os.Getpid(), Status: state.Idle,
+		Title: "peer", Inbox: in.Path, Protocol: msg.V1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := askAgentCmd([]string{"--id", "t2", "peer"}, strings.NewReader("are you done?")); code != 0 {
+		t.Fatalf("ask_agent from an agent with an inbox = %d, want 0", code)
+	}
+	msgs := in.Received()
+	if len(msgs) != 1 {
+		t.Fatalf("target's inbox got %d messages, want the question: %q", len(msgs), msgs)
+	}
+	if env, ok := msg.Parse([]byte(msgs[0])); !ok || env.Kind != msg.KindAsk || env.ID != "t2" {
+		t.Errorf("payload %q, want the ask envelope with id t2", msgs[0])
 	}
 }

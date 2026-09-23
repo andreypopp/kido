@@ -13,6 +13,7 @@ import (
 
 	"kido/internal/state"
 	"kido/internal/subrun"
+	"kido/internal/tmux"
 )
 
 // withPiSessionDir points piSessionDir at dir for the duration of the
@@ -490,5 +491,149 @@ func TestSpawnResumeRefusesNameAndTaskFile(t *testing.T) {
 	}
 	if len(*calls) != 0 {
 		t.Errorf("newWindow was called %d times, want every case refused before any tmux call", len(*calls))
+	}
+}
+
+// TestSpawnResumeCarriesKeepAliveAndTools is the same bug --model had,
+// in the two things left: a run recorded neither keepAlive nor - on the
+// resume side - its tool allowlist, both being handed to the child
+// through the environment and the command line and then forgotten. So a
+// resumed keepAlive helper armed the thirty-second idle timer it was
+// spawned to opt out of, and a resumed tool-restricted child got the full
+// toolset back, which is the worse of the two: a narrow toolset is the
+// blast-radius bound the depth ceiling is not.
+//
+// The fixture is a real fresh spawn rather than a hand-written meta, so
+// this fails if the recording half is dropped as readily as if the
+// carrying half is.
+func TestSpawnResumeCarriesKeepAliveAndTools(t *testing.T) {
+	withPanes(t, samePane)
+	t.Setenv("TMUX_PANE", "%1")
+	withCallerDepth(t, 0)
+	sessDir := t.TempDir()
+	withPiSessionDir(t, sessDir)
+	calls := withNewWindow(t, "@9", "%9", nil)
+
+	if err := spawnSubagentCmd([]string{
+		"--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--name", "helper", "--task-file", writeTaskFile(t, "hold the line"),
+		"--model", "claude-sonnet-5", "--tools", "read,bash", "--keep-alive",
+	}); err != nil {
+		t.Fatalf("fresh spawn = %v, want it to succeed", err)
+	}
+	runID := tmux.SubagentRunID(marks["@9"])
+	if meta, err := subrun.ReadMeta(runID); err != nil {
+		t.Fatal(err)
+	} else if !meta.KeepAlive || !reflect.DeepEqual(meta.Tools, []string{"read", "bash"}) {
+		t.Fatalf("meta = %+v, want keepAlive and the tool allowlist recorded", meta)
+	}
+
+	// The run has to look finished before it can be resumed, and its own
+	// session file has to exist: the spawn above created a window through a
+	// fake, so neither is true yet.
+	if err := subrun.RecordOutcome(runID, subrun.Outcome{Result: subrun.Completed, At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	writePiSessionFile(t, sessDir, runID)
+
+	if err := spawnSubagentCmd([]string{
+		"--resume", runID, "--parent-pid", "1", "--parent-instance", testParentInstance,
+	}); err != nil {
+		t.Fatalf("spawnSubagentCmd --resume = %v, want it to succeed", err)
+	}
+	resumed := (*calls)[1]
+	if envValue(t, resumed.env, "KIDO_AGENT_KEEP_ALIVE") != "1" {
+		t.Errorf("env = %v, want KIDO_AGENT_KEEP_ALIVE=1 carried through by the run's own record", resumed.env)
+	}
+	if i := slices.Index(resumed.command, "--tools"); i < 0 || resumed.command[i+1] != "read,bash" {
+		t.Errorf("command = %v, want the run's own recorded tool allowlist back", resumed.command)
+	}
+	// The meta is the run's living facts, so the resumed attempt's
+	// keepAlive is what it now says (the same way its parent edge is).
+	if meta, err := subrun.ReadMeta(runID); err != nil {
+		t.Fatal(err)
+	} else if !meta.KeepAlive {
+		t.Errorf("meta.KeepAlive = false after a resume that kept it alive")
+	}
+}
+
+// TestSpawnResumeWithoutRecordedKeepAliveOrTools is the compatibility
+// half: every meta.json written before these two keys existed has
+// neither, and json.Unmarshal leaves them zero. A resume of one must
+// behave exactly as it did - a plain child with the full toolset - rather
+// than fail or find nothing to read.
+func TestSpawnResumeWithoutRecordedKeepAliveOrTools(t *testing.T) {
+	withPanes(t, samePane)
+	t.Setenv("TMUX_PANE", "%1")
+	withCallerDepth(t, 0)
+	sessDir := t.TempDir()
+	withPiSessionDir(t, sessDir)
+	writePiSessionFile(t, sessDir, "old-run")
+	calls := withNewWindow(t, "@9", "%9", nil)
+
+	newDeadRun(t, "old-run", t.TempDir()) // no Model, no Tools, no KeepAlive
+
+	if err := spawnSubagentCmd([]string{
+		"--resume", "old-run", "--parent-pid", "1", "--parent-instance", testParentInstance,
+	}); err != nil {
+		t.Fatalf("spawnSubagentCmd --resume of a run recorded without them = %v, want it to succeed", err)
+	}
+	call := (*calls)[0]
+	if slices.Contains(call.command, "--tools") {
+		t.Errorf("command = %v, want no --tools invented for a run that recorded none", call.command)
+	}
+	for _, kv := range call.env {
+		if strings.HasPrefix(kv, "KIDO_AGENT_KEEP_ALIVE") {
+			t.Errorf("env carries %q, want no keepAlive for a run that recorded none", kv)
+		}
+	}
+	// And an explicit --keep-alive still wins over an unrecorded one: the
+	// recorded value is the default, not a ceiling.
+	if err := subrun.ClearOutcome("old-run"); err != nil {
+		t.Fatal(err)
+	}
+	if err := subrun.RecordOutcome("old-run", subrun.Outcome{Result: subrun.Died, At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := spawnSubagentCmd([]string{
+		"--resume", "old-run", "--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--keep-alive",
+	}); err != nil {
+		t.Fatalf("spawnSubagentCmd --resume --keep-alive = %v, want it to succeed", err)
+	}
+	if envValue(t, (*calls)[1].env, "KIDO_AGENT_KEEP_ALIVE") != "1" {
+		t.Errorf("env = %v, want the explicit --keep-alive through", (*calls)[1].env)
+	}
+}
+
+// TestSpawnResumeNoParentDropsTheCallersOwnEdge: --resume defaults the
+// parent edge to the caller's own record, which is right for an agent
+// picking a run up but is not always what is wanted - a human in a
+// tracked pane, or an agent handing a run over, may want it owned by
+// nobody. Before --no-parent the only way to get that was to have no
+// record at all.
+func TestSpawnResumeNoParentDropsTheCallersOwnEdge(t *testing.T) {
+	withPanes(t, samePane)
+	t.Setenv("TMUX_PANE", "%1")
+	withCallerDepth(t, 0) // the caller does report an instance of its own
+	sessDir := t.TempDir()
+	withPiSessionDir(t, sessDir)
+	writePiSessionFile(t, sessDir, "handed-over")
+	calls := withNewWindow(t, "@9", "%9", nil)
+
+	newDeadRun(t, "handed-over", t.TempDir())
+
+	if err := spawnSubagentCmd([]string{"--resume", "handed-over", "--no-parent"}); err != nil {
+		t.Fatalf("spawnSubagentCmd --resume --no-parent = %v, want it allowed", err)
+	}
+	for _, kv := range (*calls)[0].env {
+		if strings.HasPrefix(kv, "KIDO_AGENT_PARENT_") {
+			t.Errorf("env carries %q, want no parent edge at all", kv)
+		}
+	}
+	if meta, err := subrun.ReadMeta("handed-over"); err != nil {
+		t.Fatal(err)
+	} else if meta.ParentInstance != "" {
+		t.Errorf("meta.ParentInstance = %q, want the run's old edge dropped", meta.ParentInstance)
 	}
 }

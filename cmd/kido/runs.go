@@ -29,6 +29,7 @@ type RunInfo struct {
 	Cwd            string     `json:"cwd"`
 	Model          string     `json:"model,omitempty"`
 	Tools          []string   `json:"tools,omitempty"`
+	KeepAlive      bool       `json:"keepAlive,omitempty"`
 	StartedAt      time.Time  `json:"startedAt"`
 	Outcome        string     `json:"outcome"`
 	OutcomeAt      *time.Time `json:"outcomeAt,omitempty"`
@@ -97,8 +98,8 @@ func loadRunInfo(id string) (RunInfo, error) {
 	}
 	info := RunInfo{
 		ID: id, Name: meta.Name, ParentInstance: meta.ParentInstance, Depth: meta.Depth,
-		Cwd: meta.Cwd, Model: meta.Model, Tools: meta.Tools, StartedAt: meta.StartedAt,
-		Outcome: "running",
+		Cwd: meta.Cwd, Model: meta.Model, Tools: meta.Tools, KeepAlive: meta.KeepAlive,
+		StartedAt: meta.StartedAt, Outcome: "running",
 	}
 	if o, ok, err := subrun.EffectiveOutcome(id, meta.PID); err != nil {
 		return RunInfo{}, err
@@ -206,6 +207,12 @@ func showRun(w io.Writer, id string, asJSON bool) error {
 	}
 	if len(info.Tools) > 0 {
 		fmt.Fprintf(w, "tools:    %v\n", info.Tools)
+	}
+	// Shown only when set, like the model and the tools above: all three are
+	// what a resume will start the run with again, and "keepAlive: false" is
+	// the absence of a fact rather than one worth a line.
+	if info.KeepAlive {
+		fmt.Fprintln(w, "keepAlive: true")
 	}
 	fmt.Fprintf(w, "started:  %s\n", info.StartedAt.Format(time.RFC3339))
 	fmt.Fprintf(w, "outcome:  %s\n", info.Outcome)
