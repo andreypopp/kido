@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,17 +24,10 @@ import (
 // suite, which drives kido as a separately built binary and can only reach
 // it through the environment (docs/design.md, "Knobs").
 var (
-	streamBatchInterval = streamDurationFromEnv("KIDO_STREAM_BATCH_MS", 250*time.Millisecond)
-	streamBackoffFloor  = streamDurationFromEnv("KIDO_STREAM_BACKOFF_MS", 500*time.Millisecond)
-	streamBackoffCap    = streamDurationFromEnv("KIDO_STREAM_BACKOFF_CAP_MS", 10*time.Second)
+	streamBatchInterval = msFromEnv("KIDO_STREAM_BATCH_MS", 250*time.Millisecond)
+	streamBackoffFloor  = msFromEnv("KIDO_STREAM_BACKOFF_MS", 500*time.Millisecond)
+	streamBackoffCap    = msFromEnv("KIDO_STREAM_BACKOFF_CAP_MS", 10*time.Second)
 )
-
-func streamDurationFromEnv(name string, def time.Duration) time.Duration {
-	if n, err := strconv.Atoi(os.Getenv(name)); err == nil && n > 0 {
-		return time.Duration(n) * time.Millisecond
-	}
-	return def
-}
 
 const (
 	// A batch goes early once it has this much text, rather than waiting
@@ -57,9 +49,9 @@ const (
 // every send, so nothing is ever in flight twice and the completion notice
 // can be ordered after the last chunk simply by closing first.
 type streamer struct {
-	runID  string
-	name   string
-	output string
+	// sender owns the run's identifiers as well as the wire: they are
+	// what an envelope is addressed and attributed with, and nothing on
+	// this side needs a second copy of them.
 	sender *streamSender
 
 	mu       sync.Mutex
@@ -82,11 +74,12 @@ type streamer struct {
 // is the source of truth and the child must never wait on an LLM.
 func newStreamer(runID, name, parentInstance string) *streamer {
 	s := &streamer{
-		runID:  runID,
-		name:   name,
-		output: subrun.OutputPath(runID),
-		sender: &streamSender{parentInstance: parentInstance, name: name, runID: runID,
-			output: subrun.OutputPath(runID)},
+		sender: &streamSender{
+			parentInstance: parentInstance,
+			name:           name,
+			runID:          runID,
+			output:         subrun.OutputPath(runID),
+		},
 		wake: make(chan struct{}, 1),
 		stop: make(chan struct{}),
 		done: make(chan struct{}),
@@ -187,7 +180,7 @@ func (s *streamer) take() (text string, lines, n int) {
 		}
 		s.overrun = true
 		s.pending, s.bytes = nil, 0
-		return "... " + strconv.Itoa(streamRunBudget) + " bytes streamed for this run; the rest is only in " + s.output, 0, 0
+		return "... " + strconv.Itoa(streamRunBudget) + " bytes streamed for this run; the rest is only in " + s.sender.output, 0, 0
 	}
 	text = strings.Join(s.pending, "\n")
 	lines, n = len(s.pending), s.bytes
@@ -333,10 +326,16 @@ func (s *streamSender) send(text string) error {
 	return nil
 }
 
-// resolveParentInbox finds the inbox of the live agent reporting instance,
-// the same registry scan `kido notify_parent` resolves its target through.
-// A parent that has not advertised the v1 protocol has nowhere for a
-// non-message kind to land, which is send()'s own rule.
+// resolveParentInbox finds the inbox of the live agent reporting
+// instance, through the same registry scan `kido notify_parent` resolves
+// its own target with (liveParent, message_agent.go).
+//
+// The gate on what it finds is send()'s, unchanged: a non-message kind
+// needs an inbox bound and the v1 protocol advertised, since it can
+// never fall back to a paste. What differs is only what is said about a
+// parent that fails it - send names the target and the rule, and this
+// has nobody to say anything to, so every way of having no parent is one
+// error.
 func resolveParentInbox(instance string) (string, error) {
 	if instance == "" {
 		return "", errNoStreamParent
@@ -345,14 +344,9 @@ func resolveParentInbox(instance string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, s := range live {
-		if s.Instance != instance {
-			continue
-		}
-		if s.Inbox == "" || s.Protocol < msg.V1 {
-			return "", errNoStreamParent
-		}
-		return s.Inbox, nil
+	parent, ok := liveParent(live, instance)
+	if !ok || parent.Inbox == "" || parent.Protocol < msg.V1 {
+		return "", errNoStreamParent
 	}
-	return "", errNoStreamParent
+	return parent.Inbox, nil
 }

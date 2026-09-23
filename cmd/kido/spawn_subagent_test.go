@@ -592,17 +592,43 @@ func TestSpawnMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
 		t.Errorf("killWindow calls = %v, want @9 killed rather than left up unmarked", killed)
 	}
 
-	var out bytes.Buffer
-	if err := listRuns(&out, true); err != nil {
+	if infos := runOutcomes(t); len(infos) != 1 || infos[0].Outcome != "failed" {
+		t.Errorf("runs --json = %+v, want one failed run", infos)
+	}
+}
+
+// withVanishedMark makes the mark fail the way it does for a window tmux
+// has already lost, and reports which windows were killed.
+func withVanishedMark(t *testing.T) func() []string {
+	t.Helper()
+	prevKill := killWindow
+	var killed []string
+	killWindow = func(id string) error {
+		killed = append(killed, id)
+		return nil
+	}
+	prevMark, prevExists := markSubagent, windowExists
+	markSubagent = func(windowID, info string) error { return errors.New("cannot find window @9") }
+	windowExists = func(string) bool { return false }
+	t.Cleanup(func() {
+		killWindow, markSubagent, windowExists = prevKill, prevMark, prevExists
+	})
+	return func() []string { return killed }
+}
+
+// runOutcomes is what `kido runs --json` says about every run recorded so
+// far.
+func runOutcomes(t *testing.T) []RunInfo {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := listRuns(&buf, true); err != nil {
 		t.Fatal(err)
 	}
 	var infos []RunInfo
-	if err := json.Unmarshal(out.Bytes(), &infos); err != nil {
-		t.Fatalf("runs --json: %v (%q)", err, out.String())
+	if err := json.Unmarshal(buf.Bytes(), &infos); err != nil {
+		t.Fatalf("runs --json: %v (%q)", err, buf.String())
 	}
-	if len(infos) != 1 || infos[0].Outcome != "failed" {
-		t.Errorf("runs --json = %+v, want one failed run", infos)
-	}
+	return infos
 }
 
 // TestSpawnMarkFailureOnAVanishedWindowIsNotAFailure is the negative
@@ -619,52 +645,71 @@ func TestSpawnMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
 // asserts is the absence of the two things a real mark failure does:
 // killing a window (there is none to kill) and writing an outcome (the
 // run's own is the true one).
+//
+// It is a bash run, because that is the whole of the argument: the
+// wrapper in the window has already recorded and reported. Its sibling
+// below is the same race with no wrapper behind it.
 func TestSpawnMarkFailureOnAVanishedWindowIsNotAFailure(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	withNewWindow(t, "@9", "%9", nil)
+	killed := withVanishedMark(t)
+
+	runID := subrun.NewID()
+	if err := subrun.Create(runID, "true"); err != nil {
+		t.Fatal(err)
+	}
+	meta := subrun.Meta{ID: runID, Name: "build", Kind: subrun.KindBash, ParentInstance: testParentInstance}
+
+	var err error
+	out := captureStdout(t, func() {
+		err = createRunWindow(meta, "$0", nil, []string{"kido", "async-run"})
+	})
+	if err != nil {
+		t.Fatalf("createRunWindow = %v, want a window that has already ended reported as the ordinary ending it is", err)
+	}
+	fields := strings.Fields(out)
+	if len(fields) != 4 || fields[0] != "@9" || fields[1] != "%9" || fields[2] != runID {
+		t.Errorf("stdout = %q, want the window, pane and run ids the caller parses, and the output path", out)
+	} else if fields[3] != subrun.OutputPath(runID) {
+		t.Errorf("output field = %q, want %q", fields[3], subrun.OutputPath(runID))
+	}
+	if len(killed()) != 0 {
+		t.Errorf("killWindow calls = %v, want none: the window is already gone", killed())
+	}
+
+	if infos := runOutcomes(t); len(infos) != 1 || infos[0].Outcome == "failed" {
+		t.Errorf("runs --json = %+v, want the run left for its own command to describe rather than recorded failed here", infos)
+	}
+}
+
+// TestAgentMarkFailureOnAVanishedWindowIsStillAFailure is the other half
+// of the distinction above, and the reason it is a distinction rather
+// than one rule: an agent run has no wrapper in the window to describe
+// its own ending, and nothing else ever will. A window tmux has lost
+// carries no marked pane, so neither of internal/reap's rules can find
+// it - rule 1 needs dead panes to linger over and rule 2 needs a live
+// state record - and a pi that vanished before it could be marked never
+// reached its task to report on. The failure recorded here is the only
+// account of the run there will be.
+func TestAgentMarkFailureOnAVanishedWindowIsStillAFailure(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
 	withCallerDepth(t, 0)
 	withNewWindow(t, "@9", "%9", nil)
+	killed := withVanishedMark(t)
 
-	prevKill := killWindow
-	var killed []string
-	killWindow = func(id string) error {
-		killed = append(killed, id)
-		return nil
-	}
-	t.Cleanup(func() { killWindow = prevKill })
-
-	prevMark, prevExists := markSubagent, windowExists
-	markSubagent = func(windowID, info string) error { return errors.New("cannot find window @9") }
-	windowExists = func(string) bool { return false }
-	t.Cleanup(func() { markSubagent, windowExists = prevMark, prevExists })
-
-	var err error
-	out := captureStdout(t, func() {
-		err = spawnSubagentCmd([]string{
-			"--parent-pid", "1", "--parent-instance", testParentInstance,
-			"--name", "kid", "--task-file", writeTaskFile(t, "task"),
-		})
+	err := spawnSubagentCmd([]string{
+		"--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--name", "kid", "--task-file", writeTaskFile(t, "task"),
 	})
-	if err != nil {
-		t.Fatalf("spawnSubagentCmd = %v, want a window that has already ended reported as the ordinary ending it is", err)
+	if err == nil {
+		t.Fatal("spawnSubagentCmd = nil, want the mark failure reported: nobody else can speak for this run")
 	}
-	if fields := strings.Fields(out); len(fields) != 3 || fields[0] != "@9" || fields[1] != "%9" {
-		t.Errorf("stdout = %q, want the window, pane and run ids the caller parses", out)
+	if !slices.Contains(killed(), "@9") {
+		t.Errorf("killWindow calls = %v, want @9 killed as any other mark failure is", killed())
 	}
-	if len(killed) != 0 {
-		t.Errorf("killWindow calls = %v, want none: the window is already gone", killed)
-	}
-
-	var buf bytes.Buffer
-	if err := listRuns(&buf, true); err != nil {
-		t.Fatal(err)
-	}
-	var infos []RunInfo
-	if err := json.Unmarshal(buf.Bytes(), &infos); err != nil {
-		t.Fatalf("runs --json: %v (%q)", err, buf.String())
-	}
-	if len(infos) != 1 || infos[0].Outcome == "failed" {
-		t.Errorf("runs --json = %+v, want the run left for its own command to describe rather than recorded failed here", infos)
+	if infos := runOutcomes(t); len(infos) != 1 || infos[0].Outcome != "failed" {
+		t.Errorf("runs --json = %+v, want one failed run", infos)
 	}
 }
 

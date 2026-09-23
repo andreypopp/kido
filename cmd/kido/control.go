@@ -23,10 +23,14 @@ import (
 // stopEscalation is how long kido stop_subagent waits, after asking a session to
 // stop over its inbox, for it to actually go before killing its pane.
 // Overridable via KIDO_STOP_ESCALATION_MS for the e2e suite.
-var stopEscalation = escalationFromEnv(5 * time.Second)
+var stopEscalation = msFromEnv("KIDO_STOP_ESCALATION_MS", 5*time.Second)
 
-func escalationFromEnv(def time.Duration) time.Duration {
-	if n, err := strconv.Atoi(os.Getenv("KIDO_STOP_ESCALATION_MS")); err == nil && n > 0 {
+// msFromEnv reads a grace period the e2e suite shortens through the
+// environment: the value of name in milliseconds, or def when it is
+// unset, unreadable or not positive. Every knob cmd/kido exposes that
+// way goes through this (docs/design.md, "Knobs").
+func msFromEnv(name string, def time.Duration) time.Duration {
+	if n, err := strconv.Atoi(os.Getenv(name)); err == nil && n > 0 {
 		return time.Duration(n) * time.Millisecond
 	}
 	return def
@@ -238,16 +242,20 @@ func liveBashRun(to string) (subrun.Meta, bool, error) {
 	}
 	var matches []subrun.Meta
 	for _, id := range ids {
+		// The name match before the outcome read, so a run that is not the
+		// one being addressed costs one file open rather than two: every run
+		// ever recorded is listed here, and most of them are long finished.
 		meta, err := subrun.ReadMeta(id)
 		if err != nil || meta.EffectiveKind() != subrun.KindBash {
+			continue
+		}
+		if !strings.EqualFold(meta.Name, to) && meta.ID != to {
 			continue
 		}
 		if _, done, err := subrun.ReadOutcome(id); err != nil || done {
 			continue
 		}
-		if strings.EqualFold(meta.Name, to) || meta.ID == to {
-			matches = append(matches, meta)
-		}
+		matches = append(matches, meta)
 	}
 	switch len(matches) {
 	case 0:
@@ -292,24 +300,22 @@ func bashRunInScope(meta subrun.Meta) error {
 	if err != nil {
 		return err
 	}
-	callerPane, ok := findPane(panes, self)
-	if !ok {
-		return fmt.Errorf("pane %q not found", self)
-	}
-	agents := buildAgents(states, panes, callerPane.SessionID, self)
+	// The run's parent edge names an instance and the walk is over record
+	// ids, so the records claiming that instance are the candidates.
+	var parents []string
 	for _, s := range states {
-		if s.Instance != "" && s.Instance == meta.ParentInstance && isAncestor(agents, caller.ID, s.ID) {
-			return nil
+		if s.Instance != "" && s.Instance == meta.ParentInstance {
+			parents = append(parents, s.ID)
 		}
 	}
-	return fmt.Errorf("async run %q is not this agent's descendant", bashRunLabel(meta))
-}
-
-func bashRunLabel(meta subrun.Meta) string {
-	if meta.Name != "" {
-		return meta.Name
+	ok, err := callerReaches(states, panes, self, parents)
+	if err != nil {
+		return err
 	}
-	return meta.ID
+	if !ok {
+		return fmt.Errorf("async run %q is not this agent's descendant", runLabel(meta.Name, meta.ID))
+	}
+	return nil
 }
 
 // stopBashRun ends a running `kido async_bash`: signal the wrapper,
@@ -324,7 +330,7 @@ func bashRunLabel(meta subrun.Meta) string {
 // O_EXCL outcome write. A wrapper that reported inside the grace already
 // sent its own notice with its own exit status, and this says nothing.
 func stopBashRun(meta subrun.Meta, force bool) error {
-	label := fmt.Sprintf("async run %q", bashRunLabel(meta))
+	label := fmt.Sprintf("async run %q", runLabel(meta.Name, meta.ID))
 	if !force {
 		return fmt.Errorf("%s has no inbox to ask nicely over; pass --force to kill its window instead", label)
 	}
@@ -344,9 +350,8 @@ func stopBashRun(meta subrun.Meta, force bool) error {
 		}
 	}
 
-	o := subrun.Outcome{Result: subrun.Stopped, Text: stoppedText, At: time.Now()}
-	if err := subrun.RecordOutcome(meta.ID, o); err == nil {
-		noticeFor(reap.Notice{Meta: meta, Outcome: o}).send("stop_subagent")
+	if n, won := reap.RecordEnding(meta, subrun.Outcome{Result: subrun.Stopped, Text: stoppedText, At: time.Now()}); won {
+		noticeFor(n).send("stop_subagent")
 	}
 	killed, err := killBashRunPane(meta)
 	if err != nil {
@@ -420,20 +425,42 @@ func descendantTarget(states map[string]state.Session, panes []tmux.Pane, self, 
 	if target.Pane == self {
 		return state.Session{}, fmt.Errorf("%s is this agent", targetLabel(target))
 	}
-
-	callerRecord, isAgent := states[self]
-	if !isAgent {
-		return target, nil
+	ok, err := callerReaches(states, panes, self, []string{target.ID})
+	if err != nil {
+		return state.Session{}, err
 	}
-	callerPane, ok := findPane(panes, self)
 	if !ok {
-		return state.Session{}, fmt.Errorf("pane %q not found", self)
-	}
-	agents := buildAgents(states, panes, callerPane.SessionID, self)
-	if !isAncestor(agents, callerRecord.ID, target.ID) {
 		return state.Session{}, fmt.Errorf("%s is not this agent's descendant", targetLabel(target))
 	}
 	return target, nil
+}
+
+// callerReaches is the walk itself, shared by the two things a _subagent
+// command can be pointed at: an agent session (descendantTarget) and an
+// async run, which has no record of its own and is reached through the
+// records claiming the parent instance it named (bashRunInScope). ids
+// are the candidate targets, and any one of them being reachable is
+// enough.
+//
+// A caller with no state record of its own is a human at the CLI and
+// reaches everything, which is why an empty ids is still worth asking
+// about.
+func callerReaches(states map[string]state.Session, panes []tmux.Pane, self string, ids []string) (bool, error) {
+	caller, isAgent := states[self]
+	if !isAgent {
+		return true, nil
+	}
+	callerPane, ok := findPane(panes, self)
+	if !ok {
+		return false, fmt.Errorf("pane %q not found", self)
+	}
+	agents := buildAgents(states, panes, callerPane.SessionID, self)
+	for _, id := range ids {
+		if isAncestor(agents, caller.ID, id) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // sendControl delivers a control-kind envelope (interrupt or stop) to

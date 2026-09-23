@@ -179,14 +179,8 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 
 	var target state.Session
 	if spec.parentInstance != "" {
-		found := false
-		for _, s := range live {
-			if s.Instance == spec.parentInstance {
-				target, found = s, true
-				break
-			}
-		}
-		if !found {
+		var found bool
+		if target, found = liveParent(live, spec.parentInstance); !found {
 			return fail(fmt.Sprintf("no live agent reports instance %q; the parent is gone, nothing sent", spec.parentInstance))
 		}
 	} else if spec.descendantsOnly {
@@ -254,6 +248,24 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 		fmt.Printf("delivered to %s by inbox\n", targetLabel(target))
 	}
 	return 0
+}
+
+// liveParent finds the live agent reporting instance as its own: the one
+// way anything addresses a parent, which is named rather than resolved
+// like an ordinary target, since a child knows its parent's instance id
+// and nothing else about it.
+//
+// It takes the whole live slice rather than the pane-keyed view for the
+// reason `kido agent-alive` does: a pane collision drops a record from
+// the per-pane map, and a parent's is exactly the record that gets
+// dropped (docs/design.md, and internal/state's Load).
+func liveParent(live []state.Session, instance string) (state.Session, bool) {
+	for _, s := range live {
+		if s.Instance == instance {
+			return s, true
+		}
+	}
+	return state.Session{}, false
 }
 
 // senderCanBeRepliedTo reports whether an answer to an ask sent from pane

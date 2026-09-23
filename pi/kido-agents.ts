@@ -1434,19 +1434,6 @@ export default function (pi: ExtensionAPI) {
     },
   };
 
-  // asyncBashOutputDir caches the runs directory - `kido debug-log`'s own
-  // parent, since both files sit directly under the same state directory
-  // (internal/subrun.Dir, cmd/kido/main.go's debug-log case) - rather than
-  // asking kido once per call, or reimplementing state.Dir's own
-  // KIDO_STATE_DIR/XDG precedence here as a second copy of it.
-  let cachedRunsDir: string | null | undefined;
-  const runsDir = async (host: StatusHost): Promise<string | null> => {
-    if (cachedRunsDir !== undefined) return cachedRunsDir;
-    const res = await host.runKido(["debug-log"], { timeoutMs: 2000 });
-    cachedRunsDir = "error" in res ? null : join(dirname(res.out), "runs");
-    return cachedRunsDir;
-  };
-
   const asyncBashParams = Type.Object(
     {
       command: Type.String({
@@ -1488,9 +1475,9 @@ export default function (pi: ExtensionAPI) {
       if ("error" in res) {
         return { content: [{ type: "text", text: `could not start background command: ${res.error}` }], details: {} };
       }
-      const [windowID, paneID, runID] = res.out.split(/\s+/);
-      const dir = await runsDir(host);
-      const outputPath = dir ? join(dir, runID, "output") : `<state>/runs/${runID}/output`;
+      // Four fields for a bash run, the last of them where the output is
+      // being written; kido says where that is (cmd/kido's printCreated).
+      const [windowID, paneID, runID, outputPath] = res.out.split(/\s+/);
       return {
         content: [{
           type: "text",

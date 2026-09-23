@@ -202,35 +202,50 @@ func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) ([]string
 	return out, notices
 }
 
-// recordEnding writes the outcome for the run in a window a sweep is
-// about to close, and reports whether that run's parent is now this
-// sweep's to tell.
+// RecordEnding writes o as the ending of meta's run and reports the
+// notice the run's parent is owed, if this writer is the one that has to
+// send it. Every observer that discovers an ending from outside the run
+// goes through here - a sweep, `kido stop_subagent` - so a third finds a
+// call site rather than reimplementing the invariant. The run's own
+// wrapper is the exception and writes for itself: it holds no meta file,
+// and it is the one observer that can tell a write failing from a write
+// lost and says so on stderr (cmd/kido/async_run.go).
 //
-// The outcome write is the arbiter and the only one: it is O_EXCL, so a
-// sweep that loses it to the run's own wrapper, to `kido stop_subagent`
-// or to a second sidebar sweeping the same window returns false and
-// stays quiet, and exactly one observer of any ending ever speaks.
+// The outcome write is the arbiter and the only one: it is O_EXCL, so an
+// observer that loses it to another returns false and stays quiet, and
+// exactly one observer of any ending ever speaks.
 //
 // Only a bash run is spoken for. An agent's completion is a judgement
 // only the model can make, and docs/design.md is deliberate that a
 // subagent which crashes without calling notify_parent tells its parent
 // nothing; a bash run's completion is an exit code, and the two are not
-// the same case. An agent run keeps the Died it always got.
-func recordEnding(runID string, now time.Time) (Notice, bool) {
-	meta, err := subrun.ReadMeta(runID)
-	bash := err == nil && meta.EffectiveKind() == subrun.KindBash
-
-	o := subrun.Outcome{Result: subrun.Died, At: now}
-	if bash {
-		o = subrun.Outcome{Result: subrun.Failed, Text: sweptText, At: now}
-	}
-	if err := subrun.RecordOutcome(runID, o); err != nil {
+// the same case. A run nobody started is told to nobody either way.
+func RecordEnding(meta subrun.Meta, o subrun.Outcome) (Notice, bool) {
+	if err := subrun.RecordOutcome(meta.ID, o); err != nil {
 		return Notice{}, false //nolint:nilerr // losing the write is the ordinary case, not a failure
 	}
-	if !bash || meta.ParentInstance == "" {
+	if meta.EffectiveKind() != subrun.KindBash || meta.ParentInstance == "" {
 		return Notice{}, false
 	}
 	return Notice{Meta: meta, Outcome: o}, true
+}
+
+// recordEnding is RecordEnding for the run in a window a sweep is about
+// to close: the sweep is the observer that has to guess what happened,
+// and what it may guess depends on the kind. A bash run ended without
+// its wrapper reporting; an agent run keeps the Died it always got.
+func recordEnding(runID string, now time.Time) (Notice, bool) {
+	meta, err := subrun.ReadMeta(runID)
+	if err != nil {
+		// No meta is an agent-shaped run as far as every reader of it is
+		// concerned (subrun.EffectiveKind), and one with nobody to tell.
+		meta = subrun.Meta{ID: runID}
+	}
+	o := subrun.Outcome{Result: subrun.Died, At: now}
+	if meta.EffectiveKind() == subrun.KindBash {
+		o = subrun.Outcome{Result: subrun.Failed, Text: sweptText, At: now}
+	}
+	return RecordEnding(meta, o)
 }
 
 // anyMarked reports whether any pane belongs to a window kido spawn_subagent

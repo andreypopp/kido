@@ -51,14 +51,17 @@ func noticeFor(n reap.Notice) asyncNotice {
 	}
 }
 
-// label names the run in the notice, and as the notice's sender. A run
-// nobody named is its own id, which is at least addressable.
-func (n asyncNotice) label() string {
-	if n.name == "" {
-		return n.runID
+// runLabel names a run wherever one is spoken about - in a notice, as
+// the notice's sender, in what `kido stop_subagent` prints and refuses.
+// A run nobody named is its own id, which is at least addressable.
+func runLabel(name, id string) string {
+	if name == "" {
+		return id
 	}
-	return n.name
+	return name
 }
+
+func (n asyncNotice) label() string { return runLabel(n.name, n.runID) }
 
 // send delivers n to the run's parent, as a notice envelope over its
 // inbox. cmd names the calling subcommand, for whatever send prints to

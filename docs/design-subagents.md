@@ -373,6 +373,19 @@ window gone is therefore not a creation failure: the mark is skipped, no
 outcome is recorded over the command's own, and the ids are printed as
 usual.
 
+That tolerance is the **bash** case and says so in the code: it rests
+entirely on there being a wrapper in the window that has already spoken
+for the run. An agent spawn losing the same race keeps the failure it
+has always recorded, because nothing else will ever describe that run -
+a window tmux has lost carries no marked pane, so neither sweep rule can
+reach it, and a pi that vanished that fast never got to its task.
+
+What `kido async_bash` prints is the spawn line with a fourth field, the
+run's output file. Where kido keeps a run's output is kido's own to say,
+and a tool rebuilding the path would be a second copy of `state.Dir`'s
+`KIDO_STATE_DIR`/XDG precedence - so the one call the tool makes answers
+it.
+
 The notice names the run itself:
 
     async run "build" failed: exit status 3
@@ -432,7 +445,12 @@ async_bash` typed at a human's shell produces.
 
 The three observers share one notice builder (`cmd/kido`'s
 `asyncNotice`), so a parent cannot tell how its build ended by which
-process happened to notice. The sweep itself sends nothing: `reap.Sweep`
+process happened to notice, and write-then-decide is one function
+(`reap.RecordEnding`) for the observers that find an ending from outside
+the run, so a third finds a call site rather than reimplementing the
+invariant. The wrapper writes for itself: it is inside the run's own
+process, holds no meta file, and is the one observer that can tell a
+write failing from a write lost. The sweep itself sends nothing: `reap.Sweep`
 returns the runs whose parents are now the caller's to tell, and the
 caller - `kido reap`, or the sidebar through a seam `main` fills in -
 does the sending. A window sweep has no business knowing what an inbox
@@ -657,7 +675,9 @@ window aged out.
   for the session file.
 - A child that exits before `remain-on-exit` is set loses its window
   and its last screen; only the run record remains. For a bash run that
-  is only the screen: the wrapper has already recorded and reported.
+  is only the screen: the wrapper has already recorded and reported. For
+  an agent run the spawn itself reports the failure, which is the whole
+  account of it there will be.
 - An ending only a sweep observes goes unreported: rule 1 records `died`
   and tells nobody, so a run whose wrapper was `SIGKILL`ed leaves a
   waiting parent with no notice. The orphan rule does not reach a bash

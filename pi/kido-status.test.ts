@@ -172,17 +172,14 @@ switch (args[0]) {
     process.stdout.write((args[0] === "interrupt_subagent" ? "interrupted " : "stopped ") + args[args.length - 1] + "\\n");
     process.exit(0);
   }
-  // debug-log's own path is fixed, not logged - async_bash's fixture uses
-  // it only to derive the runs directory the way the real tool does
-  // (dirname of state.Dir()/debug.log), never to assert on the call.
-  case "debug-log": {
-    process.stdout.write(process.env.KIDO_FAKE_STATE_DIR + "/debug.log\\n");
-    process.exit(0);
-  }
   case "async_bash": {
     const logFile = process.env.KIDO_FAKE_ASYNC_BASH_LOG;
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
-    process.stdout.write("@9 %9 fake-async-run-id\\n");
+    // Four fields, the last of them the run's output file, exactly as
+    // cmd/kido's printCreated writes them for a bash run.
+    const runID = "fake-async-run-id";
+    const output = process.env.KIDO_FAKE_STATE_DIR + "/runs/" + runID + "/output";
+    process.stdout.write("@9 %9 " + runID + " " + output + "\\n");
     process.exit(0);
   }
   default:
@@ -1650,7 +1647,7 @@ test("async_bash asks for --stream only when the model did", async () => {
   }
 });
 
-test("async_bash's result carries the run id and the output path kido printed and derived, and tells the model to read it meanwhile", async () => {
+test("async_bash's result carries the run id and the output path kido printed, and tells the model to read it meanwhile", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
@@ -1660,7 +1657,7 @@ test("async_bash's result carries the run id and the output path kido printed an
     const result = await asyncBash.execute("c1", { command: "npm test", name: "tests" });
     assert.equal(result.details.run, "fake-async-run-id", "the run id kido async_bash printed is returned");
     const wantOutput = join(fx.runsDir, "fake-async-run-id", "output");
-    assert.equal(result.details.output, wantOutput, "the output path is derived from the run id, under kido's own runs directory");
+    assert.equal(result.details.output, wantOutput, "the output path is the fourth field of the line kido printed, not one rebuilt here");
     assert.match(result.content[0].text, /fake-async-run-id/, "the result text names the run");
     assert.match(result.content[0].text, new RegExp(wantOutput.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the result text names the output path");
     assert.match(result.content[0].text, /notice/, "the result text says a notice arrives on completion");

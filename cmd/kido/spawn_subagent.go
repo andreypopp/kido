@@ -244,8 +244,7 @@ func runEnv(runID string, parentPID int, parentInstance string, depth int, keepA
 // window rather than strand it. Both failures record the run failed,
 // since an error returned here is all the caller ever sees of it.
 //
-// The line printed is contract: pi/kido-agents.ts parses the window id,
-// pane id and run id back out of stdout.
+// What it prints is contract; printCreated owns that line.
 func createRunWindow(meta subrun.Meta, sessionID string, env, command []string) error {
 	windowID, paneID, panePID, err := newWindow(sessionID, meta.Name, meta.Cwd, env, command)
 	if err != nil {
@@ -268,22 +267,40 @@ func createRunWindow(meta subrun.Meta, sessionID string, env, command []string) 
 	if err := markSubagent(windowID, tmux.SubagentMark(meta.ID, meta.ParentInstance, meta.Depth)); err != nil {
 		// A window that has already closed cannot be marked and does not
 		// need to be: the mark is what makes a window reapable, and there
-		// is nothing left to reap. The command in it ran, so how it ended
-		// is its own to report (`kido async-run` does, and a run that
-		// reports nothing is guessed died from its pid), which is why no
-		// outcome is recorded here either. Otherwise a creation error is
-		// the standing answer for every command fast enough to beat
+		// is nothing left to reap. For a bash run that is an ordinary
+		// ending - the command in it ran, and `kido async-run` records and
+		// reports how it went from inside the window - which is why no
+		// outcome is recorded over its own here. Otherwise a creation error
+		// is the standing answer for every command fast enough to beat
 		// remain-on-exit, which is every typo.
-		if !windowExists(windowID) {
-			fmt.Printf("%s %s %s\n", windowID, paneID, meta.ID)
+		//
+		// An agent run has no such wrapper, and nothing else ever reaches
+		// it: a window tmux has lost carries no marked pane, so neither
+		// sweep rule can find it, and a pi that vanished this fast never
+		// reached its task. It keeps the recorded failure it always got.
+		if meta.EffectiveKind() == subrun.KindBash && !windowExists(windowID) {
+			printCreated(meta, windowID, paneID)
 			return nil
 		}
 		killWindow(windowID)                                                                                    //nolint:errcheck // best effort cleanup; the mark error is what matters
 		subrun.RecordOutcome(meta.ID, subrun.Outcome{Result: subrun.Failed, Text: err.Error(), At: time.Now()}) //nolint:errcheck // best effort
 		return err
 	}
-	fmt.Printf("%s %s %s\n", windowID, paneID, meta.ID)
+	printCreated(meta, windowID, paneID)
 	return nil
+}
+
+// printCreated prints what a spawn made, the line pi/kido-agents.ts
+// parses the window, pane and run ids back out of. A bash run carries a
+// fourth field, the file its output is teed to: where kido keeps a run's
+// output is kido's own to say, and a tool deriving it would be a second
+// copy of state.Dir's KIDO_STATE_DIR/XDG precedence.
+func printCreated(meta subrun.Meta, windowID, paneID string) {
+	if meta.EffectiveKind() == subrun.KindBash {
+		fmt.Printf("%s %s %s %s\n", windowID, paneID, meta.ID, subrun.OutputPath(meta.ID))
+		return
+	}
+	fmt.Printf("%s %s %s\n", windowID, paneID, meta.ID)
 }
 
 // liveInstance reports whether some session in states reports instance as
