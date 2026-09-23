@@ -694,8 +694,7 @@ not repeat them.
   `ask_agent`; nobody is waiting to be asked. Forwarding a brief down a
   level is not parallelization.
 - **No git writes.** No commit, push, reset, add, checkout or stash. The
-  top-level session commits. Leave work uncommitted. For a revert test,
-  copy the file to `/tmp`, never `git stash`.
+  top-level session commits. Leave work uncommitted. Never `git stash`.
 - **Other agents' uncommitted changes are expected.** Work runs in
   parallel; the brief says which files are yours. Do not revert, clean
   or fix anything outside them - report it instead.
@@ -708,8 +707,7 @@ not repeat them.
   your own shell.
 - **Verification is yours; it is not re-run.** For a bug fix, write the
   test first and watch it fail before touching the code; quote that
-  failure. A feature needs no such proof - its tests need only pass. Do
-  not revert working code into `/tmp` copies to manufacture failures.
+  failure. A feature needs no such proof - its tests need only pass.
   Then, once:
 
       env -u KIDO_AGENT_PARENT_INSTANCE -u KIDO_AGENT_DEPTH -u KIDO_AGENT_TASK_FILE -u KIDO_AGENT_PARENT_PID -u TMUX_PANE KIDO_TS_TEST_REQUIRED=1 make test
