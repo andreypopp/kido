@@ -100,8 +100,8 @@ func TestSSHRowDirect(t *testing.T) {
 // integration (shell/zsh/integration.zsh, sourced from a .zshrc the way
 // `kido setup-zsh` arranges) and expects the row to carry the same
 // indicators an agent pane has: an empty two-column field at the prompt,
-// a green ■ while a command runs, a green ✓ once a command has exited
-// zero, and a red ■ once a command has exited nonzero, either until the
+// a green ◼ while a command runs, a green ✓ once a command has exited
+// zero, and a red ◼ once a command has exited nonzero, either until the
 // pane is visited.
 func TestShellStatusRow(t *testing.T) {
 	t.Parallel()
@@ -158,7 +158,7 @@ func TestShellStatusRow(t *testing.T) {
 
 	h.in("send-keys", "-t", pane, "sleep 5", "Enter")
 	h.waitPaneCommand(pane, "sleep")
-	h.waitZshRow("·■ sleep", "")
+	h.waitZshRow("·◼ sleep", "")
 
 	// The sleep exits zero, and the client never left home, so it settles
 	// on the checkmark, not blank - this is just a sync point before the
@@ -169,7 +169,7 @@ func TestShellStatusRow(t *testing.T) {
 	// A command that fails leaves the row red until the pane is visited,
 	// overriding the checkmark straight away.
 	h.in("send-keys", "-t", pane, "false", "Enter")
-	h.waitZshRow("·■ zsh", "31")
+	h.waitZshRow("·◼ zsh", "31")
 
 	// Visiting the pane clears it: the failure is older than the visit.
 	h.in("select-window", "-t", pane)
