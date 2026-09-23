@@ -243,8 +243,8 @@ kido setup-claude   # back to normal
 
 `make test` runs `go vet` and the unit tests.
 
-`make e2e` drives a real tmux server built from the fork's `side-pane`
-branch. It needs that binary on `PATH` or at `KIDO_TMUX=/path/to/tmux`, and
+`make e2e` drives a real tmux server built from the tmux fork at the
+revision the Homebrew tap pins. It needs that binary on `PATH` or at `KIDO_TMUX=/path/to/tmux`, and
 skips without it; `KIDO_E2E_REQUIRED=1` makes it fail instead. Build the
 fork with `scripts/install-tmux-fork.sh <prefix>`.
 
