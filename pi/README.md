@@ -47,6 +47,13 @@ once from `KIDO_AGENT_PARENT_PID`, `KIDO_AGENT_PARENT_INSTANCE` and
 docs/design-subagents.md, "What a child is given"); absent for a root
 session.
 
+Those variables are inherited by anything the session starts, so they are
+not on their own what makes this process a subagent: everything that acts
+like one (kido-agents.ts's `ownRunID`) also requires this session's own pi
+session id to equal `KIDO_AGENT_RUN_ID`, which only the child kido actually
+spawned can satisfy. See docs/design.md, "The run id is the child's session
+id".
+
 ## Install
 
 ```sh

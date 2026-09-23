@@ -64,8 +64,16 @@ command with the server's environment, not the caller's:
 | `KIDO_AGENT_PARENT_INSTANCE` | the parent's instance id, the parent edge proper |
 | `KIDO_AGENT_DEPTH` | the child's depth, derived by kido |
 | `KIDO_AGENT_TASK_FILE` | the task text, in the run's directory |
-| `KIDO_AGENT_RUN_ID` | the run id, for a child that is not pi |
+| `KIDO_AGENT_RUN_ID` | the run id, which for a pi child is also the session id it must prove it holds |
 | `KIDO_AGENT_KEEP_ALIVE` | `1` when spawned with `keepAlive` |
+
+None of it is proof. The environment is inherited by everything the
+child's own process starts, so a pi run from inside a subagent's pane
+arrives carrying the whole set; the child's extension therefore believes
+the parent edge only when its own pi session id is `KIDO_AGENT_RUN_ID`
+too (design.md, "The run id is the child's session id"), which is what
+keeps a nested pi from ending someone else's run and closing someone
+else's window.
 
 Depth is one more than the caller's own record says, never what the
 caller claims, and a spawn at depth 3 is refused; a caller with no
@@ -122,12 +130,21 @@ would otherwise leave the instruction behind.
 
 **Watching the parent.** The child's pi is a child of the tmux server,
 so no signal tells it the parent has gone. It polls every five seconds:
-`kill(pid, 0)` first, where ESRCH ends the session on the next poll;
-otherwise whether `kido agents` still resolves its parent, and only
-two consecutive misses count, since a parent's record can vanish for a
-tick without the parent dying (design.md, "Identity"). kido being
-unreachable is not evidence. On a dead parent the child shuts itself
-down through the same path a normal exit takes.
+`kill(pid, 0)` first, where ESRCH is definite and ends the session on
+that poll without spawning anything; a live pid is not proof, since pids
+are recycled, so anything else asks `kido agent-alive <parent-instance>`
+and acts on the answer, on one reading. That command reads every live
+state record and answers whether one reports that instance - the same
+question the orphan sweep asks, of the same registry. It replaced `kido
+agents --json`, which was a display asked a liveness question: that view
+keeps one record per pane, so a `pi --print` inside the parent's pane
+took the pane and the parent's record was missing from the answer
+altogether, and a two-poll debounce rode that out rather than fixing it.
+The debounce is gone with the reason for it, and the poll also no longer
+lists panes, which is one process and no tmux round trip every five
+seconds per child. kido failing to answer remains the one inconclusive
+case and is never evidence. On a dead parent the child shuts itself down
+through the same path a normal exit takes.
 
 **Reporting.** Nothing reports for the child. It calls `notify_parent`
 itself, once, when its model judges the work done; the summary goes to
@@ -148,10 +165,11 @@ A notice is steered rather than queued as a follow-up, so a parent
 mid-turn sees it between tool calls and decides for itself whether to
 act; every other kind still waits for the turn.
 
-**Idle self-exit.** A child that has settled a turn and stayed idle for
-thirty seconds calls pi's own shutdown on itself, unless it was spawned
-with `keepAlive`. Any new work, or a message about to be delivered,
-restarts the clock. A window some client is looking at is not taken
+**Idle self-exit.** A child - the real one, by the session-id test above
+- that has settled a turn and stayed idle for thirty seconds calls pi's
+own shutdown on itself, unless it was spawned with `keepAlive`. Any new
+work, or a message about to be delivered, restarts the clock. A window
+some client is looking at is not taken
 away; the timer re-arms and tries again later. A root session, one with
 no parent in its environment, never arms it.
 
@@ -183,17 +201,17 @@ arrival, since the sender field is advisory. A human at the CLI, with
 no record, may act on anything (design.md, "Interrupt and stop").
 
 An orphan is the sweep's business. A live marked window whose child
-names a parent instance no live record claims, and whose recorded
-parent pid is dead too, is closed once both readings have agreed for
-fifteen seconds. One reading was enough before, and one bad reading
-was easy to make: a `pi --print` started inside an agent's pane
-inherits that pane, its record wins the pane for as long as it reports,
-and the real parent is absent from the map, so its children were killed
-at once with no chance to record anything. The fifteen seconds are
-longer than the child's own two-poll notice, so a child that is going
-to exit cleanly gets to. The debounce is state in the sweeping process,
-which is why a one-shot `kido reap` can never apply this rule and only
-ever collects dead windows.
+names a parent instance no live record claims is closed, on one
+reading. The reading is trustworthy because of what it is taken from:
+every live record, not the per-pane view `state.Load` returns. In that
+view a `pi --print` started inside an agent's pane inherits that pane
+and wins it for as long as it reports, and the real parent is then not
+in what the sweep was handed at all - so its children were killed with
+nothing wrong with them. A debounce used to absorb that. Asking the
+whole registry instead makes the collision irrelevant: it settles who
+owns a pane, and the sweep only ever asks whether an instance is
+running somewhere. A one-shot `kido reap` applies this rule too, since
+nothing needs a second sweep any more.
 
 ## Resuming a run
 
@@ -242,10 +260,10 @@ window aged out.
 - A child that crashes or is reaped before calling `notify_parent`
   tells its parent nothing. The run record and the captured screen are
   what remain.
-- A one-shot `kido reap` cannot apply the orphan rule; only a
-  continuously sweeping sidebar can.
-- A recycled pid can make a dead parent look alive to the sweep. The
-  window stays open until the child's own poll ends the session.
+- A child that is shutting down on its own notice when its parent dies
+  can have its window closed mid-exit and be recorded as `died` rather
+  than recording its own outcome. Whatever it managed to write first
+  wins (`RecordOutcome` is O_EXCL).
 - Nesting stops at depth 2 and no flag raises it.
 - A blocked `ask_agent` holds the asker's whole turn, for one turn of
   the target's latency; a parent asking three children serially is idle

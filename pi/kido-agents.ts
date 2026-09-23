@@ -61,10 +61,51 @@ function status(): StatusHost | null {
 
 // Read again here rather than shared across the seam: constants of this
 // process, so two readers cannot disagree. The instance id, which is
-// generated, comes from the host instead.
+// generated, comes from the host instead. What kido spawn set for a child
+// is not the same as what this process is - see ownRunID below.
 const PARENT_PID = process.env.KIDO_AGENT_PARENT_PID ? Number(process.env.KIDO_AGENT_PARENT_PID) : undefined;
 const PARENT_INSTANCE = process.env.KIDO_AGENT_PARENT_INSTANCE || undefined;
 const DEPTH = process.env.KIDO_AGENT_DEPTH ? Number(process.env.KIDO_AGENT_DEPTH) : undefined;
+const RUN_ID = process.env.KIDO_AGENT_RUN_ID || undefined;
+
+// ownRunID answers the only question every subagent-specific behaviour
+// below actually means: is THIS process the child of that run, or
+// something that merely inherited a child's environment? It returns the
+// run id when it is ours, and null otherwise.
+//
+// The environment alone cannot answer it. Every KIDO_AGENT_* variable is
+// inherited by anything an agent's process starts - a human running `pi`
+// or `pi --print` in an agent's pane, a tool shelling out to one - so a
+// parent edge is a claim any descendant can make, and this file used to
+// take it. A nested pi then resolved "self" by pane, found the real
+// agent's record, scheduled `kido close-window` on the real agent's
+// window on its way out, and would have offered someone else's parent a
+// report. Two live agents were killed that way.
+//
+// So the claim is checked against a fact about this process instead. By
+// design the run id IS the child's pi session id (docs/design.md, "The
+// run id is the child's session id"): a fresh spawn runs
+// `pi --session-id <run-id>` and a resume `pi --session <run-id>`. A
+// nested pi inherits the run id but mints a session id of its own, so it
+// can never satisfy the equality, while the real child satisfies it on
+// both paths. The one thing this gives up is a child spawned as some
+// wrapper command that itself execs pi: that pi is a session of its own,
+// not the run, and is now treated as the root session it is.
+//
+// A session id that is not known yet reads as "not a subagent". That is
+// the safe direction - the damage in the incident was all in acting - and
+// it costs a real child nothing: kido-status.ts resolves the id inside
+// session_start, before it calls any hook here and long before any turn
+// or tool call, so every caller below already has it. The states where it
+// stays null are the ones where pi is outside tmux or kido is off PATH,
+// where a child could not report an outcome, close a window or reach a
+// parent anyway.
+function ownRunID(): string | null {
+  if (PARENT_INSTANCE === undefined || RUN_ID === undefined) return null;
+  return status()?.sessionId() === RUN_ID ? RUN_ID : null;
+}
+
+const isSubagent = (): boolean => ownRunID() !== null;
 
 // What set_status's schema tells the model; the enforced cap is
 // kido-status.ts's own.
@@ -503,30 +544,36 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // missedParentPolls counts consecutive polls where the pid check was
-  // ambiguous (kill(pid, 0) succeeded or came back EPERM - a live pid
-  // proves nothing by itself, since a pid can be recycled by an unrelated
-  // process) and the registry, successfully queried, found no live record
-  // for this session's own parent. The primary fix for the actual incident
-  // this guards against - a /reload's record briefly disappearing and
-  // reappearing - lives on the parent side (kido-status.ts's
-  // session_shutdown no longer removes the record on "reload", and its
-  // INSTANCE now survives a reload instead of being regenerated); this
-  // debounce is defence in depth on top of that fix, not a substitute for
-  // it, for any other momentary gap in the parent's own record that isn't
-  // a reload. It is deliberately small: two consecutive misses, ~10s at
-  // the default poll interval, is enough to absorb a single missed read
-  // without meaningfully delaying a real orphan's cleanup.
-  let missedParentPolls = 0;
-  const CONSECUTIVE_MISSES_REQUIRED = 2;
+  // parentInRegistry asks kido whether PARENT_INSTANCE is still running:
+  // true, false, or null for "no answer", which is not evidence either
+  // way. `kido agent-alive` reads every live state record and answers
+  // that one bit. It is deliberately not `kido agents --json`, which the
+  // poll used to read: that is a display command, and it both scopes
+  // itself to the caller's tmux session and collapses its result to one
+  // record per pane. A `pi --print` started inside the parent's pane
+  // inherits TMUX_PANE and wins that pane, which dropped the parent's
+  // record out of the answer entirely and made a healthy parent look
+  // gone. A debounce here used to absorb that, treating a wrong answer as
+  // a slow one; asking a question no pane collision can disturb removes
+  // the need for it (docs/design.md, "Identity"). It also costs one
+  // process and no tmux round trip, on a timer that never stops.
+  const parentInRegistry = async (): Promise<boolean | null> => {
+    const host = status();
+    if (!host || PARENT_INSTANCE === undefined) return null;
+    const res = await host.runKido(["agent-alive", PARENT_INSTANCE], { timeoutMs: 2000 });
+    if ("error" in res) return null;
+    if (res.out === "true") return true;
+    if (res.out === "false") return false;
+    return null; // some kido that does not know this subcommand; say nothing
+  };
 
   // parentIsAlive: kill(pid, 0) first, where ESRCH is a definite "gone" -
-  // answered without a subprocess, and never debounced, so keepAlive gives
-  // no protection against a genuinely dead parent. Success or EPERM is not
-  // proof of life (a pid can be recycled), so anything else defers to
-  // whether this session's own `parent` still resolves in kido agents,
-  // and only after CONSECUTIVE_MISSES_REQUIRED polls in a row agree there
-  // is none - a single missed poll is inconclusive, not evidence.
+  // answered without a subprocess, so keepAlive gives no protection
+  // against a genuinely dead parent. Success or EPERM is not proof of life
+  // (a pid can be recycled), so anything else defers to the registry, on
+  // one reading: with the collision above gone there is no known way for a
+  // live parent's record to be missing from it. An unreachable kido stays
+  // the one inconclusive case - never shut down on a guess.
   const parentIsAlive = async (): Promise<boolean> => {
     if (PARENT_PID === undefined) return true;
     try {
@@ -534,33 +581,29 @@ export default function (pi: ExtensionAPI) {
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code === "ESRCH") return false;
     }
-    const listed = await fetchAgents();
-    if ("error" in listed) return true; // kido being unavailable is not evidence; never shut down on a guess, and not a miss either
-    const self = listed.agents.find((a) => a.self);
-    if (self?.parent) {
-      missedParentPolls = 0;
-      return true;
-    }
-    missedParentPolls++;
-    return missedParentPolls < CONSECUTIVE_MISSES_REQUIRED;
+    return (await parentInRegistry()) ?? true;
   };
 
   // Idempotent: a /reload re-runs session_start and must not pile up a
   // second timer. Unref'd so it never holds the event loop open.
   // pollInFlight stops a tick from starting a second parentIsAlive() call
-  // while the previous one is still awaiting its subprocess round trip:
+  // while the previous one is still awaiting its subprocess round trip.
+  // It outlives the debounce it was first written for, on its own merits:
   // setInterval fires on schedule regardless of whether its callback's own
-  // async work has finished, so a poll slower than PARENT_LIVENESS_POLL_MS
-  // (a loaded machine, a slow kido invocation) could otherwise overlap two
-  // or more calls into one real gap - each completing and incrementing
-  // missedParentPolls on its own, which would let a single transient gap
-  // reach the two-poll threshold faster than the debounce is meant to
-  // allow. Skipping the tick instead just delays the next real reading;
-  // it never suppresses one.
+  // async work has finished, so a reading slower than
+  // PARENT_LIVENESS_POLL_MS - a loaded machine, a slow kido - would have
+  // every tick spawn another process on top of the ones already waiting,
+  // which is a pile-up on exactly the machine least able to afford it.
+  // Overlapping readings no longer corrupt a verdict, since each is now
+  // independently trustworthy; they are simply waste. Skipping the tick
+  // delays the next real reading and never suppresses one.
   let pollInFlight = false;
 
   const startParentLivenessPoll = (shutdown: () => void): void => {
-    if (PARENT_PID === undefined) return;
+    // Only the child of the run watches the parent that spawned it: a
+    // process that merely inherited the pid would end itself over a death
+    // that says nothing about it (see ownRunID).
+    if (PARENT_PID === undefined || !isSubagent()) return;
     stopParentLivenessPoll();
     parentPollTimer = setInterval(() => {
       if (pollInFlight) return;
@@ -581,7 +624,6 @@ export default function (pi: ExtensionAPI) {
       clearInterval(parentPollTimer);
       parentPollTimer = null;
     }
-    missedParentPolls = 0;
     pollInFlight = false;
   };
 
@@ -609,12 +651,12 @@ export default function (pi: ExtensionAPI) {
   };
 
   // armIdleExit starts (or restarts) the idle-to-self-shutdown clock. Only
-  // a child arms it (PARENT_INSTANCE set, exactly as notify_parent's own
-  // refusal check), and only when it has not opted out with keepAlive. Unref'd so
+  // a child arms it (isSubagent, exactly as notify_parent's own refusal
+  // check), and only when it has not opted out with keepAlive. Unref'd so
   // it can never hold the process alive on its own, the same as the
   // parent-liveness poll.
   const armIdleExit = (shutdown: () => void): void => {
-    if (PARENT_INSTANCE === undefined || KEEP_ALIVE) return;
+    if (!isSubagent() || KEEP_ALIVE) return;
     clearIdleExit();
     idleExitTimer = setTimeout(async () => {
       const listed = await fetchAgents();
@@ -1121,10 +1163,12 @@ export default function (pi: ExtensionAPI) {
     parameters: notifyParentParams,
     async execute(_toolCallId, params) {
       // The one refusal that has nothing to do with kido being reachable:
-      // a root session (a human's own interactive pi) has no parent to
-      // tell, ever, so this must read as a clear refusal rather than the
-      // same silent no-op every other tool gives an unavailable kido.
-      if (PARENT_INSTANCE === undefined) {
+      // a session that is not itself a spawned child (a human's own
+      // interactive pi, or one started from inside an agent's pane with
+      // that agent's environment around it) has no parent of its own to
+      // tell, so this must read as a clear refusal rather than the same
+      // silent no-op every other tool gives an unavailable kido.
+      if (!isSubagent()) {
         return { content: [{ type: "text", text: "this session has no parent (it was not spawned as a subagent); notify_parent has nobody to tell" }], details: {} };
       }
       const host = status();
@@ -1212,7 +1256,7 @@ export default function (pi: ExtensionAPI) {
   // system prompt whenever no handler returns one, so this must return it
   // on every call, not only once.
   pi.on("before_agent_start", (event) => {
-    if (PARENT_INSTANCE === undefined) return;
+    if (!isSubagent()) return;
     return { systemPrompt: `${event.systemPrompt}\n\n${NOTIFY_PARENT_INSTRUCTION}` };
   });
 
@@ -1254,33 +1298,27 @@ export default function (pi: ExtensionAPI) {
   // is what every pi too old to send one meant by it.
   const isRunEnding = (reason?: string): boolean => reason === undefined || reason === "quit";
 
-  // recordOwnOutcome tells kido how this run ended: the session id is the
-  // run id verbatim, "idle" is the only status a turn finishes on, and
-  // anything else at shutdown is failed. Gated on isRunEnding: an outcome
-  // is O_EXCL, so a reload recording "completed" would leave the run's
-  // real ending unrecordable.
-  const recordOwnOutcome = async (reason?: string): Promise<void> => {
+  // endOwnRun does the two things that happen exactly once, when this
+  // process's own run actually ends: record how it ended, and schedule
+  // its window's linger. One function because they share one gate, asked
+  // once here rather than twice - is this process the run's own child
+  // (ownRunID), can kido be reached at all, and is this shutdown the run
+  // ending rather than a /reload rebuilding the extension runtime in the
+  // same process. The last part is not pedantry: an outcome is O_EXCL, so
+  // a reload recording "completed" leaves the run's real ending
+  // unrecordable, and an ungated linger, measured against pi 0.85.1,
+  // closed a live subagent's window out from under it ~30s after a
+  // /reload. The run's ending is no longer reported to the parent here at
+  // all (docs/design.md, "Notifying the parent"): a subagent calls
+  // notify_parent itself, on its own judgement.
+  const endOwnRun = async (reason?: string): Promise<void> => {
     const host = status();
-    const sessionId = host?.sessionId();
-    if (!host?.kidoPath() || !sessionId || PARENT_INSTANCE === undefined) return; // not a subagent
-    if (!isRunEnding(reason)) return;
+    const runID = ownRunID();
+    if (!runID || !host?.kidoPath() || !isRunEnding(reason)) return;
+    // The run id is this session's id verbatim; "idle" is the only status
+    // a turn finishes on, so anything else at shutdown is a failure.
     const result = host.status() === "idle" ? "completed" : "failed";
-    await host.runKido(["run-outcome", "--result", result, "--", sessionId], { timeoutMs: 3000 });
-  };
-
-  // scheduleCompletionLinger schedules this session's own window's
-  // linger once the run has actually ended. Gated on isRunEnding like
-  // recordOwnOutcome: an ungated /reload, measured against pi 0.85.1,
-  // closed a live subagent's window out from under it. Renamed from
-  // sendCompletionNotice - the run's ending is no longer automatically
-  // reported to the parent at all (docs/design.md, "Notifying the
-  // parent"; a subagent calls notify_parent itself, on its own
-  // judgement), so only the window-lifecycle half of that function's job
-  // remains here.
-  const scheduleCompletionLinger = async (reason?: string): Promise<void> => {
-    const host = status();
-    if (!host?.kidoPath() || PARENT_INSTANCE === undefined) return; // not a subagent
-    if (!isRunEnding(reason)) return;
+    await host.runKido(["run-outcome", "--result", result, "--", runID], { timeoutMs: 3000 });
     const listed = await fetchAgents();
     if ("error" in listed) return;
     const self = listed.agents.find((a) => a.self);
@@ -1312,8 +1350,7 @@ export default function (pi: ExtensionAPI) {
       stopParentLivenessPoll();
       clearIdleExit();
       abandonPending();
-      await recordOwnOutcome(reason);
-      await scheduleCompletionLinger(reason);
+      await endOwnRun(reason);
     },
     turnEnded() {
       armIdleExit(() => ctxShutdown?.());

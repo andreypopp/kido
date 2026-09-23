@@ -157,7 +157,11 @@ resolved by policy instead:
   legitimately changes on its pane and must win when it does, and nothing
   in the comparison can tell that from an intruder. What used to make the
   flip destructive — the reaper closing a parent's children the tick its
-  record vanished — is handled in `internal/reap` instead.
+  record vanished — is gone because the reaper is no longer handed this
+  map: `Load` is `LoadLive` plus `ByPane`, and anything asking "is this
+  instance running *anywhere*" takes the slice, which drops nothing.
+  Pass a pane-keyed view to `reap.Sweep` and you reintroduce the bug that
+  killed two live agents.
 
 `kido prompt` prefers the recorded inbox socket (`kido-status.ts` binds one)
 and falls back to a tmux paste **only** on `errInboxUnavailable`. Any
@@ -220,7 +224,7 @@ hosting a pty, the inner one under test with kido as its
 It builds fake `claude` and `node` binaries that reproduce the real
 agents' screens. `settle = 5s` is the only wait; every wait helper polls
 at 100ms, matching kido's default tick. Every grace period kido reads
-(the linger, the orphan debounce, stop escalation, the stall threshold)
+(the linger, stop escalation, the stall threshold)
 is shortened through the environment the inner server exports, and only
 there: the sweep in the sidebar and the helper the extension runs read
 the same variable, so shortening one in-process would leave the two
@@ -261,22 +265,35 @@ build it paid for).
 - **`TestLoadAgentPrecedence`** — pi wins over Claude Code for the same
   pane regardless of timestamp, since pi runs Claude Code inside its own
   pane.
-- **`TestSweepDoesNotActOnASingleMiss`** and
-  **`TestSweepNeverActsOnAPaneCollisionAlone`** — the orphan rule closes a
-  window, which kills the process in it, and it once acted on one reading
-  taken every 100ms. The same-pane flip above evicts a live parent's
-  record for a tick or few, so a single miss must close nothing, and the
-  pid the child recorded at spawn (`ParentPID`) must veto the clock on its
-  own, since it does not depend on which record `Load` returns. Collapsing
-  the two signals into one, or the grace into an immediate check, passes
-  every other reaper test. `TestSidebarSurvivesATransientParentPaneCollision`
-  (e2e) is the same incident end to end.
+- **`TestSweepSurvivesAPaneCollisionOnTheParent`** — the orphan rule
+  closes a window, which kills the process in it, and what it reads must
+  therefore be complete rather than merely checked. The test builds the
+  collision in real state files and sweeps *both* views: the full one
+  closes nothing, and the pane-keyed one closes the window. That second
+  assertion is the point — it is the input that killed two live agents,
+  and without it the test stops being about anything.
+  `TestSidebarSurvivesAParentPaneCollision` (e2e) is the same incident
+  end to end, and fails within a second if `take` goes back to handing
+  the sweep `s.states`.
+- **`TestReapCancelsSubagentOfDeadParent`** (e2e) — the orphan rule from
+  a one-shot `kido reap`, which it could not apply while a debounce made
+  the rule need two sweeps. It hides the sidebar first: with one reading
+  deciding, a sidebar left running would close the window itself and the
+  test would pass without the command doing anything.
+- **`TestLingeringSubagentsCarryForward`** — the previous tick's entry is
+  reused, so the test deletes `meta.json` between the two calls: an
+  implementation that re-reads loses the name. The second half pins the
+  deliberate exception, an entry with no outcome yet, which must keep
+  asking.
+- **`TestStalledSinceTakesTheBaselineItIsGiven`** — `StalledSince` must
+  read nothing, so the test records a wake and checks the verdict ignores
+  it. Reaching for the file inside would put an open in the 100ms path
+  and let `stallPending`'s two instants be judged from two baselines.
 - **`TestBuildAgentsRecycledPIDNoEdge`** — the parent edge in `kido
   agents` matches on `ParentInstance`, not `ParentPID`, because `alive()`
   reports `EPERM` as alive and cannot tell a recycled pid from the
-  parent. The reaper's pid fallback above is deliberately the opposite
-  choice: there a recycled pid leaves a window open, which is the safe
-  direction for something irreversible.
+  parent. Nothing in the reaper consults a pid any more either, which is
+  what removed the matching known limit.
 - **`TestLeakCheckCatchesAccumulation`** (e2e) — the harness's control-
   client leak check asks the test's own server for its clients, after a
   version that scanned the whole machine failed on whatever else was
@@ -284,15 +301,22 @@ build it paid for).
   scoping; this one proves the check can still fail at all. The older
   assertion — kill the server, wait for the clients to exit — could not,
   because the server's death closes their pipes regardless.
-- **`pi/kido-status.test.ts`, the parent-liveness poll** — `setInterval`
-  fires on schedule whether or not the last callback's async work has
-  finished, so `pollInFlight` stops two overlapping readings counting as
-  the two consecutive misses the debounce wants. Without the guard the
-  only failing test is the one driven by the fake agent list's call
-  sequence; the rest pass on a quiet machine and flake on a loaded one.
-  The `set_status` test in the same file reads the report it means rather
-  than the last one to arrive, for the same reason: a session emits its
-  own report at start, and nothing orders the two.
+- **`pi/kido-status.test.ts`, the parent-liveness poll** — the pair of
+  cases pinning that one `kido agent-alive` reading is conclusive and
+  that ticks do not pile up. The first counts calls, not elapsed time:
+  an assertion that the child merely exits would pass with a debounce
+  back in place. The second measures a fixed window rather than waiting
+  for a call count, because `setInterval` fires whether or not the last
+  callback finished, and stopping at the first few readings stops before
+  an unguarded pile-up is distinguishable from a handful of sequential
+  calls. The `set_status` test in the same file reads the report it means
+  rather than the last one to arrive, for a related reason: a session
+  emits its own report at start, and nothing orders the two.
+- **`TestAgentAliveSurvivesAPaneCollisionOnTheParent`** — the reaper's
+  collision test in the second place that asked the same question. Its
+  negative control runs `buildAgents` over the per-pane view and asserts
+  the child's parent is *unresolved* there; without that half the test
+  stops being about anything, exactly as in `internal/reap`.
 
 ### Other traps
 

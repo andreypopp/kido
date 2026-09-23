@@ -97,9 +97,7 @@ function capBytes(text: string, max: number): string {
 
 export type Status = "running" | "waiting" | "compacting" | "idle";
 
-// RunKidoResult's error branch carries timedOut so a caller can tell a
-// definite failure apart from a run that may still have done its work.
-export type RunKidoResult = { out: string } | { error: string; timedOut?: boolean };
+export type RunKidoResult = { out: string } | { error: string };
 
 // Anything larger than this is dropped rather than buffered.
 const MAX_PROMPT_BYTES = 1024 * 1024;
@@ -216,9 +214,11 @@ export interface StatusHost {
   kidoPath(): string | null;
   // This process's own generated instance id, as reported with --instance.
   instance(): string;
+  // Null until session_start has resolved one, and forever in a pi with
+  // no kido or no tmux. The agent half checks it against KIDO_AGENT_RUN_ID
+  // to tell a real subagent from a process that merely inherited one's
+  // environment, so it is a fact about this process, not a claim.
   sessionId(): string | null;
-  title(): string | undefined;
-  activity(): string;
   status(): Status;
   // Whether this session is listening on an inbox right now. Synchronous
   // on purpose: ask_agent checks it with no await between the check and
@@ -483,8 +483,9 @@ export default function (pi: ExtensionAPI) {
       };
       const timer = setTimeout(() => {
         child.kill();
-        // Unknown, not failed: kido may already have done its work.
-        finish({ error: `kido ${args[0]} timed out after ${opts.timeoutMs}ms`, timedOut: true });
+        // Unknown, not failed: kido may already have done its work, which
+        // is why the message says "timed out" rather than naming a failure.
+        finish({ error: `kido ${args[0]} timed out after ${opts.timeoutMs}ms` });
       }, opts.timeoutMs);
       timer.unref(); // a hung kido must never hold pi's event loop open
 
@@ -513,8 +514,6 @@ export default function (pi: ExtensionAPI) {
     kidoPath: () => kido,
     instance: () => INSTANCE,
     sessionId: () => sessionId,
-    title: () => title,
-    activity: () => activity,
     status: () => current,
     inboxOpen: () => inbox !== null,
     setActivity: (text: string) => {

@@ -89,7 +89,7 @@ instance, passed through the environment at spawn, and a parent edge is
 matched on it and nothing else. The parent pid is still recorded and
 still passed, but only as a cheap first check for the liveness poll:
 ESRCH is a definite "gone", and anything else defers to whether some
-live record in scope still reports the parent instance as its own. An
+live record still reports the parent instance as its own. An
 instance string cannot collide the way a recycled pid can, and it is
 location-independent, which is what would let it survive a subagent
 running somewhere other than this machine.
@@ -140,25 +140,52 @@ still be removed or it is a live-pid file that `Load()` - which only ever
 deletes a record whose pid is dead - leaves behind forever, claiming the
 same pane alongside the fresh record under the new id.
 
-**The child side stays defensive even so.** `parentIsAlive()` never
-treats a single "no matching instance in scope" reading as conclusive: it
-must see that same reading on two consecutive polls (`missedParentPolls`
-in kido-agents.ts, reset the moment a poll finds the parent again, and by
-`stopParentLivenessPoll`) before it will end the session, roughly ten
-seconds at the poll's default five-second interval. A dead pid (`ESRCH`)
-is never debounced - keepAlive protects against the idle-exit timer, not
-against an orphan outliving a parent that is actually gone, and a real
-ESRCH ends the session on the very next poll regardless. This is
-belt-and-braces on top of the two fixes above, not a substitute for
-either: `kido agents --json` carries no field a child could use to tell
-"my specific parent instance is missing" apart from "some *other* process
-now holds a recycled pid and was never registered at all" - both read as
-"no record names my parent instance", and nothing meaningfully sharper is
-buildable from what `AgentInfo` exposes today. The two-poll debounce
-buys tolerance for exactly the shape of gap the reload bug had (a
-record that disappears and reappears within about one poll interval)
-without adding a mechanism elaborate enough to mask a future regression
-of its own; a genuinely dead parent still exits promptly.
+**What the child asks, and of what.** `parentIsAlive()` used to read
+`kido agents --json` and look for a `parent` on its own row, and carried
+a two-poll debounce (`missedParentPolls`) because that reading could be
+wrong. It was the orphan sweep's defect in the one place the sweep's fix
+did not reach: `kido agents` is a display, and `state.Load`'s per-pane
+view is right for a display and wrong here. A `pi --print` started inside
+the parent's pane wins that pane, and the parent's record is then not in
+the answer at all - as is the child's own row, if something shells out to
+pi in the child's pane. Either way a healthy parent reads as gone, and a
+debounce that waits for a second identical wrong answer is treating a
+bad answer as a slow one.
+
+The question now has a command of its own, `kido agent-alive
+<instance>`, which reads `state.LoadLive` - every live record, nothing
+collapsed - and prints `true` or `false`. A pane collision settles who
+owns a pane, which this never asks, so the answer cannot be disturbed and
+one reading decides: the debounce is deleted. It is a separate
+subcommand rather than a flag on `kido agents` because it shares nothing
+with that command but a prefix - no pane listing, no session scoping, no
+per-pane collapse - and a display growing a second meaning is how the
+defect got here. Dropping the pane listing also drops a tmux round trip
+from a timer that runs every five seconds per subagent forever.
+
+Two things follow, and both are deliberate. A `false` ends the session on
+that poll, so a genuinely dead parent - or a recycled pid whose instance
+nobody reports - is acted on promptly; keepAlive protects against the
+idle-exit timer, never against an orphan outliving its parent. And the
+answer is no longer scoped to the caller's tmux session, since an
+instance id is globally unique and nothing about the file it was read
+from says which session its pane is in. That matches internal/reap's rule
+2, the other reader of this same fact, which has always been server-wide,
+and it removes a disagreement between them: a child whose window was
+moved to another tmux session used to poll a list its parent was not in
+and shut itself down, while the sweep - reading every record - was
+perfectly happy with it. Messaging stays session-scoped (`list_agents`
+is the display, and the limit below stands); liveness never needed to be.
+The one inconclusive reading left is kido failing to answer at all, which
+says nothing and is never acted on.
+
+None of this replaces the two fixes above. `pollInFlight` survives the
+debounce it was written for, on a different merit: `setInterval` fires
+whether or not the last callback's async work has finished, so a reading
+slower than the interval would have each tick spawn another process on
+top of those already waiting. Overlapping readings no longer corrupt a
+verdict - each is independently trustworthy - they are just a pile-up on
+the machine least able to afford one.
 
 ## Reporting, and what is carried forward
 
@@ -442,6 +469,26 @@ id also goes into `KIDO_AGENT_RUN_ID` unconditionally, because a child
 that is not pi (every e2e fake) has no session of its own to learn it
 from and still needs it to report an outcome.
 
+That one id is also how a pi session knows it is the child of the run
+rather than something that merely inherited a child's environment. Every
+`KIDO_AGENT_*` variable is inherited by whatever an agent's process
+starts - a human's `pi` in that pane, a tool shelling out to `pi
+--print` - so the parent edge is a claim any descendant can make, and the
+extension used to take it: a nested pi resolved itself by pane, found the
+real agent's record, and on its way out scheduled `kido close-window` on
+the real agent's window. It killed live agents. The extension checks the
+claim against a fact about itself instead: it is a subagent only if
+`KIDO_AGENT_PARENT_INSTANCE` is set *and* its own pi session id equals
+`KIDO_AGENT_RUN_ID`, which the real child satisfies on both the
+`--session-id` and the `--session` path and a nested pi, minting its own
+id, never can. A session id that is not known yet - null until
+`session_start` resolves one, and forever outside tmux or with no kido on
+PATH - reads as not a subagent, the direction that acts on nothing; a
+real child has its id before any hook, turn or tool call. The cost is
+that a child spawned as a wrapper command that itself execs `pi` gets a
+session of its own, not the run's, and is treated as the root session it
+is.
+
 ### Failure leaves a record
 
 The run directory and task file are created before the window, because
@@ -506,21 +553,36 @@ closes a window that is any client's current one or a session's last
 window; nothing is lost by waiting, since the sweep runs again next tick.
 A split window is finished only once all of it is.
 
-The second rule does not fire on one reading. "Gone" means two things
-at once: no live record claims the parent instance as its own, and the
-parent pid the child recorded at spawn is dead too. Either reading
-saying alive is enough, and a parent that is alive by either never
-starts a clock. Both have to agree, continuously, for `OrphanGrace`
-(fifteen seconds, `KIDO_ORPHAN_SECONDS`) before the window is closed.
-One reading used to be enough, and one bad reading was easy to make: a
-`pi --print` started inside an agent's pane inherits that pane, its
-record wins the pane for as long as it reports, and the real parent is
-absent from the map, so its children were killed at once with no chance
-to record anything. The grace is longer than the child's own two-poll
-notice so a child that is going to exit cleanly gets to, and its
-outcome is its own rather than a sweep's `died`. The clock is state in
-the sweeping process, which is why a one-shot `kido reap` can never
-apply this rule: it observes once, and only ever collects dead windows.
+The second rule fires on one reading, and what makes that safe is which
+reading it is. "Gone" means no live record claims the parent instance
+as its own - a question about the whole registry, not about any pane.
+It was once asked of `state.Load`'s per-pane view, and there the answer
+is wrong for a reason no amount of checking inside the sweep can
+recover: `Load` keeps one record per pane, so a `pi --print` started
+inside an agent's pane inherits that pane, wins it for as long as it
+reports, and the real parent's record is simply not in what the sweep
+was handed. Two live agents were killed by that. A debounce was added
+to ride it out, which treated a bad answer as a slow one.
+
+The sweep is handed every live record instead (`state.LoadLive`, or
+`state.ReadAll` for `kido reap`), and the collision stops mattering: it
+decides who owns a pane, which is a question the reaper never asks. The
+sidebar still draws its rows from the per-pane view - a pane has one
+label - and takes both views from one read of the directory
+(`state.ByPane`), so the sweep costs no extra I/O on a 100ms tick. With
+the input right, the grace, the debounce and the second opinion the
+child's recorded parent pid provided are all gone; so is the limit that
+a recycled pid could make a dead parent look alive, since no pid is
+consulted. A one-shot `kido reap` gets the rule back, because nothing
+needs two sweeps any more.
+
+The cost of dropping the grace is that a child already shutting down on
+its own notice can have its window closed mid-exit and be stamped
+`died` rather than recording its own outcome. `RecordOutcome`'s O_EXCL
+keeps whatever the child managed to write first, so what is at risk is
+the outcome of a child that has not written one yet - and a parent that
+is genuinely gone is the case where that outcome is least worth waiting
+fifteen seconds for.
 
 **The screen capture.** The sweep is the only thing that ever sees a
 marked window's dead pane before closing it destroys that screen for
@@ -591,9 +653,11 @@ family, or a message about to be delivered to the model - cancels and
 restarts it, so this is idle-for-30s, not 30s-since-the-first-settle: a
 child being actively used stays up.
 
-**Only a child arms it**, gated on `KIDO_AGENT_PARENT_INSTANCE` exactly as
-`notify_parent`'s own refusal is: a root session - a human's own
-interactive pi - must never reap itself. `spawn_subagent` also takes a
+**Only a child arms it**, gated on the session-id identity test ("The run
+id is the child's session id") exactly as `notify_parent`'s own refusal
+is: a root session - a human's own interactive pi, including one started
+from inside an agent's pane with that agent's environment around it -
+must never reap itself. `spawn_subagent` also takes a
 `keepAlive` boolean, plumbed through as `KIDO_AGENT_KEEP_ALIVE`, for a
 deliberately long-lived helper that opts out of self-reaping entirely.
 
@@ -606,7 +670,7 @@ once the user looks away.
 
 **The outcome is `completed`, not `stopped`**: nobody intervened, the
 child finished its own work on its own terms. `ctx.shutdown()` runs the
-same `session_shutdown` handler a normal exit does, so `recordOwnOutcome`
+same `session_shutdown` handler a normal exit does, so `endOwnRun`
 sees `isRunEnding(undefined)` (a plain shutdown carries no reason) and
 records `completed` off `host.status() === "idle"`, same as any other
 quit.
@@ -803,10 +867,10 @@ than 4000 characters" back and had to redo the call. `set_status`'s
 `activity` had the identical defect (against `MAX_ACTIVITY_BYTES`) and
 the same fix; `status()?.setActivity` already truncated via `capBytes`
 regardless, so only the schema was wrong. Refused, before anything is
-sent, for a session with no parent (no `KIDO_AGENT_PARENT_INSTANCE`) - a
-root session was not spawned, so there is nobody to tell, and the refusal
-says so rather than
-reading as a silent no-op.
+sent, for a session that is not itself a spawned child ("The run id is
+the child's session id") - it was not spawned, so there is nobody of its
+own to tell, and the refusal says so rather than reading as a silent
+no-op.
 
 **What this costs, deliberately.** A subagent that crashes, or is
 idle-reaped without ever calling `notify_parent`, now tells its parent
@@ -820,7 +884,7 @@ work - for the sake of covering a case the run record already covers.
 **Telling a child this is its job.** Nothing else does, once the
 automatic notice is gone, so a standing instruction is appended to a
 subagent's system prompt on every turn (`before_agent_start`, gated on
-`KIDO_AGENT_PARENT_INSTANCE` exactly as the tool's own refusal is) rather
+the same identity test as the tool's own refusal) rather
 than once into the task text `deliverTask` sends as the first message: a
 task is delivered once, and a `/reload`, a `kido spawn --resume`, or a
 parent's own later `message_agent` call producing a follow-up turn would
@@ -1013,14 +1077,25 @@ reads as zero rather than being caught wrongly.
 On detection the sidebar records the wake moment in the `wake` file in
 the state directory, only if newer than what is already there, since two
 sidebars racing to record roughly the same wake must not let the one that
-writes second clobber the other with an older value. `state.Stalled`
-then measures its threshold from the later of the report time and the
-recorded wake. That is not weaker, just later: an agent that really is
-wedged is still caught, one threshold after the machine woke instead of
-the instant it did, and an agent that reports again after the wake is
-judged on its own fresh timestamp as if nothing had paused. The marker
-is on disk rather than in the sidebar's memory because `kido agents` is a
-fresh process per call, with no tick of its own, and it is what
+writes second clobber the other with an older value. The staleness
+verdict then measures its threshold from the later of the report time
+and the recorded wake. That is not weaker, just later: an agent that
+really is wedged is still caught, one threshold after the machine woke
+instead of the instant it did, and an agent that reports again after
+the wake is judged on its own fresh timestamp as if nothing had paused.
+
+Which reading of the marker a verdict uses is a parameter
+(`state.StalledSince`). A caller on a tick reads the marker once and
+judges every session against that one reading: the sidebar asks the
+same question at two instants to decide whether to redraw, and two
+separate reads would answer those two instants from different
+baselines, which is not a comparison of anything. It also kept a file
+open per session in the 100ms path for a value that changes once per
+suspend. `state.Stalled` is the one-shot wrapper that reads the marker
+itself, for `kido agents` and anything else that asks once and exits.
+
+The marker is on disk rather than in the sidebar's memory because `kido
+agents` is a fresh process per call, with no tick of its own, and it is what
 `ask_agent` shells out to; both have to reach the same verdict without
 pi's extension knowing anything about sleep.
 
@@ -1047,9 +1122,10 @@ nowhere for the answer to land, and it is one socket, with one coalescing
 key and one last-reported status beside it, none of which may be
 duplicated. So the two halves meet at a pair of slots: the status half
 publishes a small host of accessors (the kido path, the instance id, the
-session id, title, activity and status, whether the inbox is open, and
-the shared `deliver`, `runKido` and `spawnDetached`), and the agent half
-publishes its hooks.
+session id and status, whether the inbox is open, and the shared
+`deliver`, `runKido` and `spawnDetached`), and the agent half publishes
+its hooks. Only what someone actually calls: title and activity
+accessors were published for a while and read by nobody.
 
 **The slots are on `globalThis`, keyed by a `Symbol.for` name, and that
 was measured rather than reasoned about.** The obvious argument, that ES
@@ -1175,9 +1251,8 @@ reaches it: `KIDO_LINGER_SECONDS` (read by both the sweep and the
 extension's helper, so they agree), `KIDO_IDLE_EXIT_SECONDS` (the idle
 self-exit timer, a different figure that stacks with `KIDO_LINGER_SECONDS`
 rather than sharing it - see "Idle self-exit, and resuming a run"),
-`KIDO_ORPHAN_SECONDS` (how long the sweep's orphan rule must see a parent
-gone before it acts - see "Window lifecycle"), `KIDO_STALL_THRESHOLD_MS`,
-`KIDO_STOP_ESCALATION_MS`, `KIDO_HEARTBEAT_MS`, `KIDO_PARENT_POLL_MS`,
+`KIDO_STALL_THRESHOLD_MS`, `KIDO_STOP_ESCALATION_MS`,
+`KIDO_HEARTBEAT_MS`, `KIDO_PARENT_POLL_MS`,
 `KIDO_SPAWN_TIMEOUT_MS` and `KIDO_STOP_TIMEOUT_MS`. The extension reads
 its own once at module scope, so its test suite re-imports both files
 under a cache-busting specifier to pick up a fresh value, and re-imports
