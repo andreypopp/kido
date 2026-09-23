@@ -56,6 +56,16 @@ func working(in Input) Effect {
 	return Effect{Status: state.Running, Background: in.Background && in.AgentID != ""}
 }
 
+// startingTool is working for the PreToolUse that opens a tool call: the
+// same running effect, plus the note that nothing more will be heard
+// until the tool returns. PostToolUse goes through working and so leaves
+// ToolPending false, closing the pair.
+func startingTool(in Input) Effect {
+	e := working(in)
+	e.ToolPending = true
+	return e
+}
+
 // blocked is the effect of something asking the user: the session is
 // waiting. A pending background wait survives it, since a session whose
 // main loop has stopped can only be blocked on behalf of the background
@@ -75,6 +85,12 @@ type Effect struct {
 	// written to the session (state.Session.Background) and comes back as
 	// Input.Background on the next event.
 	Background bool
+	// ToolPending records that a tool call has started and not yet
+	// returned, so the quiet that follows is the tool running rather than
+	// the session wedging (state.Session.ToolPending). It needs no
+	// carrying forward: every report writes a whole fresh Session, so any
+	// later event leaves it false by not setting it.
+	ToolPending bool
 }
 
 var (
@@ -123,7 +139,7 @@ var events = map[string]func(Input) Effect{
 		if in.ToolName == "AskUserQuestion" {
 			return blocked(in)
 		}
-		return working(in)
+		return startingTool(in)
 	},
 	"PermissionRequest": func(in Input) Effect { return blocked(in) },
 	"Notification": func(in Input) Effect {

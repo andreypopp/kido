@@ -505,6 +505,7 @@ func recordSession(agent, sessionID string, pid int, e hook.Effect, r agentRepor
 		Inbox:          r.Inbox,
 		Protocol:       r.Protocol,
 		Background:     e.Background,
+		ToolPending:    e.ToolPending,
 		Activity:       r.Activity,
 		Instance:       r.Instance,
 		ParentPID:      r.ParentPID,

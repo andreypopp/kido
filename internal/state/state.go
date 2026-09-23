@@ -86,6 +86,16 @@ type Session struct {
 	// Nothing clears it explicitly: every report writes a whole fresh
 	// Session, so it survives only as long as events keep setting it.
 	Background bool `json:"background,omitempty"`
+	// ToolPending says a tool call is in flight: PreToolUse has fired and
+	// the matching PostToolUse has not. Claude Code emits nothing in
+	// between, and a tool call has no upper bound - a build, a test run,
+	// an ssh to a slow host - so the record cannot be refreshed while one
+	// runs and would otherwise read as stale (see StalledSince).
+	//
+	// Like Background, nothing clears it explicitly: every report writes a
+	// whole fresh Session, so PostToolUse, a Stop, or an interrupted turn's
+	// idle all leave it false simply by not setting it.
+	ToolPending bool `json:"toolPending,omitempty"`
 	// Activity is free text the agent sets ("refactoring internal/ui").
 	// Unlike Status it is not a closed vocabulary and does not drive
 	// colour.
@@ -126,6 +136,11 @@ func stallThresholdFromEnv(def time.Duration) time.Duration {
 // last recorded wake (RecordPause), zero if none - whichever is later.
 // Never true for anything but Running.
 //
+// Never true either while a tool call is in flight, for the same reason
+// in a different shape: Claude Code says nothing between PreToolUse and
+// PostToolUse, and a tool call is unbounded, so a session seven minutes
+// into one is working exactly as intended.
+//
 // Never true either for a session parked on background work. Staleness
 // asks whether an agent that should be reporting has stopped, and the
 // threshold is six of the thirty-second heartbeats pi sends while it
@@ -145,7 +160,7 @@ func stallThresholdFromEnv(def time.Duration) time.Duration {
 // it meaningless. Reading the marker per call also put a file open in
 // the sidebar's 100ms path for a value that changes once per suspend.
 func StalledSince(s Session, wake, now time.Time) bool {
-	if s.Status != Running || s.Background {
+	if s.Status != Running || s.Background || s.ToolPending {
 		return false
 	}
 	baseline := s.TS

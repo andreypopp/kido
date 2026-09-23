@@ -313,3 +313,26 @@ func TestStalledResumesOnceBackgroundWorkIsDone(t *testing.T) {
 		t.Error("a running session with no background flag is not stalled")
 	}
 }
+
+// A tool call reports nothing until it returns and has no upper bound, so
+// a session in one is working, not wedged. This is the case that lit up a
+// real sidebar: a Bash call to a slow host, seven minutes with no event.
+func TestStalledIgnoresASessionInsideAToolCall(t *testing.T) {
+	saved := StallThreshold
+	StallThreshold = time.Minute
+	t.Cleanup(func() { StallThreshold = saved })
+
+	reported := time.Unix(1700000000, 0)
+	inTool := Session{Status: Running, TS: reported, ToolPending: true}
+	between := Session{Status: Running, TS: reported}
+
+	for _, after := range []time.Duration{2 * time.Minute, 3 * time.Hour} {
+		now := reported.Add(after)
+		if StalledSince(inTool, time.Time{}, now) {
+			t.Errorf("%v into a tool call, the session is stalled", after)
+		}
+		if !StalledSince(between, time.Time{}, now) {
+			t.Errorf("%v with no tool running, the session is not stalled", after)
+		}
+	}
+}

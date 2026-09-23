@@ -21,6 +21,11 @@ func tasks(statuses ...string) []struct {
 }
 
 func TestApply(t *testing.T) {
+	// PreToolUse is running plus the note that a tool call is open; the
+	// pending flag rides along with whatever Background says.
+	inTool := Effect{Status: state.Running, ToolPending: true}
+	backgroundedInTool := Effect{Status: state.Running, Background: true, ToolPending: true}
+
 	for _, c := range []struct {
 		in   Input
 		want Effect
@@ -39,16 +44,16 @@ func TestApply(t *testing.T) {
 		{Input{Event: "SubagentStop", SessionID: "s", Background: true, BackgroundTasks: tasks("running")}, ignore},
 		{Input{Event: "SubagentStop", SessionID: "s", BackgroundTasks: tasks()}, ignore},
 		{Input{Event: "SubagentStop", SessionID: "s", BackgroundTasks: tasks("running")}, ignore},
-		{Input{Event: "PreToolUse", SessionID: "s", ToolName: "Bash"}, running},
+		{Input{Event: "PreToolUse", SessionID: "s", ToolName: "Bash"}, inTool},
 		// The main loop working again ends the wait; a background
 		// subagent's own tool calls, which arrive under the same session
 		// id, do not.
-		{Input{Event: "PreToolUse", SessionID: "s", ToolName: "Bash", Background: true}, running},
+		{Input{Event: "PreToolUse", SessionID: "s", ToolName: "Bash", Background: true}, inTool},
 		{Input{Event: "PostToolUse", SessionID: "s", Background: true}, running},
 		{Input{Event: "UserPromptSubmit", SessionID: "s", Background: true}, running},
-		{Input{Event: "PreToolUse", SessionID: "s", ToolName: "Bash", AgentID: "a", Background: true}, backgrounded},
+		{Input{Event: "PreToolUse", SessionID: "s", ToolName: "Bash", AgentID: "a", Background: true}, backgroundedInTool},
 		{Input{Event: "PostToolUse", SessionID: "s", AgentID: "a", Background: true}, backgrounded},
-		{Input{Event: "PreToolUse", SessionID: "s", ToolName: "Bash", AgentID: "a"}, running},
+		{Input{Event: "PreToolUse", SessionID: "s", ToolName: "Bash", AgentID: "a"}, inTool},
 		{Input{Event: "PreToolUse", SessionID: "s", ToolName: "AskUserQuestion"}, waiting},
 		{Input{Event: "Notification", SessionID: "s", NotificationType: "permission_prompt"}, waiting},
 		{Input{Event: "Notification", SessionID: "s", NotificationType: "idle_prompt"}, ended},
@@ -130,5 +135,34 @@ func TestDescribe(t *testing.T) {
 		if got := Describe(c.event, c.e); got != c.want {
 			t.Errorf("Describe(%q, %+v) = %q, want %q", c.event, c.e, got, c.want)
 		}
+	}
+}
+
+// A tool call is the one stretch where Claude Code reports nothing and
+// has no bound on how long that lasts, so PreToolUse says so and
+// PostToolUse takes it back. AskUserQuestion is not a tool call in this
+// sense: it blocks on the user, which is a status of its own and is
+// legitimately quiet.
+func TestToolPendingSpansTheToolCall(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		in    Input
+		want  bool
+		state string
+	}{
+		{"PreToolUse opens it", Input{SessionID: "s1", Event: "PreToolUse", ToolName: "Bash"}, true, "running"},
+		{"PostToolUse closes it", Input{SessionID: "s1", Event: "PostToolUse", ToolName: "Bash"}, false, "running"},
+		{"AskUserQuestion is not a tool call", Input{SessionID: "s1", Event: "PreToolUse", ToolName: "AskUserQuestion"}, false, "waiting"},
+		{"a prompt starts a turn, not a tool", Input{SessionID: "s1", Event: "UserPromptSubmit"}, false, "running"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := Apply(tc.in)
+			if e.ToolPending != tc.want {
+				t.Errorf("ToolPending = %v, want %v", e.ToolPending, tc.want)
+			}
+			if string(e.Status) != tc.state {
+				t.Errorf("Status = %q, want %q", e.Status, tc.state)
+			}
+		})
 	}
 }

@@ -101,3 +101,36 @@ func TestAgentsDoesNotShowStalledWhileHeartbeatContinues(t *testing.T) {
 	h.stays(func() bool { return !h.stalledFor("alpha", id)() },
 		"an agent whose heartbeat keeps arriving must never be marked stalled")
 }
+
+// A Claude Code tool call is a silence with no upper bound: PreToolUse
+// fires, and nothing else arrives until the tool returns. A slow Bash -
+// a build, an ssh to a distant host - therefore outlived the stall
+// threshold while working exactly as intended, and the row showed "!".
+// The third leg is the one that matters: once the tool returns, an
+// ordinary running session goes back to being judged on the clock, so
+// the exemption cannot be hiding the signal altogether.
+func TestClaudeInsideALongToolCallIsNotStalled(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	h.newSession("beta")
+	pane := h.claudePane("beta", "✳ Slow tool")
+
+	id := "sess-slow-tool"
+	h.hook(id, pane, "PreToolUse", "tool_name", "Bash")
+
+	// Well past KIDO_STALL_THRESHOLD_MS, which the harness shortens to 3s:
+	// long enough that a session judged on its report time alone would
+	// have been called stalled several times over.
+	time.Sleep(6 * time.Second)
+	if h.stalledFor("beta", id)() {
+		t.Fatal("a session inside a tool call is stalled, though a tool call reports nothing until it returns")
+	}
+
+	// The tool returns, and the session is an ordinary running one again.
+	h.hook(id, pane, "PostToolUse", "tool_name", "Bash")
+	if h.stalledFor("beta", id)() {
+		t.Fatal("stalled immediately after the tool returned")
+	}
+	h.waitFor(h.stalledFor("beta", id), 8*time.Second,
+		msgf("agent %s to be stalled once no tool is running and no report arrives", id))
+}

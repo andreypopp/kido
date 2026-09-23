@@ -1197,6 +1197,18 @@ has no upper bound either. It costs the ability to notice background
 work that has genuinely wedged, which this signal could never see
 anyway: that needs evidence of the work itself, not of the agent.
 
+A session inside a tool call is exempt for the same reason in a
+different shape. `PreToolUse` fires, and Claude Code says nothing more
+until the tool returns: a build, a test run, an ssh to a distant host.
+A tool call has no upper bound either, so the quiet is the work, and a
+slow one crossed the threshold while behaving exactly as intended. The
+effect of `PreToolUse` therefore carries `ToolPending`, and
+`PostToolUse` takes it back by not setting it - no carrying forward is
+needed, because every report writes a whole fresh record, so a `Stop`
+or an interrupted turn's idle clears it just as well. What remains
+uncovered is a long stretch of model generation with no tool call in
+it, where nothing is reported and nothing marks the session as busy.
+
 The heartbeat changes one field on every tick with nothing else about
 the session changing, and the sidebar compares records to decide whether
 to redraw. It therefore compares sessions with the timestamp zeroed, so
