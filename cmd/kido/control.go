@@ -38,6 +38,38 @@ var killPane = tmux.KillPane
 func interruptUsage() string { return "usage: kido interrupt_subagent -- <agent>" }
 func stopUsage() string      { return "usage: kido stop_subagent [--force] -- <agent>" }
 
+// steerSubagentCmd implements `kido steer_subagent -- <agent>`: it reads
+// text from stdin and delivers it to a descendant as a v1 "steer"
+// envelope, which the receiving extension hands its model inside the
+// running turn rather than queueing for the end of it (docs/design.md,
+// "Steer and followUp").
+//
+// It lives here, beside interrupt and stop, rather than beside the
+// message-sending commands whose body it shares: what decides which
+// three commands are spelled _subagent is this file's rule, that a
+// caller may only act on its own descendants. Steering is the same axis
+// as interrupting with less force - it redirects work already underway -
+// and a steer anyone could send while an interrupt is a descendant's
+// alone would be incoherent.
+//
+// Unlike its neighbours it returns an exit code rather than an error:
+// it carries text, so it goes through send (message_agent.go), which
+// reports for itself the way every other stdin-reading command does.
+func steerSubagentCmd(args []string, stdin io.Reader) int {
+	const cmd = "steer_subagent"
+	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "kido %s: %v\n", cmd, err)
+		return 1
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: kido steer_subagent -- <agent>")
+		return 1
+	}
+	return send(cmd, sendSpec{kind: msg.KindSteer, to: fs.Arg(0), descendantsOnly: true}, stdin)
+}
+
 // interruptSubagentCmd implements `kido interrupt_subagent -- <agent>`: abort the target's
 // current turn without ending its session, as a v1 "interrupt" envelope
 // over its inbox. Unlike stop it has no escalation: there is no
@@ -168,10 +200,9 @@ func recordStopped(target state.Session) {
 	subrun.RecordOutcome(target.ID, subrun.Outcome{Result: subrun.Stopped, At: time.Now()}) //nolint:errcheck // best effort
 }
 
-// controlTarget resolves interrupt/stop's argument the way kido
-// message_agent does and enforces their shared scope rule: a caller with a state record
-// of its own may only reach its descendants; a human at the CLI, who has
-// none, may act on anything.
+// controlTarget resolves interrupt/stop's argument, reading the state
+// the rule is applied to. steer_subagent shares the rule but not this
+// read: it has both views in hand already (send, message_agent.go).
 func controlTarget(to string) (target state.Session, states map[string]state.Session, err error) {
 	states, err = state.Load()
 	if err != nil {
@@ -181,28 +212,49 @@ func controlTarget(to string) (target state.Session, states map[string]state.Ses
 	if err != nil {
 		return state.Session{}, nil, err
 	}
-	self := os.Getenv("TMUX_PANE")
-	target, err = resolveTarget(states, panes, self, to)
+	target, err = descendantTarget(states, panes, os.Getenv("TMUX_PANE"), to)
 	if err != nil {
 		return state.Session{}, nil, err
 	}
+	return target, states, nil
+}
+
+// descendantTarget resolves to the way kido message_agent does and then
+// enforces the scope rule every _subagent command shares: a caller with a
+// state record of its own may only reach its descendants; a human at the
+// CLI, who has none, may act on anything. It is one predicate for the
+// three commands named after it, so "descendant" cannot come to mean
+// three slightly different things.
+//
+// Descendant, not child: nesting goes two deep, so a grandchild is
+// reachable and isAncestor (list_agents.go) is the walk that says so.
+//
+// This is a semantic boundary and not a safeguard. Trust is uid-scoped
+// (docs/design.md, the inbox): any process that can reach the socket can
+// write an envelope claiming to be anyone, so what this buys is a
+// coherent vocabulary, not protection.
+func descendantTarget(states map[string]state.Session, panes []tmux.Pane, self, to string) (state.Session, error) {
+	target, err := resolveTarget(states, panes, self, to)
+	if err != nil {
+		return state.Session{}, err
+	}
 	if target.Pane == self {
-		return state.Session{}, nil, fmt.Errorf("%s is this agent", targetLabel(target))
+		return state.Session{}, fmt.Errorf("%s is this agent", targetLabel(target))
 	}
 
 	callerRecord, isAgent := states[self]
 	if !isAgent {
-		return target, states, nil
+		return target, nil
 	}
 	callerPane, ok := findPane(panes, self)
 	if !ok {
-		return state.Session{}, nil, fmt.Errorf("pane %q not found", self)
+		return state.Session{}, fmt.Errorf("pane %q not found", self)
 	}
 	agents := buildAgents(states, panes, callerPane.SessionID, self)
 	if !isAncestor(agents, callerRecord.ID, target.ID) {
-		return state.Session{}, nil, fmt.Errorf("%s is not this agent's descendant", targetLabel(target))
+		return state.Session{}, fmt.Errorf("%s is not this agent's descendant", targetLabel(target))
 	}
-	return target, states, nil
+	return target, nil
 }
 
 // sendControl delivers a control-kind envelope (interrupt or stop) to

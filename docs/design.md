@@ -262,20 +262,51 @@ is a wedged peer, not a busy one.
 
 `ok` means the agent has the message and will see it at its next turn
 boundary. That is the only acknowledgement level: `message_agent`
-promises delivery, not action. Delivery into pi is `followUp` for every
-kind but one, which queues behind the work the user is watching rather
-than redirecting the running turn the way `steer` would; when pi is not
-streaming the message triggers a new turn immediately regardless, so one
-call covers both cases with no window between a check and a send. A
-notice is the one exception, and steers instead - see "Notifying the
-parent" below for why.
+promises delivery, not action. Which kinds queue and which join the work
+already under way is the next section; when pi is not streaming the
+message triggers a new turn immediately regardless, so one call covers
+both cases with no window between a check and a send.
+
+### Steer and followUp
+
+pi takes a delivered message two ways, and the difference is when it is
+drained (its `agent-loop.js`). `followUp` is drained only once the agent
+has decided to stop, so it revives a session that was about to finish.
+`steer` is drained inside the loop - at its start, after long-running
+preparation such as a compaction, and after each completed turn - so it
+joins the run already under way and changes what the session is doing.
+Neither interrupts a tool call; both are read between iterations. While
+the session is idle neither is consulted at all.
+
+The rule, one line:
+
+> Steer what is safe to interleave. Queue what must be answered in order.
+
+That decides all four text-carrying kinds:
+
+- **`ask` queues.** This is the one that matters. An ask demands a
+  correlated reply, so two of them must never be in flight inside one
+  turn: measured on this branch with four agents sharing one advisor, a
+  second question arriving while the advisor was composing an answer to
+  the first risks that answer going back against the wrong `replyTo`.
+  `followUp` serialises them - a consultant answers its askers one at a
+  time - and the cost is the wait recorded under "Known limits".
+- **`message` queues.** It has neither a correlation to confuse nor any
+  authority over what the receiver is doing, so it waits for the turn in
+  progress like anything else a user might type.
+- **`steer` steers.** It is a course correction from the agent that
+  assigned the work, with nothing to correlate and no value at all once
+  the work it was correcting is finished.
+- **`notice` steers.** It is information the parent needs in order to
+  dispatch the next thing, and two children's notices once sat invisible
+  for minutes behind a parent's long turn ("Notifying the parent").
 
 ### v0 and v1
 
 A v0 payload is raw prompt text, exactly as the inbox always took it. A
 v1 payload is one JSON object carrying a version, a kind (`message`,
-`ask`, `reply`, `notice`, `interrupt`, `stop`), an id, a sender, an
-optional `replyTo`, and the text.
+`ask`, `reply`, `notice`, `steer`, `interrupt`, `stop`), an id, a sender,
+an optional `replyTo`, and the text.
 
 A payload counts as v1 only if it parses as a JSON object and carries
 both `v` and `kind`. Anything else, including a JSON object missing one
@@ -796,19 +827,31 @@ would otherwise default from the run's own meta (the paragraph above);
 omitted, nothing follows `--` at all and `kido spawn_subagent --resume`
 supplies its own default. `keepAlive` behaves identically either way.
 
-## Interrupt and stop
+## Steer, interrupt and stop
 
-Two verbs, deliberately distinct. `interrupt` aborts the target's current
-turn and leaves it alive and idle, ready for a corrected instruction; pi
-answers it with `ctx.abort()`. It has no escalation, because aborting a
-turn is meaningless to anything that cannot receive it and there is no
+Three verbs, deliberately distinct, in ascending order of force.
+`steer` leaves the turn running and adds to it: the text is delivered
+inside the loop ("Steer and followUp"), so the target reads it between
+tool calls and carries on with the correction rather than starting over.
+`interrupt` aborts the target's current turn and leaves it alive and
+idle, ready for a corrected instruction; pi answers it with
+`ctx.abort()`. It has no escalation, because aborting a turn is
+meaningless to anything that cannot receive it and there is no
 destructive fallback that makes sense for "redirect this, do not kill
 it". `stop` ends the session through the same shutdown path a normal
 exit takes, so there is no second teardown.
 
-**Scope.** A caller that is itself an agent may only reach its own
-descendants; a human at the CLI, who has no state record, may act on
-anything. This is not a security boundary, it exists so a confused peer
+**Scope.** All three share one rule. A caller that is itself an agent may
+only reach its own descendants; a human at the CLI, who has no state
+record, may act on anything. Steering had to be held to the same rule as
+interrupting rather than left open like `message_agent`: it redirects
+work already under way, which is the same authority with less force, and
+a steer anyone could send while an interrupt was a descendant's alone
+would be incoherent. The naming carries it (docs/design-subagents.md,
+"The tools, and their commands"): a command named `_subagent` acts on
+your descendants, one named `_agent` acts on any agent.
+
+This is not a security boundary, it exists so a confused peer
 cannot reach into a part of the tree it does not own. It is enforced
 twice on purpose: kido checks it before sending, using its own view of
 the tree, and the receiving extension checks it again on receipt, using

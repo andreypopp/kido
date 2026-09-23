@@ -101,14 +101,16 @@ func notifyParentCmd(args []string, stdin io.Reader) int {
 
 // sendSpec is one outbound envelope as its command described it: the
 // kind, who it goes to - an address to resolve (to) or the parent's
-// instance id (parentInstance), never both - and the correlation ids that
-// kind allows.
+// instance id (parentInstance), never both - the correlation ids that
+// kind allows, and whether the address is held to the _subagent scope
+// rule (descendantTarget, control.go).
 type sendSpec struct {
-	kind           msg.Kind
-	to             string
-	parentInstance string
-	replyTo        string
-	id             string
+	kind            msg.Kind
+	to              string
+	parentInstance  string
+	replyTo         string
+	id              string
+	descendantsOnly bool
 }
 
 // send is the body every message-sending command shares: read the text,
@@ -164,6 +166,10 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 		}
 		if !found {
 			return fail(fmt.Sprintf("no live agent reports instance %q; the parent is gone, nothing sent", spec.parentInstance))
+		}
+	} else if spec.descendantsOnly {
+		if target, err = descendantTarget(states, panes, self, spec.to); err != nil {
+			return fail(err)
 		}
 	} else if target, err = resolveTarget(states, panes, self, spec.to); err != nil {
 		return fail(err)

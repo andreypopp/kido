@@ -106,7 +106,11 @@ const MAX_PROMPT_BYTES = 1024 * 1024;
 // reported with --protocol alongside --inbox.
 const PROTOCOL_VERSION = 1;
 
-export type EnvelopeKind = "message" | "ask" | "reply" | "notice" | "interrupt" | "stop";
+export type EnvelopeKind = "message" | "ask" | "reply" | "notice" | "steer" | "interrupt" | "stop";
+
+// How pi is asked to schedule a delivered message: "followUp" waits for
+// the session to finish what it is doing, "steer" joins it.
+export type DeliverAs = "followUp" | "steer";
 
 export interface Envelope {
   v: number;
@@ -225,7 +229,7 @@ export interface StatusHost {
   // registering its waiter.
   inboxOpen(): boolean;
   setActivity(text: string): void;
-  deliver(text: string): void;
+  deliver(text: string, deliverAs?: DeliverAs): void;
   runKido(args: string[], opts: { input?: string; timeoutMs: number }): Promise<RunKidoResult>;
   spawnDetached(cmd: string, args: string[], opts?: { input?: string }): void;
 }
@@ -293,17 +297,20 @@ export default function (pi: ExtensionAPI) {
   // null whenever the last reported status was not "running".
   let heartbeatTimer: NodeJS.Timeout | null = null;
 
-  const deliver = (text: string): void => {
+  // deliver hands text to the model. The default is "followUp" and most
+  // callers take it: pi drains followUp only once the agent has decided
+  // to stop, so a queued message waits for whatever the session is doing
+  // to finish, while "steer" is drained inside the loop and joins the
+  // run already under way. Which kinds get which, and why an ask must
+  // never steer, is docs/design.md, "Steer and followUp". Either way
+  // deliverAs is only consulted while streaming: pi sends immediately
+  // when the session is idle, and the message triggers a new turn.
+  const deliver = (text: string, deliverAs: DeliverAs = "followUp"): void => {
     // A delivered message is about to produce a turn, so the idle
     // self-exit timer must not fire in the gap between this call and
     // pi's own turn_start.
     seam().agents?.workStarted();
-    // Unconditionally "followUp", idle or not. pi's docs: "When not
-    // streaming, the message is sent immediately and triggers a new turn";
-    // deliverAs is only consulted while streaming, where "followUp"
-    // "[w]aits for agent to finish all tools", as opposed to "steer"
-    // redirecting the running turn.
-    pi.sendUserMessage(text, { deliverAs: "followUp" });
+    pi.sendUserMessage(text, { deliverAs });
   };
 
   // handleInbound dispatches one inbox payload and returns the wire

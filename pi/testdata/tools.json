@@ -4,6 +4,7 @@
   "message_agent",
   "ask_agent",
   "spawn_subagent",
+  "steer_subagent",
   "interrupt_subagent",
   "stop_subagent",
   "notify_parent"

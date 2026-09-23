@@ -25,6 +25,7 @@ agent binaries.
 | `ask_agent(to, question, timeoutMs?)` | `kido ask_agent --id ID -- <to>` |
 | `spawn_subagent(task, name?, model?, tools?, keepAlive?)` | `kido spawn_subagent` |
 | `spawn_subagent(resume, model?, tools?, keepAlive?)` | `kido spawn_subagent --resume` |
+| `steer_subagent(to, message)` | `kido steer_subagent -- <to>` |
 | `interrupt_subagent(to)` | `kido interrupt_subagent -- <to>` |
 | `stop_subagent(to, force?)` | `kido stop_subagent [--force] -- <to>` |
 | `notify_parent(summary)` | `kido notify_parent` |
@@ -37,6 +38,48 @@ name too: it reports a session's whole state on every turn, of which
 `set_status`'s activity is one flag of fourteen, so the narrow tool got a
 narrow command of its own (design.md, "Reporting, and what is carried
 forward") rather than the report being renamed after it.
+
+The parity is pinned rather than merely written down. `pi/testdata/
+tools.json` is one list read by both suites: pi's own asserts the
+registered tools are exactly those names, and `cmd/kido`'s
+`TestEveryToolHasASubcommandOfItsName` asserts each is in `subcommands`.
+A tool added without a command fails the first, then the second.
+
+**The suffix is the scope.** The two halves of a tool's name each carry
+something, and the second one is a rule:
+
+| suffix | who it may act on | tools |
+|---|---|---|
+| `_agent` | any agent in this tmux session | `list_agents`, `message_agent`, `ask_agent` |
+| `_subagent` | your own descendants | `spawn_subagent`, `steer_subagent`, `interrupt_subagent`, `stop_subagent` |
+
+Descendants, not children: nesting goes two deep, so a grandchild is
+reachable, and one predicate answers it for all four (`descendantTarget`,
+cmd/kido/control.go, with the receiving half's mirror in
+`senderIsAncestor`).
+
+Be clear about what the `_subagent` rule is not. Trust is uid-scoped and
+the inbox directory is `0700`, so any process that can reach the socket
+can write an envelope claiming to be anybody (design.md, the inbox).
+The rule buys a coherent vocabulary - you can tell from a tool's name
+whose work it can touch - and not protection.
+
+**What steers and what queues.** `steer_subagent` exists because
+`message_agent` waits: a message is drained only after the target has
+decided to stop, which is useless for a correction whose whole value is
+arriving before the work is finished. The dividing line is design.md's
+("Steer and followUp"), and it is worth repeating here in one line:
+
+> Steer what is safe to interleave. Queue what must be answered in order.
+
+So `steer_subagent` steers (a course correction from the agent that
+assigned the work, nothing to correlate, worthless late) and
+`notify_parent` steers (information the parent needs to dispatch the next
+thing), while `message_agent` queues (no correlation, no authority) and
+`ask_agent` queues - which is the one to remember. An ask demands a
+correlated reply, so two must never interleave inside one turn, or an
+answer can go back against the wrong `replyTo`; queueing is what makes a
+consultant serving four agents answer them one at a time.
 
 Three of the commands above used to be one, `kido message --kind K`.
 Splitting it dropped `--kind` from the surface entirely: the command is
@@ -185,7 +228,8 @@ message that ctrl-o expands. Those used to be one event, and two
 children's notices sat invisible until the parent's long turn ended.
 A notice is steered rather than queued as a follow-up, so a parent
 mid-turn sees it between tool calls and decides for itself whether to
-act; every other kind still waits for the turn.
+act - as a `steer` envelope is, and for the same reason ("What steers
+and what queues", above); a message and an ask still wait for the turn.
 
 **Idle self-exit.** A child - the real one, by the session-id test above
 - that has settled a turn and stayed idle for thirty seconds calls pi's
@@ -211,16 +255,22 @@ if nothing else was. Two thirty-second clocks stack, so up to a minute
 can pass between a child's last turn and its window going (design.md,
 "Window lifecycle" and "Idle self-exit, and resuming a run").
 
-## Ending one from outside
+## Redirecting one, and ending one from outside
 
-`interrupt_subagent` aborts the target's current turn and leaves it
-idle with its context intact. `stop_subagent` asks it to shut down,
-waits up to five seconds for its record to go, and kills its pane if it
-is still there; a target with no inbox, or a stale one, is killed
-outright and only with `force`. Both reach descendants only, checked
-twice: by kido before sending and by the receiving extension on
-arrival, since the sender field is advisory. A human at the CLI, with
-no record, may act on anything (design.md, "Interrupt and stop").
+`steer_subagent` leaves the turn running and joins it: the text arrives
+inside the loop, so the child reads it between tool calls and continues
+with the correction instead of starting over. It is labelled with its
+sender on arrival, since an instruction landing mid-task would otherwise
+read as if the child had thought of it itself. `interrupt_subagent`
+aborts the target's current turn and leaves it idle with its context
+intact. `stop_subagent` asks it to shut down, waits up to five seconds
+for its record to go, and kills its pane if it is still there; a target
+with no inbox, or a stale one, is killed outright and only with `force`.
+All three reach descendants only, checked twice: by kido before sending
+and by the receiving extension on arrival, since the sender field is
+advisory. A human at the CLI, with
+no record, may act on anything (design.md, "Steer, interrupt and
+stop").
 
 An orphan is the sweep's business. A live marked window whose child
 names a parent instance no live record claims is closed, on one
@@ -287,9 +337,16 @@ window aged out.
   than recording its own outcome. Whatever it managed to write first
   wins (`RecordOutcome` is O_EXCL).
 - Nesting stops at depth 2 and no flag raises it.
-- A blocked `ask_agent` holds the asker's whole turn, for one turn of
-  the target's latency; a parent asking three children serially is idle
-  a long time.
+- A blocked `ask_agent` holds the asker's whole turn. The wait is not
+  one turn of the target's latency but however long the target takes to
+  reach the end of whatever it is already doing, plus a turn: an ask is
+  delivered as `followUp`, so a busy target does not see the question
+  until it would otherwise have stopped. That is deliberate, not an
+  accident of scheduling - it is what keeps two correlated replies from
+  interleaving (design.md, "Steer and followUp") - but it means a parent
+  asking three working children serially is idle a long time. A
+  correction that cannot wait that long is `steer_subagent`, which is
+  not correlated and so need not queue.
 - `--resume` does not honour pi's own `sessionDir` setting when looking
   for the session file.
 - A child that exits before `remain-on-exit` is set loses its window

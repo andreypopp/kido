@@ -19,7 +19,8 @@ neither does this file.
     cmd/kido/          subcommand dispatch (main.go), setup-*, prompt,
                        message_agent (also ask_agent and notify_parent),
                        set_status, list_agents, spawn_subagent,
-                       stop/interrupt, reap, runs, snapshot, inbox
+                       steer/stop/interrupt_subagent, reap, runs,
+                       snapshot, inbox
     internal/ui/       the Bubble Tea model, rendering, shell-status debounce
     internal/tmux/     pane listing and formats (tmux.go), control-mode client (conn.go)
     internal/state/    one JSON file per agent session, keyed by pane

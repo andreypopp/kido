@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -558,5 +559,130 @@ func TestControlUsage(t *testing.T) {
 	}
 	if err := stopSubagentCmd(nil); err == nil || !strings.Contains(err.Error(), "usage") {
 		t.Errorf("stopSubagentCmd(nil) = %v, want a usage error", err)
+	}
+}
+
+// steerTreePanes and recordSteerTree are the tree steer_subagent's scope
+// rule needs and controlTreePanes cannot express: a caller with an
+// ancestor of its own, and a descendant two deep. %1 caller is root's
+// child and child's parent; %5 is child's child, so it is the caller's
+// grandchild and must be reachable - nesting goes two deep, and a
+// parent-only rule would refuse it.
+var steerTreePanes = []tmux.Pane{
+	{PaneID: "%1", SessionID: "$1", WindowID: "@1"},
+	{PaneID: "%2", SessionID: "$1", WindowID: "@2"},
+	{PaneID: "%3", SessionID: "$1", WindowID: "@3"},
+	{PaneID: "%4", SessionID: "$1", WindowID: "@4"},
+	{PaneID: "%5", SessionID: "$1", WindowID: "@5"},
+}
+
+// recordSteerTree records that tree, every reachable session sharing one
+// inbox: which of them received something is what the refusals are about,
+// and a refusal must leave the socket silent whoever it was aimed at.
+func recordSteerTree(t *testing.T, in *testutil.Inbox) {
+	t.Helper()
+	rows := []struct {
+		id, pane, instance, parent string
+	}{
+		{"root", "%4", "root-i", ""},
+		{"caller", "%1", "caller-i", "root-i"},
+		{"child", "%2", "child-i", "caller-i"},
+		{"grandchild", "%5", "grandchild-i", "child-i"},
+		{"peer", "%3", "peer-i", ""},
+	}
+	for _, r := range rows {
+		s := state.Session{
+			Agent: state.AgentPi, Pane: r.pane, PID: os.Getpid(), Status: state.Idle,
+			Instance: r.instance, ParentInstance: r.parent, Inbox: in.Path, Protocol: msg.V1,
+		}
+		if err := state.Record(r.id, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestSteerReachesDescendants checks that steer_subagent delivers a v1
+// "steer" envelope - the kind, since the kind is the whole point: it is
+// what makes the receiving extension hand the text to its model inside
+// the running turn instead of queueing it (docs/design.md, "Steer and
+// followUp") - and that it reaches a grandchild as well as a child.
+func TestSteerReachesDescendants(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%1")
+	withPanes(t, steerTreePanes)
+	in := testutil.StartInbox(t, "ok\n")
+	recordSteerTree(t, in)
+
+	for _, to := range []string{"child", "grandchild"} {
+		if code := steerSubagentCmd([]string{"--", to}, strings.NewReader("stop and do X instead")); code != 0 {
+			t.Fatalf("steer_subagent %s = %d, want 0", to, code)
+		}
+	}
+	msgs := in.Received()
+	if len(msgs) != 2 {
+		t.Fatalf("inbox got %d envelopes, want 2: %q", len(msgs), msgs)
+	}
+	for _, raw := range msgs {
+		env, ok := msg.Parse([]byte(raw))
+		if !ok {
+			t.Fatalf("payload %q did not parse as a v1 envelope", raw)
+		}
+		if env.Kind != msg.KindSteer {
+			t.Errorf("envelope kind = %q, want %q: a steer delivered as any other kind is queued, not steered", env.Kind, msg.KindSteer)
+		}
+		if env.Text != "stop and do X instead" {
+			t.Errorf("envelope text = %q, want the message verbatim", env.Text)
+		}
+	}
+}
+
+// TestSteerRefusesNonDescendants pins the rule the _subagent suffix
+// carries: a peer, an ancestor and the caller itself are all refused, and
+// nothing is sent to any of them. Steering redirects work already under
+// way, the same authority interrupt_subagent needs, so the two agree
+// about who may use it (cmd/kido/control.go, descendantTarget).
+func TestSteerRefusesNonDescendants(t *testing.T) {
+	for _, to := range []string{"peer", "root", "caller"} {
+		t.Run(to, func(t *testing.T) {
+			t.Setenv("KIDO_STATE_DIR", t.TempDir())
+			t.Setenv("TMUX_PANE", "%1")
+			withPanes(t, steerTreePanes)
+			pastes := withSendPrompt(t, errors.New("sendPrompt must not be called"))
+			in := testutil.StartInbox(t, "ok\n")
+			recordSteerTree(t, in)
+
+			if code := steerSubagentCmd([]string{"--", to}, strings.NewReader("do something else")); code != 1 {
+				t.Fatalf("steer_subagent %s = %d, want 1", to, code)
+			}
+			if msgs := in.Received(); len(msgs) != 0 {
+				t.Errorf("inbox got %q, want nothing sent to a non-descendant", msgs)
+			}
+			if calls := pastes(); len(calls) != 0 {
+				t.Errorf("sendPrompt calls = %v, want none: a steer has no paste fallback either", calls)
+			}
+		})
+	}
+}
+
+// TestSteerUsage: no target, two targets, and empty text are all refused
+// before anything is resolved or delivered.
+func TestSteerUsage(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%1")
+	withPanes(t, steerTreePanes)
+	in := testutil.StartInbox(t, "ok\n")
+	recordSteerTree(t, in)
+
+	if code := steerSubagentCmd(nil, strings.NewReader("x")); code != 1 {
+		t.Error("steer_subagent with no target = 0, want 1")
+	}
+	if code := steerSubagentCmd([]string{"child", "grandchild"}, strings.NewReader("x")); code != 1 {
+		t.Error("steer_subagent with two targets = 0, want 1")
+	}
+	if code := steerSubagentCmd([]string{"--", "child"}, strings.NewReader("")); code != 1 {
+		t.Error("steer_subagent with empty stdin = 0, want 1")
+	}
+	if msgs := in.Received(); len(msgs) != 0 {
+		t.Errorf("inbox got %q, want nothing sent", msgs)
 	}
 }

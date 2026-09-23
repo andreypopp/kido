@@ -41,7 +41,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
-import type { AgentHooks, Envelope, Seam, SessionContext, StatusHost } from "./kido-status.ts";
+import type { AgentHooks, DeliverAs, Envelope, Seam, SessionContext, StatusHost } from "./kido-status.ts";
 
 // The seam kido-status.ts declares, spelled out again rather than
 // imported: importing a runtime value from kido-status.ts would evaluate
@@ -326,9 +326,12 @@ export default function (pi: ExtensionAPI) {
   };
 
   // Delivery goes through the status half: a task, an ask and a plain
-  // inbox prompt are all the same kind of arrival.
-  const deliver = (text: string): void => {
-    status()?.deliver(text);
+  // inbox prompt are all the same kind of arrival. deliverAs is how the
+  // one arrival that is not - a steer, which joins the turn already
+  // running instead of queueing behind it - says so; everything else
+  // takes the default (docs/design.md, "Steer and followUp").
+  const deliver = (text: string, deliverAs?: DeliverAs): void => {
+    status()?.deliver(text, deliverAs);
   };
 
   // labelFrom names an envelope's sender for the model to read, in the
@@ -479,29 +482,53 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // handleInboundControl answers an "interrupt" or "stop" envelope, but
-  // only for a sender that is one of this session's ancestors or a human
-  // at the CLI. Defence in depth: kido enforces the same rule before
-  // sending, but `from` is advisory (docs/design.md, "Interrupt and
-  // stop").
-  const handleInboundControl = async (env: Envelope, kind: "interrupt" | "stop"): Promise<"ok" | "refused"> => {
+  // senderIsAncestor answers the question every _subagent kind asks on
+  // arrival: did this come from someone entitled to act on this session -
+  // one of its ancestors, or a human at the CLI. One predicate for steer,
+  // interrupt and stop, mirroring descendantTarget (cmd/kido/control.go),
+  // which asks it of the same tree from the other end.
+  //
+  // Checked here as well as by kido because `from` is advisory, and for
+  // coherence rather than for protection: a process that can write this
+  // socket can claim to be anyone (docs/design.md, the inbox).
+  const senderIsAncestor = async (env: Envelope): Promise<boolean> => {
     const listed = await fetchAgents();
-    if ("error" in listed) return "refused";
+    if ("error" in listed) return false;
     const self = listed.agents.find((a) => a.self);
-    if (!self) return "refused";
+    if (!self) return false;
     // A human has no state record, so kido puts no session in `from`;
     // recognised by the pair, so an agent has to get two things wrong at
     // once to be mistaken for one.
-    const fromIsHuman = !env.from.session && !listed.agents.some((a) => a.pane === env.from.pane);
-    if (!fromIsHuman) {
-      const from = listed.agents.find((a) => a.id === env.from.session);
-      if (!from || !isAncestor(listed.agents, from, self)) return "refused";
-    }
+    if (!env.from.session && !listed.agents.some((a) => a.pane === env.from.pane)) return true;
+    const from = listed.agents.find((a) => a.id === env.from.session);
+    return !!from && isAncestor(listed.agents, from, self);
+  };
+
+  // handleInboundControl answers an "interrupt" or "stop" envelope, but
+  // only for a sender senderIsAncestor accepts (docs/design.md, "Steer,
+  // interrupt and stop").
+  const handleInboundControl = async (env: Envelope, kind: "interrupt" | "stop"): Promise<"ok" | "refused"> => {
+    if (!(await senderIsAncestor(env))) return "refused";
     if (kind === "interrupt") {
       ctxAbort?.();
     } else {
       ctxShutdown?.();
     }
+    return "ok";
+  };
+
+  // handleInboundSteer delivers a course correction into the turn already
+  // running, rather than queueing it for the end of one like every other
+  // text-carrying kind (docs/design.md, "Steer and followUp"). Same
+  // sender rule as interrupt and stop: steering redirects work under way,
+  // which is the same authority with less force, and a steer anyone could
+  // send while an interrupt is a descendant's alone would be incoherent.
+  //
+  // Labelled with its sender because it arrives mid-task, where an
+  // unattributed instruction reads as if the session had told itself.
+  const handleInboundSteer = async (env: Envelope): Promise<"ok" | "refused"> => {
+    if (!(await senderIsAncestor(env))) return "refused";
+    if (env.text) deliver(`${labelFrom(env.from)} is redirecting this work: ${env.text}`, "steer");
     return "ok";
   };
 
@@ -521,6 +548,8 @@ export default function (pi: ExtensionAPI) {
       case "notice":
         if (env.text) deliverNotice(env.text, labelFrom(env.from));
         return "ok";
+      case "steer":
+        return handleInboundSteer(env);
       case "interrupt":
       case "stop":
         return handleInboundControl(env, env.kind);
@@ -1076,6 +1105,35 @@ export default function (pi: ExtensionAPI) {
     },
   };
 
+  const steerSubagentParams = Type.Object(
+    {
+      to: Type.String({
+        description: "Who to steer: a descendant's exact name, exact session id, or a unique prefix of its session id.",
+      }),
+      message: Type.String({ description: "The course correction to deliver." }),
+    },
+    { additionalProperties: false },
+  );
+  const steerSubagentTool: ToolDefinition<typeof steerSubagentParams> = {
+    name: "steer_subagent",
+    label: "Steer Subagent",
+    description:
+      "Redirect a descendant that is already working, without aborting its turn: the message joins the run it is in rather than waiting for it to finish. For a correction that is useless once the work is done. Refused for anything but a descendant. Use message_agent when the message can wait for the current turn to end.",
+    promptSnippet: "steer_subagent(to, message) - redirect a descendant mid-task, without aborting its turn",
+    parameters: steerSubagentParams,
+    async execute(_toolCallId, params) {
+      const host = status();
+      if (!host?.kidoPath()) {
+        return { content: [{ type: "text", text: "kido is not available; cannot steer other agents" }], details: {} };
+      }
+      const res = await host.runKido(["steer_subagent", "--", params.to], { input: params.message, timeoutMs: 5000 });
+      if ("error" in res) {
+        return { content: [{ type: "text", text: `could not steer ${params.to}: ${res.error}` }], details: {} };
+      }
+      return { content: [{ type: "text", text: res.out || `steered ${params.to}` }], details: {} };
+    },
+  };
+
   const interruptSubagentParams = Type.Object(
     {
       to: Type.String({
@@ -1196,6 +1254,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool(messageAgentTool);
   pi.registerTool(askAgentTool);
   pi.registerTool(spawnSubagentTool);
+  pi.registerTool(steerSubagentTool);
   pi.registerTool(interruptSubagentTool);
   pi.registerTool(stopSubagentTool);
   pi.registerTool(notifyParentTool);

@@ -32,9 +32,9 @@ var subcommands = []string{
 	"hook", "setup-pi", "setup-zsh", "setup-tmux", "setup-claude",
 	"agent-status", "set_status", "list_agents", "agent-alive", "debug-log",
 	"inbox-path", "snapshot", "switch-session", "switch-window", "prompt",
-	"message_agent", "ask_agent", "notify_parent", "interrupt_subagent",
-	"stop_subagent", "spawn_subagent", "close-window", "window-focused",
-	"reap", "run-outcome", "runs",
+	"message_agent", "ask_agent", "notify_parent", "steer_subagent",
+	"interrupt_subagent", "stop_subagent", "spawn_subagent", "close-window",
+	"window-focused", "reap", "run-outcome", "runs",
 }
 
 // suggestSubcommand returns the known subcommand that most plainly shares
@@ -188,6 +188,8 @@ func main() {
 			os.Exit(askAgentCmd(os.Args[2:], os.Stdin))
 		case "notify_parent":
 			os.Exit(notifyParentCmd(os.Args[2:], os.Stdin))
+		case "steer_subagent":
+			os.Exit(steerSubagentCmd(os.Args[2:], os.Stdin))
 		case "interrupt_subagent":
 			dispatch("interrupt_subagent", func() error { return interruptSubagentCmd(os.Args[2:]) })
 			return

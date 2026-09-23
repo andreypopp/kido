@@ -93,6 +93,7 @@ switch (args[0]) {
   // environment, so the fake does too.
   case "message_agent":
   case "ask_agent":
+  case "steer_subagent":
   case "notify_parent": {
     let replyTo = "", id = "", to = null;
     for (let i = 1; i < args.length; i++) {
@@ -102,6 +103,7 @@ switch (args[0]) {
     }
     let kind = "message";
     if (args[0] === "ask_agent") kind = "ask";
+    else if (args[0] === "steer_subagent") kind = "steer";
     else if (args[0] === "notify_parent") {
       kind = "notice";
       to = process.env.KIDO_AGENT_PARENT_INSTANCE ?? null;
@@ -2518,6 +2520,78 @@ const askTree = [
 // docs/design.md's cycle-edge section exists to prevent - so each case
 // below checks not just the refusal text but that nothing was actually
 // sent (or was), off the fake kido's own log.
+// steer_subagent's own end-to-end pair. The tool shells out like every
+// other one; what is worth pinning here is the argument shape, since a
+// model-authored `to` beginning with a dash would otherwise be read as a
+// kido flag.
+test("steer_subagent runs kido steer_subagent with the target behind -- and the message on stdin", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(twoPeers);
+    const s = await startSession(fx);
+    const res = await s.tools.get("steer_subagent").execute("c1", { to: "peer-a", message: "drop that, do X" });
+    assert.match(res.content[0].text, /peer-a/);
+    const sent = await fx.waitForLog("peer-a", "steer");
+    assert.equal(sent.text, "drop that, do X", "the message goes on stdin, verbatim");
+  } finally {
+    fx.restore();
+  }
+});
+
+// The mode is the whole point of the kind, so this asserts the mode and
+// not merely that something arrived: a steer delivered as "followUp"
+// would be drained only after the agent had decided to stop, which is
+// exactly the wait steering exists to skip (docs/design.md, "Steer and
+// followUp").
+//
+// The second half is the negative control, and it is the reason this test
+// is one test: a later simplification that unified the delivery paths
+// would keep every assertion about arrival true. An ask must stay
+// followUp in particular - it carries a reply-correlation id, so two asks
+// interleaved inside one turn risk an answer reaching the wrong asker.
+test("an inbound steer is delivered as steer; a message and an ask stay followUp", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(controlTree);
+    const s = await startWithControlSpies(fx);
+    const from = { session: "root-1", name: "root-1", pane: "%2" };
+
+    assert.equal(await sendToInbox(s.inboxPath, envelope("steer", "drop that, do X", { from })), "ok");
+    const steered = s.delivered.find((d) => d.text.includes("drop that, do X"));
+    assert.ok(steered, "the steer reached the model");
+    assert.equal((steered!.opts as any).deliverAs, "steer", "a steer joins the running turn rather than queueing behind it");
+    assert.match(steered!.text, /root-1/, "and says who is redirecting the work, arriving mid-task as it does");
+
+    assert.equal(await sendToInbox(s.inboxPath, envelope("message", "when you get a moment", { from })), "ok");
+    const queued = s.delivered.find((d) => d.text.includes("when you get a moment"));
+    assert.ok(queued, "the message reached the model");
+    assert.equal((queued!.opts as any).deliverAs, "followUp", "a plain message still waits for the current turn to end");
+
+    assert.equal(await sendToInbox(s.inboxPath, envelope("ask", "are you done?", { from })), "ok");
+    const asked = s.delivered.find((d) => d.text.includes("are you done?"));
+    assert.ok(asked, "the ask reached the model");
+    assert.equal((asked!.opts as any).deliverAs, "followUp", "an ask must never steer: a correlated reply has to be answered one at a time");
+  } finally {
+    fx.restore();
+  }
+});
+
+// Same sender rule as interrupt and stop, checked on arrival because
+// `from` is advisory - and refused on the wire, so the sender hears about
+// it rather than the text landing silently.
+test("an inbound steer from a non-ancestor is refused and delivers nothing", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(controlTree);
+    const s = await startWithControlSpies(fx);
+    const resp = await sendToInbox(s.inboxPath, envelope("steer", "do my bidding", { from: { session: "peer-x", name: "peer-x", pane: "%3" } }));
+    assert.equal(resp, "refused");
+    assert.equal(s.delivered.filter((d) => d.text.includes("do my bidding")).length, 0, "and nothing reached the model");
+  } finally {
+    fx.restore();
+  }
+});
+
 test("ask_agent allows a parent asking its own child", async () => {
   const fx = makeFixture();
   try {

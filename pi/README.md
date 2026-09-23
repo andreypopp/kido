@@ -211,8 +211,9 @@ text rather than being dropped.
   instant the envelope arrives (a `ctx.ui.setWidget` line, outside the
   transcript entirely), before anything about it is delivered. The text
   itself is sent as a custom message and steered into the model's current
-  turn (`deliverAs: "steer"`, not the `"followUp"` every other kind
-  uses) rather than waiting for the turn to end - a finished child a
+  turn (`deliverAs: "steer"`, as a `steer` envelope gets, rather than the
+  `"followUp"` a message or an ask gets) rather than waiting for the turn
+  to end - a finished child a
   parent does not know about defeats the point of spawning it. Once that
   message actually reaches the transcript it renders collapsed
   ("notification from X - ctrl-o to expand", full text behind pi's own
@@ -221,7 +222,14 @@ text rather than being dropped.
   delivered to the model once. See docs/design.md, "Notifying the
   parent", for why steer is safe here (it can only land between a
   completed turn's tool results and the next model call, never mid-tool)
-  and why every other kind stays on followUp.
+  and why a message and an ask stay on followUp.
+- `steer` - a course correction from an ancestor, delivered as a user
+  message with `deliverAs: "steer"` so it joins the turn already running
+  instead of queueing behind it, and labelled with its sender, since an
+  instruction arriving mid-task would otherwise read as if this session
+  had told itself. Refused on the wire for a sender that is not an
+  ancestor, the same check `interrupt` and `stop` get and for the same
+  reason: `from` is advisory.
 - anything else - delivered anyway, marked as an unrecognised kind, so a
   typo or a newer kido talking to an older extension is visible rather
   than silently read as a plain message.
@@ -250,6 +258,13 @@ instead of `ok` - a distinct answer kido's `deliverInbox` reports as its
 own error, never triggering the send-keys paste fallback, since nothing
 was mis-delivered. A refused ask is not delivered to the model at all.
 
+- `steer_subagent(to, message)` runs `kido steer_subagent -- <to>`,
+  piping `message` on stdin. It delivers a `steer` envelope: the text
+  joins the turn the target is already running rather than waiting for it
+  to end, which is what makes it the tool for a correction that is
+  worthless once the work is done. Use `message_agent` when the message
+  can wait. Descendants only, like the two below - see docs/design.md,
+  "Steer, interrupt and stop".
 - `interrupt_subagent(to)` runs `kido interrupt_subagent -- <to>`, which
   delivers an `interrupt` envelope; this session answers one addressed to
   it with `ctx.abort()`, aborting the current turn without ending the
@@ -270,10 +285,11 @@ was mis-delivered. A refused ask is not delivered to the model at all.
   is actually done; nothing calls it automatically (see
   "Notices to a parent" above).
 
-Both are refused - on the wire, as `refused` - unless the sender can be
-verified as an ancestor of this session (the same ancestor walk
+All three are refused - on the wire, as `refused` - unless the sender can
+be verified as an ancestor of this session (the same ancestor walk
 `ask_agent`'s own refusal uses, in the opposite direction): a caller may
-only interrupt or stop its own descendants. `kido interrupt_subagent` and
-`kido stop_subagent` already enforce this before ever sending the
-envelope; this session
+only steer, interrupt or stop its own descendants, which is what the
+`_subagent` suffix in those names means. `kido steer_subagent`,
+`kido interrupt_subagent` and `kido stop_subagent` already enforce this
+before ever sending the envelope; this session
 checks it again on receipt, since `from` is advisory.
