@@ -27,7 +27,9 @@ kido_osc133_precmd() {
 }
 kido_osc133_preexec() {
   kido_osc133_ran=1
-  printf '\033]133;C\007'
+  local cmdline=$1
+  (( ${#cmdline} > 1024 )) && cmdline=${cmdline[1,1024]}
+  printf '\033]133;C;cmdline=%q\007' "$cmdline"
 }
 autoload -Uz add-zsh-hook
 add-zsh-hook precmd  kido_osc133_precmd
