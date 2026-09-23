@@ -97,6 +97,43 @@ func TestStalledRebasesAfterPause(t *testing.T) {
 	}
 }
 
+// TestStalledSinceTakesTheBaselineItIsGiven pins the split between the
+// two forms. StalledSince must judge against the wake it is handed and
+// read nothing: it is called from the sidebar's 100ms path, several
+// times per session per tick, and twice per session for the same
+// question at two instants - a verdict that reached for the file each
+// time would be a file open per call and, worse, would let the two sides
+// of that comparison be answered from two different baselines. Stalled
+// is the form that reads, for a caller that asks once and exits.
+func TestStalledSinceTakesTheBaselineItIsGiven(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+
+	saved := StallThreshold
+	StallThreshold = time.Minute
+	t.Cleanup(func() { StallThreshold = saved })
+
+	reported := time.Unix(1700000000, 0)
+	wake := reported.Add(time.Hour)
+	if err := RecordPause(wake); err != nil {
+		t.Fatal(err)
+	}
+	s := Session{Status: Running, TS: reported}
+	now := wake.Add(time.Second)
+
+	if !StalledSince(s, time.Time{}, now) {
+		t.Error("StalledSince rebased onto the recorded wake, though it was handed no baseline")
+	}
+	if !StalledSince(s, reported, now) {
+		t.Error("StalledSince rebased onto the recorded wake, though it was handed an older one")
+	}
+	if Stalled(s, now) {
+		t.Error("Stalled ignored the recorded wake: it is the form that reads the marker")
+	}
+	if got := Wake(); !got.Equal(wake) {
+		t.Errorf("Wake() = %v, want the recorded %v", got, wake)
+	}
+}
+
 // TestRecordPauseKeepsTheLatest pins RecordPause's race guard: an older
 // wake must never clobber a newer one, which is what stops two sidebars -
 // one per client - racing to record roughly the same wake moment from

@@ -121,19 +121,45 @@ func stallThresholdFromEnv(def time.Duration) time.Duration {
 	return def
 }
 
-// Stalled reports whether s claims to be running but has gone quiet for
-// longer than StallThreshold, measured from s.TS or from the last
-// recorded wake (RecordPause), whichever is later. Never true for
-// anything but Running.
-func Stalled(s Session, now time.Time) bool {
+// StalledSince reports whether s claims to be running but has gone quiet
+// for longer than StallThreshold, measured from s.TS or from wake - the
+// last recorded wake (RecordPause), zero if none - whichever is later.
+// Never true for anything but Running.
+//
+// The baseline is a parameter because a caller that asks about many
+// sessions, or about one session at two instants, must use one reading
+// of it for all of them: the sidebar compares this verdict at two times
+// to decide whether to redraw (internal/ui, stallPending), and two
+// separately read baselines could differ across that comparison and make
+// it meaningless. Reading the marker per call also put a file open in
+// the sidebar's 100ms path for a value that changes once per suspend.
+func StalledSince(s Session, wake, now time.Time) bool {
 	if s.Status != Running {
 		return false
 	}
 	baseline := s.TS
-	if wake, ok, err := readPause(); err == nil && ok && wake.After(baseline) {
+	if wake.After(baseline) {
 		baseline = wake
 	}
 	return now.Sub(baseline) >= StallThreshold
+}
+
+// Stalled is StalledSince with the wake marker read for this one call:
+// the one-shot form, for a CLI command that asks once and exits. A
+// caller on a poll reads Wake itself and uses StalledSince.
+func Stalled(s Session, now time.Time) bool {
+	return StalledSince(s, Wake(), now)
+}
+
+// Wake is the last recorded wake (RecordPause), or the zero time if the
+// machine has never been seen to sleep or the marker cannot be read - in
+// which case the baseline is the session's own TS, which is what it was
+// before pause detection existed.
+func Wake() time.Time {
+	if at, ok, err := readPause(); err == nil && ok {
+		return at
+	}
+	return time.Time{}
 }
 
 // Dir returns the directory holding state files.
@@ -153,22 +179,56 @@ func Dir() string {
 // skipped, and when several files claim one pane the outer agent wins
 // regardless of timestamp (see beats). Both policies are explained in
 // docs/design.md, "Who is authoritative for what".
+//
+// Keying by pane drops records: of two live agents sharing a pane only
+// one survives the map. That is right for the sidebar's rows, where a
+// pane has one label, and wrong for any caller asking whether some agent
+// is running at all. Such a caller wants LoadLive, which is the same
+// read without the last step.
 func Load() (map[string]Session, error) {
+	live, err := LoadLive()
+	if err != nil {
+		return nil, err
+	}
+	return ByPane(live), nil
+}
+
+// LoadLive reads every state file whose agent process is still alive and
+// returns all of them, one entry per session, dropping nothing. It has
+// Load's deletion side effect - a file whose pid is dead is removed as it
+// is read - and not Load's per-pane collapse.
+//
+// A caller that needs both views (internal/ui takes a snapshot per 100ms
+// tick and both draws rows and sweeps from it) calls this once and passes
+// the result to ByPane, rather than reading the directory twice.
+func LoadLive() ([]Session, error) {
 	files, err := readFiles()
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]Session{}
+	out := files[:0]
 	for _, s := range files {
 		if !alive(s.PID) {
 			os.Remove(filepath.Join(Dir(), s.ID+".json")) //nolint:errcheck // best effort; a concurrent writer may recreate it
 			continue
 		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+// ByPane collapses sessions to one per pane, the outer agent winning a
+// shared pane regardless of timestamp (see beats). It is Load's last
+// step, exported so a caller holding a LoadLive slice can take the same
+// view of it without a second read.
+func ByPane(sessions []Session) map[string]Session {
+	out := make(map[string]Session, len(sessions))
+	for _, s := range sessions {
 		if prev, ok := out[s.Pane]; !ok || beats(s, prev) {
 			out[s.Pane] = s
 		}
 	}
-	return out, nil
+	return out
 }
 
 // ReadAll reads every state file exactly as recorded, keyed by session id

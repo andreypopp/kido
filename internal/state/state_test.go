@@ -153,10 +153,12 @@ func TestLoadSameAgentMostRecentWins(t *testing.T) {
 // /clear, say), and a tiebreak that instead favoured the older record
 // would silently break that - it has no way to tell "a legitimate second
 // record for this pane" from "an intruder that inherited a pane it never
-// owned". The fix for the destructive consequence of this flip lives in
-// internal/reap instead (OrphanGrace, plus a ParentPID fallback that does
-// not even depend on which record Load happens to return); this test just
-// records that the flip itself is real and known, not a surprise.
+// owned". The fix for the destructive consequence of this flip is not to
+// stop the flip but to stop asking a question it can answer wrongly:
+// internal/reap is handed LoadLive, every live record rather than one per
+// pane, and a collision cannot hide a parent from a set that was never
+// collapsed. This test just records that the flip itself is real and
+// known, not a surprise.
 func TestLoadTwoOuterRecordsOnOnePaneFlipByTimestamp(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("KIDO_STATE_DIR", dir)

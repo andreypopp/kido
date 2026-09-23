@@ -56,7 +56,12 @@ type snapshot struct {
 	ssh     map[int]procs.SSHSession // pane pid -> what its ssh is doing
 	pi      map[int]bool             // pane pid -> pi runs in this pane
 	probed  time.Time                // when the process table was last read
-	err     error
+	// wake is the shared "the machine just woke" baseline (state.Wake),
+	// read once per tick so every stalled verdict drawn from this
+	// snapshot, and stallPending's comparison of two instants, uses one
+	// reading of it. See state.StalledSince.
+	wake time.Time
+	err  error
 
 	// probes remembers the last screen read of each waiting pane, so the
 	// screen is read at most once per probeInterval rather than on every
@@ -88,10 +93,26 @@ type lingering struct {
 // lingeringSubagents reads the name and outcome of every subagent window
 // this snapshot's panes show as marked but with no state record for the
 // pane the mark is on - the only panes lingeringLabel ever needs this
-// for, so a run's files are read at most once per tick per such window,
-// and never for a live agent pane or a plain shell.
-func lingeringSubagents(panes []tmux.Pane, states map[string]state.Session) map[string]lingering {
+// for, so a run's files are read only for such a window, and never for a
+// live agent pane or a plain shell.
+//
+// prev is the last tick's answer, and an entry in it is reused rather
+// than re-read. Both files behind an entry are written once and never
+// rewritten (subrun.WriteMeta at spawn, RecordOutcome under O_EXCL), so a
+// name is final as soon as it is read and an outcome as soon as there is
+// one - and a window lingers for ~30s, which at tick rate is some 600
+// re-reads of two immutable files. An entry with no outcome yet is the
+// one thing still worth asking about: that is the file the sweep or the
+// child itself may still write, and the redraw when it lands is what
+// turns the row's label from a name into a verdict.
+func lingeringSubagents(panes []tmux.Pane, states map[string]state.Session, prev map[string]lingering) map[string]lingering {
 	var out map[string]lingering
+	keep := func(runID string, l lingering) {
+		if out == nil {
+			out = map[string]lingering{}
+		}
+		out[runID] = l
+	}
 	for _, p := range panes {
 		if p.Subagent == "" {
 			continue
@@ -106,6 +127,15 @@ func lingeringSubagents(panes []tmux.Pane, states map[string]state.Session) map[
 		if _, ok := out[runID]; ok {
 			continue
 		}
+		if l, ok := prev[runID]; ok {
+			if !l.outcomeOK {
+				if o, ok, err := subrun.ReadOutcome(runID); err == nil && ok {
+					l.outcome, l.outcomeOK = o.Result, true
+				}
+			}
+			keep(runID, l)
+			continue
+		}
 		meta, err := subrun.ReadMeta(runID)
 		if err != nil {
 			// A run directory that is missing or unreadable is not this
@@ -113,14 +143,11 @@ func lingeringSubagents(panes []tmux.Pane, states map[string]state.Session) map[
 			// pane command the way it always has.
 			continue
 		}
-		if out == nil {
-			out = map[string]lingering{}
-		}
 		l := lingering{name: meta.Name}
 		if o, ok, err := subrun.ReadOutcome(runID); err == nil && ok {
 			l.outcome, l.outcomeOK = o.Result, true
 		}
-		out[runID] = l
+		keep(runID, l)
 	}
 	return out
 }
@@ -275,7 +302,13 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 		return s
 	}
 	s.active = tmux.ActivePane(s.panes, s.current)
-	s.states, s.err = state.Load()
+	// One read of the state directory, two views of it: the rows want one
+	// record per pane, the sweep wants every live record and would read a
+	// parent whose pane something else has claimed as dead (see reap.Sweep).
+	var live []state.Session
+	live, s.err = state.LoadLive()
+	s.states = state.ByPane(live)
+	s.wake = state.Wake()
 	s.ssh, s.pi = map[int]procs.SSHSession{}, map[int]bool{}
 	s.probed = prev.probed
 	// At most one fresh sweep per tick, and at most one per procsProbe: a
@@ -311,8 +344,8 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 			}
 		}
 	}
-	reapSubagentWindows(s.panes, s.states)
-	s.lingering = lingeringSubagents(s.panes, s.states)
+	reapSubagentWindows(s.panes, live)
+	s.lingering = lingeringSubagents(s.panes, s.states, prev.lingering)
 	s.probes = dismissals(conn, prev.probes, s.states)
 	for pane, p := range s.probes {
 		if !p.dismissed {
@@ -405,13 +438,12 @@ var killWindow = tmux.KillWindow
 // not from state.Load, which `kido prompt` calls too. The standalone
 // picker shares take and so sweeps as well; a second poll is as harmless
 // as a second sidebar.
-func reapSubagentWindows(panes []tmux.Pane, states map[string]state.Session) {
+// sessions is every live record, not the snapshot's per-pane view: rule
+// 2 asks whether a parent instance is running anywhere, and the per-pane
+// view answers a different question - see reap.Sweep.
+func reapSubagentWindows(panes []tmux.Pane, sessions []state.Session) {
 	if len(panes) == 0 {
 		return
-	}
-	sessions := make([]state.Session, 0, len(states))
-	for _, s := range states {
-		sessions = append(sessions, s)
 	}
 	for _, windowID := range reap.Sweep(panes, sessions, time.Now()) {
 		killWindow(windowID) //nolint:errcheck // best effort; the window may already be gone
@@ -449,7 +481,7 @@ func (m model) tick() tea.Cmd {
 // same reports whether two snapshots would render identically.
 func (a snapshot) same(b snapshot) bool {
 	return a.current == b.current && a.active == b.active && a.focused == b.focused &&
-		a.err == nil && b.err == nil &&
+		a.err == nil && b.err == nil && a.wake.Equal(b.wake) &&
 		samePanes(a.panes, b.panes) && sameStates(a.states, b.states) &&
 		maps.Equal(a.ssh, b.ssh) && maps.Equal(a.pi, b.pi) && maps.Equal(a.lingering, b.lingering)
 }
@@ -792,18 +824,23 @@ func (m *model) observe(prev shellPhase, running bool) shellPhase {
 	}
 }
 
-// stallPending reports whether any Running session's state.Stalled
-// verdict would read differently now than it did as of the frame on
-// screen (m.at). A session going stalled is driven purely by kido's own
-// clock, so without this one crossing the threshold in a quiet tick
-// would freeze as "running" until something unrelated changed.
+// stallPending reports whether any Running session's stalled verdict
+// would read differently now than it did as of the frame on screen
+// (m.at). A session going stalled is driven purely by kido's own clock,
+// so without this one crossing the threshold in a quiet tick would
+// freeze as "running" until something unrelated changed.
+//
+// Both sides read the snapshot's one wake baseline. Two separate reads
+// of the marker could differ - that is exactly what a wake is - and the
+// comparison would then be of two different questions rather than of two
+// instants.
 func (m *model) stallPending() bool {
 	now := m.now()
 	for _, s := range m.snap.states {
 		if s.Status != state.Running {
 			continue
 		}
-		if state.Stalled(s, m.at) != state.Stalled(s, now) {
+		if state.StalledSince(s, m.snap.wake, m.at) != state.StalledSince(s, m.snap.wake, now) {
 			return true
 		}
 	}
@@ -1068,26 +1105,21 @@ func continuation(i, n int) string {
 	return " "
 }
 
-// groupGlyph and groupContinuation are glyph/continuation's counterparts
-// one level up: not a window's own panes, but several subagent windows
-// anchored to the same parent pane. Anchored siblings share one visual
-// group - tree(1)'s ├/└, never ┌ - so ownership reads at a glance instead
-// of as a run of identical dots. A lone child (n==1) gets no group glyph
-// at all: appendWindows leaves it to glyph/continuation exactly as before,
-// since a group of one has no sibling to distinguish it from and the dot
-// or bracket it already draws says everything a group marker would.
+// groupGlyph is glyph's counterpart one level up: not a window's own
+// panes, but several subagent windows anchored to the same parent pane.
+// Anchored siblings share one visual group - tree(1)'s ├/└, never ┌ - so
+// ownership reads at a glance instead of as a run of identical dots. A
+// lone child (n==1) gets no group glyph at all: appendWindows leaves it
+// to glyph exactly as before, since a group of one has no sibling to
+// distinguish it from and the dot or bracket it already draws says
+// everything a group marker would. A group's own continuation is
+// continuation itself - what stands below a ├ is a │ for the same reason
+// one level down, so there is nothing to specialise.
 func groupGlyph(i, n int) string {
 	if i == n-1 {
 		return stDim.Render("└")
 	}
 	return stDim.Render("├")
-}
-
-func groupContinuation(i, n int) string {
-	if i < n-1 {
-		return stDim.Render("│")
-	}
-	return " "
 }
 
 // indicators marks an agent pane by its status: the glyph alone says it is
@@ -1275,7 +1307,7 @@ func (m *model) paneLabel(p tmux.Pane) string {
 	if s, reported := m.snap.states[p.PaneID]; reported {
 		ind = indicator(s.Status)
 		activity = s.Activity
-		if state.Stalled(s, m.at) {
+		if state.StalledSince(s, m.snap.wake, m.at) {
 			ind = indicatorStalled()
 		}
 	}
@@ -1316,20 +1348,22 @@ func markParentOf(w []tmux.Pane) string {
 }
 
 // windowPlacement is where one window sits in the sidebar tree: its
-// panes, how deep the walk put it, and the pane row it hangs off - the
-// pane of the agent that spawned it, or "" for a window drawn as a root.
+// panes and the pane row it hangs off - the pane of the agent that
+// spawned it, or "" for a window drawn as a root. There is no depth:
+// appendWindows indents by recursing through the anchors, so a number
+// here would be a second account of the same thing with nobody to read
+// it.
 type windowPlacement struct {
 	panes  []tmux.Pane
-	depth  int
 	anchor string // pane id of the spawning agent; "" for a root
 }
 
 // orderWindowsByTree places a session's windows in the spawn tree: a
 // subagent's window follows the pane of whatever agent spawned it,
-// recursively. Both the anchor and the depth come from this walk, never
-// from the agent's reported Depth: a subagent whose parent is in another
-// session, or gone, still reports depth 1, and must not be drawn under a
-// row it has no edge to.
+// recursively. The anchor comes from this walk, never from the agent's
+// reported Depth: a subagent whose parent is in another session, or
+// gone, still reports depth 1, and must not be drawn under a row it has
+// no edge to.
 //
 // The parent normally comes from the agent's own state record
 // (ParentInstance); a window whose record is gone - a finished subagent
@@ -1373,13 +1407,20 @@ func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) 
 	// already placed is a root, anchor and all: the anchor is only ever
 	// an edge the walk itself found.
 	out := make([]windowPlacement, 0, len(ordered))
+	// depth is not drawn, but placed-ness is: a window is a child only if
+	// its parent was itself placed by this walk, which is what the map's
+	// presence records. The number is how a later window learns its own.
 	depth := make(map[string]int, len(ordered))
 	for _, w := range ordered {
 		pl := windowPlacement{panes: w}
-		if d, ok := depth[parentOf(w)]; ok {
-			pl.depth, pl.anchor = d+1, anchors[parentOf(w)]
+		d, placed := depth[parentOf(w)]
+		if placed {
+			pl.anchor = anchors[parentOf(w)]
+			d++
+		} else {
+			d = 0
 		}
-		depth[w[0].WindowID] = pl.depth
+		depth[w[0].WindowID] = d
 		out = append(out, pl)
 	}
 	return out
@@ -1457,7 +1498,7 @@ func (m *model) appendWindows(placements []windowPlacement) {
 				continue
 			}
 			for gi, k := range kids {
-				emit(k, nested, nested+groupContinuation(gi, len(kids))+" ", groupGlyph(gi, len(kids)))
+				emit(k, nested, nested+continuation(gi, len(kids))+" ", groupGlyph(gi, len(kids)))
 			}
 		}
 	}

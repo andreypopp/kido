@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -21,14 +23,14 @@ func windowIDs(placements []windowPlacement) []string {
 	return ids
 }
 
-// depths is the window -> depth view the sidebar used to be handed
-// directly, kept here because it is what these tests assert about.
-func depths(placements []windowPlacement) map[string]int {
-	d := map[string]int{}
+// anchors is the window -> anchor pane view: where the walk hung each
+// window, which is the whole of what it decides. "" is a root.
+func anchorsOf(placements []windowPlacement) map[string]string {
+	a := map[string]string{}
 	for _, pl := range placements {
-		d[pl.panes[0].WindowID] = pl.depth
+		a[pl.panes[0].WindowID] = pl.anchor
 	}
-	return d
+	return a
 }
 
 func sameIDs(got, want []string) bool {
@@ -62,7 +64,7 @@ func renderRows(panes []tmux.Pane, states map[string]state.Session) []string {
 		phases:  map[string]shellPhase{},
 		now:     func() time.Time { return at },
 		at:      at,
-		snap:    snapshot{current: "sess", panes: panes, states: states, lingering: lingeringSubagents(panes, states)},
+		snap:    snapshot{current: "sess", panes: panes, states: states, lingering: lingeringSubagents(panes, states, nil)},
 	}
 	m.rebuild()
 	out := make([]string, 0, len(m.rows))
@@ -431,19 +433,11 @@ func TestOrderWindowsByTreePutsChildRightAfterParent(t *testing.T) {
 	if !sameIDs(windowIDs(got), want) {
 		t.Fatalf("order = %v, want %v", windowIDs(got), want)
 	}
-	depth := depths(got)
-	for id, wantDepth := range map[string]int{"@shell": 0, "@root": 0, "@child2": 1, "@child1": 1} {
-		if depth[id] != wantDepth {
-			t.Errorf("depth[%s] = %d, want %d", id, depth[id], wantDepth)
-		}
-	}
-	for _, pl := range got {
-		want := ""
-		if pl.depth > 0 {
-			want = "%root" // the pane the parent agent runs in, not its window
-		}
-		if pl.anchor != want {
-			t.Errorf("anchor[%s] = %q, want %q", pl.panes[0].WindowID, pl.anchor, want)
+	anchors := anchorsOf(got)
+	// The anchor is the pane the parent agent runs in, not its window.
+	for id, wantAnchor := range map[string]string{"@shell": "", "@root": "", "@child2": "%root", "@child1": "%root"} {
+		if anchors[id] != wantAnchor {
+			t.Errorf("anchor[%s] = %q, want %q", id, anchors[id], wantAnchor)
 		}
 	}
 }
@@ -466,12 +460,9 @@ func TestOrderWindowsByTreeIndentsOnlyRealChildren(t *testing.T) {
 	if !sameIDs(windowIDs(got), []string{"@shell", "@orphan"}) {
 		t.Fatalf("order = %v, want tmux's own order kept", windowIDs(got))
 	}
-	if depths(got)["@orphan"] != 0 {
-		t.Errorf("depth[@orphan] = %d, want 0: its parent is in no window of this session", depths(got)["@orphan"])
-	}
 	for _, pl := range got {
 		if pl.anchor != "" {
-			t.Errorf("anchor[%s] = %q, want none: there is no edge to hang it off",
+			t.Errorf("anchor[%s] = %q, want none: its parent is in no window of this session, so there is no edge to hang it off",
 				pl.panes[0].WindowID, pl.anchor)
 		}
 	}
@@ -496,18 +487,21 @@ func TestOrderWindowsByTreeNests(t *testing.T) {
 	if !sameIDs(windowIDs(got), []string{"@root", "@kid", "@grandkid"}) {
 		t.Fatalf("order = %v, want parent-first", windowIDs(got))
 	}
-	depth := depths(got)
-	if depth["@kid"] != 1 || depth["@grandkid"] != 2 {
-		t.Errorf("depths = kid %d, grandkid %d; want 1 and 2", depth["@kid"], depth["@grandkid"])
+	// Each hangs off the pane of its own parent, which is what
+	// appendWindows recurses through to indent: one level for the kid, two
+	// for the grandkid, whatever Depth either reported.
+	anchors := anchorsOf(got)
+	if anchors["@kid"] != "%root" || anchors["@grandkid"] != "%kid" {
+		t.Errorf("anchors = kid %q, grandkid %q; want %%root and %%kid", anchors["@kid"], anchors["@grandkid"])
 	}
 }
 
 // TestOrderWindowsByTreeHandlesCycle checks that a bogus ParentInstance
 // naming a window's own descendant (or itself) never drops a window from
 // the result - only from wherever the cycle would have placed it - the
-// same guarantee orderTree (cmd/kido/agents.go) makes. The depth walk
-// must survive it too: it runs over the ordered result exactly once, so a
-// ring cannot make it recurse.
+// same guarantee orderTree (cmd/kido/agents.go) makes. The placement
+// walk must survive it too: it runs over the ordered result exactly
+// once, so a ring cannot make it recurse.
 func TestOrderWindowsByTreeHandlesCycle(t *testing.T) {
 	windows := [][]tmux.Pane{
 		{{PaneID: "%a", WindowID: "@a"}},
@@ -528,8 +522,8 @@ func TestOrderWindowsByTreeHandlesCycle(t *testing.T) {
 	if !seen["@a"] || !seen["@b"] {
 		t.Errorf("order = %v, want both @a and @b present", windowIDs(got))
 	}
-	if got[0].depth != 0 {
-		t.Errorf("the first window of a cycle is drawn as a root, want depth 0, got %d", got[0].depth)
+	if got[0].anchor != "" {
+		t.Errorf("the first window of a cycle is drawn as a root, want no anchor, got %q", got[0].anchor)
 	}
 }
 
@@ -550,14 +544,8 @@ func TestOrderWindowsByTreeFallsBackToMarkWhenRecordGone(t *testing.T) {
 	if !sameIDs(windowIDs(got), []string{"@root", "@kid"}) {
 		t.Fatalf("order = %v, want the marked window to follow its marked parent", windowIDs(got))
 	}
-	depth := depths(got)
-	if depth["@kid"] != 1 {
-		t.Errorf("depth[@kid] = %d, want 1: the mark says its parent is @root", depth["@kid"])
-	}
-	for _, pl := range got {
-		if pl.panes[0].WindowID == "@kid" && pl.anchor != "%root" {
-			t.Errorf("anchor[@kid] = %q, want %%root", pl.anchor)
-		}
+	if a := anchorsOf(got)["@kid"]; a != "%root" {
+		t.Errorf("anchor[@kid] = %q, want %%root: the mark says its parent is @root", a)
 	}
 }
 
@@ -579,13 +567,8 @@ func TestOrderWindowsByTreeRecordBeatsStaleMark(t *testing.T) {
 	}
 	got := orderWindowsByTree(windows, states)
 	for _, pl := range got {
-		if pl.panes[0].WindowID == "@kid" {
-			if pl.anchor != "%root" {
-				t.Errorf("anchor[@kid] = %q, want %%root: the live record names root-inst, not the mark's other-inst", pl.anchor)
-			}
-			if pl.depth != 1 {
-				t.Errorf("depth[@kid] = %d, want 1", pl.depth)
-			}
+		if pl.panes[0].WindowID == "@kid" && pl.anchor != "%root" {
+			t.Errorf("anchor[@kid] = %q, want %%root: the live record names root-inst, not the mark's other-inst", pl.anchor)
 		}
 	}
 }
@@ -604,8 +587,8 @@ func TestOrderWindowsByTreeMarkedOrphanIsRoot(t *testing.T) {
 	if !sameIDs(windowIDs(got), []string{"@shell", "@kid"}) {
 		t.Fatalf("order = %v, want both windows kept in tmux's own order", windowIDs(got))
 	}
-	if depths(got)["@kid"] != 0 {
-		t.Errorf("depth[@kid] = %d, want 0: its marked parent is in no window of this session", depths(got)["@kid"])
+	if a := anchorsOf(got)["@kid"]; a != "" {
+		t.Errorf("anchor[@kid] = %q, want none: its marked parent is in no window of this session", a)
 	}
 	for _, pl := range got {
 		if pl.anchor != "" {
@@ -778,6 +761,45 @@ func TestRenderLingeringSubagentMissingRunDirDegradesGracefully(t *testing.T) {
 		"sess",
 		"· ",
 	})
+}
+
+// TestLingeringSubagentsCarryForward pins what the previous tick's
+// answer is for. A lingering window's name never changes (subrun.Meta is
+// written once at spawn) and the sidebar ticks ten times a second for
+// the whole ~30s linger, so re-reading it is some six hundred pointless
+// file opens per finished subagent. Carrying the entry forward is
+// asserted the only way that cannot pass by accident: the meta file is
+// deleted between the two calls, so an implementation that re-reads
+// loses the name outright.
+//
+// The outcome is the deliberate exception and the second half of this
+// test: a carried entry without one is asked again each tick, because
+// that file appears later - written by the child as it exits, or by the
+// sweep on its behalf - and it is the only thing about the row still
+// able to change.
+func TestLingeringSubagentsCarryForward(t *testing.T) {
+	id := newRun(t, "subagent", "")
+	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
+
+	first := lingeringSubagents(panes, nil, nil)
+	if first[id].name != "subagent" || first[id].outcomeOK {
+		t.Fatalf("first read = %+v, want the run's name and no outcome yet", first[id])
+	}
+
+	if err := os.Remove(filepath.Join(subrun.Dir(), id, "meta.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := subrun.RecordOutcome(id, subrun.Outcome{Result: subrun.Completed}); err != nil {
+		t.Fatal(err)
+	}
+
+	next := lingeringSubagents(panes, nil, first)
+	if next[id].name != "subagent" {
+		t.Errorf("name = %q, want it carried forward from the previous tick rather than re-read", next[id].name)
+	}
+	if !next[id].outcomeOK || next[id].outcome != subrun.Completed {
+		t.Errorf("outcome = %+v, want the outcome recorded since the previous tick to be picked up", next[id])
+	}
 }
 
 // TestRenderLingeringSubagentStillNests is f430308's fix, checked again

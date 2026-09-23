@@ -273,14 +273,9 @@ func start(t *testing.T, session string, kidoArgs ...string) *harness {
 	// a full second before checking it is still shown running, and this
 	// setting is global to every inner server this harness starts - a
 	// shorter threshold marked their panes stalled too.
-	// KIDO_ORPHAN_SECONDS shortens reap.OrphanGrace the same way: rule 2
-	// now needs to see a subagent's parent gone on two sweeps a real 15s
-	// apart before it closes anything, which would put
-	// TestSidebarCancelsSubagentOfDeadParent well past its 5s settle.
 	body := fmt.Sprintf(`
 set-environment -g KIDO_STATE_DIR "%s"
 set-environment -g KIDO_LINGER_SECONDS 1
-set-environment -g KIDO_ORPHAN_SECONDS 1
 set-environment -g KIDO_STOP_ESCALATION_MS 300
 set-environment -g KIDO_STALL_THRESHOLD_MS 3000
 set -g status off
