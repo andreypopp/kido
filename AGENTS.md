@@ -296,6 +296,10 @@ in place.
     make e2e     go test ./e2e/ -count=1 -v
     make install binary to $BIN (default ~/.local/bin), shared files to $BIN/../share/kido
 
+Validation is `make test` then `make e2e`, both in full; `go test -run` on
+one test or `go test` on one package is for chasing a specific failure
+while you work, not a substitute for running either target whole.
+
 `make e2e` needs the fork on `PATH` or at `KIDO_TMUX=/path/to/tmux` and
 **skips** without it; `KIDO_E2E_REQUIRED=1` fails instead, which is what
 CI uses so a broken fork build cannot pass as a skip. The TypeScript suite

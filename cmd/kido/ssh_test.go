@@ -9,10 +9,20 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"kido/shell"
 )
+
+// noTTY runs cmd in its own session, detached from this process's
+// controlling terminal: an interactive zsh prefers /dev/tty over a piped
+// stdin whenever one is attached, and every command here either is that
+// zsh or execs into it via the bootstrap.
+func noTTY(cmd *exec.Cmd) *exec.Cmd {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	return cmd
+}
 
 // TestParseSSHSplitsAtTheDestination pins where kido thinks the
 // destination is, which is the whole of what it needs from an ssh command
@@ -214,7 +224,7 @@ func runBootstrap(t *testing.T, home, shell string, env ...string) (out, tmpdir 
 	if err := os.MkdirAll(tmpdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("/bin/sh", "-c", sshBootstrap())
+	cmd := noTTY(exec.Command("/bin/sh", "-c", sshBootstrap()))
 	cmd.Env = append([]string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + home,
@@ -345,7 +355,7 @@ func TestBootstrapFallsBackToAPlainShell(t *testing.T) {
 		if err := os.MkdirAll(tmpdir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		cmd := exec.Command("/bin/sh", "-c", sshBootstrap())
+		cmd := noTTY(exec.Command("/bin/sh", "-c", sshBootstrap()))
 		cmd.Env = []string{
 			"PATH=" + filepath.Dir(shell),
 			"HOME=" + zshHome(t, ""),
@@ -386,7 +396,7 @@ func TestBootstrapDecodesWithABSDBase64(t *testing.T) {
 	if err := os.MkdirAll(tmpdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("/bin/sh", "-c", sshBootstrap())
+	cmd := noTTY(exec.Command("/bin/sh", "-c", sshBootstrap()))
 	cmd.Env = []string{
 		"PATH=" + shim + ":" + os.Getenv("PATH"),
 		"HOME=" + zshHome(t, ""), "SHELL=" + shell, "TMPDIR=" + tmpdir,
@@ -445,7 +455,7 @@ func TestSSHPrimesAPristineZsh(t *testing.T) {
 
 	// The control: the same pristine zsh, started the way ssh would start
 	// it with no kido in front of it.
-	plain := exec.Command(shell, "-l")
+	plain := noTTY(exec.Command(shell, "-l"))
 	plain.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "SHELL=" + shell}
 	plain.Stdin = strings.NewReader(script)
 	control, err := plain.CombinedOutput()
@@ -460,7 +470,7 @@ func TestSSHPrimesAPristineZsh(t *testing.T) {
 	if err := os.MkdirAll(tmpdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	primed := exec.Command("/bin/sh", "-c", sshBootstrap())
+	primed := noTTY(exec.Command("/bin/sh", "-c", sshBootstrap()))
 	primed.Env = []string{
 		"PATH=" + os.Getenv("PATH"), "HOME=" + home, "SHELL=" + shell, "TMPDIR=" + tmpdir,
 	}
@@ -498,7 +508,7 @@ func TestSSHPrimesAZshThatSplitsWords(t *testing.T) {
 	if err := os.MkdirAll(tmpdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("/bin/sh", "-c", sshBootstrap())
+	cmd := noTTY(exec.Command("/bin/sh", "-c", sshBootstrap()))
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"), "HOME=" + home, "SHELL=" + shell, "TMPDIR=" + tmpdir,
 	}
@@ -523,7 +533,7 @@ func TestSSHPrimesAZshWithItsOwnZDOTDIR(t *testing.T) {
 	if err := os.MkdirAll(tmpdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("/bin/sh", "-c", sshBootstrap())
+	cmd := noTTY(exec.Command("/bin/sh", "-c", sshBootstrap()))
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "SHELL=" + shell,
 		"TMPDIR=" + tmpdir, "ZDOTDIR=" + dots,
