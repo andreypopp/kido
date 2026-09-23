@@ -20,6 +20,7 @@ import (
 
 	"kido/internal/hook"
 	"kido/internal/procs"
+	"kido/internal/reap"
 	"kido/internal/state"
 	"kido/internal/tmux"
 	"kido/internal/ui"
@@ -276,6 +277,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "kido: no tmux client; pass -client '#{client_name}'")
 		os.Exit(1)
 	}
+	// The sidebar's sweep is one of the observers that can discover a bash
+	// run's ending, and the only one that is not a kido subcommand; this is
+	// where it is given the sending half it cannot import.
+	ui.NotifyRunEnded = func(n reap.Notice) { noticeFor(n).send("sidebar") }
 	if err := ui.Run(opts); err != nil {
 		fmt.Fprintln(os.Stderr, "kido:", err)
 		os.Exit(1)

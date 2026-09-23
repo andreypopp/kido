@@ -30,8 +30,15 @@ func reapCmd(args []string) error {
 	for _, s := range sessions {
 		all = append(all, s)
 	}
-	for _, windowID := range reap.Sweep(panes, all, time.Now()) {
+	closing, notices := reap.Sweep(panes, all, time.Now())
+	for _, windowID := range closing {
 		killWindow(windowID) //nolint:errcheck // best effort; another sweep or the linger helper may have closed it first
+	}
+	// After the windows, because this is the one observer that may block:
+	// a notice is a socket round trip to an agent that might be wedged,
+	// and the window it describes is better closed first.
+	for _, n := range notices {
+		noticeFor(n).send("reap")
 	}
 	return nil
 }

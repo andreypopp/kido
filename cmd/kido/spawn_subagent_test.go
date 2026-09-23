@@ -721,7 +721,7 @@ func TestSpawnNoParentIsNotReaped(t *testing.T) {
 		Agent: state.AgentPi, Pane: "%9", PID: os.Getpid(), Status: state.Idle,
 		Instance: "loner-inst", ParentInstance: meta.ParentInstance, Depth: meta.Depth,
 	}}
-	if closed := reap.Sweep(panes, sessions, time.Now()); len(closed) != 0 {
+	if closed, _ := reap.Sweep(panes, sessions, time.Now()); len(closed) != 0 {
 		t.Errorf("Sweep closed %v, want nothing: a child owned by nobody is not an orphan", closed)
 	}
 }

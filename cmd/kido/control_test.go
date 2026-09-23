@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -684,5 +685,217 @@ func TestSteerUsage(t *testing.T) {
 	}
 	if msgs := in.Received(); len(msgs) != 0 {
 		t.Errorf("inbox got %q, want nothing sent", msgs)
+	}
+}
+
+// bashRunUnder writes a run `kido async_bash` would have created under
+// parent, still going: no outcome, a pane of its own, and a pid the
+// caller chooses so a test can decide whether its wrapper is still there
+// to be signalled.
+func bashRunUnder(t *testing.T, name, parent string, pid int) subrun.Meta {
+	t.Helper()
+	meta := subrun.Meta{ID: startAsyncRun(t, "sleep", "600"), Name: name, Kind: subrun.KindBash,
+		ParentInstance: parent, Pane: "%2", Window: "@2", PID: pid, StartedAt: time.Now()}
+	if err := subrun.WriteMeta(meta); err != nil {
+		t.Fatal(err)
+	}
+	return meta
+}
+
+// withStopEscalation shortens the grace stopBashRun gives a wrapper to
+// report for itself. The package variable rather than the environment,
+// because it is read once at init and this is the only process reading
+// it here.
+func withStopEscalation(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := stopEscalation
+	stopEscalation = d
+	t.Cleanup(func() { stopEscalation = prev })
+}
+
+// TestStopBashRunReportsWhenTheWrapperCannot is the other half of the
+// exactly-once invariant: a deliberate stop is an ending too, and when
+// the wrapper is not there to describe it the stop must. The run's pid
+// here belongs to nothing, which is the SIGKILLed-wrapper case and the
+// reason the grace is skipped rather than waited out - there is nobody
+// left who could report.
+//
+// The outcome text is the stop's own, distinct from the wrapper's "exit
+// status N" and from a sweep's, so a parent can tell which observer
+// found the ending.
+func TestStopBashRunReportsWhenTheWrapperCannot(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	in := noticeParent(t, "root-inst")
+	killed := withKillPane(t)
+	meta := bashRunUnder(t, "doomed", "root-inst", deadPID(t))
+
+	captureStdout(t, func() {
+		if err := stopSubagentCmd([]string{"--force", "doomed"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	got := envelopes(t, in)
+	if len(got) != 1 {
+		t.Fatalf("parent received %d envelopes, want exactly 1: %+v", len(got), got)
+	}
+	if got[0].From.Name != "doomed" {
+		t.Errorf("notice is from %+v, want the run's name", got[0].From)
+	}
+	if !strings.Contains(got[0].Text, "stopped") {
+		t.Errorf("notice text = %q, want it to say the run was stopped", got[0].Text)
+	}
+	o, ok, _ := subrun.ReadOutcome(meta.ID)
+	if !ok || o.Result != subrun.Stopped || o.Text != stoppedText {
+		t.Errorf("outcome = %+v (recorded %v), want %q/%q", o, ok, subrun.Stopped, stoppedText)
+	}
+	if calls := killed(); len(calls) != 1 || calls[0] != "%2" {
+		t.Errorf("killPane calls = %v, want the run's own pane", calls)
+	}
+}
+
+// TestStopBashRunLeavesTheWrapperToReportIfItCan is the negative control
+// for the test above, and the reason the stop signals before it speaks:
+// a wrapper that is still there reports the ending itself, with the exit
+// status and the output tail a stop can only guess at, and having asked
+// for the stop is no licence to tell a second story about it. The
+// outcome write is what arbitrates, exactly as it does for a sweep.
+func TestStopBashRunLeavesTheWrapperToReportIfItCan(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	in := noticeParent(t, "root-inst")
+	killed := withKillPane(t)
+	withStopEscalation(t, 2*time.Second)
+
+	// A real process to signal, so the wait is entered at all; the
+	// goroutine below stands in for the wrapper it would be, recording
+	// the ending inside the grace.
+	sleep := exec.Command("sleep", "30")
+	if err := sleep.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer sleep.Process.Kill() //nolint:errcheck // best effort cleanup
+	meta := bashRunUnder(t, "polite", "root-inst", sleep.Process.Pid)
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		subrun.RecordOutcome(meta.ID, subrun.Outcome{ //nolint:errcheck // the assertion below reads it back
+			Result: subrun.Failed, Text: "killed by terminated", At: time.Now()})
+	}()
+
+	out := captureStdout(t, func() {
+		if err := stopSubagentCmd([]string{"--force", "polite"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "wrapper reported") {
+		t.Errorf("kido stop_subagent said %q, want it to say the wrapper reported the ending", out)
+	}
+	if got := in.Received(); len(got) != 0 {
+		t.Errorf("parent received %q, want nothing: the wrapper's own notice is the one ending this run gets", got)
+	}
+	if o, _, _ := subrun.ReadOutcome(meta.ID); o.Text != "killed by terminated" {
+		t.Errorf("outcome = %+v, want the wrapper's own story to stand", o)
+	}
+	if calls := killed(); len(calls) != 0 {
+		t.Errorf("killPane calls = %v, want none: the run ended when it was asked to", calls)
+	}
+}
+
+// TestStopBashRunStillNeedsForce pins that nothing here relaxed the
+// refusal every inbox-less target is held to. A bash run has no inbox to
+// ask nicely over, so stopping it degrades straight to killing
+// something, which is what --force means; whether that gate is right for
+// a build rather than an agent is a separate question and a separate
+// change to a refusal.
+//
+// The assertions that carry it are the absences: nothing killed, no
+// outcome recorded, nothing sent. A refusal that returned an error and
+// still stopped the run would satisfy the first one alone.
+func TestStopBashRunStillNeedsForce(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	in := noticeParent(t, "root-inst")
+	killed := withKillPane(t)
+	meta := bashRunUnder(t, "doomed", "root-inst", deadPID(t))
+
+	err := stopSubagentCmd([]string{"doomed"})
+	if err == nil {
+		t.Fatal("stopSubagentCmd on a bash run without --force succeeded, want the inbox-less refusal")
+	}
+	if !strings.Contains(err.Error(), "--force") {
+		t.Errorf("refusal = %v, want it to name --force", err)
+	}
+	if calls := killed(); len(calls) != 0 {
+		t.Errorf("killPane calls = %v, want none after a refusal", calls)
+	}
+	if o, ok, _ := subrun.ReadOutcome(meta.ID); ok {
+		t.Errorf("a refused stop recorded %+v, want nothing", o)
+	}
+	if got := in.Received(); len(got) != 0 {
+		t.Errorf("a refused stop sent %q, want nothing", got)
+	}
+}
+
+// TestStopBashRunRefusesANonDescendant: a run is reached by the same
+// scope rule as an agent, applied to the only parent edge it has - the
+// instance `kido async_bash` recorded in its meta, since a bash run
+// writes no state record for descendantTarget to walk.
+func TestStopBashRunRefusesANonDescendant(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%1")
+	withPanes(t, controlTreePanes)
+	in := testutil.StartInbox(t, "ok\n")
+	recordControlTree(t, in)
+	withKillPane(t)
+
+	// caller-i is the caller's own instance and child-i its child's, so a
+	// run under peer-i is nobody's business here.
+	stranger := bashRunUnder(t, "stranger", "peer-i", deadPID(t))
+	if err := stopSubagentCmd([]string{"--force", "stranger"}); err == nil {
+		t.Fatal("stopSubagentCmd reached a run under an unrelated agent, want a refusal")
+	}
+	if o, ok, _ := subrun.ReadOutcome(stranger.ID); ok {
+		t.Errorf("a refused stop recorded %+v, want nothing", o)
+	}
+
+	// The descendant half, so the refusal above is a rule about scope and
+	// not about bash runs being unreachable: a run under the caller's own
+	// child is a descendant.
+	mine := bashRunUnder(t, "mine", "child-i", deadPID(t))
+	captureStdout(t, func() {
+		if err := stopSubagentCmd([]string{"--force", "mine"}); err != nil {
+			t.Fatalf("stopSubagentCmd on a run started by this agent's own child = %v, want success", err)
+		}
+	})
+	if o, ok, _ := subrun.ReadOutcome(mine.ID); !ok || o.Result != subrun.Stopped {
+		t.Errorf("outcome = %+v (recorded %v), want it stopped", o, ok)
+	}
+}
+
+// TestStopIgnoresAFinishedBashRun: only a run with no outcome yet is
+// matched by name, so a finished run cannot shadow a live agent that
+// happens to share its name - and stop goes on meaning what it meant.
+func TestStopIgnoresAFinishedBashRun(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("TMUX_PANE", "%1")
+	withPanes(t, controlTreePanes)
+	in := testutil.StartInbox(t, "ok\n")
+	recordControlTree(t, in)
+
+	done := bashRunUnder(t, "child", "caller-i", deadPID(t))
+	if err := subrun.RecordOutcome(done.ID, subrun.Outcome{Result: subrun.Completed, At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	withKillPane(t)
+	withStopEscalation(t, 100*time.Millisecond)
+	captureStdout(t, func() {
+		if err := stopSubagentCmd([]string{"child"}); err != nil {
+			t.Fatalf("stopSubagentCmd = %v, want the agent named \"child\" to be stopped over its inbox", err)
+		}
+	})
+	got := in.Received()
+	if len(got) != 1 {
+		t.Fatalf("agent inbox received %q, want the stop envelope", got)
+	}
+	if env, ok := msg.Parse([]byte(got[0])); !ok || env.Kind != msg.KindStop {
+		t.Errorf("agent inbox received %q, want a stop envelope", got[0])
 	}
 }

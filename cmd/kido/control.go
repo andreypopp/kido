@@ -7,10 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	"kido/internal/msg"
+	"kido/internal/reap"
 	"kido/internal/state"
 	"kido/internal/subrun"
 	"kido/internal/tmux"
@@ -111,6 +115,17 @@ func stopSubagentCmd(args []string) error {
 		return errors.New(stopUsage())
 	}
 
+	// Before the agent lookup, because a bash run is not one: it has no
+	// state record, so resolveTarget could only ever answer "no agent
+	// session matches" for a build that is plainly running. Only a run
+	// with no outcome yet is matched here, so a finished run's name never
+	// shadows an agent's.
+	if run, ok, err := liveBashRun(fs.Arg(0)); err != nil {
+		return err
+	} else if ok {
+		return stopBashRun(run, *force)
+	}
+
 	target, states, err := controlTarget(fs.Arg(0))
 	if err != nil {
 		return err
@@ -198,6 +213,170 @@ func killTargetPane(target state.Session) error {
 // the common case is a target with no run record at all.
 func recordStopped(target state.Session) {
 	subrun.RecordOutcome(target.ID, subrun.Outcome{Result: subrun.Stopped, At: time.Now()}) //nolint:errcheck // best effort
+}
+
+// stoppedText is what a bash run's outcome says when `kido
+// stop_subagent` is the one that had to record it: its wrapper was asked
+// to end the run and did not report within stopEscalation, so the stop
+// speaks for it. Distinct from the wrapper's own "killed by terminated"
+// and from a sweep's, so a parent reading the notice can tell which
+// observer found the ending.
+const stoppedText = "stopped by kido stop_subagent; its wrapper did not report"
+
+// liveBashRun resolves to as a `kido async_bash` run with no outcome
+// recorded yet - one that is still going - and enforces the same scope rule every
+// _subagent command shares: a caller with a state record of its own may
+// only reach its descendants (descendantTarget).
+//
+// A run is addressed by its name or by its id, the two things `kido
+// async_bash` printed; ok is false when nothing matches, which is what
+// lets stopSubagentCmd fall through to the agents.
+func liveBashRun(to string) (subrun.Meta, bool, error) {
+	ids, err := subrun.List()
+	if err != nil {
+		return subrun.Meta{}, false, err
+	}
+	var matches []subrun.Meta
+	for _, id := range ids {
+		meta, err := subrun.ReadMeta(id)
+		if err != nil || meta.EffectiveKind() != subrun.KindBash {
+			continue
+		}
+		if _, done, err := subrun.ReadOutcome(id); err != nil || done {
+			continue
+		}
+		if strings.EqualFold(meta.Name, to) || meta.ID == to {
+			matches = append(matches, meta)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return subrun.Meta{}, false, nil
+	case 1:
+		if err := bashRunInScope(matches[0]); err != nil {
+			return subrun.Meta{}, false, err
+		}
+		return matches[0], true, nil
+	default:
+		ids := make([]string, len(matches))
+		for i, m := range matches {
+			ids[i] = m.ID
+		}
+		sort.Strings(ids)
+		return subrun.Meta{}, false, fmt.Errorf("%q matches several running async runs: %s", to, strings.Join(ids, ", "))
+	}
+}
+
+// bashRunInScope applies the descendant rule to a run, which has no
+// state record to apply it to: the edge is the parent instance `kido
+// async_bash` recorded in its meta. A caller with no record of its own
+// is a human at the CLI and may act on anything, exactly as
+// descendantTarget lets one.
+//
+// Descendant, not child: a run started by the caller's own subagent is
+// reachable, which is the walk isAncestor does for agents.
+func bashRunInScope(meta subrun.Meta) error {
+	states, err := state.Load()
+	if err != nil {
+		return err
+	}
+	self := os.Getenv("TMUX_PANE")
+	caller, isAgent := states[self]
+	if !isAgent {
+		return nil
+	}
+	if meta.ParentInstance == caller.Instance {
+		return nil
+	}
+	panes, err := listPanes()
+	if err != nil {
+		return err
+	}
+	callerPane, ok := findPane(panes, self)
+	if !ok {
+		return fmt.Errorf("pane %q not found", self)
+	}
+	agents := buildAgents(states, panes, callerPane.SessionID, self)
+	for _, s := range states {
+		if s.Instance != "" && s.Instance == meta.ParentInstance && isAncestor(agents, caller.ID, s.ID) {
+			return nil
+		}
+	}
+	return fmt.Errorf("async run %q is not this agent's descendant", bashRunLabel(meta))
+}
+
+func bashRunLabel(meta subrun.Meta) string {
+	if meta.Name != "" {
+		return meta.Name
+	}
+	return meta.ID
+}
+
+// stopBashRun ends a running `kido async_bash`: signal the wrapper,
+// which forwards it to the command and reports the ending itself, and
+// only speak for the run if it did not.
+//
+// The --force gate is the one every inbox-less target is held to
+// (stopSubagentCmd), applied unchanged: a bash run has no inbox to ask
+// nicely over, so stopping it degrades straight to killing something.
+//
+// Which observer reports is settled the same way everywhere else: the
+// O_EXCL outcome write. A wrapper that reported inside the grace already
+// sent its own notice with its own exit status, and this says nothing.
+func stopBashRun(meta subrun.Meta, force bool) error {
+	label := fmt.Sprintf("async run %q", bashRunLabel(meta))
+	if !force {
+		return fmt.Errorf("%s has no inbox to ask nicely over; pass --force to kill its window instead", label)
+	}
+
+	// A wrapper that is already gone - SIGKILLed, or taken down with its
+	// window - will never report, and waiting out the grace for it would
+	// only delay the notice nobody else is going to send.
+	signalled := meta.PID > 0 && syscall.Kill(meta.PID, syscall.SIGTERM) == nil
+	if signalled {
+		deadline := time.Now().Add(stopEscalation)
+		for time.Now().Before(deadline) {
+			if _, done, _ := subrun.ReadOutcome(meta.ID); done {
+				fmt.Printf("stopped %s; its wrapper reported the ending\n", label)
+				return nil
+			}
+			time.Sleep(stopPollInterval)
+		}
+	}
+
+	o := subrun.Outcome{Result: subrun.Stopped, Text: stoppedText, At: time.Now()}
+	if err := subrun.RecordOutcome(meta.ID, o); err == nil {
+		noticeFor(reap.Notice{Meta: meta, Outcome: o}).send("stop_subagent")
+	}
+	killed, err := killBashRunPane(meta)
+	if err != nil {
+		return fmt.Errorf("%s was recorded stopped, but its pane could not be killed: %w", label, err)
+	}
+	if killed {
+		fmt.Printf("stopped %s; killed its pane\n", label)
+	} else {
+		fmt.Printf("stopped %s; its pane was already gone\n", label)
+	}
+	return nil
+}
+
+// killBashRunPane kills the pane a run's window is in, with the guard
+// killTargetPane applies for the same reason: killing a session's only
+// pane destroys the session. A pane already gone is not a failure -
+// the run is over either way, and its outcome is already recorded.
+func killBashRunPane(meta subrun.Meta) (bool, error) {
+	panes, err := listPanes()
+	if err != nil {
+		return false, err
+	}
+	pane, ok := findPane(panes, meta.Pane)
+	if !ok {
+		return false, nil
+	}
+	if tmux.LastWindow(panes, pane.WindowID) && tmux.LastPane(panes, pane.WindowID) {
+		return false, errors.New("it is its session's only pane; killing it would destroy the session")
+	}
+	return true, killPane(pane.PaneID)
 }
 
 // controlTarget resolves interrupt/stop's argument, reading the state

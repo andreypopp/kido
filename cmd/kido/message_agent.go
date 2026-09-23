@@ -114,6 +114,13 @@ type sendSpec struct {
 	replyTo         string
 	id              string
 	descendantsOnly bool
+	// fromName replaces the envelope's whole From with that name alone,
+	// for a sender that is not an agent session: a bash run's completion
+	// notice speaks for the run, which has no state record and so no
+	// identity kido could look up. Without it the receiver labels the
+	// notice by whatever the *sending process* is - a pane id, or worse,
+	// the unrelated agent that happened to run `kido stop_subagent`.
+	fromName string
 	// needsReplyPath holds the send to a caller that can actually receive
 	// the answer it is demanding (senderCanBeRepliedTo). Only an ask sets
 	// it: every other kind is one-way and correlates nothing.
@@ -204,13 +211,17 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 	if envID == "" {
 		envID = msg.NewID()
 	}
+	from := senderOf(states)
+	if spec.fromName != "" {
+		from = msg.From{Name: spec.fromName}
+	}
 	payload := text
 	if target.Protocol >= msg.V1 {
 		env := msg.Envelope{
 			V:       msg.V1,
 			Kind:    spec.kind,
 			ID:      envID,
-			From:    senderOf(states),
+			From:    from,
 			ReplyTo: spec.replyTo,
 			Text:    text,
 		}

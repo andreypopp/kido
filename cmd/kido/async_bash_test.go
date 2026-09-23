@@ -178,7 +178,7 @@ func TestAsyncNoticeNamesTheRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	text := asyncNoticeText(id, "build", subrun.Failed, "exit status 3")
+	text := asyncNotice{runID: id, name: "build", result: subrun.Failed, text: "exit status 3"}.body()
 	for _, want := range []string{`"build"`, "failed", "exit status 3", id, "boom"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("notice = %q, want it to carry %q", text, want)
@@ -187,7 +187,7 @@ func TestAsyncNoticeNamesTheRun(t *testing.T) {
 
 	// With no name to carry, the run id is what is left; a notice saying
 	// only "async run" would name nothing at all.
-	if text := asyncNoticeText(id, "", subrun.Completed, "exit status 0"); !strings.Contains(text, id) {
+	if text := (asyncNotice{runID: id, result: subrun.Completed, text: "exit status 0"}).body(); !strings.Contains(text, id) {
 		t.Errorf("unnamed run's notice = %q, want it to fall back to the run id", text)
 	}
 }

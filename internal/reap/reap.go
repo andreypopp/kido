@@ -99,8 +99,30 @@ func captureScreen(w *window) {
 	subrun.WriteScreen(w.runID, data) //nolint:errcheck // best effort, see doc comment
 }
 
+// Notice is a bash run whose ending a sweep discovered and won the
+// outcome write for: nobody else is going to speak for it, so the
+// caller has to tell its parent. Sweep returns these rather than
+// sending anything, because a notice travels over an agent's inbox
+// socket and this package has no business knowing that; what a window
+// sweep can know is that a run ended with nothing said about it, which
+// is the whole of what a Notice carries. cmd/kido's asyncNotice turns
+// one into the text a parent reads.
+type Notice struct {
+	Meta    subrun.Meta
+	Outcome subrun.Outcome
+}
+
+// sweptText is what a bash run's outcome says when a sweep is the one
+// that found the ending. The wrapper records and notifies before it
+// exits (cmd/kido/async_run.go), so it covers every ending it lives to
+// see; an outcome still unwritten when the window is collected means the
+// wrapper never got to speak - killed outright, or taken down with its
+// window.
+const sweptText = "ended without its wrapper reporting"
+
 // Sweep returns the windows that should be closed now, in the order they
-// appear in panes.
+// appear in panes, and the bash runs whose parents this sweep is now
+// obliged to notify (see Notice).
 //
 // sessions must be every live record, one entry per agent session:
 // state.LoadLive or state.ReadAll. It may not be a per-pane view
@@ -123,17 +145,18 @@ func captureScreen(w *window) {
 //
 // Neither rule closes a window that is any client's current one, or a
 // session's last window.
-func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) []string {
+func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) ([]string, []Notice) {
 	if !anyMarked(panes) {
 		// Nothing kido spawn_subagent created is on screen, so neither rule can
 		// close anything. The common case on a machine with no subagents
 		// running, and this runs on every sidebar tick.
-		return nil
+		return nil, nil
 	}
 	windows, byID, byPane := foldWindows(panes)
 
 	closing := map[string]bool{}
 	var out []string
+	var notices []Notice
 	mark := func(id string) {
 		w, ok := byID[id]
 		if !ok || closing[id] || !w.marked || w.focused || tmux.LastWindow(panes, id) {
@@ -142,7 +165,9 @@ func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) []string 
 		closing[id] = true
 		if w.runID != "" {
 			captureScreen(w)
-			subrun.RecordOutcome(w.runID, subrun.Outcome{Result: subrun.Died, At: now}) //nolint:errcheck // best effort
+			if n, ok := recordEnding(w.runID, now); ok {
+				notices = append(notices, n)
+			}
 		}
 		out = append(out, id)
 	}
@@ -174,7 +199,38 @@ func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) []string 
 			mark(id) // rule 2
 		}
 	}
-	return out
+	return out, notices
+}
+
+// recordEnding writes the outcome for the run in a window a sweep is
+// about to close, and reports whether that run's parent is now this
+// sweep's to tell.
+//
+// The outcome write is the arbiter and the only one: it is O_EXCL, so a
+// sweep that loses it to the run's own wrapper, to `kido stop_subagent`
+// or to a second sidebar sweeping the same window returns false and
+// stays quiet, and exactly one observer of any ending ever speaks.
+//
+// Only a bash run is spoken for. An agent's completion is a judgement
+// only the model can make, and docs/design.md is deliberate that a
+// subagent which crashes without calling notify_parent tells its parent
+// nothing; a bash run's completion is an exit code, and the two are not
+// the same case. An agent run keeps the Died it always got.
+func recordEnding(runID string, now time.Time) (Notice, bool) {
+	meta, err := subrun.ReadMeta(runID)
+	bash := err == nil && meta.EffectiveKind() == subrun.KindBash
+
+	o := subrun.Outcome{Result: subrun.Died, At: now}
+	if bash {
+		o = subrun.Outcome{Result: subrun.Failed, Text: sweptText, At: now}
+	}
+	if err := subrun.RecordOutcome(runID, o); err != nil {
+		return Notice{}, false //nolint:nilerr // losing the write is the ordinary case, not a failure
+	}
+	if !bash || meta.ParentInstance == "" {
+		return Notice{}, false
+	}
+	return Notice{Meta: meta, Outcome: o}, true
 }
 
 // anyMarked reports whether any pane belongs to a window kido spawn_subagent

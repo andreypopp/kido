@@ -439,6 +439,15 @@ func listPanes(conn *tmux.Conn) ([]tmux.Pane, error) {
 // reaper closes without a tmux server.
 var killWindow = tmux.KillWindow
 
+// NotifyRunEnded is told about a bash run whose ending this sidebar's
+// sweep discovered and recorded, and whose parent is therefore the
+// sweep's to tell (reap.Notice). A seam rather than a call: the notice
+// goes over an agent's inbox socket, whose client half lives in
+// cmd/kido, which this package cannot import. main sets it before
+// ui.Run, and the default is silence - a sidebar with nobody wired up
+// must not be the reason a run is reported twice, or once wrongly.
+var NotifyRunEnded = func(reap.Notice) {}
+
 // reapSubagentWindows closes the subagent windows this snapshot shows as
 // finished. Called from take, on the snapshot goroutine, and deliberately
 // not from state.Load, which `kido prompt` calls too. The standalone
@@ -451,8 +460,12 @@ func reapSubagentWindows(panes []tmux.Pane, sessions []state.Session) {
 	if len(panes) == 0 {
 		return
 	}
-	for _, windowID := range reap.Sweep(panes, sessions, time.Now()) {
+	closing, notices := reap.Sweep(panes, sessions, time.Now())
+	for _, windowID := range closing {
 		killWindow(windowID) //nolint:errcheck // best effort; the window may already be gone
+	}
+	for _, n := range notices {
+		NotifyRunEnded(n)
 	}
 }
 

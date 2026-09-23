@@ -7,17 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"kido/internal/subrun"
 )
-
-// maxNoticeTailBytes is how much of a run's output the completion notice
-// carries. The tail, not the head: what a failure has to say, it says
-// last.
-const maxNoticeTailBytes = 4000
 
 // asyncSignalGrace is how long the wrapper waits for the command to die
 // after passing on a signal, before reporting the ending itself. The
@@ -133,74 +127,9 @@ func reportAsyncRun(runID, name string, result subrun.Result, status string) {
 		}
 		return
 	}
-	// A run nobody started has nobody to tell, and notify_parent's own
-	// refusal would only print to a pane that is about to close.
-	if os.Getenv("KIDO_AGENT_PARENT_INSTANCE") == "" {
-		return
-	}
-	notifyParentCmd(nil, strings.NewReader(asyncNoticeText(runID, name, result, status))) //nolint:errcheck // prints its own error; the outcome is already recorded
-}
-
-// asyncNoticeText is the completion notice: what ended, how, and the last
-// of what it said.
-//
-// It names the run itself because nothing else will. A bash run writes no
-// state record, so the receiving extension labels the sender by whatever
-// it can find - falling through to the pane id, leaving a parent reading
-// "notification from %47" - and the run's name is the only thing in this
-// text that can carry it.
-func asyncNoticeText(runID, name string, result subrun.Result, status string) string {
-	if name == "" {
-		name = runID
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "async run %q %s: %s\n", name, result, status)
-	fmt.Fprintf(&b, "run: %s\n", runID)
-	fmt.Fprintf(&b, "output: %s\n", subrun.OutputPath(runID))
-	tail, omitted, err := tailOfFile(subrun.OutputPath(runID), maxNoticeTailBytes)
-	switch {
-	case err != nil:
-		fmt.Fprintf(&b, "--- output unreadable: %v ---", err)
-	case tail == "":
-		fmt.Fprint(&b, "--- no output ---")
-	case omitted > 0:
-		fmt.Fprintf(&b, "--- last %d bytes of output (%d omitted) ---\n%s", len(tail), omitted, tail)
-	default:
-		fmt.Fprintf(&b, "--- output ---\n%s", tail)
-	}
-	return b.String()
-}
-
-// tailOfFile returns the last max bytes of path and how many bytes were
-// dropped from the front of it. The cut is moved forward off a partial
-// UTF-8 rune and anything still invalid is replaced, because a notice
-// that is not valid UTF-8 is refused by the send path outright - and a
-// build log ending mid-character is an ordinary way for that to happen.
-func tailOfFile(path string, max int64) (string, int64, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", 0, err
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return "", 0, err
-	}
-	var omitted int64
-	if fi.Size() > max {
-		omitted = fi.Size() - max
-		if _, err := f.Seek(omitted, io.SeekStart); err != nil {
-			return "", 0, err
-		}
-	}
-	b, err := io.ReadAll(f)
-	if err != nil {
-		return "", 0, err
-	}
-	if omitted > 0 {
-		for len(b) > 0 && b[0]&0xC0 == 0x80 {
-			b, omitted = b[1:], omitted+1
-		}
-	}
-	return strings.ToValidUTF8(string(b), "\uFFFD"), omitted, nil
+	asyncNotice{
+		runID: runID, name: name,
+		parentInstance: os.Getenv("KIDO_AGENT_PARENT_INSTANCE"),
+		result:         result, text: status,
+	}.send("async-run")
 }

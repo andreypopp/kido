@@ -69,6 +69,14 @@ func watched(p tmux.Pane) tmux.Pane {
 // the last-window rule by accident.
 var other = pane("%other", "@other")
 
+// sweep is Sweep's window list alone, for the tests whose subject is
+// which windows a sweep closes. The notices are asserted on by name in
+// the tests that are about them.
+func sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) []string {
+	ids, _ := Sweep(panes, sessions, now)
+	return ids
+}
+
 func check(t *testing.T, got, want []string) {
 	t.Helper()
 	if !slices.Equal(got, want) {
@@ -81,7 +89,7 @@ func check(t *testing.T, got, want []string) {
 // in a session whose sidebar has already swept the record away.
 func TestSweepClosesFinishedSubagentWindow(t *testing.T) {
 	panes := []tmux.Pane{other, dead(marked(pane("%1", "@1")), 60)}
-	check(t, Sweep(panes, nil, now), []string{"@1"})
+	check(t, sweep(panes, nil, now), []string{"@1"})
 }
 
 // TestSweepWaitsOutTheGrace pins the read window: the linger exists so the
@@ -90,7 +98,7 @@ func TestSweepClosesFinishedSubagentWindow(t *testing.T) {
 // ever fires.
 func TestSweepWaitsOutTheGrace(t *testing.T) {
 	panes := []tmux.Pane{other, dead(marked(pane("%1", "@1")), 1)}
-	check(t, Sweep(panes, nil, now), nil)
+	check(t, sweep(panes, nil, now), nil)
 }
 
 // TestSweepNeverTouchesAnUnmarkedWindow is the guard against the failure
@@ -103,14 +111,14 @@ func TestSweepNeverTouchesAnUnmarkedWindow(t *testing.T) {
 	stale := state.Session{Pane: "%1", PID: os.Getpid(),
 		Instance: "child-inst", ParentInstance: "long-gone-inst"}
 	panes := []tmux.Pane{other, dead(pane("%1", "@1"), 600)}
-	check(t, Sweep(panes, []state.Session{stale}, now), nil)
+	check(t, sweep(panes, []state.Session{stale}, now), nil)
 }
 
 // TestSweepNeverClosesASessionsLastWindow: closing it destroys the
 // session itself, which is never what a sweep was asked to do.
 func TestSweepNeverClosesASessionsLastWindow(t *testing.T) {
 	panes := []tmux.Pane{dead(marked(pane("%1", "@1")), 600)}
-	check(t, Sweep(panes, nil, now), nil)
+	check(t, sweep(panes, nil, now), nil)
 }
 
 // TestSweepCollectsAFocusedWindowOnceTheUserLeaves is what replaces the
@@ -119,8 +127,8 @@ func TestSweepNeverClosesASessionsLastWindow(t *testing.T) {
 // again on every poll, it is collected as soon as they switch away.
 func TestSweepCollectsAFocusedWindowOnceTheUserLeaves(t *testing.T) {
 	finished := dead(marked(pane("%1", "@1")), 600)
-	check(t, Sweep([]tmux.Pane{other, watched(finished)}, nil, now), nil)
-	check(t, Sweep([]tmux.Pane{watched(other), finished}, nil, now), []string{"@1"})
+	check(t, sweep([]tmux.Pane{other, watched(finished)}, nil, now), nil)
+	check(t, sweep([]tmux.Pane{watched(other), finished}, nil, now), []string{"@1"})
 }
 
 // TestSweepCancelsSubagentOfDeadParent is rule 2: the subagent is alive
@@ -134,7 +142,7 @@ func TestSweepCancelsSubagentOfDeadParent(t *testing.T) {
 	// process is gone, which is the reading that decides this.
 	parent := state.Session{Pane: "%p", PID: deadPID(t), Instance: "root-inst"}
 	panes := []tmux.Pane{other, marked(pane("%1", "@1"))}
-	check(t, Sweep(panes, []state.Session{child, parent}, now), []string{"@1"})
+	check(t, sweep(panes, []state.Session{child, parent}, now), []string{"@1"})
 }
 
 // TestSweepSurvivesAPaneCollisionOnTheParent is the regression test for
@@ -152,8 +160,17 @@ func TestSweepCancelsSubagentOfDeadParent(t *testing.T) {
 // The per-pane view is swept too, as a negative control: it is the input
 // that killed two live agents, and if it stopped closing the window this
 // test would no longer be about anything.
+//
+// The window carries a bash run, so what a lossy reading costs is
+// counted in full: it does not merely close a live window, it records an
+// ending for a command that is still running and tells the parent a
+// story that is false. The notices are asserted on in both halves for
+// that reason - silence from the complete reading, exactly one from the
+// lossy one - since a sweep is now something that speaks and not only
+// something that closes.
 func TestSweepSurvivesAPaneCollisionOnTheParent(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	bashRun(t, "run-collision", "build", "root-inst")
 	live := time.Now()
 	record(t, "parent", state.Session{Pane: "%p", PID: os.Getpid(),
 		Agent: state.AgentPi, Instance: "root-inst", TS: live})
@@ -161,13 +178,20 @@ func TestSweepSurvivesAPaneCollisionOnTheParent(t *testing.T) {
 		Agent: state.AgentPi, Instance: "child-inst", ParentInstance: "root-inst", TS: live})
 	record(t, "intruder", state.Session{Pane: "%p", PID: os.Getpid(),
 		Agent: state.AgentPi, Instance: "intruder-inst", TS: live.Add(time.Second)})
-	panes := []tmux.Pane{other, marked(pane("%1", "@1"))}
+	panes := []tmux.Pane{other, markedWithRun(pane("%1", "@1"), "run-collision")}
 
 	all, err := state.LoadLive()
 	if err != nil {
 		t.Fatal(err)
 	}
-	check(t, Sweep(panes, all, now), nil)
+	closing, told := Sweep(panes, all, now)
+	check(t, closing, nil)
+	if len(told) != 0 {
+		t.Errorf("a complete reading produced %+v, want silence: the run is still going", told)
+	}
+	if o, ok, _ := subrun.ReadOutcome("run-collision"); ok {
+		t.Errorf("a complete reading recorded %+v for a run that is still going", o)
+	}
 
 	byPane, err := state.Load()
 	if err != nil {
@@ -180,7 +204,11 @@ func TestSweepSurvivesAPaneCollisionOnTheParent(t *testing.T) {
 	for _, s := range byPane {
 		lossy = append(lossy, s)
 	}
-	check(t, Sweep(panes, lossy, now), []string{"@1"})
+	closing, told = Sweep(panes, lossy, now)
+	check(t, closing, []string{"@1"})
+	if len(told) != 1 {
+		t.Errorf("the lossy reading produced %d notices, want the 1 that shows what it costs", len(told))
+	}
 }
 
 // record writes one state file, so a test can exercise the same read
@@ -197,7 +225,7 @@ func TestSweepLeavesSubagentOfLiveParentAlone(t *testing.T) {
 		Instance: "child-inst", ParentInstance: "root-inst"}
 	parent := state.Session{Pane: "%p", PID: os.Getpid(), Instance: "root-inst"}
 	panes := []tmux.Pane{other, marked(pane("%1", "@1"))}
-	check(t, Sweep(panes, []state.Session{child, parent}, now), nil)
+	check(t, sweep(panes, []state.Session{child, parent}, now), nil)
 }
 
 // TestSweepNeverTouchesARootAgent: a record with no ParentInstance is the
@@ -207,7 +235,7 @@ func TestSweepLeavesSubagentOfLiveParentAlone(t *testing.T) {
 func TestSweepNeverTouchesARootAgent(t *testing.T) {
 	root := state.Session{Pane: "%1", PID: deadPID(t), Instance: "root-inst"}
 	panes := []tmux.Pane{other, marked(pane("%1", "@1"))}
-	check(t, Sweep(panes, []state.Session{root}, now), nil)
+	check(t, sweep(panes, []state.Session{root}, now), nil)
 }
 
 // TestSweepWaitsForEverySplitPane: a subagent that split its own window
@@ -215,10 +243,10 @@ func TestSweepNeverTouchesARootAgent(t *testing.T) {
 func TestSweepWaitsForEverySplitPane(t *testing.T) {
 	first := dead(marked(pane("%1", "@1")), 600)
 	second := marked(pane("%2", "@1"))
-	check(t, Sweep([]tmux.Pane{other, first, second}, nil, now), nil)
+	check(t, sweep([]tmux.Pane{other, first, second}, nil, now), nil)
 
 	second = dead(second, 600)
-	check(t, Sweep([]tmux.Pane{other, first, second}, nil, now), []string{"@1"})
+	check(t, sweep([]tmux.Pane{other, first, second}, nil, now), []string{"@1"})
 }
 
 // TestSweepReturnsAWindowOnce: both rules can name the same window - a
@@ -228,7 +256,7 @@ func TestSweepReturnsAWindowOnce(t *testing.T) {
 	child := state.Session{Pane: "%1", PID: os.Getpid(),
 		Instance: "child-inst", ParentInstance: "gone-inst"}
 	panes := []tmux.Pane{other, dead(marked(pane("%1", "@1")), 600)}
-	check(t, Sweep(panes, []state.Session{child}, now), []string{"@1"})
+	check(t, sweep(panes, []state.Session{child}, now), []string{"@1"})
 }
 
 // TestSweepRecordsDiedForAWindowItCloses: a run whose window a sweep
@@ -240,7 +268,7 @@ func TestSweepRecordsDiedForAWindowItCloses(t *testing.T) {
 		t.Fatal(err)
 	}
 	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-died"), 60)}
-	check(t, Sweep(panes, nil, now), []string{"@1"})
+	check(t, sweep(panes, nil, now), []string{"@1"})
 
 	got, ok, err := subrun.ReadOutcome("run-died")
 	if err != nil || !ok {
@@ -263,7 +291,7 @@ func TestSweepDoesNotOverwriteARecordedOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-done"), 60)}
-	check(t, Sweep(panes, nil, now), []string{"@1"})
+	check(t, sweep(panes, nil, now), []string{"@1"})
 
 	got, ok, err := subrun.ReadOutcome("run-done")
 	if err != nil || !ok || got.Result != subrun.Completed {
@@ -298,7 +326,7 @@ func TestSweepCapturesScreenBeforeClosing(t *testing.T) {
 	stubCapture(t, "%1", "panic: something went wrong\n")
 
 	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-crash"), 60)}
-	check(t, Sweep(panes, nil, now), []string{"@1"})
+	check(t, sweep(panes, nil, now), []string{"@1"})
 
 	got, ok, err := subrun.ReadScreen("run-crash")
 	if err != nil || !ok {
@@ -321,7 +349,7 @@ func TestSweepCapturesNothingForAWindowItRefusesToClose(t *testing.T) {
 	stubCapture(t, "%1", "should never be written")
 
 	finished := dead(markedWithRun(pane("%1", "@1"), "run-focused"), 600)
-	check(t, Sweep([]tmux.Pane{other, watched(finished)}, nil, now), nil)
+	check(t, sweep([]tmux.Pane{other, watched(finished)}, nil, now), nil)
 
 	if _, ok, err := subrun.ReadScreen("run-focused"); err != nil || ok {
 		t.Fatalf("ReadScreen ok = %v, err = %v, want no screen for a window Sweep refused to close", ok, err)
@@ -331,7 +359,7 @@ func TestSweepCapturesNothingForAWindowItRefusesToClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	solo := []tmux.Pane{dead(markedWithRun(pane("%2", "@2"), "run-lastwindow"), 600)}
-	check(t, Sweep(solo, nil, now), nil)
+	check(t, sweep(solo, nil, now), nil)
 	if _, ok, err := subrun.ReadScreen("run-lastwindow"); err != nil || ok {
 		t.Fatalf("ReadScreen ok = %v, err = %v, want no screen for a session's last window", ok, err)
 	}
@@ -348,7 +376,7 @@ func TestSweepClosesEvenWhenCaptureFails(t *testing.T) {
 	stubCapture(t, "%never-matches", "unreachable")
 
 	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-nopane"), 60)}
-	check(t, Sweep(panes, nil, now), []string{"@1"})
+	check(t, sweep(panes, nil, now), []string{"@1"})
 
 	if _, ok, err := subrun.ReadScreen("run-nopane"); err != nil || ok {
 		t.Fatalf("ReadScreen ok = %v, err = %v, want no screen after a failed capture", ok, err)
@@ -367,7 +395,7 @@ func TestSweepBoundsTheCapturedScreen(t *testing.T) {
 	stubCapture(t, "%1", huge)
 
 	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-huge"), 60)}
-	check(t, Sweep(panes, nil, now), []string{"@1"})
+	check(t, sweep(panes, nil, now), []string{"@1"})
 
 	got, ok, err := subrun.ReadScreen("run-huge")
 	if err != nil || !ok {
@@ -378,5 +406,149 @@ func TestSweepBoundsTheCapturedScreen(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "TAIL") {
 		t.Errorf("screen truncation dropped the tail: %q", got[max(0, len(got)-20):])
+	}
+}
+
+// bashRun writes the meta a `kido async_bash` window's run has: kind
+// bash, and a parent to tell. parent may be empty, which is a run
+// started from a shell nobody was tracking.
+func bashRun(t *testing.T, id, name, parent string) {
+	t.Helper()
+	if err := subrun.Create(id, "make -j8"); err != nil {
+		t.Fatal(err)
+	}
+	if err := subrun.WriteMeta(subrun.Meta{ID: id, Name: name, Kind: subrun.KindBash,
+		ParentInstance: parent}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// notices is Sweep's second return, for the tests that are about it.
+func notices(t *testing.T, panes []tmux.Pane, sessions []state.Session) []Notice {
+	t.Helper()
+	_, out := Sweep(panes, sessions, now)
+	return out
+}
+
+// TestSweepNotifiesForABashRunNobodyReported is rule 1 as the backstop
+// that makes "never zero" true. The wrapper records and notifies before
+// it exits, so it covers every ending it lives to see; an ending it does
+// not - SIGKILL, a window closed by hand, the process tree gone - leaves
+// a marked window with dead panes and no outcome, which is precisely
+// what this sweep finds. Before this, it recorded died and said nothing,
+// and a parent waited forever on a build that had already stopped
+// existing.
+func TestSweepNotifiesForABashRunNobodyReported(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	bashRun(t, "run-killed", "build", "root-inst")
+	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-killed"), 60)}
+
+	got := notices(t, panes, nil)
+	if len(got) != 1 {
+		t.Fatalf("Sweep returned %d notices, want exactly 1: %+v", len(got), got)
+	}
+	if got[0].Meta.Name != "build" || got[0].Meta.ParentInstance != "root-inst" {
+		t.Errorf("notice names %+v, want the run's own name and parent", got[0].Meta)
+	}
+	if got[0].Outcome.Result != subrun.Failed || got[0].Outcome.Text != sweptText {
+		t.Errorf("notice carries %+v, want %q/%q", got[0].Outcome, subrun.Failed, sweptText)
+	}
+	o, ok, err := subrun.ReadOutcome("run-killed")
+	if err != nil || !ok || o.Result != subrun.Failed || o.Text != sweptText {
+		t.Errorf("ReadOutcome = %+v, %v, %v, want the same story on disk", o, ok, err)
+	}
+}
+
+// TestSweepSaysNothingForABashRunItsWrapperReported is the negative
+// control the test above is unsafe without, and the half that carries
+// the invariant: exactly one notice per run, never two. A wrapper that
+// already recorded the ending has already sent its own notice with its
+// own exit status and its own output tail, and the sweep that comes
+// along afterwards finds a window indistinguishable from one whose
+// wrapper never spoke. Only the outcome on disk tells them apart, and it
+// is the O_EXCL write - not a flag, not a marker file - that must be
+// what is read.
+//
+// Without this half, a sweep that notified unconditionally would pass
+// every assertion in the positive test.
+func TestSweepSaysNothingForABashRunItsWrapperReported(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	bashRun(t, "run-told", "build", "root-inst")
+	if err := subrun.RecordOutcome("run-told", subrun.Outcome{
+		Result: subrun.Failed, Text: "exit status 3", At: now}); err != nil {
+		t.Fatal(err)
+	}
+	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-told"), 60)}
+
+	closing, got := Sweep(panes, nil, now)
+	check(t, closing, []string{"@1"})
+	if len(got) != 0 {
+		t.Errorf("Sweep returned %+v, want nothing: the wrapper already reported this ending", got)
+	}
+	if o, _, _ := subrun.ReadOutcome("run-told"); o.Text != "exit status 3" {
+		t.Errorf("outcome = %+v, want the wrapper's own story to stand", o)
+	}
+}
+
+// TestSweepNotifiesOnceUnderTwoObservers: a sidebar per client, plus
+// whatever `kido reap` an operator types, all sweep the same window, and
+// a window a sweep names is not closed until its caller gets round to
+// it. The second sweep sees exactly what the first saw and must still
+// produce no notice - which is the outcome write arbitrating, since
+// nothing else about the two readings differs.
+func TestSweepNotifiesOnceUnderTwoObservers(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	bashRun(t, "run-raced", "build", "root-inst")
+	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-raced"), 60)}
+
+	total := len(notices(t, panes, nil)) + len(notices(t, panes, nil))
+	if total != 1 {
+		t.Errorf("two sweeps of one ending produced %d notices, want exactly 1", total)
+	}
+}
+
+// TestSweepNotifiesOnlyForBashRuns is design.md's deliberate cost, which
+// this feature would otherwise revert in passing: a subagent that
+// crashes without calling notify_parent tells its parent nothing,
+// because an agent's completion is a judgement only the model can make
+// and a fabricated notice is a false positive. A bash run's completion
+// is an exit code. The two are not the same case and must not share a
+// rule - and an agent run keeps the died it always got, rather than
+// picking up the failed a bash run now gets.
+func TestSweepNotifiesOnlyForBashRuns(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	if err := subrun.Create("run-agent", "do a thing"); err != nil {
+		t.Fatal(err)
+	}
+	if err := subrun.WriteMeta(subrun.Meta{ID: "run-agent", Name: "kid",
+		ParentInstance: "root-inst"}); err != nil {
+		t.Fatal(err)
+	}
+	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-agent"), 60)}
+
+	closing, got := Sweep(panes, nil, now)
+	check(t, closing, []string{"@1"})
+	if len(got) != 0 {
+		t.Errorf("Sweep returned %+v for an agent run, want silence", got)
+	}
+	if o, _, _ := subrun.ReadOutcome("run-agent"); o.Result != subrun.Died {
+		t.Errorf("agent run's outcome = %q, want it to stay %q", o.Result, subrun.Died)
+	}
+}
+
+// TestSweepNotifiesNobodyForAParentlessBashRun: `kido async_bash` typed
+// at a human's shell records no parent instance, and a notice with
+// nobody to receive it is not a notice. The ending is still recorded,
+// which is the half that matters to `kido runs`.
+func TestSweepNotifiesNobodyForAParentlessBashRun(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	bashRun(t, "run-loner", "build", "")
+	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-loner"), 60)}
+
+	if got := notices(t, panes, nil); len(got) != 0 {
+		t.Errorf("Sweep returned %+v, want nothing: this run has no parent to tell", got)
+	}
+	if o, ok, _ := subrun.ReadOutcome("run-loner"); !ok || o.Result != subrun.Failed {
+		t.Errorf("outcome = %+v (recorded %v), want the ending recorded regardless", o, ok)
 	}
 }

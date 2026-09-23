@@ -357,9 +357,10 @@ observed. Then, in this order and never concurrently:
 
 1. the outcome: `completed` for exit 0, `failed` otherwise, with the
    status as its text ("exit status 3", "signal: killed");
-2. the completion notice, once, to the parent - the same
-   `kido notify_parent` path a spawned child reports home on, which reads
-   the parent edge out of the environment and needs no record of its own.
+2. the completion notice, once, to the parent - a `notice` envelope over
+   the parent's inbox, addressed to the instance in its own environment
+   and needing no record of its own, exactly as a spawned child's report
+   home is.
 
 Everything is reported **before this process exits**, which is what makes
 the feature independent of the window surviving. tmux sets
@@ -379,29 +380,88 @@ The notice names the run itself:
     --- last 4000 bytes of output (12034 omitted) ---
     ...
 
-It has to. A bash run writes no state record, so the receiving side has
-nothing to label the sender with and falls back to the pane id - a parent
-reading "notification from %47". The output file is the source of truth
+It has to, twice over: the envelope's `from` names the run as well, and
+for the same reason. A bash run writes no state record, so the sender
+kido can fill in is whichever *process* observed the ending - the
+wrapper's own pane, which is no agent, leaving a parent reading
+"notification from %47", or a sweeping sidebar, or the unrelated agent
+that typed `kido stop_subagent`. The run's name is the only honest
+answer, and it is what the parent's widget row shows.
+
+The output file is the source of truth
 and is never truncated; the notice carries its last 4000 bytes, the tail
 rather than the head because what a failure has to say, it says last, cut
 back to a whole rune so a log ending mid-character cannot cost the run
 its only notice.
 
-**Exactly one ending.** The winner of the outcome write is the sender of
-the notice. `RecordOutcome` is already a once-only, crash-safe arbiter of
-exactly this question (O_EXCL), so a wrapper that finds an outcome
-already there - a sweep's `died`, a `kido stop_subagent`'s `stopped` -
-keeps that story and says nothing. A wrapper being killed is the one
-ending nobody else is watching for, so `SIGTERM`, `SIGHUP` and `SIGINT`
-are passed on to the command and then reported as `failed` on the
-wrapper's own way out; `SIGKILL` is not survivable and leaves the run to
-the sweep.
+**Exactly one ending.** Every async run produces exactly one terminal
+notice, from whichever observer discovers the ending - including the
+ones that discover it by finding a corpse. Never zero, or a model waits
+forever on a build that has already stopped existing; never two, or it
+acts twice.
 
-A bash run is deliberately not an agent. It has no state record, so it is
-not in `kido list_agents`, cannot be addressed by `message_agent` or
-`ask_agent`, and has no status to report - there is nothing there to
-answer. What it has is the run record, which is already the store for
-facts that outlive a process, and `kido runs` shows it like any other.
+The winner of the outcome write is the sender of the notice.
+`RecordOutcome` is already a once-only, crash-safe arbiter of exactly
+this question (O_EXCL), so nothing else is introduced to decide it: not
+a flag, not a "notified" marker, the same write read the same way. Three
+observers can win it:
+
+| Observer | Discovers the ending | Records | Notifies |
+|---|---|---|---|
+| the wrapper | its own `wait(2)`, or a signal it can catch | `completed`/`failed` | yes, with the exit status |
+| a sweep's rule 1 (`internal/reap`) | a marked window dead for the linger | `failed`, "ended without its wrapper reporting" | yes, if it won |
+| `kido stop_subagent` | a deliberate stop | `stopped`, naming itself | yes, if it won |
+
+The wrapper covers every ending it lives to see, which is why `SIGTERM`,
+`SIGHUP` and `SIGINT` are passed on to the command and then reported as
+`failed` on the wrapper's own way out. `SIGKILL` is not survivable, and
+neither is having the window killed under it or the process tree taken
+away: those leave a marked window with dead panes and no outcome, which
+is exactly what rule 1 finds. It used to record `died` and say nothing,
+and the parent of a killed build waited forever.
+
+Only a **bash** run is spoken for this way. An agent's completion is a
+judgement only the model can make, and a child that crashes without
+calling `notify_parent` deliberately tells its parent nothing
+(design.md, "Notifying the parent"); a bash process's completion is an
+exit code. The two are not the same case and do not share a rule - an
+agent run still records `died` and still sends nothing. A run with no
+parent instance is told to nobody either way, which is what `kido
+async_bash` typed at a human's shell produces.
+
+The three observers share one notice builder (`cmd/kido`'s
+`asyncNotice`), so a parent cannot tell how its build ended by which
+process happened to notice. The sweep itself sends nothing: `reap.Sweep`
+returns the runs whose parents are now the caller's to tell, and the
+caller - `kido reap`, or the sidebar through a seam `main` fills in -
+does the sending. A window sweep has no business knowing what an inbox
+is, and the one thing it can know is that a run ended with nothing said
+about it.
+
+**Stopping one.** `kido stop_subagent --force -- <name>` ends a run,
+addressed by the name or the run id `kido async_bash` printed. A run has
+no state record for the usual target resolution to find, so stop matches
+it against the runs that have no outcome yet - a finished run can never
+shadow a live agent - and applies the same scope rule every `_subagent`
+command shares to the only parent edge a run has, the instance in its
+meta. `--force` is required for the reason it always is: a bash run has
+no inbox to ask nicely over, so stopping it degrades straight to killing
+something.
+
+The stop signals the wrapper first and waits out the stop escalation,
+because a wrapper that is still there reports the ending itself with the
+exit status and the output tail the stop could only guess at. Only if it
+does not report does the stop record and send its own notice - and a
+wrapper that is already gone is not waited for at all, since waiting
+would delay a notice nobody else was ever going to send. Each observer's
+outcome text says which of them it was.
+
+Apart from stop, a bash run is deliberately not an agent. It has no state
+record, so it is not in `kido list_agents`, cannot be addressed by
+`message_agent` or `ask_agent`, and has no status to report - there is
+nothing there to answer. What it has is the run record, which is already
+the store for facts that outlive a process, and `kido runs` shows it like
+any other.
 
 ## A human at a shell
 

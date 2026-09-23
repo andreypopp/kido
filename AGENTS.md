@@ -529,6 +529,45 @@ build it paid for).
   the first of two are identical at any instant, and so are "nothing yet"
   and "nothing ever" (`TestAsyncBashStillRunningSaysNothing`,
   `TestAsyncBashWithNoParentStillRecordsItsOutcome`).
+- **`TestSweepSaysNothingForABashRunItsWrapperReported`** and
+  **`TestReapSaysNothingForARunItsWrapperReported`** — the negative
+  controls that carry "exactly one notice per run". The window in each is
+  indistinguishable from the one its positive half sweeps: dead, marked,
+  past the linger. Only the outcome already on disk tells them apart, and
+  reading it is the whole mechanism — so a sweep that notified
+  unconditionally passes every assertion the positive halves make, and
+  the duplicate notice it sends is the bug itself, a parent told twice
+  about one build and acting twice. `TestSweepNotifiesOnceUnderTwoObservers`
+  pins the same claim against the input that actually produces it: two
+  readings of one window with nothing else differing, which is a sidebar
+  per client plus whatever `kido reap` an operator types.
+- **`TestSweepNotifiesOnlyForBashRuns`** — design.md's deliberate cost,
+  which this feature would otherwise revert in passing: a subagent that
+  crashes without calling `notify_parent` tells its parent nothing,
+  because an agent's completion is a judgement only the model can make.
+  A bash run's completion is an exit code. The test asserts the agent
+  run keeps the `died` it always got, not merely that no notice was
+  sent, since a fix that spoke for everything would otherwise only be
+  half caught.
+- **`TestStopBashRunLeavesTheWrapperToReportIfItCan`** — why the stop
+  signals before it speaks. A wrapper that is still there reports with
+  the exit status and the output tail a stop can only guess at, and
+  having asked for the stop is no licence to tell a second story about
+  it. Its positive half,
+  `TestStopBashRunReportsWhenTheWrapperCannot`, uses a pid belonging to
+  nothing — the SIGKILLed-wrapper case — because that is the one where
+  the grace must be skipped rather than waited out.
+  `TestStopBashRunStillNeedsForce` asserts three absences (nothing
+  killed, no outcome, nothing sent): a refusal that returned an error
+  and still stopped the run satisfies the first assertion alone, and
+  relaxing that gate is a separate change to a refusal.
+- **`TestKilledWrapperIsReportedByWhoeverFindsIt`** (e2e) — deliberately
+  does *not* hide the sidebar, unlike its neighbours in `reap_test.go`:
+  the session's own sweep and the `kido reap` typed over it are two real
+  observers racing for one ending, which is the arbitration end to end
+  rather than a claim about one command. It finds the wrapper by the run
+  id on its command line rather than by reading `meta.json`, because the
+  file is kido's belief and the process list is what is running.
 - **`TestAsyncNoticeTailIsValidUTF8`** — the cut is at a byte offset, and
   the send path refuses a message that is not valid UTF-8 outright. A
   log ending mid-character is an ordinary build log, and without the
