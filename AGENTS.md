@@ -14,6 +14,60 @@ as built, with the subagent side of it in
 changing any of that; the code's comments no longer repeat it, and
 neither does this file.
 
+## Code commenting guidelines
+
+A comment earns its place by saying something the code cannot. Most do
+not, and the honest fix is to delete rather than reword: narration that
+restates the line below it, banners labelling a section the reader can
+already see, and commented-out code that version control is already
+keeping.
+
+What to keep, each for a reason narration does not have:
+
+- An external constraint this project cannot change - a platform
+  behaviour, a vendor's protocol, a dependency's quirk - once it has
+  been verified. The tmux and Claude Code notes in this file exist for
+  exactly that reason.
+- A link to the issue or discussion behind a constraint the code has no
+  way to express.
+- Legal notices, and doc comments stating a public contract.
+- A workaround's explanation, for as long as the workaround is there.
+  When the constraint goes the workaround goes with it; deleting the
+  explanation alone leaves code nobody will dare touch.
+
+Some comments are not comments. Build, compiler and formatter
+directives are instructions wearing comment syntax, and that syntax
+does not make them safe to remove. A diagnostic suppression needs its
+rule read before it is judged: one covering a false positive or a
+style-only rule stays, and one hiding a correctness or safety failure
+calls for fixing the cause rather than finding a quieter way to spell
+the same silence.
+
+Treat a loud comment as a claim to check, not a verdict to obey or to
+discard. `IMPORTANT`, `do not remove`, `too risky`, `fine for now` and
+a long justification all show that somebody was worried, not that they
+were right. A claimed external constraint needs evidence it still holds
+on a live path; where that evidence is missing, keep the comment and
+say what is missing. Do not invent a defect, and do not call deliberate
+behaviour a bug.
+
+Removing comments never licenses changing behaviour. The two are
+separate changes and a diff that mixes them hides both.
+
+A comment explaining *why* can outlive its reason, and a stale
+explanation is worse than none because it is trusted. This repo has
+already carried a measured claim about which client tmux names inside a
+popup, true when written and false once kido had its own control
+client; a test comment pointing at machinery that had since been
+deleted; and a refusal describing itself as mirroring a rule that had
+changed underneath it. When a mechanism changes, grep for the prose
+that described it.
+
+Design rationale belongs in [docs/design.md](docs/design.md) and
+[docs/design-subagents.md](docs/design-subagents.md), not beside the
+code. A comment re-explaining a decision is a second copy of it, and
+the copy is the one that drifts.
+
 ## Layout
 
     cmd/kido/          subcommand dispatch (main.go), setup-*, prompt,
