@@ -36,6 +36,10 @@ type AgentInfo struct {
 	SinceReport int `json:"sinceReport"`
 	// Stalled is state.Stalled(s, now).
 	Stalled bool `json:"stalled"`
+	// Instance is s.Instance, the id `kido agent-alive` matches on. Empty
+	// for an agent that never reported one (a Claude Code session tracked
+	// only by hooks), which is never true of anything with CanMessage.
+	Instance string `json:"instance,omitempty"`
 }
 
 func listAgentsUsage() string {
@@ -118,6 +122,7 @@ func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, se
 			Model:       s.Model,
 			SinceReport: int(now.Sub(s.TS).Seconds()),
 			Stalled:     state.Stalled(s, now),
+			Instance:    s.Instance,
 		})
 	}
 	return out

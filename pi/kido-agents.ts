@@ -211,6 +211,9 @@ interface AgentInfo {
   window: string;
   stalled: boolean;
   sinceReport: number;
+  // Instance is what `kido agent-alive` matches on; empty for an agent
+  // that never reported one, which canMessage rules out.
+  instance?: string;
 }
 
 // resolveAgent applies the same addressing rules kido message_agent's
@@ -886,6 +889,23 @@ export default function (pi: ExtensionAPI) {
           }],
           details: {},
         };
+      }
+      // Same fail-fast reasoning, for the case stalled cannot catch: a
+      // target that died seconds ago is not stalled (that takes minutes
+      // of silence), and canMessage guarantees an instance to ask about.
+      // An inconclusive answer (no instance, an error, or a kido too old
+      // to know the subcommand) is never treated as "dead".
+      if (target.instance) {
+        const alive = await host.runKido(["agent-alive", target.instance], { timeoutMs: 2000 });
+        if (!("error" in alive) && alive.out === "false") {
+          return {
+            content: [{
+              type: "text",
+              text: `${target.name || target.id} is no longer running; refusing to wait for a reply`,
+            }],
+            details: {},
+          };
+        }
       }
 
       // The inbox may have gone away while fetchAgents() was in flight.

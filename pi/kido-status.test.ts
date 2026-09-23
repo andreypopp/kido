@@ -2676,6 +2676,34 @@ test("ask_agent refuses a stalled target immediately, without sending anything",
   }
 });
 
+// A target that died seconds ago is not stalled - that takes minutes of
+// silence - so target.stalled alone lets ask_agent commit to the full
+// timeoutMs against a target that will never answer. The timeoutMs of
+// 600000 against settlesWithin(..., 500) is the point: a version missing
+// the liveness check would still answer correctly, only 600000ms later.
+test("ask_agent refuses a target that is not alive, promptly and without sending anything", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([
+      { id: "self", name: "self", parent: "", self: true, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, instance: "peer-a-instance" },
+    ]);
+    fx.setParentAlive("gone");
+    const s = await startSession(fx);
+    const ask = s.tools.get("ask_agent");
+
+    const result = await settlesWithin(ask.execute("c1", { to: "peer-a", question: "q", timeoutMs: 600000 }), 500);
+    assert.match(result.content[0].text, /no longer running/);
+    assert.equal(fx.lastLogFor("peer-a", "ask"), undefined, "a dead target must never actually be asked");
+    assert.ok(
+      fx.parentAliveCalls().some((args) => args.includes("peer-a-instance")),
+      "the resolved target's own instance id was queried, not its session id",
+    );
+  } finally {
+    fx.restore();
+  }
+});
+
 // withIdleExitEnv sets KIDO_IDLE_EXIT_SECONDS and, optionally,
 // KIDO_AGENT_KEEP_ALIVE, restoring whatever was there before - both are
 // read once at module scope, so every case below goes through
