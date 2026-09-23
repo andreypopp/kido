@@ -8,12 +8,12 @@ them the same.
 
 ```
 tmux
-┌ ▌ Tmux config          an agent: ▌ running, ◆ waiting, ◌ compacting, ✓ done
-└   zsh
-· ▌ cargo test           a shell running a command (red ▌ when the last failed)
-· ssh deploy@build-box   ssh panes show the destination
+┌◼ Tmux config           an agent: ◼ running, ◆ waiting, ◌ compacting, ✓ done
+└ zsh
+╶◼ cargo test            a shell running a command (red ◼ when the last failed)
+╶ ssh deploy@build-box   ssh panes show the destination
 review
-· ◆ Fix login redirect
+╶◆ Fix login redirect
 ```
 
 ## Install

@@ -86,7 +86,7 @@ func TestFirstLastKeys(t *testing.T) {
 	h.waitRows(5)
 	focusSidebar(h)
 
-	// Lines: 1 alpha, 2 · shell, 3 beta, 4 ┌ shell, 5 └ shell.
+	// Lines: 1 alpha, 2 ╶ shell, 3 beta, 4 ┌ shell, 5 └ shell.
 	h.sendKeys("G")
 	h.waitSelectedLine(5)
 

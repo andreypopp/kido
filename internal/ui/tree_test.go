@@ -207,7 +207,7 @@ func TestRenderGroupsSiblingSubagentsWithTheirOwnShells(t *testing.T) {
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"·◼ orchestrator",
+		"╶◼ orchestrator",
 		"  ├◼ subagent-a",
 		"  │ └ zsh",
 		"  └◼ subagent-b",
@@ -238,7 +238,7 @@ func TestRenderGroupsSiblingSubagentsAtDepthTwo(t *testing.T) {
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"·◼ root",
+		"╶◼ root",
 		"  ├◼ subagent-a",
 		"  │ └◼ grandkid-a1",
 		"  └◼ subagent-b",
@@ -263,7 +263,7 @@ func TestRenderGroupsSiblingSubagentsWithADeadOne(t *testing.T) {
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"·◼ orchestrator",
+		"╶◼ orchestrator",
 		"  ├◼ subagent-a",
 		"  └× subagent-b",
 	})
@@ -359,7 +359,7 @@ func TestRenderNestsRecursively(t *testing.T) {
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"·◼ root",
+		"╶◼ root",
 		"  └◼ kid",
 		"    └◼ grandkid",
 	})
@@ -381,8 +381,8 @@ func TestRenderDrawsAnOrphanAsARoot(t *testing.T) {
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"·◼ unrelated",
-		"·◼ orphan",
+		"╶◼ unrelated",
+		"╶◼ orphan",
 	})
 }
 
@@ -401,10 +401,10 @@ func TestRenderDropsNobodyInACycle(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("rows = %q, want the session and both agents", rows)
 	}
-	if rows[1] != "·◼ a" {
+	if rows[1] != "╶◼ a" {
 		t.Errorf("rows[1] = %q, want the first member of the ring drawn as a root", rows[1])
 	}
-	if rows[2] != "  └◼ b" && rows[2] != "·◼ b" {
+	if rows[2] != "  └◼ b" && rows[2] != "╶◼ b" {
 		t.Errorf("rows[2] = %q, want the other member drawn somewhere", rows[2])
 	}
 }
@@ -655,13 +655,13 @@ func TestRenderNestsADeadSubagentForTheWholeLinger(t *testing.T) {
 		"%22": agentState("root-inst", "", "orchestrator"),
 	}
 	// Before the fix this rendered as two flush-left rows: "sess",
-	// "·◼ orchestrator", "· " (the dead pane un-nested at the left
+	// "╶◼ orchestrator", "╶ " (the dead pane un-nested at the left
 	// margin, no longer indented under its parent) - exactly during the
 	// window the user is most likely to be looking at it to read its last
 	// screen.
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"·◼ orchestrator",
+		"╶◼ orchestrator",
 		"  └ ",
 	})
 }
@@ -707,7 +707,7 @@ func TestRenderLingeringSubagentShowsItsOwnName(t *testing.T) {
 	rows := renderRows(panes, nil)
 	wantRows(t, rows, []string{
 		"sess",
-		"·× fix the flaky test",
+		"╶× fix the flaky test",
 	})
 }
 
@@ -739,7 +739,7 @@ func TestRenderLingeringSubagentShowsOutcome(t *testing.T) {
 	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
 	wantRows(t, renderRows(panes, nil), []string{
 		"sess",
-		"·✓ subagent  completed",
+		"╶✓ subagent  completed",
 	})
 }
 
@@ -841,7 +841,7 @@ func TestRenderLingeringSubagentMissingRunDirDegradesGracefully(t *testing.T) {
 	rows := renderRows(panes, nil)
 	wantRows(t, rows, []string{
 		"sess",
-		"· ",
+		"╶ ",
 	})
 }
 
@@ -898,7 +898,7 @@ func TestRenderLingeringSubagentStillNests(t *testing.T) {
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"·◼ orchestrator",
+		"╶◼ orchestrator",
 		"  └× subagent",
 	})
 }

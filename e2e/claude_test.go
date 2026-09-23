@@ -26,7 +26,7 @@ func (h *harness) rowFor(name string) string {
 // spaces).
 func (h *harness) waitGlyph(title, glyph string) {
 	h.t.Helper()
-	want := "·" + indField(glyph) + title
+	want := "╶" + indField(glyph) + title
 	h.waitFor(func() bool { return h.rowFor(title) == want }, settle,
 		func() string { return fmt.Sprintf("row %q (is %q)", want, h.rowFor(title)) })
 }
@@ -58,7 +58,7 @@ func TestClaudeStatuses(t *testing.T) {
 	}
 
 	// The title comes from the pane title with the leading marker gone.
-	if got := h.rowFor("Tmux config"); got != "·◼ Tmux config" {
+	if got := h.rowFor("Tmux config"); got != "╶◼ Tmux config" {
 		t.Errorf("row = %q", got)
 	}
 
@@ -127,7 +127,7 @@ func TestClaudeBackgroundWork(t *testing.T) {
 	// knows nothing of the background job.
 	h.hook("sess-bg", pane, "Notification", "notification_type", "idle_prompt")
 	time.Sleep(time.Second)
-	if got := h.rowFor("Background job"); got != "·◼ Background job" {
+	if got := h.rowFor("Background job"); got != "╶◼ Background job" {
 		t.Fatalf("row = %q, want still running while the background job is", got)
 	}
 
@@ -150,7 +150,7 @@ func TestClaudeSubagentMidTurn(t *testing.T) {
 
 	h.hookPayload("sess-mid", pane, "SubagentStop", map[string]any{"agent_id": "a", "background_tasks": []any{}})
 	time.Sleep(time.Second)
-	if got := h.rowFor("Midturn job"); got != "·◼ Midturn job" {
+	if got := h.rowFor("Midturn job"); got != "╶◼ Midturn job" {
 		t.Fatalf("row = %q, want still running: the main loop never stopped", got)
 	}
 }
@@ -174,7 +174,7 @@ func TestClaudeDismissedPrompt(t *testing.T) {
 	// being read as idle.
 	h.fakeClaude(pane, "busy")
 	time.Sleep(time.Second)
-	if got := h.rowFor("Dismissed"); got != "·◆ Dismissed" {
+	if got := h.rowFor("Dismissed"); got != "╶◆ Dismissed" {
 		t.Fatalf("row = %q, want the waiting glyph while work is in flight", got)
 	}
 

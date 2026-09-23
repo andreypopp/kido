@@ -25,7 +25,7 @@ func TestRenderGrouping(t *testing.T) {
 	h.waitFor(func() bool { return len(h.rows()) >= 6 }, settle, msgf("all rows"))
 
 	rows := h.rows()
-	want := []string{"zeta", "· " + shell, "alpha",
+	want := []string{"zeta", "╶ " + shell, "alpha",
 		"┌ " + shell, "├ " + shell, "└ " + shell}
 	if len(rows) != len(want) {
 		t.Fatalf("rows = %q, want %q", rows, want)
@@ -55,7 +55,7 @@ func TestFollowActivePane(t *testing.T) {
 	// "cat" waits on stdin, so this window's row reads differently from
 	// every shell row and the selection is unambiguous.
 	h.newWindow("beta", "editor", "cat", "-")
-	h.waitRow("· cat")
+	h.waitRow("╶ cat")
 
 	h.waitSelected(shell)
 	h.in("switch-client", "-c", h.client, "-t", "beta:1")
@@ -64,7 +64,7 @@ func TestFollowActivePane(t *testing.T) {
 	h.waitSelected("cat")
 	h.waitFor(func() bool {
 		lines := h.capture()
-		return selectedIndexOf(lines) == rowIndexOf(lines, "· cat")
+		return selectedIndexOf(lines) == rowIndexOf(lines, "╶ cat")
 	}, settle, msgf("selection on the cat row"))
 }
 
@@ -154,22 +154,22 @@ func TestShellStatusRow(t *testing.T) {
 	// rc left behind, with no "C" before it: shellOutcome's start-time
 	// guard is what keeps that from marking a pane nothing has run in, so
 	// this row is blank without the test ever visiting the pane.
-	h.waitZshRow("·  zsh", "")
+	h.waitZshRow("╶  zsh", "")
 
 	h.in("send-keys", "-t", pane, "sleep 5", "Enter")
 	h.waitPaneCommand(pane, "sleep")
-	h.waitZshRow("·◼ sleep", "")
+	h.waitZshRow("╶◼ sleep", "")
 
 	// The sleep exits zero, and the client never left home, so it settles
 	// on the checkmark, not blank - this is just a sync point before the
 	// next command.
-	h.waitFor(func() bool { return h.zshRow("·✓ zsh", "32") },
+	h.waitFor(func() bool { return h.zshRow("╶✓ zsh", "32") },
 		10*time.Second, msgf("the row a checkmark after the sleep"))
 
 	// A command that fails leaves the row red until the pane is visited,
 	// overriding the checkmark straight away.
 	h.in("send-keys", "-t", pane, "false", "Enter")
-	h.waitZshRow("·◼ zsh", "31")
+	h.waitZshRow("╶◼ zsh", "31")
 
 	// Visiting the pane clears it: the failure is older than the visit.
 	h.in("select-window", "-t", pane)
@@ -177,7 +177,7 @@ func TestShellStatusRow(t *testing.T) {
 	h.waitSelected("zsh")
 	h.in("select-window", "-t", home)
 	h.in("select-pane", "-t", home)
-	h.waitZshRow("·  zsh", "")
+	h.waitZshRow("╶  zsh", "")
 
 	// CommandEndTime has one-second resolution and the seen comparison is
 	// strict (see shellOutcome), so let the visit above age past its
@@ -188,7 +188,7 @@ func TestShellStatusRow(t *testing.T) {
 	// A command that succeeds while the client is looking at a different
 	// pane leaves the row a green checkmark, same as a done agent pane.
 	h.in("send-keys", "-t", pane, "true", "Enter")
-	h.waitZshRow("·✓ zsh", "32")
+	h.waitZshRow("╶✓ zsh", "32")
 
 	// Visiting the pane clears it: the success is older than the visit.
 	h.in("select-window", "-t", pane)
@@ -196,7 +196,7 @@ func TestShellStatusRow(t *testing.T) {
 	h.waitSelected("zsh")
 	h.in("select-window", "-t", home)
 	h.in("select-pane", "-t", home)
-	h.waitZshRow("·  zsh", "")
+	h.waitZshRow("╶  zsh", "")
 }
 
 // zshRow reports whether the sidebar holds exactly the row want, with (or

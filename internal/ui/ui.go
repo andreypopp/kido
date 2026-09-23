@@ -1083,7 +1083,7 @@ var (
 func glyph(i, n int) string {
 	switch {
 	case n == 1:
-		return stDim.Render("·")
+		return stDim.Render("╶")
 	case i == 0:
 		return stDim.Render("┌")
 	case i == n-1:
