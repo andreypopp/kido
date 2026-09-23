@@ -13,11 +13,12 @@
  *   `list_agents()`, `set_status(activity)`, `message_agent(to, message,
  *   replyTo?)`, `ask_agent(to, question, timeoutMs?)`, `spawn_subagent(task,
  *   name?, model?, tools?)`, `interrupt_subagent(to)`, `stop_subagent(to,
- *   force?)` and `notify_parent(summary)` all shell out to a kido
- *   subcommand, asynchronously. They register unconditionally at factory
- *   time and no-op at call time until session_start has resolved kido and a
- *   session id, since pi may run the factory in invocations that never
- *   start a session. ask_agent waits here, in the extension, because only a
+ *   force?)`, `async_bash(command, name?)` and `notify_parent(summary)` all
+ *   shell out to a kido subcommand, asynchronously. They register
+ *   unconditionally at factory time and no-op at call time until
+ *   session_start has resolved kido and a session id, since pi may run
+ *   the factory in invocations that never start a session. ask_agent
+ *   waits here, in the extension, because only a
  *   long-lived process has an inbox for the reply to arrive on. A subagent
  *   is told to call notify_parent by a standing instruction appended to its
  *   own system prompt (before_agent_start), since nothing calls it for the
@@ -1288,6 +1289,69 @@ export default function (pi: ExtensionAPI) {
     },
   };
 
+  // asyncBashOutputDir caches the runs directory - `kido debug-log`'s own
+  // parent, since both files sit directly under the same state directory
+  // (internal/subrun.Dir, cmd/kido/main.go's debug-log case) - rather than
+  // asking kido once per call, or reimplementing state.Dir's own
+  // KIDO_STATE_DIR/XDG precedence here as a second copy of it.
+  let cachedRunsDir: string | null | undefined;
+  const runsDir = async (host: StatusHost): Promise<string | null> => {
+    if (cachedRunsDir !== undefined) return cachedRunsDir;
+    const res = await host.runKido(["debug-log"], { timeoutMs: 2000 });
+    cachedRunsDir = "error" in res ? null : join(dirname(res.out), "runs");
+    return cachedRunsDir;
+  };
+
+  const asyncBashParams = Type.Object(
+    {
+      command: Type.String({
+        description:
+          'The command to run in the background, as a shell command line (e.g. "make -j8 && ./run"), run under bash -c.',
+      }),
+      name: Type.Optional(
+        Type.String({
+          description: "A name for the run and its window; derived from the command's first word when omitted.",
+        }),
+      ),
+    },
+    { additionalProperties: false },
+  );
+  const asyncBashTool: ToolDefinition<typeof asyncBashParams> = {
+    name: "async_bash",
+    label: "Async Bash",
+    description:
+      "Run a shell command in the background instead of waiting on it, so this session can keep working while it runs. This replaces polling: exactly one notice arrives when the command ends, carrying its exit status and a tail of its output. Read the output file with the ordinary read tool at any time before then to check on progress.",
+    promptSnippet:
+      "async_bash(command, name?) - run a command in the background; a notice with its exit status arrives when it ends, read the output file meanwhile",
+    parameters: asyncBashParams,
+    async execute(_toolCallId, params) {
+      const host = status();
+      if (!host?.kidoPath()) {
+        return { content: [{ type: "text", text: "kido is not available; cannot run a background command" }], details: {} };
+      }
+      const args = ["async_bash"];
+      if (params.name) args.push("--name", params.name);
+      args.push("--", params.command);
+      const res = await host.runKido(args, { timeoutMs: SPAWN_TIMEOUT_MS });
+      if ("error" in res) {
+        return { content: [{ type: "text", text: `could not start background command: ${res.error}` }], details: {} };
+      }
+      const [windowID, paneID, runID] = res.out.split(/\s+/);
+      const dir = await runsDir(host);
+      const outputPath = dir ? join(dir, runID, "output") : `<state>/runs/${runID}/output`;
+      return {
+        content: [{
+          type: "text",
+          text:
+            `started run ${runID}${params.name ? ` (${params.name})` : ""} in window ${windowID}; ` +
+            `a notice with its exit status and a tail of its output arrives when it ends - ` +
+            `read ${outputPath} with the read tool to check on it meanwhile`,
+        }],
+        details: { name: params.name, window: windowID, pane: paneID, run: runID, output: outputPath },
+      };
+    },
+  };
+
   const notifyParentParams = Type.Object(
     {
       // No maxLength here, for the same reason set_status's schema has
@@ -1346,6 +1410,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool(steerSubagentTool);
   pi.registerTool(interruptSubagentTool);
   pi.registerTool(stopSubagentTool);
+  pi.registerTool(asyncBashTool);
   pi.registerTool(notifyParentTool);
 
   // Captured directly from pi, not through the seam: kido-status.ts's
@@ -1387,11 +1452,19 @@ export default function (pi: ExtensionAPI) {
   // method wide.
   pi.registerMessageRenderer<{ from: string }>(NOTICE_CUSTOM_TYPE, (message, options, theme) => {
     const from = message.details?.from || "another agent";
+    const content = typeof message.content === "string" ? message.content : "";
     if (!options.expanded) {
-      const line = theme.fg("dim", `notification from ${from} — ctrl-o to expand`);
+      // The collapsed row is the notice's own first line - true today of
+      // every sender (an async run's "async run NAME result: status", a
+      // subagent's own one-sentence report) - and nothing past it: a
+      // sender that wants a better collapsed summary writes it as line
+      // one, rather than this file parsing further into text it did not
+      // produce.
+      const firstLine = content.split("\n", 1)[0];
+      const summary = firstLine ? `: ${firstLine}` : "";
+      const line = theme.fg("dim", `notification from ${from}${summary} — ctrl-o to expand`);
       return { render: () => [line] };
     }
-    const content = typeof message.content === "string" ? message.content : "";
     const lines = [theme.fg("dim", `notification from ${from}:`), ...content.split("\n")];
     return { render: () => lines };
   });

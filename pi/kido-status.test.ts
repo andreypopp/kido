@@ -172,6 +172,19 @@ switch (args[0]) {
     process.stdout.write((args[0] === "interrupt_subagent" ? "interrupted " : "stopped ") + args[args.length - 1] + "\\n");
     process.exit(0);
   }
+  // debug-log's own path is fixed, not logged - async_bash's fixture uses
+  // it only to derive the runs directory the way the real tool does
+  // (dirname of state.Dir()/debug.log), never to assert on the call.
+  case "debug-log": {
+    process.stdout.write(process.env.KIDO_FAKE_STATE_DIR + "/debug.log\\n");
+    process.exit(0);
+  }
+  case "async_bash": {
+    const logFile = process.env.KIDO_FAKE_ASYNC_BASH_LOG;
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
+    process.stdout.write("@9 %9 fake-async-run-id\\n");
+    process.exit(0);
+  }
   default:
     process.exit(1);
 }
@@ -198,6 +211,8 @@ interface Fixture {
   lastSpawnArgs(): string[] | undefined;
   lastSpawnTask(): string | undefined;
   lastRunOutcomeArgs(): string[] | undefined;
+  lastAsyncBashArgs(): string[] | undefined;
+  runsDir: string;
   waitForCloseWindow(ms?: number): Promise<string[]>;
   lastStatusArgs(): string[] | undefined;
   setStatusCalls(): string[][];
@@ -240,8 +255,10 @@ function makeFixture(): Fixture {
   const setStatusLogFile = join(dir, "set-status.jsonl");
   const controlLogFile = join(dir, "control.jsonl");
   const runOutcomeLogFile = join(dir, "run-outcome.jsonl");
+  const asyncBashLogFile = join(dir, "async-bash.jsonl");
   const agentsCallLogFile = join(dir, "agents-calls.jsonl");
   const parentAliveLogFile = join(dir, "parent-alive.jsonl");
+  const stateDir = join(dir, "state");
   const deadInstancesFile = join(dir, "dead-instances");
   writeFileSync(deadInstancesFile, "");
   writeFileSync(agentsFile, "[]");
@@ -252,6 +269,7 @@ function makeFixture(): Fixture {
   writeFileSync(setStatusLogFile, "");
   writeFileSync(controlLogFile, "");
   writeFileSync(runOutcomeLogFile, "");
+  writeFileSync(asyncBashLogFile, "");
   writeFileSync(agentsCallLogFile, "");
   writeFileSync(parentAliveLogFile, "");
   const windowFocusedLogFile = join(dir, "window-focused.jsonl");
@@ -268,6 +286,8 @@ function makeFixture(): Fixture {
     KIDO_FAKE_SET_STATUS_LOG: process.env.KIDO_FAKE_SET_STATUS_LOG,
     KIDO_FAKE_CONTROL_LOG: process.env.KIDO_FAKE_CONTROL_LOG,
     KIDO_FAKE_RUN_OUTCOME_LOG: process.env.KIDO_FAKE_RUN_OUTCOME_LOG,
+    KIDO_FAKE_ASYNC_BASH_LOG: process.env.KIDO_FAKE_ASYNC_BASH_LOG,
+    KIDO_FAKE_STATE_DIR: process.env.KIDO_FAKE_STATE_DIR,
     KIDO_FAKE_AGENTS_CALL_LOG: process.env.KIDO_FAKE_AGENTS_CALL_LOG,
     KIDO_FAKE_PARENT_ALIVE_LOG: process.env.KIDO_FAKE_PARENT_ALIVE_LOG,
     KIDO_FAKE_PARENT_ALIVE: process.env.KIDO_FAKE_PARENT_ALIVE,
@@ -290,6 +310,8 @@ function makeFixture(): Fixture {
   process.env.KIDO_FAKE_SET_STATUS_LOG = setStatusLogFile;
   process.env.KIDO_FAKE_CONTROL_LOG = controlLogFile;
   process.env.KIDO_FAKE_RUN_OUTCOME_LOG = runOutcomeLogFile;
+  process.env.KIDO_FAKE_ASYNC_BASH_LOG = asyncBashLogFile;
+  process.env.KIDO_FAKE_STATE_DIR = stateDir;
   process.env.KIDO_FAKE_AGENTS_CALL_LOG = agentsCallLogFile;
   process.env.KIDO_FAKE_PARENT_ALIVE_LOG = parentAliveLogFile;
   process.env.KIDO_FAKE_DEAD_FILE = deadInstancesFile;
@@ -351,6 +373,10 @@ function makeFixture(): Fixture {
     lastRunOutcomeArgs() {
       return last(jsonLines(runOutcomeLogFile));
     },
+    lastAsyncBashArgs() {
+      return last(jsonLines(asyncBashLogFile));
+    },
+    runsDir: join(stateDir, "runs"),
     async waitForCloseWindow(ms = 2000) {
       let found: string[] | undefined;
       await pollUntil(() => (found = last(jsonLines(closeWindowLogFile))) !== undefined, ms, "a kido close-window call");
@@ -1051,27 +1077,36 @@ test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 r
 // parent"): an inbound notice renders collapsed by default and expands
 // under pi's own ctrl-o toggle (options.expanded), which this extension
 // never binds itself - see kido-agents.ts's registerMessageRenderer call.
-test("an inbound notice renders collapsed by default, naming the sender, and expands to the full text", async () => {
+// The collapsed line is the notice's own first line (e.g. an async run's
+// own `async run "build" failed: exit status 3`), not a generic
+// placeholder - kido-agents.ts's registerMessageRenderer takes only that
+// much off the notice text, nothing further into whatever body follows.
+test("an inbound notice renders collapsed by default, naming the sender and its own first line, and expands to the full text", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     const s = await startSession(fx);
     const from = { session: "peer-a", name: "peer-a" };
+    const text = 'async run "build" failed: exit status 3\nrun: abc123\noutput: /tmp/x/output\n--- output ---\nboom';
 
-    await sendToInbox(s.inboxPath, envelope("notice", "the whole result, in full", { from }));
+    await sendToInbox(s.inboxPath, envelope("notice", text, { from }));
     const sent = s.messages.find((m) => m.message.customType === "kido-notice");
     assert.ok(sent, "a notice was sent as a custom message");
-    assert.equal(sent!.message.content, "the whole result, in full", "the model-visible content is the notice's full text");
+    assert.equal(sent!.message.content, text, "the model-visible content is the notice's full text");
 
     const renderer = s.renderers.get("kido-notice");
     assert.ok(renderer, "the agent half registered a renderer for its own custom type");
 
     const collapsed = renderer!(sent!.message, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
-    assert.match(collapsed, /notification from peer-a.*ctrl-o to expand/, "the collapsed line names the sender and hints at expansion");
-    assert.ok(!collapsed.includes("the whole result, in full"), "the collapsed line does not leak the full text");
+    assert.match(
+      collapsed,
+      /notification from peer-a: async run "build" failed: exit status 3 .*ctrl-o to expand/,
+      "the collapsed line names the sender, carries the notice's own first line as its summary, and hints at expansion",
+    );
+    assert.ok(!collapsed.includes("boom"), "the collapsed line does not leak the body past the first line");
 
     const expanded = renderer!(sent!.message, { expanded: true, outputPad: 1 }, fakeTheme).render(80).join("\n");
-    assert.ok(expanded.includes("the whole result, in full"), "expanding shows the full content");
+    assert.ok(expanded.includes("boom"), "expanding shows the full content, tail included");
   } finally {
     fx.restore();
   }
@@ -1565,6 +1600,54 @@ test("a settled turn sends no automatic notice, and neither does a plain shutdow
       await new Promise((r) => setTimeout(r, 200));
       assert.equal(jsonLines(fx.logFile).filter((l) => l.kind === "notice").length, 0, "a plain shutdown must send no notice either");
     });
+  } finally {
+    fx.restore();
+  }
+});
+
+// async_bash: kido async_bash is invoked exactly the way spawn_subagent
+// invokes its own subcommand - a single -- separating flags from the
+// command text, which travels through unchanged regardless of how many
+// words it contains, since kido's own commandArgv is what decides bash -c
+// vs argv, not this file (docs/design-subagents.md, "An async bash run").
+test("async_bash passes -- and the command unchanged, with --name only when given", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const asyncBash = s.tools.get("async_bash");
+
+    await asyncBash.execute("c1", { command: "true" });
+    let args = fx.lastAsyncBashArgs();
+    assert.deepEqual(args, ["async_bash", "--", "true"], "a one-word command is passed through unchanged, with no --name");
+
+    await asyncBash.execute("c2", { command: "make -j8 && ./run", name: "build" });
+    args = fx.lastAsyncBashArgs();
+    assert.deepEqual(
+      args,
+      ["async_bash", "--name", "build", "--", "make -j8 && ./run"],
+      "a multi-word command line still travels as one argument after --, unchanged; kido's own commandArgv decides bash -c vs argv",
+    );
+  } finally {
+    fx.restore();
+  }
+});
+
+test("async_bash's result carries the run id and the output path kido printed and derived, and tells the model to read it meanwhile", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const asyncBash = s.tools.get("async_bash");
+
+    const result = await asyncBash.execute("c1", { command: "npm test", name: "tests" });
+    assert.equal(result.details.run, "fake-async-run-id", "the run id kido async_bash printed is returned");
+    const wantOutput = join(fx.runsDir, "fake-async-run-id", "output");
+    assert.equal(result.details.output, wantOutput, "the output path is derived from the run id, under kido's own runs directory");
+    assert.match(result.content[0].text, /fake-async-run-id/, "the result text names the run");
+    assert.match(result.content[0].text, new RegExp(wantOutput.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the result text names the output path");
+    assert.match(result.content[0].text, /notice/, "the result text says a notice arrives on completion");
+    assert.match(result.content[0].text, /read/, "the result text says the output file can be read meanwhile");
   } finally {
     fx.restore();
   }

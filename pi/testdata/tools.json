@@ -7,5 +7,6 @@
   "steer_subagent",
   "interrupt_subagent",
   "stop_subagent",
+  "async_bash",
   "notify_parent"
 ]
