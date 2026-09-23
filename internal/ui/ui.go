@@ -1167,11 +1167,22 @@ func indicatorFailed() string { return stErr.Render("▌") }
 // its record is already gone, so field("") - the "kido knows nothing about
 // this pane" tell a plain uninstrumented shell earns - would say the wrong
 // thing about a row kido actually knows more about than a live one (its
-// name, and often its outcome). × is used nowhere else, so it cannot be
-// confused with a live status, and it is dimmed the same as the row's own
-// text, rendered on demand for the same package-init reason as the rest of
-// this table.
-func indicatorGone() string { return stDim.Render("×") }
+// name, and often its outcome). A run that completed gets the same glyph
+// indicatorDone uses for a live agent's finished turn, dimmed instead of
+// green-bold: the two are the same claim, "this went well", at different
+// strengths, which is the axis every other pair in this table already uses
+// to tell live from gone (compare indicatorFailed's ▌ to a shell's own dim
+// stems). Anything that did not finish cleanly - failed, died, or a run
+// somebody stopped before it was done, none of which is a claim of success
+// - keeps ×, and so does a window whose outcome has not landed yet: it is
+// not this function's business to guess one. Rendered on demand for the
+// same package-init reason as the rest of this table.
+func indicatorGone(l lingering) string {
+	if l.outcomeOK && l.outcome == subrun.Completed {
+		return stDim.Render("✓")
+	}
+	return stDim.Render("×")
+}
 
 // indicatorStalled marks a session state.Stalled reports as wedged,
 // rendered on demand for the same reason as indicatorDone.
@@ -1271,7 +1282,7 @@ func (m *model) lingeringLabel(p tmux.Pane) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	label := field(indicatorGone()) + stDim.Render(l.name)
+	label := field(indicatorGone(l)) + stDim.Render(l.name)
 	if l.outcomeOK {
 		label += "  " + stDim.Render(string(l.outcome))
 	}

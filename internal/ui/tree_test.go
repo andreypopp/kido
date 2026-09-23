@@ -705,14 +705,66 @@ func TestRenderLingeringSubagentLooksDead(t *testing.T) {
 
 // TestRenderLingeringSubagentShowsOutcome checks the second half: when a
 // sweep or the subagent's own run-outcome call has recorded how the run
-// ended, the row shows it.
+// ended, the row shows it. A completed run also swaps the glyph for a
+// dimmed checkmark rather than the cross - see TestRenderLingeringSubagentGlyphByOutcome.
 func TestRenderLingeringSubagentShowsOutcome(t *testing.T) {
 	id := newRun(t, "subagent", subrun.Completed)
 	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
 	wantRows(t, renderRows(panes, nil), []string{
 		"sess",
-		"· × subagent  completed",
+		"· ✓ subagent  completed",
 	})
+}
+
+// TestRenderLingeringSubagentGlyphByOutcome is the glyph choice itself:
+// a completed run gets the dimmed checkmark, since it is the same claim
+// indicatorDone makes for a live agent's finished turn, just weaker; a
+// failed or died run keeps the cross, since neither is a claim of
+// success; and a run somebody stopped keeps the cross too, because ending
+// deliberately is not finishing the work - a checkmark would claim it did
+// what it did not.
+func TestRenderLingeringSubagentGlyphByOutcome(t *testing.T) {
+	cases := []struct {
+		result subrun.Result
+		glyph  string
+	}{
+		{subrun.Completed, "✓"},
+		{subrun.Failed, "×"},
+		{subrun.Died, "×"},
+		{subrun.Stopped, "×"},
+	}
+	for _, c := range cases {
+		id := newRun(t, "subagent", c.result)
+		panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
+		row := renderRows(panes, nil)[1]
+		if !strings.Contains(row, c.glyph) {
+			t.Errorf("result %q: row = %q, want glyph %q", c.result, row, c.glyph)
+		}
+		other := "✓"
+		if c.glyph == "✓" {
+			other = "×"
+		}
+		if strings.Contains(row, other) {
+			t.Errorf("result %q: row = %q, want no %q", c.result, row, other)
+		}
+	}
+}
+
+// TestRenderLingeringSubagentNoOutcomeKeepsCross checks the honesty rule:
+// a window that has just died with no outcome recorded yet must not show
+// the checkmark, since nothing has confirmed it finished successfully -
+// only its arrival, already covered by TestRenderLingeringSubagentInventsNoOutcome,
+// turns the row from a name into a verdict.
+func TestRenderLingeringSubagentNoOutcomeKeepsCross(t *testing.T) {
+	id := newRun(t, "subagent", "")
+	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
+	row := renderRows(panes, nil)[1]
+	if !strings.Contains(row, "×") {
+		t.Errorf("row = %q, want the cross while no outcome is recorded", row)
+	}
+	if strings.Contains(row, "✓") {
+		t.Errorf("row = %q, want no checkmark before an outcome is recorded", row)
+	}
 }
 
 // TestRenderLingeringSubagentInventsNoOutcome is the other side of that:
