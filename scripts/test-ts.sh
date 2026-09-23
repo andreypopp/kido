@@ -4,10 +4,17 @@
 # as the pair a pi host loads, through one fake pi and one real inbox
 # socket, and almost every case needs both halves at once.
 #
-# Skips cleanly when node is missing or too old for unflagged TypeScript
-# (stable from node 22.18/23.6 on); KIDO_TS_TEST_REQUIRED=1 fails instead,
-# the same convention e2e uses for KIDO_E2E_REQUIRED. `make test` calls
-# this so the Go unit tests never gain a node dependency of their own.
+# Skips cleanly when node is missing or too old; KIDO_TS_TEST_REQUIRED=1
+# fails instead, the same convention e2e uses for KIDO_E2E_REQUIRED. `make
+# test` calls this so the Go unit tests never gain a node dependency of
+# their own.
+#
+# The floor is 24, not the 22.18 where unflagged TypeScript became stable.
+# Parsing was never the binding constraint: 22.18 reads these files and
+# then its test runner abandons the suite, cancelling 77 of 79 cases in
+# half a second with "Promise resolution is still pending but the event
+# loop has already resolved". CI pinned 22.18 on that reasoning and found
+# it, which is the only reason the number here is one anything has checked.
 
 set -eu
 
@@ -25,10 +32,10 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 if ! node -e '
-const [maj, min] = process.versions.node.split(".").map(Number);
-process.exit(maj > 23 || maj === 23 || (maj === 22 && min >= 18) ? 0 : 1);
+const [maj] = process.versions.node.split(".").map(Number);
+process.exit(maj >= 24 ? 0 : 1);
 '; then
-	fail_or_skip "node $(node --version) is too old for unflagged TypeScript (need >=22.18 or >=23.6)"
+	fail_or_skip "node $(node --version) is too old to run this suite (need >=24)"
 fi
 
 cd "$(dirname "$0")/../pi"

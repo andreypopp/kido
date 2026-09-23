@@ -65,13 +65,15 @@ jobs:
       - name: Check tmux fork
         run: $HOME/tmux-side/bin/tmux -V
 
-      # test-ts.sh needs unflagged TypeScript, stable from node 22.18/23.6
-      # on, and skips cleanly when it is older. A runner's preinstalled node
-      # is whatever it happens to be, so pin one and demand the suite runs.
+      # test-ts.sh skips cleanly on a node it cannot use, and a runner's
+      # preinstalled node is whatever it happens to be, so pin one and demand
+      # the suite runs. 24 rather than the 22.18 where unflagged TypeScript
+      # landed: 22.18 parses the files and then its test runner cancels the
+      # suite, which this pin is how we learned.
       - name: Set up node
         uses: actions/setup-node@v4
         with:
-          node-version: '22.18'
+          node-version: '24'
 
       - name: Unit tests
         run: KIDO_TS_TEST_REQUIRED=1 make test
