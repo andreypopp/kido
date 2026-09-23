@@ -676,6 +676,17 @@ func lingeringSubagentPane(w, pane, runID, parentInstance string) tmux.Pane {
 	}
 }
 
+// liveSubagentPane is lingeringSubagentPane's alive twin: a marked window
+// with a real run id but no state record for its pane, and Dead false -
+// a plain `bash` run for its whole life, or an agent run in the window
+// between new-window and its first status report.
+func liveSubagentPane(w, pane, runID, parentInstance string) tmux.Pane {
+	return tmux.Pane{
+		SessionName: "sess", WindowID: w, PaneID: pane,
+		Dead: false, Subagent: tmux.SubagentMark(runID, parentInstance, 1),
+	}
+}
+
 // newRun writes a run's meta (and, if result != "", its outcome) under a
 // fresh KIDO_STATE_DIR and returns its id.
 func newRun(t *testing.T, name string, result subrun.Result) string {
@@ -728,6 +739,59 @@ func TestRenderLingeringSubagentLooksDead(t *testing.T) {
 			t.Errorf("row = %q, contains %q, a live status glyph", row, live)
 		}
 	}
+}
+
+// TestRenderLiveMarkedPaneWithNoRecordShowsRunning is the bug fix itself:
+// a marked pane whose run has no state record yet, but whose process is
+// still alive, must not read as dead for however long it takes that
+// record to appear (a bash run under async_bash never writes one at
+// all). It renders as a running row - the same ◼ field an agent pane
+// gets - labelled from the run's own meta name, not dimmed like the
+// tombstone.
+func TestRenderLiveMarkedPaneWithNoRecordShowsRunning(t *testing.T) {
+	id := newRun(t, "make build", "")
+	panes := []tmux.Pane{liveSubagentPane("@20", "%30", id, "")}
+	wantRows(t, renderRows(panes, nil), []string{
+		"sess",
+		"╶◼ make build",
+	})
+}
+
+// TestRenderDeadMarkedPaneWithNoRecordStaysTombstone is the negative
+// control TestRenderLiveMarkedPaneWithNoRecordShowsRunning is unsafe
+// without: without it, a fix that rendered every marked pane with no
+// record as running - live or dead - would pass the positive case too.
+// A dead pane keeps exactly today's tombstone: the dimmed name and, once
+// recorded, its outcome.
+func TestRenderDeadMarkedPaneWithNoRecordStaysTombstone(t *testing.T) {
+	id := newRun(t, "make build", "")
+	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
+	wantRows(t, renderRows(panes, nil), []string{
+		"sess",
+		"╶× make build",
+	})
+}
+
+// TestRenderLiveSubagentWithRecordUnaffected pins that this change is
+// scoped to marked-and-unreported panes only: a live subagent that has
+// already reported keeps taking the agent-row path entirely, never
+// lingeringLabel, whether its pane happens to be alive or dead.
+func TestRenderLiveSubagentWithRecordUnaffected(t *testing.T) {
+	panes := []tmux.Pane{
+		agentPane("@13", "%22", "orchestrator"),
+		shellPane("@13", "%47"),
+		agentPane("@20", "%30", "subagent"),
+	}
+	states := map[string]state.Session{
+		"%22": agentState("root-inst", "", "orchestrator"),
+		"%30": agentState("kid-inst", "root-inst", "subagent"),
+	}
+	wantRows(t, renderRows(panes, states), []string{
+		"sess",
+		"┌◼ orchestrator",
+		"│ └◼ subagent",
+		"└ zsh",
+	})
 }
 
 // TestRenderLingeringSubagentShowsOutcome checks the second half: when a

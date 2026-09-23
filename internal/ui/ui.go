@@ -1325,14 +1325,18 @@ func (m *model) interactivePane(p tmux.Pane) bool {
 	return p.AlternateOn
 }
 
-// lingeringLabel is the row text for a lingering subagent window's pane -
-// one carrying tmux.SubagentOption whose run has no live record for this
-// pane (see lingeringSubagents, which does the file reads this only looks
-// up) - or "", false when p is not one. Dimming the whole label, name and
-// outcome alike, says "not interactive" the same way stDim already does
-// for the tree's own stems and an agent's activity text; the × in the
-// field column is what actually says "dead", since a dim row inside an
-// already-dim nested block does not otherwise stand out at a glance.
+// lingeringLabel is the row text for a marked pane whose run has no live
+// record for this pane (see lingeringSubagents, which does the file reads
+// this only looks up) - or "", false when p is not one. A pane still
+// alive is a run in progress, not yet reporting for whatever reason (a
+// bash run never will; an agent run might just be between new-window and
+// its first status report), so it gets the same running row a reporting
+// agent gets: undimmed name behind the ◼ field. Only a dead pane is the
+// tombstone - dimming the whole label, name and outcome alike, says "not
+// interactive" the same way stDim already does for the tree's own stems
+// and an agent's activity text; the × in the field column is what
+// actually says "dead", since a dim row inside an already-dim nested
+// block does not otherwise stand out at a glance.
 func (m *model) lingeringLabel(p tmux.Pane) (string, bool) {
 	runID := tmux.SubagentRunID(p.Subagent)
 	if runID == "" {
@@ -1341,6 +1345,9 @@ func (m *model) lingeringLabel(p tmux.Pane) (string, bool) {
 	l, ok := m.snap.lingering[runID]
 	if !ok {
 		return "", false
+	}
+	if !p.Dead {
+		return field(indicator(state.Running)) + l.name, true
 	}
 	label := field(indicatorGone(l)) + stDim.Render(l.name)
 	if l.outcomeOK {
