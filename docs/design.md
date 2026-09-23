@@ -300,13 +300,20 @@ That decides all four text-carrying kinds:
 - **`notice` steers.** It is information the parent needs in order to
   dispatch the next thing, and two children's notices once sat invisible
   for minutes behind a parent's long turn ("Notifying the parent").
+- **`stream` is held, then steers.** A batch of a running command's
+  output is the one kind that is not delivered on arrival at all: it is
+  buffered and handed to the model at a moment that costs no turn. The
+  schedule, and why a flush on the wrong turn boundary is a loop rather
+  than an expense, is design-subagents.md, "Streaming a run's output".
 
 ### v0 and v1
 
 A v0 payload is raw prompt text, exactly as the inbox always took it. A
 v1 payload is one JSON object carrying a version, a kind (`message`,
-`ask`, `reply`, `notice`, `steer`, `interrupt`, `stop`), an id, a sender,
-an optional `replyTo`, and the text.
+`ask`, `reply`, `notice`, `stream`, `steer`, `interrupt`, `stop`), an id,
+a sender, an optional `replyTo`, and the text - plus, for a `stream`
+envelope alone, the run it is the output of and the file that holds all
+of it.
 
 A payload counts as v1 only if it parses as a JSON object and carries
 both `v` and `kind`. Anything else, including a JSON object missing one
@@ -512,8 +519,8 @@ direction - a notice is not an answer, and a child that finished after
 being asked something else would have its summary delivered as the reply
 to that question. Having a shutting-down child refuse its unanswered
 asks on the wire needs a `refused` envelope kind that does not exist
-(`internal/msg` has message, ask, reply, notice, steer, interrupt,
-stop), and buys nothing the poll does not already cover: a killed or
+(`internal/msg` has message, ask, reply, notice, stream, steer,
+interrupt, stop), and buys nothing the poll does not already cover: a killed or
 crashed child can no more refuse on the wire than it can call
 `notify_parent`, which was two of the three reports. One mechanism reads
 the one fact that is true in every case - the process is gone - so
@@ -1548,7 +1555,12 @@ self-exit timer, a different figure that stacks with `KIDO_LINGER_SECONDS`
 rather than sharing it - see "Idle self-exit, and resuming a run"),
 `KIDO_STALL_THRESHOLD_MS`, `KIDO_STOP_ESCALATION_MS`,
 `KIDO_HEARTBEAT_MS`, `KIDO_PARENT_POLL_MS`, `KIDO_ASK_POLL_MS`,
-`KIDO_SPAWN_TIMEOUT_MS` and `KIDO_STOP_TIMEOUT_MS`. The extension reads
+`KIDO_SPAWN_TIMEOUT_MS`, `KIDO_STOP_TIMEOUT_MS`, and streaming's five:
+`KIDO_STREAM_BATCH_MS`, `KIDO_STREAM_BACKOFF_MS` and
+`KIDO_STREAM_BACKOFF_CAP_MS` on the wrapper's side (how often a batch
+goes, and how long it waits after a failed send before trying again),
+`KIDO_STREAM_FLUSH_MS` and `KIDO_STREAM_FLUSH_CAP_MS` on the receiver's
+(the idle flush schedule's floor and its cap). The extension reads
 its own once at module scope, so its test suite re-imports both files
 under a cache-busting specifier to pick up a fresh value, and re-imports
 both together, because a fresh half and a cached half would silently pair

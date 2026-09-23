@@ -28,6 +28,7 @@ agent binaries.
 | `steer_subagent(to, message)` | `kido steer_subagent -- <to>` |
 | `interrupt_subagent(to)` | `kido interrupt_subagent -- <to>` |
 | `stop_subagent(to, force?)` | `kido stop_subagent [--force] -- <to>` |
+| `async_bash(command, name?, stream?)` | `kido async_bash [--name NAME] [--stream] -- COMMAND...` |
 | `notify_parent(summary)` | `kido notify_parent` |
 
 The rule runs one way only: a tool names its command, while a subcommand
@@ -325,7 +326,7 @@ command; a fork is a standalone session with no record.
 
 ## An async bash run
 
-`kido async_bash [--name NAME] -- COMMAND...` runs a command in a
+`kido async_bash [--name NAME] [--stream] -- COMMAND...` runs a command in a
 detached window of its own and tells the caller once it has ended. It is
 structurally a spawn whose child is a command rather than a pi session:
 the same `createRunWindow`, the same `runEnv`, the same `@kido_subagent`
@@ -462,6 +463,93 @@ record, so it is not in `kido list_agents`, cannot be addressed by
 nothing there to answer. What it has is the run record, which is already
 the store for facts that outlive a process, and `kido runs` shows it like
 any other.
+
+## Streaming a run's output
+
+`async_bash(command, name?, stream?)` and `kido async_bash --stream` ask
+for the command's output as it arrives, not only at the end. The tool
+surface is one boolean because the capability is one flag deep; a second
+tool would be a second name for it, and every tool invokes the
+subcommand of its own name.
+
+The reason a line is not an envelope is pi's own delivery model.
+Measured against 0.85.1, the steering queue drains **one** message per
+poll by default (`PendingMessageQueue.drain`, `steeringMode` defaulting
+to `one-at-a-time`), and every drained message is one LLM call carrying
+the whole context. One envelope per line would therefore be one turn per
+line: a thousand-line build takes the agent hostage at a cost quadratic
+in its output. What makes streaming affordable is not rate limiting,
+which only lengthens that, but **coalescing** at both ends - and one
+fact about pi's loop: extension `turn_end` handlers are awaited before
+the loop polls the steering queue (`agent.js`'s emit, `agent-session.js`
+forwarding `turn_end` with `await`, `agent-loop.js` polling after it), so
+a message enqueued from inside that handler is drained by the very next
+poll, riding a call the agent was already going to make.
+
+**The wrapper's side.** With `--stream`, `kido async-run` tees into a
+third writer that batches whole lines and sends one `stream` envelope
+per 250ms or 4KB, whichever comes first, with ANSI escapes and control
+bytes stripped from what travels (the output file keeps the bytes as
+written). A line the command has not finished writing waits for the next
+batch, or for the close. The parent's inbox is resolved **once** and
+held, and re-resolved only after a failed send: `send()`'s own
+resolution is a state-directory read plus a tmux pane listing, which is
+right for one notice and not for a chunk stream.
+
+Nothing about it may cost the command anything. The tee to the output
+file is unconditional and is the source of truth; the stream is
+best-effort from a bounded buffer, written to by the copy goroutine
+under a mutex and sent by one goroutine of its own. A failed or stalled
+send drops its chunk rather than retrying it - a build's output
+redelivered late and out of order is worse than absent, and the file has
+all of it - and takes a doubling backoff before the next attempt. A
+buffer past 64KB drops its own oldest lines, so what survives a slow
+parent is the tail. Per run, 256KB may be streamed; past that the stream
+says so once and goes quiet.
+
+Every line the parent did not acknowledge is counted, and the count goes
+in the completion notice (`N lines not streamed`), so a model that
+watched output arrive is never left believing it saw all of it. The
+notice is sent **after** the final chunk - the stream is closed, which
+flushes and waits for anything in flight, before the notice is built -
+because the wire is one connection per message with no sequencing, and
+the only ordering available is that the wrapper sends nothing
+concurrently.
+
+**The receiver's side.** A `stream` envelope is the one kind that
+reaches nobody on arrival: `kido-agents.ts` appends its lines to a
+per-run buffer, and the buffer is handed to the model as **one**
+collapsed custom message at one of three moments:
+
+- at `turn_end`, **only if that turn ran tools**. This guard is the
+  whole of why streaming is affordable, and it is one `if`. A turn with
+  tool calls has its next LLM call already committed, so the batch costs
+  zero extra turns. A turn without them was the agent stopping: flushing
+  there buys a turn, that turn's own `turn_end` has no tool calls
+  either, more lines arrive while it runs, and the loop ends when the
+  command does - the seizure this design exists to avoid, re-entering
+  through the coalesced channel.
+- otherwise on a backoff schedule - 10s, then 20s, 40s, ..., capped at
+  300s - each flush costing one genuine turn. The first wakes are
+  frequent, which is when an early failure is worth seeing; the later
+  ones are sparse, which is when there is nothing to do but wait. One
+  timer for the session, not one per run.
+- immediately before a run's completion notice, which also resets the
+  schedule, so the model never reads "this is how it ended" above the
+  output it is the ending of.
+
+A batch carries the last 200 lines or 16KB, whichever binds first, under
+one line reading `... N lines omitted (see <path>)` - N counting both
+what the cap cut and what the held buffer (5000 lines) dropped while
+waiting for a turn, since one number is the only one a model can act on. Tail, not head, for
+the reason the completion notice carries one. The run's name is on the
+row and in the batch's first line, because a bash run has no state
+record and the label would otherwise fall through to a pane id.
+
+What this costs, stated plainly: while the agent is working, the stream
+costs it context bytes and no turns at all; while it is idle, a
+ten-minute build wakes it about six times and an hour-long one about
+sixteen. `stream` defaults to off.
 
 ## A human at a shell
 

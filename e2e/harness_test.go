@@ -317,11 +317,19 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 	// a full second before checking it is still shown running, and this
 	// setting is global to every inner server this harness starts - a
 	// shorter threshold marked their panes stalled too.
+	// KIDO_STREAM_* shorten the streaming wrapper's batch interval and the
+	// backoff it takes after a failed send, in the same one place and for
+	// the same reason: the wrapper is a `kido async-run` the inner server
+	// started, and a real 250ms batch would have a test of coalescing
+	// waiting out the settle for a handful of chunks.
 	body := fmt.Sprintf(`
 set-environment -g KIDO_STATE_DIR "%s"
 set-environment -g KIDO_LINGER_SECONDS 1
 set-environment -g KIDO_STOP_ESCALATION_MS 300
 set-environment -g KIDO_STALL_THRESHOLD_MS 3000
+set-environment -g KIDO_STREAM_BATCH_MS 100
+set-environment -g KIDO_STREAM_BACKOFF_MS 100
+set-environment -g KIDO_STREAM_BACKOFF_CAP_MS 500
 set -g status off
 set -sg escape-time 0
 set -g default-shell /bin/bash

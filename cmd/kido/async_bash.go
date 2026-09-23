@@ -14,7 +14,7 @@ import (
 )
 
 func asyncBashUsage() string {
-	return "usage: kido async_bash [--name NAME] -- COMMAND [ARG...]"
+	return "usage: kido async_bash [--name NAME] [--stream] -- COMMAND [ARG...]"
 }
 
 // asyncBashCmd implements `kido async_bash`: it creates a detached window
@@ -33,6 +33,7 @@ func asyncBashCmd(args []string) error {
 	fs := flag.NewFlagSet("async_bash", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	name := fs.String("name", "", "window name; derived from the command when omitted")
+	stream := fs.Bool("stream", false, "send the command's output to this caller in batches as it runs")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w\n%s", err, asyncBashUsage())
 	}
@@ -92,6 +93,9 @@ func asyncBashCmd(args []string) error {
 	env := append(runEnv(runID, caller.PID, caller.Instance, meta.Depth, false),
 		"KIDO_STATE_DIR="+state.Dir())
 	command := []string{self, "async-run", "--run-id", runID, "--name", windowName}
+	if *stream {
+		command = append(command, "--stream")
+	}
 	return createRunWindow(meta, pane.SessionID, env, command)
 }
 

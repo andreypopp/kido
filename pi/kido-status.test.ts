@@ -27,7 +27,7 @@ import { join, delimiter, dirname } from "node:path";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
 import kidoStatus, { parseEnvelope } from "./kido-status.ts";
-import kidoAgents, { isAncestor } from "./kido-agents.ts";
+import kidoAgents, { isAncestor, nextStreamFlushDelay, streamBatch } from "./kido-agents.ts";
 
 // The fake kido binary. Written to disk once per fixture so it can be
 // found on PATH as a file literally named "kido" - findKido() joins a
@@ -1633,6 +1633,23 @@ test("async_bash passes -- and the command unchanged, with --name only when give
   }
 });
 
+test("async_bash asks for --stream only when the model did", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const asyncBash = s.tools.get("async_bash");
+
+    await asyncBash.execute("c1", { command: "make", name: "build" });
+    assert.deepEqual(fx.lastAsyncBashArgs(), ["async_bash", "--name", "build", "--", "make"], "streaming is off by default");
+
+    await asyncBash.execute("c2", { command: "make", name: "build", stream: true });
+    assert.deepEqual(fx.lastAsyncBashArgs(), ["async_bash", "--name", "build", "--stream", "--", "make"]);
+  } finally {
+    fx.restore();
+  }
+});
+
 test("async_bash's result carries the run id and the output path kido printed and derived, and tells the model to read it meanwhile", async () => {
   const fx = makeFixture();
   try {
@@ -1648,6 +1665,173 @@ test("async_bash's result carries the run id and the output path kido printed an
     assert.match(result.content[0].text, new RegExp(wantOutput.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the result text names the output path");
     assert.match(result.content[0].text, /notice/, "the result text says a notice arrives on completion");
     assert.match(result.content[0].text, /read/, "the result text says the output file can be read meanwhile");
+  } finally {
+    fx.restore();
+  }
+});
+
+// Streaming a run's output: the receiver half. A "stream" envelope is
+// buffered on arrival and reaches the model only when flushStreams runs,
+// so every case below asserts on pi.sendMessage calls of the stream
+// custom type - what the model would actually be handed - never on what
+// arrived on the wire.
+const streamMessages = (messages: Array<{ message: any }>) =>
+  messages.filter((m) => m.message.customType === "kido-stream");
+
+function streamEnvelope(text: string, run = "run-1", output = "/state/runs/run-1/output"): string {
+  return JSON.stringify({ v: 1, kind: "stream", id: "env-" + Math.random().toString(36).slice(2), from: { session: "", name: "chatty" }, text, run, output });
+}
+
+// withEnv runs fn with vars set, restoring whatever was there. The
+// extensions read their knobs once at module scope, so a case that sets
+// one has to go through freshExtensions() inside this.
+async function withEnv<T>(vars: Record<string, string>, fn: () => Promise<T>): Promise<T> {
+  const saved: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(vars)) {
+    saved[k] = process.env[k];
+    process.env[k] = v;
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+// TestStreamBatchRidesAToolTurn. The negative control is the whole test,
+// and it is the second half: the same chunks after a turn with no tool
+// calls must produce nothing until the idle timer fires. A receiver that
+// flushed on every turn_end passes the first half and reintroduces the
+// seizure this feature exists to avoid - flushing after a tool-less turn
+// buys a turn, that turn has no tool calls either, more lines arrive
+// during it, and the loop ends when the command does.
+//
+// "From inside the turn_end handler" is asserted by when the message
+// appears: nothing before the emit, the batch after it. pi awaits
+// extension handlers before polling the steering queue, so a batch that
+// is there when the emit resolves rides the LLM call the tool turn had
+// already committed to.
+test("a batch rides a turn that ran tools, and a turn that ran none leaves it held for the idle schedule (TestStreamBatchRidesAToolTurn)", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const factory = await withEnv({ KIDO_STREAM_FLUSH_MS: "120", KIDO_STREAM_FLUSH_CAP_MS: "400" }, () => freshExtensions());
+    const s = await startSessionUsing(factory, fx);
+
+    for (const text of ["line 1\nline 2", "line 3", "line 4\nline 5"]) {
+      assert.equal(await sendToInbox(s.inboxPath, streamEnvelope(text)), "ok");
+    }
+    assert.equal(streamMessages(s.messages).length, 0, "a chunk on the wire reaches the model on nobody's schedule but flushStreams'");
+
+    await s.emit("turn_end", { turnIndex: 0, toolResults: [{ role: "toolResult" }] });
+    const sent = streamMessages(s.messages);
+    assert.equal(sent.length, 1, "three chunks during one turn are one message, not three");
+    assert.match(sent[0].message.content, /line 1[\s\S]*line 5/, "the one message carries every line that arrived");
+    assert.equal((sent[0].opts as any).deliverAs, "steer", "a batch is steered, so the turn already committed to is the one that carries it");
+
+    // The negative control.
+    for (const text of ["line 6", "line 7"]) {
+      assert.equal(await sendToInbox(s.inboxPath, streamEnvelope(text)), "ok");
+    }
+    await s.emit("turn_end", { turnIndex: 1, toolResults: [] });
+    assert.equal(streamMessages(s.messages).length, 1, "a turn with no tool calls was the agent stopping: flushing there would buy a turn, and another");
+
+    await pollUntil(() => streamMessages(s.messages).length === 2, 2000, "the held batch to be flushed by the idle schedule");
+    assert.match(streamMessages(s.messages)[1].message.content, /line 6[\s\S]*line 7/, "the held lines arrive on the idle schedule instead");
+  } finally {
+    fx.restore();
+  }
+});
+
+// TestStreamBackoffDoubles, in the two halves the claim has. The schedule
+// itself is a pure function and is checked as one, with no clock at all;
+// what a clock could only measure badly is then checked as a count of
+// flushes over a fixed window, never as elapsed time.
+test("the idle flush schedule doubles up to its cap, and the flushes over a window are the few that implies (TestStreamBackoffDoubles)", async () => {
+  assert.equal(nextStreamFlushDelay(10000), 20000, "each idle flush costs a turn, so the next one waits twice as long");
+  assert.equal(nextStreamFlushDelay(20000), 40000);
+  assert.equal(nextStreamFlushDelay(160000), 300000, "the doubling stops at the cap");
+  assert.equal(nextStreamFlushDelay(300000), 300000, "and stays there");
+
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const factory = await withEnv({ KIDO_STREAM_FLUSH_MS: "40", KIDO_STREAM_FLUSH_CAP_MS: "120" }, () => freshExtensions());
+    const s = await startSessionUsing(factory, fx);
+
+    // Output all the way through the window, and never a turn to ride, so
+    // every flush in it is one the schedule chose.
+    const window = 600;
+    const deadline = Date.now() + window;
+    let n = 0;
+    while (Date.now() < deadline) {
+      await sendToInbox(s.inboxPath, streamEnvelope(`line ${++n}`));
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    const flushes = streamMessages(s.messages).length;
+    // Unbacked-off, a 40ms floor over this window is ~15 flushes, i.e. ~15
+    // turns; doubling to a 120ms cap is ~5.
+    assert.ok(flushes >= 2, `only ${flushes} flushes in ${window}ms: a held batch must still get through`);
+    assert.ok(flushes <= 8, `${flushes} flushes in ${window}ms: the schedule is not slowing down`);
+  } finally {
+    fx.restore();
+  }
+});
+
+// TestBatchTailAndOmittedCount. The cap lives in the receiver, because
+// the receiver is what spends the parent's context. Tail, not head, for
+// the reason the completion notice carries one: what a failure has to
+// say, it says last. The count is checked against the pure function too,
+// where "first line" is a fact about the batch rather than about the
+// header the flush puts above it.
+test("a batch is the tail, with one line saying how many it left out and where they are (TestBatchTailAndOmittedCount)", async () => {
+  const thousand = Array.from({ length: 1000 }, (_, i) => `line ${i + 1}`);
+  const batch = streamBatch(thousand, "/state/runs/run-1/output").split("\n");
+  assert.equal(batch[0], "... 800 lines omitted (see /state/runs/run-1/output)", "the first line of a capped batch says what is missing and where to read it");
+  assert.equal(batch.length, 201, "200 lines and the one that accounts for the rest");
+  assert.equal(batch[1], "line 801", "the tail, not the head");
+  assert.equal(batch[200], "line 1000");
+
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    assert.equal(await sendToInbox(s.inboxPath, streamEnvelope(thousand.join("\n"))), "ok");
+    await s.emit("turn_end", { turnIndex: 0, toolResults: [{ role: "toolResult" }] });
+
+    const sent = streamMessages(s.messages);
+    assert.equal(sent.length, 1);
+    const lines = sent[0].message.content.split("\n");
+    assert.match(lines[0], /^async run "chatty" output \(run run-1\)$/, "the header names the run, which is all the collapsed row shows");
+    assert.equal(lines[1], "... 800 lines omitted (see /state/runs/run-1/output)");
+    assert.equal(lines[lines.length - 1], "line 1000");
+  } finally {
+    fx.restore();
+  }
+});
+
+// The ordering rule, on the receiving side: a run's completion notice
+// must never reach the model before the output it is the ending of. The
+// wrapper sends the last chunk first (cmd/kido/async_run.go); this is the
+// other half, where a batch held for want of a free turn is flushed by
+// the notice's own arrival rather than left behind it.
+test("a completion notice flushes whatever output was still held, and arrives after it", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    assert.equal(await sendToInbox(s.inboxPath, streamEnvelope("line 1\nline 2")), "ok");
+    assert.equal(streamMessages(s.messages).length, 0, "nothing is flushed on arrival");
+
+    assert.equal(
+      await sendToInbox(s.inboxPath, envelope("notice", 'async run "chatty" completed: exit status 0', { from: { session: "", name: "chatty" } })),
+      "ok",
+    );
+    const kinds = s.messages.map((m) => m.message.customType);
+    assert.deepEqual(kinds, ["kido-stream", "kido-notice"], "the held batch goes first; the ending follows the output it is the ending of");
   } finally {
     fx.restore();
   }

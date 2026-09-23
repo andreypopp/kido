@@ -106,7 +106,7 @@ const MAX_PROMPT_BYTES = 1024 * 1024;
 // reported with --protocol alongside --inbox.
 const PROTOCOL_VERSION = 1;
 
-export type EnvelopeKind = "message" | "ask" | "reply" | "notice" | "steer" | "interrupt" | "stop";
+export type EnvelopeKind = "message" | "ask" | "reply" | "notice" | "stream" | "steer" | "interrupt" | "stop";
 
 // How pi is asked to schedule a delivered message: "followUp" waits for
 // the session to finish what it is doing, "steer" joins it.
@@ -119,6 +119,10 @@ export interface Envelope {
   from: { session: string; name?: string; pane?: string };
   replyTo?: string;
   text: string;
+  // A "stream" envelope's own pair (internal/msg): the async run these
+  // lines came from, and the file that has every one of them.
+  run?: string;
+  output?: string;
 }
 
 // parseEnvelope mirrors internal/msg.Parse: a payload is a v1 envelope

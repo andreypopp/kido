@@ -192,6 +192,63 @@ const ASK_LIVENESS_POLL_MS = Number(process.env.KIDO_ASK_POLL_MS) || 5000;
 // registerMessageRenderer below.
 const NOTICE_CUSTOM_TYPE = "kido-notice";
 
+// The custom message type a batch of a streaming run's output is
+// delivered as, rendered collapsed exactly as a notice is.
+const STREAM_CUSTOM_TYPE = "kido-stream";
+
+// STREAM_FLUSH_MS and STREAM_FLUSH_CAP_MS are the idle flush schedule: a
+// batch held because no turn was free is flushed after the first, then
+// after twice that, capped at the second. Each one of those costs a turn,
+// which is why it slows down; the doubling and the cap are the whole
+// bound on what a long-running build costs an idle agent
+// (docs/design-subagents.md, "Streaming a run's output").
+const STREAM_FLUSH_MS = Number(process.env.KIDO_STREAM_FLUSH_MS) || 10000;
+const STREAM_FLUSH_CAP_MS = Number(process.env.KIDO_STREAM_FLUSH_CAP_MS) || 300000;
+
+// nextStreamFlushDelay is the idle schedule, as a function of nothing but
+// the last delay: double it, stop at the cap.
+export function nextStreamFlushDelay(prev: number): number {
+  return Math.min(prev * 2, STREAM_FLUSH_CAP_MS);
+}
+
+// What one batch may carry: the last of it, for the reason the completion
+// notice carries a tail rather than a head. Everything cut is still in
+// the run's output file, which the batch names.
+const STREAM_BATCH_LINES = 200;
+const STREAM_BATCH_BYTES = 16 * 1024;
+
+// How many lines a held buffer keeps before it starts dropping its own
+// oldest. Above the batch cap by enough that the omitted count a batch
+// reports is the real one for any ordinary burst, and bounded because a
+// parent that never gets a free turn must not grow without limit.
+const STREAM_BUFFER_LINES = 5000;
+
+// streamBatch is the per-batch cap, as a function of nothing but its
+// arguments so it can be checked as one: the last STREAM_BATCH_LINES
+// lines or STREAM_BATCH_BYTES, whichever binds first, preceded by one
+// line saying how many were left out and where they can be read.
+export function streamBatch(lines: string[], output: string, alreadyDropped = 0): string {
+  let start = Math.max(0, lines.length - STREAM_BATCH_LINES);
+  let bytes = 0;
+  for (let i = lines.length - 1; i >= start; i--) {
+    bytes += Buffer.byteLength(lines[i], "utf8") + 1;
+    if (bytes > STREAM_BATCH_BYTES) {
+      start = i + 1;
+      break;
+    }
+  }
+  // Never nothing: one line longer than the whole budget still goes, cut
+  // to it, since a batch of pure bookkeeping tells the model less than a
+  // truncated line does.
+  if (start >= lines.length && lines.length > 0) start = lines.length - 1;
+  const kept = lines.slice(start).map((l) => capBytes(l, STREAM_BATCH_BYTES));
+  // Lines the buffer itself dropped while waiting for a free turn count
+  // here too: one number the model can trust, not one per mechanism.
+  const omitted = lines.length - kept.length + alreadyDropped;
+  if (omitted === 0) return kept.join("\n");
+  return [`... ${omitted} lines omitted (see ${output})`, ...kept].join("\n");
+}
+
 // The standing instruction appended to a subagent's system prompt (see
 // the before_agent_start hook below): with the automatic notice gone
 // (docs/design.md, "Notifying the parent"), nothing else tells a child
@@ -413,6 +470,86 @@ export default function (pi: ExtensionAPI) {
     );
   };
 
+  // streamBuffers holds, per async run, the lines that have arrived and
+  // not yet been handed to the model. A "stream" envelope never reaches
+  // the model on arrival, which is the whole feature: pi drains one
+  // steering message per poll, so one message per chunk would be one LLM
+  // turn per chunk. Flushed as one message at the moments flushStreams
+  // is called from, and nowhere else.
+  const streamBuffers = new Map<string, { name: string; output: string; lines: string[]; dropped: number }>();
+
+  // The idle flush schedule: one timer for the session, and the delay it
+  // was last armed with. Both are reset when a run completes, since the
+  // next run's first lines deserve the floor rather than whatever the
+  // last one escalated to.
+  let streamTimer: NodeJS.Timeout | null = null;
+  let streamDelay = STREAM_FLUSH_MS;
+
+  const clearStreamTimer = (): void => {
+    if (streamTimer) {
+      clearTimeout(streamTimer);
+      streamTimer = null;
+    }
+  };
+
+  // armStreamFlush schedules the next idle flush, doubling the delay each
+  // time up to the cap. Only ever one timer: a second run's lines ride
+  // the one already ticking rather than buying a turn of their own.
+  const armStreamFlush = (): void => {
+    if (streamTimer) return;
+    const delay = streamDelay;
+    streamTimer = setTimeout(() => {
+      streamTimer = null;
+      streamDelay = nextStreamFlushDelay(streamDelay);
+      flushStreams();
+    }, delay);
+    streamTimer.unref?.(); // a held batch must never hold pi's event loop open
+  };
+
+  // handleInboundStream buffers one chunk. Nothing is delivered here.
+  const handleInboundStream = (env: Envelope): void => {
+    const run = env.run || env.from.name || env.from.session || "run";
+    const entry = streamBuffers.get(run) ?? {
+      name: env.from.name || run,
+      output: env.output || "the run's output file",
+      lines: [],
+      dropped: 0,
+    };
+    for (const line of env.text.split("\n")) entry.lines.push(line);
+    if (entry.lines.length > STREAM_BUFFER_LINES) {
+      entry.dropped += entry.lines.length - STREAM_BUFFER_LINES;
+      entry.lines = entry.lines.slice(entry.lines.length - STREAM_BUFFER_LINES);
+    }
+    streamBuffers.set(run, entry);
+    armStreamFlush();
+  };
+
+  // flushStreams hands every held batch to the model, one collapsed
+  // custom message per run, and is the only place a stream chunk is
+  // delivered. Its callers are the schedule: a turn that had tool calls
+  // (free - the next LLM call is already committed), the idle timer
+  // above, and a run's own completion notice, which must not arrive
+  // before the output it is the ending of.
+  const flushStreams = (): void => {
+    if (streamBuffers.size === 0) return;
+    clearStreamTimer();
+    clearIdleExit();
+    for (const [run, entry] of [...streamBuffers]) {
+      streamBuffers.delete(run);
+      if (entry.lines.length === 0) continue;
+      const header = `async run ${JSON.stringify(entry.name)} output (run ${run})`;
+      pi.sendMessage(
+        {
+          customType: STREAM_CUSTOM_TYPE,
+          content: `${header}\n${streamBatch(entry.lines, entry.output, entry.dropped)}`,
+          display: true,
+          details: { from: entry.name, run, output: entry.output },
+        },
+        { deliverAs: "steer", triggerTurn: true },
+      );
+    }
+  };
+
   // pendingInboundAsks remembers, for an ask still awaiting our reply,
   // the asker's pane - the one part of `from` a `/reload` cannot change.
   // labelFrom's own fallback (session id, absent a name) is exactly what
@@ -556,7 +693,15 @@ export default function (pi: ExtensionAPI) {
         handleInboundReply(env);
         return "ok";
       case "notice":
+        // Before the notice itself, never after: a run's ending must not
+        // reach the model ahead of the output tail it refers to. The
+        // schedule starts over too - this run is done escalating.
+        flushStreams();
+        streamDelay = STREAM_FLUSH_MS;
         if (env.text) deliverNotice(env.text, labelFrom(env.from));
+        return "ok";
+      case "stream":
+        if (env.text) handleInboundStream(env);
         return "ok";
       case "steer":
         return handleInboundSteer(env);
@@ -1313,6 +1458,12 @@ export default function (pi: ExtensionAPI) {
           description: "A name for the run and its window; derived from the command's first word when omitted.",
         }),
       ),
+      stream: Type.Optional(
+        Type.Boolean({
+          description:
+            "Send the command's output to this session in batches while it runs, instead of only at the end. Off by default.",
+        }),
+      ),
     },
     { additionalProperties: false },
   );
@@ -1320,7 +1471,7 @@ export default function (pi: ExtensionAPI) {
     name: "async_bash",
     label: "Async Bash",
     description:
-      "Run a shell command in the background instead of waiting on it, so this session can keep working while it runs. This replaces polling: exactly one notice arrives when the command ends, carrying its exit status and a tail of its output. Read the output file with the ordinary read tool at any time before then to check on progress.",
+      "Run a shell command in the background instead of waiting on it, so this session can keep working while it runs. This replaces polling: exactly one notice arrives when the command ends, carrying its exit status and a tail of its output. Read the output file with the ordinary read tool at any time before then to check on progress. With stream=true the output also arrives in batches as it runs - between your own tool calls while you are working, on a slowing schedule when you are idle, capped per batch and per run, so some lines are only ever in the file, which always has all of them.",
     promptSnippet:
       "async_bash(command, name?) - run a command in the background; a notice with its exit status arrives when it ends, read the output file meanwhile",
     parameters: asyncBashParams,
@@ -1331,6 +1482,7 @@ export default function (pi: ExtensionAPI) {
       }
       const args = ["async_bash"];
       if (params.name) args.push("--name", params.name);
+      if (params.stream) args.push("--stream");
       args.push("--", params.command);
       const res = await host.runKido(args, { timeoutMs: SPAWN_TIMEOUT_MS });
       if ("error" in res) {
@@ -1345,9 +1497,11 @@ export default function (pi: ExtensionAPI) {
           text:
             `started run ${runID}${params.name ? ` (${params.name})` : ""} in window ${windowID}; ` +
             `a notice with its exit status and a tail of its output arrives when it ends - ` +
-            `read ${outputPath} with the read tool to check on it meanwhile`,
+            (params.stream
+              ? `batches of its output arrive meanwhile, capped, with anything they leave out in ${outputPath}`
+              : `read ${outputPath} with the read tool to check on it meanwhile`),
         }],
-        details: { name: params.name, window: windowID, pane: paneID, run: runID, output: outputPath },
+        details: { name: params.name, window: windowID, pane: paneID, run: runID, output: outputPath, stream: !!params.stream },
       };
     },
   };
@@ -1439,6 +1593,33 @@ export default function (pi: ExtensionAPI) {
     if (!noticeId || !pendingNotices.has(noticeId)) return;
     pendingNotices.delete(noticeId);
     renderNoticeWidget();
+  });
+
+  // The free flush, and the guard that is the whole of why streaming is
+  // affordable. pi awaits this handler before it polls the steering queue
+  // (measured against pi 0.85.1's agent-loop.js), so a batch sent from
+  // here is drained by the very next poll. A turn that ran tools has its
+  // next LLM call already committed and the batch costs nothing; a turn
+  // that ran none was the agent stopping, and flushing there buys a turn
+  // whose own turn_end has no tool calls either - which, with output
+  // still arriving, is a loop that ends when the command does. Those
+  // batches wait for the idle schedule instead.
+  pi.on("turn_end", (event: { toolResults?: unknown[] }) => {
+    if (!event?.toolResults?.length) return;
+    flushStreams();
+  });
+
+  // A streamed batch collapses the way a notice does, and for the same
+  // reason: it is bulk the model reads and a human only wants one line of.
+  // Its own first line names the run, so the collapsed row does not repeat
+  // a sender the way a notice's does.
+  pi.registerMessageRenderer<{ from: string }>(STREAM_CUSTOM_TYPE, (message, options, theme) => {
+    const content = typeof message.content === "string" ? message.content : "";
+    const [firstLine, ...rest] = content.split("\n");
+    if (!options.expanded) {
+      return { render: () => [theme.fg("dim", `${firstLine} — ctrl-o to expand`)] };
+    }
+    return { render: () => [theme.fg("dim", firstLine), ...rest] };
   });
 
   // Every notice, whatever kind of sender wrote it, collapses to one line
@@ -1556,6 +1737,9 @@ export default function (pi: ExtensionAPI) {
       // of what was pending so a later renderNoticeWidget call does not
       // resurrect rows for notices this session no longer remembers.
       pendingNotices.clear();
+      clearStreamTimer();
+      streamBuffers.clear();
+      streamDelay = STREAM_FLUSH_MS;
     },
     async sessionStarted(ctx: SessionContext) {
       startParentLivenessPoll(ctx.shutdown);
@@ -1569,6 +1753,7 @@ export default function (pi: ExtensionAPI) {
       // reload still tears the inbox down.
       stopParentLivenessPoll();
       clearIdleExit();
+      clearStreamTimer();
       abandonPending();
       await endOwnRun(reason);
     },

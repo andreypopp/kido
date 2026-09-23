@@ -20,7 +20,7 @@ import (
 const asyncSignalGrace = 2 * time.Second
 
 func asyncRunUsage() string {
-	return "usage: kido async-run [--run-id ID] [--name NAME]"
+	return "usage: kido async-run [--run-id ID] [--name NAME] [--stream]"
 }
 
 // asyncRunCmd implements `kido async-run`, the command a `kido
@@ -45,6 +45,7 @@ func asyncRunCmd(args []string) int {
 	fs.SetOutput(io.Discard)
 	runID := fs.String("run-id", os.Getenv("KIDO_AGENT_RUN_ID"), "the run this window is running")
 	name := fs.String("name", "", "the run's name, carried in the completion notice")
+	stream := fs.Bool("stream", false, "send the command's output to the parent in batches as it runs")
 	if err := fs.Parse(args); err != nil {
 		return fail(fmt.Sprintf("%v\n%s", err, asyncRunUsage()))
 	}
@@ -69,7 +70,16 @@ func asyncRunCmd(args []string) int {
 	// os/exec gives the child a single descriptor when Stdout and Stderr
 	// are equal, so the two arrive interleaved in the order the command
 	// wrote them rather than through two racing copies of the file.
-	w := io.MultiWriter(os.Stdout, out)
+	// The streamer is last, so the two writers that cannot fail to keep up
+	// - the pane and the output file, which is the source of truth - always
+	// have the bytes before anything is batched for the parent.
+	writers := []io.Writer{os.Stdout, out}
+	var stripe *streamer
+	if *stream {
+		stripe = newStreamer(*runID, *name, os.Getenv("KIDO_AGENT_PARENT_INSTANCE"))
+		writers = append(writers, stripe)
+	}
+	w := io.MultiWriter(writers...)
 	command := exec.Command(argv[0], argv[1:]...)
 	command.Stdin = os.Stdin
 	command.Stdout, command.Stderr = w, w
@@ -80,8 +90,20 @@ func asyncRunCmd(args []string) int {
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
 	defer signal.Stop(sig)
 
+	// report is the wrapper's whole ending, wherever it is reached from:
+	// the stream is closed first, which flushes its last batch and waits
+	// for any send in flight, so the notice is strictly after the final
+	// chunk and carries the count of what never made it.
+	report := func(result subrun.Result, status string) {
+		unstreamed := 0
+		if stripe != nil {
+			unstreamed = stripe.Close()
+		}
+		reportAsyncRun(*runID, *name, result, status, unstreamed)
+	}
+
 	if err := command.Start(); err != nil {
-		reportAsyncRun(*runID, *name, subrun.Failed, err.Error())
+		report(subrun.Failed, err.Error())
 		return fail(err)
 	}
 
@@ -101,7 +123,7 @@ func asyncRunCmd(args []string) int {
 				code = ee.ExitCode()
 			}
 		}
-		reportAsyncRun(*runID, *name, result, status)
+		report(result, status)
 		return code
 	case s := <-sig:
 		command.Process.Signal(s) //nolint:errcheck // best effort; the report below is the point
@@ -109,7 +131,7 @@ func asyncRunCmd(args []string) int {
 		case <-done:
 		case <-time.After(asyncSignalGrace):
 		}
-		reportAsyncRun(*runID, *name, subrun.Failed, "killed by "+s.String())
+		report(subrun.Failed, "killed by "+s.String())
 		return 1
 	}
 }
@@ -119,7 +141,7 @@ func asyncRunCmd(args []string) int {
 // arbiter of who observed the ending first (subrun.RecordOutcome's
 // O_EXCL), so a wrapper that loses it - to a sweep, or to `kido
 // stop_subagent` - stays quiet and leaves the notice to whoever won.
-func reportAsyncRun(runID, name string, result subrun.Result, status string) {
+func reportAsyncRun(runID, name string, result subrun.Result, status string, unstreamed int) {
 	err := subrun.RecordOutcome(runID, subrun.Outcome{Result: result, Text: status, At: time.Now()})
 	if err != nil {
 		if !os.IsExist(err) {
@@ -130,6 +152,6 @@ func reportAsyncRun(runID, name string, result subrun.Result, status string) {
 	asyncNotice{
 		runID: runID, name: name,
 		parentInstance: os.Getenv("KIDO_AGENT_PARENT_INSTANCE"),
-		result:         result, text: status,
+		result:         result, text: status, unstreamed: unstreamed,
 	}.send("async-run")
 }

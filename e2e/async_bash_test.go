@@ -31,13 +31,20 @@ func (h *harness) asyncParent(session, id string) *testutil.Inbox {
 // command can find a parent - and returns the run id it printed.
 func (h *harness) asyncBash(name string, command ...string) string {
 	h.t.Helper()
+	return h.asyncBashWith(nil, name, command...)
+}
+
+// asyncBashWith is asyncBash with extra flags before the --, which is
+// how a test asks for --stream.
+func (h *harness) asyncBashWith(flags []string, name string, command ...string) string {
+	h.t.Helper()
 	outFile := filepath.Join(h.dir, "async-"+name+".out")
 	quoted := make([]string, len(command))
 	for i, c := range command {
 		quoted[i] = shellQuote(c)
 	}
-	h.sendLiteral(fmt.Sprintf("%s async_bash --name %s -- %s > %s 2>&1; echo rc=$? >> %s",
-		kidoBin, name, strings.Join(quoted, " "), outFile, outFile))
+	h.sendLiteral(fmt.Sprintf("%s async_bash --name %s %s -- %s > %s 2>&1; echo rc=$? >> %s",
+		kidoBin, name, strings.Join(flags, " "), strings.Join(quoted, " "), outFile, outFile))
 	h.sendKeys("Enter")
 	out := h.waitFileContains(outFile, "rc=")
 	fields := strings.Fields(out)

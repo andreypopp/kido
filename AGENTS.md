@@ -568,6 +568,55 @@ build it paid for).
   rather than a claim about one command. It finds the wrapper by the run
   id on its command line rather than by reading `meta.json`, because the
   file is kido's belief and the process list is what is running.
+- **The streaming pair in `pi/kido-status.test.ts`,
+  `TestStreamBatchRidesAToolTurn`** — the second half is the test. A
+  receiver that flushes on *every* `turn_end` passes the first half
+  (N chunks in one tool-bearing turn, one `sendMessage`) and
+  reintroduces exactly the seizure coalescing exists to avoid: a flush
+  after a tool-less turn buys a turn, that turn has no tool calls
+  either, more output lands while it runs, and it repeats until the
+  command ends. So the negative half holds the same chunks after a turn
+  with `toolResults: []` and asserts **zero** sends until the idle timer
+  fires. The `toolResults` guard is one `if`, and it is the first thing
+  a cleanup would read as redundant.
+- **`TestStreamBackoffDoubles`** — two halves for one claim, because
+  neither alone is honest. The schedule is a pure function
+  (`nextStreamFlushDelay`) and is checked with no clock at all; what a
+  clock could only measure badly is then a *count of flushes over a
+  fixed window*, never an elapsed-time assertion. Feeding output right
+  through that window is load-bearing: a schedule only re-arms when
+  there is something held, so a test that stops feeding stops measuring
+  the schedule.
+- **`TestWrapperDoesNotBlockOnADeadParent`** — two parents that cannot
+  take the output, and only one of them can fail the test. A socket with
+  nothing listening fails a send instantly, so no amount of blocking
+  shows; the stalled listener (`testutil.StartInbox(t, "")`, which reads
+  and never answers) costs a sender the whole wire deadline, and that is
+  the half with teeth. What it measures is the **command's** own
+  duration, read off the output file's last write rather than the
+  wrapper's return, because the wrapper's ending legitimately waits out
+  a stalled send or two and would drown the signal. Run against a
+  wrapper that sends from the copy path it prints `the command took
+  2.013580423s, want under 1.4s`. Its second assertion, the notice's
+  `N lines not streamed`, is readable only because a stalled inbox still
+  records what arrived.
+- **`TestCompletionNoticeFollowsTheFinalChunk`** — the batch interval is
+  set *longer than the whole run* on purpose, and the command's last
+  line has no newline: both make the only chunk there is come from the
+  close, which is the one the ordering rule is about. With an ordinary
+  interval the sender has already drained everything by the time the
+  command exits, and a wrapper that notified before closing its stream
+  passes.
+- **`TestStreamCoalescesAndStripsAnsi`** — the lines are written slowly,
+  one every 30ms. Written in a burst they arrive in one `Write` and are
+  coalesced by the pipe alone, so a wrapper sending one envelope per
+  line passes; measured, that version of the test stayed green and the
+  e2e twin reported `50 lines arrived as 50 envelopes`.
+- **`TestStreamNeverPastes`** — the same shape, and the same load-
+  bearing assertion, as `TestAskAgentRefusesACallerWithNoReplyPath`: the
+  pane was not typed into. A build's output tail typed into whatever
+  shell reclaimed a dead parent's pane is every line of it run as a
+  command.
 - **`TestAsyncNoticeTailIsValidUTF8`** — the cut is at a byte offset, and
   the send path refuses a message that is not valid UTF-8 outright. A
   log ending mid-character is an ordinary build log, and without the

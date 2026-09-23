@@ -22,6 +22,7 @@ const (
 	KindAsk       Kind = "ask"       // a question expecting a reply envelope
 	KindReply     Kind = "reply"     // the answer to an earlier ask, by ReplyTo
 	KindNotice    Kind = "notice"    // informational, no reply expected
+	KindStream    Kind = "stream"    // a coalesced batch of an async run's output lines
 	KindSteer     Kind = "steer"     // a course correction, delivered into the receiver's running turn
 	KindInterrupt Kind = "interrupt" // abort the receiver's current turn; it stays alive
 	KindStop      Kind = "stop"      // end the receiver's session
@@ -45,6 +46,13 @@ type Envelope struct {
 	From    From   `json:"from"`
 	ReplyTo string `json:"replyTo,omitempty"`
 	Text    string `json:"text"`
+	// Run and Output are a "stream" envelope's own: which async run wrote
+	// these lines, and where every line of it can be read. The receiver
+	// buffers by Run - a name can be shared by two runs, an id cannot -
+	// and names Output in the batch it hands the model, so a tail the cap
+	// cut is still reachable.
+	Run    string `json:"run,omitempty"`
+	Output string `json:"output,omitempty"`
 }
 
 // Parse reports whether raw is a v1 envelope: a JSON object carrying both

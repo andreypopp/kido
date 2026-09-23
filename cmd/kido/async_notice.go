@@ -31,6 +31,12 @@ type asyncNotice struct {
 	parentInstance string
 	result         subrun.Result
 	text           string
+	// unstreamed is how many of the run's output lines never reached the
+	// parent while it ran (--stream only; zero for every other sender and
+	// every other observer of an ending). Reported because a model that
+	// watched output arrive would otherwise have no way to know it was
+	// watching part of it.
+	unstreamed int
 }
 
 // noticeFor is the notice for a run a sweep has just recorded the ending
@@ -80,6 +86,9 @@ func (n asyncNotice) body() string {
 	fmt.Fprintf(&b, "async run %q %s: %s\n", n.label(), n.result, n.text)
 	fmt.Fprintf(&b, "run: %s\n", n.runID)
 	fmt.Fprintf(&b, "output: %s\n", subrun.OutputPath(n.runID))
+	if n.unstreamed > 0 {
+		fmt.Fprintf(&b, "%d lines not streamed (the output file above has every one)\n", n.unstreamed)
+	}
 	tail, omitted, err := tailOfFile(subrun.OutputPath(n.runID), maxNoticeTailBytes)
 	switch {
 	case err != nil:
