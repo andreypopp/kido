@@ -234,6 +234,11 @@ type model struct {
 	// first saw a command start and stop.
 	phases map[string]shellPhase
 
+	// sshRemote is the panes whose far side has been seen marking a
+	// prompt, keyed by PaneID and garbage-collected with phases. See
+	// observeRemote.
+	sshRemote map[string]bool
+
 	// now is the clock, injectable so tests can drive the phases above;
 	// at is the one reading taken for the update being handled, so every
 	// deadline in a frame is measured against the same instant.
@@ -276,7 +281,8 @@ func Run(opts Options) error {
 	m := model{
 		opts: opts, conn: conn,
 		seen: map[string]time.Time{}, phases: map[string]shellPhase{},
-		now: time.Now,
+		sshRemote: map[string]bool{},
+		now:       time.Now,
 	}
 	m.at = m.now()
 	m.started = m.at
@@ -768,6 +774,7 @@ func (m *model) track() {
 	live := make(map[string]bool, len(m.snap.panes))
 	for _, p := range m.snap.panes {
 		live[p.PaneID] = true
+		m.observeRemote(p)
 		if running, ok := p.ShellStatus(); ok {
 			// A program holding the terminal is not a run, so it never
 			// becomes one the debounce has drawn - otherwise quitting an
@@ -796,6 +803,49 @@ func (m *model) track() {
 		if !live[pane] {
 			delete(m.phases, pane)
 		}
+	}
+	for pane := range m.sshRemote {
+		if !live[pane] {
+			delete(m.sshRemote, pane)
+		}
+	}
+}
+
+// sshInteractive reports whether pane p is an ssh that has handed the
+// terminal to a remote shell, as its arguments describe it.
+func (m *model) sshInteractive(p tmux.Pane) bool {
+	sess, ok := m.snap.ssh[p.PanePID]
+	return ok && sess.Interactive
+}
+
+// observeRemote notes whether an interactive ssh pane's far side emits
+// OSC 133, in which case the pane's own #{pane_command_*} fields describe
+// the remote shell: tmux parses the markers off the pane's output stream
+// and does not know they crossed a network.
+//
+// The tell is a prompt marked strictly after the local shell marked the
+// ssh command as started, since nothing local can mark one while ssh
+// holds the terminal. Strictly: tmux's timestamps are whole seconds, and
+// an ssh launched in the same second as the prompt before it would
+// otherwise pass this on a host with no integration at all, which is the
+// permanently-busy row the suppression exists for. The price is a
+// connection that reaches its first remote prompt inside that same
+// second - a local one, mostly: the far side goes on being suppressed
+// until it returns to a prompt in a later second, so the session's first
+// command is missed and every one after it is not.
+//
+// The reading latches because tmux overwrites pane_command_start_time on
+// the remote shell's own 133;C: mid-command a reporting pane carries the
+// same fields as a silent one. It is dropped the moment the pane stops
+// being an interactive ssh, so a second ssh from that pane is judged on
+// its own.
+func (m *model) observeRemote(p tmux.Pane) {
+	if !m.sshInteractive(p) {
+		delete(m.sshRemote, p.PaneID)
+		return
+	}
+	if p.LastPromptTime > p.CommandStartTime {
+		m.sshRemote[p.PaneID] = true
 	}
 }
 
@@ -1264,10 +1314,12 @@ func (m *model) agentTitleOf(p tmux.Pane) (string, bool) {
 // and answers it for the innermost program, where pane_current_command
 // would name the process group leader (git, for a pager; sudo, for an
 // editor under it). An ssh sitting at a remote shell takes no alternate
-// buffer of its own, so it is decided from its arguments instead; a
-// full-screen program on the far side still shows here.
+// buffer of its own, so it is decided from its arguments instead - unless
+// the far side is reporting (observeRemote), when the pane's OSC 133
+// state is the remote shell's and is worth drawing. A full-screen program
+// on the far side still shows here.
 func (m *model) interactivePane(p tmux.Pane) bool {
-	if sess, ok := m.snap.ssh[p.PanePID]; ok && sess.Interactive {
+	if m.sshInteractive(p) && !m.sshRemote[p.PaneID] {
 		return true
 	}
 	return p.AlternateOn

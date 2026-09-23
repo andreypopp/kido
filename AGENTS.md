@@ -386,6 +386,14 @@ build it paid for).
   produced the rule; delete the Go half and the fixture pins nothing but
   itself. Same shape, and same reason, as
   `internal/msg/testdata/discriminator.json`.
+- **`TestSSHWithoutRemoteIntegrationStaysQuiet`** — the negative control
+  the ssh gate is only safe with. `observeRemote` latches, so a wrong
+  reading is permanent for that session, and the row it produces is a
+  green one that never ends: the test therefore holds a non-integrated
+  far side still for ten ticks rather than checking it once.
+  `TestSSHRemoteShellReports` is its positive half, and
+  `TestSSHRemoteLatchDropped` pins that the latch is a reading of one ssh
+  session and not of the pane.
 - **`TestParseGuardLookalike`** — command output resembling a control-mode
   guard line must not be read as `%end`.
 - **`TestLoadAgentPrecedence`** — pi wins over Claude Code for the same
@@ -524,10 +532,14 @@ reference:
 
 - A background shell has no completion event (see above), so a session
   held open by one alone never returns to idle.
-- An interactive `ssh` pane is suppressed wholesale, so a remote shell
-  that *has* the integration installed reports nothing. Gating the
-  suppression on `LastPromptTime > CommandStartTime` — a prompt marker
-  arriving after the ssh launch came from the far side — would fix it.
+- An interactive `ssh` pane whose far side reaches its first prompt in
+  the same whole second the ssh started in reports nothing until the
+  prompt after its first remote command: `observeRemote`
+  (`internal/ui`) reads `LastPromptTime > CommandStartTime` strictly,
+  and tmux's timestamps have no finer resolution to read. Accepting the
+  tie is not the fix — a local prompt and an ssh launched from it share
+  a second just as readily, and every non-integrated remote would then
+  hold the row green for the life of the connection.
 
 The limits of the subagent system — a child moved to another session, a
 blocked ask holding a whole turn, a child that exits before its window
