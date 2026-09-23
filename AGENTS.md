@@ -706,10 +706,11 @@ not repeat them.
   server.
 - **Every wait has a deadline.** No open-ended polling in code or in
   your own shell.
-- **Verification is yours; it is not re-run.** One pre-fix proof: the
-  test for the behaviour the change exists for, run against a `/tmp`
-  copy without the change, its failure quoted verbatim. Not one per
-  behaviour - ten reverts is an afternoon. Then, once:
+- **Verification is yours; it is not re-run.** For a bug fix, write the
+  test first and watch it fail before touching the code; quote that
+  failure. A feature needs no such proof - its tests need only pass. Do
+  not revert working code into `/tmp` copies to manufacture failures.
+  Then, once:
 
       env -u KIDO_AGENT_PARENT_INSTANCE -u KIDO_AGENT_DEPTH -u KIDO_AGENT_TASK_FILE -u KIDO_AGENT_PARENT_PID -u TMUX_PANE KIDO_TS_TEST_REQUIRED=1 make test
       env -u KIDO_AGENT_PARENT_INSTANCE -u KIDO_AGENT_DEPTH -u KIDO_AGENT_TASK_FILE -u KIDO_AGENT_PARENT_PID -u TMUX_PANE KIDO_E2E_REQUIRED=1 KIDO_TMUX=$HOME/bin/tmux make e2e
