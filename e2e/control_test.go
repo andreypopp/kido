@@ -4,18 +4,22 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"kido/internal/testutil"
 )
 
 // wedgedChild is agentWithInbox (harness_test.go) read as one particular
 // thing: an inbox that answers "ok" to anything and then does nothing is
 // a pi extension that received the request but never acted on it, wedged
 // the way a real one was once observed to be for hours after a laptop
-// slept and its provider connection died. The socket itself is of no
-// interest here - what the target failed to do with the request is.
-func (h *harness) wedgedChild(session, sessionID string) (paneID, windowID string) {
+// slept and its provider connection died. The inbox is returned too: a
+// caller that needs to know the target actually got the stop request -
+// not merely that stop_subagent's own window has had time to start - has
+// nowhere else to look.
+func (h *harness) wedgedChild(session, sessionID string) (paneID, windowID string, in *testutil.Inbox) {
 	h.t.Helper()
-	_, paneID = h.agentWithInbox(session, sessionID)
-	return paneID, h.windowID(paneID)
+	in, paneID = h.agentWithInbox(session, sessionID)
+	return paneID, h.windowID(paneID), in
 }
 
 // TestStopKillsAWedgedChildAfterEscalation drives `kido stop_subagent` against a
@@ -27,7 +31,7 @@ func TestStopKillsAWedgedChildAfterEscalation(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	_, windowID := h.wedgedChild("alpha", "wedged-e2e")
+	_, windowID, _ := h.wedgedChild("alpha", "wedged-e2e")
 
 	out := h.runKido("alpha", "stop.out", "stop_subagent", "wedged-e2e")
 	if !strings.Contains(out, "killed") {
@@ -48,10 +52,20 @@ func TestStopDoesNotKillAHealthyChild(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	paneID, windowID := h.wedgedChild("alpha", "healthy-e2e")
+	paneID, windowID, in := h.wedgedChild("alpha", "healthy-e2e")
 
+	// The record must not disappear until the stop request has actually
+	// reached the target: stop_subagent runs in a freshly created window
+	// (runKido), and that window taking longer to start than some fixed
+	// guess to remove the record first is exactly how this test used to
+	// fail ("no agent session matches") before controlTarget ever got to
+	// send anything. in.Received() is the one place delivery can be
+	// observed from outside the target, so it is what gates the removal.
 	go func() {
-		time.Sleep(60 * time.Millisecond)
+		deadline := time.Now().Add(settle)
+		for len(in.Received()) == 0 && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
 		h.agentStatus("healthy-e2e", paneID, "pi", "idle", "--remove")
 	}()
 
