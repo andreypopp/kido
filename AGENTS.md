@@ -430,7 +430,14 @@ build it paid for).
   that is merely slow is still waited for, through many liveness
   readings and an abort signal that never fires, and the answer that
   arrives is its own. A fix that gave up on a slow healthy target would
-  be worse than the hang, and only that case can report it.
+  be worse than the hang, and only that case can report it. The reading
+  count is polled for, not sampled after one fixed sleep: a sleep sized
+  for three 50ms-interval readings came up short on a loaded CI runner,
+  since each reading is a real subprocess round trip and not a timer
+  tick. `makeFixture`'s `restore()` retries its `rmSync` past `ENOTEMPTY`
+  for the same reason on the other side of the same race - a liveness or
+  send poll's subprocess can still be writing its log line into the
+  fixture's directory after a test's own assertions are done with it.
 - **`TestSSHWithoutRemoteIntegrationStaysQuiet`** — the negative control
   the ssh gate is only safe with. `observeRemote` latches, so a wrong
   reading is permanent for that session, and the row it produces is a

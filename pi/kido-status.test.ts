@@ -448,7 +448,11 @@ function makeFixture(): Fixture {
         if (v === undefined) delete process.env[k];
         else process.env[k] = v;
       }
-      rmSync(dir, { recursive: true, force: true });
+      // maxRetries/retryDelay, not a bare rmSync: a liveness or send poll's
+      // real subprocess can still be writing its log line into dir after a
+      // test's own assertions are done with it, which rmSync alone reads
+      // as ENOTEMPTY rather than retrying past.
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     },
   };
 }
@@ -3190,12 +3194,13 @@ test("a live target that takes its time is still waited for, and its reply is wh
       const p = ask.execute("c1", { to: "peer-a", question: "q", timeoutMs: 600000 }, ac.signal);
       const sent = await fx.waitForLog("peer-a", "ask");
 
-      await new Promise((r) => setTimeout(r, 600));
+      const readings = () => fx.parentAliveCalls().filter((args) => args.includes("peer-a-instance")).length;
+      // Polled for, not slept for a fixed distance: each reading is a real
+      // subprocess round trip, so a run-to-run-constant sleep either wastes
+      // time on a fast machine or comes up short of 3 on a loaded one -
+      // which is exactly how this test was flaky on CI.
+      await pollUntil(() => readings() >= 3, 6000, "several liveness readings that came back alive");
       assert.equal(await pendingState(p), "pending", "a slow but live target must still be waited for");
-      assert.ok(
-        fx.parentAliveCalls().filter((args) => args.includes("peer-a-instance")).length >= 3,
-        "several liveness readings came back alive and none of them gave up",
-      );
 
       const resp = await sendToInbox(s.inboxPath, envelope("reply", "the slow answer", { replyTo: sent!.id, from: { session: "peer-a", name: "peer-a" } }));
       assert.equal(resp, "ok");
