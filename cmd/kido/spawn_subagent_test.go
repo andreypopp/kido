@@ -52,7 +52,9 @@ func withNewWindow(t *testing.T, windowID, paneID string, err error) *[]newWindo
 	// question createRunWindow asks about it on a failure has to be
 	// answered here too; the ordinary answer is that it is still there.
 	windowExists = func(string) bool { return true }
-	t.Cleanup(func() { newWindow, markSubagent, markSubagentPane, windowExists = prev, prevMark, prevPaneMark, prevExists })
+	t.Cleanup(func() {
+		newWindow, markSubagent, markSubagentPane, windowExists = prev, prevMark, prevPaneMark, prevExists
+	})
 	return &calls
 }
 
