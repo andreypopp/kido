@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,16 @@ import (
 // to that bound has no debounce to wait out, only a slow machine to
 // finish on, and 5s was found to be too tight for that alone.
 //
+// The batch window is set far wider than writeEvery, and the envelope
+// budget is judged against the number of windows the run actually
+// spanned (elapsed/batch + 2, cmd/kido/async_stream_test.go's
+// TestStreamCoalescesAndStripsAnsi): on a loaded runner a 50ms gap
+// between lines can stretch well past a 100ms window, and a fixed
+// count of envelopes then measures how far it stretched rather than
+// whether the wrapper batches at all. It is set on this test's own
+// inner server (like ZDOTDIR elsewhere in this suite), not in the
+// shared harness config, because no other e2e test drives --stream.
+//
 // Watched over a span rather than sampled once, for the reason
 // stableCount gives: one notice and the first of two are identical at any
 // instant.
@@ -31,16 +42,20 @@ func TestAsyncBashStreamCoalescesAndEndsWithTheNotice(t *testing.T) {
 	t.Parallel()
 	const lines = 20
 	const writeEvery = 50 * time.Millisecond
+	const batch = 2 * time.Second
 	const noticeWait = 20 * time.Second
 
 	h := start(t, "alpha")
+	h.in("set-environment", "-g", "KIDO_STREAM_BATCH_MS", strconv.FormatInt(batch.Milliseconds(), 10))
 	in := h.asyncParent("alpha", "parent-stream-e2e")
 
+	runStart := time.Now()
 	h.asyncBashWith([]string{"--stream"}, "chatty",
 		"sh", "-c", fmt.Sprintf("for i in $(seq 1 %d); do echo line $i; sleep %.3f; done; exit 2", lines, writeEvery.Seconds()))
 
 	h.waitFor(func() bool { return lastNotice(h, in) != "" }, noticeWait,
 		msgf("the parent's inbox to receive the run's completion notice"))
+	elapsed := time.Since(runStart)
 	// The notice is the wrapper's last act, but the chunks before it were
 	// sent by the same process in the same order, so nothing can still be
 	// in flight behind it.
@@ -68,8 +83,12 @@ func TestAsyncBashStreamCoalescesAndEndsWithTheNotice(t *testing.T) {
 	if chunks == 0 {
 		t.Fatalf("no output was streamed at all; the inbox holds %d envelopes", len(in.Received()))
 	}
-	if chunks >= lines {
-		t.Errorf("%d lines arrived as %d envelopes, want them coalesced into far fewer", lines, chunks)
+	// A batching wrapper can send at most one chunk per window the run
+	// spanned, plus the one its close flushes. A wrapper sending one
+	// envelope per line sends all of them however long the run took.
+	want := int(elapsed/batch) + 2
+	if chunks > want {
+		t.Errorf("%d lines arrived as %d envelopes over %v, want at most %d: a chunk is a %v window's worth of output, not a line", lines, chunks, elapsed, want, batch)
 	}
 	if notices != 1 {
 		t.Errorf("parent received %d completion notices, want exactly 1", notices)
