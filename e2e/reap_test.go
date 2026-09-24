@@ -88,16 +88,34 @@ func (h *harness) killPane(paneID string) {
 }
 
 // runKido runs a kido command in a one-shot window of session and returns
-// its output once it has written something. A fresh window rather than
-// the client's own pane: several of these tests have the client looking
-// at the very window under test, and typing there would land in it.
+// its output once the command has exited. A fresh window rather than the
+// client's own pane: several of these tests have the client looking at
+// the very window under test, and typing there would land in it.
+//
+// It waits for the trailing "rc=<code>" line rather than mere
+// non-emptiness: a command that writes output before it is done - a
+// notice line well ahead of its final "stopped ...", say - can otherwise
+// be read mid-write, its exit code line not there yet even though the
+// file already holds something.
 func (h *harness) runKido(session, outName string, args ...string) string {
 	h.t.Helper()
 	outFile := filepath.Join(h.dir, outName)
 	script := fmt.Sprintf("%s %s > %s 2>&1; echo rc=$? >> %s",
 		kidoBin, strings.Join(args, " "), outFile, outFile)
 	h.newWindow(session, "", "sh", "-c", script)
-	return h.waitFileNonEmpty(outFile)
+	var content string
+	h.waitFor(func() bool {
+		b, err := os.ReadFile(outFile)
+		if err != nil || !strings.Contains(string(b), "rc=") {
+			return false
+		}
+		content = string(b)
+		return true
+	}, settle, func() string {
+		b, _ := os.ReadFile(outFile)
+		return fmt.Sprintf("%s to contain an \"rc=\" line, got %q", outFile, string(b))
+	})
+	return content
 }
 
 // stays asserts that cond keeps holding for a while: the shape every
