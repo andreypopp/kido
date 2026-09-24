@@ -1,26 +1,24 @@
-BIN ?= $(HOME)/.local/bin
-TMUX_FORK_BUILD ?= $(CURDIR)/build/tmux-fork
+PREFIX ?= $(HOME)/.local
+GO_LDFLAGS ?=
 
 .PHONY: build install test e2e
 
 build:
 	go build -o bin/kido ./cmd/kido
 
-# built once, into a scratch prefix outside $BIN, and only copied in if
-# $BIN/kido-tmux is missing - a file target, so a second `make install`
-# does not pay for the tmux fork's build again
-$(BIN)/kido-tmux:
-	mkdir -p $(BIN)
-	./scripts/install-tmux-fork.sh $(TMUX_FORK_BUILD)
-	cp $(TMUX_FORK_BUILD)/bin/kido-tmux $(BIN)/kido-tmux
+# built straight into $(PREFIX) - the same tree the binary and the shared
+# files land in - keyed on the binary it produces, so a second `make
+# install` does not pay for the tmux fork's build again
+$(PREFIX)/bin/kido-tmux:
+	./scripts/install-tmux-fork.sh $(PREFIX)
 
 # the tmux config, the shell integration, the bin directory's shims, the
 # pi extensions and the Claude Code settings go where kido looks for them
 # relative to its own binary, the same layout Homebrew's pkgshare gives it
-install: build $(BIN)/kido-tmux
-	mkdir -p $(BIN)
-	rm -f $(BIN)/kido && cp bin/kido $(BIN)/kido
-	./scripts/install-share.sh $(BIN)/../share/kido
+install: $(PREFIX)/bin/kido-tmux
+	mkdir -p $(PREFIX)/bin
+	go build -ldflags '$(GO_LDFLAGS)' -o $(PREFIX)/bin/kido ./cmd/kido
+	./scripts/install-share.sh $(PREFIX)/share/kido
 
 # unit tests; the end-to-end suite needs the patched tmux and is separate.
 # test-ts covers pi's two extensions under node and skips without one, so

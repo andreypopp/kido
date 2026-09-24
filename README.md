@@ -202,13 +202,13 @@ in `~/.config/kido/kido.conf` now.
 ## Development
 
 ```sh
-make install          # binary to $BIN (default ~/.local/bin), shared files to $BIN/../share/kido
+make install          # binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
 make test             # go vet, the unit tests, and the pi extensions' node suite
 make e2e              # drives kido inside a real tmux server
 ```
 
 `make install` also builds the tmux fork from the `third_party/tmux`
-submodule and installs it as `$BIN/kido-tmux`. kido finds its tmux as
+submodule and installs it as `$PREFIX/bin/kido-tmux`. kido finds its tmux as
 `$KIDO_TMUX`, else a `kido-tmux` beside its own binary, else `tmux` on
 `PATH` - the last being how a build in a checkout runs.
 

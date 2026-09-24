@@ -305,7 +305,7 @@ fallback, and `invokedPath(os.Args[0])` is used instead of
     make test    go vet ./..., the unit tests (cmd/..., internal/...),
                  and scripts/test-ts.sh: one node suite for both pi extensions
     make e2e     go test ./e2e/ -count=1 -v
-    make install binary to $BIN (default ~/.local/bin), shared files to $BIN/../share/kido
+    make install binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
 
 A failure that passed here and failed on GitHub's slower, contended
 runners reproduces in `scripts/ci-like.sh`: a Linux container with the

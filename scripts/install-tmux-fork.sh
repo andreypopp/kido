@@ -70,10 +70,14 @@ make -j"$njobs"
 echo "==> make install" >&2
 make install
 
-# The fork's build produces a binary named "tmux"; kido ships it as
-# "kido-tmux" so it can sit beside the kido binary without shadowing
-# whatever stock tmux the user already has on PATH.
+# The fork's build produces a binary named "tmux", and a man page
+# installed as tmux.1; kido ships both as "kido-tmux"/"kido-tmux.1" so
+# they can sit beside a stock tmux install (this script's own prefix, or
+# the Homebrew formula's) without shadowing or colliding with it.
 mv "$prefix/bin/tmux" "$prefix/bin/kido-tmux"
+if [ -e "$prefix/share/man/man1/tmux.1" ]; then
+	mv "$prefix/share/man/man1/tmux.1" "$prefix/share/man/man1/kido-tmux.1"
+fi
 
 echo "==> installed:" >&2
 "$prefix/bin/kido-tmux" -V
