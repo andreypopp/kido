@@ -8,12 +8,18 @@ import (
 	"testing"
 )
 
-// startPickerNoClient runs kido standalone with -client omitted entirely,
-// the way a bare `kido` typed by hand (or a future binding careless about
-// -client) would, so client inference is what picks the client it drives.
+// pickerArgs is a standalone kido with -client omitted, which is what
+// puts client inference in charge of the client it drives. The flag it
+// does pass only names the default interval: a kido with no argument at
+// all is the launcher now (TestKidoInsideAKidoPaneRefuses), so a binding
+// careless about -client still has to pass something.
+var pickerArgs = []string{"-interval", "100ms"}
+
+// startPickerNoClient runs kido standalone with -client omitted, so
+// client inference is what picks the client it drives.
 func startPickerNoClient(h *harness, session string) *picker {
 	h.t.Helper()
-	pane := h.newWindow(session, "picker", "env", "-u", "TMUX_SIDE_CLIENT", kidoBin)
+	pane := h.newWindow(session, "picker", append([]string{"env", "-u", "TMUX_SIDE_CLIENT", kidoBin}, pickerArgs...)...)
 	h.in("set-option", "-w", "-t", pane, "remain-on-exit", "on")
 	return &picker{h: h, pane: pane}
 }
@@ -27,7 +33,8 @@ func startPickerNoClientCapturingStderr(h *harness, session string) (p *picker, 
 	h.t.Helper()
 	errFile = filepath.Join(h.dir, "refuse-stderr")
 	pane := h.newWindow(session, "picker", "bash", "-c",
-		fmt.Sprintf("env -u TMUX_SIDE_CLIENT %q 2>%q", kidoBin, errFile))
+		fmt.Sprintf("env -u TMUX_SIDE_CLIENT %q %s 2>%q", kidoBin,
+			strings.Join(pickerArgs, " "), errFile))
 	h.in("set-option", "-w", "-t", pane, "remain-on-exit", "on")
 	return &picker{h: h, pane: pane}, errFile
 }

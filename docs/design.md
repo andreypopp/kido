@@ -1624,6 +1624,56 @@ Deliberately not built: terminfo shipping or compilation, a kido binary
 on the remote, ControlMaster sharing, askpass, fish. kitty needs
 those; a shell that only has to emit four escape sequences does not.
 
+## The launcher
+
+`kido` with no arguments is the program the user runs; every other
+invocation is a subcommand, and the one exception is the side column,
+which the fork starts as a bare `kido` with `TMUX_SIDE_CLIENT` set. The
+launcher never runs inside a multiplexer: with `TMUX` set it refuses,
+starts nothing and says to run kido from a plain terminal, because a
+multiplexer already owns that terminal and nesting one under it buys a
+second prefix and a second status line.
+
+The server lives on its own socket, `kido`, under `TMUX_TMPDIR` as tmux
+places it, so it never shares a server with a stock tmux. The launcher
+probes it with `list-sessions` and reads three outcomes off the answer:
+a server answers, so attach; tmux's own "protocol version mismatch" on
+stderr, which is an older kido-tmux still running after an upgrade and
+gets kido's own message naming the socket and how to restart it; and
+anything else, which means start one and let tmux report its own socket
+problems.
+
+A started server reads a configuration kido writes at every launch to
+`$KIDO_STATE_DIR/server.conf`, in this order: kido's defaults, which are
+`tmux/kido-side.tmux` verbatim; `source-file -q` of the user's file,
+`$XDG_CONFIG_HOME/kido/kido.conf` or `~/.config/kido/kido.conf`; then
+the two options kido owns, `side-status-command` and `default-command`,
+both naming the kido binary by absolute path. The user's file comes
+after the defaults so the user wins over kido, and kido's own two come
+last so the user cannot lose the side column by accident. A
+`default-command` the user did set is captured first with `set -gF
+@kido-user-command '#{default-command}'`, and `kido shell` runs it.
+`~/.tmux.conf` is never read; a user who wants theirs writes one
+`source-file` line. Paths are quoted twice, once for tmux and once for
+the sh tmux runs a command through, and a path carrying a character no
+quoting survives (`tmuxConfUnsafe`) is refused before anything starts.
+
+### Priming a local shell
+
+`kido shell` is the default command. It resolves the user's shell as the
+server's `default-shell` when set, else `$SHELL`, else `/bin/sh`, each
+checked executable, and runs it as a login shell primed the way `kido
+ssh` primes a remote one: zsh through a throwaway `ZDOTDIR` whose files
+source the user's real ones and then the integration, bash 4.4 and up
+through `ENV` with `--login --posix`, anything else plain. The plan is
+one implementation in `cmd/kido/prime.go`: the mode decision, the
+throwaway directory's contents, the argv tail and the bash floor. What
+is not shared is the transport, deliberately. The far side has only sh,
+so the ssh bootstrap is rendered from those parts as a POSIX program and
+the version comparison is spelled once in Go and once in sh; and a
+plain-mode local shell gets tmux's dashed argv[0] where the remote gets
+`-l`, since sh cannot set another process's argv[0].
+
 ## Knobs
 
 Every duration a test has to shorten is a package variable, and the ones

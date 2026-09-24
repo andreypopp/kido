@@ -36,7 +36,7 @@ var subcommands = []string{
 	"message_agent", "ask_agent", "notify_parent", "steer_subagent",
 	"interrupt_subagent", "stop_subagent", "spawn_subagent", "async_bash",
 	"async-run", "close-window",
-	"window-focused", "reap", "run-outcome", "runs", "ssh",
+	"window-focused", "reap", "run-outcome", "runs", "ssh", "shell",
 }
 
 // suggestSubcommand returns the known subcommand that most plainly shares
@@ -233,6 +233,9 @@ func main() {
 		case "ssh":
 			dispatch("ssh", func() error { return sshCmd(os.Args[2:]) })
 			return
+		case "shell":
+			dispatch("shell", func() error { return shellCmd(os.Args[2:]) })
+			return
 		default:
 			// A leading flag (bare `kido -client NAME`, or any other flag)
 			// falls through to the interactive UI below, same as always.
@@ -247,6 +250,19 @@ func main() {
 				return
 			}
 		}
+	}
+
+	// Bare `kido` is the launcher: it starts or attaches to kido's own
+	// server. The one exception is the side column, which the fork runs as
+	// bare `kido` too and tells apart by $TMUX_SIDE_CLIENT - the variable
+	// that already decides ui.Options.Standalone below. Anything with an
+	// argument, a flag included, is a command or the picker, as before.
+	if len(os.Args) == 1 && os.Getenv("TMUX_SIDE_CLIENT") == "" {
+		if err := launch(); err != nil {
+			fmt.Fprintln(os.Stderr, "kido:", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	opts := ui.Options{}

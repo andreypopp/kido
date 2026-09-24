@@ -29,6 +29,22 @@ func binary() string {
 	return binaryPath
 }
 
+// Binary is the tmux executable kido runs, for a caller that has to run
+// it itself rather than through this package - the launcher, which starts
+// a server rather than talking to one.
+func Binary() string { return binary() }
+
+// GlobalOption reads a global tmux option, empty when it is unset or when
+// there is no server to ask (-q, so an unknown user option is empty
+// rather than an error).
+func GlobalOption(name string) string {
+	out, err := run("show-options", "-gqv", name)
+	if err != nil {
+		return ""
+	}
+	return out
+}
+
 // resolveBinary is binary()'s logic taking its inputs as arguments, so the
 // order can be tested without a real KIDO_TMUX or a real kido binary on
 // disk.

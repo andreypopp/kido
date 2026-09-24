@@ -698,6 +698,31 @@ build it paid for).
   different. Without them a sweep or a shutdown that always notified would
   pass every other test and the parent would hear each ending twice.
 - **`interleaving: an inbound ask from the same target is refused even while the outbound send to it is still in flight`** (TS) — once waited a fixed 120ms for the agents lookup subprocess, and a slow macOS runner outlived the guess. It now awaits the instant the cycle edge is registered, through `setAskEdgeListener`, with the lookup deliberately slowed to 400ms so a return to a wall-clock guess fails at once.
+- **`TestBareIsTheLauncher`** — two halves: a bare `kido` is the
+  launcher and refuses under `TMUX`, and a bare `kido` with
+  `TMUX_SIDE_CLIENT` set is still the side column, because that is how
+  the fork starts it. Drop the second half and the sidebar itself is
+  refused on its first tick. Client inference is now reachable only with
+  a flag, which is what moved in `e2e/client_infer_test.go`.
+- **`TestServerConfLayersInOrder`** — asserts positions, not presence:
+  the user's `kido.conf` after kido's defaults and before the two options
+  kido owns. Every line present in the wrong order passes a presence
+  check, and the wrong order is the bug (a user losing the side column,
+  or kido losing to the user's `default-command` without capturing it).
+- **`TestKidoInsideAKidoPaneRefuses`** (e2e) — the assertion with teeth
+  is the server's client count unchanged over a span, the same shape as
+  the ask refusal: a refusal that printed the message and attached anyway
+  passes everything else.
+- **`TestFirstPaneShellIsPrimed`** (e2e) — a pane in a fresh HOME with no
+  rc file reports a prompt. Verified with teeth: with `default-command`
+  emptied from the generated config it fails.
+  `TestKidoConfDefaultCommandIsCaptured` is its sibling and checks the
+  pane really runs the user's command, not merely that the option was
+  copied.
+- **`reportedPrompt`** (e2e harness) — `#{pane_last_prompt_time}` on a
+  pane that never reported one is the *empty string*, not `0`: tmux
+  formats an unset timestamp as empty (measured on the fork). A check
+  against `"0"` alone held for every pane there has ever been.
 - **`TestNotifyParentUnderTheCapIsUntouched`** — the negative control the
   report split is unsafe without. Every assertion the over-cap case makes
   is satisfied by a command that splits *every* report, at the cost of a

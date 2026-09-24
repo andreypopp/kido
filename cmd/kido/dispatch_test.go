@@ -48,9 +48,17 @@ func dispatchTestBin(t *testing.T) string {
 // touching a real tmux server.
 func runDispatchTest(t *testing.T, args ...string) (stderr string, code int) {
 	t.Helper()
+	return runDispatchEnv(t, nil, args...)
+}
+
+// runDispatchEnv is runDispatchTest with extra environment, for the cases
+// that are about what main() reads from it rather than from its
+// arguments.
+func runDispatchEnv(t *testing.T, env []string, args ...string) (stderr string, code int) {
+	t.Helper()
 	bin := dispatchTestBin(t)
 	cmd := exec.Command(bin, args...)
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH")}, env...)
 	var errBuf strings.Builder
 	cmd.Stderr = &errBuf
 	err := cmd.Run()
@@ -126,16 +134,34 @@ func TestLeadingFlagReachesUI(t *testing.T) {
 	}
 }
 
-// TestBareReachesUI pins that plain `kido`, with no arguments, still
-// reaches the interactive UI path.
-func TestBareReachesUI(t *testing.T) {
-	stderr, code := runDispatchTest(t)
-	if code != 1 {
-		t.Fatalf("exit code = %d, want 1 (stderr: %s)", code, stderr)
-	}
-	if !strings.Contains(stderr, "must run inside tmux") {
-		t.Errorf("stderr = %q, want the UI's own tmux-required error", stderr)
-	}
+// TestBareIsTheLauncher pins both halves of what plain `kido` means now.
+// With no arguments it starts or attaches to kido's own server, so
+// inside a tmux it refuses instead - and the second case is what keeps
+// that from being a rule about arguments alone: the side column is run
+// as a bare `kido` too, by a fork that tells it apart with
+// $TMUX_SIDE_CLIENT, and it must still reach the UI. Without that half,
+// a refusal keyed on $TMUX alone passes here and leaves every kido
+// server with an empty side column.
+func TestBareIsTheLauncher(t *testing.T) {
+	t.Run("inside tmux it refuses", func(t *testing.T) {
+		stderr, code := runDispatchEnv(t, []string{"TMUX=/tmp/tmux-501/kido,1234,0"})
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1 (stderr: %s)", code, stderr)
+		}
+		if !strings.Contains(stderr, "plain terminal") {
+			t.Errorf("stderr = %q, want the launcher's refusal", stderr)
+		}
+	})
+
+	t.Run("the side column still reaches the UI", func(t *testing.T) {
+		stderr, code := runDispatchEnv(t, []string{"TMUX_SIDE_CLIENT=/dev/ttys001"})
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1 (stderr: %s)", code, stderr)
+		}
+		if !strings.Contains(stderr, "must run inside tmux") {
+			t.Errorf("stderr = %q, want the UI's own tmux-required error", stderr)
+		}
+	})
 }
 
 // TestKnownSubcommandsDispatch checks that every name in subcommands is

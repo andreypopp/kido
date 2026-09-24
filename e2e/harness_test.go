@@ -911,9 +911,15 @@ func (h *harness) waitPaneCommand(id, cmd string) {
 func (h *harness) waitPanePrompt(id string) {
 	h.t.Helper()
 	h.waitFor(func() bool {
-		return h.in("display-message", "-p", "-t", id, "#{pane_last_prompt_time}") != "0"
+		return reportedPrompt(h.in("display-message", "-p", "-t", id, "#{pane_last_prompt_time}"))
 	}, settle, msgf("pane %s to report its first prompt", id))
 }
+
+// reportedPrompt reads #{pane_last_prompt_time}. A pane that has never
+// reported one answers with the *empty string*, not "0": tmux formats an
+// unset timestamp as empty (measured on the fork), so a check for "0"
+// alone holds for every pane there has ever been.
+func reportedPrompt(v string) bool { return v != "" && v != "0" }
 
 // sshProxy writes (once per harness) a ProxyCommand script that just
 // blocks, so an ssh pane needs no network. It is a script rather than
