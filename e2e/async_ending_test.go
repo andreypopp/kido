@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -9,6 +10,20 @@ import (
 	"testing"
 	"time"
 )
+
+// runKidoDone is runKido, but waits for the trailing "rc=<code>" line
+// rather than mere non-emptiness: a command that prints as it goes -
+// stop_subagent's own notice line arrives well before its final
+// "stopped ..." - can otherwise be read mid-write, seen once on a slow
+// CI runner (waitFileContains's doc comment names the same trap).
+func (h *harness) runKidoDone(session, outName string, args ...string) string {
+	h.t.Helper()
+	outFile := filepath.Join(h.dir, outName)
+	script := fmt.Sprintf("%s %s > %s 2>&1; echo rc=$? >> %s",
+		kidoBin, strings.Join(args, " "), outFile, outFile)
+	h.newWindow(session, "", "sh", "-c", script)
+	return h.waitFileContains(outFile, "rc=")
+}
 
 // wrapperPID finds the `kido async-run` process of runID by the run id
 // on its own command line, which is how anything outside kido would have
@@ -80,7 +95,7 @@ func TestKilledWrapperIsReportedByWhoeverFindsIt(t *testing.T) {
 	// The linger the harness runs with is 1s; rule 1 leaves a dead window
 	// alone until it has passed.
 	time.Sleep(1200 * time.Millisecond)
-	if out := h.runKido("alpha", "reap-doomed.out", "reap"); !strings.Contains(out, "rc=0") {
+	if out := h.runKidoDone("alpha", "reap-doomed.out", "reap"); !strings.Contains(out, "rc=0") {
 		t.Fatalf("kido reap output = %q, want a clean exit", out)
 	}
 
@@ -95,7 +110,7 @@ func TestKilledWrapperIsReportedByWhoeverFindsIt(t *testing.T) {
 
 	// A second reap, and a span: neither the command nor the sidebar that
 	// is still running may tell the story again.
-	h.runKido("alpha", "reap-doomed-2.out", "reap")
+	h.runKidoDone("alpha", "reap-doomed-2.out", "reap")
 	h.stableCount(in, 1, "one ending, one notice, however many observers find it")
 
 	info := h.waitOutcome(runID)
@@ -122,7 +137,7 @@ func TestStopBashRunNotifiesOnce(t *testing.T) {
 	runID := h.asyncBash("stopme", "sleep", "60")
 	h.hideSidebar()
 
-	out := h.runKido("alpha", "stop.out", "stop_subagent", "--force", "--", "stopme")
+	out := h.runKidoDone("alpha", "stop.out", "stop_subagent", "--force", "--", "stopme")
 	if !strings.Contains(out, "rc=0") {
 		t.Fatalf("kido stop_subagent output = %q, want a clean exit", out)
 	}
@@ -166,7 +181,7 @@ func TestStopSpeaksForAWrapperThatCannot(t *testing.T) {
 	h.hideSidebar()
 	h.killWrapper(runID)
 
-	out := h.runKido("alpha", "stopdead.out", "stop_subagent", "--force", "--", "zombie")
+	out := h.runKidoDone("alpha", "stopdead.out", "stop_subagent", "--force", "--", "zombie")
 	if !strings.Contains(out, "rc=0") {
 		t.Fatalf("kido stop_subagent output = %q, want a clean exit", out)
 	}
@@ -227,7 +242,7 @@ func TestReapedAgentRunTellsItsParentNobodyReported(t *testing.T) {
 	// The linger the harness runs with is 1s; rule 1 leaves a dead window
 	// alone until it has passed.
 	time.Sleep(1200 * time.Millisecond)
-	if out := h.runKido("alpha", "reap-silent.out", "reap"); !strings.Contains(out, "rc=0") {
+	if out := h.runKidoDone("alpha", "reap-silent.out", "reap"); !strings.Contains(out, "rc=0") {
 		t.Fatalf("kido reap output = %q, want a clean exit", out)
 	}
 
@@ -240,6 +255,6 @@ func TestReapedAgentRunTellsItsParentNobodyReported(t *testing.T) {
 		}
 	}
 
-	h.runKido("alpha", "reap-silent-2.out", "reap")
+	h.runKidoDone("alpha", "reap-silent-2.out", "reap")
 	h.stableCount(in, 1, "one ending, one notice, however many observers find it")
 }
