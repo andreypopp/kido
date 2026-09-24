@@ -38,7 +38,7 @@ var (
 )
 
 func spawnUsage() string {
-	return "usage: kido spawn_subagent --parent-pid PID --parent-instance ID --name NAME --task-file FILE|- [--depth N] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
+	return "usage: kido spawn_subagent --parent-pid PID --parent-instance ID --name NAME --task-file FILE|- [--depth N] [--fork SESSION_ID] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
 		"   or: kido spawn_subagent --no-parent --name NAME --task-file FILE|- [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
 		"   or: kido spawn_subagent --resume RUN_ID [--parent-pid PID --parent-instance ID | --no-parent] [--keep-alive] [-- COMMAND...]"
 }
@@ -64,6 +64,7 @@ func spawnSubagentCmd(args []string) error {
 	model := fs.String("model", "", "model the child will run, recorded in the run's meta for kido runs")
 	toolsFlag := fs.String("tools", "", "comma-separated tool allowlist the child will run, recorded in the run's meta for kido runs")
 	resumeID := fs.String("resume", "", "resume an existing run's own session instead of starting a new one")
+	forkSession := fs.String("fork", "", "seed the child's session with this pi session's transcript, so it starts holding the caller's context")
 	keepAlive := fs.Bool("keep-alive", false, "the child does not self-reap after going idle (KIDO_AGENT_KEEP_ALIVE)")
 	// --no-parent is the whole surface for a child owned by nobody, and it
 	// is a flag rather than an empty --parent-instance because the two
@@ -103,6 +104,8 @@ func spawnSubagentCmd(args []string) error {
 		return fmt.Errorf("--resume keeps the run's original task; --task-file is refused alongside it\n%s", spawnUsage())
 	case resuming && *name != "":
 		return fmt.Errorf("--resume keeps the run's original window name; --name is refused alongside it\n%s", spawnUsage())
+	case resuming && *forkSession != "":
+		return fmt.Errorf("--resume continues a run's own session; --fork starts a new one from somebody else's, and the two cannot both be asked for\n%s", spawnUsage())
 	}
 
 	if resuming {
@@ -114,6 +117,11 @@ func spawnSubagentCmd(args []string) error {
 	}
 	if len(*name) > maxWindowNameLen {
 		return fmt.Errorf("refusing window name %q: %d bytes is over the %d byte limit", *name, len(*name), maxWindowNameLen)
+	}
+	// --fork goes on the child's command line, so it is held to what a
+	// window name is held to: tmux's own parsers are what it has to survive.
+	if i := strings.IndexAny(*forkSession, tmuxConfUnsafe); i >= 0 {
+		return fmt.Errorf("refusing --fork %q: it contains %q, which cannot survive tmux's own command-line parsing", *forkSession, (*forkSession)[i:i+1])
 	}
 
 	task, err := readTask(*taskFile)
@@ -178,9 +186,17 @@ func spawnSubagentCmd(args []string) error {
 	}
 
 	// The run id is the child's own pi session id; any other command has
-	// no session to name and is left as given.
+	// no session to name and is left as given. Measured against pi 0.85.1,
+	// --fork and --session-id compose: createSessionManager (main.js) forks
+	// the resolved source through SessionManager.forkFrom with the given id,
+	// so a forked child still holds the run id its identity proof is read
+	// from (docs/design-subagents.md, "Forking the caller's context").
 	if command[0] == "pi" {
-		command = append([]string{command[0], "--session-id", runID}, command[1:]...)
+		flags := []string{"--session-id", runID}
+		if *forkSession != "" {
+			flags = append([]string{"--fork", *forkSession}, flags...)
+		}
+		command = slices.Insert(command, 1, flags...)
 	}
 
 	return createRunWindow(meta, pane.SessionID, runEnv(runID, *parentPID, *parentInstance, depth, *keepAlive), command)

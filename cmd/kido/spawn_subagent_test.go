@@ -828,3 +828,97 @@ func TestSpawnNoParentRefusesAParentToo(t *testing.T) {
 		t.Errorf("newWindow was called %d times, want the refusal before any tmux call", len(*calls))
 	}
 }
+
+// TestSpawnForkCarriesBothFlagsOntoThePiCommandLine: a forked child is
+// still a run, so it must come up holding the run id its whole identity
+// proof is read from (pi/kido-agents.ts's ownRunID) as well as the
+// caller's transcript. Measured against pi 0.85.1, --fork and
+// --session-id compose - createSessionManager forks the resolved source
+// through SessionManager.forkFrom with the given id - so both belong on
+// the line, and the order is the one that was measured.
+//
+// The task is read back out of the run directory alongside it: a fork
+// replaces where the child's context comes from, not how it is given its
+// work.
+func TestSpawnForkCarriesBothFlagsOntoThePiCommandLine(t *testing.T) {
+	withPanes(t, samePane)
+	t.Setenv("TMUX_PANE", "%1")
+	withCallerDepth(t, 0)
+	calls := withNewWindow(t, "@7", "%7", nil)
+
+	out := captureStdout(t, func() {
+		if err := spawnSubagentCmd([]string{
+			"--parent-pid", "1", "--parent-instance", testParentInstance,
+			"--name", "kid", "--task-file", writeTaskFile(t, "merge the two branches"),
+			"--fork", "caller-session-id",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	runID := strings.Fields(out)[2]
+
+	want := []string{"pi", "--fork", "caller-session-id", "--session-id", runID}
+	if got := (*calls)[0].command; !reflect.DeepEqual(got, want) {
+		t.Errorf("command = %v, want %v", got, want)
+	}
+	task, err := os.ReadFile(envValue(t, (*calls)[0].env, "KIDO_AGENT_TASK_FILE"))
+	if err != nil || string(task) != "merge the two branches" {
+		t.Errorf("task file = %q, %v, want the task a forked child is still given", task, err)
+	}
+}
+
+// TestSpawnForkKeepsTheChildsOwnFlags: --fork is inserted into the pi
+// command the caller asked for rather than replacing it, so a forked
+// child still gets its name, model and tool ceiling. The insertion point
+// matters - pi reads --fork and --session-id wherever they appear, but a
+// command line that put them after a flag's value would be handing the
+// wrong argument to that flag.
+func TestSpawnForkKeepsTheChildsOwnFlags(t *testing.T) {
+	withPanes(t, samePane)
+	t.Setenv("TMUX_PANE", "%1")
+	withCallerDepth(t, 0)
+	calls := withNewWindow(t, "@7", "%7", nil)
+
+	out := captureStdout(t, func() {
+		if err := spawnSubagentCmd([]string{
+			"--parent-pid", "1", "--parent-instance", testParentInstance,
+			"--name", "kid", "--task-file", writeTaskFile(t, "x"),
+			"--fork", "caller-session-id",
+			"--", "pi", "--name", "kid", "--model", "claude-sonnet-5",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	runID := strings.Fields(out)[2]
+
+	want := []string{"pi", "--fork", "caller-session-id", "--session-id", runID, "--name", "kid", "--model", "claude-sonnet-5"}
+	if got := (*calls)[0].command; !reflect.DeepEqual(got, want) {
+		t.Errorf("command = %v, want %v", got, want)
+	}
+}
+
+// TestSpawnForkRefusals: neither refusal can be discovered from the
+// child's window. A --fork alongside --resume asks for two different
+// sessions at once, and a fork id carrying a character tmux's parsers
+// cannot pass through is the window name's rule applied to the other
+// piece of model-adjacent text on that command line.
+func TestSpawnForkRefusals(t *testing.T) {
+	withPanes(t, samePane)
+	t.Setenv("TMUX_PANE", "%1")
+	withCallerDepth(t, 0)
+	calls := withNewWindow(t, "@7", "%7", nil)
+
+	if err := spawnSubagentCmd([]string{"--resume", "run-1", "--fork", "sess-1"}); err == nil {
+		t.Error("spawn --resume --fork = nil, want a refusal: a run cannot both continue and be forked from elsewhere")
+	}
+	if err := spawnSubagentCmd([]string{
+		"--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--name", "kid", "--task-file", writeTaskFile(t, "x"),
+		"--fork", "sess$(id)",
+	}); err == nil {
+		t.Error("spawn --fork with an unsafe id = nil, want the same refusal a window name gets")
+	}
+	if len(*calls) != 0 {
+		t.Errorf("newWindow called %d times, want 0: nothing refused may reach tmux", len(*calls))
+	}
+}

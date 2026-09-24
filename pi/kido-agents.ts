@@ -112,13 +112,11 @@ const isSubagent = (): boolean => ownRunID() !== null;
 // kido-status.ts's own.
 const MAX_ACTIVITY_BYTES = 256;
 
-// notify_parent's own cap, matching kido-status.ts's former MAX_RESULT_BYTES
-// (the automatic notice's own bound, before this tool replaced it): bigger
-// than the activity cap, since this is a work product and not a UI label,
-// but far smaller than MAX_PROMPT_BYTES, since it is spliced whole into the
-// parent's next turn as a followUp message. Enforced here, not just in the
-// schema, the same way set_status enforces MAX_ACTIVITY_BYTES itself: a
-// model is free to ignore what the schema merely asks for.
+// What notify_parent's schema tells the model, and nothing more. The bound
+// is `kido notify_parent`'s own: a report over it is written to the run's
+// directory whole and the parent is sent its head plus that path.
+// Enforcing it here too would be the tool throwing away what the command
+// exists to keep.
 const MAX_NOTICE_BYTES = 4000;
 
 // capBytes cuts on a code-point boundary, never mid-sequence, mirroring
@@ -1261,6 +1259,12 @@ export default function (pi: ExtensionAPI) {
             "Resume a dead or finished subagent by its own run id (from this tool's earlier result, or `kido runs`) instead of starting a new one, in its own new window. Refused together with task or name.",
         }),
       ),
+      fork: Type.Optional(
+        Type.Boolean({
+          description:
+            "Start the subagent holding this session's context: it is forked from this conversation and then given the task. For a short judgement or merge step that has to know what was already decided - the whole context is replayed on every one of its turns, so it is a poor choice for a long worker. Refused together with resume; defaults to false.",
+        }),
+      ),
     },
     { additionalProperties: false },
   );
@@ -1268,9 +1272,9 @@ export default function (pi: ExtensionAPI) {
     name: "spawn_subagent",
     label: "Spawn Subagent",
     description:
-      "Create a subagent in its own tmux window with a task, or resume a dead or finished one by its run id. Returns its identity immediately without waiting for it to finish.",
+      "Create a subagent in its own tmux window with a task, or resume a dead or finished one by its run id. With fork: true it starts holding this session's context, for a judgement step that has to know what was already decided. Returns its identity immediately without waiting for it to finish.",
     promptSnippet:
-      "spawn_subagent(task, name?, model?, tools?, keepAlive?) or spawn_subagent(resume, model?, tools?, keepAlive?) - delegate a task to a new subagent, or resume a dead one, in its own window",
+      "spawn_subagent(task, name?, model?, tools?, keepAlive?, fork?) or spawn_subagent(resume, model?, tools?, keepAlive?) - delegate a task to a new subagent, optionally forked from your own context, or resume a dead one, in its own window",
     parameters: spawnSubagentParams,
     async execute(_toolCallId, params) {
       const host = status();
@@ -1292,6 +1296,12 @@ export default function (pi: ExtensionAPI) {
         if (params.name) {
           return {
             content: [{ type: "text", text: "resume and name cannot both be given: a resumed run keeps its own original window name" }],
+            details: {},
+          };
+        }
+        if (params.fork) {
+          return {
+            content: [{ type: "text", text: "resume and fork cannot both be given: a resumed run continues its own session, a fork starts a new one from this session's context" }],
             details: {},
           };
         }
@@ -1343,6 +1353,21 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
+      // The session to fork is this one, and the extension is told what it
+      // is (kido-status.ts's sessionId) rather than kido guessing from a
+      // pane: `pi --fork` resolves a session by id and there is exactly one
+      // right answer here. A session with no id at all - pi outside a
+      // session file - has nothing to fork from, and saying so beats
+      // spawning a child that silently holds no context.
+      const forkArgs: string[] = [];
+      if (params.fork) {
+        const sessionID = status()?.sessionId();
+        if (!sessionID) {
+          return { content: [{ type: "text", text: "this session has no id of its own to fork from; spawn without fork" }], details: {} };
+        }
+        forkArgs.push("--fork", sessionID);
+      }
+
       const name = params.name || safeSubagentName();
       const child = ["pi", "--name", name, ...modelAndTools];
 
@@ -1363,6 +1388,7 @@ export default function (pi: ExtensionAPI) {
           "-",
           ...modelAndTools,
           ...keepAliveArgs,
+          ...forkArgs,
           "--",
           ...child,
         ],
@@ -1373,8 +1399,11 @@ export default function (pi: ExtensionAPI) {
       }
       const [windowID, paneID, runID] = res.out.split(/\s+/);
       return {
-        content: [{ type: "text", text: `spawned ${name} (window ${windowID}, pane ${paneID}, run ${runID})` }],
-        details: { name, window: windowID, pane: paneID, run: runID },
+        content: [{
+          type: "text",
+          text: `spawned ${name} (window ${windowID}, pane ${paneID}, run ${runID})${params.fork ? ", forked from this session's context" : ""}`,
+        }],
+        details: { name, window: windowID, pane: paneID, run: runID, fork: !!params.fork },
       };
     },
   };
@@ -1538,10 +1567,11 @@ export default function (pi: ExtensionAPI) {
       // none: it is a character count checked against a byte budget, and
       // typebox rejects the whole call on it rather than truncating -
       // measured live, a model given a long report had to redo the call
-      // after "summary must not have more than N characters". capBytes
-      // below is the sole enforcement, and it truncates.
+      // after "summary must not have more than N characters".
       summary: Type.String({
-        description: `A short summary of the finished work to send to your parent. Capped at ${MAX_NOTICE_BYTES} bytes.`,
+        description:
+          `A short summary of the finished work to send to your parent. Your parent reads the first ${MAX_NOTICE_BYTES} bytes; ` +
+          `anything longer is kept in full in this run's directory and the notice says where, so nothing is lost.`,
       }),
     },
     { additionalProperties: false },
@@ -1573,8 +1603,12 @@ export default function (pi: ExtensionAPI) {
       // to fetch every agent, find its own row and read `parent` off it -
       // a whole subprocess and a tmux pane listing to recover something
       // kido had handed the process at spawn.
-      const text = capBytes(params.summary, MAX_NOTICE_BYTES);
-      const res = await host.runKido(["notify_parent"], { input: text, timeoutMs: 5000 });
+      // The summary goes through untouched: what a report over the cap
+      // costs is decided by `kido notify_parent`, which keeps the whole of
+      // it in the run's directory and sends the parent its head and that
+      // path. This tool used to cut it to the cap here, and the rest of a
+      // long report was simply gone.
+      const res = await host.runKido(["notify_parent"], { input: params.summary, timeoutMs: 5000 });
       if ("error" in res) {
         return { content: [{ type: "text", text: `could not notify parent: ${res.error}` }], details: {} };
       }

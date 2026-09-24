@@ -23,7 +23,7 @@ agent binaries.
 | `set_status(activity)` | `kido set_status -- <activity>` |
 | `message_agent(to, message, replyTo?)` | `kido message_agent [--reply-to ID] -- <to>` |
 | `ask_agent(to, question, timeoutMs?)` | `kido ask_agent --id ID -- <to>` |
-| `spawn_subagent(task, name?, model?, tools?, keepAlive?)` | `kido spawn_subagent` |
+| `spawn_subagent(task, name?, model?, tools?, keepAlive?, fork?)` | `kido spawn_subagent [--fork SESSION_ID]` |
 | `spawn_subagent(resume, model?, tools?, keepAlive?)` | `kido spawn_subagent --resume` |
 | `steer_subagent(to, message)` | `kido steer_subagent -- <to>` |
 | `interrupt_subagent(to)` | `kido interrupt_subagent -- <to>` |
@@ -97,10 +97,12 @@ told to use `message_agent` instead (design.md, "Ask and reply").
 `kido notify_parent` takes no target at all, reading the parent edge out
 of `KIDO_AGENT_PARENT_INSTANCE` (design.md, "Notifying the parent").
 Tools register unconditionally and report kido as unavailable until a
-session has resolved it. `set_status` and `notify_parent` cap their
-text by truncating, at 256 and 4000 bytes, and their schemas do not
-repeat the cap as a `maxLength`: that counts UTF-16 code units and
-rejects the whole call, which cost a subagent a redo of its one report.
+session has resolved it. `set_status` and `notify_parent` are bounded at
+256 and 4000 bytes, and their schemas do not repeat the bound as a
+`maxLength`: that counts UTF-16 code units and rejects the whole call,
+which cost a subagent a redo of its one report. An activity is a UI label
+and is truncated; a report is a work product and is kept whole, with only
+what the parent is *sent* bounded ("Reporting", below).
 
 `list_agents` returns every agent whose pane is in the caller's tmux
 session, itself included, ordered parent-first: id, name, agent, pane,
@@ -164,6 +166,50 @@ that cannot be marked is killed rather than left uncollectable.
 The tool returns `spawned <name> (window @N, pane %N, run <id>)` at
 once. It does not wait for anything the child does.
 
+## Forking the caller's context
+
+`spawn_subagent(fork: true)`, `kido spawn_subagent --fork SESSION_ID`,
+starts the child as `pi --fork <session> --session-id <run-id>` with the
+task as its first message - everything else is a fresh spawn's own path:
+the same `createRunWindow` and `runEnv`, its own run id, parent edge,
+mark, depth ceiling, tool allowlist and model handling. What changes is
+where the child's context comes from. It starts holding the caller's
+whole transcript, so it can be given a judgement to make - a merge, a
+decision between two things the parent already weighed - without the
+parent having to restate what it decided and why.
+
+The two flags compose, which is what makes this possible at all: measured
+against pi 0.85.1, `createSessionManager` (`main.js`) forks the resolved
+source through `SessionManager.forkFrom(..., { id: sessionId })`, so the
+forked session is created *with* the id kido asked for, and it refuses up
+front if a session already holds that id. Verified by running it: a
+session told to say BANANA, forked with `--fork <id> --session-id <new
+id>`, answered BANANA when asked what it had said before, under the new
+id's own session file. That matters beyond convenience - the run id is
+the child's session id, and a child proves it is the run it claims to be
+by `sessionId() === KIDO_AGENT_RUN_ID` (design.md, "The run id is the
+child's session id"). A fork that could not be given an id would be a
+child with no identity proof, and would be no child at all.
+
+The session forked is the **caller's own**, and the extension passes it
+(pi hands it the id) rather than kido guessing it from a pane. Nothing
+resolves a session a model named: there is exactly one right answer, and
+it is not the model's to give.
+
+**A fork replays the parent's whole context on every turn.** That is the
+cost, it is per-turn rather than once, and it is why this is for a short
+judgement step and not for a long worker: a child forked from a large
+conversation pays for it again with every tool call it makes. A worker
+wants a task and a clean context.
+
+The flag reaches tmux's command line, so it is held to the window name's
+rule (`tmuxConfUnsafe`) and refused rather than quoted. `--fork` and
+`--resume` together are refused: one continues a run's own session and
+the other starts a new one from somebody else's. Nothing checks that the
+source session exists, unlike `--resume` - the source is the caller's own
+live session, which by construction does, and pi's own error lands in the
+child's window if it somehow does not.
+
 ## The run record
 
 Each spawn owns `<state>/runs/<run-id>/`, written before the window is
@@ -178,6 +224,9 @@ created so the child can read its task the instant tmux starts it:
   is there at all (design.md, "Idle self-exit, and resuming a run");
 - `outcome`, once the run has ended: `completed` or `failed` from the
   child itself, `died` from a sweep, `stopped` from `kido stop_subagent`;
+- `report`, for a `notify_parent` report too long to send whole - the
+  text as the child wrote it, which the parent's notice names ("A child's
+  life", below);
 - `command` and `output`, for a bash run only: the argv the wrapper
   execs and everything the command wrote (see "An async bash run");
 - `screen`, the window's last screen and a bounded tail of scrollback,
@@ -224,6 +273,28 @@ through the same path a normal exit takes.
 itself, once, when its model judges the work done; the summary goes to
 the parent as a `notice` envelope and nowhere else, addressed to the
 instance in its own environment rather than to anything it looked up.
+
+A report is **kept whole**. The notice is spliced into the parent's next
+turn, so what the parent is sent is bounded at 4000 bytes - but the bound
+used to be applied by throwing the rest away, in the tool, and a report
+over it reached its parent cut mid-sentence with no sign there had been
+more. Now `kido notify_parent` writes the full text to the sender's own
+run directory as `report`, beside `task` and `output`, and sends the head
+of it plus a final line naming that file:
+
+    full report: <state>/runs/<run-id>/report
+
+Head and line together stay inside the cap, so the notice is no larger
+than it ever was. A report within the cap is delivered byte for byte and
+leaves no file: nothing was lost, so there is nothing to point at. The
+head is cut back off a partial rune, because the send path refuses a
+message that is not valid UTF-8 outright - `tailOfFile`'s rule
+(`ending_notice.go`) in the other direction. A sender with no run
+directory - a session kido never spawned, carrying somebody else's parent
+edge - has nowhere to keep it and is truncated as before; so is one whose
+write fails, since the point of the call is that the parent hears
+something. `kido runs <id>` gains one line, `report:`, for a run that
+left one.
 An automatic notice on every settled turn was removed, because a turn
 settles for reasons that are not the task - most sharply, answering a
 sibling's `ask_agent` settled a turn and sent the parent a report meant
@@ -365,9 +436,12 @@ have a record can hand a run over instead of adopting it. A named instance must 
 the window exists: the sweep keeps no history, and a stale edge would
 have the window closed as an orphan within seconds with nothing to say
 why. `spawn_subagent(resume)` always passes the caller's own live
-identity, and refuses `task` or `name` alongside `resume` rather than
-guessing which the model wanted. `pi --fork <run-id>` stays a bare
-command; a fork is a standalone session with no record.
+identity, and refuses `task`, `name` or `fork` alongside `resume` rather
+than guessing which the model wanted. The `pi --fork <run-id>` line `kido
+runs` prints stays a bare command: forking a *finished run* from a shell
+is a standalone session with no record, which is a different thing from
+`spawn_subagent(fork)` forking the *caller's live session* into a child
+that has one ("Forking the caller's context", above).
 
 ## An async bash run
 

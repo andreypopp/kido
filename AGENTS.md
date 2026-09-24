@@ -674,6 +674,16 @@ build it paid for).
   positive case's window with only the outcome on disk, or only the flag,
   different. Without them a sweep or a shutdown that always notified would
   pass every other test and the parent would hear each ending twice.
+- **`TestNotifyParentUnderTheCapIsUntouched`** — the negative control the
+  report split is unsafe without. Every assertion the over-cap case makes
+  is satisfied by a command that splits *every* report, at the cost of a
+  file and a path line on each four-sentence notice. The claim is
+  delivery byte for byte and no file left behind.
+- **`TestNotifyParentHeadIsCutOnARuneBoundary`** — three thousand
+  three-byte runes, so wherever the cap falls it falls inside one. The
+  send path refuses a message that is not valid UTF-8, so a head cut at
+  the byte would cost the parent the whole notice, path line included;
+  the head is cut back to the rune the way the tail is cut forward.
 - **`TestAgentAliveSurvivesAPaneCollisionOnTheParent`** — the reaper's
   collision test in the second place that asked the same question. Its
   negative control runs `buildAgents` over the per-pane view and asserts

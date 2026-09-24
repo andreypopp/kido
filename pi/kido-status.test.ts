@@ -1427,6 +1427,37 @@ test("spawn_subagent(resume) with model/tools overrides them in the resumed pi's
   }
 });
 
+// fork is the one spawn parameter whose value the model never supplies:
+// the session to fork is this one, and the tool reads its id from pi
+// rather than letting a model name a session. So what is asserted is
+// that the id on the command line is this session's own - a tool that
+// passed a plausible-looking anything would satisfy "--fork is present".
+test("spawn_subagent(fork) passes --fork with this session's own id, and nothing at all without it", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const spawn = s.tools.get("spawn_subagent");
+
+    await spawn.execute("c1", { task: "decide", name: "kid-plain" });
+    assert.ok(!fx.lastSpawnArgs()!.includes("--fork"), "an ordinary spawn must not fork anything");
+
+    const result = await spawn.execute("c2", { task: "decide", name: "kid-fork", fork: true });
+    const spawnArgs = fx.lastSpawnArgs()!;
+    assert.equal(argAfter(spawnArgs, "--fork"), DEFAULT_SESSION, "the caller's own session id is what is forked, not anything the model named");
+    assert.equal(argAfter(spawnArgs, "--task-file"), "-", "a forked child is still given its task the ordinary way");
+    assert.equal(fx.lastSpawnTask(), "decide");
+    assert.match(result.content[0].text, /forked from this session/, "the model is told the child holds its context");
+    // The kido flag is the whole of it: the child's own `pi --fork ... 
+    // --session-id RUN` command line is kido's to build, so the tool must
+    // not be spelling a second, divergent copy of it after "--".
+    const command = spawnArgs.slice(spawnArgs.indexOf("--") + 1);
+    assert.deepEqual(command, ["pi", "--name", "kid-fork"], "the child command is untouched: --fork is kido's to place");
+  } finally {
+    fx.restore();
+  }
+});
+
 test("spawn_subagent refuses resume combined with task or name, and refuses no task without resume, before calling kido", async () => {
   const fx = makeFixture();
   try {
@@ -1442,6 +1473,9 @@ test("spawn_subagent refuses resume combined with task or name, and refuses no t
 
     result = await spawn.execute("c3", {});
     assert.match(result.content[0].text, /task is required unless resume is given/);
+
+    result = await spawn.execute("c4", { resume: "run-abc", fork: true });
+    assert.match(result.content[0].text, /resume and fork cannot both be given/);
 
     assert.equal(fx.lastSpawnArgs(), undefined, "kido spawn_subagent must not be invoked for any refused combination");
   } finally {
@@ -1895,15 +1929,15 @@ test("notify_parent sends a notice to the parent in its environment, carrying th
   }
 });
 
-// A model that ran notify_parent with a genuinely long report used to
-// get "summary must not have more than 4000 characters" back instead of
-// a notice sent - the schema's own maxLength rejected the call before
-// capBytes (below, in execute) ever ran, so the truncation the tool's own
-// description promises ("Capped at N bytes") was dead code. Fixed by
-// dropping the schema-level cap and leaving capBytes as the only
-// enforcement, so this checks the schema accepts what it used to reject
-// and the execute() still truncates.
-test("notify_parent's schema accepts a summary over the byte cap, and execute() truncates it rather than rejecting", async () => {
+// A long report survives two separate ways of being thrown away, and
+// this pins both: the schema's own maxLength used to reject the call
+// outright (a character count against a byte budget - a model given a
+// long report had to redo it), and the tool then cut the summary to the
+// cap itself, which lost the rest of it for good. The cap is now `kido
+// notify_parent`'s alone, and it keeps what it cannot send, so what the
+// tool must do with a long summary is pass it on whole - byte for byte,
+// which is the assertion with teeth here.
+test("notify_parent's schema accepts a summary over the byte cap, and execute() hands the whole of it to kido rather than cutting it", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
@@ -1915,13 +1949,13 @@ test("notify_parent's schema accepts a summary over the byte cap, and execute() 
 
       assert.ok(
         Value.Check(tool.parameters, { summary: longSummary }),
-        "the schema itself no longer rejects a call over 4000 characters - it is the tool's own capBytes that enforces the bound, by truncating",
+        "the schema itself no longer rejects a call over 4000 characters - the bound is kido notify_parent's, and it splits rather than rejects",
       );
 
       const result = await tool.execute("call-1", { summary: longSummary });
       assert.ok(result.content[0].text.length > 0, "the call succeeds rather than failing schema validation");
       const sent = await fx.waitForLog("parent-inst", "notice");
-      assert.equal(Buffer.byteLength(sent!.text, "utf8"), 4000, "the notice actually sent is truncated to the byte cap, not rejected");
+      assert.equal(sent!.text, longSummary, "the whole report reaches kido untouched; where it is split, and what is kept, is the command's own business");
     });
   } finally {
     fx.restore();

@@ -52,6 +52,12 @@ func CommandPath(id string) string { return filepath.Join(dirFor(id), "command")
 // tail.
 func OutputPath(id string) string { return filepath.Join(dirFor(id), "output") }
 
+// ReportPath is where a run's own notify_parent report is kept whole. The
+// parent is sent at most a notice's worth of it (cmd/kido, notifyParentCmd)
+// and this file is the rest: a report is a work product, and a cut one used
+// to be the only copy there was.
+func ReportPath(id string) string { return filepath.Join(dirFor(id), "report") }
+
 func metaPath(id string) string    { return filepath.Join(dirFor(id), "meta.json") }
 func outcomePath(id string) string { return filepath.Join(dirFor(id), "outcome") }
 func screenPath(id string) string  { return filepath.Join(dirFor(id), "screen") }
@@ -205,6 +211,28 @@ func ReadMeta(id string) (Meta, error) {
 	var m Meta
 	err = json.Unmarshal(b, &m)
 	return m, err
+}
+
+// WriteReport saves id's notify_parent report in full, last writer wins:
+// a child reporting twice is reporting on more work than the first call
+// covered. The run's directory is not created here - a sender kido never
+// spawned has none, and the error is what tells notifyParentCmd to fall
+// back to a plain truncation.
+func WriteReport(id, text string) error {
+	if err := checkID(id); err != nil {
+		return err
+	}
+	return os.WriteFile(ReportPath(id), []byte(text), 0o600)
+}
+
+// HasReport reports whether id's run has a report file, which only a
+// report too long for one notice ever leaves behind.
+func HasReport(id string) bool {
+	if err := checkID(id); err != nil {
+		return false
+	}
+	_, err := os.Stat(ReportPath(id))
+	return err == nil
 }
 
 // ReadTask reads id's task text.

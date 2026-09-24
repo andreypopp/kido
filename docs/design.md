@@ -1042,13 +1042,17 @@ only when the model itself decides its work is done, over the identical
 `notice` envelope path the automatic notices used - no second
 transport. Content is exactly what the model chooses to say, not
 extracted from `agent_end`'s message data (there is no need to; the
-model writes the summary itself), capped at 4000 bytes for the same
-reason the old automatic notice was: larger than the activity cap, since
-this is the child's actual work product and not a UI label, but far
-smaller than `MAX_PROMPT_BYTES`, since it is spliced whole into the
-parent's context as a message rather than transported as an arbitrary
-payload. The cap is enforced by truncating, in `capBytes`, and only
-there: the tool's own schema does not repeat it as a `maxLength`, because
+model writes the summary itself). What the parent is *sent* is capped at
+4000 bytes for the same reason the old automatic notice was: larger than
+the activity cap, since this is the child's actual work product and not a
+UI label, but far smaller than `MAX_PROMPT_BYTES`, since it is spliced
+whole into the parent's context as a message rather than transported as
+an arbitrary payload. The report itself is not cut to fit: `kido
+notify_parent` keeps the whole of a longer one in the run's directory and
+names it in the notice (design-subagents.md, "Reporting"). The cap is
+enforced there, in the command, and not in the tool, which would be
+throwing away what the command exists to keep; the tool's own schema does
+not repeat it as a `maxLength` either, because
 `maxLength` counts UTF-16 code units against a bound stated in bytes and
 rejects the whole call outright rather than truncating - measured live, a
 subagent with a genuinely long report got "summary must not have more

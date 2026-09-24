@@ -247,6 +247,12 @@ func showRun(w io.Writer, id string, asJSON bool) error {
 	if info.OutcomeText != "" {
 		fmt.Fprintf(w, "detail:   %s\n", info.OutcomeText)
 	}
+	// Only a report too long for one notice leaves a file behind, and then
+	// the notice its parent got names this path too: one line, for the run
+	// whose whole report is the thing worth having.
+	if subrun.HasReport(id) {
+		fmt.Fprintf(w, "report:   %s\n", subrun.ReportPath(id))
+	}
 	fmt.Fprintf(w, "resume:   %s\n", resume)
 	fmt.Fprintf(w, "fork:     %s\n", fork)
 	fmt.Fprintf(w, "task:\n%s\n", task)

@@ -88,6 +88,11 @@ func askAgentCmd(args []string, stdin io.Reader) int {
 //
 // A session with no such variable is a root session with nobody to tell,
 // which is a clear refusal rather than a silent success.
+//
+// The report a child writes is its work product and is kept whole: over
+// the notice cap it goes to the run's own directory and the parent is
+// sent the head of it plus the path (reportNotice, report.go). The cap
+// used to be the tool's, and applied by throwing the rest away.
 func notifyParentCmd(args []string, stdin io.Reader) int {
 	const cmd = "notify_parent"
 	if len(args) > 0 {
@@ -99,7 +104,16 @@ func notifyParentCmd(args []string, stdin io.Reader) int {
 		fmt.Fprintf(os.Stderr, "kido %s: this session has no parent ($KIDO_AGENT_PARENT_INSTANCE is not set); nothing sent\n", cmd)
 		return 1
 	}
-	return send(cmd, sendSpec{kind: msg.KindNotice, parentInstance: instance}, stdin)
+	b, err := io.ReadAll(stdin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kido %s: %v\n", cmd, err)
+		return 1
+	}
+	notice, _, err := reportNotice(strings.TrimSuffix(string(b), "\n"), os.Getenv("KIDO_AGENT_RUN_ID"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kido %s: keeping the whole report failed (%v); sending a truncated one\n", cmd, err)
+	}
+	return send(cmd, sendSpec{kind: msg.KindNotice, parentInstance: instance}, strings.NewReader(notice))
 }
 
 // sendSpec is one outbound envelope as its command described it: the
