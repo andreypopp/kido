@@ -52,7 +52,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/tmux-side
-          key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.sha }}
+          key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.sha }}-${{ hashFiles('scripts/install-tmux-fork.sh') }}
 
       - name: Build and install tmux fork
         if: steps.tmux-cache.outputs.cache-hit != 'true'
@@ -63,7 +63,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/tmux-side
-          key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.sha }}
+          key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.sha }}-${{ hashFiles('scripts/install-tmux-fork.sh') }}
 
       - name: Check tmux fork
         run: $HOME/tmux-side/bin/kido-tmux -V
