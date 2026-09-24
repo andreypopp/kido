@@ -321,9 +321,11 @@ never saturated to chase a runner failure: work here runs in parallel,
 and one agent spinning every core stalls all the others while, measured,
 still failing to reproduce.
 
-Validation is `make test` then `make e2e`, both in full; `go test -run` on
-one test or `go test` on one package is for chasing a specific failure
-while you work, not a substitute for running either target whole.
+Validation before a release is `make test` then `make e2e`, both in
+full, and CI runs both on every push (`scripts/ci-watch.sh` waits for
+it). While working, `go test` on the package you changed is the loop;
+a spawned agent runs only that, by the rule under "Working here as a
+spawned agent".
 
 `make e2e` needs the fork on `PATH` or at `KIDO_TMUX=/path/to/tmux` and
 **skips** without it; `KIDO_E2E_REQUIRED=1` fails instead, which is what
@@ -870,16 +872,22 @@ not repeat them.
   server.
 - **Every wait has a deadline.** No open-ended polling in code or in
   your own shell.
-- **Verification is yours; it is not re-run.** For a bug fix, write the
-  test first and watch it fail before touching the code; quote that
+- **Verify what you touched; CI runs the whole.** For a bug fix, write
+  the test first and watch it fail before touching the code; quote that
   failure. A feature needs no such proof - its tests need only pass.
-  Then, once:
+  Then run `go vet ./...` and the tests of the packages you changed (an
+  e2e test you wrote, with `KIDO_E2E_REQUIRED=1 KIDO_TMUX=$HOME/bin/tmux
+  go test ./e2e/ -run Name`; the TypeScript suite through
+  `scripts/test-ts.sh` if you touched `pi/`), each once, with the
+  environment scrubbed:
 
-      env -u KIDO_AGENT_PARENT_INSTANCE -u KIDO_AGENT_DEPTH -u KIDO_AGENT_TASK_FILE -u KIDO_AGENT_PARENT_PID -u TMUX_PANE KIDO_TS_TEST_REQUIRED=1 make test
-      env -u KIDO_AGENT_PARENT_INSTANCE -u KIDO_AGENT_DEPTH -u KIDO_AGENT_TASK_FILE -u KIDO_AGENT_PARENT_PID -u TMUX_PANE KIDO_E2E_REQUIRED=1 KIDO_TMUX=$HOME/bin/tmux make e2e
+      env -u KIDO_AGENT_PARENT_INSTANCE -u KIDO_AGENT_DEPTH -u KIDO_AGENT_TASK_FILE -u KIDO_AGENT_PARENT_PID -u TMUX_PANE go test ./internal/ui/
 
-  No loops, no second tmux build. Report PASS/FAIL/SKIP as printed; a
-  failure in a file you do not own is reported, not fixed.
+  Do not run `make test` or `make e2e`: the top-level session pushes and
+  watches CI, which runs both on every commit, and a full local run in
+  every subagent is that run a third time. No loops, no second tmux
+  build. Report PASS/FAIL/SKIP as printed; a failure in a file you do
+  not own is reported, not fixed.
 - **Docs are not per task.** Do not edit `docs/` or this file unless the
   brief assigns them. Put any prose a change deserves in your report.
 - **Report through `notify_parent`, under 4000 characters**, leading
