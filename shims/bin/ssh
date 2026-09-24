@@ -1,0 +1,6 @@
+#!/bin/sh
+# kido's ssh: `kido ssh`, which primes the remote shell when it can and
+# is plain ssh when it cannot. It finds the real ssh itself, past this
+# directory.
+. "${0%/*}/../shim.sh"
+exec "$kido_prefix_bin/kido" ssh "$@"

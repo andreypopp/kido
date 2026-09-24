@@ -1,0 +1,20 @@
+#!/bin/sh
+# kido's tmux: kido-tmux, found the way kido itself finds it. Inside a
+# kido pane $TMUX names the kido server, which a stock tmux cannot talk
+# to, so every `tmux` a plugin, an editor or a run-shell line runs has to
+# land here.
+. "${0%/*}/../shim.sh"
+case ${KIDO_TMUX-} in
+'') ;;
+*/*) exec "$KIDO_TMUX" "$@" ;;
+*)
+	# A bare name would find this shim again on PATH.
+	kido_real "$KIDO_TMUX"
+	exec "$kido_found" "$@"
+	;;
+esac
+if [ -x "$kido_prefix_bin/kido-tmux" ]; then
+	exec "$kido_prefix_bin/kido-tmux" "$@"
+fi
+kido_real tmux
+exec "$kido_found" "$@"

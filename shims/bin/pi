@@ -1,0 +1,15 @@
+#!/bin/sh
+# kido's pi: the real pi with kido's two extensions loaded from where the
+# package ships them, so nothing is written into ~/.pi/agent/extensions.
+. "${0%/*}/../shim.sh"
+case ${1-} in
+# pi reads these subcommands from its first argument, so nothing may go
+# in front of them; none of them starts a session anyway.
+install | remove | uninstall | update | list | config | auth) ;;
+*)
+	set -- --extension "$kido_share/pi/kido-status.ts" \
+		--extension "$kido_share/pi/kido-agents.ts" "$@"
+	;;
+esac
+kido_real pi
+exec "$kido_found" "$@"

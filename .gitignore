@@ -1,4 +1,4 @@
-bin/
+/bin/
 pi/node_modules/
 /kido
 pi/.copy-*/

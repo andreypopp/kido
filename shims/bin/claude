@@ -1,0 +1,6 @@
+#!/bin/sh
+# kido's claude: the real Claude Code with kido's hooks merged in through
+# --settings, so nothing is written into the user's settings.json.
+. "${0%/*}/../shim.sh"
+kido_real claude
+exec "$kido_found" --settings "$kido_share/claude/settings.json" "$@"
