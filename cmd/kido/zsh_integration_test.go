@@ -29,6 +29,9 @@ func zshPreexec(t *testing.T, cmdline string) string {
 	return out.String()
 }
 
+// oscPrefix is the command-start marker up to its command line. Both
+// integrations are held to these same bytes, so both this file's tests
+// and bash_integration_test.go's read them through it and payload below.
 const oscPrefix = "\033]133;C;cmdline="
 
 // payload is the cmdline= value in a 133;C sequence.

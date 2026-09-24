@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -344,4 +345,57 @@ func TestInvokedPathFallsBackToExecutable(t *testing.T) {
 	if got != want {
 		t.Errorf("invokedPath = %q, want %q", got, want)
 	}
+}
+
+// runRCBlock runs one generated rc block through the shell at sh, and
+// returns what it wrote to stdout and to stderr. The block is the whole
+// program: a shell that cannot parse it fails the run.
+func runRCBlock(t *testing.T, sh, block string) (out, errs string) {
+	t.Helper()
+	var o, e strings.Builder
+	cmd := exec.Command(sh, "-c", block)
+	cmd.Stdout, cmd.Stderr = &o, &e
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("%s: %v (stderr %q)", sh, err, e.String())
+	}
+	return o.String(), e.String()
+}
+
+// rcBlockRuns is what every generated rc block promises, checked against
+// the real shell that reads it: it parses, it sources a script that is
+// there and says nothing else, and a missing one produces kido's own
+// message on stderr - naming the file and the setup command that writes
+// it - rather than the shell's error, which is the whole point of the
+// guard. print is a line of that shell printing "sourced", and setup the
+// subcommand the message must name. It returns the script it wrote, for
+// a caller with more to ask of the same block.
+func rcBlockRuns(t *testing.T, shell string, block func(source string) string, print, setup string) string {
+	t.Helper()
+	sh, err := exec.LookPath(shell)
+	if err != nil {
+		t.Skipf("no %s in PATH", shell)
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "integration."+shell)
+	if err := os.WriteFile(script, []byte(print), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, errs := runRCBlock(t, sh, block(script))
+	if strings.TrimSpace(out) != "sourced" {
+		t.Errorf("stdout = %q, want the script to have been sourced", out)
+	}
+	if errs != "" {
+		t.Errorf("stderr = %q, want nothing", errs)
+	}
+
+	missing := filepath.Join(dir, "gone."+shell)
+	out, errs = runRCBlock(t, sh, block(missing))
+	if out != "" {
+		t.Errorf("stdout = %q, want nothing", out)
+	}
+	if !strings.Contains(errs, missing) || !strings.Contains(errs, setup) {
+		t.Errorf("stderr = %q, want it to name %q and how to fix it", errs, missing)
+	}
+	return script
 }

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"kido/internal/testutil"
 )
 
 // TestRenderGrouping checks the shape of the list: sessions oldest first,
@@ -240,30 +242,13 @@ func (h *harness) waitShellRow(want string, color string) {
 	})
 }
 
-// modernBash returns a bash new enough for PS0, which
-// shell/bash/integration.bash is built on and which macOS's own 3.2
-// /bin/bash does not have.
-func modernBash(t *testing.T) string {
-	t.Helper()
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("no bash in PATH")
-	}
-	out, err := exec.Command(bash, "-c",
-		`((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))) && echo yes`).Output()
-	if err != nil || strings.TrimSpace(string(out)) != "yes" {
-		t.Skip("the bash in PATH is older than 4.4, which PS0 needs")
-	}
-	return bash
-}
-
 // TestBashShellStatusRow is TestShellStatusRow's twin for bash: a plain
 // bash pane with shell/bash/integration.bash sourced the way `kido
 // setup-bash`'s block sources it carries the same indicators, off the
 // same OSC 133 markers, through the same states.
 func TestBashShellStatusRow(t *testing.T) {
 	t.Parallel()
-	bash := modernBash(t)
+	bash := testutil.ModernBash(t)
 	h := start(t, "alpha")
 
 	home := ""
@@ -290,11 +275,14 @@ func TestBashShellStatusRow(t *testing.T) {
 	// makes the window's first process bash itself.
 	pane := h.newWindow("alpha", "", bash, "--rcfile", rc, "-i")
 	h.waitPaneCommand(pane, "bash")
+	// The shell has to have reached its first prompt before anything is
+	// typed at it, or the line is read by a terminal nobody is listening
+	// at yet; that prompt is also the marker the row below is drawn from.
+	h.waitPanePrompt(pane)
 	// An idle integrated shell shows nothing, in a field that keeps the
 	// label at the column every other row starts at. bash's first prompt
 	// fires no "D" at all - nothing has run - so this row is blank
 	// without the test ever visiting the pane.
-	time.Sleep(2 * time.Second)
 	h.waitShellRow("╶  bash", "")
 
 	h.in("send-keys", "-t", pane, "sleep 5", "Enter")

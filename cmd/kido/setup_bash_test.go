@@ -4,51 +4,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-// TestBashrcBlockRuns checks the generated block against a real bash:
-// that it parses, that it sources a script that is there, and that a
-// missing one produces a message on stderr instead of bash's own error -
-// the whole point of the guard.
+// TestBashrcBlockRuns checks the generated block against a real bash, and
+// then against the one other shell that reads it.
 func TestBashrcBlockRuns(t *testing.T) {
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("no bash in PATH")
-	}
-	dir := t.TempDir()
-	script := filepath.Join(dir, "integration.bash")
-	if err := os.WriteFile(script, []byte("echo sourced\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	run := func(t *testing.T, sh, source string) (string, string) {
-		t.Helper()
-		var out, errb strings.Builder
-		cmd := exec.Command(sh, "-c", bashrcBlock(source))
-		cmd.Stdout, cmd.Stderr = &out, &errb
-		if err := cmd.Run(); err != nil {
-			t.Fatalf("%s: %v (stderr %q)", sh, err, errb.String())
-		}
-		return out.String(), errb.String()
-	}
-
-	out, errs := run(t, bash, script)
-	if strings.TrimSpace(out) != "sourced" {
-		t.Errorf("stdout = %q, want the script to have been sourced", out)
-	}
-	if errs != "" {
-		t.Errorf("stderr = %q, want nothing", errs)
-	}
-
-	missing := filepath.Join(dir, "gone.bash")
-	out, errs = run(t, bash, missing)
-	if out != "" {
-		t.Errorf("stdout = %q, want nothing", out)
-	}
-	if !strings.Contains(errs, missing) || !strings.Contains(errs, "setup-bash") {
-		t.Errorf("stderr = %q, want it to name %q and how to fix it", errs, missing)
-	}
+	script := rcBlockRuns(t, "bash", bashrcBlock, "echo sourced\n", "setup-bash")
 
 	// The block can land in ~/.profile, which every sh reads: there it
 	// must parse, say nothing, and source nothing - the integration is
@@ -61,7 +23,7 @@ func TestBashrcBlockRuns(t *testing.T) {
 		t.Log("no dash in PATH; the sh guard is unchecked here")
 		return
 	}
-	out, errs = run(t, dash, script)
+	out, errs := runRCBlock(t, dash, bashrcBlock(script))
 	if out != "" || errs != "" {
 		t.Errorf("under dash the block wrote %q / %q, want silence", out, errs)
 	}

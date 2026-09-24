@@ -167,10 +167,14 @@ _kido_ssh_init() {
 // types at - reads the login files bash itself would have (/etc/profile,
 // then the first of ~/.bash_profile, ~/.bash_login, ~/.profile, exactly
 // as a login bash run with no kido in front of it would), sources the
-// integration only on a bash new enough for its PS0 hook, and removes
-// the directory it came from. Unlike the zsh path there is no deferral to
-// the first prompt: nothing else runs after this file, so there are no
-// later hooks for the integration to land in front of.
+// integration, and removes the directory it came from. Unlike the zsh
+// path there is no deferral to the first prompt: nothing else runs after
+// this file, so there are no later hooks for the integration to land in
+// front of.
+//
+// Nothing here reads $BASH_VERSINFO: the bootstrap has already asked this
+// bash its version and sent a bash too old for PS0 down kido_plain, which
+// never reaches --posix at all.
 const kidoBashEnv = `# Written by ` + "`kido ssh`" + ` into a throwaway $ENV file on this host.
 # It removes itself; nothing kido sends is meant to outlive the session.
 unset ENV
@@ -184,14 +188,7 @@ for _kido_f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
   if [ -r "$_kido_f" ]; then . "$_kido_f"; break; fi
 done
 unset _kido_f
-# PS0 arrived in bash 4.4; an older bash gets its login files and nothing
-# more, the same "unprimed but not broken" outcome kido_plain gives a
-# remote with no zsh, no mktemp or no base64.
-if { [ "${BASH_VERSINFO[0]}" -gt 4 ] ||
-     { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; }; } &&
-   [ -f "$_kido_dir/integration.bash" ]; then
-  . "$_kido_dir/integration.bash"
-fi
+[ ! -f "$_kido_dir/integration.bash" ] || . "$_kido_dir/integration.bash"
 rm -rf -- "$_kido_dir"
 unset _kido_dir
 `
@@ -211,6 +208,13 @@ unset _kido_dir
 // zsh and bash are primed; anything else stays kido_plain. The login
 // shell is read from $SHELL, which sshd sets from the password database,
 // so the detection costs no extra round trip.
+//
+// A bash is asked its own version before anything else is done to it.
+// That costs one process on the remote and buys the only reliable
+// answer: Apple's bash 3.2 never reads $ENV under --posix, so a floor
+// checked inside the $ENV file would be a floor that host never reaches,
+// leaving the session in posix mode for its whole life and the temporary
+// directory behind it.
 //
 // The decode is tried twice because the flag is not portable: GNU
 // coreutils spells it -d, and the BSD base64 some remotes carry spells it
@@ -234,8 +238,22 @@ kido_decode() {
   [ -s "$2" ] || printf %%s "$1" | base64 -D > "$2" 2>/dev/null
   [ -s "$2" ]
 }
+kido_bash_has_ps0() {
+  kido_v=$("$kido_shell" -c 'echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"' 2>/dev/null)
+  kido_maj=${kido_v%%%%.*}
+  kido_min=${kido_v#*.}
+  case "$kido_maj$kido_min" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$kido_maj" -gt 4 ] || { [ "$kido_maj" -eq 4 ] && [ "$kido_min" -ge 4 ]; }
+}
 case "$kido_name" in
-  zsh|bash) ;;
+  zsh) ;;
+  # PS0 arrived in bash 4.4. An older bash is left alone here rather than
+  # inside the $ENV file, which it may never read: it gets its own login
+  # files and no markers, the "unprimed but not broken" outcome kido_plain
+  # gives a remote with no zsh, no mktemp or no base64.
+  bash) kido_bash_has_ps0 || kido_plain ;;
   *) kido_plain ;;
 esac
 command -v mktemp >/dev/null 2>&1 && command -v base64 >/dev/null 2>&1 || kido_plain
@@ -252,6 +270,12 @@ if [ "$kido_name" = zsh ]; then
   export ZDOTDIR="$kido_dir"
   exec "$kido_shell" -l
 fi
+# No dotfile guard here, unlike the zsh branch above: kitty's
+# exec_bash_with_integration has none either, and the guard it does have
+# in exec_zsh_with_integration is commented "dont prevent
+# zsh-newuser-install from running". bash has no first-login installer to
+# suppress, and a remote with no login files at all is one the $ENV file
+# below sources nothing from, which is what bash would have done anyway.
 kido_decode "$kido_bash_b64" "$kido_dir/integration.bash" || kido_plain
 cat > "$kido_dir/env.bash" <<'KIDO_BASHENV' || kido_plain
 %sKIDO_BASHENV

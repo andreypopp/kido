@@ -1555,17 +1555,31 @@ the directory. There is no deferral to a first prompt here the way there
 is for zsh: nothing else runs after this file, so there is no later hook
 for the integration to land in front of.
 
-The integration's own `PS0` hook needs bash 4.4; the version floor is
-checked inside that same file, against `$BASH_VERSINFO`, because the
-outer POSIX sh bootstrap has no way to ask bash's own version without
-spawning bash. An older bash gets its login files and no markers - the
-same outcome an unsupported shell gets from `kido_plain`, reached by a
-different route. macOS ships 3.2 as `/bin/bash`, old enough to exercise
-this, and also old enough that it does not read `$ENV` under `--posix` at
-all on that platform; a login bash's own file-reading still runs the
-user's dotfiles, but nothing ever reads kidoBashEnv far enough to remove
-it, which is one more way - alongside the one below - that this
-bootstrap's cleanup can be skipped without breaking a session.
+The integration's own `PS0` hook needs bash 4.4, and the bootstrap checks
+that floor itself, before it does anything else to a bash: it spawns the
+login shell once to ask, `"$kido_shell" -c 'echo
+"${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"'`, and an answer under 4.4 -
+or one that is not a version at all, which is what a shell merely named
+bash prints - goes to `kido_plain`. An older bash gets its login files
+and no markers, the same outcome an unsupported shell gets, by the same
+route.
+
+That is one process on the remote, and the alternative was measured and
+rejected. macOS ships 3.2 as `/bin/bash`, and Apple's build does not
+read `$ENV` under `--posix` at all: a floor checked inside the `$ENV`
+file is one that host never reads, so the session it leaves reports
+nothing - indistinguishable from the intended outcome - while spending
+its whole life in posix mode, with the throwaway directory holding the
+file nothing read still on the remote when the session ends. Asking
+first means such a bash never reaches `--posix`, and the two halves of
+that are what `TestBootstrapFallsBackForOldBash` asserts.
+
+The bash branch has no dotfile guard, where the zsh one does. That is
+kitty's shape too: the guard in its `exec_zsh_with_integration` is there
+for `zsh-newuser-install` and `exec_bash_with_integration` has none.
+bash has no first-login installer to suppress, and a remote with no
+login files is one the `$ENV` file sources nothing from - which is what
+bash would have done anyway.
 
 **Nothing persists.** kido's payload is small enough to resend on every
 connection, so unlike kitty - which caches under

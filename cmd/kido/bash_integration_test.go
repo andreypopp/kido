@@ -8,29 +8,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-)
 
-// modernBash returns a bash new enough for PS0, which is what
-// shell/bash/integration.bash is built on and what macOS's own 3.2
-// /bin/bash does not have.
-func modernBash(t *testing.T) string {
-	t.Helper()
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("no bash in PATH")
-	}
-	out, err := exec.Command(bash, "-c", "printf %s.%s ${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}").Output()
-	if err != nil {
-		t.Fatalf("%s: %v", bash, err)
-	}
-	major, minor, _ := strings.Cut(string(out), ".")
-	maj, _ := strconv.Atoi(major)
-	min, _ := strconv.Atoi(minor)
-	if maj < 4 || (maj == 4 && min < 4) {
-		t.Skipf("bash %s is older than 4.4, which PS0 needs", out)
-	}
-	return bash
-}
+	"kido/internal/testutil"
+)
 
 // osc133Seqs is every OSC 133 marker in a stream, whole. The shell's own
 // noise - its prompt, the lines it echoes back off a piped stdin, the
@@ -44,7 +24,7 @@ var osc133Seqs = regexp.MustCompile("\x1b\\]133;[^\x07]*\x07")
 // the tty.
 func bashSession(t *testing.T, lines ...string) []string {
 	t.Helper()
-	bash := modernBash(t)
+	bash := testutil.ModernBash(t)
 	script, err := filepath.Abs(filepath.Join("..", "..", "shell", "bash", "integration.bash"))
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +66,7 @@ func bashSession(t *testing.T, lines ...string) []string {
 // a literal BEL in a line (ctrl-v ctrl-g) and in the history with it.
 func bashPreexec(t *testing.T, cmdline string) string {
 	t.Helper()
-	bash := modernBash(t)
+	bash := testutil.ModernBash(t)
 	script, err := filepath.Abs(filepath.Join("..", "..", "shell", "bash", "integration.bash"))
 	if err != nil {
 		t.Fatal(err)
@@ -137,26 +117,14 @@ func TestBashIntegrationMarksAPipelineOnce(t *testing.T) {
 	line := "echo hi | cat | cat"
 	var starts []string
 	for _, s := range bashSession(t, line) {
-		if strings.HasPrefix(s, bashStart) {
+		if strings.HasPrefix(s, oscPrefix) {
 			starts = append(starts, s)
 		}
 	}
-	want := bashStart + line + "\x07"
+	want := oscPrefix + line + "\x07"
 	if len(starts) != 1 || starts[0] != want {
 		t.Errorf("starts = %q, want exactly one %q", starts, want)
 	}
-}
-
-// bashStart is the command-start marker up to its command line.
-const bashStart = "\x1b]133;C;cmdline="
-
-// bashPayload is the cmdline= value in a command-start marker.
-func bashPayload(t *testing.T, marker string) string {
-	t.Helper()
-	if !strings.HasPrefix(marker, bashStart) || !strings.HasSuffix(marker, "\x07") {
-		t.Fatalf("output %q is not a 133;C sequence", marker)
-	}
-	return strings.TrimSuffix(strings.TrimPrefix(marker, bashStart), "\x07")
 }
 
 // lastStart is the last command-start marker in a session's markers.
@@ -164,7 +132,7 @@ func lastStart(t *testing.T, seqs []string) string {
 	t.Helper()
 	var start string
 	for _, s := range seqs {
-		if strings.HasPrefix(s, bashStart) {
+		if strings.HasPrefix(s, oscPrefix) {
 			start = s
 		}
 	}
@@ -182,23 +150,23 @@ func lastStart(t *testing.T, seqs []string) string {
 // OSC sequence early.
 func TestBashIntegrationEmitsCmdline(t *testing.T) {
 	ordinary := "git log --oneline | head -3"
-	if got := bashPreexec(t, ordinary); got != bashStart+ordinary+"\x07" {
+	if got := bashPreexec(t, ordinary); got != oscPrefix+ordinary+"\x07" {
 		t.Errorf("kido_osc133_preexec(%q) = %q, want the command line verbatim", ordinary, got)
 	}
 
 	// ';' and '=' are part of the OSC's own syntax, but cmdline= is the
 	// last parameter and its value runs to the end of the string.
 	punct := "FOO=bar; make test"
-	if got := bashPreexec(t, punct); got != bashStart+punct+"\x07" {
+	if got := bashPreexec(t, punct); got != oscPrefix+punct+"\x07" {
 		t.Errorf("kido_osc133_preexec(%q) = %q, want ';' and '=' intact", punct, got)
 	}
 
 	nasty := "a\x07b\x1bc"
 	got := bashPreexec(t, nasty)
-	if want := bashStart + "a b c\x07"; got != want {
+	if want := oscPrefix + "a b c\x07"; got != want {
 		t.Errorf("kido_osc133_preexec(%q) = %q, want %q", nasty, got, want)
 	}
-	if strings.ContainsAny(bashPayload(t, got), "\x07\x1b") {
+	if strings.ContainsAny(payload(t, got), "\x07\x1b") {
 		t.Errorf("output %q still carries a raw BEL or ESC inside the OSC payload", got)
 	}
 }
@@ -208,14 +176,14 @@ func TestBashIntegrationEmitsCmdline(t *testing.T) {
 func TestBashIntegrationTruncatesCmdline(t *testing.T) {
 	line := "true " + strings.Repeat("héllo", 300) // multibyte, 1505 characters
 	start := lastStart(t, bashSession(t, line))
-	payload := bashPayload(t, start)
-	if n := len([]rune(payload)); n != 1024 {
+	cmdline := payload(t, start)
+	if n := len([]rune(cmdline)); n != 1024 {
 		t.Fatalf("truncated command line is %d runes, want 1024 (marker %q)", n, start)
 	}
-	if !strings.HasPrefix(line, payload) {
+	if !strings.HasPrefix(line, cmdline) {
 		t.Errorf("truncated command line is not a prefix of the original")
 	}
-	if strings.ContainsRune(payload, '\ufffd') {
-		t.Errorf("truncated command line %q contains a replacement rune: cut mid-rune", payload)
+	if strings.ContainsRune(cmdline, '\ufffd') {
+		t.Errorf("truncated command line %q contains a replacement rune: cut mid-rune", cmdline)
 	}
 }

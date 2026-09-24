@@ -886,6 +886,15 @@ func (h *harness) waitPaneCommand(id, cmd string) {
 	}, settle, msgf("pane %s running %s", id, cmd))
 }
 
+// waitPanePrompt waits until pane id has reported an OSC 133 prompt, the
+// one reading that says an integrated shell is up and listening.
+func (h *harness) waitPanePrompt(id string) {
+	h.t.Helper()
+	h.waitFor(func() bool {
+		return h.in("display-message", "-p", "-t", id, "#{pane_last_prompt_time}") != "0"
+	}, settle, msgf("pane %s to report its first prompt", id))
+}
+
 // sshProxy writes (once per harness) a ProxyCommand script that just
 // blocks, so an ssh pane needs no network. It is a script rather than
 // "sleep 300" because kido reads ssh's arguments out of ps output, where a
