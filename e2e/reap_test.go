@@ -241,8 +241,8 @@ func TestFocusedWindowIsReapedOnceTheUserLeaves(t *testing.T) {
 	h.killPane(paneID)
 
 	// The linger helper fires while they are still there, and gives up.
-	if out := h.runKido("alpha", "linger.out", "close-window", windowID); !strings.Contains(out, "current window") {
-		t.Errorf("kido close-window output = %q, want it to say it left a focused window alone", out)
+	if out := h.runKido("alpha", "linger.out", "close-run", windowID); !strings.Contains(out, "current window") {
+		t.Errorf("kido close-run output = %q, want it to say it left a focused window alone", out)
 	}
 	h.stays(func() bool { return h.windowExists(windowID) },
 		"the window the user is reading was closed")
@@ -258,39 +258,55 @@ func (h *harness) paneDead(paneID string) bool {
 	return h.in("display-message", "-p", "-t", paneID, "#{pane_dead}") == "1"
 }
 
-// windowPaneCount is how many panes windowID currently has.
-func (h *harness) windowPaneCount(windowID string) int {
+// paneExists reports whether paneID is still a pane of the inner server.
+func (h *harness) paneExists(paneID string) bool {
 	h.t.Helper()
-	out := h.in("list-panes", "-t", windowID, "-F", "#{pane_id}")
-	if out == "" {
-		return 0
+	for _, line := range strings.Split(h.in("list-panes", "-a", "-F", "#{pane_id}"), "\n") {
+		if line == paneID {
+			return true
+		}
 	}
-	return len(strings.Split(out, "\n"))
+	return false
 }
 
-// TestSplitPaneSurvivesAFinishedRunThenTheWindowIsReaped is both bugs from
-// one real incident, in the order the user hit them: they split a
-// subagent's window, ran something of their own in it, and the run's own
-// pane finished. tmux.NewWindow used to turn remain-on-exit on for the
-// whole *window*, so the split pane inherited it too and stayed on screen
-// as "Pane is dead" instead of closing when its own command exited -
-// and `kido close-window`, seeing only the window-wide option (never the
-// split's own liveness) with no per-pane check at all, closed the whole
-// window seconds later, taking the user's live split with it.
-func TestSplitPaneSurvivesAFinishedRunThenTheWindowIsReaped(t *testing.T) {
+// windowMark is the @kido_subagent window option's value, empty for a
+// window that carries none. Straight through h.tmux: show-options for an
+// option that is not set exits nonzero, which h.in would fail the test
+// over, and "not set" is exactly what half of this asks about.
+func (h *harness) windowMark(windowID string) string {
+	h.t.Helper()
+	out, err := h.tmux(h.inner, "show-options", "-w", "-t", windowID, "@kido_subagent")
+	if err != nil {
+		return ""
+	}
+	return out
+}
+
+// TestSplitPaneSurvivesAFinishedRunAndTheWindowGoesPlain is the incident
+// the unit of collection changed for, in the order the user hit it: they
+// split a shell into a subagent's window and the run in it finished. The
+// window was the unit then, so with a live pane in it nothing could be
+// collected at all and the run's dead pane sat beside their shell until
+// they left the window. The unit is the run's pane now, and what is left
+// behind is an ordinary window: unmarked, drawn by the sidebar as the
+// user's own, and closing when its last pane exits like any window.
+//
+// It is also still the test for the older bug underneath: remain-on-exit
+// is the run pane's alone (tmux.NewWindow sets it with set-option -p), so
+// the split closes on exit instead of becoming a second corpse.
+func TestSplitPaneSurvivesAFinishedRunAndTheWindowGoesPlain(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
 	runWindowID, runPaneID, runID := h.asyncBashIDs(nil, "splitrun", "sleep", "1")
-	// The split's own sleep must clearly outlast the close-window refusal
-	// check below, which watches the pane count for a couple of seconds
-	// (h.stays): were the two durations close, the split exiting on its
-	// own during that watch would be indistinguishable from a wrong close.
+	// The split outlives the collection below by waiting on a file this
+	// test creates, rather than on a duration: a sleep that happened to
+	// end while the run's pane was being collected would be
+	// indistinguishable from the window taking the split with it.
+	stop := filepath.Join(h.dir, "splitrun-stop")
 	splitPaneID := h.in("split-window", "-P", "-F", "#{pane_id}", "-t", runWindowID,
-		"-c", h.dir, "sh", "-c", "sleep 5")
+		"-c", h.dir, "sh", "-c", fmt.Sprintf("while [ ! -f %s ]; do sleep 0.1; done", stop))
 
-	// The run finishes on its own; its pane goes dead (tmux.NewWindow's
-	// pane-scoped remain-on-exit), the split does not (bug 2, fixed).
 	info := h.waitOutcome(runID)
 	if info.Outcome != "completed" {
 		t.Fatalf("kido runs reports outcome %q, want completed", info.Outcome)
@@ -298,47 +314,49 @@ func TestSplitPaneSurvivesAFinishedRunThenTheWindowIsReaped(t *testing.T) {
 	h.waitFor(func() bool { return h.paneDead(runPaneID) }, settle,
 		msgf("run pane %s to go dead once its command exits", runPaneID))
 	if h.paneDead(splitPaneID) {
-		t.Fatalf("split pane %s is dead already; it should still be running its sleep", splitPaneID)
+		t.Fatalf("split pane %s is dead already; it should still be waiting on %s", splitPaneID, stop)
 	}
-	if n := h.windowPaneCount(runWindowID); n != 2 {
-		t.Fatalf("window %s has %d panes, want 2 (the dead run pane and the live split)", runWindowID, n)
+	// The sidebar draws the finished run before anything collects it, which
+	// is what makes its absence below mean something.
+	h.waitRow("splitrun")
+
+	// The linger, and the sweep behind it, collect the run's dead pane and
+	// nothing else.
+	h.waitFor(func() bool { return !h.paneExists(runPaneID) }, settle,
+		msgf("the run's dead pane %s to be collected once the linger has passed", runPaneID))
+	if !h.windowExists(runWindowID) {
+		t.Fatalf("window %s is gone; collecting the run's pane must leave the user's split standing", runWindowID)
+	}
+	if !h.paneExists(splitPaneID) {
+		t.Fatalf("the user's split %s went with the run's pane", splitPaneID)
 	}
 
-	// close-window must refuse: the window has a live pane (bug 1, fixed).
-	if out := h.runKido("alpha", "split-close.out", "close-window", runWindowID); !strings.Contains(out, "live pane") {
-		t.Errorf("kido close-window output = %q, want it to say it left a window with a live pane alone", out)
+	// With its run collected the window is nobody's subagent: unmarked, so
+	// the tree stops nesting it, switch-window stops skipping it and no
+	// later sweep considers it.
+	h.waitFor(func() bool { return h.windowMark(runWindowID) == "" }, settle,
+		msgf("window %s to be unmarked, is %q", runWindowID, h.windowMark(runWindowID)))
+	// And the sidebar draws it as the plain window it now is: the session,
+	// the client's own shell and the user's split, with no row left for the
+	// run - neither its name nor the outcome its label carried, and no
+	// nested block for a window that is nobody's subagent now.
+	plain := func() bool {
+		// rowIndex answers 0 for a row that is not there; it is 1-based.
+		return len(h.rows()) == 3 && h.rowIndex("splitrun") == 0 && h.rowIndex("completed") == 0
 	}
-	h.stays(func() bool { return h.windowExists(runWindowID) && h.windowPaneCount(runWindowID) == 2 },
-		"the window with the user's live split was closed")
+	h.waitFor(plain, settle, func() string {
+		return fmt.Sprintf("window %s to be drawn as a plain window with the user's shell, rows are %q",
+			runWindowID, h.rows())
+	})
+	h.stays(plain, fmt.Sprintf("the sidebar went back to drawing window %s as a run: %q", runWindowID, h.rows()))
 
-	// The split exits on its own. It must vanish outright - not linger as
-	// a second "Pane is dead" corpse - which is the direct assertion for
-	// bug 2: no window-scoped remain-on-exit reached it.
-	// One read decides, and a window tmux can no longer find counts as
-	// the split being gone: the sweep closes the window the tick the split
-	// leaves it all dead, so a second read after "one pane left" can land
-	// on no window at all (measured on a loaded runner). A corpse is the
-	// failure, and it is caught on the read that sees it.
-	h.waitFor(func() bool {
-		out, err := h.tmux(h.inner, "list-panes", "-t", runWindowID, "-F", "#{pane_id} #{pane_dead}")
-		if err != nil {
-			return true
-		}
-		for _, line := range strings.Split(out, "\n") {
-			if line == splitPaneID+" 1" {
-				t.Fatalf("split pane %s is a dead corpse after its command exited, want it gone", splitPaneID)
-			}
-			if strings.HasPrefix(line, splitPaneID+" ") {
-				return false
-			}
-		}
-		return true
-	}, settle, msgf("the split's own pane %s to close once its command exits", splitPaneID))
-
-	// Now the window holds only the dead run pane, and the sweep collects
-	// it once the linger has passed.
+	// The split exits on its own, and the window goes like any window:
+	// nothing kido did left remain-on-exit on that pane.
+	if err := os.WriteFile(stop, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	h.waitFor(func() bool { return !h.windowExists(runWindowID) }, settle,
-		msgf("window %s to be swept now that every pane in it is dead", runWindowID))
+		msgf("window %s to close when its last pane exits", runWindowID))
 }
 
 // TestSidebarCancelsSubagentOfDeadParent is the second rule, which is the
@@ -444,11 +462,11 @@ func TestReapCancelsSubagentOfDeadParent(t *testing.T) {
 	}
 }
 
-// TestCloseWindowLeavesFocusedWindowAlone checks `kido close-window`
-// against a real tmux server: a window the client has actually switched
-// to must be left open, since the user may have gone there to read a
-// finishing subagent's last screen.
-func TestCloseWindowLeavesFocusedWindowAlone(t *testing.T) {
+// TestCloseRunLeavesFocusedWindowAlone checks `kido close-run` against a
+// real tmux server: a window the client has actually switched to must be
+// left open, since the user may have gone there to read a finishing
+// subagent's last screen.
+func TestCloseRunLeavesFocusedWindowAlone(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
@@ -459,7 +477,7 @@ func TestCloseWindowLeavesFocusedWindowAlone(t *testing.T) {
 	h.waitFor(func() bool { return h.activeWindowID("alpha") == windowID }, settle,
 		msgf("client to switch to window %s", windowID))
 
-	h.runKido("alpha", "close.out", "close-window", windowID)
+	h.runKido("alpha", "close.out", "close-run", windowID)
 
 	if !h.windowExists(windowID) {
 		t.Errorf("window %s was closed although the client had it focused", windowID)

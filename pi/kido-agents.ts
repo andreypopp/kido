@@ -80,7 +80,7 @@ const RUN_ID = process.env.KIDO_AGENT_RUN_ID || undefined;
 // or `pi --print` in an agent's pane, a tool shelling out to one - so a
 // parent edge is a claim any descendant can make, and this file used to
 // take it. A nested pi then resolved "self" by pane, found the real
-// agent's record, scheduled `kido close-window` on the real agent's
+// agent's record, scheduled `kido close-run` on the real agent's
 // window on its way out, and would have offered someone else's parent a
 // report. Two live agents were killed that way.
 //
@@ -872,7 +872,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   // windowFocused asks kido whether this session's own window is the one
-  // some client is currently looking at - the same test close-window and
+  // some client is currently looking at - the same test close-run and
   // the sweep (internal/reap) use, via a dedicated kido subcommand rather
   // than fetchAgents, since kido list_agents --json carries no focus field.
   const windowFocused = async (windowID: string): Promise<boolean> => {
@@ -1809,14 +1809,16 @@ export default function (pi: ExtensionAPI) {
   };
 
   // scheduleWindowLinger spawns the detached linger helper: sleep, then
-  // `kido close-window`, as its own process since this one's event loop
-  // is gone by the time the sleep fires. windowID and kido's path are
-  // passed as sh's $0/$1 so neither needs shell-quoting.
+  // `kido close-run`, as its own process since this one's event loop is
+  // gone by the time the sleep fires. The helper is given this session's
+  // window and collects the run's own pane in it, closing the window when
+  // that pane is all it has. windowID and kido's path are passed as sh's
+  // $0/$1 so neither needs shell-quoting.
   const scheduleWindowLinger = (windowID: string): void => {
     const host = status();
     const kido = host?.kidoPath();
     if (!host || !kido) return;
-    host.spawnDetached("sh", ["-c", `sleep ${LINGER_SECONDS} && exec "$0" close-window "$1"`, kido, windowID]);
+    host.spawnDetached("sh", ["-c", `sleep ${LINGER_SECONDS} && exec "$0" close-run "$1"`, kido, windowID]);
   };
 
   // isRunEnding tells a shutdown that ends the run apart from one that

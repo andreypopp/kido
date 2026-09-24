@@ -844,7 +844,8 @@ func LastWindow(panes []Pane, windowID string) bool {
 
 // WindowAllDead reports whether every pane of windowID is a
 // remain-on-exit corpse. A split window is finished only once all of it
-// is: close-window and the sweep (internal/reap's foldWindows) share the
+// is: close-run's fallback and the sweep (internal/reap's foldWindows)
+// share the
 // rule, since a subagent that split its own window and left something
 // running in the other pane is still working.
 func WindowAllDead(panes []Pane, windowID string) bool {
@@ -920,6 +921,18 @@ func subagentField(info, prefix string) string {
 // MarkSubagent sets SubagentOption on windowID to info (SubagentMark).
 func MarkSubagent(windowID, info string) error {
 	_, err := run("set-option", "-w", "-t", windowID, SubagentOption, info)
+	return err
+}
+
+// UnmarkSubagent removes SubagentOption from windowID. A window whose
+// run's pane has been collected is an ordinary window again - whatever
+// the user split into it is all that is left - and the mark is what
+// every other reader keys on: the tree nests it, switch-window skips it
+// and a later sweep would consider it. Unsetting an option that is
+// already unset is not an error (measured on the fork), which matters
+// because several observers may collect one run.
+func UnmarkSubagent(windowID string) error {
+	_, err := run("set-option", "-w", "-u", "-t", windowID, SubagentOption)
 	return err
 }
 

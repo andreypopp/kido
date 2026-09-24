@@ -8,7 +8,7 @@ import (
 
 // windowFocusedCmd implements `kido window-focused WINDOW_ID`: prints
 // "true" or "false", answering whether some client is looking at that
-// window right now (tmux.WindowFocused - the same test close-window and
+// window right now (tmux.WindowFocused - the same test close-run and
 // internal/reap's sweep use). pi/kido-agents.ts's idle self-exit timer is
 // its only caller: a subagent about to shut itself down for being idle
 // must not take a screen the user is actively reading, and re-arms

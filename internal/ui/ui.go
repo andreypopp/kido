@@ -463,9 +463,14 @@ func listPanes(conn *tmux.Conn) ([]tmux.Pane, error) {
 	return tmux.ListPanes()
 }
 
-// killWindow is tmux.KillWindow, indirected so a test can watch what the
-// reaper closes without a tmux server.
-var killWindow = tmux.KillWindow
+// killWindow, killPane and unmarkSubagent are their tmux counterparts,
+// indirected so a test can watch what the reaper closes without a tmux
+// server.
+var (
+	killWindow     = tmux.KillWindow
+	killPane       = tmux.KillPane
+	unmarkSubagent = tmux.UnmarkSubagent
+)
 
 // NotifyRunEnded is told about a bash run whose ending this sidebar's
 // sweep discovered and recorded, and whose parent is therefore the
@@ -476,8 +481,9 @@ var killWindow = tmux.KillWindow
 // must not be the reason a run is reported twice, or once wrongly.
 var NotifyRunEnded = func(reap.Notice) {}
 
-// reapSubagentWindows closes the subagent windows this snapshot shows as
-// finished. Called from take, on the snapshot goroutine, and deliberately
+// reapSubagentWindows closes what this snapshot shows as finished: a
+// run's own dead pane, or its window when the run is all of it. Called
+// from take, on the snapshot goroutine, and deliberately
 // not from state.Load, which `kido prompt` calls too. The standalone
 // picker shares take and so sweeps as well; a second poll is as harmless
 // as a second sidebar.
@@ -489,8 +495,16 @@ func reapSubagentWindows(panes []tmux.Pane, sessions []state.Session) {
 		return
 	}
 	closing, notices := reap.Sweep(panes, sessions, time.Now())
-	for _, windowID := range closing {
-		killWindow(windowID) //nolint:errcheck // best effort; the window may already be gone
+	for _, c := range closing {
+		if c.Window() {
+			killWindow(c.WindowID) //nolint:errcheck // best effort; the window may already be gone
+			continue
+		}
+		// The run's pane goes and the user's split stays, so the window is
+		// theirs now: unmarking is what stops the tree nesting it, the
+		// sidebar drawing it as a run and a later sweep considering it.
+		killPane(c.PaneID)         //nolint:errcheck // best effort; the pane may already be gone
+		unmarkSubagent(c.WindowID) //nolint:errcheck // best effort; the window may have gone with it
 	}
 	for _, n := range notices {
 		NotifyRunEnded(n)

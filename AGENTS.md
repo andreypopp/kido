@@ -494,6 +494,13 @@ build it paid for).
   `TestSidebarSurvivesAParentPaneCollision` (e2e) is the same incident
   end to end, and fails within a second if `take` goes back to handing
   the sweep `s.states`.
+- **`TestSweepClosesTheRunsPaneAndLeavesTheSplit`** and its negative
+  control **`TestSweepClosesTheWindowWhenTheRunsPaneIsAllOfIt`** - the
+  unit of collection, one test each way. Without the control, a sweep
+  that only ever named panes would pass the first and lose the
+  last-window refusal, the one refusal that can destroy a session;
+  without the first, the window stays the unit and a user's split keeps
+  a corpse beside it.
 - **`TestReapCancelsSubagentOfDeadParent`** (e2e) — the orphan rule from
   a one-shot `kido reap`, which it could not apply while a debounce made
   the rule need two sweeps. It hides the sidebar first: with one reading

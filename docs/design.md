@@ -622,7 +622,7 @@ starts - a human's `pi` in that pane, a tool shelling out to `pi
 --print` - so the parent edge is a claim any descendant can make, and an
 extension that takes the claim at face value acts on somebody else's run:
 a nested pi resolves itself by pane, finds the real agent's record, and on
-its way out schedules `kido close-window` on the real agent's window.
+its way out schedules `kido close-run` on the real agent's window.
 Measured live, that killed live agents. The extension checks the
 claim against a fact about itself instead: it is a subagent only if
 `KIDO_AGENT_PARENT_INSTANCE` is set *and* its own pi session id equals
@@ -660,16 +660,20 @@ its window and its last screen. The run record survives and still reads
 as `died` from the pid; every fix costs more than the gap.
 
 **The linger helper.** Before exiting, a subagent spawns a detached
-`sh -c 'sleep N && exec kido close-window @id'`, so it outlives the pi
-process whose event loop is gone by the time the sleep would fire. The
-helper refuses a window that is some client's current one, because the
-user may have switched there to read the subagent's last screen, and a
-session's only window, because closing that destroys the session and
-detaches every client. It also refuses a window with a live pane in it,
-the user's own split beside the run; that pane is not kido's to kill.
-It checks once and does not retry: the window it leaves is a marked
-window with a dead pane, which is exactly what the sweep collects on a
-later pass.
+`sh -c 'sleep N && exec kido close-run @id'`, so it outlives the pi
+process whose event loop is gone by the time the sleep would fire. It is
+given the window, and what it collects in it is the run's own pane: the
+window belongs to whoever is in it, and what kido put there is one pane.
+A window the run is all of is closed; a window holding the user's split
+beside it keeps the split and is unmarked, since with the run collected
+it is an ordinary window. The helper refuses a window that is some
+client's current one, because the user may have switched there to read
+the subagent's last screen, and that covers both units, since a pane
+killed under them takes the screen away and resizes what is left. It
+also refuses a session's only window, because closing that destroys the
+session and detaches every client, and a run whose pane is still alive.
+It checks once and does not retry: what it leaves is what the sweep
+collects on a later pass.
 
 **The sweep.** `reap.Sweep` runs on the sidebar's own poll, every tick,
 and is what actually collects a subagent window in a live session; `kido
@@ -689,22 +693,46 @@ and outlive it, so a stale record names a pane somebody else holds now. A
 sweep with no mark to check closes a plain shell window that is nobody's
 subagent, which is measured rather than hypothetical.
 
-So there are two rules, and both may only close a window carrying the
-mark. First: every pane of a marked window is dead and has been for the
-linger grace. This reads no record at all. Second: a live subagent whose
-parent is gone is cancelled by closing its window, a forced stop rather
-than the graceful one the child's own poll asks for, but the only lever
-a process outside pi has. This one needs the records, since nothing in
-tmux knows who spawned whom, and the mark is what keeps a stale record
-naming a recycled pane id from closing an unrelated window. A record with
-no parent instance is a root agent and nobody's to cancel. Neither rule
-closes a window that is any client's current one or a session's last
-window; nothing is lost by waiting, since the sweep runs again next tick.
-A split window is finished only once all of it is, and both closers
-read that rule: the sweep through its own fold, `kido close-window`
-through `tmux.WindowAllDead`. A pane the user splits off carries no
+So there are two rules, and both may only act on a window carrying the
+mark. First: the run's own pane is dead and has been for the linger
+grace. This reads no record at all. Second: a live subagent whose parent
+is gone is cancelled by killing the pane it runs in, a forced stop
+rather than the graceful one the child's own poll asks for, but the only
+lever a process outside pi has. This one needs the records, since
+nothing in tmux knows who spawned whom, and the mark is what keeps a
+stale record naming a recycled pane id from closing an unrelated
+window. A record with no parent instance is a root agent and nobody's to
+cancel. Neither rule acts on a window that is any client's current one,
+and neither closes a session's last window; nothing is lost by waiting,
+since the sweep runs again next tick.
+
+**A split window is the user's window.** The unit of collection is the
+run's pane, not the window it was made in: a window finished only once
+every pane in it is dead leaves the run's corpse beside the user's own
+shell until they leave (measured live). So a sweep names either a pane
+or a window (`reap.Close`), and the caller does the killing: the run's
+pane goes with `kill-pane` and the window is unmarked (`set-option -wu
+@kido_subagent`), or, when that pane is all the window has, the window
+goes with `kill-window`. The two are not spellings of one act: killing
+a window's last pane closes the window anyway, but only the window case
+can destroy a session, and only it is held to the last-window refusal.
+
+Unmarking is what hands the window back. Every other reader keys on the
+mark: the tree nests the window under its parent, `switch-window` skips
+it, the sidebar draws the run's label on it, and a later sweep would
+consider it again. With the mark gone the window is drawn as the plain
+window it is, with whatever the user left in it. The same holds for a
+stop's escalation and a bash run stopped with `--force`: the target's
+pane is killed, and the window is unmarked when something of the user's
+is left in it.
+
+Which pane is the run's is `@kido_subagent_pane` (`set-option -p`),
+which no pane the user splits off later carries. A window marked by a
+kido from before that option existed has no run pane to single out, and
+falls back to the older rule in both closers: every pane of it is dead,
+and the window is the unit. A pane the user splits off carries no
 `remain-on-exit` of its own, so it closes on exit like any pane, and
-the window is left holding the run's dead pane alone for the sweep.
+the window then goes like any window.
 
 The second rule fires on one reading, and what makes that safe is which
 reading it is. "Gone" means no live record claims the parent instance as
@@ -829,7 +857,7 @@ closes the window of the very child it was waiting for
 
 **A window a client is looking at is not reaped out from under them.**
 Before shutting down, the timer asks `kido window-focused <id>` - the
-same `tmux.WindowFocused` test `kido close-window` and the sweep already
+same `tmux.WindowFocused` test `kido close-run` and the sweep already
 share - and, if focused, simply re-arms rather than giving up, exactly as
 the linger helper re-checks on its own next pass; the window is collected
 once the user looks away.

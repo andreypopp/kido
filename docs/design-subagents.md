@@ -410,16 +410,20 @@ it records `failed` with a detail saying no turn ever ran, which is what
 lets a parent tell "never started" from "ended mid-work"; and
 `--unreported` alongside it if the session never called `notify_parent`),
 the record is removed, and a detached helper is spawned to run
-`kido close-window` after the linger. A `/reload` runs the same handler
+`kido close-run` after the linger. A `/reload` runs the same handler
 and does none of the run-ending parts, since the run carries on.
 
-**The window.** The helper closes the window after thirty seconds
-unless a client is in it or it is the session's last. The sidebar's
-sweep is the backstop: a marked window whose panes are all dead for the
-same thirty seconds is closed, its screen captured and `died` recorded
-if nothing else was. Two thirty-second clocks stack, so up to a minute
-can pass between a child's last turn and its window going (design.md,
-"Window lifecycle" and "Idle self-exit, and resuming a run").
+**The window, and the pane.** The helper collects the run's pane after
+thirty seconds unless a client is in the window or the run is still
+going; when that pane is all the window has, the window goes with it,
+unless it is the session's last. The sidebar's sweep is the backstop: a
+marked run's pane dead for the same thirty seconds is collected, its
+screen captured and `died` recorded if nothing else was. A window the
+user has split something of their own into keeps that split and is
+unmarked, becoming an ordinary window of theirs. Two thirty-second
+clocks stack, so up to a minute can pass between a child's last turn
+and its window going (design.md, "Window lifecycle" and "Idle
+self-exit, and resuming a run").
 
 ## Redirecting one, and ending one from outside
 

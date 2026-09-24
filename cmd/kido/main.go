@@ -34,7 +34,7 @@ var subcommands = []string{
 	"inbox-path", "snapshot", "switch-session", "switch-window", "prompt",
 	"message_agent", "ask_agent", "notify_parent", "steer_subagent",
 	"interrupt_subagent", "stop_subagent", "spawn_subagent", "async_bash",
-	"async-run", "close-window",
+	"async-run", "close-run",
 	"window-focused", "reap", "run-outcome", "runs", "ssh", "shell",
 }
 
@@ -168,8 +168,8 @@ func main() {
 			return
 		case "async-run":
 			os.Exit(asyncRunCmd(os.Args[2:]))
-		case "close-window":
-			dispatch("close-window", func() error { return closeWindowCmd(os.Args[2:]) })
+		case "close-run":
+			dispatch("close-run", func() error { return closeRunCmd(os.Args[2:]) })
 			return
 		case "window-focused":
 			dispatch("window-focused", func() error { return windowFocusedCmd(os.Args[2:]) })

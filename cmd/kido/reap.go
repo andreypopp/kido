@@ -31,14 +31,28 @@ func reapCmd(args []string) error {
 		all = append(all, s)
 	}
 	closing, notices := reap.Sweep(panes, all, time.Now())
-	for _, windowID := range closing {
-		killWindow(windowID) //nolint:errcheck // best effort; another sweep or the linger helper may have closed it first
+	for _, c := range closing {
+		applyClose(c)
 	}
-	// After the windows, because this is the one observer that may block:
+	// After the closes, because this is the one observer that may block:
 	// a notice is a socket round trip to an agent that might be wedged,
 	// and the window it describes is better closed first.
 	for _, n := range notices {
 		noticeFor(n).send("reap")
 	}
 	return nil
+}
+
+// applyClose does what a sweep asked for: kill the run's pane and hand
+// the window back to whatever the user left in it, or close the window
+// when the run was all of it. Every call is best effort - another sweep,
+// or the linger helper, may have got there first, and each of them is
+// racing the others by design.
+func applyClose(c reap.Close) {
+	if c.Window() {
+		killWindow(c.WindowID) //nolint:errcheck // best effort; it may already be gone
+		return
+	}
+	killPane(c.PaneID)         //nolint:errcheck // best effort; it may already be gone
+	unmarkSubagent(c.WindowID) //nolint:errcheck // best effort; the window may have gone with the pane
 }
