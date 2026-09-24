@@ -26,8 +26,15 @@ id=${id%% *}
 # underlined and blue so it reads as one.
 printf '%s: run \033]8;;%s\033\\\033[4;34m%s\033[0m\033]8;;\033\\\n' "$short" "$url" "$id"
 
+# The live progress is drawn on the terminal when there is one (the
+# async_bash window, for anyone who switches to it) and dropped
+# otherwise: it redraws in place, which is noise in a file.
 rc=0
-gh run watch "$id" --exit-status >/dev/null 2>&1 || rc=$?
+if [ -t 1 ] || [ -w /dev/tty ]; then
+	gh run watch "$id" --exit-status >/dev/tty 2>&1 || rc=$?
+else
+	gh run watch "$id" --exit-status >/dev/null 2>&1 || rc=$?
+fi
 gh run view "$id" --json jobs -q '.jobs[] | "\(.name): \(.conclusion)"'
 if [ $rc -ne 0 ]; then
 	gh run view "$id" --log-failed 2>/dev/null |
