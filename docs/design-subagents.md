@@ -82,13 +82,12 @@ correlated reply, so two must never interleave inside one turn, or an
 answer can go back against the wrong `replyTo`; queueing is what makes a
 consultant serving four agents answer them one at a time.
 
-Three of the commands above used to be one, `kido message --kind K`.
-Splitting it dropped `--kind` from the surface entirely: the command is
-the kind. `message_agent --reply-to ID` is a reply - the old spelling
-wanted `--kind reply --reply-to ID`, one fact stated twice - `ask_agent`
-is an ask, `notify_parent` is a notice. The wire is untouched: an
-envelope still carries all four kinds and a reply is still correlated on
-`kind: "reply"` (design.md, "v0 and v1").
+There is no `--kind` flag anywhere on the surface: the command is the
+kind. `message_agent --reply-to ID` is a reply, `ask_agent` is an ask,
+`notify_parent` is a notice - one fact stated once, where a single
+`kido message --kind K` would have `--kind reply --reply-to ID` state it
+twice. The wire is unaffected: an envelope carries all four kinds and a
+reply is correlated on `kind: "reply"` (design.md, "v0 and v1").
 
 `kido ask_agent` sends and returns rather than waiting: the answer
 arrives on the asker's own inbox, and only a long-lived process has one -
@@ -258,16 +257,14 @@ that poll without spawning anything; a live pid is not proof, since pids
 are recycled, so anything else asks `kido agent-alive <parent-instance>`
 and acts on the answer, on one reading. That command reads every live
 state record and answers whether one reports that instance - the same
-question the orphan sweep asks, of the same registry. It replaced `kido
-agents --json`, which was a display asked a liveness question: that view
-keeps one record per pane, so a `pi --print` inside the parent's pane
-took the pane and the parent's record was missing from the answer
-altogether, and a two-poll debounce rode that out rather than fixing it.
-The debounce is gone with the reason for it, and the poll also no longer
-lists panes, which is one process and no tmux round trip every five
-seconds per child. kido failing to answer remains the one inconclusive
-case and is never evidence. On a dead parent the child shuts itself down
-through the same path a normal exit takes.
+question the orphan sweep asks, of the same registry. It is deliberately
+not a display: `kido list_agents` keeps one record per pane, so a
+`pi --print` inside the parent's pane takes the pane and the parent's
+record goes missing from the answer altogether, which is a wrong answer no
+debounce fixes. Nor does the poll list panes, so it costs one process and
+no tmux round trip every five seconds per child. kido failing to answer is
+the one inconclusive case and is never evidence. On a dead parent the
+child shuts itself down through the same path a normal exit takes.
 
 **Reporting.** Nothing reports for the child. It calls `notify_parent`
 itself, once, when its model judges the work done; the summary goes to
@@ -275,41 +272,41 @@ the parent as a `notice` envelope and nowhere else, addressed to the
 instance in its own environment rather than to anything it looked up.
 
 A report is **kept whole**. The notice is spliced into the parent's next
-turn, so what the parent is sent is bounded at 4000 bytes - but the bound
-used to be applied by throwing the rest away, in the tool, and a report
-over it reached its parent cut mid-sentence with no sign there had been
-more. Now `kido notify_parent` writes the full text to the sender's own
-run directory as `report`, beside `task` and `output`, and sends the head
-of it plus a final line naming that file:
+turn, so what the parent is sent is bounded at 4000 bytes - but applying
+that bound by throwing the rest away, as the tool would, delivers a report
+cut mid-sentence with no sign there had been more. So `kido notify_parent`
+writes the full text to the sender's own run directory as `report`, beside
+`task` and `output`, and sends the head of it plus a final line naming
+that file:
 
     full report: <state>/runs/<run-id>/report
 
 Head and line together stay inside the cap, so the notice is no larger
-than it ever was. A report within the cap is delivered byte for byte and
-leaves no file: nothing was lost, so there is nothing to point at. The
+than the cap allows. A report within the cap is delivered byte for byte
+and leaves no file: nothing was lost, so there is nothing to point at. The
 head is cut back off a partial rune, because the send path refuses a
 message that is not valid UTF-8 outright - `tailOfFile`'s rule
 (`ending_notice.go`) in the other direction. A sender with no run
 directory - a session kido never spawned, carrying somebody else's parent
-edge - has nowhere to keep it and is truncated as before; so is one whose
+edge - has nowhere to keep it and is truncated instead; so is one whose
 write fails, since the point of the call is that the parent hears
-something. `kido runs <id>` gains one line, `report:`, for a run that
+something. `kido runs <id>` carries one line, `report:`, for a run that
 left one.
-An automatic notice on every settled turn was removed, because a turn
-settles for reasons that are not the task - most sharply, answering a
-sibling's `ask_agent` settled a turn and sent the parent a report meant
-for the sibling
-(design.md, "Notifying the parent").
+
+Nothing notifies on a settled turn, because a turn settles for reasons
+that are not the task - most sharply, answering a sibling's `ask_agent`
+settles a turn, and the report that automatic notice sends the parent is
+the one meant for the sibling (design.md, "Notifying the parent").
 
 What the child says about its work is therefore still its own to say.
 But an **ending** is not a judgement, and a child that ends without ever
-calling the tool now produces exactly one notice saying so - naming the
+calling the tool produces exactly one notice saying so - naming the
 run, the outcome recorded for it, the run id and `spawn_subagent(resume:)` to
 pick it up. It claims nothing about the work; it says only that the run
 ended and nothing was said about it, which is a fact any observer can
-establish. The parent used to learn nothing at all here, and a parent
-that had dispatched work and gone quiet waiting for a report waited for
-one that was never coming.
+establish. Without it the parent learns nothing at all here, and a parent
+that has dispatched work and gone quiet waiting for a report waits for one
+that is never coming.
 
 Two observers can send it, and they are the two ways a run can end
 silently:
@@ -329,8 +326,9 @@ shutting down.
 On the parent's side a notice is rendered the moment it lands, as a
 `notification from <name>` line above the editor, and separately
 enters the model's context at the next turn boundary as a collapsed
-message that ctrl-o expands. Those used to be one event, and two
-children's notices sat invisible until the parent's long turn ended.
+message that ctrl-o expands. Delivered as one event the two would queue
+together behind the running turn: measured live, two children's notices
+sat invisible until the parent's long turn ended.
 A notice is steered rather than queued as a follow-up, so a parent
 mid-turn sees it between tool calls and decides for itself whether to
 act - as a `steer` envelope is, and for the same reason ("What steers
@@ -341,15 +339,15 @@ and what queues", above); a message and an ask still wait for the turn.
 own shutdown on itself, unless it was spawned with `keepAlive`. The
 same clock is armed once more, from the delivery of the task: a child
 handed its task has everything it needs, so if nothing has begun a turn
-by the time the clock runs out, nothing ever will. That case was on no
-clock at all before - a pi that cannot start its model settles at
-startup without reaching a first turn, so it never armed the clock,
-never shut down, never recorded an outcome and told its parent nothing,
-indistinguishable from a child at work. Arming from delivery rather
-than from session start is what leaves a resumed run, which comes back
-idle waiting for a message, and a session with no task file at all
-exactly as they were; delivery is not itself work, and the first real
-sign of it clears the clock as it always did. Any new
+by the time the clock runs out, nothing ever will. Nothing else covers
+that case - a pi that cannot start its model settles at startup without
+reaching a first turn, so a clock armed only from a settled turn never
+starts, and the child never shuts down, never records an outcome and tells
+its parent nothing, indistinguishable from a child at work. Arming from
+delivery rather than from session start is what leaves a resumed run,
+which comes back idle waiting for a message, and a session with no task
+file at all, untouched; delivery is not itself work, and the first real
+sign of it clears the clock. Any new
 work, or a message about to be delivered, restarts the clock. A window
 some client is looking at is not taken
 away; the timer re-arms and tries again later. Nor is one call to pi's
@@ -357,18 +355,18 @@ shutdown trusted to end the session: pi's interactive-mode handler acts
 only when the session is not mid-compaction, and re-checks a request it
 declined only on its own next `agent_settled`, which a compaction never
 emits. Observational memory hangs its compaction trigger on the very
-event that arms this clock, so a compaction outliving the thirty
-seconds had a child record a shutdown request nobody would ever read,
-and sit idle with no outcome for as long as it was left. The clock
-therefore re-arms after every call to shutdown, exactly as in its other
-decline paths, until the session's own ending clears it. A root
+event that arms this clock, so a compaction outliving the thirty seconds
+leaves a child holding a shutdown request nobody will ever read, idle with
+no outcome for as long as it is left. The clock therefore re-arms after
+every call to shutdown, exactly as in its other decline paths, until the
+session's own ending clears it. A root
 session, one with no parent in its environment, never arms it.
 
 **A session with a live child of its own is not idle**, however quiet it
 has been. "I have spawned it and I am waiting for its report" settles a
-turn exactly as finished work does, and the clock could not tell them
-apart: a parent shut itself down thirty seconds after spawning, and the
-orphan rule then closed the child it was waiting for, mid-work. So the
+turn exactly as finished work does, and a clock that cannot tell them
+apart shuts a parent down thirty seconds after it spawns, whereupon the
+orphan rule closes the child it was waiting for, mid-work. So the
 timer asks `kido children-alive <instance>` first and re-arms if the
 answer is yes, exactly as it does for a focused window. The last child
 ending resumes the clock, as does that child's notice, which is new work
@@ -382,8 +380,8 @@ and a `/reload` forgets everything in memory, while the record is the
 durable half and is where a parent edge lives. A child whose process is
 gone but whose outcome has not landed yet reads as ended, which is the
 safe direction: a parent held open by a corpse would never go idle again.
-kido being unreachable reads the same way, leaving the behaviour the
-clock had before there was a query at all.
+kido being unreachable reads the same way, which is the behaviour the
+clock has with no query at all.
 
 **Shutdown.** Whether it quit, self-exited, was stopped, or lost its
 parent, the child runs one teardown: the parent poll and idle timer
@@ -428,12 +426,12 @@ reading. The reading is trustworthy because of what it is taken from:
 every live record, not the per-pane view `state.Load` returns. In that
 view a `pi --print` started inside an agent's pane inherits that pane
 and wins it for as long as it reports, and the real parent is then not
-in what the sweep was handed at all - so its children were killed with
-nothing wrong with them. A debounce used to absorb that. Asking the
-whole registry instead makes the collision irrelevant: it settles who
-owns a pane, and the sweep only ever asks whether an instance is
-running somewhere. A one-shot `kido reap` applies this rule too, since
-nothing needs a second sweep any more.
+in what the sweep was handed at all - measured live, that killed two
+children with nothing wrong with them, and a debounce absorbing it treats
+a bad answer as a slow one. Asking the whole registry makes the collision
+irrelevant: it settles who owns a pane, and the sweep only ever asks
+whether an instance is running somewhere. A one-shot `kido reap` applies
+this rule too, needing no second sweep to do it.
 
 ## Resuming a run
 
@@ -573,8 +571,8 @@ The wrapper covers every ending it lives to see, which is why `SIGTERM`,
 `failed` on the wrapper's own way out. `SIGKILL` is not survivable, and
 neither is having the window killed under it or the process tree taken
 away: those leave a marked window with dead panes and no outcome, which
-is exactly what rule 1 finds. It used to record `died` and say nothing,
-and the parent of a killed build waited forever.
+is exactly what rule 1 finds, and why rule 1 speaks: recording `died` and
+saying nothing leaves the parent of a killed build waiting forever.
 
 Both kinds of run are spoken for this way, but not with the same claim.
 A bash process's completion is an exit code, and the notice reports it;
@@ -585,7 +583,7 @@ it always was. A run with no parent instance is told to nobody either
 way, which is what `kido async_bash` typed at a human's shell produces.
 
 The three observers share one notice builder (`cmd/kido`'s
-`asyncNotice`), so a parent cannot tell how its build ended by which
+`endingNotice`), so a parent cannot tell how its build ended by which
 process happened to notice, and write-then-decide is one function
 (`reap.RecordEnding`) for the observers that find an ending from outside
 the run, so a third finds a call site rather than reimplementing the
@@ -740,8 +738,8 @@ What works:
 What is refused, each naming what to do instead:
 
 - `kido ask_agent` - the answer can only arrive on the asker's inbox, and
-  a shell has none. This used to deliver, interrupting the target with a
-  question it could not answer.
+  a shell has none. Delivering it instead spends a turn of the target's
+  attention on a question it cannot answer.
 - `kido notify_parent` - a shell was not spawned, so there is nobody to
   tell.
 - `kido set_status` - there is no record to set an activity on.
