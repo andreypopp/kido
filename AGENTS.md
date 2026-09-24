@@ -88,7 +88,7 @@ the copy is the one that drifts.
     internal/subrun/   the durable record of one `kido spawn_subagent`
     internal/testutil/ test scaffolding shared by more than one package
     shell/zsh/         the OSC 133 integration every primed shell sources
-    tmux/              kido-side.tmux, the defaults the launcher writes into server.conf
+    tmux/              kido-tmux.conf, the defaults the launcher writes into server.conf
     shims/             the bin directory's sh shims (tmux, ssh, pi, claude) and shim.sh
     claude/            settings.json, the hooks file the claude shim hands to Claude Code
     scripts/           install-share.sh, the one description of share/kido; the fork build

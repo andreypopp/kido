@@ -6,5 +6,5 @@ package tmuxconf
 
 import _ "embed"
 
-//go:embed kido-side.tmux
+//go:embed kido-tmux.conf
 var Defaults []byte

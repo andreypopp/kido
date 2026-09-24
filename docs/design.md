@@ -1642,7 +1642,7 @@ problems.
 
 A started server reads a configuration kido writes at every launch to
 `$KIDO_STATE_DIR/server.conf`, in this order: kido's defaults, which are
-`tmux/kido-side.tmux` verbatim; `source-file -q` of the user's file,
+`tmux/kido-tmux.conf` verbatim; `source-file -q` of the user's file,
 `$XDG_CONFIG_HOME/kido/kido.conf` or `~/.config/kido/kido.conf`; then
 the two options kido owns, `side-status-command` and `default-command`,
 both naming the kido binary by absolute path. The user's file comes
@@ -1757,7 +1757,7 @@ loads after the shipped copy and conflicts; the fix is to delete
 
 **Install layout.** `scripts/install-share.sh <prefix>/share/kido` is
 the one description of share/kido: the two shell integrations,
-`shim.sh`, `bin/*`, `pi/*.ts` and `claude/settings.json`. `kido-side.tmux`
+`shim.sh`, `bin/*`, `pi/*.ts` and `claude/settings.json`. `kido-tmux.conf`
 is not among them - the launcher writes the embedded copy into the
 configuration it starts the server with, and nothing reads it from disk. `make install`
 runs it, and so does the e2e harness, which builds kido as `<tmp>/bin/kido`

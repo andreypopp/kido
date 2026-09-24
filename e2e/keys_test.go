@@ -129,7 +129,7 @@ func TestEscReleasesFocus(t *testing.T) {
 // call the same window-switching path as `kido switch-window`, without
 // handing the keyboard back to the pane: the sidebar's own S-Up/S-Down keys
 // would otherwise do nothing, since focused keys are routed to the side job
-// and never reach the client-level bindings in tmux/kido-side.tmux.
+// and never reach the client-level bindings in tmux/kido-tmux.conf.
 func TestShiftUpDownSwitchesWindow(t *testing.T) {
 	t.Parallel()
 	h := setupSwitchWindowSessions(t) // sessions a, c, b (created order), each with two windows

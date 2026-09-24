@@ -168,7 +168,7 @@ func sourceWord(path string) (string, error) {
 // writeServerConf generates the file the kido server starts with and
 // returns its path. Three layers, in this order:
 //
-//   - kido's defaults, `tmux/kido-side.tmux` verbatim;
+//   - kido's defaults, `tmux/kido-tmux.conf` verbatim;
 //   - the user's kido.conf, which may override any of them;
 //   - what kido owns, which the user may not: the side column runs this
 //     kido by absolute path, and every pane's shell is primed by it.

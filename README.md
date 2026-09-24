@@ -61,7 +61,7 @@ source-file ~/.tmux.conf
 ```
 
 The server starts with a generated file in three layers: kido's defaults
-(`tmux/kido-side.tmux` in this repo - the side column and its keys), then
+(`tmux/kido-tmux.conf` in this repo - the side column and its keys), then
 your `kido.conf`, which may override any of them, then the two options kido
 owns and you cannot override, `side-status-command` and `default-command`.
 A `default-command` you set is kept and run by `kido shell`, primed.

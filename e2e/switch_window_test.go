@@ -75,7 +75,7 @@ func (h *harness) selectWindow(session, window string) {
 
 // runSwitchWindow runs `kido switch-window <dir> -client <h.client>` against
 // the inner server, the way a key binding's run-shell would (see
-// tmux/kido-side.tmux).
+// tmux/kido-tmux.conf).
 func (h *harness) runSwitchWindow(dir string) {
 	h.t.Helper()
 	tmuxEnv := h.in("display-message", "-p", "#{socket_path},#{pid},0")
@@ -175,7 +175,7 @@ func TestSwitchWindowOrderPrev(t *testing.T) {
 }
 
 // TestSwitchWindowBinding checks the actual key binding documented in
-// tmux/kido-side.tmux and the README: bind-key -n ... run-shell "kido
+// tmux/kido-tmux.conf and the README: bind-key -n ... run-shell "kido
 // switch-window next -client '#{client_name}'". It proves #{client_name}
 // expands to the real client name when run-shell fires from a key binding,
 // not just when the test drives kido directly with -client.
