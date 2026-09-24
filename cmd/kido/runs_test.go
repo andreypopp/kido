@@ -130,6 +130,34 @@ func TestRunOutcomeCmdRecordsCompletedOrFailed(t *testing.T) {
 	}
 }
 
+// TestRunOutcomeCompletedCapturesNoScreen is the negative control for
+// TestRunOutcomeCapturesTheChildsOwnScreen: a screen is only ever read
+// off a failure, so a completion is not worth the capture-pane or the
+// file it would leave in the run's directory.
+func TestRunOutcomeCompletedCapturesNoScreen(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	if err := subrun.Create("run-ok", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := subrun.WriteMeta(subrun.Meta{ID: "run-ok", Pane: "%9", StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+
+	prev := subrun.CapturePane
+	subrun.CapturePane = func(string) (string, error) {
+		t.Error("capture-pane run for a completed ending, want no capture at all")
+		return "", nil
+	}
+	t.Cleanup(func() { subrun.CapturePane = prev })
+
+	if err := runOutcomeCmd([]string{"--result", "completed", "run-ok"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := subrun.ReadScreen("run-ok"); ok {
+		t.Error("a screen was written for a completed ending")
+	}
+}
+
 // TestRunOutcomeCmdRejectsDiedAndStopped: a run's own process must not be
 // able to claim an outcome only kido itself gets to assign from the
 // outside (internal/reap's Died, cmd/kido/control.go's Stopped).
@@ -182,12 +210,14 @@ func TestRunOutcomeCapturesTheChildsOwnScreen(t *testing.T) {
 	}
 }
 
-// TestRunOutcomeRefinesNoTurnDetailFromLoginScreen checks the one ending
-// whose cause is knowable from the screen: a run that never ran a turn
-// because pi could not authenticate a provider prints "Use /login ..."
-// and exits 0, which is exactly what a bare model alias like "sonnet"
-// used to produce.
-func TestRunOutcomeRefinesNoTurnDetailFromLoginScreen(t *testing.T) {
+// TestRunOutcomeRefinesNoTurnDetailWhenAuthFailsAtRunTime checks the one
+// ending whose cause is knowable from the screen: a run that never ran a
+// turn because pi could not authenticate a provider prints "Use /login
+// ..." and exits 0. The bare alias that used to produce it is refused
+// before the spawn now (validateModel), so what is left for this to
+// catch is a model of a configured provider whose auth fails at run
+// time - an expired key, a revoked token.
+func TestRunOutcomeRefinesNoTurnDetailWhenAuthFailsAtRunTime(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	if err := subrun.Create("run-login", "x"); err != nil {
 		t.Fatal(err)

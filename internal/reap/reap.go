@@ -65,17 +65,43 @@ type Close struct {
 // pane of it.
 func (c Close) Window() bool { return c.PaneID == "" }
 
-// maxScreenBytes bounds a captured screen. It is far smaller than
-// spawn.go's 1MB task cap - this is exhaust for a human to read after the
-// fact, not model input - but big enough to hold several hundred lines of
-// a typical crash; a wedged agent's scrollback could otherwise be
-// arbitrarily large, and captureScreenLines (internal/tmux) only bounds
-// how many lines are asked for, not how wide or how many bytes they are.
-const maxScreenBytes = 64 * 1024
+// Ops are the tmux acts a Close is carried out with. Every caller
+// indirects them for its own tests - internal/ui and cmd/kido each keep
+// their own set - so Release takes them rather than reaching for tmux
+// itself.
+type Ops struct {
+	KillWindow func(string) error
+	KillPane   func(string) error
+	Unmark     func(string) error
+}
 
-// capturePaneScreen is tmux.CaptureScreen, indirected so a unit test can
-// substitute a fake pane's screen without a real tmux server.
-var capturePaneScreen = tmux.CaptureScreen
+// Release carries out c against a server whose panes are panes: close
+// the window when the run was all of it, or kill the run's own pane and
+// hand the window back to whatever the user left in it. Unmarking is
+// what stops the tree nesting that window, switch-window skipping it and
+// a later sweep considering it.
+//
+// It is every collector's one act - the sidebar's sweep, `kido reap`,
+// `kido close-run` and the kill `kido stop_subagent` degrades to - so
+// "kill the run's pane, then unmark unless that pane was the window's
+// last" has one spelling. A Close from Sweep never needs that last
+// exception, since mark already promotes a lone pane to a window close;
+// a caller that found the run's pane some other way does.
+//
+// What comes back is the kill's error, which is the act that either
+// happened or did not. The unmark is best effort: the window may have
+// gone between the listing and now, and a mark left on a window nobody
+// can find is not a reason to call a collected run uncollected.
+func (o Ops) Release(panes []tmux.Pane, c Close) error {
+	if c.Window() {
+		return o.KillWindow(c.WindowID)
+	}
+	err := o.KillPane(c.PaneID)
+	if !tmux.LastPane(panes, c.WindowID) {
+		o.Unmark(c.WindowID) //nolint:errcheck // best effort, see doc comment
+	}
+	return err
+}
 
 // captureScreen saves the final screen of the panes a sweep is about to
 // close into runID's directory, before mark's caller closes anything -
@@ -100,7 +126,7 @@ func captureScreen(runID string, paneIDs []string) {
 	}
 	var b strings.Builder
 	for _, paneID := range paneIDs {
-		text, err := capturePaneScreen(paneID)
+		text, err := subrun.CapturePane(paneID)
 		if err != nil {
 			continue
 		}
@@ -114,14 +140,9 @@ func captureScreen(runID string, paneIDs []string) {
 		}
 		b.WriteString(text)
 	}
-	data := []byte(b.String())
+	data := subrun.TruncateScreen([]byte(b.String()))
 	if len(data) == 0 {
 		return
-	}
-	if len(data) > maxScreenBytes {
-		// Keep the tail: the interesting part of a wedged agent's
-		// scrollback - a crash, a traceback - is whatever came last.
-		data = data[len(data)-maxScreenBytes:]
 	}
 	subrun.WriteScreen(runID, data) //nolint:errcheck // best effort, see doc comment
 }
@@ -339,7 +360,9 @@ func foldWindows(panes []tmux.Pane) ([]*window, map[string]*window, map[string]s
 		}
 		// The fallback for a window with no run pane to single out: it is
 		// finished only once all of it is, since nothing tells the run's own
-		// pane from one the user split off later.
+		// pane from one the user split off later. One of three halves of that
+		// old-mark fallback - the others are runPaneOf (cmd/kido/closerun.go)
+		// and tmux.WindowAllDead - which go together or not at all.
 		if !p.Dead {
 			w.allDead = false
 		}

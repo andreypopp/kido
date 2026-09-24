@@ -5,6 +5,7 @@ import (
 	"os"
 	"regexp"
 
+	"kido/internal/reap"
 	"kido/internal/tmux"
 )
 
@@ -25,6 +26,14 @@ var killWindow = tmux.KillWindow
 
 // unmarkSubagent is tmux.UnmarkSubagent, indirected for the same reason.
 var unmarkSubagent = tmux.UnmarkSubagent
+
+// releaseOps binds cmd/kido's three indirected tmux acts to the one
+// helper that carries out a close (reap.Ops.Release). It is a function
+// rather than a value so a test swapping any of the three is read at the
+// call, not at package init.
+func releaseOps() reap.Ops {
+	return reap.Ops{KillWindow: killWindow, KillPane: killPane, Unmark: unmarkSubagent}
+}
 
 // closeRunCmd implements `kido close-run <window-id>`, what the linger
 // helper runs after its delay: collect the finished run in that window.
@@ -60,14 +69,9 @@ func closeRunCmd(args []string) error {
 		return nil
 	}
 	if ok && !tmux.LastPane(panes, windowID) {
-		// The user's own split is in there. Kill the run's pane alone, and
-		// unmark the window: with the run collected it is theirs, and every
-		// reader of the mark - the tree, switch-window, a later sweep -
-		// must stop treating it as kido's.
-		if err := killPane(runPane.PaneID); err != nil {
-			return err
-		}
-		return unmarkSubagent(windowID)
+		// The user's own split is in there, so what is collected is the run's
+		// pane and the window becomes theirs (reap.Ops.Release).
+		return releaseOps().Release(panes, reap.Close{WindowID: windowID, PaneID: runPane.PaneID})
 	}
 	// Either the run's pane is all the window has, or the window was
 	// marked before kido recorded which pane the run was in - and then a
@@ -83,12 +87,15 @@ func closeRunCmd(args []string) error {
 		fmt.Fprintf(os.Stderr, "kido close-run: %s is its session's only window; closing it would destroy the session\n", windowID)
 		return nil
 	}
-	return killWindow(windowID)
+	return releaseOps().Release(panes, reap.Close{WindowID: windowID})
 }
 
 // runPaneOf is the pane of windowID the run itself is in
 // (tmux.SubagentPaneOption), and false for a window with none: one kido
-// never created, or one marked before that option existed.
+// never created, or one marked before that option existed. That second
+// case is one of three halves of the old-mark fallback - the others are
+// foldWindows (internal/reap) and tmux.WindowAllDead - which are retired
+// together or not at all.
 func runPaneOf(panes []tmux.Pane, windowID string) (tmux.Pane, bool) {
 	for _, p := range panes {
 		if p.WindowID == windowID && p.SubagentPane != "" {

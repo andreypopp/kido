@@ -249,9 +249,10 @@ created so the child can read its task the instant tmux starts it:
 - `command` and `output`, for a bash run only: the argv the wrapper
   execs and everything the command wrote (see "An async bash run");
 - `screen`, the window's last screen and a bounded tail of scrollback.
-  A run's own shutdown captures its own pane before it records its
-  outcome (`kido run-outcome`), the one moment the pane is certainly
-  still alive; a sweep captures the pane it is about to close, for the
+  A run's own shutdown captures its own pane before it records a
+  failure (`kido run-outcome`), the one moment the pane is certainly
+  still alive - a completion's screen is nobody's evidence and is not
+  kept; a sweep captures the pane it is about to close, for the
   run whose child never got that chance. Both write the same file, and
   `kido close-run` captures nothing.
 

@@ -495,16 +495,9 @@ func reapSubagentWindows(panes []tmux.Pane, sessions []state.Session) {
 		return
 	}
 	closing, notices := reap.Sweep(panes, sessions, time.Now())
+	ops := reap.Ops{KillWindow: killWindow, KillPane: killPane, Unmark: unmarkSubagent}
 	for _, c := range closing {
-		if c.Window() {
-			killWindow(c.WindowID) //nolint:errcheck // best effort; the window may already be gone
-			continue
-		}
-		// The run's pane goes and the user's split stays, so the window is
-		// theirs now: unmarking is what stops the tree nesting it, the
-		// sidebar drawing it as a run and a later sweep considering it.
-		killPane(c.PaneID)         //nolint:errcheck // best effort; the pane may already be gone
-		unmarkSubagent(c.WindowID) //nolint:errcheck // best effort; the window may have gone with it
+		ops.Release(panes, c) //nolint:errcheck // best effort; another sweep, or the linger helper, may have got there first
 	}
 	for _, n := range notices {
 		NotifyRunEnded(n)

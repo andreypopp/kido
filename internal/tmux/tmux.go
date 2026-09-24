@@ -845,9 +845,13 @@ func LastWindow(panes []Pane, windowID string) bool {
 // WindowAllDead reports whether every pane of windowID is a
 // remain-on-exit corpse. A split window is finished only once all of it
 // is: close-run's fallback and the sweep (internal/reap's foldWindows)
-// share the
-// rule, since a subagent that split its own window and left something
-// running in the other pane is still working.
+// share the rule, since a subagent that split its own window and left
+// something running in the other pane is still working.
+//
+// This exists only for a window marked before @kido_subagent_pane did,
+// and is one of three halves of that fallback - the others are
+// foldWindows (internal/reap) and runPaneOf (cmd/kido/closerun.go). When
+// no such window can still be on a server, all three go together.
 func WindowAllDead(panes []Pane, windowID string) bool {
 	found := false
 	for _, p := range panes {

@@ -209,24 +209,10 @@ func killTargetPane(target state.Session) error {
 	}
 	// After the refusal, before the kill (see stopCmd).
 	recordStopped(target)
-	if err := killPane(pane.PaneID); err != nil {
-		return err
-	}
-	releaseWindow(panes, pane)
-	return nil
-}
-
-// releaseWindow hands a run's window back to the user once the run's own
-// pane has been killed out of it: with something of theirs still in
-// there the window is an ordinary window, and the mark is what every
-// other reader keys on (the tree nests it, switch-window skips it, a
-// sweep considers it). A window the killed pane was all of is gone with
-// it and has nothing to unmark, which is why this asks.
-func releaseWindow(panes []tmux.Pane, pane tmux.Pane) {
-	if tmux.LastPane(panes, pane.WindowID) {
-		return
-	}
-	unmarkSubagent(pane.WindowID) //nolint:errcheck // best effort; the window may have gone anyway
+	// The pane and not the window, even when it is the window's only one:
+	// a stop kills what it was pointed at, and the refusal above is what
+	// guards the session.
+	return releaseOps().Release(panes, reap.Close{WindowID: pane.WindowID, PaneID: pane.PaneID})
 }
 
 // recordStopped marks target's run stopped, if it has one: target.ID is
@@ -398,10 +384,9 @@ func killBashRunPane(meta subrun.Meta) (bool, error) {
 	if tmux.LastWindow(panes, pane.WindowID) && tmux.LastPane(panes, pane.WindowID) {
 		return false, errors.New("it is its session's only pane; killing it would destroy the session")
 	}
-	if err := killPane(pane.PaneID); err != nil {
+	if err := releaseOps().Release(panes, reap.Close{WindowID: pane.WindowID, PaneID: pane.PaneID}); err != nil {
 		return false, err
 	}
-	releaseWindow(panes, pane)
 	return true, nil
 }
 

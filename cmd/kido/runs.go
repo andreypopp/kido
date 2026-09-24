@@ -83,16 +83,16 @@ func runOutcomeUsage() string {
 // spoken for from outside - stopped, or swept - has had its parent told
 // once already, and this call then records nothing and says nothing.
 //
-// Before any of that, it captures the run's own pane into the run
+// Before any of that, a failing run captures its own pane into the run
 // directory (subrun.CaptureOwnScreen): this call runs from inside the
 // child, whose pane is still alive at this instant, which is the one
 // chance to save what it actually showed before the process that reports
 // this exits and takes it with it - a sweep's own capture (internal/reap)
 // only ever sees a window already being closed, and `kido close-run`
-// captures nothing at all. It runs for every self-recorded ending, not
-// only a failure: there is no cheaper way to tell a boring completion
-// from a useful failure beforehand here than there is for the sweep's own
-// capture, which keeps a cleanly finished run's last screen too.
+// captures nothing at all. A failure is the only ending whose screen
+// anyone reads, so a completion is not worth the capture-pane and the
+// file; the sweep, which keeps every screen it collects, cannot tell the
+// two apart beforehand and this can.
 func runOutcomeCmd(args []string) error {
 	fs := flag.NewFlagSet("run-outcome", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -113,7 +113,7 @@ func runOutcomeCmd(args []string) error {
 	o := subrun.Outcome{Result: r, Text: *text, At: time.Now()}
 
 	meta, metaErr := subrun.ReadMeta(id)
-	if metaErr == nil {
+	if metaErr == nil && r == subrun.Failed {
 		if screen, ok := subrun.CaptureOwnScreen(id, meta.Pane); ok {
 			o.Text = refineNoTurnDetail(o.Text, screen)
 		}
@@ -145,6 +145,12 @@ const loginLine = "Use /login to log into a provider via OAuth or API key"
 // model. Any other text, or a screen without that line, is returned
 // unchanged - this is the one ending whose cause is knowable from the
 // screen, not a general rewrite of every detail string.
+//
+// What is left for it to catch is narrower than it was: validateModel
+// (spawn_subagent.go) refuses a model no configured provider can run
+// before any window is created, so the bare alias that used to end this
+// way never gets this far. A model of a configured provider whose auth
+// fails at run time - an expired key, a revoked token - still does.
 func refineNoTurnDetail(text, screen string) string {
 	if !strings.Contains(text, "no turn ever ran") || !strings.Contains(screen, loginLine) {
 		return text

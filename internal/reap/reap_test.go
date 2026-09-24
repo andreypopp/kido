@@ -321,19 +321,19 @@ func TestSweepDoesNotOverwriteARecordedOutcome(t *testing.T) {
 	}
 }
 
-// stubCapture replaces capturePaneScreen for the duration of a test with
+// stubCapture replaces subrun.CapturePane for the duration of a test with
 // one that returns text for a fixed pane id and an error for any other,
 // and restores the real tmux.CaptureScreen afterwards.
 func stubCapture(t *testing.T, paneID, text string) {
 	t.Helper()
-	real := capturePaneScreen
-	capturePaneScreen = func(p string) (string, error) {
+	real := subrun.CapturePane
+	subrun.CapturePane = func(p string) (string, error) {
 		if p != paneID {
 			return "", fmt.Errorf("no such pane %q", p)
 		}
 		return text, nil
 	}
-	t.Cleanup(func() { capturePaneScreen = real })
+	t.Cleanup(func() { subrun.CapturePane = real })
 }
 
 // TestSweepCapturesScreenBeforeClosing: the whole point of capturing from
@@ -405,15 +405,15 @@ func TestSweepClosesEvenWhenCaptureFails(t *testing.T) {
 	}
 }
 
-// TestSweepBoundsTheCapturedScreen pins maxScreenBytes: a wedged agent's
-// scrollback could be arbitrarily large, and what lands on disk must stay
-// bounded regardless.
+// TestSweepBoundsTheCapturedScreen pins subrun.MaxScreenBytes: a wedged
+// agent's scrollback could be arbitrarily large, and what lands on disk
+// must stay bounded regardless.
 func TestSweepBoundsTheCapturedScreen(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	if err := subrun.Create("run-huge", "x"); err != nil {
 		t.Fatal(err)
 	}
-	huge := strings.Repeat("x", maxScreenBytes*2) + "TAIL"
+	huge := strings.Repeat("x", subrun.MaxScreenBytes*2) + "TAIL"
 	stubCapture(t, "%1", huge)
 
 	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-huge"), 60)}
@@ -423,8 +423,8 @@ func TestSweepBoundsTheCapturedScreen(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("ReadScreen = %q, %v, %v", got, ok, err)
 	}
-	if len(got) > maxScreenBytes {
-		t.Errorf("len(screen) = %d, want <= %d", len(got), maxScreenBytes)
+	if len(got) > subrun.MaxScreenBytes {
+		t.Errorf("len(screen) = %d, want <= %d", len(got), subrun.MaxScreenBytes)
 	}
 	if !strings.HasSuffix(got, "TAIL") {
 		t.Errorf("screen truncation dropped the tail: %q", got[max(0, len(got)-20):])
