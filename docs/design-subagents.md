@@ -246,8 +246,12 @@ created so the child can read its task the instant tmux starts it:
   life", below);
 - `command` and `output`, for a bash run only: the argv the wrapper
   execs and everything the command wrote (see "An async bash run");
-- `screen`, the window's last screen and a bounded tail of scrollback,
-  captured by the sweep before it closes the window.
+- `screen`, the window's last screen and a bounded tail of scrollback.
+  A run's own shutdown captures its own pane before it records its
+  outcome (`kido run-outcome`), the one moment the pane is certainly
+  still alive; a sweep captures the pane it is about to close, for the
+  run whose child never got that chance. Both write the same file, and
+  `kido close-run` captures nothing.
 
 An outcome is written once and never overwritten; the rules for who
 writes which, and why `stopped` wins a race against `completed`, are
@@ -407,7 +411,9 @@ stop, every waiting ask is released, the inbox closes, the outcome is
 recorded (`completed` if the session was idle, else `failed`; a session
 still waiting for its first turn reports idle and has done nothing, so
 it records `failed` with a detail saying no turn ever ran, which is what
-lets a parent tell "never started" from "ended mid-work"; and
+lets a parent tell "never started" from "ended mid-work", and names
+pi's own "Use /login" line when the captured screen carries it, the
+one such ending whose cause is knowable without opening the screen; and
 `--unreported` alongside it if the session never called `notify_parent`),
 the record is removed, and a detached helper is spawned to run
 `kido close-run` after the linger. A `/reload` runs the same handler
@@ -462,9 +468,12 @@ a window: `pi --session <run-id>` at the run's own directory, under the
 run's original name, with the model its meta recorded unless the command
 after `--` names one, through the same window creation and mark as a fresh
 spawn. The run record continues rather than doubling; its old outcome and
-screen are cleared. It refuses a run still alive, one with no pi session
-file, and one whose pi session lives under a `sessionDir` setting kido does
-not read.
+screen are cleared. It refuses a run still alive. A run with no pi session file is
+not refused: the run id is the child's own session id, so with no file
+on disk the id is free rather than stale, and the resume mints a fresh
+session under it with `--session-id`, clearing the run's delivered
+marker so the stored task is delivered again rather than skipped as
+already delivered.
 
 The run comes back as what it was: its recorded model, tool allowlist and
 `keepAlive`, unless the caller overrides them after `--` (design.md,
@@ -835,7 +844,10 @@ window aged out.
   correction that cannot wait that long is `steer_subagent`, which is
   not correlated and so need not queue.
 - `--resume` does not honour pi's own `sessionDir` setting when looking
-  for the session file.
+  for the session file, and since that is exactly when it falls back to
+  minting a fresh session under the run's own id, it cannot rule out a
+  collision with a session pi placed there under a name kido does not
+  know to avoid.
 - A child that exits before `remain-on-exit` is set loses its window
   and its last screen; only the run record remains. For a bash run that
   is only the screen: the wrapper has already recorded and reported. For

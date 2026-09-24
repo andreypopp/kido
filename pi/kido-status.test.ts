@@ -1367,6 +1367,26 @@ function argAfter(args: string[] | undefined, flag: string): string | undefined 
   return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
 }
 
+// A bare alias like "sonnet" (what AGENTS.md files in the wild have told
+// orchestrators to pass) used to reach pi's own --model unresolved, where
+// it silently matched no provider and ran no turn for thirty seconds
+// before failing; kido spawn_subagent now checks it against `pi
+// --list-models` up front. The schema is the only place a model-calling
+// caller ever reads the expected shape, so it has to say it.
+test("spawn_subagent's model parameter documents the provider/model-id format", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const spawn = s.tools.get("spawn_subagent");
+    const description = (spawn.parameters as any).properties.model.description as string;
+    assert.match(description, /provider\/model-id/, "names the expected shape");
+    assert.match(description, /claude-bridge\/claude-sonnet-5/, "gives a concrete example");
+  } finally {
+    fx.restore();
+  }
+});
+
 test("spawn_subagent passes its task as text on stdin and calls kido spawn_subagent with its own identity and depth+1, without waiting for the child", async () => {
   const fx = makeFixture();
   try {

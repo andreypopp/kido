@@ -58,6 +58,24 @@ func withNewWindow(t *testing.T, windowID, paneID string, err error) *[]newWindo
 	return &calls
 }
 
+// withListModels stubs listModels for the duration of a test, so
+// validateModel never shells out to a real pi. rows are "provider/model"
+// pairs; the fake table matches pi --list-models's own shape: a header
+// line, skipped by position rather than read, then one row per model.
+func withListModels(t *testing.T, rows ...string) {
+	t.Helper()
+	prev := listModels
+	var b strings.Builder
+	b.WriteString("PROVIDER\tMODEL\n")
+	for _, r := range rows {
+		parts := strings.SplitN(r, "/", 2)
+		b.WriteString(parts[0] + "\t" + parts[1] + "\n")
+	}
+	out := []byte(b.String())
+	listModels = func() ([]byte, error) { return out, nil }
+	t.Cleanup(func() { listModels = prev })
+}
+
 // captureStdout returns what f wrote to os.Stdout. The line kido spawn_subagent
 // prints is parsed by pi/kido-agents.ts, so it is contract rather than
 // logging and has to be read back verbatim.
@@ -880,6 +898,7 @@ func TestSpawnForkKeepsTheChildsOwnFlags(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
 	withCallerDepth(t, 0)
+	withListModels(t, "acme/claude-sonnet-5")
 	calls := withNewWindow(t, "@7", "%7", nil)
 
 	out := captureStdout(t, func() {
@@ -887,14 +906,14 @@ func TestSpawnForkKeepsTheChildsOwnFlags(t *testing.T) {
 			"--parent-pid", "1", "--parent-instance", testParentInstance,
 			"--name", "kid", "--task-file", writeTaskFile(t, "x"),
 			"--fork", "caller-session-id",
-			"--", "pi", "--name", "kid", "--model", "claude-sonnet-5",
+			"--", "pi", "--name", "kid", "--model", "acme/claude-sonnet-5",
 		}); err != nil {
 			t.Fatal(err)
 		}
 	})
 	runID := strings.Fields(out)[2]
 
-	want := []string{"pi", "--fork", "caller-session-id", "--session-id", runID, "--name", "kid", "--model", "claude-sonnet-5"}
+	want := []string{"pi", "--fork", "caller-session-id", "--session-id", runID, "--name", "kid", "--model", "acme/claude-sonnet-5"}
 	if got := (*calls)[0].command; !reflect.DeepEqual(got, want) {
 		t.Errorf("command = %v, want %v", got, want)
 	}
@@ -923,5 +942,90 @@ func TestSpawnForkRefusals(t *testing.T) {
 	}
 	if len(*calls) != 0 {
 		t.Errorf("newWindow called %d times, want 0: nothing refused may reach tmux", len(*calls))
+	}
+}
+
+// TestValidateModelExactProviderMatch pins the gate itself: a full model
+// id is accepted only when its own provider is in the configured list, a
+// bare alias like "sonnet" is refused exactly as an id whose provider was
+// never configured is, and the refusal names every model that is.
+func TestValidateModelExactProviderMatch(t *testing.T) {
+	withListModels(t, "acme/claude-sonnet-5", "acme/claude-opus-5", "other/gemini-pro")
+
+	if err := validateModel("acme/claude-sonnet-5"); err != nil {
+		t.Errorf("validateModel(%q) = %v, want nil: it is a configured provider's own model", "acme/claude-sonnet-5", err)
+	}
+	for _, bad := range []string{"sonnet", "claude-sonnet-5", "nope/claude-sonnet-5", ""} {
+		if bad == "" {
+			continue // "" means "no model given" and is always accepted; see next test
+		}
+		err := validateModel(bad)
+		if err == nil {
+			t.Errorf("validateModel(%q) = nil, want a refusal", bad)
+			continue
+		}
+		if !strings.Contains(err.Error(), bad) || !strings.Contains(err.Error(), "claude-sonnet-5") {
+			t.Errorf("validateModel(%q) error = %q, want it to name the model and list what is configured", bad, err)
+		}
+	}
+}
+
+// TestValidateModelAcceptsNoModelGiven: a spawn naming no model at all
+// must never pay for or be refused by a check that only applies when one
+// was asked for.
+func TestValidateModelAcceptsNoModelGiven(t *testing.T) {
+	prev := listModels
+	called := false
+	listModels = func() ([]byte, error) {
+		called = true
+		return nil, errors.New("should never be called")
+	}
+	t.Cleanup(func() { listModels = prev })
+
+	if err := validateModel(""); err != nil {
+		t.Errorf("validateModel(\"\") = %v, want nil", err)
+	}
+	if called {
+		t.Error("listModels was called for an empty model; want it skipped entirely")
+	}
+}
+
+// TestValidateModelRefusesWhenListModelsFails: a pi that cannot even list
+// its models cannot start one either, so the spawn is refused rather than
+// let through unchecked.
+func TestValidateModelRefusesWhenListModelsFails(t *testing.T) {
+	prev := listModels
+	listModels = func() ([]byte, error) { return nil, errors.New("exec: \"pi\": executable file not found in $PATH") }
+	t.Cleanup(func() { listModels = prev })
+
+	err := validateModel("acme/claude-sonnet-5")
+	if err == nil || !strings.Contains(err.Error(), "pi --list-models") {
+		t.Errorf("validateModel = %v, want a refusal naming pi --list-models", err)
+	}
+}
+
+// TestSpawnRefusesUnconfiguredModel is the fresh-spawn path end to end:
+// the model on the child's own pi command line is checked before any
+// window is created, the same shape as TestSpawnFabricatedParentIsRefusedUpFront.
+func TestSpawnRefusesUnconfiguredModel(t *testing.T) {
+	withPanes(t, samePane)
+	t.Setenv("TMUX_PANE", "%1")
+	withCallerDepth(t, 0)
+	withListModels(t, "acme/claude-sonnet-5")
+	calls := withNewWindow(t, "@9", "%9", nil)
+
+	err := spawnSubagentCmd([]string{
+		"--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--name", "kid", "--task-file", writeTaskFile(t, "x"),
+		"--", "pi", "--name", "kid", "--model", "sonnet",
+	})
+	if err == nil {
+		t.Fatal("spawnSubagentCmd with an unconfigured model = nil error, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "sonnet") || !strings.Contains(err.Error(), "claude-sonnet-5") {
+		t.Errorf("error = %q, want it to name the model and what is configured", err)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("newWindow was called %d times, want the refusal to happen before any tmux call", len(*calls))
 	}
 }

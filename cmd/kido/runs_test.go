@@ -147,3 +147,70 @@ func TestRunOutcomeCmdRejectsDiedAndStopped(t *testing.T) {
 		t.Error("an outcome was recorded despite every attempt being refused")
 	}
 }
+
+// TestRunOutcomeCapturesTheChildsOwnScreen pins the fix for the bug report
+// where a run failing with "no turn ever ran" pointed at a screen file
+// that did not exist: `kido run-outcome` is called from inside the child
+// itself, whose pane is still alive at that instant, and must save it
+// before returning rather than leaving it to a sweep that may never run
+// before the window closes (`kido close-run` never captures anything at
+// all).
+func TestRunOutcomeCapturesTheChildsOwnScreen(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	if err := subrun.Create("run-screen", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := subrun.WriteMeta(subrun.Meta{ID: "run-screen", Pane: "%9", StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+
+	prev := subrun.CapturePane
+	subrun.CapturePane = func(pane string) (string, error) {
+		if pane != "%9" {
+			t.Fatalf("captured pane = %q, want %q", pane, "%9")
+		}
+		return "pi's last screen before it exited\n", nil
+	}
+	t.Cleanup(func() { subrun.CapturePane = prev })
+
+	if err := runOutcomeCmd([]string{"--result", "failed", "--unreported", "run-screen"}); err != nil {
+		t.Fatal(err)
+	}
+	screen, ok, err := subrun.ReadScreen("run-screen")
+	if err != nil || !ok || !strings.Contains(screen, "pi's last screen") {
+		t.Fatalf("ReadScreen = %q, %v, %v, want the child's own pane captured before it exited", screen, ok, err)
+	}
+}
+
+// TestRunOutcomeRefinesNoTurnDetailFromLoginScreen checks the one ending
+// whose cause is knowable from the screen: a run that never ran a turn
+// because pi could not authenticate a provider prints "Use /login ..."
+// and exits 0, which is exactly what a bare model alias like "sonnet"
+// used to produce.
+func TestRunOutcomeRefinesNoTurnDetailFromLoginScreen(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	if err := subrun.Create("run-login", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := subrun.WriteMeta(subrun.Meta{ID: "run-login", Pane: "%9", StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+
+	prev := subrun.CapturePane
+	subrun.CapturePane = func(string) (string, error) {
+		return "Use /login to log into a provider via OAuth or API key\n", nil
+	}
+	t.Cleanup(func() { subrun.CapturePane = prev })
+
+	const noTurnText = "no turn ever ran: the task was delivered and the session never started work on it (the pane's own screen, kept with the run, is the only account of why)"
+	if err := runOutcomeCmd([]string{"--result", "failed", "--unreported", "--text", noTurnText, "run-login"}); err != nil {
+		t.Fatal(err)
+	}
+	o, ok, err := subrun.ReadOutcome("run-login")
+	if err != nil || !ok {
+		t.Fatalf("outcome = %+v, %v, %v", o, ok, err)
+	}
+	if !strings.Contains(o.Text, "Use /login") {
+		t.Errorf("outcome text = %q, want it to name the login line the pane showed", o.Text)
+	}
+}

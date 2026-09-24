@@ -82,6 +82,17 @@ func runOutcomeUsage() string {
 // because the outcome write is what decides who speaks: a run already
 // spoken for from outside - stopped, or swept - has had its parent told
 // once already, and this call then records nothing and says nothing.
+//
+// Before any of that, it captures the run's own pane into the run
+// directory (subrun.CaptureOwnScreen): this call runs from inside the
+// child, whose pane is still alive at this instant, which is the one
+// chance to save what it actually showed before the process that reports
+// this exits and takes it with it - a sweep's own capture (internal/reap)
+// only ever sees a window already being closed, and `kido close-run`
+// captures nothing at all. It runs for every self-recorded ending, not
+// only a failure: there is no cheaper way to tell a boring completion
+// from a useful failure beforehand here than there is for the sweep's own
+// capture, which keeps a cleanly finished run's last screen too.
 func runOutcomeCmd(args []string) error {
 	fs := flag.NewFlagSet("run-outcome", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -98,20 +109,47 @@ func runOutcomeCmd(args []string) error {
 	if r != subrun.Completed && r != subrun.Failed {
 		return fmt.Errorf("--result must be %q or %q\n%s", subrun.Completed, subrun.Failed, runOutcomeUsage())
 	}
+	id := fs.Arg(0)
 	o := subrun.Outcome{Result: r, Text: *text, At: time.Now()}
-	if !*unreported {
-		return subrun.RecordOutcome(fs.Arg(0), o)
+
+	meta, metaErr := subrun.ReadMeta(id)
+	if metaErr == nil {
+		if screen, ok := subrun.CaptureOwnScreen(id, meta.Pane); ok {
+			o.Text = refineNoTurnDetail(o.Text, screen)
+		}
 	}
-	meta, err := subrun.ReadMeta(fs.Arg(0))
-	if err != nil {
+
+	if !*unreported {
+		return subrun.RecordOutcome(id, o)
+	}
+	if metaErr != nil {
 		// No meta file is a run nothing knows the parent of, so there is
 		// nobody to tell; the outcome is still this child's to record.
-		return subrun.RecordOutcome(fs.Arg(0), o)
+		return subrun.RecordOutcome(id, o)
 	}
 	if n, won := reap.RecordEnding(meta, o); won {
 		noticeFor(n).send("run-outcome")
 	}
 	return nil
+}
+
+// loginLine is what pi prints and exits 0 on when it cannot resolve a
+// provider for the model it was given - the one line that makes "no turn
+// ever ran" precise, since it names its own cause. Matched by substring
+// rather than parsed, since it is pi's own wording to change.
+const loginLine = "Use /login to log into a provider via OAuth or API key"
+
+// refineNoTurnDetail sharpens the idle-exit detail (pi/kido-agents.ts's
+// NO_FIRST_TURN_TEXT) when the screen just captured for it holds pi's own
+// explanation: a provider it could not authenticate for the requested
+// model. Any other text, or a screen without that line, is returned
+// unchanged - this is the one ending whose cause is knowable from the
+// screen, not a general rewrite of every detail string.
+func refineNoTurnDetail(text, screen string) string {
+	if !strings.Contains(text, "no turn ever ran") || !strings.Contains(screen, loginLine) {
+		return text
+	}
+	return text + ` (the pane showed: "` + loginLine + `")`
 }
 
 func loadRunInfo(id string) (RunInfo, error) {

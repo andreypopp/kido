@@ -1290,7 +1290,16 @@ export default function (pi: ExtensionAPI) {
             "A name for the subagent's window and session; a name is generated when omitted. Refused together with resume - a resumed run keeps its original window name.",
         }),
       ),
-      model: Type.Optional(Type.String({ description: "Model for the subagent to run." })),
+      // "provider/model-id" (e.g. claude-bridge/claude-sonnet-5), never a
+      // bare alias like "sonnet" - kido spawn_subagent checks it against
+      // `pi --list-models` and refuses up front rather than letting pi
+      // accept it, print "Use /login ..." and exit having run no turn.
+      model: Type.Optional(
+        Type.String({
+          description:
+            'Model for the subagent to run, as "provider/model-id" (e.g. claude-bridge/claude-sonnet-5) - see `pi --list-models`. A bare alias like "sonnet" is refused, not resolved.',
+        }),
+      ),
       tools: Type.Optional(
         Type.Array(Type.String(), {
           description: "Tool names the subagent may use - its capability ceiling. Omit to leave it at pi's default set.",

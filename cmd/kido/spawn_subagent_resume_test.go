@@ -101,7 +101,17 @@ func TestSpawnResumeRefusesLiveRun(t *testing.T) {
 	}
 }
 
-func TestSpawnResumeRefusesMissingSessionFile(t *testing.T) {
+// TestSpawnResumeWithNoSessionFileRespawnsUnderTheSameRunID pins the fix
+// for the bug report where `kido runs <id>` printed a resume command that
+// `kido spawn_subagent --resume` itself then refused with "no pi session
+// file found ...; nothing to resume". The run id is also the child's own
+// pi session id (docs/design-subagents.md, "The run record"), and with no
+// file on disk that id is free rather than stale - so this mints a fresh
+// session under it with --session-id instead of --session, and clears
+// the "delivered" marker the never-started first attempt left, so the
+// stored task is redelivered rather than silently skipped by
+// pi/kido-agents.ts's deliverTask.
+func TestSpawnResumeWithNoSessionFileRespawnsUnderTheSameRunID(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
 	withCallerDepth(t, 0)
@@ -110,16 +120,25 @@ func TestSpawnResumeRefusesMissingSessionFile(t *testing.T) {
 
 	cwd := t.TempDir()
 	newDeadRun(t, "gone-run", cwd)
+	if err := os.WriteFile(subrun.DeliveredPath("gone-run"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
-	err := spawnSubagentCmd([]string{"--resume", "gone-run"})
-	if err == nil {
-		t.Fatal("spawnSubagentCmd --resume with no pi session file = nil error, want a refusal")
+	if err := spawnSubagentCmd([]string{"--resume", "gone-run"}); err != nil {
+		t.Fatalf("spawnSubagentCmd --resume with no pi session file = %v, want it to mint a fresh session instead of refusing", err)
 	}
-	if !strings.Contains(err.Error(), "no pi session file") {
-		t.Errorf("error = %q, want it to say no pi session file was found", err)
+	if len(*calls) != 1 {
+		t.Fatalf("newWindow called %d times, want 1", len(*calls))
 	}
-	if len(*calls) != 0 {
-		t.Errorf("newWindow was called %d times, want the refusal to happen before any tmux call", len(*calls))
+	call := (*calls)[0]
+	if !slices.Contains(call.command, "--session-id") || !slices.Contains(call.command, "gone-run") {
+		t.Errorf("command = %v, want it to mint a fresh session under the run's own id (--session-id gone-run)", call.command)
+	}
+	if slices.Contains(call.command, "--session") {
+		t.Errorf("command = %v, want --session-id, never --session, since no session file exists to resume", call.command)
+	}
+	if _, err := os.Stat(subrun.DeliveredPath("gone-run")); !os.IsNotExist(err) {
+		t.Errorf("delivered marker still exists (err=%v), want it cleared so the stored task is redelivered", err)
 	}
 }
 
@@ -315,6 +334,7 @@ func TestSpawnResumeDefaultsModelFromMeta(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
 	withCallerDepth(t, 0)
+	withListModels(t, "acme/claude-sonnet-5")
 	sessDir := t.TempDir()
 	withPiSessionDir(t, sessDir)
 	writePiSessionFile(t, sessDir, "modeled-run")
@@ -325,7 +345,7 @@ func TestSpawnResumeDefaultsModelFromMeta(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := subrun.WriteMeta(subrun.Meta{
-		ID: "modeled-run", Name: "kid", Depth: 1, Model: "claude-sonnet-5",
+		ID: "modeled-run", Name: "kid", Depth: 1, Model: "acme/claude-sonnet-5",
 		Window: "@1", Pane: "%1", PID: deadPID(t), Cwd: cwd, StartedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
@@ -338,7 +358,7 @@ func TestSpawnResumeDefaultsModelFromMeta(t *testing.T) {
 		t.Fatalf("spawnSubagentCmd --resume = %v, want it to succeed", err)
 	}
 	call := (*calls)[0]
-	if !slices.Contains(call.command, "--model") || !slices.Contains(call.command, "claude-sonnet-5") {
+	if !slices.Contains(call.command, "--model") || !slices.Contains(call.command, "acme/claude-sonnet-5") {
 		t.Errorf("command = %v, want the run's own recorded model carried through", call.command)
 	}
 }
@@ -349,6 +369,7 @@ func TestSpawnResumeExplicitModelWinsOverMeta(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
 	withCallerDepth(t, 0)
+	withListModels(t, "acme/claude-sonnet-5", "acme/claude-opus-5")
 	sessDir := t.TempDir()
 	withPiSessionDir(t, sessDir)
 	writePiSessionFile(t, sessDir, "modeled-run-2")
@@ -359,7 +380,7 @@ func TestSpawnResumeExplicitModelWinsOverMeta(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := subrun.WriteMeta(subrun.Meta{
-		ID: "modeled-run-2", Name: "kid", Depth: 1, Model: "claude-sonnet-5",
+		ID: "modeled-run-2", Name: "kid", Depth: 1, Model: "acme/claude-sonnet-5",
 		Window: "@1", Pane: "%1", PID: deadPID(t), Cwd: cwd, StartedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
@@ -370,15 +391,15 @@ func TestSpawnResumeExplicitModelWinsOverMeta(t *testing.T) {
 
 	if err := spawnSubagentCmd([]string{
 		"--resume", "modeled-run-2", "--parent-pid", "1",
-		"--", "pi", "--model", "claude-opus-5",
+		"--", "pi", "--model", "acme/claude-opus-5",
 	}); err != nil {
 		t.Fatalf("spawnSubagentCmd --resume = %v, want it to succeed", err)
 	}
 	call := (*calls)[0]
-	got := slices.Contains(call.command, "claude-opus-5")
-	wantNotSonnet := !slices.Contains(call.command, "claude-sonnet-5")
+	got := slices.Contains(call.command, "acme/claude-opus-5")
+	wantNotSonnet := !slices.Contains(call.command, "acme/claude-sonnet-5")
 	if !got || !wantNotSonnet {
-		t.Errorf("command = %v, want the caller's own --model claude-opus-5 kept, meta's claude-sonnet-5 not also appended", call.command)
+		t.Errorf("command = %v, want the caller's own --model acme/claude-opus-5 kept, meta's acme/claude-sonnet-5 not also appended", call.command)
 	}
 }
 
@@ -514,10 +535,12 @@ func TestSpawnResumeCarriesKeepAliveAndTools(t *testing.T) {
 	withPiSessionDir(t, sessDir)
 	calls := withNewWindow(t, "@9", "%9", nil)
 
+	withListModels(t, "acme/claude-sonnet-5")
+
 	if err := spawnSubagentCmd([]string{
 		"--parent-pid", "1", "--parent-instance", testParentInstance,
 		"--name", "helper", "--task-file", writeTaskFile(t, "hold the line"),
-		"--model", "claude-sonnet-5", "--tools", "read,bash", "--keep-alive",
+		"--model", "acme/claude-sonnet-5", "--tools", "read,bash", "--keep-alive",
 	}); err != nil {
 		t.Fatalf("fresh spawn = %v, want it to succeed", err)
 	}

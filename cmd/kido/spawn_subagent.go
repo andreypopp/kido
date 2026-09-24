@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -138,6 +139,9 @@ func spawnSubagentCmd(args []string) error {
 	command := fs.Args()
 	if len(command) == 0 {
 		command = []string{"pi"}
+	}
+	if err := validateModel(extractModel(command)); err != nil {
+		return err
 	}
 
 	pane, _, err := callerPane()
@@ -369,9 +373,12 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 		return fmt.Errorf("run %q is still running (pid %d); resuming a live agent makes no sense", runID, meta.PID)
 	}
 
-	if !piSessionFileExists(meta.Cwd, runID) {
-		return fmt.Errorf("run %q: no pi session file found under %s; nothing to resume", runID, piSessionDir(meta.Cwd))
-	}
+	// A run with no pi session file on disk has nothing for `pi --session`
+	// to resume - the id is free, not stale, since it is also the child's
+	// own session id (docs/design-subagents.md, "The run record") - so this
+	// mints a fresh session under that same id instead, further down, and
+	// redelivers the stored task as if this were a fresh spawn.
+	sessionExists := piSessionFileExists(meta.Cwd, runID)
 
 	pane, _, err := callerPane()
 	if err != nil {
@@ -424,7 +431,15 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 		command = []string{"pi"}
 	}
 	if command[0] == "pi" {
-		command = slices.Insert(command, 1, "--session", runID)
+		if sessionExists {
+			command = slices.Insert(command, 1, "--session", runID)
+		} else {
+			// No pi session file for this run id, so there is nothing to
+			// resume by --session; --session-id mints a fresh one under the
+			// same id instead, which is free precisely because no file claims
+			// it.
+			command = slices.Insert(command, 1, "--session-id", runID)
+		}
 		// A bare `--resume` with no `-- pi --model ...` used to come up on
 		// pi's default provider, which may have no API key configured -
 		// the run's own meta already remembers what it ran under, and a
@@ -441,6 +456,9 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 		if len(meta.Tools) > 0 && !slices.Contains(command[1:], "--tools") {
 			command = append(command, "--tools", strings.Join(meta.Tools, ","))
 		}
+	}
+	if err := validateModel(extractModel(command)); err != nil {
+		return err
 	}
 	// keepAlive is the run's own too: a deliberately long-lived helper that
 	// came back arming a thirty-second idle timer was not the helper that
@@ -462,6 +480,18 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 	// fresh one - see ClearScreen's own doc.
 	if err := subrun.ClearScreen(runID); err != nil {
 		return err
+	}
+	if !sessionExists {
+		// The fresh session minted above starts holding the same task file,
+		// and pi/kido-agents.ts's deliverTask skips redelivering it once the
+		// sibling "delivered" marker exists - which it does, left by the
+		// attempt that read the task and then never ran a turn on it. Without
+		// clearing it here the respawned session would come up idle with no
+		// task at all, and thirty seconds later end exactly as the one before
+		// it did.
+		if err := subrun.ClearDelivered(runID); err != nil {
+			return err
+		}
 	}
 
 	// The parent edge the resume claims is the run's from here on, and
@@ -520,6 +550,101 @@ func piSessionFileExists(cwd, id string) bool {
 		}
 	}
 	return false
+}
+
+// listModels runs `pi --list-models`, indirected so a test never shells
+// out to a real pi. It is run with kido's own environment untouched -
+// the caller's PATH and HOME, exactly what the spawn itself would use to
+// resolve a bare "pi" - since which providers are configured is a
+// per-user setting, not kido's to guess at.
+var listModels = func() ([]byte, error) {
+	return exec.Command("pi", "--list-models").Output()
+}
+
+// extractModel returns the --model argument on a `pi` command line, or ""
+// when there is none or command is not literally pi: that is the one
+// value that will actually reach pi's own model resolution, whether it
+// arrived as a fresh spawn's child argv or spawnResume's meta-derived
+// default.
+func extractModel(command []string) string {
+	if len(command) == 0 || command[0] != "pi" {
+		return ""
+	}
+	for i, a := range command {
+		if a == "--model" && i+1 < len(command) {
+			return command[i+1]
+		}
+	}
+	return ""
+}
+
+// modelRow is one line of `pi --list-models`'s table.
+type modelRow struct{ provider, id string }
+
+// parseModelRows reads pi --list-models's own table: a header line,
+// then one row per model with the provider in column 1 and the model id
+// in column 2, whitespace-separated. The header is skipped by position,
+// not matched by wording, since that wording is pi's to change.
+func parseModelRows(out []byte) []modelRow {
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	var rows []modelRow
+	for i, line := range lines {
+		if i == 0 || strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		rows = append(rows, modelRow{provider: fields[0], id: fields[1]})
+	}
+	return rows
+}
+
+// describeModels renders a refusal's "configured: ..." list, grouped by
+// provider so a machine with many models does not spell every one of them
+// out on its own line.
+func describeModels(rows []modelRow) string {
+	byProvider := map[string][]string{}
+	var providers []string
+	for _, r := range rows {
+		if _, ok := byProvider[r.provider]; !ok {
+			providers = append(providers, r.provider)
+		}
+		byProvider[r.provider] = append(byProvider[r.provider], r.id)
+	}
+	parts := make([]string, len(providers))
+	for i, p := range providers {
+		parts[i] = p + "/{" + strings.Join(byProvider[p], ",") + "}"
+	}
+	return strings.Join(parts, ", ")
+}
+
+// validateModel refuses a model no configured pi provider can actually
+// run, rather than letting pi accept it, print "Use /login to log into a
+// provider via OAuth or API key" and exit 0 having run no turn thirty
+// seconds later (the failure mode a bare alias like "sonnet" - never a
+// pi model id - used to produce). It checks against `pi --list-models`,
+// the same resolution pi's own --model flag is handed to, and by exact
+// "provider/model" match: a full id whose provider is not configured is
+// refused exactly as a bare alias is. A pi that cannot even list its
+// models cannot start one either, so a failure running the command
+// refuses the spawn rather than letting it through unchecked.
+func validateModel(model string) error {
+	if model == "" {
+		return nil
+	}
+	out, err := listModels()
+	if err != nil {
+		return fmt.Errorf("could not validate model %q: pi --list-models: %w", model, err)
+	}
+	rows := parseModelRows(out)
+	for _, row := range rows {
+		if row.provider+"/"+row.id == model {
+			return nil
+		}
+	}
+	return fmt.Errorf("model %q is not a model of a configured provider; configured: %s", model, describeModels(rows))
 }
 
 // readTask reads the task text from path, or from stdin when path is "-".

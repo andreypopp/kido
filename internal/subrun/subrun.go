@@ -62,6 +62,11 @@ func metaPath(id string) string    { return filepath.Join(dirFor(id), "meta.json
 func outcomePath(id string) string { return filepath.Join(dirFor(id), "outcome") }
 func screenPath(id string) string  { return filepath.Join(dirFor(id), "screen") }
 
+// DeliveredPath is the sibling marker pi/kido-agents.ts's deliverTask
+// writes once it has handed id's task to the model, so a /reload does not
+// deliver it twice.
+func DeliveredPath(id string) string { return filepath.Join(dirFor(id), "delivered") }
+
 // NewID generates a run id. It is also the child's own pi session id, so
 // it must be safe both as a directory name and on pi's command line;
 // msg.NewID's hex alphabet satisfies both.
@@ -311,6 +316,22 @@ func WriteScreen(id string, data []byte) error {
 		return err
 	}
 	return writeAtomic(screenPath(id), data, 0o644)
+}
+
+// ClearDelivered removes id's delivered marker, if any: `kido
+// spawn_subagent --resume`'s fallback when no pi session file exists for
+// the run mints a fresh session under the same id instead of resuming one
+// (spawn_subagent.go's spawnResume), and that fresh session's own
+// deliverTask would otherwise find the marker left by the attempt that
+// never ran a turn and skip redelivering the task altogether.
+func ClearDelivered(id string) error {
+	if err := checkID(id); err != nil {
+		return err
+	}
+	if err := os.Remove(DeliveredPath(id)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // ClearScreen removes id's captured screen, if any, the same way
