@@ -11,7 +11,7 @@ short=$(git rev-parse --short "$sha")
 id=
 i=0
 while [ -z "$id" ]; do
-	id=$(gh run list --commit "$sha" --json databaseId,url -q '.[0] | "\(.databaseId) \(.url)"' 2>/dev/null || true)
+	id=$(gh run list --commit "$sha" --json databaseId,url -q '.[0] | select(. != null) | "\(.databaseId) \(.url)"' 2>/dev/null || true)
 	[ -n "$id" ] && break
 	i=$((i + 1))
 	if [ $i -ge 30 ]; then
