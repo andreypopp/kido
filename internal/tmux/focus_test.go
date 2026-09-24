@@ -41,3 +41,26 @@ func TestLastWindow(t *testing.T) {
 		t.Error("a window absent from the pane list belongs to no session, want false")
 	}
 }
+
+// allDeadPanes: @1 has one dead and one live pane (a split still running
+// something), @2 is entirely dead.
+var allDeadPanes = []Pane{
+	{PaneID: "%1", WindowID: "@1", Dead: true},
+	{PaneID: "%2", WindowID: "@1", Dead: false},
+	{PaneID: "%3", WindowID: "@2", Dead: true},
+	{PaneID: "%4", WindowID: "@2", Dead: true},
+}
+
+// TestWindowAllDead pins the rule close-window and the sweep must agree
+// on: a window is finished only once every pane of it is.
+func TestWindowAllDead(t *testing.T) {
+	if WindowAllDead(allDeadPanes, "@1") {
+		t.Error("@1 has a live pane, want not all dead")
+	}
+	if !WindowAllDead(allDeadPanes, "@2") {
+		t.Error("@2's panes are all dead, want all dead")
+	}
+	if WindowAllDead(allDeadPanes, "@nonexistent") {
+		t.Error("a window absent from the pane list has no dead panes to speak of, want false")
+	}
+}

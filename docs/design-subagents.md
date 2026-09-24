@@ -153,7 +153,8 @@ window name is refused if it carries a character tmux's parsers cannot
 pass through, or exceeds 64 bytes; the extension generates a hex name
 when the model gives none. The task is refused over 1MB.
 
-The window gets `remain-on-exit`, so it survives its command exiting,
+The pane gets `remain-on-exit` (a pane option, so a later split does
+not inherit it), so it survives its command exiting,
 and the window option `@kido_subagent`, valued `run=<id>
 parent=<instance> depth=<n>`. The mark is what makes the window a
 subagent's to every reader that comes later: the sweep, the sidebar's

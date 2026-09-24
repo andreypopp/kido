@@ -42,11 +42,52 @@ func TestCloseWindowRefusesFocused(t *testing.T) {
 }
 
 // TestCloseWindowKillsUnfocused checks the ordinary case: a window that
-// is not any client's current one is closed.
+// is not any client's current one, and whose panes are all dead, is
+// closed.
 func TestCloseWindowKillsUnfocused(t *testing.T) {
 	panes := []tmux.Pane{
 		{PaneID: "%1", SessionID: "$0", WindowID: "@1", Active: true, SessionAttached: true},
-		{PaneID: "%2", SessionID: "$0", WindowID: "@2", Active: false, SessionAttached: true},
+		{PaneID: "%2", SessionID: "$0", WindowID: "@2", Active: false, SessionAttached: true, Dead: true},
+	}
+	killed := withCloseWindowDeps(t, panes)
+
+	if err := closeWindowCmd([]string{"@2"}); err != nil {
+		t.Fatalf("closeWindowCmd = %v, want it to succeed", err)
+	}
+	if len(*killed) != 1 || (*killed)[0] != "@2" {
+		t.Errorf("killed = %v, want [@2]", *killed)
+	}
+}
+
+// TestCloseWindowRefusesALivePane pins the fix for the bug where a user
+// split a subagent's finished window - the split's shell pane is still
+// alive - and the linger helper closed the window anyway, taking the
+// user's split with it. Only when every pane of the window is dead may
+// close-window proceed.
+func TestCloseWindowRefusesALivePane(t *testing.T) {
+	panes := []tmux.Pane{
+		{PaneID: "%1", SessionID: "$0", WindowID: "@1", Active: true, SessionAttached: true, Dead: true},
+		{PaneID: "%2", SessionID: "$0", WindowID: "@2", Active: false, SessionAttached: true, Dead: true},
+		{PaneID: "%3", SessionID: "$0", WindowID: "@2", Active: false, SessionAttached: true, Dead: false},
+	}
+	killed := withCloseWindowDeps(t, panes)
+
+	if err := closeWindowCmd([]string{"@2"}); err != nil {
+		t.Fatalf("closeWindowCmd on a window with a live pane = %v, want no error (a skip, not a failure)", err)
+	}
+	if len(*killed) != 0 {
+		t.Errorf("killWindow called for %v, want a window with a live pane left untouched", *killed)
+	}
+}
+
+// TestCloseWindowKillsWhenAllDead is the positive control for
+// TestCloseWindowRefusesALivePane: once the split pane has also exited,
+// the window is closed as before.
+func TestCloseWindowKillsWhenAllDead(t *testing.T) {
+	panes := []tmux.Pane{
+		{PaneID: "%1", SessionID: "$0", WindowID: "@1", Active: true, SessionAttached: true, Dead: true},
+		{PaneID: "%2", SessionID: "$0", WindowID: "@2", Active: false, SessionAttached: true, Dead: true},
+		{PaneID: "%3", SessionID: "$0", WindowID: "@2", Active: false, SessionAttached: true, Dead: true},
 	}
 	killed := withCloseWindowDeps(t, panes)
 

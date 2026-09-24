@@ -50,5 +50,12 @@ func closeWindowCmd(args []string) error {
 		fmt.Fprintf(os.Stderr, "kido close-window: %s is its session's only window; closing it would destroy the session\n", windowID)
 		return nil
 	}
+	// A split window is finished only once all of it is: the sweep
+	// (internal/reap) applies the same rule, so a window left here is
+	// collected once its last live pane exits.
+	if !tmux.WindowAllDead(panes, windowID) {
+		fmt.Fprintf(os.Stderr, "kido close-window: %s still has a live pane; leaving it for the sweep\n", windowID)
+		return nil
+	}
 	return killWindow(windowID)
 }

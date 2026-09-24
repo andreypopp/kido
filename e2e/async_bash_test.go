@@ -38,6 +38,14 @@ func (h *harness) asyncBash(name string, command ...string) string {
 // how a test asks for --stream.
 func (h *harness) asyncBashWith(flags []string, name string, command ...string) string {
 	h.t.Helper()
+	_, _, runID := h.asyncBashIDs(flags, name, command...)
+	return runID
+}
+
+// asyncBashIDs is asyncBashWith for a caller that also needs the window
+// and pane `kido async_bash` created, e.g. to split that window.
+func (h *harness) asyncBashIDs(flags []string, name string, command ...string) (windowID, paneID, runID string) {
+	h.t.Helper()
 	outFile := filepath.Join(h.dir, "async-"+name+".out")
 	quoted := make([]string, len(command))
 	for i, c := range command {
@@ -51,7 +59,7 @@ func (h *harness) asyncBashWith(flags []string, name string, command ...string) 
 	if len(fields) < 3 || !strings.Contains(out, "rc=0") {
 		h.t.Fatalf("kido async_bash printed %q, want \"<window id> <pane id> <run id>\" and rc=0", out)
 	}
-	return fields[2]
+	return fields[0], fields[1], fields[2]
 }
 
 // stableCount asserts that in holds exactly want envelopes and goes on

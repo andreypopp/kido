@@ -252,6 +252,82 @@ func TestFocusedWindowIsReapedOnceTheUserLeaves(t *testing.T) {
 		msgf("window %s to be collected on a later sweep, now that the user has left it", windowID))
 }
 
+// paneDead reports whether tmux considers paneID a remain-on-exit corpse.
+func (h *harness) paneDead(paneID string) bool {
+	h.t.Helper()
+	return h.in("display-message", "-p", "-t", paneID, "#{pane_dead}") == "1"
+}
+
+// windowPaneCount is how many panes windowID currently has.
+func (h *harness) windowPaneCount(windowID string) int {
+	h.t.Helper()
+	out := h.in("list-panes", "-t", windowID, "-F", "#{pane_id}")
+	if out == "" {
+		return 0
+	}
+	return len(strings.Split(out, "\n"))
+}
+
+// TestSplitPaneSurvivesAFinishedRunThenTheWindowIsReaped is both bugs from
+// one real incident, in the order the user hit them: they split a
+// subagent's window, ran something of their own in it, and the run's own
+// pane finished. tmux.NewWindow used to turn remain-on-exit on for the
+// whole *window*, so the split pane inherited it too and stayed on screen
+// as "Pane is dead" instead of closing when its own command exited -
+// and `kido close-window`, seeing only the window-wide option (never the
+// split's own liveness) with no per-pane check at all, closed the whole
+// window seconds later, taking the user's live split with it.
+func TestSplitPaneSurvivesAFinishedRunThenTheWindowIsReaped(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+
+	runWindowID, runPaneID, runID := h.asyncBashIDs(nil, "splitrun", "sleep", "1")
+	// The split's own sleep must clearly outlast the close-window refusal
+	// check below, which watches the pane count for a couple of seconds
+	// (h.stays): were the two durations close, the split exiting on its
+	// own during that watch would be indistinguishable from a wrong close.
+	splitPaneID := h.in("split-window", "-P", "-F", "#{pane_id}", "-t", runWindowID,
+		"-c", h.dir, "sh", "-c", "sleep 5")
+
+	// The run finishes on its own; its pane goes dead (tmux.NewWindow's
+	// pane-scoped remain-on-exit), the split does not (bug 2, fixed).
+	info := h.waitOutcome(runID)
+	if info.Outcome != "completed" {
+		t.Fatalf("kido runs reports outcome %q, want completed", info.Outcome)
+	}
+	h.waitFor(func() bool { return h.paneDead(runPaneID) }, settle,
+		msgf("run pane %s to go dead once its command exits", runPaneID))
+	if h.paneDead(splitPaneID) {
+		t.Fatalf("split pane %s is dead already; it should still be running its sleep", splitPaneID)
+	}
+	if n := h.windowPaneCount(runWindowID); n != 2 {
+		t.Fatalf("window %s has %d panes, want 2 (the dead run pane and the live split)", runWindowID, n)
+	}
+
+	// close-window must refuse: the window has a live pane (bug 1, fixed).
+	if out := h.runKido("alpha", "split-close.out", "close-window", runWindowID); !strings.Contains(out, "live pane") {
+		t.Errorf("kido close-window output = %q, want it to say it left a window with a live pane alone", out)
+	}
+	h.stays(func() bool { return h.windowExists(runWindowID) && h.windowPaneCount(runWindowID) == 2 },
+		"the window with the user's live split was closed")
+
+	// The split exits on its own. It must vanish outright - not linger as
+	// a second "Pane is dead" corpse - which is the direct assertion for
+	// bug 2: no window-scoped remain-on-exit reached it.
+	h.waitFor(func() bool { return h.windowPaneCount(runWindowID) == 1 }, settle,
+		msgf("the split's own pane %s to close once its command exits", splitPaneID))
+	for _, line := range strings.Split(h.in("list-panes", "-t", runWindowID, "-F", "#{pane_id}"), "\n") {
+		if line == splitPaneID {
+			t.Fatalf("split pane %s is still listed after its command exited, want it gone rather than a dead corpse", splitPaneID)
+		}
+	}
+
+	// Now the window holds only the dead run pane, and the sweep collects
+	// it once the linger has passed.
+	h.waitFor(func() bool { return !h.windowExists(runWindowID) }, settle,
+		msgf("window %s to be swept now that every pane in it is dead", runWindowID))
+}
+
 // TestSidebarCancelsSubagentOfDeadParent is the second rule, which is the
 // one that still needs a state record: nothing in tmux knows who spawned
 // whom. The subagent here is perfectly healthy - its process is running,

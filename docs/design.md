@@ -650,8 +650,9 @@ a window nothing can ever find again is worse than no window at all.
 
 ## Window lifecycle
 
-A spawned window has `remain-on-exit` turned on, so it survives its own
-command exiting: both for the read window the linger gives the user and
+A spawned window has `remain-on-exit` turned on for the pane the run
+made (`set-option -p`, not a window option), so that pane survives its
+own command exiting: both for the read window the linger gives the user and
 so a sweep has something to find if the linger never ran. The option is
 set by a second tmux call after `new-window`, and a command that exits
 fast enough beats it every time, so a child that fails immediately loses
@@ -664,9 +665,11 @@ process whose event loop is gone by the time the sleep would fire. The
 helper refuses a window that is some client's current one, because the
 user may have switched there to read the subagent's last screen, and a
 session's only window, because closing that destroys the session and
-detaches every client. It checks once and does not retry: the window it
-leaves is a marked window with a dead pane, which is exactly what the
-sweep collects on a later pass.
+detaches every client. It also refuses a window with a live pane in it,
+the user's own split beside the run; that pane is not kido's to kill.
+It checks once and does not retry: the window it leaves is a marked
+window with a dead pane, which is exactly what the sweep collects on a
+later pass.
 
 **The sweep.** `reap.Sweep` runs on the sidebar's own poll, every tick,
 and is what actually collects a subagent window in a live session; `kido
@@ -697,7 +700,11 @@ naming a recycled pane id from closing an unrelated window. A record with
 no parent instance is a root agent and nobody's to cancel. Neither rule
 closes a window that is any client's current one or a session's last
 window; nothing is lost by waiting, since the sweep runs again next tick.
-A split window is finished only once all of it is.
+A split window is finished only once all of it is, and both closers
+read that rule: the sweep through its own fold, `kido close-window`
+through `tmux.WindowAllDead`. A pane the user splits off carries no
+`remain-on-exit` of its own, so it closes on exit like any pane, and
+the window is left holding the run's dead pane alone for the sweep.
 
 The second rule fires on one reading, and what makes that safe is which
 reading it is. "Gone" means no live record claims the parent instance as

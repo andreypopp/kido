@@ -742,7 +742,11 @@ func newWindowArgs(session, name, cwd string, env, command []string) []string {
 // element execed directly; tmux routes a single-word command through the
 // pane's shell instead), in cwd, with env (each "KEY=VALUE") set for that
 // command alone. It returns the new window and pane ids and the pid of
-// the exec'd command itself, and turns on remain-on-exit for the window.
+// the exec'd command itself, and turns on remain-on-exit for the pane it
+// made - a pane-scoped option ("-p"), not a window-scoped one: the
+// latter applies to every pane of the window including one a user splits
+// off later, and would keep an ordinary shell pane on screen as a
+// "Pane is dead" corpse once its own command exits.
 //
 // remain-on-exit is set by a second tmux call, and a command that exits
 // fast enough beats it every time: measured against the fork, a window
@@ -768,7 +772,7 @@ func NewWindow(session, name, cwd string, env, command []string) (windowID, pane
 	if err != nil {
 		return "", "", 0, fmt.Errorf("new-window: unexpected pane_pid %q", parts[2])
 	}
-	if _, err := run("set-window-option", "-t", windowID, "remain-on-exit", "on"); err != nil {
+	if _, err := run("set-option", "-p", "-t", paneID, "remain-on-exit", "on"); err != nil {
 		// Losing the race above is not a failure to create the window: the
 		// command ran, and what it cost is the corpse on screen. A window
 		// tmux can no longer find is exactly that case, and reporting it as
@@ -836,6 +840,25 @@ func LastWindow(panes []Pane, windowID string) bool {
 		}
 	}
 	return len(windows) <= 1
+}
+
+// WindowAllDead reports whether every pane of windowID is a
+// remain-on-exit corpse. A split window is finished only once all of it
+// is: close-window and the sweep (internal/reap's foldWindows) share the
+// rule, since a subagent that split its own window and left something
+// running in the other pane is still working.
+func WindowAllDead(panes []Pane, windowID string) bool {
+	found := false
+	for _, p := range panes {
+		if p.WindowID != windowID {
+			continue
+		}
+		found = true
+		if !p.Dead {
+			return false
+		}
+	}
+	return found
 }
 
 // LastPane reports whether windowID has exactly one pane. Killing a
