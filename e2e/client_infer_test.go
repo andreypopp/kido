@@ -106,4 +106,14 @@ func TestStandaloneRefusesWithTwoClients(t *testing.T) {
 	}
 
 	h.tmux(h.outer, "kill-window", "-t", win)
+	// The second client's side-status job (its own control-mode client,
+	// per client - status.c's "each client runs it") only exits once the
+	// inner server has noticed the detach and killed the job in turn; on a
+	// loaded CI runner that outlives the test function, and the harness's
+	// own leak check (which expects exactly one control client) fires on
+	// a client this test itself attached rather than on an actual leak.
+	h.waitFor(func() bool { return len(controlClientPIDs(h.inner)) <= 1 }, settle,
+		func() string {
+			return fmt.Sprintf("the second client's control connection to close (are %v)", controlClientPIDs(h.inner))
+		})
 }
