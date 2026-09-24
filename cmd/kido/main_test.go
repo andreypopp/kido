@@ -1,7 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -482,5 +487,68 @@ func TestAgentStatusErrors(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) > 0 {
 		t.Errorf("failed calls wrote %d files", len(entries))
+	}
+}
+
+// TestEverySubcommandCaseReturns reads main's switch from the source: a
+// case that dispatches and forgets to return falls into the sidebar's
+// startup, which fails on the missing TTY with exit 1 after the
+// subcommand has already printed its answer, and every caller that
+// shells out reads a nonzero exit as inconclusive and ignores it.
+// Measured live: `kido agent-alive` did exactly that, so an ask never saw
+// its target die and a child never saw its parent die. A binary run
+// cannot pin this for every subcommand, since most exit through a usage
+// error before the fallthrough is reached; the source can.
+func TestEverySubcommandCaseReturns(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "main.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sw *ast.SwitchStmt
+	ast.Inspect(f, func(n ast.Node) bool {
+		if fd, ok := n.(*ast.FuncDecl); ok && fd.Name.Name != "main" {
+			return false
+		}
+		if s, ok := n.(*ast.SwitchStmt); ok && sw == nil {
+			sw = s
+		}
+		return sw == nil
+	})
+	if sw == nil {
+		t.Fatal("no switch in main")
+	}
+	for _, c := range sw.Body.List {
+		cc := c.(*ast.CaseClause)
+		if cc.List == nil {
+			continue // default: the flag path, which is the UI
+		}
+		last := cc.Body[len(cc.Body)-1]
+		switch s := last.(type) {
+		case *ast.ReturnStmt:
+			continue
+		case *ast.ExprStmt:
+			if call, ok := s.X.(*ast.CallExpr); ok {
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Exit" {
+					continue
+				}
+			}
+		}
+		t.Errorf("case %s at %s falls through to the UI: its last statement is not a return or os.Exit",
+			types.ExprString(cc.List[0]), fset.Position(last.Pos()))
+	}
+}
+
+// TestAgentAliveExitsCleanly is the live half: the built binary, asked
+// about an instance nobody claims, answers false and exits 0 with nothing
+// on stderr, which is the reading every liveness poll depends on.
+func TestAgentAliveExitsCleanly(t *testing.T) {
+	bin := dispatchTestBin(t)
+	cmd := exec.Command(bin, "agent-alive", "nobody")
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "KIDO_STATE_DIR=" + t.TempDir()}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil || strings.TrimSpace(stdout.String()) != "false" || stderr.Len() != 0 {
+		t.Fatalf("kido agent-alive nobody: err=%v stdout=%q stderr=%q; want false, exit 0, no stderr", err, stdout.String(), stderr.String())
 	}
 }

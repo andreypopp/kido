@@ -117,6 +117,7 @@ func main() {
 			return
 		case "agent-alive":
 			dispatch("agent-alive", func() error { return agentAliveCmd(os.Args[2:]) })
+			return
 		case "children-alive":
 			dispatch("children-alive", func() error { return childrenAliveCmd(os.Args[2:]) })
 			return
