@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -169,5 +170,34 @@ func TestNotifyParentWithNoRunDirectoryTruncates(t *testing.T) {
 	}
 	if strings.Contains(notice, "full report:") {
 		t.Errorf("notice names a file there is nowhere to write: %q", notice[len(notice)-60:])
+	}
+}
+
+// TestTrimPartialRuneAgreesInBothDirections pins headWithin and
+// tailOfFile to the one primitive both are built on: cut anywhere inside
+// a 4-byte rune, either direction must produce valid UTF-8 with exactly
+// that rune dropped, not just "not the same bug in both places".
+func TestTrimPartialRuneAgreesInBothDirections(t *testing.T) {
+	const r = "🎉" // 4-byte rune
+	s := "ab" + r + "cd"
+	start := strings.Index(s, r)
+	for cut := start + 1; cut < start+len(r); cut++ {
+		t.Run(fmt.Sprintf("cut=%d", cut), func(t *testing.T) {
+			back := trimPartialRune([]byte(s[:cut]), false)
+			if !utf8.Valid(back) {
+				t.Errorf("backward trim at %d is not valid UTF-8: %q", cut, back)
+			}
+			if string(back) != s[:start] {
+				t.Errorf("backward trim at %d = %q, want %q (the partial rune dropped)", cut, back, s[:start])
+			}
+
+			front := trimPartialRune([]byte(s[cut:]), true)
+			if !utf8.Valid(front) {
+				t.Errorf("forward trim at %d is not valid UTF-8: %q", cut, front)
+			}
+			if string(front) != s[start+len(r):] {
+				t.Errorf("forward trim at %d = %q, want %q (the partial rune dropped)", cut, front, s[start+len(r):])
+			}
+		})
 	}
 }

@@ -472,6 +472,15 @@ func (h *harness) in(args ...string) string {
 	return h.must(h.tmux(h.inner, args...))
 }
 
+// startCommand reads windowID's #{pane_start_command}: tmux's own record
+// of the argv it was handed, past kido's command-line construction and
+// tmux's parsers, which is a better witness than what the spawned
+// process itself reports it was given.
+func (h *harness) startCommand(windowID string) string {
+	h.t.Helper()
+	return h.in("display-message", "-p", "-t", windowID, "#{pane_start_command}")
+}
+
 // out runs a command on the outer server (the one holding the pty).
 func (h *harness) out(args ...string) string {
 	h.t.Helper()

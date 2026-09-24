@@ -192,10 +192,11 @@ func spawnSubagentCmd(args []string) error {
 	// so a forked child still holds the run id its identity proof is read
 	// from (docs/design-subagents.md, "Forking the caller's context").
 	if command[0] == "pi" {
-		flags := []string{"--session-id", runID}
+		var flags []string
 		if *forkSession != "" {
-			flags = append([]string{"--fork", *forkSession}, flags...)
+			flags = append(flags, "--fork", *forkSession)
 		}
+		flags = append(flags, "--session-id", runID)
 		command = slices.Insert(command, 1, flags...)
 	}
 
@@ -417,7 +418,7 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 		command = []string{"pi"}
 	}
 	if command[0] == "pi" {
-		command = append([]string{command[0], "--session", runID}, command[1:]...)
+		command = slices.Insert(command, 1, "--session", runID)
 		// A bare `--resume` with no `-- pi --model ...` used to come up on
 		// pi's default provider, which may have no API key configured -
 		// the run's own meta already remembers what it ran under, and a

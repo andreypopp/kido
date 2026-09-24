@@ -249,10 +249,8 @@ func TestSpawnResumeCarriesKeepAlive(t *testing.T) {
 // internal/tmux/tmux.go), so the resume fails outright. Hence the fake pi
 // below, on this server's PATH alone: a live pane, whatever is installed.
 //
-// `pane_start_command` is read rather than anything the child reports,
-// because it is the better witness either way: tmux's own record of the
-// argv it was handed, past kido's command-line construction and tmux's
-// parsers, rather than what kido believed it passed.
+// Read back via startCommand, which is the better witness either way -
+// see its doc comment.
 func TestSpawnResumeCarriesToolsOntoThePiCommandLine(t *testing.T) {
 	t.Parallel()
 	h := startPathPrefix(t, "alpha", piBinDir)
@@ -269,7 +267,7 @@ func TestSpawnResumeCarriesToolsOntoThePiCommandLine(t *testing.T) {
 	}
 	newWindowID := fields[0]
 
-	started := h.in("display-message", "-p", "-t", newWindowID, "#{pane_start_command}")
+	started := h.startCommand(newWindowID)
 	if !strings.Contains(started, "--tools read,bash") {
 		t.Errorf("resumed pane's command = %q, want the run's own recorded tool allowlist back", started)
 	}

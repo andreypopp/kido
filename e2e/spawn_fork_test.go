@@ -12,10 +12,8 @@ import (
 // halves have to be there - the fork is the context the child was spawned
 // for, and the run id is what its own extension proves its identity with
 // (pi/kido-agents.ts's ownRunID). The unit test pins the argv kido builds;
-// this one reads tmux's own record of the argv it was handed, past kido's
-// command-line construction and tmux's parsers, exactly as
-// TestSpawnResumeCarriesToolsOntoThePiCommandLine does and for the same
-// reason.
+// this one reads it back via startCommand, exactly as
+// TestSpawnResumeCarriesToolsOntoThePiCommandLine does.
 //
 // The flags are only spelled onto the line when the command is literally
 // `pi`, so this spawn names none - which leaves the pane's fate to whether
@@ -40,7 +38,7 @@ func TestSpawnForkCarriesTheForkOntoThePiCommandLine(t *testing.T) {
 	windowID, runID := fields[0], fields[2]
 	t.Cleanup(func() { h.in("kill-window", "-t", windowID) })
 
-	started := h.in("display-message", "-p", "-t", windowID, "#{pane_start_command}")
+	started := h.startCommand(windowID)
 	if !strings.Contains(started, "--fork caller-session-e2e") {
 		t.Errorf("forked pane's command = %q, want it to fork the session kido was given", started)
 	}

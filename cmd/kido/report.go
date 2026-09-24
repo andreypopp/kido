@@ -41,10 +41,10 @@ func reportNotice(report, runID string) (notice, path string, err error) {
 }
 
 // headWithin is the first max bytes of s, cut back off a partial UTF-8
-// rune - tailOfFile's rule (ending_notice.go) in the other direction, and
-// for the same reason: the send path refuses a message that is not valid
-// UTF-8 outright, so a cut through a multi-byte character would cost the
-// report the one notice it gets.
+// rune - trimPartialRune's rule (ending_notice.go) in the other
+// direction, and for the same reason: the send path refuses a message
+// that is not valid UTF-8 outright, so a cut through a multi-byte
+// character would cost the report the one notice it gets.
 func headWithin(s string, max int) string {
 	if max <= 0 {
 		return ""
@@ -52,13 +52,6 @@ func headWithin(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	b := []byte(s[:max])
-	for len(b) > 0 && b[len(b)-1]&0xC0 == 0x80 {
-		b = b[:len(b)-1]
-	}
-	// A lead byte last is a rune the cut began and did not finish.
-	if len(b) > 0 && b[len(b)-1]&0xC0 == 0xC0 {
-		b = b[:len(b)-1]
-	}
+	b := trimPartialRune([]byte(s[:max]), false)
 	return strings.ToValidUTF8(string(b), "\uFFFD")
 }

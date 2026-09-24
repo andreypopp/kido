@@ -213,6 +213,20 @@ func ReadMeta(id string) (Meta, error) {
 	return m, err
 }
 
+// writeAtomic writes data to path via a same-directory temp file plus
+// os.Rename, so a reader never sees a partial write and two racing
+// writers never corrupt one another - os.Rename is the
+// same-filesystem atomic swap that buys that. The temp file lives
+// beside path, so a caller whose directory does not exist yet gets its
+// error from the temp write.
+func writeAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 // WriteReport saves id's notify_parent report in full, last writer wins:
 // a child reporting twice is reporting on more work than the first call
 // covered. The run's directory is not created here - a sender kido never
@@ -222,7 +236,7 @@ func WriteReport(id, text string) error {
 	if err := checkID(id); err != nil {
 		return err
 	}
-	return os.WriteFile(ReportPath(id), []byte(text), 0o600)
+	return writeAtomic(ReportPath(id), []byte(text), 0o600)
 }
 
 // HasReport reports whether id's run has a report file, which only a
@@ -290,18 +304,13 @@ func ClearOutcome(id string) error {
 // RecordOutcome does would just let a losing-race capture pin a run to a
 // worse screen forever, and would permanently strand `kido spawn_subagent --resume`
 // after its first attempt, since nothing else ever removes this file.
-// Written temp-then-rename, the way state.Record is, so a reader never
-// sees a partial write and two racing writers never corrupt one another;
-// os.Rename is the same-filesystem atomic swap that buys that.
+// Written via writeAtomic, the way state.Record is, so a reader never
+// sees a partial write and two racing writers never corrupt one another.
 func WriteScreen(id string, data []byte) error {
 	if err := checkID(id); err != nil {
 		return err
 	}
-	tmp := screenPath(id) + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, screenPath(id))
+	return writeAtomic(screenPath(id), data, 0o644)
 }
 
 // ClearScreen removes id's captured screen, if any, the same way

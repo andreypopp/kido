@@ -131,6 +131,28 @@ func (n endingNotice) agentBody() string {
 	return b.String()
 }
 
+// trimPartialRune drops a partial UTF-8 rune from the cut edge of b: the
+// front when the bytes before it were dropped (fromFront true), the back
+// when the bytes after it were (fromFront false). Walking forward off a
+// cut always lands on a lead byte or the end; walking backward can leave
+// a lead byte whose continuation bytes were cut away, which needs the
+// extra check the forward direction does not.
+func trimPartialRune(b []byte, fromFront bool) []byte {
+	if fromFront {
+		for len(b) > 0 && b[0]&0xC0 == 0x80 {
+			b = b[1:]
+		}
+		return b
+	}
+	for len(b) > 0 && b[len(b)-1]&0xC0 == 0x80 {
+		b = b[:len(b)-1]
+	}
+	if len(b) > 0 && b[len(b)-1]&0xC0 == 0xC0 {
+		b = b[:len(b)-1]
+	}
+	return b
+}
+
 // tailOfFile returns the last max bytes of path and how many bytes were
 // dropped from the front of it. The cut is moved forward off a partial
 // UTF-8 rune and anything still invalid is replaced, because a notice
@@ -158,9 +180,9 @@ func tailOfFile(path string, max int64) (string, int64, error) {
 		return "", 0, err
 	}
 	if omitted > 0 {
-		for len(b) > 0 && b[0]&0xC0 == 0x80 {
-			b, omitted = b[1:], omitted+1
-		}
+		before := len(b)
+		b = trimPartialRune(b, true)
+		omitted += int64(before - len(b))
 	}
 	return strings.ToValidUTF8(string(b), "\uFFFD"), omitted, nil
 }
