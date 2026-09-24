@@ -1472,6 +1472,26 @@ test("spawn_subagent(resume) with model/tools overrides them in the resumed pi's
   }
 });
 
+// A resume brings a run back idle: it keeps its original task, which it
+// has already been given, so nothing is delivered to it and it waits.
+// The result text used to say only that the run was resumed, and a
+// parent that resumed a killed run then waited on a child that was
+// waiting on it. Clarity only - what the tool does is unchanged.
+test("spawn_subagent(resume) tells the caller the run is idle and needs a message", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const result = await s.tools.get("spawn_subagent").execute("c1", { resume: "run-abc" });
+    const text = result.content[0].text;
+    assert.match(text, /idle/i, "the resumed run is idle, not working");
+    assert.match(text, /message/i, "and says what moves it: a message from whoever resumed it");
+    assert.match(text, /fake-run-id/, "still naming the run it brought back");
+  } finally {
+    fx.restore();
+  }
+});
+
 // fork is the one spawn parameter whose value the model never supplies:
 // the session to fork is this one, and the tool reads its id from pi
 // rather than letting a model name a session. So what is asserted is
@@ -1681,6 +1701,102 @@ test("a missing KIDO_AGENT_TASK_FILE does not break session_start", async () => 
       if (saved === undefined) delete process.env.KIDO_AGENT_TASK_FILE;
       else process.env.KIDO_AGENT_TASK_FILE = saved;
     }
+  } finally {
+    fx.restore();
+  }
+});
+
+// The startup failure this pair exists for, observed: a child came up
+// with pi unable to start its model at all ("No API key found for
+// amazon-bedrock" on its pane) and never ran a turn. The idle self-exit
+// was armed from turnEnded alone, so a child that never reached a first
+// turn armed nothing, never shut itself down, never recorded an outcome
+// and told its parent nothing: `kido runs` showed it running
+// indefinitely, and to the parent it was indistinguishable from a child
+// hard at work. The clock is armed from the task's own delivery instead
+// - the moment a child has everything it needs and nothing has begun -
+// and the first sign of work clears it exactly as it always did.
+//
+// The outcome has to say which of the two endings it was, since
+// "failed" alone reads as work that went wrong: what is asserted is the
+// --text, not merely the failure.
+test("a child whose task is delivered but whose first turn never starts self-exits and records that no turn ever ran", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@7" }]);
+    const taskFile = join(fx.inboxDir, "..", "never-started-task.txt");
+    writeFileSync(taskFile, "do the important thing");
+    await asSubagent(
+      "never-started-run",
+      async () => {
+        const factory = await freshExtensions();
+        const s = await startWithShutdownSpy(factory, "never-started-run");
+        assert.ok(s.delivered.some((d) => d.text === "do the important thing"), "the task was delivered, as it was in the incident");
+
+        // No agent_start, no turn_start, no agent_settled: pi never got
+        // as far as a turn.
+        await pollUntil(() => s.shutdowns() > 0, 2000, "the idle self-exit to fire for a child that never started a turn");
+
+        await s.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
+        const args = fx.lastRunOutcomeArgs();
+        assert.ok(args, "an outcome is recorded for a run that ended this way");
+        assert.deepEqual(args!.slice(0, 3), ["run-outcome", "--result", "failed"], "a child that never worked did not complete");
+        assert.ok(args!.includes("--unreported"), "and its parent is owed the one notice its silence earns");
+        assert.match(argAfter(args!, "--text") ?? "", /no turn/i, "the notice's detail tells a parent 'never started' from 'ended mid-work'");
+        assert.equal(args![args!.length - 1], "never-started-run", "recorded against this run");
+      },
+      {
+        KIDO_AGENT_TASK_FILE: taskFile,
+        KIDO_AGENT_PARENT_PID: String(process.pid), // alive: the parent poll must not be what ends this session
+        KIDO_PARENT_POLL_MS: "5000",
+        KIDO_IDLE_EXIT_SECONDS: "0.05",
+        KIDO_LINGER_SECONDS: "0.05",
+      },
+    );
+  } finally {
+    fx.restore();
+  }
+});
+
+// The negative control, and the whole reason the clock is armed from the
+// delivery rather than from session start: a child whose task does start
+// a turn must be affected in no way at all. It is held for several times
+// the idle window with the turn still running, which is what a child
+// doing its work looks like, and then ends the ordinary way - completed,
+// with no detail claiming it never ran.
+test("a child whose task starts a turn is untouched by the startup clock", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@7" }]);
+    const taskFile = join(fx.inboxDir, "..", "working-task.txt");
+    writeFileSync(taskFile, "do the important thing");
+    await asSubagent(
+      "working-run",
+      async () => {
+        const factory = await freshExtensions();
+        const s = await startWithShutdownSpy(factory, "working-run");
+        await s.emit("agent_start", {});
+
+        await new Promise((r) => setTimeout(r, 300)); // six idle windows
+        assert.equal(s.shutdowns(), 0, "a child whose first turn started is never shut down out from under its own work");
+
+        await s.emit("agent_settled", {}, { isIdle: () => true });
+        await pollUntil(() => s.shutdowns() > 0, 2000, "the ordinary idle self-exit still fires after a settled turn");
+        await s.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
+        assert.deepEqual(
+          fx.lastRunOutcomeArgs(),
+          ["run-outcome", "--result", "completed", "--unreported", "--", "working-run"],
+          "the outcome a working child has always got, detail and all",
+        );
+      },
+      {
+        KIDO_AGENT_TASK_FILE: taskFile,
+        KIDO_AGENT_PARENT_PID: String(process.pid),
+        KIDO_PARENT_POLL_MS: "5000",
+        KIDO_IDLE_EXIT_SECONDS: "0.05",
+        KIDO_LINGER_SECONDS: "0.05",
+      },
+    );
   } finally {
     fx.restore();
   }

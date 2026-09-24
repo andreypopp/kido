@@ -338,7 +338,18 @@ and what queues", above); a message and an ask still wait for the turn.
 
 **Idle self-exit.** A child - the real one, by the session-id test above
 - that has settled a turn and stayed idle for thirty seconds calls pi's
-own shutdown on itself, unless it was spawned with `keepAlive`. Any new
+own shutdown on itself, unless it was spawned with `keepAlive`. The
+same clock is armed once more, from the delivery of the task: a child
+handed its task has everything it needs, so if nothing has begun a turn
+by the time the clock runs out, nothing ever will. That case was on no
+clock at all before - a pi that cannot start its model settles at
+startup without reaching a first turn, so it never armed the clock,
+never shut down, never recorded an outcome and told its parent nothing,
+indistinguishable from a child at work. Arming from delivery rather
+than from session start is what leaves a resumed run, which comes back
+idle waiting for a message, and a session with no task file at all
+exactly as they were; delivery is not itself work, and the first real
+sign of it clears the clock as it always did. Any new
 work, or a message about to be delivered, restarts the clock. A window
 some client is looking at is not taken
 away; the timer re-arms and tries again later. A root session, one with
@@ -368,7 +379,10 @@ clock had before there was a query at all.
 **Shutdown.** Whether it quit, self-exited, was stopped, or lost its
 parent, the child runs one teardown: the parent poll and idle timer
 stop, every waiting ask is released, the inbox closes, the outcome is
-recorded (`completed` if the session was idle, else `failed`, and
+recorded (`completed` if the session was idle, else `failed`; a session
+still waiting for its first turn reports idle and has done nothing, so
+it records `failed` with a detail saying no turn ever ran, which is what
+lets a parent tell "never started" from "ended mid-work"; and
 `--unreported` alongside it if the session never called `notify_parent`),
 the record is removed, and a detached helper is spawned to run
 `kido close-window` after the linger. A `/reload` runs the same handler

@@ -524,6 +524,17 @@ build it paid for).
   calls. The `set_status` test in the same file reads the report it means
   rather than the last one to arrive, for a related reason: a session
   emits its own report at start, and nothing orders the two.
+- **`pi/kido-status.test.ts`, the startup-idle pair** — a child whose pi
+  never reaches a first turn, and its negative control. The positive
+  half's assertion with teeth is the `--text`, not the `failed`: a fix
+  that armed the clock and left the outcome alone records `completed`
+  for a child that did nothing, and a parent reading "completed" acts on
+  work that never happened. The control holds a child whose turn started
+  for six idle windows and asserts **zero** shutdowns, which is what
+  stops the clock being armed from session start instead - that version
+  passes the positive half and kills a resumed run, and a slow first
+  turn, thirty seconds in. There is no e2e twin: every part of this
+  ending is the extension's, and a fake pi would pin the fake.
 - **`pi/kido-status.test.ts`, the heartbeat stopping** — counts *every*
   report, not the `running` ones, and that is the whole test. `send()`
   sets `current` before it calls `stopHeartbeat()`, so a heartbeat that

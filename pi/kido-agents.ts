@@ -262,6 +262,14 @@ const NOTIFY_PARENT_INSTRUCTION =
   "You were spawned as a subagent. When your work is done, or you are blocked and cannot make further progress, call notify_parent with a short summary - your parent is not watching this session and will learn nothing otherwise. " +
   "When you reply to another agent's question with message_agent, that call is the entire response - end the turn there, with no summary or sign-off after it.";
 
+// NO_FIRST_TURN_TEXT is the detail recorded for a run that was given its
+// task and never started a turn on it - a pi that could not start its
+// model at all. It names the pane's own screen because the error is only
+// ever there; the sweep captures it when it closes the window, as it does
+// for every run (internal/reap's captureScreen).
+const NO_FIRST_TURN_TEXT =
+  "no turn ever ran: the task was delivered and the session never started work on it (the pane's own screen, kept with the run, is the only account of why)";
+
 // AgentInfo mirrors cmd/kido/list_agents.go's AgentInfo, what `kido
 // list_agents --json` prints. Only the fields read here are declared.
 interface AgentInfo {
@@ -842,9 +850,19 @@ export default function (pi: ExtensionAPI) {
   let reportedToParent = false;
 
   // idleExitTimer is the idle self-exit clock: armed on every settled turn
-  // (turnEnded), cleared by any sign of new work (workStarted). Only a
+  // (turnEnded) and on the delivery of the task a child was spawned with
+  // (deliverTask), cleared by any sign of new work (workStarted). Only a
   // child arms it at all (see armIdleExit's own gate).
   let idleExitTimer: NodeJS.Timeout | null = null;
+
+  // awaitingFirstWork is true between the task being handed to the model
+  // and the first sign that anything began. A child whose pi cannot start
+  // its model at all - no API key for it, the failure this came from -
+  // settles at startup looking exactly like an idle child, so its ending
+  // has to be told apart from one that worked and stopped: this is what
+  // makes the outcome a failure rather than a completion, and what puts
+  // "no turn ever ran" in the notice its parent gets.
+  let awaitingFirstWork = false;
 
   const clearIdleExit = (): void => {
     if (idleExitTimer) {
@@ -1372,8 +1390,16 @@ export default function (pi: ExtensionAPI) {
           return { content: [{ type: "text", text: `could not resume ${params.resume}: ${res.error}` }], details: {} };
         }
         const [windowID, paneID, runID] = res.out.split(/\s+/);
+        // A resumed run keeps its original task, which it was already
+        // given, so nothing is delivered to it and it comes back idle.
+        // Saying so is the whole of this line's job: a parent that
+        // resumed a run and then waited for it waited on a child that was
+        // waiting on it.
         return {
-          content: [{ type: "text", text: `resumed ${runID} (window ${windowID}, pane ${paneID})` }],
+          content: [{
+            type: "text",
+            text: `resumed ${runID} (window ${windowID}, pane ${paneID}); it is back with its context and idle - send it a message to continue, since it is waiting for one`,
+          }],
           details: { window: windowID, pane: paneID, run: runID },
         };
       }
@@ -1764,7 +1790,16 @@ export default function (pi: ExtensionAPI) {
     } catch {
       // no marker written, so a later /reload gets another try
     }
-    if (task.trim()) deliver(task);
+    if (!task.trim()) return;
+    deliver(task);
+    // deliver() is not work beginning: it hands pi a message and returns,
+    // and everything that follows is pi's. So the clock goes on here,
+    // after deliver's own workStarted has cleared it - a child that gets
+    // as far as a turn clears it again within milliseconds (agent_start),
+    // and one that never does is collected by the shutdown path every
+    // other ending already takes.
+    awaitingFirstWork = true;
+    armIdleExit(() => ctxShutdown?.());
   };
 
   // scheduleWindowLinger spawns the detached linger helper: sleep, then
@@ -1806,10 +1841,13 @@ export default function (pi: ExtensionAPI) {
     const runID = ownRunID();
     if (!runID || !host?.kidoPath() || !isRunEnding(reason)) return;
     // The run id is this session's id verbatim; "idle" is the only status
-    // a turn finishes on, so anything else at shutdown is a failure.
-    const result = host.status() === "idle" ? "completed" : "failed";
+    // a turn finishes on, so anything else at shutdown is a failure - and
+    // so is a session still waiting for its first turn, which reports
+    // idle and has done nothing at all.
+    const result = host.status() === "idle" && !awaitingFirstWork ? "completed" : "failed";
     const args = ["run-outcome", "--result", result];
     if (!reportedToParent) args.push("--unreported");
+    if (awaitingFirstWork) args.push("--text", NO_FIRST_TURN_TEXT);
     await host.runKido([...args, "--", runID], { timeoutMs: 3000 });
     const listed = await fetchAgents();
     if ("error" in listed) return;
@@ -1851,7 +1889,14 @@ export default function (pi: ExtensionAPI) {
     turnEnded() {
       armIdleExit(() => ctxShutdown?.());
     },
-    workStarted: clearIdleExit,
+    // Any sign of work stops the clock and settles what this session's
+    // ending will be called: it got as far as working. clearIdleExit
+    // alone does not, since a shutdown clears the timer too and must
+    // leave that judgement as it found it.
+    workStarted() {
+      awaitingFirstWork = false;
+      clearIdleExit();
+    },
     handleEnvelope,
   };
   seam().agents = hooks;
