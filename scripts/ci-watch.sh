@@ -22,8 +22,9 @@ while [ -z "$id" ]; do
 done
 url=${id#* }
 id=${id%% *}
-# OSC 8: the run id is a link to the run in a terminal that draws them.
-printf '%s: run \033]8;;%s\033\\%s\033]8;;\033\\\n' "$short" "$url" "$id"
+# OSC 8: the run id is a link to the run in a terminal that draws them,
+# underlined and blue so it reads as one.
+printf '%s: run \033]8;;%s\033\\\033[4;34m%s\033[0m\033]8;;\033\\\n' "$short" "$url" "$id"
 
 rc=0
 gh run watch "$id" --exit-status >/dev/null 2>&1 || rc=$?
