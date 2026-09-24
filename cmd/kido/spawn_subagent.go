@@ -32,9 +32,10 @@ const maxWindowNameLen = 64
 // newWindow and markSubagent are tmux.NewWindow and tmux.MarkSubagent,
 // indirected so tests can run spawnCmd without a tmux server.
 var (
-	newWindow    = tmux.NewWindow
-	markSubagent = tmux.MarkSubagent
-	windowExists = tmux.WindowExists
+	newWindow        = tmux.NewWindow
+	markSubagent     = tmux.MarkSubagent
+	markSubagentPane = tmux.MarkSubagentPane
+	windowExists     = tmux.WindowExists
 )
 
 func spawnUsage() string {
@@ -303,6 +304,11 @@ func createRunWindow(meta subrun.Meta, sessionID string, env, command []string) 
 		subrun.RecordOutcome(meta.ID, subrun.Outcome{Result: subrun.Failed, Text: err.Error(), At: time.Now()}) //nolint:errcheck // best effort
 		return err
 	}
+	// Best effort: a failure here only costs this run the pane-level
+	// disambiguation lingeringLabel uses to tell a later split pane apart
+	// from the run's own, and it falls back to today's window-wide
+	// behaviour for this window rather than losing the run itself.
+	markSubagentPane(paneID, meta.ID) //nolint:errcheck // best effort, see above
 	printCreated(meta, windowID, paneID)
 	return nil
 }

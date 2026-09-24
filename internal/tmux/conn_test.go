@@ -94,7 +94,7 @@ func TestQuote(t *testing.T) {
 func TestParsePanes(t *testing.T) {
 	line := strings.Join([]string{"work", "$1", "1700000000", "2", "@7", "win", "layout",
 		"%3", "1", "4242", "claude", "/tmp", "0", "1", "1700000100", "1700000050",
-		"2", "1700000090", "make test", "0", "", "1", "", "✳ Title"}, sep)
+		"2", "1700000090", "make test", "0", "", "1", "", "", "✳ Title"}, sep)
 	p := parsePanes([]string{line, "junk"})
 	if len(p) != 1 {
 		t.Fatalf("got %d panes, want 1", len(p))
@@ -116,7 +116,7 @@ func TestParsePanes(t *testing.T) {
 func TestParsePanesEmptyCommandStatus(t *testing.T) {
 	line := strings.Join([]string{"work", "$1", "1700000000", "2", "@7", "win", "layout",
 		"%3", "0", "4242", "zsh", "/tmp", "1", "0", "", "1700000050",
-		"", "", "", "0", "", "0", "", "zsh"}, sep)
+		"", "", "", "0", "", "0", "", "", "zsh"}, sep)
 	p := parsePanes([]string{line})
 	if len(p) != 1 {
 		t.Fatalf("got %d panes, want 1", len(p))
@@ -137,7 +137,7 @@ func TestParsePanesEmptyCommandStatus(t *testing.T) {
 func TestParsePanesDeadSubagent(t *testing.T) {
 	line := strings.Join([]string{"work", "$1", "1700000000", "2", "@7", "kid", "layout",
 		"%3", "0", "4242", "", "/tmp", "0", "0", "", "",
-		"", "", "", "1", "1700000200", "1", "parent=abc depth=1", "kid"}, sep)
+		"", "", "", "1", "1700000200", "1", "parent=abc depth=1", "", "kid"}, sep)
 	p := parsePanes([]string{line})
 	if len(p) != 1 {
 		t.Fatalf("got %d panes, want 1", len(p))
@@ -235,6 +235,27 @@ func TestOrderSessions(t *testing.T) {
 	}
 	if len(sessions[0].Windows[0]) != 2 {
 		t.Errorf("session a window @1: got %d panes, want 2", len(sessions[0].Windows[0]))
+	}
+}
+
+// TestOrderSessionsSortsPanesByCreationOrder pins that a window's panes
+// come out oldest pane first, not in list-panes' own order: `split-window
+// -b` puts a new pane ahead of an older one in that order, and the
+// sidebar's "row 0 is the run" assumption (internal/ui's SubagentPane)
+// depends on the run's own, older pane staying first regardless of where
+// a later split lands it.
+func TestOrderSessionsSortsPanesByCreationOrder(t *testing.T) {
+	panes := []Pane{
+		{SessionName: "a", SessionCreated: 100, WindowID: "@1", PaneID: "%9"}, // newer pane, lower list-panes index
+		{SessionName: "a", SessionCreated: 100, WindowID: "@1", PaneID: "%4"}, // older pane, listed second
+	}
+	sessions := OrderSessions(panes)
+	if len(sessions) != 1 || len(sessions[0].Windows) != 1 {
+		t.Fatalf("got %+v, want one session with one window", sessions)
+	}
+	got := []string{sessions[0].Windows[0][0].PaneID, sessions[0].Windows[0][1].PaneID}
+	if want := []string{"%4", "%9"}; !equal(got, want) {
+		t.Errorf("window @1 panes: got %v, want %v (oldest first)", got, want)
 	}
 }
 

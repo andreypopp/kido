@@ -189,10 +189,11 @@ func TestRenderGroupsSiblingSubagents(t *testing.T) {
 }
 
 // TestRenderGroupsSiblingSubagentsWithTheirOwnShells is the two-pane
-// sibling in that same group: the group glyph stands in for that
-// sibling's own bracket-open row 0, and its own bracket still closes with
-// └ on its second row - the group and the window bracket compose without
-// either one dropping a row.
+// sibling in that same group: since this fix its own ┌…└ bracket keeps
+// its full span beside the group glyph, one column further in, rather
+// than losing row 0 to it - a two-pane child reads as its own window
+// with the group glyph marking it as anchored, not as a run of rows the
+// group glyph has partly swallowed.
 func TestRenderGroupsSiblingSubagentsWithTheirOwnShells(t *testing.T) {
 	panes := []tmux.Pane{
 		agentPane("@13", "%22", "orchestrator"),
@@ -208,8 +209,8 @@ func TestRenderGroupsSiblingSubagentsWithTheirOwnShells(t *testing.T) {
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
 		"╶◼ orchestrator",
-		"  ├◼ subagent-a",
-		"  │ └ zsh",
+		"  ├┌◼ subagent-a",
+		"  │└ zsh",
 		"  └◼ subagent-b",
 	})
 }
@@ -295,9 +296,8 @@ func TestRenderMultipleTopLevelAgentsInOneWindow(t *testing.T) {
 // pane. The parent's column is carried down the left of the child's rows
 // with a stem, so the bracket still reads as one window with a block
 // nested inside it. The child is also the lone-child-with-two-panes case:
-// its group glyph (a group of one) takes over row 0 in place of its own
-// ┌, but its second pane still closes the window with its own └, one
-// column further in than a real group's sibling stem would put it.
+// since this fix its own ┌…└ bracket keeps its full span, one column in
+// from the group glyph (a group of one), rather than losing row 0 to it.
 func TestRenderKeepsTheColumnAcrossANestedChild(t *testing.T) {
 	panes := []tmux.Pane{
 		shellPane("@13", "%10"),
@@ -314,8 +314,8 @@ func TestRenderKeepsTheColumnAcrossANestedChild(t *testing.T) {
 		"sess",
 		"┌ zsh",
 		"├◼ orchestrator",
-		"│ └◼ subagent",
-		"│   └ zsh",
+		"│ └┌◼ subagent",
+		"│  └ zsh",
 		"└ zsh",
 	})
 }
@@ -772,6 +772,75 @@ func TestRenderDeadMarkedPaneWithNoRecordStaysTombstone(t *testing.T) {
 	})
 }
 
+// TestRenderSplitPaneOfALiveRunIsAnOrdinaryPane is the bug itself: the
+// user split a running bash/agent window, and the split pane must draw
+// as a plain shell rather than as a second copy of the run. Only the
+// pane createRunWindow actually marked with SubagentPane carries the
+// running label; its sibling, which inherits the window-scoped Subagent
+// through tmux's own option fallback but carries no SubagentPane of its
+// own, falls through to the ordinary pane path.
+func TestRenderSplitPaneOfALiveRunIsAnOrdinaryPane(t *testing.T) {
+	id := newRun(t, "make build", "")
+	runPane := liveSubagentPane("@20", "%30", id, "")
+	runPane.SubagentPane = id
+	split := shellPane("@20", "%31")
+	split.Subagent = runPane.Subagent // the window mark, inherited by every pane
+	wantRows(t, renderRows([]tmux.Pane{runPane, split}, nil), []string{
+		"sess",
+		"┌◼ make build",
+		"└ zsh",
+	})
+}
+
+// TestRenderMarkedWindowWithNoPaneOptionKeepsTodaysBehaviour is the
+// negative control: a window marked before SubagentPane existed, where
+// no pane carries it, must not un-nest or drop the run label - every
+// unreported pane of it keeps drawing as the run in progress, exactly as
+// it always has, rather than being refused the label just because none
+// of its panes can prove ownership.
+func TestRenderMarkedWindowWithNoPaneOptionKeepsTodaysBehaviour(t *testing.T) {
+	id := newRun(t, "make build", "")
+	runPane := liveSubagentPane("@20", "%30", id, "")
+	split := liveSubagentPane("@20", "%31", id, "")
+	wantRows(t, renderRows([]tmux.Pane{runPane, split}, nil), []string{
+		"sess",
+		"┌◼ make build",
+		"└◼ make build",
+	})
+}
+
+// TestRenderReproducesTheLiveSplitBugReport is the exact incident: the
+// user switched to a keepAlive pi named "helper" (one pane, reported and
+// idle) and split it, leaving the window [zsh split %5, pi %4] in tmux's
+// own list-panes order - the split newer and so, under split -b, listed
+// first. Sorted to creation order (tmux.OrderSessions) the reported pi
+// %4 comes first regardless, its own SubagentPane keeps the zsh split
+// from ever being mistaken for the run, and the two-pane anchored window
+// draws its own bracket beside the group glyph rather than losing row 0
+// to it.
+func TestRenderReproducesTheLiveSplitBugReport(t *testing.T) {
+	pi := agentPane("@20", "%4", "helper")
+	pi.SubagentPane = "run-1"
+	pi.Subagent = tmux.SubagentMark("run-1", "root-inst", 1)
+	split := shellPane("@20", "%5")
+	split.Subagent = pi.Subagent // the window mark, inherited by every pane
+	panes := []tmux.Pane{
+		agentPane("@13", "%22", "working-on-kido"),
+		split, // listed before pi, as tmux would after `split-window -b`
+		pi,
+	}
+	states := map[string]state.Session{
+		"%22": agentState("root-inst", "", "working-on-kido"),
+		"%4":  {Agent: state.AgentPi, Status: state.Idle, Title: "helper", Instance: "helper-inst", ParentInstance: "root-inst", TS: testAt},
+	}
+	wantRows(t, renderRows(panes, states), []string{
+		"sess",
+		"╶◼ working-on-kido",
+		"  └┌  helper",
+		"   └ zsh",
+	})
+}
+
 // TestRenderLiveSubagentWithRecordUnaffected pins that this change is
 // scoped to marked-and-unreported panes only: a live subagent that has
 // already reported keeps taking the agent-row path entirely, never
@@ -945,6 +1014,36 @@ func TestLingeringSubagentsCarryForward(t *testing.T) {
 	}
 	if !next[id].outcomeOK || next[id].outcome != subrun.Completed {
 		t.Errorf("outcome = %+v, want the outcome recorded since the previous tick to be picked up", next[id])
+	}
+}
+
+// TestLingeringSubagentsRecoversPaneSeenLate pins the real race the split
+// fix has: createRunWindow issues the window mark and the pane mark as
+// two separate tmux commands, so a tick that reacts to the window's own
+// %window-add notification can poll in between them, before the pane
+// mark exists at all - measured live, in
+// TestSidebarShowsASplitBashRunPaneAsAnOrdinaryShell (e2e), which failed
+// every run against the version of this function that only ever set
+// `pane` once, at creation. Reusing that first, paneless reading forever
+// would draw every unreported pane of the window as the run for its
+// whole life, exactly the bug this whole change fixes - so the pane must
+// be recovered from a later tick's panes rather than frozen empty.
+func TestLingeringSubagentsRecoversPaneSeenLate(t *testing.T) {
+	id := newRun(t, "split-e2e", "")
+	runPane := liveSubagentPane("@20", "%1", id, "")
+	// The first tick observes the window mark but not yet the pane mark,
+	// as a tick landing between the two separate set-option calls would.
+	first := lingeringSubagents([]tmux.Pane{runPane}, nil, nil)
+	if first[id].pane != "" {
+		t.Fatalf("first read pane = %q, want \"\" (the pane mark not observed yet)", first[id].pane)
+	}
+
+	runPane.SubagentPane = id
+	split := shellPane("@20", "%2")
+	split.Subagent = runPane.Subagent
+	next := lingeringSubagents([]tmux.Pane{runPane, split}, nil, first)
+	if next[id].pane != "%1" {
+		t.Errorf("pane = %q after the pane mark appeared, want %%1 recovered rather than staying \"\" forever", next[id].pane)
 	}
 }
 

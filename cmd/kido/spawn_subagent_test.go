@@ -36,7 +36,7 @@ const fakePanePID = 42424242
 
 func withNewWindow(t *testing.T, windowID, paneID string, err error) *[]newWindowCall {
 	t.Helper()
-	prev, prevMark, prevExists := newWindow, markSubagent, windowExists
+	prev, prevMark, prevPaneMark, prevExists := newWindow, markSubagent, markSubagentPane, windowExists
 	var calls []newWindowCall
 	newWindow = func(session, name, cwd string, env, command []string) (string, string, int, error) {
 		calls = append(calls, newWindowCall{session, name, cwd, env, command})
@@ -47,11 +47,12 @@ func withNewWindow(t *testing.T, windowID, paneID string, err error) *[]newWindo
 		marks[windowID] = info
 		return nil
 	}
+	markSubagentPane = func(paneID, runID string) error { return nil }
 	// The window a fake newWindow returned is in no tmux server, so the
 	// question createRunWindow asks about it on a failure has to be
 	// answered here too; the ordinary answer is that it is still there.
 	windowExists = func(string) bool { return true }
-	t.Cleanup(func() { newWindow, markSubagent, windowExists = prev, prevMark, prevExists })
+	t.Cleanup(func() { newWindow, markSubagent, markSubagentPane, windowExists = prev, prevMark, prevPaneMark, prevExists })
 	return &calls
 }
 

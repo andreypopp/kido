@@ -162,6 +162,23 @@ is deleted within a tick of its process dying and the mark lasts as long
 as the window (design.md, "Who is authoritative for what"). A window
 that cannot be marked is killed rather than left uncollectable.
 
+The pane `new-window` made gets a second, pane-scoped option,
+`@kido_subagent_pane`, set with `set-option -p`. A window option is
+answered for every pane of the window, split panes included, so the
+window mark alone cannot tell the run's own pane from one the user
+split off later; a pane option has no such fallback and reads empty on
+the split. The sidebar draws the run's row - running, or the tombstone
+with its outcome - on the pane carrying it, and every other pane of the
+window as the shell or command it is. A window with the window mark and
+no pane carrying the pane option, one marked by an older kido on a
+server still running, draws the run on every unreported pane as before,
+since nothing about it can say which pane is the run's. The two marks
+are two tmux commands, so a tick reacting to the window's creation can
+see the first and not the second; the sidebar re-reads the pane on
+every tick until it has one rather than caching the gap. The sweep and
+`kido stop_subagent` act on the whole window, as before: the user's
+split dies with the run it was split from.
+
 The tool returns `spawned <name> (window @N, pane %N, run <id>)` at
 once. It does not wait for anything the child does.
 

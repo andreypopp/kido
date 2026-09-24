@@ -88,6 +88,14 @@ type lingering struct {
 	name      string
 	outcome   subrun.Result
 	outcomeOK bool // whether an outcome has been recorded at all
+	// pane is the id of the one pane that carries tmux.SubagentPaneOption
+	// for this run, or "" when no pane in the window does - a window
+	// marked before that option existed. lingeringLabel draws the run's
+	// label only on this pane when it is set; "" keeps today's behaviour
+	// of drawing it on every unreported pane of the window, since nothing
+	// on such a window can tell the run's own pane apart from one the
+	// user split off later.
+	pane string
 }
 
 // lingeringSubagents reads the name and outcome of every subagent window
@@ -113,6 +121,15 @@ func lingeringSubagents(panes []tmux.Pane, states map[string]state.Session, prev
 		}
 		out[runID] = l
 	}
+	// paneOf finds each run's own pane before the main loop below can need
+	// it: SubagentPane may sit on a pane later in this slice than the one
+	// that first creates the run's entry.
+	paneOf := map[string]string{}
+	for _, p := range panes {
+		if p.SubagentPane != "" {
+			paneOf[p.SubagentPane] = p.PaneID
+		}
+	}
 	for _, p := range panes {
 		if p.Subagent == "" {
 			continue
@@ -133,6 +150,17 @@ func lingeringSubagents(panes []tmux.Pane, states map[string]state.Session, prev
 					l.outcome, l.outcomeOK = o.Result, true
 				}
 			}
+			if l.pane == "" {
+				// The pane option is a separate, later tmux command than the
+				// window option (createRunWindow issues them as two distinct
+				// execs), so a tick that reacts to the window's own
+				// %window-add notification can poll in between them and cache
+				// an entry before its pane is known. Re-derive it from this
+				// tick's panes until it is, the same way outcomeOK is
+				// rechecked above, rather than freezing "" in for the run's
+				// whole life.
+				l.pane = paneOf[runID]
+			}
 			keep(runID, l)
 			continue
 		}
@@ -143,7 +171,7 @@ func lingeringSubagents(panes []tmux.Pane, states map[string]state.Session, prev
 			// pane command the way it always has.
 			continue
 		}
-		l := lingering{name: meta.Name}
+		l := lingering{name: meta.Name, pane: paneOf[runID]}
 		if o, ok, err := subrun.ReadOutcome(runID); err == nil && ok {
 			l.outcome, l.outcomeOK = o.Result, true
 		}
@@ -1373,6 +1401,13 @@ func (m *model) lingeringLabel(p tmux.Pane) (string, bool) {
 	if !ok {
 		return "", false
 	}
+	if l.pane != "" && l.pane != p.PaneID {
+		// A pane in the run's window that is not the run's own - a split
+		// the user made later - draws as the ordinary pane it is. Only a
+		// window marked before SubagentPane existed leaves l.pane empty,
+		// which keeps every unreported pane of it on the label as before.
+		return "", false
+	}
 	if !p.Dead {
 		return field(indicator(state.Running)) + l.name, true
 	}
@@ -1590,16 +1625,25 @@ func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) 
 // below, so a child of the last pane hangs free.
 //
 // A window anchored to a pane - a subagent spawned from it, whether or
-// not it has siblings - gets a ├/└ group glyph on its own first row, in
-// place of that window's own glyph (which would otherwise draw a dot or
-// ┌ indistinguishable from any other one-pane window, with nothing to
-// say this one is a subagent's). The group glyph only ever replaces a
-// window's row-0 glyph, never adds a column next to it, so a multi-pane
-// subagent's own closing row still carries its own └ - the group and the
-// window brackets compose exactly like the outer window bracket and a
-// nested child already do, one level further in. depth > 1 is the same
-// recursion again: a subagent's own subagents are just another anchor
-// lookup, off its own first pane.
+// not it has siblings - gets a ├/└ group glyph of its own, marking which
+// pane spawned it the way none of glyph's own dot-or-bracket glyphs can.
+// A one-pane child still collapses to the group glyph alone, exactly as
+// before: a bracket around a single row says nothing a plain glyph
+// would not already say just as well, and the group glyph already marks
+// it as anchored. A child with more than one pane of its own is
+// different: since this fix, its own ┌ ├ └ bracket keeps its full span
+// rather than losing row 0 to the group glyph, so the split pane a user
+// adds to a running child's window still reads as that window's own
+// second pane and not as a row the group glyph swallowed. The group
+// glyph and the window's own bracket are two columns side by side on
+// every row of such a child, not one column that only shows up on row
+// 0: row 0 carries the group's opening glyph (├ or └) beside the
+// window's own opening bracket (┌), and every row below it carries the
+// group's plain continuation (│ or a blank, from continuation, exactly
+// what a further sibling below would need to keep its own stem
+// unbroken) beside the window's own continuing bracket glyph. depth > 1
+// is the same recursion again: a subagent's own subagents are just
+// another anchor lookup, off its own first pane.
 //
 // The price is that a window hoisted under a parent's pane no longer
 // appears in tmux's own window order - a subagent's window can sit above
@@ -1614,31 +1658,46 @@ func (m *model) appendWindows(placements []windowPlacement) {
 		}
 	}
 	drawn := make([]bool, len(placements))
-	// prefix is the ambient stem for a window's own row 0; cont is the
-	// ambient stem for its remaining rows, which differs from prefix only
-	// when lead is set - a sibling in a group of more than one, where row
-	// 0's own glyph is replaced by the group glyph lead and everything
-	// below it carries the group's own continuation instead.
-	var emit func(i int, prefix, cont, lead string)
-	emit = func(i int, prefix, cont, lead string) {
+	// prefix is the ambient stem to the left of a window's own columns,
+	// the same for every row of it: by construction (see the recursive
+	// call below) it is always what a row's fuller stem was built from
+	// before the group's own character and a trailing space were appended,
+	// so there is never a need to peel it back out of a styled string to
+	// recover it.
+	//
+	// lead is the group's opening glyph (├ or └), drawn on row 0 only;
+	// groupStem is its plain continuation (│ or a blank, from
+	// continuation), drawn instead on every row after it - both "" for a
+	// window with no anchor at all.
+	var emit func(i int, prefix, lead, groupStem string)
+	emit = func(i int, prefix, lead, groupStem string) {
 		if drawn[i] {
 			return
 		}
 		drawn[i] = true
 		panes := placements[i].panes
+		n := len(panes)
 		for j, p := range panes {
-			amb, g := cont, glyph(j, len(panes))
-			nested := amb + continuation(j, len(panes)) + " "
-			if j == 0 {
-				amb = prefix
-				nested = amb + continuation(j, len(panes)) + " "
-				if lead != "" {
-					// The group glyph stands in for row 0's own bracket glyph
-					// entirely, so what continues below it is the group's own
-					// continuation (cont), not a continuation of a bracket that
-					// was never drawn.
-					g, nested = lead, cont
+			var g, nested string
+			switch {
+			case lead == "":
+				g = glyph(j, n)
+				nested = prefix + continuation(j, n) + " "
+			case n == 1:
+				// A lone-pane child collapses to the group glyph alone, as
+				// before: a bracket around one row has nothing left to say.
+				g = lead
+				nested = prefix + groupStem + " "
+			default:
+				// Two columns, not one: the group's own glyph beside this
+				// window's own bracket, present on every row - see the doc
+				// comment above for why row 0 no longer swallows the other.
+				stem := lead
+				if j > 0 {
+					stem = groupStem
 				}
+				g = stem + glyph(j, n)
+				nested = prefix + groupStem + continuation(j, n) + " "
 			}
 			// No space of our own between g and the label: field()
 			// supplies it (as part of the indicator, or its two-space
@@ -1646,12 +1705,12 @@ func (m *model) appendWindows(placements []windowPlacement) {
 			// (paneLabel's no-OSC-133 branch) supplies its own so it
 			// does not jam against g.
 			m.rows = append(m.rows, row{
-				text:   amb + g + m.paneLabel(p),
+				text:   prefix + g + m.paneLabel(p),
 				paneID: p.PaneID,
 			})
 			kids := byAnchor[p.PaneID]
 			for gi, k := range kids {
-				emit(k, nested, nested+continuation(gi, len(kids))+" ", groupGlyph(gi, len(kids)))
+				emit(k, nested, groupGlyph(gi, len(kids)), continuation(gi, len(kids)))
 			}
 		}
 	}

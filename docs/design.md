@@ -1435,15 +1435,29 @@ The stem stops where the parent has no rows left below it, so a child of
 a window's last pane hangs free instead of dangling a line into empty
 space.
 
-Several windows anchored to the same pane are a second, inner bracket
-the same way: each sibling's first row takes a ├, the last a └, in place
-of the dot or ┌ that window would otherwise open with, so a parent with
+Windows anchored to the same pane are a second, inner bracket the same
+way: each child's first row takes a ├, the last a └, so a parent with
 three children reads as one group rather than a run of identical dots
-that says nothing about them belonging together. The group glyph only
-ever replaces a window's first glyph, never adds a column beside it, so
-a two-pane sibling still closes its own bracket on its second row. A
-lone child gets no group glyph at all, as above: a group of one has no
-sibling to be told apart from.
+that says nothing about them belonging together. A lone child gets the
+same └: which pane spawned it is worth more than how many panes it
+has. A child with one pane collapses to that glyph alone, since a
+bracket around one row says nothing. A child with several panes keeps
+its own ┌…└ bracket in a column of its own, right after the group
+glyph, and the group's continuation (│, or a blank under a └) runs down
+beside it on every row:
+
+    └  working-on-kido
+      ├┌◼ helper
+      │└  zsh
+      └  other-child
+
+so a pane the user splits off a running child's window still reads as
+that window's second pane, and not as a row the group glyph swallowed.
+A window's rows go oldest pane to newest, by the number in the pane id,
+which tmux allocates monotonically; list-panes order is layout
+position, and `split-window -b` puts a new pane above an older one.
+The sort happens once, in `tmux.OrderSessions`, so every reader of a
+window agrees on row 0.
 
 The price is that a window hoisted under a parent's pane is not in tmux's
 own window order: a subagent's window can sit above a lower-numbered one,

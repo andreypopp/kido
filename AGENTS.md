@@ -811,6 +811,20 @@ build it paid for).
   field participates in equality by default and must be zeroed in
   `drawnPart` to be ignored. It fails toward extra redraws, which is the
   safe direction — the opposite convention to most such comparators.
+- **A window's panes are ordered oldest first, not as tmux lists them.**
+  `tmux.OrderSessions` sorts each window's panes by the number in the
+  pane id, which tmux allocates monotonically; list-panes order is
+  layout position, and `split-window -b` puts a new pane ahead of an
+  older one. The sort happens once so the tree, the group glyph's row 0
+  and `kido switch-window` agree; a reader that goes back to tmux's
+  order draws a user's split above the run it was split from.
+- **A pane option that must not fall back to the window needs
+  `set-option -p`.** tmux answers a `-w` option for every pane of the
+  window, so `@kido_subagent` alone cannot tell the run's pane from one
+  the user split off later; `@kido_subagent_pane` (`SubagentPaneOption`)
+  reads empty on the split, which is the whole point of it. The two are
+  set by two tmux commands, so a tick can see the window mark before the
+  pane mark; `lingeringSubagents` re-reads the pane until it has one.
 - **`field()` is the column-alignment contract.** Every pane-label branch
   routes through it; a new pane kind that forgets it misaligns the whole
   column. A shell with no OSC 133 integration deliberately gets *no*
@@ -876,8 +890,8 @@ not repeat them.
   the test first and watch it fail before touching the code; quote that
   failure. A feature needs no such proof - its tests need only pass.
   Then run `go vet ./...` and the tests of the packages you changed (an
-  e2e test you wrote, with `KIDO_E2E_REQUIRED=1 KIDO_TMUX=$HOME/bin/tmux
-  go test ./e2e/ -run Name`; the TypeScript suite through
+  e2e test you wrote, with `KIDO_E2E_REQUIRED=1
+  KIDO_TMUX=$(command -v kido-tmux) go test ./e2e/ -run Name`; the TypeScript suite through
   `scripts/test-ts.sh` if you touched `pi/`), each once, with the
   environment scrubbed:
 

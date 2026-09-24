@@ -174,8 +174,20 @@ type Pane struct {
 	DeadTime int64
 	// Subagent is the @kido_subagent window option kido spawn_subagent sets on a
 	// window of its own making, read through the pane because one
-	// list-panes is the only listing kido takes.
+	// list-panes is the only listing kido takes. tmux's option lookup
+	// falls back from pane to window scope, so this reads the same value
+	// on every pane of a marked window, split panes included.
 	Subagent string
+	// SubagentPane is the @kido_subagent_pane *pane*-scoped option
+	// (SubagentPaneOption), set only on the one pane createRunWindow made
+	// the run in. Unlike Subagent it does not fall back to the window: a
+	// pane the user split off later carries no pane-scoped option of its
+	// own and no window-scoped fallback exists for this name, so it reads
+	// "" - which is what tells lingeringLabel that pane apart from the
+	// run's own. Empty on every pane of a window marked before this field
+	// existed, which is the fallback lingeringLabel keeps today's
+	// behaviour for.
+	SubagentPane string
 	// SessionAttached is whether any client is attached to this pane's
 	// session; see Watched.
 	SessionAttached bool
@@ -232,6 +244,7 @@ var paneFormat = strings.Join([]string{
 	"#{pane_dead_time}",
 	"#{session_attached}",
 	"#{" + SubagentOption + "}",
+	"#{" + SubagentPaneOption + "}",
 	"#{pane_title}",
 }, sep)
 
@@ -241,10 +254,20 @@ var paneFormat = strings.Join([]string{
 // own cleanup").
 const SubagentOption = "@kido_subagent"
 
+// SubagentPaneOption is the tmux *pane*-scoped option createRunWindow sets
+// on the one pane a run actually runs in (MarkSubagentPane), naming the
+// same run id SubagentOption's "run=" token carries. It exists because
+// SubagentOption is a window option and tmux's format lookup falls back
+// from pane to window scope, so every pane of a marked window - including
+// one the user splits off later - reads a non-empty Subagent; only a
+// pane-scoped option can tell the run's own pane apart from a sibling the
+// user added.
+const SubagentPaneOption = "@kido_subagent_pane"
+
 // paneFields is the number of #{...} entries paneFormat asks tmux for;
 // parsePanes' SplitN count and len(f) guard both use it so the two cannot
 // drift apart (TestPaneFieldsMatchParsePanes).
-const paneFields = 24
+const paneFields = 25
 
 // parsePanes turns list-panes output lines into panes. Shared by the exec
 // and control-mode paths, which ask for the same format.
@@ -260,7 +283,7 @@ func parsePanes(lines []string) []Pane {
 			CurrentPath: f[11], AlternateOn: f[12] == "1",
 			CommandRunning: f[13] == "1", CommandLine: f[18], Dead: f[19] == "1",
 			SessionAttached: f[21] != "" && f[21] != "0",
-			Subagent:        f[22], Title: f[23]}
+			Subagent:        f[22], SubagentPane: f[23], Title: f[24]}
 		p.SessionCreated, _ = strconv.ParseInt(f[2], 10, 64)
 		p.WindowIndex, _ = strconv.Atoi(f[3])
 		p.PanePID, _ = strconv.Atoi(f[9])
@@ -278,9 +301,19 @@ func parsePanes(lines []string) []Pane {
 	return panes
 }
 
+// paneNum is the numeric part of a pane id ("%12" -> 12), tmux's own
+// creation-order counter. A pane id that fails to parse - which never
+// happens against a real tmux server - sorts first rather than panicking
+// or being dropped.
+func paneNum(id string) int {
+	n, _ := strconv.Atoi(strings.TrimPrefix(id, "%"))
+	return n
+}
+
 // Session is one session's windows, grouped the way kido shows and walks
-// them: Windows[i] is one window's panes in pane order, so Windows[i][0]
-// identifies the window (SessionName, WindowID).
+// them: Windows[i] is one window's panes in creation order (paneNum), so
+// Windows[i][0] identifies the window (SessionName, WindowID) but is not
+// necessarily its lowest #{pane_index}.
 type Session struct {
 	Name string
 	// ID is the session id ("$3"), and it is what every command that
@@ -293,11 +326,18 @@ type Session struct {
 }
 
 // OrderSessions groups panes into sessions and windows in kido's order:
-// sessions oldest first (session_created), ties broken by name, and within
-// a session each window's panes kept in ListPanes' own order (tmux's
-// natural window order). This is kido's one true order, derived from one
-// list-panes: the sidebar's grouping, `kido switch-session` and `kido
-// switch-window` all walk it, so they cannot drift apart.
+// sessions oldest first (session_created), ties broken by name, and
+// within a session each window's own panes oldest first - the numeric
+// part of the pane id, which tmux allocates monotonically, so a pane
+// never changes place once made regardless of where a later split lands
+// it in tmux's own list-panes order. #{pane_index} is a layout position,
+// not an age: `split-window -b` puts the new pane first, which is
+// exactly the case this sidebar has to draw a run's own pane before a
+// split the user made afterwards (see internal/ui's SubagentPane, whose
+// first-pane-is-the-run assumption this ordering exists to keep true).
+// This is kido's one true order, derived from one list-panes: the
+// sidebar's grouping, `kido switch-session` and `kido switch-window` all
+// walk it, so they cannot drift apart.
 func OrderSessions(panes []Pane) []Session {
 	type group struct {
 		created int64
@@ -318,6 +358,13 @@ func OrderSessions(panes []Pane) []Session {
 			n++
 		}
 		g.sess.Windows[n-1] = append(g.sess.Windows[n-1], p)
+	}
+	for _, g := range order {
+		for _, w := range g.sess.Windows {
+			sort.SliceStable(w, func(i, j int) bool {
+				return paneNum(w[i].PaneID) < paneNum(w[j].PaneID)
+			})
+		}
 	}
 	sort.SliceStable(order, func(i, j int) bool {
 		if order[i].created != order[j].created {
@@ -850,5 +897,15 @@ func subagentField(info, prefix string) string {
 // MarkSubagent sets SubagentOption on windowID to info (SubagentMark).
 func MarkSubagent(windowID, info string) error {
 	_, err := run("set-option", "-w", "-t", windowID, SubagentOption, info)
+	return err
+}
+
+// MarkSubagentPane sets SubagentPaneOption on paneID to runID, a
+// pane-scoped option ("-p") rather than the window-scoped one
+// MarkSubagent writes: it must not be readable through the window-option
+// fallback on any other pane of the same window, which is the whole
+// point of having it.
+func MarkSubagentPane(paneID, runID string) error {
+	_, err := run("set-option", "-p", "-t", paneID, SubagentPaneOption, runID)
 	return err
 }
