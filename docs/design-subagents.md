@@ -352,8 +352,17 @@ exactly as they were; delivery is not itself work, and the first real
 sign of it clears the clock as it always did. Any new
 work, or a message about to be delivered, restarts the clock. A window
 some client is looking at is not taken
-away; the timer re-arms and tries again later. A root session, one with
-no parent in its environment, never arms it.
+away; the timer re-arms and tries again later. Nor is one call to pi's
+shutdown trusted to end the session: pi's interactive-mode handler acts
+only when the session is not mid-compaction, and re-checks a request it
+declined only on its own next `agent_settled`, which a compaction never
+emits. Observational memory hangs its compaction trigger on the very
+event that arms this clock, so a compaction outliving the thirty
+seconds had a child record a shutdown request nobody would ever read,
+and sit idle with no outcome for as long as it was left. The clock
+therefore re-arms after every call to shutdown, exactly as in its other
+decline paths, until the session's own ending clears it. A root
+session, one with no parent in its environment, never arms it.
 
 **A session with a live child of its own is not idle**, however quiet it
 has been. "I have spawned it and I am waiting for its report" settles a

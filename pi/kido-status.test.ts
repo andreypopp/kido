@@ -3595,6 +3595,41 @@ test("idle self-exit: a live child run re-arms the clock, and the session exits 
   }
 });
 
+// pi's interactive-mode shutdown handler only acts on a shutdown request
+// once it is not mid-compaction (isIdle), and only re-checks that flag on
+// its own next agent_settled - so a shutdown requested while a compaction
+// is in flight can be recorded and never acted on. The clock must not
+// take ctx.shutdown() at its word: it re-arms after calling it, so a
+// declined request is asked for again rather than left as the one attempt
+// a child ever gets.
+test("idle self-exit: a shutdown pi declined is asked for again", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
+    await withParentEnv(process.pid, "parent-inst", 5000, async () => {
+      await withIdleExitEnv(0.05, false, async () => {
+        const factory = await freshExtensions();
+        // A shutdown pi declines because it is compacting still returns
+        // from ctx.shutdown() - pi just does not end the session. Mirror
+        // the real sequence around the first firing without it changing
+        // anything: kido-agents.ts does not listen for either event.
+        const s = await startWithShutdownSpy(factory);
+        await s.emit("agent_settled", {}, { isIdle: () => true });
+        await pollUntil(() => s.shutdowns() > 0, 2000, "the first ctx.shutdown() attempt");
+        await s.emit("session_before_compact");
+        await s.emit("session_compact");
+        await pollUntil(
+          () => s.shutdowns() > 1,
+          2000,
+          "a second ctx.shutdown() after the declined attempt's idle window",
+        );
+      });
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
 // A child that ends without ever calling notify_parent owes its parent
 // one notice saying so - the ending was silent, and a parent that
 // dispatched work learnt nothing from a child that idled out. The flag

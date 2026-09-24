@@ -926,7 +926,13 @@ export default function (pi: ExtensionAPI) {
         armIdleExit(shutdown);
         return;
       }
+      // pi's own shutdown handler only ends the session once it is not
+      // mid-compaction, and only re-checks that on its own next
+      // agent_settled - so a request made here while pi is compacting can
+      // be recorded and never acted on. Re-arming costs nothing once the
+      // session does end: sessionEnding clears the timer first.
       shutdown();
+      armIdleExit(shutdown);
     }, IDLE_EXIT_MS);
     idleExitTimer.unref();
   };
