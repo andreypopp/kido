@@ -108,9 +108,9 @@ session's last window moves to the next session, where tmux's own
 
 ### `kido ssh [ssh args...] destination`
 
-ssh, with the remote zsh primed to report to the sidebar: the row then
-shows what the shell on the far side is running, on a host where nothing
-is installed.
+ssh, with the remote zsh or bash primed to report to the sidebar: the row
+then shows what the shell on the far side is running, on a host where
+nothing is installed.
 
 ```sh
 kido ssh deploy@build-box
@@ -119,13 +119,24 @@ kido ssh -o BatchMode=yes -p 2222 build-box
 
 The arguments are ssh's own and are passed through in order. kido sends a
 small bootstrap as the remote command, which decodes the shell
-integration into a temporary directory, points `ZDOTDIR` at it and execs
-the login shell; that directory's `.zshenv` hands `ZDOTDIR` straight back
-before the real dotfiles are read and then deletes itself, so the remote
-`$HOME` is never touched and nothing outlives the session.
+integration into a temporary directory and execs the login shell primed
+for it. For zsh that means pointing `ZDOTDIR` at the directory; its
+`.zshenv` hands `ZDOTDIR` straight back before the real dotfiles are read
+and then deletes itself. Bash has no `ZDOTDIR`, and a login bash ignores
+`--rcfile`, so the bootstrap execs it with `--login --posix` and an `ENV`
+pointing into the same directory - the one lever that gets bash to read a
+file of its own choosing before a login shell's - which turns posix mode
+back off, sources `/etc/profile` and the first of `~/.bash_profile`,
+`~/.bash_login` or `~/.profile`, sources the integration, and removes the
+directory. Either way the remote `$HOME` is never touched and nothing
+outlives the session.
 
-Only zsh is primed. Anything kido cannot prime - a remote command of your
-own, no terminal, no zsh on the far side, a remote with no `base64`, an
+Bash needs 4.4 for the `PS0` hook the integration uses; an older bash (macOS
+ships 3.2 as `/bin/bash`) gets its login files and no priming, the same
+as any other shell kido does not know.
+
+Anything kido cannot prime - a remote command of your own, no terminal,
+a login shell that is neither zsh nor bash, a remote with no `base64`, an
 option meaning there is no login shell in this connection - is a plain
 ssh session, unchanged. `kido ssh host` is never worse than `ssh host`.
 

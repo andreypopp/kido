@@ -1510,9 +1510,11 @@ command. kitty does the opposite - a small bootstrap in argv that asks
 the terminal for the heavy payload over a DCS escape, gated by a one-time
 password - and that channel cannot work here: it needs a kitty-aware
 emulator at the local end, and kido's local end is tmux inside whatever
-terminal the user has. Argv is affordable because the payload is one
-~1.5K file where kitty's is ~127K plus terminfo. stdin is not an option
-at all: the interactive session needs it.
+terminal the user has. Argv is affordable because the payload is two
+small files, ~2K and ~4.6K, where kitty's is ~127K plus terminfo - both
+ride along on every connection regardless of which one the remote's login
+shell needs, for a bootstrap of about 12.3K. stdin is not an option at
+all: the interactive session needs it.
 
 **What that costs, said plainly.** Anything in an ssh command line is
 visible in the remote's `ps`. The payload is a public shell script with
@@ -1538,6 +1540,33 @@ kitty's care and worth keeping: a zsh with none is about to run
 `zsh-newuser-install`, and a `ZDOTDIR` pointing at kido's directory would
 quietly suppress it.
 
+**The bash branch.** bash has no `ZDOTDIR`, and a login bash ignores
+`--rcfile` - only a non-login bash reads it. `--posix` is the one lever
+that gets bash to read a file of its own choosing, `$ENV`, before a login
+shell's own files, which is exactly kitty's `exec_bash_with_integration`:
+`export ENV=...; exec "$login_shell" --login --posix`. The bootstrap does
+the same, pointing `ENV` at a file in the same throwaway directory as the
+decoded integration. That file turns posix mode back off first - so
+nothing about the rest of the session, interactive shell included, runs
+posix - then sources `/etc/profile` and the first of `~/.bash_profile`,
+`~/.bash_login` or `~/.profile` itself, exactly as a login bash with no
+kido in front of it would, then sources the integration, then removes
+the directory. There is no deferral to a first prompt here the way there
+is for zsh: nothing else runs after this file, so there is no later hook
+for the integration to land in front of.
+
+The integration's own `PS0` hook needs bash 4.4; the version floor is
+checked inside that same file, against `$BASH_VERSINFO`, because the
+outer POSIX sh bootstrap has no way to ask bash's own version without
+spawning bash. An older bash gets its login files and no markers - the
+same outcome an unsupported shell gets from `kido_plain`, reached by a
+different route. macOS ships 3.2 as `/bin/bash`, old enough to exercise
+this, and also old enough that it does not read `$ENV` under `--posix` at
+all on that platform; a login bash's own file-reading still runs the
+user's dotfiles, but nothing ever reads kidoBashEnv far enough to remove
+it, which is one more way - alongside the one below - that this
+bootstrap's cleanup can be skipped without breaking a session.
+
 **Nothing persists.** kido's payload is small enough to resend on every
 connection, so unlike kitty - which caches under
 `~/.local/share/kitty-ssh-kitten` - it leaves nothing behind. The
@@ -1560,15 +1589,18 @@ this connection has no login shell in it (`-N`, `-T`, `-W`, `-f`, `-n`,
 `-s`, `-O`, `-Q`, `-V`, `-G`). When it does prime it adds `-t`, because
 ssh allocates no tty for a command and the shell being asked for is an
 interactive one. On the remote side every failure ends in the same login
-shell unprimed: a login shell that is not zsh, no `mktemp` or `base64`,
-a directory that cannot be made, a payload that will not decode. kido
-execs ssh rather than wrapping it, so signals, the exit status and the
-tty behave as they would with no kido in front of them.
+shell unprimed: a login shell that is neither zsh nor bash, no `mktemp`
+or `base64`, a directory that cannot be made, a payload that will not
+decode. kido execs ssh rather than wrapping it, so signals, the exit
+status and the tty behave as they would with no kido in front of them.
 
 The remote login shell is read from `$SHELL`, which sshd sets from the
-password database, so detection costs no extra round trip. Only zsh is
-primed: the bash integration ships and installs locally, but nothing
-sends it over a connection yet.
+password database, so detection costs no extra round trip. zsh and bash
+are both primed now; the command line carries both integrations base64'd
+and branches on the login shell's basename, so the size cost of adding
+bash is paid on every connection regardless of which shell answers -
+around 12.3K for the two payloads together, well inside what an ssh
+command line can carry.
 
 Deliberately not built: terminfo shipping or compilation, a kido binary
 on the remote, ControlMaster sharing, askpass, fish. kitty needs

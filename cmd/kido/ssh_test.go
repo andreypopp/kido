@@ -164,37 +164,49 @@ func TestKidoZshenvIsAZshProgram(t *testing.T) {
 	}
 }
 
-// TestSSHBootstrapCarriesTheIntegration pins the payload: the embedded
-// integration, base64 of it and nothing else, and quotable. The base64
-// alphabet holds no single quote, which is what makes wrapping the
-// payload in one pair of single quotes safe with no escaping at all - a
-// payload that ever grew one would end the quoting early and hand the
-// remote shell the rest of the file as commands.
+// TestSSHBootstrapCarriesTheIntegration pins both payloads: the embedded
+// zsh and bash integrations, base64 of each and nothing else, and
+// quotable. The base64 alphabet holds no single quote, which is what
+// makes wrapping a payload in one pair of single quotes safe with no
+// escaping at all - a payload that ever grew one would end the quoting
+// early and hand the remote shell the rest of the file as commands.
 func TestSSHBootstrapCarriesTheIntegration(t *testing.T) {
 	boot := sshBootstrap()
-	payload := base64.StdEncoding.EncodeToString(shell.ZshIntegration)
-	if strings.ContainsAny(payload, "'\\") {
-		t.Fatalf("the encoded payload is not safe inside single quotes: %q", payload)
+	cases := []struct {
+		name   string
+		src    []byte
+		marker string
+	}{
+		{"zsh", shell.ZshIntegration, "kido_osc133_preexec"},
+		{"bash", shell.BashIntegration, "kido_osc133_preexec"},
 	}
-	if !strings.Contains(boot, "'"+payload+"'") {
-		t.Error("the bootstrap does not carry the embedded integration, single-quoted")
-	}
-	decoded, err := base64.StdEncoding.DecodeString(payload)
-	if err != nil {
-		t.Fatalf("decoding the payload: %v", err)
-	}
-	if !bytes.Equal(decoded, shell.ZshIntegration) {
-		t.Error("the payload does not decode back to shell/zsh/integration.zsh")
-	}
-	if !bytes.Contains(shell.ZshIntegration, []byte("kido_osc133_preexec")) {
-		t.Error("the embedded integration is not kido's zsh integration")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			payload := base64.StdEncoding.EncodeToString(c.src)
+			if strings.ContainsAny(payload, "'\\") {
+				t.Fatalf("the encoded payload is not safe inside single quotes: %q", payload)
+			}
+			if !strings.Contains(boot, "'"+payload+"'") {
+				t.Error("the bootstrap does not carry the embedded integration, single-quoted")
+			}
+			decoded, err := base64.StdEncoding.DecodeString(payload)
+			if err != nil {
+				t.Fatalf("decoding the payload: %v", err)
+			}
+			if !bytes.Equal(decoded, c.src) {
+				t.Errorf("the payload does not decode back to shell/%s/integration.%s", c.name, c.name)
+			}
+			if !bytes.Contains(c.src, []byte(c.marker)) {
+				t.Errorf("the embedded integration is not kido's %s integration", c.name)
+			}
+		})
 	}
 }
 
 // fakeShell writes a script that stands in for a remote login shell and
-// reports what the bootstrap did to it: its arguments, the ZDOTDIR it was
-// handed, and what is in that directory. name is its basename, which is
-// the only thing the bootstrap's shell detection reads.
+// reports what the bootstrap did to it: its arguments, the ZDOTDIR or ENV
+// it was handed, and what is in that directory. name is its basename,
+// which is the only thing the bootstrap's shell detection reads.
 func fakeShell(t *testing.T, name string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -206,12 +218,47 @@ func fakeShell(t *testing.T, name string) string {
 echo "args=$*"
 echo "ZDOTDIR=${ZDOTDIR-<unset>}"
 [ -n "$ZDOTDIR" ] && ls -a "$ZDOTDIR"
+echo "ENV=${ENV-<unset>}"
+[ -n "$ENV" ] && ls -a "$(dirname "$ENV")"
 exit 0
 `
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// envFrom reads the ENV line the stand-in shell printed.
+func envFrom(t *testing.T, out string) string {
+	t.Helper()
+	m := regexp.MustCompile(`(?m)^ENV=(.*)$`).FindStringSubmatch(out)
+	if m == nil {
+		t.Fatalf("output %q names no ENV", out)
+	}
+	return m[1]
+}
+
+// TestBootstrapPrimesBash is TestBootstrapPrimesZsh's counterpart: a
+// stand-in login shell named bash is exec'd with --login --posix and an
+// ENV pointing at a throwaway directory holding both env.bash and the
+// decoded integration.
+func TestBootstrapPrimesBash(t *testing.T) {
+	out, tmpdir := runBootstrap(t, t.TempDir(), fakeShell(t, "bash"))
+	if !strings.Contains(out, "args=--login --posix") {
+		t.Errorf("output %q, want the login shell exec'd with --login --posix", out)
+	}
+	if envFrom(t, out) == "<unset>" {
+		t.Fatalf("output %q names no ENV", out)
+	}
+	if !strings.Contains(out, "env.bash") || !strings.Contains(out, "integration.bash") {
+		t.Errorf("output %q, want the ENV directory to hold env.bash and integration.bash", out)
+	}
+	// As in TestBootstrapPrimesZsh: the stand-in shell never reads ENV, so
+	// nothing removed the directory and the trap could not run either,
+	// because the bootstrap exec'd.
+	if got := leftBehind(t, tmpdir); len(got) != 1 {
+		t.Errorf("temporary directories = %q, want the one this run made", got)
+	}
 }
 
 // runBootstrap runs the bootstrap under a real /bin/sh, as the remote's
@@ -323,10 +370,10 @@ func TestBootstrapRedirectsAnExistingZDOTDIR(t *testing.T) {
 // these must exec the login shell with nothing changed, and leave no
 // temporary directory behind.
 func TestBootstrapFallsBackToAPlainShell(t *testing.T) {
-	t.Run("a login shell that is not zsh", func(t *testing.T) {
-		out, tmpdir := runBootstrap(t, zshHome(t, ""), fakeShell(t, "bash"))
+	t.Run("a login shell kido does not know", func(t *testing.T) {
+		out, tmpdir := runBootstrap(t, zshHome(t, ""), fakeShell(t, "ksh"))
 		if got := zdotdirFrom(t, out); got != "<unset>" {
-			t.Errorf("ZDOTDIR = %q, want a bash session left alone", got)
+			t.Errorf("ZDOTDIR = %q, want a ksh session left alone", got)
 		}
 		if got := leftBehind(t, tmpdir); len(got) != 0 {
 			t.Errorf("left %q behind on the remote", got)
@@ -551,5 +598,218 @@ func TestSSHPrimesAZshWithItsOwnZDOTDIR(t *testing.T) {
 	}
 	if got := leftBehind(t, tmpdir); len(got) != 0 {
 		t.Errorf("left %q behind on the remote", got)
+	}
+}
+
+// interactiveBash writes a shell named bash that is a real bash forced
+// interactive, so a test can drive it down a pipe, the same trick
+// interactiveZsh plays. Order matters here in a way it does not for zsh:
+// bash's option parser treats a long option like --login as invalid once
+// it has seen a short one, so -i has to come after "$@", not before it.
+// Skips when the bash on PATH cannot run the primed integration at all -
+// the version floor itself is TestBootstrapFallsBackForOldBash's claim,
+// not this helper's.
+func interactiveBash(t *testing.T) string {
+	t.Helper()
+	real, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash in PATH")
+	}
+	if !bashAtLeast44(real) {
+		t.Skip("bash on PATH is older than 4.4")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bash")
+	body := "#!/bin/sh\nexec " + real + " \"$@\" -i\n"
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// bashAtLeast44 reports whether the bash at path is new enough for PS0,
+// by asking it to evaluate the same test kidoBashEnv runs on the remote.
+func bashAtLeast44(path string) bool {
+	err := exec.Command(path, "-c",
+		`[ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; }`).Run()
+	return err == nil
+}
+
+// TestSSHPrimesAPristineBash is TestSSHPrimesAPristineZsh's counterpart,
+// with the same negative control: a bash whose dotfiles know nothing
+// about kido reports nothing on its own, and the same bash started
+// through kido's bootstrap reports a prompt, a command line and an exit
+// status, with its own .bash_profile still the one that set the prompt.
+func TestSSHPrimesAPristineBash(t *testing.T) {
+	shell := interactiveBash(t)
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".bash_profile"), []byte("PS1='remote$ '\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := "true\nexit\n"
+
+	// The control: the same pristine bash, started the way ssh would start
+	// it with no kido in front of it.
+	plain := noTTY(exec.Command(shell, "--login"))
+	plain.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "SHELL=" + shell, "TERM=dumb"}
+	plain.Stdin = strings.NewReader(script)
+	control, err := plain.CombinedOutput()
+	if err != nil {
+		t.Fatalf("plain bash: %v\n%s", err, control)
+	}
+	if osc133.Match(control) {
+		t.Fatalf("the pristine remote already reports OSC 133 without kido; this test would prove nothing\n%q", control)
+	}
+
+	tmpdir := filepath.Join(t.TempDir(), "tmp")
+	if err := os.MkdirAll(tmpdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	primed := noTTY(exec.Command("/bin/sh", "-c", sshBootstrap()))
+	primed.Env = []string{
+		"PATH=" + os.Getenv("PATH"), "HOME=" + home, "SHELL=" + shell, "TMPDIR=" + tmpdir, "TERM=dumb",
+	}
+	primed.Stdin = strings.NewReader(script)
+	out, err := primed.CombinedOutput()
+	if err != nil {
+		t.Fatalf("primed bash: %v\n%s", err, out)
+	}
+	for _, want := range []string{"\x1b]133;A", "\x1b]133;C;cmdline=true", "\x1b]133;D;0"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("primed output does not contain %q; it is %q", want, out)
+		}
+	}
+	// Nothing persists: kidoBashEnv removes the directory as it reads it,
+	// the same way the .zshenv does for zsh.
+	if got := leftBehind(t, tmpdir); len(got) != 0 {
+		t.Errorf("left %q behind on the remote", got)
+	}
+	// The user's own dotfiles still ran, from their own $HOME: an ENV kido
+	// pointed elsewhere and forgot to restore would be a far worse thing to
+	// do to a login than not reporting at all.
+	if !strings.Contains(string(out), "remote$") {
+		t.Errorf("the pristine .bash_profile did not run; output is %q", out)
+	}
+}
+
+// TestSSHPrimesABashSourcesBashrc pins that both of a real bash login's
+// own files ran: kidoBashEnv sources only /etc/profile and the first of
+// .bash_profile, .bash_login, .profile itself, exactly as a login bash
+// with no kido in front of it would - so a .bashrc only runs if the
+// user's own .bash_profile sources it, which is what this one does.
+func TestSSHPrimesABashSourcesBashrc(t *testing.T) {
+	shell := interactiveBash(t)
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".bash_profile"),
+		[]byte("echo KIDO_BASH_PROFILE_RAN\nsource ~/.bashrc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".bashrc"),
+		[]byte("echo KIDO_BASH_RC_RAN\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tmpdir := filepath.Join(t.TempDir(), "tmp")
+	if err := os.MkdirAll(tmpdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := noTTY(exec.Command("/bin/sh", "-c", sshBootstrap()))
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"), "HOME=" + home, "SHELL=" + shell, "TMPDIR=" + tmpdir, "TERM=dumb",
+	}
+	cmd.Stdin = strings.NewReader("true\nexit\n")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("primed bash: %v\n%s", err, out)
+	}
+	for _, want := range []string{"KIDO_BASH_PROFILE_RAN", "KIDO_BASH_RC_RAN"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("output does not contain %q; it is %q", want, out)
+		}
+	}
+	if got := leftBehind(t, tmpdir); len(got) != 0 {
+		t.Errorf("left %q behind on the remote", got)
+	}
+}
+
+// TestSSHPrimesABashWithOnlyAProfile pins the fallback order kidoBashEnv
+// gives login files: a remote with a .profile and no .bash_profile or
+// .bash_login still gets it, the same order a login bash with no kido in
+// front of it uses.
+func TestSSHPrimesABashWithOnlyAProfile(t *testing.T) {
+	shell := interactiveBash(t)
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".profile"),
+		[]byte("echo KIDO_DOT_PROFILE_RAN\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tmpdir := filepath.Join(t.TempDir(), "tmp")
+	if err := os.MkdirAll(tmpdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := noTTY(exec.Command("/bin/sh", "-c", sshBootstrap()))
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"), "HOME=" + home, "SHELL=" + shell, "TMPDIR=" + tmpdir, "TERM=dumb",
+	}
+	cmd.Stdin = strings.NewReader("true\nexit\n")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("primed bash: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "KIDO_DOT_PROFILE_RAN") {
+		t.Errorf(".profile did not run with no .bash_profile present; output is %q", out)
+	}
+	if !osc133.Match(out) {
+		t.Errorf("nothing was primed; output is %q", out)
+	}
+	if got := leftBehind(t, tmpdir); len(got) != 0 {
+		t.Errorf("left %q behind on the remote", got)
+	}
+}
+
+// TestBootstrapFallsBackForOldBash pins the version floor: a login bash
+// too old for PS0 (macOS ships 3.2 as /bin/bash) must not be left half
+// primed. What that host's own bash actually does is not read $ENV under
+// --posix at all, login files included, which happens to reach the same
+// place kidoBashEnv's own $BASH_VERSINFO check aims for - the login files
+// bash always reads on its own, and no markers - by a different route,
+// so this test does not assert on the temporary directory the way its
+// siblings do: nothing on this host ever reads kidoBashEnv far enough to
+// remove it.
+func TestBootstrapFallsBackForOldBash(t *testing.T) {
+	const old = "/bin/bash"
+	if _, err := os.Stat(old); err != nil {
+		t.Skip("no /bin/bash on this host")
+	}
+	if bashAtLeast44(old) {
+		t.Skip("/bin/bash on this host is not old enough to exercise the floor")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bash")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexec "+old+" \"$@\" -i\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".bash_profile"),
+		[]byte("echo KIDO_OLD_BASH_PROFILE_RAN\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tmpdir := filepath.Join(t.TempDir(), "tmp")
+	if err := os.MkdirAll(tmpdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := noTTY(exec.Command("/bin/sh", "-c", sshBootstrap()))
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"), "HOME=" + home, "SHELL=" + path, "TMPDIR=" + tmpdir, "TERM=dumb",
+	}
+	cmd.Stdin = strings.NewReader("true\nexit\n")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bootstrap: %v\n%s", err, out)
+	}
+	if osc133.Match(out) {
+		t.Errorf("an old bash reported OSC 133; output is %q", out)
+	}
+	if !strings.Contains(string(out), "KIDO_OLD_BASH_PROFILE_RAN") {
+		t.Errorf("the login files did not run; output is %q", out)
 	}
 }

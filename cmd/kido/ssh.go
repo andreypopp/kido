@@ -155,10 +155,52 @@ _kido_ssh_init() {
 }
 `
 
+// kidoBashEnv is the $ENV file kido hands a login bash through --posix,
+// in the same throwaway directory as the integration. A login bash
+// ignores $ENV - and --rcfile, which only a non-login bash reads - so
+// --posix is the one lever that gets a file of kido's choosing read
+// before anything of the user's; this is exec_bash_with_integration from
+// kitty's ssh kitten, cut down the same way the zsh path is.
+//
+// Once sourced it turns posix mode back off - so nothing else about the
+// session runs posix, all the way to the interactive shell the user
+// types at - reads the login files bash itself would have (/etc/profile,
+// then the first of ~/.bash_profile, ~/.bash_login, ~/.profile, exactly
+// as a login bash run with no kido in front of it would), sources the
+// integration only on a bash new enough for its PS0 hook, and removes
+// the directory it came from. Unlike the zsh path there is no deferral to
+// the first prompt: nothing else runs after this file, so there are no
+// later hooks for the integration to land in front of.
+const kidoBashEnv = `# Written by ` + "`kido ssh`" + ` into a throwaway $ENV file on this host.
+# It removes itself; nothing kido sends is meant to outlive the session.
+unset ENV
+set +o posix
+# Resetting posix mode does not clear this on its own - kitty's bash
+# integration carries the same comment, against the same bash behaviour.
+shopt -u inherit_errexit 2>/dev/null
+_kido_dir="${BASH_SOURCE%/*}"
+[ ! -r /etc/profile ] || . /etc/profile
+for _kido_f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+  if [ -r "$_kido_f" ]; then . "$_kido_f"; break; fi
+done
+unset _kido_f
+# PS0 arrived in bash 4.4; an older bash gets its login files and nothing
+# more, the same "unprimed but not broken" outcome kido_plain gives a
+# remote with no zsh, no mktemp or no base64.
+if { [ "${BASH_VERSINFO[0]}" -gt 4 ] ||
+     { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; }; } &&
+   [ -f "$_kido_dir/integration.bash" ]; then
+  . "$_kido_dir/integration.bash"
+fi
+rm -rf -- "$_kido_dir"
+unset _kido_dir
+`
+
 // sshBootstrap is the POSIX sh program kido sends as the remote command.
-// It decodes the integration into a fresh temporary directory, points
-// ZDOTDIR at it and execs the login shell; anything it cannot do ends in
-// the same login shell unprimed, so a failure costs the session nothing.
+// It decodes the integration for the remote's login shell into a fresh
+// temporary directory and execs that shell primed; anything it cannot do
+// ends in the same login shell unprimed, so a failure costs the session
+// nothing.
 //
 // The payload rides in the ssh command line, where the remote's `ps` can
 // read it. That is a deliberate trade and not an oversight: it is a
@@ -166,39 +208,54 @@ _kido_ssh_init() {
 // - stdin - is the interactive session's own tty. See docs/design.md,
 // "Priming a remote shell".
 //
-// Only zsh is primed. The login shell is read from $SHELL, which sshd
-// sets from the password database, so the detection costs no extra round
-// trip.
+// zsh and bash are primed; anything else stays kido_plain. The login
+// shell is read from $SHELL, which sshd sets from the password database,
+// so the detection costs no extra round trip.
 //
 // The decode is tried twice because the flag is not portable: GNU
 // coreutils spells it -d, and the BSD base64 some remotes carry spells it
 // -D and rejects -d.
 func sshBootstrap() string {
-	payload := base64.StdEncoding.EncodeToString(shell.ZshIntegration)
-	return fmt.Sprintf(`kido_b64='%s'
+	zshPayload := base64.StdEncoding.EncodeToString(shell.ZshIntegration)
+	bashPayload := base64.StdEncoding.EncodeToString(shell.BashIntegration)
+	return fmt.Sprintf(`kido_zsh_b64='%s'
+kido_bash_b64='%s'
 kido_dir=''
+kido_shell=${SHELL:-/bin/sh}
+[ -x "$kido_shell" ] || kido_shell=/bin/sh
+kido_name=${kido_shell##*/}
 kido_plain() {
   [ -n "$kido_dir" ] && rm -rf "$kido_dir"
   "$kido_shell" -l -c : >/dev/null 2>&1 && exec "$kido_shell" -l
   exec "$kido_shell"
 }
-kido_shell=${SHELL:-/bin/sh}
-[ -x "$kido_shell" ] || kido_shell=/bin/sh
-[ "${kido_shell##*/}" = zsh ] || kido_plain
+kido_decode() {
+  printf %%s "$1" | base64 -d > "$2" 2>/dev/null
+  [ -s "$2" ] || printf %%s "$1" | base64 -D > "$2" 2>/dev/null
+  [ -s "$2" ]
+}
+case "$kido_name" in
+  zsh|bash) ;;
+  *) kido_plain ;;
+esac
 command -v mktemp >/dev/null 2>&1 && command -v base64 >/dev/null 2>&1 || kido_plain
 kido_dir=$(mktemp -d "${TMPDIR:-/tmp}/kido-ssh.XXXXXXXX" 2>/dev/null) && [ -d "$kido_dir" ] || kido_plain
 trap 'rm -rf "$kido_dir"' EXIT HUP INT TERM
-printf %%s "$kido_b64" | base64 -d > "$kido_dir/integration.zsh" 2>/dev/null
-[ -s "$kido_dir/integration.zsh" ] ||
-  printf %%s "$kido_b64" | base64 -D > "$kido_dir/integration.zsh" 2>/dev/null
-[ -s "$kido_dir/integration.zsh" ] || kido_plain
-kido_zdotdir=${ZDOTDIR:-$HOME}
-[ -f "$kido_zdotdir/.zshrc" ] || [ -f "$kido_zdotdir/.zshenv" ] ||
-  [ -f "$kido_zdotdir/.zprofile" ] || [ -f "$kido_zdotdir/.zlogin" ] || kido_plain
-cat > "$kido_dir/.zshenv" <<'KIDO_ZSHENV' || kido_plain
+if [ "$kido_name" = zsh ]; then
+  kido_decode "$kido_zsh_b64" "$kido_dir/integration.zsh" || kido_plain
+  kido_zdotdir=${ZDOTDIR:-$HOME}
+  [ -f "$kido_zdotdir/.zshrc" ] || [ -f "$kido_zdotdir/.zshenv" ] ||
+    [ -f "$kido_zdotdir/.zprofile" ] || [ -f "$kido_zdotdir/.zlogin" ] || kido_plain
+  cat > "$kido_dir/.zshenv" <<'KIDO_ZSHENV' || kido_plain
 %sKIDO_ZSHENV
-[ -n "$ZDOTDIR" ] && export KIDO_ORIG_ZDOTDIR="$ZDOTDIR"
-export ZDOTDIR="$kido_dir"
-exec "$kido_shell" -l
-`, payload, kidoZshenv)
+  [ -n "$ZDOTDIR" ] && export KIDO_ORIG_ZDOTDIR="$ZDOTDIR"
+  export ZDOTDIR="$kido_dir"
+  exec "$kido_shell" -l
+fi
+kido_decode "$kido_bash_b64" "$kido_dir/integration.bash" || kido_plain
+cat > "$kido_dir/env.bash" <<'KIDO_BASHENV' || kido_plain
+%sKIDO_BASHENV
+export ENV="$kido_dir/env.bash"
+exec "$kido_shell" --login --posix
+`, zshPayload, bashPayload, kidoZshenv, kidoBashEnv)
 }
