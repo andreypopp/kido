@@ -1,7 +1,9 @@
 # Built and run by scripts/ci-like.sh. Not meant to be built by hand: the
-# script supplies TMUX_REVISION (the Homebrew tap's pinned commit for the
-# andreypopp/tmux fork) as a build-arg and tags the resulting image with it,
-# so a tap bump produces a new tag rather than a stale reused one.
+# script supplies TMUX_REVISION (third_party/tmux's pinned commit, read
+# from the gitlink) as a build-arg purely to tag the resulting image with
+# it, so a submodule bump produces a new tag rather than a stale reused
+# one; the build itself reads the fork's source from the submodule copied
+# in below, not from this argument.
 FROM golang:1.27-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,14 +14,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 	&& apt-get install -y --no-install-recommends nodejs \
 	&& rm -rf /var/lib/apt/lists/*
 
+# Built from the vendored submodule, not a clone: the build context is the
+# kido repo root (see ci-like.sh), so both the script and third_party/tmux
+# are available at the same relative layout the script expects.
 ARG TMUX_REVISION
-COPY install-tmux-fork.sh /tmp/install-tmux-fork.sh
+COPY scripts/install-tmux-fork.sh /tmp/build-tmux/scripts/install-tmux-fork.sh
+COPY third_party/tmux /tmp/build-tmux/third_party/tmux
 RUN test -n "$TMUX_REVISION" \
-	&& /tmp/install-tmux-fork.sh /usr/local/tmux-side "$TMUX_REVISION" \
-	&& /usr/local/tmux-side/bin/tmux -V \
-	&& rm /tmp/install-tmux-fork.sh
+	&& /tmp/build-tmux/scripts/install-tmux-fork.sh /usr/local/tmux-side \
+	&& /usr/local/tmux-side/bin/kido-tmux -V \
+	&& rm -rf /tmp/build-tmux
 
-ENV KIDO_TMUX=/usr/local/tmux-side/bin/tmux
+ENV KIDO_TMUX=/usr/local/tmux-side/bin/kido-tmux
 ENV PATH=/usr/local/tmux-side/bin:$PATH
 
 # A GitHub runner's Ubuntu image comes up under a UTF-8 locale; this one's

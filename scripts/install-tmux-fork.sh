@@ -1,56 +1,49 @@
 #!/bin/sh
-# Build and install the andreypopp/tmux fork into the prefix given as $1, at
-# the revision the Homebrew tap pins (or the revision given as $2). Used by
-# CI (.github/workflows/ci.yml) and by humans setting up a local build of the
-# fork kido runs inside.
+# Build the andreypopp/tmux fork vendored at third_party/tmux and install it
+# into the prefix given as $1, as <prefix>/bin/kido-tmux. Used by CI
+# (.github/workflows/ci.yml), scripts/ci-like/, `make install`, and by
+# humans setting up a local build of the fork kido runs inside.
 #
-# Usage: scripts/install-tmux-fork.sh <prefix> [revision]
+# Usage: scripts/install-tmux-fork.sh <prefix>
 #        scripts/install-tmux-fork.sh --print-revision
 #
-# With no revision, reads the tap's pinned revision so a plain
-# `scripts/install-tmux-fork.sh <prefix>` builds the same commit
-# `brew install andreypopp/tap/tmux` would. --print-revision only resolves
-# and prints that SHA, without cloning or building anything.
+# --print-revision prints the commit third_party/tmux is pinned to, without
+# building anything: `git ls-files -s third_party/tmux`, read from the
+# superproject's own index rather than `git -C third_party/tmux rev-parse
+# HEAD`, because the gitlink it reports resolves even when the submodule
+# has never been checked out (a fresh, non-recursive clone) - which is
+# exactly the state a cache-key lookup runs in before the submodule update
+# step - and even when the pin is only staged, not yet committed.
 #
-# Requires: git, curl, sh, a C toolchain, bison, autoconf, automake,
-# pkg-config, and the libevent/ncurses/utf8proc development headers.
+# Requires: git (for --print-revision only), sh, tar, a C toolchain,
+# bison, autoconf, automake, pkg-config, and the libevent/ncurses/utf8proc
+# development headers.
 
 set -eu
 
-tap_formula_url="https://raw.githubusercontent.com/andreypopp/homebrew-tap/main/Formula/tmux.rb"
-
-resolve_revision() {
-	formula=$(curl -fsSL "$tap_formula_url")
-	revision=$(printf '%s\n' "$formula" | sed -n 's/.*revision: *"\([0-9a-fA-F]*\)".*/\1/p' | head -n1)
-	case "$revision" in
-	[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
-	*)
-		echo "install-tmux-fork.sh: could not extract a 40-hex revision from $tap_formula_url" >&2
-		exit 1
-		;;
-	esac
-	printf '%s\n' "$revision"
-}
+script_dir=$(cd "$(dirname "$0")" && pwd)
+repo_root=$(cd "$script_dir/.." && pwd)
+submodule="$repo_root/third_party/tmux"
 
 if [ "${1:-}" = "--print-revision" ]; then
-	resolve_revision
+	git -C "$repo_root" ls-files -s third_party/tmux | awk '{print $2}'
 	exit 0
 fi
 
-prefix=${1:?"usage: $0 <prefix> [revision]"}
-revision=${2:-$(resolve_revision)}
+prefix=${1:?"usage: $0 <prefix>"}
 
-repo_url="https://github.com/andreypopp/tmux.git"
+if [ ! -e "$submodule/configure.ac" ]; then
+	echo "install-tmux-fork.sh: $submodule is empty; run git submodule update --init" >&2
+	exit 1
+fi
 
 workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT INT TERM
 
-echo "==> fetching $repo_url at $revision into $workdir" >&2
-git init -q "$workdir/tmux"
+echo "==> copying $submodule into $workdir" >&2
+mkdir -p "$workdir/tmux"
+(cd "$submodule" && tar -cf - --exclude=.git .) | (cd "$workdir/tmux" && tar -xf -)
 cd "$workdir/tmux"
-git remote add origin "$repo_url"
-git fetch --depth 1 origin "$revision"
-git checkout -q FETCH_HEAD
 
 # On macOS, Homebrew's ncurses is keg-only (not linked into
 # /opt/homebrew/lib/pkgconfig), so pkg-config falls back to the ancient
@@ -77,5 +70,10 @@ make -j"$njobs"
 echo "==> make install" >&2
 make install
 
+# The fork's build produces a binary named "tmux"; kido ships it as
+# "kido-tmux" so it can sit beside the kido binary without shadowing
+# whatever stock tmux the user already has on PATH.
+mv "$prefix/bin/tmux" "$prefix/bin/kido-tmux"
+
 echo "==> installed:" >&2
-"$prefix/bin/tmux" -V
+"$prefix/bin/kido-tmux" -V

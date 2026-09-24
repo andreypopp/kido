@@ -1,0 +1,4 @@
+[submodule "third_party/tmux"]
+	path = third_party/tmux
+	url = https://github.com/andreypopp/tmux.git
+	branch = fork

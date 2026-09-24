@@ -88,6 +88,7 @@ the copy is the one that drifts.
     internal/testutil/ test scaffolding shared by more than one package
     shell/zsh/         the OSC 133 integration sourced from ~/.zshrc
     tmux/              kido-side.tmux, sourced from ~/.tmux.conf
+    third_party/tmux   the tmux fork, a git submodule built as kido-tmux
     pi/                the two pi extensions, embedded and written out by setup-pi
     e2e/               tests driving kido inside a real tmux server
 
@@ -107,10 +108,19 @@ tool and is spelled as it reads.
 ## The tmux fork
 
 kido only runs under [andreypopp/tmux](https://github.com/andreypopp/tmux),
-at the revision the Homebrew tap pins (`tmux -V` prints `next-3.9`). Build one with
-`scripts/install-tmux-fork.sh <prefix>`. The fork is
+vendored as the git submodule `third_party/tmux` and pinned there (`tmux -V`
+prints `next-3.9`). `scripts/install-tmux-fork.sh <prefix>` builds the
+submodule into `<prefix>/bin/kido-tmux`, and `--print-revision` reads the
+pin with `git ls-files -s`, which answers from the index and so works when
+the submodule is not checked out or the pin is only staged. The fork is
 [PR tmux/tmux#5468](https://github.com/tmux/tmux/pull/5468) (side status)
-plus a `side-status-command` patch.
+plus a `side-status-command` patch and the OSC 133 command-line capture.
+
+kido finds its tmux binary in this order: `$KIDO_TMUX`, then a `kido-tmux`
+beside its own executable (the unresolved invoked path first, for the
+same Homebrew-symlink reason as `findShared`), then `tmux` on PATH. The
+e2e harness gives its freshly built kido that sibling, so the suite runs
+the resolution users get.
 
 Two things kido depends on:
 
@@ -340,9 +350,9 @@ halves disagreeing about when a window is finished with. The full list is
 under "Knobs" in docs/design.md.
 
 CI runs both suites on Ubuntu and macOS for every push to `main` and every
-PR, building the fork at the revision `andreypopp/homebrew-tap`'s tmux
-formula pins - resolved via `scripts/install-tmux-fork.sh --print-revision`,
-so CI and `brew install` build the same commit - and cached by that SHA,
+PR, building the fork from the submodule at the revision it pins -
+`scripts/install-tmux-fork.sh --print-revision`, the commit the tap
+formula must pin so CI and `brew install` build the same one - cached by that SHA,
 with `cache/restore` + `cache/save` split so a failing job still saves the
 build it paid for).
 

@@ -7,9 +7,10 @@
 //
 // KIDO_TMUX picks which tmux the harness tests (default: the "tmux" on
 // PATH); it is the harness's own knob and is kept out of every environment
-// kido itself runs in, because kido resolves the tmux binary from the
-// server it is talking to. The tests skip when no patched tmux is
-// available, unless KIDO_E2E_REQUIRED=1.
+// kido itself runs in, so kido resolves the tmux binary the way an install
+// does: through a "kido-tmux" sibling, which setup() symlinks beside the
+// built kidoBin to point at that same patched tmux. The tests skip when no
+// patched tmux is available, unless KIDO_E2E_REQUIRED=1.
 package e2e
 
 import (
@@ -100,6 +101,16 @@ func setup(m *testing.M) (int, error) {
 		return 0, err
 	}
 	tmuxBin, tmuxWhy = findTmux()
+	// A production kido resolves the tmux binary through a "kido-tmux"
+	// sibling (internal/tmux.resolveBinary); cleanEnv strips KIDO_TMUX from
+	// every environment this harness builds, including the servers' own, so
+	// without this symlink the built kidoBin would fall through to "tmux" on
+	// PATH instead - exercising a resolution step no install ever takes.
+	if tmuxBin != "" {
+		if err := os.Symlink(tmuxBin, filepath.Join(dir, "kido-tmux")); err != nil {
+			return 0, err
+		}
+	}
 	return m.Run(), nil
 }
 

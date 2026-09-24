@@ -95,8 +95,9 @@ func TestSnapshotReplays(t *testing.T) {
 	// kido snapshot talks to the server named by $TMUX.
 	tmuxEnv := h.in("display-message", "-p", "#{socket_path},#{pid},0")
 	cmd := exec.Command(kidoBin, "snapshot")
-	// No KIDO_TMUX: kido resolves the tmux binary from the server $TMUX
-	// names, which is the point of the test running against the fork.
+	// No KIDO_TMUX: kido resolves the tmux binary through the kido-tmux
+	// sibling setup() symlinks next to kidoBin, the same resolution an
+	// install ships (internal/tmux.resolveBinary).
 	cmd.Env = cleanEnv("TMUX="+tmuxEnv, "KIDO_STATE_DIR="+h.stateDir)
 	var errb bytes.Buffer
 	cmd.Stderr = &errb

@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -43,7 +45,8 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       # restore/save rather than actions/cache: a failing job must still
-      # save the build it just paid for.
+      # save the build it just paid for. The key is still the submodule's
+      # pinned revision, read from the gitlink rather than a tap lookup.
       - name: Restore tmux fork build
         id: tmux-cache
         uses: actions/cache/restore@v4
@@ -53,7 +56,7 @@ jobs:
 
       - name: Build and install tmux fork
         if: steps.tmux-cache.outputs.cache-hit != 'true'
-        run: ./scripts/install-tmux-fork.sh "$HOME/tmux-side" "${{ steps.tmux-fork.outputs.sha }}"
+        run: ./scripts/install-tmux-fork.sh "$HOME/tmux-side"
 
       - name: Save tmux fork build
         if: steps.tmux-cache.outputs.cache-hit != 'true'
@@ -63,7 +66,7 @@ jobs:
           key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.sha }}
 
       - name: Check tmux fork
-        run: $HOME/tmux-side/bin/tmux -V
+        run: $HOME/tmux-side/bin/kido-tmux -V
 
       # test-ts.sh skips cleanly on a node it cannot use, and a runner's
       # preinstalled node is whatever it happens to be, so pin one and demand
@@ -79,4 +82,4 @@ jobs:
         run: KIDO_TS_TEST_REQUIRED=1 make test
 
       - name: E2E tests
-        run: KIDO_TMUX=$HOME/tmux-side/bin/tmux KIDO_E2E_REQUIRED=1 make e2e
+        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux KIDO_E2E_REQUIRED=1 make e2e

@@ -1,13 +1,22 @@
 BIN ?= $(HOME)/.local/bin
+TMUX_FORK_BUILD ?= $(CURDIR)/build/tmux-fork
 
 .PHONY: build install test e2e
 
 build:
 	go build -o bin/kido ./cmd/kido
 
+# built once, into a scratch prefix outside $BIN, and only copied in if
+# $BIN/kido-tmux is missing - a file target, so a second `make install`
+# does not pay for the tmux fork's build again
+$(BIN)/kido-tmux:
+	mkdir -p $(BIN)
+	./scripts/install-tmux-fork.sh $(TMUX_FORK_BUILD)
+	cp $(TMUX_FORK_BUILD)/bin/kido-tmux $(BIN)/kido-tmux
+
 # the tmux config and the shell integration go where kido looks for them
 # relative to its own binary, the same layout Homebrew's pkgshare gives it
-install: build
+install: build $(BIN)/kido-tmux
 	mkdir -p $(BIN) $(BIN)/../share/kido/shell/zsh $(BIN)/../share/kido/shell/bash
 	rm -f $(BIN)/kido && cp bin/kido $(BIN)/kido
 	cp shell/zsh/integration.zsh $(BIN)/../share/kido/shell/zsh/integration.zsh

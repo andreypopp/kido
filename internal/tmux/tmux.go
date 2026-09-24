@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,36 +18,76 @@ var (
 	binaryPath = "tmux"
 )
 
-// binary returns the tmux executable to run: the one running the server
-// named by $TMUX when it can be found (so a patched tmux talks to itself),
-// else whatever "tmux" resolves to on PATH.
+// binary returns the tmux executable to run, in order: $KIDO_TMUX when
+// set; else "kido-tmux" beside the kido binary itself, the way an install
+// ships it; else whatever "tmux" resolves to on PATH, for a developer
+// running from a checkout with neither.
 func binary() string {
 	binaryOnce.Do(func() {
-		f := strings.Split(os.Getenv("TMUX"), ",")
-		if len(f) < 2 {
-			return
-		}
-		pid := f[1]
-
-		// Linux: /proc/<pid>/exe is a symlink to the absolute binary path,
-		// unlike "ps -o comm=" which only reports the basename.
-		if p, err := os.Readlink("/proc/" + pid + "/exe"); err == nil {
-			if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
-				binaryPath = p
-				return
-			}
-		}
-
-		out, err := exec.Command("ps", "-o", "comm=", "-p", pid).Output()
-		if err != nil {
-			return
-		}
-		p := strings.TrimSpace(string(out))
-		if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
-			binaryPath = p
-		}
+		binaryPath = resolveBinary(os.Getenv("KIDO_TMUX"), os.Args[0])
 	})
 	return binaryPath
+}
+
+// resolveBinary is binary()'s logic taking its inputs as arguments, so the
+// order can be tested without a real KIDO_TMUX or a real kido binary on
+// disk.
+func resolveBinary(kidoTmuxEnv, arg0 string) string {
+	if kidoTmuxEnv != "" {
+		return kidoTmuxEnv
+	}
+	exe, err := invokedPath(arg0)
+	if err == nil {
+		if sib := siblingTmux(exe); sib != "" {
+			return sib
+		}
+	}
+	return "tmux"
+}
+
+// invokedPath returns the path kido was started as, with symlinks left
+// alone. Mirrors cmd/kido/setup.go's invokedPath, and for the same reason:
+// os.Executable resolves through /proc/self/exe on Linux and always comes
+// back fully resolved, which would defeat siblingTmux's unresolved-first
+// ordering below on exactly the platform where nobody tests it.
+func invokedPath(arg0 string) (string, error) {
+	var p string
+	switch {
+	case strings.ContainsRune(arg0, filepath.Separator):
+		p = arg0
+	case arg0 != "":
+		if found, err := exec.LookPath(arg0); err == nil {
+			p = found
+		}
+	}
+	if p != "" {
+		if abs, err := filepath.Abs(p); err == nil {
+			if fi, err := os.Stat(abs); err == nil && !fi.IsDir() {
+				return abs, nil
+			}
+		}
+	}
+	return os.Executable()
+}
+
+// siblingTmux returns the absolute path of "kido-tmux" beside exe, or ""
+// when there is none. The unresolved exe is tried first and its symlink
+// target only as a fallback - the same ordering findShared uses in
+// cmd/kido/setup.go, and for the same reason: Homebrew's bin directory is
+// a symlink it repoints on every upgrade, and the unresolved spelling
+// survives a `brew cleanup` that deletes the resolved one.
+func siblingTmux(exe string) string {
+	candidates := []string{exe}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil && resolved != exe {
+		candidates = append(candidates, resolved)
+	}
+	for _, c := range candidates {
+		sib := filepath.Join(filepath.Dir(c), "kido-tmux")
+		if fi, err := os.Stat(sib); err == nil && !fi.IsDir() {
+			return sib
+		}
+	}
+	return ""
 }
 
 func run(args ...string) (string, error) {

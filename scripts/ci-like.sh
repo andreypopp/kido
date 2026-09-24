@@ -144,17 +144,21 @@ if [ "$machine_state" != "true" ]; then
 	fi
 fi
 
+kido_repo_root=$(cd "$script_dir/.." && pwd)
 tmux_revision=$("$script_dir/install-tmux-fork.sh" --print-revision)
 dockerfile_digest=$( (shasum -a 256 "$script_dir/ci-like/Dockerfile" 2>/dev/null || sha256sum "$script_dir/ci-like/Dockerfile") | cut -c1-12)
 image="kido-ci-like:$tmux_revision-$dockerfile_digest"
 
 if ! "$podman" image exists "$image" 2>/dev/null; then
 	echo "==> building $image (first build compiles the tmux fork from source; can take several minutes)" >&2
+	# The build context is kido's own repo root, not scripts/: the
+	# Dockerfile builds the fork from third_party/tmux, which only exists
+	# there.
 	"$podman" build \
 		--build-arg "TMUX_REVISION=$tmux_revision" \
 		-t "$image" \
 		-f "$script_dir/ci-like/Dockerfile" \
-		"$script_dir"
+		"$kido_repo_root"
 fi
 
 userns_args=()
