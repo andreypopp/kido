@@ -314,13 +314,26 @@ func TestSplitPaneSurvivesAFinishedRunThenTheWindowIsReaped(t *testing.T) {
 	// The split exits on its own. It must vanish outright - not linger as
 	// a second "Pane is dead" corpse - which is the direct assertion for
 	// bug 2: no window-scoped remain-on-exit reached it.
-	h.waitFor(func() bool { return h.windowPaneCount(runWindowID) == 1 }, settle,
-		msgf("the split's own pane %s to close once its command exits", splitPaneID))
-	for _, line := range strings.Split(h.in("list-panes", "-t", runWindowID, "-F", "#{pane_id}"), "\n") {
-		if line == splitPaneID {
-			t.Fatalf("split pane %s is still listed after its command exited, want it gone rather than a dead corpse", splitPaneID)
+	// One read decides, and a window tmux can no longer find counts as
+	// the split being gone: the sweep closes the window the tick the split
+	// leaves it all dead, so a second read after "one pane left" can land
+	// on no window at all (measured on a loaded runner). A corpse is the
+	// failure, and it is caught on the read that sees it.
+	h.waitFor(func() bool {
+		out, err := h.tmux(h.inner, "list-panes", "-t", runWindowID, "-F", "#{pane_id} #{pane_dead}")
+		if err != nil {
+			return true
 		}
-	}
+		for _, line := range strings.Split(out, "\n") {
+			if line == splitPaneID+" 1" {
+				t.Fatalf("split pane %s is a dead corpse after its command exited, want it gone", splitPaneID)
+			}
+			if strings.HasPrefix(line, splitPaneID+" ") {
+				return false
+			}
+		}
+		return true
+	}, settle, msgf("the split's own pane %s to close once its command exits", splitPaneID))
 
 	// Now the window holds only the dead run pane, and the sweep collects
 	// it once the linger has passed.

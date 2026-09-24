@@ -33,9 +33,9 @@ type picker struct {
 // tell tea.Quit from a crash or a signal.
 func startPicker(h *harness, session string) *picker {
 	h.t.Helper()
+	h.keepDeadPanes()
 	pane := h.newWindow(session, "picker", "env", "-u", "TMUX_SIDE_CLIENT",
 		kidoBin, "-client", h.client)
-	h.in("set-option", "-w", "-t", pane, "remain-on-exit", "on")
 	p := &picker{h: h, pane: pane}
 	p.waitRow(session)
 	return p
