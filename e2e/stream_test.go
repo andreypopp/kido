@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -10,26 +11,35 @@ import (
 
 // TestAsyncBashStreamCoalescesAndEndsWithTheNotice is streaming end to
 // end, and what it asserts is the shape of the traffic rather than any
-// one envelope: fifty lines written over two and a half seconds reach the
-// parent as far fewer than fifty envelopes (coalescing, which is the
-// whole reason a line is not an envelope - one queued message is one LLM
-// turn under pi's default drain), every one of them before the single
-// completion notice (the ordering the wire cannot give, since it has one
-// connection per message and no sequencing), and that notice names the
-// run and its exit status.
+// one envelope: twenty lines reach the parent as far fewer than twenty
+// envelopes (coalescing, which is the whole reason a line is not an
+// envelope - one queued message is one LLM turn under pi's default
+// drain), every one of them before the single completion notice (the
+// ordering the wire cannot give, since it has one connection per message
+// and no sequencing), and that notice names the run and its exit status.
+//
+// The command's own idle duration (lines*writeEvery, about a second) is
+// what the notice wait is scaled off, not the debounce-driven `settle`
+// every other wait in this suite uses: a command already running close
+// to that bound has no debounce to wait out, only a slow machine to
+// finish on, and 5s was found to be too tight for that alone.
 //
 // Watched over a span rather than sampled once, for the reason
 // stableCount gives: one notice and the first of two are identical at any
 // instant.
 func TestAsyncBashStreamCoalescesAndEndsWithTheNotice(t *testing.T) {
 	t.Parallel()
+	const lines = 20
+	const writeEvery = 50 * time.Millisecond
+	const noticeWait = 20 * time.Second
+
 	h := start(t, "alpha")
 	in := h.asyncParent("alpha", "parent-stream-e2e")
 
 	h.asyncBashWith([]string{"--stream"}, "chatty",
-		"sh", "-c", "for i in $(seq 1 50); do echo line $i; sleep 0.05; done; exit 2")
+		"sh", "-c", fmt.Sprintf("for i in $(seq 1 %d); do echo line $i; sleep %.3f; done; exit 2", lines, writeEvery.Seconds()))
 
-	h.waitFor(func() bool { return lastNotice(h, in) != "" }, settle,
+	h.waitFor(func() bool { return lastNotice(h, in) != "" }, noticeWait,
 		msgf("the parent's inbox to receive the run's completion notice"))
 	// The notice is the wrapper's last act, but the chunks before it were
 	// sent by the same process in the same order, so nothing can still be
@@ -58,13 +68,13 @@ func TestAsyncBashStreamCoalescesAndEndsWithTheNotice(t *testing.T) {
 	if chunks == 0 {
 		t.Fatalf("no output was streamed at all; the inbox holds %d envelopes", len(in.Received()))
 	}
-	if chunks >= 50 {
-		t.Errorf("50 lines arrived as %d envelopes, want them coalesced into far fewer", chunks)
+	if chunks >= lines {
+		t.Errorf("%d lines arrived as %d envelopes, want them coalesced into far fewer", lines, chunks)
 	}
 	if notices != 1 {
 		t.Errorf("parent received %d completion notices, want exactly 1", notices)
 	}
-	t.Logf("50 lines arrived as %d stream envelopes, then one notice", chunks)
+	t.Logf("%d lines arrived as %d stream envelopes, then one notice", lines, chunks)
 	if notice.From.Name != "chatty" || !strings.Contains(notice.Text, "exit status 2") {
 		t.Errorf("notice = %+v, want it to name chatty and exit status 2", notice)
 	}
