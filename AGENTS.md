@@ -296,6 +296,19 @@ in place.
     make e2e     go test ./e2e/ -count=1 -v
     make install binary to $BIN (default ~/.local/bin), shared files to $BIN/../share/kido
 
+A failure that passed here and failed on GitHub's slower, contended
+runners reproduces in `scripts/ci-like.sh`: a Linux container with the
+repo bind-mounted, CPU and memory capped, and the tmux fork built in at
+the revision the tap pins (`make ci-like ARGS="go test ./cmd/kido/ -run
+TestFoo"`). A bare CPU quota throttles the whole container in lockstep
+and rarely reproduces a timing failure by itself; `--contend N` starts N
+independent busy sibling containers, real multi-tenant contention, and
+paired with a low `--cpu-shares` it desyncs a wrapper's timer from the
+command it times, the way a loaded runner does. The host's own cores are
+never saturated to chase a runner failure: work here runs in parallel,
+and one agent spinning every core stalls all the others while, measured,
+still failing to reproduce.
+
 Validation is `make test` then `make e2e`, both in full; `go test -run` on
 one test or `go test` on one package is for chasing a specific failure
 while you work, not a substitute for running either target whole.

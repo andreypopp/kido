@@ -26,3 +26,9 @@ test:
 # KIDO_TMUX=<path>; KIDO_E2E_REQUIRED=1 fails instead of skipping
 e2e:
 	go test ./e2e/ -count=1 -v
+
+# reproduces a CI-runner-only failure in a CPU/memory-capped Linux
+# container instead of by loading the host, e.g.:
+#   make ci-like ARGS="--cpus 0.25 -- go test ./cmd/kido/ -run TestFoo"
+ci-like:
+	./scripts/ci-like.sh $(ARGS)
