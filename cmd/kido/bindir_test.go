@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	claudeconf "kido/claude"
 	"kido/internal/hook"
 	"kido/shell"
 )
@@ -372,10 +371,17 @@ func TestOnlyALocalPrimeMovesPATH(t *testing.T) {
 // event table: every event kido maps, each running `kido hook`, and only
 // SessionEnd waited for.
 func TestShippedClaudeSettingsAreKidosHooks(t *testing.T) {
-	hooks, err := claudeconf.Hooks()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "claude", "settings.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	var shipped struct {
+		Hooks map[string][]any `json:"hooks"`
+	}
+	if err := json.Unmarshal(raw, &shipped); err != nil {
+		t.Fatal(err)
+	}
+	hooks := shipped.Hooks
 	var events []string
 	for event, list := range hooks {
 		events = append(events, event)

@@ -128,6 +128,15 @@ func userConfPath() (string, error) {
 	return filepath.Join(home, ".config", "kido", "kido.conf"), nil
 }
 
+// tmuxConfUnsafe are the characters a string cannot contain and still be
+// written into a tmux command that nests parsers: tmux's own, then sh's,
+// and tmux's again for anything that reaches a further tmux command. No
+// escape survives all three - a single quote would end tmux's string, and
+// `$`, `#`, a backslash or a backtick would be expanded by sh or by tmux
+// rather than taken literally. Spaces are fine, which is the case that
+// actually happens; the rest is refused rather than written broken.
+const tmuxConfUnsafe = "'\"$#\\`\n\r"
+
 // confCommand quotes a path, with any fixed arguments after it, as one
 // command word of the generated configuration.
 // Both places a path is written there - side-status-command and
@@ -135,8 +144,7 @@ func userConfPath() (string, error) {
 // expanding them as formats, so the word is single-quoted for tmux and
 // double-quoted for the shell inside that, which leaves a space (the case
 // that actually happens) working. The characters no such nesting can
-// carry are refused rather than written broken, exactly as in the block
-// setup-tmux writes: tmuxConfUnsafe is the same list for the same reason.
+// carry are refused rather than written broken.
 func confCommand(path string, args ...string) (string, error) {
 	if i := strings.IndexAny(path, tmuxConfUnsafe); i >= 0 {
 		return "", fmt.Errorf("cannot start a kido server: the path %s contains %q", path, path[i:i+1])
@@ -160,8 +168,7 @@ func sourceWord(path string) (string, error) {
 // writeServerConf generates the file the kido server starts with and
 // returns its path. Three layers, in this order:
 //
-//   - kido's defaults, the file `kido setup-tmux` sources for a user
-//     running kido inside their own tmux;
+//   - kido's defaults, `tmux/kido-side.tmux` verbatim;
 //   - the user's kido.conf, which may override any of them;
 //   - what kido owns, which the user may not: the side column runs this
 //     kido by absolute path, and every pane's shell is primed by it.

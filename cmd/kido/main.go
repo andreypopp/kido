@@ -18,7 +18,6 @@ import (
 
 	"github.com/sahilm/fuzzy"
 
-	claudeconf "kido/claude"
 	"kido/internal/hook"
 	"kido/internal/procs"
 	"kido/internal/reap"
@@ -31,8 +30,7 @@ import (
 // kept in one place so unknownSubcommand can name them; a subcommand
 // added to the switch and forgotten here just gets a plainer error.
 var subcommands = []string{
-	"hook", "setup-pi", "setup-zsh", "setup-bash", "setup-tmux", "setup-claude",
-	"agent-status", "set_status", "list_agents", "agent-alive", "children-alive", "debug-log",
+	"hook", "agent-status", "set_status", "list_agents", "agent-alive", "children-alive", "debug-log",
 	"inbox-path", "snapshot", "switch-session", "switch-window", "prompt",
 	"message_agent", "ask_agent", "notify_parent", "steer_subagent",
 	"interrupt_subagent", "stop_subagent", "spawn_subagent", "async_bash",
@@ -79,20 +77,11 @@ func unknownSubcommand(name string) {
 	os.Exit(1)
 }
 
-// debugFlag parses a command's args for its one boolean --debug flag,
-// erroring on anything else.
-func debugFlag(cmd string, args []string) (bool, error) {
-	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	debug := fs.Bool("debug", false, "")
-	if err := fs.Parse(args); err != nil {
-		return false, err
-	}
-	if fs.NArg() > 0 {
-		return false, fmt.Errorf("unknown argument %q", fs.Arg(0))
-	}
-	return *debug, nil
-}
+// hookDebugEnv switches on the debug log `kido hook` appends every event
+// it receives to. Claude Code runs the hook, so nothing kido is told can
+// carry a flag; what reaches it is the environment of the pane Claude Code
+// was started in.
+const hookDebugEnv = "KIDO_HOOK_DEBUG"
 
 // dispatch runs fn for a subcommand named name, printing "kido <name>:
 // <err>" to stderr and exiting 1 on failure. hook (which must never fail
@@ -109,51 +98,14 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "hook":
-			debug, err := debugFlag("hook", os.Args[2:])
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "kido hook:", err)
+			if len(os.Args) > 2 {
+				fmt.Fprintln(os.Stderr, "usage: kido hook")
 				return // never fail the Claude Code hook
 			}
-			if err := runHook(os.Stdin, debug); err != nil {
+			if err := runHook(os.Stdin, os.Getenv(hookDebugEnv) != ""); err != nil {
 				fmt.Fprintln(os.Stderr, "kido hook:", err)
 			}
 			return // never fail the Claude Code hook
-		case "setup-pi":
-			if len(os.Args) > 2 {
-				fmt.Fprintln(os.Stderr, "usage: kido setup-pi")
-				os.Exit(1)
-			}
-			dispatch("setup-pi", setupPi)
-			return
-		case "setup-zsh":
-			if len(os.Args) > 2 {
-				fmt.Fprintln(os.Stderr, "usage: kido setup-zsh")
-				os.Exit(1)
-			}
-			dispatch("setup-zsh", setupZsh)
-			return
-		case "setup-bash":
-			if len(os.Args) > 2 {
-				fmt.Fprintln(os.Stderr, "usage: kido setup-bash")
-				os.Exit(1)
-			}
-			dispatch("setup-bash", setupBash)
-			return
-		case "setup-tmux":
-			if len(os.Args) > 2 {
-				fmt.Fprintln(os.Stderr, "usage: kido setup-tmux")
-				os.Exit(1)
-			}
-			dispatch("setup-tmux", setupTmux)
-			return
-		case "setup-claude":
-			debug, err := debugFlag("setup-claude", os.Args[2:])
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "kido setup-claude:", err)
-				os.Exit(1)
-			}
-			dispatch("setup-claude", func() error { return setupClaude(debug) })
-			return
 		case "agent-status":
 			dispatch("agent-status", func() error { return agentStatus(os.Args[2:]) })
 			return
@@ -313,109 +265,6 @@ func main() {
 	}
 }
 
-// setupClaude registers `kido hook` (or, with debug, `kido hook --debug`
-// for every Claude Code hook event) in the user's Claude Code settings
-// file, replacing any earlier kido hooks and keeping everything else. The
-// previous file is kept as settings.json.bak.
-func setupClaude(debug bool) error {
-	dir := os.Getenv("CLAUDE_CONFIG_DIR")
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return err
-		}
-		dir = filepath.Join(home, ".claude")
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	path := filepath.Join(dir, "settings.json")
-	n, err := writeClaudeSettings(path, debug)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("registered kido hook for %d events in %s\n", n, path)
-	return nil
-}
-
-// writeClaudeSettings registers kido's hooks at path - the shipped
-// settings file's (claude/settings.json), or with debug `kido hook
-// --debug` for every event in hook.AllEvents() - replacing any earlier
-// kido hook entries (in either mode) and removing kido entries for events
-// outside the target set, so switching modes back and forth is
-// idempotent. It returns the number of events registered.
-func writeClaudeSettings(path string, debug bool) (int, error) {
-	settings := map[string]any{}
-	old, err := os.ReadFile(path)
-	switch {
-	case err == nil:
-		if err := json.Unmarshal(old, &settings); err != nil {
-			return 0, fmt.Errorf("%s: %w", path, err)
-		}
-	case !os.IsNotExist(err):
-		return 0, err
-	}
-	hooks, _ := settings["hooks"].(map[string]any)
-	if hooks == nil {
-		hooks = map[string]any{}
-	}
-
-	target, err := kidoHookEntries(debug)
-	if err != nil {
-		return 0, err
-	}
-
-	for _, event := range hook.AllEvents() {
-		var kept []any
-		if list, ok := hooks[event].([]any); ok {
-			for _, entry := range list {
-				if !isKidoHook(entry) {
-					kept = append(kept, entry)
-				}
-			}
-		}
-		kept = append(kept, target[event]...)
-		if len(kept) == 0 {
-			delete(hooks, event)
-		} else {
-			hooks[event] = kept
-		}
-	}
-	settings["hooks"] = hooks
-
-	out, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return 0, err
-	}
-	if old != nil {
-		if err := os.WriteFile(path+".bak", old, 0o644); err != nil {
-			return 0, err
-		}
-	}
-	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
-		return 0, err
-	}
-	return len(target), nil
-}
-
-// kidoHookEntries is what writeClaudeSettings registers, by event. The
-// ordinary set is the shipped file's, so setup-claude and the claude shim
-// cannot disagree about it; the debug set has no shipped counterpart.
-func kidoHookEntries(debug bool) (map[string][]any, error) {
-	if !debug {
-		return claudeconf.Hooks()
-	}
-	target := map[string][]any{}
-	for _, event := range hook.AllEvents() {
-		h := map[string]any{"type": "command", "command": "kido hook --debug", "timeout": 5}
-		if event != "SessionEnd" {
-			h["async"] = true // never delay Claude; SessionEnd must finish
-		}
-		target[event] = []any{map[string]any{"hooks": []any{h}}}
-	}
-	return target, nil
-}
-
 // parseSwitchArgs parses the argument shape shared by switch-session and
 // switch-window: next|prev plus an optional -client/--client flag, in
 // either order. client falls back to $TMUX_SIDE_CLIENT, then the
@@ -475,19 +324,6 @@ func switchWindow(args []string) error {
 		return err
 	}
 	return tmux.SwitchWindow(client, dir == "next")
-}
-
-// isKidoHook reports whether a hooks entry runs kido (any earlier form).
-func isKidoHook(entry any) bool {
-	m, _ := entry.(map[string]any)
-	list, _ := m["hooks"].([]any)
-	for _, h := range list {
-		hm, _ := h.(map[string]any)
-		if cmd, _ := hm["command"].(string); strings.Contains(cmd, "kido") {
-			return true
-		}
-	}
-	return false
 }
 
 // runHook is the Claude Code hook: it reads the event from stdin and

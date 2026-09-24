@@ -32,8 +32,8 @@ agent binaries.
 | `notify_parent(summary)` | `kido notify_parent` |
 
 The rule runs one way only: a tool names its command, while a subcommand
-that is nobody's tool keeps whatever name fits it - `hook`, the
-`setup-*` commands, `agent-alive`, `prompt`, `snapshot`, `reap`, `runs`
+that is nobody's tool keeps whatever name fits it - `hook`, `shell`,
+`ssh`, `agent-alive`, `prompt`, `snapshot`, `reap`, `runs`
 and the rest. `kido agent-status` is the sharpest case and keeps its own
 name too: it reports a session's whole state on every turn, of which
 `set_status`'s activity is one flag of fourteen, so the narrow tool got a

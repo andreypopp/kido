@@ -1,7 +1,7 @@
-# kido inside a native tmux side column.
-# Needs the patched tmux: brew install andreypopp/tap/tmux
-# (github.com/andreypopp/tmux, branch side-pane).
-#   source-file <brew prefix>/share/kido/kido-side.tmux   (see README: Install)
+# kido's tmux defaults: the side column and the keys around it. The
+# launcher writes this file into the configuration it starts the kido
+# server with, ahead of the user's own ~/.config/kido/kido.conf, so
+# anything here can be overridden there.
 
 set -g side-status left
 set -g side-status-width 40

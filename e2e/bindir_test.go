@@ -205,7 +205,7 @@ func TestShimsReachTheRealPrograms(t *testing.T) {
 // TestPiShimLoadsKidosToolsOnce runs the real pi through the shim, since
 // whether two copies of an extension collide is pi's behaviour and not
 // something a fake can report. Once with no extensions of its own, and
-// once with the links a development `kido setup-pi` leaves, pointing at
+// once with links in pi's own extensions directory pointing at
 // this checkout - a different real path from the shipped copies, which pi
 // does not dedupe, so the extensions' own one-copy rule is what keeps the
 // tools single and the conflict errors away. Skips where pi is not

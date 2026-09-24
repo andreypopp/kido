@@ -1,10 +1,8 @@
 # kido
 
-A tmux sidebar for coding agent sessions. It runs in the side status column
-of [andreypopp/tmux](https://github.com/andreypopp/tmux), a fork with
-`side-status-command`, and lists every session, window and pane with live
-status for agent panes. Claude Code and pi both report; the sidebar renders
-them the same.
+A terminal multiplexer for coding agent sessions: tmux, with a side column
+listing every session, window and pane and live status for the ones running
+an agent. Claude Code and pi both report; the sidebar renders them the same.
 
 ```
 tmux
@@ -16,39 +14,88 @@ review
 ╶◆ Fix login redirect
 ```
 
+kido ships its own tmux, [andreypopp/tmux](https://github.com/andreypopp/tmux)
+built as `kido-tmux`, because the side column is a fork feature. It runs on
+a socket of its own, so a stock tmux on the same machine is untouched.
+
 ## Install
 
-1. Install the fork and kido (the tap's `tmux` replaces Homebrew's):
+```sh
+brew install andreypopp/tap/kido
+```
 
-       brew uninstall tmux 2>/dev/null; brew install andreypopp/tap/tmux andreypopp/tap/kido
+Then, from a plain terminal:
 
-2. `kido setup-tmux` adds a marked block to `~/.tmux.conf` sourcing the
-   sidebar config kido ships. Reload with `tmux source-file ~/.tmux.conf`,
-   or restart tmux.
+```sh
+kido
+```
 
-3. `kido setup-claude` registers the hook in `~/.claude/settings.json` so
-   Claude Code reports its status. If you use pi, `kido setup-pi` installs
-   its two extensions into `~/.pi/agent/extensions/`.
+That is the whole setup: nothing is written into `~/.zshrc`, `~/.tmux.conf`,
+`~/.claude/settings.json` or `~/.pi/agent/extensions`. Check that the
+sidebar is on the left, `prefix K` hides and shows it, `prefix k` toggles
+focus and `/` searches.
 
-4. Optional: `kido setup-zsh` adds a marked block to `~/.zshrc`, and
-   `kido setup-bash` one to `~/.bashrc` (and to the file a login shell
-   reads, since tmux starts a pane's shell as one), sourcing the script
-   that emits the OSC 133 markers tmux reads to tell whether a pane is
-   running a command. The bash one needs bash 4.4 or newer, which macOS's
-   own `/bin/bash` is not. Shells already running are unaffected.
+## The launcher
 
-5. Optional: bind the popup picker, which is not bound by default (see
-   Popup for what the wrapping is for):
+`kido` with no arguments starts kido's server, or attaches to it if one is
+already running. Every other invocation is a subcommand.
 
-       bind-key P run-shell -b "tmux display-popup -c '#{client_name}' -E -w 40 -h 80% 'kido -client #{client_name}'"
+- The server lives on the tmux socket `kido`, under `$TMUX_TMPDIR` like any
+  tmux socket. kido-tmux and a stock tmux never share a server.
+- Run inside a multiplexer - `$TMUX` set, kido's own included - `kido`
+  refuses and starts nothing: nesting buys a second prefix and a second
+  status line. Run it from a plain terminal.
+- After an upgrade the server still runs the old kido-tmux and refuses the
+  new client. kido says so, and names the socket; detach and
+  `kido-tmux -L kido kill-server` once its windows are free.
 
-6. Check: `tmux -V` prints `next-3.9`, the sidebar is on the left,
-   `prefix K` hides and shows it, `prefix k` toggles focus, `/` searches,
-   and `prefix P` opens the picker if you bound it.
+## Configuration
 
-`setup-tmux`, `setup-zsh` and `setup-bash` source the shipped file only
-if it is there. A second run leaves the block alone; a block pointing elsewhere is
-rewritten in place.
+Your own configuration goes in `~/.config/kido/kido.conf`
+(`$XDG_CONFIG_HOME/kido/kido.conf` when that is set), in tmux's syntax.
+`~/.tmux.conf` is **not** read - a config written for stock tmux tends to
+fight the side column - so if you want it, source it yourself:
+
+```tmux
+source-file ~/.tmux.conf
+```
+
+The server starts with a generated file in three layers: kido's defaults
+(`tmux/kido-side.tmux` in this repo - the side column and its keys), then
+your `kido.conf`, which may override any of them, then the two options kido
+owns and you cannot override, `side-status-command` and `default-command`.
+A `default-command` you set is kept and run by `kido shell`, primed.
+
+## The bin directory
+
+Inside a kido pane, four names resolve to shims kido ships (its bin
+directory is first on `PATH`):
+
+| name | what it runs |
+|------|--------------|
+| `tmux` | `kido-tmux`. Required, not a convenience: `$TMUX` in a kido pane names the kido socket, and a stock tmux client gets a protocol mismatch there. |
+| `ssh` | `kido ssh`, so a remote shell reports what it is running (see below). |
+| `pi` | the real pi with `--extension` for kido's two extensions, where the package ships them. |
+| `claude` | the real Claude Code with `--settings` naming the shipped hooks file. |
+
+Each finds the real program on `PATH` after its own directory, so nothing is
+shadowed twice and `ssh -V`, `tmux -V` and the rest behave as always. Only
+sessions started from a kido pane get any of this, which is exactly the set
+of sessions kido tracks.
+
+**pi** therefore needs no installation step: a pi started in a kido pane has
+kido's status reporting, its inbox and its agent tools. **Claude Code**
+reports through the hooks in the shipped settings file; `--settings` merges
+with your own `~/.claude/settings.json`, which kido does not touch.
+
+## Shells
+
+Every pane's shell is started by `kido shell`, as a login shell, with kido's
+OSC 133 integration arranged around it: zsh through a throwaway `ZDOTDIR`
+that sources your real dotfiles first, bash 4.4 and up through `ENV` with
+`--login --posix`. That is what makes a shell row show what it is running.
+Any other shell - fish, or a bash below 4.4, which is what macOS ships as
+`/bin/bash` - gets a working pane with no command status.
 
 ## Keys
 
@@ -69,9 +116,10 @@ rewritten in place.
 
 kido runs as a one-shot picker whenever `$TMUX_SIDE_CLIENT` is empty, which
 the fork sets only for the `side-status-command` job. A popup or a plain
-pane gets the picker; the side column keeps the behaviour above.
+pane gets the picker; the side column keeps the behaviour above. It is not
+bound by default:
 
-```
+```tmux
 bind-key P run-shell -b "tmux display-popup -c '#{client_name}' -E -w 40 -h 80% 'kido -client #{client_name}'"
 ```
 
@@ -92,9 +140,10 @@ formats, which is what lets `-client` and `-c` name the right one.
 
 Switches the client to the adjacent session in the sidebar's order (oldest
 first, ties by name), wrapping around. `-client` defaults to
-`$TMUX_SIDE_CLIENT`, then the current client. Not bound by default:
+`$TMUX_SIDE_CLIENT`, then the current client. Not bound by default (the
+defaults file carries the same thing for `switch-window`, commented out):
 
-```
+```tmux
 bind-key -n S-Up   run-shell "kido switch-session prev -client '#{client_name}'"
 bind-key -n S-Down run-shell "kido switch-session next -client '#{client_name}'"
 ```
@@ -110,7 +159,7 @@ session's last window moves to the next session, where tmux's own
 
 ssh, with the remote zsh or bash primed to report to the sidebar: the row
 then shows what the shell on the far side is running, on a host where
-nothing is installed.
+nothing is installed. This is what `ssh` runs inside a kido pane.
 
 ```sh
 kido ssh deploy@build-box
@@ -131,9 +180,9 @@ back off, sources `/etc/profile` and the first of `~/.bash_profile`,
 directory. Either way the remote `$HOME` is never touched and nothing
 outlives the session.
 
-Bash needs 4.4 for the `PS0` hook the integration uses; an older bash (macOS
-ships 3.2 as `/bin/bash`) gets its login files and no priming, the same
-as any other shell kido does not know.
+Bash needs 4.4 for the `PS0` hook the integration uses; an older bash gets
+its login files and no priming, the same as any other shell kido does not
+know.
 
 Anything kido cannot prime - a remote command of your own, no terminal,
 a login shell that is neither zsh nor bash, a remote with no `base64`, an
@@ -197,20 +246,12 @@ kido agent-status --agent pi --session "$id" --status idle \
   --inbox "$(kido inbox-path "$id")"
 ```
 
-### `kido setup-pi`
-
-Installs both pi extensions into `~/.pi/agent/extensions/`, which pi picks
-up on its next start: `kido-status.ts` (status reporting and the inbox)
-and `kido-agents.ts` (the agent tools). A symlink there is left alone, so
-either name can point at a checkout. When pi runs Claude Code inside
-itself, the sidebar shows pi, not the embedded session.
-
 ### `kido snapshot`
 
 Prints a shell script that recreates every session, window, pane and
 layout, resuming Claude Code and pi panes by session id. A pane that
 reported no session is recreated bare. Run it outside tmux after a
-`tmux kill-server`.
+`kido-tmux -L kido kill-server`.
 
 ## Status
 
@@ -240,26 +281,60 @@ State lives in `~/.local/state/kido/`.
 
 ## Debugging
 
-`kido setup-claude --debug` registers `kido hook --debug` for every Claude
-Code hook event, not only the ones kido acts on. Each event appends a
-tab-separated line to `kido debug-log`'s path: timestamp, `TMUX_PANE`, the
-raw payload, and the effect kido computed (`unmapped` for events outside
-its table). Behaviour is otherwise unchanged.
+With `KIDO_HOOK_DEBUG` set in the environment Claude Code was started in,
+every hook event appends a tab-separated line to `kido debug-log`'s path:
+timestamp, `TMUX_PANE`, the raw payload, and the effect kido computed
+(`unmapped` for an event outside its table). Behaviour is otherwise
+unchanged. It is an environment variable rather than a flag because Claude
+Code is what runs the hook.
 
 ```sh
-kido setup-claude --debug
+KIDO_HOOK_DEBUG=1 claude
 tail -f "$(kido debug-log)"
-kido setup-claude   # back to normal
 ```
 
-## Tests
+The shipped settings file registers only the events kido acts on. To see
+one it does not, add a `kido hook` entry for that event to your own
+`~/.claude/settings.json`; the two files are merged.
 
-`make test` runs `go vet` and the unit tests.
+## Upgrading from the setup-command era
 
-`make e2e` drives a real tmux server built from the tmux fork at the
-revision the Homebrew tap pins. It needs that binary on `PATH` or at `KIDO_TMUX=/path/to/tmux`, and
+Earlier kido was a sidebar installed beside your own tmux, configured by
+`kido setup-*`. Those commands are gone, and so is the tap's `tmux`
+formula. Nothing below is required - what the old setup left behind is
+inert under kido - but all of it can go:
+
+```sh
+brew uninstall andreypopp/tap/tmux   # and `brew install tmux` for a stock one
+rm -f ~/.pi/agent/extensions/kido-status.ts ~/.pi/agent/extensions/kido-agents.ts
+```
+
+Then delete, by hand, the marked kido blocks (`# >>> kido ... >>>` to
+`# <<< kido ... <<<`) from `~/.tmux.conf`, `~/.zshrc`, `~/.bashrc` and
+whichever of `~/.bash_profile`, `~/.bash_login` or `~/.profile` has one,
+and the `kido hook` entries from `~/.claude/settings.json` - the shipped
+settings file has them, and a duplicate just runs the hook twice.
+
+Anything you want to keep from the sidebar block in `~/.tmux.conf` belongs
+in `~/.config/kido/kido.conf` now.
+
+## Development
+
+```sh
+make install          # binary to $BIN (default ~/.local/bin), shared files to $BIN/../share/kido
+make test             # go vet, the unit tests, and the pi extensions' node suite
+make e2e              # drives kido inside a real tmux server
+```
+
+`make install` also builds the tmux fork from the `third_party/tmux`
+submodule and installs it as `$BIN/kido-tmux`. kido finds its tmux as
+`$KIDO_TMUX`, else a `kido-tmux` beside its own binary, else `tmux` on
+`PATH` - the last being how a build in a checkout runs.
+
+`make e2e` needs the fork on `PATH` or at `KIDO_TMUX=/path/to/tmux`, and
 skips without it; `KIDO_E2E_REQUIRED=1` makes it fail instead. Build the
-fork with `scripts/install-tmux-fork.sh <prefix>`.
+fork on its own with `scripts/install-tmux-fork.sh <prefix>`.
 
-CI runs both on every push to `main` and every pull request, on Linux and
-macOS.
+CI runs both suites on every push to `main` and every pull request, on
+Linux and macOS, building the fork from the submodule at the revision it
+pins.

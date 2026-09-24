@@ -2,8 +2,8 @@
 # when a command starts and finishes, so the sidebar can show it as
 # running or idle the way it does for agent panes.
 #
-# It ships with kido; `kido setup-bash` finds it and adds a line to
-# your ~/.bashrc that sources it.
+# It ships with kido, which arranges for it to be sourced: `kido shell`
+# for a local pane, `kido ssh` for a remote one.
 #
 # The markers are the same OSC 133 sequences shell/zsh/integration.zsh
 # sends, and mean the same to tmux next-3.9: A (a prompt is here) feeds

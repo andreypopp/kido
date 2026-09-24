@@ -288,7 +288,7 @@ function seam(): Seam {
 // One copy of each extension per process. pi dedupes the extensions it
 // is given by real path and nothing else (resource-loader.js mergePaths,
 // measured against 0.87.1), so the copy kido's bin directory passes with
-// --extension and one an older `kido setup-pi` left in
+// --extension and one an earlier kido installed into
 // ~/.pi/agent/extensions are two extensions to it: both would bind an
 // inbox and report, and the second's tools would fail to load as
 // conflicts. The first copy pi runs keeps the slot - the --extension one,

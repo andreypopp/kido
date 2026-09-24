@@ -1423,8 +1423,8 @@ func (m *model) paneLabel(p tmux.Pane) string {
 		} else if cmd := m.localCommand(p); cmd != "" {
 			text = stProc.Render(cmd)
 		}
-		// A shell with kido's OSC 133 integration (shell/zsh, installed
-		// by `kido setup-zsh`) gets the same indicators an agent pane
+		// A shell with kido's OSC 133 integration (shell/zsh, sourced by
+		// every primed pane) gets the same indicators an agent pane
 		// has: running, done, or the last command having failed. A shell
 		// without it says nothing, and its row stays exactly as it always
 		// was, field and all - which means it never calls field() and so

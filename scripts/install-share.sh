@@ -19,7 +19,6 @@ src=$(cd "$(dirname "$0")/.." && pwd)
 mkdir -p "$dest/shell/zsh" "$dest/shell/bash" "$dest/bin" "$dest/pi" "$dest/claude"
 cp "$src/shell/zsh/integration.zsh" "$dest/shell/zsh/integration.zsh"
 cp "$src/shell/bash/integration.bash" "$dest/shell/bash/integration.bash"
-cp "$src/tmux/kido-side.tmux" "$dest/kido-side.tmux"
 cp "$src/shims/shim.sh" "$dest/shim.sh"
 for f in tmux ssh pi claude; do
 	cp "$src/shims/bin/$f" "$dest/bin/$f"

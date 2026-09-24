@@ -2,8 +2,8 @@
 # when a command starts and finishes, so the sidebar can show it as
 # running or idle the way it does for agent panes.
 #
-# It ships with kido; `kido setup-zsh` finds it and adds a line to
-# your ~/.zshrc that sources it.
+# It ships with kido, which arranges for it to be sourced: `kido shell`
+# for a local pane, `kido ssh` for a remote one.
 #
 # The markers are OSC 133, which tmux next-3.9 parses into its own
 # formats: A (a prompt is here) feeds #{pane_last_prompt_time}, C (a

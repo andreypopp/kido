@@ -70,7 +70,8 @@ the copy is the one that drifts.
 
 ## Layout
 
-    cmd/kido/          subcommand dispatch (main.go), setup-*, prompt,
+    cmd/kido/          subcommand dispatch (main.go), the launcher
+                       (launch.go, shell.go, prime.go, bindir.go), prompt,
                        message_agent (also ask_agent and notify_parent),
                        set_status, list_agents, spawn_subagent,
                        async_bash and its async-run wrapper,
@@ -86,13 +87,13 @@ the copy is the one that drifts.
     internal/reap/     which subagent windows are finished with, and when
     internal/subrun/   the durable record of one `kido spawn_subagent`
     internal/testutil/ test scaffolding shared by more than one package
-    shell/zsh/         the OSC 133 integration sourced from ~/.zshrc
-    tmux/              kido-side.tmux, sourced from ~/.tmux.conf
+    shell/zsh/         the OSC 133 integration every primed shell sources
+    tmux/              kido-side.tmux, the defaults the launcher writes into server.conf
     shims/             the bin directory's sh shims (tmux, ssh, pi, claude) and shim.sh
-    claude/            settings.json, the hooks file the claude shim and setup-claude share
+    claude/            settings.json, the hooks file the claude shim hands to Claude Code
     scripts/           install-share.sh, the one description of share/kido; the fork build
     third_party/tmux   the tmux fork, a git submodule built as kido-tmux
-    pi/                the two pi extensions, embedded and written out by setup-pi
+    pi/                the two pi extensions, which the pi shim loads with --extension
     e2e/               tests driving kido inside a real tmux server
 
 `go build ./cmd/kido`; module name is `kido`, no external build steps.
@@ -208,7 +209,7 @@ it.
 ## What Claude Code actually reports
 
 `internal/hook/hook.go` is the event table. The behaviours below were
-measured over ~10k logged events (`kido setup-claude --debug`, then
+measured over ~10k logged events (every event registered, and
 `tail -f "$(kido debug-log)"`), not read from documentation:
 
 - **`SubagentStop` fires on every subagent turn** — 546 times in one
@@ -222,8 +223,9 @@ measured over ~10k logged events (`kido setup-claude --debug`, then
   not, and carries no `background_tasks`. Without the `in.Background`
   guard it turns a session doing background work idle a minute in. This
   was a real bug.
-- **`TaskCompleted` never appeared.** It is in `allEvents` (so `--debug`
-  logs it if it ever shows up) but nothing fires it, which is why a
+- **`TaskCompleted` never appeared.** It is in `allEvents`, so it is a
+  name to register by hand if it ever shows up, but nothing fires it,
+  which is why a
   session held open by a background *shell* alone can never return to
   idle. Known gap.
 
@@ -279,7 +281,7 @@ Exit codes: `0` sent, `1` empty stdin or an error, `4` no agent in scope,
 when the window had none — which is why `5` can never be resolved by
 widening.
 
-## Installed-file lookup (`cmd/kido/setup.go`)
+## Installed-file lookup (`cmd/kido/shared.go`)
 
 Shipped files live at `<prefix>/share/kido/...` beside `<prefix>/bin/kido`
 — Homebrew's `pkgshare` layout, which `make install` mirrors so one
@@ -292,15 +294,11 @@ fallback, and `invokedPath(os.Args[0])` is used instead of
 - Homebrew's `<prefix>/bin/kido` and `<prefix>/share/kido` are symlinks it
   repoints on every upgrade. The unresolved spelling stays valid; the
   resolved one names a Cellar version directory that the next
-  `brew cleanup` deletes — leaving a `.zshrc` pointing at nothing.
+  `brew cleanup` deletes — leaving the server's `side-status-command`,
+  and every pane's PATH, pointing at nothing.
 - On Linux `os.Executable()` reads `/proc/self/exe` and *always* resolves,
   so it defeats the ordering above on exactly the platform where nobody
   tests it.
-
-`setup-zsh` and `setup-tmux` share `blockSpec`/`installBlock`: both write
-a marked block that sources the shipped file **only if it exists**. A
-second run leaves the block alone; a block pointing elsewhere is rewritten
-in place.
 
 ## Tests
 
@@ -832,13 +830,18 @@ build it paid for).
   shells.** Claude Code runs the hook via `sh -c "kido hook"`, and dash on
   Linux does not `exec` the final command — so the immediate parent is a
   short-lived `sh`, not the agent.
-- **The `setup-tmux` block nests three parsers** (tmux -> sh -> tmux again
-  for `source-file`), and no escape survives all three. `tmuxConfBlock`
-  therefore refuses a path containing a quote, a double quote, `$`, `#`, a
-  backslash, a backtick, or a newline (`tmuxConfUnsafe`) rather than trying
-  to quote it.
-- **`setup-pi` leaves a symlink alone** so a dev can point that name at a
-  checkout; only a real file is backed up and replaced.
+- **A tmux command that reaches a further parser has no escape that
+  survives.** The generated `server.conf` (tmux -> sh) and a window name
+  on a `new-window` command line (tmux -> sh -> tmux) both go through
+  `tmuxConfUnsafe` (`cmd/kido/launch.go`), which refuses a quote, a double
+  quote, `$`, `#`, a backslash, a backtick or a newline rather than trying
+  to quote it. A space is quoted, being the case that happens.
+- **`KIDO_HOOK_DEBUG` is the only switch for the hook's debug log.**
+  Claude Code runs `kido hook` from the settings file kido ships, so no
+  flag of kido's can reach it; the environment of the pane Claude Code
+  started in can. It logs the events that file registers, which is
+  `hook.Events()` — anything else has to be registered by hand in the
+  user's own settings.json, which `--settings` merges with.
 
 ## Working here as a spawned agent
 
@@ -878,11 +881,15 @@ not repeat them.
 ## Releasing
 
 The repo carries **no version and no tags, deliberately**. Versioning
-lives in `andreypopp/homebrew-tap`: formulas `kido` and `tmux`, each
-pinned by a git `revision:` with a hand-bumped `version`. A release is
+lives in `andreypopp/homebrew-tap`, in the `kido` formula alone: a git
+`revision:` with a hand-bumped `version`. The separate `tmux` formula is
+retired — kido ships the fork itself, and the formula fetches it as a
+resource at the revision this repo pins, which
+`scripts/install-tmux-fork.sh --print-revision` prints. A release is
 
 1. land on `main` here (CI green),
-2. bump `revision:` and `version` in the tap formula, push the tap,
+2. bump `revision:` and `version` in the `kido` formula — and its tmux
+   resource when the submodule pin moved — then push the tap,
 3. `brew upgrade`.
 
 Do not add a tag. Note that `brew audit`/`brew style` vendor gems into

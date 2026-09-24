@@ -141,8 +141,8 @@ type Pane struct {
 	CurrentCommand string
 	CurrentPath    string
 	// OSC 133 shell integration, reported by tmux only for shells that
-	// emit the markers (kido ships a zsh integration in shell/zsh,
-	// installed by `kido setup-zsh`). A shell that
+	// emit the markers (kido ships a zsh integration in shell/zsh, which
+	// every primed pane sources). A shell that
 	// never emits them leaves LastPromptTime zero; see ShellStatus.
 	// AlternateOn is tmux's own answer to "a program owns this terminal":
 	// vim, a pager, top and friends all take the screen by switching to

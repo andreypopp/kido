@@ -43,11 +43,11 @@ docs/design.md and this file loses the phase.
   server starts with kido's overlay, then the user's file, so the user
   wins over kido except for what kido must own (the side column and the
   default command, which the overlay sets after).
-- **Setup splits**: tmux and shell configuration become launch-time
-  injection; the Claude Code hooks and the pi extensions still have to be
-  written into their homes, and `kido` says so on first launch. The
-  `setup-tmux`, `setup-zsh` and `setup-bash` commands go once the
-  launcher covers them.
+- **Setup goes entirely**: tmux and shell configuration become
+  launch-time injection, and the Claude Code hooks and the pi extensions
+  are handed to those programs on their own command lines by the bin
+  directory's shims, so nothing is written into anybody's home and there
+  is nothing for a first launch to check.
 - **Shells other than zsh and bash** get a working pane with no
   command-line status, as `kido ssh` gives them today.
 
@@ -118,20 +118,16 @@ yet; the sidebar keeps running under whatever tmux the user has.
   empty `~/.pi/agent/extensions` has kido's tools, and one started with
   the old symlinks present does not register them twice.
 
-## Phase 4: setup collapses, and the release
+## Phase 4: the release
 
-- Every `setup-*` command is removed along with its block-writing and
-  file-writing code: the launcher, the bin directory and the shipped
-  settings file cover all of them. `kido` on first launch has nothing to
-  check. a user's existing blocks
-  in `.zshrc`, `.bashrc` and `.tmux.conf` are inert under kido-tmux and
-  README says they may be deleted.
-- README rewritten around `brew install kido` then `kido`. docs/design.md
-  gains the launcher, the socket, the shims and the resolution order;
-  AGENTS.md's "The tmux fork" section points at the submodule; the
-  "Releasing" section loses the tap's `tmux` formula.
+The commands and the documentation have landed: no `setup-*` command
+remains, README is written around `brew install andreypopp/tap/kido` then
+`kido`, and AGENTS.md's "Releasing" section names the `kido` formula
+alone. What is left is the release itself.
+
 - Release: tap bump, the `tmux` formula retired, `brew upgrade`, and the
-  user's own tmux restored to stock.
+  user's own tmux restored to stock. The formula's tmux resource takes the
+  revision `scripts/install-tmux-fork.sh --print-revision` prints.
 
 ## Phase 5, optional: tagged releases
 

@@ -99,8 +99,8 @@ func TestSSHRowDirect(t *testing.T) {
 }
 
 // TestShellStatusRow drives a plain zsh pane through kido's OSC 133
-// integration (shell/zsh/integration.zsh, sourced from a .zshrc the way
-// `kido setup-zsh` arranges) and expects the row to carry the same
+// integration (shell/zsh/integration.zsh, sourced from a .zshrc the way a
+// primed pane sources it) and expects the row to carry the same
 // indicators an agent pane has: an empty two-column field at the prompt,
 // a green ◼ while a command runs, a green ✓ once a command has exited
 // zero, and a red ◼ once a command has exited nonzero, either until the
@@ -131,8 +131,7 @@ func TestShellStatusRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A ZDOTDIR of our own rather than the developer's home, so the test
-	// never reads their rc files, holding the source line setup-zsh's
-	// block carries.
+	// never reads their rc files.
 	zdot := filepath.Join(h.dir, "zdotdir")
 	if err := os.MkdirAll(zdot, 0o755); err != nil {
 		t.Fatal(err)
@@ -243,8 +242,8 @@ func (h *harness) waitShellRow(want string, color string) {
 }
 
 // TestBashShellStatusRow is TestShellStatusRow's twin for bash: a plain
-// bash pane with shell/bash/integration.bash sourced the way `kido
-// setup-bash`'s block sources it carries the same indicators, off the
+// bash pane with shell/bash/integration.bash sourced the way a primed
+// pane sources it carries the same indicators, off the
 // same OSC 133 markers, through the same states.
 func TestBashShellStatusRow(t *testing.T) {
 	t.Parallel()

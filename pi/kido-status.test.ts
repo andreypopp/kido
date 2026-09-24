@@ -614,7 +614,7 @@ async function asSubagent<T>(
 
 // A second copy of either file, at another path, registers nothing: pi
 // dedupes by real path alone, so the copy kido's bin directory passes
-// with --extension and one an older setup-pi left in pi's extensions
+// with --extension and one an earlier kido installed into pi's extensions
 // directory both reach a factory. The copy lives under this directory
 // only so its own imports resolve against node_modules here. The second
 // half is the control the refusal is unsafe without: the file that

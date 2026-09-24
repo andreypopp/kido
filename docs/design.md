@@ -556,8 +556,9 @@ delivered. At the tool boundary the task is text: `spawn_subagent` hands it
 to `kido spawn_subagent` on stdin, and kido is what decides it becomes a
 file, so another backend could write it inside a sandbox instead. The window
 name is model-authored too and does go on the command line, so it is refused
-if it contains any character the setup-tmux path check refuses, and refused
-over 64 bytes rather than quietly mangled.
+if it contains any character no nesting of tmux's parser, sh's and tmux's
+again survives (`tmuxConfUnsafe`), and refused over 64 bytes rather than
+quietly mangled.
 
 ### A parentless spawn, and a parent that must exist
 
@@ -1490,19 +1491,15 @@ source an integration of kido's - `shell/zsh/integration.zsh`, or
 host where nobody has installed anything the pane stays silent for the
 life of the connection.
 
-A local pane gets its copy from an rc file instead: `kido setup-zsh` and
-`kido setup-bash` keep a marked block sourcing the shipped file. The bash
-half hangs its command-start marker off `PS0` and its prompt marker off
-`PROMPT_COMMAND`, which is how kitty does it and is what makes the start
-marker fire once per command line where a `DEBUG` trap fires once per
-simple command; it needs bash 4.4 for `PS0`, and an older bash reports
-nothing rather than half of it. `setup-bash` writes its block twice over,
-once in `~/.bashrc` and once in whichever of `~/.bash_profile`,
-`~/.bash_login` and `~/.profile` a login bash reads, because tmux starts
-a pane's shell as a login shell and bash reads no `~/.bashrc` there. The
-block is POSIX sh and guarded on `$BASH_VERSION`, since the file it lands
-in can be the `~/.profile` every other sh reads too, and the integration
-is a no-op when sourced twice.
+A local pane gets its copy from `kido shell`, which primes every pane the
+kido server starts ("Priming a local shell"); nothing is written into the
+user's rc files. The bash half of the integration hangs its command-start
+marker off `PS0` and its prompt marker off `PROMPT_COMMAND`, which is how
+kitty does it and is what makes the start marker fire once per command
+line where a `DEBUG` trap fires once per simple command; it needs bash 4.4
+for `PS0`, and an older bash reports nothing rather than half of it. The
+integration is a no-op when sourced twice, which is what makes priming
+safe for a shell that reaches it from more than one direction.
 
 `kido ssh` is that host's answer: it sends the integration along with the
 connection. The design is kitty's ssh kitten, cut down to the one thing
@@ -1696,9 +1693,11 @@ Inside a kido pane they are what those names resolve to:
   through unchanged: pi reads those from `argv[1]`, and none starts a
   session.
 - `claude` runs the real Claude Code with `--settings` naming
-  `share/kido/claude/settings.json`, which holds exactly the hooks
-  `setup-claude` registers. Both read the one file, `claude/settings.json`;
-  the shim reads the installed copy and `setup-claude` the embedded one.
+  `share/kido/claude/settings.json`, which holds one `kido hook` entry per
+  event in kido's table (`hook.Events()`, pinned by
+  `TestShippedClaudeSettingsAreKidosHooks`). `--settings` merges with the
+  user's own settings.json rather than replacing it, so nothing of theirs
+  is touched and a debugging session can add events of its own there.
 
 A shim never embeds a path. Every location is worked out from `$0`:
 `kido_share` is `$0/../..`, and the directory holding kido and kido-tmux
@@ -1752,12 +1751,15 @@ a copy at any other path registers nothing. pi loads CLI extensions
 first, so the shipped copy wins; a `/reload` runs the same file again
 and finds the slot its own; the key is `fileURLToPath(import.meta.url)`,
 so the test suite's `?fresh=` imports count as the same copy. A copy
-written by an older `setup-pi` has no guard, loads after the shipped
-copy and conflicts; the fix is to delete `~/.pi/agent/extensions/kido-*.ts`.
+installed into `~/.pi/agent/extensions` by an older kido has no guard,
+loads after the shipped copy and conflicts; the fix is to delete
+`~/.pi/agent/extensions/kido-*.ts`.
 
 **Install layout.** `scripts/install-share.sh <prefix>/share/kido` is
-the one description of share/kido: the integrations, `kido-side.tmux`,
-`shim.sh`, `bin/*`, `pi/*.ts` and `claude/settings.json`. `make install`
+the one description of share/kido: the two shell integrations,
+`shim.sh`, `bin/*`, `pi/*.ts` and `claude/settings.json`. `kido-side.tmux`
+is not among them - the launcher writes the embedded copy into the
+configuration it starts the server with, and nothing reads it from disk. `make install`
 runs it, and so does the e2e harness, which builds kido as `<tmp>/bin/kido`
 with `<tmp>/share/kido` beside it. The Homebrew formula installs the
 same set.

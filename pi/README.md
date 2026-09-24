@@ -56,17 +56,14 @@ id".
 
 ## Install
 
-```sh
-mkdir -p ~/.pi/agent/extensions
-cp kido-status.ts kido-agents.ts ~/.pi/agent/extensions/
-```
+Nothing to install: the `pi` in kido's bin directory runs the real pi with
+`--extension` for both of these files where the package ships them, so a
+pi started from a kido pane has them and one started anywhere else does
+not. A copy in `~/.pi/agent/extensions/` from an earlier kido registers
+nothing and can be deleted (docs/design.md, "One copy of each pi
+extension").
 
-`kido setup-pi` does exactly this, from copies embedded in the binary.
-Extensions in `~/.pi/agent/extensions/` are auto-discovered at startup and can
-be hot-reloaded with `/reload`. For a project-local install use
-`.pi/extensions/` instead.
-
-For a one-off run without installing, pass both (`-e` repeats); they need
+To run them against a checkout, pass both (`-e` repeats); they need
 not be in the same directory, but there is no reason not to be:
 
 ```sh
