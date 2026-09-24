@@ -1655,6 +1655,8 @@ last so the user cannot lose the side column by accident. A
 the sh tmux runs a command through, and a path carrying a character no
 quoting survives (`tmuxConfUnsafe`) is refused before anything starts.
 
+A captured command that is a single word naming zsh or bash, or the same executable as the login shell under another name, is primed as that shell instead of run as a command inside one (`shellCommand`). `default-command "zsh"` is a common line, written to skip the login shell; run as a command it becomes `zsh -l -c zsh`, a primed outer shell around a bare non-interactive inner one that never reports a prompt, for every pane, silently. kido still primes with `-l`, so what the user gets is a primed login zsh rather than the non-login shell tmux's own rule would start. A word with arguments, or naming a shell kido does not prime, still runs as a command.
+
 ### Priming a local shell
 
 `kido shell` is the default command. It resolves the user's shell as the

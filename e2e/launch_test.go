@@ -454,6 +454,50 @@ func TestKidoConfDefaultCommandIsCaptured(t *testing.T) {
 	}, "the pane to be running the user's own default-command")
 }
 
+// TestKidoConfDefaultCommandNamingAShellIsPrimed is the bug fixed
+// alongside TestKidoConfDefaultCommandIsCaptured: a user who wrote
+// `set-option -g default-command "zsh"` - to skip the login shell, or
+// for a wrapper like reattach-to-user-namespace - was handed an
+// unprimed, non-login zsh with none of kido's integration, silently, in
+// every pane. Pre-fix this failed with:
+//
+//	the pane's shell to report its first prompt: condition never became true
+//
+// because the parked command ran as `zsh -l -c zsh`: the outer login
+// zsh is primed but the inner one is bare, non-interactive, and OSC 133
+// never fires. TestKidoConfDefaultCommandIsCaptured pins the case this
+// must not change: a real command still runs as the command.
+func TestKidoConfDefaultCommandNamingAShellIsPrimed(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("no zsh in PATH")
+	}
+	r := newKidoRun(t)
+	conf := filepath.Join(r.config, "kido")
+	if err := os.MkdirAll(conf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(conf, "kido.conf"),
+		[]byte(`set -g default-command "zsh"`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r.launch("first")
+	r.waitUp()
+	if got := r.mustKido("show-options", "-gv", "@kido-user-command"); got != "zsh" {
+		t.Errorf("@kido-user-command = %q, want the default-command kido.conf set", got)
+	}
+	pane := r.firstPane()
+	r.waitFor(func() bool {
+		return reportedPrompt(r.mustKido("display-message", "-p", "-t", pane, "#{pane_last_prompt_time}"))
+	}, "the pane's shell to report its first prompt")
+
+	shims := filepath.Join(shareDir, "bin")
+	if got := r.shellIn(pane, "command -v tmux"); !sameFile(got, filepath.Join(shims, "tmux")) {
+		t.Errorf("command -v tmux = %q in the pane, want the shim in %s", got, shims)
+	}
+}
+
 // TestTmuxConfIsIgnored is the decision that a kido server reads no
 // ~/.tmux.conf: a configuration written for stock tmux fights the side
 // column, and a user who wants theirs writes one source-file line in

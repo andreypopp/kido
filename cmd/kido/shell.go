@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -23,7 +24,7 @@ func shellCmd(args []string) error {
 	if len(args) > 0 {
 		return fmt.Errorf("usage: kido shell")
 	}
-	path := loginShell()
+	path, command := shellCommand(loginShell(), tmux.GlobalOption(userCommandOption))
 	mode := localPrimeMode(path)
 	env := os.Environ()
 	bin, _ := ownBinDir()
@@ -33,8 +34,67 @@ func shellCmd(args []string) error {
 		// pane with no shell.
 		mode = primePlain
 	}
-	argv := shellArgv(path, mode, tmux.GlobalOption(userCommandOption))
+	argv := shellArgv(path, mode, command)
 	return syscall.Exec(path, argv, withEnv(env, add))
+}
+
+// bareShellWord reports whether command, trimmed, is a single word with
+// no shell metacharacters: the shape a parked default-command must have
+// to be considered a shell's own name rather than a command line with
+// arguments of its own. It is pure - no lookup, no filesystem - so
+// shellCommand's resolution is the only part of the decision that needs
+// either.
+func bareShellWord(command string) (word string, ok bool) {
+	word = strings.TrimSpace(command)
+	if word == "" || strings.ContainsAny(word, " \t\n\"'$`\\;|&<>(){}[]*?~!#") {
+		return "", false
+	}
+	return word, true
+}
+
+// shellCommand decides what shellCmd execs for a parked default-command:
+// `set-option -g default-command "zsh"` names a shell, not a command to
+// run inside one, and a user who wrote that meant to skip the login
+// shell - not to lose OSC 133, the bin directory and the shims for every
+// pane, silently. A bare word whose basename is zsh or bash, or that
+// resolves to the very same executable as loginShellPath, is primed as
+// that shell instead, with no -c. Anything else - a command with
+// arguments, or a bare word naming something kido does not prime - is
+// unchanged.
+//
+// tmux itself would start a bare "zsh" as an interactive, non-login
+// shell; kido primes every shell with -l regardless (primeShellArgs), so
+// what the user gets here is a primed *login* zsh, not the exact shell
+// tmux would have.
+func shellCommand(loginShellPath, command string) (path, effective string) {
+	word, ok := bareShellWord(command)
+	if !ok {
+		return loginShellPath, command
+	}
+	// syscall.Exec takes a path and does not search PATH itself, so a
+	// relative word has to be resolved here to be exec'd at all - but not
+	// to decide whether it names a shell, which only reads its basename.
+	resolved := word
+	if !strings.Contains(word, "/") {
+		if p, err := exec.LookPath(word); err == nil {
+			resolved = p
+		}
+	}
+	switch filepath.Base(resolved) {
+	case "zsh", "bash":
+		return resolved, ""
+	}
+	if sameExecutable(resolved, loginShellPath) {
+		return loginShellPath, ""
+	}
+	return loginShellPath, command
+}
+
+// sameExecutable reports whether a and b name the same file on disk.
+func sameExecutable(a, b string) bool {
+	fa, errA := os.Stat(a)
+	fb, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(fa, fb)
 }
 
 // withEnv is base with each assignment in add replacing any it already

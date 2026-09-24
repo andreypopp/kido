@@ -64,7 +64,7 @@ The server starts with a generated file in three layers: kido's defaults
 (`tmux/kido-tmux.conf` in this repo - the side column and its keys), then
 your `kido.conf`, which may override any of them, then the two options kido
 owns and you cannot override, `side-status-command` and `default-command`.
-A `default-command` you set is kept and run by `kido shell`, primed.
+A `default-command` you set is kept and run by `kido shell`, primed. If it is just a shell's name, `zsh` or `bash` or a path to one, that shell is what gets primed, rather than being run as a command inside the login shell.
 
 ## The bin directory
 

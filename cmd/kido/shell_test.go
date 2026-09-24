@@ -39,6 +39,103 @@ func TestShellArgv(t *testing.T) {
 	}
 }
 
+// TestBareShellWord pins the syntax a parked default-command must have
+// to even be considered a shell's own name: one word, nothing a shell
+// would treat specially.
+func TestBareShellWord(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+		wantOK  bool
+	}{
+		{"a bare name", "zsh", true},
+		{"an absolute path", "/bin/zsh", true},
+		{"a name with an argument", "zsh -l", false},
+		{"a wrapped command", "reattach-to-user-namespace -l zsh", false},
+		{"empty", "", false},
+		{"whitespace only", "   ", false},
+		{"padded with whitespace", "  zsh  ", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			word, ok := bareShellWord(c.command)
+			if ok != c.wantOK {
+				t.Errorf("bareShellWord(%q) ok = %v, want %v", c.command, ok, c.wantOK)
+			}
+			if ok && word != strings.TrimSpace(c.command) {
+				t.Errorf("bareShellWord(%q) word = %q, want %q", c.command, word, strings.TrimSpace(c.command))
+			}
+		})
+	}
+}
+
+// TestShellCommand pins which parked default-commands shellCmd primes as
+// a shell rather than runs as one: a bare word naming zsh or bash, and
+// nothing else - a command with arguments stays a command, a shell kido
+// does not know stays a command, and a wrapper around a shell (the
+// reattach-to-user-namespace case people actually write) stays exactly
+// as it was, because it has arguments of its own.
+func TestShellCommand(t *testing.T) {
+	const login = "/bin/zsh"
+	cases := []struct {
+		name     string
+		command  string
+		primed   bool
+		wantBase string
+	}{
+		{"bare zsh", "zsh", true, "zsh"},
+		{"an absolute zsh path", "/bin/zsh", true, "zsh"},
+		{"bare bash", "bash", true, "bash"},
+		{"zsh with an argument", "zsh -l", false, ""},
+		{"a shell kido does not prime", "fish", false, ""},
+		{"a wrapped command", "reattach-to-user-namespace -l zsh", false, ""},
+		{"empty default-command", "", false, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path, effective := shellCommand(login, c.command)
+			if c.primed {
+				if effective != "" {
+					t.Errorf("effective command = %q, want none: %q is primed as a shell", effective, c.command)
+				}
+				if filepath.Base(path) != c.wantBase {
+					t.Errorf("path = %q, want a %s", path, c.wantBase)
+				}
+				return
+			}
+			if path != login || effective != c.command {
+				t.Errorf("shellCommand(%q, %q) = (%q, %q), want unchanged (%q, %q)",
+					login, c.command, path, effective, login, c.command)
+			}
+		})
+	}
+
+	// A command naming the very same executable as the login shell, under
+	// a name that is not literally "zsh" or "bash", is primed as that
+	// login shell too.
+	real := filepath.Join(t.TempDir(), "myshell")
+	if err := os.WriteFile(real, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path, effective := shellCommand(real, real)
+	if effective != "" || path != real {
+		t.Errorf("shellCommand(%q, %q) = (%q, %q), want (%q, \"\"): the same executable as the login shell",
+			real, real, path, effective, real)
+	}
+}
+
+// TestShellArgvForABareShellCommand pins shellArgv's output once
+// shellCommand has resolved a parked default-command: the same shape as
+// no default-command at all, primed with -l and no -c.
+func TestShellArgvForABareShellCommand(t *testing.T) {
+	path, command := shellCommand("/bin/zsh", "zsh")
+	got := shellArgv(path, primeZsh, command)
+	want := []string{path, "-l"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("shellArgv = %q, want %q", got, want)
+	}
+}
+
 // TestWithEnv pins the replacement, which appending would not give: a
 // session that already exports ZDOTDIR is the ordinary case for the zsh
 // priming, and a second assignment after it is one the shell never
