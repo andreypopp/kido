@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"kido/internal/state"
+	"kido/internal/subrun"
 	"kido/internal/tmux"
 )
 
@@ -250,6 +251,52 @@ func TestBuildAgentsStableOrderOnTie(t *testing.T) {
 		}
 		if !slices.Equal(got, want) {
 			t.Fatalf("run %d: order = %v, want %v", i, got, want)
+		}
+	}
+}
+
+// TestBuildAgentsCanReply pins the three run-record shapes that decide
+// whether a target can answer an ask_agent: no record, an empty tools
+// list, and a tools list that excludes message_agent - each keeps
+// CanReply false despite having an inbox; a tools list including
+// message_agent, and no record at all, both leave it true.
+func TestBuildAgentsCanReply(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	states := map[string]state.Session{
+		"%1": {ID: "no-record", Pane: "%1", PID: 100, Agent: state.AgentPi, Status: state.Idle, Inbox: "sock"},
+		"%2": {ID: "empty-tools", Pane: "%2", PID: 200, Agent: state.AgentPi, Status: state.Idle, Inbox: "sock"},
+		"%3": {ID: "no-message-tool", Pane: "%3", PID: 300, Agent: state.AgentPi, Status: state.Idle, Inbox: "sock"},
+		"%4": {ID: "has-message-tool", Pane: "%4", PID: 400, Agent: state.AgentPi, Status: state.Idle, Inbox: "sock"},
+	}
+	panes := []tmux.Pane{
+		{PaneID: "%1", SessionID: "$1", WindowID: "@1"},
+		{PaneID: "%2", SessionID: "$1", WindowID: "@2"},
+		{PaneID: "%3", SessionID: "$1", WindowID: "@3"},
+		{PaneID: "%4", SessionID: "$1", WindowID: "@4"},
+	}
+	for id, tools := range map[string][]string{
+		"empty-tools":      {},
+		"no-message-tool":  {"read", "bash"},
+		"has-message-tool": {"read", "message_agent"},
+	} {
+		if err := subrun.Create(id, "task"); err != nil {
+			t.Fatal(err)
+		}
+		if err := subrun.WriteMeta(subrun.Meta{ID: id, Tools: tools}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := buildAgents(states, panes, "$1", "%1")
+	want := map[string]bool{
+		"no-record":        true,
+		"empty-tools":      true,
+		"no-message-tool":  false,
+		"has-message-tool": true,
+	}
+	for _, a := range got {
+		if a.CanReply != want[a.ID] {
+			t.Errorf("%s: CanReply = %v, want %v", a.ID, a.CanReply, want[a.ID])
 		}
 	}
 }

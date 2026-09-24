@@ -425,6 +425,15 @@ before resolving the target, the way `kido notify_parent` refuses a root
 session, and the refusal names `message_agent` - the one-way send a shell actually
 wanted.
 
+A target that cannot reply is refused too: a reply is a `message_agent`
+call, so a child spawned with a tools allowlist that excludes it has
+nothing to answer with, and the ask would only block. `kido list_agents
+--json` reports this as `canReply`, read beside `canMessage`. Measured
+live: a parent asked four such reviewers for their reports seconds after
+spawning them; each said so through `notify_parent` and the asks waited
+until the user interrupted. A child's result arrives as a notice, and the
+spawn and ask descriptions now say so.
+
 The test is the one `send` already applies to the *recipient* of any
 non-message envelope, turned on the sender, because a reply is exactly
 such an envelope: the caller's pane must have a live state record (so

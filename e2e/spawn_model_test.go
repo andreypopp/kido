@@ -45,11 +45,27 @@ func TestSpawnRefusesModelRejectedByPi(t *testing.T) {
 	h := startPathPrefix(t, "alpha", piDir)
 
 	h.liveParent("alpha", "model-e2e-parent")
-	out := h.runKido("alpha", "model-refused.out", "spawn_subagent",
-		"--parent-pid", "1", "--parent-instance", "model-e2e-parent",
-		"--name", "model-e2e", "--task-file", h.writeTaskFile("model-e2e"),
-		"--", "pi", "--name", "model-e2e", "--model", "sonnet",
-	)
+	// PATH is set on the command itself: a pane's own PATH is whatever
+	// its login shell left, which on macOS is path_helper's order with the
+	// machine's real pi ahead of the fake (the trap AGENTS.md describes
+	// for the shims), and on CI has no pi at all. The gate runs `pi` from
+	// kido's own environment, so that is the one that must name the fake.
+	outFile := filepath.Join(h.dir, "model-refused.out")
+	h.sendLiteral(fmt.Sprintf("PATH=%s:$PATH %s spawn_subagent --parent-pid 1 --parent-instance model-e2e-parent --name model-e2e --task-file %s -- pi --name model-e2e --model sonnet > %s 2>&1; echo rc=$? >> %s",
+		shellQuote(piDir), kidoBin, h.writeTaskFile("model-e2e"), outFile, outFile))
+	h.sendKeys("Enter")
+	var out string
+	h.waitFor(func() bool {
+		b, err := os.ReadFile(outFile)
+		if err != nil || !strings.Contains(string(b), "rc=") {
+			return false
+		}
+		out = string(b)
+		return true
+	}, settle, msgf("%s to contain an rc= line", outFile))
+	if !strings.Contains(out, "acme/{") {
+		t.Fatalf("output = %q, want the fake pi's table to have answered, not the machine's own", out)
+	}
 	if !strings.Contains(out, "rc=1") {
 		t.Errorf("kido spawn_subagent with an unconfigured model = %q, want rc=1", out)
 	}

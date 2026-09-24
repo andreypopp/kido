@@ -105,7 +105,9 @@ what the parent is *sent* bounded ("Reporting", below).
 
 `list_agents` returns every agent whose pane is in the caller's tmux
 session, itself included, ordered parent-first: id, name, agent, pane,
-window, status, activity, parent, depth, self, cwd, model, `canMessage`
+window, status, activity, parent, depth, self, cwd, model, `canMessage`,
+`canReply` (false only when its run record narrows its tools away from
+message_agent, the one tool a reply is sent through)
 (whether it has an inbox; a Claude Code session is visible but only
 reachable by paste), `sinceReport` and `stalled`. Sessions in another
 tmux session are not listed, and nothing here can reach them.

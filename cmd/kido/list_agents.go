@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"text/tabwriter"
 	"time"
 
 	"kido/internal/state"
+	"kido/internal/subrun"
 	"kido/internal/tmux"
 	"kido/internal/tree"
 )
@@ -30,7 +32,12 @@ type AgentInfo struct {
 	Self       bool   `json:"self"`
 	Cwd        string `json:"cwd"`
 	CanMessage bool   `json:"canMessage"`
-	Model      string `json:"model"`
+	// CanReply is whether ask_agent may wait on this agent: it has an
+	// inbox, and its run record - if any - does not narrow its tools
+	// away from message_agent. A target spawned without message_agent can
+	// never send the reply an ask waits for.
+	CanReply bool   `json:"canReply"`
+	Model    string `json:"model"`
 	// SinceReport is seconds since the session's last report. It measures
 	// staleness, not idle time: a session reporting Running has one too.
 	SinceReport int `json:"sinceReport"`
@@ -119,6 +126,7 @@ func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, se
 			Self:        s.Pane == self,
 			Cwd:         p.CurrentPath,
 			CanMessage:  s.Inbox != "",
+			CanReply:    s.Inbox != "" && canReplyTools(s.ID),
 			Model:       s.Model,
 			SinceReport: int(now.Sub(s.TS).Seconds()),
 			Stalled:     state.Stalled(s, now),
@@ -137,6 +145,17 @@ func orderTree(scoped []state.Session, byInstance map[string]string) []state.Ses
 	return tree.Order(sorted,
 		func(s state.Session) string { return s.ID },
 		func(s state.Session) string { return parentID(s, byInstance) })
+}
+
+// canReplyTools reports whether id's run record, if any, still allows
+// message_agent: no record (a root agent, or a pi/kido too old to write
+// one) and an empty tools list both mean unrestricted.
+func canReplyTools(id string) bool {
+	meta, err := subrun.ReadMeta(id)
+	if err != nil || len(meta.Tools) == 0 {
+		return true
+	}
+	return slices.Contains(meta.Tools, "message_agent")
 }
 
 // isAncestor reports whether ancestorID is an ancestor of targetID within

@@ -279,6 +279,12 @@ interface AgentInfo {
   pane: string;
   self: boolean;
   canMessage: boolean;
+  // canReply is whether the target could send the message_agent reply an
+  // ask waits for: false only when it was spawned with a tools allowlist
+  // that excludes message_agent. Missing (older test doubles, never a real
+  // kido) reads as true, since a target that cannot reply at all is
+  // already caught by canMessage.
+  canReply?: boolean;
   window: string;
   stalled: boolean;
   sinceReport: number;
@@ -1065,7 +1071,7 @@ export default function (pi: ExtensionAPI) {
     name: "ask_agent",
     label: "Ask Agent",
     description:
-      "Ask another agent a question and block until it replies - one full turn of the target's latency, not a round-trip, since a busy target does not see the question until it would otherwise have stopped. Refused for an ancestor, a target outside this tmux session, one with no inbox, or yourself.",
+      "Ask another agent a question and block until it replies - one full turn of the target's latency, not a round-trip, since a busy target does not see the question until it would otherwise have stopped. Refused for an ancestor, a target outside this tmux session, one with no inbox or no message_agent tool, or yourself. Not for collecting a subagent's result: that arrives on its own as a notice when the child finishes, and an ask blocks this turn until the target answers, so the notice cannot be read until the ask returns.",
     promptSnippet: "ask_agent(to, question, timeoutMs?) - ask another agent a question and wait for its reply",
     parameters: askAgentParams,
     async execute(_toolCallId, params, signal) {
@@ -1107,6 +1113,15 @@ export default function (pi: ExtensionAPI) {
       if (!target.canMessage) {
         return {
           content: [{ type: "text", text: `${target.name || target.id} has no inbox; an ask cannot work over a paste, there is no way back` }],
+          details: {},
+        };
+      }
+      if (target.canReply === false) {
+        return {
+          content: [{
+            type: "text",
+            text: `${target.name || target.id} was spawned without the message_agent tool and cannot reply; use message_agent, or wait for its notify_parent notice`,
+          }],
           details: {},
         };
       }
@@ -1330,7 +1345,7 @@ export default function (pi: ExtensionAPI) {
     name: "spawn_subagent",
     label: "Spawn Subagent",
     description:
-      "Create a subagent in its own tmux window with a task, or resume a dead or finished one by its run id. With fork: true it starts holding this session's context, for a judgement step that has to know what was already decided. Returns its identity immediately without waiting for it to finish.",
+      "Create a subagent in its own tmux window with a task, or resume a dead or finished one by its run id. With fork: true it starts holding this session's context, for a judgement step that has to know what was already decided. Returns its identity immediately without waiting for it to finish. Its result arrives as a notice when it calls notify_parent; do not ask_agent a child for its result.",
     promptSnippet:
       "spawn_subagent(task, name?, model?, tools?, keepAlive?, fork?) or spawn_subagent(resume, model?, tools?, keepAlive?) - delegate a task to a new subagent, optionally forked from your own context, or resume a dead one, in its own window",
     parameters: spawnSubagentParams,

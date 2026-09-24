@@ -1387,6 +1387,29 @@ test("spawn_subagent's model parameter documents the provider/model-id format", 
   }
 });
 
+// The incident these two descriptions exist to prevent: a parent spawned
+// reviewers with no message_agent tool, then ask_agent'd each for its
+// result and blocked. Both sentences ride along on every turn, so they
+// are pinned here rather than left to the tests above that only exercise
+// the behaviour.
+test("spawn_subagent and ask_agent's descriptions teach the notify_parent pattern, not ask_agent for a child's result", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    assert.match(
+      s.tools.get("spawn_subagent").description!,
+      /Its result arrives as a notice when it calls notify_parent; do not ask_agent a child for its result\./,
+    );
+    assert.match(
+      s.tools.get("ask_agent").description!,
+      /Not for collecting a subagent's result: that arrives on its own as a notice when the child finishes, and an ask blocks this turn until the target answers, so the notice cannot be read until the ask returns\./,
+    );
+  } finally {
+    fx.restore();
+  }
+});
+
 test("spawn_subagent passes its task as text on stdin and calls kido spawn_subagent with its own identity and depth+1, without waiting for the child", async () => {
   const fx = makeFixture();
   try {
@@ -3287,6 +3310,43 @@ test("ask_agent refuses a target that is not alive, promptly and without sending
       fx.parentAliveCalls().some((args) => args.includes("peer-a-instance")),
       "the resolved target's own instance id was queried, not its session id",
     );
+  } finally {
+    fx.restore();
+  }
+});
+
+// canReply is a run record's fact, not canMessage's: a target with an
+// inbox but no message_agent tool has somewhere to send a reply, and
+// still cannot send one. Checked before any send, the same shape as the
+// stalled and not-alive prechecks above.
+test("ask_agent refuses a target spawned without the message_agent tool, without sending anything", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([
+      { id: "self", name: "self", parent: "", self: true, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, canReply: false },
+    ]);
+    const s = await startSession(fx);
+    const result = await s.tools.get("ask_agent").execute("c1", { to: "peer-a", question: "status?", timeoutMs: 50 });
+    assert.match(result.content[0].text, /message_agent/);
+    assert.match(result.content[0].text, /notify_parent/);
+    assert.equal(fx.lastLogFor("peer-a", "ask"), undefined, "a target that cannot reply must never actually be asked");
+  } finally {
+    fx.restore();
+  }
+});
+
+test("ask_agent still sends to a target with canReply true", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([
+      { id: "self", name: "self", parent: "", self: true, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, canReply: true },
+    ]);
+    const s = await startSession(fx);
+    const result = await s.tools.get("ask_agent").execute("c1", { to: "peer-a", question: "status?", timeoutMs: 50 });
+    assert.doesNotMatch(result.content[0].text, /message_agent tool/);
+    assert.ok(await fx.waitForLog("peer-a", "ask"), "the ask was actually sent to a target that can reply");
   } finally {
     fx.restore();
   }
