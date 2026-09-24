@@ -2,6 +2,8 @@ package e2e
 
 import (
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // focusSidebar gives the sidebar the keyboard (prefix k) and waits.
@@ -160,6 +162,87 @@ func TestShiftUpDownSwitchesWindow(t *testing.T) {
 	if !h.clientFocused() {
 		t.Fatal("shift+up released the sidebar's keyboard focus")
 	}
+}
+
+// TestShiftUpDownUnfocusedSwitchesWindow checks that S-Up/S-Down reach the
+// client-level binding in tmux/kido-tmux.conf even with the sidebar
+// unfocused, when the keys go to the pane rather than to the side job.
+func TestShiftUpDownUnfocusedSwitchesWindow(t *testing.T) {
+	t.Parallel()
+	h := setupSwitchWindowSessions(t)
+	h.waitWindow("a", "a0")
+	if h.clientFocused() {
+		t.Fatal("the sidebar has focus before the test starts")
+	}
+
+	h.sendKeys("S-Down") // a0 -> a1
+	h.waitWindow("a", "a1")
+	if h.clientFocused() {
+		t.Fatal("shift+down gave the sidebar keyboard focus")
+	}
+
+	h.sendKeys("S-Down") // a1 -> c0, crossing into session c
+	h.waitWindow("c", "c0")
+	if h.clientFocused() {
+		t.Fatal("shift+down gave the sidebar keyboard focus")
+	}
+
+	h.sendKeys("S-Up") // c0 -> a1
+	h.waitWindow("a", "a1")
+	if h.clientFocused() {
+		t.Fatal("shift+up gave the sidebar keyboard focus")
+	}
+}
+
+// TestCtrlSTogglesFocusWithSidebarShown checks that C-s toggles keyboard
+// focus exactly as prefix k does, with no prefix needed, while the sidebar
+// is shown.
+func TestCtrlSTogglesFocusWithSidebarShown(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	if h.clientFocused() {
+		t.Fatal("the sidebar has focus before C-s")
+	}
+
+	h.sendKeys("C-s")
+	h.waitFocused(true)
+	h.sendKeys("C-s")
+	h.waitFocused(false)
+}
+
+// TestCtrlSOpensPickerWithSidebarHidden checks that, with the sidebar
+// hidden, C-s opens kido's one-shot picker in a popup, and that q closes
+// it again. The popup runs a literal "tmux" (tmux/kido-tmux.conf), which
+// this harness resolves through tmuxDir rather than through the
+// shims/bin/tmux shim a real install has - see setup().
+func TestCtrlSOpensPickerWithSidebarHidden(t *testing.T) {
+	t.Parallel()
+	if tmuxDir == "" {
+		t.Skip("no patched tmux to resolve a literal \"tmux\" to")
+	}
+	h := startPathPrefix(t, "alpha", tmuxDir)
+	h.prefix("K") // hide the sidebar
+	h.waitFor(func() bool { return !h.sidebarVisible() }, settle, msgf("sidebar gone"))
+
+	h.sendKeys("C-s")
+	h.waitFor(func() bool { return hasLine(outerScreenLines(h), "alpha") }, settle,
+		msgf("the popup picker showing session alpha"))
+
+	h.sendKeys("q")
+	h.waitFor(func() bool { return !hasLine(outerScreenLines(h), "alpha") }, settle,
+		msgf("the popup picker closed"))
+}
+
+// outerScreenLines is the outer pane's whole screen as plain text, escape
+// sequences stripped - unlike h.sidebar(), which cuts everything left of
+// the separator: a popup draws over the window area too.
+func outerScreenLines(h *harness) []string {
+	h.t.Helper()
+	out := make([]string, 0, len(h.capture()))
+	for _, l := range h.capture() {
+		out = append(out, ansi.Strip(l))
+	}
+	return out
 }
 
 // TestPrefixPassthrough checks that the prefix still reaches tmux while

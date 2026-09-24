@@ -668,6 +668,20 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 		m.switchWindow(false)
 	case "enter":
 		return m.jump()
+	case "ctrl+s":
+		// C-s (no prefix, tmux/kido-tmux.conf) reaches the side job whenever
+		// it has focus - server-client.c forwards every non-mouse key there
+		// unconditionally while CLIENT_SIDESTATUSFOCUS is set, the prefix
+		// key alone excepted - so the toggle back to the pane has to be
+		// handled here rather than by a second tmux binding, which would
+		// never see the keystroke.
+		if !m.opts.Standalone {
+			if err := tmux.ReleaseSideFocus(m.opts.Client); err != nil {
+				m.status = err.Error()
+			} else {
+				m.focus(m.snap.active)
+			}
+		}
 	case "esc", "ctrl+c":
 		// Leave the search, or hand the keyboard back to the pane - or,
 		// standalone, quit. The search is always left first, so Esc means

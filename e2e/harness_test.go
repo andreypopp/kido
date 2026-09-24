@@ -30,6 +30,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"kido/internal/testutil"
+	tmuxconf "kido/tmux"
 )
 
 var (
@@ -40,6 +41,7 @@ var (
 	claudeBin string // a binary named "claude" that just sleeps
 	nodeBin   string // the same binary named "node", for a pi pane
 	piBinDir  string // a directory holding one binary, named "pi"
+	tmuxDir   string // a directory holding one binary, named "tmux", the patched fork
 )
 
 const (
@@ -116,6 +118,20 @@ func setup(m *testing.M) (int, error) {
 	// PATH instead - exercising a resolution step no install ever takes.
 	if tmuxBin != "" {
 		if err := os.Symlink(tmuxBin, filepath.Join(filepath.Dir(kidoBin), "kido-tmux")); err != nil {
+			return 0, err
+		}
+		// tmux/kido-tmux.conf's C-s binding runs a literal "tmux", resolved
+		// through the inner server's own PATH the way a production kido
+		// pane resolves it through the shims/bin/tmux shim - which a bare
+		// go build here has no installed copy of. This directory stands in
+		// for it, holding only the patched fork under that name so nothing
+		// else on PATH is shadowed; only the popup test puts it on a
+		// server's PATH.
+		tmuxDir = filepath.Join(dir, "tmux-bin")
+		if err := os.MkdirAll(tmuxDir, 0o755); err != nil {
+			return 0, err
+		}
+		if err := os.Symlink(tmuxBin, filepath.Join(tmuxDir, "tmux")); err != nil {
 			return 0, err
 		}
 	}
@@ -341,7 +357,16 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 	// the same reason: the wrapper is a `kido async-run` the inner server
 	// started, and a real 250ms batch would have a test of coalescing
 	// waiting out the settle for a handful of chunks.
-	body := fmt.Sprintf(`
+	// The shipped defaults first, byte for byte (tmux/kido-tmux.conf via
+	// tmuxconf.Defaults), the same as a real launch writes them
+	// (cmd/kido/launch.go writeServerConf) - so K, k, S-Up/S-Down and C-s
+	// are the bindings this suite actually exercises. The harness's own
+	// settings come after, so they win where they repeat a default (the
+	// side-status-width and side-status-command lines below are exactly
+	// such overrides).
+	var body bytes.Buffer
+	body.Write(tmuxconf.Defaults)
+	fmt.Fprintf(&body, `
 set-environment -g KIDO_STATE_DIR "%s"
 set-environment -g KIDO_LINGER_SECONDS 1
 set-environment -g KIDO_STOP_ESCALATION_MS 300
@@ -353,19 +378,11 @@ set -g status off
 set -sg escape-time 0
 set -g default-shell /bin/bash
 set -g default-command ""
-set -g side-status left
 set -g side-status-width %d
 set -g side-status-style "fg=default,bg=default"
 set -g side-status-command "%s%s"
-set -g mouse on
-bind-key K if-shell -F '#{==:#{side-status},off}' \
-  'set -g side-status left ; refresh-client -f side-status-focus' \
-  'set -g side-status off'
-bind-key k if-shell -F '#{m:*side-status-focus*,#{client_flags}}' \
-  'refresh-client -f !side-status-focus' \
-  'refresh-client -f side-status-focus'
 `, h.stateDir, sideWidth, kidoBin, args)
-	if err := os.WriteFile(conf, []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(conf, body.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

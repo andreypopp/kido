@@ -74,7 +74,7 @@ directory is first on `PATH`):
 | name | what it runs |
 |------|--------------|
 | `tmux` | `kido-tmux`. Required, not a convenience: `$TMUX` in a kido pane names the kido socket, and a stock tmux client gets a protocol mismatch there. |
-| `ssh` | `kido ssh`, so a remote shell reports what it is running (see below). |
+| `ssh` | `kido ssh`, so a remote shell reports what it is running. |
 | `pi` | the real pi with `--extension` for kido's two extensions, where the package ships them. |
 | `claude` | the real Claude Code with `--settings` naming the shipped hooks file. |
 
@@ -88,6 +88,15 @@ kido's status reporting, its inbox and its agent tools. **Claude Code**
 reports through the hooks in the shipped settings file; `--settings` merges
 with your own `~/.claude/settings.json`, which kido does not touch.
 
+**ssh** sends a small bootstrap as the remote command, which primes the
+remote zsh or bash the same way a local pane is primed, so the row shows
+what the shell on the far side is running, on a host where nothing is
+installed. Anything kido cannot prime - a remote command of your own, no
+terminal, a login shell that is neither zsh nor bash, a remote with no
+`base64`, an old bash without `PS0` - is a plain ssh session, unchanged.
+`kido ssh host` is never worse than `ssh host`, and the remote `$HOME` is
+never touched.
+
 ## Shells
 
 Every pane's shell is started by `kido shell`, as a login shell, with kido's
@@ -99,159 +108,31 @@ Any other shell - fish, or a bash below 4.4, which is what macOS ships as
 
 ## Keys
 
+kido runs as a one-shot picker whenever `$TMUX_SIDE_CLIENT` is empty, which
+the fork sets only for the `side-status-command` job - a popup or a plain
+pane gets the picker, and the side column keeps the behaviour below.
+
 | key | action |
 |-----|--------|
 | `prefix K` | show the sidebar with keyboard focus, or hide it |
 | `prefix k` | toggle keyboard focus between the sidebar and the pane |
+| `C-s` | with the sidebar hidden, open the picker in a popup; with it shown, toggle keyboard focus |
 | drag the sidebar's edge | resize it |
 | `j` / `k`, `C-j` / `C-k`, `C-n` / `C-p` | move between panes |
 | `gg` / `G` | first / last pane |
-| `S-Up` / `S-Down` | switch the client to the previous / next window |
+| `S-Up` / `S-Down` | switch the client to the previous / next window (works with the sidebar unfocused too) |
 | `n` / `N` | next / previous session that wants you (waiting, or done since you last looked) |
 | `/` | fuzzy-filter by session name, agent title, or ssh destination; `Esc` cancels |
 | `Esc` / `C-c` | clear the filter, or return focus to the pane |
 | `Enter` / click | jump to the pane |
 
-## Popup
-
-kido runs as a one-shot picker whenever `$TMUX_SIDE_CLIENT` is empty, which
-the fork sets only for the `side-status-command` job. A popup or a plain
-pane gets the picker; the side column keeps the behaviour above. It is not
-bound by default:
-
-```tmux
-bind-key P run-shell -b "tmux display-popup -c '#{client_name}' -E -w 40 -h 80% 'kido -client #{client_name}'"
-```
-
-`display-popup` does not expand `#{...}` in the command it runs, and a
-popup has no client of its own, so `#{client_name}` asked from inside it
-answers with whichever client tmux saw last. `run-shell` does expand
-formats, which is what lets `-client` and `-c` name the right one.
+The picker has its own, smaller set:
 
 | key | action |
 |-----|--------|
 | `q` | close the picker |
 | `Esc` / `C-c` | clear the filter, or close the picker |
 | `Enter` / click | jump to the pane, then close the picker |
-
-## Commands
-
-### `kido switch-session next|prev [-client NAME]`
-
-Switches the client to the adjacent session in the sidebar's order (oldest
-first, ties by name), wrapping around. `-client` defaults to
-`$TMUX_SIDE_CLIENT`, then the current client. Not bound by default (the
-defaults file carries the same thing for `switch-window`, commented out):
-
-```tmux
-bind-key -n S-Up   run-shell "kido switch-session prev -client '#{client_name}'"
-bind-key -n S-Down run-shell "kido switch-session next -client '#{client_name}'"
-```
-
-### `kido switch-window next|prev [-client NAME]`
-
-The same, over one flat list of windows across the whole server: sessions
-oldest first, each session's windows in tmux's order. Advancing past a
-session's last window moves to the next session, where tmux's own
-`next-window` wraps inside one session.
-
-### `kido ssh [ssh args...] destination`
-
-ssh, with the remote zsh or bash primed to report to the sidebar: the row
-then shows what the shell on the far side is running, on a host where
-nothing is installed. This is what `ssh` runs inside a kido pane.
-
-```sh
-kido ssh deploy@build-box
-kido ssh -o BatchMode=yes -p 2222 build-box
-```
-
-The arguments are ssh's own and are passed through in order. kido sends a
-small bootstrap as the remote command, which decodes the shell
-integration into a temporary directory and execs the login shell primed
-for it. For zsh that means pointing `ZDOTDIR` at the directory; its
-`.zshenv` hands `ZDOTDIR` straight back before the real dotfiles are read
-and then deletes itself. Bash has no `ZDOTDIR`, and a login bash ignores
-`--rcfile`, so the bootstrap execs it with `--login --posix` and an `ENV`
-pointing into the same directory - the one lever that gets bash to read a
-file of its own choosing before a login shell's - which turns posix mode
-back off, sources `/etc/profile` and the first of `~/.bash_profile`,
-`~/.bash_login` or `~/.profile`, sources the integration, and removes the
-directory. Either way the remote `$HOME` is never touched and nothing
-outlives the session.
-
-Bash needs 4.4 for the `PS0` hook the integration uses; an older bash gets
-its login files and no priming, the same as any other shell kido does not
-know.
-
-Anything kido cannot prime - a remote command of your own, no terminal,
-a login shell that is neither zsh nor bash, a remote with no `base64`, an
-option meaning there is no login shell in this connection - is a plain
-ssh session, unchanged. `kido ssh host` is never worse than `ssh host`.
-
-The payload rides in the ssh command line, where the remote's `ps` can
-read it. It is a public shell script with no secrets in it, which is what
-makes that acceptable; the alternative channel is the interactive
-session's own stdin. The remote also self-reports, which is a weaker
-claim than the local process table kido reads for everything else.
-
-### `kido prompt [--window]`
-
-Reads a prompt from stdin and sends it to the one agent pane in scope.
-
-Scope is the caller's tmux window, widening to the session when the window
-has no agent pane. A window with several agents does not widen. `--window`
-never widens.
-
-pi receives a user message over the unix socket its extension reported with
-`kido agent-status --inbox`. Every other agent, Claude Code included, gets
-the prompt pasted into its pane followed by Enter, as does pi when the
-socket has gone away. It is a paste rather than typed keys because an
-application with bracketed paste on reads a bare newline as a submit,
-which would split a multi-line prompt into one input per line.
-
-Exit codes: `0` sent, `1` empty stdin or an error, `4` no agent in scope,
-`5` several.
-
-```sh
-echo "run the tests" | kido prompt
-echo "run the tests" | kido prompt --window
-```
-
-### `kido agent-status`
-
-```
-kido agent-status --agent NAME --session ID --status running|waiting|compacting|idle \
-  [--title TITLE] [--inbox PATH] [--ended] [--remove]
-```
-
-How any agent other than Claude Code reports, called from inside its own
-pane. `--title` is shown in place of the pane title. `--inbox` is a unix
-socket the agent takes prompts on. Both are kept across calls that omit
-them; `--inbox ""` clears the socket. `--ended` marks the end of a turn,
-which is what `✓ done` tracks. `--remove` drops the record.
-
-The socket speaks one prompt per connection: written with no framing,
-ended by half-closing the write half, answered with `ok\n`. An agent whose
-own socket frames messages differently must not report it here.
-
-### `kido inbox-path NAME`
-
-Prints `<state dir>/inbox/NAME.sock`, creating the `inbox` directory with
-mode `0700`. A name containing a path separator or `..`, or one whose path
-would not fit in `sun_path`, prints nothing and exits 1.
-
-```sh
-kido agent-status --agent pi --session "$id" --status idle \
-  --inbox "$(kido inbox-path "$id")"
-```
-
-### `kido snapshot`
-
-Prints a shell script that recreates every session, window, pane and
-layout, resuming Claude Code and pi panes by session id. A pane that
-reported no session is recreated bare. Run it outside tmux after a
-`kido-tmux -L kido kill-server`.
 
 ## Status
 
