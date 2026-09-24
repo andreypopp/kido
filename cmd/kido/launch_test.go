@@ -101,10 +101,10 @@ func TestServerConfLayersInOrder(t *testing.T) {
 		t.Errorf("layers out of order (defaults %d, kido.conf %d, capture %d, side %d, command %d):\n%s",
 			defaults, source, capture, side, command, conf)
 	}
-	if lines := strings.Split(conf, "\n"); !strings.Contains(lines[side], `'"`+exe+`"'`) {
+	if lines := strings.Split(conf, "\n"); !strings.Contains(lines[side], `'`+exe+`'`) {
 		t.Errorf("the last side-status-command is %q, not the kido binary %s", lines[side], exe)
 	}
-	if !strings.Contains(conf, `'"`+exe+`" shell'`) {
+	if !strings.Contains(conf, `'`+exe+` shell'`) {
 		t.Errorf("default-command is not `%s shell`:\n%s", exe, conf)
 	}
 }
@@ -133,6 +133,43 @@ func TestServerConfNamesTheUsersKidoConf(t *testing.T) {
 	}
 	if want := filepath.Join(home, ".config", "kido", "kido.conf"); got != want {
 		t.Errorf("userConfPath = %q, want %q", got, want)
+	}
+}
+
+// TestConfCommandLeavesAnUnquotedPathParseable is why confCommand only
+// double-quotes a path when it needs to: the result is not just tmux
+// configuration syntax, it is also what tmux's own default_window_name()
+// (third_party/tmux/names.c) parses to name a window when
+// automatic-rename is off, and that function undoes at most one layer of
+// quoting. A path with no space needs none, and leaving the extra layer
+// out is what turns the window name from a single backslash into the
+// command's own first word - see TestFirstWindowNameIsNotQuoteDebris
+// (e2e), which is the claim this cannot make on its own since the
+// parsing happens in tmux's C, not kido's Go.
+func TestConfCommandLeavesAnUnquotedPathParseable(t *testing.T) {
+	got, err := confCommand("/opt/homebrew/bin/kido", "shell")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "'/opt/homebrew/bin/kido shell'"; got != want {
+		t.Errorf("confCommand = %q, want %q", got, want)
+	}
+}
+
+// TestConfCommandQuotesAPathWithASpace is the case confCommand cannot
+// avoid double-quoting: the runtime shell (`$SHELL -c "<default-command>"`)
+// would otherwise split the path itself into two words. This is also the
+// residual TestFirstWindowNameIsNotQuoteDebris does not cover: a kido
+// installed under a path with a space in it still names the window a
+// single backslash with automatic-rename off, because default_window_name()
+// only undoes one layer of quoting and two are required here.
+func TestConfCommandQuotesAPathWithASpace(t *testing.T) {
+	got, err := confCommand("/Application Support/kido", "shell")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `'"/Application Support/kido" shell'`; got != want {
+		t.Errorf("confCommand = %q, want %q", got, want)
 	}
 }
 

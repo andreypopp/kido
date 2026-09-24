@@ -1655,6 +1655,8 @@ last so the user cannot lose the side column by accident. A
 the sh tmux runs a command through, and a path carrying a character no
 quoting survives (`tmuxConfUnsafe`) is refused before anything starts.
 
+The inner shell-level quotes go on only when the path has a space. tmux names a fresh window once, at spawn, from the first word of `default-command` (`default_window_name` in the fork's names.c), and it undoes at most one layer of quoting; a path quoted when it need not be came out as a single backslash, and with `automatic-rename off` nothing ever corrected it. A window is therefore named `kido`, the command's first word, not the shell's own name, since the pane runs `kido shell` and not the shell directly. A kido installed under a path with a space still gets the backslash. The first session is named `main` rather than tmux's `0`; it is created only when starting a fresh server, so nothing can already hold the name.
+
 A captured command that is a single word naming zsh or bash, or the same executable as the login shell under another name, is primed as that shell instead of run as a command inside one (`shellCommand`). `default-command "zsh"` is a common line, written to skip the login shell; run as a command it becomes `zsh -l -c zsh`, a primed outer shell around a bare non-interactive inner one that never reports a prompt, for every pane, silently. kido still primes with `-l`, so what the user gets is a primed login zsh rather than the non-login shell tmux's own rule would start. A word with arguments, or naming a shell kido does not prime, still runs as a command.
 
 ### Priming a local shell

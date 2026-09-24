@@ -46,7 +46,10 @@ func launch() error {
 	if err != nil {
 		return err
 	}
-	return execTmux(bin, serverEnv(os.Environ()), "-L", kidoSocket, "-f", conf, "new-session")
+	// -s main: a session name of tmux's own choosing is a bare integer
+	// ("0"), and this only runs once, starting a fresh server, so no
+	// session named main can already exist to collide with.
+	return execTmux(bin, serverEnv(os.Environ()), "-L", kidoSocket, "-f", conf, "new-session", "-s", "main")
 }
 
 // serverEnv is the environment a kido server starts with: the launcher's
@@ -141,15 +144,28 @@ const tmuxConfUnsafe = "'\"$#\\`\n\r"
 // command word of the generated configuration.
 // Both places a path is written there - side-status-command and
 // default-command - are command strings tmux hands to /bin/sh after
-// expanding them as formats, so the word is single-quoted for tmux and
-// double-quoted for the shell inside that, which leaves a space (the case
-// that actually happens) working. The characters no such nesting can
-// carry are refused rather than written broken.
+// expanding them as formats, so the word is single-quoted for tmux and,
+// only when the path itself needs it (a space, the case that actually
+// happens), double-quoted for the shell inside that. The characters no
+// such nesting can carry are refused rather than written broken.
+//
+// The inner double quotes are otherwise left off on purpose: this string
+// is also what tmux's own default_window_name() (third_party/tmux/names.c)
+// parses to name a window with automatic-rename off, and it strips at
+// most one layer of quoting - a path wrapped in quotes it does not need
+// survives as a single backslash, not as its basename. Unquoted, a
+// window using this as its default-command is named after the command's
+// first word, matching what stock tmux does for an unquoted
+// default-command.
 func confCommand(path string, args ...string) (string, error) {
 	if i := strings.IndexAny(path, tmuxConfUnsafe); i >= 0 {
 		return "", fmt.Errorf("cannot start a kido server: the path %s contains %q", path, path[i:i+1])
 	}
-	word := `'"` + path + `"`
+	inner := path
+	if strings.ContainsAny(path, " \t") {
+		inner = `"` + path + `"`
+	}
+	word := "'" + inner
 	for _, a := range args {
 		word += " " + a
 	}
