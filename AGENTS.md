@@ -91,7 +91,8 @@ the copy is the one that drifts.
     tmux/              kido-tmux.conf, the defaults the launcher writes into server.conf
     shims/             the bin directory's sh shims (tmux, ssh, pi, claude) and shim.sh
     claude/            settings.json, the hooks file the claude shim hands to Claude Code
-    scripts/           install-share.sh, the one description of share/kido; the fork build
+    scripts/           install-share.sh, the one description of share/kido; the fork build;
+                       ci-watch.sh, which waits for a commit's CI run (async_bash it)
     third_party/tmux   the tmux fork, a git submodule built as kido-tmux
     pi/                the two pi extensions, which the pi shim loads with --extension
     e2e/               tests driving kido inside a real tmux server
