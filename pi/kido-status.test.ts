@@ -27,7 +27,7 @@ import { join, delimiter, dirname } from "node:path";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
 import kidoStatus, { parseEnvelope } from "./kido-status.ts";
-import kidoAgents, { isAncestor, nextStreamFlushDelay, streamBatch } from "./kido-agents.ts";
+import kidoAgents, { isAncestor, nextStreamFlushDelay, setAskEdgeListener, streamBatch } from "./kido-agents.ts";
 
 // The fake kido binary. Written to disk once per fixture so it can be
 // found on PATH as a file literally named "kido" - findKido() joins a
@@ -53,8 +53,16 @@ switch (args[0]) {
     const file = process.env.KIDO_FAKE_AGENTS_FILE;
     const callLog = process.env.KIDO_FAKE_AGENTS_CALL_LOG;
     if (callLog) fs.appendFileSync(callLog, "1\\n");
-    process.stdout.write(file && fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "[]");
-    process.exit(0);
+    const respond = () => {
+      process.stdout.write(file && fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "[]");
+      process.exit(0);
+    };
+    // KIDO_FAKE_AGENTS_DELAY_MS: how long this child holds its stdout
+    // open before exiting, so a test can make the lookup slower than a
+    // fixed wait the caller might otherwise use to guess at it.
+    const delay = Number(process.env.KIDO_FAKE_AGENTS_DELAY_MS || 0);
+    if (delay > 0) setTimeout(respond, delay); else respond();
+    break;
   }
   case "agent-alive": {
     // The parent-liveness poll's whole query. KIDO_FAKE_PARENT_ALIVE is
@@ -311,6 +319,7 @@ function makeFixture(): Fixture {
     KIDO_FAKE_INBOX_FAIL: process.env.KIDO_FAKE_INBOX_FAIL,
     KIDO_FAKE_MESSAGE_FAIL_TO: process.env.KIDO_FAKE_MESSAGE_FAIL_TO,
     KIDO_FAKE_MESSAGE_DELAY_MS: process.env.KIDO_FAKE_MESSAGE_DELAY_MS,
+    KIDO_FAKE_AGENTS_DELAY_MS: process.env.KIDO_FAKE_AGENTS_DELAY_MS,
   };
   process.env.PATH = binDir + delimiter + (saved.PATH ?? "");
   process.env.TMUX_PANE = "%1";
@@ -337,6 +346,7 @@ function makeFixture(): Fixture {
   delete process.env.KIDO_FAKE_INBOX_FAIL;
   delete process.env.KIDO_FAKE_MESSAGE_FAIL_TO;
   delete process.env.KIDO_FAKE_MESSAGE_DELAY_MS;
+  delete process.env.KIDO_FAKE_AGENTS_DELAY_MS;
 
   return {
     agentsFile,
@@ -2389,6 +2399,11 @@ test("interleaving: an inbound ask from the same target is refused even while th
     fx.setAgents(twoPeers.slice(0, 2)); // self, peer-a
     fx.setMessageFailTo(undefined);
     process.env.KIDO_FAKE_MESSAGE_DELAY_MS = "800";
+    // Slower than any fixed wait a caller might have guessed at, so a
+    // test synchronising on wall-clock time instead of the real signal
+    // (the cycle edge actually being registered) fails deterministically
+    // rather than only on a loaded runner. See setAskEdgeListener.
+    process.env.KIDO_FAKE_AGENTS_DELAY_MS = "400";
     try {
       const s = await startSession(fx);
       const ask = s.tools.get("ask_agent");
@@ -2397,16 +2412,26 @@ test("interleaving: an inbound ask from the same target is refused even while th
       // kido below - this only races at all because runKido shells out via
       // spawn rather than execFileSync; the old blocking call could never
       // let an inbound connection be dispatched before the send finished.
+      let edgeRegistered: (() => void) | undefined;
+      const registered = new Promise<void>((resolve) => {
+        edgeRegistered = resolve;
+      });
+      setAskEdgeListener((target) => {
+        if (target === "peer-a") edgeRegistered?.();
+      });
       const p1 = ask.execute("c1", { to: "peer-a", question: "q1" });
-      // A fixed wait, not a poll on the agents-lookup subprocess's own log
-      // write: that write happens near the start of the child's short
-      // life, well before the parent's spawn 'close' event fires at the
-      // end of it, so watching for it is not a reliable proxy for
-      // "fetchAgents() has resolved in this process". 120ms comfortably
-      // covers one undelayed subprocess round trip (tens of ms, measured)
-      // while staying well short of the 800ms the outbound send itself is
-      // held up for below.
-      await new Promise((r) => setTimeout(r, 120));
+      // The real synchronisation point: the cycle edge (pendingOutbound.set
+      // in kido-agents.ts) is registered synchronously, in-process, right
+      // after the agents-lookup subprocess's await resolves. There is no
+      // honest way to observe that moment from outside the process: the
+      // lookup child writes its own log line well before the parent's
+      // spawn 'close' event fires at the end of its life, so watching for
+      // that write is not a reliable proxy for "the edge exists now". A
+      // fixed wait guessing at the lookup's duration is what this
+      // replaces, and with the lookup slowed above a 120ms guess is
+      // routinely too short.
+      await registered;
+      setAskEdgeListener(undefined);
 
       // The load-bearing half of this test. "Refused" alone is true
       // whether or not the send is still running: the waiter is not
@@ -2427,7 +2452,9 @@ test("interleaving: an inbound ask from the same target is refused even while th
       const outcome = await p1;
       assert.equal(outcome.content[0].text, "done");
     } finally {
+      setAskEdgeListener(undefined);
       delete process.env.KIDO_FAKE_MESSAGE_DELAY_MS;
+      delete process.env.KIDO_FAKE_AGENTS_DELAY_MS;
     }
   } finally {
     fx.restore();

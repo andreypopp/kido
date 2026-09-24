@@ -687,6 +687,7 @@ build it paid for).
   positive case's window with only the outcome on disk, or only the flag,
   different. Without them a sweep or a shutdown that always notified would
   pass every other test and the parent would hear each ending twice.
+- **`interleaving: an inbound ask from the same target is refused even while the outbound send to it is still in flight`** (TS) — once waited a fixed 120ms for the agents lookup subprocess, and a slow macOS runner outlived the guess. It now awaits the instant the cycle edge is registered, through `setAskEdgeListener`, with the lookup deliberately slowed to 400ms so a return to a wall-clock guess fails at once.
 - **`TestNotifyParentUnderTheCapIsUntouched`** — the negative control the
   report split is unsafe without. Every assertion the over-cap case makes
   is satisfied by a command that splits *every* report, at the cost of a

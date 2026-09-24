@@ -315,6 +315,18 @@ export function isAncestor(agents: AgentInfo[], self: AgentInfo, target: AgentIn
   return false;
 }
 
+// onAskEdgeRegistered fires synchronously the instant an outbound ask's
+// cycle edge is registered (pendingOutbound.set below, docs/design.md's
+// "The cycle edge") - a test seam only, since nothing about that moment
+// is otherwise observable from outside the process: the agents-lookup
+// subprocess it follows writes its own log line well before the parent's
+// await on it resolves, so watching for that write is not a reliable
+// proxy for "the edge exists now".
+let onAskEdgeRegistered: ((target: string) => void) | undefined;
+export function setAskEdgeListener(fn: ((target: string) => void) | undefined): void {
+  onAskEdgeRegistered = fn;
+}
+
 export default function (pi: ExtensionAPI) {
   let parentPollTimer: NodeJS.Timeout | null = null;
 
@@ -1130,6 +1142,7 @@ export default function (pi: ExtensionAPI) {
       const timer = setTimeout(() => settle({ gaveUp: "timeout" }), timeoutMs);
       timer.unref(); // a wait must never hold pi's event loop open
       pendingOutbound.set(id, { targetSession: target.id, settle });
+      onAskEdgeRegistered?.(target.id);
       // pi hands every tool the turn's AbortSignal, and Esc aborts it. A
       // wait that ignores it is a turn the human cannot end, since pi's
       // own abort path waits for the tool call to return. addEventListener
