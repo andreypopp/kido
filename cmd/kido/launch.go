@@ -40,22 +40,34 @@ func launch() error {
 			"so it refuses this client; restart it once its windows are free (detach, then "+
 			"%s -L %s kill-server)", kidoSocket, bin, kidoSocket)
 	case serverUp:
-		return execTmux(bin, "-L", kidoSocket, "attach-session")
+		return execTmux(bin, os.Environ(), "-L", kidoSocket, "attach-session")
 	}
 	conf, err := writeServerConf()
 	if err != nil {
 		return err
 	}
-	return execTmux(bin, "-L", kidoSocket, "-f", conf, "new-session")
+	return execTmux(bin, serverEnv(os.Environ()), "-L", kidoSocket, "-f", conf, "new-session")
+}
+
+// serverEnv is the environment a kido server starts with: the launcher's
+// own, with kido's bin directory first on PATH (bindir.go). The server
+// keeps the environment it started with, so this is the PATH of
+// everything it runs without a shell in between.
+func serverEnv(env []string) []string {
+	dir, ok := ownBinDir()
+	if !ok {
+		return env
+	}
+	return withEnv(env, []string{"PATH=" + pathWithFirst(dir, os.Getenv("PATH"))})
 }
 
 // execTmux replaces this process with tmux. It returns only on failure.
-func execTmux(bin string, args ...string) error {
+func execTmux(bin string, env []string, args ...string) error {
 	path, err := exec.LookPath(bin)
 	if err != nil {
 		return err
 	}
-	return syscall.Exec(path, append([]string{bin}, args...), os.Environ())
+	return syscall.Exec(path, append([]string{bin}, args...), env)
 }
 
 // serverState is what the kido socket answered when kido asked.

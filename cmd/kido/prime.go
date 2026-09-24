@@ -59,18 +59,28 @@ const (
 	bashIntegrationFile = "integration.bash"
 )
 
-// primeFiles is what mode's throwaway directory holds, by name.
-func primeFiles(mode primeMode) map[string][]byte {
+// primeFiles is what mode's throwaway directory holds, by name. A
+// non-empty binDir puts kido's bin directory first on PATH at the end of
+// the integration (pathPrependScript), which is only ever right locally:
+// the far side of `kido ssh` has no kido and no shims, which is why
+// sshBootstrap sends the integrations as they ship rather than these.
+func primeFiles(mode primeMode, binDir string) map[string][]byte {
+	withPath := func(integration []byte) []byte {
+		if binDir == "" {
+			return integration
+		}
+		return append(append([]byte{}, integration...), pathPrependScript(binDir)...)
+	}
 	switch mode {
 	case primeZsh:
 		return map[string][]byte{
 			zshEnvFile:         []byte(kidoZshenv),
-			zshIntegrationFile: shell.ZshIntegration,
+			zshIntegrationFile: withPath(shell.ZshIntegration),
 		}
 	case primeBash:
 		return map[string][]byte{
 			bashEnvFile:         []byte(kidoBashEnv),
-			bashIntegrationFile: shell.BashIntegration,
+			bashIntegrationFile: withPath(shell.BashIntegration),
 		}
 	}
 	return nil
@@ -207,13 +217,14 @@ rm -rf -- "$_kido_dir"
 unset _kido_dir
 `
 
-// primeLocal builds the throwaway directory for mode under the local
-// temporary directory and returns the environment additions the primed
-// shell needs. The directory removes itself, from the startup file kido
-// just wrote into it, so there is nothing left to clean up after the exec
-// that follows - which is as well, because nothing of kido's survives it.
-func primeLocal(mode primeMode) ([]string, error) {
-	files := primeFiles(mode)
+// primeLocal builds the throwaway directory for mode, with binDir as
+// primeFiles takes it, under the local temporary directory and returns
+// the environment additions the primed shell needs. The directory
+// removes itself, from the startup file kido just wrote into it, so there
+// is nothing left to clean up after the exec that follows - which is as
+// well, because nothing of kido's survives it.
+func primeLocal(mode primeMode, binDir string) ([]string, error) {
+	files := primeFiles(mode, binDir)
 	if len(files) == 0 {
 		return nil, nil
 	}

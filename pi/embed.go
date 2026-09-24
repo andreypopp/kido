@@ -1,6 +1,8 @@
 // Package pi carries the kido extensions for the pi coding agent. pi
-// loads TypeScript from its extensions directory directly, so they ship
-// as source and `kido setup-pi` writes them out.
+// loads TypeScript directly, so they ship as source, and the same two
+// files reach pi two ways: installed under share/kido/pi, where the pi in
+// kido's bin directory names them with --extension, and embedded here for
+// `kido setup-pi` to write into pi's own extensions directory.
 package pi
 
 import _ "embed"

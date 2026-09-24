@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"strings"
 	"syscall"
 )
@@ -87,8 +86,11 @@ func sshArgs(args []string, tty bool) []string {
 // report to kido's sidebar, by way of a bootstrap sent as the remote
 // command. It replaces this process with ssh, so signals, the exit status
 // and the tty all behave as they would without kido in front of them.
+//
+// The ssh it runs is the one past kido's bin directory, whose own ssh is
+// the shim that ran this.
 func sshCmd(args []string) error {
-	path, err := exec.LookPath("ssh")
+	path, err := realOnPath("ssh")
 	if err != nil {
 		return err
 	}

@@ -52,7 +52,7 @@ func TestPrimeLocalWritesAThrowawayDirectory(t *testing.T) {
 	os.Unsetenv("ZDOTDIR")
 
 	t.Run("zsh", func(t *testing.T) {
-		env, err := primeLocal(primeZsh)
+		env, err := primeLocal(primeZsh, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -73,7 +73,7 @@ func TestPrimeLocalWritesAThrowawayDirectory(t *testing.T) {
 	t.Run("zsh with a ZDOTDIR of its own", func(t *testing.T) {
 		dots := t.TempDir()
 		t.Setenv("ZDOTDIR", dots)
-		env, err := primeLocal(primeZsh)
+		env, err := primeLocal(primeZsh, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -86,7 +86,7 @@ func TestPrimeLocalWritesAThrowawayDirectory(t *testing.T) {
 	})
 
 	t.Run("bash", func(t *testing.T) {
-		env, err := primeLocal(primeBash)
+		env, err := primeLocal(primeBash, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -102,7 +102,7 @@ func TestPrimeLocalWritesAThrowawayDirectory(t *testing.T) {
 	})
 
 	t.Run("plain", func(t *testing.T) {
-		env, err := primeLocal(primePlain)
+		env, err := primeLocal(primePlain, "")
 		if err != nil || env != nil {
 			t.Errorf("primeLocal(primePlain) = %v, %v, want nothing at all", env, err)
 		}

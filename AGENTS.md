@@ -88,6 +88,9 @@ the copy is the one that drifts.
     internal/testutil/ test scaffolding shared by more than one package
     shell/zsh/         the OSC 133 integration sourced from ~/.zshrc
     tmux/              kido-side.tmux, sourced from ~/.tmux.conf
+    shims/             the bin directory's sh shims (tmux, ssh, pi, claude) and shim.sh
+    claude/            settings.json, the hooks file the claude shim and setup-claude share
+    scripts/           install-share.sh, the one description of share/kido; the fork build
     third_party/tmux   the tmux fork, a git submodule built as kido-tmux
     pi/                the two pi extensions, embedded and written out by setup-pi
     e2e/               tests driving kido inside a real tmux server
@@ -723,6 +726,45 @@ build it paid for).
   pane that never reported one is the *empty string*, not `0`: tmux
   formats an unset timestamp as empty (measured on the fork). A check
   against `"0"` alone held for every pane there has ever been.
+- **`TestKidoPaneRunsTheShims`** (e2e) — on macOS its last assertion is
+  the control that makes the rest mean anything: a nested
+  `zsh -l -c 'command -v ssh'` in the same pane, with the same inherited
+  PATH but no integration after it, finds the system ssh, so path_helper
+  really does demote the launcher's PATH on that machine. Without that
+  half, a shim first in the pane could be the server's PATH surviving a
+  login that rewrote nothing. With `primeLocal(mode, "")` in
+  `kido shell` it fails with `command -v ssh = "/usr/bin/ssh"`.
+  `TestPrimedZshPutsTheBinDirectoryFirst` is the same claim as a unit
+  test, with a `.zprofile` standing in for path_helper; its unprimed run
+  is the control and aborts the test if the rewrite demoted nothing.
+- **`TestShimsReachTheRealPrograms`** (e2e) — the fakes go on PATH from
+  the test HOME's `.zshrc`/`.bash_profile`, not from `startPathPrefix`:
+  on macOS path_helper would put `/usr/bin`, and the real ssh, ahead of
+  a launcher-level fake directory, and the rc file keeps the fakes out of
+  every other test's PATH. `'echo a  b'` is there for its double space,
+  which a shim that lost the quotes around `"$@"` collapses.
+- **`TestShimFindsTheProgramPastItsOwnDirectory`** — "past a second
+  install" is the case that makes "after my directory" rather than
+  "anything but me" the rule. The no-real-program case asserts a prompt
+  exit 127 under a deadline, because a shim that runs itself never
+  returns.
+- **`TestPiShimLoadsKidosToolsOnce`** (e2e; skips without pi, so never
+  in CI) — real pi, because the collision is pi's behaviour. It needs a
+  link to the checkout, whose real path differs from the shipped copies'.
+  With the guard removed it prints `Tool "list_agents" conflicts with
+  .../share/kido/pi/kido-agents.ts`. Its TS sibling, "a second copy of
+  the extensions ..." in `pi/kido-status.test.ts`, has the reload half
+  as its control: a guard that refused every second factory call would
+  pass the copy half and leave a reloaded session with no tools.
+- **`TestOnlyALocalPrimeMovesPATH`** — the seam. The remote bootstrap's
+  payloads are the shipped integrations byte for byte
+  (`TestSSHBootstrapCarriesTheIntegration`), so asserting those carry no
+  `_kido_bin` is what stops a later refactor from routing `kido ssh`
+  through `primeFiles` with the local bin directory.
+- **`TestShippedClaudeSettingsAreKidosHooks`** — pins
+  `claude/settings.json` to `hook.Events()`. The file is JSON and cannot
+  carry the "SessionEnd must finish, so it is the one hook that is not
+  async" comment, so the test asserts that rule instead.
 - **`TestNotifyParentUnderTheCapIsUntouched`** — the negative control the
   report split is unsafe without. Every assertion the over-cap case makes
   is satisfied by a command that splits *every* report, at the cost of a

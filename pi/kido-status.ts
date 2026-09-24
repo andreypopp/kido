@@ -44,6 +44,7 @@ import { randomUUID } from "node:crypto";
 import { accessSync, constants, unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { delimiter, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // Generated once per process, not per session, so a /reload does not
 // change it under a child that recorded it as a ParentInstance - held on
@@ -284,7 +285,28 @@ function seam(): Seam {
   return (g[SEAM] ??= { host: null, agents: null });
 }
 
+// One copy of each extension per process. pi dedupes the extensions it
+// is given by real path and nothing else (resource-loader.js mergePaths,
+// measured against 0.87.1), so the copy kido's bin directory passes with
+// --extension and one an older `kido setup-pi` left in
+// ~/.pi/agent/extensions are two extensions to it: both would bind an
+// inbox and report, and the second's tools would fail to load as
+// conflicts. The first copy pi runs keeps the slot - the --extension one,
+// since pi loads those ahead of its own directory - and the other
+// registers nothing. A /reload runs the same file again and finds the
+// slot its own. Keyed by the file's path, so the test suite's
+// cache-busting query on the module URL is still the same copy.
+// kido-agents.ts does the same against a slot of its own.
+const COPY_SLOT = Symbol.for("kido.pi.extension.status.copy");
+
+function isFirstCopy(): boolean {
+  const path = fileURLToPath(import.meta.url);
+  const g = globalThis as unknown as Record<symbol, string | undefined>;
+  return (g[COPY_SLOT] ??= path) === path;
+}
+
 export default function (pi: ExtensionAPI) {
+  if (!isFirstCopy()) return;
   let kido: string | null = null;
   let sessionId: string | null = null;
   let title: string | undefined;

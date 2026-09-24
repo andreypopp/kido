@@ -41,6 +41,7 @@ import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-age
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { AgentHooks, DeliverAs, Envelope, Seam, SessionContext, StatusHost } from "./kido-status.ts";
 
@@ -327,7 +328,18 @@ export function setAskEdgeListener(fn: ((target: string) => void) | undefined): 
   onAskEdgeRegistered = fn;
 }
 
+// One copy per process, for the reason kido-status.ts gives beside its
+// own slot; spelled out again rather than imported, as the seam is.
+const COPY_SLOT = Symbol.for("kido.pi.extension.agents.copy");
+
+function isFirstCopy(): boolean {
+  const path = fileURLToPath(import.meta.url);
+  const g = globalThis as unknown as Record<symbol, string | undefined>;
+  return (g[COPY_SLOT] ??= path) === path;
+}
+
 export default function (pi: ExtensionAPI) {
+  if (!isFirstCopy()) return;
   let parentPollTimer: NodeJS.Timeout | null = null;
 
   // How an inbound "interrupt"/"stop" envelope reaches pi: captured in

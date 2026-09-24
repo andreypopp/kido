@@ -36,6 +36,7 @@ var (
 	tmuxBin   string // patched tmux, or "" when unusable
 	tmuxWhy   string // why it is unusable
 	kidoBin   string // freshly built kido
+	shareDir  string // the share/kido beside it
 	claudeBin string // a binary named "claude" that just sleeps
 	nodeBin   string // the same binary named "node", for a pi pane
 	piBinDir  string // a directory holding one binary, named "pi"
@@ -68,9 +69,16 @@ func setup(m *testing.M) (int, error) {
 	}
 	defer os.RemoveAll(dir)
 
-	kidoBin = filepath.Join(dir, "kido")
+	// kido is laid out as an install lays it out, <prefix>/bin beside
+	// <prefix>/share/kido, so a kido pane gets the bin directory's shims
+	// and a shim finds the kido and kido-tmux it works back to.
+	kidoBin = filepath.Join(dir, "bin", "kido")
 	if out, err := exec.Command("go", "build", "-o", kidoBin, "kido/cmd/kido").CombinedOutput(); err != nil {
 		return 0, fmt.Errorf("go build kido: %v\n%s", err, out)
+	}
+	shareDir = filepath.Join(dir, "share", "kido")
+	if out, err := exec.Command("../scripts/install-share.sh", shareDir).CombinedOutput(); err != nil {
+		return 0, fmt.Errorf("install-share.sh: %v\n%s", err, out)
 	}
 	if claudeBin, err = buildFakeAgent(dir, dir, "claude"); err != nil {
 		return 0, err
@@ -107,7 +115,7 @@ func setup(m *testing.M) (int, error) {
 	// without this symlink the built kidoBin would fall through to "tmux" on
 	// PATH instead - exercising a resolution step no install ever takes.
 	if tmuxBin != "" {
-		if err := os.Symlink(tmuxBin, filepath.Join(dir, "kido-tmux")); err != nil {
+		if err := os.Symlink(tmuxBin, filepath.Join(filepath.Dir(kidoBin), "kido-tmux")); err != nil {
 			return 0, err
 		}
 	}

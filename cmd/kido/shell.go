@@ -26,7 +26,8 @@ func shellCmd(args []string) error {
 	path := loginShell()
 	mode := localPrimeMode(path)
 	env := os.Environ()
-	add, err := primeLocal(mode)
+	bin, _ := ownBinDir()
+	add, err := primeLocal(mode, bin)
 	if err != nil {
 		// A pane that cannot be primed is a pane with no markers, never a
 		// pane with no shell.

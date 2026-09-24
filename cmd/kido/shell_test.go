@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -132,7 +133,7 @@ func TestPrimedZshReportsLocally(t *testing.T) {
 	if mode != primeZsh {
 		t.Fatalf("localPrimeMode = %v for a zsh with dotfiles, want it primed", mode)
 	}
-	add, err := primeLocal(mode)
+	add, err := primeLocal(mode, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,5 +146,57 @@ func TestPrimedZshReportsLocally(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); err == nil {
 		t.Errorf("%s is still there; nothing kido writes for a shell may outlive it", dir)
+	}
+}
+
+// TestPrimedZshPutsTheBinDirectoryFirst is why the prepend lives in the
+// integration rather than only in the environment the pane inherits: a
+// login file that rewrites PATH - macOS path_helper, run from
+// /etc/zprofile, is the one every Mac has - demotes an inherited entry,
+// and the integration runs after every login file. The unprimed run is the
+// control: the same inherited PATH, the same .zprofile, and the directory
+// no longer first. It is also run with the directory already inherited,
+// so a nested shell cannot grow PATH.
+func TestPrimedZshPutsTheBinDirectoryFirst(t *testing.T) {
+	zsh := interactiveZsh(t)
+	home := zshHome(t, "")
+	if err := os.WriteFile(filepath.Join(home, ".zprofile"), []byte("PATH=/usr/bin:/bin:$PATH\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	os.Unsetenv("ZDOTDIR")
+	bin := filepath.Join(t.TempDir(), "kido bin")
+	inherited := bin + ":/usr/bin:/bin"
+	path := regexp.MustCompile(`PATH<([^>]*)>`)
+
+	run := func(argv, add []string) string {
+		t.Helper()
+		cmd := noTTY(exec.Command(argv[0], argv[1:]...))
+		cmd.Path = zsh
+		cmd.Env = append([]string{"PATH=" + inherited, "HOME=" + home, "SHELL=" + zsh, "TERM=dumb"}, add...)
+		cmd.Stdin = strings.NewReader("printf 'PATH<%s>\\n' \"$PATH\"\nexit\n")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%q: %v\n%s", argv, err, out)
+		}
+		// The last match: a primed shell reports the command line too,
+		// with the unexpanded %s in it.
+		m := path.FindAllStringSubmatch(string(out), -1)
+		if m == nil {
+			t.Fatalf("%q printed no PATH: %q", argv, out)
+		}
+		return m[len(m)-1][1]
+	}
+
+	if got := run([]string{zsh, "-l"}, nil); strings.HasPrefix(got, bin+":") {
+		t.Fatalf("PATH = %q unprimed: the .zprofile did not demote the directory, so this test proves nothing", got)
+	}
+	add, err := primeLocal(primeZsh, bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := run(shellArgv(zsh, primeZsh, ""), add)
+	if !strings.HasPrefix(got, bin+":") || strings.Count(got, bin) != 1 {
+		t.Errorf("PATH = %q primed, want %q first and once", got, bin)
 	}
 }

@@ -21,11 +21,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Value } from "typebox/value";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, delimiter, dirname } from "node:path";
 import net from "node:net";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import kidoStatus, { parseEnvelope } from "./kido-status.ts";
 import kidoAgents, { isAncestor, nextStreamFlushDelay, setAskEdgeListener, streamBatch } from "./kido-agents.ts";
 
@@ -509,7 +509,7 @@ function createFakePi() {
       widgets.set(key, { content, options });
     },
   };
-  return { pi, tools, delivered, messages, renderers, widgets, ui, emit };
+  return { pi, tools, handlers, delivered, messages, renderers, widgets, ui, emit };
 }
 
 // fakeTheme is the minimal Theme surface a message renderer reads: fg()
@@ -611,6 +611,41 @@ async function asSubagent<T>(
     }
   }
 }
+
+// A second copy of either file, at another path, registers nothing: pi
+// dedupes by real path alone, so the copy kido's bin directory passes
+// with --extension and one an older setup-pi left in pi's extensions
+// directory both reach a factory. The copy lives under this directory
+// only so its own imports resolve against node_modules here. The second
+// half is the control the refusal is unsafe without: the file that
+// claimed the slot still registers everything when run again, which is
+// what a /reload does - a guard that refused every second factory call
+// would pass the first half and leave a reloaded session with no tools.
+test("a second copy of the extensions at another path registers nothing, and a reload of the first still does", async () => {
+  const first = createFakePi();
+  loadExtensions(first.pi);
+  assert.ok(first.tools.size > 0 && first.handlers.size > 0, "the extensions registered nothing at all");
+
+  const here = dirname(fileURLToPath(import.meta.url));
+  const dir = mkdtempSync(join(here, ".copy-"));
+  try {
+    for (const name of ["kido-status.ts", "kido-agents.ts"]) copyFileSync(join(here, name), join(dir, name));
+    const status = await import(pathToFileURL(join(dir, "kido-status.ts")).href);
+    const agents = await import(pathToFileURL(join(dir, "kido-agents.ts")).href);
+    const copy = createFakePi();
+    status.default(copy.pi);
+    agents.default(copy.pi);
+    assert.deepEqual([...copy.tools.keys()], [], "the copy registered tools");
+    assert.deepEqual([...copy.handlers.keys()], [], "the copy registered handlers");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  const reloaded = createFakePi();
+  loadExtensions(reloaded.pi);
+  assert.deepEqual([...reloaded.tools.keys()].sort(), [...first.tools.keys()].sort());
+  assert.deepEqual([...reloaded.handlers.keys()].sort(), [...first.handlers.keys()].sort());
+});
 
 // pi discovers extensions in a directory and picks its own order, so
 // neither half may read the other at factory time (see the seam note in

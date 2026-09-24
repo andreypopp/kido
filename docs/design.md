@@ -1674,6 +1674,94 @@ the version comparison is spelled once in Go and once in sh; and a
 plain-mode local shell gets tmux's dashed argv[0] where the remote gets
 `-l`, since sh cannot set another process's argv[0].
 
+### The bin directory
+
+kido ships a bin directory at `<prefix>/share/kido/bin` holding four
+`sh` shims, `tmux`, `ssh`, `pi` and `claude` (source `shims/bin`, with
+the shared helper `shims/shim.sh` installed as `share/kido/shim.sh`).
+Inside a kido pane they are what those names resolve to:
+
+- `tmux` runs `$KIDO_TMUX` when set, else the `kido-tmux` beside kido,
+  else the first `tmux` on PATH past the shim: `internal/tmux`'s order.
+  A bare-name `KIDO_TMUX` is looked up past the shim too, because
+  `exec` would otherwise find the shim itself. This shim is required,
+  not a convenience: `$TMUX` in a kido pane names the kido socket, and a
+  stock client gets a protocol mismatch there.
+- `ssh` runs `kido ssh "$@"`, and `kido ssh` finds the real ssh past the
+  bin directory (`lookPathPast`), for the same reason.
+- `pi` runs the real pi with `--extension` for `share/kido/pi/kido-status.ts`
+  and `kido-agents.ts`, so nothing is written into `~/.pi/agent/extensions`.
+  A first argument that is one of pi's own subcommands (`install`,
+  `remove`, `uninstall`, `update`, `list`, `config`, `auth`) is passed
+  through unchanged: pi reads those from `argv[1]`, and none starts a
+  session.
+- `claude` runs the real Claude Code with `--settings` naming
+  `share/kido/claude/settings.json`, which holds exactly the hooks
+  `setup-claude` registers. Both read the one file, `claude/settings.json`;
+  the shim reads the installed copy and `setup-claude` the embedded one.
+
+A shim never embeds a path. Every location is worked out from `$0`:
+`kido_share` is `$0/../..`, and the directory holding kido and kido-tmux
+is `$0/../../../bin`, the inverse of `findShared`. The kernel resolves
+those `..` physically, so under Homebrew, where share/kido is a symlink,
+they land in the Cellar version's own bin. Nothing needs quoting, and
+nothing goes stale when the package moves.
+
+The real program is the first executable of that name on PATH *after*
+the shim's own directory. A shim whose directory is not on PATH at all,
+one run by path, takes the first match that is not itself. The rule is
+"after", not "anything but me", because of a second kido install's bin
+directory: its shim is a different file, so "anything but me" would hand
+the call to it, and it would hand the call straight back.
+
+**PATH.** The bin directory goes first on PATH in two places. The
+launcher starts the server with it first (`serverEnv`); the server keeps
+the environment it started with, so this is the PATH of everything tmux
+runs with no user shell in between: `run-shell`, plugins, a `new-window`
+command, and the `pi` of every `spawn_subagent` window. And the
+integration of every locally primed shell puts it first again at its
+very end (`pathPrependScript`, appended by `primeFiles` when given a bin
+directory), which is after the user's login files, which may have
+rewritten PATH: macOS `path_helper` from `/etc/zprofile`, Debian's
+`/etc/profile`. The prepend removes every existing occurrence first, so a
+nested shell or a second launch never grows PATH.
+
+`kido ssh` sends the integrations exactly as they ship. The far side has
+no kido and no shims, so nothing there touches PATH. The seam is
+`primeFiles(mode, binDir)`: local-only, and `sshBootstrap` never calls
+it.
+
+A bin directory whose path contains `:` cannot be a PATH entry, so
+`binDir` reports it absent and kido runs with no shims. So does a kido
+with no share/kido beside it, a checkout build.
+
+Limits: a plain-mode shell (fish, a zsh with no dotfiles, bash below
+4.4) has no integration, and keeps the shims only if its login files
+leave the inherited PATH order alone; and a login shell nested inside a
+pane runs path_helper again with nothing after it.
+
+**One copy of each pi extension.** pi dedupes the extensions it is given
+by real path and by nothing else (`resource-loader.js`'s `mergePaths`,
+pi 0.87.1), so the shipped copy passed with `--extension` and a copy or
+link in `~/.pi/agent/extensions` are two extensions to pi: both would
+bind an inbox and report, and the second copy's tools fail with
+"Tool X conflicts with ...". Each file therefore claims a `globalThis`
+slot keyed by its own file path the first time its factory runs
+(`kido.pi.extension.status.copy`, `kido.pi.extension.agents.copy`), and
+a copy at any other path registers nothing. pi loads CLI extensions
+first, so the shipped copy wins; a `/reload` runs the same file again
+and finds the slot its own; the key is `fileURLToPath(import.meta.url)`,
+so the test suite's `?fresh=` imports count as the same copy. A copy
+written by an older `setup-pi` has no guard, loads after the shipped
+copy and conflicts; the fix is to delete `~/.pi/agent/extensions/kido-*.ts`.
+
+**Install layout.** `scripts/install-share.sh <prefix>/share/kido` is
+the one description of share/kido: the integrations, `kido-side.tmux`,
+`shim.sh`, `bin/*`, `pi/*.ts` and `claude/settings.json`. `make install`
+runs it, and so does the e2e harness, which builds kido as `<tmp>/bin/kido`
+with `<tmp>/share/kido` beside it. The Homebrew formula installs the
+same set.
+
 ## Knobs
 
 Every duration a test has to shorten is a package variable, and the ones

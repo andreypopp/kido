@@ -18,6 +18,7 @@ import (
 
 	"github.com/sahilm/fuzzy"
 
+	claudeconf "kido/claude"
 	"kido/internal/hook"
 	"kido/internal/procs"
 	"kido/internal/reap"
@@ -337,10 +338,11 @@ func setupClaude(debug bool) error {
 	return nil
 }
 
-// writeClaudeSettings registers kido's hook command for the target event
-// set (hook.Events(), or hook.AllEvents() when debug) at path, replacing
-// any earlier kido hook entries (in either mode) and removing kido entries
-// for events outside the target set, so switching modes back and forth is
+// writeClaudeSettings registers kido's hooks at path - the shipped
+// settings file's (claude/settings.json), or with debug `kido hook
+// --debug` for every event in hook.AllEvents() - replacing any earlier
+// kido hook entries (in either mode) and removing kido entries for events
+// outside the target set, so switching modes back and forth is
 // idempotent. It returns the number of events registered.
 func writeClaudeSettings(path string, debug bool) (int, error) {
 	settings := map[string]any{}
@@ -358,15 +360,9 @@ func writeClaudeSettings(path string, debug bool) (int, error) {
 		hooks = map[string]any{}
 	}
 
-	command := "kido hook"
-	targetEvents := hook.Events()
-	if debug {
-		command = "kido hook --debug"
-		targetEvents = hook.AllEvents()
-	}
-	target := map[string]bool{}
-	for _, event := range targetEvents {
-		target[event] = true
+	target, err := kidoHookEntries(debug)
+	if err != nil {
+		return 0, err
 	}
 
 	for _, event := range hook.AllEvents() {
@@ -378,13 +374,7 @@ func writeClaudeSettings(path string, debug bool) (int, error) {
 				}
 			}
 		}
-		if target[event] {
-			h := map[string]any{"type": "command", "command": command, "timeout": 5}
-			if event != "SessionEnd" {
-				h["async"] = true // never delay Claude; SessionEnd must finish
-			}
-			kept = append(kept, map[string]any{"hooks": []any{h}})
-		}
+		kept = append(kept, target[event]...)
 		if len(kept) == 0 {
 			delete(hooks, event)
 		} else {
@@ -405,7 +395,25 @@ func writeClaudeSettings(path string, debug bool) (int, error) {
 	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
 		return 0, err
 	}
-	return len(targetEvents), nil
+	return len(target), nil
+}
+
+// kidoHookEntries is what writeClaudeSettings registers, by event. The
+// ordinary set is the shipped file's, so setup-claude and the claude shim
+// cannot disagree about it; the debug set has no shipped counterpart.
+func kidoHookEntries(debug bool) (map[string][]any, error) {
+	if !debug {
+		return claudeconf.Hooks()
+	}
+	target := map[string][]any{}
+	for _, event := range hook.AllEvents() {
+		h := map[string]any{"type": "command", "command": "kido hook --debug", "timeout": 5}
+		if event != "SessionEnd" {
+			h["async"] = true // never delay Claude; SessionEnd must finish
+		}
+		target[event] = []any{map[string]any{"hooks": []any{h}}}
+	}
+	return target, nil
 }
 
 // parseSwitchArgs parses the argument shape shared by switch-session and
