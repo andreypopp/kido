@@ -11,7 +11,7 @@ short=$(git rev-parse --short "$sha")
 id=
 i=0
 while [ -z "$id" ]; do
-	id=$(gh run list --commit "$sha" --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
+	id=$(gh run list --commit "$sha" --json databaseId,url -q '.[0] | "\(.databaseId) \(.url)"' 2>/dev/null || true)
 	[ -n "$id" ] && break
 	i=$((i + 1))
 	if [ $i -ge 30 ]; then
@@ -20,7 +20,10 @@ while [ -z "$id" ]; do
 	fi
 	sleep 10
 done
-echo "$short: run $id"
+url=${id#* }
+id=${id%% *}
+# OSC 8: the run id is a link to the run in a terminal that draws them.
+printf '%s: run \033]8;;%s\033\\%s\033]8;;\033\\\n' "$short" "$url" "$id"
 
 rc=0
 gh run watch "$id" --exit-status >/dev/null 2>&1 || rc=$?
