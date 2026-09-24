@@ -298,27 +298,31 @@ func TestSplitPaneSurvivesAFinishedRunAndTheWindowGoesPlain(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	runWindowID, runPaneID, runID := h.asyncBashIDs(nil, "splitrun", "sleep", "1")
-	// The split outlives the collection below by waiting on a file this
-	// test creates, rather than on a duration: a sleep that happened to
-	// end while the run's pane was being collected would be
-	// indistinguishable from the window taking the split with it.
+	// The run ends when this test says so, and the split outlives the
+	// collection below by waiting on a second file: neither waits on a
+	// duration, since a pane dead for exactly one linger is a window a
+	// loaded runner's polls can miss whole (measured: macOS CI saw the
+	// pane already collected before it saw it dead).
+	finish := filepath.Join(h.dir, "splitrun-finish")
 	stop := filepath.Join(h.dir, "splitrun-stop")
+	runWindowID, runPaneID, runID := h.asyncBashIDs(nil, "splitrun",
+		"sh", "-c", fmt.Sprintf("while [ ! -f %s ]; do sleep 0.1; done", finish))
 	splitPaneID := h.in("split-window", "-P", "-F", "#{pane_id}", "-t", runWindowID,
 		"-c", h.dir, "sh", "-c", fmt.Sprintf("while [ ! -f %s ]; do sleep 0.1; done", stop))
+	// The sidebar draws the run before anything collects it, which is what
+	// makes its absence below mean something.
+	h.waitRow("splitrun")
 
+	if err := os.WriteFile(finish, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	info := h.waitOutcome(runID)
 	if info.Outcome != "completed" {
 		t.Fatalf("kido runs reports outcome %q, want completed", info.Outcome)
 	}
-	h.waitFor(func() bool { return h.paneDead(runPaneID) }, settle,
-		msgf("run pane %s to go dead once its command exits", runPaneID))
 	if h.paneDead(splitPaneID) {
 		t.Fatalf("split pane %s is dead already; it should still be waiting on %s", splitPaneID, stop)
 	}
-	// The sidebar draws the finished run before anything collects it, which
-	// is what makes its absence below mean something.
-	h.waitRow("splitrun")
 
 	// The linger, and the sweep behind it, collect the run's dead pane and
 	// nothing else.
