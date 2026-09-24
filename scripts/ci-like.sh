@@ -5,7 +5,8 @@
 # `go test -parallel N` on every core does.
 #
 # Usage: scripts/ci-like.sh [--cpus N] [--memory SIZE] [--timeout SECONDS]
-#                            [--cpu-shares N] [--contend N] -- <command...>
+#                            [--cpu-shares N] [--contend N] [--budget N]
+#                            -- <command...>
 #
 #   --cpus N        CPU quota handed to the container (default 0.5)
 #   --memory SIZE   memory limit, podman syntax e.g. 1g (default 1g)
@@ -15,6 +16,17 @@
 #                   outweighed by them)
 #   --contend N     start N independent busy sibling containers (each
 #                   spinning 16 threads) before running, removed on exit
+#   --budget N      total host cores this run may use, test container and
+#                   siblings together (default 2)
+#
+# A run never takes more of the host than --budget: the test container gets
+# --cpus, and whatever is left of the budget is split as a CPU quota across
+# the --contend siblings, however many threads each of them spins. The cap
+# matters because the siblings exist to be busy - uncapped, N of them at 16
+# spinning threads saturate every core the podman machine has, which are
+# the host's cores, and the machine that is being kept honest for one
+# reproduction stalls every other thing running on the box. Contention is
+# for chasing one named failure; a whole-suite run wants no siblings at all.
 #
 # A CPU quota alone throttles the whole test container in lockstep - the
 # command being tested and its own child processes pause and resume
@@ -33,12 +45,23 @@
 # /tmp inside the container) regardless of what the host has set, so this
 # never touches the host's tmux, kido or state dir.
 #
+# The command runs as a non-root uid, the one owning the bind-mounted repo
+# - a GitHub runner is the `runner` user, and a test asserting a file
+# chmodded to 000 is unreadable holds for nobody else. Under rootless
+# podman that is --userns=keep-id, which maps the caller's uid to itself
+# inside the container and leaves the bind mount writable with no chown;
+# under a rootful podman the mapping is already the identity, so the uid
+# is passed with --user instead. The locale is the image's (C.UTF-8, see
+# its Dockerfile), so no caller has to pass one.
+#
 # The env -u list is the one AGENTS.md's "Working here as a spawned agent"
 # gives for running the suites: it strips the agent-tracking variables so
 # the command runs as it would on a CI runner, not as a spawned subagent.
 #
 # The image is built once per tmux fork revision and cached by a tag that
-# includes it (kido-ci-like:<sha>), so a tap bump rebuilds automatically.
+# includes it and a digest of the Dockerfile (kido-ci-like:<sha>-<digest>),
+# so a tap bump or an edit to the image rebuilds automatically; podman's
+# own layer cache keeps the rebuild off the tmux compile.
 
 set -euo pipefail
 
@@ -47,6 +70,7 @@ memory=1g
 timeout_s=300
 cpu_shares=
 contend=0
+budget=2
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -68,6 +92,10 @@ while [ $# -gt 0 ]; do
 		;;
 	--contend)
 		contend=$2
+		shift 2
+		;;
+	--budget)
+		budget=$2
 		shift 2
 		;;
 	--)
@@ -117,7 +145,8 @@ if [ "$machine_state" != "true" ]; then
 fi
 
 tmux_revision=$("$script_dir/install-tmux-fork.sh" --print-revision)
-image="kido-ci-like:$tmux_revision"
+dockerfile_digest=$( (shasum -a 256 "$script_dir/ci-like/Dockerfile" 2>/dev/null || sha256sum "$script_dir/ci-like/Dockerfile") | cut -c1-12)
+image="kido-ci-like:$tmux_revision-$dockerfile_digest"
 
 if ! "$podman" image exists "$image" 2>/dev/null; then
 	echo "==> building $image (first build compiles the tmux fork from source; can take several minutes)" >&2
@@ -126,6 +155,14 @@ if ! "$podman" image exists "$image" 2>/dev/null; then
 		-t "$image" \
 		-f "$script_dir/ci-like/Dockerfile" \
 		"$script_dir"
+fi
+
+userns_args=()
+if [ "$("$podman" info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" = "true" ]; then
+	userns_args=(--userns=keep-id)
+else
+	repo_owner=$(stat -f '%u:%g' "$repo_root" 2>/dev/null || stat -c '%u:%g' "$repo_root")
+	userns_args=(--user "$repo_owner")
 fi
 
 env_args=()
@@ -145,10 +182,15 @@ cleanup() {
 trap cleanup EXIT
 
 if [ "$contend" -gt 0 ]; then
-	echo "==> starting $contend busy sibling container(s) for contention" >&2
+	sibling_cpus=$(awk -v b="$budget" -v c="$cpus" -v n="$contend" 'BEGIN{printf "%.3f", (b-c)/n}')
+	if awk -v s="$sibling_cpus" 'BEGIN{exit !(s <= 0)}'; then
+		echo "ci-like.sh: --cpus $cpus leaves nothing of the --budget $budget for $contend sibling(s); raise --budget or lower --cpus" >&2
+		exit 1
+	fi
+	echo "==> starting $contend busy sibling container(s) for contention, $sibling_cpus cpu each (budget $budget total)" >&2
 	for i in $(seq 1 "$contend"); do
 		name="kido-ci-like-busy-$$-$i"
-		"$podman" run -d --rm --name "$name" busybox \
+		"$podman" run -d --rm --name "$name" --cpus "$sibling_cpus" busybox \
 			sh -c 'for i in $(seq 1 16); do (while true; do :; done) & done; wait' >/dev/null
 		busy_names+=("$name")
 	done
@@ -176,11 +218,13 @@ status=0
 	--cpus "$cpus" \
 	--memory "$memory" \
 	"${cpu_shares_args[@]}" \
+	"${userns_args[@]}" \
 	-e KIDO_STATE_DIR=/tmp/kido-state \
+	-e HOME=/home/ci \
 	"${env_args[@]}" \
 	-v "$repo_root:/repo:Z" \
 	-v kido-ci-like-gomodcache:/go/pkg/mod \
-	-v kido-ci-like-gobuildcache:/root/.cache/go-build \
+	-v kido-ci-like-gocache:/gocache \
 	-w /repo \
 	"$image" \
 	env -u KIDO_AGENT_PARENT_INSTANCE -u KIDO_AGENT_DEPTH -u KIDO_AGENT_TASK_FILE -u KIDO_AGENT_PARENT_PID -u TMUX_PANE \

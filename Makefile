@@ -30,5 +30,7 @@ e2e:
 # reproduces a CI-runner-only failure in a CPU/memory-capped Linux
 # container instead of by loading the host, e.g.:
 #   make ci-like ARGS="--cpus 0.25 -- go test ./cmd/kido/ -run TestFoo"
+# a run is bounded to --budget host cores in total (default 2), siblings
+# included; --contend is for one named failure, not for a whole suite
 ci-like:
 	./scripts/ci-like.sh $(ARGS)
