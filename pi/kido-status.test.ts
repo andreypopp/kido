@@ -3153,12 +3153,16 @@ test("an ask aborted while its send is in flight leaves no liveness watch runnin
       await new Promise((r) => setTimeout(r, 100)); // still inside the send
       ac.abort();
       // Not instant, unlike the case above: execute cannot return before
-      // the send it is awaiting does, and that await is capped at 5s.
-      const result = await settlesWithin(p, 3000);
+      // the send it is awaiting does, and that await is capped at 5s by
+      // runKido's own timeoutMs - a real subprocess spawn, not a mock -
+      // so the bound here has to clear 5s with room for a loaded runner's
+      // scheduling on top, not merely clear the 400ms delay this send is
+      // given in the fast case.
+      const result = await settlesWithin(p, 9000);
       assert.match(result.content[0].text, /interrupted/);
 
       const readings = () => fx.parentAliveCalls().filter((args) => args.includes("peer-a-instance")).length;
-      await pollForStable(readings, 400, 3000, "the liveness readings for an abandoned ask to stop");
+      await pollForStable(readings, 400, 6000, "the liveness readings for an abandoned ask to stop");
     });
   } finally {
     fx.restore();

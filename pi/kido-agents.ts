@@ -1134,10 +1134,16 @@ export default function (pi: ExtensionAPI) {
       pendingOutbound.set(id, { targetSession: target.id, settle });
       // pi hands every tool the turn's AbortSignal, and Esc aborts it. A
       // wait that ignores it is a turn the human cannot end, since pi's
-      // own abort path waits for the tool call to return. Listening is
-      // enough: addEventListener on an already-aborted signal never fires,
-      // but pi does not call a tool whose signal is already aborted.
-      signal?.addEventListener("abort", onAbort, { once: true });
+      // own abort path waits for the tool call to return. addEventListener
+      // on an already-aborted signal never fires - true of the signal pi
+      // hands in, but not of this one any more: the prechecks above this
+      // point are themselves awaits, and an abort landing during one of
+      // them reaches this line already aborted. Checked explicitly rather
+      // than relied on to have already fired, since "pi does not call a
+      // tool whose signal is already aborted" is a fact about the call,
+      // not about every await inside it.
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener("abort", onAbort, { once: true });
 
       // target.id, not params.to: passing the resolved id removes a second
       // resolution inside kido ask_agent that could disagree with this one.
