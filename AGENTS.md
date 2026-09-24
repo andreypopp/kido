@@ -599,11 +599,24 @@ build it paid for).
   the half with teeth. What it measures is the **command's** own
   duration, read off the output file's last write rather than the
   wrapper's return, because the wrapper's ending legitimately waits out
-  a stalled send or two and would drown the signal. Run against a
-  wrapper that sends from the copy path it prints `the command took
-  2.013580423s, want under 1.4s`. Its second assertion, the notice's
-  `N lines not streamed`, is readable only because a stalled inbox still
-  records what arrived.
+  a stalled send or two and would drown the signal. What that duration
+  is compared against is **measured in the test**, not written down: the
+  same command through the same wrapper with no parent configured, the
+  one arrangement that cannot block, and the budget is twice that
+  baseline. A constant budget measures the machine — the version that
+  bounded the command at 1.4s went red on a loaded macOS runner in the
+  half that cannot block at all (`the command took 2.93s, want under
+  1.4s`), and it stays green only while the machine is quick. The
+  stalled wire deadline is scaled to the same baseline and kept half as
+  long again as the budget, because a send made from the copy path
+  blocks *while* the command runs and so costs one deadline rather than
+  a deadline on top of the run; at two thirds it fails by 14ms, which is
+  no margin at all. Run against a wrapper that sends from the copy path
+  it prints `the command took 3.122547222s, want under 2.074312648s
+  (1.037156324s with no parent at all, and a 3.111468972s wire deadline
+  to block on)`. Its second assertion, the notice's `N lines not
+  streamed`, is readable only because a stalled inbox still records what
+  arrived.
 - **`TestCompletionNoticeFollowsTheFinalChunk`** — the batch interval is
   set *longer than the whole run* on purpose, and the command's last
   line has no newline: both make the only chunk there is come from the
@@ -615,7 +628,14 @@ build it paid for).
   one every 30ms. Written in a burst they arrive in one `Write` and are
   coalesced by the pipe alone, so a wrapper sending one envelope per
   line passes; measured, that version of the test stayed green and the
-  e2e twin reported `50 lines arrived as 50 envelopes`.
+  e2e twin reported `50 lines arrived as 50 envelopes`. The batch window
+  is set far wider than that spacing (2s against 30ms) and the envelope
+  count is judged against the number of windows the run **actually
+  spanned**, `elapsed/batch + 2`, for the converse reason: a fixed count
+  measures how far a loaded machine stretched the gaps, which is how
+  this went red on macOS with `20 lines arrived as 15 envelopes`. Under
+  the same load the per-line wrapper still fails it, `20 envelopes over
+  3.419727792s, want at most 3`.
 - **`TestStreamNeverPastes`** — the same shape, and the same load-
   bearing assertion, as `TestAskAgentRefusesACallerWithNoReplyPath`: the
   pane was not typed into. A build's output tail typed into whatever

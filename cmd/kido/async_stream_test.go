@@ -112,27 +112,45 @@ func TestStreamNeverPastes(t *testing.T) {
 // The lines are written *slowly* on purpose: written in one burst they
 // would be coalesced by the pipe alone, and a wrapper sending one
 // envelope per line would pass.
+//
+// The batch window is set far wider than that spacing, and the count is
+// judged against the number of windows the run actually spanned, so the
+// assertion reads the wrapper's batching rather than the machine's
+// speed: on a loaded runner the gaps between lines stretch, and a fixed
+// count of envelopes is a measure of how far they stretched.
 func TestStreamCoalescesAndStripsAnsi(t *testing.T) {
+	const lines = 20
+	const writeEvery = 30 * time.Millisecond
+	const batch = 2 * time.Second
+
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	in := streamParent(t, "root-inst", "ok\n")
 	t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "root-inst")
-	withStreamKnobs(t, 100*time.Millisecond, 20*time.Millisecond, 100*time.Millisecond)
+	withStreamKnobs(t, batch, 20*time.Millisecond, 100*time.Millisecond)
 
-	id := startAsyncRun(t, "sh", "-c", `for i in $(seq 1 20); do printf '\033[32mline %s\033[0m\n' $i; sleep 0.03; done`)
+	script := fmt.Sprintf(`for i in $(seq 1 %d); do printf '\033[32mline %%s\033[0m\n' $i; sleep %.3f; done`, lines, writeEvery.Seconds())
+	id := startAsyncRun(t, "sh", "-c", script)
+	start := time.Now()
 	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", id, "--name", "chatty", "--stream"}) })
+	elapsed := time.Since(start)
 
 	chunks := streamText(t, envelopes(t, in))
 	if len(chunks) == 0 {
 		t.Fatalf("no stream envelopes arrived at all")
 	}
-	if len(chunks) > 10 {
-		t.Errorf("20 lines arrived as %d envelopes, want them coalesced into far fewer", len(chunks))
+	// A batching wrapper can send at most one chunk per window the run
+	// spanned, plus the one its close flushes. A wrapper sending one
+	// envelope per line sends all of them however long the run took.
+	want := int(elapsed/batch) + 2
+	if len(chunks) > want {
+		t.Errorf("%d lines written %v apart arrived as %d envelopes over %v, want at most %d: a chunk is a %v window's worth of output, not a line",
+			lines, writeEvery, len(chunks), elapsed, want, batch)
 	}
 	joined := strings.Join(chunks, "\n")
 	if strings.ContainsRune(joined, 0x1b) {
 		t.Errorf("streamed text carries an escape byte: %q", joined)
 	}
-	for _, want := range []string{"line 1", "line 20"} {
+	for _, want := range []string{"line 1", fmt.Sprintf("line %d", lines)} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("streamed text = %q, want it to carry %q", joined, want)
 		}
@@ -202,14 +220,37 @@ func TestCompletionNoticeFollowsTheFinalChunk(t *testing.T) {
 // half with the teeth. What it measures is the *command's* own duration,
 // read off the output file's last write, because the wrapper's own
 // ending legitimately waits out a stalled send or two and would drown it.
+//
+// What that duration is compared against is measured here rather than
+// written down: the same command through the same wrapper with no parent
+// configured at all, which is the one arrangement that cannot block
+// because there is no address to dial. A constant budget measures the
+// machine instead of the wrapper, and on a loaded macOS runner the
+// unblockable half of this test was the one that failed it.
 func TestWrapperDoesNotBlockOnADeadParent(t *testing.T) {
 	const lines = 60
 	const writeEvery = 10 * time.Millisecond
-	// What the command takes on its own, plus room for a loaded machine -
-	// and comfortably under the stalled wire deadline below, which is what
-	// a wrapper that sent from the copy path would spend before the output
-	// file saw the next line.
-	const childBudget = lines*writeEvery + 800*time.Millisecond
+
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "")
+	withStreamKnobs(t, 20*time.Millisecond, 20*time.Millisecond, 100*time.Millisecond)
+	_, baseline := runStreamingChild(t, lines, writeEvery)
+
+	// A parent that cannot take the output may cost the command as much
+	// again as it cost with no parent at all - room for the run-to-run
+	// spread of a loaded machine, which is what a fixed figure here could
+	// never be given.
+	budget := 2 * baseline
+	// The deadline a stalled parent costs a sender is scaled to the same
+	// baseline and kept half as long again as that budget, so one blocked
+	// send puts the command over it however slow the machine is. It has
+	// to clear the budget rather than the baseline: a send made from the
+	// copy path blocks *while* the command is running, so what such a
+	// wrapper costs is one deadline, not a deadline on top of the run.
+	// Scaled rather than fixed for the converse reason - a fixed deadline
+	// is eventually small beside a slow machine's own noise, and the test
+	// stops being able to see a wrapper that waits at all.
+	stalledWire := max(3*baseline, 3*time.Second)
 
 	t.Run("nothing listening", func(t *testing.T) {
 		t.Setenv("KIDO_STATE_DIR", t.TempDir())
@@ -225,8 +266,8 @@ func TestWrapperDoesNotBlockOnADeadParent(t *testing.T) {
 		withStreamKnobs(t, 20*time.Millisecond, 20*time.Millisecond, 100*time.Millisecond)
 
 		id, child := runStreamingChild(t, lines, writeEvery)
-		if child > childBudget {
-			t.Errorf("the command took %v, want under %v: a parent that cannot be reached must cost it nothing", child, childBudget)
+		if child > budget {
+			t.Errorf("the command took %v, want under %v (%v with no parent at all): a parent that cannot be reached must cost it nothing", child, budget, baseline)
 		}
 		if got := countLines(t, subrun.OutputPath(id)); got != lines {
 			t.Errorf("output file has %d lines, want all %d: the file is the source of truth", got, lines)
@@ -238,11 +279,12 @@ func TestWrapperDoesNotBlockOnADeadParent(t *testing.T) {
 		in := streamParent(t, "root-inst", "")
 		t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "root-inst")
 		withStreamKnobs(t, 20*time.Millisecond, 20*time.Millisecond, 100*time.Millisecond)
-		withInboxTimeout(t, 2*time.Second)
+		withInboxTimeout(t, stalledWire)
 
 		id, child := runStreamingChild(t, lines, writeEvery)
-		if child > childBudget {
-			t.Errorf("the command took %v, want under %v: a stalled parent must not be waited on by the child", child, childBudget)
+		if child > budget {
+			t.Errorf("the command took %v, want under %v (%v with no parent at all, and a %v wire deadline to block on): a stalled parent must not be waited on by the child",
+				child, budget, baseline, stalledWire)
 		}
 		if got := countLines(t, subrun.OutputPath(id)); got != lines {
 			t.Errorf("output file has %d lines, want all %d", got, lines)
