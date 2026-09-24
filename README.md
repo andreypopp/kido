@@ -30,10 +30,12 @@ review
    Claude Code reports its status. If you use pi, `kido setup-pi` installs
    its two extensions into `~/.pi/agent/extensions/`.
 
-4. Optional, zsh only: `kido setup-zsh` adds a marked block to `~/.zshrc`
-   sourcing the script that emits the OSC 133 markers tmux reads to tell
-   whether a pane is running a command. Shells already running are
-   unaffected.
+4. Optional: `kido setup-zsh` adds a marked block to `~/.zshrc`, and
+   `kido setup-bash` one to `~/.bashrc` (and to the file a login shell
+   reads, since tmux starts a pane's shell as one), sourcing the script
+   that emits the OSC 133 markers tmux reads to tell whether a pane is
+   running a command. The bash one needs bash 4.4 or newer, which macOS's
+   own `/bin/bash` is not. Shells already running are unaffected.
 
 5. Optional: bind the popup picker, which is not bound by default (see
    Popup for what the wrapping is for):
@@ -44,8 +46,8 @@ review
    `prefix K` hides and shows it, `prefix k` toggles focus, `/` searches,
    and `prefix P` opens the picker if you bound it.
 
-Both `setup-tmux` and `setup-zsh` source the shipped file only if it is
-there. A second run leaves the block alone; a block pointing elsewhere is
+`setup-tmux`, `setup-zsh` and `setup-bash` source the shipped file only
+if it is there. A second run leaves the block alone; a block pointing elsewhere is
 rewritten in place.
 
 ## Keys

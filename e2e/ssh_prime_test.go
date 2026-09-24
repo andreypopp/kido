@@ -43,7 +43,7 @@ func integratedShellPane(t *testing.T, h *harness) string {
 
 	pane := h.newWindow("alpha", "")
 	h.waitPaneCommand(pane, "zsh")
-	h.waitZshRow("╶  zsh", "")
+	h.waitShellRow("╶  zsh", "")
 	return pane
 }
 
@@ -76,7 +76,7 @@ func TestKidoSSHPrimesARemoteShell(t *testing.T) {
 	reports := func(d time.Duration) bool {
 		deadline := time.Now().Add(d)
 		for time.Now().Before(deadline) {
-			if h.zshRow("╶✓ ssh localhost", "32") {
+			if h.shellRow("╶✓ ssh localhost", "32") {
 				return true
 			}
 			time.Sleep(100 * time.Millisecond)
@@ -93,7 +93,7 @@ func TestKidoSSHPrimesARemoteShell(t *testing.T) {
 	}
 	// The negative control, and the claim the rest of the test rests on:
 	// this far side says nothing on its own.
-	if h.zshRow("╶✓ ssh localhost", "32") || h.zshRow("╶◼ ssh localhost", "") {
+	if h.shellRow("╶✓ ssh localhost", "32") || h.shellRow("╶◼ ssh localhost", "") {
 		t.Fatalf("the unprimed remote reported after all; rows are %q", h.rows())
 	}
 	remote("exit")

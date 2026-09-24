@@ -71,7 +71,7 @@ func TestSSHRemoteShellStatus(t *testing.T) {
 
 	pane := h.newWindow("alpha", "")
 	h.waitPaneCommand(pane, "zsh")
-	h.waitZshRow("╶  zsh", "")
+	h.waitShellRow("╶  zsh", "")
 
 	// ssh is a child of the pane's shell, and forces a pty for a remote
 	// command that is itself an interactive shell - which is what makes
@@ -94,7 +94,7 @@ func TestSSHRemoteShellStatus(t *testing.T) {
 	}
 	// The far side has reached a prompt: the row is an idle integrated
 	// shell's, in the field, and still names the destination.
-	h.waitZshRow("╶  ssh localhost", "")
+	h.waitShellRow("╶  ssh localhost", "")
 
 	// A first remote command, whose exit status crossing the connection is
 	// the first thing here that a suppressed ssh pane could not show.
@@ -107,16 +107,16 @@ func TestSSHRemoteShellStatus(t *testing.T) {
 	// that prompt in a later second than its own start, which is why this
 	// is a sleep and not a `true`.
 	h.in("send-keys", "-t", pane, "sleep 1", "Enter")
-	h.waitZshRow("╶✓ ssh localhost", "32")
+	h.waitShellRow("╶✓ ssh localhost", "32")
 
 	// A command on the far side. Nothing local runs, and the local pane's
 	// foreground process is still ssh; the only thing that moves is the
 	// OSC 133 state the remote shell writes down the connection.
 	h.in("send-keys", "-t", pane, "sleep 3", "Enter")
-	h.waitZshRow(running("╶◼ ssh localhost", "sleep 3"), "")
+	h.waitShellRow(running("╶◼ ssh localhost", "sleep 3"), "")
 
 	// It exits zero on the far side, with the client in another window,
 	// so the remote exit status reaches the row too.
-	h.waitFor(func() bool { return h.zshRow("╶✓ ssh localhost", "32") },
+	h.waitFor(func() bool { return h.shellRow("╶✓ ssh localhost", "32") },
 		10*time.Second, msgf("a checkmark after the remote sleep"))
 }

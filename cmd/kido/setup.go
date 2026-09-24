@@ -129,7 +129,7 @@ type blockSpec struct {
 	rel        string                       // the shipped file, under share/kido
 	begin, end string                       // the markers around the block
 	body       func(string) (string, error) // the whole block, markers included
-	reload     string                       // printed last: how to load it
+	reload     string                       // printed last: how to load it, if anything
 }
 
 // installBlock is what every setup command that edits a config file does:
@@ -185,6 +185,8 @@ func installBlock(spec blockSpec) error {
 		}
 		fmt.Printf("%s the kido block sourcing %s in %s\n", action, shipped, shown)
 	}
-	fmt.Println(spec.reload)
+	if spec.reload != "" {
+		fmt.Println(spec.reload)
+	}
 	return nil
 }

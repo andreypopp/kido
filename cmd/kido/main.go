@@ -30,7 +30,7 @@ import (
 // kept in one place so unknownSubcommand can name them; a subcommand
 // added to the switch and forgotten here just gets a plainer error.
 var subcommands = []string{
-	"hook", "setup-pi", "setup-zsh", "setup-tmux", "setup-claude",
+	"hook", "setup-pi", "setup-zsh", "setup-bash", "setup-tmux", "setup-claude",
 	"agent-status", "set_status", "list_agents", "agent-alive", "children-alive", "debug-log",
 	"inbox-path", "snapshot", "switch-session", "switch-window", "prompt",
 	"message_agent", "ask_agent", "notify_parent", "steer_subagent",
@@ -130,6 +130,13 @@ func main() {
 				os.Exit(1)
 			}
 			dispatch("setup-zsh", setupZsh)
+			return
+		case "setup-bash":
+			if len(os.Args) > 2 {
+				fmt.Fprintln(os.Stderr, "usage: kido setup-bash")
+				os.Exit(1)
+			}
+			dispatch("setup-bash", setupBash)
 			return
 		case "setup-tmux":
 			if len(os.Args) > 2 {

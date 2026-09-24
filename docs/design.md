@@ -1481,8 +1481,24 @@ side says so: tmux parses OSC 133 off the pane's output stream and never
 learns the markers crossed a network, and `observeRemote` (internal/ui)
 latches a pane once its far side marks a prompt later than the local
 shell marked the ssh as started. All of that needs the remote shell to
-source `shell/zsh/integration.zsh`. On a host where nobody has installed
-anything the pane stays silent for the life of the connection.
+source an integration of kido's - `shell/zsh/integration.zsh`, or
+`shell/bash/integration.bash`, which emit the same four markers. On a
+host where nobody has installed anything the pane stays silent for the
+life of the connection.
+
+A local pane gets its copy from an rc file instead: `kido setup-zsh` and
+`kido setup-bash` keep a marked block sourcing the shipped file. The bash
+half hangs its command-start marker off `PS0` and its prompt marker off
+`PROMPT_COMMAND`, which is how kitty does it and is what makes the start
+marker fire once per command line where a `DEBUG` trap fires once per
+simple command; it needs bash 4.4 for `PS0`, and an older bash reports
+nothing rather than half of it. `setup-bash` writes its block twice over,
+once in `~/.bashrc` and once in whichever of `~/.bash_profile`,
+`~/.bash_login` and `~/.profile` a login bash reads, because tmux starts
+a pane's shell as a login shell and bash reads no `~/.bashrc` there. The
+block is POSIX sh and guarded on `$BASH_VERSION`, since the file it lands
+in can be the `~/.profile` every other sh reads too, and the integration
+is a no-op when sourced twice.
 
 `kido ssh` is that host's answer: it sends the integration along with the
 connection. The design is kitty's ssh kitten, cut down to the one thing
@@ -1551,10 +1567,11 @@ tty behave as they would with no kido in front of them.
 
 The remote login shell is read from `$SHELL`, which sshd sets from the
 password database, so detection costs no extra round trip. Only zsh is
-primed.
+primed: the bash integration ships and installs locally, but nothing
+sends it over a connection yet.
 
 Deliberately not built: terminfo shipping or compilation, a kido binary
-on the remote, ControlMaster sharing, askpass, bash and fish. kitty needs
+on the remote, ControlMaster sharing, askpass, fish. kitty needs
 those; a shell that only has to emit four escape sequences does not.
 
 ## Knobs

@@ -154,7 +154,7 @@ func TestShellStatusRow(t *testing.T) {
 	// rc left behind, with no "C" before it: shellOutcome's start-time
 	// guard is what keeps that from marking a pane nothing has run in, so
 	// this row is blank without the test ever visiting the pane.
-	h.waitZshRow("╶  zsh", "")
+	h.waitShellRow("╶  zsh", "")
 
 	h.in("send-keys", "-t", pane, "sleep 5", "Enter")
 	h.waitPaneCommand(pane, "sleep")
@@ -172,18 +172,18 @@ func TestShellStatusRow(t *testing.T) {
 	if h.in("display-message", "-p", "-t", pane, "#{pane_command_line}") != "" {
 		sleepRow = "╶◼ sleep 5"
 	}
-	h.waitZshRow(sleepRow, "")
+	h.waitShellRow(sleepRow, "")
 
 	// The sleep exits zero, and the client never left home, so it settles
 	// on the checkmark, not blank - this is just a sync point before the
 	// next command.
-	h.waitFor(func() bool { return h.zshRow("╶✓ zsh", "32") },
+	h.waitFor(func() bool { return h.shellRow("╶✓ zsh", "32") },
 		10*time.Second, msgf("the row a checkmark after the sleep"))
 
 	// A command that fails leaves the row red until the pane is visited,
 	// overriding the checkmark straight away.
 	h.in("send-keys", "-t", pane, "false", "Enter")
-	h.waitZshRow("╶◼ zsh", "31")
+	h.waitShellRow("╶◼ zsh", "31")
 
 	// Visiting the pane clears it: the failure is older than the visit.
 	h.in("select-window", "-t", pane)
@@ -191,7 +191,7 @@ func TestShellStatusRow(t *testing.T) {
 	h.waitSelected("zsh")
 	h.in("select-window", "-t", home)
 	h.in("select-pane", "-t", home)
-	h.waitZshRow("╶  zsh", "")
+	h.waitShellRow("╶  zsh", "")
 
 	// CommandEndTime has one-second resolution and the seen comparison is
 	// strict (see shellOutcome), so let the visit above age past its
@@ -202,7 +202,7 @@ func TestShellStatusRow(t *testing.T) {
 	// A command that succeeds while the client is looking at a different
 	// pane leaves the row a green checkmark, same as a done agent pane.
 	h.in("send-keys", "-t", pane, "true", "Enter")
-	h.waitZshRow("╶✓ zsh", "32")
+	h.waitShellRow("╶✓ zsh", "32")
 
 	// Visiting the pane clears it: the success is older than the visit.
 	h.in("select-window", "-t", pane)
@@ -210,16 +210,16 @@ func TestShellStatusRow(t *testing.T) {
 	h.waitSelected("zsh")
 	h.in("select-window", "-t", home)
 	h.in("select-pane", "-t", home)
-	h.waitZshRow("╶  zsh", "")
+	h.waitShellRow("╶  zsh", "")
 }
 
-// zshRow reports whether the sidebar holds exactly the row want, with (or
+// shellRow reports whether the sidebar holds exactly the row want, with (or
 // without) the given colour on it. want "" asks only that the row is not
 // red - the running indicator is green too, so callers checking the running
 // or idle row pass "" and callers checking a settled outcome pass "31" or
 // "32". Text and colour are read from one capture, so a row cannot be
 // matched in one frame and coloured in another.
-func (h *harness) zshRow(want string, color string) bool {
+func (h *harness) shellRow(want string, color string) bool {
 	h.t.Helper()
 	for _, line := range h.capture() {
 		if sideText(line) == want {
@@ -233,9 +233,101 @@ func (h *harness) zshRow(want string, color string) bool {
 	return false
 }
 
-func (h *harness) waitZshRow(want string, color string) {
+func (h *harness) waitShellRow(want string, color string) {
 	h.t.Helper()
-	h.waitFor(func() bool { return h.zshRow(want, color) }, settle, func() string {
+	h.waitFor(func() bool { return h.shellRow(want, color) }, settle, func() string {
 		return fmt.Sprintf("row %q (color=%q); rows are %q", want, color, h.rows())
 	})
+}
+
+// modernBash returns a bash new enough for PS0, which
+// shell/bash/integration.bash is built on and which macOS's own 3.2
+// /bin/bash does not have.
+func modernBash(t *testing.T) string {
+	t.Helper()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash in PATH")
+	}
+	out, err := exec.Command(bash, "-c",
+		`((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))) && echo yes`).Output()
+	if err != nil || strings.TrimSpace(string(out)) != "yes" {
+		t.Skip("the bash in PATH is older than 4.4, which PS0 needs")
+	}
+	return bash
+}
+
+// TestBashShellStatusRow is TestShellStatusRow's twin for bash: a plain
+// bash pane with shell/bash/integration.bash sourced the way `kido
+// setup-bash`'s block sources it carries the same indicators, off the
+// same OSC 133 markers, through the same states.
+func TestBashShellStatusRow(t *testing.T) {
+	t.Parallel()
+	bash := modernBash(t)
+	h := start(t, "alpha")
+
+	home := ""
+	for _, p := range h.panes() {
+		if p.Session == "alpha" && p.Active {
+			home = p.ID
+		}
+	}
+	if home == "" {
+		t.Fatal("no active pane in alpha")
+	}
+
+	script, err := filepath.Abs(filepath.Join("..", "shell", "bash", "integration.bash"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc := filepath.Join(h.dir, "bashrc")
+	if err := os.WriteFile(rc, []byte(fmt.Sprintf("source %q\n", script)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// --rcfile rather than a home of its own: bash has no ZDOTDIR, and
+	// the test must never read the developer's rc files. -i because the
+	// pane is a tty but the shell is exec'd with argv, which is what
+	// makes the window's first process bash itself.
+	pane := h.newWindow("alpha", "", bash, "--rcfile", rc, "-i")
+	h.waitPaneCommand(pane, "bash")
+	// An idle integrated shell shows nothing, in a field that keeps the
+	// label at the column every other row starts at. bash's first prompt
+	// fires no "D" at all - nothing has run - so this row is blank
+	// without the test ever visiting the pane.
+	time.Sleep(2 * time.Second)
+	h.waitShellRow("╶  bash", "")
+
+	h.in("send-keys", "-t", pane, "sleep 5", "Enter")
+	h.waitPaneCommand(pane, "sleep")
+	// A patched tmux reports the command line the shell marked with its
+	// 133;C, and the row shows that in place of #{pane_current_command}.
+	// Read once rather than poll, for the reason TestShellStatusRow gives.
+	sleepRow := "╶◼ sleep"
+	if h.in("display-message", "-p", "-t", pane, "#{pane_command_line}") != "" {
+		sleepRow = "╶◼ sleep 5"
+	}
+	h.waitShellRow(sleepRow, "")
+
+	// The sleep exits zero, and the client never left home, so it settles
+	// on the checkmark.
+	h.waitFor(func() bool { return h.shellRow("╶✓ bash", "32") },
+		10*time.Second, msgf("the row a checkmark after the sleep"))
+
+	// A command that fails leaves the row red until the pane is visited.
+	h.in("send-keys", "-t", pane, "false", "Enter")
+	h.waitShellRow("╶◼ bash", "31")
+
+	// Visiting the pane clears it: the failure is older than the visit.
+	// Both rows are labelled bash, the harness's own pane being a bash
+	// too, so the wait is on the row losing its red rather than on
+	// h.waitSelected - which the other pane's row satisfies at once, and
+	// the test would switch away again before kido had seen the visit at
+	// all.
+	h.in("select-window", "-t", pane)
+	h.in("select-pane", "-t", pane)
+	h.waitFor(func() bool { return h.selectedRow() == "╶  bash" }, settle,
+		msgf("the visited bash row clear of its red"))
+	h.in("select-window", "-t", home)
+	h.in("select-pane", "-t", home)
+	h.waitShellRow("╶  bash", "")
 }
