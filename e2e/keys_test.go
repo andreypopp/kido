@@ -213,14 +213,12 @@ func TestCtrlSTogglesFocusWithSidebarShown(t *testing.T) {
 // TestCtrlSOpensPickerWithSidebarHidden checks that, with the sidebar
 // hidden, C-s opens kido's one-shot picker in a popup, and that q closes
 // it again. The popup runs a literal "tmux" (tmux/kido-tmux.conf), which
-// this harness resolves through tmuxDir rather than through the
-// shims/bin/tmux shim a real install has - see setup().
+// resolves through serverPathPrefix (start, via requireTmux, already
+// skips when there is no patched tmux to put there) rather than through
+// the shims/bin/tmux shim a real install has - see setup().
 func TestCtrlSOpensPickerWithSidebarHidden(t *testing.T) {
 	t.Parallel()
-	if tmuxDir == "" {
-		t.Skip("no patched tmux to resolve a literal \"tmux\" to")
-	}
-	h := startPathPrefix(t, "alpha", tmuxDir)
+	h := start(t, "alpha")
 	h.prefix("K") // hide the sidebar
 	h.waitFor(func() bool { return !h.sidebarVisible() }, settle, msgf("sidebar gone"))
 

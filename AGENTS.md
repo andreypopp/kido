@@ -334,6 +334,12 @@ the runner ships. The
 harness (`e2e/harness_test.go`) nests two tmux servers — an outer one
 hosting a pty, the inner one under test with kido as its
 `side-status-command` — and reads the sidebar back with `capture-pane`.
+The inner server's own PATH starts with the built kido's directory and
+the fork (`serverPathPrefix`), the way `serverEnv` primes a real launch:
+`kido-tmux.conf` names a bare `kido` and a bare `tmux` in bindings that
+`run-shell` resolves against the server's PATH, not a pane's. A machine
+with kido installed masks a missing entry, and runs the installed binary
+instead of the built one; CI, with neither, got exit 127.
 `cleanEnv` strips `KIDO_AGENT_*` along with `KIDO_TMUX`, because the
 suite is routinely run from inside a tracked agent's pane: everything the
 harness starts inherits that agent's parent edge, the inner tmux server

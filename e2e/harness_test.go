@@ -42,6 +42,14 @@ var (
 	nodeBin   string // the same binary named "node", for a pi pane
 	piBinDir  string // a directory holding one binary, named "pi"
 	tmuxDir   string // a directory holding one binary, named "tmux", the patched fork
+	// serverPathPrefix is the PATH prefix every inner server gets: the built
+	// kido's directory, so a bare "kido" in tmux/kido-tmux.conf's bindings
+	// resolves to the binary this harness just built rather than to
+	// whatever is installed on the machine running the suite (or nothing,
+	// on CI) - mirroring what serverEnv (cmd/kido/launch.go) does for a
+	// real launch - plus tmuxDir, for the one binding that runs a literal
+	// "tmux" (the C-s popup).
+	serverPathPrefix string
 )
 
 const (
@@ -134,6 +142,7 @@ func setup(m *testing.M) (int, error) {
 		if err := os.Symlink(tmuxBin, filepath.Join(tmuxDir, "tmux")); err != nil {
 			return 0, err
 		}
+		serverPathPrefix = filepath.Dir(kidoBin) + string(os.PathListSeparator) + tmuxDir
 	}
 	return m.Run(), nil
 }
@@ -297,12 +306,12 @@ func start(t *testing.T, session string, kidoArgs ...string) *harness {
 	return startPathPrefix(t, session, "", kidoArgs...)
 }
 
-// startPathPrefix is start with pathDir ahead of PATH for the inner tmux
-// server, so that a pane command given as a bare name resolves there. The
-// server's own environment is the only place that works: tmux looks a
-// pane's command up in the environment of the server process, not in the
-// session environment it hands the child, so `set-environment PATH` on a
-// running server does not find it.
+// startPathPrefix is start with pathDir ahead of the inner server's PATH,
+// which always carries serverPathPrefix (the built kido and the patched
+// tmux) regardless of pathDir. The server's own environment is the only
+// place either works: tmux looks a pane's command up in the environment
+// of the server process, not in the session environment it hands the
+// child, so `set-environment PATH` on a running server does not find it.
 //
 // It is a whole harness's PATH, so a fake put there shadows that name for
 // every pane of that test - including the shells the test types into,
@@ -364,6 +373,10 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 	// settings come after, so they win where they repeat a default (the
 	// side-status-width and side-status-command lines below are exactly
 	// such overrides).
+	prefix := serverPathPrefix
+	if pathDir != "" {
+		prefix = pathDir + string(os.PathListSeparator) + prefix
+	}
 	var body bytes.Buffer
 	body.Write(tmuxconf.Defaults)
 	fmt.Fprintf(&body, `
@@ -418,11 +431,8 @@ set -g side-status-command "%s%s"
 	h.must(h.tmux(h.outer, "set-option", "-g", "default-terminal", "screen-256color"))
 	// remain-on-exit keeps a dead client's error on screen, not vanishing.
 	h.must(h.tmux(h.outer, "set-option", "-g", "remain-on-exit", "on"))
-	inner := fmt.Sprintf("unset TMUX; exec %q -L %s -f %q new-session -s %s -c %q",
-		tmuxBin, h.inner, conf, session, h.dir)
-	if pathDir != "" {
-		inner = fmt.Sprintf("PATH=%q:$PATH; export PATH; ", pathDir) + inner
-	}
+	inner := fmt.Sprintf("PATH=%q:$PATH; export PATH; unset TMUX; exec %q -L %s -f %q new-session -s %s -c %q",
+		prefix, tmuxBin, h.inner, conf, session, h.dir)
 	h.must(h.tmux(h.outer, "new-window", "-d", "-t", "host", "-n", "side", inner))
 
 	h.waitFor(func() bool { return hasLine(h.sidebar(), session) }, settle,
