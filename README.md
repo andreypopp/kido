@@ -1,22 +1,11 @@
 # kido
 
-A terminal multiplexer for coding agent sessions: tmux, with a side column
-listing every session, window and pane and live status for the ones running
-an agent. Claude Code and pi both report; the sidebar renders them the same.
+A workflow on top of tmux to manage coding agents (pi and claude code are supported).
 
-```
-tmux
-┌◼ Tmux config           an agent: ◼ running, ◆ waiting, ◌ compacting, ✓ done
-└ zsh
-╶◼ cargo test            a shell running a command (red ◼ when the last failed)
-╶ ssh deploy@build-box   ssh panes show the destination
-review
-╶◆ Fix login redirect
-```
-
-kido ships its own tmux, [andreypopp/tmux](https://github.com/andreypopp/tmux)
-built as `kido-tmux`, because the side column is a fork feature. It runs on
-a socket of its own, so a stock tmux on the same machine is untouched.
+Kido runs modified tmux to gather status from every pane and to render a
+sidebar with this information. On top of that kido ships with a small set of pi
+extensions for process management (subagents, async bash tool) which are
+integrated with use tmux for supervision and status reporting.
 
 ## Install
 
@@ -30,24 +19,7 @@ Then, from a plain terminal:
 kido
 ```
 
-That is the whole setup: nothing is written into `~/.zshrc`, `~/.tmux.conf`,
-`~/.claude/settings.json` or `~/.pi/agent/extensions`. Check that the
-sidebar is on the left, `prefix K` hides and shows it, `prefix k` toggles
-focus and `/` searches.
-
-## The launcher
-
-`kido` with no arguments starts kido's server, or attaches to it if one is
-already running. Every other invocation is a subcommand.
-
-- The server lives on the tmux socket `kido`, under `$TMUX_TMPDIR` like any
-  tmux socket. kido-tmux and a stock tmux never share a server.
-- Run inside a multiplexer - `$TMUX` set, kido's own included - `kido`
-  refuses and starts nothing: nesting buys a second prefix and a second
-  status line. Run it from a plain terminal.
-- After an upgrade the server still runs the old kido-tmux and refuses the
-  new client. kido says so, and names the socket; detach and
-  `kido-tmux -L kido kill-server` once its windows are free.
+Now start using it as you are using tmux.
 
 ## Configuration
 
