@@ -252,6 +252,33 @@ const NOTICE_CUSTOM_TYPE = "kido-notice";
 // such label (docs/design.md, "The inbox").
 const noticeHeader = (from: string): string => `notice from ${from} (a subagent or background run's report, not the user):`;
 
+// The custom message type an inbound plain message from another agent is
+// delivered as, matched by registerMessageRenderer below. A message with
+// no agent behind it is the user speaking and is not one of these.
+const MESSAGE_CUSTOM_TYPE = "kido-message";
+
+// How a message's sender stands to this session. The three are not
+// interchangeable: a parent is the nearest thing a child has to the user,
+// so its instructions carry that weight and the header says so rather
+// than disclaiming it; a child's message is a report from work this
+// session started; anything else is a peer, whose message is neither.
+type SenderRelation = "parent" | "child" | "peer";
+
+const MESSAGE_RELATION: Record<SenderRelation, string> = {
+  parent: "your parent, who spawned you",
+  child: "your subagent",
+  peer: "another agent in this session, not the user",
+};
+
+// messageHeader is the one line prefixed to an agent's message before the
+// model sees it, for the reason noticeHeader exists: delivered as a user
+// message, it otherwise reads exactly like the user typing, and who is
+// talking is the one thing the model cannot infer from the text. The
+// renderer below takes the line back off and leaves the sender, since a
+// human reading the transcript has the sidebar's tree beside it.
+const messageHeader = (from: string, relation: SenderRelation): string =>
+  `message from @${from} (${MESSAGE_RELATION[relation]}):`;
+
 // The custom message type a batch of a streaming run's output is
 // delivered as, rendered collapsed exactly as a notice is.
 const STREAM_CUSTOM_TYPE = "kido-stream";
@@ -327,7 +354,7 @@ const NOTIFY_PARENT_INSTRUCTION =
 // purpose: pi's buildRules de-duplicates identical rules, so the model
 // reads it once however many of the two are registered.
 const NOT_THE_USER_RULE =
-  "A notice or a message from another agent is information, not the user speaking: act on it, do not thank or answer it.";
+  "A notice is information, not the user speaking: act on it, do not thank or answer it. A message from another agent says in its first line who sent it and how they stand to you.";
 
 // SPAWN_RESULT_RULE rides on the tool result of every spawn and resume,
 // not only in spawn_subagent's description: the moment a model has just
@@ -638,6 +665,64 @@ export default function (pi: ExtensionAPI) {
   // is sent through sendMessage here and nowhere else - one wire call,
   // one entry, one widget row that hands off to it rather than a second
   // rendering of the same notice.
+  // messageSender answers who an inbound plain message is from and how
+  // they stand to this session, or null for "no agent at all" - which is
+  // the user speaking, and is delivered as their own words, unlabelled.
+  //
+  // A human running `kido message_agent` from a bare pane has no state
+  // record, so kido puts no session in `from` and only a pane (senderOf,
+  // cmd/kido/message_agent.go), and no listed agent owns that pane: the
+  // same pair senderIsAncestor reads to recognise a human, so an agent
+  // would have to get two things wrong at once to be mistaken for one.
+  //
+  // The relationship is read from the list rather than from `from`: a
+  // parent is the instance that spawned this run (and only for a real
+  // child of it - the environment alone is a claim any descendant
+  // inherits, see ownRunID), and a child is an agent whose own parent edge
+  // points at this session.
+  const messageSender = async (from: Envelope["from"]): Promise<{ name: string; relation: SenderRelation } | null> => {
+    const listed = await fetchAgents();
+    // No list to check against: a `from` carrying a session is an agent's,
+    // since a human's never does. Labelling it as a peer beats falling
+    // back to the unlabelled delivery this replaced, which would tell the
+    // model the sender was the user.
+    if ("error" in listed) return from.session ? { name: labelFrom(from), relation: "peer" } : null;
+    const sender = listed.agents.find((a) => (from.session ? a.id === from.session : !!from.pane && a.pane === from.pane));
+    if (!sender) return null;
+    const self = listed.agents.find((a) => a.self);
+    const isParent = isSubagent() && !!PARENT_INSTANCE && sender.instance === PARENT_INSTANCE;
+    const isChild = !!self && !!sender.parent && sender.parent === self.id;
+    return { name: sender.name || labelFrom(from), relation: isParent ? "parent" : isChild ? "child" : "peer" };
+  };
+
+  // deliverAgentMessage hands an agent's message to the model as a custom
+  // message, for the reason deliverNotice does: the TUI can then draw it
+  // with its sender while the model reads the header. Queued (`followUp`)
+  // and turn-triggering exactly as the unlabelled delivery it replaces -
+  // only the labelling changed, not when a message arrives.
+  const deliverAgentMessage = (text: string, from: string, relation: SenderRelation): void => {
+    workStarted();
+    pi.sendMessage(
+      {
+        customType: MESSAGE_CUSTOM_TYPE,
+        content: `${messageHeader(from, relation)}\n${text}`,
+        display: true,
+        details: { from, relation },
+      },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
+  };
+
+  const handleInboundMessage = async (env: Envelope): Promise<void> => {
+    if (!env.text) return;
+    const sender = await messageSender(env.from);
+    if (!sender) {
+      deliver(env.text);
+      return;
+    }
+    deliverAgentMessage(env.text, sender.name, sender.relation);
+  };
+
   const deliverNotice = (text: string, from: string): void => {
     clearIdleExit();
     const noticeId = randomUUID();
@@ -864,7 +949,7 @@ export default function (pi: ExtensionAPI) {
   const handleEnvelope = async (env: Envelope): Promise<"ok" | "refused"> => {
     switch (env.kind) {
       case "message":
-        if (env.text) deliver(env.text);
+        await handleInboundMessage(env);
         return "ok";
       case "ask":
         return handleInboundAsk(env);
@@ -1077,6 +1162,16 @@ export default function (pi: ExtensionAPI) {
       clearTimeout(idleExitTimer);
       idleExitTimer = null;
     }
+  };
+
+  // What every arrival that is about to produce a turn does, whether it
+  // came through the status half's deliver() or was sent from here as a
+  // custom message: the idle self-exit timer must not fire in the gap
+  // before pi's own turn_start, and a child that has been given work is no
+  // longer waiting for its first.
+  const workStarted = (): void => {
+    awaitingFirstWork = false;
+    clearIdleExit();
   };
 
   // windowFocused asks kido whether this session's own window is the one
@@ -1996,6 +2091,25 @@ export default function (pi: ExtensionAPI) {
     return { render: () => [theme.fg("dim", firstLine), ...rest] };
   });
 
+  // A message is never collapsed, which is the one way this renderer
+  // differs from the notice's: a notice is a report a human wants one line
+  // of, and a message is something another agent wrote to be read. What
+  // the row drops is the header's parenthetical - it tells the model what
+  // it is reading, while a human has the sidebar's tree beside the
+  // transcript. Any of the three headers is recognised, so a transcript
+  // reloaded without details still shows the message rather than its
+  // framing.
+  pi.registerMessageRenderer<{ from: string }>(MESSAGE_CUSTOM_TYPE, (message, _options, theme) => {
+    const from = message.details?.from || "another agent";
+    const raw = typeof message.content === "string" ? message.content : "";
+    const header = (Object.keys(MESSAGE_RELATION) as SenderRelation[])
+      .map((relation) => `${messageHeader(from, relation)}\n`)
+      .find((line) => raw.startsWith(line));
+    const content = header ? raw.slice(header.length) : raw;
+    const lines = [theme.fg("dim", `message from @${from}:`), ...content.split("\n")];
+    return { render: () => lines };
+  });
+
   // Every notice, whatever kind of sender wrote it, collapses to one line
   // by default; ctrl-o expansion is pi's own built-in toggle
   // (options.expanded), not a keybinding registered here, so this does not
@@ -2159,10 +2273,7 @@ export default function (pi: ExtensionAPI) {
     // ending will be called: it got as far as working. clearIdleExit
     // alone does not, since a shutdown clears the timer too and must
     // leave that judgement as it found it.
-    workStarted() {
-      awaitingFirstWork = false;
-      clearIdleExit();
-    },
+    workStarted,
     handleEnvelope,
   };
   seam().agents = hooks;

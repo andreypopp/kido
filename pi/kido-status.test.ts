@@ -1120,7 +1120,12 @@ test("an inbound ask's delivered text says the message_agent reply is the whole 
 test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 raw text all reach the model", async () => {
   const fx = makeFixture();
   try {
-    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    // peer-a is listed, so its message is an agent's rather than the
+    // user's - the distinction the message kind now turns on.
+    fx.setAgents([
+      { id: "self", name: "self", parent: "", self: true, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true },
+    ]);
     const s = await startSession(fx);
     const from = { session: "peer-a", name: "peer-a" };
 
@@ -1128,7 +1133,10 @@ test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 r
     assert.ok(s.delivered.some((d) => d.text === "plain v0 text"), "v0 raw text is delivered unchanged");
 
     await sendToInbox(s.inboxPath, envelope("message", "hello", { from }));
-    assert.ok(s.delivered.some((d) => d.text === "hello"), "kind message delivers its text as-is");
+    assert.ok(
+      s.messages.some((m) => m.message.customType === "kido-message" && m.message.content.endsWith("\nhello")),
+      "kind message reaches the model as a custom message carrying its text",
+    );
 
     await sendToInbox(s.inboxPath, envelope("notice", "build finished", { from }));
     assert.ok(
@@ -1145,6 +1153,68 @@ test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 r
 
     await sendToInbox(s.inboxPath, envelope("ping", "unknown kind text", { from }));
     assert.ok(s.delivered.some((d) => d.text.includes("unrecognised message kind") && d.text.includes("unknown kind text")));
+  } finally {
+    fx.restore();
+  }
+});
+
+// A message from an agent arrives under a header naming the sender and
+// what they are to this session, the way a notice does: a message steered
+// or queued into a session otherwise reads exactly like the user typing,
+// and who is talking is the one thing the model cannot infer. The three
+// relationships are not interchangeable - a parent's message is the
+// nearest thing a child has to the user speaking, a child's is a report
+// from work this session started, a peer's is neither - so the header
+// says which, and only the peer's says "not the user".
+test("a message from an agent is labelled with its sender and their relationship; one from a shell stays the user's own words", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([
+      { id: DEFAULT_SESSION, name: "worker", parent: "boss-session", pane: "%1", instance: "self-inst", self: true, canMessage: true },
+      { id: "boss-session", name: "boss", parent: "", pane: "%2", instance: "parent-inst", self: false, canMessage: true },
+      { id: "kid-session", name: "kid", parent: DEFAULT_SESSION, pane: "%3", instance: "kid-inst", self: false, canMessage: true },
+      { id: "peer-session", name: "peer-a", parent: "", pane: "%4", instance: "peer-inst", self: false, canMessage: true },
+    ]);
+    // A subagent of "parent-inst", which is what asSubagent sets: the
+    // parent header is only right for the agent that actually spawned
+    // this session.
+    await asSubagent(DEFAULT_SESSION, async () => {
+      const s = await startSessionUsing(await freshExtensions(), fx);
+      const labelled = () => s.messages.filter((m) => m.message.customType === "kido-message").map((m) => m.message);
+
+      await sendToInbox(s.inboxPath, envelope("message", "fix the failing test\nthen report", { from: { session: "boss-session", name: "boss" } }));
+      await sendToInbox(s.inboxPath, envelope("message", "the refactor is in", { from: { session: "kid-session", name: "kid" } }));
+      await sendToInbox(s.inboxPath, envelope("message", "can you review this?", { from: { session: "peer-session", name: "peer-a" } }));
+
+      assert.deepEqual(
+        labelled().map((m) => m.content),
+        [
+          "message from @boss (your parent, who spawned you):\nfix the failing test\nthen report",
+          "message from @kid (your subagent):\nthe refactor is in",
+          "message from @peer-a (another agent in this session, not the user):\ncan you review this?",
+        ],
+        "one header line each, naming the sender and how they stand to this session, with the text from the next line on",
+      );
+
+      const renderer = s.renderers.get("kido-message");
+      assert.ok(renderer, "the agent half registered a renderer for its own message type");
+      const drawn = renderer!(labelled()[0], { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
+      assert.match(drawn, /^message from @boss:/, "the row names the sender");
+      assert.ok(!drawn.includes("who spawned you"), "the parenthetical is for the model; the transcript does not repeat it");
+      assert.ok(
+        drawn.includes("fix the failing test") && drawn.includes("then report"),
+        "and a message is drawn in full without expanding: unlike a report, it is meant to be read",
+      );
+
+      // The negative control, and the rule the whole feature turns on: a
+      // human running `kido message_agent` from a bare pane has no state
+      // record, so kido puts no session in `from` (senderOf,
+      // cmd/kido/message_agent.go) and no listed agent owns that pane.
+      // That is the user speaking, and it must stay exactly as typed.
+      await sendToInbox(s.inboxPath, envelope("message", "do this instead", { from: { session: "", pane: "%99" } as any }));
+      assert.ok(s.delivered.some((d) => d.text === "do this instead"), "a shell's message is the user's own words, delivered unlabelled");
+      assert.equal(labelled().length, 3, "and it is not dressed up as an agent's message");
+    });
   } finally {
     fx.restore();
   }
@@ -1215,10 +1285,11 @@ test("a notice reaches the model under a header naming what it is, and the heade
     assert.ok(!expanded.includes("not the user"), "nor does expanding show a header the transcript already carries");
     assert.ok(expanded.includes("needs a decision"), "expanding still shows the whole text");
 
-    // The plain "message" kind deliberately carries no sender label at
-    // all (docs/design.md, "The inbox"); nothing here may leak onto it.
-    await sendToInbox(s.inboxPath, envelope("message", "do the other thing", { from: { session: "kid-1", name: "kid-1" } }));
-    assert.ok(s.delivered.some((d) => d.text === "do the other thing"), "a plain message is still delivered unlabelled");
+    // A message from no agent at all is the user speaking, and stays
+    // plain unlabelled text (docs/design.md, "The inbox"); nothing here
+    // may leak onto it.
+    await sendToInbox(s.inboxPath, envelope("message", "do the other thing", { from: { session: "", pane: "%99" } as any }));
+    assert.ok(s.delivered.some((d) => d.text === "do the other thing"), "a shell's message is delivered unlabelled");
   } finally {
     fx.restore();
   }
@@ -1480,7 +1551,10 @@ test("an inbound notice renders a widget the instant it is received, not when it
 test("a notice is delivered by steer, not followUp; plain messages and asks are unaffected", async () => {
   const fx = makeFixture();
   try {
-    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    fx.setAgents([
+      { id: "self", name: "self", parent: "", self: true, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true },
+    ]);
     const s = await startSession(fx);
     const from = { session: "peer-a", name: "peer-a" };
 
@@ -1490,7 +1564,9 @@ test("a notice is delivered by steer, not followUp; plain messages and asks are 
     assert.equal((sent!.opts as any).deliverAs, "steer", "a notice steers into the running turn rather than waiting for it to end");
 
     await sendToInbox(s.inboxPath, envelope("message", "a plain message", { from }));
-    assert.ok(s.delivered.some((d) => d.text === "a plain message"), "a plain message still goes through sendUserMessage/deliver");
+    const message = s.messages.find((m) => m.message.customType === "kido-message");
+    assert.ok(message, "the message reached sendMessage");
+    assert.equal((message!.opts as any).deliverAs, "followUp", "a message still queues behind the running turn rather than joining it");
 
     await sendToInbox(s.inboxPath, envelope("ask", "you there?", { id: "ask-y", from }));
     assert.ok(s.delivered.some((d) => d.text.includes("you there?")), "an ask still goes through the same deliver() path as a plain message, unaffected by the notice-only steer change");
@@ -3269,13 +3345,13 @@ test("the heartbeat stops once the session is no longer running", async () => {
 // spies the tests below observe - what an inbound "interrupt"/"stop"
 // envelope (handleInboundControl) actually calls.
 async function startWithControlSpies(fx: Fixture) {
-  const { pi, tools, delivered, emit } = createFakePi();
+  const { pi, tools, delivered, messages, emit } = createFakePi();
   let aborts = 0;
   let shutdowns = 0;
   const ctx = { ...fakeCtx(), abort: () => { aborts++; }, shutdown: () => { shutdowns++; } };
   loadExtensions(pi);
   await emit("session_start", {}, ctx);
-  return { tools, delivered, emit, inboxPath: fx.selfInboxPath(), aborts: () => aborts, shutdowns: () => shutdowns };
+  return { tools, delivered, messages, emit, inboxPath: fx.selfInboxPath(), aborts: () => aborts, shutdowns: () => shutdowns };
 }
 
 // controlTree is a self whose parent is "root-1", the shape
@@ -3417,7 +3493,10 @@ test("an interrupt of an idle agent is harmless, and the session still answers a
 
     const followUp = await sendToInbox(s.inboxPath, envelope("message", "still there?", { from: { session: "root-1", name: "root-1" } }));
     assert.equal(followUp, "ok");
-    assert.ok(s.delivered.some((d) => d.text === "still there?"), "the session must still accept a message after an interrupt");
+    assert.ok(
+      s.messages.some((m) => m.message.customType === "kido-message" && m.message.content.endsWith("\nstill there?")),
+      "the session must still accept a message after an interrupt",
+    );
   } finally {
     fx.restore();
   }
@@ -3509,9 +3588,9 @@ test("an inbound steer is delivered as steer; a message and an ask stay followUp
     assert.match(steered!.text, /root-1/, "and says who is redirecting the work, arriving mid-task as it does");
 
     assert.equal(await sendToInbox(s.inboxPath, envelope("message", "when you get a moment", { from })), "ok");
-    const queued = s.delivered.find((d) => d.text.includes("when you get a moment"));
+    const queued = s.messages.find((m) => m.message.customType === "kido-message");
     assert.ok(queued, "the message reached the model");
-    assert.equal((queued!.opts as any).deliverAs, "followUp", "a plain message still waits for the current turn to end");
+    assert.equal((queued!.opts as any).deliverAs, "followUp", "a message still waits for the current turn to end");
 
     assert.equal(await sendToInbox(s.inboxPath, envelope("ask", "are you done?", { from })), "ok");
     const asked = s.delivered.find((d) => d.text.includes("are you done?"));

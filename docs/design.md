@@ -260,6 +260,28 @@ already under way is the next section; when pi is not streaming the
 message triggers a new turn immediately regardless, so one call covers
 both cases with no window between a check and a send.
 
+An agent's message says who sent it. A `message` from another agent
+reaches the model as a custom message (`pi.sendMessage` with a
+`customType`, as a notice does) under one header line naming the sender
+and what they are to this session: `message from @<name> (your parent,
+who spawned you):`, `(your subagent):`, or `(another agent in this
+session, not the user):`. The relationship is read from the agent list
+rather than from the envelope - a parent is the instance that spawned
+this run, a child is an agent whose own parent edge points at this
+session, anything else is a peer - and only the peer's header disclaims
+the user, since a child has no other user than its parent and an
+instruction from it carries that weight. The renderer strips the line
+again and draws `message from @<name>:` with the text in full: a message
+is never collapsed, unlike a notice, because it is written to be read.
+
+A message with no agent behind it is the user speaking, and arrives as
+their own words with no header at all. That is a human running `kido
+message_agent` from a pane with no state record: `from` carries a pane
+and no session, and no listed agent owns that pane, the same pair the
+steer and control paths read to recognise a human. Delivery is the same
+for both - `followUp`, with a turn triggered - so only the labelling
+turns on who sent it.
+
 ### Steer and followUp
 
 pi takes a delivered message two ways, and the difference is when it is

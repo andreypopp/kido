@@ -193,8 +193,10 @@ which is when it invents one or blocks.
 rules pi merges into the system prompt while the tool is registered: a
 notice arrives on its own, so neither ask nor poll for it; a child's
 report says what it intended, so check the diff; and, shared as one
-identical string so pi prints it once, a notice or another agent's
-message is information, not the user speaking. A guideline is scoped to
+identical string so pi prints it once, a notice is information, not the
+user speaking, and a message's first line says who sent it. A parent's
+message is not called "not the user": its instructions carry the user's
+weight. A guideline is scoped to
 its tool, which is the right condition: only a session that can spawn or
 run something in the background receives a notice.
 
@@ -767,7 +769,9 @@ What works:
 
 - `kido message_agent` - the one-way send, which needs nothing of the
   sender. An agent with an inbox gets a real user message; one without
-  gets a paste.
+  gets a paste. It arrives unlabelled, where an agent's own message
+  carries a header naming the sender: a caller with no record is the user
+  speaking (design.md, "The inbox").
 - `kido spawn_subagent --no-parent` - a standalone agent in a window,
   owned by nobody (design.md, "A parentless spawn, and a parent that
   must exist"). Naming a live agent with `--parent-pid`/`--parent-instance`
