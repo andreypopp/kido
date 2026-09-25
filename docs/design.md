@@ -282,6 +282,16 @@ steer and control paths read to recognise a human. Delivery is the same
 for both - `followUp`, with a turn triggered - so only the labelling
 turns on who sent it.
 
+An `ask` gets the same custom-message treatment, headed the same way -
+`ask from @<name> (your parent, who spawned you):` and so on - since who
+is asking and how they stand to this session is the same question either
+kind raises. The model's text still carries what it needs to answer: the
+question, the ask's id, a line saying the asker cannot see this session's
+context, and the exact `message_agent` call that replies. The renderer
+strips all of that back to `ask from @<name>:` and the question alone -
+the id and the reply mechanics are for the model, not for a human reading
+the transcript.
+
 ### Steer and followUp
 
 pi takes a delivered message two ways, and the difference is when it is

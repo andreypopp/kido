@@ -279,6 +279,17 @@ const MESSAGE_RELATION: Record<SenderRelation, string> = {
 const messageHeader = (from: string, relation: SenderRelation): string =>
   `message from @${from} (${MESSAGE_RELATION[relation]}):`;
 
+// The custom message type an inbound ask is delivered as, matched by
+// registerMessageRenderer below - the same treatment deliverAgentMessage
+// gives a plain message, so the id and reply instructions the model needs
+// do not also land in a human's transcript.
+const ASK_CUSTOM_TYPE = "kido-ask";
+
+// askHeader mirrors messageHeader; an ask is headed the same way a
+// message is, since who is asking and how they stand to this session is
+// the same question either kind raises.
+const askHeader = (from: string, relation: SenderRelation): string => `ask from @${from} (${MESSAGE_RELATION[relation]}):`;
+
 // The custom message type a batch of a streaming run's output is
 // delivered as, rendered collapsed exactly as a notice is.
 const STREAM_CUSTOM_TYPE = "kido-stream";
@@ -361,7 +372,7 @@ const NOT_THE_USER_RULE =
 // launched a child is the moment it is most tempted to wait for it, or to
 // write the result it has not got.
 const SPAWN_RESULT_RULE =
-  "its result arrives as a notice when it calls notify_parent - you know nothing about it until then, so do not report, assume or predict it, and do not ask it for its result; continue other work or answer the user meanwhile";
+  "its result arrives as a notice when it calls notify_parent - you know nothing about it until then, so do not report, assume or predict it, and do not ask it for its result; continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you";
 
 // NO_FIRST_TURN_TEXT is the detail recorded for a run that was given its
 // task and never started a turn on it - a pi that could not start its
@@ -867,14 +878,24 @@ export default function (pi: ExtensionAPI) {
   // model actually decides whether to keep talking.
   const STOP_AFTER_ASK_REPLY =
     "That message_agent call is the entire response - end the turn there, with no summary or sign-off after it.";
-  const handleInboundAsk = (env: Envelope): "ok" | "refused" => {
+  const handleInboundAsk = async (env: Envelope): Promise<"ok" | "refused"> => {
     if (hasAskOutstandingTo(env.from.session)) return "refused";
-    const from = labelFrom(env.from);
+    const sender = await messageSender(env.from);
+    const from = sender?.name ?? labelFrom(env.from);
+    const relation = sender?.relation ?? "peer";
     if (env.from.pane) pendingInboundAsks.set(env.id, env.from.pane);
-    deliver(
-      `${from} is asking (id ${env.id}): ${env.text}\n\n` +
-        `${from} cannot see this session's context, so make the answer self-contained. ` +
-        `Reply with message_agent(to=${JSON.stringify(from)}, message=<answer>, replyTo=${JSON.stringify(env.id)}). ${STOP_AFTER_ASK_REPLY}`,
+    workStarted();
+    pi.sendMessage(
+      {
+        customType: ASK_CUSTOM_TYPE,
+        content:
+          `${askHeader(from, relation)}\n${from} is asking (id ${env.id}): ${env.text}\n\n` +
+          `${from} cannot see this session's context, so make the answer self-contained. ` +
+          `Reply with message_agent(to=${JSON.stringify(from)}, message=<answer>, replyTo=${JSON.stringify(env.id)}). ${STOP_AFTER_ASK_REPLY}`,
+        display: true,
+        details: { from, relation, id: env.id, question: env.text },
+      },
+      { deliverAs: "followUp", triggerTurn: true },
     );
     return "ok";
   };
@@ -954,7 +975,7 @@ export default function (pi: ExtensionAPI) {
         await handleInboundMessage(env);
         return "ok";
       case "ask":
-        return handleInboundAsk(env);
+        return await handleInboundAsk(env);
       case "reply":
         handleInboundReply(env);
         return "ok";
@@ -1928,11 +1949,11 @@ export default function (pi: ExtensionAPI) {
     name: "async_bash",
     label: "Async Bash",
     description:
-      "Run a shell command in the background instead of waiting on it, so this session can keep working while it runs. This replaces polling: exactly one notice arrives when the command ends, carrying its exit status and a tail of its output. Read the output file with the ordinary read tool at any time before then to check on progress. With stream=true the output also arrives in batches as it runs - between your own tool calls while you are working, on a slowing schedule when you are idle, capped per batch and per run, so some lines are only ever in the file, which always has all of them.",
+      "Run a shell command in the background - for a command whose result you do not need for your next step, so this session can keep working while it runs. A command you need before continuing, such as tests you are about to act on or a build you are about to read, belongs in bash, in the foreground, not here. This replaces polling: exactly one notice arrives when the command ends, carrying its exit status and a tail of its output. Read the output file with the ordinary read tool at any time before then to check on progress; if you have nothing else to do, end your turn instead - the notice wakes you. With stream=true the output also arrives in batches as it runs - between your own tool calls while you are working, on a slowing schedule when you are idle, capped per batch and per run, so some lines are only ever in the file, which always has all of them.",
     promptSnippet:
       "async_bash(command, name?) - run a command in the background; a notice with its exit status arrives when it ends, read the output file meanwhile",
     promptGuidelines: [
-      "A notice arrives when a background command ends; keep working, do not sleep or poll for it.",
+      "Use async_bash only for a command whose result you do not need next; if you need it before continuing, run it in bash instead. A notice arrives when a background command ends - if you have nothing else to do, end your turn rather than sleep or poll for it.",
       NOT_THE_USER_RULE,
     ],
     parameters: asyncBashParams,
@@ -1957,7 +1978,7 @@ export default function (pi: ExtensionAPI) {
           type: "text",
           text:
             `started run ${runID}${params.name ? ` (${params.name})` : ""} in window ${windowID}; ` +
-            `a notice with its exit status and a tail of its output arrives when it ends, so keep working and do not sleep or poll for it - ` +
+            `a notice with its exit status and a tail of its output arrives when it ends - if you have nothing else to do, end your turn now, since the notice wakes you; never sleep or poll for it - ` +
             (params.stream
               ? `batches of its output arrive meanwhile, capped, with anything they leave out in ${outputPath}`
               : `read ${outputPath} with the read tool to check on it meanwhile`),
@@ -2115,6 +2136,19 @@ export default function (pi: ExtensionAPI) {
       .find((line) => raw.startsWith(line));
     const content = header ? raw.slice(header.length) : raw;
     const lines = [theme.fg("dim", `message from @${from}:`), ...content.split("\n")];
+    return { render: () => lines };
+  });
+
+  // An ask shows only the question, never the id or the reply
+  // instructions the model needs but a human reading the transcript does
+  // not - those live in message.details.question, put there by
+  // handleInboundAsk, not parsed back out of the full content. A
+  // transcript entry reloaded with no details at all falls back to the
+  // raw content, id and instructions included, being the best available.
+  pi.registerMessageRenderer<{ from: string; question: string }>(ASK_CUSTOM_TYPE, (message, _options, theme) => {
+    const from = message.details?.from || "another agent";
+    const question = message.details?.question ?? (typeof message.content === "string" ? message.content : "");
+    const lines = [theme.fg("dim", `ask from @${from}:`), ...question.split("\n")];
     return { render: () => lines };
   });
 

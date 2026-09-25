@@ -745,6 +745,13 @@ function envelope(kind: string, text: string, extra: { id?: string; replyTo?: st
   });
 }
 
+// askSent finds the kido-ask message a handleInboundAsk call handed to
+// sendMessage, matching by a substring of its full content (the model's
+// text, not the renderer's trimmed-down question).
+function askSent(s: { messages: Array<{ message: any; opts: unknown }> }, includes: string): { message: any; opts: unknown } | undefined {
+  return s.messages.find((m) => m.message.customType === "kido-ask" && m.message.content.includes(includes));
+}
+
 // pendingState races a promise against a short timer, purely to observe
 // that it has *not yet* settled - it must never be used to prove the
 // opposite, since a promise that "settles" 1ms after the window closes
@@ -855,11 +862,11 @@ test("cycle refusal: an inbound ask from a session we're already asking is refus
 
     const refused = await sendToInbox(s.inboxPath, envelope("ask", "are you free?", { id: "inbound-1", from: { session: "peer-a", name: "peer-a" } }));
     assert.equal(refused, "refused");
-    assert.ok(!s.delivered.some((d) => d.text.includes("are you free?")), "a refused ask is not shown to the model");
+    assert.ok(!askSent(s, "are you free?"), "a refused ask is not shown to the model");
 
     const ok = await sendToInbox(s.inboxPath, envelope("ask", "another question", { id: "inbound-2", from: { session: "peer-b", name: "peer-b" } }));
     assert.equal(ok, "ok");
-    assert.ok(s.delivered.some((d) => d.text.includes("another question")), "an ask from anyone else is shown");
+    assert.ok(askSent(s, "another question"), "an ask from anyone else is shown");
 
     // Release the edge so p1 does not dangle past the test.
     const sent = fx.lastLogFor("peer-a", "ask");
@@ -925,9 +932,9 @@ test("a reply to an unnamed asker still reaches it after the asker reloads and i
       envelope("ask", "still there?", { id: "ask-reload-1", from: { session: "peer-a-old", pane: "%42" } }),
     );
     assert.equal(resp, "ok");
-    const asked = s.delivered.find((d) => d.text.includes("is asking"));
+    const asked = askSent(s, "is asking");
     assert.ok(asked, "the ask was delivered to the model");
-    assert.match(asked!.text, /message_agent\(to="peer-a-old"/, "an unnamed asker's fallback label is its session id");
+    assert.match(asked!.message.content, /message_agent\(to="peer-a-old"/, "an unnamed asker's fallback label is its session id");
 
     // The asker reloads: same pane and agent, a new session id, before
     // this session gets around to replying.
@@ -1107,7 +1114,7 @@ test("an inbound ask's delivered text says the message_agent reply is the whole 
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     const s = await startSession(fx);
     await sendToInbox(s.inboxPath, envelope("ask", "you there?", { id: "ask-y", from: { session: "peer-a", name: "peer-a" } }));
-    const delivered = s.delivered.find((d) => d.text.includes("is asking"))?.text ?? "";
+    const delivered = askSent(s, "is asking")?.message.content ?? "";
     assert.match(delivered, /message_agent/, "names the tool that actually reaches the asker");
     assert.match(delivered, /entire response|whole response/i, "says the reply call is the whole response, not just how to send it");
     assert.match(delivered, /no summary|sign-off/i, "says plainly not to follow the reply with narration");
@@ -1146,7 +1153,10 @@ test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 r
 
     const askResp = await sendToInbox(s.inboxPath, envelope("ask", "you there?", { id: "ask-x", from }));
     assert.equal(askResp, "ok");
-    assert.ok(s.delivered.some((d) => d.text.includes("peer-a is asking") && d.text.includes("you there?")));
+    assert.ok(
+      s.messages.some((m) => m.message.customType === "kido-ask" && m.message.content.includes("peer-a is asking") && m.message.content.includes("you there?")),
+      "kind ask reaches the model as a custom message",
+    );
 
     await sendToInbox(s.inboxPath, envelope("reply", "an answer", { replyTo: "no-such-ask", from }));
     assert.ok(s.delivered.some((d) => d.text.includes("replied") && d.text.includes("an answer")));
@@ -1214,6 +1224,57 @@ test("a message from an agent is labelled with its sender and their relationship
       await sendToInbox(s.inboxPath, envelope("message", "do this instead", { from: { session: "", pane: "%99" } as any }));
       assert.ok(s.delivered.some((d) => d.text === "do this instead"), "a shell's message is the user's own words, delivered unlabelled");
       assert.equal(labelled().length, 3, "and it is not dressed up as an agent's message");
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
+// An ask gets the same treatment deliverAgentMessage gives a plain
+// message, and for the same reason: delivered as a user message it
+// otherwise reads as the user typing, and the id plus reply instructions
+// the model needs are not something a human reading the transcript wants
+// to see. Headed the way a message is (same relation wording), but the
+// renderer shows only the question - the id, the reply call and the
+// parenthetical are for the model alone.
+test("an inbound ask is headed like a message and renders as just the question, with the id and reply instructions hidden", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([
+      { id: DEFAULT_SESSION, name: "worker", parent: "boss-session", pane: "%1", instance: "self-inst", self: true, canMessage: true },
+      { id: "boss-session", name: "boss", parent: "", pane: "%2", instance: "parent-inst", self: false, canMessage: true },
+    ]);
+    await asSubagent(DEFAULT_SESSION, async () => {
+      const s = await startSessionUsing(await freshExtensions(), fx);
+
+      await sendToInbox(s.inboxPath, envelope("ask", "is the build green?", { id: "ask-hdr", from: { session: "boss-session", name: "boss" } }));
+      const sent = s.messages.find((m) => m.message.customType === "kido-ask")!;
+      assert.ok(sent, "an ask reaches the model as a custom message");
+      assert.equal((sent.opts as any).deliverAs, "followUp", "an ask still queues, exactly as it did delivered as plain text");
+      assert.equal((sent.opts as any).triggerTurn, true, "an ask still wakes an idle session");
+
+      const content = sent.message.content as string;
+      assert.match(content, /^ask from @boss \(your parent, who spawned you\):\n/, "headed the way a message from the same sender would be");
+      assert.match(content, /is asking \(id ask-hdr\): is the build green\?/, "the model's text still carries the question and the id");
+      assert.match(content, /cannot see this session's context, so make the answer self-contained/, "and the self-contained-answer line");
+      assert.match(content, /message_agent\(to="boss", message=<answer>, replyTo="ask-hdr"\)/, "and the exact reply call");
+      assert.match(content, /entire response|whole response/i, "and STOP_AFTER_ASK_REPLY");
+
+      const renderer = s.renderers.get("kido-ask");
+      assert.ok(renderer, "the agent half registered a renderer for its own ask type");
+      const drawn = renderer!(sent.message, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
+      assert.match(drawn, /^ask from @boss:/, "the row names the sender, without the parenthetical");
+      assert.ok(drawn.includes("is the build green?"), "and shows the question");
+      assert.ok(!drawn.includes("ask-hdr"), "the id is hidden");
+      assert.ok(!drawn.includes("message_agent"), "the reply instructions are hidden");
+      assert.ok(!drawn.includes("who spawned you"), "the parenthetical is for the model, not the transcript");
+
+      // A transcript entry reloaded with no details at all - the one case
+      // the renderer cannot recover a clean question from - falls back to
+      // the raw content rather than showing nothing.
+      const noDetails = { ...sent.message, details: undefined };
+      const fallback = renderer!(noDetails, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
+      assert.ok(fallback.includes("is the build green?"), "the fallback still shows the question, from the raw content");
     });
   } finally {
     fx.restore();
@@ -1569,7 +1630,9 @@ test("a notice is delivered by steer, not followUp; plain messages and asks are 
     assert.equal((message!.opts as any).deliverAs, "followUp", "a message still queues behind the running turn rather than joining it");
 
     await sendToInbox(s.inboxPath, envelope("ask", "you there?", { id: "ask-y", from }));
-    assert.ok(s.delivered.some((d) => d.text.includes("you there?")), "an ask still goes through the same deliver() path as a plain message, unaffected by the notice-only steer change");
+    const askMsg = s.messages.find((m) => m.message.customType === "kido-ask" && m.message.content.includes("you there?"));
+    assert.ok(askMsg, "an ask still reaches the model as a custom message, unaffected by the notice-only steer change");
+    assert.equal((askMsg!.opts as any).deliverAs, "followUp", "an ask still queues behind the running turn rather than joining it");
   } finally {
     fx.restore();
   }
@@ -1762,6 +1825,7 @@ test("a spawn and a resume both end by saying the result arrives as a notice and
       assert.match(text, /do not report, assume or predict it/, `${what}: forbids inventing the result it does not have`);
       assert.match(text, /do not ask it for its result/, `${what}: forbids the ask that blocks the turn the notice would land in`);
       assert.match(text, /continue other work or answer the user meanwhile/, `${what}: says what to do with the turn instead`);
+      assert.match(text, /if nothing else is left, end your turn - the notice wakes you/, `${what}: says to end the turn when there is nothing else to do`);
     }
   } finally {
     fx.restore();
@@ -1803,8 +1867,8 @@ test("spawn_subagent and async_bash carry promptGuidelines pi will merge into it
       "spawn_subagent: a child's report is what it meant to do, so the diff is what to check before relaying success",
     );
     assert.ok(
-      bashRules.some((r) => /keep working, do not sleep or poll for it/.test(r)),
-      "async_bash: the notice comes to the model; waiting for it costs the parallelism the tool is for",
+      bashRules.some((r) => /do not need next/.test(r) && /end your turn/.test(r) && /sleep or poll/.test(r)),
+      "async_bash: only for a result you do not need next, and end the turn rather than wait for its notice",
     );
 
     // One string, not two similar ones: buildRules de-duplicates by exact
@@ -2356,7 +2420,7 @@ test("async_bash's result carries the run id and the output path kido printed, a
     assert.match(result.content[0].text, /read/, "the result text says the output file can be read meanwhile");
     assert.match(
       result.content[0].text,
-      /keep working and do not sleep or poll for it/,
+      /end your turn now, since the notice wakes you; never sleep or poll for it/,
       "and says what to do with the turn it just freed, at the moment the model is most tempted to wait",
     );
   } finally {
@@ -3824,7 +3888,7 @@ test("an inbound steer is delivered as steer; a message and an ask stay followUp
     assert.equal((queued!.opts as any).deliverAs, "followUp", "a message still waits for the current turn to end");
 
     assert.equal(await sendToInbox(s.inboxPath, envelope("ask", "are you done?", { from })), "ok");
-    const asked = s.delivered.find((d) => d.text.includes("are you done?"));
+    const asked = askSent(s, "are you done?");
     assert.ok(asked, "the ask reached the model");
     assert.equal((asked!.opts as any).deliverAs, "followUp", "an ask must never steer: a correlated reply has to be answered one at a time");
   } finally {
