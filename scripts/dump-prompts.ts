@@ -1,6 +1,7 @@
 // dump-prompts.ts prints every piece of text kido's pi extensions put in
-// front of a model: each tool's description, prompt snippet and parameter
-// descriptions, and the system prompt appended to a subagent. It loads
+// front of a model: each tool's description, prompt snippet, prompt
+// guidelines and parameter descriptions, and the system prompt appended
+// to a subagent. It loads
 // pi/kido-agents.ts against a stub of pi's ExtensionAPI, the same way the
 // test suite does, so what it prints is what pi registers.
 //
@@ -45,6 +46,9 @@ for (const t of tools) {
   out.push(`### ${t.name}`, "");
   out.push("description:", "", "```", t.description, "```", "");
   out.push("promptSnippet:", "", "```", t.promptSnippet ?? "<none>", "```", "");
+  if (t.promptGuidelines?.length) {
+    out.push("promptGuidelines (merged into the system prompt's rules while the tool is registered):", "", "```", t.promptGuidelines.join("\n"), "```", "");
+  }
   const props = t.parameters?.properties ?? {};
   const required = new Set<string>(t.parameters?.required ?? []);
   if (Object.keys(props).length === 0) {
@@ -66,7 +70,7 @@ const injected: Array<[string, string, string]> = [
   ["a reply nobody is waiting for (handleInboundReply)", "<from> replied (to ask <id>): <text>", "followUp"],
   ["a plain message", "<text> verbatim, no sender label (deliberate: a subagent cannot tell a parent's message from the user's, and both are equally authoritative)", "followUp"],
   ["a steer from an ancestor (handleInboundSteer)", "<from> is redirecting this work: <text>", "steer"],
-  ["a notice (deliverNotice)", "<text> verbatim as a custom message of type kido-notice; the TUI shows it collapsed as \"notification from <from>\"", "steer"],
+  ["a notice (deliverNotice)", "notice from <from> (a subagent or background run's report, not the user):\n<text> verbatim, as a custom message of type kido-notice; the TUI takes the header back off and shows it collapsed as \"notification from <from>: <first line>\"", "steer"],
   ["a stream batch (flushStreams)", "async run \"<name>\" output (run <id>)\n<the last lines, capped>; with lines dropped: \"... N lines omitted (see <output path>)\" first", "steer, at a moment that costs no turn"],
   ["an unknown kind", "[unrecognised message kind \"<kind>\" from <from>] <text>", "followUp"],
   ["message_agent's result while answering an ask", "delivered to <to> by inbox That message_agent call is the entire response - end the turn there, with no summary or sign-off after it.", "tool result"],

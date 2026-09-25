@@ -665,7 +665,7 @@ test("either load order wires the pair up: agents first, status second", async (
     const resp = await sendToInbox(s.inboxPath, envelope("notice", "loaded either way", { from: { session: "peer-a", name: "peer-a" } }));
     assert.equal(resp, "ok");
     assert.ok(
-      s.messages.some((m) => m.message.content === "loaded either way"),
+      s.messages.some((m) => m.message.customType === "kido-notice" && m.message.content.endsWith("\nloaded either way")),
       "the envelope was dispatched by the agent half, not delivered as plain text",
     );
   } finally {
@@ -1125,7 +1125,7 @@ test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 r
 
     await sendToInbox(s.inboxPath, envelope("notice", "build finished", { from }));
     assert.ok(
-      s.messages.some((m) => m.message.customType === "kido-notice" && m.message.content === "build finished" && m.message.details?.from === "peer-a"),
+      s.messages.some((m) => m.message.customType === "kido-notice" && m.message.content.endsWith("\nbuild finished") && m.message.details?.from === "peer-a"),
       "kind notice reaches the model as a custom message, named by its sender, full text intact",
     );
 
@@ -1162,7 +1162,7 @@ test("an inbound notice renders collapsed by default, naming the sender and its 
     await sendToInbox(s.inboxPath, envelope("notice", text, { from }));
     const sent = s.messages.find((m) => m.message.customType === "kido-notice");
     assert.ok(sent, "a notice was sent as a custom message");
-    assert.equal(sent!.message.content, text, "the model-visible content is the notice's full text");
+    assert.ok(sent!.message.content.endsWith(`\n${text}`), "the model-visible content is the notice's full text, under its header line");
 
     const renderer = s.renderers.get("kido-notice");
     assert.ok(renderer, "the agent half registered a renderer for its own custom type");
@@ -1177,6 +1177,41 @@ test("an inbound notice renders collapsed by default, naming the sender and its 
 
     const expanded = renderer!(sent!.message, { expanded: true, outputPad: 1 }, fakeTheme).render(80).join("\n");
     assert.ok(expanded.includes("boom"), "expanding shows the full content, tail included");
+  } finally {
+    fx.restore();
+  }
+});
+
+// A notice is steered into a running turn, where it reads exactly like
+// the user having typed - the confusion Claude Code's "[SYSTEM
+// NOTIFICATION - NOT USER INPUT]" header exists to end. The header is
+// model-facing only: the transcript already says who a notification is
+// from, so the renderer takes it back off, and the collapsed row is still
+// the child's own first line rather than a row of identical headers.
+test("a notice reaches the model under a header naming what it is, and the header is not what the TUI shows", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const text = "reviewed internal/ui: two findings\nthe second one needs a decision";
+
+    await sendToInbox(s.inboxPath, envelope("notice", text, { from: { session: "kid-1", name: "kid-1" } }));
+    const sent = s.messages.find((m) => m.message.customType === "kido-notice")!;
+    const [header, ...body] = (sent.message.content as string).split("\n");
+    assert.match(header!, /^notice from kid-1 \(.*not the user\):$/, "one header line, naming the sender and what this is");
+    assert.equal(body.join("\n"), text, "the child's own text follows, from the next line, byte for byte");
+
+    const renderer = s.renderers.get("kido-notice")!;
+    const collapsed = renderer(sent.message, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
+    assert.match(collapsed, /notification from kid-1: reviewed internal\/ui: two findings/, "the collapsed row is the child's first line, not the header");
+    const expanded = renderer(sent.message, { expanded: true, outputPad: 1 }, fakeTheme).render(80).join("\n");
+    assert.ok(!expanded.includes("not the user"), "nor does expanding show a header the transcript already carries");
+    assert.ok(expanded.includes("needs a decision"), "expanding still shows the whole text");
+
+    // The plain "message" kind deliberately carries no sender label at
+    // all (docs/design.md, "The inbox"); nothing here may leak onto it.
+    await sendToInbox(s.inboxPath, envelope("message", "do the other thing", { from: { session: "kid-1", name: "kid-1" } }));
+    assert.ok(s.delivered.some((d) => d.text === "do the other thing"), "a plain message is still delivered unlabelled");
   } finally {
     fx.restore();
   }
@@ -1277,7 +1312,7 @@ test("a notice reaches the model exactly once, and its widget row is removed onc
     const noticeMessages = s.messages.filter((m) => m.message.customType === "kido-notice");
     assert.equal(noticeMessages.length, 1, "the notice's text was sent to the model exactly once");
     const sent = noticeMessages[0]!.message;
-    assert.equal(sent.content, "the whole result", "the model-visible text is the notice's full text, unchanged");
+    assert.ok(sent.content.endsWith("\nthe whole result"), "the model-visible text is the notice's full text, unchanged under its header line");
     const noticeId = sent.details?.noticeId;
     assert.ok(noticeId, "the message carries an id the widget half can be matched against");
 
@@ -1405,6 +1440,98 @@ test("spawn_subagent and ask_agent's descriptions teach the notify_parent patter
       s.tools.get("ask_agent").description!,
       /Not for collecting a subagent's result: that arrives on its own as a notice when the child finishes, and an ask blocks this turn until the target answers, so the notice cannot be read until the ask returns\./,
     );
+  } finally {
+    fx.restore();
+  }
+});
+
+// The same incident from the other end: the description is read when the
+// tool is called, and a launch result is read at the one moment the model
+// has a child and no result from it - which is when it invents one, or
+// blocks. Claude Code puts the rule in its own launch result for exactly
+// that reason; both spawns and resumes carry it here.
+test("a spawn and a resume both end by saying the result arrives as a notice and must not be waited on, reported or predicted", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const spawn = s.tools.get("spawn_subagent");
+
+    for (const [what, params] of [["a spawn", { task: "t" }], ["a resume", { resume: "run-abc" }]] as const) {
+      const text = (await spawn.execute("c1", params)).content[0].text as string;
+      assert.match(text, /arrives as a notice when it calls notify_parent/, `${what}: names how the result actually arrives`);
+      assert.match(text, /do not report, assume or predict it/, `${what}: forbids inventing the result it does not have`);
+      assert.match(text, /do not ask it for its result/, `${what}: forbids the ask that blocks the turn the notice would land in`);
+      assert.match(text, /continue other work or answer the user meanwhile/, `${what}: says what to do with the turn instead`);
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+// promptGuidelines is pi's own field (core/extensions/types.d.ts): each
+// string becomes a bullet in the system prompt's rules section while the
+// tool is registered, merged by buildRules in pi's system-prompt.js. It
+// is where a rule about the turns *after* a call belongs, a description
+// being read only when the tool is called. The shape assertions are
+// pi's _normalizePromptGuidelines (agent-session.js), which trims, drops
+// the empty and de-duplicates: a guideline that survives it unchanged is
+// one the model reads as written.
+test("spawn_subagent and async_bash carry promptGuidelines pi will merge into its rules section", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const spawnRules = s.tools.get("spawn_subagent").promptGuidelines as string[];
+    const bashRules = s.tools.get("async_bash").promptGuidelines as string[];
+
+    for (const [name, rules] of [["spawn_subagent", spawnRules], ["async_bash", bashRules]] as const) {
+      assert.ok(Array.isArray(rules) && rules.length > 0, `${name} registers guidelines`);
+      for (const rule of rules) {
+        assert.equal(typeof rule, "string", `${name}: every guideline is a string`);
+        assert.equal(rule, rule.trim(), `${name}: survives the normalizer's trim unchanged`);
+        assert.ok(rule.length > 0, `${name}: no empty guideline, which the normalizer would drop`);
+      }
+      assert.equal(new Set(rules).size, rules.length, `${name}: no duplicate the normalizer would collapse`);
+    }
+
+    assert.ok(
+      spawnRules.some((r) => /arrives on its own as a notice/.test(r) && /never ask a child for its result/.test(r) && /poll list_agents/.test(r)),
+      "spawn_subagent: the result arrives on its own; neither ask nor poll for it",
+    );
+    assert.ok(
+      spawnRules.some((r) => /Trust but verify/.test(r) && /check the diff/.test(r)),
+      "spawn_subagent: a child's report is what it meant to do, so the diff is what to check before relaying success",
+    );
+    assert.ok(
+      bashRules.some((r) => /keep working, do not sleep or poll for it/.test(r)),
+      "async_bash: the notice comes to the model; waiting for it costs the parallelism the tool is for",
+    );
+
+    // One string, not two similar ones: buildRules de-duplicates by exact
+    // text, so the shared rule is a single bullet however many of the two
+    // tools a session has.
+    const shared = spawnRules.filter((r) => bashRules.includes(r));
+    assert.equal(shared.length, 1, "exactly one rule is shared between the two tools");
+    assert.match(shared[0]!, /not the user speaking/, "the shared rule is the one about what a notice is");
+    assert.match(shared[0]!, /do not thank or answer it/, "and says what not to do with it");
+  } finally {
+    fx.restore();
+  }
+});
+
+test("spawn_subagent's task parameter tells the model how to write the prompt a context-free child will read", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+    const task = (s.tools.get("spawn_subagent").parameters as any).properties.task.description as string;
+    assert.match(task, /no context beyond this text/, "says the child starts blank");
+    assert.match(task, /fork/, "names the one exception");
+    assert.match(task, /files, the lines and the specific change/, "says what a usable task names");
+    assert.match(task, /report back/, "says to ask for a report");
+    assert.match(task, /write code or only research/, "says to state which of the two the child is for");
+    assert.match(task, /based on your findings/, "and names the phrase that hands the parent's own synthesis to the child");
   } finally {
     fx.restore();
   }
@@ -1928,6 +2055,11 @@ test("async_bash's result carries the run id and the output path kido printed, a
     assert.match(result.content[0].text, new RegExp(wantOutput.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the result text names the output path");
     assert.match(result.content[0].text, /notice/, "the result text says a notice arrives on completion");
     assert.match(result.content[0].text, /read/, "the result text says the output file can be read meanwhile");
+    assert.match(
+      result.content[0].text,
+      /keep working and do not sleep or poll for it/,
+      "and says what to do with the turn it just freed, at the moment the model is most tempted to wait",
+    );
   } finally {
     fx.restore();
   }

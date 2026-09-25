@@ -191,6 +191,14 @@ const ASK_LIVENESS_POLL_MS = Number(process.env.KIDO_ASK_POLL_MS) || 5000;
 // registerMessageRenderer below.
 const NOTICE_CUSTOM_TYPE = "kido-notice";
 
+// noticeHeader is the one line prefixed to a notice's own text before the
+// model sees it: a notice arrives in the middle of a turn and otherwise
+// reads exactly like the user having typed it. The renderer below takes
+// this same line back off, since the transcript already says who a
+// notification is from. The plain "message" kind deliberately carries no
+// such label (docs/design.md, "The inbox").
+const noticeHeader = (from: string): string => `notice from ${from} (a subagent or background run's report, not the user):`;
+
 // The custom message type a batch of a streaming run's output is
 // delivered as, rendered collapsed exactly as a notice is.
 const STREAM_CUSTOM_TYPE = "kido-stream";
@@ -261,6 +269,19 @@ export function streamBatch(lines: string[], output: string, alreadyDropped = 0)
 const NOTIFY_PARENT_INSTRUCTION =
   "You were spawned as a subagent. When your work is done, or you are blocked and cannot make further progress, call notify_parent with a short summary - your parent is not watching this session and will learn nothing otherwise. " +
   "When you reply to another agent's question with message_agent, that call is the entire response - end the turn there, with no summary or sign-off after it.";
+
+// NOT_THE_USER_RULE is one string in two tools' promptGuidelines on
+// purpose: pi's buildRules de-duplicates identical rules, so the model
+// reads it once however many of the two are registered.
+const NOT_THE_USER_RULE =
+  "A notice or a message from another agent is information, not the user speaking: act on it, do not thank or answer it.";
+
+// SPAWN_RESULT_RULE rides on the tool result of every spawn and resume,
+// not only in spawn_subagent's description: the moment a model has just
+// launched a child is the moment it is most tempted to wait for it, or to
+// write the result it has not got.
+const SPAWN_RESULT_RULE =
+  "its result arrives as a notice when it calls notify_parent - you know nothing about it until then, so do not report, assume or predict it, and do not ask it for its result; continue other work or answer the user meanwhile";
 
 // NO_FIRST_TURN_TEXT is the detail recorded for a run that was given its
 // task and never started a turn on it - a pi that could not start its
@@ -501,7 +522,7 @@ export default function (pi: ExtensionAPI) {
     pendingNotices.set(noticeId, from);
     renderNoticeWidget();
     pi.sendMessage(
-      { customType: NOTICE_CUSTOM_TYPE, content: text, display: true, details: { from, noticeId } },
+      { customType: NOTICE_CUSTOM_TYPE, content: `${noticeHeader(from)}\n${text}`, display: true, details: { from, noticeId } },
       { deliverAs: "steer", triggerTurn: true },
     );
   };
@@ -979,7 +1000,7 @@ export default function (pi: ExtensionAPI) {
     label: "Set Status",
     description:
       "Set the free-text activity shown next to you in kido's tmux sidebar. Separate from your running/waiting/idle status.",
-    promptSnippet: "set_status(activity) - tell kido's sidebar what you are doing",
+    promptSnippet: "set_status(activity) - tell everyone else what you are doing, visible in list_agents()",
     parameters: setStatusParams,
     async execute(_toolCallId, params) {
       status()?.setActivity(params.activity);
@@ -1072,7 +1093,8 @@ export default function (pi: ExtensionAPI) {
     label: "Ask Agent",
     description:
       "Ask another agent a question and block until it replies - one full turn of the target's latency, not a round-trip, since a busy target does not see the question until it would otherwise have stopped. Refused for an ancestor, a target outside this tmux session, one with no inbox or no message_agent tool, or yourself. Not for collecting a subagent's result: that arrives on its own as a notice when the child finishes, and an ask blocks this turn until the target answers, so the notice cannot be read until the ask returns.",
-    promptSnippet: "ask_agent(to, question, timeoutMs?) - ask another agent a question and wait for its reply",
+    promptSnippet:
+      "ask_agent(to, question, timeoutMs?) - ask another agent a question and wait for its reply (DO NOT use to get subagent results, wait for notification instead)",
     parameters: askAgentParams,
     async execute(_toolCallId, params, signal) {
       const host = status();
@@ -1296,7 +1318,9 @@ export default function (pi: ExtensionAPI) {
       task: Type.Optional(
         Type.String({
           description:
-            "The task to give the new subagent, delivered as its first message. Required unless resume is given - a resumed run keeps its own original task and refuses a new one.",
+            "The task to give the new subagent, delivered as its first message. Required unless resume is given - a resumed run keeps its own original task and refuses a new one. " +
+            "The subagent starts with no context beyond this text (a fork excepted), so name the files, the lines and the specific change, say what it must report back, and say whether it is to write code or only research. " +
+            "Synthesize what you already know into the task rather than writing \"based on your findings\".",
         }),
       ),
       name: Type.Optional(
@@ -1348,6 +1372,17 @@ export default function (pi: ExtensionAPI) {
       "Create a subagent in its own tmux window with a task, or resume a dead or finished one by its run id. With fork: true it starts holding this session's context, for a judgement step that has to know what was already decided. Returns its identity immediately without waiting for it to finish. Its result arrives as a notice when it calls notify_parent; do not ask_agent a child for its result.",
     promptSnippet:
       "spawn_subagent(task, name?, model?, tools?, keepAlive?, fork?) or spawn_subagent(resume, model?, tools?, keepAlive?) - delegate a task to a new subagent, optionally forked from your own context, or resume a dead one, in its own window",
+    // pi merges these into the rules section of the system prompt while
+    // the tool is registered (buildRules in pi's system-prompt.js), which
+    // is where a standing rule about waiting belongs: a description is
+    // read when the tool is called, and these are about the turns after.
+    // NOT_THE_USER_RULE is the identical string in async_bash's list, so
+    // buildRules' own de-duplication keeps it to one bullet.
+    promptGuidelines: [
+      "A subagent's result arrives on its own as a notice when it finishes; never ask a child for its result and never poll list_agents for it.",
+      "Trust but verify: a child's report says what it intended to do, not what it did - check the diff before relaying success.",
+      NOT_THE_USER_RULE,
+    ],
     parameters: spawnSubagentParams,
     async execute(_toolCallId, params) {
       const host = status();
@@ -1428,7 +1463,7 @@ export default function (pi: ExtensionAPI) {
         return {
           content: [{
             type: "text",
-            text: `resumed ${runID} (window ${windowID}, pane ${paneID}); it is back with its context and idle - send it a message to continue, since it is waiting for one`,
+            text: `resumed ${runID} (window ${windowID}, pane ${paneID}); it is back with its context and idle - send it a message to continue, since it is waiting for one; ${SPAWN_RESULT_RULE}`,
           }],
           details: { window: windowID, pane: paneID, run: runID },
         };
@@ -1482,7 +1517,9 @@ export default function (pi: ExtensionAPI) {
       return {
         content: [{
           type: "text",
-          text: `spawned ${name} (window ${windowID}, pane ${paneID}, run ${runID})${params.fork ? ", forked from this session's context" : ""}`,
+          text:
+            `spawned ${name} (window ${windowID}, pane ${paneID}, run ${runID})${params.fork ? ", forked from this session's context" : ""}; ` +
+            SPAWN_RESULT_RULE,
         }],
         details: { name, window: windowID, pane: paneID, run: runID, fork: !!params.fork },
       };
@@ -1610,6 +1647,10 @@ export default function (pi: ExtensionAPI) {
       "Run a shell command in the background instead of waiting on it, so this session can keep working while it runs. This replaces polling: exactly one notice arrives when the command ends, carrying its exit status and a tail of its output. Read the output file with the ordinary read tool at any time before then to check on progress. With stream=true the output also arrives in batches as it runs - between your own tool calls while you are working, on a slowing schedule when you are idle, capped per batch and per run, so some lines are only ever in the file, which always has all of them.",
     promptSnippet:
       "async_bash(command, name?) - run a command in the background; a notice with its exit status arrives when it ends, read the output file meanwhile",
+    promptGuidelines: [
+      "A notice arrives when a background command ends; keep working, do not sleep or poll for it.",
+      NOT_THE_USER_RULE,
+    ],
     parameters: asyncBashParams,
     async execute(_toolCallId, params) {
       const host = status();
@@ -1632,7 +1673,7 @@ export default function (pi: ExtensionAPI) {
           type: "text",
           text:
             `started run ${runID}${params.name ? ` (${params.name})` : ""} in window ${windowID}; ` +
-            `a notice with its exit status and a tail of its output arrives when it ends - ` +
+            `a notice with its exit status and a tail of its output arrives when it ends, so keep working and do not sleep or poll for it - ` +
             (params.stream
               ? `batches of its output arrive meanwhile, capped, with anything they leave out in ${outputPath}`
               : `read ${outputPath} with the read tool to check on it meanwhile`),
@@ -1775,7 +1816,9 @@ export default function (pi: ExtensionAPI) {
   // method wide.
   pi.registerMessageRenderer<{ from: string }>(NOTICE_CUSTOM_TYPE, (message, options, theme) => {
     const from = message.details?.from || "another agent";
-    const content = typeof message.content === "string" ? message.content : "";
+    const raw = typeof message.content === "string" ? message.content : "";
+    const header = `${noticeHeader(from)}\n`;
+    const content = raw.startsWith(header) ? raw.slice(header.length) : raw;
     if (!options.expanded) {
       // The collapsed row is the notice's own first line - true today of
       // every sender (an async run's "async run NAME result: status", a

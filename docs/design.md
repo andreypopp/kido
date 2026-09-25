@@ -1152,8 +1152,12 @@ expand" - with the full text behind pi's own `registerMessageRenderer`
 keybinding this extension registers; a second extension bound to the same
 key would conflict, riding the existing flag does not. The collapse is a
 transcript-display concern only - the model still receives the full text,
-since a custom message participates in LLM context exactly as a plain
-user message did. Every notice collapses the same way regardless of
+under one header line, `notice from <from> (a subagent or background
+run's report, not the user):`, which the renderer strips again. A notice
+steered into a turn otherwise reads exactly like the user typing, and
+the header is what tells the two apart. The model gets the text since
+a custom message participates in LLM context exactly as a plain user
+message did. Every notice collapses the same way regardless of
 whether its sender is actually a subagent: kind, not identity, is the
 sender's own choice (`kido notify_parent` versus `kido message_agent`),
 and `from` is advisory in exactly the way the rest of

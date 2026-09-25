@@ -183,7 +183,20 @@ every tick until it has one rather than caching the gap. The sweep and
 split dies with the run it was split from.
 
 The tool returns `spawned <name> (window @N, pane %N, run <id>)` at
-once. It does not wait for anything the child does.
+once. It does not wait for anything the child does. The result, and a
+resume's, ends with the rule that the child's result arrives as a notice
+and is not to be waited on, asked for or predicted: a launch result is
+read at the one moment the model has a child and no result from it,
+which is when it invents one or blocks.
+
+`spawn_subagent` and `async_bash` also carry pi's `promptGuidelines`,
+rules pi merges into the system prompt while the tool is registered: a
+notice arrives on its own, so neither ask nor poll for it; a child's
+report says what it intended, so check the diff; and, shared as one
+identical string so pi prints it once, a notice or another agent's
+message is information, not the user speaking. A guideline is scoped to
+its tool, which is the right condition: only a session that can spawn or
+run something in the background receives a notice.
 
 ## Forking the caller's context
 
