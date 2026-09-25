@@ -834,12 +834,12 @@ build it paid for).
   pane mark; `lingeringSubagents` re-reads the pane until it has one.
 - **`field()` is the column-alignment contract.** Every pane-label branch
   routes through it; a new pane kind that forgets it misaligns the whole
-  column. A shell with no OSC 133 integration deliberately gets *no*
-  field at all — the missing offset is the tell that kido knows nothing
-  about that pane. Anything drawn to the *left* of a label has to fit in
-  the space already accounted for: the sibling-group glyph replaces that
-  row's bracket rather than adding a column, because a first draft added
-  one and every label below shifted by two cells.
+  column. A shell with no OSC 133 integration and a program that has
+  taken the terminal both get an empty field — no glyph, but the column
+  stays, so every label lines up regardless of what kido knows about the
+  pane. Anything drawn to the *left* of a label has to fit in the space
+  already accounted for: a child window's group glyph has a column of
+  its own, and its bracket follows in the next.
 - **A standalone kido infers its client by counting, and the count is
   wrong without a filter.** `#{client_name}` asked from inside a popup is
   unanswerable — a popup is not a client, and the answer has changed

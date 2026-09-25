@@ -80,7 +80,7 @@ func agentPane(w, pane, title string) tmux.Pane {
 }
 
 // shellPane is an ordinary pane: no record, no OSC 133 integration, so
-// its row is its command and nothing else.
+// its row is its command behind an empty field, no glyph.
 func shellPane(w, pane string) tmux.Pane {
 	return tmux.Pane{SessionName: "sess", WindowID: w, PaneID: pane, CurrentCommand: "zsh"}
 }
@@ -129,7 +129,7 @@ func TestRenderNestsUnderTheParentPane(t *testing.T) {
 		"sess",
 		"┌◼ orchestrator",
 		"│ └◼ subagent",
-		"└ zsh",
+		"└  zsh",
 	})
 }
 
@@ -139,9 +139,8 @@ func TestRenderNestsUnderTheParentPane(t *testing.T) {
 // easiest to get wrong: an indicator glyph sitting flush against its tree
 // glyph, a known pane with nothing to say keeping the same two-column
 // width so its title still lines up with the indicator row above it, and
-// a shell with no OSC 133 integration at all getting no field - so its
-// title starts one column earlier than the other two, which is the tell,
-// not a bug.
+// a shell with no OSC 133 integration at all keeping that same empty
+// field, so its title lines up with the other two as well.
 func TestRenderFieldCasesAlignBesideEachOther(t *testing.T) {
 	panes := []tmux.Pane{
 		agentPane("@1", "%1", "orchestrator"),
@@ -156,7 +155,7 @@ func TestRenderFieldCasesAlignBesideEachOther(t *testing.T) {
 		"sess",
 		"┌◼ orchestrator",
 		"├  idle-agent",
-		"└ zsh",
+		"└  zsh",
 	})
 }
 
@@ -184,7 +183,7 @@ func TestRenderGroupsSiblingSubagents(t *testing.T) {
 		"│ ├◼ subagent-a",
 		"│ ├◼ subagent-b",
 		"│ └◼ subagent-c",
-		"└ zsh",
+		"└  zsh",
 	})
 }
 
@@ -210,7 +209,7 @@ func TestRenderGroupsSiblingSubagentsWithTheirOwnShells(t *testing.T) {
 		"sess",
 		"╶◼ orchestrator",
 		"  ├┌◼ subagent-a",
-		"  │└ zsh",
+		"  │└  zsh",
 		"  └◼ subagent-b",
 	})
 }
@@ -312,11 +311,11 @@ func TestRenderKeepsTheColumnAcrossANestedChild(t *testing.T) {
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"┌ zsh",
+		"┌  zsh",
 		"├◼ orchestrator",
 		"│ └┌◼ subagent",
-		"│  └ zsh",
-		"└ zsh",
+		"│  └  zsh",
+		"└  zsh",
 	})
 }
 
@@ -335,7 +334,7 @@ func TestRenderStopsTheStemAtTheLastPane(t *testing.T) {
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
-		"┌ zsh",
+		"┌  zsh",
 		"└◼ orchestrator",
 		"  └◼ subagent",
 	})
@@ -438,7 +437,7 @@ func TestRenderIsDeterministic(t *testing.T) {
 		"│ ├◼ kid-a",
 		"│ └◼ kid-b",
 		"│   └◼ grandkid",
-		"└ zsh",
+		"└  zsh",
 	})
 }
 
@@ -662,7 +661,7 @@ func TestRenderNestsADeadSubagentForTheWholeLinger(t *testing.T) {
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
 		"╶◼ orchestrator",
-		"  └ ",
+		"  └  ",
 	})
 }
 
@@ -788,7 +787,7 @@ func TestRenderSplitPaneOfALiveRunIsAnOrdinaryPane(t *testing.T) {
 	wantRows(t, renderRows([]tmux.Pane{runPane, split}, nil), []string{
 		"sess",
 		"┌◼ make build",
-		"└ zsh",
+		"└  zsh",
 	})
 }
 
@@ -837,7 +836,7 @@ func TestRenderReproducesTheLiveSplitBugReport(t *testing.T) {
 		"sess",
 		"╶◼ working-on-kido",
 		"  └┌  helper",
-		"   └ zsh",
+		"   └  zsh",
 	})
 }
 
@@ -859,7 +858,7 @@ func TestRenderLiveSubagentWithRecordUnaffected(t *testing.T) {
 		"sess",
 		"┌◼ orchestrator",
 		"│ └◼ subagent",
-		"└ zsh",
+		"└  zsh",
 	})
 }
 
@@ -960,7 +959,7 @@ func TestRenderLiveSubagentUnaffectedByLingering(t *testing.T) {
 		"sess",
 		"┌◼ orchestrator",
 		"│ └◼ subagent",
-		"└ zsh",
+		"└  zsh",
 	})
 }
 
@@ -974,7 +973,7 @@ func TestRenderLingeringSubagentMissingRunDirDegradesGracefully(t *testing.T) {
 	rows := renderRows(panes, nil)
 	wantRows(t, rows, []string{
 		"sess",
-		"╶ ",
+		"╶  ",
 	})
 }
 

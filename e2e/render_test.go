@@ -27,8 +27,8 @@ func TestRenderGrouping(t *testing.T) {
 	h.waitFor(func() bool { return len(h.rows()) >= 6 }, settle, msgf("all rows"))
 
 	rows := h.rows()
-	want := []string{"zeta", "╶ " + shell, "alpha",
-		"┌ " + shell, "├ " + shell, "└ " + shell}
+	want := []string{"zeta", "╶  " + shell, "alpha",
+		"┌  " + shell, "├  " + shell, "└  " + shell}
 	if len(rows) != len(want) {
 		t.Fatalf("rows = %q, want %q", rows, want)
 	}
@@ -57,7 +57,7 @@ func TestFollowActivePane(t *testing.T) {
 	// "cat" waits on stdin, so this window's row reads differently from
 	// every shell row and the selection is unambiguous.
 	h.newWindow("beta", "editor", "cat", "-")
-	h.waitRow("╶ cat")
+	h.waitRow("╶  cat")
 
 	h.waitSelected(shell)
 	h.in("switch-client", "-c", h.client, "-t", "beta:1")
@@ -66,7 +66,7 @@ func TestFollowActivePane(t *testing.T) {
 	h.waitSelected("cat")
 	h.waitFor(func() bool {
 		lines := h.capture()
-		return selectedIndexOf(lines) == rowIndexOf(lines, "╶ cat")
+		return selectedIndexOf(lines) == rowIndexOf(lines, "╶  cat")
 	}, settle, msgf("selection on the cat row"))
 }
 

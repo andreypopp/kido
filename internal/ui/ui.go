@@ -1302,17 +1302,14 @@ func indicatorStalled() string { return stStalled.Render("!") }
 
 // field is the indicator column: one glyph and one space, or two spaces
 // when there is no indicator, so every label starts at the same column
-// whatever the pane is doing. Agent rows and shell rows with OSC 133 both
-// go through it; a shell without the integration gets no field at all, and
-// the missing offset is the tell that kido knows nothing about it.
+// whatever the pane is doing. Every pane row goes through it, including a
+// shell with no OSC 133 integration and a program that has taken the
+// terminal - both draw no glyph, but the column stays.
 //
 // appendWindows no longer puts a space of its own between the tree glyph
 // and this field - field's own leading character (the indicator, or the
 // first of its two filler spaces) sits directly against the tree glyph -
-// so a running agent reads "└◼ title", not "└ ◼ title". A pane with no
-// field at all (see paneLabel's no-OSC-133 branch) supplies that one
-// separating space itself, since it never calls field and would otherwise
-// jam its text against the glyph.
+// so a running agent reads "└◼ title", not "└ ◼ title".
 func field(ind string) string {
 	if ind == "" {
 		return "  "
@@ -1480,18 +1477,12 @@ func (m *model) paneLabel(p tmux.Pane) string {
 			text = stProc.Render(cmd)
 		}
 		// A shell with kido's OSC 133 integration (shell/zsh, sourced by
-		// every primed pane) gets the same indicators an agent pane
-		// has: running, done, or the last command having failed. A shell
-		// without it says nothing, and its row stays exactly as it always
-		// was, field and all - which means it never calls field() and so
-		// must add its own separating space now that appendWindows no
-		// longer supplies one ahead of every label indiscriminately.
-		if _, ok := p.ShellStatus(); !ok {
-			return " " + text
-		}
-		if m.interactivePane(p) {
-			// The field stays, so the row still lines up with the other
-			// integrated shells; only the glyph goes.
+		// every primed pane) gets the same indicators an agent pane has:
+		// running, done, or the last command having failed. A shell
+		// without it, and a program that has taken the terminal either
+		// way, draw no glyph but keep the field, so every row in the
+		// column lines up.
+		if _, ok := p.ShellStatus(); !ok || m.interactivePane(p) {
 			return field("") + text
 		}
 		return field(m.shellIndicator(m.phases[p.PaneID])) + text
