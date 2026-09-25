@@ -2,7 +2,9 @@ package e2e
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -235,6 +237,39 @@ func TestPromptDefaultSessionOne(t *testing.T) {
 	h.runPrompt("session scope")
 	h.waitMain("rc=0")
 	h.waitPaneText(pane, "got: session scope")
+}
+
+// TestPromptExcludesSubagentWindow checks that a spawned subagent's
+// window is never a candidate: with the window empty, one top-level
+// Claude Code pane and one spawned subagent (also claude-looking)
+// elsewhere in the session, the widened search still delivers to the
+// top-level agent (exit 0), rather than seeing two candidates and
+// exiting 5.
+func TestPromptExcludesSubagentWindow(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	topLevel := h.claudePane("alpha", "✳ Claude") // a new window, not the shell's own
+
+	taskFile := filepath.Join(h.dir, "task.txt")
+	if err := os.WriteFile(taskFile, []byte("do the thing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outFile := filepath.Join(h.dir, "spawn.out")
+	cmd := fmt.Sprintf("%s spawn_subagent --no-parent --name sub-e2e --task-file %s -- %s -- > %s 2>&1",
+		kidoBin, taskFile, claudeBin, outFile)
+	h.sendLiteral(cmd)
+	h.sendKeys("Enter")
+	out := strings.TrimSpace(h.waitFileNonEmpty(outFile))
+	fields := strings.Fields(out)
+	if len(fields) != 3 {
+		t.Fatalf("kido spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", out)
+	}
+	subPane := fields[1]
+	h.waitPaneCommand(subPane, "claude")
+
+	h.runPrompt("hi")
+	h.waitMain("rc=0")
+	h.waitPaneText(topLevel, "got: hi")
 }
 
 // TestPromptDefaultSessionSeveral checks that, with the window empty,

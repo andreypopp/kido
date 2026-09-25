@@ -326,6 +326,13 @@ outright, since a paste or a v0 payload has nowhere to carry a kind or an
 id and silently downgrading an ask to a plain prompt would strip the
 thing that made it one. `kido prompt` stays v0 forever: it is the
 agent-agnostic path and has to keep working against Claude Code panes.
+It targets a top-level agent only: a pane whose window carries the
+`@kido_subagent` mark is never a candidate, the same reader the sweep
+and `switch-window` use, which covers a child between its spawn and its
+first report. The search widens from the caller's window to the session
+when the window holds no candidate, and without the exclusion one agent
+and one live child anywhere in the session would be two candidates and
+exit 5, where a human plausibly meant the agent.
 
 There is no protocol 2 for interrupt and stop. kido runs on one machine
 with the binary and the extension upgraded together, so a version gate

@@ -14,11 +14,14 @@ import (
 )
 
 // prompt implements `kido prompt [--window]`: it reads a prompt from
-// stdin (one trailing newline stripped) and sends it to the one agent
-// pane in scope, over its inbox when it reported one and pasted into the
-// pane otherwise. The scope is the caller's window, widening to the
-// session only when the window has no agent pane at all; --window never
-// widens. An agent pane is any pane state.IsAgentPane accepts.
+// stdin (one trailing newline stripped) and sends it to the one
+// top-level agent pane in scope, over its inbox when it reported one and
+// pasted into the pane otherwise. The scope is the caller's window,
+// widening to the session only when the window has no top-level agent
+// pane at all; --window never widens. A candidate pane is any pane
+// state.IsAgentPane accepts whose window carries no @kido_subagent mark
+// (tmux.Pane.Subagent) - a subagent is never a target, spawned by kido
+// or not.
 //
 // Returns the process exit code, printing any error to stderr itself.
 func prompt(args []string, stdin io.Reader) int {
@@ -136,12 +139,16 @@ func inScope(p tmux.Pane, self tmux.Pane, wholeSession bool) bool {
 	return wholeSession || p.WindowIndex == self.WindowIndex
 }
 
-// agentPanesIn returns the agent panes (per state.IsAgentPane) in self's
-// session, narrowed to self's window unless wholeSession.
+// agentPanesIn returns the top-level agent panes (per state.IsAgentPane,
+// excluding any pane whose window carries the @kido_subagent mark) in
+// self's session, narrowed to self's window unless wholeSession.
 func agentPanesIn(panes []tmux.Pane, states map[string]state.Session, pi map[int]bool, self tmux.Pane, wholeSession bool) []tmux.Pane {
 	var out []tmux.Pane
 	for _, p := range panes {
 		if !inScope(p, self, wholeSession) {
+			continue
+		}
+		if p.Subagent != "" {
 			continue
 		}
 		if state.IsAgentPane(states, pi, p) {

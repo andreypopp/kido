@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"kido/internal/tmux"
 )
 
 // TestPromptEmptyStdin checks that empty input (or input that is only a
@@ -20,6 +22,32 @@ func TestPromptEmptyStdin(t *testing.T) {
 func TestPromptUnknownArg(t *testing.T) {
 	if code := prompt([]string{"bogus"}, strings.NewReader("hi")); code != 1 {
 		t.Errorf("code = %d, want 1", code)
+	}
+}
+
+// TestPromptAgentPanesInExcludesSubagentWindows checks that a pane whose window
+// carries the @kido_subagent mark is never a candidate, even though it
+// looks like an agent pane otherwise (CurrentCommand "claude"): a
+// subagent is never a target for kido prompt. The negative control is an
+// unmarked second agent pane, which must still make two candidates.
+func TestPromptAgentPanesInExcludesSubagentWindows(t *testing.T) {
+	self := tmux.Pane{PaneID: "%1", SessionName: "alpha", WindowIndex: 0}
+	panes := []tmux.Pane{
+		self,
+		{PaneID: "%2", SessionName: "alpha", WindowIndex: 1, CurrentCommand: "claude"},
+		{PaneID: "%3", SessionName: "alpha", WindowIndex: 2, CurrentCommand: "claude", Subagent: "run=abc"},
+	}
+
+	got := agentPanesIn(panes, nil, nil, self, true)
+	if len(got) != 1 || got[0].PaneID != "%2" {
+		t.Fatalf("agentPanesIn = %v, want only %%2 (the subagent window's pane must be excluded)", got)
+	}
+
+	// Negative control: without the mark, both are candidates.
+	panes[2].Subagent = ""
+	got = agentPanesIn(panes, nil, nil, self, true)
+	if len(got) != 2 {
+		t.Fatalf("agentPanesIn (unmarked) = %v, want both %%2 and %%3", got)
 	}
 }
 
