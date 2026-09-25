@@ -21,7 +21,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Value } from "typebox/value";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, rmSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, delimiter, dirname } from "node:path";
 import net from "node:net";
@@ -1051,6 +1051,112 @@ test("abandonPending: session_shutdown and a failed rebind settle a waiting ask 
       const out = await settlesWithin(p, 500);
       assert.equal(out.content[0].text, "still here");
     }
+  } finally {
+    fx.restore();
+  }
+});
+
+// A /reload keeps the process, the pid and the session id, so nothing
+// requires the inbox to go down with the module. These four cases are the
+// live incident: an async run's notice, which never falls back to a paste
+// and is sent exactly once, landed while its parent was mid-/reload and
+// was lost for good.
+function noticesIn(s: { messages: Array<{ message: any }> }, text: string) {
+  return s.messages.filter((m) => m.message.customType === "kido-notice" && m.message.content.includes(text));
+}
+
+test("a notice sent across a /reload is delivered to the reloaded session exactly once", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(twoPeers);
+    const s1 = await startSessionUsing(await freshExtensions(), fx);
+    await s1.emit("session_shutdown", { reason: "reload" });
+
+    // The gap: the old module is done, the reloaded one has not started.
+    const sent = sendToInbox(s1.inboxPath, envelope("notice", "ci run finished", { from: { session: "peer-a", name: "peer-a" } }));
+
+    const s2 = await startSessionUsing(await freshExtensions(), fx);
+    assert.equal(await settlesWithin(sent, 2000), "ok");
+    await pollUntil(() => noticesIn(s2, "ci run finished").length > 0, 2000, "the notice to reach the reloaded session");
+    assert.equal(noticesIn(s2, "ci run finished").length, 1, "the reloaded session was told more than once");
+    assert.equal(noticesIn(s1, "ci run finished").length, 0, "the module that shut down must not deliver it too");
+  } finally {
+    fx.restore();
+  }
+});
+
+// The holding claim, with the ordering that carries it: the connection is
+// accepted in the gap and answered only once the new handler is in place.
+// The gap is still a shutdown as far as ask_agent is concerned - the
+// inbox this module was serving is gone even though the socket is not.
+test("an envelope that arrives in the /reload gap is held, then answered and delivered once", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(twoPeers);
+    const s1 = await startSessionUsing(await freshExtensions(), fx);
+    await s1.emit("session_shutdown", { reason: "reload" });
+
+    const sent = sendToInbox(s1.inboxPath, envelope("message", "in the gap", { from: { session: "peer-a", name: "peer-a" } }));
+    assert.equal(await pendingState(sent, 100), "pending", "the gap must hold the connection, not answer it");
+
+    const refused = await s1.tools.get("ask_agent").execute("c1", { to: "peer-b", question: "q" });
+    assert.match(refused.content[0].text, /inbox is unavailable/, "a shut-down module must still refuse to wait for a reply");
+
+    const s2 = await startSessionUsing(await freshExtensions(), fx);
+    assert.equal(await settlesWithin(sent, 2000), "ok");
+    // A message from a known agent reaches the model as a labelled
+    // kido-message, not as plain delivered text, so both are counted.
+    const inGap = (s: { delivered: Array<{ text: string }>; messages: Array<{ message: any }> }) =>
+      s.delivered.filter((d) => d.text.includes("in the gap")).length +
+      s.messages.filter((m) => String(m.message.content).includes("in the gap")).length;
+    await pollUntil(() => inGap(s2) > 0, 2000, "the held message to reach the reloaded session");
+    assert.equal(inGap(s2), 1, "the held message was delivered more than once");
+    assert.equal(inGap(s1), 0, "the module that shut down must not deliver it too");
+  } finally {
+    fx.restore();
+  }
+});
+
+// The negative control: every other reason still closes and unlinks, and
+// a send afterwards fails exactly as it always has.
+test("a session_shutdown that is not a reload still closes the inbox", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(twoPeers);
+    const s = await startSessionUsing(await freshExtensions(), fx);
+    assert.equal(await sendToInbox(s.inboxPath, envelope("message", "before", { from: { session: "peer-a", name: "peer-a" } })), "ok");
+
+    await s.emit("session_shutdown", { reason: "quit" });
+    assert.equal(existsSync(s.inboxPath), false, "the socket file is still there after a quit");
+    await assert.rejects(
+      () => sendToInbox(s.inboxPath, envelope("message", "after", { from: { session: "peer-a", name: "peer-a" } })),
+      /ENOENT|ECONNREFUSED/,
+    );
+  } finally {
+    fx.restore();
+  }
+});
+
+// One listener, read off the socket file itself: a rebind unlinks and
+// creates a new one, so the inode is what tells "handed forward" from
+// "torn down and replaced". The deliveries are the other half - a second
+// listener on a stolen path shows up as an answer nobody delivers.
+test("a /reload leaves exactly one listener, on the same socket", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(twoPeers);
+    const s1 = await startSessionUsing(await freshExtensions(), fx);
+    const before = statSync(s1.inboxPath).ino;
+
+    await s1.emit("session_shutdown", { reason: "reload" });
+    const s2 = await startSessionUsing(await freshExtensions(), fx);
+    assert.equal(statSync(s2.inboxPath).ino, before, "the reload rebound the socket instead of keeping it");
+
+    for (const text of ["after one", "after two"]) {
+      assert.equal(await sendToInbox(s2.inboxPath, envelope("notice", text, { from: { session: "peer-a", name: "peer-a" } })), "ok");
+      await pollUntil(() => noticesIn(s2, text).length === 1, 2000, `the notice ${JSON.stringify(text)} to arrive exactly once`);
+    }
+    assert.equal(noticesIn(s1, "after one").length + noticesIn(s1, "after two").length, 0, "a second listener still pointing at the old module");
   } finally {
     fx.restore();
   }

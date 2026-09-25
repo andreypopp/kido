@@ -278,6 +278,54 @@ export interface Seam {
   agents: AgentHooks | null;
 }
 
+// The listening inbox, held on globalThis for the same reason INSTANCE is:
+// a /reload re-evaluates this file but keeps the process, the pid and the
+// session id, and the socket path is keyed by pid, so nothing requires the
+// listener to go down with the module. handler is whichever module owns
+// the inbox now - null in the gap between a reload's shutdown and the
+// reloaded module's session_start, during which connections are parked in
+// waiting rather than refused. docs/design.md, "The inbox".
+interface InboxHold {
+  server: Server;
+  path: string;
+  handler: ((sock: Socket) => void) | null;
+  waiting: Socket[];
+  retained: boolean;
+}
+
+const INBOX_SLOT = Symbol.for("kido.pi.extension.inbox");
+
+function heldInbox(): InboxHold | null {
+  return (globalThis as unknown as Record<symbol, InboxHold | undefined>)[INBOX_SLOT] ?? null;
+}
+
+function setHeldInbox(hold: InboxHold | null): void {
+  (globalThis as unknown as Record<symbol, InboxHold | undefined>)[INBOX_SLOT] = hold ?? undefined;
+}
+
+// The server's one connection listener, outliving every module that owns
+// the inbox: it reads the slot on each connection rather than closing over
+// a handler. A parked socket has had no data listener attached, so it is
+// still paused and loses nothing; the reloaded module's handler reads it
+// whole.
+function dispatchInbox(sock: Socket): void {
+  const hold = heldInbox();
+  if (!hold) {
+    sock.destroy();
+    return;
+  }
+  if (hold.handler) {
+    hold.handler(sock);
+    return;
+  }
+  sock.on("error", () => {});
+  sock.once("close", () => {
+    const i = hold.waiting.indexOf(sock);
+    if (i >= 0) hold.waiting.splice(i, 1);
+  });
+  hold.waiting.push(sock);
+}
+
 const SEAM = Symbol.for("kido.pi.extension.seam");
 
 function seam(): Seam {
@@ -385,26 +433,49 @@ export default function (pi: ExtensionAPI) {
     });
   };
 
-  const stopInbox = (): void => {
-    const server = inbox;
-    const path = inboxPath;
+  // keepListening is the /reload case: this module stops serving the
+  // inbox, but the socket stays bound and the server is handed to the
+  // reloaded module through the slot. Either way `inbox` goes null
+  // synchronously, which is what ask_agent's inboxOpen() check reads as
+  // "this session is shutting down".
+  const stopInbox = (opts: { keepListening?: boolean } = {}): void => {
+    const hold = heldInbox();
     inbox = null;
     inboxPath = null;
     inboxReported = false;
-    if (server) {
-      try {
-        server.close();
-      } catch {
-        // already closed
-      }
+    if (!hold) return;
+    hold.handler = null;
+    if (opts.keepListening) {
+      hold.retained = true;
+      return;
     }
-    if (path) {
-      try {
-        unlinkSync(path);
-      } catch {
-        // already gone
-      }
+    setHeldInbox(null);
+    for (const sock of hold.waiting.splice(0)) sock.destroy();
+    try {
+      hold.server.close();
+    } catch {
+      // already closed
     }
+    try {
+      unlinkSync(hold.path);
+    } catch {
+      // already gone
+    }
+  };
+
+  // adoptInbox picks up a listener a reload handed forward: same socket,
+  // no rebind, and whatever arrived in the gap is handled now, answer
+  // included.
+  const adoptInbox = (): boolean => {
+    const hold = heldInbox();
+    if (!hold?.retained) return false;
+    hold.retained = false;
+    hold.handler = onConnection;
+    inbox = hold.server;
+    inboxPath = hold.path;
+    inboxReported = false;
+    for (const sock of hold.waiting.splice(0)) onConnection(sock);
+    return true;
   };
 
   const startInbox = async (): Promise<void> => {
@@ -420,7 +491,7 @@ export default function (pi: ExtensionAPI) {
     } catch {
       // nothing there
     }
-    const server = createServer({ allowHalfOpen: true }, onConnection);
+    const server = createServer({ allowHalfOpen: true }, dispatchInbox);
     server.on("error", () => {});
     const bound = await new Promise<boolean>((resolve) => {
       server.once("error", () => resolve(false));
@@ -428,6 +499,7 @@ export default function (pi: ExtensionAPI) {
     });
     if (!bound) return; // never publish a path we are not listening on
     server.unref(); // never hold pi's event loop open
+    setHeldInbox({ server, path, handler: onConnection, waiting: [], retained: false });
     inbox = server;
     inboxPath = path;
     inboxReported = false;
@@ -576,17 +648,20 @@ export default function (pi: ExtensionAPI) {
     title = ctx.sessionManager.getSessionName() || undefined;
     model = ctx.model?.id;
     lastKey = null;
-    // A /reload re-runs this handler: drop the old timer and inbox first.
+    // A /reload re-runs this handler: drop the old timer first, and take
+    // over the listener it handed forward. Anything else binds afresh.
     stopHeartbeat();
-    stopInbox();
-    try {
-      await startInbox();
-    } catch {
-      // no inbox; status reporting carries on regardless
+    if (!adoptInbox()) {
+      stopInbox();
+      try {
+        await startInbox();
+      } catch {
+        // no inbox; status reporting carries on regardless
+      }
     }
-    // A rebind that succeeded lands on the same pid-named path, so a
-    // waiting ask is left alone; one that failed has nowhere for an
-    // answer to arrive.
+    // A bind that failed has nowhere for an answer to arrive; an adopted
+    // or rebound inbox is the same pid-named path, so a waiting ask is
+    // left alone.
     if (!inbox) seam().agents?.inboxLost();
 
     // After the inbox, before the first report (which carries --inbox).
@@ -649,7 +724,7 @@ export default function (pi: ExtensionAPI) {
     // stopInbox and sessionEnding's synchronous prefix run before this
     // handler's first await, which is what lets ask_agent's inboxOpen()
     // check stand in for "this session is shutting down".
-    stopInbox();
+    stopInbox({ keepListening: event?.reason === "reload" });
     stopHeartbeat();
     // Before the removal report: kido must still have a record of this
     // session while the agent half resolves its parent edge and window.

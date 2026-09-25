@@ -244,6 +244,26 @@ which is unique among live processes, so a leftover file at that path
 cannot belong to a running listener and is always safe to unlink before
 binding.
 
+**A `/reload` does not take the inbox down.** A reload keeps the process,
+the pid and the session id, and the path is keyed by the pid, so the
+listening server outlives the module that bound it: it is held on
+`globalThis` behind a `Symbol.for` slot, the same mechanism `INSTANCE` and
+the seam use to survive jiti's re-evaluation. The server's own connection
+listener is an indirection through that slot rather than a closure over
+one module's handler; `session_shutdown` with reason `"reload"` clears the
+handler and leaves the socket bound, and the reloaded module's
+`session_start` installs its own handler instead of rebinding. Every other
+reason closes the server and unlinks the socket, and the next
+`session_start` binds afresh.
+
+A connection accepted in the gap - after the old module's shutdown and
+before the new one's handler is installed - is parked, not dropped or
+refused. Nothing has attached a data listener to it, so the socket is
+still paused and loses no bytes; the new handler reads it whole and
+answers it. That gap is what made the case this is for: a notice never
+falls back to a paste and is sent exactly once, so an async run that
+finished while its parent was mid-reload was lost for good.
+
 The wire protocol is one message per connection: connect, write the
 payload as UTF-8 with no framing, half-close the write side so EOF ends
 the message, read the reply, close. The reply is `ok` or `refused`. One
@@ -531,21 +551,23 @@ deliver" after a reply has already raced in is a no-op.
 A waiter with nowhere for its answer to land would sit out its whole
 timeout on a socket nobody listens to, holding its cycle edge shut for
 just as long. So the inbox going away releases every waiting ask, but
-only when it is not coming back: a `/reload` tears the inbox down and
-rebinds it at the same pid-named path, and a wait genuinely survives
+only when it is not coming back: a `/reload` keeps the socket bound and
+hands the listener to the reloaded module, so a wait genuinely survives
 that. The status extension therefore does not release waiters from its
-own teardown; it tells the agent extension when a rebind has failed, and
+own teardown; it tells the agent extension when a bind has failed, and
 on shutdown.
 
-The shutdown case rests on ordering. `session_shutdown` closes the inbox
-and runs the agent extension's synchronous prefix (stop the parent poll,
+The shutdown case rests on ordering. `session_shutdown` stops this module
+serving the inbox - clearing the handler on a reload, closing the server
+on anything else - and runs the agent extension's synchronous prefix (stop the parent poll,
 release every waiter) before its first `await`, so there is no moment at
 which the session is on its way out but its inbox still looks open. That
 is what lets `ask_agent` use a synchronous "is the inbox open" check,
 with no `await` between the check and registering its waiter, as its
-whole test for "this session is shutting down". A momentarily closed
-inbox during a reload that goes on to succeed is refused the same
-conservative way.
+whole test for "this session is shutting down". The check reads the
+module's own view, not the held server, so a reload's gap is refused the
+same conservative way even though the socket is still listening: the
+waiter would belong to a module that is already gone.
 
 ### When the target goes away
 
@@ -1486,10 +1508,11 @@ particular order. The status half calls the agent half's hooks at exact
 points in its own handlers: the session context is captured first thing
 in `session_start` so a `/reload`'s fresh context replaces the old one
 even in a session with no kido; the parent poll and task delivery run
-after the inbox is bound (so a task's first turn can already be answered)
-and before the first report (which is what carries `--inbox`); on
-shutdown the outcome is recorded and the window linger scheduled after
-the inbox is down and before the removal report, so kido still resolves
+after the inbox is bound or adopted (so a task's first turn can already
+be answered) and before the first report (which is what carries
+`--inbox`); on shutdown the outcome is recorded and the window linger
+scheduled after this module has stopped serving the inbox and before the
+removal report, so kido still resolves
 this session's parent edge and window while they run; and the idle
 self-exit timer ("Idle self-exit, and resuming a run", above) is armed
 from `agent_settled`, driven through the same hook mechanism rather than
