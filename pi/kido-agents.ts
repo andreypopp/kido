@@ -372,26 +372,67 @@ interface AgentInfo {
   instance?: string;
 }
 
+// What a name is split into for matching. A session nobody named is
+// called after its pane title, which is a phrase rather than a handle
+// ("Tmux config"), so the word a human would think to type is not at the
+// front of the name and matching the whole name alone offers nothing.
+const NAME_WORD_SEPARATORS = /[\s\-_/]+/;
+
+// The floor on an inserted id prefix: short enough to type and read,
+// long enough that it stays unique as agents come and go, since the list
+// it was checked against is only the one on screen at the time.
+const MIN_ID_PREFIX = 8;
+
+// completionValue is what accepting a row inserts. A name carrying
+// whitespace cannot survive as one `@` token - the editor's own token
+// ends at the space, and so does atToken - so that agent is addressed by
+// the shortest prefix of its id that is at least MIN_ID_PREFIX long and
+// unique among the agents listed, which resolveAgent accepts exactly as
+// it accepts a name. Every other name inserts itself.
+function completionValue(agents: AgentInfo[], agent: AgentInfo): string {
+  if (!/\s/.test(agent.name)) return `@${agent.name}`;
+  const others = agents.filter((a) => a.id !== agent.id);
+  for (let n = MIN_ID_PREFIX; n <= agent.id.length; n++) {
+    const prefix = agent.id.slice(0, n);
+    if (!others.some((a) => a.id.startsWith(prefix))) return `@${prefix}`;
+  }
+  return `@${agent.id}`;
+}
+
 // agentCompletionItems is the `@name` half of the editor's completion
-// list: every agent in this tmux session whose name starts with the
-// token, this session itself excluded (nobody addresses themselves), a
-// subagent's row naming the parent it belongs to. `parent` is the
-// parent's session id (cmd/kido/list_agents.go's parentID), so the name
-// is looked up in the same list and the id stands in when the parent is
-// not in it.
+// list: every agent in this tmux session whose name, or any word of it,
+// starts with the token - this session itself excluded (nobody addresses
+// themselves) - with the whole-name matches first, a subagent's row
+// naming the parent it belongs to. `parent` is the parent's session id
+// (cmd/kido/list_agents.go's parentID), so the name is looked up in the
+// same list and the id stands in when the parent is not in it.
 function agentCompletionItems(agents: AgentInfo[], token: string): CompletionItem[] {
   const nameByID = new Map(agents.map((a) => [a.id, a.name]));
   const wanted = token.toLowerCase();
-  return agents
-    .filter((a) => !a.self && a.name && a.name.toLowerCase().startsWith(wanted))
+  const matched: Array<{ agent: AgentInfo; rank: number }> = [];
+  for (const a of agents) {
+    if (a.self || !a.name) continue;
+    const name = a.name.toLowerCase();
+    if (name.startsWith(wanted)) matched.push({ agent: a, rank: 0 });
+    else if (name.split(NAME_WORD_SEPARATORS).some((word) => word.startsWith(wanted))) matched.push({ agent: a, rank: 1 });
+  }
+  // A stable sort, so agents matching equally well keep the order kido
+  // listed them in.
+  matched.sort((x, y) => x.rank - y.rank);
+  return matched
     .slice(0, MAX_AGENT_COMPLETIONS)
-    .map((a) => {
+    .map(({ agent: a }) => {
       const parent = a.parent ? nameByID.get(a.parent) || a.parent : "";
+      const value = completionValue(agents, a);
       const description = [
         a.activity ? `${a.status || "agent"} - ${a.activity}` : a.status || "agent",
         parent ? `subagent of ${parent}` : "",
+        // Only worth saying when the label and the insertion differ; a
+        // row that reads `@Tmux config` and types an id otherwise does
+        // it without warning.
+        value === `@${a.name}` ? "" : `inserts ${value}`,
       ].filter(Boolean).join(", ");
-      return { value: `@${a.name}`, label: `@${a.name}`, description };
+      return { value, label: `@${a.name}`, description };
     });
 }
 

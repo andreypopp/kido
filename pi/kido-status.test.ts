@@ -1298,6 +1298,14 @@ const completionAgents = [
   { id: "p1", name: "helm", parent: "", self: false, canMessage: true, status: "idle" },
   { id: "c1", name: "helper-one", parent: "p1", self: false, canMessage: true, status: "running", activity: "refactoring internal/ui" },
   { id: "c2", name: "builder", parent: "p1", self: false, canMessage: true, status: "waiting" },
+  // A session the user never named: `kido list_agents` falls back to the
+  // pane title, which is a phrase with spaces in it (a Claude Code title
+  // here) rather than a handle. Its id shares eight characters with the
+  // next agent's, so the prefix that identifies it has to be longer than
+  // the floor.
+  { id: "01a0d843-7f2e-4b5a-9c31-8de0f1a2b3c4", name: "Tmux config", parent: "", self: false, canMessage: true, status: "running" },
+  { id: "01a0d843-ffff-4b5a-9c31-8de0f1a2b3c4", name: "scribe", parent: "", self: false, canMessage: true, status: "idle" },
+  { id: "k9", name: "config-linter", parent: "", self: false, canMessage: true, status: "idle" },
 ];
 
 test("@ completion offers this session's agents first and still returns the built-in provider's file items", async () => {
@@ -1329,6 +1337,49 @@ test("@ completion offers this session's agents first and still returns the buil
     // not a second implementation of it here.
     const applied = provider.applyCompletion(["@hel"], 0, 4, suggestions.items[0], "@hel");
     assert.equal(applied.lines[0], "@helm ", "the accepted item replaces the token with @name");
+  } finally {
+    fx.restore();
+  }
+});
+
+// Seen live: a session nobody named is called after its pane title, and
+// typing the word that identifies it offered nothing at all - a
+// whole-name startsWith can never match a word in the middle, and a name
+// with a space can never be typed as one `@` token either, so there is
+// nothing for the editor to insert. Matching any word of the name finds
+// it; inserting the agent's unique id prefix is what makes accepting it
+// mean something, since resolveAgent takes an id prefix as readily as a
+// name.
+test("@ completion matches a word inside an agent's name, and inserts an id prefix when the name cannot be typed as a token", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(completionAgents);
+    const s = await startSession(fx);
+    const { provider } = stackOver(s.autocompleteFactories);
+
+    const suggestions = await suggestOnceListed(provider, "@config");
+    const labels = suggestions.items.map((i: any) => i.label);
+    assert.deepEqual(
+      labels,
+      ["@config-linter", "@Tmux config"],
+      "both are offered, case-insensitively, and the whole-name match is ranked ahead of the word match",
+    );
+
+    const unnamed = suggestions.items.find((i: any) => i.label === "@Tmux config");
+    assert.equal(
+      unnamed.value,
+      "@01a0d843-7",
+      "a name with whitespace inserts the shortest id prefix of at least eight characters that is unique in the list",
+    );
+    assert.match(unnamed.description, /01a0d843-7/, "and the row says what accepting it will actually insert");
+    const applied = provider.applyCompletion(["@config"], 0, 7, unnamed, "@config");
+    assert.equal(applied.lines[0], "@01a0d843-7 ", "accepting it leaves an address kido can resolve, not an untypeable name");
+
+    // The negative control: a name that survives as a token is still
+    // inserted as itself. An id prefix everywhere would pass every
+    // assertion above and make every completion unreadable.
+    const spaceless = suggestions.items.find((i: any) => i.label === "@config-linter");
+    assert.equal(spaceless.value, "@config-linter", "a spaceless name inserts the name");
   } finally {
     fx.restore();
   }

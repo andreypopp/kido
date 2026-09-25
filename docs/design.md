@@ -412,7 +412,11 @@ by name, top-level and subagents alike, the caller excluded, each row
 showing status, activity and a subagent's parent. `@` is also pi's file
 trigger, so the provider wraps pi's own: agent matches come first, the
 built-in's file matches follow under the same prefix, and a token that
-matches no agent (`@src/...`) is the built-in's answer untouched. A
+matches no agent (`@src/...`) is the built-in's answer untouched. The
+token matches the start of the name or of any word in it, whole-name
+matches first; a name with whitespace, which cannot be typed back as one
+`@` token, inserts the shortest unique prefix of the agent's id instead,
+which addressing resolves like a name. A
 keystroke never waits on `kido list_agents`: it is served the last list,
 and a refresh runs behind it once that is older than
 `KIDO_AGENT_LIST_TTL_MS` (1s). Nothing is fetched until the first `@`.
