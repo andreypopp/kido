@@ -407,6 +407,16 @@ answer to another. `ask_agent` resolves the target once in the extension and
 passes the resolved id to `kido ask_agent`, so a second resolution inside
 kido cannot disagree with the first.
 
+In pi's prompt editor, `@` and a prefix completes agents in the session
+by name, top-level and subagents alike, the caller excluded, each row
+showing status, activity and a subagent's parent. `@` is also pi's file
+trigger, so the provider wraps pi's own: agent matches come first, the
+built-in's file matches follow under the same prefix, and a token that
+matches no agent (`@src/...`) is the built-in's answer untouched. A
+keystroke never waits on `kido list_agents`: it is served the last list,
+and a refresh runs behind it once that is older than
+`KIDO_AGENT_LIST_TTL_MS` (1s). Nothing is fetched until the first `@`.
+
 ## Ask and reply
 
 An ask blocks the calling tool until the answer arrives on the asker's
@@ -1870,7 +1880,8 @@ self-exit timer, a different figure that stacks with `KIDO_LINGER_SECONDS`
 rather than sharing it - see "Idle self-exit, and resuming a run"),
 `KIDO_STALL_THRESHOLD_MS`, `KIDO_STOP_ESCALATION_MS`,
 `KIDO_HEARTBEAT_MS`, `KIDO_PARENT_POLL_MS`, `KIDO_ASK_POLL_MS`,
-`KIDO_SPAWN_TIMEOUT_MS`, `KIDO_STOP_TIMEOUT_MS`, and streaming's five:
+`KIDO_SPAWN_TIMEOUT_MS`, `KIDO_STOP_TIMEOUT_MS`, `KIDO_AGENT_LIST_TTL_MS`,
+and streaming's five:
 `KIDO_STREAM_BATCH_MS`, `KIDO_STREAM_BACKOFF_MS` and
 `KIDO_STREAM_BACKOFF_CAP_MS` on the wrapper's side (how often a batch
 goes, and how long it waits after a failed send before trying again),

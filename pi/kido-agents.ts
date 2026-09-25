@@ -187,6 +187,59 @@ const DEFAULT_ASK_TIMEOUT_MS = 5 * 60 * 1000;
 // target dying mid-wait and the asker sitting out its whole timeoutMs.
 const ASK_LIVENESS_POLL_MS = Number(process.env.KIDO_ASK_POLL_MS) || 5000;
 
+// How stale the `@name` completion's agent list may get before a
+// keystroke kicks a background refresh. Never waited on: the list in hand
+// is what the editor is offered, however old it is.
+const AGENT_LIST_TTL_MS = Number(process.env.KIDO_AGENT_LIST_TTL_MS) || 1000;
+
+// The most agents `@` offers at once, ahead of whatever files the
+// built-in provider found for the same token.
+const MAX_AGENT_COMPLETIONS = 10;
+
+// pi's autocomplete shapes (@earendil-works/pi-tui's AutocompleteItem,
+// AutocompleteSuggestions and AutocompleteProvider), declared here for
+// the same reason the notice renderer's component is: pi's own runtime
+// always resolves that package, this one's test suite does not install
+// it, and the surface used is this small.
+interface CompletionItem {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+interface CompletionSuggestions {
+  items: CompletionItem[];
+  prefix: string;
+}
+
+interface CompletionProvider {
+  triggerCharacters?: string[];
+  getSuggestions(
+    lines: string[],
+    cursorLine: number,
+    cursorCol: number,
+    options: { signal: AbortSignal; force?: boolean },
+  ): Promise<CompletionSuggestions | null>;
+  applyCompletion(
+    lines: string[],
+    cursorLine: number,
+    cursorCol: number,
+    item: CompletionItem,
+    prefix: string,
+  ): { lines: string[]; cursorLine: number; cursorCol: number };
+  shouldTriggerFileCompletion?(lines: string[], cursorLine: number, cursorCol: number): boolean;
+}
+
+// atToken reads the `@`-token the cursor sits in, or undefined for a
+// cursor that is not in one. It must agree with pi's own
+// CombinedAutocompleteProvider (extractAtPrefix: the token back to the
+// last delimiter, when it starts with "@"), since the merged list below
+// carries one prefix for the agents and the files both.
+export function atToken(textBeforeCursor: string): string | undefined {
+  const m = textBeforeCursor.match(/(?:^|\s)@([^\s@]*)$/);
+  return m ? m[1] : undefined;
+}
+
 // The custom message type an inbound notice is delivered as, matched by
 // registerMessageRenderer below.
 const NOTICE_CUSTOM_TYPE = "kido-notice";
@@ -300,6 +353,11 @@ interface AgentInfo {
   pane: string;
   self: boolean;
   canMessage: boolean;
+  // What the sidebar shows next to the agent: its running/waiting/idle
+  // status and whatever set_status last put there. Both only ever reach
+  // a human, in an `@name` completion's description line.
+  status?: string;
+  activity?: string;
   // canReply is whether the target could send the message_agent reply an
   // ask waits for: false only when it was spawned with a tools allowlist
   // that excludes message_agent. Missing (older test doubles, never a real
@@ -312,6 +370,29 @@ interface AgentInfo {
   // Instance is what `kido agent-alive` matches on; empty for an agent
   // that never reported one, which canMessage rules out.
   instance?: string;
+}
+
+// agentCompletionItems is the `@name` half of the editor's completion
+// list: every agent in this tmux session whose name starts with the
+// token, this session itself excluded (nobody addresses themselves), a
+// subagent's row naming the parent it belongs to. `parent` is the
+// parent's session id (cmd/kido/list_agents.go's parentID), so the name
+// is looked up in the same list and the id stands in when the parent is
+// not in it.
+function agentCompletionItems(agents: AgentInfo[], token: string): CompletionItem[] {
+  const nameByID = new Map(agents.map((a) => [a.id, a.name]));
+  const wanted = token.toLowerCase();
+  return agents
+    .filter((a) => !a.self && a.name && a.name.toLowerCase().startsWith(wanted))
+    .slice(0, MAX_AGENT_COMPLETIONS)
+    .map((a) => {
+      const parent = a.parent ? nameByID.get(a.parent) || a.parent : "";
+      const description = [
+        a.activity ? `${a.status || "agent"} - ${a.activity}` : a.status || "agent",
+        parent ? `subagent of ${parent}` : "",
+      ].filter(Boolean).join(", ");
+      return { value: `@${a.name}`, label: `@${a.name}`, description };
+    });
 }
 
 // resolveAgent applies the same addressing rules kido message_agent's
@@ -784,6 +865,65 @@ export default function (pi: ExtensionAPI) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
   };
+
+  // The list the `@name` completion is served from, and nothing else: a
+  // keystroke must never wait on `kido list_agents --json`, so the editor
+  // gets whatever the last call returned - stale, or empty before the
+  // first one lands - while a refresh runs behind it. A failed lookup
+  // still stamps the clock, so a kido that cannot answer is asked once a
+  // TTL rather than once a keystroke.
+  let completionRegistered = false;
+  let completionAgents: AgentInfo[] = [];
+  let completionAgentsAt = 0;
+  let completionRefresh: Promise<void> | null = null;
+
+  const refreshCompletionAgents = (): void => {
+    if (completionRefresh || Date.now() - completionAgentsAt < AGENT_LIST_TTL_MS) return;
+    completionRefresh = (async () => {
+      const listed = await fetchAgents();
+      if ("agents" in listed) completionAgents = listed.agents;
+      completionAgentsAt = Date.now();
+    })()
+      .catch(() => {})
+      .finally(() => {
+        completionRefresh = null;
+      });
+  };
+
+  // `@` is pi's own file-reference trigger, so this wraps the built-in
+  // provider rather than replacing it: matching agents first, then
+  // whatever files pi found for the same token, under the one prefix both
+  // halves share. `@src/...` therefore still completes files, and a token
+  // matching no agent is the built-in's answer untouched. The await here
+  // is pi's own file lookup, unchanged; kido's half of the list is never
+  // awaited (see refreshCompletionAgents).
+  const createAgentCompletionProvider = (current: CompletionProvider): CompletionProvider => ({
+    triggerCharacters: current.triggerCharacters,
+    async getSuggestions(lines, cursorLine, cursorCol, options) {
+      const token = atToken((lines[cursorLine] ?? "").slice(0, cursorCol));
+      if (token === undefined) return current.getSuggestions(lines, cursorLine, cursorCol, options);
+      refreshCompletionAgents();
+      const items = agentCompletionItems(completionAgents, token);
+      const files = await current.getSuggestions(lines, cursorLine, cursorCol, options);
+      if (items.length === 0) return files;
+      const prefix = `@${token}`;
+      // Only a file half that answered the same token can be merged: pi
+      // returns the prefix its own items are to replace, and two prefixes
+      // in one list would have the editor cut the wrong text.
+      const fileItems = files && files.prefix === prefix ? files.items : [];
+      return { items: [...items, ...fileItems], prefix };
+    },
+    // An agent item's value is `@name`, which is what pi's own
+    // applyCompletion inserts for any `@` prefix - so the insertion, the
+    // trailing space and the cursor are pi's, not a second implementation
+    // of them here.
+    applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+      return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+    },
+    shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
+      return current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? true;
+    },
+  });
 
   // parentInRegistry asks kido whether PARENT_INSTANCE is still running:
   // true, false, or null for "no answer", which is not evidence either
@@ -1757,8 +1897,18 @@ export default function (pi: ExtensionAPI) {
   // once. Registering a second "session_start" listener here is fine -
   // pi calls every extension's registration for a given event, and this
   // one only ever reads ctx, never races kido-status.ts's own.
-  pi.on("session_start", (_event: unknown, ctx: { ui?: typeof widgetUi }) => {
+  pi.on("session_start", (_event: unknown, ctx: { ui?: (NonNullable<typeof widgetUi> & { addAutocompleteProvider?: (factory: (current: CompletionProvider) => CompletionProvider) => void }) | null }) => {
     widgetUi = ctx.ui ?? null;
+    // A headless session has no ui at all, and a pi older than 0.87.1 has
+    // one without this method; both simply get no `@name` completion.
+    // Registered once: session_start fires again on a /reload, and a
+    // second wrapper would ask kido for the same list twice per keystroke.
+    if (!ctx.ui?.addAutocompleteProvider || completionRegistered) return;
+    completionRegistered = true;
+    // Nothing is fetched here: a session that never types `@` never asks
+    // kido for a list, and the first `@` keystroke kicks the refresh that
+    // the keystroke after it is served from.
+    ctx.ui.addAutocompleteProvider((current) => createAgentCompletionProvider(current));
   });
 
   // The other end of deliverNotice's hand-off: once the identical

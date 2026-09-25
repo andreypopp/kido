@@ -504,12 +504,19 @@ function createFakePi() {
     for (const h of handlers.get(event) ?? []) results.push(await h(...args));
     return results;
   }
+  // Every factory handed to ui.addAutocompleteProvider, in registration
+  // order: pi stacks them over its own built-in provider, so a test
+  // builds the same stack by calling one with a provider of its own.
+  const autocompleteFactories: Array<(current: any) => any> = [];
   const ui = {
     setWidget(key: string, content: string[] | undefined, options?: unknown) {
       widgets.set(key, { content, options });
     },
+    addAutocompleteProvider(factory: (current: any) => any) {
+      autocompleteFactories.push(factory);
+    },
   };
-  return { pi, tools, handlers, delivered, messages, renderers, widgets, ui, emit };
+  return { pi, tools, handlers, delivered, messages, renderers, widgets, autocompleteFactories, ui, emit };
 }
 
 // fakeTheme is the minimal Theme surface a message renderer reads: fg()
@@ -527,10 +534,10 @@ function fakeCtx(sessionId = "self-session", ui?: unknown) {
 }
 
 async function startSession(fx: Fixture, sessionId?: string) {
-  const { pi, tools, delivered, messages, renderers, widgets, ui, emit } = createFakePi();
+  const { pi, tools, delivered, messages, renderers, widgets, autocompleteFactories, ui, emit } = createFakePi();
   loadExtensions(pi);
   await emit("session_start", {}, fakeCtx(sessionId, ui));
-  return { tools, delivered, messages, renderers, widgets, emit, inboxPath: fx.selfInboxPath() };
+  return { tools, delivered, messages, renderers, widgets, autocompleteFactories, emit, inboxPath: fx.selfInboxPath() };
 }
 
 // loadExtensions is what a pi host does with the pair: run both factories
@@ -550,10 +557,10 @@ function loadExtensions(pi: unknown): void {
 // freshExtensions below reloads both so those module-scope constants are
 // recomputed from whatever the environment holds at that moment.
 async function startSessionUsing(factory: (pi: unknown) => void, fx: Fixture, sessionId?: string) {
-  const { pi, tools, delivered, messages, renderers, widgets, ui, emit } = createFakePi();
+  const { pi, tools, delivered, messages, renderers, widgets, autocompleteFactories, ui, emit } = createFakePi();
   factory(pi);
   await emit("session_start", {}, fakeCtx(sessionId, ui));
-  return { tools, delivered, messages, renderers, widgets, emit, inboxPath: fx.selfInboxPath() };
+  return { tools, delivered, messages, renderers, widgets, autocompleteFactories, emit, inboxPath: fx.selfInboxPath() };
 }
 
 // freshExtensions reimports both extensions under a cache-busting
@@ -1233,6 +1240,151 @@ test("a notice from a nameless sender still renders sanely, collapsed and expand
     const collapsed = renderer(sent!.message, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
     assert.match(collapsed, /notification from %12/, "a nameless sender still gets a sane, non-empty label");
   } finally {
+    fx.restore();
+  }
+});
+
+// `@` completion. pi stacks an extension's provider over its own
+// built-in one (ctx.ui.addAutocompleteProvider, pi 0.87.1), which is what
+// lets agent names share the trigger `@` already uses for file
+// references instead of taking it away: stackOver builds that stack the
+// way pi does, with a stand-in for the built-in half that records what it
+// was asked and answers the same `@token` prefix pi's own
+// CombinedAutocompleteProvider returns.
+function stackOver(
+  factories: Array<(current: any) => any>,
+  files: Array<{ value: string; label: string }> = [],
+) {
+  const calls: Array<{ lines: string[]; cursorLine: number; cursorCol: number }> = [];
+  const builtIn = {
+    triggerCharacters: ["@"],
+    async getSuggestions(lines: string[], cursorLine: number, cursorCol: number) {
+      calls.push({ lines, cursorLine, cursorCol });
+      if (files.length === 0) return null;
+      const before = (lines[cursorLine] ?? "").slice(0, cursorCol);
+      return { items: files, prefix: before.slice(before.lastIndexOf("@")) };
+    },
+    applyCompletion(lines: string[], cursorLine: number, _cursorCol: number, item: any, prefix: string) {
+      const line = lines[cursorLine] ?? "";
+      const applied = line.slice(0, line.length - prefix.length) + item.value + " ";
+      return { lines: [applied], cursorLine, cursorCol: applied.length };
+    },
+    shouldTriggerFileCompletion: () => true,
+  };
+  assert.equal(factories.length, 1, "exactly one provider was registered");
+  return { provider: factories[0]!(builtIn), builtIn, calls };
+}
+
+const suggest = (provider: any, line: string, cursorCol = line.length) =>
+  provider.getSuggestions([line], 0, cursorCol, { signal: new AbortController().signal });
+
+// Nothing is fetched until the first `@`, and that first keystroke is
+// served before its own refresh lands - the editor never waits on a
+// subprocess. So every assertion about what is offered polls keystrokes
+// until the list is there, which is what a typing human does, rather
+// than sleeping a guess at how long one subprocess takes.
+async function suggestOnceListed(provider: any, line: string, ms = 2000) {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const suggestions = await suggest(provider, line);
+    if (suggestions?.items?.some((i: any) => i.value.startsWith("@") && !i.value.includes("/"))) return suggestions;
+    if (Date.now() > deadline) throw new Error(`timed out after ${ms}ms waiting for the agent list behind "${line}"`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+const completionAgents = [
+  { id: "self", name: "self", parent: "", self: true, canMessage: true, status: "running" },
+  { id: "p1", name: "helm", parent: "", self: false, canMessage: true, status: "idle" },
+  { id: "c1", name: "helper-one", parent: "p1", self: false, canMessage: true, status: "running", activity: "refactoring internal/ui" },
+  { id: "c2", name: "builder", parent: "p1", self: false, canMessage: true, status: "waiting" },
+];
+
+test("@ completion offers this session's agents first and still returns the built-in provider's file items", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(completionAgents);
+    const s = await startSession(fx);
+    const { provider, calls } = stackOver(s.autocompleteFactories, [{ value: "@helpers/readme.md", label: "helpers/readme.md" }]);
+
+    const suggestions = await suggestOnceListed(provider, "@hel");
+
+    assert.equal(suggestions.prefix, "@hel", "one prefix for both halves of the list, the token pi itself would cut");
+    const values = suggestions.items.map((i: any) => i.value);
+    assert.deepEqual(
+      values,
+      ["@helm", "@helper-one", "@helpers/readme.md"],
+      "matching agents first, then the files pi found for the same token; a non-matching agent is left out",
+    );
+
+    const child = suggestions.items.find((i: any) => i.value === "@helper-one");
+    assert.match(child.description, /running/, "a row says what the agent is doing");
+    assert.match(child.description, /refactoring internal\/ui/, "including whatever set_status last put there");
+    assert.match(child.description, /subagent of helm/, "and names a subagent's parent by name, not by the id the list carries");
+    assert.ok(!values.includes("@self"), "this session is not offered to itself");
+
+    assert.ok(calls.length > 0, "the built-in provider was asked too, so @src/... keeps completing files");
+
+    // Accepting an agent inserts `@name` through pi's own applyCompletion,
+    // not a second implementation of it here.
+    const applied = provider.applyCompletion(["@hel"], 0, 4, suggestions.items[0], "@hel");
+    assert.equal(applied.lines[0], "@helm ", "the accepted item replaces the token with @name");
+  } finally {
+    fx.restore();
+  }
+});
+
+test("a token that is not an @ reference is handed to the built-in provider untouched", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(completionAgents);
+    const s = await startSession(fx);
+    const { provider, calls } = stackOver(s.autocompleteFactories, [{ value: "src/main.ts", label: "src/main.ts" }]);
+
+    const suggestions = await suggest(provider, "look at src/ma");
+    assert.equal(calls.length, 1, "the built-in provider was asked");
+    assert.deepEqual(suggestions.items.map((i: any) => i.value), ["src/main.ts"], "and its answer is returned as it came");
+
+    // An @ token that matches no agent is the same delegation: the file
+    // half's own answer, with nothing added and nothing dropped.
+    const files = await suggest(provider, "@src/ma");
+    assert.deepEqual(files.items.map((i: any) => i.value), ["src/main.ts"], "@src/... still completes files");
+  } finally {
+    fx.restore();
+  }
+});
+
+// A keystroke may never wait on `kido list_agents --json`: the editor is
+// offered the list in hand and the refresh runs behind it. The fake kido
+// holds its answer for 400ms here, far longer than the completion is
+// allowed to take, and the assertion with teeth is that the slow call
+// happened at all - a provider that simply never refreshed would satisfy
+// the deadline and go stale forever.
+test("@ completion serves the last agent list without waiting for the subprocess behind it", async () => {
+  const fx = makeFixture();
+  const savedTTL = process.env.KIDO_AGENT_LIST_TTL_MS;
+  try {
+    fx.setAgents(completionAgents);
+    process.env.KIDO_AGENT_LIST_TTL_MS = "50";
+    const s = await startSessionUsing(await freshExtensions(), fx);
+    const { provider } = stackOver(s.autocompleteFactories);
+
+    await suggestOnceListed(provider, "@hel");
+
+    process.env.KIDO_FAKE_AGENTS_DELAY_MS = "400";
+    const callsBefore = fx.agentsCallCount();
+    await new Promise((r) => setTimeout(r, 60)); // past the TTL: the next keystroke refreshes
+
+    const started = Date.now();
+    const suggestions = await suggest(provider, "@hel");
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 200, `the completion returned in ${elapsed}ms, without waiting out the 400ms lookup`);
+    assert.equal(suggestions.items[0].value, "@helm", "and served the list it already had");
+
+    await pollUntil(() => fx.agentsCallCount() > callsBefore, 2000, "the background refresh to run");
+  } finally {
+    if (savedTTL === undefined) delete process.env.KIDO_AGENT_LIST_TTL_MS;
+    else process.env.KIDO_AGENT_LIST_TTL_MS = savedTTL;
     fx.restore();
   }
 });
