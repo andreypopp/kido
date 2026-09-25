@@ -24,19 +24,28 @@ func TestRenderGrouping(t *testing.T) {
 	h.newSession("alpha")
 	h.in("split-window", "-d", "-t", "alpha:")
 	h.in("split-window", "-d", "-t", "alpha:")
-	h.waitFor(func() bool { return len(h.rows()) >= 6 }, settle, msgf("all rows"))
 
-	rows := h.rows()
+	// A pane split-window just created briefly reports its current command
+	// as the forked server binary before the shell exec's, so wait for the
+	// rows to settle on the wanted text rather than asserting once as soon
+	// as the count is reached.
 	want := []string{"zeta", "╶  " + shell, "alpha",
 		"┌  " + shell, "├  " + shell, "└  " + shell}
-	if len(rows) != len(want) {
-		t.Fatalf("rows = %q, want %q", rows, want)
-	}
-	for i, w := range want {
-		if strings.TrimSpace(rows[i]) != w {
-			t.Errorf("row %d = %q, want %q", i, rows[i], w)
+	var rows []string
+	h.waitFor(func() bool {
+		rows = h.rows()
+		if len(rows) != len(want) {
+			return false
 		}
-	}
+		for i, w := range want {
+			if strings.TrimSpace(rows[i]) != w {
+				return false
+			}
+		}
+		return true
+	}, settle, func() string {
+		return fmt.Sprintf("rows = %q, want %q", rows, want)
+	})
 
 	// The client is attached to zeta, which is created first: it is bold
 	// and alpha is not.
