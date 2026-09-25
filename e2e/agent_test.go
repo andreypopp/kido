@@ -54,7 +54,7 @@ func TestPiPaneLooksLikeAClaudePane(t *testing.T) {
 	// claude pane is the one that keeps the title row.
 	h.agentStatus("pi-1", pane, "pi", "", "--remove")
 	h.waitFor(func() bool {
-		return h.countRows("╶◼ deploy - kido") == 1 && h.countRows("╶ node") == 1
+		return h.countRows("╶◼ deploy - kido") == 1 && h.countRows("╶  node") == 1
 	}, settle, func() string {
 		return fmt.Sprintf("the pi pane back to a plain node row (rows are %q)", h.rows())
 	})
