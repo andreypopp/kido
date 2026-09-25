@@ -338,6 +338,16 @@ that are not the task - most sharply, answering a sibling's `ask_agent`
 settles a turn, and the report that automatic notice sends the parent is
 the one meant for the sibling (design.md, "Notifying the parent").
 
+A turn that ends in a provider error is the one exception. pi fires
+`agent_end` once per attempt, retries included, and `agent_settled` once
+after them, so the last `agent_end` before a settle is the turn's
+outcome. When it stopped on `"error"`, the child sends its parent one
+notice at once, through `notify_parent`'s path, naming the error and how
+to continue the run. An aborted turn, such as one interrupted by the
+parent, is not a failure and sends nothing. The notice does not count as
+the child's report, so if it then falls silent the ending notice below
+still fires, carrying the last error in its detail.
+
 What the child says about its work is therefore still its own to say.
 But an **ending** is not a judgement, and a child that ends without ever
 calling the tool produces exactly one notice saying so - naming the

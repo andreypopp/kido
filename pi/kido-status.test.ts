@@ -1619,23 +1619,41 @@ test("a notice reaches the model exactly once, and its widget row is removed onc
 // once via deliverTask is the wrong lifetime for a standing rule (a
 // parent's later message_agent call produces a follow-up turn with no
 // other memory of it).
-test("a subagent's system prompt carries the notify_parent instruction; a root session's does not", async () => {
+// The handler must not return `systemPrompt` (or set forceSystemPrompt):
+// pi 0.87.1's docs/extensions.md says that "replaces the whole prompt for
+// that run" and to "prefer changing prompt sections, selected tools, or
+// guidelines" instead - an opaque forced prompt is what broke
+// pi-claude-bridge's prompt-capture, which keys its cache off the
+// structured sections a forced prompt bypasses. So this asserts the
+// opposite of what it used to: no handler may return a systemPrompt
+// override, and the instruction must show up in
+// systemPromptOptions.promptGuidelines instead - added exactly once per
+// call, never accumulated, which the second emit here is what would
+// catch (pi hands every call its own freshly normalized copy of the
+// prompt options; a handler that mutated something shared would show it
+// here as two entries after two turns).
+test("a subagent's before_agent_start hook adds the notify_parent instruction to systemPromptOptions rather than forcing a whole prompt; a root session's does not", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
     await asSubagent(DEFAULT_SESSION, async () => {
       const factory = await freshExtensions();
       const s = await startSessionUsing(factory, fx);
-      const results = await s.emit("before_agent_start", { systemPrompt: "base prompt" });
-      const override = results.find((r: any) => r?.systemPrompt) as { systemPrompt: string } | undefined;
-      assert.ok(override, "a subagent's before_agent_start hook returns a replacement system prompt");
-      assert.ok(override!.systemPrompt.startsWith("base prompt"), "the base prompt is preserved, not replaced");
-      assert.match(override!.systemPrompt, /notify_parent/, "the instruction names the tool the model must call");
+
+      const event: any = { systemPrompt: "base prompt", systemPromptOptions: { promptGuidelines: [] } };
+      const results = await s.emit("before_agent_start", event);
+      assert.ok(results.every((r) => r === undefined), "the handler must not force a whole-prompt replacement");
+      assert.equal(event.systemPromptOptions.promptGuidelines.length, 1, "the instruction is added as one guideline");
+      assert.match(event.systemPromptOptions.promptGuidelines[0], /notify_parent/, "names the tool the model must call");
       assert.match(
-        override!.systemPrompt,
+        event.systemPromptOptions.promptGuidelines[0],
         /entire response|whole response/i,
-        "also carries the stop-after-replying instruction, at system-prompt level where it can compete with the host's own",
+        "also carries the stop-after-replying instruction",
       );
+
+      const event2: any = { systemPrompt: "base prompt", systemPromptOptions: { promptGuidelines: [] } };
+      await s.emit("before_agent_start", event2);
+      assert.equal(event2.systemPromptOptions.promptGuidelines.length, 1, "a second turn's own fresh options get the instruction once, not accumulated onto the first turn's");
     });
   } finally {
     fx.restore();
@@ -1645,8 +1663,10 @@ test("a subagent's system prompt carries the notify_parent instruction; a root s
   try {
     rootFx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     const s = await startSession(rootFx); // root session: no KIDO_AGENT_PARENT_INSTANCE
-    const results = await s.emit("before_agent_start", { systemPrompt: "base prompt" });
+    const event: any = { systemPrompt: "base prompt", systemPromptOptions: { promptGuidelines: [] } };
+    const results = await s.emit("before_agent_start", event);
     assert.ok(results.every((r) => r === undefined), "a root session's system prompt is left alone");
+    assert.equal(event.systemPromptOptions.promptGuidelines.length, 0, "and no guideline is added either");
   } finally {
     rootFx.restore();
   }
@@ -2645,6 +2665,129 @@ test("notify_parent from a session with no parent refuses clearly, and sends not
   }
 });
 
+// The report this fixes: a subagent's turn ended with a provider error
+// (pi-claude-bridge's own "Error: prompt-capture: ...", stopReason
+// "error") and the child then sat idle until the idle-exit clock ended
+// it, so the parent's only notice was "completed without reporting" -
+// the error itself never reached it; the user had to read the child's
+// pane. This is the immediate notice, sent as the turn settles, before
+// any idle-exit backstop.
+test("a subagent's errored turn notifies the parent at once, naming the error and how to continue", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+    await asSubagent("run-errored", async () => {
+      const factory = await freshExtensions();
+      const s = await startSessionUsing(factory, fx, "run-errored");
+      await s.emit("agent_end", {
+        messages: [{ role: "assistant", stopReason: "error", errorMessage: "prompt-capture: no capture for this system prompt" }],
+      });
+      await s.emit("agent_settled", {}, { isIdle: () => true });
+      const sent = await fx.waitForLog("parent-inst", "notice");
+      assert.match(sent!.text, /stopped on an error/i);
+      assert.match(sent!.text, /prompt-capture: no capture for this system prompt/);
+      assert.match(sent!.text, /run-errored/, "names the run id so the parent can act on it");
+      assert.match(sent!.text, /resume|retry/i, "says how to continue it");
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
+// The negative control: an interrupt is not a failure, and nothing about
+// it should read as one.
+test("an aborted turn sends no error notice", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+    await asSubagent("run-aborted", async () => {
+      const factory = await freshExtensions();
+      const s = await startSessionUsing(factory, fx, "run-aborted");
+      await s.emit("agent_end", { messages: [{ role: "assistant", stopReason: "aborted" }] });
+      await s.emit("agent_settled", {}, { isIdle: () => true });
+      await new Promise((r) => setTimeout(r, 30));
+      assert.equal(jsonLines(fx.logFile).length, 0, "an interrupt is not an error and sends nothing");
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
+test("a top-level session's errored turn sends no notice: it has nobody to tell", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx); // root session: no KIDO_AGENT_PARENT_INSTANCE
+    await s.emit("agent_end", { messages: [{ role: "assistant", stopReason: "error", errorMessage: "boom" }] });
+    await s.emit("agent_settled", {}, { isIdle: () => true });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(jsonLines(fx.logFile).length, 0);
+  } finally {
+    fx.restore();
+  }
+});
+
+// Once per error, not per retry: pi 0.87.1 can fire agent_end more than
+// once per loop (an automatic retry) but agent_settled only once, after
+// retries are exhausted - so a redundant settle with no new agent_end
+// must not repeat the notice, and a later, genuinely new failure (the
+// parent messaged the child to retry, and it failed again) must.
+test("once per error: a redundant settle does not resend, and a later fresh failure does", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+    await asSubagent("run-retry", async () => {
+      const factory = await freshExtensions();
+      const s = await startSessionUsing(factory, fx, "run-retry");
+
+      await s.emit("agent_end", { messages: [{ role: "assistant", stopReason: "error", errorMessage: "first failure" }] });
+      await s.emit("agent_settled", {}, { isIdle: () => true });
+      await fx.waitForLog("parent-inst", "notice");
+      assert.equal(jsonLines(fx.logFile).filter((l) => l.kind === "notice").length, 1);
+
+      await s.emit("agent_settled", {}, { isIdle: () => true });
+      await new Promise((r) => setTimeout(r, 30));
+      assert.equal(jsonLines(fx.logFile).filter((l) => l.kind === "notice").length, 1, "no duplicate for the same error");
+
+      await s.emit("agent_end", { messages: [{ role: "assistant", stopReason: "error", errorMessage: "second failure" }] });
+      await s.emit("agent_settled", {}, { isIdle: () => true });
+      await pollUntil(() => jsonLines(fx.logFile).filter((l) => l.kind === "notice").length >= 2, 2000, "a second notice");
+      const notices = jsonLines(fx.logFile).filter((l) => l.kind === "notice");
+      assert.equal(notices.length, 2, "a later, genuinely new failure notifies again");
+      assert.match(notices[1].text, /second failure/);
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
+// The backstop: even if the immediate notice above never landed, the
+// idle-exit ending notice a silent child gets is still supposed to carry
+// the whole account, per docs/design-subagents.md's "exactly one ending
+// notice" - and now that includes the last turn's own error.
+test("the idle-exit ending's outcome text carries the last turn's error when the child never reported", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
+    await asSubagent("run-error-idle", async () => {
+      const factory = await freshExtensions();
+      const s = await startSessionUsing(factory, fx, "run-error-idle");
+      await s.emit("agent_end", { messages: [{ role: "assistant", stopReason: "error", errorMessage: "prompt-capture: no capture" }] });
+      await s.emit("agent_settled", {}, { isIdle: () => true });
+      await fx.waitForLog("parent-inst", "notice"); // the immediate notice, not the subject here
+      await s.emit("session_shutdown");
+      const args = fx.lastRunOutcomeArgs();
+      assert.deepEqual(args?.slice(0, 4), ["run-outcome", "--result", "completed", "--unreported"]);
+      const i = args!.indexOf("--text");
+      assert.ok(i >= 0, "the ending outcome carries a --text detail");
+      assert.match(args![i + 1], /last turn failed/);
+      assert.match(args![i + 1], /prompt-capture: no capture/);
+    });
+  } finally {
+    fx.restore();
+  }
+});
+
 test("session_shutdown schedules the window linger helper for a subagent", async () => {
   const fx = makeFixture();
   try {
@@ -2931,9 +3074,9 @@ test("a real subagent, fresh or resumed, is still a subagent in every respect", 
           const factory = await freshExtensions();
           const s = await startWithShutdownSpy(factory, runID);
 
-          const results = await s.emit("before_agent_start", { systemPrompt: "base prompt" });
-          const override = results.find((r: any) => r?.systemPrompt) as { systemPrompt: string } | undefined;
-          assert.match(override!.systemPrompt, /notify_parent/, `${runID}: the standing instruction still rides on every turn`);
+          const event: any = { systemPrompt: "base prompt", systemPromptOptions: { promptGuidelines: [] } };
+          await s.emit("before_agent_start", event);
+          assert.match(event.systemPromptOptions.promptGuidelines.join("\n"), /notify_parent/, `${runID}: the standing instruction still rides on every turn`);
 
           const result = await s.tools.get("notify_parent").execute("call-1", { summary: "done" });
           assert.ok(result.content[0].text.length > 0, `${runID}: notify_parent still runs`);

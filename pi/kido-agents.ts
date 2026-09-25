@@ -1142,6 +1142,12 @@ export default function (pi: ExtensionAPI) {
   // run does - the session carries straight on in the same process.
   let reportedToParent = false;
 
+  // lastTurnError is the errorMessage of the last turn when it stopped on
+  // "error"; an abort is not an error. errorNoticeSent keeps one notice per
+  // failure, since agent_settled can fire again with nothing new.
+  let lastTurnError: string | undefined;
+  let errorNoticeSent = false;
+
   // idleExitTimer is the idle self-exit clock: armed on every settled turn
   // (turnEnded) and on the delivery of the task a child was spawned with
   // (deliverTask), cleared by any sign of new work (workStarted). Only a
@@ -2140,15 +2146,46 @@ export default function (pi: ExtensionAPI) {
     return { render: () => lines };
   });
 
-  // notifyParentInstruction rides on every turn, not just the first, since
-  // a delivered task is a one-shot user message and a subagent's later
-  // follow-up turns (a parent's own message_agent call, say) have no other
-  // memory of "tell your parent when you're done". pi resets to the base
-  // system prompt whenever no handler returns one, so this must return it
-  // on every call, not only once.
+  const ERROR_NOTICE_LIMIT = 400;
+  const trimErrorMessage = (msg: string): string => (msg.length > ERROR_NOTICE_LIMIT ? `${msg.slice(0, ERROR_NOTICE_LIMIT)}…` : msg);
+
+  // The instruction goes in as a guideline, not a returned systemPrompt:
+  // a forced prompt is opaque to pi-claude-bridge, whose prompt capture
+  // then fails the turn. pi hands every call fresh options, so it is
+  // pushed on every turn and never accumulates.
   pi.on("before_agent_start", (event) => {
     if (!isSubagent()) return;
-    return { systemPrompt: `${event.systemPrompt}\n\n${NOTIFY_PARENT_INSTRUCTION}` };
+    event.systemPromptOptions.promptGuidelines.push(NOTIFY_PARENT_INSTRUCTION);
+  });
+
+  // agent_end fires once per attempt, retries included, and agent_settled
+  // once after them, so the last agent_end before a settle is the turn's
+  // outcome and only agent_settled speaks.
+  pi.on("agent_end", (event: { messages?: { role?: string; stopReason?: string; errorMessage?: string }[] }) => {
+    const assistants = (event?.messages ?? []).filter((m) => m?.role === "assistant");
+    const last = assistants[assistants.length - 1];
+    if (!last) return;
+    if (last.stopReason === "error") {
+      lastTurnError = last.errorMessage || "no error message given";
+      errorNoticeSent = false;
+    } else {
+      lastTurnError = undefined;
+    }
+  });
+
+  // A failed turn is told to the parent at once. reportedToParent stays
+  // as it was: the child has still said nothing about its work.
+  pi.on("agent_settled", async (_event: unknown, ctx: { isIdle(): boolean }) => {
+    if (!ctx.isIdle() || !isSubagent() || !lastTurnError || errorNoticeSent) return;
+    errorNoticeSent = true;
+    const host = status();
+    if (!host?.kidoPath()) return;
+    const runID = ownRunID();
+    const text =
+      `subagent stopped on an error: ${trimErrorMessage(lastTurnError)}\n` +
+      `run: ${runID}\n` +
+      `message it to retry, or spawn_subagent(resume: "${runID}") once it has exited`;
+    await host.runKido(["notify_parent"], { input: text, timeoutMs: 5000 });
   });
 
   // deliverTask hands the model the task kido spawn_subagent left for us, the same
@@ -2228,6 +2265,7 @@ export default function (pi: ExtensionAPI) {
     const args = ["run-outcome", "--result", result];
     if (!reportedToParent) args.push("--unreported");
     if (awaitingFirstWork) args.push("--text", NO_FIRST_TURN_TEXT);
+    else if (lastTurnError) args.push("--text", `its last turn failed: ${trimErrorMessage(lastTurnError)}`);
     await host.runKido([...args, "--", runID], { timeoutMs: 3000 });
     const listed = await fetchAgents();
     if ("error" in listed) return;
