@@ -2120,6 +2120,16 @@ export default function (pi: ExtensionAPI) {
     return { render: () => [theme.fg("dim", firstLine), ...rest] };
   });
 
+  // A renderer that returns its own component skips the box pi paints in
+  // customMessageBg behind an extension message, so it is painted here.
+  const INBOUND_BG = "customMessageBg";
+  const stripAnsi = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, "");
+  // Padded to the visible width before theme.bg, which does not pad.
+  const withBackground =
+    (theme: { bg: (color: string, text: string) => string }, lines: string[]) =>
+    (width: number): string[] =>
+      lines.map((line) => theme.bg(INBOUND_BG, line + " ".repeat(Math.max(0, width - stripAnsi(line).length))));
+
   // A message is never collapsed, which is the one way this renderer
   // differs from the notice's: a notice is a report a human wants one line
   // of, and a message is something another agent wrote to be read. What
@@ -2136,7 +2146,7 @@ export default function (pi: ExtensionAPI) {
       .find((line) => raw.startsWith(line));
     const content = header ? raw.slice(header.length) : raw;
     const lines = [theme.fg("dim", `message from @${from}:`), ...content.split("\n")];
-    return { render: () => lines };
+    return { render: withBackground(theme, lines) };
   });
 
   // An ask shows only the question, never the id or the reply
@@ -2149,7 +2159,7 @@ export default function (pi: ExtensionAPI) {
     const from = message.details?.from || "another agent";
     const question = message.details?.question ?? (typeof message.content === "string" ? message.content : "");
     const lines = [theme.fg("dim", `ask from @${from}:`), ...question.split("\n")];
-    return { render: () => lines };
+    return { render: withBackground(theme, lines) };
   });
 
   // Every notice, whatever kind of sender wrote it, collapses to one line
@@ -2176,10 +2186,10 @@ export default function (pi: ExtensionAPI) {
       const firstLine = content.split("\n", 1)[0];
       const summary = firstLine ? `: ${firstLine}` : "";
       const line = theme.fg("dim", `notification from ${from}${summary} — ctrl-o to expand`);
-      return { render: () => [line] };
+      return { render: withBackground(theme, [line]) };
     }
     const lines = [theme.fg("dim", `notification from ${from}:`), ...content.split("\n")];
-    return { render: () => lines };
+    return { render: withBackground(theme, lines) };
   });
 
   const ERROR_NOTICE_LIMIT = 400;

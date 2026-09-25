@@ -521,8 +521,18 @@ function createFakePi() {
 
 // fakeTheme is the minimal Theme surface a message renderer reads: fg()
 // applied as an identity function, so a rendered line's text is asserted
-// on directly rather than through a colour-code-stripping helper.
-const fakeTheme = { fg: (_color: string, text: string) => text } as any;
+// on directly rather than through a colour-code-stripping helper. bg() is
+// identity too, for the same reason, but records every call it was given
+// so a test can assert a renderer painted a background without every
+// other assertion in this file having to see through it.
+const fakeTheme = {
+  fg: (_color: string, text: string) => text,
+  bgCalls: [] as Array<{ color: string; text: string }>,
+  bg(color: string, text: string) {
+    this.bgCalls.push({ color, text });
+    return text;
+  },
+} as any;
 
 function fakeCtx(sessionId = "self-session", ui?: unknown) {
   return {
@@ -1371,6 +1381,72 @@ test("a notice from a nameless sender still renders sanely, collapsed and expand
     const renderer = s.renderers.get("kido-notice")!;
     const collapsed = renderer(sent!.message, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
     assert.match(collapsed, /notification from %12/, "a nameless sender still gets a sane, non-empty label");
+  } finally {
+    fx.restore();
+  }
+});
+
+// A message, an ask and a notice all draw on the same background pi's own
+// CustomMessageComponent already paints behind an extension's default
+// rendering ("customMessageBg", modes/interactive/components/custom-
+// message.js): each of these three renders its own component instead, and
+// bypassing that box without repainting it would leave every inbound entry
+// on the plain background a user's own typing sits on. The row must fill
+// the width in both a notice's collapsed and its expanded form, since a
+// background that stops short of the edge is not a boundary a glance can
+// see.
+test("a message, an ask and a notice each paint the full-width customMessageBg background pi's own box uses", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([
+      { id: DEFAULT_SESSION, name: "worker", parent: "boss-session", pane: "%1", instance: "self-inst", self: true, canMessage: true },
+      { id: "boss-session", name: "boss", parent: "", pane: "%2", instance: "parent-inst", self: false, canMessage: true },
+    ]);
+    await asSubagent(DEFAULT_SESSION, async () => {
+      const s = await startSessionUsing(await freshExtensions(), fx);
+
+      await sendToInbox(s.inboxPath, envelope("message", "ping", { from: { session: "boss-session", name: "boss" } }));
+      await sendToInbox(s.inboxPath, envelope("ask", "still there?", { id: "ask-bg", from: { session: "boss-session", name: "boss" } }));
+      await sendToInbox(s.inboxPath, envelope("notice", "build finished", { from: { session: "boss-session", name: "boss" } }));
+
+      const message = s.messages.find((m) => m.message.customType === "kido-message")!;
+      const ask = s.messages.find((m) => m.message.customType === "kido-ask")!;
+      const notice = s.messages.find((m) => m.message.customType === "kido-notice")!;
+
+      for (const [label, entry, width] of [
+        ["message", message, 80],
+        ["ask", ask, 40],
+      ] as const) {
+        fakeTheme.bgCalls.length = 0;
+        const renderer = s.renderers.get(`kido-${label}`)!;
+        const lines = renderer(entry.message, { expanded: true, outputPad: 1 }, fakeTheme).render(width);
+        assert.ok(fakeTheme.bgCalls.length > 0, `${label}: theme.bg was called at all`);
+        assert.ok(
+          fakeTheme.bgCalls.every((c: { color: string }) => c.color === "customMessageBg"),
+          `${label}: every background call used the theme's customMessageBg key, the same one pi's own box paints`,
+        );
+        assert.equal(fakeTheme.bgCalls.length, lines.length, `${label}: every drawn line, not just the first, went through the background`);
+        assert.ok(
+          fakeTheme.bgCalls.every((c: { text: string }) => c.text.length === width),
+          `${label}: each line is padded to the full render width before the background wraps it`,
+        );
+      }
+
+      const noticeRenderer = s.renderers.get("kido-notice")!;
+      fakeTheme.bgCalls.length = 0;
+      const collapsed = noticeRenderer(notice.message, { expanded: false, outputPad: 1 }, fakeTheme).render(60);
+      assert.equal(collapsed.length, 1, "the collapsed notice is one line");
+      assert.equal(fakeTheme.bgCalls.length, 1, "and that one line went through the background");
+      assert.equal(fakeTheme.bgCalls[0].text.length, 60, "padded to the full width even collapsed to one line");
+
+      fakeTheme.bgCalls.length = 0;
+      const expanded = noticeRenderer(notice.message, { expanded: true, outputPad: 1 }, fakeTheme).render(60);
+      assert.equal(fakeTheme.bgCalls.length, expanded.length, "every line of the expanded notice went through the background too");
+      assert.ok(
+        fakeTheme.bgCalls.every((c: { text: string }) => c.text.length === 60),
+        "including the expanded form, padded to the same full width",
+      );
+    });
   } finally {
     fx.restore();
   }
