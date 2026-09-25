@@ -1,11 +1,11 @@
 # kido
 
-A workflow on top of tmux to manage coding agents (pi and claude code are supported).
+A workflow on top of tmux to manage coding agents (pi and Claude Code are supported).
 
-Kido runs modified tmux to gather status from every pane and to render a
-sidebar with this information. On top of that kido ships with a small set of pi
-extensions for process management (subagents, async bash tool) which are
-integrated with use tmux for supervision and status reporting.
+Kido runs a modified tmux to gather status from every pane and to render a
+sidebar with this information. On top of that, kido ships with a small set of pi
+extensions for process management (subagents, an async bash tool), which use
+tmux for supervision and status reporting.
 
 ## Install
 
@@ -19,7 +19,7 @@ Then, from a plain terminal:
 kido
 ```
 
-Now start using it as you are using tmux.
+Now use it as you would use tmux.
 
 ## Configuration
 
@@ -35,9 +35,7 @@ source-file ~/.tmux.conf
 
 ## Keys
 
-kido runs as a one-shot picker whenever `$TMUX_SIDE_CLIENT` is empty, which
-the fork sets only for the `side-status-command` job - a popup or a plain
-pane gets the picker, and the side column keeps the behaviour below.
+By default the following keys are bound:
 
 | key | action |
 |-----|--------|
@@ -45,65 +43,31 @@ pane gets the picker, and the side column keeps the behaviour below.
 | `prefix k` | toggle keyboard focus between the sidebar and the pane |
 | `C-s` | with the sidebar hidden, open the picker in a popup; with it shown, toggle keyboard focus |
 | drag the sidebar's edge | resize it |
-| `j` / `k`, `C-j` / `C-k`, `C-n` / `C-p` | move between panes |
-| `gg` / `G` | first / last pane |
 | `S-Up` / `S-Down` | switch the client to the previous / next window (works with the sidebar unfocused too) |
-| `n` / `N` | next / previous session that wants you (waiting, or done since you last looked) |
-| `/` | fuzzy-filter by session name, agent title, or ssh destination; `Esc` cancels |
-| `Esc` / `C-c` | clear the filter, or return focus to the pane |
-| `Enter` / click | jump to the pane |
 
-The picker has its own, smaller set:
+While the sidebar is focused:
 
 | key | action |
 |-----|--------|
-| `q` | close the picker |
+| `j` / `k`, `C-j` / `C-k`, `C-n` / `C-p` | move between panes |
+| `n` / `N` | next / previous session that wants you (waiting, or done since you last looked) |
+| `gg` / `G` | first / last pane |
+| `/` | fuzzy-filter by session name, agent title, or ssh destination; `Esc` cancels |
 | `Esc` / `C-c` | clear the filter, or close the picker |
 | `Enter` / click | jump to the pane, then close the picker |
+| `q` | close the picker |
 
 ## Status
 
-Agent panes show `▌ running`, `◆ waiting`, `◌ compacting`, `✓ done`, or
-nothing when idle. A session stays running at turn end while background
-commands or agents it started are still going. `✓ done` lasts until you
-visit the pane.
+Agent panes show `▌ running`, `◆ waiting`, `◌ compacting`, `✓ done`, or nothing
+when idle. `✓ done` lasts until you visit the pane.
 
 Shell panes with the OSC 133 integration use the same indicators: green `▌`
 while a command runs, then, until you visit the pane, green `✓` if the last
-one exited zero or red `▌` if it exited nonzero. A shell without the
-integration has no indicator column. A program that has taken the
-terminal (an editor, a pager, an `ssh` shell) shows no indicator.
+one exited zero or red `▌` if it exited nonzero.
 
-An `ssh` pane is the exception: once its far side marks a prompt, the row
-shows the remote shell's commands with the same indicators, beside the
-destination. That needs the integration on the remote, which `kido ssh`
-supplies for a host that does not have it.
-
-Claude Code reports through `kido hook`. Dismissing a question or denying a
-permission fires no hook, so kido reads the pane and returns it to idle
-once the input box is back and nothing is running. pi reports through
-`kido agent-status`, and a pi pane is recognised before it reports anything
-from the pi in its process tree.
-
-State lives in `~/.local/state/kido/`.
-
-## Debugging
-
-With `KIDO_HOOK_DEBUG` set in the environment Claude Code was started in,
-every hook event appends a tab-separated line to `kido debug-log`'s path:
-timestamp, `TMUX_PANE`, the raw payload, and the effect kido computed
-(`unmapped` for an event outside its table). Behaviour is otherwise
-unchanged. It is an environment variable rather than a flag because Claude
-Code is what runs the hook.
-
-```sh
-KIDO_HOOK_DEBUG=1 claude
-tail -f "$(kido debug-log)"
-```
-
-The shipped settings file registers only the events kido acts on. To see
-one it does not, add a `kido hook` entry for that event to your own
-`~/.claude/settings.json`; the two files are merged.
+Kido overrides the `ssh` command to inject shell integration on the remote side.
+This means shell panes show the status and command for remote shells as well.
 
 ## Upgrading from the setup-command era
 
@@ -134,15 +98,25 @@ make test             # go vet, the unit tests, and the pi extensions' node suit
 make e2e              # drives kido inside a real tmux server
 ```
 
-`make install` also builds the tmux fork from the `third_party/tmux`
-submodule and installs it as `$PREFIX/bin/kido-tmux`. kido finds its tmux as
-`$KIDO_TMUX`, else a `kido-tmux` beside its own binary, else `tmux` on
-`PATH` - the last being how a build in a checkout runs.
+CI runs both suites on every push to `main` and every pull request, on Linux
+and macOS.
 
-`make e2e` needs the fork on `PATH` or at `KIDO_TMUX=/path/to/tmux`, and
-skips without it; `KIDO_E2E_REQUIRED=1` makes it fail instead. Build the
-fork on its own with `scripts/install-tmux-fork.sh <prefix>`.
+Ask your coding agent for assistance; kido was built to be developed with one.
 
-CI runs both suites on every push to `main` and every pull request, on
-Linux and macOS, building the fork from the submodule at the revision it
-pins.
+## Debugging
+
+With `KIDO_HOOK_DEBUG` set in the environment Claude Code was started in,
+every hook event appends a tab-separated line to `kido debug-log`'s path:
+timestamp, `TMUX_PANE`, the raw payload, and the effect kido computed
+(`unmapped` for an event outside its table). Behaviour is otherwise
+unchanged. It is an environment variable rather than a flag because Claude
+Code is what runs the hook.
+
+```sh
+KIDO_HOOK_DEBUG=1 claude
+tail -f "$(kido debug-log)"
+```
+
+The shipped settings file registers only the events kido acts on. To see
+one it does not, add a `kido hook` entry for that event to your own
+`~/.claude/settings.json`; the two files are merged.
