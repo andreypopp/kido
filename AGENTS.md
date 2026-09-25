@@ -305,7 +305,7 @@ fallback, and `invokedPath(os.Args[0])` is used instead of
 
     make test    go vet ./..., the unit tests (cmd/..., internal/...),
                  and scripts/test-ts.sh: one node suite for both pi extensions
-    make e2e     go test ./e2e/ -count=1 -v
+    make e2e     builds the fork into build/ and runs go test ./e2e/ against it
     make install binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
 
 A failure that passed here and failed on GitHub's slower, contended
@@ -327,13 +327,15 @@ it). While working, `go test` on the package you changed is the loop;
 a spawned agent runs only that, by the rule under "Working here as a
 spawned agent".
 
-`make e2e` needs the fork on `PATH` or at `KIDO_TMUX=/path/to/tmux` and
-**skips** without it; `KIDO_E2E_REQUIRED=1` fails instead, which is what
-CI uses so a broken fork build cannot pass as a skip. The TypeScript suite
-has the same shape — it skips without a node new enough to run `.ts`
-unflagged, and `KIDO_TS_TEST_REQUIRED=1` fails instead, which CI sets
-for the same reason, having pinned a node rather than trusting whatever
-the runner ships. The
+`make e2e` builds the fork itself, into `build/tmux-fork/<revision>/`
+so a submodule bump builds a new one and nothing else does, and runs the
+suite against it with `KIDO_E2E_REQUIRED=1`; a `KIDO_TMUX` in the
+environment names another fork and skips the build, which is how CI runs
+it against its cached one. A bare `go test ./e2e/` with neither skips.
+The TypeScript suite has a similar shape — it skips without a node new
+enough to run `.ts` unflagged, and `KIDO_TS_TEST_REQUIRED=1` fails
+instead, which CI sets, having pinned a node rather than trusting
+whatever the runner ships. The
 harness (`e2e/harness_test.go`) nests two tmux servers — an outer one
 hosting a pty, the inner one under test with kido as its
 `side-status-command` — and reads the sidebar back with `capture-pane`.
@@ -898,7 +900,9 @@ not repeat them.
   failure. A feature needs no such proof - its tests need only pass.
   Then run `go vet ./...` and the tests of the packages you changed (an
   e2e test you wrote, with `KIDO_E2E_REQUIRED=1
-  KIDO_TMUX=$(command -v kido-tmux) go test ./e2e/ -run Name`; the TypeScript suite through
+  KIDO_TMUX=$(command -v kido-tmux) go test ./e2e/ -run Name`, or the
+  checkout's own fork under `build/tmux-fork/` once `make e2e` has built
+  it; the TypeScript suite through
   `scripts/test-ts.sh` if you touched `pi/`), each once, with the
   environment scrubbed:
 

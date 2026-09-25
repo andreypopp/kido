@@ -28,10 +28,19 @@ test:
 	go test ./cmd/... ./internal/...
 	./scripts/test-ts.sh
 
-# drives kido inside a real tmux fork; needs the fork on PATH or
-# KIDO_TMUX=<path>; KIDO_E2E_REQUIRED=1 fails instead of skipping
-e2e:
-	go test ./e2e/ -count=1 -v
+# the fork the e2e suite runs kido inside, built into the checkout under
+# a directory named by the pinned revision, so a submodule bump builds a
+# new one and a second run of the same pin builds nothing
+TMUX_FORK_REV := $(shell ./scripts/install-tmux-fork.sh --print-revision)
+TMUX_FORK := build/tmux-fork/$(TMUX_FORK_REV)
+$(TMUX_FORK)/bin/kido-tmux:
+	git submodule update --init third_party/tmux
+	./scripts/install-tmux-fork.sh $(CURDIR)/$(TMUX_FORK)
+
+# drives kido inside a real tmux fork: the one above, unless KIDO_TMUX
+# names another (CI, with its cached build); it never skips
+e2e: $(if $(KIDO_TMUX),,$(TMUX_FORK)/bin/kido-tmux)
+	KIDO_TMUX=$${KIDO_TMUX:-$(CURDIR)/$(TMUX_FORK)/bin/kido-tmux} KIDO_E2E_REQUIRED=1 go test ./e2e/ -count=1 -v
 
 # reproduces a CI-runner-only failure in a CPU/memory-capped Linux
 # container instead of by loading the host, e.g.:

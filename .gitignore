@@ -2,3 +2,4 @@
 pi/node_modules/
 /kido
 pi/.copy-*/
+/build/
