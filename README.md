@@ -25,18 +25,13 @@ Now start using it as you are using tmux.
 
 Your own configuration goes in `~/.config/kido/kido.conf`
 (`$XDG_CONFIG_HOME/kido/kido.conf` when that is set), in tmux's syntax.
-`~/.tmux.conf` is **not** read - a config written for stock tmux tends to
-fight the side column - so if you want it, source it yourself:
+
+If you want your `~/.tmux.conf` to take effect, you need to source it from
+`kido.conf`:
 
 ```tmux
 source-file ~/.tmux.conf
 ```
-
-The server starts with a generated file in three layers: kido's defaults
-(`tmux/kido-tmux.conf` in this repo - the side column and its keys), then
-your `kido.conf`, which may override any of them, then the two options kido
-owns and you cannot override, `side-status-command` and `default-command`.
-The first session is named `main`. A `default-command` you set is kept and run by `kido shell`, primed. If it is just a shell's name, `zsh` or `bash` or a path to one, that shell is what gets primed, rather than being run as a command inside the login shell.
 
 ## The bin directory
 
