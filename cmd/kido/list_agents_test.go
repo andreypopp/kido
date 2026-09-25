@@ -13,6 +13,31 @@ import (
 	"kido/internal/tmux"
 )
 
+// TestDisplayNameStripsPisMarker checks that list_agents' name fallback
+// goes through the same pi-marker stripping as the sidebar, so a name
+// list_agents prints is always the one the sidebar shows and can be typed
+// back as an @ mention or a message_agent target.
+func TestDisplayNameStripsPisMarker(t *testing.T) {
+	byPane := map[string]tmux.Pane{
+		"%1": {PaneID: "%1", Title: "π - kido"},
+		"%2": {PaneID: "%2", Title: "π - review - kido"},
+		"%3": {PaneID: "%3", Title: "π - kido"},
+	}
+	for _, c := range []struct {
+		name string
+		s    state.Session
+		want string
+	}{
+		{"no title, unnamed pi session", state.Session{Pane: "%1"}, "kido"},
+		{"no title, named pi session", state.Session{Pane: "%2"}, "review - kido"},
+		{"reported title wins verbatim", state.Session{Pane: "%3", Title: "π - kido"}, "π - kido"},
+	} {
+		if got := displayName(c.s, byPane); got != c.want {
+			t.Errorf("%s: displayName = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
 // TestAgentsCmdDefaultsToTheCallersSession drives the command itself,
 // not buildAgents: the scoping it applies is chosen here, from $TMUX_PANE
 // against tmux's pane list, and an agent in another tmux session is one

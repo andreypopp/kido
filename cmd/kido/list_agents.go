@@ -194,13 +194,14 @@ func paneIndex(panes []tmux.Pane) map[string]tmux.Pane {
 }
 
 // displayName is the name a session shows in kido list_agents:
-// its reported Title, falling back to its pane's title. matchTarget
+// its reported Title, falling back to its pane's title stripped the way
+// the sidebar strips it. matchTarget
 // (message_agent.go) resolves by the same name, so the two must not drift.
 func displayName(s state.Session, byPane map[string]tmux.Pane) string {
 	if s.Title != "" {
 		return s.Title
 	}
-	return byPane[s.Pane].Title
+	return state.AgentTitle(byPane[s.Pane].Title)
 }
 
 // parentID resolves s's parent to an agent id, "" for a root, by

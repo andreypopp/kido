@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -1317,31 +1316,14 @@ func field(ind string) string {
 	return ind + " "
 }
 
-// piPrefix is what pi puts before the title it sets: "π - <session> -
-// <cwd>", or "π - <cwd>" when the session is unnamed. Only the marker is
-// dropped; what the agent chose to name itself is shown whole.
-const piPrefix = "π - "
-
-// agentTitle extracts the session name from the pane title an agent sets,
-// e.g. "✳ Tmux config" → "Tmux config" for Claude Code and "π - kido -
-// internal" → "kido - internal" for pi. Anything else is left as it is.
-// Falls back to "-".
-//
-// pi's marker is a letter as far as unicode is concerned, so it needs its
-// own prefix test; Claude Code's keeps the older rule of trimming leading
-// punctuation and symbols, which is what every Claude Code title kido has
-// ever shown went through.
+// agentTitle is state.AgentTitle with the sidebar's own fallback for an
+// empty result: a row always shows something, where a name resolved for
+// addressing (list_agents, message_agent) is better left empty.
 func agentTitle(title string) string {
-	t, ok := strings.CutPrefix(title, piPrefix)
-	if !ok {
-		t = strings.TrimLeftFunc(title, func(r rune) bool {
-			return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-		})
+	if t := state.AgentTitle(title); t != "" {
+		return t
 	}
-	if t == "" {
-		return "-"
-	}
-	return t
+	return "-"
 }
 
 // agentTitleOf returns pane p's agent title and true when it is an agent

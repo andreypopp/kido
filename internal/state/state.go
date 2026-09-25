@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"kido/internal/tmux"
 )
@@ -389,6 +390,31 @@ func Record(id string, s Session) error {
 		return err
 	}
 	return os.Rename(tmp, filepath.Join(dir, id+".json"))
+}
+
+// piPrefix is what pi puts before the title it sets: "π - <session> -
+// <cwd>", or "π - <cwd>" when the session is unnamed. Only the marker is
+// dropped; what the agent chose to name itself is shown whole.
+const piPrefix = "π - "
+
+// AgentTitle extracts the session name from the pane title an agent sets,
+// e.g. "✳ Tmux config" → "Tmux config" for Claude Code and "π - kido -
+// internal" → "kido - internal" for pi. Anything else is left as it is.
+// Empty in, empty out - callers that want a placeholder (the sidebar's
+// "-") supply their own.
+//
+// pi's marker is a letter as far as unicode is concerned, so it needs its
+// own prefix test; Claude Code's keeps the older rule of trimming leading
+// punctuation and symbols, which is what every Claude Code title kido has
+// ever shown went through.
+func AgentTitle(title string) string {
+	t, ok := strings.CutPrefix(title, piPrefix)
+	if !ok {
+		t = strings.TrimLeftFunc(title, func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+		})
+	}
+	return t
 }
 
 // IsAgentPane reports whether p runs an agent: one that has reported (its
