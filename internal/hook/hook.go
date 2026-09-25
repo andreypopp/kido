@@ -181,8 +181,9 @@ func Events() []string {
 
 // allEvents is the full list of Claude Code hook events, per the Claude
 // Code hooks reference. Most are not in the events table above (Apply
-// treats them as unmapped); --debug registers all of them so their raw
-// payloads land in the debug log too.
+// treats them as unmapped); the shipped settings file registers only
+// the events in the table, and one of these is registered by hand in a
+// user's own settings.json to see its payload in the debug log.
 var allEvents = []string{
 	"SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "StopFailure",
 	"PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch",
