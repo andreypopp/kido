@@ -33,46 +33,6 @@ If you want your `~/.tmux.conf` to take effect, you need to source it from
 source-file ~/.tmux.conf
 ```
 
-## The bin directory
-
-Inside a kido pane, four names resolve to shims kido ships (its bin
-directory is first on `PATH`):
-
-| name | what it runs |
-|------|--------------|
-| `tmux` | `kido-tmux`. Required, not a convenience: `$TMUX` in a kido pane names the kido socket, and a stock tmux client gets a protocol mismatch there. |
-| `ssh` | `kido ssh`, so a remote shell reports what it is running. |
-| `pi` | the real pi with `--extension` for kido's two extensions, where the package ships them. |
-| `claude` | the real Claude Code with `--settings` naming the shipped hooks file. |
-
-Each finds the real program on `PATH` after its own directory, so nothing is
-shadowed twice and `ssh -V`, `tmux -V` and the rest behave as always. Only
-sessions started from a kido pane get any of this, which is exactly the set
-of sessions kido tracks.
-
-**pi** therefore needs no installation step: a pi started in a kido pane has
-kido's status reporting, its inbox and its agent tools. **Claude Code**
-reports through the hooks in the shipped settings file; `--settings` merges
-with your own `~/.claude/settings.json`, which kido does not touch.
-
-**ssh** sends a small bootstrap as the remote command, which primes the
-remote zsh or bash the same way a local pane is primed, so the row shows
-what the shell on the far side is running, on a host where nothing is
-installed. Anything kido cannot prime - a remote command of your own, no
-terminal, a login shell that is neither zsh nor bash, a remote with no
-`base64`, an old bash without `PS0` - is a plain ssh session, unchanged.
-`kido ssh host` is never worse than `ssh host`, and the remote `$HOME` is
-never touched.
-
-## Shells
-
-Every pane's shell is started by `kido shell`, as a login shell, with kido's
-OSC 133 integration arranged around it: zsh through a throwaway `ZDOTDIR`
-that sources your real dotfiles first, bash 4.4 and up through `ENV` with
-`--login --posix`. That is what makes a shell row show what it is running.
-Any other shell - fish, or a bash below 4.4, which is what macOS ships as
-`/bin/bash` - gets a working pane with no command status.
-
 ## Keys
 
 kido runs as a one-shot picker whenever `$TMUX_SIDE_CLIENT` is empty, which
