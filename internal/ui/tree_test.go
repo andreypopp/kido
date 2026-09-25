@@ -1064,3 +1064,55 @@ func TestRenderLingeringSubagentStillNests(t *testing.T) {
 		"  └× subagent",
 	})
 }
+
+// TestOrderWindowsByTreeAnchorsToTheSecondAgentPaneInAWindow is the live
+// bug report: one window holds two agent panes, each with its own
+// instance and no parent of its own (the user's top-level pi, and a
+// second pi split into the same window). A subagent spawned from the
+// second pane must nest under that pane's row, not become a root - and
+// a subagent of the first pane must keep nesting under it, which already
+// worked before the fix and is the negative control here.
+func TestOrderWindowsByTreeAnchorsToTheSecondAgentPaneInAWindow(t *testing.T) {
+	windows := [][]tmux.Pane{
+		{{PaneID: "%21", WindowID: "@13"}, {PaneID: "%101", WindowID: "@13"}},
+		{{PaneID: "%kid1", WindowID: "@kid1"}},
+		{{PaneID: "%kid2", WindowID: "@kid2"}},
+	}
+	states := map[string]state.Session{
+		"%21":   {Instance: "top-inst"},
+		"%101":  {Instance: "second-inst"},
+		"%kid1": {Instance: "kid1-inst", ParentInstance: "top-inst", Depth: 1},
+		"%kid2": {Instance: "kid2-inst", ParentInstance: "second-inst", Depth: 1},
+	}
+	got := orderWindowsByTree(windows, states)
+	anchors := anchorsOf(got)
+	if anchors["@kid1"] != "%21" {
+		t.Errorf("anchor[@kid1] = %q, want %%21 (negative control: a child of the window's first agent pane)", anchors["@kid1"])
+	}
+	if anchors["@kid2"] != "%101" {
+		t.Errorf("anchor[@kid2] = %q, want %%101 (the bug: a child of the window's second agent pane)", anchors["@kid2"])
+	}
+}
+
+// TestRenderNestsUnderTheSecondAgentPaneInAWindow is the same bug end to
+// end: a subagent of the second pane must be drawn under that pane's
+// row, with its own group glyph, exactly as a subagent of the first pane
+// already is.
+func TestRenderNestsUnderTheSecondAgentPaneInAWindow(t *testing.T) {
+	panes := []tmux.Pane{
+		agentPane("@13", "%21", "top-level"),
+		agentPane("@13", "%101", "second"),
+		agentPane("@20", "%30", "subagent-b"),
+	}
+	states := map[string]state.Session{
+		"%21":  agentState("top-inst", "", "top-level"),
+		"%101": agentState("second-inst", "", "second"),
+		"%30":  agentState("kid-inst", "second-inst", "subagent-b"),
+	}
+	wantRows(t, renderRows(panes, states), []string{
+		"sess",
+		"┌◼ top-level",
+		"└◼ second",
+		"  └◼ subagent-b",
+	})
+}

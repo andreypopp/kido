@@ -1470,6 +1470,12 @@ parent is in another session, or gone, still reports depth 1, and indenting
 by that number alone puts it under whatever row happens to precede it. A
 window is only nested under a pane the walk actually found an edge to.
 
+Every agent pane is an anchor, not only a window's first: a window can
+hold two agents (a top-level pi split with a second one), and a child of
+the second nests under that pane's row. A window's own place in the tree
+still comes from one record, its first agent pane's, since a window sits
+in exactly one place however many agents it holds.
+
 Nesting inside a window cuts its bracket in two, since the ┌ ├ └ glyphs
 join a window's panes into one column. The column is carried on down the
 left of the nested rows with a │ stem rather than restarted, so a
