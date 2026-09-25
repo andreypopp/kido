@@ -290,7 +290,6 @@ interface InboxHold {
   path: string;
   handler: ((sock: Socket) => void) | null;
   waiting: Socket[];
-  retained: boolean;
 }
 
 const INBOX_SLOT = Symbol.for("kido.pi.extension.inbox");
@@ -365,7 +364,6 @@ export default function (pi: ExtensionAPI) {
   let beforeCompact: Status = "idle";
 
   let inbox: Server | null = null;
-  let inboxPath: string | null = null;
   let inboxReported = false;
 
   // null whenever the last reported status was not "running".
@@ -441,14 +439,10 @@ export default function (pi: ExtensionAPI) {
   const stopInbox = (opts: { keepListening?: boolean } = {}): void => {
     const hold = heldInbox();
     inbox = null;
-    inboxPath = null;
     inboxReported = false;
     if (!hold) return;
     hold.handler = null;
-    if (opts.keepListening) {
-      hold.retained = true;
-      return;
-    }
+    if (opts.keepListening) return;
     setHeldInbox(null);
     for (const sock of hold.waiting.splice(0)) sock.destroy();
     try {
@@ -468,11 +462,9 @@ export default function (pi: ExtensionAPI) {
   // included.
   const adoptInbox = (): boolean => {
     const hold = heldInbox();
-    if (!hold?.retained) return false;
-    hold.retained = false;
+    if (!hold || hold.handler) return false;
     hold.handler = onConnection;
     inbox = hold.server;
-    inboxPath = hold.path;
     inboxReported = false;
     for (const sock of hold.waiting.splice(0)) onConnection(sock);
     return true;
@@ -499,9 +491,8 @@ export default function (pi: ExtensionAPI) {
     });
     if (!bound) return; // never publish a path we are not listening on
     server.unref(); // never hold pi's event loop open
-    setHeldInbox({ server, path, handler: onConnection, waiting: [], retained: false });
+    setHeldInbox({ server, path, handler: onConnection, waiting: [] });
     inbox = server;
-    inboxPath = path;
     inboxReported = false;
   };
 
@@ -533,6 +524,7 @@ export default function (pi: ExtensionAPI) {
     // The report that carries --inbox must never be coalesced away:
     // session_start awaits the socket bind, and another handler can send
     // an equivalent "idle" report inside that window.
+    const inboxPath = inbox ? (heldInbox()?.path ?? null) : null;
     const pendingInbox = inboxPath !== null && !inboxReported;
     if (!pendingInbox && !opts.heartbeat && key === lastKey) return;
     if (!opts.heartbeat) lastKey = key;

@@ -270,25 +270,22 @@ const MESSAGE_RELATION: Record<SenderRelation, string> = {
   peer: "another agent in this session, not the user",
 };
 
-// messageHeader is the one line prefixed to an agent's message before the
-// model sees it, for the reason noticeHeader exists: delivered as a user
-// message, it otherwise reads exactly like the user typing, and who is
-// talking is the one thing the model cannot infer from the text. The
-// renderer below takes the line back off and leaves the sender, since a
-// human reading the transcript has the sidebar's tree beside it.
-const messageHeader = (from: string, relation: SenderRelation): string =>
-  `message from @${from} (${MESSAGE_RELATION[relation]}):`;
+// senderHeader is the one line prefixed to an agent's message or ask
+// before the model sees it, for the reason noticeHeader exists: delivered
+// as a user message, it otherwise reads exactly like the user typing, and
+// who is talking is the one thing the model cannot infer from the text.
+// An ask is headed the same way a message is, since who is asking and how
+// they stand to this session is the same question either kind raises. The
+// message renderer below takes the line back off and leaves the sender,
+// since a human reading the transcript has the sidebar's tree beside it.
+const senderHeader = (kind: "message" | "ask", from: string, relation: SenderRelation): string =>
+  `${kind} from @${from} (${MESSAGE_RELATION[relation]}):`;
 
 // The custom message type an inbound ask is delivered as, matched by
 // registerMessageRenderer below - the same treatment deliverAgentMessage
 // gives a plain message, so the id and reply instructions the model needs
 // do not also land in a human's transcript.
 const ASK_CUSTOM_TYPE = "kido-ask";
-
-// askHeader mirrors messageHeader; an ask is headed the same way a
-// message is, since who is asking and how they stand to this session is
-// the same question either kind raises.
-const askHeader = (from: string, relation: SenderRelation): string => `ask from @${from} (${MESSAGE_RELATION[relation]}):`;
 
 // The custom message type a batch of a streaming run's output is
 // delivered as, rendered collapsed exactly as a notice is.
@@ -716,7 +713,7 @@ export default function (pi: ExtensionAPI) {
     pi.sendMessage(
       {
         customType: MESSAGE_CUSTOM_TYPE,
-        content: `${messageHeader(from, relation)}\n${text}`,
+        content: `${senderHeader("message", from, relation)}\n${text}`,
         display: true,
         details: { from, relation },
       },
@@ -889,7 +886,7 @@ export default function (pi: ExtensionAPI) {
       {
         customType: ASK_CUSTOM_TYPE,
         content:
-          `${askHeader(from, relation)}\n${from} is asking (id ${env.id}): ${env.text}\n\n` +
+          `${senderHeader("ask", from, relation)}\n${from} is asking (id ${env.id}): ${env.text}\n\n` +
           `${from} cannot see this session's context, so make the answer self-contained. ` +
           `Reply with message_agent(to=${JSON.stringify(from)}, message=<answer>, replyTo=${JSON.stringify(env.id)}). ${STOP_AFTER_ASK_REPLY}`,
         display: true,
@@ -1166,10 +1163,9 @@ export default function (pi: ExtensionAPI) {
   let reportedToParent = false;
 
   // lastTurnError is the errorMessage of the last turn when it stopped on
-  // "error"; an abort is not an error. errorNoticeSent keeps one notice per
+  // "error"; an abort is not an error. notified keeps one notice per
   // failure, since agent_settled can fire again with nothing new.
-  let lastTurnError: string | undefined;
-  let errorNoticeSent = false;
+  let lastTurnError: { text: string; notified: boolean } | undefined;
 
   // idleExitTimer is the idle self-exit clock: armed on every settled turn
   // (turnEnded) and on the delivery of the task a child was spawned with
@@ -2124,11 +2120,27 @@ export default function (pi: ExtensionAPI) {
   // customMessageBg behind an extension message, so it is painted here.
   const INBOUND_BG = "customMessageBg";
   const stripAnsi = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, "");
-  // Padded to the visible width before theme.bg, which does not pad.
-  const withBackground =
-    (theme: { bg: (color: string, text: string) => string }, lines: string[]) =>
-    (width: number): string[] =>
-      lines.map((line) => theme.bg(INBOUND_BG, line + " ".repeat(Math.max(0, width - stripAnsi(line).length))));
+  // Padded to the visible width before theme.bg, which does not pad;
+  // cached per width, since pi calls render on every redraw.
+  const withBackground = (theme: { bg: (color: string, text: string) => string }, lines: string[]) => {
+    let cachedWidth = -1;
+    let cached: string[] = [];
+    return (width: number): string[] => {
+      if (width !== cachedWidth) {
+        cachedWidth = width;
+        cached = lines.map((line) => theme.bg(INBOUND_BG, line + " ".repeat(Math.max(0, width - stripAnsi(line).length))));
+      }
+      return cached;
+    };
+  };
+
+  const renderInbound = (
+    theme: { fg: (style: string, text: string) => string; bg: (color: string, text: string) => string },
+    headerLine: string,
+    body: string,
+  ): { render: (width: number) => string[] } => ({
+    render: withBackground(theme, [theme.fg("dim", headerLine), ...body.split("\n")]),
+  });
 
   // A message is never collapsed, which is the one way this renderer
   // differs from the notice's: a notice is a report a human wants one line
@@ -2142,11 +2154,10 @@ export default function (pi: ExtensionAPI) {
     const from = message.details?.from || "another agent";
     const raw = typeof message.content === "string" ? message.content : "";
     const header = (Object.keys(MESSAGE_RELATION) as SenderRelation[])
-      .map((relation) => `${messageHeader(from, relation)}\n`)
+      .map((relation) => `${senderHeader("message", from, relation)}\n`)
       .find((line) => raw.startsWith(line));
     const content = header ? raw.slice(header.length) : raw;
-    const lines = [theme.fg("dim", `message from @${from}:`), ...content.split("\n")];
-    return { render: withBackground(theme, lines) };
+    return renderInbound(theme, `message from @${from}:`, content);
   });
 
   // An ask shows only the question, never the id or the reply
@@ -2158,8 +2169,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerMessageRenderer<{ from: string; question: string }>(ASK_CUSTOM_TYPE, (message, _options, theme) => {
     const from = message.details?.from || "another agent";
     const question = message.details?.question ?? (typeof message.content === "string" ? message.content : "");
-    const lines = [theme.fg("dim", `ask from @${from}:`), ...question.split("\n")];
-    return { render: withBackground(theme, lines) };
+    return renderInbound(theme, `ask from @${from}:`, question);
   });
 
   // Every notice, whatever kind of sender wrote it, collapses to one line
@@ -2188,8 +2198,7 @@ export default function (pi: ExtensionAPI) {
       const line = theme.fg("dim", `notification from ${from}${summary} — ctrl-o to expand`);
       return { render: withBackground(theme, [line]) };
     }
-    const lines = [theme.fg("dim", `notification from ${from}:`), ...content.split("\n")];
-    return { render: withBackground(theme, lines) };
+    return renderInbound(theme, `notification from ${from}:`, content);
   });
 
   const ERROR_NOTICE_LIMIT = 400;
@@ -2212,8 +2221,7 @@ export default function (pi: ExtensionAPI) {
     const last = assistants[assistants.length - 1];
     if (!last) return;
     if (last.stopReason === "error") {
-      lastTurnError = last.errorMessage || "no error message given";
-      errorNoticeSent = false;
+      lastTurnError = { text: last.errorMessage || "no error message given", notified: false };
     } else {
       lastTurnError = undefined;
     }
@@ -2222,13 +2230,13 @@ export default function (pi: ExtensionAPI) {
   // A failed turn is told to the parent at once. reportedToParent stays
   // as it was: the child has still said nothing about its work.
   pi.on("agent_settled", async (_event: unknown, ctx: { isIdle(): boolean }) => {
-    if (!ctx.isIdle() || !isSubagent() || !lastTurnError || errorNoticeSent) return;
-    errorNoticeSent = true;
+    if (!ctx.isIdle() || !isSubagent() || !lastTurnError || lastTurnError.notified) return;
+    lastTurnError.notified = true;
     const host = status();
     if (!host?.kidoPath()) return;
     const runID = ownRunID();
     const text =
-      `subagent stopped on an error: ${trimErrorMessage(lastTurnError)}\n` +
+      `subagent stopped on an error: ${trimErrorMessage(lastTurnError.text)}\n` +
       `run: ${runID}\n` +
       `message it to retry, or spawn_subagent(resume: "${runID}") once it has exited`;
     await host.runKido(["notify_parent"], { input: text, timeoutMs: 5000 });
@@ -2311,7 +2319,7 @@ export default function (pi: ExtensionAPI) {
     const args = ["run-outcome", "--result", result];
     if (!reportedToParent) args.push("--unreported");
     if (awaitingFirstWork) args.push("--text", NO_FIRST_TURN_TEXT);
-    else if (lastTurnError) args.push("--text", `its last turn failed: ${trimErrorMessage(lastTurnError)}`);
+    else if (lastTurnError) args.push("--text", `its last turn failed: ${trimErrorMessage(lastTurnError.text)}`);
     await host.runKido([...args, "--", runID], { timeoutMs: 3000 });
     const listed = await fetchAgents();
     if ("error" in listed) return;

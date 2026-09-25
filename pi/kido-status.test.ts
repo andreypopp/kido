@@ -543,11 +543,21 @@ function fakeCtx(sessionId = "self-session", ui?: unknown) {
   };
 }
 
+// startSessionCore is the shape every session-starting helper below
+// shares: build a fake pi, run one or more extension factories against
+// it, emit session_start with a ctx the caller assembles (buildCtx gets
+// the fake pi's own bundle, so it can hand back ctx.ui or leave it out,
+// exactly as the caller needs), and hand back everything the fake pi
+// recorded plus this session's inbox path.
+async function startSessionCore(fx: Fixture, factory: (pi: unknown) => void, buildCtx: (created: ReturnType<typeof createFakePi>) => unknown) {
+  const created = createFakePi();
+  factory(created.pi);
+  await created.emit("session_start", {}, buildCtx(created));
+  return { ...created, inboxPath: fx.selfInboxPath() };
+}
+
 async function startSession(fx: Fixture, sessionId?: string) {
-  const { pi, tools, delivered, messages, renderers, widgets, autocompleteFactories, ui, emit } = createFakePi();
-  loadExtensions(pi);
-  await emit("session_start", {}, fakeCtx(sessionId, ui));
-  return { tools, delivered, messages, renderers, widgets, autocompleteFactories, emit, inboxPath: fx.selfInboxPath() };
+  return startSessionCore(fx, loadExtensions, (c) => fakeCtx(sessionId, c.ui));
 }
 
 // loadExtensions is what a pi host does with the pair: run both factories
@@ -567,10 +577,7 @@ function loadExtensions(pi: unknown): void {
 // freshExtensions below reloads both so those module-scope constants are
 // recomputed from whatever the environment holds at that moment.
 async function startSessionUsing(factory: (pi: unknown) => void, fx: Fixture, sessionId?: string) {
-  const { pi, tools, delivered, messages, renderers, widgets, autocompleteFactories, ui, emit } = createFakePi();
-  factory(pi);
-  await emit("session_start", {}, fakeCtx(sessionId, ui));
-  return { tools, delivered, messages, renderers, widgets, autocompleteFactories, emit, inboxPath: fx.selfInboxPath() };
+  return startSessionCore(fx, factory, (c) => fakeCtx(sessionId, c.ui));
 }
 
 // freshExtensions reimports both extensions under a cache-busting
@@ -682,7 +689,7 @@ test("either load order wires the pair up: agents first, status second", async (
     const resp = await sendToInbox(s.inboxPath, envelope("notice", "loaded either way", { from: { session: "peer-a", name: "peer-a" } }));
     assert.equal(resp, "ok");
     assert.ok(
-      s.messages.some((m) => m.message.customType === "kido-notice" && m.message.content.endsWith("\nloaded either way")),
+      customMessages(s, "kido-notice").some((m) => m.message.content.endsWith("\nloaded either way")),
       "the envelope was dispatched by the agent half, not delivered as plain text",
     );
   } finally {
@@ -698,10 +705,10 @@ test("either load order wires the pair up: agents first, status second", async (
 // to - only a file on disk to keep checking. In particular ask_agent's
 // execute() can return control to its caller before the fake kido
 // subprocess for the outbound send has appended its log entry.
-async function pollUntil(cond: () => boolean, ms = 2000, what = "a condition"): Promise<void> {
+async function pollUntil(cond: () => boolean | Promise<boolean>, ms = 2000, what = "a condition"): Promise<void> {
   const deadline = Date.now() + ms;
   for (;;) {
-    if (cond()) return;
+    if (await cond()) return;
     if (Date.now() > deadline) throw new Error(`timed out after ${ms}ms waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 5));
   }
@@ -755,11 +762,18 @@ function envelope(kind: string, text: string, extra: { id?: string; replyTo?: st
   });
 }
 
+// customMessages returns every message of one kido custom type a session
+// recorded, the shared lookup every kido-ask/kido-notice/kido-message site
+// below filters through.
+function customMessages(s: { messages: Array<{ message: any; opts: unknown }> }, customType: string): Array<{ message: any; opts: unknown }> {
+  return s.messages.filter((m) => m.message.customType === customType);
+}
+
 // askSent finds the kido-ask message a handleInboundAsk call handed to
 // sendMessage, matching by a substring of its full content (the model's
 // text, not the renderer's trimmed-down question).
 function askSent(s: { messages: Array<{ message: any; opts: unknown }> }, includes: string): { message: any; opts: unknown } | undefined {
-  return s.messages.find((m) => m.message.customType === "kido-ask" && m.message.content.includes(includes));
+  return customMessages(s, "kido-ask").find((m) => m.message.content.includes(includes));
 }
 
 // pendingState races a promise against a short timer, purely to observe
@@ -1061,8 +1075,8 @@ test("abandonPending: session_shutdown and a failed rebind settle a waiting ask 
 // live incident: an async run's notice, which never falls back to a paste
 // and is sent exactly once, landed while its parent was mid-/reload and
 // was lost for good.
-function noticesIn(s: { messages: Array<{ message: any }> }, text: string) {
-  return s.messages.filter((m) => m.message.customType === "kido-notice" && m.message.content.includes(text));
+function noticesIn(s: { messages: Array<{ message: any; opts: unknown }> }, text: string) {
+  return customMessages(s, "kido-notice").filter((m) => m.message.content.includes(text));
 }
 
 test("a notice sent across a /reload is delivered to the reloaded session exactly once", async () => {
@@ -1257,20 +1271,20 @@ test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 r
 
     await sendToInbox(s.inboxPath, envelope("message", "hello", { from }));
     assert.ok(
-      s.messages.some((m) => m.message.customType === "kido-message" && m.message.content.endsWith("\nhello")),
+      customMessages(s, "kido-message").some((m) => m.message.content.endsWith("\nhello")),
       "kind message reaches the model as a custom message carrying its text",
     );
 
     await sendToInbox(s.inboxPath, envelope("notice", "build finished", { from }));
     assert.ok(
-      s.messages.some((m) => m.message.customType === "kido-notice" && m.message.content.endsWith("\nbuild finished") && m.message.details?.from === "peer-a"),
+      customMessages(s, "kido-notice").some((m) => m.message.content.endsWith("\nbuild finished") && m.message.details?.from === "peer-a"),
       "kind notice reaches the model as a custom message, named by its sender, full text intact",
     );
 
     const askResp = await sendToInbox(s.inboxPath, envelope("ask", "you there?", { id: "ask-x", from }));
     assert.equal(askResp, "ok");
     assert.ok(
-      s.messages.some((m) => m.message.customType === "kido-ask" && m.message.content.includes("peer-a is asking") && m.message.content.includes("you there?")),
+      customMessages(s, "kido-ask").some((m) => m.message.content.includes("peer-a is asking") && m.message.content.includes("you there?")),
       "kind ask reaches the model as a custom message",
     );
 
@@ -1306,7 +1320,7 @@ test("a message from an agent is labelled with its sender and their relationship
     // this session.
     await asSubagent(DEFAULT_SESSION, async () => {
       const s = await startSessionUsing(await freshExtensions(), fx);
-      const labelled = () => s.messages.filter((m) => m.message.customType === "kido-message").map((m) => m.message);
+      const labelled = () => customMessages(s, "kido-message").map((m) => m.message);
 
       await sendToInbox(s.inboxPath, envelope("message", "fix the failing test\nthen report", { from: { session: "boss-session", name: "boss" } }));
       await sendToInbox(s.inboxPath, envelope("message", "the refactor is in", { from: { session: "kid-session", name: "kid" } }));
@@ -1364,7 +1378,7 @@ test("an inbound ask is headed like a message and renders as just the question, 
       const s = await startSessionUsing(await freshExtensions(), fx);
 
       await sendToInbox(s.inboxPath, envelope("ask", "is the build green?", { id: "ask-hdr", from: { session: "boss-session", name: "boss" } }));
-      const sent = s.messages.find((m) => m.message.customType === "kido-ask")!;
+      const sent = customMessages(s, "kido-ask")[0]!;
       assert.ok(sent, "an ask reaches the model as a custom message");
       assert.equal((sent.opts as any).deliverAs, "followUp", "an ask still queues, exactly as it did delivered as plain text");
       assert.equal((sent.opts as any).triggerTurn, true, "an ask still wakes an idle session");
@@ -1414,7 +1428,7 @@ test("an inbound notice renders collapsed by default, naming the sender and its 
     const text = 'async run "build" failed: exit status 3\nrun: abc123\noutput: /tmp/x/output\n--- output ---\nboom';
 
     await sendToInbox(s.inboxPath, envelope("notice", text, { from }));
-    const sent = s.messages.find((m) => m.message.customType === "kido-notice");
+    const sent = customMessages(s, "kido-notice")[0];
     assert.ok(sent, "a notice was sent as a custom message");
     assert.ok(sent!.message.content.endsWith(`\n${text}`), "the model-visible content is the notice's full text, under its header line");
 
@@ -1450,7 +1464,7 @@ test("a notice reaches the model under a header naming what it is, and the heade
     const text = "reviewed internal/ui: two findings\nthe second one needs a decision";
 
     await sendToInbox(s.inboxPath, envelope("notice", text, { from: { session: "kid-1", name: "kid-1" } }));
-    const sent = s.messages.find((m) => m.message.customType === "kido-notice")!;
+    const sent = customMessages(s, "kido-notice")[0]!;
     const [header, ...body] = (sent.message.content as string).split("\n");
     assert.match(header!, /^notice from kid-1 \(.*not the user\):$/, "one header line, naming the sender and what this is");
     assert.equal(body.join("\n"), text, "the child's own text follows, from the next line, byte for byte");
@@ -1481,7 +1495,7 @@ test("a notice from a nameless sender still renders sanely, collapsed and expand
     // from a bare pane looks like on the wire (labelFrom's own
     // fallback order: name, session, pane, "another agent").
     await sendToInbox(s.inboxPath, envelope("notice", "from a human", { from: { session: "", pane: "%12" } as any }));
-    const sent = s.messages.find((m) => m.message.customType === "kido-notice");
+    const sent = customMessages(s, "kido-notice")[0];
     assert.equal(sent!.message.details.from, "%12", "the pane stands in for a name when there is none");
 
     const renderer = s.renderers.get("kido-notice")!;
@@ -1515,9 +1529,9 @@ test("a message, an ask and a notice each paint the full-width customMessageBg b
       await sendToInbox(s.inboxPath, envelope("ask", "still there?", { id: "ask-bg", from: { session: "boss-session", name: "boss" } }));
       await sendToInbox(s.inboxPath, envelope("notice", "build finished", { from: { session: "boss-session", name: "boss" } }));
 
-      const message = s.messages.find((m) => m.message.customType === "kido-message")!;
-      const ask = s.messages.find((m) => m.message.customType === "kido-ask")!;
-      const notice = s.messages.find((m) => m.message.customType === "kido-notice")!;
+      const message = customMessages(s, "kido-message")[0]!;
+      const ask = customMessages(s, "kido-ask")[0]!;
+      const notice = customMessages(s, "kido-notice")[0]!;
 
       for (const [label, entry, width] of [
         ["message", message, 80],
@@ -1598,13 +1612,16 @@ const suggest = (provider: any, line: string, cursorCol = line.length) =>
 // until the list is there, which is what a typing human does, rather
 // than sleeping a guess at how long one subprocess takes.
 async function suggestOnceListed(provider: any, line: string, ms = 2000) {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    const suggestions = await suggest(provider, line);
-    if (suggestions?.items?.some((i: any) => i.value.startsWith("@") && !i.value.includes("/"))) return suggestions;
-    if (Date.now() > deadline) throw new Error(`timed out after ${ms}ms waiting for the agent list behind "${line}"`);
-    await new Promise((r) => setTimeout(r, 10));
-  }
+  let suggestions: any;
+  await pollUntil(
+    async () => {
+      suggestions = await suggest(provider, line);
+      return !!suggestions?.items?.some((i: any) => i.value.startsWith("@") && !i.value.includes("/"));
+    },
+    ms,
+    `the agent list behind "${line}"`,
+  );
+  return suggestions;
 }
 
 const completionAgents = [
@@ -1778,7 +1795,7 @@ test("an inbound notice renders a widget the instant it is received, not when it
     // The model-visible message was already handed to sendMessage in the
     // very same call - the widget is in addition to that, not instead of
     // it.
-    const sent = s.messages.find((m) => m.message.customType === "kido-notice");
+    const sent = customMessages(s, "kido-notice")[0];
     assert.ok(sent, "the notice was also handed to sendMessage, unconditionally");
   } finally {
     fx.restore();
@@ -1802,17 +1819,17 @@ test("a notice is delivered by steer, not followUp; plain messages and asks are 
     const from = { session: "peer-a", name: "peer-a" };
 
     await sendToInbox(s.inboxPath, envelope("notice", "build finished", { from }));
-    const sent = s.messages.find((m) => m.message.customType === "kido-notice");
+    const sent = customMessages(s, "kido-notice")[0];
     assert.ok(sent, "the notice reached sendMessage");
     assert.equal((sent!.opts as any).deliverAs, "steer", "a notice steers into the running turn rather than waiting for it to end");
 
     await sendToInbox(s.inboxPath, envelope("message", "a plain message", { from }));
-    const message = s.messages.find((m) => m.message.customType === "kido-message");
+    const message = customMessages(s, "kido-message")[0];
     assert.ok(message, "the message reached sendMessage");
     assert.equal((message!.opts as any).deliverAs, "followUp", "a message still queues behind the running turn rather than joining it");
 
     await sendToInbox(s.inboxPath, envelope("ask", "you there?", { id: "ask-y", from }));
-    const askMsg = s.messages.find((m) => m.message.customType === "kido-ask" && m.message.content.includes("you there?"));
+    const askMsg = customMessages(s, "kido-ask").find((m) => m.message.content.includes("you there?"));
     assert.ok(askMsg, "an ask still reaches the model as a custom message, unaffected by the notice-only steer change");
     assert.equal((askMsg!.opts as any).deliverAs, "followUp", "an ask still queues behind the running turn rather than joining it");
   } finally {
@@ -1833,7 +1850,7 @@ test("a notice reaches the model exactly once, and its widget row is removed onc
     const from = { session: "peer-a", name: "peer-a" };
 
     await sendToInbox(s.inboxPath, envelope("notice", "the whole result", { from }));
-    const noticeMessages = s.messages.filter((m) => m.message.customType === "kido-notice");
+    const noticeMessages = customMessages(s, "kido-notice");
     assert.equal(noticeMessages.length, 1, "the notice's text was sent to the model exactly once");
     const sent = noticeMessages[0]!.message;
     assert.ok(sent.content.endsWith("\nthe whole result"), "the model-visible text is the notice's full text, unchanged under its header line");
@@ -3734,13 +3751,14 @@ test("the heartbeat stops once the session is no longer running", async () => {
 // spies the tests below observe - what an inbound "interrupt"/"stop"
 // envelope (handleInboundControl) actually calls.
 async function startWithControlSpies(fx: Fixture) {
-  const { pi, tools, delivered, messages, emit } = createFakePi();
   let aborts = 0;
   let shutdowns = 0;
-  const ctx = { ...fakeCtx(), abort: () => { aborts++; }, shutdown: () => { shutdowns++; } };
-  loadExtensions(pi);
-  await emit("session_start", {}, ctx);
-  return { tools, delivered, messages, emit, inboxPath: fx.selfInboxPath(), aborts: () => aborts, shutdowns: () => shutdowns };
+  const s = await startSessionCore(fx, loadExtensions, () => ({
+    ...fakeCtx(),
+    abort: () => { aborts++; },
+    shutdown: () => { shutdowns++; },
+  }));
+  return { ...s, aborts: () => aborts, shutdowns: () => shutdowns };
 }
 
 // controlTree is a self whose parent is "root-1", the shape
@@ -3883,7 +3901,7 @@ test("an interrupt of an idle agent is harmless, and the session still answers a
     const followUp = await sendToInbox(s.inboxPath, envelope("message", "still there?", { from: { session: "root-1", name: "root-1" } }));
     assert.equal(followUp, "ok");
     assert.ok(
-      s.messages.some((m) => m.message.customType === "kido-message" && m.message.content.endsWith("\nstill there?")),
+      customMessages(s, "kido-message").some((m) => m.message.content.endsWith("\nstill there?")),
       "the session must still accept a message after an interrupt",
     );
   } finally {
@@ -3896,10 +3914,9 @@ test("an interrupt of an idle agent is harmless, and the session still answers a
 // while it waits out a live run (agent-session.js: `await
 // this.waitForIdle()`), instead of resolving in the same tick.
 async function startWithDelayedAbort(fx: Fixture, delayMs: number) {
-  const { pi, tools, delivered, messages, emit } = createFakePi();
   let aborts = 0;
   let abortSettledAt = 0;
-  const ctx = {
+  const s = await startSessionCore(fx, loadExtensions, () => ({
     ...fakeCtx(),
     abort: () =>
       new Promise<void>((resolve) => {
@@ -3909,10 +3926,8 @@ async function startWithDelayedAbort(fx: Fixture, delayMs: number) {
           resolve();
         }, delayMs);
       }),
-  };
-  loadExtensions(pi);
-  await emit("session_start", {}, ctx);
-  return { tools, delivered, messages, emit, inboxPath: fx.selfInboxPath(), aborts: () => aborts, abortSettledAt: () => abortSettledAt };
+  }));
+  return { ...s, aborts: () => aborts, abortSettledAt: () => abortSettledAt };
 }
 
 // The bug this pins: handleInboundControl used to call ctxAbort?.() without
@@ -3952,7 +3967,7 @@ test("an interrupt does not answer until ctx.abort() settles, so a message sent 
     const msgResp = await sendToInbox(s.inboxPath, envelope("message", "still there?", { from: { session: "root-1", name: "root-1" } }));
     assert.equal(msgResp, "ok");
     assert.ok(
-      s.messages.some((m) => m.message.customType === "kido-message" && m.message.content.endsWith("\nstill there?")),
+      customMessages(s, "kido-message").some((m) => m.message.content.endsWith("\nstill there?")),
       "the message sent right after the interrupt must reach pi.sendMessage",
     );
   } finally {
@@ -4065,7 +4080,7 @@ test("an inbound steer is delivered as steer; a message and an ask stay followUp
     assert.match(steered!.text, /root-1/, "and says who is redirecting the work, arriving mid-task as it does");
 
     assert.equal(await sendToInbox(s.inboxPath, envelope("message", "when you get a moment", { from })), "ok");
-    const queued = s.messages.find((m) => m.message.customType === "kido-message");
+    const queued = customMessages(s, "kido-message")[0];
     assert.ok(queued, "the message reached the model");
     assert.equal((queued!.opts as any).deliverAs, "followUp", "a message still waits for the current turn to end");
 

@@ -1544,7 +1544,8 @@ func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) 
 			}
 		}
 	}
-	parentInstance := func(w []tmux.Pane) string {
+	parentByWindow := make(map[string]string, len(windows))
+	for _, w := range windows {
 		s := windowAgent(w, states)
 		if s.Instance == "" && s.ParentInstance == "" {
 			// No agent record at all for this window - the common case is a
@@ -1555,12 +1556,13 @@ func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) 
 			// can move or be reparented (kido spawn_subagent --resume), and the mark
 			// is written once at window creation and never rewritten to
 			// match.
-			return markParentOf(w)
+			parentByWindow[w[0].WindowID] = markParentOf(w)
+		} else {
+			parentByWindow[w[0].WindowID] = s.ParentInstance
 		}
-		return s.ParentInstance
 	}
 	parentOf := func(w []tmux.Pane) string {
-		return byInstance[parentInstance(w)].windowID
+		return byInstance[parentByWindow[w[0].WindowID]].windowID
 	}
 	ordered := tree.Order(windows,
 		func(w []tmux.Pane) string { return w[0].WindowID },
@@ -1580,7 +1582,7 @@ func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) 
 		pl := windowPlacement{panes: w}
 		d, placed := depth[parentOf(w)]
 		if placed {
-			pl.anchor = byInstance[parentInstance(w)].paneID
+			pl.anchor = byInstance[parentByWindow[w[0].WindowID]].paneID
 			d++
 		} else {
 			d = 0
