@@ -528,7 +528,7 @@ export default function (pi: ExtensionAPI) {
 
   // How an inbound "interrupt"/"stop" envelope reaches pi: captured in
   // sessionStarting, null until a session has started.
-  let ctxAbort: (() => void) | null = null;
+  let ctxAbort: (() => Promise<void>) | null = null;
   let ctxShutdown: (() => void) | null = null;
 
   // widgetUi is the raw pi.on("session_start") ctx.ui, captured directly
@@ -921,7 +921,9 @@ export default function (pi: ExtensionAPI) {
   const handleInboundControl = async (env: Envelope, kind: "interrupt" | "stop"): Promise<"ok" | "refused"> => {
     if (!(await senderIsAncestor(env))) return "refused";
     if (kind === "interrupt") {
-      ctxAbort?.();
+      // Awaited, so a message sent after the reply finds the turn ended
+      // rather than in a queue the abort skips.
+      await ctxAbort?.();
     } else {
       ctxShutdown?.();
     }
@@ -2277,7 +2279,9 @@ export default function (pi: ExtensionAPI) {
   // fires, so load order does not matter.
   const hooks: AgentHooks = {
     sessionStarting(ctx: SessionContext) {
-      ctxAbort = () => ctx.abort();
+      ctxAbort = async () => {
+        await ctx.abort();
+      };
       ctxShutdown = () => ctx.shutdown();
       // A /reload's fresh ctx has already had pi clear the previous
       // widgets out from under it (resetExtensionUI); drop our own record

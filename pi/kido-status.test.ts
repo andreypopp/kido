@@ -3645,6 +3645,94 @@ test("an interrupt of an idle agent is harmless, and the session still answers a
   }
 });
 
+// startWithDelayedAbort is startWithControlSpies but ctx.abort() settles
+// only after delayMs - the shape pi's own AgentSession.abort() takes
+// while it waits out a live run (agent-session.js: `await
+// this.waitForIdle()`), instead of resolving in the same tick.
+async function startWithDelayedAbort(fx: Fixture, delayMs: number) {
+  const { pi, tools, delivered, messages, emit } = createFakePi();
+  let aborts = 0;
+  let abortSettledAt = 0;
+  const ctx = {
+    ...fakeCtx(),
+    abort: () =>
+      new Promise<void>((resolve) => {
+        setTimeout(() => {
+          aborts++;
+          abortSettledAt = Date.now();
+          resolve();
+        }, delayMs);
+      }),
+  };
+  loadExtensions(pi);
+  await emit("session_start", {}, ctx);
+  return { tools, delivered, messages, emit, inboxPath: fx.selfInboxPath(), aborts: () => aborts, abortSettledAt: () => abortSettledAt };
+}
+
+// The bug this pins: handleInboundControl used to call ctxAbort?.() without
+// awaiting it, so the interrupt's inbox reply - and any envelope handled
+// after it - could race pi's own abort still settling. A message sent
+// right after an interrupt (kido interrupt_subagent then message_agent,
+// exactly what a caller does) would land while pi still thought it was
+// streaming, routing it into pi's low-level followUp queue instead of the
+// run-starting path - and nothing ever drained that queue once the abort's
+// own turn exited without checking it. Pre-fix, this failed on the second
+// assertion: the reply came back in a handful of ms while ctx.abort() was
+// still 150ms from settling.
+test("an interrupt does not answer until ctx.abort() settles, so a message sent right after is not orphaned", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(controlTree);
+    const s = await startWithDelayedAbort(fx, 150);
+
+    const before = Date.now();
+    const resp = await sendToInbox(s.inboxPath, envelope("interrupt", "", { from: { session: "root-1", name: "root-1" } }));
+    const answeredAt = Date.now();
+    assert.equal(resp, "ok");
+    assert.equal(s.aborts(), 1);
+    assert.ok(
+      answeredAt - before >= 150,
+      `the interrupt reply must not arrive before ctx.abort() settles (answered after ${answeredAt - before}ms)`,
+    );
+    assert.ok(
+      s.abortSettledAt() > 0 && s.abortSettledAt() <= answeredAt,
+      "ctx.abort() must have already settled by the time the reply is sent",
+    );
+
+    // Sent only once the interrupt's own reply came back, exactly as a
+    // caller who awaits interrupt_subagent before calling message_agent
+    // does - by now pi genuinely is idle, so this must reach the model
+    // rather than sit in a queue nothing drains.
+    const msgResp = await sendToInbox(s.inboxPath, envelope("message", "still there?", { from: { session: "root-1", name: "root-1" } }));
+    assert.equal(msgResp, "ok");
+    assert.ok(
+      s.messages.some((m) => m.message.customType === "kido-message" && m.message.content.endsWith("\nstill there?")),
+      "the message sent right after the interrupt must reach pi.sendMessage",
+    );
+  } finally {
+    fx.restore();
+  }
+});
+
+// Negative control: an already-idle agent's ctx.abort() settles at once
+// (nothing to unwind), so the fix must not have added a fixed wait of its
+// own - the reply tracks ctx.abort()'s own delay, not a constant.
+test("an interrupt to an idle session still answers promptly", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents(controlTree);
+    const s = await startWithDelayedAbort(fx, 0);
+
+    const before = Date.now();
+    const resp = await sendToInbox(s.inboxPath, envelope("interrupt", "", { from: { session: "root-1", name: "root-1" } }));
+    assert.equal(resp, "ok");
+    assert.equal(s.aborts(), 1);
+    assert.ok(Date.now() - before < 150, `an interrupt to an idle session must not be held up (answered after ${Date.now() - before}ms)`);
+  } finally {
+    fx.restore();
+  }
+});
+
 // A person running `kido interrupt_subagent`/`kido stop_subagent` by hand has no state
 // record, so kido has no session id to put in the envelope's `from` - and
 // the scope rule deliberately lets that caller reach anything
