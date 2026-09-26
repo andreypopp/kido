@@ -313,9 +313,9 @@ is a wedged peer, not a busy one.
 `ok` means the agent has the message and will see it at its next turn
 boundary. That is the only acknowledgement level: `message_agent`
 promises delivery, not action. Which kinds queue and which join the work
-already under way is the next section; when pi is not streaming the
-message triggers a new turn immediately regardless, so one call covers
-both cases with no window between a check and a send.
+already under way is the next section; an idle session has no turn to
+queue behind and is woken with one of its own, which is the section after
+that.
 
 An agent's message says who sent it. A `message` from another agent
 reaches the model as a custom message (`pi.sendMessage` with a
@@ -336,8 +336,8 @@ their own words with no header at all. That is a human running `kido
 message_agent` from a pane with no state record: `from` carries a pane
 and no session, and no listed agent owns that pane, the same pair the
 steer and control paths read to recognise a human. Delivery is the same
-for both - `followUp`, with a turn triggered - so only the labelling
-turns on who sent it.
+for both - `followUp` while the session is streaming, a wake while it is
+idle - so only the labelling turns on who sent it.
 
 An `ask` gets the same custom-message treatment, headed the same way -
 `ask from @<name> (your parent, who spawned you):` and so on - since who
@@ -388,6 +388,70 @@ That decides all four text-carrying kinds:
   buffered and handed to the model at a moment that costs no turn. The
   schedule, and why a flush on the wrong turn boundary is a loop rather
   than an expense, is design-subagents.md, "Streaming a run's output".
+
+### Waking an idle session
+
+While the session is idle neither queue is consulted, so an arrival has to
+start a turn of its own. It does that in two calls: the arrival is queued
+with `sendMessage(..., { deliverAs: "nextTurn" })`, which appends nothing
+and starts nothing, and then a short user-role **trigger** is sent with
+`sendUserMessage`. pi's `prompt()` runs the turn, injecting every pending
+`nextTurn` message immediately after the user message - so the arrival
+keeps its custom type, its header and its renderer, and reaches the model
+inside a turn `prompt()` prepared.
+
+That detour exists because of pi 0.87.1: `sendMessage` with `triggerTurn`
+on an idle session reaches the agent loop directly, skipping the
+`before_agent_start` emit and the system-prompt diff `prompt()` does
+first. The cost was two bugs - a subagent woken by a message never saw
+its own standing `notify_parent` instruction, and a resumed session whose
+extensions or tools had changed sent a stale prompt, which
+pi-claude-bridge refuses outright ("prompt-capture: no capture for this
+N-char system prompt"). Nothing changes while the session is streaming:
+pi prepares every later turn itself, so a steer or a followUp is handed
+the message exactly as before, and no trigger is sent.
+
+The trigger is one line, varying only in which kind is coming - `(kido: a
+message arrived; it follows)` and its three siblings. It is short because
+it is permanent: pi renders custom messages through an extension's
+renderer but has none for a user message, so the trigger is in the
+transcript as typed and the model reads it as the user's own words. It
+says no more than what follows, since what follows carries the sender,
+the text and every instruction. `expandPromptTemplates` is off, so it is
+never dispatched as a command.
+
+**One trigger at a time.** Pending `nextTurn` messages are all injected
+into the one turn `prompt()` builds, so an arrival that lands while a
+trigger's turn has not begun is queued and sends no trigger of its own: it
+rides the turn already on its way, and a second trigger would only buy a
+second turn for a message the first one already carries. Two asks sharing
+one turn is accepted rather than serialised - each carries its own id and
+is answered with `replyTo`, so nothing is misattributed by them arriving
+together. The flag that says a trigger is out is cleared at pi's
+`turn_start`, and also if `sendUserMessage` fails: that call *is*
+`prompt()`, which can throw before any turn starts - a compaction in
+progress, an unconfigured model - and a flag cleared at `turn_start` alone
+would then hold every later arrival back for the life of the session.
+
+`turn_start` is later than the point `prompt()` drains those pending
+messages, which in 0.87.1 costs nothing: the drain is followed
+synchronously by the run going active, so an arrival that still reads the
+session as idle is always still ahead of it, and one that arrives after
+reads a streaming session and takes the ordinary steer or followUp path.
+
+One race is left, and it is pi's: `prompt()` decides whether it is
+streaming after the call returns, so a turn that starts in between queues
+the trigger instead of prompting. The trigger carries the kind's own mode
+for exactly that reason - otherwise pi throws "Agent is already
+processing" and the turn is lost - and the arrival waits in pi for the
+next `prompt()`, which is the next wake or the user typing. The cost is
+lateness for one message; nothing is dropped, duplicated or pasted. A
+user who types first is the same case from the other end: their turn
+carries the arrival, which is what a queued message is for.
+
+The idle-exit clock is untouched by any of this. It is reset when the
+envelope arrives, not when the model is handed it, so an arrival waiting
+for its turn cannot let a session exit underneath it.
 
 ### v0 and v1
 
@@ -1266,10 +1330,11 @@ whether its sender is actually a subagent: kind, not identity, is the
 sender's own choice (`kido notify_parent` versus `kido message_agent`),
 and `from` is advisory in exactly the way the rest of
 the inbox protocol already treats it, so nothing here does an identity
-lookup to decide how to render. `triggerTurn` is never omitted: an idle
-parent must be woken by a notice exactly as a plain message wakes it, and
-`sendMessage`, unlike `sendUserMessage`, does not trigger a turn on its
-own.
+lookup to decide how to render. A turn is always asked for: an idle parent
+must be woken by a notice exactly as a plain message wakes it, and
+`sendMessage`, unlike `sendUserMessage`, starts no turn of its own - which
+is why an idle parent gets the trigger described under "Waking an idle
+session".
 
 **Visual arrival is immediate; model delivery steers.** They are two
 events, because one - `deliverAs: "followUp"`, the mode a plain message

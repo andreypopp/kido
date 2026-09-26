@@ -292,6 +292,24 @@ const ASK_CUSTOM_TYPE = "kido-ask";
 // delivered as, rendered collapsed exactly as a notice is.
 const STREAM_CUSTOM_TYPE = "kido-stream";
 
+// The user-role line that starts a turn for an arrival that found the
+// session idle (see wake below). Short and neutral by necessity: pi has no
+// renderer for a user message - registerMessageRenderer covers custom
+// messages only - so whatever this says is in the transcript for good, and
+// the model reads it as the user's own words. The arrival itself follows
+// immediately, carrying the sender, the text and every instruction, so
+// this says no more than which kind is coming.
+const WAKE_TRIGGERS: Record<string, string> = {
+  [MESSAGE_CUSTOM_TYPE]: "(kido: a message arrived; it follows)",
+  [NOTICE_CUSTOM_TYPE]: "(kido: a notification arrived; it follows)",
+  [ASK_CUSTOM_TYPE]: "(kido: a question arrived; it follows)",
+  [STREAM_CUSTOM_TYPE]: "(kido: a background run's output follows)",
+};
+
+// One arrival as wake takes it: what pi.sendMessage is given, minus the
+// delivery options wake itself decides.
+type WakeMessage = { customType: string; content: string; display: boolean; details?: unknown };
+
 // STREAM_FLUSH_MS and STREAM_FLUSH_CAP_MS are the idle flush schedule: a
 // batch held because no turn was free is flushed after the first, then
 // after twice that, capped at the second. Each one of those costs a turn,
@@ -613,6 +631,97 @@ export default function (pi: ExtensionAPI) {
     status()?.deliver(text, deliverAs);
   };
 
+  // Whether pi has a run in flight, read live off the session ctx captured
+  // in sessionStarting rather than off kido's own reported status: a wake
+  // has to be decided by the same boolean pi's own sendCustomMessage
+  // branches on. ctx.hasPendingMessages() is deliberately not read - it
+  // counts queued user *text* (pi's _steeringMessages, emptied as each one
+  // lands) and never a queued custom message, so it cannot answer this
+  // question.
+  let ctxIsIdle: (() => boolean) | null = null;
+
+  // A trigger that has been sent and whose turn has not started yet. One
+  // is enough for any number of arrivals: prompt() injects every pending
+  // "nextTurn" message into the one turn it builds, so an arrival behind a
+  // trigger rides the turn already on its way and asking for a second
+  // would only buy a second turn. Two asks in one turn are accepted: each
+  // carries its own id and is answered with replyTo, so nothing is
+  // misattributed by them sharing the turn.
+  //
+  // Cleared at pi's turn_start, which is later than the point prompt()
+  // drains those pending messages - but in 0.87.1 the drain is followed
+  // synchronously by the run going active (_runAgentPrompt sets
+  // _isAgentRunActive before its first await), so an arrival that still
+  // reads the session as idle is always still ahead of the drain. What
+  // arrives after it reads a streaming session and takes the ordinary
+  // steer or followUp path instead.
+  let wakeInFlight = false;
+
+  // wake hands one arrival to the model and makes sure a turn runs for it.
+  //
+  // While pi is streaming that is what it always was: sendMessage with
+  // triggerTurn, steered into the running turn or queued behind it, since a
+  // later turn is prepared by pi's own next-turn machinery. An idle session
+  // is the workaround. pi 0.87.1's sendCustomMessage takes the
+  // triggerTurn branch straight to _runAgentPrompt (its agent-session.ts),
+  // which skips everything prompt() does first: the before_agent_start
+  // emit, so NOTIFY_PARENT_INSTRUCTION is missing from exactly the turns a
+  // message woke, and the system-prompt diff, so a resumed session whose
+  // extensions or tools have changed sends a stale prompt and
+  // pi-claude-bridge refuses the turn ("prompt-capture: no capture for this
+  // N-char system prompt"). Queueing the arrival as "nextTurn" and starting
+  // the turn with sendUserMessage goes through prompt(), which emits
+  // before_agent_start, persists the prompt diff, and injects every pending
+  // nextTurn message immediately after the user message - so the arrival
+  // keeps its custom type, its header and its renderer, and the turn it
+  // rides is a properly prepared one. Remove this when pi's own
+  // triggerTurn path runs prompt().
+  const wake = (message: WakeMessage, deliverAs: DeliverAs): void => {
+    let idle = false;
+    try {
+      idle = !!ctxIsIdle?.();
+    } catch {
+      // A ctx pi has retired throws rather than answering (its
+      // assertActive): mid-/reload, which is no session to prompt.
+      idle = false;
+    }
+    if (!idle) {
+      pi.sendMessage(message, { deliverAs, triggerTurn: true });
+      return;
+    }
+    pi.sendMessage(message, { deliverAs: "nextTurn" });
+    if (wakeInFlight) return;
+    wakeInFlight = true;
+    // The trigger carries the kind's own mode for the one race this cannot
+    // close: pi decides whether it is streaming inside prompt(), after this
+    // call has returned, so a turn that starts in between queues the
+    // trigger the way the kind asked for instead of pi throwing "Agent is
+    // already processing". The arrival then waits in pi for the next
+    // prompt() - the next wake, or the user typing - which costs it a turn
+    // of lateness and nothing else. expandPromptTemplates is spelled out
+    // because the trigger is user-role text and must never be dispatched
+    // as a command.
+    const trigger = WAKE_TRIGGERS[message.customType] ?? WAKE_TRIGGERS[MESSAGE_CUSTOM_TYPE];
+    const clear = (): void => {
+      wakeInFlight = false;
+    };
+    // sendUserMessage is prompt(), and prompt() can fail before any turn
+    // starts - a compaction in progress, an unconfigured model - so
+    // turn_start would never come and a flag cleared there alone would
+    // leave every later arrival queued behind a turn that is not coming.
+    // The queued arrivals stay queued either way and ride the next
+    // prompt(); what the failure must not do is stop the next one asking.
+    try {
+      void Promise.resolve(pi.sendUserMessage(trigger, { deliverAs, expandPromptTemplates: false })).catch(clear);
+    } catch {
+      clear();
+    }
+  };
+
+  pi.on("turn_start", () => {
+    wakeInFlight = false;
+  });
+
   // labelFrom names an envelope's sender for the model to read, in the
   // same fallback order targetLabel (cmd/kido/message.go) uses. It is a
   // label only, shown to the model, never the address a reply actually
@@ -666,9 +775,10 @@ export default function (pi: ExtensionAPI) {
   // The two halves meet exactly once each: the widget's entry is removed
   // when (and only when) the identical steered message actually reaches
   // the transcript (the message_start listener below, matched by
-  // noticeId - fired identically whether the message arrived by steer or
-  // followUp, so nothing else here needed to change), so the model text
-  // is sent through sendMessage here and nowhere else - one wire call,
+  // noticeId - fired identically whether the message arrived by steer, by
+  // followUp or injected into the turn a wake started, so nothing else
+  // here needed to change), so the model text is sent through wake here
+  // and nowhere else - one wire call,
   // one entry, one widget row that hands off to it rather than a second
   // rendering of the same notice.
   // messageSender answers who an inbound plain message is from and how
@@ -704,18 +814,18 @@ export default function (pi: ExtensionAPI) {
   // deliverAgentMessage hands an agent's message to the model as a custom
   // message, for the reason deliverNotice does: the TUI can then draw it
   // with its sender while the model reads the header. Queued (`followUp`)
-  // and turn-triggering exactly as the unlabelled delivery it replaces -
-  // only the labelling changed, not when a message arrives.
+  // and waking an idle session exactly as the unlabelled delivery it
+  // replaces - only the labelling changed, not when a message arrives.
   const deliverAgentMessage = (text: string, from: string, relation: SenderRelation): void => {
     workStarted();
-    pi.sendMessage(
+    wake(
       {
         customType: MESSAGE_CUSTOM_TYPE,
         content: `${senderHeader("message", from, relation)}\n${text}`,
         display: true,
         details: { from, relation },
       },
-      { deliverAs: "followUp", triggerTurn: true },
+      "followUp",
     );
   };
 
@@ -734,10 +844,7 @@ export default function (pi: ExtensionAPI) {
     const noticeId = randomUUID();
     pendingNotices.set(noticeId, from);
     renderNoticeWidget();
-    pi.sendMessage(
-      { customType: NOTICE_CUSTOM_TYPE, content: `${noticeHeader(from)}\n${text}`, display: true, details: { from, noticeId } },
-      { deliverAs: "steer", triggerTurn: true },
-    );
+    wake({ customType: NOTICE_CUSTOM_TYPE, content: `${noticeHeader(from)}\n${text}`, display: true, details: { from, noticeId } }, "steer");
   };
 
   // streamBuffers holds, per async run, the lines that have arrived and
@@ -808,14 +915,14 @@ export default function (pi: ExtensionAPI) {
       streamBuffers.delete(run);
       if (entry.lines.length === 0) continue;
       const header = `async run ${JSON.stringify(entry.name)} output (run ${run})`;
-      pi.sendMessage(
+      wake(
         {
           customType: STREAM_CUSTOM_TYPE,
           content: `${header}\n${streamBatch(entry.lines, entry.output, entry.dropped)}`,
           display: true,
           details: { from: entry.name, run, output: entry.output },
         },
-        { deliverAs: "steer", triggerTurn: true },
+        "steer",
       );
     }
   };
@@ -879,7 +986,7 @@ export default function (pi: ExtensionAPI) {
     const relation = sender?.relation ?? "peer";
     if (env.from.pane) pendingInboundAsks.set(env.id, env.from.pane);
     workStarted();
-    pi.sendMessage(
+    wake(
       {
         customType: ASK_CUSTOM_TYPE,
         content:
@@ -889,7 +996,7 @@ export default function (pi: ExtensionAPI) {
         display: true,
         details: { from, relation, id: env.id, question: env.text },
       },
-      { deliverAs: "followUp", triggerTurn: true },
+      "followUp",
     );
     return "ok";
   };
@@ -2328,6 +2435,7 @@ export default function (pi: ExtensionAPI) {
         await ctx.abort();
       };
       ctxShutdown = () => ctx.shutdown();
+      ctxIsIdle = () => ctx.isIdle();
       // A /reload's fresh ctx has already had pi clear the previous
       // widgets out from under it (resetExtensionUI); drop our own record
       // of what was pending so a later renderNoticeWidget call does not
@@ -2336,6 +2444,10 @@ export default function (pi: ExtensionAPI) {
       clearStreamTimer();
       streamBuffers.clear();
       streamDelay = STREAM_FLUSH_MS;
+      // A trigger whose turn the reload took with it will never reach a
+      // turn_start, so the next arrival must be free to send one of its
+      // own against the session that exists now.
+      wakeInFlight = false;
     },
     async sessionStarted(ctx: SessionContext) {
       startParentLivenessPoll(ctx.shutdown);

@@ -482,13 +482,23 @@ function makeFixture(): Fixture {
 function createFakePi() {
   const tools = new Map<string, any>();
   const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
-  const delivered: Array<{ text: string; opts: unknown }> = [];
-  const messages: Array<{ message: any; opts: unknown }> = [];
+  // seq is one counter across both recorders: a wake is two calls whose
+  // order is load-bearing (the custom message has to be queued before the
+  // trigger reaches prompt(), which drains the queue), and two arrays
+  // cannot be compared without it.
+  let seq = 0;
+  const delivered: Array<{ text: string; opts: unknown; seq: number }> = [];
+  const messages: Array<{ message: any; opts: unknown; seq: number }> = [];
   const renderers = new Map<string, (message: any, options: any, theme: any) => unknown>();
   // widgets is setWidget's own record, keyed the same way the real UI
   // keys a widget: content undefined means "cleared", exactly as
   // pi.ExtensionUIContext.setWidget itself treats it.
   const widgets = new Map<string, { content: string[] | undefined; options?: unknown }>();
+  // What the host does with a user message, which in pi is to start a turn
+  // for it when the session is idle (its prompt()). Wired by
+  // startSessionCore; a case that wants pi's gap between the two held open
+  // replaces it, and one that wants prompt() to fail returns a rejection.
+  let onUserMessage: (() => unknown) | null = null;
   const pi = {
     registerTool(tool: any) {
       tools.set(tool.name, tool);
@@ -497,10 +507,13 @@ function createFakePi() {
       (handlers.get(event) ?? handlers.set(event, []).get(event)!).push(handler);
     },
     sendUserMessage(text: string, opts: unknown) {
-      delivered.push({ text, opts });
+      delivered.push({ text, opts, seq: seq++ });
+      // Returned, not discarded: pi's own sendUserMessage is prompt() and
+      // rejects when the turn cannot start, which kido reads.
+      return onUserMessage?.();
     },
     sendMessage(message: any, opts: unknown) {
-      messages.push({ message, opts });
+      messages.push({ message, opts, seq: seq++ });
     },
     registerMessageRenderer(customType: string, renderer: (message: any, options: any, theme: any) => unknown) {
       renderers.set(customType, renderer);
@@ -530,7 +543,22 @@ function createFakePi() {
       autocompleteFactories.push(factory);
     },
   };
-  return { pi, tools, handlers, delivered, messages, renderers, widgets, notifications, autocompleteFactories, ui, emit };
+  return {
+    pi,
+    tools,
+    handlers,
+    delivered,
+    messages,
+    renderers,
+    widgets,
+    notifications,
+    autocompleteFactories,
+    ui,
+    emit,
+    setOnUserMessage(f: (() => unknown) | null) {
+      onUserMessage = f;
+    },
+  };
 }
 
 // fakeTheme is the minimal Theme surface a message renderer reads: fg()
@@ -556,11 +584,16 @@ const fakeTheme = {
 // idle-exit or liveness timer is still armed. A ctx missing shutdown()
 // crashes the whole run when that timer fires, after every case has
 // already passed.
-function fakeCtx(sessionId = "self-session", ui?: unknown) {
+// idle is a function, not a boolean, because pi's own ctx.isIdle() is one
+// and a case that watches a turn start has to be able to answer
+// differently on the next call. hasPendingMessages is pi's too, and
+// answers for queued user text alone.
+function fakeCtx(sessionId = "self-session", ui?: unknown, idle: () => boolean = () => true) {
   return {
     sessionManager: { getSessionId: () => sessionId, getSessionName: () => undefined },
     model: undefined,
-    isIdle: () => true,
+    isIdle: idle,
+    hasPendingMessages: () => false,
     abort: () => {},
     shutdown: () => {},
     ui,
@@ -576,12 +609,21 @@ function fakeCtx(sessionId = "self-session", ui?: unknown) {
 async function startSessionCore(fx: Fixture, factory: (pi: unknown) => void, buildCtx: (created: ReturnType<typeof createFakePi>) => unknown) {
   const created = createFakePi();
   factory(created.pi);
-  await created.emit("session_start", {}, buildCtx(created));
+  const ctx = buildCtx(created) as { isIdle?: () => boolean };
+  // pi's prompt() starts a turn for a user message when the session is
+  // idle, and queues it when it is not. Nothing else in this fake ever
+  // fires turn_start, and kido waits for it before letting a second
+  // arrival through (wake, kido-agents.ts), so without this every case
+  // that delivers twice would be reading a session pi had abandoned.
+  created.setOnUserMessage(() => {
+    if (ctx.isIdle?.()) void created.emit("turn_start", {});
+  });
+  await created.emit("session_start", {}, ctx);
   return { ...created, inboxPath: fx.selfInboxPath() };
 }
 
-async function startSession(fx: Fixture, sessionId?: string) {
-  return startSessionCore(fx, loadExtensions, (c) => fakeCtx(sessionId, c.ui));
+async function startSession(fx: Fixture, sessionId?: string, idle?: () => boolean) {
+  return startSessionCore(fx, loadExtensions, (c) => fakeCtx(sessionId, c.ui, idle));
 }
 
 // loadExtensions is what a pi host does with the pair: run both factories
@@ -600,8 +642,8 @@ function loadExtensions(pi: unknown): void {
 // read once, at module scope, when they are first imported.
 // freshExtensions below reloads both so those module-scope constants are
 // recomputed from whatever the environment holds at that moment.
-async function startSessionUsing(factory: (pi: unknown) => void, fx: Fixture, sessionId?: string) {
-  return startSessionCore(fx, factory, (c) => fakeCtx(sessionId, c.ui));
+async function startSessionUsing(factory: (pi: unknown) => void, fx: Fixture, sessionId?: string, idle?: () => boolean) {
+  return startSessionCore(fx, factory, (c) => fakeCtx(sessionId, c.ui, idle));
 }
 
 // freshExtensions reimports both extensions under a cache-busting
@@ -1404,8 +1446,7 @@ test("an inbound ask is headed like a message and renders as just the question, 
       await sendToInbox(s.inboxPath, envelope("ask", "is the build green?", { id: "ask-hdr", from: { session: "boss-session", name: "boss" } }));
       const sent = customMessages(s, "kido-ask")[0]!;
       assert.ok(sent, "an ask reaches the model as a custom message");
-      assert.equal((sent.opts as any).deliverAs, "followUp", "an ask still queues, exactly as it did delivered as plain text");
-      assert.equal((sent.opts as any).triggerTurn, true, "an ask still wakes an idle session");
+      assert.equal((sent.opts as any).deliverAs, "nextTurn", "an idle session's ask rides the turn kido's own trigger starts (see the wake cases)");
 
       const content = sent.message.content as string;
       assert.match(content, /^ask from @boss \(your parent, who spawned you\):\n/, "headed the way a message from the same sender would be");
@@ -1832,6 +1873,10 @@ test("an inbound notice renders a widget the instant it is received, not when it
 // report until its turn happens to end, since that defeats doing the work
 // in a subagent at all. Plain messages and asks are the negative control -
 // they must stay on followUp, unchanged.
+//
+// Driven against a streaming session, which is the only state the modes
+// are about: while pi is idle neither queue is consulted at all and the
+// arrival is woken through prompt() instead (see the wake cases below).
 test("a notice is delivered by steer, not followUp; plain messages and asks are unaffected", async () => {
   const fx = makeFixture();
   try {
@@ -1839,7 +1884,7 @@ test("a notice is delivered by steer, not followUp; plain messages and asks are 
       { id: "self", name: "self", parent: "", self: true, canMessage: true },
       { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true },
     ]);
-    const s = await startSession(fx);
+    const s = await startSession(fx, undefined, () => false);
     const from = { session: "peer-a", name: "peer-a" };
 
     await sendToInbox(s.inboxPath, envelope("notice", "build finished", { from }));
@@ -1856,6 +1901,158 @@ test("a notice is delivered by steer, not followUp; plain messages and asks are 
     const askMsg = customMessages(s, "kido-ask").find((m) => m.message.content.includes("you there?"));
     assert.ok(askMsg, "an ask still reaches the model as a custom message, unaffected by the notice-only steer change");
     assert.equal((askMsg!.opts as any).deliverAs, "followUp", "an ask still queues behind the running turn rather than joining it");
+    assert.equal(triggers(s).length, 0, "a streaming session needs no trigger: pi prepares the next turn itself");
+  } finally {
+    fx.restore();
+  }
+});
+
+// triggers is every wake trigger a session typed as the user - the
+// user-role line kido sends to start a turn for an arrival that found the
+// session idle. Matched by the prefix every one of them shares, so a case
+// can assert on how many there were without naming the wording.
+function triggers(s: { delivered: Array<{ text: string; opts: unknown; seq: number }> }) {
+  return s.delivered.filter((d) => d.text.startsWith("(kido:"));
+}
+
+// pi 0.87.1's sendCustomMessage({triggerTurn: true}) hands an idle session
+// straight to the agent loop (agent-session.ts, the triggerTurn branch
+// calling _runAgentPrompt), skipping everything prompt() does first: the
+// before_agent_start emit, so a message-woken turn is missing this file's
+// own NOTIFY_PARENT_INSTRUCTION, and the system-prompt diff, so a resumed
+// session whose extensions or tools have changed sends a stale prompt and
+// pi-claude-bridge refuses the turn ("prompt-capture: no capture for this
+// N-char system prompt"). Waking through sendUserMessage is the one way in
+// that runs both.
+//
+// Asserted per kind, and in both halves each time: the arrival is queued
+// as "nextTurn" - which pi injects right after the user message - and the
+// trigger is what actually starts the turn. Either alone passes a
+// half-applied fix: a nextTurn message with no trigger is a message
+// nothing delivers until the user happens to type, and a trigger with a
+// triggerTurn message beside it is two turns for one arrival.
+test("an idle session is woken through prompt(): the arrival is queued as nextTurn and a user trigger starts the turn", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([
+      { id: "self", name: "self", parent: "", self: true, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true },
+    ]);
+    const s = await startSession(fx);
+    const from = { session: "peer-a", name: "peer-a" };
+
+    const cases: Array<{ kind: string; customType: string; trigger: string; deliverAs: string }> = [
+      { kind: "message", customType: "kido-message", trigger: "(kido: a message arrived; it follows)", deliverAs: "followUp" },
+      { kind: "notice", customType: "kido-notice", trigger: "(kido: a notification arrived; it follows)", deliverAs: "steer" },
+      { kind: "ask", customType: "kido-ask", trigger: "(kido: a question arrived; it follows)", deliverAs: "followUp" },
+    ];
+    for (const c of cases) {
+      await sendToInbox(s.inboxPath, envelope(c.kind, `${c.kind} text`, { id: `env-${c.kind}`, from }));
+      const sent = customMessages(s, c.customType)[0];
+      assert.ok(sent, `the ${c.kind} reached sendMessage`);
+      assert.equal((sent!.opts as any).deliverAs, "nextTurn", `an idle session's ${c.kind} rides the turn the trigger starts`);
+      assert.ok(!(sent!.opts as any).triggerTurn, `and must not also ask pi to start a turn of its own for the ${c.kind}`);
+
+      const trigger = s.delivered.find((d) => d.text === c.trigger);
+      assert.ok(trigger, `the ${c.kind} was triggered by a user message: ${JSON.stringify(s.delivered.map((d) => d.text))}`);
+      assert.ok(trigger!.seq > sent!.seq, "the arrival must be queued before the trigger, which is what drains the queue");
+      assert.equal((trigger!.opts as any).deliverAs, c.deliverAs, "the trigger carries the kind's own mode, for the race where a turn starts under it");
+      assert.equal((trigger!.opts as any).expandPromptTemplates, false, "a trigger is text the model reads, never a command to dispatch");
+    }
+    assert.equal(triggers(s).length, cases.length, "one trigger per arrival, no more");
+  } finally {
+    fx.restore();
+  }
+});
+
+// A held batch of a run's output is the fourth kind that wakes an idle
+// session, and the one that can be flushed with no turn in sight at all -
+// its idle schedule fires on kido's own timer. Same rule, checked where
+// the flush comes from a timer rather than from an envelope.
+test("a stream batch flushed while the session is idle wakes it the same way", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const factory = await withEnv({ KIDO_STREAM_FLUSH_MS: "40", KIDO_STREAM_FLUSH_CAP_MS: "120" }, () => freshExtensions());
+    const s = await startSessionUsing(factory, fx);
+
+    assert.equal(await sendToInbox(s.inboxPath, streamEnvelope("line 1")), "ok");
+    await pollUntil(() => streamMessages(s.messages).length === 1, 2000, "the idle schedule to flush the batch");
+    assert.equal((streamMessages(s.messages)[0].opts as any).deliverAs, "nextTurn", "an idle flush rides the turn its trigger starts");
+    const trigger = s.delivered.find((d) => d.text === "(kido: a background run's output follows)");
+    assert.ok(trigger, `the batch was triggered by a user message: ${JSON.stringify(s.delivered.map((d) => d.text))}`);
+    assert.equal((trigger!.opts as any).deliverAs, "steer", "and the trigger carries a batch's own mode");
+  } finally {
+    fx.restore();
+  }
+});
+
+// Two arrivals racing in the window pi leaves open: the trigger has been
+// handed over and the turn it will start has not begun, so the session
+// still reads as idle. The second arrival must queue for the turn already
+// on its way and ask for no turn of its own - one trigger is one turn, and
+// a second would buy a whole extra turn for a message the first one
+// already carries. Two asks sharing that turn is accepted: each carries
+// its own id and is answered with replyTo, so neither reply can be
+// misattributed.
+//
+// The assertion with teeth is the trigger count. Both asks reaching the
+// model is what pi does with a pending nextTurn message anyway, so a wake
+// that triggered once per arrival would deliver both and still be wrong.
+test("two asks arriving while idle ride one turn: one trigger, both delivered", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([
+      { id: "self", name: "self", parent: "", self: true, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true },
+      { id: "peer-b", name: "peer-b", parent: "", self: false, canMessage: true },
+    ]);
+    const s = await startSession(fx, undefined, () => true);
+    s.setOnUserMessage(null); // pi's gap, held open: no turn starts under either ask
+
+    await sendToInbox(s.inboxPath, envelope("ask", "first question", { id: "ask-1", from: { session: "peer-a", name: "peer-a" } }));
+    assert.equal(triggers(s).length, 1, "the first ask starts a turn");
+
+    await sendToInbox(s.inboxPath, envelope("ask", "second question", { id: "ask-2", from: { session: "peer-b", name: "peer-b" } }));
+    assert.equal(triggers(s).length, 1, "the second rides that turn rather than buying one of its own");
+
+    for (const [question, id] of [["first question", "ask-1"], ["second question", "ask-2"]]) {
+      const sent = askSent(s, question);
+      assert.ok(sent, `${question} reached the model, neither lost nor held back`);
+      assert.equal((sent!.opts as any).deliverAs, "nextTurn", "both are injected into the turn the one trigger starts");
+      assert.ok(!(sent!.opts as any).triggerTurn, "and neither asks pi to start a turn for it");
+      assert.match(sent!.message.content as string, new RegExp(`\\(id ${id}\\)`), "each carries its own id, which is what makes sharing a turn safe");
+    }
+  } finally {
+    fx.restore();
+  }
+});
+
+// The clear turn_start cannot do. pi's prompt() can fail before any turn
+// starts - a compaction in progress, an unconfigured model - and
+// sendUserMessage *is* prompt(), so its rejection is the only word kido
+// gets that the turn is not coming. Without clearing the flag there too,
+// one failed trigger leaves every later arrival queued behind it for the
+// life of the session, each waiting on a turn_start that never arrives.
+test("a trigger whose turn never starts does not hold the next arrival back", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([
+      { id: "self", name: "self", parent: "", self: true, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true },
+    ]);
+    const s = await startSession(fx, undefined, () => true);
+    // prompt()'s own wording for the case, failing the way prompt() fails:
+    // a rejection, after the call kido makes has already returned.
+    s.setOnUserMessage(() => Promise.reject(new Error("Cannot submit a prompt while compaction is in progress")));
+    const from = { session: "peer-a", name: "peer-a" };
+
+    await sendToInbox(s.inboxPath, envelope("ask", "first question", { id: "ask-1", from }));
+    assert.equal(triggers(s).length, 1, "the first ask asked for its turn");
+
+    await sendToInbox(s.inboxPath, envelope("ask", "second question", { id: "ask-2", from }));
+    await pollUntil(() => triggers(s).length === 2, 2000, "the next arrival to wake the session itself");
+    assert.ok(askSent(s, "second question"), "and it reached the model");
   } finally {
     fx.restore();
   }
@@ -2700,7 +2897,10 @@ test("a batch rides a turn that ran tools, and a turn that ran none leaves it he
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     const factory = await withEnv({ KIDO_STREAM_FLUSH_MS: "120", KIDO_STREAM_FLUSH_CAP_MS: "400" }, () => freshExtensions());
-    const s = await startSessionUsing(factory, fx);
+    // Streaming throughout: a turn_end is a turn boundary inside a run, and
+    // a batch's mode is only consulted while a run is under way. An idle
+    // flush wakes the session instead, which is its own case above.
+    const s = await startSessionUsing(factory, fx, undefined, () => false);
 
     for (const text of ["line 1\nline 2", "line 3", "line 4\nline 5"]) {
       assert.equal(await sendToInbox(s.inboxPath, streamEnvelope(text)), "ok");
@@ -3841,11 +4041,11 @@ test("the heartbeat stops once the session is no longer running", async () => {
 // startWithControlSpies is startSession but with ctx.abort()/ctx.shutdown()
 // spies the tests below observe - what an inbound "interrupt"/"stop"
 // envelope (handleInboundControl) actually calls.
-async function startWithControlSpies(fx: Fixture) {
+async function startWithControlSpies(fx: Fixture, idle?: () => boolean) {
   let aborts = 0;
   let shutdowns = 0;
   const s = await startSessionCore(fx, loadExtensions, () => ({
-    ...fakeCtx(),
+    ...fakeCtx(undefined, undefined, idle),
     abort: () => { aborts++; },
     shutdown: () => { shutdowns++; },
   }));
@@ -4161,7 +4361,10 @@ test("an inbound steer is delivered as steer; a message and an ask stay followUp
   const fx = makeFixture();
   try {
     fx.setAgents(controlTree);
-    const s = await startWithControlSpies(fx);
+    // Streaming, which is the only state these modes are about: an arrival
+    // that finds the session idle is woken through prompt() instead (see
+    // "an idle session is woken through prompt()").
+    const s = await startWithControlSpies(fx, () => false);
     const from = { session: "root-1", name: "root-1", pane: "%2" };
 
     assert.equal(await sendToInbox(s.inboxPath, envelope("steer", "drop that, do X", { from })), "ok");

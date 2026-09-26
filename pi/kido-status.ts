@@ -208,6 +208,10 @@ function spawnDetached(cmd: string, args: string[], opts: { input?: string } = {
 export interface SessionContext {
   abort(): void;
   shutdown(): void;
+  // Whether pi has no agent run in flight. Read live, per arriving
+  // envelope: only an idle session has to be woken through a prompt (wake,
+  // kido-agents.ts).
+  isIdle(): boolean;
 }
 
 // StatusHost is what this half lends the agent half, as accessors rather
