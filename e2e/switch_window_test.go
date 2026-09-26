@@ -60,7 +60,7 @@ func (h *harness) addWindow(session, name string) {
 // exactly like a live subagent's pane does.
 func (h *harness) markSubagent(session, window string) {
 	h.t.Helper()
-	h.in("set-option", "-w", "-t", session+":"+window, "@kido_subagent", "parent=root-inst depth=1")
+	h.in("set-option", "-w", "-t", session+":"+window, "@kido_subagent", "parent=root-e2e depth=1")
 }
 
 // selectWindow puts the client directly on session's window (by name),

@@ -49,7 +49,7 @@ func TestStallRedrawsOnAQuietTick(t *testing.T) {
 		active:  pane,
 		panes:   []tmux.Pane{{SessionName: "alpha", WindowID: "@1", PaneID: pane, Title: "wedged"}},
 		states: map[string]state.Session{
-			pane: {Pane: pane, Agent: state.AgentPi, Status: state.Running, TS: base, Instance: "i"},
+			pane: {Pane: pane, Agent: state.AgentPi, Status: state.Running, TS: base, ID: "i"},
 		},
 	}
 	tick := func(d time.Duration) {
@@ -91,10 +91,10 @@ func TestStallRedrawsOnAQuietTick(t *testing.T) {
 func TestSnapshotSameIgnoresHeartbeatTS(t *testing.T) {
 	base := time.Unix(1700000000, 0)
 	a := snapshot{states: map[string]state.Session{
-		"%1": {Pane: "%1", Agent: state.AgentPi, Status: state.Running, TS: base, Instance: "i"},
+		"%1": {Pane: "%1", Agent: state.AgentPi, Status: state.Running, TS: base, ID: "i"},
 	}}
 	b := snapshot{states: map[string]state.Session{
-		"%1": {Pane: "%1", Agent: state.AgentPi, Status: state.Running, TS: base.Add(time.Minute), Instance: "i"},
+		"%1": {Pane: "%1", Agent: state.AgentPi, Status: state.Running, TS: base.Add(time.Minute), ID: "i"},
 	}}
 	if !a.same(b) {
 		t.Error("a TS-only change (a heartbeat re-report) should not make same() report a difference")
@@ -108,10 +108,10 @@ func TestSnapshotSameIgnoresHeartbeatTS(t *testing.T) {
 func TestSnapshotSameCatchesOtherSessionChanges(t *testing.T) {
 	base := time.Unix(1700000000, 0)
 	a := snapshot{states: map[string]state.Session{
-		"%1": {Pane: "%1", Agent: state.AgentPi, Status: state.Running, TS: base, Instance: "i"},
+		"%1": {Pane: "%1", Agent: state.AgentPi, Status: state.Running, TS: base, ID: "i"},
 	}}
 	b := snapshot{states: map[string]state.Session{
-		"%1": {Pane: "%1", Agent: state.AgentPi, Status: state.Idle, TS: base, Instance: "i"},
+		"%1": {Pane: "%1", Agent: state.AgentPi, Status: state.Idle, TS: base, ID: "i"},
 	}}
 	if a.same(b) {
 		t.Error("a Status change must still be caught by same()")

@@ -72,13 +72,13 @@ type streamer struct {
 // cannot be resolved is not an error here: every send simply fails, every
 // line is counted as unstreamed, and the run carries on - the output file
 // is the source of truth and the child must never wait on an LLM.
-func newStreamer(runID, name, parentInstance string) *streamer {
+func newStreamer(runID, name, parentSession string) *streamer {
 	s := &streamer{
 		sender: &streamSender{
-			parentInstance: parentInstance,
-			name:           name,
-			runID:          runID,
-			output:         subrun.OutputPath(runID),
+			parentSession: parentSession,
+			name:          name,
+			runID:         runID,
+			output:        subrun.OutputPath(runID),
 		},
 		wake: make(chan struct{}, 1),
 		stop: make(chan struct{}),
@@ -292,16 +292,16 @@ var errNoStreamParent = errors.New("no live parent listening for this run's outp
 // again only after a failure, which is the one event that can mean the
 // address has changed.
 type streamSender struct {
-	parentInstance string
-	name           string
-	runID          string
-	output         string
-	inbox          string
+	parentSession string
+	name          string
+	runID         string
+	output        string
+	inbox         string
 }
 
 func (s *streamSender) send(text string) error {
 	if s.inbox == "" {
-		inbox, err := resolveParentInbox(s.parentInstance)
+		inbox, err := resolveParentInbox(s.parentSession)
 		if err != nil {
 			return err
 		}
@@ -327,7 +327,7 @@ func (s *streamSender) send(text string) error {
 }
 
 // resolveParentInbox finds the inbox of the live agent reporting
-// instance, through the same registry scan `kido notify_parent` resolves
+// session, through the same registry scan `kido notify_parent` resolves
 // its own target with (liveParent, message_agent.go).
 //
 // The gate on what it finds is send()'s, unchanged: a non-message kind
@@ -336,15 +336,15 @@ func (s *streamSender) send(text string) error {
 // parent that fails it - send names the target and the rule, and this
 // has nobody to say anything to, so every way of having no parent is one
 // error.
-func resolveParentInbox(instance string) (string, error) {
-	if instance == "" {
+func resolveParentInbox(session string) (string, error) {
+	if session == "" {
 		return "", errNoStreamParent
 	}
 	live, err := state.LoadLive()
 	if err != nil {
 		return "", err
 	}
-	parent, ok := liveParent(live, instance)
+	parent, ok := liveParent(live, session)
 	if !ok || parent.Inbox == "" || parent.Protocol < msg.V1 {
 		return "", errNoStreamParent
 	}

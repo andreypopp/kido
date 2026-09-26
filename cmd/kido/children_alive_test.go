@@ -17,16 +17,16 @@ func childRun(t *testing.T, id, parent string, pid int) {
 	if err := subrun.Create(id, "do a thing"); err != nil {
 		t.Fatal(err)
 	}
-	if err := subrun.WriteMeta(subrun.Meta{ID: id, Name: id, ParentInstance: parent,
+	if err := subrun.WriteMeta(subrun.Meta{ID: id, Name: id, ParentSession: parent,
 		PID: pid, StartedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func childrenAlive(t *testing.T, instance string) string {
+func childrenAlive(t *testing.T, session string) string {
 	t.Helper()
 	out := captureStdout(t, func() {
-		if err := childrenAliveCmd([]string{instance}); err != nil {
+		if err := childrenAliveCmd([]string{session}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -40,12 +40,12 @@ func childrenAlive(t *testing.T, instance string) string {
 func TestChildrenAliveReadsTheRunRecords(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 
-	if got := childrenAlive(t, "parent-inst"); got != "false" {
+	if got := childrenAlive(t, "parent-sess"); got != "false" {
 		t.Errorf("with no runs at all: %q, want false", got)
 	}
 
-	childRun(t, "run-live", "parent-inst", os.Getpid())
-	if got := childrenAlive(t, "parent-inst"); got != "true" {
+	childRun(t, "run-live", "parent-sess", os.Getpid())
+	if got := childrenAlive(t, "parent-sess"); got != "true" {
 		t.Errorf("with a live child: %q, want true", got)
 	}
 	// The negative control the whole feature rests on: a parent whose
@@ -54,13 +54,13 @@ func TestChildrenAliveReadsTheRunRecords(t *testing.T) {
 	if err := subrun.RecordOutcome("run-live", subrun.Outcome{Result: subrun.Completed, At: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if got := childrenAlive(t, "parent-inst"); got != "false" {
+	if got := childrenAlive(t, "parent-sess"); got != "false" {
 		t.Errorf("with its only child ended: %q, want false", got)
 	}
 
 	// Somebody else's child says nothing about this parent.
-	childRun(t, "run-other", "other-inst", os.Getpid())
-	if got := childrenAlive(t, "parent-inst"); got != "false" {
+	childRun(t, "run-other", "other-sess", os.Getpid())
+	if got := childrenAlive(t, "parent-sess"); got != "false" {
 		t.Errorf("with only another parent's child live: %q, want false", got)
 	}
 
@@ -68,8 +68,8 @@ func TestChildrenAliveReadsTheRunRecords(t *testing.T) {
 	// is ended as far as this reading goes - the same guess `kido runs`
 	// prints - because a parent held open by a corpse would never go idle
 	// again.
-	childRun(t, "run-gone", "parent-inst", 0)
-	if got := childrenAlive(t, "parent-inst"); got != "false" {
+	childRun(t, "run-gone", "parent-sess", 0)
+	if got := childrenAlive(t, "parent-sess"); got != "false" {
 		t.Errorf("with a child whose process is gone: %q, want false", got)
 	}
 }

@@ -43,10 +43,6 @@ type AgentInfo struct {
 	SinceReport int `json:"sinceReport"`
 	// Stalled is state.Stalled(s, now).
 	Stalled bool `json:"stalled"`
-	// Instance is s.Instance, the id `kido agent-alive` matches on. Empty
-	// for an agent that never reported one (a Claude Code session tracked
-	// only by hooks), which is never true of anything with CanMessage.
-	Instance string `json:"instance,omitempty"`
 }
 
 func listAgentsUsage() string {
@@ -101,13 +97,11 @@ func listAgentsCmd(args []string) error {
 func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, self string) []AgentInfo {
 	byPane := paneIndex(panes)
 	scoped := sessionsInSession(states, panes, session)
-	byInstance := map[string]string{} // instance -> agent id, for resolving Parent
+	inScope := map[string]bool{} // the agents Parent may be resolved against
 	for _, s := range scoped {
-		if s.Instance != "" {
-			byInstance[s.Instance] = s.ID
-		}
+		inScope[s.ID] = true
 	}
-	ordered := orderTree(scoped, byInstance)
+	ordered := orderTree(scoped, inScope)
 
 	now := time.Now()
 	out := make([]AgentInfo, 0, len(ordered))
@@ -121,7 +115,7 @@ func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, se
 			Window:      p.WindowID,
 			Status:      string(s.Status),
 			Activity:    s.Activity,
-			Parent:      parentID(s, byInstance),
+			Parent:      parentID(s, inScope),
 			Depth:       s.Depth,
 			Self:        s.Pane == self,
 			Cwd:         p.CurrentPath,
@@ -130,7 +124,6 @@ func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, se
 			Model:       s.Model,
 			SinceReport: int(now.Sub(s.TS).Seconds()),
 			Stalled:     state.Stalled(s, now),
-			Instance:    s.Instance,
 		})
 	}
 	return out
@@ -139,12 +132,12 @@ func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, se
 // orderTree sorts scoped parent-first, siblings oldest report first (a
 // Session records no start time, so TS is the proxy for spawn order).
 // tree.Order keeps the order it receives, so the sort comes first.
-func orderTree(scoped []state.Session, byInstance map[string]string) []state.Session {
+func orderTree(scoped []state.Session, inScope map[string]bool) []state.Session {
 	sorted := append([]state.Session(nil), scoped...)
 	sort.SliceStable(sorted, func(i, j int) bool { return olderFirst(sorted[i], sorted[j]) })
 	return tree.Order(sorted,
 		func(s state.Session) string { return s.ID },
-		func(s state.Session) string { return parentID(s, byInstance) })
+		func(s state.Session) string { return parentID(s, inScope) })
 }
 
 // canReplyTools reports whether id's run record, if any, still allows
@@ -204,12 +197,12 @@ func displayName(s state.Session, byPane map[string]tmux.Pane) string {
 	return state.AgentTitle(byPane[s.Pane].Title)
 }
 
-// parentID resolves s's parent to an agent id, "" for a root, by
-// ParentInstance looked up among the agents in scope. A self-edge is
-// reported as a root.
-func parentID(s state.Session, byInstance map[string]string) string {
-	if id := byInstance[s.ParentInstance]; id != s.ID {
-		return id
+// parentID resolves s's parent to an agent id, "" for a root: the
+// session it names, when that session is one of the agents in scope. A
+// self-edge is reported as a root.
+func parentID(s state.Session, inScope map[string]bool) string {
+	if s.ParentSession != s.ID && inScope[s.ParentSession] {
+		return s.ParentSession
 	}
 	return ""
 }

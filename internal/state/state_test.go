@@ -336,3 +336,80 @@ func TestStalledIgnoresASessionInsideAToolCall(t *testing.T) {
 		}
 	}
 }
+
+// TestRecordRefusesASecondLiveHolder is the second incident: two
+// processes opened one session id - a test pi resuming a copy of another
+// session's file - and the newcomer's report overwrote the record of the
+// session that was actually running, giving it a wrong pane and a wrong
+// inbox. A session id has one live holder, and it is whoever got there
+// first.
+func TestRecordRefusesASecondLiveHolder(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	held := Session{Pane: "%1", PID: 1, Status: Running, Inbox: "/tmp/held.sock", TS: time.Now().UTC()}
+	if err := Record("s", held); err != nil {
+		t.Fatal(err)
+	}
+	err := Record("s", Session{Pane: "%2", PID: os.Getpid(), Status: Idle, TS: time.Now().UTC()})
+	if err == nil {
+		t.Errorf("Record by a second live process = nil, want a refusal")
+	}
+	got, ok, _ := Get("s")
+	if !ok || got.Pane != "%1" || got.PID != 1 || got.Inbox != "/tmp/held.sock" {
+		t.Errorf("record = %+v, want the first holder's untouched", got)
+	}
+}
+
+// TestRemoveLeavesAnotherHoldersRecord is the same incident's second
+// half: the intruder exited and took the live session's record with it.
+func TestRemoveLeavesAnotherHoldersRecord(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	if err := Record("s", Session{Pane: "%1", PID: 1, Status: Running, TS: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Remove("s", os.Getpid()); err == nil {
+		t.Errorf("Remove by a process that does not hold the session = nil, want a refusal")
+	}
+	if _, ok, _ := Get("s"); !ok {
+		t.Errorf("the holder's record was removed by another process")
+	}
+}
+
+// TestRecordTakesOverADeadHolder is the restart case, at the record
+// level: the previous process is gone, so its session id is free.
+func TestRecordTakesOverADeadHolder(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	if err := Record("s", Session{Pane: "%1", PID: deadPID(t), Status: Idle, TS: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Record("s", Session{Pane: "%2", PID: os.Getpid(), Status: Running, TS: time.Now().UTC()}); err != nil {
+		t.Errorf("Record over a dead holder = %v, want the takeover to succeed", err)
+	}
+	got, _, _ := Get("s")
+	if got.Pane != "%2" || got.PID != os.Getpid() {
+		t.Errorf("record = %+v, want the new process's", got)
+	}
+}
+
+// TestRecordByTheHolderIsAnOrdinaryUpdate is the control the two
+// refusals above are unsafe without: every report after the first is a
+// second write of a session id that already has a live record on disk,
+// and a claim that read only "a live record exists" would refuse them
+// all and leave every agent frozen at its first status.
+func TestRecordByTheHolderIsAnOrdinaryUpdate(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	if err := Record("s", Session{Pane: "%1", PID: os.Getpid(), Status: Idle, TS: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Record("s", Session{Pane: "%1", PID: os.Getpid(), Status: Running, TS: time.Now().UTC()}); err != nil {
+		t.Errorf("the holder's own second report = %v, want it written", err)
+	}
+	if got, _, _ := Get("s"); got.Status != Running {
+		t.Errorf("record = %+v, want the holder's update", got)
+	}
+	if err := Remove("s", os.Getpid()); err != nil {
+		t.Errorf("Remove by the holder = %v, want it removed", err)
+	}
+	if _, ok, _ := Get("s"); ok {
+		t.Errorf("the holder's own record survived its removal")
+	}
+}

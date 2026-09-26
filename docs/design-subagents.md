@@ -4,7 +4,7 @@ A subagent is a pi session that another agent started, in a tmux window
 of its own, in the same tmux session, with a task as its first message
 and a record of the run that outlives it. This document follows one
 from the tool call that creates it to the sweep that closes its window.
-The mechanisms it rides on - the inbox, addressing, the instance id,
+The mechanisms it rides on - the inbox, addressing, session identity,
 the window lifecycle, run outcomes, staleness, and the seam between the
 two pi extensions - are described in [design.md](design.md), and are
 referred to by section name rather than repeated. AGENTS.md carries
@@ -94,7 +94,7 @@ arrives on the asker's own inbox, and only a long-lived process has one -
 so a caller without one is refused outright rather than delivered, and
 told to use `message_agent` instead (design.md, "Ask and reply").
 `kido notify_parent` takes no target at all, reading the parent edge out
-of `KIDO_AGENT_PARENT_INSTANCE` (design.md, "Notifying the parent").
+of `KIDO_AGENT_PARENT_SESSION` (design.md, "Notifying the parent").
 Tools register unconditionally and report kido as unavailable until a
 session has resolved it. `set_status` and `notify_parent` are bounded at
 256 and 4000 bytes, and their schemas do not repeat the bound as a
@@ -129,7 +129,7 @@ command with the server's environment, not the caller's:
 | variable | what it carries |
 |---|---|
 | `KIDO_AGENT_PARENT_PID` | the parent's pid, a cheap first liveness check |
-| `KIDO_AGENT_PARENT_INSTANCE` | the parent's instance id, the parent edge proper |
+| `KIDO_AGENT_PARENT_SESSION` | the parent's session id, the parent edge proper |
 | `KIDO_AGENT_DEPTH` | the child's depth, derived by kido |
 | `KIDO_AGENT_TASK_FILE` | the task text, in the run's directory |
 | `KIDO_AGENT_RUN_ID` | the run id, which for a pi child is also the session id it must prove it holds |
@@ -158,7 +158,7 @@ when the model gives none. The task is refused over 1MB.
 The pane gets `remain-on-exit` (a pane option, so a later split does
 not inherit it), so it survives its command exiting,
 and the window option `@kido_subagent`, valued `run=<id>
-parent=<instance> depth=<n>`. The mark is what makes the window a
+parent=<session> depth=<n>`. The mark is what makes the window a
 subagent's to every reader that comes later: the sweep, the sidebar's
 tree, and the window-cycling keys all key off it, because a state record
 is deleted within a tick of its process dying and the mark lasts as long
@@ -252,7 +252,7 @@ created so the child can read its task the instant tmux starts it:
 - `task`, the text as given, never deleted;
 - `delivered`, written by the child after it has read the task, so a
   `/reload` does not deliver it twice;
-- `meta.json`, the name, parent instance, depth, window, pane, pid,
+- `meta.json`, the name, parent session, depth, window, pane, pid,
   cwd, model, tools, `keepAlive` and start time - everything a spawn was
   given that a resume has to start it with again, which is why `keepAlive`
   is there at all (design.md, "Idle self-exit, and resuming a run");
@@ -294,9 +294,9 @@ would otherwise leave the instruction behind.
 so no signal tells it the parent has gone. It polls every five seconds:
 `kill(pid, 0)` first, where ESRCH is definite and ends the session on
 that poll without spawning anything; a live pid is not proof, since pids
-are recycled, so anything else asks `kido agent-alive <parent-instance>`
+are recycled, so anything else asks `kido agent-alive <parent-session>`
 and acts on the answer, on one reading. That command reads every live
-state record and answers whether one reports that instance - the same
+state record and answers whether one holds that session - the same
 question the orphan sweep asks, of the same registry. It is deliberately
 not a display: `kido list_agents` keeps one record per pane, so a
 `pi --print` inside the parent's pane takes the pane and the parent's
@@ -309,7 +309,7 @@ child shuts itself down through the same path a normal exit takes.
 **Reporting.** Nothing reports for the child. It calls `notify_parent`
 itself, once, when its model judges the work done; the summary goes to
 the parent as a `notice` envelope and nowhere else, addressed to the
-instance in its own environment rather than to anything it looked up.
+session in its own environment rather than to anything it looked up.
 
 A report is **kept whole**. The notice is spliced into the parent's next
 turn, so what the parent is sent is bounded at 4000 bytes - but applying
@@ -417,13 +417,13 @@ has been. "I have spawned it and I am waiting for its report" settles a
 turn exactly as finished work does, and a clock that cannot tell them
 apart shuts a parent down thirty seconds after it spawns, whereupon the
 orphan rule closes the child it was waiting for, mid-work. So the
-timer asks `kido children-alive <instance>` first and re-arms if the
+timer asks `kido children-alive <session>` first and re-arms if the
 answer is yes, exactly as it does for a focused window. The last child
 ending resumes the clock, as does that child's notice, which is new work
 like any other.
 
 The reading is of the **run records**, not of anything the session
-remembers: a run whose meta names this instance as its parent and which
+remembers: a run whose meta names this session as its parent and which
 has not ended - no outcome recorded, and a pid still alive, which is what
 `kido runs` shows as running. A child outlives the turn that spawned it
 and a `/reload` forgets everything in memory, while the record is the
@@ -477,7 +477,7 @@ no record, may act on anything (design.md, "Steer, interrupt and
 stop").
 
 An orphan is the sweep's business. A live marked window whose child
-names a parent instance no live record claims is closed, on one
+names a parent session no live record holds is closed, on one
 reading. The reading is trustworthy because of what it is taken from:
 every live record, not the per-pane view `state.Load` returns. In that
 view a `pi --print` started inside an agent's pane inherits that pane
@@ -486,8 +486,17 @@ in what the sweep was handed at all - measured live, that killed two
 children with nothing wrong with them, and a debounce absorbing it treats
 a bad answer as a slow one. Asking the whole registry makes the collision
 irrelevant: it settles who owns a pane, and the sweep only ever asks
-whether an instance is running somewhere. A one-shot `kido reap` applies
+whether a session is running somewhere. A one-shot `kido reap` applies
 this rule too, needing no second sweep to do it.
+
+The parent edge names the parent's **session**, so a parent that is quit
+and resumed (`pi --resume`, a new process on the same session id) has its
+children back the moment it reports again. What it does not have is the
+gap: while no process holds that session id its children are orphans by
+this rule, and the sweep acts on one reading. Children whose own windows
+are all that is left of them - `kido async_bash` runs, which have no state
+record for this rule to read - are unaffected and wait out a restart.
+An agent child is not: this rule, or its own parent-liveness poll, ends it.
 
 ## Resuming a run
 
@@ -508,11 +517,11 @@ The run comes back as what it was: its recorded model, tool allowlist and
 "Idle self-exit, and resuming a run").
 
 The parent edge is whoever resumes. Given `--parent-pid` and
-`--parent-instance`, they are used; omitted, they default to the
+`--parent-session`, they are used; omitted, they default to the
 caller's own record, so an agent resuming becomes the run's new parent
 and a human at a bare shell resumes a parentless session that will not
 self-exit. `--no-parent` asks for that outright, so an agent that does
-have a record can hand a run over instead of adopting it. A named instance must belong to a live agent, checked before
+have a record can hand a run over instead of adopting it. A named session must belong to a live agent, checked before
 the window exists: the sweep keeps no history, and a stale edge would
 have the window closed as an orphan within seconds with nothing to say
 why. `spawn_subagent(resume)` always passes the caller's own live
@@ -558,7 +567,7 @@ observed. Then, in this order and never concurrently:
 1. the outcome: `completed` for exit 0, `failed` otherwise, with the
    status as its text ("exit status 3", "signal: killed");
 2. the completion notice, once, to the parent - a `notice` envelope over
-   the parent's inbox, addressed to the instance in its own environment
+   the parent's inbox, addressed to the session in its own environment
    and needing no record of its own, exactly as a spawned child's report
    home is.
 
@@ -638,7 +647,7 @@ A bash process's completion is an exit code, and the notice reports it;
 an agent's completion is a judgement only the model can make, so the
 notice for an agent run reports only that the run ended and nobody spoke
 for it ("Reporting", above) - the outcome recorded is still the `died`
-it always was. A run with no parent instance is told to nobody either
+it always was. A run with no parent session is told to nobody either
 way, which is what `kido async_bash` typed at a human's shell produces.
 
 The three observers share one notice builder (`cmd/kido`'s
@@ -660,7 +669,7 @@ addressed by the name or the run id `kido async_bash` printed. A run has
 no state record for the usual target resolution to find, so stop matches
 it against the runs that have no outcome yet - a finished run can never
 shadow a live agent - and applies the same scope rule every `_subagent`
-command shares to the only parent edge a run has, the instance in its
+command shares to the only parent edge a run has, the session in its
 meta. `--force` is required for the reason it always is: a bash run has
 no inbox to ask nicely over, so stopping it degrades straight to killing
 something.
@@ -772,7 +781,7 @@ sixteen. `stream` defaults to off.
 The commands are the tools' commands, but nothing stops a human from
 running them, and doing so is a supported path rather than an accident.
 What a bare shell has is a pane with no state record: no inbox, no
-instance, no parent, depth 0. Every difference follows from that one
+session id, no parent, depth 0. Every difference follows from that one
 fact.
 
 What works:
@@ -784,7 +793,7 @@ What works:
   speaking (design.md, "The inbox").
 - `kido spawn_subagent --no-parent` - a standalone agent in a window,
   owned by nobody (design.md, "A parentless spawn, and a parent that
-  must exist"). Naming a live agent with `--parent-pid`/`--parent-instance`
+  must exist"). Naming a live agent with `--parent-pid`/`--parent-session`
   works too and makes the child that agent's; naming a dead or invented
   one is refused, not spawned.
 - `kido spawn_subagent --resume <id>` - parentless by default from an

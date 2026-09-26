@@ -23,19 +23,19 @@ import (
 // every running run and every guessed died. Absent means "no recorded
 // end time".
 type RunInfo struct {
-	ID             string     `json:"id"`
-	Name           string     `json:"name"`
-	Kind           string     `json:"kind"`
-	ParentInstance string     `json:"parentInstance,omitempty"`
-	Depth          int        `json:"depth"`
-	Cwd            string     `json:"cwd"`
-	Model          string     `json:"model,omitempty"`
-	Tools          []string   `json:"tools,omitempty"`
-	KeepAlive      bool       `json:"keepAlive,omitempty"`
-	StartedAt      time.Time  `json:"startedAt"`
-	Outcome        string     `json:"outcome"`
-	OutcomeAt      *time.Time `json:"outcomeAt,omitempty"`
-	OutcomeText    string     `json:"outcomeText,omitempty"`
+	ID            string     `json:"id"`
+	Name          string     `json:"name"`
+	Kind          string     `json:"kind"`
+	ParentSession string     `json:"parentSession,omitempty"`
+	Depth         int        `json:"depth"`
+	Cwd           string     `json:"cwd"`
+	Model         string     `json:"model,omitempty"`
+	Tools         []string   `json:"tools,omitempty"`
+	KeepAlive     bool       `json:"keepAlive,omitempty"`
+	StartedAt     time.Time  `json:"startedAt"`
+	Outcome       string     `json:"outcome"`
+	OutcomeAt     *time.Time `json:"outcomeAt,omitempty"`
+	OutcomeText   string     `json:"outcomeText,omitempty"`
 }
 
 func runsUsage() string {
@@ -165,7 +165,7 @@ func loadRunInfo(id string) (RunInfo, error) {
 	}
 	info := RunInfo{
 		ID: id, Name: meta.Name, Kind: string(meta.EffectiveKind()),
-		ParentInstance: meta.ParentInstance, Depth: meta.Depth,
+		ParentSession: meta.ParentSession, Depth: meta.Depth,
 		Cwd: meta.Cwd, Model: meta.Model, Tools: meta.Tools, KeepAlive: meta.KeepAlive,
 		StartedAt: meta.StartedAt, Outcome: "running",
 	}
@@ -214,7 +214,7 @@ func listRuns(w io.Writer, asJSON bool) error {
 			duration = now.Sub(info.StartedAt).Round(time.Second).String()
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			info.ID, info.Name, info.ParentInstance, info.StartedAt.Format(time.RFC3339),
+			info.ID, info.Name, info.ParentSession, info.StartedAt.Format(time.RFC3339),
 			duration, info.Outcome, info.Cwd)
 	}
 	return tw.Flush()
@@ -268,7 +268,7 @@ func showRun(w io.Writer, id string, asJSON bool) error {
 	fmt.Fprintf(w, "id:       %s\n", info.ID)
 	fmt.Fprintf(w, "name:     %s\n", info.Name)
 	fmt.Fprintf(w, "kind:     %s\n", info.Kind)
-	fmt.Fprintf(w, "parent:   %s\n", info.ParentInstance)
+	fmt.Fprintf(w, "parent:   %s\n", info.ParentSession)
 	fmt.Fprintf(w, "depth:    %d\n", info.Depth)
 	fmt.Fprintf(w, "cwd:      %s\n", info.Cwd)
 	if info.Model != "" {

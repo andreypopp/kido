@@ -52,7 +52,7 @@ func TestSpawnKeepAliveSetsEnv(t *testing.T) {
 
 	h.liveParent("alpha", "p")
 	h.runSpawn(outFile, envFile,
-		"--parent-pid", "1", "--parent-instance", "p",
+		"--parent-pid", "1", "--parent-session", "p",
 		"--name", "kid-keepalive", "--task-file", taskFile,
 		"--keep-alive",
 	)
@@ -180,10 +180,10 @@ func TestSpawnResumeRefusesLiveRun(t *testing.T) {
 // test uses.
 func (h *harness) spawnRecordedRun(name string) (runID, sessDir string) {
 	h.t.Helper()
-	h.liveParent("alpha", "root-inst")
+	h.liveParent("alpha", "root-e2e")
 	outFile := filepath.Join(h.dir, name+"-spawn.out")
 	h.sendLiteral(fmt.Sprintf(
-		"%s spawn_subagent --parent-pid 1 --parent-instance root-inst --name %s "+
+		"%s spawn_subagent --parent-pid 1 --parent-session root-e2e --name %s "+
 			"--task-file %s --tools read,bash --keep-alive -- /bin/sh -c %s > %s 2>&1",
 		kidoBin, name, h.writeTaskFile(name), shellQuote("exec sleep 300"), outFile))
 	h.sendKeys("Enter")

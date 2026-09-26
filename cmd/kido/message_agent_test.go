@@ -154,17 +154,17 @@ func TestMessageV1PlainKind(t *testing.T) {
 	}
 }
 
-// TestNotifyParentSendsToTheInstanceInTheEnvironment pins what makes
+// TestNotifyParentSendsToTheSessionInTheEnvironment pins what makes
 // `kido notify_parent` take no target at all: the parent comes from
-// KIDO_AGENT_PARENT_INSTANCE, matched against the live registry. The
+// KIDO_AGENT_PARENT_SESSION, matched against the live registry. The
 // only record here is reachable by nothing else - its pane is in another
 // tmux session, where resolveTarget's scope would refuse it, and no
 // name or id argument is given - so a delivery can only have come from
-// the instance in the environment. That is also the negative control
+// the session id in the environment. That is also the negative control
 // for the round trip this replaced: pi's notify_parent used to read its
 // own row out of the agent list, and the agent list cannot see this
 // target.
-func TestNotifyParentSendsToTheInstanceInTheEnvironment(t *testing.T) {
+func TestNotifyParentSendsToTheSessionInTheEnvironment(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
 	withPanes(t, []tmux.Pane{
@@ -173,14 +173,14 @@ func TestNotifyParentSendsToTheInstanceInTheEnvironment(t *testing.T) {
 	})
 
 	in := testutil.StartInbox(t, "ok\n")
-	if err := state.Record("parent", state.Session{
-		Pane: "%9", PID: os.Getpid(), Status: state.Idle, Instance: "parent-inst",
+	if err := state.Record("parent-sess", state.Session{
+		Pane: "%9", PID: os.Getpid(), Status: state.Idle,
 		Inbox: in.Path, Protocol: msg.V1,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "parent-inst")
+	t.Setenv("KIDO_AGENT_PARENT_SESSION", "parent-sess")
 	if code := notifyParentCmd(nil, strings.NewReader("the answer is 42")); code != 0 {
 		t.Fatalf("notify_parent = %d, want 0", code)
 	}
@@ -209,19 +209,19 @@ func TestNotifyParentWithoutAParentRefuses(t *testing.T) {
 	pastes := withSendPrompt(t, errors.New("sendPrompt must not be called"))
 
 	in := testutil.StartInbox(t, "ok\n")
-	if err := state.Record("peer", state.Session{
-		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Instance: "peer-inst",
+	if err := state.Record("peer-sess", state.Session{
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle,
 		Inbox: in.Path, Protocol: msg.V1, Title: "peer",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "")
+	t.Setenv("KIDO_AGENT_PARENT_SESSION", "")
 	if code := notifyParentCmd(nil, strings.NewReader("nobody to tell")); code != 1 {
 		t.Errorf("notify_parent with no parent in the environment = %d, want 1", code)
 	}
 
-	t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "peer-inst")
+	t.Setenv("KIDO_AGENT_PARENT_SESSION", "peer-sess")
 	if code := notifyParentCmd([]string{"peer"}, strings.NewReader("named a target")); code != 1 {
 		t.Errorf("notify_parent with an argument = %d, want 1", code)
 	}
@@ -234,16 +234,16 @@ func TestNotifyParentWithoutAParentRefuses(t *testing.T) {
 	}
 }
 
-// TestNotifyParentGoneParent: the instance in the environment naming
+// TestNotifyParentGoneParent: the session in the environment naming
 // nobody live is the ordinary case of a parent that has since exited, and
-// is an error naming the instance rather than a fallback to anything.
+// is an error naming the session rather than a fallback to anything.
 func TestNotifyParentGoneParent(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
 	withPanes(t, samePane)
 	pastes := withSendPrompt(t, errors.New("sendPrompt must not be called"))
 
-	t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "long-gone")
+	t.Setenv("KIDO_AGENT_PARENT_SESSION", "long-gone")
 	if code := notifyParentCmd(nil, strings.NewReader("anybody there?")); code != 1 {
 		t.Error("notify_parent to a gone parent = 0, want 1")
 	}
@@ -671,16 +671,16 @@ func TestMessageNoticeToADeadV1AgentDoesNotPaste(t *testing.T) {
 	pastes := withSendPrompt(t, nil)
 
 	// A path with nothing listening on it: exactly what a dead agent's
-	// record still names. The instance is what makes the same record the
+	// record still names. Its session id is what makes the same record the
 	// parent notify_parent resolves out of the environment.
 	if err := state.Record("target", state.Session{
-		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Instance: "target-inst",
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle,
 		Inbox: filepath.Join(t.TempDir(), "gone.sock"), Protocol: msg.V1,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "target-inst")
+	t.Setenv("KIDO_AGENT_PARENT_SESSION", "target")
 	sends := map[string]func() int{
 		"notice": func() int { return notifyParentCmd(nil, strings.NewReader("touch /tmp/pwned")) },
 		"ask":    func() int { return askAgentCmd([]string{"target"}, strings.NewReader("touch /tmp/pwned")) },

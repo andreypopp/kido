@@ -31,18 +31,22 @@ The status half shells out to:
 
 ```
 kido agent-status --agent pi --session <id> --status running|waiting|compacting|idle \
-     [--title <text>] [--activity <text>] [--model <name>] [--instance <id>] \
-     [--parent-pid <pid>] [--parent-instance <id>] [--depth <n>] \
+     [--title <text>] [--activity <text>] [--model <name>] \
+     [--parent-pid <pid>] [--parent-session <id>] [--depth <n>] \
      [--ended] [--remove] [--inbox <path>] [--protocol <n>]
 ```
 
 kido reads `$TMUX_PANE` from the environment, so the command is spawned from
 inside the pi process, which lives in the tmux pane.
 
-`--instance` is a random id generated once for this process (not per session)
-and reported on every call, so kido can tell this process from another one
-reusing its pid. `--parent-pid`, `--parent-instance` and `--depth` are read
-once from `KIDO_AGENT_PARENT_PID`, `KIDO_AGENT_PARENT_INSTANCE` and
+The session id is the agent's identity: one live process holds it, and a
+child names its parent by it. The first report of a session is the claim
+on that id, and is the one call this extension awaits: kido exits 6 if
+another live process already holds the session (two pi processes started
+from one session file), and the extension then reports nothing more,
+binds no inbox and tells the user once, naming the holder. `--parent-pid`, `--parent-session` and
+`--depth` are read
+once from `KIDO_AGENT_PARENT_PID`, `KIDO_AGENT_PARENT_SESSION` and
 `KIDO_AGENT_DEPTH`, which `kido spawn_subagent` sets in a subagent's
 environment (see docs/design-subagents.md, "What a child is given");
 absent for a root session.
@@ -283,7 +287,7 @@ was mis-delivered. A refused ask is not delivered to the model at all.
   stop".
 - `notify_parent(summary)` runs `kido notify_parent`, piping `summary` on
   stdin and naming no target: the command reads the parent out of
-  `KIDO_AGENT_PARENT_INSTANCE` in its own environment. Refused, before
+  `KIDO_AGENT_PARENT_SESSION` in its own environment. Refused, before
   anything is sent, for a session with no parent - a root session was not
   spawned, so there is nobody to tell, and both the tool and the command
   say so. Call this once, when the model itself judges its delegated work

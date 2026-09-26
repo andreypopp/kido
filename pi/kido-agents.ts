@@ -62,11 +62,12 @@ function status(): StatusHost | null {
 }
 
 // Read again here rather than shared across the seam: constants of this
-// process, so two readers cannot disagree. The instance id, which is
-// generated, comes from the host instead. What kido spawn_subagent set for a child
-// is not the same as what this process is - see ownRunID below.
+// process, so two readers cannot disagree. This session's own id, which
+// pi hands out rather than the environment, comes from the host instead.
+// What kido spawn_subagent set for a child is not the same as what this
+// process is - see ownRunID below.
 const PARENT_PID = process.env.KIDO_AGENT_PARENT_PID ? Number(process.env.KIDO_AGENT_PARENT_PID) : undefined;
-const PARENT_INSTANCE = process.env.KIDO_AGENT_PARENT_INSTANCE || undefined;
+const PARENT_SESSION = process.env.KIDO_AGENT_PARENT_SESSION || undefined;
 const DEPTH = process.env.KIDO_AGENT_DEPTH ? Number(process.env.KIDO_AGENT_DEPTH) : undefined;
 const RUN_ID = process.env.KIDO_AGENT_RUN_ID || undefined;
 
@@ -103,7 +104,7 @@ const RUN_ID = process.env.KIDO_AGENT_RUN_ID || undefined;
 // where a child could not report an outcome, close a window or reach a
 // parent anyway.
 function ownRunID(): string | null {
-  if (PARENT_INSTANCE === undefined || RUN_ID === undefined) return null;
+  if (PARENT_SESSION === undefined || RUN_ID === undefined) return null;
   return status()?.sessionId() === RUN_ID ? RUN_ID : null;
 }
 
@@ -402,9 +403,6 @@ interface AgentInfo {
   window: string;
   stalled: boolean;
   sinceReport: number;
-  // Instance is what `kido agent-alive` matches on; empty for an agent
-  // that never reported one, which canMessage rules out.
-  instance?: string;
 }
 
 // What a name is split into for matching. A session nobody named is
@@ -684,7 +682,7 @@ export default function (pi: ExtensionAPI) {
   // would have to get two things wrong at once to be mistaken for one.
   //
   // The relationship is read from the list rather than from `from`: a
-  // parent is the instance that spawned this run (and only for a real
+  // parent is the session that spawned this run (and only for a real
   // child of it - the environment alone is a claim any descendant
   // inherits, see ownRunID), and a child is an agent whose own parent edge
   // points at this session.
@@ -698,7 +696,7 @@ export default function (pi: ExtensionAPI) {
     const sender = listed.agents.find((a) => (from.session ? a.id === from.session : !!from.pane && a.pane === from.pane));
     if (!sender) return null;
     const self = listed.agents.find((a) => a.self);
-    const isParent = isSubagent() && !!PARENT_INSTANCE && sender.instance === PARENT_INSTANCE;
+    const isParent = isSubagent() && !!PARENT_SESSION && sender.id === PARENT_SESSION;
     const isChild = !!self && !!sender.parent && sender.parent === self.id;
     return { name: sender.name || labelFrom(from), relation: isParent ? "parent" : isChild ? "child" : "peer" };
   };
@@ -830,9 +828,8 @@ export default function (pi: ExtensionAPI) {
   // stale before this session's model gets around to answering. Rather
   // than trying to keep that label fresh, message_agent re-resolves the
   // target from this pane at the moment a reply is actually sent (see
-  // resolveReplyTarget) - the instance id is the other value a reload
-  // cannot change, but kido's addressing has nothing that resolves one,
-  // while every pane is already in `kido list_agents --json`. Entries are
+  // resolveReplyTarget) - a pane is the one address a reload cannot
+  // invalidate, and every pane is already in `kido list_agents --json`. Entries are
   // removed once a reply consumes them; a never-answered ask leaves one
   // behind for this session's lifetime, the same bound as an unanswered
   // ask's own wire round trip already accepts.
@@ -1071,7 +1068,7 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // parentInRegistry asks kido whether PARENT_INSTANCE is still running:
+  // parentInRegistry asks kido whether PARENT_SESSION is still running:
   // true, false, or null for "no answer", which is not evidence either
   // way. `kido agent-alive` reads every live state record and answers
   // that one bit. It is deliberately not `kido list_agents --json`, which the
@@ -1086,8 +1083,8 @@ export default function (pi: ExtensionAPI) {
   // process and no tmux round trip, on a timer that never stops.
   const parentInRegistry = async (): Promise<boolean | null> => {
     const host = status();
-    if (!host || PARENT_INSTANCE === undefined) return null;
-    const res = await host.runKido(["agent-alive", PARENT_INSTANCE], { timeoutMs: 2000 });
+    if (!host || PARENT_SESSION === undefined) return null;
+    const res = await host.runKido(["agent-alive", PARENT_SESSION], { timeoutMs: 2000 });
     if ("error" in res) return null;
     if (res.out === "true") return true;
     if (res.out === "false") return false;
@@ -1221,7 +1218,9 @@ export default function (pi: ExtensionAPI) {
   const hasLiveChildren = async (): Promise<boolean> => {
     const host = status();
     if (!host?.kidoPath()) return false;
-    const res = await host.runKido(["children-alive", host.instance()], { timeoutMs: 2000 });
+    const own = host.sessionId();
+    if (!own) return false;
+    const res = await host.runKido(["children-alive", own], { timeoutMs: 2000 });
     return "out" in res && res.out.trim() === "true";
   };
 
@@ -1461,20 +1460,18 @@ export default function (pi: ExtensionAPI) {
       }
       // Same fail-fast reasoning, for the case stalled cannot catch: a
       // target that died seconds ago is not stalled (that takes minutes
-      // of silence), and canMessage guarantees an instance to ask about.
-      // An inconclusive answer (no instance, an error, or a kido too old
-      // to know the subcommand) is never treated as "dead".
-      if (target.instance) {
-        const alive = await host.runKido(["agent-alive", target.instance], { timeoutMs: 2000 });
-        if (!("error" in alive) && alive.out === "false") {
-          return {
-            content: [{
-              type: "text",
-              text: `${target.name || target.id} is no longer running; refusing to wait for a reply`,
-            }],
-            details: {},
-          };
-        }
+      // of silence), and every listed agent is named by the session id
+      // this asks about. An inconclusive answer (an error, or a kido too
+      // old to know the subcommand) is never treated as "dead".
+      const alive = await host.runKido(["agent-alive", target.id], { timeoutMs: 2000 });
+      if (!("error" in alive) && alive.out === "false") {
+        return {
+          content: [{
+            type: "text",
+            text: `${target.name || target.id} is no longer running; refusing to wait for a reply`,
+          }],
+          details: {},
+        };
       }
 
       // The inbox may have gone away while fetchAgents() was in flight.
@@ -1554,13 +1551,13 @@ export default function (pi: ExtensionAPI) {
       // during the send settles before this point is reached, and an
       // interval armed after its own settle is one nothing will ever
       // clear.
-      if (target.instance && !settled) {
-        const instance = target.instance;
+      if (!settled) {
+        const targetID = target.id;
         let reading = false;
         watch = setInterval(() => {
           if (reading) return;
           reading = true;
-          host.runKido(["agent-alive", instance], { timeoutMs: 2000 }).then((res) => {
+          host.runKido(["agent-alive", targetID], { timeoutMs: 2000 }).then((res) => {
             reading = false;
             if (!("error" in res) && res.out === "false") settle({ gaveUp: "gone" });
           });
@@ -1690,6 +1687,12 @@ export default function (pi: ExtensionAPI) {
       if (!host?.kidoPath()) {
         return { content: [{ type: "text", text: "kido is not available; cannot spawn a subagent" }], details: {} };
       }
+      // The child's parent edge is this session's id, so a pi that has
+      // none - outside tmux, or not tracked - has no edge to give it.
+      const own = host.sessionId();
+      if (!own) {
+        return { content: [{ type: "text", text: "this session has no id of its own to parent a subagent with; cannot spawn" }], details: {} };
+      }
       // resume keeps the run's own original task and window name - the same
       // pair `kido spawn_subagent --resume` itself refuses alongside --task-file and
       // --name - so a call naming both is ambiguous about which one the
@@ -1743,8 +1746,8 @@ export default function (pi: ExtensionAPI) {
           params.resume,
           "--parent-pid",
           String(process.pid),
-          "--parent-instance",
-          host.instance(),
+          "--parent-session",
+          own,
           ...keepAliveArgs,
         ];
         // Only named after "--" if there is something to override - an
@@ -1770,20 +1773,10 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
-      // The session to fork is this one, and the extension is told what it
-      // is (kido-status.ts's sessionId) rather than kido guessing from a
-      // pane: `pi --fork` resolves a session by id and there is exactly one
-      // right answer here. A session with no id at all - pi outside a
-      // session file - has nothing to fork from, and saying so beats
-      // spawning a child that silently holds no context.
-      const forkArgs: string[] = [];
-      if (params.fork) {
-        const sessionID = status()?.sessionId();
-        if (!sessionID) {
-          return { content: [{ type: "text", text: "this session has no id of its own to fork from; spawn without fork" }], details: {} };
-        }
-        forkArgs.push("--fork", sessionID);
-      }
+      // The session to fork is this one, named by the same id the child's
+      // parent edge is: `pi --fork` resolves a session by id and there is
+      // exactly one right answer here.
+      const forkArgs = params.fork ? ["--fork", own] : [];
 
       const name = params.name || safeSubagentName();
       const child = ["pi", "--name", name, ...modelAndTools];
@@ -1795,8 +1788,8 @@ export default function (pi: ExtensionAPI) {
           "spawn_subagent",
           "--parent-pid",
           String(process.pid),
-          "--parent-instance",
-          host.instance(),
+          "--parent-session",
+          own,
           "--depth",
           String(depth),
           "--name",
@@ -2021,8 +2014,8 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text", text: "kido is not available; cannot notify the parent" }], details: {} };
       }
       // No target, and nothing listed to find one: `kido notify_parent`
-      // reads the parent edge out of KIDO_AGENT_PARENT_INSTANCE, the same
-      // environment this file's own PARENT_INSTANCE comes from. This used
+      // reads the parent edge out of KIDO_AGENT_PARENT_SESSION, the same
+      // environment this file's own PARENT_SESSION comes from. This used
       // to fetch every agent, find its own row and read `parent` off it -
       // a whole subprocess and a tmux pane listing to recover something
       // kido had handed the process at spawn.

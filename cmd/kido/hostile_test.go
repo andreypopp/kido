@@ -70,7 +70,7 @@ func TestSpawnHostileWindowNameMatrix(t *testing.T) {
 			taskFile := writeTaskFile(t, "task")
 
 			err := spawnSubagentCmd([]string{
-				"--parent-pid", "1", "--parent-instance", testParentInstance,
+				"--parent-pid", "1", "--parent-session", testParentSession,
 				"--name", c.name, "--task-file", taskFile,
 			})
 			if c.refuse {
@@ -128,7 +128,7 @@ func TestSpawnHostileTaskTextRoundTrip(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := spawnSubagentCmd([]string{
-				"--parent-pid", "1", "--parent-instance", testParentInstance,
+				"--parent-pid", "1", "--parent-session", testParentSession,
 				"--name", "kid", "--task-file", taskFile,
 			}); err != nil {
 				t.Fatal(err)
@@ -150,7 +150,7 @@ func TestSpawnHostileTaskTextRoundTrip(t *testing.T) {
 			withStdinBytes(t, c.task)
 
 			if err := spawnSubagentCmd([]string{
-				"--parent-pid", "1", "--parent-instance", testParentInstance,
+				"--parent-pid", "1", "--parent-session", testParentSession,
 				"--name", "kid", "--task-file", "-",
 			}); err != nil {
 				t.Fatal(err)

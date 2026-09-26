@@ -6,8 +6,8 @@ import (
 	"kido/internal/subrun"
 )
 
-// childrenAliveCmd implements `kido children-alive INSTANCE`: prints
-// "true" or "false", answering whether any run INSTANCE started is still
+// childrenAliveCmd implements `kido children-alive SESSION`: prints
+// "true" or "false", answering whether any run SESSION started is still
 // going. pi/kido-agents.ts's idle self-exit is its only caller - a child
 // about to shut itself down asking whether it is the only thing it
 // started that would be shut down with it (docs/design-subagents.md,
@@ -33,7 +33,7 @@ import (
 // evidence.
 func childrenAliveCmd(args []string) error {
 	if len(args) != 1 || args[0] == "" {
-		return fmt.Errorf("usage: kido children-alive INSTANCE")
+		return fmt.Errorf("usage: kido children-alive SESSION")
 	}
 	ids, err := subrun.List()
 	if err != nil {
@@ -41,7 +41,7 @@ func childrenAliveCmd(args []string) error {
 	}
 	for _, id := range ids {
 		meta, err := subrun.ReadMeta(id)
-		if err != nil || meta.ParentInstance != args[0] {
+		if err != nil || meta.ParentSession != args[0] {
 			continue
 		}
 		if _, ended, err := subrun.EffectiveOutcome(id, meta.PID); err == nil && !ended {

@@ -22,7 +22,7 @@ func (h *harness) asyncParent(session, id string) *testutil.Inbox {
 	in := testutil.StartInbox(h.t, "ok\n")
 	pane := h.in("display-message", "-p", "-t", session+":", "#{pane_id}")
 	h.agentStatus(id, pane, "pi", "idle",
-		"--instance", id+"-inst", "--inbox", in.Path, "--protocol", "1")
+		"--inbox", in.Path, "--protocol", "1")
 	return in
 }
 

@@ -440,8 +440,8 @@ func TestAgentStatusActivityIsOneLine(t *testing.T) {
 	}
 }
 
-// TestAgentStatusParentAndDepth checks that --instance, --parent-pid,
-// --parent-instance and --depth are recorded exactly as given on every
+// TestAgentStatusParentAndDepth checks that --parent-pid,
+// --parent-session and --depth are recorded exactly as given on every
 // call, with no carry-forward: the agent reports them fresh from its own
 // environment on every call, so an omitted flag means "root agent", not
 // "keep the last one".
@@ -451,14 +451,14 @@ func TestAgentStatusParentAndDepth(t *testing.T) {
 
 	report := reporter(t, "p1")
 
-	s := report("--instance", "child-inst", "--parent-pid", "4242", "--parent-instance", "parent-inst", "--depth", "1")
-	if s.Instance != "child-inst" || s.ParentPID != 4242 || s.ParentInstance != "parent-inst" || s.Depth != 1 {
-		t.Fatalf("record = %+v, want instance child-inst, parent pid 4242, parent instance parent-inst and depth 1", s)
+	s := report("--parent-pid", "4242", "--parent-session", "parent-sess", "--depth", "1")
+	if s.ParentPID != 4242 || s.ParentSession != "parent-sess" || s.Depth != 1 {
+		t.Fatalf("record = %+v, want parent pid 4242, parent session parent-sess and depth 1", s)
 	}
 
 	// Unlike --activity, omitting these on the next call resets them to
 	// zero rather than carrying the previous values forward.
-	if s := report(); s.Instance != "" || s.ParentPID != 0 || s.ParentInstance != "" || s.Depth != 0 {
+	if s := report(); s.ParentPID != 0 || s.ParentSession != "" || s.Depth != 0 {
 		t.Errorf("record = %+v, want a root agent (no carry-forward)", s)
 	}
 }
@@ -540,7 +540,7 @@ func TestEverySubcommandCaseReturns(t *testing.T) {
 }
 
 // TestAgentAliveExitsCleanly is the live half: the built binary, asked
-// about an instance nobody claims, answers false and exits 0 with nothing
+// about a session nobody holds, answers false and exits 0 with nothing
 // on stderr, which is the reading every liveness poll depends on.
 func TestAgentAliveExitsCleanly(t *testing.T) {
 	bin := dispatchTestBin(t)

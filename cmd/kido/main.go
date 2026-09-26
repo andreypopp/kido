@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -83,6 +84,22 @@ func unknownSubcommand(name string) {
 // was started in.
 const hookDebugEnv = "KIDO_HOOK_DEBUG"
 
+// exitSessionHeld is what `kido agent-status` exits with when another
+// live process holds the session id it was told to report under. It is a
+// code of its own because the caller acts on it: pi/kido-status.ts stops
+// reporting for the rest of the session and tells its user once, which
+// it cannot do from a message it would have to match on (docs/design.md,
+// "One holder per session id").
+const exitSessionHeld = 6
+
+func exitCodeFor(err error) int {
+	var held *state.HeldError
+	if errors.As(err, &held) {
+		return exitSessionHeld
+	}
+	return 1
+}
+
 // dispatch runs fn for a subcommand named name, printing "kido <name>:
 // <err>" to stderr and exiting 1 on failure. hook (which must never fail
 // the caller) and prompt and the message-sending commands (which return
@@ -107,7 +124,10 @@ func main() {
 			}
 			return // never fail the Claude Code hook
 		case "agent-status":
-			dispatch("agent-status", func() error { return agentStatus(os.Args[2:]) })
+			if err := agentStatus(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "kido agent-status:", err)
+				os.Exit(exitCodeFor(err))
+			}
 			return
 		case "set_status":
 			dispatch("set_status", func() error { return setStatusCmd(os.Args[2:]) })
@@ -354,7 +374,7 @@ func runHook(r io.Reader, debug bool) error {
 	case e.Ignore:
 		return nil
 	case e.Remove:
-		return state.Remove(in.SessionID)
+		return state.Remove(in.SessionID, procs.ReporterPID(true))
 	}
 	return recordSession(state.AgentClaude, in.SessionID, procs.ReporterPID(true), e, agentReport{})
 }
@@ -363,15 +383,14 @@ func runHook(r io.Reader, debug bool) error {
 // the fields only `kido agent-status` can set. runHook passes the zero
 // value, Claude Code's hooks reporting none of them.
 type agentReport struct {
-	Title          string
-	Inbox          string
-	Protocol       int
-	Activity       string
-	Instance       string
-	ParentPID      int
-	ParentInstance string
-	Depth          int
-	Model          string
+	Title         string
+	Inbox         string
+	Protocol      int
+	Activity      string
+	ParentPID     int
+	ParentSession string
+	Depth         int
+	Model         string
 }
 
 // recordSession builds and writes a whole fresh state.Session for one
@@ -380,22 +399,21 @@ type agentReport struct {
 func recordSession(agent, sessionID string, pid int, e hook.Effect, r agentReport) error {
 	now := time.Now().UTC()
 	s := state.Session{
-		Agent:          agent,
-		Pane:           os.Getenv("TMUX_PANE"),
-		PID:            pid,
-		Status:         e.Status,
-		TS:             now,
-		Title:          r.Title,
-		Inbox:          r.Inbox,
-		Protocol:       r.Protocol,
-		Background:     e.Background,
-		ToolPending:    e.ToolPending,
-		Activity:       r.Activity,
-		Instance:       r.Instance,
-		ParentPID:      r.ParentPID,
-		ParentInstance: r.ParentInstance,
-		Depth:          r.Depth,
-		Model:          r.Model,
+		Agent:         agent,
+		Pane:          os.Getenv("TMUX_PANE"),
+		PID:           pid,
+		Status:        e.Status,
+		TS:            now,
+		Title:         r.Title,
+		Inbox:         r.Inbox,
+		Protocol:      r.Protocol,
+		Background:    e.Background,
+		ToolPending:   e.ToolPending,
+		Activity:      r.Activity,
+		ParentPID:     r.ParentPID,
+		ParentSession: r.ParentSession,
+		Depth:         r.Depth,
+		Model:         r.Model,
 	}
 	if e.Ended {
 		s.Ended = endedAt(sessionID, now)
@@ -430,7 +448,7 @@ func statusList() string {
 func agentStatusUsage() string {
 	return "usage: kido agent-status --agent NAME --session ID " +
 		"--status " + statusList() + " [--title TITLE] [--inbox PATH] [--protocol N] " +
-		"[--activity TEXT] [--instance ID] [--parent-pid PID] [--parent-instance ID] " +
+		"[--activity TEXT] [--parent-pid PID] [--parent-session ID] " +
 		"[--depth N] [--model NAME] [--ended] [--remove]"
 }
 
@@ -457,9 +475,8 @@ func agentStatus(args []string) error {
 	protocol := fs.Int("protocol", 0,
 		"highest inbox envelope version the agent understands (see internal/msg); omitted keeps the last reported value")
 	activity := fs.String("activity", "", "free text describing what the agent is doing, one line of at most 256 bytes; omitted keeps the last reported value, empty clears it")
-	instance := fs.String("instance", "", "opaque id the agent generates once per process and reports on every call")
 	parentPID := fs.Int("parent-pid", 0, "pid of the agent that spawned this one, 0 for a root agent")
-	parentInstance := fs.String("parent-instance", "", "instance id of the agent that spawned this one, empty for a root agent")
+	parentSession := fs.String("parent-session", "", "session id of the agent that spawned this one, empty for a root agent")
 	depth := fs.Int("depth", 0, "depth in the spawn tree, 0 for a root agent")
 	model := fs.String("model", "", "name of the model the agent is currently running; omitted keeps the last reported value, empty clears it")
 	ended := fs.Bool("ended", false, "a turn just finished")
@@ -476,21 +493,20 @@ func agentStatus(args []string) error {
 		return fmt.Errorf("--agent and --session are required\n%s", agentStatusUsage())
 	}
 	if *remove {
-		return state.Remove(*session)
+		return state.Remove(*session, procs.ReporterPID(false))
 	}
 	if !state.Valid(state.Status(*status)) {
 		return fmt.Errorf("unknown status %q\n%s", *status, agentStatusUsage())
 	}
 	r := agentReport{
-		Title:          *title,
-		Inbox:          *inbox,
-		Protocol:       *protocol,
-		Activity:       oneLine(*activity, maxActivity),
-		Instance:       *instance,
-		ParentPID:      *parentPID,
-		ParentInstance: *parentInstance,
-		Depth:          *depth,
-		Model:          *model,
+		Title:         *title,
+		Inbox:         *inbox,
+		Protocol:      *protocol,
+		Activity:      oneLine(*activity, maxActivity),
+		ParentPID:     *parentPID,
+		ParentSession: *parentSession,
+		Depth:         *depth,
+		Model:         *model,
 	}
 	// The previous record is read unconditionally: the extension reports
 	// --inbox/--protocol once and carries nothing else forward itself, so

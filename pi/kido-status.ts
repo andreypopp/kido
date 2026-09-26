@@ -7,7 +7,7 @@
  *
  *   kido agent-status --agent pi --session <id> --status running|waiting|compacting|idle
  *                     [--title <text>] [--activity <text>] [--model <name>]
- *                     [--instance <id>] [--parent-pid <pid>] [--parent-instance <id>]
+ *                     [--parent-pid <pid>] [--parent-session <id>]
  *                     [--depth <n>] [--ended] [--remove]
  *                     [--inbox <path>] [--protocol <n>]
  *
@@ -40,34 +40,15 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { accessSync, constants, unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { delimiter, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Generated once per process, not per session, so a /reload does not
-// change it under a child that recorded it as a ParentInstance - held on
-// globalThis rather than module scope to make that true: pi (measured
-// against 0.85.1) clears its extension module cache and re-evaluates this
-// file's top level on every /reload (resource-loader.js's reload() calls
-// clearExtensionCache(); loader.js loads extensions through jiti with
-// moduleCache: false), so a plain `const INSTANCE = randomUUID()` here
-// picked up a fresh value each time even though the process, the pid and
-// the session id never changed. A child that recorded the pre-reload value
-// as its own --parent-instance could then never match it again, which is
-// what made a live parent look gone. Symbol.for is the same mechanism the
-// seam below already relies on to survive that same re-evaluation. Read by
-// kido-agents.ts through the seam, never by importing it: a second
-// evaluation of this file would read the same slot, but importing it as a
-// runtime value would still cost a second module evaluation for nothing.
-const INSTANCE_SLOT = Symbol.for("kido.pi.extension.instance");
-const INSTANCE = ((globalThis as unknown as Record<symbol, string | undefined>)[INSTANCE_SLOT] ??= randomUUID());
-
 // Set by `kido spawn_subagent` in a subagent's environment; absent for a root
 // session. kido-agents.ts reads the same three itself.
 const PARENT_PID = process.env.KIDO_AGENT_PARENT_PID ? Number(process.env.KIDO_AGENT_PARENT_PID) : undefined;
-const PARENT_INSTANCE = process.env.KIDO_AGENT_PARENT_INSTANCE || undefined;
+const PARENT_SESSION = process.env.KIDO_AGENT_PARENT_SESSION || undefined;
 const DEPTH = process.env.KIDO_AGENT_DEPTH ? Number(process.env.KIDO_AGENT_DEPTH) : undefined;
 
 // HEARTBEAT_MS is how often a session re-sends its status while it is
@@ -75,6 +56,11 @@ const DEPTH = process.env.KIDO_AGENT_DEPTH ? Number(process.env.KIDO_AGENT_DEPTH
 // a real last-seen time (docs/design.md, "Heartbeat and staleness").
 // Read once at module scope; a test re-imports the module to change it.
 const HEARTBEAT_MS = Number(process.env.KIDO_HEARTBEAT_MS) || 30000;
+
+// How long the session claim waits for kido. A timeout is not a refusal:
+// the session goes on reporting, and the claim in kido's own write path
+// (internal/state.Record) is what actually decides who holds the id.
+const CLAIM_TIMEOUT_MS = 5000;
 
 // Cap for the free-text activity, applied on the way in; the tool schema
 // says 256 too, but a model is free to ignore it.
@@ -98,7 +84,15 @@ function capBytes(text: string, max: number): string {
 
 export type Status = "running" | "waiting" | "compacting" | "idle";
 
-export type RunKidoResult = { out: string } | { error: string };
+// code is the subcommand's exit status, absent when kido could not be
+// run at all or was killed on the timeout. Only the session claim reads
+// it (EXIT_SESSION_HELD); everything else acts on error alone.
+export type RunKidoResult = { out: string } | { error: string; code?: number };
+
+// What `kido agent-status` exits with when another live process holds
+// this session id (cmd/kido/main.go). Two pi processes on one session
+// file is the case: the second must not report, and says so once.
+export const EXIT_SESSION_HELD = 6;
 
 // Anything larger than this is dropped rather than buffered.
 const MAX_PROMPT_BYTES = 1024 * 1024;
@@ -203,7 +197,7 @@ function spawnDetached(cmd: string, args: string[], opts: { input?: string } = {
 // import: pi (measured against 0.85.1) evaluates each extension in a
 // module registry of its own, so an import of this file from
 // kido-agents.ts produced a second evaluation of it with its own scope
-// and its own INSTANCE. kido-agents.ts therefore imports nothing but
+// and its own state. kido-agents.ts therefore imports nothing but
 // types from here. Neither slot is read at factory time, so load order
 // does not matter. docs/design.md, "Two extensions, and the seam
 // between them".
@@ -221,8 +215,6 @@ export interface SessionContext {
 export interface StatusHost {
   // The resolved kido binary, or null until session_start has found one.
   kidoPath(): string | null;
-  // This process's own generated instance id, as reported with --instance.
-  instance(): string;
   // Null until session_start has resolved one, and forever in a pi with
   // no kido or no tmux. The agent half checks it against KIDO_AGENT_RUN_ID
   // to tell a real subagent from a process that merely inherited one's
@@ -278,8 +270,8 @@ export interface Seam {
   agents: AgentHooks | null;
 }
 
-// The listening inbox, held on globalThis for the same reason INSTANCE is:
-// a /reload re-evaluates this file but keeps the process, the pid and the
+// The listening inbox, held on globalThis rather than at module scope: a
+// /reload re-evaluates this file but keeps the process, the pid and the
 // session id, and the socket path is keyed by pid, so nothing requires the
 // listener to go down with the module. handler is whichever module owns
 // the inbox now - null in the gap between a reload's shutdown and the
@@ -365,6 +357,12 @@ export default function (pi: ExtensionAPI) {
 
   let inbox: Server | null = null;
   let inboxReported = false;
+
+  // false once kido has answered that another live process holds this
+  // session id: this pi is not tracked, and must neither report nor bind
+  // an inbox for the rest of the session (docs/design.md, "One holder per
+  // session id").
+  let tracked = true;
 
   // null whenever the last reported status was not "running".
   let heartbeatTimer: NodeJS.Timeout | null = null;
@@ -512,11 +510,43 @@ export default function (pi: ExtensionAPI) {
 
   // Fire-and-forget. Coalesced: identical consecutive reports are dropped,
   // except a heartbeat re-send.
+  // statusArgs is one report's whole command line, shared by send() and
+  // by the claim session_start makes with it: the claim is the first
+  // report, awaited rather than fired and forgotten, because its answer
+  // is the one thing this extension needs back from kido.
+  const statusArgs = (
+    status: Status,
+    opts: { ended?: boolean; remove?: boolean; inbox?: string | null } = {},
+  ): string[] => {
+    const args = [
+      "agent-status",
+      "--agent",
+      "pi",
+      "--session",
+      sessionId as string,
+      "--status",
+      status,
+      // Always sent: an omitted --activity is carried forward by kido, an
+      // empty one clears it.
+      "--activity",
+      activity,
+    ];
+    if (title) args.push("--title", title);
+    if (model) args.push("--model", model);
+    if (PARENT_PID !== undefined) args.push("--parent-pid", String(PARENT_PID));
+    if (PARENT_SESSION) args.push("--parent-session", PARENT_SESSION);
+    if (DEPTH !== undefined) args.push("--depth", String(DEPTH));
+    if (opts.ended) args.push("--ended");
+    if (opts.remove) args.push("--remove");
+    if (opts.inbox) args.push("--inbox", opts.inbox, "--protocol", String(PROTOCOL_VERSION));
+    return args;
+  };
+
   const send = (
     status: Status,
     opts: { ended?: boolean; remove?: boolean; heartbeat?: boolean } = {},
   ): void => {
-    if (!kido || !sessionId) return;
+    if (!kido || !sessionId || !tracked) return;
 
     // activity and model join the key, or a set_status or model switch
     // that leaves the status unchanged would be dropped.
@@ -532,33 +562,9 @@ export default function (pi: ExtensionAPI) {
     if (status === "running") startHeartbeat();
     else stopHeartbeat();
 
-    const args = [
-      "agent-status",
-      "--agent",
-      "pi",
-      "--session",
-      sessionId,
-      "--status",
-      status,
-      // Always sent: an omitted --activity is carried forward by kido, an
-      // empty one clears it.
-      "--activity",
-      activity,
-      "--instance",
-      INSTANCE,
-    ];
-    if (title) args.push("--title", title);
-    if (model) args.push("--model", model);
-    if (PARENT_PID !== undefined) args.push("--parent-pid", String(PARENT_PID));
-    if (PARENT_INSTANCE) args.push("--parent-instance", PARENT_INSTANCE);
-    if (DEPTH !== undefined) args.push("--depth", String(DEPTH));
-    if (opts.ended) args.push("--ended");
-    if (opts.remove) args.push("--remove");
-    // Reported once; kido carries both forward.
-    if (pendingInbox && inboxPath) {
-      args.push("--inbox", inboxPath, "--protocol", String(PROTOCOL_VERSION));
-      inboxReported = true;
-    }
+    // The inbox is reported once; kido carries it forward.
+    const args = statusArgs(status, { ...opts, inbox: pendingInbox ? inboxPath : null });
+    if (pendingInbox && inboxPath) inboxReported = true;
 
     spawnDetached(kido, args);
   };
@@ -596,7 +602,7 @@ export default function (pi: ExtensionAPI) {
           finish({ out: Buffer.concat(stdout).toString("utf8").trim() });
         } else {
           const errText = Buffer.concat(stderr).toString("utf8").trim();
-          finish({ error: errText || `kido ${args[0]} exited with code ${code}` });
+          finish({ error: errText || `kido ${args[0]} exited with code ${code}`, code: code ?? undefined });
         }
       });
       // A child that exits before reading all of stdin turns the write
@@ -609,7 +615,6 @@ export default function (pi: ExtensionAPI) {
 
   seam().host = {
     kidoPath: () => kido,
-    instance: () => INSTANCE,
     sessionId: () => sessionId,
     status: () => current,
     inboxOpen: () => inbox !== null,
@@ -640,9 +645,32 @@ export default function (pi: ExtensionAPI) {
     title = ctx.sessionManager.getSessionName() || undefined;
     model = ctx.model?.id;
     lastKey = null;
-    // A /reload re-runs this handler: drop the old timer first, and take
-    // over the listener it handed forward. Anything else binds afresh.
+    tracked = true;
     stopHeartbeat();
+
+    // The claim, before anything else is done in kido's name: this same
+    // first report, awaited, so its refusal can be read. A session id
+    // another live process holds is not this one's to report under, and
+    // every later report is fire-and-forget precisely because this one
+    // settled the question. The inbox is not bound either - its path is
+    // named after this pid and would collide with nothing, but nothing
+    // could address it, since only a state record publishes one.
+    if (sessionId) {
+      const claim = await runKido(statusArgs("idle"), { timeoutMs: CLAIM_TIMEOUT_MS });
+      if ("error" in claim && claim.code === EXIT_SESSION_HELD) {
+        tracked = false;
+        try {
+          ctx.ui?.notify?.(`kido: ${claim.error}`, "warning");
+        } catch {
+          // a pi with no UI to notify: the refusal still stands
+        }
+        return;
+      }
+      lastKey = null; // the claim is not a report the coalescing may match against
+    }
+
+    // A /reload re-runs this handler: take over the listener it handed
+    // forward. Anything else binds afresh.
     if (!adoptInbox()) {
       stopInbox();
       try {
@@ -736,6 +764,9 @@ export default function (pi: ExtensionAPI) {
     // which is right for an outcome but wrong here, where the record's
     // filename - the session id - is what actually changed.
     if (event?.reason === "reload") return;
+    // A session this process never claimed has no record of its own to
+    // remove, and the record under that id belongs to somebody still
+    // running: send() drops the report for exactly that reason.
     send("idle", { remove: true });
   });
 }

@@ -26,7 +26,7 @@ func TestSetStatusSetsOnlyTheActivity(t *testing.T) {
 		Agent: state.AgentPi, Pane: "%7", PID: os.Getpid(), Status: state.Running, Title: "worker",
 		Inbox: "/tmp/nope.sock", Protocol: 1, Background: true,
 		Ended: time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC), TS: time.Date(2024, 3, 1, 12, 5, 0, 0, time.UTC),
-		Activity: "the old one", Instance: "inst-1", ParentInstance: "parent-inst",
+		Activity: "the old one", ParentSession: "parent-sess",
 		ParentPID: 4242, Depth: 1, Model: "claude-sonnet-5",
 	}
 	if err := state.Record("worker-session", before); err != nil {

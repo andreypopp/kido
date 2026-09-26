@@ -487,7 +487,7 @@ var NotifyRunEnded = func(reap.Notice) {}
 // picker shares take and so sweeps as well; a second poll is as harmless
 // as a second sidebar.
 // sessions is every live record, not the snapshot's per-pane view: rule
-// 2 asks whether a parent instance is running anywhere, and the per-pane
+// 2 asks whether a parent session is running anywhere, and the per-pane
 // view answers a different question - see reap.Sweep.
 func reapSubagentWindows(panes []tmux.Pane, sessions []state.Session) {
 	if len(panes) == 0 {
@@ -1488,23 +1488,25 @@ func (m *model) paneLabel(p tmux.Pane) string {
 	return label
 }
 
-// windowAgent is the record of the first pane in w that has a place in
-// the spawn tree, or the zero Session for a window with none.
-func windowAgent(w []tmux.Pane, states map[string]state.Session) state.Session {
+// windowParent is the parent session named by the first record in w that
+// names one, or "" for a window whose records are all root sessions -
+// or which has no record at all, the case orderWindowsByTree falls back
+// to the window mark for.
+func windowParent(w []tmux.Pane, states map[string]state.Session) string {
 	for _, p := range w {
-		if s, ok := states[p.PaneID]; ok && (s.Instance != "" || s.ParentInstance != "") {
-			return s
+		if s, ok := states[p.PaneID]; ok && s.ParentSession != "" {
+			return s.ParentSession
 		}
 	}
-	return state.Session{}
+	return ""
 }
 
-// markParentOf is the parent instance carried in w's window mark
+// markParentOf is the parent session carried in w's window mark
 // (tmux.SubagentOption), read by orderWindowsByTree only once windowAgent
 // finds no record at all: it is the fallback, not the source of truth.
 func markParentOf(w []tmux.Pane) string {
 	for _, p := range w {
-		if id := tmux.SubagentParentInstance(p.Subagent); id != "" {
+		if id := tmux.SubagentParentSession(p.Subagent); id != "" {
 			return id
 		}
 	}
@@ -1530,39 +1532,34 @@ type windowPlacement struct {
 // no edge to.
 //
 // The parent normally comes from the agent's own state record
-// (ParentInstance); a window whose record is gone - a finished subagent
-// lingering for the sweep - falls back to its window mark instead, so it
-// keeps its place in the tree for the whole linger rather than un-nesting
-// to the left margin the instant its record is removed. See markParentOf.
+// (ParentSession); a window whose record names none - a finished
+// subagent lingering for the sweep, its record removed - falls back to
+// its window mark instead, so it keeps its place in the tree for the
+// whole linger rather than un-nesting to the left margin the instant its
+// record is removed. See markParentOf. A record that does name a parent
+// wins over the mark even when the two disagree: a live subagent can
+// move or be reparented (kido spawn_subagent --resume), and the mark is
+// written once at window creation and never rewritten to match.
 func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) []windowPlacement {
 	type loc struct{ windowID, paneID string }
-	byInstance := map[string]loc{}
+	bySession := map[string]loc{}
 	for _, w := range windows {
 		for _, p := range w {
-			if s, ok := states[p.PaneID]; ok && s.Instance != "" {
-				byInstance[s.Instance] = loc{w[0].WindowID, p.PaneID}
+			if s, ok := states[p.PaneID]; ok && s.ID != "" {
+				bySession[s.ID] = loc{w[0].WindowID, p.PaneID}
 			}
 		}
 	}
 	parentByWindow := make(map[string]string, len(windows))
 	for _, w := range windows {
-		s := windowAgent(w, states)
-		if s.Instance == "" && s.ParentInstance == "" {
-			// No agent record at all for this window - the common case is a
-			// subagent that reported --remove on exit while its window still
-			// lingers for the sweep. The mark outlives the record, so fall
-			// back to it. A window with any record instead follows the
-			// record even when it disagrees with the mark: a live subagent
-			// can move or be reparented (kido spawn_subagent --resume), and the mark
-			// is written once at window creation and never rewritten to
-			// match.
-			parentByWindow[w[0].WindowID] = markParentOf(w)
-		} else {
-			parentByWindow[w[0].WindowID] = s.ParentInstance
+		parent := windowParent(w, states)
+		if parent == "" {
+			parent = markParentOf(w)
 		}
+		parentByWindow[w[0].WindowID] = parent
 	}
 	parentOf := func(w []tmux.Pane) string {
-		return byInstance[parentByWindow[w[0].WindowID]].windowID
+		return bySession[parentByWindow[w[0].WindowID]].windowID
 	}
 	ordered := tree.Order(windows,
 		func(w []tmux.Pane) string { return w[0].WindowID },
@@ -1582,7 +1579,7 @@ func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) 
 		pl := windowPlacement{panes: w}
 		d, placed := depth[parentOf(w)]
 		if placed {
-			pl.anchor = byInstance[parentByWindow[w[0].WindowID]].paneID
+			pl.anchor = bySession[parentByWindow[w[0].WindowID]].paneID
 			d++
 		} else {
 			d = 0

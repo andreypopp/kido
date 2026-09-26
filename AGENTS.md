@@ -243,6 +243,14 @@ State lives in `$KIDO_STATE_DIR`, else `$XDG_STATE_HOME/kido`, else
 id, written temp-file-then-rename. There is **no locking**; races are
 resolved by policy instead:
 
+- A session id has one live holder. `Record` creates a new record with
+  `os.Link` from its own pid-named temp file, which is atomic and fails
+  if the name is taken; an existing record is overwritten only by the pid
+  it names or once that pid is dead. `Remove` is held to the same rule.
+  A refusal is `state.HeldError`, and `kido agent-status` exits **6** for
+  it, which `pi/kido-status.ts` reads to stop reporting and tell its user
+  (docs/design.md, "One holder per session id"). Change that exit code in
+  one half only and a second pi silently clobbers a live session again.
 - `Load()` removes a file whose recorded pid is dead, rather than skipping
   it. That is what cleans up the per-turn headless Claude Code sessions pi
   spawns.
@@ -260,7 +268,7 @@ resolved by policy instead:
   flip destructive — the reaper closing a parent's children the tick its
   record vanished — is gone because the reaper is no longer handed this
   map: `Load` is `LoadLive` plus `ByPane`, and anything asking "is this
-  instance running *anywhere*" takes the slice, which drops nothing.
+  session running *anywhere*" takes the slice, which drops nothing.
   Pass a pane-keyed view to `reap.Sweep` and you reintroduce the bug that
   killed two live agents.
 
@@ -412,7 +420,7 @@ build it paid for).
   on a kido where *everything* from a shell was broken, which is the one
   failure a negative-only test cannot report.
 - **`TestSpawnNoParentIsNotReaped`** — drives a real `reap.Sweep` instead
-  of asserting `meta.ParentInstance == ""`: the sweep is the reader whose
+  of asserting `meta.ParentSession == ""`: the sweep is the reader whose
   verdict `--no-parent` is claiming, and the field on its own pins
   nothing. Point the record's parent at a name nobody claims and the same
   sweep closes the window, which is what gives it teeth. Its e2e twin is
@@ -517,8 +525,23 @@ build it paid for).
   read nothing, so the test records a wake and checks the verdict ignores
   it. Reaching for the file inside would put an open in the 100ms path
   and let `stallPending`'s two instants be judged from two baselines.
+- **`TestRecordByTheHolderIsAnOrdinaryUpdate`** — the control the two
+  claim refusals beside it are unsafe without. Every report after the
+  first is a second write of a session id that already has a live record
+  on disk, so a claim reading only "a live record exists" refuses them
+  all and freezes every agent at its first status - while passing both
+  refusal tests. `TestRecordTakesOverADeadHolder` is the other half of
+  the same rule, and is the restart: a session id whose holder has died
+  is free, or a resumed pi could never report at all.
+- **`TestSecondHolderOfASessionIdIsRefused`** (e2e) — the same claim
+  through the real binary from two panes, because the rule is about two
+  live pids and a unit test in one process has only one. It reads the
+  state file rather than anything kido says about it, and its takeover
+  half reports from a pane that stays alive: a reporter that exits
+  leaves a dead-pid record the sidebar deletes within a tick, which
+  looks exactly like a refused write.
 - **`TestBuildAgentsRecycledPIDNoEdge`** — the parent edge in `kido
-  list_agents` matches on `ParentInstance`, not `ParentPID`, because
+  list_agents` matches on `ParentSession`, not `ParentPID`, because
   `alive()` reports `EPERM` as alive and cannot tell a recycled pid from the
   parent. Nothing in the reaper consults a pid any more either, which is
   what removed the matching known limit.
@@ -906,7 +929,7 @@ not repeat them.
   `scripts/test-ts.sh` if you touched `pi/`), each once, with the
   environment scrubbed:
 
-      env -u KIDO_AGENT_PARENT_INSTANCE -u KIDO_AGENT_DEPTH -u KIDO_AGENT_TASK_FILE -u KIDO_AGENT_PARENT_PID -u TMUX_PANE go test ./internal/ui/
+      env -u KIDO_AGENT_PARENT_SESSION -u KIDO_AGENT_DEPTH -u KIDO_AGENT_TASK_FILE -u KIDO_AGENT_PARENT_PID -u KIDO_AGENT_RUN_ID -u TMUX_PANE go test ./internal/ui/
 
   Do not run `make test` or `make e2e`: the top-level session pushes and
   watches CI, which runs both on every commit, and a full local run in

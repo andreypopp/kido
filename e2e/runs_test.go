@@ -27,9 +27,9 @@ type runInfo struct {
 // which every test here needs control over.
 func (h *harness) spawnRun(name, script string) (runID, windowID string) {
 	h.t.Helper()
-	h.liveParent("alpha", "root-inst")
+	h.liveParent("alpha", "root-e2e")
 	outFile := filepath.Join(h.dir, name+".out")
-	cmd := fmt.Sprintf("%s spawn_subagent --parent-pid 1 --parent-instance root-inst --name %s --task-file %s -- /bin/sh -c %s > %s 2>&1",
+	cmd := fmt.Sprintf("%s spawn_subagent --parent-pid 1 --parent-session root-e2e --name %s --task-file %s -- /bin/sh -c %s > %s 2>&1",
 		kidoBin, name, h.writeTaskFile(name), shellQuote(script), outFile)
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")
@@ -156,7 +156,7 @@ func TestStopRecordsStoppedOutcome(t *testing.T) {
 	// must equal the run id for stopCmd's outcome write to land anywhere).
 	paneID := h.in("list-panes", "-t", windowID, "-F", "#{pane_id}")
 	in := testutil.StartInbox(h.t, "ok\n")
-	h.agentStatus(runID, paneID, "pi", "idle", "--instance", runID+"-inst", "--inbox", in.Path, "--protocol", "1")
+	h.agentStatus(runID, paneID, "pi", "idle", "--inbox", in.Path, "--protocol", "1")
 
 	out := h.runKido("alpha", "stop.out", "stop_subagent", runID)
 	if !strings.Contains(out, "killed") {

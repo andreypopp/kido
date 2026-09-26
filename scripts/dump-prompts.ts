@@ -27,7 +27,7 @@ const pi = {
 // against the run id kido handed it. Both are faked here, and the
 // environment goes in before the import, since the module reads it at
 // its top level.
-process.env.KIDO_AGENT_PARENT_INSTANCE = "dump";
+process.env.KIDO_AGENT_PARENT_SESSION = "dump";
 process.env.KIDO_AGENT_RUN_ID = "dump-run";
 const seam = ((globalThis as any)[Symbol.for("kido.pi.extension.seam")] ??= {});
 seam.host = { sessionId: () => "dump-run" };

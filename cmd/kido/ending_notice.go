@@ -27,9 +27,9 @@ const maxNoticeTailBytes = 4000
 // for all of them, because a parent must not be able to tell how its run
 // ended by which process happened to notice.
 type endingNotice struct {
-	runID          string
-	name           string
-	parentInstance string
+	runID         string
+	name          string
+	parentSession string
 	// kind is the run's kind, the zero value read as an agent run exactly
 	// as subrun.Meta.EffectiveKind reads an absent one.
 	kind   subrun.Kind
@@ -47,12 +47,12 @@ type endingNotice struct {
 // of.
 func noticeFor(n reap.Notice) endingNotice {
 	return endingNotice{
-		runID:          n.Meta.ID,
-		name:           n.Meta.Name,
-		parentInstance: n.Meta.ParentInstance,
-		kind:           n.Meta.EffectiveKind(),
-		result:         n.Outcome.Result,
-		text:           n.Outcome.Text,
+		runID:         n.Meta.ID,
+		name:          n.Meta.Name,
+		parentSession: n.Meta.ParentSession,
+		kind:          n.Meta.EffectiveKind(),
+		result:        n.Outcome.Result,
+		text:          n.Outcome.Text,
 	}
 }
 
@@ -74,16 +74,16 @@ func (n endingNotice) label() string { return runLabel(n.name, n.runID) }
 // failure here costs the notice and nothing else.
 //
 // A run nobody started has nobody to tell - a `kido async_bash` typed at
-// a human's shell has no parent instance at all - and notify_parent's own
+// a human's shell has no parent session at all - and notify_parent's own
 // refusal would only print to a pane that is about to close.
 func (n endingNotice) send(cmd string) {
-	if n.parentInstance == "" {
+	if n.parentSession == "" {
 		return
 	}
 	send(cmd, sendSpec{ //nolint:errcheck // prints its own error; the outcome is already recorded
-		kind:           msg.KindNotice,
-		parentInstance: n.parentInstance,
-		fromName:       n.label(),
+		kind:          msg.KindNotice,
+		parentSession: n.parentSession,
+		fromName:      n.label(),
 	}, strings.NewReader(n.body()))
 }
 

@@ -79,17 +79,17 @@ func NewID() string { return msg.NewID() }
 // which is what makes it one run rather than two (docs/design.md, "Idle
 // self-exit, and resuming a run").
 type Meta struct {
-	ID             string   `json:"id"`
-	Name           string   `json:"name"`
-	Kind           Kind     `json:"kind,omitempty"`
-	ParentInstance string   `json:"parentInstance,omitempty"`
-	Depth          int      `json:"depth"`
-	Window         string   `json:"window"`
-	Pane           string   `json:"pane"`
-	PID            int      `json:"pid"` // the child process's pid, for EffectiveOutcome's liveness guess
-	Cwd            string   `json:"cwd"`
-	Model          string   `json:"model,omitempty"`
-	Tools          []string `json:"tools,omitempty"`
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	Kind          Kind     `json:"kind,omitempty"`
+	ParentSession string   `json:"parentSession,omitempty"`
+	Depth         int      `json:"depth"`
+	Window        string   `json:"window"`
+	Pane          string   `json:"pane"`
+	PID           int      `json:"pid"` // the child process's pid, for EffectiveOutcome's liveness guess
+	Cwd           string   `json:"cwd"`
+	Model         string   `json:"model,omitempty"`
+	Tools         []string `json:"tools,omitempty"`
 	// KeepAlive is the --keep-alive the run was spawned with. Recorded, like
 	// Model and Tools, because a resume has to start the run it was rather
 	// than a default one: a helper spawned to stay up came back arming a

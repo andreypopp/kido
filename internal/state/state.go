@@ -5,6 +5,7 @@ package state
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -101,15 +102,12 @@ type Session struct {
 	// Unlike Status it is not a closed vocabulary and does not drive
 	// colour.
 	Activity string `json:"activity,omitempty"`
-	// Instance is an opaque id an agent generates once per process and
-	// reports on every status call. It, not the pid, is what a child names
-	// as its ParentInstance (docs/design.md, Identity).
-	Instance string `json:"instance,omitempty"`
 	// ParentPID is the pid of the agent that spawned this one, used only
 	// as a first liveness check; a parent edge is matched on
-	// ParentInstance, that parent's own Instance.
-	ParentPID      int    `json:"parentPid,omitempty"`
-	ParentInstance string `json:"parentInstance,omitempty"`
+	// ParentSession, the session id of the agent that spawned this one
+	// (docs/design.md, Identity).
+	ParentPID     int    `json:"parentPid,omitempty"`
+	ParentSession string `json:"parentSession,omitempty"`
 	// Depth is 0 for a root agent, 1 for its subagent, 2 for that
 	// subagent's.
 	Depth int `json:"depth,omitempty"`
@@ -375,7 +373,48 @@ func alive(pid int) bool {
 // liveness test Load does rather than a second opinion.
 func Alive(pid int) bool { return alive(pid) }
 
-// Record writes the state file for session id atomically.
+// HeldError is what Record and Remove answer a process that is not the
+// live holder of the session id it named (docs/design.md, "One holder
+// per session id"). PID is the holder's, Pane the pane it reported, so
+// the caller can tell its user where the other one is.
+type HeldError struct {
+	ID   string
+	PID  int
+	Pane string
+}
+
+func (e *HeldError) Error() string {
+	return fmt.Sprintf("session %s is already open in pane %s (pid %d); this process is not tracked", e.ID, e.Pane, e.PID)
+}
+
+// held reports the live holder of id, if the record on disk names a
+// process other than pid that is still running.
+func held(id string, pid int) *HeldError {
+	prev, ok, err := Get(id)
+	if err != nil || !ok || prev.PID == pid || !alive(prev.PID) {
+		return nil
+	}
+	return &HeldError{ID: id, PID: prev.PID, Pane: prev.Pane}
+}
+
+// Record writes the state file for session id atomically, and only for
+// the process that holds that session: one live holder per session id.
+// A second process opening a session another live process already has -
+// two pi sessions started from one session file - would otherwise
+// overwrite the running one's pane, pid and inbox, and take its record
+// with it when it exited. It gets a *HeldError and writes nothing.
+//
+// The claim needs no lock. A first writer creates the record with
+// os.Link from its own temp file, which is atomic and fails if the name
+// is taken, so of two processes starting at once exactly one can be
+// first and the other reads its record and stands down. Every later
+// write is by definition over an existing record: it is allowed when the
+// record is the caller's own (every report after the first) or when the
+// holder's pid is dead (a restart taking its own session id back), and
+// refused otherwise. Two processes taking over one dead holder both
+// write, so the takeover re-reads what landed and whoever lost it is
+// told; nothing else needs a second reading, the holder's own writes
+// being the only ones left.
 func Record(id string, s Session) error {
 	dir := Dir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -385,11 +424,36 @@ func Record(id string, s Session) error {
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(dir, id+".json.tmp")
+	path := filepath.Join(dir, id+".json")
+	// Named after the writing process, not the agent: two `kido hook`
+	// invocations for one Claude Code session are two processes reporting
+	// the same pid, and a shared temp name would let one read the other's
+	// half-written bytes. The extension is not .json, which is what keeps
+	// it out of readFiles.
+	tmp := filepath.Join(dir, fmt.Sprintf("%s.json.tmp.%d", id, os.Getpid()))
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, filepath.Join(dir, id+".json"))
+	defer os.Remove(tmp) //nolint:errcheck // best effort; a leftover temp file is skipped by every reader
+	if err := os.Link(tmp, path); err == nil {
+		return nil
+	} else if !os.IsExist(err) {
+		return err
+	}
+	prev, ok, _ := Get(id)
+	takeover := ok && prev.PID != s.PID
+	if takeover && alive(prev.PID) {
+		return &HeldError{ID: id, PID: prev.PID, Pane: prev.Pane}
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	if takeover {
+		if e := held(id, s.PID); e != nil {
+			return e
+		}
+	}
+	return nil
 }
 
 // piPrefix is what pi puts before the title it sets: "π - <session> -
@@ -428,8 +492,13 @@ func IsAgentPane(states map[string]Session, piPanes map[int]bool, p tmux.Pane) b
 	return reported || p.CurrentCommand == "claude" || piPanes[p.PanePID]
 }
 
-// Remove deletes the state file for session id.
-func Remove(id string) error {
+// Remove deletes the state file for session id on behalf of pid, which
+// must be its live holder: an intruder exiting may not take the running
+// session's record with it (see Record).
+func Remove(id string, pid int) error {
+	if e := held(id, pid); e != nil {
+		return e
+	}
 	err := os.Remove(filepath.Join(Dir(), id+".json"))
 	if os.IsNotExist(err) {
 		return nil

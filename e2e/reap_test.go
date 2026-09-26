@@ -38,20 +38,20 @@ func (h *harness) windowID(paneID string) string {
 // records is that sleep's own - which is what makes killing the pane
 // leave behind precisely the dead-pid record every live sidebar deletes
 // on its next 100ms poll.
-func (h *harness) subagentWindow(session, name, sessionID, instance, parentInstance string) (paneID, windowID string) {
+func (h *harness) subagentWindow(session, name, sessionID, parentSession string) (paneID, windowID string) {
 	h.t.Helper()
 	script := fmt.Sprintf("%s agent-status --agent pi --session %s --status idle "+
-		"--instance %s --parent-instance %s; exec sleep 300",
-		kidoBin, sessionID, instance, parentInstance)
+		"--parent-session %s; exec sleep 300",
+		kidoBin, sessionID, parentSession)
 	paneID = h.newWindow(session, name, "sh", "-c", script)
 	h.waitPaneCommand(paneID, "sleep")
 	windowID = h.windowID(paneID)
 	h.in("set-window-option", "-t", windowID, "remain-on-exit", "on")
-	h.in("set-option", "-w", "-t", windowID, "@kido_subagent", "parent="+parentInstance+" depth=1")
+	h.in("set-option", "-w", "-t", windowID, "@kido_subagent", "parent="+parentSession+" depth=1")
 	return paneID, windowID
 }
 
-// liveParent records an agent with the given instance on session's own
+// liveParent records an agent holding the given session id on session's own
 // pane, out of band so the pid it records is the test binary's and stays
 // alive for the whole test.
 //
@@ -62,13 +62,13 @@ func (h *harness) subagentWindow(session, name, sessionID, instance, parentInsta
 //
 // Every test that spawns through `kido spawn_subagent` with an invented
 // parent needs one too, and for a related reason made into a refusal:
-// kido now checks the instance names somebody alive before it creates
-// the window (cmd/kido/spawn_subagent.go's liveInstance), rather than
-// leaving the child to be closed by rule 2 seconds later.
-func (h *harness) liveParent(session, instance string) {
+// kido now checks the parent session names somebody alive before it
+// creates the window (cmd/kido/spawn_subagent.go's liveSession), rather
+// than leaving the child to be closed by rule 2 seconds later.
+func (h *harness) liveParent(session, sessionID string) {
 	h.t.Helper()
 	pane := h.in("display-message", "-p", "-t", session+":", "#{pane_id}")
-	h.agentStatus(instance+"-parent-e2e", pane, "pi", "idle", "--instance", instance)
+	h.agentStatus(sessionID, pane, "pi", "idle")
 }
 
 // killPane SIGKILLs the process in paneID and waits for it to go: the
@@ -150,8 +150,8 @@ func TestSidebarReapsFinishedSubagentWindow(t *testing.T) {
 	h := start(t, "alpha")
 
 	const childSession = "reap-child-e2e"
-	h.liveParent("alpha", "root-inst")
-	paneID, windowID := h.subagentWindow("alpha", "kid-e2e", childSession, "child-inst", "root-inst")
+	h.liveParent("alpha", "root-e2e")
+	paneID, windowID := h.subagentWindow("alpha", "kid-e2e", childSession, "root-e2e")
 	stateFile := filepath.Join(h.stateDir, childSession+".json")
 	h.waitFor(func() bool { _, err := os.Stat(stateFile); return err == nil }, settle,
 		msgf("the subagent's state record %s to be written", stateFile))
@@ -187,7 +187,7 @@ func TestReapLeavesUnmarkedWindowAlone(t *testing.T) {
 	// subagent record, naming an orphan's parent, pointing at a window
 	// kido never created.
 	h.agentStatus("stale-e2e", paneID, "pi", "idle",
-		"--instance", "stale-inst", "--parent-instance", "vanished-inst")
+		"--parent-session", "vanished-e2e")
 
 	if out := h.runKido("alpha", "reap.out", "reap"); !strings.Contains(out, "rc=0") {
 		t.Errorf("kido reap output = %q, want a clean exit", out)
@@ -209,7 +209,7 @@ func TestReapNeverClosesASessionsLastWindow(t *testing.T) {
 	paneID := h.in("list-panes", "-t", "solo", "-F", "#{pane_id}")
 	windowID := h.windowID(paneID)
 	h.in("set-window-option", "-t", windowID, "remain-on-exit", "on")
-	h.in("set-option", "-w", "-t", windowID, "@kido_subagent", "parent=root-inst depth=1")
+	h.in("set-option", "-w", "-t", windowID, "@kido_subagent", "parent=root-e2e depth=1")
 	h.killPane(paneID)
 
 	h.runKido("alpha", "last.out", "reap")
@@ -230,8 +230,8 @@ func TestFocusedWindowIsReapedOnceTheUserLeaves(t *testing.T) {
 	h := start(t, "alpha")
 
 	const childSession = "linger-child-e2e"
-	h.liveParent("alpha", "root-inst")
-	paneID, windowID := h.subagentWindow("alpha", "linger-e2e", childSession, "child-inst", "root-inst")
+	h.liveParent("alpha", "root-e2e")
+	paneID, windowID := h.subagentWindow("alpha", "linger-e2e", childSession, "root-e2e")
 	home := h.activeWindowID("alpha")
 
 	// The user switches over to read the subagent's last screen.
@@ -375,12 +375,12 @@ func TestSidebarCancelsSubagentOfDeadParent(t *testing.T) {
 
 	// A parent whose pid can actually die: reported from inside its own
 	// pane, unlike liveParent's.
-	parentScript := fmt.Sprintf("%s agent-status --agent pi --session parent-e2e --status idle "+
-		"--instance root-inst; exec sleep 300", kidoBin)
+	parentScript := fmt.Sprintf("%s agent-status --agent pi --session parent-e2e --status idle"+
+		"; exec sleep 300", kidoBin)
 	parentPane := h.newWindow("alpha", "parent-e2e", "sh", "-c", parentScript)
 	h.waitPaneCommand(parentPane, "sleep")
 
-	_, windowID := h.subagentWindow("alpha", "kid-e2e", "cancel-child-e2e", "child-inst", "root-inst")
+	_, windowID := h.subagentWindow("alpha", "kid-e2e", "cancel-child-e2e", "parent-e2e")
 	h.stays(func() bool { return h.windowExists(windowID) },
 		"a subagent's window was closed while its parent was still alive")
 
@@ -397,7 +397,7 @@ func TestSidebarCancelsSubagentOfDeadParent(t *testing.T) {
 //
 // It is a test of what the sidebar hands its sweep, and of nothing else.
 // The collision decides only which record owns a pane; the sweep asks
-// whether an instance is running anywhere, and both records are on disk
+// whether a session is running anywhere, and both records are on disk
 // and alive throughout. The child names no parent pid: waiting a
 // collision out, or checking a second pid, are gone, so a window kept
 // open by either would prove nothing about what keeps it open now.
@@ -405,25 +405,25 @@ func TestSidebarSurvivesAParentPaneCollision(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	parentScript := fmt.Sprintf("%s agent-status --agent pi --session parent-collision-e2e --status idle "+
-		"--instance root-inst; exec sleep 300", kidoBin)
+	parentScript := fmt.Sprintf("%s agent-status --agent pi --session parent-collision-e2e --status idle"+
+		"; exec sleep 300", kidoBin)
 	parentPane := h.newWindow("alpha", "parent-collision-e2e", "sh", "-c", parentScript)
 	h.waitPaneCommand(parentPane, "sleep")
 
 	childScript := fmt.Sprintf("%s agent-status --agent pi --session child-collision-e2e --status idle "+
-		"--instance child-inst --parent-instance root-inst; exec sleep 300", kidoBin)
+		"--parent-session parent-collision-e2e; exec sleep 300", kidoBin)
 	childPane := h.newWindow("alpha", "kid-collision-e2e", "sh", "-c", childScript)
 	h.waitPaneCommand(childPane, "sleep")
 	windowID := h.windowID(childPane)
 	h.in("set-window-option", "-t", windowID, "remain-on-exit", "on")
-	h.in("set-option", "-w", "-t", windowID, "@kido_subagent", "parent=root-inst depth=1")
+	h.in("set-option", "-w", "-t", windowID, "@kido_subagent", "parent=parent-collision-e2e depth=1")
 
 	// The collision: an intruder claims the parent's own pane with a
 	// newer timestamp, the same way a `pi --print` inheriting TMUX_PANE
 	// does. Left in place for the whole test - state.Load hands the
 	// intruder that pane for as long as it reports, so a sidebar sweeping
-	// a per-pane view would see no record for root-inst at all.
-	h.agentStatus("intruder-collision-e2e", parentPane, "pi", "idle", "--instance", "intruder-inst")
+	// a per-pane view would see no record for parent-collision-e2e at all.
+	h.agentStatus("intruder-collision-e2e", parentPane, "pi", "idle")
 
 	h.stays(func() bool { return h.windowExists(windowID) },
 		"a subagent's window was closed by a pane collision on its parent's own record, though the parent's own record was on disk and its process alive")
@@ -443,13 +443,13 @@ func TestReapCancelsSubagentOfDeadParent(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	parentScript := fmt.Sprintf("%s agent-status --agent pi --session parent-oneshot-e2e --status idle "+
-		"--instance oneshot-root-inst; exec sleep 300", kidoBin)
+	parentScript := fmt.Sprintf("%s agent-status --agent pi --session parent-oneshot-e2e --status idle"+
+		"; exec sleep 300", kidoBin)
 	parentPane := h.newWindow("alpha", "parent-oneshot-e2e", "sh", "-c", parentScript)
 	h.waitPaneCommand(parentPane, "sleep")
 
 	_, windowID := h.subagentWindow("alpha", "kid-oneshot-e2e", "oneshot-child-e2e",
-		"oneshot-child-inst", "oneshot-root-inst")
+		"parent-oneshot-e2e")
 	// Hide the column first and wait for it to go, so nothing else is
 	// sweeping: rule 2 fires on one reading now, so a sidebar still
 	// running would race the command under test and could close the

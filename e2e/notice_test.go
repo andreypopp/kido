@@ -23,19 +23,19 @@ import (
 //
 // It is also where the whole of notify_parent's addressing is exercised:
 // the child names nobody, so the parent it reaches can only have come
-// from the KIDO_AGENT_PARENT_INSTANCE `kido spawn_subagent` put in the
+// from the KIDO_AGENT_PARENT_SESSION `kido spawn_subagent` put in the
 // window's environment two processes earlier.
 func TestSpawnedChildNoticeReachesParentInboxQuickly(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
 	// The parent: a real inbox, and a state record advertising it under
-	// the instance the child's environment will name, so the notice goes
-	// over the socket rather than falling back to a paste.
+	// the session id the child's environment will name, so the notice
+	// goes over the socket rather than falling back to a paste.
 	in := testutil.StartInbox(t, "ok\n")
 	parentPane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 	h.agentStatus("parent-notice-e2e", parentPane, "pi", "idle",
-		"--instance", "parent-notice-e2e-inst", "--inbox", in.Path, "--protocol", "1")
+		"--inbox", in.Path, "--protocol", "1")
 
 	taskFile := filepath.Join(h.dir, "task.txt")
 	if err := os.WriteFile(taskFile, []byte("say hi"), 0o644); err != nil {
@@ -50,11 +50,11 @@ func TestSpawnedChildNoticeReachesParentInboxQuickly(t *testing.T) {
 	// assertions below.
 	child := fmt.Sprintf(
 		"%s agent-status --agent pi --session child-notice-e2e --status idle "+
-			"--instance child-notice-e2e-inst --parent-instance parent-notice-e2e-inst; "+
+			"--parent-session parent-notice-e2e; "+
 			"printf \"the answer is 42\" | %s notify_parent; "+
 			"exec sleep 300",
 		kidoBin, kidoBin)
-	cmd := fmt.Sprintf("%s spawn_subagent --parent-pid 1 --parent-instance parent-notice-e2e-inst --name kid-notice-e2e --task-file %s -- /bin/sh -c %s > %s 2>&1",
+	cmd := fmt.Sprintf("%s spawn_subagent --parent-pid 1 --parent-session parent-notice-e2e --name kid-notice-e2e --task-file %s -- /bin/sh -c %s > %s 2>&1",
 		kidoBin, taskFile, shellQuote(child), outFile)
 
 	t0 := time.Now()

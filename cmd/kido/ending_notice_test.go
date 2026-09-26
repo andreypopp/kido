@@ -15,7 +15,7 @@ import (
 // noticeParent records a parent agent on %2 with a live inbox and puts
 // the caller on %1, which is the shape every observer of a run's ending
 // sends from: a process whose own pane is not the parent's.
-func noticeParent(t *testing.T, instance string) *testutil.Inbox {
+func noticeParent(t *testing.T, session string) *testutil.Inbox {
 	t.Helper()
 	t.Setenv("TMUX_PANE", "%1")
 	withPanes(t, []tmux.Pane{
@@ -23,9 +23,9 @@ func noticeParent(t *testing.T, instance string) *testutil.Inbox {
 		{PaneID: "%2", SessionID: "$1", WindowID: "@2"},
 	})
 	in := testutil.StartInbox(t, "ok\n")
-	if err := state.Record("parent", state.Session{
+	if err := state.Record(session, state.Session{
 		Agent: state.AgentPi, Pane: "%2", PID: 1, Status: state.Idle, Title: "orchestrator",
-		Instance: instance, Inbox: in.Path, Protocol: msg.V1,
+		Inbox: in.Path, Protocol: msg.V1,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -55,8 +55,8 @@ func envelopes(t *testing.T, in *testutil.Inbox) []msg.Envelope {
 // only honest answer and the only one a model can act on.
 func TestAsyncNoticeSaysItIsFromTheRun(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	in := noticeParent(t, "root-inst")
-	t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "root-inst")
+	in := noticeParent(t, "root-sess")
+	t.Setenv("KIDO_AGENT_PARENT_SESSION", "root-sess")
 
 	id := startAsyncRun(t, "true")
 	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", id, "--name", "build"}) })
@@ -84,7 +84,7 @@ func deadRunWindow(runID string) []tmux.Pane {
 	return []tmux.Pane{
 		{PaneID: "%2", SessionID: "$1", WindowID: "@2"},
 		{PaneID: "%9", SessionID: "$1", WindowID: "@9",
-			Subagent: tmux.SubagentMark(runID, "root-inst", 1),
+			Subagent: tmux.SubagentMark(runID, "root-sess", 1),
 			Dead:     true, DeadTime: time.Now().Add(-time.Hour).Unix()},
 	}
 }
@@ -107,7 +107,7 @@ func withKillWindow(t *testing.T) func() []string {
 func startedRun(t *testing.T, name, parent string) subrun.Meta {
 	t.Helper()
 	meta := subrun.Meta{ID: startAsyncRun(t, "sleep", "600"), Name: name, Kind: subrun.KindBash,
-		ParentInstance: parent, Pane: "%9", Window: "@9", StartedAt: time.Now()}
+		ParentSession: parent, Pane: "%9", Window: "@9", StartedAt: time.Now()}
 	if err := subrun.WriteMeta(meta); err != nil {
 		t.Fatal(err)
 	}
@@ -121,8 +121,8 @@ func startedRun(t *testing.T, name, parent string) subrun.Meta {
 // SIGKILLed, or taken down with its window, it never got to report.
 func TestReapNotifiesForARunWhoseWrapperNeverSpoke(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	in := noticeParent(t, "root-inst")
-	meta := startedRun(t, "doomed", "root-inst")
+	in := noticeParent(t, "root-sess")
+	meta := startedRun(t, "doomed", "root-sess")
 	withPanes(t, deadRunWindow(meta.ID))
 	closed := withKillWindow(t)
 
@@ -169,8 +169,8 @@ func TestReapNotifiesForARunWhoseWrapperNeverSpoke(t *testing.T) {
 // disk tells them apart, and reading it is the whole mechanism.
 func TestReapSaysNothingForARunItsWrapperReported(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	in := noticeParent(t, "root-inst")
-	meta := startedRun(t, "told", "root-inst")
+	in := noticeParent(t, "root-sess")
+	meta := startedRun(t, "told", "root-sess")
 	if err := subrun.RecordOutcome(meta.ID, subrun.Outcome{
 		Result: subrun.Failed, Text: "exit status 3", At: time.Now()}); err != nil {
 		t.Fatal(err)
@@ -203,7 +203,7 @@ func startedAgentRun(t *testing.T, name, parent string) subrun.Meta {
 	if err := subrun.Create(id, "do a thing"); err != nil {
 		t.Fatal(err)
 	}
-	meta := subrun.Meta{ID: id, Name: name, ParentInstance: parent,
+	meta := subrun.Meta{ID: id, Name: name, ParentSession: parent,
 		Pane: "%9", Window: "@9", StartedAt: time.Now()}
 	if err := subrun.WriteMeta(meta); err != nil {
 		t.Fatal(err)
@@ -218,8 +218,8 @@ func startedAgentRun(t *testing.T, name, parent string) subrun.Meta {
 // notify_parent, it left a marked window and nothing else.
 func TestReapNotifiesForAnAgentRunNobodyReported(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	in := noticeParent(t, "root-inst")
-	meta := startedAgentRun(t, "ttyfix", "root-inst")
+	in := noticeParent(t, "root-sess")
+	meta := startedAgentRun(t, "ttyfix", "root-sess")
 	withPanes(t, deadRunWindow(meta.ID))
 	withKillWindow(t)
 
@@ -251,8 +251,8 @@ func TestReapNotifiesForAnAgentRunNobodyReported(t *testing.T) {
 // itself out.
 func TestRunOutcomeUnreportedNotifiesTheParent(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	in := noticeParent(t, "root-inst")
-	meta := startedAgentRun(t, "ttyfix", "root-inst")
+	in := noticeParent(t, "root-sess")
+	meta := startedAgentRun(t, "ttyfix", "root-sess")
 
 	if err := runOutcomeCmd([]string{"--result", "completed", "--unreported", meta.ID}); err != nil {
 		t.Fatal(err)
@@ -282,8 +282,8 @@ func TestRunOutcomeUnreportedNotifiesTheParent(t *testing.T) {
 // that differs here is the flag, and the outcome is recorded either way.
 func TestRunOutcomeWithoutUnreportedSaysNothing(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	in := noticeParent(t, "root-inst")
-	meta := startedAgentRun(t, "ttyfix", "root-inst")
+	in := noticeParent(t, "root-sess")
+	meta := startedAgentRun(t, "ttyfix", "root-sess")
 
 	if err := runOutcomeCmd([]string{"--result", "completed", meta.ID}); err != nil {
 		t.Fatal(err)
@@ -304,8 +304,8 @@ func TestRunOutcomeWithoutUnreportedSaysNothing(t *testing.T) {
 // beat later - finds the write taken and stays quiet.
 func TestRunOutcomeUnreportedThatLosesTheWriteSaysNothing(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	in := noticeParent(t, "root-inst")
-	meta := startedAgentRun(t, "ttyfix", "root-inst")
+	in := noticeParent(t, "root-sess")
+	meta := startedAgentRun(t, "ttyfix", "root-sess")
 	if err := subrun.RecordOutcome(meta.ID, subrun.Outcome{Result: subrun.Stopped, At: time.Now()}); err != nil {
 		t.Fatal(err)
 	}

@@ -131,7 +131,7 @@ func TestSweepWaitsOutTheGrace(t *testing.T) {
 // list, Sweep says so without folding the windows at all.
 func TestSweepNeverTouchesAnUnmarkedWindow(t *testing.T) {
 	stale := state.Session{Pane: "%1", PID: os.Getpid(),
-		Instance: "child-inst", ParentInstance: "long-gone-inst"}
+		ID: "child-sess", ParentSession: "long-gone-sess"}
 	panes := []tmux.Pane{other, dead(pane("%1", "@1"), 600)}
 	check(t, sweep(panes, []state.Session{stale}, now))
 }
@@ -159,10 +159,10 @@ func TestSweepCollectsAFocusedWindowOnceTheUserLeaves(t *testing.T) {
 // one-shot `kido reap` apply this rule at all.
 func TestSweepCancelsSubagentOfDeadParent(t *testing.T) {
 	child := state.Session{Pane: "%1", PID: os.Getpid(),
-		Instance: "child-inst", ParentInstance: "root-inst"}
+		ID: "child-sess", ParentSession: "root-sess"}
 	// The parent record is still on disk (ReadAll keeps it) but its
 	// process is gone, which is the reading that decides this.
-	parent := state.Session{Pane: "%p", PID: deadPID(t), Instance: "root-inst"}
+	parent := state.Session{Pane: "%p", PID: deadPID(t), ID: "root-sess"}
 	panes := []tmux.Pane{other, marked(pane("%1", "@1"))}
 	check(t, sweep(panes, []state.Session{child, parent}, now), winClose("@1"))
 }
@@ -192,14 +192,14 @@ func TestSweepCancelsSubagentOfDeadParent(t *testing.T) {
 // something that closes.
 func TestSweepSurvivesAPaneCollisionOnTheParent(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	bashRun(t, "run-collision", "build", "root-inst")
+	bashRun(t, "run-collision", "build", "parent-sess")
 	live := time.Now()
-	record(t, "parent", state.Session{Pane: "%p", PID: os.Getpid(),
-		Agent: state.AgentPi, Instance: "root-inst", TS: live})
-	record(t, "child", state.Session{Pane: "%1", PID: os.Getpid(),
-		Agent: state.AgentPi, Instance: "child-inst", ParentInstance: "root-inst", TS: live})
-	record(t, "intruder", state.Session{Pane: "%p", PID: os.Getpid(),
-		Agent: state.AgentPi, Instance: "intruder-inst", TS: live.Add(time.Second)})
+	record(t, "parent-sess", state.Session{Pane: "%p", PID: os.Getpid(),
+		Agent: state.AgentPi, TS: live})
+	record(t, "child-sess", state.Session{Pane: "%1", PID: os.Getpid(),
+		Agent: state.AgentPi, ParentSession: "parent-sess", TS: live})
+	record(t, "intruder-sess", state.Session{Pane: "%p", PID: os.Getpid(),
+		Agent: state.AgentPi, TS: live.Add(time.Second)})
 	panes := []tmux.Pane{other, markedWithRun(pane("%1", "@1"), "run-collision")}
 
 	all, err := state.LoadLive()
@@ -219,7 +219,7 @@ func TestSweepSurvivesAPaneCollisionOnTheParent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := byPane["%p"]; !ok || byPane["%p"].Instance != "intruder-inst" {
+	if _, ok := byPane["%p"]; !ok || byPane["%p"].ID != "intruder-sess" {
 		t.Fatalf("state.Load has %+v on the parent's pane, want the intruder to have won it", byPane["%p"])
 	}
 	lossy := make([]state.Session, 0, len(byPane))
@@ -244,18 +244,18 @@ func record(t *testing.T, id string, s state.Session) {
 
 func TestSweepLeavesSubagentOfLiveParentAlone(t *testing.T) {
 	child := state.Session{Pane: "%1", PID: os.Getpid(),
-		Instance: "child-inst", ParentInstance: "root-inst"}
-	parent := state.Session{Pane: "%p", PID: os.Getpid(), Instance: "root-inst"}
+		ID: "child-sess", ParentSession: "root-sess"}
+	parent := state.Session{Pane: "%p", PID: os.Getpid(), ID: "root-sess"}
 	panes := []tmux.Pane{other, marked(pane("%1", "@1"))}
 	check(t, sweep(panes, []state.Session{child, parent}, now))
 }
 
-// TestSweepNeverTouchesARootAgent: a record with no ParentInstance is the
+// TestSweepNeverTouchesARootAgent: a record with no ParentSession is the
 // user's own agent, not a subagent, and is nobody's to close - even with
 // its window marked and its process gone, which is as close to reapable
 // as a root record can look.
 func TestSweepNeverTouchesARootAgent(t *testing.T) {
-	root := state.Session{Pane: "%1", PID: deadPID(t), Instance: "root-inst"}
+	root := state.Session{Pane: "%1", PID: deadPID(t), ID: "root-sess"}
 	panes := []tmux.Pane{other, marked(pane("%1", "@1"))}
 	check(t, sweep(panes, []state.Session{root}, now))
 }
@@ -276,7 +276,7 @@ func TestSweepWaitsForEverySplitPane(t *testing.T) {
 // must still be closed once.
 func TestSweepReturnsAWindowOnce(t *testing.T) {
 	child := state.Session{Pane: "%1", PID: os.Getpid(),
-		Instance: "child-inst", ParentInstance: "gone-inst"}
+		ID: "child-sess", ParentSession: "gone-sess"}
 	panes := []tmux.Pane{other, dead(marked(pane("%1", "@1")), 600)}
 	check(t, sweep(panes, []state.Session{child}, now), winClose("@1"))
 }
@@ -440,7 +440,7 @@ func bashRun(t *testing.T, id, name, parent string) {
 		t.Fatal(err)
 	}
 	if err := subrun.WriteMeta(subrun.Meta{ID: id, Name: name, Kind: subrun.KindBash,
-		ParentInstance: parent}); err != nil {
+		ParentSession: parent}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -462,14 +462,14 @@ func notices(t *testing.T, panes []tmux.Pane, sessions []state.Session) []Notice
 // existing.
 func TestSweepNotifiesForABashRunNobodyReported(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	bashRun(t, "run-killed", "build", "root-inst")
+	bashRun(t, "run-killed", "build", "root-sess")
 	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-killed"), 60)}
 
 	got := notices(t, panes, nil)
 	if len(got) != 1 {
 		t.Fatalf("Sweep returned %d notices, want exactly 1: %+v", len(got), got)
 	}
-	if got[0].Meta.Name != "build" || got[0].Meta.ParentInstance != "root-inst" {
+	if got[0].Meta.Name != "build" || got[0].Meta.ParentSession != "root-sess" {
 		t.Errorf("notice names %+v, want the run's own name and parent", got[0].Meta)
 	}
 	if got[0].Outcome.Result != subrun.Failed || got[0].Outcome.Text != sweptText {
@@ -495,7 +495,7 @@ func TestSweepNotifiesForABashRunNobodyReported(t *testing.T) {
 // every assertion in the positive test.
 func TestSweepSaysNothingForABashRunItsWrapperReported(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	bashRun(t, "run-told", "build", "root-inst")
+	bashRun(t, "run-told", "build", "root-sess")
 	if err := subrun.RecordOutcome("run-told", subrun.Outcome{
 		Result: subrun.Failed, Text: "exit status 3", At: now}); err != nil {
 		t.Fatal(err)
@@ -520,7 +520,7 @@ func TestSweepSaysNothingForABashRunItsWrapperReported(t *testing.T) {
 // nothing else about the two readings differs.
 func TestSweepNotifiesOnceUnderTwoObservers(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	bashRun(t, "run-raced", "build", "root-inst")
+	bashRun(t, "run-raced", "build", "root-sess")
 	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-raced"), 60)}
 
 	total := len(notices(t, panes, nil)) + len(notices(t, panes, nil))
@@ -537,7 +537,7 @@ func agentRun(t *testing.T, id, name, parent string) {
 	if err := subrun.Create(id, "do a thing"); err != nil {
 		t.Fatal(err)
 	}
-	if err := subrun.WriteMeta(subrun.Meta{ID: id, Name: name, ParentInstance: parent}); err != nil {
+	if err := subrun.WriteMeta(subrun.Meta{ID: id, Name: name, ParentSession: parent}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -551,7 +551,7 @@ func agentRun(t *testing.T, id, name, parent string) {
 // said about it, which is the one thing a window sweep can know.
 func TestSweepNotifiesForAnAgentRunNobodyReported(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	agentRun(t, "run-agent", "kid", "root-inst")
+	agentRun(t, "run-agent", "kid", "root-sess")
 	panes := []tmux.Pane{other, dead(markedWithRun(pane("%1", "@1"), "run-agent"), 60)}
 
 	closing, got := Sweep(panes, nil, now)
@@ -559,7 +559,7 @@ func TestSweepNotifiesForAnAgentRunNobodyReported(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("Sweep returned %d notices for an unreported agent run, want exactly 1: %+v", len(got), got)
 	}
-	if got[0].Meta.Name != "kid" || got[0].Meta.ParentInstance != "root-inst" {
+	if got[0].Meta.Name != "kid" || got[0].Meta.ParentSession != "root-sess" {
 		t.Errorf("notice names %+v, want the run's own name and parent", got[0].Meta)
 	}
 	if got[0].Outcome.Result != subrun.Died {
@@ -579,7 +579,7 @@ func TestSweepNotifiesForAnAgentRunNobodyReported(t *testing.T) {
 // half and tell the parent about one ending twice.
 func TestSweepSaysNothingForAnAgentRunThatReported(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	agentRun(t, "run-said", "kid", "root-inst")
+	agentRun(t, "run-said", "kid", "root-sess")
 	if err := subrun.RecordOutcome("run-said", subrun.Outcome{Result: subrun.Completed, At: now}); err != nil {
 		t.Fatal(err)
 	}
@@ -596,7 +596,7 @@ func TestSweepSaysNothingForAnAgentRunThatReported(t *testing.T) {
 }
 
 // TestSweepNotifiesNobodyForAParentlessBashRun: `kido async_bash` typed
-// at a human's shell records no parent instance, and a notice with
+// at a human's shell records no parent session, and a notice with
 // nobody to receive it is not a notice. The ending is still recorded,
 // which is the half that matters to `kido runs`.
 func TestSweepNotifiesNobodyForAParentlessBashRun(t *testing.T) {
@@ -703,7 +703,7 @@ func TestSweepCapturesOnlyTheRunsPane(t *testing.T) {
 // so a second observer of the same split window says nothing.
 func TestSweepNotifiesOnceForARunsPane(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	bashRun(t, "run-paned", "build", "root-inst")
+	bashRun(t, "run-paned", "build", "root-sess")
 	run := dead(runPane(pane("%1", "@1"), "run-paned"), 600)
 	shell := split(pane("%2", "@1"), "run-paned")
 	panes := []tmux.Pane{other, run, shell}
@@ -723,8 +723,22 @@ func TestSweepNotifiesOnceForARunsPane(t *testing.T) {
 // part of the cancellation.
 func TestSweepCancelsAnOrphanByItsOwnPane(t *testing.T) {
 	child := state.Session{Pane: "%1", PID: os.Getpid(),
-		Instance: "child-inst", ParentInstance: "root-inst"}
-	parent := state.Session{Pane: "%p", PID: deadPID(t), Instance: "root-inst"}
+		ID: "child-sess", ParentSession: "root-sess"}
+	parent := state.Session{Pane: "%p", PID: deadPID(t), ID: "root-sess"}
 	panes := []tmux.Pane{other, runPane(pane("%1", "@1"), "run-orphan"), split(pane("%2", "@1"), "run-orphan")}
 	check(t, sweep(panes, []state.Session{child, parent}, now), paneClose("@1", "%1"))
+}
+
+// TestSweepLeavesAChildOfARestartedParentAlone is the first incident: a
+// user quit their orchestrator and resumed the same session with
+// `pi --resume`. The session id is the same, the process is not, so the
+// parent edge a child recorded must name the session and not the
+// process - or every child of a restarted parent is an orphan within a
+// tick of the restart.
+func TestSweepLeavesAChildOfARestartedParentAlone(t *testing.T) {
+	child := state.Session{ID: "child-sess", Pane: "%1", PID: os.Getpid(),
+		ParentSession: "parent-sess"}
+	parent := state.Session{ID: "parent-sess", Pane: "%p", PID: os.Getpid()}
+	panes := []tmux.Pane{other, marked(pane("%1", "@1"))}
+	check(t, sweep(panes, []state.Session{child, parent}, now))
 }

@@ -37,7 +37,7 @@ func newRun(t *testing.T, meta subrun.Meta, task string) {
 
 func TestRunsListsAndShows(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	newRun(t, subrun.Meta{ID: "run-a", Name: "kid", ParentInstance: "root", Depth: 1,
+	newRun(t, subrun.Meta{ID: "run-a", Name: "kid", ParentSession: "root", Depth: 1,
 		Cwd: "/tmp/proj", StartedAt: time.Now().Add(-time.Minute)}, "do the thing")
 	if err := subrun.RecordOutcome("run-a", subrun.Outcome{Result: subrun.Completed, At: time.Now()}); err != nil {
 		t.Fatal(err)
@@ -73,7 +73,7 @@ func TestRunsListsAndShows(t *testing.T) {
 // cwd first, so it works verbatim from anywhere.
 func TestRunsResumeCommandWorksFromAnyDirectory(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	newRun(t, subrun.Meta{ID: "run-b", Name: "kid", ParentInstance: "root", Depth: 1,
+	newRun(t, subrun.Meta{ID: "run-b", Name: "kid", ParentSession: "root", Depth: 1,
 		Cwd: "/tmp/some project", StartedAt: time.Now()}, "task")
 
 	var show bytes.Buffer

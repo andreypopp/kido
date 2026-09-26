@@ -76,7 +76,7 @@ func asyncRunCmd(args []string) int {
 	writers := []io.Writer{os.Stdout, out}
 	var stripe *streamer
 	if *stream {
-		stripe = newStreamer(*runID, *name, os.Getenv("KIDO_AGENT_PARENT_INSTANCE"))
+		stripe = newStreamer(*runID, *name, os.Getenv("KIDO_AGENT_PARENT_SESSION"))
 		writers = append(writers, stripe)
 	}
 	w := io.MultiWriter(writers...)
@@ -151,7 +151,7 @@ func reportAsyncRun(runID, name string, result subrun.Result, status string, uns
 	}
 	endingNotice{
 		runID: runID, name: name, kind: subrun.KindBash,
-		parentInstance: os.Getenv("KIDO_AGENT_PARENT_INSTANCE"),
-		result:         result, text: status, unstreamed: unstreamed,
+		parentSession: os.Getenv("KIDO_AGENT_PARENT_SESSION"),
+		result:        result, text: status, unstreamed: unstreamed,
 	}.send("async-run")
 }

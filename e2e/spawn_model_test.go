@@ -51,7 +51,7 @@ func TestSpawnRefusesModelRejectedByPi(t *testing.T) {
 	// for the shims), and on CI has no pi at all. The gate runs `pi` from
 	// kido's own environment, so that is the one that must name the fake.
 	outFile := filepath.Join(h.dir, "model-refused.out")
-	h.sendLiteral(fmt.Sprintf("PATH=%s:$PATH %s spawn_subagent --parent-pid 1 --parent-instance model-e2e-parent --name model-e2e --task-file %s -- pi --name model-e2e --model sonnet > %s 2>&1; echo rc=$? >> %s",
+	h.sendLiteral(fmt.Sprintf("PATH=%s:$PATH %s spawn_subagent --parent-pid 1 --parent-session model-e2e-parent --name model-e2e --task-file %s -- pi --name model-e2e --model sonnet > %s 2>&1; echo rc=$? >> %s",
 		shellQuote(piDir), kidoBin, h.writeTaskFile("model-e2e"), outFile, outFile))
 	h.sendKeys("Enter")
 	var out string

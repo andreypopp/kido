@@ -46,7 +46,7 @@ func newDeadRun(t *testing.T, id, cwd string) {
 		t.Fatal(err)
 	}
 	if err := subrun.WriteMeta(subrun.Meta{
-		ID: id, Name: "kid", ParentInstance: "old-parent", Depth: 1,
+		ID: id, Name: "kid", ParentSession: "old-parent", Depth: 1,
 		Window: "@1", Pane: "%1", PID: deadPID(t), Cwd: cwd, StartedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
@@ -157,12 +157,11 @@ func TestSpawnResumeContinuesRunRecord(t *testing.T) {
 	writePiSessionFile(t, sessDir, "resume-run")
 	calls := withNewWindow(t, "@9", "%9", nil)
 
-	// --parent-instance must name somebody currently alive, or spawnResume
-	// now refuses before ever reaching newWindow - see liveInstance's own
+	// --parent-session must name somebody currently alive, or spawnResume
+	// now refuses before ever reaching newWindow - see liveSession's own
 	// doc.
-	if err := state.Record("some-other-pane", state.Session{
+	if err := state.Record("new-parent", state.Session{
 		Agent: state.AgentPi, Pane: "%other", PID: os.Getpid(), Status: state.Idle,
-		Instance: "new-parent",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +181,7 @@ func TestSpawnResumeContinuesRunRecord(t *testing.T) {
 
 	if err := spawnSubagentCmd([]string{
 		"--resume", "resume-run",
-		"--parent-pid", "777", "--parent-instance", "new-parent",
+		"--parent-pid", "777", "--parent-session", "new-parent",
 	}); err != nil {
 		t.Fatalf("spawnSubagentCmd --resume = %v, want it to succeed", err)
 	}
@@ -197,8 +196,8 @@ func TestSpawnResumeContinuesRunRecord(t *testing.T) {
 	if call.cwd != cwd {
 		t.Errorf("window cwd = %q, want the run's own cwd %q, not the caller's", call.cwd, cwd)
 	}
-	if got := envValue(t, call.env, "KIDO_AGENT_PARENT_INSTANCE"); got != "new-parent" {
-		t.Errorf("KIDO_AGENT_PARENT_INSTANCE = %q, want the resumer's own %q", got, "new-parent")
+	if got := envValue(t, call.env, "KIDO_AGENT_PARENT_SESSION"); got != "new-parent" {
+		t.Errorf("KIDO_AGENT_PARENT_SESSION = %q, want the resumer's own %q", got, "new-parent")
 	}
 	if got := envValue(t, call.env, "KIDO_AGENT_RUN_ID"); got != "resume-run" {
 		t.Errorf("KIDO_AGENT_RUN_ID = %q, want %q", got, "resume-run")
@@ -211,7 +210,7 @@ func TestSpawnResumeContinuesRunRecord(t *testing.T) {
 	if got.ID != originalMeta.ID || got.Name != originalMeta.Name || !got.StartedAt.Equal(originalMeta.StartedAt) {
 		t.Errorf("meta = %+v, want id/name/startedAt unchanged from %+v", got, originalMeta)
 	}
-	if got.ParentInstance != "new-parent" || got.Window != "@9" || got.Pane != "%9" || got.PID != fakePanePID {
+	if got.ParentSession != "new-parent" || got.Window != "@9" || got.Pane != "%9" || got.PID != fakePanePID {
 		t.Errorf("meta = %+v, want the new window/pane/pid and parent edge", got)
 	}
 
@@ -229,7 +228,7 @@ func TestSpawnResumeContinuesRunRecord(t *testing.T) {
 }
 
 // TestSpawnResumeDefaultsParentFromCallersOwnRecord: when --parent-pid/
-// --parent-instance are omitted, they come from the caller's own reported
+// --parent-session are omitted, they come from the caller's own reported
 // identity, exactly as depth already does - the resumer becomes the new
 // parent without kido runs's printed line having to name it up front.
 func TestSpawnResumeDefaultsParentFromCallersOwnRecord(t *testing.T) {
@@ -238,9 +237,9 @@ func TestSpawnResumeDefaultsParentFromCallersOwnRecord(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	// Load() filters out any record whose pid is dead, so the caller's own
 	// record needs a real, live pid - this test process's own.
-	if err := state.Record("caller", state.Session{
+	if err := state.Record("caller-sess", state.Session{
 		Agent: state.AgentPi, Pane: "%1", PID: os.Getpid(), Status: state.Idle,
-		Instance: "caller-inst", Depth: 0,
+		Depth: 0,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -259,8 +258,8 @@ func TestSpawnResumeDefaultsParentFromCallersOwnRecord(t *testing.T) {
 	if got := envValue(t, call.env, "KIDO_AGENT_PARENT_PID"); got != strconv.Itoa(os.Getpid()) {
 		t.Errorf("KIDO_AGENT_PARENT_PID = %q, want the caller's own pid %d", got, os.Getpid())
 	}
-	if got := envValue(t, call.env, "KIDO_AGENT_PARENT_INSTANCE"); got != "caller-inst" {
-		t.Errorf("KIDO_AGENT_PARENT_INSTANCE = %q, want the caller's own instance %q", got, "caller-inst")
+	if got := envValue(t, call.env, "KIDO_AGENT_PARENT_SESSION"); got != "caller-sess" {
+		t.Errorf("KIDO_AGENT_PARENT_SESSION = %q, want the caller's own session %q", got, "caller-sess")
 	}
 }
 
@@ -278,7 +277,7 @@ func TestSpawnResumeRespectsDepthCeiling(t *testing.T) {
 
 	err := spawnSubagentCmd([]string{
 		"--resume", "deep-run",
-		"--parent-pid", "1", "--parent-instance", "p",
+		"--parent-pid", "1", "--parent-session", "p",
 	})
 	if err == nil {
 		t.Fatal("spawnSubagentCmd --resume for a caller at the ceiling = nil error, want a refusal")
@@ -291,14 +290,14 @@ func TestSpawnResumeRespectsDepthCeiling(t *testing.T) {
 	}
 }
 
-// TestSpawnResumeRefusesAnUnverifiableParentInstance pins the fix for the
+// TestSpawnResumeRefusesAnUnverifiableParentSession pins the fix for the
 // window that used to die within moments of a resume: internal/reap's
-// rule 2 closes any marked window whose child reports a ParentInstance
-// nobody currently alive claims as their own, and KIDO_AGENT_PARENT_INSTANCE
+// rule 2 closes any marked window whose child reports a ParentSession
+// nobody currently alive claims as their own, and KIDO_AGENT_PARENT_SESSION
 // is exactly what makes a resumed pi report one. Refusing here, before the
 // window is ever created, replaces that silent near-instant close (the run
 // left recording a useless "died") with an error at spawn time.
-func TestSpawnResumeRefusesAnUnverifiableParentInstance(t *testing.T) {
+func TestSpawnResumeRefusesAnUnverifiableParentSession(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
@@ -313,13 +312,13 @@ func TestSpawnResumeRefusesAnUnverifiableParentInstance(t *testing.T) {
 
 	err := spawnSubagentCmd([]string{
 		"--resume", "orphan-run",
-		"--parent-pid", "777", "--parent-instance", "nobody-is-this",
+		"--parent-pid", "777", "--parent-session", "nobody-is-this",
 	})
 	if err == nil {
-		t.Fatal("spawnSubagentCmd --resume with an unverifiable --parent-instance = nil error, want a refusal")
+		t.Fatal("spawnSubagentCmd --resume with an unverifiable --parent-session = nil error, want a refusal")
 	}
 	if !strings.Contains(err.Error(), "nobody-is-this") || !strings.Contains(err.Error(), "no currently live agent") {
-		t.Errorf("error = %q, want it to name the instance and say nobody currently live claims it", err)
+		t.Errorf("error = %q, want it to name the session and say nobody currently live holds it", err)
 	}
 	if len(*calls) != 0 {
 		t.Errorf("newWindow was called %d times, want the refusal to happen before any tmux call", len(*calls))
@@ -538,7 +537,7 @@ func TestSpawnResumeCarriesKeepAliveAndTools(t *testing.T) {
 	withListModels(t, "acme/claude-sonnet-5")
 
 	if err := spawnSubagentCmd([]string{
-		"--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--parent-pid", "1", "--parent-session", testParentSession,
 		"--name", "helper", "--task-file", writeTaskFile(t, "hold the line"),
 		"--model", "acme/claude-sonnet-5", "--tools", "read,bash", "--keep-alive",
 	}); err != nil {
@@ -560,7 +559,7 @@ func TestSpawnResumeCarriesKeepAliveAndTools(t *testing.T) {
 	writePiSessionFile(t, sessDir, runID)
 
 	if err := spawnSubagentCmd([]string{
-		"--resume", runID, "--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--resume", runID, "--parent-pid", "1", "--parent-session", testParentSession,
 	}); err != nil {
 		t.Fatalf("spawnSubagentCmd --resume = %v, want it to succeed", err)
 	}
@@ -597,7 +596,7 @@ func TestSpawnResumeWithoutRecordedKeepAliveOrTools(t *testing.T) {
 	newDeadRun(t, "old-run", t.TempDir()) // no Model, no Tools, no KeepAlive
 
 	if err := spawnSubagentCmd([]string{
-		"--resume", "old-run", "--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--resume", "old-run", "--parent-pid", "1", "--parent-session", testParentSession,
 	}); err != nil {
 		t.Fatalf("spawnSubagentCmd --resume of a run recorded without them = %v, want it to succeed", err)
 	}
@@ -619,7 +618,7 @@ func TestSpawnResumeWithoutRecordedKeepAliveOrTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := spawnSubagentCmd([]string{
-		"--resume", "old-run", "--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--resume", "old-run", "--parent-pid", "1", "--parent-session", testParentSession,
 		"--keep-alive",
 	}); err != nil {
 		t.Fatalf("spawnSubagentCmd --resume --keep-alive = %v, want it to succeed", err)
@@ -638,7 +637,7 @@ func TestSpawnResumeWithoutRecordedKeepAliveOrTools(t *testing.T) {
 func TestSpawnResumeNoParentDropsTheCallersOwnEdge(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
-	withCallerDepth(t, 0) // the caller does report an instance of its own
+	withCallerDepth(t, 0) // the caller does have a session of its own
 	sessDir := t.TempDir()
 	withPiSessionDir(t, sessDir)
 	writePiSessionFile(t, sessDir, "handed-over")
@@ -656,7 +655,7 @@ func TestSpawnResumeNoParentDropsTheCallersOwnEdge(t *testing.T) {
 	}
 	if meta, err := subrun.ReadMeta("handed-over"); err != nil {
 		t.Fatal(err)
-	} else if meta.ParentInstance != "" {
-		t.Errorf("meta.ParentInstance = %q, want the run's old edge dropped", meta.ParentInstance)
+	} else if meta.ParentSession != "" {
+		t.Errorf("meta.ParentSession = %q, want the run's old edge dropped", meta.ParentSession)
 	}
 }

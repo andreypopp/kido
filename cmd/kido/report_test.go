@@ -23,13 +23,13 @@ func withParentInbox(t *testing.T) *testutil.Inbox {
 	t.Setenv("TMUX_PANE", "%1")
 	withPanes(t, []tmux.Pane{{PaneID: "%1", SessionID: "$1"}, {PaneID: "%9", SessionID: "$1"}})
 	in := testutil.StartInbox(t, "ok\n")
-	if err := state.Record("parent", state.Session{
-		Pane: "%9", PID: os.Getpid(), Status: state.Idle, Instance: "parent-inst",
+	if err := state.Record("parent-sess", state.Session{
+		Pane: "%9", PID: os.Getpid(), Status: state.Idle,
 		Inbox: in.Path, Protocol: msg.V1,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "parent-inst")
+	t.Setenv("KIDO_AGENT_PARENT_SESSION", "parent-sess")
 	return in
 }
 

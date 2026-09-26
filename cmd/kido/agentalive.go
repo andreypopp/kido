@@ -6,9 +6,9 @@ import (
 	"kido/internal/state"
 )
 
-// agentAliveCmd implements `kido agent-alive INSTANCE`: prints "true" or
-// "false", answering whether some agent session still reports INSTANCE as
-// its own instance id. pi/kido-agents.ts's parent-liveness poll is its
+// agentAliveCmd implements `kido agent-alive SESSION`: prints "true" or
+// "false", answering whether some live process still holds the agent
+// session SESSION. pi/kido-agents.ts's parent-liveness poll is its
 // only caller - a subagent asking, every few seconds, whether the parent
 // that spawned it is still there (docs/design.md, "Identity").
 //
@@ -24,7 +24,7 @@ import (
 // reaper killed two live agents (docs/design.md, "The orphan rule").
 //
 // So this reads state.LoadLive, every live record with nothing collapsed,
-// and asks the only question the poll has: is this instance running. A
+// and asks the only question the poll has: is this session running. A
 // collision decides who owns a pane and cannot disturb that answer. There
 // is no tmux round trip either, which is what the poll's other reviewer
 // was after: every five seconds per subagent, forever.
@@ -34,18 +34,23 @@ import (
 // this same fact, and already server-wide. A parent in another tmux
 // session reads as alive to both.
 //
+// The question is asked of the session and not of the process, which is
+// what makes a parent that was quit and resumed (`pi --resume`, a new
+// process on the same session id) still the parent its children polled
+// for before the restart.
+//
 // "false" is not an error: exit 0 either way, so the caller can tell a
 // definite "gone" from kido being unreachable, which is never evidence.
 func agentAliveCmd(args []string) error {
 	if len(args) != 1 || args[0] == "" {
-		return fmt.Errorf("usage: kido agent-alive INSTANCE")
+		return fmt.Errorf("usage: kido agent-alive SESSION")
 	}
 	live, err := state.LoadLive()
 	if err != nil {
 		return err
 	}
 	for _, s := range live {
-		if s.Instance == args[0] {
+		if s.ID == args[0] {
 			fmt.Println("true")
 			return nil
 		}

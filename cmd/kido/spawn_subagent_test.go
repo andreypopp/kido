@@ -113,7 +113,7 @@ func TestSpawnPrintsWindowPaneRun(t *testing.T) {
 	var err error
 	out := captureStdout(t, func() {
 		err = spawnSubagentCmd([]string{
-			"--parent-pid", "1", "--parent-instance", testParentInstance,
+			"--parent-pid", "1", "--parent-session", testParentSession,
 			"--name", "kid", "--task-file", writeTaskFile(t, "task"),
 		})
 	})
@@ -145,14 +145,14 @@ func TestSpawnMarksTheWindow(t *testing.T) {
 	withCallerDepth(t, 0)
 	withNewWindow(t, "@9", "%9", nil)
 	if err := spawnSubagentCmd([]string{
-		"--parent-pid", "123", "--parent-instance", testParentInstance,
+		"--parent-pid", "123", "--parent-session", testParentSession,
 		"--name", "kid", "--task-file", writeTaskFile(t, "x"),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	got := marks["@9"]
-	if !strings.Contains(got, testParentInstance) {
-		t.Errorf("mark on @9 = %q, want it to name the parent instance", got)
+	if !strings.Contains(got, testParentSession) {
+		t.Errorf("mark on @9 = %q, want it to name the parent session", got)
 	}
 	if tmux.SubagentRunID(got) == "" {
 		t.Errorf("mark on @9 = %q, want a run= token a sweep can read back", got)
@@ -171,13 +171,13 @@ func writeTaskFile(t *testing.T, contents string) string {
 	return path
 }
 
-// testParentInstance is the instance every fresh-spawn test hands to
-// --parent-instance. It is a constant rather than a literal per test
-// because spawnSubagentCmd now refuses an instance no live agent claims
-// (liveInstance), so the fixture below has to claim this one - and the
-// honest fixture is the caller claiming it as its own, since a fresh
-// spawn's caller is the parent it names.
-const testParentInstance = "parent-inst"
+// testParentSession is the session id every fresh-spawn test hands to
+// --parent-session. It is a constant rather than a literal per test
+// because spawnSubagentCmd refuses a session no live agent holds
+// (liveSession), so the fixture below has to be that session - and the
+// honest fixture is the caller's own id, since a fresh spawn's caller is
+// the parent it names.
+const testParentSession = "parent-sess"
 
 // withCallerDepth records a state.Session for the caller pane (%1, in
 // samePane) reporting depth, so spawnSubagentCmd's derivation of the child's depth
@@ -185,24 +185,22 @@ const testParentInstance = "parent-inst"
 func withCallerDepth(t *testing.T, depth int) {
 	t.Helper()
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	if err := state.Record("caller", state.Session{
+	if err := state.Record(testParentSession, state.Session{
 		Agent: state.AgentPi, Pane: "%1", PID: os.Getpid(), Status: state.Idle, Depth: depth,
-		Instance: testParentInstance,
 	}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// withLiveParent records a live agent, on a pane of its own, claiming
-// instance: what a spawn needs when the parent it names is somebody other
+// withLiveParent records a live agent, on a pane of its own, holding
+// session: what a spawn needs when the parent it names is somebody other
 // than the caller - a human at a shell parenting a child onto a running
 // agent. The pid is this test process's, since state.Load drops a record
 // whose pid is dead.
-func withLiveParent(t *testing.T, instance string) {
+func withLiveParent(t *testing.T, session string) {
 	t.Helper()
-	if err := state.Record("live-parent-"+instance, state.Session{
+	if err := state.Record(session, state.Session{
 		Agent: state.AgentPi, Pane: "%parent", PID: os.Getpid(), Status: state.Idle,
-		Instance: instance,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +213,7 @@ func TestSpawnRefusedAtMaxDepth(t *testing.T) {
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, "do the thing")
 	err := spawnSubagentCmd([]string{
-		"--parent-pid", "123", "--parent-instance", testParentInstance,
+		"--parent-pid", "123", "--parent-session", testParentSession,
 		"--name", "kid", "--task-file", taskFile,
 	})
 	if err == nil {
@@ -240,7 +238,7 @@ func TestSpawnCannotEscapeCeilingWithSmallerDepth(t *testing.T) {
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, "do the thing")
 	err := spawnSubagentCmd([]string{
-		"--parent-pid", "123", "--parent-instance", testParentInstance,
+		"--parent-pid", "123", "--parent-session", testParentSession,
 		"--depth", "1", "--name", "kid", "--task-file", taskFile,
 	})
 	if err == nil {
@@ -261,7 +259,7 @@ func TestSpawnAllowsMaxDepth(t *testing.T) {
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, "do the thing")
 	err := spawnSubagentCmd([]string{
-		"--parent-pid", "123", "--parent-instance", testParentInstance,
+		"--parent-pid", "123", "--parent-session", testParentSession,
 		"--name", "kid", "--task-file", taskFile,
 	})
 	if err != nil {
@@ -285,11 +283,11 @@ func TestSpawnUnreportedCallerIsDepthZero(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir()) // empty: no record for the caller
 	// The parent it names is therefore somebody else, which is the shape a
 	// human at a shell is in - and it still has to be alive.
-	withLiveParent(t, testParentInstance)
+	withLiveParent(t, testParentSession)
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, "do the thing")
 	if err := spawnSubagentCmd([]string{
-		"--parent-pid", "123", "--parent-instance", testParentInstance,
+		"--parent-pid", "123", "--parent-session", testParentSession,
 		"--name", "kid", "--task-file", taskFile,
 	}); err != nil {
 		t.Fatalf("spawnSubagentCmd with no caller record = %v, want it allowed at depth 0", err)
@@ -303,7 +301,7 @@ func TestSpawnRejectsUnsafeName(t *testing.T) {
 	calls := withNewWindow(t, "@1", "%1", nil)
 	for _, name := range []string{`kid"s`, "kid$x", "kid#x", "kid`x", "kid\\x", "kid'x", "kid\nx", "kid\rx"} {
 		err := spawnSubagentCmd([]string{
-			"--parent-pid", "123", "--parent-instance", testParentInstance,
+			"--parent-pid", "123", "--parent-session", testParentSession,
 			"--name", name, "--task-file", "/tmp/task",
 		})
 		if err == nil {
@@ -324,7 +322,7 @@ func TestSpawnRejectsLongName(t *testing.T) {
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, "task")
 	err := spawnSubagentCmd([]string{
-		"--parent-pid", "123", "--parent-instance", testParentInstance,
+		"--parent-pid", "123", "--parent-session", testParentSession,
 		"--name", strings.Repeat("x", maxWindowNameLen+1), "--task-file", taskFile,
 	})
 	if err == nil {
@@ -342,7 +340,7 @@ func TestSpawnAllowsSpaceInName(t *testing.T) {
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, "task")
 	err := spawnSubagentCmd([]string{
-		"--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--parent-pid", "1", "--parent-session", testParentSession,
 		"--name", "kid one", "--task-file", taskFile,
 	})
 	if err != nil {
@@ -362,7 +360,7 @@ func TestSpawnMissingTaskFile(t *testing.T) {
 	withCallerDepth(t, 0)
 	calls := withNewWindow(t, "@1", "%1", nil)
 	err := spawnSubagentCmd([]string{
-		"--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--parent-pid", "1", "--parent-session", testParentSession,
 		"--name", "kid", "--task-file", filepath.Join(t.TempDir(), "does-not-exist.txt"),
 	})
 	if err == nil {
@@ -382,7 +380,7 @@ func TestSpawnRejectsOversizedTaskFile(t *testing.T) {
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, strings.Repeat("x", maxTaskBytes+1))
 	err := spawnSubagentCmd([]string{
-		"--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--parent-pid", "1", "--parent-session", testParentSession,
 		"--name", "kid", "--task-file", taskFile,
 	})
 	if err == nil {
@@ -400,7 +398,7 @@ func TestSpawnAllowsTaskFileAtCap(t *testing.T) {
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, strings.Repeat("x", maxTaskBytes))
 	err := spawnSubagentCmd([]string{
-		"--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--parent-pid", "1", "--parent-session", testParentSession,
 		"--name", "kid", "--task-file", taskFile,
 	})
 	if err != nil {
@@ -416,7 +414,7 @@ func TestSpawnAllowsTaskFileAtCap(t *testing.T) {
 func TestSpawnRejectsNegativeDepth(t *testing.T) {
 	calls := withNewWindow(t, "@1", "%1", nil)
 	err := spawnSubagentCmd([]string{
-		"--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--parent-pid", "1", "--parent-session", testParentSession,
 		"--depth", "-1", "--name", "kid", "--task-file", "/tmp/task",
 	})
 	if err == nil {
@@ -443,7 +441,7 @@ func TestSpawnTaskNeverOnCommandLine(t *testing.T) {
 	taskFile := writeTaskFile(t, taskText)
 
 	if err := spawnSubagentCmd([]string{
-		"--parent-pid", "123", "--parent-instance", testParentInstance,
+		"--parent-pid", "123", "--parent-session", testParentSession,
 		"--name", "kid", "--task-file", taskFile,
 	}); err != nil {
 		t.Fatal(err)
@@ -496,7 +494,7 @@ func TestSpawnPassesParentAndDepth(t *testing.T) {
 
 	taskFile := writeTaskFile(t, "task")
 	err := spawnSubagentCmd([]string{
-		"--parent-pid", "555", "--parent-instance", testParentInstance,
+		"--parent-pid", "555", "--parent-session", testParentSession,
 		"--name", "kid", "--task-file", taskFile,
 		"--", "fakepi", "--flag",
 	})
@@ -510,7 +508,7 @@ func TestSpawnPassesParentAndDepth(t *testing.T) {
 
 	for _, kv := range []string{
 		"KIDO_AGENT_PARENT_PID=555",
-		"KIDO_AGENT_PARENT_INSTANCE=parent-inst",
+		"KIDO_AGENT_PARENT_SESSION=parent-sess",
 		"KIDO_AGENT_DEPTH=2", // caller reported depth 1, so the child is 2
 	} {
 		if !slices.Contains(call.env, kv) {
@@ -535,7 +533,7 @@ func TestSpawnDefaultsCommandToPi(t *testing.T) {
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, "task")
 	if err := spawnSubagentCmd([]string{
-		"--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--parent-pid", "1", "--parent-session", testParentSession,
 		"--name", "kid", "--task-file", taskFile,
 	}); err != nil {
 		t.Fatal(err)
@@ -560,7 +558,7 @@ func TestSpawnFailureIsAVisibleFailedRun(t *testing.T) {
 	withCallerDepth(t, 0)
 	withNewWindow(t, "", "", errors.New("no such session"))
 	if err := spawnSubagentCmd([]string{
-		"--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--parent-pid", "1", "--parent-session", testParentSession,
 		"--name", "kid", "--task-file", writeTaskFile(t, "task"),
 	}); err == nil {
 		t.Fatal("spawnSubagentCmd = nil, want the window creation failure")
@@ -603,7 +601,7 @@ func TestSpawnMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
 	t.Cleanup(func() { markSubagent = prevMark })
 
 	if err := spawnSubagentCmd([]string{
-		"--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--parent-pid", "1", "--parent-session", testParentSession,
 		"--name", "kid", "--task-file", writeTaskFile(t, "task"),
 	}); err == nil {
 		t.Fatal("spawnSubagentCmd = nil, want the mark failure")
@@ -679,7 +677,7 @@ func TestSpawnMarkFailureOnAVanishedWindowIsNotAFailure(t *testing.T) {
 	if err := subrun.Create(runID, "true"); err != nil {
 		t.Fatal(err)
 	}
-	meta := subrun.Meta{ID: runID, Name: "build", Kind: subrun.KindBash, ParentInstance: testParentInstance}
+	meta := subrun.Meta{ID: runID, Name: "build", Kind: subrun.KindBash, ParentSession: testParentSession}
 
 	var err error
 	out := captureStdout(t, func() {
@@ -720,7 +718,7 @@ func TestAgentMarkFailureOnAVanishedWindowIsStillAFailure(t *testing.T) {
 	killed := withVanishedMark(t)
 
 	err := spawnSubagentCmd([]string{
-		"--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--parent-pid", "1", "--parent-session", testParentSession,
 		"--name", "kid", "--task-file", writeTaskFile(t, "task"),
 	})
 	if err == nil {
@@ -743,7 +741,7 @@ func TestAgentMarkFailureOnAVanishedWindowIsStillAFailure(t *testing.T) {
 // by nobody, that nothing will collect.
 //
 // So the assertion that matters is the sweep, not the field. A record with
-// no ParentInstance is exempt from rule 2 by the first clause of its own
+// no ParentSession is exempt from rule 2 by the first clause of its own
 // condition, and reading that clause back off the meta file would pin
 // nothing - the sweep is the reader whose verdict the flag is claiming.
 func TestSpawnNoParentIsNotReaped(t *testing.T) {
@@ -759,7 +757,7 @@ func TestSpawnNoParentIsNotReaped(t *testing.T) {
 	}
 	// Neither variable is set at all, rather than set empty: the child's
 	// extension tests for their presence to decide it is a subagent, so an
-	// empty KIDO_AGENT_PARENT_INSTANCE would arm an idle timer for a parent
+	// empty KIDO_AGENT_PARENT_SESSION would arm an idle timer for a parent
 	// that does not exist.
 	for _, kv := range (*calls)[0].env {
 		if strings.HasPrefix(kv, "KIDO_AGENT_PARENT_") {
@@ -772,29 +770,29 @@ func TestSpawnNoParentIsNotReaped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if meta.ParentInstance != "" {
-		t.Errorf("meta.ParentInstance = %q, want it empty", meta.ParentInstance)
+	if meta.ParentSession != "" {
+		t.Errorf("meta.ParentSession = %q, want it empty", meta.ParentSession)
 	}
 
 	// A real sweep over the window the spawn just made, with the record the
 	// child would report: alive, marked, and naming no parent - exactly
-	// what KIDO_AGENT_PARENT_INSTANCE's absence produces.
+	// what KIDO_AGENT_PARENT_SESSION's absence produces.
 	panes := []tmux.Pane{
 		{PaneID: "%other", WindowID: "@other", SessionID: "$1"},
 		{PaneID: "%9", WindowID: "@9", SessionID: "$1", Subagent: marks["@9"]},
 	}
 	sessions := []state.Session{{
 		Agent: state.AgentPi, Pane: "%9", PID: os.Getpid(), Status: state.Idle,
-		Instance: "loner-inst", ParentInstance: meta.ParentInstance, Depth: meta.Depth,
+		ID: "loner-sess", ParentSession: meta.ParentSession, Depth: meta.Depth,
 	}}
 	if closed, _ := reap.Sweep(panes, sessions, time.Now()); len(closed) != 0 {
 		t.Errorf("Sweep closed %v, want nothing: a child owned by nobody is not an orphan", closed)
 	}
 }
 
-// TestSpawnRefusesAFabricatedParentInstance pins the other half of the
-// decision above: --no-parent is the way to spawn without a parent, so an
-// instance nobody claims is a mistake rather than a spelling of it. It
+// TestSpawnRefusesAFabricatedParentSession pins the other half of the
+// decision above: --no-parent is the way to spawn without a parent, so a
+// session nobody holds is a mistake rather than a spelling of it. It
 // used to be accepted - only --resume checked liveness - and the child
 // was then closed by internal/reap's rule 2 within moments, with the run
 // left recording a useless "died" and no error anywhere for a human to
@@ -802,22 +800,22 @@ func TestSpawnNoParentIsNotReaped(t *testing.T) {
 // this command has already exited successfully.
 //
 // --parent-pid names a live process (1 is init) so that the pid cannot be
-// what is doing the refusing: the instance is the parent edge proper.
-func TestSpawnRefusesAFabricatedParentInstance(t *testing.T) {
+// what is doing the refusing: the session id is the parent edge proper.
+func TestSpawnRefusesAFabricatedParentSession(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
 	withCallerDepth(t, 0)
 	calls := withNewWindow(t, "@9", "%9", nil)
 
 	err := spawnSubagentCmd([]string{
-		"--parent-pid", "1", "--parent-instance", "nobody-is-this",
+		"--parent-pid", "1", "--parent-session", "nobody-is-this",
 		"--name", "kid", "--task-file", writeTaskFile(t, "task"),
 	})
 	if err == nil {
-		t.Fatal("spawnSubagentCmd with a fabricated --parent-instance = nil error, want a refusal")
+		t.Fatal("spawnSubagentCmd with a fabricated --parent-session = nil error, want a refusal")
 	}
 	if !strings.Contains(err.Error(), "nobody-is-this") || !strings.Contains(err.Error(), "--no-parent") {
-		t.Errorf("error = %q, want it to name the instance and point at --no-parent", err)
+		t.Errorf("error = %q, want it to name the session and point at --no-parent", err)
 	}
 	if len(*calls) != 0 {
 		t.Errorf("newWindow was called %d times, want the refusal before any tmux call", len(*calls))
@@ -834,7 +832,7 @@ func TestSpawnNoParentRefusesAParentToo(t *testing.T) {
 	calls := withNewWindow(t, "@9", "%9", nil)
 
 	err := spawnSubagentCmd([]string{
-		"--no-parent", "--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--no-parent", "--parent-pid", "1", "--parent-session", testParentSession,
 		"--name", "kid", "--task-file", writeTaskFile(t, "task"),
 	})
 	if err == nil {
@@ -869,7 +867,7 @@ func TestSpawnForkCarriesBothFlagsOntoThePiCommandLine(t *testing.T) {
 
 	out := captureStdout(t, func() {
 		if err := spawnSubagentCmd([]string{
-			"--parent-pid", "1", "--parent-instance", testParentInstance,
+			"--parent-pid", "1", "--parent-session", testParentSession,
 			"--name", "kid", "--task-file", writeTaskFile(t, "merge the two branches"),
 			"--fork", "caller-session-id",
 		}); err != nil {
@@ -903,7 +901,7 @@ func TestSpawnForkKeepsTheChildsOwnFlags(t *testing.T) {
 
 	out := captureStdout(t, func() {
 		if err := spawnSubagentCmd([]string{
-			"--parent-pid", "1", "--parent-instance", testParentInstance,
+			"--parent-pid", "1", "--parent-session", testParentSession,
 			"--name", "kid", "--task-file", writeTaskFile(t, "x"),
 			"--fork", "caller-session-id",
 			"--", "pi", "--name", "kid", "--model", "acme/claude-sonnet-5",
@@ -934,7 +932,7 @@ func TestSpawnForkRefusals(t *testing.T) {
 		t.Error("spawn --resume --fork = nil, want a refusal: a run cannot both continue and be forked from elsewhere")
 	}
 	if err := spawnSubagentCmd([]string{
-		"--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--parent-pid", "1", "--parent-session", testParentSession,
 		"--name", "kid", "--task-file", writeTaskFile(t, "x"),
 		"--fork", "sess$(id)",
 	}); err == nil {
@@ -1015,7 +1013,7 @@ func TestSpawnRefusesUnconfiguredModel(t *testing.T) {
 	calls := withNewWindow(t, "@9", "%9", nil)
 
 	err := spawnSubagentCmd([]string{
-		"--parent-pid", "1", "--parent-instance", testParentInstance,
+		"--parent-pid", "1", "--parent-session", testParentSession,
 		"--name", "kid", "--task-file", writeTaskFile(t, "x"),
 		"--", "pi", "--name", "kid", "--model", "sonnet",
 	})

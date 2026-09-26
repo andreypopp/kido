@@ -279,8 +279,9 @@ func liveBashRun(to string) (subrun.Meta, bool, error) {
 }
 
 // bashRunInScope applies the descendant rule to a run, which has no
-// state record to apply it to: the edge is the parent instance `kido
-// async_bash` recorded in its meta. A caller with no record of its own
+// state record to apply it to: the edge is the parent session `kido
+// async_bash` recorded in its meta, which is an agent id the walk takes
+// as it is. A caller with no record of its own
 // is a human at the CLI and may act on anything, exactly as
 // descendantTarget lets one.
 //
@@ -296,22 +297,14 @@ func bashRunInScope(meta subrun.Meta) error {
 	if !isAgent {
 		return nil
 	}
-	if meta.ParentInstance == caller.Instance {
+	if meta.ParentSession == caller.ID {
 		return nil
 	}
 	panes, err := listPanes()
 	if err != nil {
 		return err
 	}
-	// The run's parent edge names an instance and the walk is over record
-	// ids, so the records claiming that instance are the candidates.
-	var parents []string
-	for _, s := range states {
-		if s.Instance != "" && s.Instance == meta.ParentInstance {
-			parents = append(parents, s.ID)
-		}
-	}
-	ok, err := callerReaches(states, panes, self, parents)
+	ok, err := callerReaches(states, panes, self, []string{meta.ParentSession})
 	if err != nil {
 		return err
 	}
@@ -444,9 +437,8 @@ func descendantTarget(states map[string]state.Session, panes []tmux.Pane, self, 
 // callerReaches is the walk itself, shared by the two things a _subagent
 // command can be pointed at: an agent session (descendantTarget) and an
 // async run, which has no record of its own and is reached through the
-// records claiming the parent instance it named (bashRunInScope). ids
-// are the candidate targets, and any one of them being reachable is
-// enough.
+// parent session it named (bashRunInScope). ids are the candidate
+// targets, and any one of them being reachable is enough.
 //
 // A caller with no state record of its own is a human at the CLI and
 // reaches everything, which is why an empty ids is still worth asking

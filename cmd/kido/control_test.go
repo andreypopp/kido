@@ -146,19 +146,19 @@ var controlTreePanes = []tmux.Pane{
 func recordControlTree(t *testing.T, in *testutil.Inbox) {
 	t.Helper()
 	if err := state.Record("caller", state.Session{
-		Agent: state.AgentPi, Pane: "%1", PID: os.Getpid(), Status: state.Idle, Instance: "caller-i",
+		Agent: state.AgentPi, Pane: "%1", PID: os.Getpid(), Status: state.Idle,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := state.Record("child", state.Session{
 		Agent: state.AgentPi, Pane: "%2", PID: os.Getpid(), Status: state.Idle,
-		Instance: "child-i", ParentInstance: "caller-i", Inbox: in.Path, Protocol: msg.V1,
+		ParentSession: "caller", Inbox: in.Path, Protocol: msg.V1,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := state.Record("peer", state.Session{
 		Agent: state.AgentPi, Pane: "%3", PID: os.Getpid(), Status: state.Idle,
-		Instance: "peer-i", Inbox: in.Path, Protocol: msg.V1,
+		Inbox: in.Path, Protocol: msg.V1,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestStopNoEscalationWhenTargetGoes(t *testing.T) {
 	}
 	go func() {
 		time.Sleep(30 * time.Millisecond)
-		state.Remove("target") //nolint:errcheck
+		state.Remove("target", os.Getpid()) //nolint:errcheck
 	}()
 
 	if err := stopSubagentCmd([]string{"target"}); err != nil {
@@ -519,12 +519,12 @@ func TestStopRefusedLeavesNoOutcome(t *testing.T) {
 		in := testutil.StartInbox(t, "ok\n")
 		setup(t, "run-peer", controlTreePanes, state.Session{
 			Agent: state.AgentPi, Pane: "%3", PID: os.Getpid(), Status: state.Idle,
-			Instance: "peer-i", Inbox: in.Path, Protocol: msg.V1,
+			Inbox: in.Path, Protocol: msg.V1,
 		})
 		// The caller needs a record of its own for the descendant scope rule
 		// to apply at all (controlTarget).
 		if err := state.Record("caller", state.Session{
-			Agent: state.AgentPi, Pane: "%1", PID: os.Getpid(), Status: state.Idle, Instance: "caller-i",
+			Agent: state.AgentPi, Pane: "%1", PID: os.Getpid(), Status: state.Idle,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -583,18 +583,18 @@ var steerTreePanes = []tmux.Pane{
 func recordSteerTree(t *testing.T, in *testutil.Inbox) {
 	t.Helper()
 	rows := []struct {
-		id, pane, instance, parent string
+		id, pane, parent string
 	}{
-		{"root", "%4", "root-i", ""},
-		{"caller", "%1", "caller-i", "root-i"},
-		{"child", "%2", "child-i", "caller-i"},
-		{"grandchild", "%5", "grandchild-i", "child-i"},
-		{"peer", "%3", "peer-i", ""},
+		{"root", "%4", ""},
+		{"caller", "%1", "root"},
+		{"child", "%2", "caller"},
+		{"grandchild", "%5", "child"},
+		{"peer", "%3", ""},
 	}
 	for _, r := range rows {
 		s := state.Session{
 			Agent: state.AgentPi, Pane: r.pane, PID: os.Getpid(), Status: state.Idle,
-			Instance: r.instance, ParentInstance: r.parent, Inbox: in.Path, Protocol: msg.V1,
+			ParentSession: r.parent, Inbox: in.Path, Protocol: msg.V1,
 		}
 		if err := state.Record(r.id, s); err != nil {
 			t.Fatal(err)
@@ -695,7 +695,7 @@ func TestSteerUsage(t *testing.T) {
 func bashRunUnder(t *testing.T, name, parent string, pid int) subrun.Meta {
 	t.Helper()
 	meta := subrun.Meta{ID: startAsyncRun(t, "sleep", "600"), Name: name, Kind: subrun.KindBash,
-		ParentInstance: parent, Pane: "%2", Window: "@2", PID: pid, StartedAt: time.Now()}
+		ParentSession: parent, Pane: "%2", Window: "@2", PID: pid, StartedAt: time.Now()}
 	if err := subrun.WriteMeta(meta); err != nil {
 		t.Fatal(err)
 	}
@@ -725,9 +725,9 @@ func withStopEscalation(t *testing.T, d time.Duration) {
 // found the ending.
 func TestStopBashRunReportsWhenTheWrapperCannot(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	in := noticeParent(t, "root-inst")
+	in := noticeParent(t, "root-sess")
 	killed := withKillPane(t)
-	meta := bashRunUnder(t, "doomed", "root-inst", deadPID(t))
+	meta := bashRunUnder(t, "doomed", "root-sess", deadPID(t))
 
 	captureStdout(t, func() {
 		if err := stopSubagentCmd([]string{"--force", "doomed"}); err != nil {
@@ -762,7 +762,7 @@ func TestStopBashRunReportsWhenTheWrapperCannot(t *testing.T) {
 // outcome write is what arbitrates, exactly as it does for a sweep.
 func TestStopBashRunLeavesTheWrapperToReportIfItCan(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	in := noticeParent(t, "root-inst")
+	in := noticeParent(t, "root-sess")
 	killed := withKillPane(t)
 	withStopEscalation(t, 2*time.Second)
 
@@ -774,7 +774,7 @@ func TestStopBashRunLeavesTheWrapperToReportIfItCan(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sleep.Process.Kill() //nolint:errcheck // best effort cleanup
-	meta := bashRunUnder(t, "polite", "root-inst", sleep.Process.Pid)
+	meta := bashRunUnder(t, "polite", "root-sess", sleep.Process.Pid)
 	go func() {
 		time.Sleep(150 * time.Millisecond)
 		subrun.RecordOutcome(meta.ID, subrun.Outcome{ //nolint:errcheck // the assertion below reads it back
@@ -812,9 +812,9 @@ func TestStopBashRunLeavesTheWrapperToReportIfItCan(t *testing.T) {
 // still stopped the run would satisfy the first one alone.
 func TestStopBashRunStillNeedsForce(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	in := noticeParent(t, "root-inst")
+	in := noticeParent(t, "root-sess")
 	killed := withKillPane(t)
-	meta := bashRunUnder(t, "doomed", "root-inst", deadPID(t))
+	meta := bashRunUnder(t, "doomed", "root-sess", deadPID(t))
 
 	err := stopSubagentCmd([]string{"doomed"})
 	if err == nil {
@@ -836,7 +836,7 @@ func TestStopBashRunStillNeedsForce(t *testing.T) {
 
 // TestStopBashRunRefusesANonDescendant: a run is reached by the same
 // scope rule as an agent, applied to the only parent edge it has - the
-// instance `kido async_bash` recorded in its meta, since a bash run
+// parent session `kido async_bash` recorded in its meta, since a bash run
 // writes no state record for descendantTarget to walk.
 func TestStopBashRunRefusesANonDescendant(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
@@ -846,9 +846,9 @@ func TestStopBashRunRefusesANonDescendant(t *testing.T) {
 	recordControlTree(t, in)
 	withKillPane(t)
 
-	// caller-i is the caller's own instance and child-i its child's, so a
-	// run under peer-i is nobody's business here.
-	stranger := bashRunUnder(t, "stranger", "peer-i", deadPID(t))
+	// "caller" is the caller's own session and "child" its child's, so a
+	// run under "peer" is nobody's business here.
+	stranger := bashRunUnder(t, "stranger", "peer", deadPID(t))
 	if err := stopSubagentCmd([]string{"--force", "stranger"}); err == nil {
 		t.Fatal("stopSubagentCmd reached a run under an unrelated agent, want a refusal")
 	}
@@ -859,7 +859,7 @@ func TestStopBashRunRefusesANonDescendant(t *testing.T) {
 	// The descendant half, so the refusal above is a rule about scope and
 	// not about bash runs being unreachable: a run under the caller's own
 	// child is a descendant.
-	mine := bashRunUnder(t, "mine", "child-i", deadPID(t))
+	mine := bashRunUnder(t, "mine", "child", deadPID(t))
 	captureStdout(t, func() {
 		if err := stopSubagentCmd([]string{"--force", "mine"}); err != nil {
 			t.Fatalf("stopSubagentCmd on a run started by this agent's own child = %v, want success", err)
@@ -880,7 +880,7 @@ func TestStopIgnoresAFinishedBashRun(t *testing.T) {
 	in := testutil.StartInbox(t, "ok\n")
 	recordControlTree(t, in)
 
-	done := bashRunUnder(t, "child", "caller-i", deadPID(t))
+	done := bashRunUnder(t, "child", "caller", deadPID(t))
 	if err := subrun.RecordOutcome(done.ID, subrun.Outcome{Result: subrun.Completed, At: time.Now()}); err != nil {
 		t.Fatal(err)
 	}

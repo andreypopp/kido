@@ -96,7 +96,7 @@ func TestAsyncRunLeavesAnOutcomeItDidNotWin(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	// A parent nothing can resolve: the send is attempted and fails
 	// loudly, which is exactly the tell this test reads.
-	t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "nobody-alive-reports-this")
+	t.Setenv("KIDO_AGENT_PARENT_SESSION", "nobody-alive-reports-this")
 
 	lost := startAsyncRun(t, "true")
 	if err := subrun.RecordOutcome(lost, subrun.Outcome{Result: subrun.Stopped, At: time.Now()}); err != nil {

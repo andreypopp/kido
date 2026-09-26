@@ -40,9 +40,9 @@ var (
 )
 
 func spawnUsage() string {
-	return "usage: kido spawn_subagent --parent-pid PID --parent-instance ID --name NAME --task-file FILE|- [--depth N] [--fork SESSION_ID] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
+	return "usage: kido spawn_subagent --parent-pid PID --parent-session ID --name NAME --task-file FILE|- [--depth N] [--fork SESSION_ID] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
 		"   or: kido spawn_subagent --no-parent --name NAME --task-file FILE|- [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
-		"   or: kido spawn_subagent --resume RUN_ID [--parent-pid PID --parent-instance ID | --no-parent] [--keep-alive] [-- COMMAND...]"
+		"   or: kido spawn_subagent --resume RUN_ID [--parent-pid PID --parent-session ID | --no-parent] [--keep-alive] [-- COMMAND...]"
 }
 
 // spawnSubagentCmd implements `kido spawn_subagent`: it creates a detached window in the
@@ -56,7 +56,7 @@ func spawnSubagentCmd(args []string) error {
 	fs := flag.NewFlagSet("spawn_subagent", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	parentPID := fs.Int("parent-pid", 0, "pid of the agent spawning this one")
-	parentInstance := fs.String("parent-instance", "", "Instance of the agent spawning this one")
+	parentSession := fs.String("parent-session", "", "Session id of the agent spawning this one")
 	// --depth is accepted (pi/kido-agents.ts sends it for its own early
 	// refusal) but never consulted for the child's depth: see callerDepth
 	// below. It is parsed only so a negative value can be rejected.
@@ -69,8 +69,8 @@ func spawnSubagentCmd(args []string) error {
 	forkSession := fs.String("fork", "", "seed the child's session with this pi session's transcript, so it starts holding the caller's context")
 	keepAlive := fs.Bool("keep-alive", false, "the child does not self-reap after going idle (KIDO_AGENT_KEEP_ALIVE)")
 	// --no-parent is the whole surface for a child owned by nobody, and it
-	// is a flag rather than an empty --parent-instance because the two
-	// failures are not alike: a script whose $INSTANCE came out empty means
+	// is a flag rather than an empty --parent-session because the two
+	// failures are not alike: a script whose parent session came out empty means
 	// to name a parent and has lost it, and silently spawning an
 	// uncollectable window for it would be the wrong reading. A flag cannot
 	// be arrived at by accident. spawn_subagent the tool never passes it -
@@ -87,15 +87,15 @@ func spawnSubagentCmd(args []string) error {
 		}
 	})
 	resuming := *resumeID != ""
-	parentGiven := *parentPID > 0 || *parentInstance != ""
+	parentGiven := *parentPID > 0 || *parentSession != ""
 
 	switch {
 	case *noParent && parentGiven:
-		return fmt.Errorf("--no-parent contradicts --parent-pid/--parent-instance; pass one or the other\n%s", spawnUsage())
+		return fmt.Errorf("--no-parent contradicts --parent-pid/--parent-session; pass one or the other\n%s", spawnUsage())
 	case !resuming && !*noParent && *parentPID <= 0:
 		return fmt.Errorf("--parent-pid is required (or --no-parent for a child owned by nobody)\n%s", spawnUsage())
-	case !resuming && !*noParent && *parentInstance == "":
-		return fmt.Errorf("--parent-instance is required (or --no-parent for a child owned by nobody)\n%s", spawnUsage())
+	case !resuming && !*noParent && *parentSession == "":
+		return fmt.Errorf("--parent-session is required (or --no-parent for a child owned by nobody)\n%s", spawnUsage())
 	case depthGiven && *claimedDepth < 0:
 		return fmt.Errorf("--depth must not be negative\n%s", spawnUsage())
 	case !resuming && *name == "":
@@ -111,7 +111,7 @@ func spawnSubagentCmd(args []string) error {
 	}
 
 	if resuming {
-		return spawnResume(*resumeID, *parentPID, *parentInstance, fs.Args(), *keepAlive, *noParent)
+		return spawnResume(*resumeID, *parentPID, *parentSession, fs.Args(), *keepAlive, *noParent)
 	}
 
 	if i := strings.IndexAny(*name, tmuxConfUnsafe); i >= 0 {
@@ -155,8 +155,8 @@ func spawnSubagentCmd(args []string) error {
 	// stricter (docs/design.md, "The depth ceiling is derived").
 	//
 	// One read, two views of it: the pane-keyed one settles who owns the
-	// caller's pane, and the whole live slice answers "is this instance
-	// running anywhere" for liveInstance below - a parent's own record is
+	// caller's pane, and the whole live slice answers "is this session
+	// running anywhere" for liveSession below - a parent's own record is
 	// exactly the one a pane collision drops from the per-pane view
 	// (AGENTS.md, "Agent state").
 	live, err := state.LoadLive()
@@ -170,14 +170,14 @@ func spawnSubagentCmd(args []string) error {
 	}
 	// A made-up parent edge used to be accepted here and cost the child its
 	// window moments later: internal/reap's rule 2 closes any marked window
-	// whose child names a ParentInstance no live record claims, and it keeps
-	// no history, so an invented instance and one whose process has died
+	// whose child names a ParentSession no live record claims, and it keeps
+	// no history, so an invented session and one whose process has died
 	// read identically to it - there was never going to be an error message
 	// for the human to see. The tool cannot trip this, since a pi session
 	// spawning names itself; a human at a shell could, and --no-parent is
 	// now the honest spelling of what they were reaching for.
-	if *parentInstance != "" && !liveInstance(live, *parentInstance) {
-		return fmt.Errorf("--parent-instance %q names no currently live agent; the child would be closed within moments as an orphan (internal/reap's rule 2) - pass --no-parent for a child owned by nobody, or name an agent that is actually running", *parentInstance)
+	if *parentSession != "" && !liveSession(live, *parentSession) {
+		return fmt.Errorf("--parent-session %q names no currently live agent; the child would be closed within moments as an orphan (internal/reap's rule 2) - pass --no-parent for a child owned by nobody, or name an agent that is actually running", *parentSession)
 	}
 
 	runID := subrun.NewID()
@@ -185,7 +185,7 @@ func spawnSubagentCmd(args []string) error {
 		return err
 	}
 	meta := subrun.Meta{
-		ID: runID, Name: *name, Kind: subrun.KindAgent, ParentInstance: *parentInstance, Depth: depth,
+		ID: runID, Name: *name, Kind: subrun.KindAgent, ParentSession: *parentSession, Depth: depth,
 		Cwd: pane.CurrentPath, Model: *model, Tools: tools, KeepAlive: *keepAlive,
 		StartedAt: time.Now(),
 	}
@@ -205,7 +205,7 @@ func spawnSubagentCmd(args []string) error {
 		command = slices.Insert(command, 1, flags...)
 	}
 
-	return createRunWindow(meta, pane.SessionID, runEnv(runID, *parentPID, *parentInstance, depth, *keepAlive), command)
+	return createRunWindow(meta, pane.SessionID, runEnv(runID, *parentPID, *parentSession, depth, *keepAlive), command)
 }
 
 // callerPane resolves the pane kido was run from - $TMUX_PANE, which tmux
@@ -230,11 +230,11 @@ func callerPane() (tmux.Pane, []tmux.Pane, error) {
 // the only channel a child has: new-window runs its command with the tmux
 // server's environment, not the caller's. The parent edge is left out
 // when there is nobody to name - a --no-parent spawn, or a run resumed
-// from a bare human shell - so an empty pid or instance is omitted rather
+// from a bare human shell - so an empty pid or session is omitted rather
 // than reported as zero or empty: the child's own subagent test reads
 // whether the variable is there at all, and internal/reap would read a
 // zero as an orphan's.
-func runEnv(runID string, parentPID int, parentInstance string, depth int, keepAlive bool) []string {
+func runEnv(runID string, parentPID int, parentSession string, depth int, keepAlive bool) []string {
 	env := []string{
 		"KIDO_AGENT_TASK_FILE=" + subrun.TaskPath(runID),
 		// Unconditional: a child that is not pi has no --session-id to learn
@@ -245,8 +245,8 @@ func runEnv(runID string, parentPID int, parentInstance string, depth int, keepA
 	if parentPID > 0 {
 		env = append(env, "KIDO_AGENT_PARENT_PID="+strconv.Itoa(parentPID))
 	}
-	if parentInstance != "" {
-		env = append(env, "KIDO_AGENT_PARENT_INSTANCE="+parentInstance)
+	if parentSession != "" {
+		env = append(env, "KIDO_AGENT_PARENT_SESSION="+parentSession)
 	}
 	if keepAlive {
 		env = append(env, "KIDO_AGENT_KEEP_ALIVE=1")
@@ -286,7 +286,7 @@ func createRunWindow(meta subrun.Meta, sessionID string, env, command []string) 
 	if err := subrun.WriteMeta(meta); err != nil {
 		return err
 	}
-	if err := markSubagent(windowID, tmux.SubagentMark(meta.ID, meta.ParentInstance, meta.Depth)); err != nil {
+	if err := markSubagent(windowID, tmux.SubagentMark(meta.ID, meta.ParentSession, meta.Depth)); err != nil {
 		// A window that has already closed cannot be marked and does not
 		// need to be: the mark is what makes a window reapable, and there
 		// is nothing left to reap. For a bash run that is an ordinary
@@ -330,18 +330,18 @@ func printCreated(meta subrun.Meta, windowID, paneID string) {
 	fmt.Printf("%s %s %s\n", windowID, paneID, meta.ID)
 }
 
-// liveInstance reports whether some session in states reports instance as
+// liveSession reports whether some record in states is session's, and
 // its own and is still alive - the same reading internal/reap's rule 2
 // uses to decide a subagent's parent is gone, spelled out here so a
 // spawn can refuse before creating a window rule 2 would only close
 // moments later.
 //
 // It takes the whole live slice rather than the pane-keyed map for the
-// reason the sweep does: the question is whether an instance is running
+// reason the sweep does: the question is whether a session is running
 // anywhere, and a pane collision drops a record from the per-pane view.
-func liveInstance(sessions []state.Session, instance string) bool {
+func liveSession(sessions []state.Session, session string) bool {
 	for _, s := range sessions {
-		if s.Instance == instance && state.Alive(s.PID) {
+		if s.ID == session && state.Alive(s.PID) {
 			return true
 		}
 	}
@@ -356,7 +356,7 @@ func liveInstance(sessions []state.Session, instance string) bool {
 // (docs/design.md, "kido spawn_subagent --resume"). command is fs.Args(): the
 // COMMAND after "--", defaulting to plain pi exactly as a fresh spawn
 // does.
-func spawnResume(runID string, parentPID int, parentInstance string, command []string, keepAlive, noParent bool) error {
+func spawnResume(runID string, parentPID int, parentSession string, command []string, keepAlive, noParent bool) error {
 	meta, err := subrun.ReadMeta(runID)
 	if err != nil {
 		return fmt.Errorf("run %q: %w", runID, err)
@@ -386,12 +386,12 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 	}
 
 	// A caller with no state record - a bare human shell - gets no parent
-	// pid or instance defaulted for it, exactly as an unreported caller's
+	// pid or session defaulted for it, exactly as an unreported caller's
 	// own depth defaults to 0 below: the resumed run simply has no current
 	// parent, same as any other pi session kido never spawned. A caller
 	// that does have a record (another agent, or `kido runs`'s printed
 	// resume line run from inside a kido-tracked pane) becomes the run's
-	// new parent without --parent-pid/--parent-instance having to name it.
+	// new parent without --parent-pid/--parent-session having to name it.
 	// Given explicitly, those flags still win, the same as a fresh spawn,
 	// and --no-parent asks for a parentless resume outright: an agent that
 	// does have a record can hand over a run it does not want to own.
@@ -404,15 +404,15 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 		if parentPID == 0 {
 			parentPID = self.PID
 		}
-		if parentInstance == "" {
-			parentInstance = self.Instance
+		if parentSession == "" {
+			parentSession = self.ID
 		}
 	}
 	// internal/reap's rule 2 closes any marked window whose child reports
-	// a ParentInstance that names nobody currently alive - it has no
-	// memory of history, so "never heard of that instance" and "that
-	// instance's process has since died" read identically to it, and
-	// KIDO_AGENT_PARENT_INSTANCE below is exactly what makes the resumed
+	// a ParentSession that names nobody currently alive - it has no
+	// memory of history, so "never heard of that session" and "that
+	// session's process has since died" read identically to it, and
+	// KIDO_AGENT_PARENT_SESSION below is exactly what makes the resumed
 	// pi report one. A fresh spawn can never trigger this: its caller is
 	// always the live process asking for itself. --resume's whole point
 	// is letting a *different*, by-hand caller claim the parent edge, so
@@ -423,8 +423,8 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 	if depth > maxDepth {
 		return fmt.Errorf("refusing to resume at depth %d: maximum nesting is %d (root 0, subagent 1, subagent 2)", depth, maxDepth)
 	}
-	if parentInstance != "" && !liveInstance(live, parentInstance) {
-		return fmt.Errorf("--parent-instance %q names no currently live agent; the resumed run would be reaped within moments as an orphan (internal/reap's rule 2) - omit --parent-pid/--parent-instance for a parentless resume, or give the instance of an agent that is actually running", parentInstance)
+	if parentSession != "" && !liveSession(live, parentSession) {
+		return fmt.Errorf("--parent-session %q names no currently live agent; the resumed run would be reaped within moments as an orphan (internal/reap's rule 2) - omit --parent-pid/--parent-session for a parentless resume, or give the session id of an agent that is actually running", parentSession)
 	}
 
 	if len(command) == 0 {
@@ -499,8 +499,8 @@ func spawnResume(runID string, parentPID int, parentInstance string, command []s
 	// and `pi --session` run from any other directory asks to fork into
 	// the current one instead of resuming, so the window is created there
 	// rather than at the caller's.
-	meta.ParentInstance, meta.Depth, meta.KeepAlive = parentInstance, depth, keepAlive
-	return createRunWindow(meta, pane.SessionID, runEnv(runID, parentPID, parentInstance, depth, keepAlive), command)
+	meta.ParentSession, meta.Depth, meta.KeepAlive = parentSession, depth, keepAlive
+	return createRunWindow(meta, pane.SessionID, runEnv(runID, parentPID, parentSession, depth, keepAlive), command)
 }
 
 // piSessionDir mirrors pi 0.85.1's own getDefaultSessionDirPath

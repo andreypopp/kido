@@ -10,7 +10,7 @@ import (
 )
 
 // The human-as-caller path, end to end. What a bare shell is, to kido, is
-// a pane with no state record - no inbox, no instance, no parent, depth 0
+// a pane with no state record - no inbox, no session id, no parent, depth 0
 // (docs/design-subagents.md, "A human at a shell") - and that is the one
 // condition this suite gets for real rather than constructed: a window
 // the harness opens and never registers an agent in *is* a record-less
@@ -142,7 +142,7 @@ func TestSteerFromAShellIsNotHeldToTheDescendantRule(t *testing.T) {
 	// not possibly be, so the descendant rule would refuse it outright.
 	in, paneID := h.agentWithInbox("alpha", "stranger-e2e")
 	h.agentStatus("stranger-e2e", paneID, "pi", "idle",
-		"--instance", "stranger-e2e-inst", "--parent-instance", "somebody-else-inst",
+		"--parent-session", "somebody-else-e2e",
 		"--inbox", in.Path, "--protocol", "1")
 
 	out := h.pipeKido("alpha", "steer.out", "stop what you are doing",

@@ -176,7 +176,7 @@ const sweptText = "ended without its wrapper reporting"
 // state.LoadLive or state.ReadAll. It may not be a per-pane view
 // (state.Load), and "liveness is checked here" does not make one safe -
 // a record the caller already dropped cannot be checked at all. Rule 2
-// asks whether an instance is running anywhere, which has an answer on
+// asks whether a session is running anywhere, which has an answer on
 // disk that no pane collision can disturb, but only if it is given every
 // record. Handed a pane-keyed map it reads a parent whose pane a second
 // process transiently claimed (state.beats) as a dead parent, and closes
@@ -253,10 +253,10 @@ func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) ([]Close,
 		}
 	}
 
-	live := map[string]bool{} // Instance of every agent still running
+	live := map[string]bool{} // the session id of every agent still running
 	for _, s := range sessions {
-		if s.Instance != "" && state.Alive(s.PID) {
-			live[s.Instance] = true
+		if state.Alive(s.PID) {
+			live[s.ID] = true
 		}
 	}
 
@@ -264,10 +264,10 @@ func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) ([]Close,
 		// A dead subagent is rule 1's business: acting on its record here
 		// would let a state file left by a previous tmux server close a
 		// window by pane id alone.
-		if s.ParentInstance == "" || !state.Alive(s.PID) {
+		if s.ParentSession == "" || !state.Alive(s.PID) {
 			continue
 		}
-		if live[s.ParentInstance] {
+		if live[s.ParentSession] {
 			continue
 		}
 		if id, ok := byPane[s.Pane]; ok {
@@ -300,7 +300,7 @@ func RecordEnding(meta subrun.Meta, o subrun.Outcome) (Notice, bool) {
 	if err := subrun.RecordOutcome(meta.ID, o); err != nil {
 		return Notice{}, false //nolint:nilerr // losing the write is the ordinary case, not a failure
 	}
-	if meta.ParentInstance == "" {
+	if meta.ParentSession == "" {
 		return Notice{}, false
 	}
 	return Notice{Meta: meta, Outcome: o}, true

@@ -82,7 +82,7 @@ func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 	h.liveParent("alpha", "parent-xyz")
 	h.runSpawn(outFile, envFile,
 		"--parent-pid", "424242",
-		"--parent-instance", "parent-xyz",
+		"--parent-session", "parent-xyz",
 		"--depth", "1",
 		"--name", "kid-e2e",
 		"--task-file", taskFile,
@@ -120,9 +120,9 @@ func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 		t.Errorf("spawned process's cwd = %q, want %q (the caller's own, via -c)", cwd, wantCwd)
 	}
 	for k, want := range map[string]string{
-		"KIDO_AGENT_PARENT_PID":      "424242",
-		"KIDO_AGENT_PARENT_INSTANCE": "parent-xyz",
-		"KIDO_AGENT_DEPTH":           "1",
+		"KIDO_AGENT_PARENT_PID":     "424242",
+		"KIDO_AGENT_PARENT_SESSION": "parent-xyz",
+		"KIDO_AGENT_DEPTH":          "1",
 	} {
 		if got := envLine(env, k); got != want {
 			t.Errorf("spawned process's %s = %q, want %q (kido spawn_subagent's -e must reach it, not just the caller's own environment)", k, got, want)
@@ -178,7 +178,7 @@ func TestSpawnRefusesDepthBeyondCeiling(t *testing.T) {
 	}
 	cmd := fmt.Sprintf(
 		"%s agent-status --agent pi --session caller-e2e --status idle --depth %d && "+
-			"%s spawn_subagent --parent-pid 1 --parent-instance p --depth 1 --name kid --task-file %s > %s 2>&1; echo rc=$? >> %s",
+			"%s spawn_subagent --parent-pid 1 --parent-session p --depth 1 --name kid --task-file %s > %s 2>&1; echo rc=$? >> %s",
 		kidoBin, maxDepthForTest, kidoBin, taskFile, outFile, outFile)
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")
@@ -212,7 +212,7 @@ const maxDepthForTest = 2
 // and inventing one leaves an orphan the sweep closes within seconds.
 //
 // The child reports itself the way the absence of
-// KIDO_AGENT_PARENT_INSTANCE leaves it: a live subagent record naming no
+// KIDO_AGENT_PARENT_SESSION leaves it: a live subagent record naming no
 // parent. That is the record rule 2 reads, and its first clause is what
 // exempts it.
 func TestSpawnNoParentIsNotReaped(t *testing.T) {
@@ -236,13 +236,13 @@ func TestSpawnNoParentIsNotReaped(t *testing.T) {
 	windowID, paneID := fields[0], fields[1]
 
 	env := h.waitFileNonEmpty(envFile)
-	for _, k := range []string{"KIDO_AGENT_PARENT_PID", "KIDO_AGENT_PARENT_INSTANCE"} {
+	for _, k := range []string{"KIDO_AGENT_PARENT_PID", "KIDO_AGENT_PARENT_SESSION"} {
 		if got := envLine(env, k); got != "" {
 			t.Errorf("spawned process's %s = %q, want it unset: the child is owned by nobody", k, got)
 		}
 	}
 
-	h.agentStatus("loner-e2e", paneID, "pi", "idle", "--instance", "loner-e2e-inst")
+	h.agentStatus("loner-e2e", paneID, "pi", "idle")
 	if out := h.runKido("alpha", "reap.out", "reap"); !strings.Contains(out, "rc=0") {
 		t.Errorf("kido reap output = %q, want a clean exit", out)
 	}
@@ -254,7 +254,7 @@ func TestSpawnNoParentIsNotReaped(t *testing.T) {
 // above, and what makes rule 2's exemption a decision rather than an
 // accident: the same record-less shell, the same command, one flag
 // different. `--no-parent` makes a window the sweep declines to touch; an
-// invented `--parent-instance` makes no window at all, because the child
+// invented `--parent-session` makes no window at all, because the child
 // it would create is one the sweep collects within seconds - and the read
 // that would explain that runs in another process, after this command has
 // already exited successfully, so there was never going to be an error
@@ -266,14 +266,14 @@ func TestSpawnFabricatedParentIsRefusedUpFront(t *testing.T) {
 
 	out := h.runKido("alpha", "fabricated.out", "spawn_subagent",
 		"--parent-pid", "1", // init, so the pid itself is alive and cannot be what refuses
-		"--parent-instance", "nobody-is-this",
+		"--parent-session", "nobody-is-this",
 		"--name", "orphan-e2e", "--task-file", h.writeTaskFile("orphan-e2e"))
 
 	if !strings.Contains(out, "rc=1") {
 		t.Errorf("kido spawn_subagent with a fabricated parent = %q, want rc=1", out)
 	}
 	if !strings.Contains(out, "nobody-is-this") || !strings.Contains(out, "--no-parent") {
-		t.Errorf("output = %q, want it to name the instance and point at --no-parent", out)
+		t.Errorf("output = %q, want it to name the session and point at --no-parent", out)
 	}
 	if got := h.in("list-windows", "-a", "-F", "#{window_name}"); strings.Contains(got, "orphan-e2e") {
 		t.Errorf("windows = %q, want no window created for a refused spawn", got)

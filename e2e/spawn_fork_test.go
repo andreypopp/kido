@@ -23,11 +23,11 @@ import (
 func TestSpawnForkCarriesTheForkOntoThePiCommandLine(t *testing.T) {
 	t.Parallel()
 	h := startPathPrefix(t, "alpha", piBinDir)
-	h.liveParent("alpha", "root-inst")
+	h.liveParent("alpha", "root-e2e")
 
 	outFile := filepath.Join(h.dir, "fork.out")
 	h.sendLiteral(fmt.Sprintf(
-		"%s spawn_subagent --parent-pid 1 --parent-instance root-inst --name forked-e2e "+
+		"%s spawn_subagent --parent-pid 1 --parent-session root-e2e --name forked-e2e "+
 			"--task-file %s --fork caller-session-e2e > %s 2>&1",
 		kidoBin, h.writeTaskFile("forked-e2e"), outFile))
 	h.sendKeys("Enter")

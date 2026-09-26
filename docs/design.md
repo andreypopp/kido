@@ -34,8 +34,9 @@ its pane up there. A state record names a pane and nothing above it.
 `$XDG_STATE_HOME/kido`, else `~/.local/state/kido`, one JSON file per
 agent session named by session id, written temp-then-rename. A record
 carries the agent's status, its pane, its pid, its title, its inbox
-socket and protocol version, its free-text activity, its model, its
-instance id, and its place in the spawn tree. There is no locking. The
+socket and protocol version, its free-text activity, its model, and its
+place in the spawn tree. There is no locking beyond the claim that keeps
+one session id to one live process ("Identity"). The
 one policy that stands in for it is that `Load` removes any record whose
 pid is dead, rather than skipping it: pi's headless Claude Code bridge
 writes one such record per turn, and nothing else would ever clean them
@@ -76,56 +77,80 @@ socket. The `wake` file is the staleness rebase marker described below.
 
 ## Identity
 
-A session id is not a process identity. pi re-runs `session_start` on
-`/resume` and `/reload`, and a session id can change under both, so a
-child keyed to its parent's session id would look orphaned while the
-parent was very much alive. A pid is not one either: pids are recycled,
-and kido's liveness test (`kill(pid, 0)`) reads EPERM as alive, so a pid
-reused by another user's process looks like a living parent.
+**An agent is its session, not its process.** The session id is the
+identity: the name of its state file, what a child names as its parent,
+what `kido agent-alive` answers about, and what the tree, the reaper and
+the ask cycle rule all match on. A pid is not an identity - pids are
+recycled, and kido's liveness test (`kill(pid, 0)`) reads EPERM as
+alive, so a pid reused by another user's process looks like a living
+parent. The parent pid is still recorded and still passed, but only as a
+cheap first check for the liveness poll: ESRCH is a definite "gone", and
+anything else defers to whether some live process still holds the parent
+session.
 
-So every pi process generates an opaque instance id once per process and
-reports it on every status call. A child names its parent by that
-instance, passed through the environment at spawn, and a parent edge is
-matched on it and nothing else. The parent pid is still recorded and
-still passed, but only as a cheap first check for the liveness poll:
-ESRCH is a definite "gone", and anything else defers to whether some
-live record still reports the parent instance as its own. An
-instance string cannot collide the way a recycled pid can, and it is
-location-independent, which is what would let it survive a subagent
-running somewhere other than this machine.
+What this buys is the restart. A user who quits pi and resumes the same
+session (`pi --resume`) has a new process on the same session id, and
+every child keyed to that id is that session's child again the moment it
+reports. A per-process identity made every one of them an orphan for
+good: the tree dropped them, and the orphan rule treated them as
+ortherless. A `/reload`, which keeps both the process and the session
+id, was the same failure in a smaller shape.
 
-**"Once per process" is not "once at module scope".** `INSTANCE` is held
-on `globalThis` behind a `Symbol.for` key - the same mechanism the seam
-below relies on - and generated only when that slot is empty, because a
-module-scope `const` does not survive a `/reload`. Measured against pi
-0.85.1: a reload clears pi's extension module cache and re-evaluates each
-extension's top level from scratch (`resource-loader.js`'s `reload()`
-calls `clearExtensionCache()`; extensions load through jiti with
-`moduleCache: false`), so a plain `const INSTANCE = randomUUID()` there
-picks up a *new* value while the process, the pid and the session id all
-stay as they were. A child holding the pre-reload value as its own
-`--parent-instance` could then never match it again: every
-parent-liveness poll afterward sees a live pid and no record naming that
-instance, which is indistinguishable from the parent actually being gone,
-and the child shuts itself down minutes later. `PARENT_PID`,
-`PARENT_INSTANCE` and depth need no such care: they come from
-`process.env`, which a `/reload` does not touch.
+The session id is read, never generated, so both extension halves read
+it from the one place pi hands it out (`ctx.sessionManager`), the status
+half holding it and the agent half reading it across the seam. Parent
+pid, parent session and depth are read from the environment by both
+halves independently, since two readers of a constant cannot disagree.
 
-The instance is the one identity that is generated rather than read, so
-it is the one the agent extension reads across the seam from the status
-extension instead of computing itself; a second copy would be a second
-id. Parent pid, parent instance and depth are read from the environment
-by both halves independently, since two readers of a constant cannot
-disagree.
+**One holder per session id.** One live process holds a session id, and
+it is whoever got there first. A second process opening a session
+another live one already has - two pi processes started from one session
+file, or `pi --session <file>` twice - would otherwise overwrite the
+running one's pane, pid and inbox, and delete its record on the way out.
+Both have happened, and the running session was left with a wrong inbox
+path, a "?" in the sidebar, and a child reaped for a parent that had
+vanished from `LoadLive`.
 
-**The record itself must survive a reload too, not just the instance
-that names it.** `session_shutdown` fires for a reload exactly as it
+The claim lives in the write path (`state.Record`), needs no lock, and
+is three rules:
+
+- A session id with no record on disk is claimed by creating it, with
+  `os.Link` from the writer's own temp file. That is atomic and fails if
+  the name is taken, so of two processes starting at once exactly one is
+  first and the other reads its record and stands down.
+- A record naming the writer's own pid is the writer's own: every report
+  after the first goes through unchanged.
+- A record naming another pid is refused while that pid is alive, and
+  overwritten when it is dead - which is the restart taking its own
+  session id back. Two processes taking one dead holder's id both write,
+  so a takeover re-reads what landed and whoever lost it is told; no
+  other write needs a second reading.
+
+`state.Remove` is held to the same rule, so an intruder exiting cannot
+take the running session's record with it. A refusal is `state.HeldError`
+and `kido agent-status` exits **6** for it, a code of its own because
+pi's extension acts on it: the second pi stops reporting for the rest of
+the session and tells its user once, naming the pane and pid of the
+process that does hold the id. It does not bind an inbox either - the
+socket path is named after its own pid and would collide with nothing,
+but only a state record publishes an address, so nothing could ever
+reach it.
+
+That claim is made in `session_start`, as the session's first status
+report, awaited rather than fired and forgotten: it is the one thing the
+extension needs an answer to. Every later report is fire-and-forget
+precisely because this one settled the question. A report refused later
+- a takeover lost, a pid recycled onto a stale record - is therefore
+unobservable to the extension, and costs that session its row rather
+than anything else's.
+
+**The record must survive a reload.** `session_shutdown` fires for a reload exactly as it
 does for a real exit, so it removes this session's own state record for
 every reason except literally `"reload"`. Removing it unconditionally -
 `send("idle", { remove: true })`, with `session_start` reporting a fresh
 one moments later - leaves a gap in which a live parent's poll lands on
-"no record" with the instance held perfectly fixed: a second,
-independent way to produce the symptom above. This is deliberately
+"no record" for a session id that never changed: a second, independent
+way to produce the symptom above. This is deliberately
 not the same gate as `isRunEnding` (used for the run outcome and the
 completion linger, below): those answer "did the run finish", and
 correctly treat `"new"`, `"resume"` and `"fork"` as not run-ending, since
@@ -137,8 +162,17 @@ still be removed or it is a live-pid file that `Load()` - which only ever
 deletes a record whose pid is dead - leaves behind forever, claiming the
 same pane alongside the fresh record under the new id.
 
+**Children belong to the session that spawned them.** `/new`, `/resume`
+and `/fork` move one pi process to a new session id, and a child names
+the old one. That old session then has no live holder, and its children
+are orphans by the ordinary rule - no special case, and none wanted: the
+session they were spawned by and report to is over, and the process
+now at that terminal is another session with work of its own. The
+alternative, carrying the edge across, would have a child address its
+report to a session nobody is reading.
+
 **What the child asks, and of what.** `parentIsAlive()` asks
-`kido agent-alive <instance>`, a command of its own, which reads
+`kido agent-alive <session>`, a command of its own, which reads
 `state.LoadLive` - every live record, nothing collapsed - and prints
 `true` or `false`. One reading decides, and there is no debounce.
 
@@ -158,12 +192,15 @@ read a pane's owner. Asking no pane list also keeps a tmux round trip out
 of a timer that runs every five seconds per subagent forever.
 
 Two things follow, and both are deliberate. A `false` ends the session on
-that poll, so a genuinely dead parent - or a recycled pid whose instance
-nobody reports - is acted on promptly; keepAlive protects against the
-idle-exit timer, never against an orphan outliving its parent. And the
-answer is not scoped to the caller's tmux session, since an instance id
-is globally unique and nothing about the file it was read from says which
-session its pane is in. That matches internal/reap's rule 2, the other
+that poll, so a genuinely dead parent - or a recycled pid whose session
+nobody holds - is acted on promptly; keepAlive protects against the
+idle-exit timer, never against an orphan outliving its parent. The cost
+is a parent that goes away and comes back: a child polling across the
+gap between a quit and a `pi --resume` reads a definite "false" and ends
+itself, restart or no restart. And the
+answer is not scoped to the caller's tmux session, since a session id
+is unique and nothing about the file it was read from says which
+tmux session its pane is in. That matches internal/reap's rule 2, the other
 reader of this same fact, which is server-wide as well; scoping the poll
 would put the two out of step, and a child whose window was moved to
 another tmux session would poll a list its parent is not in and shut
@@ -195,7 +232,7 @@ field, and by the flag's presence rather than its value:
   socket nobody listens on; `--activity ""` clears the activity rather
   than being read as an omission, which is what carries an activity a
   `kido set_status` set through every later report.
-- Instance, parent pid, parent instance, depth: never carried forward.
+- Parent pid, parent session, depth: never carried forward.
   The agent knows them from its own environment and reports them fresh
   on every call, which is cheaper than carry-forward and more robust
   than walking the parent chain, which fails as soon as one intermediate
@@ -247,8 +284,8 @@ binding.
 **A `/reload` does not take the inbox down.** A reload keeps the process,
 the pid and the session id, and the path is keyed by the pid, so the
 listening server outlives the module that bound it: it is held on
-`globalThis` behind a `Symbol.for` slot, the same mechanism `INSTANCE` and
-the seam use to survive jiti's re-evaluation. The server's own connection
+`globalThis` behind a `Symbol.for` slot, the same mechanism the seam uses
+to survive jiti's re-evaluation. The server's own connection
 listener is an indirection through that slot rather than a closure over
 one module's handler; `session_shutdown` with reason `"reload"` clears the
 handler and leaves the socket bound, and the reloaded module's
@@ -286,7 +323,7 @@ reaches the model as a custom message (`pi.sendMessage` with a
 and what they are to this session: `message from @<name> (your parent,
 who spawned you):`, `(your subagent):`, or `(another agent in this
 session, not the user):`. The relationship is read from the agent list
-rather than from the envelope - a parent is the instance that spawned
+rather than from the envelope - a parent is the session that spawned
 this run, a child is an agent whose own parent edge points at this
 session, anything else is a peer - and only the peer's header disclaims
 the user, since a child has no other user than its parent and an
@@ -580,15 +617,14 @@ answer that can no longer exist. The endings that produce it are ordinary
 ones: a child that finishes its work and exits without replying, and a
 child killed with `stop_subagent`.
 
-So a waiting ask keeps asking `kido agent-alive <instance>` - the same
+So a waiting ask keeps asking `kido agent-alive <session>` - the same
 one-bit question, on the same terms, as the parent-liveness poll in the
 status extension: a definite `false` settles the waiter, and an
 unanswerable kido says nothing either way and never gives up. The
 interval is `KIDO_ASK_POLL_MS`, five seconds by default, with a reading
 never overlapping its predecessor (`setInterval` fires whether or not
 the last callback finished) and the timer unref'd, so a wait still never
-holds pi's event loop open. A target with no instance id is not polled
-at all; there is nothing to ask about.
+holds pi's event loop open.
 
 The alternatives are both worse. Having the child's `notify_parent`
 settle a parent's pending ask means inferring a `replyTo` the child
@@ -639,29 +675,29 @@ quietly mangled.
 ### A parentless spawn, and a parent that must exist
 
 A fresh spawn either names a live parent, with `--parent-pid` and
-`--parent-instance`, or says outright that it has none, with
+`--parent-session`, or says outright that it has none, with
 `--no-parent`; one of the two is required. The third possibility, a parent
 nobody claims, is a mistake and is refused (below). `--no-parent` is what
 lets a human at a shell start a standalone agent: an agent in a window,
 owned by nobody, that nothing will collect and that reports to nobody.
 Nothing had to be built for it, because an unparented child is already
-contemplated everywhere else - an empty `ParentInstance` is exempt from
+contemplated everywhere else - an empty `ParentSession` is exempt from
 the sweep's rule 2 by the first clause of its own condition, a child with
-no `KIDO_AGENT_PARENT_INSTANCE` fails the subagent test and so arms no
+no `KIDO_AGENT_PARENT_SESSION` fails the subagent test and so arms no
 idle timer and cannot call `notify_parent`, and `--resume` defaults to it
 for a caller with no record. The flag works on `--resume` too, where it
 drops the caller's own edge rather than defaulting to it.
 
-**Why a flag and not an empty `--parent-instance`.** The two failures are
-not alike. A script whose `$INSTANCE` comes out empty meant to name a
+**Why a flag and not an empty `--parent-session`.** The two failures are
+not alike. A script whose parent session comes out empty meant to name a
 parent and has lost it, and silently spawning an uncollectable window for
 it is the wrong reading of that; a flag cannot be arrived at by accident.
 The tool never passes it - a live pi session spawning names itself - so
 this is a human's entrance only, which is the whole population that can
 make the mistake.
 
-**And the instance named must be alive.** With `--no-parent` spelling the
-honest case, a `--parent-instance` nobody claims is a mistake rather than
+**And the session named must be alive.** With `--no-parent` spelling the
+honest case, a `--parent-session` nobody holds is a mistake rather than
 a spelling of it, and is refused before the window exists - the same
 reading, from the same registry, that `--resume` checks (below). The check
 takes the whole live slice rather than the pane-keyed view, for the reason
@@ -709,7 +745,7 @@ a nested pi resolves itself by pane, finds the real agent's record, and on
 its way out schedules `kido close-run` on the real agent's window.
 Measured live, that killed live agents. The extension checks the
 claim against a fact about itself instead: it is a subagent only if
-`KIDO_AGENT_PARENT_INSTANCE` is set *and* its own pi session id equals
+`KIDO_AGENT_PARENT_SESSION` is set *and* its own pi session id equals
 `KIDO_AGENT_RUN_ID`, which the real child satisfies on both the
 `--session-id` and the `--session` path and a nested pi, minting its own
 id, never can. A session id that is not known yet - null until
@@ -785,7 +821,7 @@ rather than the graceful one the child's own poll asks for, but the only
 lever a process outside pi has. This one needs the records, since
 nothing in tmux knows who spawned whom, and the mark is what keeps a
 stale record naming a recycled pane id from closing an unrelated
-window. A record with no parent instance is a root agent and nobody's to
+window. A record with no parent session is a root agent and nobody's to
 cancel. Neither rule acts on a window that is any client's current one,
 and neither closes a session's last window; nothing is lost by waiting,
 since the sweep runs again next tick.
@@ -819,8 +855,8 @@ and the window is the unit. A pane the user splits off carries no
 the window then goes like any window.
 
 The second rule fires on one reading, and what makes that safe is which
-reading it is. "Gone" means no live record claims the parent instance as
-its own - a question about the whole registry, not about any pane - so the
+reading it is. "Gone" means no live process holds the parent session - a
+question about the whole registry, not about any pane - so the
 sweep is handed every live record (`state.LoadLive`, or `state.ReadAll`
 for `kido reap`). `state.Load`'s per-pane view cannot answer it, for a
 reason no amount of checking inside the sweep can recover: `Load` keeps
@@ -890,7 +926,7 @@ window first.
 the parent's pi, so no OS parent-death signal reaches it. It polls every
 five seconds: `kill(pid, 0)` first, where ESRCH is a definite answer
 given without a subprocess, and otherwise `kido agent-alive
-<parent-instance>`, which a recycled pid cannot fake ("What the child
+<parent-session>`, which a recycled pid cannot fake ("What the child
 asks, and of what" above, for why that command and not a listing). kido
 being unavailable is not evidence of anything and never shuts a session
 down. On a dead parent the child calls pi's `shutdown`, through the same
@@ -932,8 +968,8 @@ deliberately long-lived helper that opts out of self-reaping entirely.
 
 **A session with a live child of its own is not idle.** Waiting for a
 child's report settles a turn exactly as finished work does, so before
-shutting down the timer asks `kido children-alive <instance>` - are any
-of this instance's runs still going, read from the run records, which
+shutting down the timer asks `kido children-alive <session>` - are any
+of this session's runs still going, read from the run records, which
 are where a parent edge outlives a turn - and re-arms if any are. A
 parent that exited here would take its child with it: the orphan rule
 closes the window of the very child it was waiting for
@@ -1011,10 +1047,10 @@ pi session file is gone (`piSessionDir`, mirroring pi 0.85.1's own
 walk pi's own per-project `sessionDir` setting, a known gap). The depth
 ceiling still applies, derived from the *resumer's* own caller record
 exactly as a fresh spawn's is - resuming does not bypass it.
-`--parent-pid`/`--parent-instance` are optional for `--resume` alone (a
+`--parent-pid`/`--parent-session` are optional for `--resume` alone (a
 fresh spawn still requires them, or `--no-parent` in their place - see "A
 parentless spawn, and a parent that must exist"): omitted, they default to the caller's own
-reported pid and instance, the same source depth already reads, so a human
+reported pid and session id, the same source depth already reads, so a human
 with no state record resumes into a parentless (root-like) session that will
 not self-reap, while another agent resuming becomes the run's new parent
 without having to be named up front - which is what lets `kido runs <id>`
@@ -1032,18 +1068,18 @@ pi's default provider, which may have no API key configured on the
 machine actually running it, and the run's meta already remembers what it
 ran under - there is no reason to make every resumer repeat it.
 
-**`--parent-instance` is refused, before the window exists, unless it names
+**`--parent-session` is refused, before the window exists, unless it names
 somebody currently alive.** internal/reap's rule 2 closes any marked window
-whose child reports a `ParentInstance` that no live record claims as its own
-`Instance` - it keeps no history, so "never heard of that instance" and
-"that instance's process has since died" read identically to it. The tool
+whose child reports a `ParentSession` no live record holds - it keeps no
+history, so "never heard of that session" and
+"that session's process has since died" read identically to it. The tool
 can never hit this: its caller is always the live pi process asking for
-itself, so the instance it hands over is definitionally live at that
+itself, so the session id it hands over is definitionally live at that
 moment. `--resume` is different by design - it is exactly the mechanism that
 lets a *different*, by-hand caller claim the parent edge (the paragraph
 above) - which makes an unverifiable value here a real, not hypothetical,
 failure mode: measured live, `kido spawn_subagent --resume <id> --parent-pid
-<pid> --parent-instance <id>` naming a parent nobody claims leaves a window
+<pid> --parent-session <id>` naming a parent nobody holds leaves a window
 gone within about a second, the run recording a useless `died` outcome and
 nothing saying why. The read that would explain it (rule 2 firing) happens in a
 completely different process on its next sidebar poll, by which point the
@@ -1052,11 +1088,11 @@ message for a human to see at all. Checking liveness with the same
 reading rule 2 itself uses, before the window is created, turns that silent,
 delayed close into an immediate, actionable refusal. A resumer with
 no state record, or one who omits the flags, is unaffected - an empty
-`--parent-instance` skips the check entirely and resumes parentless.
+`--parent-session` skips the check entirely and resumes parentless.
 
 **`spawn_subagent(resume)`.** The tool mirrors the CLI: an optional `resume`
 parameter runs `kido spawn_subagent --resume <resume>` instead of a fresh
-spawn, passing this session's own `--parent-pid`/`--parent-instance` exactly
+spawn, passing this session's own `--parent-pid`/`--parent-session` exactly
 as a fresh spawn does - which is always safe, since a live pi session
 calling its own tool is definitionally the live agent the refusal above is
 guarding against not having. `resume` combined with `task` or `name` is
@@ -1173,10 +1209,10 @@ own to tell, and the refusal says so rather than reading as a silent
 no-op.
 
 **Who the parent is, and who reads it.** `kido notify_parent` takes no
-target at all: it reads `KIDO_AGENT_PARENT_INSTANCE` from its own
+target at all: it reads `KIDO_AGENT_PARENT_SESSION` from its own
 environment - the parent edge `kido spawn_subagent` put there, inherited
 through the child's pi and on into everything the child runs - and
-resolves that instance against `state.LoadLive`, the same registry and
+resolves that session against `state.LoadLive`, the same registry and
 the same question `kido agent-alive` asks. Resolving it the long way round
 - list every agent, find your own row, read `parent` off it, hand that
 back to kido to address - would be a display asked for a fact kido has
@@ -1185,7 +1221,7 @@ with it: a `pi --print` in the parent's pane takes that pane and the
 parent's own record falls out of the answer, the same reading the liveness
 poll and the orphan sweep both refuse. An absent
 variable is a root session, refused in the command as well as in the
-tool; an instance no live record claims is a parent that has since
+tool; a session no live record holds is a parent that has since
 exited, and is an error rather than a fallback to anything.
 
 **What this costs, and what covers it.** A subagent that crashes, or is
@@ -1455,7 +1491,7 @@ to notice the gap, and an ask against it is back to the original flaw.
 
 pi's support is two extensions, loaded together by the `pi` shim's two
 `--extension` flags ("The bin directory"). `kido-status.ts` is
-the status report, its coalescing, the heartbeat, the instance id, and
+the status report, its coalescing, the heartbeat, the session claim, and
 the inbox server with plain v0 delivery; the inbox is status-side because
 it predates all the agent work and exists so `kido prompt` can hand a
 prompt to a session nobody is typing into. `kido-agents.ts` is the tools,
@@ -1471,7 +1507,7 @@ half needs it to dispatch what arrives and to refuse an ask when there is
 nowhere for the answer to land, and it is one socket, with one coalescing
 key and one last-reported status beside it, none of which may be
 duplicated. So the two halves meet at a pair of slots: the status half
-publishes a small host of accessors (the kido path, the instance id, the
+publishes a small host of accessors (the kido path, the
 session id and status, whether the inbox is open, and the shared
 `deliver`, `runKido` and `spawnDetached`), and the agent half publishes
 its hooks - only what someone actually calls, and nothing kept published
@@ -1483,8 +1519,8 @@ modules are singletons per resolved path so an import of the neighbouring
 file is the module pi loaded, is false for pi: each extension is evaluated
 in a module registry of its own, so `kido-agents.ts` importing a runtime
 value from `kido-status.ts` produces a second evaluation of that file,
-under the identical URL, with its own module scope and its own generated
-instance id. Module-scope slots leave each half holding a copy of the
+under the identical URL, with its own module scope. Module-scope slots
+leave each half holding a copy of the
 other that no session ever started: measured, `list_agents` in a real pi
 answered `[]` while every unit test passed. `globalThis` and the
 `Symbol.for` registry are shared across those evaluations, also measured.

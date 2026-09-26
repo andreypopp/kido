@@ -38,11 +38,11 @@ func TestAgentAliveSurvivesAPaneCollisionOnTheParent(t *testing.T) {
 	live := time.Now()
 	for _, s := range []state.Session{
 		{ID: "parent", Pane: "%p", PID: os.Getpid(), Agent: state.AgentPi,
-			Status: state.Idle, Instance: "root-inst", TS: live},
+			Status: state.Idle, TS: live},
 		{ID: "child", Pane: "%1", PID: os.Getpid(), Agent: state.AgentPi,
-			Status: state.Idle, Instance: "child-inst", ParentInstance: "root-inst", TS: live},
+			Status: state.Idle, ParentSession: "parent", TS: live},
 		{ID: "intruder", Pane: "%p", PID: os.Getpid(), Agent: state.AgentPi,
-			Status: state.Idle, Instance: "intruder-inst", TS: live.Add(time.Second)},
+			Status: state.Idle, TS: live.Add(time.Second)},
 	} {
 		if err := state.Record(s.ID, s); err != nil {
 			t.Fatal(err)
@@ -50,12 +50,12 @@ func TestAgentAliveSurvivesAPaneCollisionOnTheParent(t *testing.T) {
 	}
 
 	var err error
-	out := captureStdout(t, func() { err = agentAliveCmd([]string{"root-inst"}) })
+	out := captureStdout(t, func() { err = agentAliveCmd([]string{"parent"}) })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.TrimSpace(out) != "true" {
-		t.Errorf("agent-alive root-inst = %q, want %q: the parent is plainly running, collision or not", strings.TrimSpace(out), "true")
+		t.Errorf("agent-alive parent = %q, want %q: the parent is plainly running, collision or not", strings.TrimSpace(out), "true")
 	}
 
 	// The negative control: the reading the poll used to take. The
@@ -66,7 +66,7 @@ func TestAgentAliveSurvivesAPaneCollisionOnTheParent(t *testing.T) {
 	if lerr != nil {
 		t.Fatal(lerr)
 	}
-	if byPane["%p"].Instance != "intruder-inst" {
+	if byPane["%p"].ID != "intruder" {
 		t.Fatalf("state.Load has %+v on the parent's pane, want the intruder to have won it", byPane["%p"])
 	}
 	panes, perr := listPanes()
@@ -80,30 +80,30 @@ func TestAgentAliveSurvivesAPaneCollisionOnTheParent(t *testing.T) {
 	}
 }
 
-// TestAgentAliveGoneAndUnknown: an instance nothing reports is "false",
+// TestAgentAliveGoneAndUnknown: a session nobody holds is "false",
 // not an error - a definite answer the caller acts on - and so is one
 // whose process has died, which LoadLive drops. The child's poll tells
 // that apart from kido being unreachable by the exit code, so "false"
 // must never come with one.
 func TestAgentAliveGoneAndUnknown(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	if err := state.Record("dead", state.Session{Pane: "%9", PID: deadPID(t),
-		Agent: state.AgentPi, Status: state.Idle, Instance: "dead-inst", TS: time.Now()}); err != nil {
+	if err := state.Record("dead-sess", state.Session{Pane: "%9", PID: deadPID(t),
+		Agent: state.AgentPi, Status: state.Idle, TS: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	for _, instance := range []string{"dead-inst", "never-existed"} {
+	for _, session := range []string{"dead-sess", "never-existed"} {
 		var err error
-		out := captureStdout(t, func() { err = agentAliveCmd([]string{instance}) })
+		out := captureStdout(t, func() { err = agentAliveCmd([]string{session}) })
 		if err != nil {
-			t.Fatalf("agent-alive %s: %v", instance, err)
+			t.Fatalf("agent-alive %s: %v", session, err)
 		}
 		if strings.TrimSpace(out) != "false" {
-			t.Errorf("agent-alive %s = %q, want %q", instance, strings.TrimSpace(out), "false")
+			t.Errorf("agent-alive %s = %q, want %q", session, strings.TrimSpace(out), "false")
 		}
 	}
 }
 
-// TestAgentAliveUsage: a missing or empty instance is a usage error
+// TestAgentAliveUsage: a missing or empty session is a usage error
 // rather than a silent "false", which a caller would read as a dead
 // parent and act on.
 func TestAgentAliveUsage(t *testing.T) {
@@ -112,5 +112,26 @@ func TestAgentAliveUsage(t *testing.T) {
 		if err := agentAliveCmd(args); err == nil {
 			t.Errorf("agent-alive %q: want a usage error", args)
 		}
+	}
+}
+
+// TestAgentAliveFollowsARestartedSession: a parent that was quit and
+// resumed (`pi --resume`) keeps its session id and gets a new process,
+// so the liveness poll must be answered about the session. A child that
+// polled for the old process would shut itself down minutes after every
+// restart.
+func TestAgentAliveFollowsARestartedSession(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	if err := state.Record("parent-sess", state.Session{Pane: "%p", PID: os.Getpid(),
+		Agent: state.AgentPi, Status: state.Idle, TS: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	out := captureStdout(t, func() { err = agentAliveCmd([]string{"parent-sess"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out) != "true" {
+		t.Errorf("agent-alive parent-sess = %q, want %q", strings.TrimSpace(out), "true")
 	}
 }

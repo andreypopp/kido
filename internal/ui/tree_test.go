@@ -85,10 +85,10 @@ func shellPane(w, pane string) tmux.Pane {
 	return tmux.Pane{SessionName: "sess", WindowID: w, PaneID: pane, CurrentCommand: "zsh"}
 }
 
-func agentState(inst, parent, title string) state.Session {
+func agentState(id, parent, title string) state.Session {
 	return state.Session{
 		Agent: state.AgentPi, Status: state.Running, Title: title,
-		Instance: inst, ParentInstance: parent, TS: testAt,
+		ID: id, ParentSession: parent, TS: testAt,
 	}
 }
 
@@ -97,10 +97,10 @@ func agentState(inst, parent, title string) state.Session {
 // pane), but the window mark kido spawn_subagent wrote survives, since only the
 // state record and the mark's own "run=" prefix are removed by
 // kido agent-status --remove.
-func deadSubagentPane(w, pane, parentInstance string) tmux.Pane {
+func deadSubagentPane(w, pane, parentSession string) tmux.Pane {
 	return tmux.Pane{
 		SessionName: "sess", WindowID: w, PaneID: pane,
-		Dead: true, Subagent: tmux.SubagentMark("", parentInstance, 1),
+		Dead: true, Subagent: tmux.SubagentMark("", parentSession, 1),
 	}
 }
 
@@ -122,8 +122,8 @@ func TestRenderNestsUnderTheParentPane(t *testing.T) {
 		agentPane("@20", "%30", "subagent"),
 	}
 	states := map[string]state.Session{
-		"%22": agentState("root-inst", "", "orchestrator"),
-		"%30": agentState("kid-inst", "root-inst", "subagent"),
+		"%22": agentState("root-sess", "", "orchestrator"),
+		"%30": agentState("kid-sess", "root-sess", "subagent"),
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -148,8 +148,8 @@ func TestRenderFieldCasesAlignBesideEachOther(t *testing.T) {
 		shellPane("@1", "%3"),
 	}
 	states := map[string]state.Session{
-		"%1": agentState("root-inst", "", "orchestrator"),
-		"%2": {Agent: state.AgentPi, Status: state.Idle, Title: "idle-agent", Instance: "idle-inst", TS: testAt},
+		"%1": agentState("root-sess", "", "orchestrator"),
+		"%2": {Agent: state.AgentPi, Status: state.Idle, Title: "idle-agent", ID: "idle-sess", TS: testAt},
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -172,10 +172,10 @@ func TestRenderGroupsSiblingSubagents(t *testing.T) {
 		agentPane("@22", "%32", "subagent-c"),
 	}
 	states := map[string]state.Session{
-		"%22": agentState("root-inst", "", "orchestrator"),
-		"%30": agentState("kid-a-inst", "root-inst", "subagent-a"),
-		"%31": agentState("kid-b-inst", "root-inst", "subagent-b"),
-		"%32": agentState("kid-c-inst", "root-inst", "subagent-c"),
+		"%22": agentState("root-sess", "", "orchestrator"),
+		"%30": agentState("kid-a-sess", "root-sess", "subagent-a"),
+		"%31": agentState("kid-b-sess", "root-sess", "subagent-b"),
+		"%32": agentState("kid-c-sess", "root-sess", "subagent-c"),
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -201,9 +201,9 @@ func TestRenderGroupsSiblingSubagentsWithTheirOwnShells(t *testing.T) {
 		agentPane("@21", "%31", "subagent-b"),
 	}
 	states := map[string]state.Session{
-		"%22": agentState("root-inst", "", "orchestrator"),
-		"%30": agentState("kid-a-inst", "root-inst", "subagent-a"),
-		"%31": agentState("kid-b-inst", "root-inst", "subagent-b"),
+		"%22": agentState("root-sess", "", "orchestrator"),
+		"%30": agentState("kid-a-sess", "root-sess", "subagent-a"),
+		"%31": agentState("kid-b-sess", "root-sess", "subagent-b"),
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -229,12 +229,12 @@ func TestRenderGroupsSiblingSubagentsAtDepthTwo(t *testing.T) {
 		agentPane("@6", "%6", "grandkid-b2"),
 	}
 	states := map[string]state.Session{
-		"%1": agentState("root-inst", "", "root"),
-		"%2": agentState("a-inst", "root-inst", "subagent-a"),
-		"%3": agentState("b-inst", "root-inst", "subagent-b"),
-		"%4": agentState("a1-inst", "a-inst", "grandkid-a1"),
-		"%5": agentState("b1-inst", "b-inst", "grandkid-b1"),
-		"%6": agentState("b2-inst", "b-inst", "grandkid-b2"),
+		"%1": agentState("root-sess", "", "root"),
+		"%2": agentState("a-sess", "root-sess", "subagent-a"),
+		"%3": agentState("b-sess", "root-sess", "subagent-b"),
+		"%4": agentState("a1-sess", "a-sess", "grandkid-a1"),
+		"%5": agentState("b1-sess", "b-sess", "grandkid-b1"),
+		"%6": agentState("b2-sess", "b-sess", "grandkid-b2"),
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -255,11 +255,11 @@ func TestRenderGroupsSiblingSubagentsWithADeadOne(t *testing.T) {
 	panes := []tmux.Pane{
 		agentPane("@13", "%22", "orchestrator"),
 		agentPane("@20", "%30", "subagent-a"),
-		lingeringSubagentPane("@21", "%31", id, "root-inst"),
+		lingeringSubagentPane("@21", "%31", id, "root-sess"),
 	}
 	states := map[string]state.Session{
-		"%22": agentState("root-inst", "", "orchestrator"),
-		"%30": agentState("kid-a-inst", "root-inst", "subagent-a"),
+		"%22": agentState("root-sess", "", "orchestrator"),
+		"%30": agentState("kid-a-sess", "root-sess", "subagent-a"),
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -280,8 +280,8 @@ func TestRenderMultipleTopLevelAgentsInOneWindow(t *testing.T) {
 		agentPane("@1", "%2", "second"),
 	}
 	states := map[string]state.Session{
-		"%1": agentState("first-inst", "", "first"),
-		"%2": agentState("second-inst", "", "second"),
+		"%1": agentState("first-sess", "", "first"),
+		"%2": agentState("second-sess", "", "second"),
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -306,8 +306,8 @@ func TestRenderKeepsTheColumnAcrossANestedChild(t *testing.T) {
 		shellPane("@20", "%31"),
 	}
 	states := map[string]state.Session{
-		"%22": agentState("root-inst", "", "orchestrator"),
-		"%30": agentState("kid-inst", "root-inst", "subagent"),
+		"%22": agentState("root-sess", "", "orchestrator"),
+		"%30": agentState("kid-sess", "root-sess", "subagent"),
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -329,8 +329,8 @@ func TestRenderStopsTheStemAtTheLastPane(t *testing.T) {
 		agentPane("@20", "%30", "subagent"),
 	}
 	states := map[string]state.Session{
-		"%22": agentState("root-inst", "", "orchestrator"),
-		"%30": agentState("kid-inst", "root-inst", "subagent"),
+		"%22": agentState("root-sess", "", "orchestrator"),
+		"%30": agentState("kid-sess", "root-sess", "subagent"),
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -350,11 +350,11 @@ func TestRenderNestsRecursively(t *testing.T) {
 		agentPane("@3", "%3", "grandkid"),
 	}
 	states := map[string]state.Session{
-		"%1": agentState("root-inst", "", "root"),
+		"%1": agentState("root-sess", "", "root"),
 		"%2": {Agent: state.AgentPi, Status: state.Running, Title: "kid",
-			Instance: "kid-inst", ParentInstance: "root-inst", Depth: 1, TS: testAt},
+			ID: "kid-sess", ParentSession: "root-sess", Depth: 1, TS: testAt},
 		"%3": {Agent: state.AgentPi, Status: state.Running, Title: "grandkid",
-			Instance: "gk-inst", ParentInstance: "kid-inst", Depth: 1, TS: testAt},
+			ID: "gk-sess", ParentSession: "kid-sess", Depth: 1, TS: testAt},
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -374,9 +374,9 @@ func TestRenderDrawsAnOrphanAsARoot(t *testing.T) {
 		agentPane("@2", "%2", "orphan"),
 	}
 	states := map[string]state.Session{
-		"%1": agentState("other-inst", "", "unrelated"),
+		"%1": agentState("other-sess", "", "unrelated"),
 		"%2": {Agent: state.AgentPi, Status: state.Running, Title: "orphan",
-			Instance: "orphan-inst", ParentInstance: "elsewhere-inst", Depth: 1, TS: testAt},
+			ID: "orphan-sess", ParentSession: "elsewhere-sess", Depth: 1, TS: testAt},
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -393,8 +393,8 @@ func TestRenderDropsNobodyInACycle(t *testing.T) {
 		agentPane("@2", "%b", "b"),
 	}
 	states := map[string]state.Session{
-		"%a": agentState("a-inst", "b-inst", "a"),
-		"%b": agentState("b-inst", "a-inst", "b"),
+		"%a": agentState("a-sess", "b-sess", "a"),
+		"%b": agentState("b-sess", "a-sess", "b"),
 	}
 	rows := renderRows(panes, states)
 	if len(rows) != 3 {
@@ -420,10 +420,10 @@ func TestRenderIsDeterministic(t *testing.T) {
 		agentPane("@4", "%5", "grandkid"),
 	}
 	states := map[string]state.Session{
-		"%1": agentState("root-inst", "", "root"),
-		"%3": agentState("a-inst", "root-inst", "kid-a"),
-		"%4": agentState("b-inst", "root-inst", "kid-b"),
-		"%5": agentState("g-inst", "b-inst", "grandkid"),
+		"%1": agentState("root-sess", "", "root"),
+		"%3": agentState("a-sess", "root-sess", "kid-a"),
+		"%4": agentState("b-sess", "root-sess", "kid-b"),
+		"%5": agentState("g-sess", "b-sess", "grandkid"),
 	}
 	want := renderRows(panes, states)
 	for range 20 {
@@ -453,9 +453,9 @@ func TestOrderWindowsByTreePutsChildRightAfterParent(t *testing.T) {
 		{{PaneID: "%child1", WindowID: "@child1"}}, // spawned first, but tmux put it after child2
 	}
 	states := map[string]state.Session{
-		"%root":   {Instance: "root-inst"},
-		"%child2": {ParentInstance: "root-inst", Depth: 1},
-		"%child1": {ParentInstance: "root-inst", Depth: 1},
+		"%root":   {ID: "root-sess"},
+		"%child2": {ParentSession: "root-sess", Depth: 1},
+		"%child1": {ParentSession: "root-sess", Depth: 1},
 	}
 	got := orderWindowsByTree(windows, states)
 	want := []string{"@shell", "@root", "@child2", "@child1"}
@@ -483,7 +483,7 @@ func TestOrderWindowsByTreeIndentsOnlyRealChildren(t *testing.T) {
 		{{PaneID: "%orphan", WindowID: "@orphan"}},
 	}
 	states := map[string]state.Session{
-		"%orphan": {Instance: "orphan-inst", ParentInstance: "elsewhere-inst", Depth: 1},
+		"%orphan": {ID: "orphan-sess", ParentSession: "elsewhere-sess", Depth: 1},
 	}
 	got := orderWindowsByTree(windows, states)
 	if !sameIDs(windowIDs(got), []string{"@shell", "@orphan"}) {
@@ -508,9 +508,9 @@ func TestOrderWindowsByTreeNests(t *testing.T) {
 		{{PaneID: "%grandkid", WindowID: "@grandkid"}},
 	}
 	states := map[string]state.Session{
-		"%root":     {Instance: "root-inst"},
-		"%kid":      {Instance: "kid-inst", ParentInstance: "root-inst", Depth: 1},
-		"%grandkid": {Instance: "gk-inst", ParentInstance: "kid-inst", Depth: 1},
+		"%root":     {ID: "root-sess"},
+		"%kid":      {ID: "kid-sess", ParentSession: "root-sess", Depth: 1},
+		"%grandkid": {ID: "gk-sess", ParentSession: "kid-sess", Depth: 1},
 	}
 	got := orderWindowsByTree(windows, states)
 	if !sameIDs(windowIDs(got), []string{"@root", "@kid", "@grandkid"}) {
@@ -525,7 +525,7 @@ func TestOrderWindowsByTreeNests(t *testing.T) {
 	}
 }
 
-// TestOrderWindowsByTreeHandlesCycle checks that a bogus ParentInstance
+// TestOrderWindowsByTreeHandlesCycle checks that a bogus ParentSession
 // naming a window's own descendant (or itself) never drops a window from
 // the result - only from wherever the cycle would have placed it - the
 // same guarantee orderTree (cmd/kido/agents.go) makes. The placement
@@ -537,8 +537,8 @@ func TestOrderWindowsByTreeHandlesCycle(t *testing.T) {
 		{{PaneID: "%b", WindowID: "@b"}},
 	}
 	states := map[string]state.Session{
-		"%a": {Instance: "a-inst", ParentInstance: "b-inst"},
-		"%b": {Instance: "b-inst", ParentInstance: "a-inst"},
+		"%a": {ID: "a-sess", ParentSession: "b-sess"},
+		"%b": {ID: "b-sess", ParentSession: "a-sess"},
 	}
 	got := orderWindowsByTree(windows, states)
 	if len(got) != 2 {
@@ -564,10 +564,10 @@ func TestOrderWindowsByTreeHandlesCycle(t *testing.T) {
 func TestOrderWindowsByTreeFallsBackToMarkWhenRecordGone(t *testing.T) {
 	windows := [][]tmux.Pane{
 		{{PaneID: "%root", WindowID: "@root"}},
-		{deadSubagentPane("@kid", "%kid", "root-inst")},
+		{deadSubagentPane("@kid", "%kid", "root-sess")},
 	}
 	states := map[string]state.Session{
-		"%root": {Instance: "root-inst"},
+		"%root": {ID: "root-sess"},
 	}
 	got := orderWindowsByTree(windows, states)
 	if !sameIDs(windowIDs(got), []string{"@root", "@kid"}) {
@@ -587,30 +587,30 @@ func TestOrderWindowsByTreeRecordBeatsStaleMark(t *testing.T) {
 	windows := [][]tmux.Pane{
 		{{PaneID: "%root", WindowID: "@root"}},
 		{{PaneID: "%other", WindowID: "@other"}},
-		{{PaneID: "%kid", WindowID: "@kid", Subagent: tmux.SubagentMark("run-1", "other-inst", 1)}},
+		{{PaneID: "%kid", WindowID: "@kid", Subagent: tmux.SubagentMark("run-1", "other-sess", 1)}},
 	}
 	states := map[string]state.Session{
-		"%root":  {Instance: "root-inst"},
-		"%other": {Instance: "other-inst"},
-		"%kid":   {Instance: "kid-inst", ParentInstance: "root-inst"},
+		"%root":  {ID: "root-sess"},
+		"%other": {ID: "other-sess"},
+		"%kid":   {ID: "kid-sess", ParentSession: "root-sess"},
 	}
 	got := orderWindowsByTree(windows, states)
 	for _, pl := range got {
 		if pl.panes[0].WindowID == "@kid" && pl.anchor != "%root" {
-			t.Errorf("anchor[@kid] = %q, want %%root: the live record names root-inst, not the mark's other-inst", pl.anchor)
+			t.Errorf("anchor[@kid] = %q, want %%root: the live record names root-sess, not the mark's other-sess", pl.anchor)
 		}
 	}
 }
 
 // TestOrderWindowsByTreeMarkedOrphanIsRoot is the marked counterpart of
 // TestOrderWindowsByTreeIndentsOnlyRealChildren: a window whose record is
-// gone and whose mark names a parent instance that is not in this
+// gone and whose mark names a parent session that is not in this
 // session (moved away, or a stale mark from a previous server) is drawn
 // flush left, not hung off whatever row precedes it.
 func TestOrderWindowsByTreeMarkedOrphanIsRoot(t *testing.T) {
 	windows := [][]tmux.Pane{
 		{{PaneID: "%shell", WindowID: "@shell"}},
-		{deadSubagentPane("@kid", "%kid", "elsewhere-inst")},
+		{deadSubagentPane("@kid", "%kid", "elsewhere-sess")},
 	}
 	got := orderWindowsByTree(windows, map[string]state.Session{})
 	if !sameIDs(windowIDs(got), []string{"@shell", "@kid"}) {
@@ -627,12 +627,12 @@ func TestOrderWindowsByTreeMarkedOrphanIsRoot(t *testing.T) {
 }
 
 // TestOrderWindowsByTreeMarkFallbackDropsNothing is requirement 4 for the
-// mark fallback specifically: a mark naming a parent instance that
+// mark fallback specifically: a mark naming a parent session that
 // exists nowhere at all - not even in another session's row - still
 // keeps the window in the result, drawn as a root.
 func TestOrderWindowsByTreeMarkFallbackDropsNothing(t *testing.T) {
 	windows := [][]tmux.Pane{
-		{deadSubagentPane("@kid", "%kid", "nonexistent-inst")},
+		{deadSubagentPane("@kid", "%kid", "nonexistent-sess")},
 	}
 	got := orderWindowsByTree(windows, map[string]state.Session{})
 	if !sameIDs(windowIDs(got), []string{"@kid"}) {
@@ -648,10 +648,10 @@ func TestOrderWindowsByTreeMarkFallbackDropsNothing(t *testing.T) {
 func TestRenderNestsADeadSubagentForTheWholeLinger(t *testing.T) {
 	panes := []tmux.Pane{
 		agentPane("@13", "%22", "orchestrator"),
-		deadSubagentPane("@20", "%30", "root-inst"),
+		deadSubagentPane("@20", "%30", "root-sess"),
 	}
 	states := map[string]state.Session{
-		"%22": agentState("root-inst", "", "orchestrator"),
+		"%22": agentState("root-sess", "", "orchestrator"),
 	}
 	// Before the fix this rendered as two flush-left rows: "sess",
 	// "╶◼ orchestrator", "╶ " (the dead pane un-nested at the left
@@ -668,10 +668,10 @@ func TestRenderNestsADeadSubagentForTheWholeLinger(t *testing.T) {
 // lingeringSubagentPane is a finished subagent's window carrying a real
 // run id in its mark, unlike deadSubagentPane's empty one, so
 // lingeringSubagents has something to look up on disk.
-func lingeringSubagentPane(w, pane, runID, parentInstance string) tmux.Pane {
+func lingeringSubagentPane(w, pane, runID, parentSession string) tmux.Pane {
 	return tmux.Pane{
 		SessionName: "sess", WindowID: w, PaneID: pane,
-		Dead: true, Subagent: tmux.SubagentMark(runID, parentInstance, 1),
+		Dead: true, Subagent: tmux.SubagentMark(runID, parentSession, 1),
 	}
 }
 
@@ -679,10 +679,10 @@ func lingeringSubagentPane(w, pane, runID, parentInstance string) tmux.Pane {
 // with a real run id but no state record for its pane, and Dead false -
 // a plain `bash` run for its whole life, or an agent run in the window
 // between new-window and its first status report.
-func liveSubagentPane(w, pane, runID, parentInstance string) tmux.Pane {
+func liveSubagentPane(w, pane, runID, parentSession string) tmux.Pane {
 	return tmux.Pane{
 		SessionName: "sess", WindowID: w, PaneID: pane,
-		Dead: false, Subagent: tmux.SubagentMark(runID, parentInstance, 1),
+		Dead: false, Subagent: tmux.SubagentMark(runID, parentSession, 1),
 	}
 }
 
@@ -820,7 +820,7 @@ func TestRenderMarkedWindowWithNoPaneOptionKeepsTodaysBehaviour(t *testing.T) {
 func TestRenderReproducesTheLiveSplitBugReport(t *testing.T) {
 	pi := agentPane("@20", "%4", "helper")
 	pi.SubagentPane = "run-1"
-	pi.Subagent = tmux.SubagentMark("run-1", "root-inst", 1)
+	pi.Subagent = tmux.SubagentMark("run-1", "root-sess", 1)
 	split := shellPane("@20", "%5")
 	split.Subagent = pi.Subagent // the window mark, inherited by every pane
 	panes := []tmux.Pane{
@@ -829,8 +829,8 @@ func TestRenderReproducesTheLiveSplitBugReport(t *testing.T) {
 		pi,
 	}
 	states := map[string]state.Session{
-		"%22": agentState("root-inst", "", "working-on-kido"),
-		"%4":  {Agent: state.AgentPi, Status: state.Idle, Title: "helper", Instance: "helper-inst", ParentInstance: "root-inst", TS: testAt},
+		"%22": agentState("root-sess", "", "working-on-kido"),
+		"%4":  {Agent: state.AgentPi, Status: state.Idle, Title: "helper", ID: "helper-sess", ParentSession: "root-sess", TS: testAt},
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -851,8 +851,8 @@ func TestRenderLiveSubagentWithRecordUnaffected(t *testing.T) {
 		agentPane("@20", "%30", "subagent"),
 	}
 	states := map[string]state.Session{
-		"%22": agentState("root-inst", "", "orchestrator"),
-		"%30": agentState("kid-inst", "root-inst", "subagent"),
+		"%22": agentState("root-sess", "", "orchestrator"),
+		"%30": agentState("kid-sess", "root-sess", "subagent"),
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -952,8 +952,8 @@ func TestRenderLiveSubagentUnaffectedByLingering(t *testing.T) {
 		agentPane("@20", "%30", "subagent"),
 	}
 	states := map[string]state.Session{
-		"%22": agentState("root-inst", "", "orchestrator"),
-		"%30": agentState("kid-inst", "root-inst", "subagent"),
+		"%22": agentState("root-sess", "", "orchestrator"),
+		"%30": agentState("kid-sess", "root-sess", "subagent"),
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -1053,10 +1053,10 @@ func TestRenderLingeringSubagentStillNests(t *testing.T) {
 	id := newRun(t, "subagent", "")
 	panes := []tmux.Pane{
 		agentPane("@13", "%22", "orchestrator"),
-		lingeringSubagentPane("@20", "%30", id, "root-inst"),
+		lingeringSubagentPane("@20", "%30", id, "root-sess"),
 	}
 	states := map[string]state.Session{
-		"%22": agentState("root-inst", "", "orchestrator"),
+		"%22": agentState("root-sess", "", "orchestrator"),
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -1067,7 +1067,7 @@ func TestRenderLingeringSubagentStillNests(t *testing.T) {
 
 // TestOrderWindowsByTreeAnchorsToTheSecondAgentPaneInAWindow is the live
 // bug report: one window holds two agent panes, each with its own
-// instance and no parent of its own (the user's top-level pi, and a
+// session and no parent of its own (the user's top-level pi, and a
 // second pi split into the same window). A subagent spawned from the
 // second pane must nest under that pane's row, not become a root - and
 // a subagent of the first pane must keep nesting under it, which already
@@ -1079,10 +1079,10 @@ func TestOrderWindowsByTreeAnchorsToTheSecondAgentPaneInAWindow(t *testing.T) {
 		{{PaneID: "%kid2", WindowID: "@kid2"}},
 	}
 	states := map[string]state.Session{
-		"%21":   {Instance: "top-inst"},
-		"%101":  {Instance: "second-inst"},
-		"%kid1": {Instance: "kid1-inst", ParentInstance: "top-inst", Depth: 1},
-		"%kid2": {Instance: "kid2-inst", ParentInstance: "second-inst", Depth: 1},
+		"%21":   {ID: "top-sess"},
+		"%101":  {ID: "second-sess"},
+		"%kid1": {ID: "kid1-sess", ParentSession: "top-sess", Depth: 1},
+		"%kid2": {ID: "kid2-sess", ParentSession: "second-sess", Depth: 1},
 	}
 	got := orderWindowsByTree(windows, states)
 	anchors := anchorsOf(got)
@@ -1105,9 +1105,9 @@ func TestRenderNestsUnderTheSecondAgentPaneInAWindow(t *testing.T) {
 		agentPane("@20", "%30", "subagent-b"),
 	}
 	states := map[string]state.Session{
-		"%21":  agentState("top-inst", "", "top-level"),
-		"%101": agentState("second-inst", "", "second"),
-		"%30":  agentState("kid-inst", "second-inst", "subagent-b"),
+		"%21":  agentState("top-sess", "", "top-level"),
+		"%101": agentState("second-sess", "", "second"),
+		"%30":  agentState("kid-sess", "second-sess", "subagent-b"),
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -1115,4 +1115,22 @@ func TestRenderNestsUnderTheSecondAgentPaneInAWindow(t *testing.T) {
 		"└◼ second",
 		"  └◼ subagent-b",
 	})
+}
+
+// TestOrderWindowsByTreeFollowsARestartedParent: the child's window
+// hangs off its parent's pane because the record names the parent's
+// session, which survives the parent being quit and resumed.
+func TestOrderWindowsByTreeFollowsARestartedParent(t *testing.T) {
+	windows := [][]tmux.Pane{
+		{{PaneID: "%root", WindowID: "@root"}},
+		{{PaneID: "%kid", WindowID: "@kid"}},
+	}
+	states := map[string]state.Session{
+		"%root": {ID: "root-sess"},
+		"%kid":  {ID: "kid-sess", ParentSession: "root-sess", Depth: 1},
+	}
+	got := orderWindowsByTree(windows, states)
+	if a := anchorsOf(got)["@kid"]; a != "%root" {
+		t.Errorf("anchor[@kid] = %q, want %%root", a)
+	}
 }

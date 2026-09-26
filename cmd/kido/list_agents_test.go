@@ -162,7 +162,7 @@ func TestBuildAgentsScopesToSession(t *testing.T) {
 
 // TestBuildAgentsListsEveryAgentInACycle pins the one thing orderTree
 // owes its caller: an agent in the session is in the list. A bogus
-// ParentInstance can make a record name one of its own descendants - or
+// ParentSession can make a record name one of its own descendants - or
 // itself - as its parent, and a walk that starts at the roots reaches
 // neither. list_agents is the only way to discover an agent at all, so a
 // ring that drops out of it is an agent nothing can address; it comes out
@@ -172,8 +172,8 @@ func TestBuildAgentsListsEveryAgentInACycle(t *testing.T) {
 		{PaneID: "%1", SessionID: "$1"}, {PaneID: "%2", SessionID: "$1"}, {PaneID: "%3", SessionID: "$1"},
 	}
 	states := map[string]state.Session{
-		"%1": {ID: "a", Pane: "%1", PID: 100, Instance: "a-inst", ParentInstance: "b-inst"},
-		"%2": {ID: "b", Pane: "%2", PID: 200, Instance: "b-inst", ParentInstance: "a-inst"},
+		"%1": {ID: "a", Pane: "%1", PID: 100, ParentSession: "b"},
+		"%2": {ID: "b", Pane: "%2", PID: 200, ParentSession: "a"},
 		"%3": {ID: "root", Pane: "%3", PID: 300},
 	}
 	got := buildAgents(states, panes, "$1", "%3")
@@ -189,7 +189,7 @@ func TestBuildAgentsListsEveryAgentInACycle(t *testing.T) {
 
 	// A record that is its own parent is a root, not a child of itself.
 	self := map[string]state.Session{
-		"%1": {ID: "a", Pane: "%1", PID: 100, Instance: "a-inst", ParentInstance: "a-inst"},
+		"%1": {ID: "a", Pane: "%1", PID: 100, ParentSession: "a"},
 	}
 	got = buildAgents(self, panes, "$1", "%1")
 	if len(got) != 1 || got[0].Parent != "" {
@@ -198,14 +198,14 @@ func TestBuildAgentsListsEveryAgentInACycle(t *testing.T) {
 }
 
 // TestBuildAgentsParentTree checks that a subagent is ordered right after
-// its parent (matched by ParentInstance against the parent's own
-// Instance), and that siblings come out oldest first.
+// its parent (matched by ParentSession against the parent's own session
+// id), and that siblings come out oldest first.
 func TestBuildAgentsParentTree(t *testing.T) {
 	t0 := time.Unix(1000, 0)
 	states := map[string]state.Session{
-		"%1": {ID: "root", Pane: "%1", PID: 100, Instance: "root-inst", Status: state.Running, TS: t0},
-		"%2": {ID: "child2", Pane: "%2", PID: 201, ParentInstance: "root-inst", Depth: 1, Status: state.Running, TS: t0.Add(2 * time.Second)},
-		"%3": {ID: "child1", Pane: "%3", PID: 202, ParentInstance: "root-inst", Depth: 1, Status: state.Running, TS: t0.Add(1 * time.Second)},
+		"%1": {ID: "root", Pane: "%1", PID: 100, Status: state.Running, TS: t0},
+		"%2": {ID: "child2", Pane: "%2", PID: 201, ParentSession: "root", Depth: 1, Status: state.Running, TS: t0.Add(2 * time.Second)},
+		"%3": {ID: "child1", Pane: "%3", PID: 202, ParentSession: "root", Depth: 1, Status: state.Running, TS: t0.Add(1 * time.Second)},
 	}
 	panes := []tmux.Pane{
 		{PaneID: "%1", SessionID: "$1"}, {PaneID: "%2", SessionID: "$1"}, {PaneID: "%3", SessionID: "$1"},
@@ -230,7 +230,7 @@ func TestBuildAgentsParentTree(t *testing.T) {
 }
 
 // TestBuildAgentsRecycledPIDNoEdge checks that a parent edge is matched on
-// ParentInstance, not ParentPID: a pid can be recycled by an unrelated
+// ParentSession, not ParentPID: a pid can be recycled by an unrelated
 // process, and alive() cannot tell the difference (it reports EPERM as
 // alive), so a pid-keyed edge could wrongly attach a child to a process
 // that merely reused its parent's old pid.
@@ -239,10 +239,10 @@ func TestBuildAgentsRecycledPIDNoEdge(t *testing.T) {
 		{PaneID: "%1", SessionID: "$1"}, {PaneID: "%2", SessionID: "$1"},
 	}
 	states := map[string]state.Session{
-		"%1": {ID: "root", Pane: "%1", PID: 100, Instance: "root-inst"},
-		// child's ParentPID (100) matches root's PID, but its ParentInstance
-		// names some other, unrelated process's instance.
-		"%2": {ID: "child", Pane: "%2", PID: 200, ParentPID: 100, ParentInstance: "someone-else"},
+		"%1": {ID: "root", Pane: "%1", PID: 100},
+		// child's ParentPID (100) matches root's PID, but its ParentSession
+		// names some other, unrelated session.
+		"%2": {ID: "child", Pane: "%2", PID: 200, ParentPID: 100, ParentSession: "someone-else"},
 	}
 	got := buildAgents(states, panes, "$1", "%1")
 	for _, a := range got {
@@ -322,6 +322,26 @@ func TestBuildAgentsCanReply(t *testing.T) {
 	for _, a := range got {
 		if a.CanReply != want[a.ID] {
 			t.Errorf("%s: CanReply = %v, want %v", a.ID, a.CanReply, want[a.ID])
+		}
+	}
+}
+
+// TestBuildAgentsParentEdgeSurvivesARestart: the child names its
+// parent's session, which a restart keeps, so the row still hangs off
+// the parent after the parent has been quit and resumed.
+func TestBuildAgentsParentEdgeSurvivesARestart(t *testing.T) {
+	states := map[string]state.Session{
+		"%p": {ID: "parent-sess", Pane: "%p", Agent: state.AgentPi, Status: state.Idle},
+		"%1": {ID: "child-sess", Pane: "%1", Agent: state.AgentPi, Status: state.Idle,
+			ParentSession: "parent-sess", Depth: 1},
+	}
+	panes := []tmux.Pane{
+		{PaneID: "%p", SessionID: "$1", WindowID: "@p"},
+		{PaneID: "%1", SessionID: "$1", WindowID: "@1"},
+	}
+	for _, a := range buildAgents(states, panes, "$1", "%p") {
+		if a.ID == "child-sess" && a.Parent != "parent-sess" {
+			t.Errorf("child's parent = %q, want %q", a.Parent, "parent-sess")
 		}
 	}
 }

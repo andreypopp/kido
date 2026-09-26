@@ -38,7 +38,7 @@ func withInboxTimeout(t *testing.T, d time.Duration) {
 // streamParent is noticeParent with a chosen reply: "ok\n" for a parent
 // that answers, "" for one that accepts the connection and never does,
 // which is the only failure that can actually make a sender wait.
-func streamParent(t *testing.T, instance, reply string) *testutil.Inbox {
+func streamParent(t *testing.T, session, reply string) *testutil.Inbox {
 	t.Helper()
 	t.Setenv("TMUX_PANE", "%1")
 	withPanes(t, []tmux.Pane{
@@ -46,9 +46,9 @@ func streamParent(t *testing.T, instance, reply string) *testutil.Inbox {
 		{PaneID: "%2", SessionID: "$1", WindowID: "@2"},
 	})
 	in := testutil.StartInbox(t, reply)
-	if err := state.Record("parent", state.Session{
+	if err := state.Record(session, state.Session{
 		Agent: state.AgentPi, Pane: "%2", PID: 1, Status: state.Idle, Title: "orchestrator",
-		Instance: instance, Inbox: in.Path, Protocol: msg.V1,
+		Inbox: in.Path, Protocol: msg.V1,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -124,8 +124,8 @@ func TestStreamCoalescesAndStripsAnsi(t *testing.T) {
 	const batch = 2 * time.Second
 
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	in := streamParent(t, "root-inst", "ok\n")
-	t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "root-inst")
+	in := streamParent(t, "root-sess", "ok\n")
+	t.Setenv("KIDO_AGENT_PARENT_SESSION", "root-sess")
 	withStreamKnobs(t, batch, 20*time.Millisecond, 100*time.Millisecond)
 
 	script := fmt.Sprintf(`for i in $(seq 1 %d); do printf '\033[32mline %%s\033[0m\n' $i; sleep %.3f; done`, lines, writeEvery.Seconds())
@@ -172,8 +172,8 @@ func TestStreamCoalescesAndStripsAnsi(t *testing.T) {
 // reads back.
 func TestCompletionNoticeFollowsTheFinalChunk(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	in := streamParent(t, "root-inst", "ok\n")
-	t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "root-inst")
+	in := streamParent(t, "root-sess", "ok\n")
+	t.Setenv("KIDO_AGENT_PARENT_SESSION", "root-sess")
 	// A batch interval longer than the whole run, so the only chunk there
 	// is comes from the close - which is exactly the chunk the ordering
 	// rule is about, and the one a wrapper that spoke before closing
@@ -232,7 +232,7 @@ func TestWrapperDoesNotBlockOnADeadParent(t *testing.T) {
 	const writeEvery = 10 * time.Millisecond
 
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "")
+	t.Setenv("KIDO_AGENT_PARENT_SESSION", "")
 	withStreamKnobs(t, 20*time.Millisecond, 20*time.Millisecond, 100*time.Millisecond)
 	_, baseline := runStreamingChild(t, lines, writeEvery)
 
@@ -256,13 +256,13 @@ func TestWrapperDoesNotBlockOnADeadParent(t *testing.T) {
 		t.Setenv("KIDO_STATE_DIR", t.TempDir())
 		t.Setenv("TMUX_PANE", "%1")
 		withPanes(t, samePane)
-		if err := state.Record("parent", state.Session{
+		if err := state.Record("root-sess", state.Session{
 			Agent: state.AgentPi, Pane: "%2", PID: 1, Status: state.Idle, Title: "orchestrator",
-			Instance: "root-inst", Inbox: testutil.StaleSocket(t), Protocol: msg.V1,
+			Inbox: testutil.StaleSocket(t), Protocol: msg.V1,
 		}); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "root-inst")
+		t.Setenv("KIDO_AGENT_PARENT_SESSION", "root-sess")
 		withStreamKnobs(t, 20*time.Millisecond, 20*time.Millisecond, 100*time.Millisecond)
 
 		id, child := runStreamingChild(t, lines, writeEvery)
@@ -276,8 +276,8 @@ func TestWrapperDoesNotBlockOnADeadParent(t *testing.T) {
 
 	t.Run("listening and never answering", func(t *testing.T) {
 		t.Setenv("KIDO_STATE_DIR", t.TempDir())
-		in := streamParent(t, "root-inst", "")
-		t.Setenv("KIDO_AGENT_PARENT_INSTANCE", "root-inst")
+		in := streamParent(t, "root-sess", "")
+		t.Setenv("KIDO_AGENT_PARENT_SESSION", "root-sess")
 		withStreamKnobs(t, 20*time.Millisecond, 20*time.Millisecond, 100*time.Millisecond)
 		withInboxTimeout(t, stalledWire)
 

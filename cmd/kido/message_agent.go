@@ -78,7 +78,7 @@ func askAgentCmd(args []string, stdin io.Reader) int {
 
 // notifyParentCmd implements `kido notify_parent`: it sends stdin to the
 // agent that spawned this one as a "notice" envelope, and takes no
-// target. The parent comes from KIDO_AGENT_PARENT_INSTANCE, the parent
+// target. The parent comes from KIDO_AGENT_PARENT_SESSION, the parent
 // edge kido spawn_subagent itself put in the child's environment
 // (docs/design.md, "Identity"), so a child reporting home names nobody -
 // and cannot name anybody else. pi's notify_parent tool used to list the
@@ -96,12 +96,12 @@ func askAgentCmd(args []string, stdin io.Reader) int {
 func notifyParentCmd(args []string, stdin io.Reader) int {
 	const cmd = "notify_parent"
 	if len(args) > 0 {
-		fmt.Fprintln(os.Stderr, "usage: kido notify_parent (the parent comes from $KIDO_AGENT_PARENT_INSTANCE, not from an argument)")
+		fmt.Fprintln(os.Stderr, "usage: kido notify_parent (the parent comes from $KIDO_AGENT_PARENT_SESSION, not from an argument)")
 		return 1
 	}
-	instance := os.Getenv("KIDO_AGENT_PARENT_INSTANCE")
-	if instance == "" {
-		fmt.Fprintf(os.Stderr, "kido %s: this session has no parent ($KIDO_AGENT_PARENT_INSTANCE is not set); nothing sent\n", cmd)
+	parent := os.Getenv("KIDO_AGENT_PARENT_SESSION")
+	if parent == "" {
+		fmt.Fprintf(os.Stderr, "kido %s: this session has no parent ($KIDO_AGENT_PARENT_SESSION is not set); nothing sent\n", cmd)
 		return 1
 	}
 	b, err := io.ReadAll(stdin)
@@ -113,18 +113,18 @@ func notifyParentCmd(args []string, stdin io.Reader) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "kido %s: keeping the whole report failed (%v); sending a truncated one\n", cmd, err)
 	}
-	return send(cmd, sendSpec{kind: msg.KindNotice, parentInstance: instance}, strings.NewReader(notice))
+	return send(cmd, sendSpec{kind: msg.KindNotice, parentSession: parent}, strings.NewReader(notice))
 }
 
 // sendSpec is one outbound envelope as its command described it: the
 // kind, who it goes to - an address to resolve (to) or the parent's
-// instance id (parentInstance), never both - the correlation ids that
+// session id (parentSession), never both - the correlation ids that
 // kind allows, and whether the address is held to the _subagent scope
 // rule (descendantTarget, control.go).
 type sendSpec struct {
 	kind            msg.Kind
 	to              string
-	parentInstance  string
+	parentSession   string
 	replyTo         string
 	id              string
 	descendantsOnly bool
@@ -168,7 +168,7 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 
 	// One read, two views of it: the per-pane map for the sender's own
 	// record and for resolving an address, and the whole live slice for
-	// finding a parent by instance - the question `kido agent-alive` asks
+	// finding a parent by session id - the question `kido agent-alive` asks
 	// of the same registry, and for its reason, since a pane collision
 	// drops a record from the per-pane view and a parent's is exactly the
 	// record that gets dropped.
@@ -192,10 +192,10 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 	}
 
 	var target state.Session
-	if spec.parentInstance != "" {
+	if spec.parentSession != "" {
 		var found bool
-		if target, found = liveParent(live, spec.parentInstance); !found {
-			return fail(fmt.Sprintf("no live agent reports instance %q; the parent is gone, nothing sent", spec.parentInstance))
+		if target, found = liveParent(live, spec.parentSession); !found {
+			return fail(fmt.Sprintf("no live process holds session %q; the parent is gone, nothing sent", spec.parentSession))
 		}
 	} else if spec.descendantsOnly {
 		if target, err = descendantTarget(states, panes, self, spec.to); err != nil {
@@ -264,18 +264,18 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 	return 0
 }
 
-// liveParent finds the live agent reporting instance as its own: the one
-// way anything addresses a parent, which is named rather than resolved
-// like an ordinary target, since a child knows its parent's instance id
-// and nothing else about it.
+// liveParent finds the live agent holding session: the one way anything
+// addresses a parent, which is named rather than resolved like an
+// ordinary target, since a child knows its parent's session id and
+// nothing else about it.
 //
 // It takes the whole live slice rather than the pane-keyed view for the
 // reason `kido agent-alive` does: a pane collision drops a record from
 // the per-pane map, and a parent's is exactly the record that gets
 // dropped (docs/design.md, and internal/state's Load).
-func liveParent(live []state.Session, instance string) (state.Session, bool) {
+func liveParent(live []state.Session, session string) (state.Session, bool) {
 	for _, s := range live {
-		if s.Instance == instance {
+		if s.ID == session {
 			return s, true
 		}
 	}
@@ -347,7 +347,7 @@ func sessionsInSession(states map[string]state.Session, panes []tmux.Pane, sessi
 // resolveTarget finds the agent to names, scoped to the caller's own tmux
 // session. An agent in another session is reported as such rather than
 // as not found. The addressing rules are matchTarget's. notify_parent
-// does not come through here: it holds an instance id rather than an
+// does not come through here: it holds a session id rather than an
 // address, and resolves it against the whole live registry (see send).
 func resolveTarget(states map[string]state.Session, panes []tmux.Pane, self, to string) (state.Session, error) {
 	caller, ok := findPane(panes, self)

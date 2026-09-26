@@ -79,7 +79,7 @@ func asyncBashCmd(args []string) error {
 
 	meta := subrun.Meta{
 		ID: runID, Name: windowName, Kind: subrun.KindBash,
-		ParentInstance: caller.Instance, Depth: caller.Depth + 1,
+		ParentSession: caller.ID, Depth: caller.Depth + 1,
 		Cwd: pane.CurrentPath, StartedAt: time.Now(),
 	}
 	// The depth ceiling a spawn is held to is not applied: nesting is what
@@ -90,7 +90,7 @@ func asyncBashCmd(args []string) error {
 	// wrapper is kido itself: it must find the same run directory this
 	// command just wrote, and new-window otherwise gives it the tmux
 	// server's environment rather than this process's.
-	env := append(runEnv(runID, caller.PID, caller.Instance, meta.Depth, false),
+	env := append(runEnv(runID, caller.PID, caller.ID, meta.Depth, false),
 		"KIDO_STATE_DIR="+state.Dir())
 	command := []string{self, "async-run", "--run-id", runID, "--name", windowName}
 	if *stream {
