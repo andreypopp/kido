@@ -37,6 +37,8 @@ type kidoRun struct {
 	state  string
 	outer  string
 	shell  string
+	// kidoSock is the full path of the socket called "kido" under tmpdir.
+	kidoSock string
 }
 
 // newKidoRun builds that world but starts no kido: a test that writes a
@@ -64,6 +66,16 @@ func newKidoRun(t *testing.T) *kidoRun {
 	r.shell = primableShell(t, r.home)
 	r.outer = fmt.Sprintf("kido-l-%s-%d-%d", sanitize.ReplaceAllString(t.Name(), "-"),
 		os.Getpid(), rand.Int32N(1<<20))
+	// Where the launcher's server will put its socket: this test's own
+	// TMUX_TMPDIR decides it, and every tmux command below addresses that
+	// path rather than the name "kido". The name would be resolved against
+	// a list of directories that ends in /tmp, so the moment this
+	// directory stops resolving - the cleanup below deletes it - the name
+	// means the developer's own live server instead. That is not
+	// hypothetical: it happened.
+	r.kidoSock = socketPath(r.tmpdir, "kido")
+	watchSockets(r.outer)
+	watchSocketIn(r.tmpdir, "kido")
 
 	t.Cleanup(func() {
 		// The kido server first: killing the outer one only takes away the
@@ -148,7 +160,7 @@ func (r *kidoRun) mustOuter(args ...string) string {
 // is a question these tests poll.
 func (r *kidoRun) kido(args ...string) (string, error) {
 	r.t.Helper()
-	full := append([]string{"-L", "kido"}, args...)
+	full := append([]string{"-S", r.kidoSock}, args...)
 	cmd := exec.Command(tmuxBin, full...)
 	cmd.Env = cleanEnv("TMUX=", "TMUX_TMPDIR="+r.tmpdir)
 	out, err := cmd.Output()

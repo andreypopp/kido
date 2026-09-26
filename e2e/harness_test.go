@@ -143,6 +143,9 @@ func setup(m *testing.M) (int, error) {
 			return 0, err
 		}
 		serverPathPrefix = filepath.Dir(kidoBin) + string(os.PathListSeparator) + tmuxDir
+		if err := startWatchdog(); err != nil {
+			return 0, err
+		}
 	}
 	return m.Run(), nil
 }
@@ -328,6 +331,9 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 		os.Getpid(), rand.Int32N(1<<20))
 	h.outer = "kido-o-" + name
 	h.inner = "kido-i-" + name
+	// Registered before either server exists: a server this process has
+	// asked for but not yet seen must still die with it.
+	watchSockets(h.outer, h.inner)
 	h.stateDir = filepath.Join(h.dir, "state")
 	if err := os.MkdirAll(h.stateDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -483,12 +489,16 @@ func processGone(pid string, budget time.Duration) bool {
 
 // killServer stops a test server and unlinks its socket, which tmux
 // sometimes leaves behind in the shared socket directory.
+//
+// It addresses the server by path, like the watchdog and for the same
+// reason: a socket *name* is resolved against a list of directories and
+// silently falls through to /tmp when the first of them cannot be
+// resolved, so a name is a request to kill whatever server answers to it
+// anywhere, rather than the one this test started.
 func killServer(socket string) {
-	path, err := exec.Command(tmuxBin, "-L", socket, "display-message", "-p", "#{socket_path}").Output()
-	exec.Command(tmuxBin, "-L", socket, "kill-server").Run()
-	if err == nil {
-		os.Remove(strings.TrimSpace(string(path)))
-	}
+	path := socketPath("", socket)
+	exec.Command(tmuxBin, "-S", path, "kill-server").Run()
+	os.Remove(path)
 }
 
 func (h *harness) tmux(socket string, args ...string) (string, error) {

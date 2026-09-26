@@ -17,11 +17,12 @@ func TestLeakCheckIgnoresUnrelatedServer(t *testing.T) {
 	h := start(t, "leak-a")
 
 	scratch := "kido-leak-scratch-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	watchSockets(scratch)
 	if err := exec.Command(tmuxBin, "-L", scratch, "-f", "/dev/null",
 		"new-session", "-d", "-s", "s").Run(); err != nil {
 		t.Fatalf("start scratch server: %v", err)
 	}
-	t.Cleanup(func() { exec.Command(tmuxBin, "-L", scratch, "kill-server").Run() })
+	t.Cleanup(func() { killServer(scratch) })
 
 	client := exec.Command(tmuxBin, "-L", scratch, "-C", "attach-session", "-t", "s")
 	stdin, err := client.StdinPipe()
