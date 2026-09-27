@@ -41,6 +41,11 @@ type endingNotice struct {
 	// watched output arrive would otherwise have no way to know it was
 	// watching part of it.
 	unstreamed int
+	// unreported is the child's own word that it never called
+	// notify_parent (`kido run-outcome --unreported`). Only the child can
+	// know it; every other observer of an agent run's ending leaves it
+	// false and says nothing either way about a report.
+	unreported bool
 }
 
 // noticeFor is the notice for a run a sweep has just recorded the ending
@@ -114,15 +119,20 @@ func (n endingNotice) body() string {
 	return b.String()
 }
 
-// agentBody is the notice for a subagent run that ended without its
-// child ever calling notify_parent. It claims nothing about the work:
-// the first line is the only verdict there is - the run ended and
-// nobody spoke for it - and the rest is what a parent needs to do
-// something about that, the run id and the session to pick up where it
-// stopped.
+// agentBody is the notice for a subagent run whose ending the child did
+// not record as a reported one. It claims nothing about the work: the
+// first line is the only verdict there is, and the rest is what a parent
+// needs to do something about it, the run id and the session to pick up
+// where it stopped. The verdict is the child's own when it vouched for
+// its silence; a sweep knows only that the run ended with no outcome of
+// its own, which is no evidence of silence.
 func (n endingNotice) agentBody() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "subagent %q %s without reporting: it never called notify_parent, so this is the whole account of it\n", n.label(), n.result)
+	if n.unreported {
+		fmt.Fprintf(&b, "subagent %q %s without reporting: it never called notify_parent, so this is the whole account of it\n", n.label(), n.result)
+	} else {
+		fmt.Fprintf(&b, "subagent %q ended without recording an outcome of its own, so kido recorded it as %s; whether it called notify_parent is not known, and any report it sent stands\n", n.label(), n.result)
+	}
 	if n.text != "" {
 		fmt.Fprintf(&b, "detail: %s\n", n.text)
 	}

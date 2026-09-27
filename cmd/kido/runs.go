@@ -128,7 +128,9 @@ func runOutcomeCmd(args []string) error {
 		return subrun.RecordOutcome(id, o)
 	}
 	if n, won := reap.RecordEnding(meta, o); won {
-		noticeFor(n).send("run-outcome")
+		notice := noticeFor(n)
+		notice.unreported = true
+		notice.send("run-outcome")
 	}
 	return nil
 }

@@ -236,9 +236,40 @@ func TestReapNotifiesForAnAgentRunNobodyReported(t *testing.T) {
 	if got[0].From.Name != "ttyfix" {
 		t.Errorf("notice is from %+v, want it to name the run", got[0].From)
 	}
-	for _, want := range []string{"ttyfix", "without reporting", string(subrun.Died), meta.ID, "spawn_subagent(resume: \"" + meta.ID + "\")"} {
+	for _, want := range []string{"ttyfix", string(subrun.Died), meta.ID, "spawn_subagent(resume: \"" + meta.ID + "\")"} {
 		if !strings.Contains(got[0].Text, want) {
 			t.Errorf("notice text = %q, want it to carry %q", got[0].Text, want)
+		}
+	}
+}
+
+// TestReapNoticeClaimsOnlyWhatTheSweepKnows is the incident behind it: a
+// child called notify_parent, exited cleanly on its idle clock, and its
+// own `kido run-outcome` never ran (the binary was mid-upgrade), so the
+// sweep found the dead window with no outcome and told the parent the
+// child "never called notify_parent". A sweep reads the window and the
+// outcome file and nothing else; whether the child reported is not among
+// what it can know, so its notice must not say either way.
+func TestReapNoticeClaimsOnlyWhatTheSweepKnows(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	in := noticeParent(t, "root-sess")
+	meta := startedAgentRun(t, "simp-merge", "root-sess")
+	withPanes(t, deadRunWindow(meta.ID))
+	withKillWindow(t)
+
+	captureStdout(t, func() {
+		if err := reapCmd(nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	got := envelopes(t, in)
+	if len(got) != 1 {
+		t.Fatalf("parent received %d envelopes, want exactly 1: %+v", len(got), got)
+	}
+	for _, claim := range []string{"never called notify_parent", "without reporting", "whole account"} {
+		if strings.Contains(got[0].Text, claim) {
+			t.Errorf("notice text = %q, claims %q, which a sweep cannot know", got[0].Text, claim)
 		}
 	}
 }
@@ -265,7 +296,7 @@ func TestRunOutcomeUnreportedNotifiesTheParent(t *testing.T) {
 	if got[0].Kind != msg.KindNotice || got[0].From.Name != "ttyfix" {
 		t.Errorf("envelope = %+v, want a notice from the run", got[0])
 	}
-	for _, want := range []string{"ttyfix", "without reporting", string(subrun.Completed), meta.ID, "spawn_subagent(resume: \"" + meta.ID + "\")"} {
+	for _, want := range []string{"ttyfix", "never called notify_parent", string(subrun.Completed), meta.ID, "spawn_subagent(resume: \"" + meta.ID + "\")"} {
 		if !strings.Contains(got[0].Text, want) {
 			t.Errorf("notice text = %q, want it to carry %q", got[0].Text, want)
 		}

@@ -96,7 +96,8 @@ output: <path>
 <N> lines not streamed (the output file above has every one)   [only when streaming dropped lines]
 --- last <n> bytes of output (<m> omitted) ---   | --- output --- | --- no output --- | --- output unreadable: <err> ---
 <tail>`, "```", "");
-out.push("```", `subagent "<name>" <result> without reporting: it never called notify_parent, so this is the whole account of it
+out.push("```", `subagent "<name>" <result> without reporting: it never called notify_parent, so this is the whole account of it   [from the child itself]
+subagent "<name>" ended without recording an outcome of its own, so kido recorded it as <result>; whether it called notify_parent is not known, and any report it sent stands   [from a sweep]
 detail: <text>   [when there is one]
 run: <id>
 resume: spawn_subagent(resume: "<id>")`, "```", "");

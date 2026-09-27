@@ -232,9 +232,9 @@ func TestReapedAgentRunTellsItsParentNobodyReported(t *testing.T) {
 	}
 
 	h.waitFor(func() bool { return len(in.Received()) > 0 }, 2*time.Second,
-		msgf("the parent to be told about a child that ended without reporting"))
+		msgf("the parent to be told about a child that ended with no outcome of its own"))
 	got := in.Received()[0]
-	for _, want := range []string{`"kind":"notice"`, "silent-e2e", "without reporting", "died", runID} {
+	for _, want := range []string{`"kind":"notice"`, "silent-e2e", "without recording an outcome", "died", runID} {
 		if !strings.Contains(got, want) {
 			t.Errorf("notice = %q, want it to carry %q", got, want)
 		}
