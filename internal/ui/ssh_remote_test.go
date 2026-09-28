@@ -57,7 +57,8 @@ func (m *model) sshTick(p tmux.Pane) {
 // side has kido's integration: the remote shell's own OSC 133 markers land
 // on the local pane, so once a prompt has been marked after the ssh
 // started the row reports remote commands like any other integrated shell
-// - while still naming the destination.
+// - while still naming the destination. Its negative control is
+// TestSSHWithoutRemoteIntegrationStaysQuiet.
 func TestSSHRemoteShellReports(t *testing.T) {
 	base := time.Unix(1700000000, 0)
 	clock := base
@@ -110,7 +111,8 @@ func TestSSHRemoteShellReports(t *testing.T) {
 // TestSSHWithoutRemoteIntegrationStaysQuiet is the negative control: a far
 // side that never marks a prompt leaves the local pane reporting a command
 // that has run since the ssh started and never ends, which is exactly the
-// permanently-busy row the suppression exists for.
+// permanently-busy row the suppression exists for. It is held for ten
+// ticks, not checked once, because observeRemote latches a wrong reading.
 func TestSSHWithoutRemoteIntegrationStaysQuiet(t *testing.T) {
 	base := time.Unix(1700000000, 0)
 	clock := base

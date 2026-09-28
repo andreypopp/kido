@@ -581,7 +581,8 @@ func TestSpawnFailureIsAVisibleFailedRun(t *testing.T) {
 // markSubagent must not leave the window up unmarked, which no sweep
 // would ever find since internal/reap only touches a window carrying
 // @kido_subagent. It kills the window and records the run as failed, the
-// same as the newWindow-failure path.
+// same as the newWindow-failure path. Its negative control is
+// TestSpawnMarkFailureOnAVanishedWindowIsNotAFailure.
 func TestSpawnMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")

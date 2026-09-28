@@ -9,7 +9,8 @@ import (
 
 // TestShellOutcome covers the shell counterpart of done: the last command's
 // exit status marks the row, green for 0 and red otherwise, until the pane
-// is visited.
+// is visited. It pins two tmux/zsh quirks: `C` clears cmd_status, and a
+// first prompt emits `D` with no `C` before it, which must mark nothing.
 func TestShellOutcome(t *testing.T) {
 	// started stands in for panes never visited; visited is later, so an
 	// outcome that predates it has been looked at.
