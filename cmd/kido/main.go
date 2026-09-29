@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -27,17 +28,58 @@ import (
 	"kido/internal/ui"
 )
 
-// subcommands lists every kido subcommand the switch in main recognises,
-// kept in one place so unknownSubcommand can name them; a subcommand
-// added to the switch and forgotten here just gets a plainer error.
-var subcommands = []string{
-	"hook", "agent-status", "set_status", "list_agents", "agent-alive", "children-alive", "debug-log",
-	"inbox-path", "snapshot", "switch-session", "switch-window", "prompt",
-	"message_agent", "ask_agent", "notify_parent", "steer_subagent",
-	"interrupt_subagent", "stop_subagent", "spawn_subagent", "async_bash",
-	"async-run", "close-run",
-	"window-focused", "reap", "run-outcome", "runs", "ssh", "shell",
+// commands are the subcommands that report an error and exit 1 on
+// failure (dispatch): every kido subcommand except the irregular cases
+// in main's switch and exitCommands below.
+var commands = map[string]func([]string) error{
+	"set_status":         setStatusCmd,
+	"list_agents":        listAgentsCmd,
+	"agent-alive":        agentAliveCmd,
+	"children-alive":     childrenAliveCmd,
+	"snapshot":           func([]string) error { return snapshot(os.Stdout) },
+	"switch-session":     func(args []string) error { return switchCmd("switch-session", args, tmux.SwitchSession) },
+	"switch-window":      func(args []string) error { return switchCmd("switch-window", args, tmux.SwitchWindow) },
+	"interrupt_subagent": interruptSubagentCmd,
+	"stop_subagent":      stopSubagentCmd,
+	"spawn_subagent":     spawnSubagentCmd,
+	"async_bash":         asyncBashCmd,
+	"close-run":          closeRunCmd,
+	"window-focused":     windowFocusedCmd,
+	"reap":               reapCmd,
+	"run-outcome":        runOutcomeCmd,
+	"runs":               runsCmd,
+	"ssh":                sshCmd,
+	"shell":              shellCmd,
 }
+
+// exitCommands are the subcommands that return their own process exit
+// code rather than going through dispatch: prompt and the message-sending
+// commands, which distinguish more outcomes than success/failure.
+var exitCommands = map[string]func([]string, io.Reader) int{
+	"prompt":         prompt,
+	"message_agent":  messageAgentCmd,
+	"ask_agent":      askAgentCmd,
+	"notify_parent":  notifyParentCmd,
+	"steer_subagent": steerSubagentCmd,
+}
+
+// subcommands lists every kido subcommand, so unknownSubcommand can name
+// them: commands and exitCommands' keys, sorted, plus the switch's own
+// irregular cases, which take a shape neither table can hold (hook must
+// never fail the caller; agent-status has its own exit code; debug-log
+// and inbox-path print a path; async-run does not yet take the stdin
+// exitCommands requires, since async_run.go is another phase's file).
+var subcommands = func() []string {
+	names := []string{"hook", "agent-status", "debug-log", "inbox-path", "async-run"}
+	for name := range commands {
+		names = append(names, name)
+	}
+	for name := range exitCommands {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}()
 
 // suggestSubcommand returns the known subcommand that most plainly shares
 // its letters, in order, with what the user typed, or "" when none does.
@@ -105,7 +147,7 @@ func dispatch(name string, fn func() error) {
 
 func main() {
 	if len(os.Args) > 1 {
-		switch os.Args[1] {
+		switch name := os.Args[1]; name {
 		case "hook":
 			if len(os.Args) > 2 {
 				fmt.Fprintln(os.Stderr, "usage: kido hook")
@@ -126,18 +168,6 @@ func main() {
 				os.Exit(code)
 			}
 			return
-		case "set_status":
-			dispatch("set_status", func() error { return setStatusCmd(os.Args[2:]) })
-			return
-		case "list_agents":
-			dispatch("list_agents", func() error { return listAgentsCmd(os.Args[2:]) })
-			return
-		case "agent-alive":
-			dispatch("agent-alive", func() error { return agentAliveCmd(os.Args[2:]) })
-			return
-		case "children-alive":
-			dispatch("children-alive", func() error { return childrenAliveCmd(os.Args[2:]) })
-			return
 		case "debug-log":
 			fmt.Println(filepath.Join(state.Dir(), "debug.log"))
 			return
@@ -153,61 +183,16 @@ func main() {
 			}
 			fmt.Println(path)
 			return
-		case "snapshot":
-			dispatch("snapshot", func() error { return snapshot(os.Stdout) })
-			return
-		case "switch-session":
-			dispatch("switch-session", func() error { return switchSession(os.Args[2:]) })
-			return
-		case "switch-window":
-			dispatch("switch-window", func() error { return switchWindow(os.Args[2:]) })
-			return
-		case "prompt":
-			os.Exit(prompt(os.Args[2:], os.Stdin))
-		case "message_agent":
-			os.Exit(messageAgentCmd(os.Args[2:], os.Stdin))
-		case "ask_agent":
-			os.Exit(askAgentCmd(os.Args[2:], os.Stdin))
-		case "notify_parent":
-			os.Exit(notifyParentCmd(os.Args[2:], os.Stdin))
-		case "steer_subagent":
-			os.Exit(steerSubagentCmd(os.Args[2:], os.Stdin))
-		case "interrupt_subagent":
-			dispatch("interrupt_subagent", func() error { return interruptSubagentCmd(os.Args[2:]) })
-			return
-		case "stop_subagent":
-			dispatch("stop_subagent", func() error { return stopSubagentCmd(os.Args[2:]) })
-			return
-		case "spawn_subagent":
-			dispatch("spawn_subagent", func() error { return spawnSubagentCmd(os.Args[2:]) })
-			return
-		case "async_bash":
-			dispatch("async_bash", func() error { return asyncBashCmd(os.Args[2:]) })
-			return
 		case "async-run":
 			os.Exit(asyncRunCmd(os.Args[2:]))
-		case "close-run":
-			dispatch("close-run", func() error { return closeRunCmd(os.Args[2:]) })
-			return
-		case "window-focused":
-			dispatch("window-focused", func() error { return windowFocusedCmd(os.Args[2:]) })
-			return
-		case "reap":
-			dispatch("reap", func() error { return reapCmd(os.Args[2:]) })
-			return
-		case "run-outcome":
-			dispatch("run-outcome", func() error { return runOutcomeCmd(os.Args[2:]) })
-			return
-		case "runs":
-			dispatch("runs", func() error { return runsCmd(os.Args[2:]) })
-			return
-		case "ssh":
-			dispatch("ssh", func() error { return sshCmd(os.Args[2:]) })
-			return
-		case "shell":
-			dispatch("shell", func() error { return shellCmd(os.Args[2:]) })
-			return
 		default:
+			if fn, ok := commands[name]; ok {
+				dispatch(name, func() error { return fn(os.Args[2:]) })
+				return
+			}
+			if fn, ok := exitCommands[name]; ok {
+				os.Exit(fn(os.Args[2:], os.Stdin))
+			}
 			// A leading flag (bare `kido -client NAME`, or any other flag)
 			// falls through to the interactive UI below, same as always.
 			// Anything else is a typo or an old name - every subagent tool
@@ -216,8 +201,8 @@ func main() {
 			// fallthrough reported a misleading tmux-client error instead
 			// of naming the mismatch, so say so instead of guessing at a
 			// client.
-			if !strings.HasPrefix(os.Args[1], "-") {
-				unknownSubcommand(os.Args[1])
+			if !strings.HasPrefix(name, "-") {
+				unknownSubcommand(name)
 				return
 			}
 		}
@@ -279,11 +264,13 @@ func main() {
 	}
 }
 
-// parseSwitchArgs parses the argument shape shared by switch-session and
-// switch-window: next|prev plus an optional -client/--client flag, in
-// either order. client falls back to $TMUX_SIDE_CLIENT, then the
-// current client, when -client is not given.
-func parseSwitchArgs(cmd string, args []string) (client, dir string, err error) {
+// switchCmd implements `kido switch-session`/`kido switch-window`
+// next|prev [-client NAME]: it parses the argument shape the two share
+// and calls fn (tmux.SwitchSession or tmux.SwitchWindow) with the
+// resolved client and direction. client falls back to $TMUX_SIDE_CLIENT,
+// then the current client, when -client is not given.
+func switchCmd(cmd string, args []string, fn func(client string, next bool) error) error {
+	var client, dir string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if name, value, ok := strings.Cut(arg, "="); ok && (name == "-client" || name == "--client") {
@@ -294,20 +281,20 @@ func parseSwitchArgs(cmd string, args []string) (client, dir string, err error) 
 		case "-client", "--client":
 			i++
 			if i >= len(args) {
-				return "", "", fmt.Errorf("%s needs a value", arg)
+				return fmt.Errorf("%s needs a value", arg)
 			}
 			client = args[i]
 		case "next", "prev":
 			if dir != "" {
-				return "", "", fmt.Errorf("only one of next/prev allowed")
+				return fmt.Errorf("only one of next/prev allowed")
 			}
 			dir = arg
 		default:
-			return "", "", fmt.Errorf("unknown argument %q", arg)
+			return fmt.Errorf("unknown argument %q", arg)
 		}
 	}
 	if dir == "" {
-		return "", "", fmt.Errorf("usage: kido %s next|prev [-client NAME]", cmd)
+		return fmt.Errorf("usage: kido %s next|prev [-client NAME]", cmd)
 	}
 	if client == "" {
 		client = os.Getenv("TMUX_SIDE_CLIENT")
@@ -315,29 +302,7 @@ func parseSwitchArgs(cmd string, args []string) (client, dir string, err error) 
 	if client == "" {
 		client = tmux.CurrentClient()
 	}
-	return client, dir, nil
-}
-
-// switchSession implements `kido switch-session next|prev [-client NAME]`:
-// it switches the current client to the adjacent session in kido's order
-// (internal/tmux.OrderSessions), wrapping around.
-func switchSession(args []string) error {
-	client, dir, err := parseSwitchArgs("switch-session", args)
-	if err != nil {
-		return err
-	}
-	return tmux.SwitchSession(client, dir == "next")
-}
-
-// switchWindow implements `kido switch-window next|prev [-client NAME]`: it
-// switches the current client to the adjacent window in the sidebar's
-// order (internal/tmux.OrderSessions), wrapping around the whole server.
-func switchWindow(args []string) error {
-	client, dir, err := parseSwitchArgs("switch-window", args)
-	if err != nil {
-		return err
-	}
-	return tmux.SwitchWindow(client, dir == "next")
+	return fn(client, dir == "next")
 }
 
 // runHook is the Claude Code hook: it reads the event from stdin and

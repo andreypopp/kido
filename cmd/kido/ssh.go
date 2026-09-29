@@ -42,18 +42,15 @@ func sshArgs(args []string, tty bool) []string {
 // and the tty all behave as they would without kido in front of them.
 //
 // The ssh it runs is the one past kido's bin directory, whose own ssh is
-// the shim that ran this.
+// the shim that ran this - but `kido ssh` is also a supported interface
+// on its own (docs/design.md, the ssh_prime_test.go e2e suite), so it
+// resolves the real ssh itself rather than taking it as an argument.
 func sshCmd(args []string) error {
 	path, err := realOnPath("ssh")
 	if err != nil {
 		return err
 	}
-	argv := sshArgs(args, isTTY(os.Stdin))
-	return syscall.Exec(path, argv, os.Environ())
-}
-
-// isTTY reports whether f is a terminal.
-func isTTY(f *os.File) bool {
-	info, err := f.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	info, statErr := os.Stdin.Stat()
+	tty := statErr == nil && info.Mode()&os.ModeCharDevice != 0
+	return syscall.Exec(path, sshArgs(args, tty), os.Environ())
 }

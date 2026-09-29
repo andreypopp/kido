@@ -25,11 +25,18 @@ import (
 //
 // Returns the process exit code, printing any error to stderr itself.
 func prompt(args []string, stdin io.Reader) int {
-	window, err := parsePromptArgs(args)
-	if err != nil {
+	fs := flag.NewFlagSet("prompt", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	windowFlag := fs.Bool("window", false, "search only the caller's window, never widening to the session")
+	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, "kido prompt:", err)
 		return 1
 	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "kido prompt: unknown argument %q\n", fs.Arg(0))
+		return 1
+	}
+	window := *windowFlag
 
 	b, err := io.ReadAll(stdin)
 	if err != nil {
@@ -70,21 +77,16 @@ func prompt(args []string, stdin io.Reader) int {
 		fmt.Fprintln(os.Stderr, "agent not found")
 		return 4
 	case 1:
-		return deliver(states[candidates[0].PaneID].Inbox, candidates[0].PaneID, text)
+		inbox := states[candidates[0].PaneID].Inbox
+		if _, err := deliverInboxOrPaste(inbox, text, candidates[0].PaneID, text); err != nil {
+			fmt.Fprintln(os.Stderr, "kido prompt:", err)
+			return 1
+		}
+		return 0
 	default:
 		fmt.Fprintln(os.Stderr, "multiple agents found")
 		return 5
 	}
-}
-
-// deliver hands text to the chosen agent and returns prompt's exit code,
-// printing any error itself.
-func deliver(inbox, pane, text string) int {
-	if _, err := deliverInboxOrPaste(inbox, text, pane, text); err != nil {
-		fmt.Fprintln(os.Stderr, "kido prompt:", err)
-		return 1
-	}
-	return 0
 }
 
 // sendPrompt is tmux.SendPrompt, indirected so tests can check the paste
@@ -113,21 +115,6 @@ func deliverInboxOrPaste(inbox, inboxPayload, pane, pasteText string) (paste boo
 		return false, err
 	}
 	return true, nil
-}
-
-// parsePromptArgs parses prompt's flags: --window/-window, rejecting any
-// stray positional argument.
-func parsePromptArgs(args []string) (window bool, err error) {
-	fs := flag.NewFlagSet("prompt", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	windowFlag := fs.Bool("window", false, "search only the caller's window, never widening to the session")
-	if err := fs.Parse(args); err != nil {
-		return false, err
-	}
-	if fs.NArg() > 0 {
-		return false, fmt.Errorf("unknown argument %q", fs.Arg(0))
-	}
-	return *windowFlag, nil
 }
 
 // inScope reports whether p is within the search scope: self's session,

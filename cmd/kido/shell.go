@@ -24,7 +24,7 @@ func shellCmd(args []string) error {
 	if len(args) > 0 {
 		return fmt.Errorf("usage: kido shell")
 	}
-	path, command := shellCommand(loginShell(), tmux.GlobalOption(userCommandOption))
+	path, command := shellCommand(resolveLoginShell(tmux.GlobalOption("default-shell"), os.Getenv("SHELL")), tmux.GlobalOption(userCommandOption))
 	mode := localPrimeMode(path)
 	env := os.Environ()
 	bin, _ := ownBinDir()
@@ -84,17 +84,12 @@ func shellCommand(loginShellPath, command string) (path, effective string) {
 	case "zsh", "bash":
 		return resolved, ""
 	}
-	if sameExecutable(resolved, loginShellPath) {
-		return loginShellPath, ""
+	if fa, errA := os.Stat(resolved); errA == nil {
+		if fb, errB := os.Stat(loginShellPath); errB == nil && os.SameFile(fa, fb) {
+			return loginShellPath, ""
+		}
 	}
 	return loginShellPath, command
-}
-
-// sameExecutable reports whether a and b name the same file on disk.
-func sameExecutable(a, b string) bool {
-	fa, errA := os.Stat(a)
-	fb, errB := os.Stat(b)
-	return errA == nil && errB == nil && os.SameFile(fa, fb)
 }
 
 // withEnv is base with each assignment in add replacing any it already
@@ -123,19 +118,14 @@ func withEnv(base, add []string) []string {
 // pane gets an interactive login shell.
 const userCommandOption = "@kido-user-command"
 
-// loginShell is the shell a kido pane runs: the server's default-shell
-// when there is a server to ask - tmux itself defaults that to the $SHELL
-// of whoever started the server, so a user who set one wins and a user
-// who did not loses nothing - then $SHELL, then /bin/sh.
-func loginShell() string {
-	return resolveLoginShell(tmux.GlobalOption("default-shell"), os.Getenv("SHELL"))
-}
-
-// resolveLoginShell is loginShell's order over values it is given, so it
-// can be tested without a tmux server answering for the machine the test
-// runs on. A candidate that is not an executable file is skipped: an
-// option naming a shell this host does not have must not cost the pane
-// its shell.
+// resolveLoginShell is the shell a kido pane runs, over values given so
+// it can be tested without a tmux server answering for the machine the
+// test runs on: the server's default-shell when there is a server to ask
+// - tmux itself defaults that to the $SHELL of whoever started the
+// server, so a user who set one wins and a user who did not loses
+// nothing - then $SHELL, then /bin/sh. A candidate that is not an
+// executable file is skipped: an option naming a shell this host does
+// not have must not cost the pane its shell.
 func resolveLoginShell(candidates ...string) string {
 	for _, candidate := range candidates {
 		if candidate == "" {

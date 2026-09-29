@@ -35,20 +35,6 @@ const (
 	primeBash                   // $ENV read through --posix
 )
 
-// primeModeFor is the mode a login shell at path gets, by its basename -
-// the only thing about a shell that can be known without running it. A
-// bash has one more gate to pass, bashHasPS0, which costs a process to
-// ask and so is left to the caller.
-func primeModeFor(path string) primeMode {
-	switch filepath.Base(path) {
-	case "zsh":
-		return primeZsh
-	case "bash":
-		return primeBash
-	}
-	return primePlain
-}
-
 // The names inside a primed shell's throwaway directory. zsh finds its
 // startup file by the name zsh looks for; bash is handed $ENV by path and
 // so could use any name, but the two are spelled alike here.
@@ -270,23 +256,23 @@ func hasZshDotfiles() bool {
 	return false
 }
 
-// localPrimeMode is the mode a shell at path gets in a kido pane: the
-// basename decision plus the two questions only this machine can answer,
-// asked here rather than in primeModeFor because each costs a process or
-// a stat.
+// localPrimeMode is the mode a shell at path gets in a kido pane: its
+// basename - the only thing about a shell that can be known without
+// running it - plus, for zsh and bash, one more gate only this machine
+// can answer, each costing a process or a stat.
 func localPrimeMode(path string) primeMode {
-	switch mode := primeModeFor(path); mode {
-	case primeZsh:
+	switch filepath.Base(path) {
+	case "zsh":
 		if !hasZshDotfiles() {
 			return primePlain
 		}
-		return mode
-	case primeBash:
+		return primeZsh
+	case "bash":
 		out, err := exec.Command(path, "-c", bashVersionProbe).Output()
 		if err != nil || !bashHasPS0(string(out)) {
 			return primePlain
 		}
-		return mode
+		return primeBash
 	}
 	return primePlain
 }
@@ -374,7 +360,7 @@ cat > "$kido_dir/%[11]s" <<'KIDO_BASHENV' || kido_plain
 export ENV="$kido_dir/%[11]s"
 exec "$kido_shell" %[13]s
 `,
-		base64Payload(shell.ZshIntegration), base64Payload(shell.BashIntegration),
+		base64.StdEncoding.EncodeToString(shell.ZshIntegration), base64.StdEncoding.EncodeToString(shell.BashIntegration),
 		strings.Join(primeShellArgs(primePlain), " "),
 		bashVersionProbe, bashPS0Major, bashPS0Minor,
 		zshIntegrationFile, zshEnvFile, kidoZshenv,
@@ -382,8 +368,3 @@ exec "$kido_shell" %[13]s
 		strings.Join(primeShellArgs(primeBash), " "),
 		strings.Join(primeShellArgs(primeZsh), " "))
 }
-
-// base64Payload encodes an integration for the ssh command line. The
-// base64 alphabet holds no single quote, which is what makes wrapping a
-// payload in one pair of single quotes safe with no escaping at all.
-func base64Payload(b []byte) string { return base64.StdEncoding.EncodeToString(b) }

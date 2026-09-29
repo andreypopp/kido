@@ -443,8 +443,8 @@ func TestAgentStatusErrors(t *testing.T) {
 	}
 }
 
-// TestEverySubcommandCaseReturns reads main's switch from the source: a
-// case that dispatches and forgets to return falls into the sidebar's
+// TestEverySubcommandCaseReturns reads main's dispatch from the source: a
+// branch that dispatches and forgets to return falls into the sidebar's
 // startup, which fails on the missing TTY with exit 1 after the
 // subcommand has already printed its answer, and every caller that
 // shells out reads a nonzero exit as inconclusive and ignores it.
@@ -452,6 +452,15 @@ func TestAgentStatusErrors(t *testing.T) {
 // its target die and a child never saw its parent die. A binary run
 // cannot pin this for every subcommand, since most exit through a usage
 // error before the fallthrough is reached; the source can.
+//
+// main dispatches two ways: the switch's own irregular cases (hook,
+// agent-status, debug-log, inbox-path, async-run), checked the same way
+// as before, and the default case's two map lookups, one for commands and
+// one for exitCommands, each of which runs every name its table holds.
+// Because every table entry shares its one lookup-and-dispatch block,
+// checking that block once verifies the rule for every subcommand the
+// table names, not just the ones written here - unlike the old
+// hand-written switch, where each case needed its own checked return.
 func TestEverySubcommandCaseReturns(t *testing.T) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "main.go", nil, 0)
@@ -471,24 +480,49 @@ func TestEverySubcommandCaseReturns(t *testing.T) {
 	if sw == nil {
 		t.Fatal("no switch in main")
 	}
-	for _, c := range sw.Body.List {
-		cc := c.(*ast.CaseClause)
-		if cc.List == nil {
-			continue // default: the flag path, which is the UI
+	endsInReturnOrExit := func(body []ast.Stmt) bool {
+		if len(body) == 0 {
+			return false
 		}
-		last := cc.Body[len(cc.Body)-1]
-		switch s := last.(type) {
+		switch s := body[len(body)-1].(type) {
 		case *ast.ReturnStmt:
-			continue
+			return true
 		case *ast.ExprStmt:
 			if call, ok := s.X.(*ast.CallExpr); ok {
 				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Exit" {
-					continue
+					return true
 				}
 			}
 		}
-		t.Errorf("case %s at %s falls through to the UI: its last statement is not a return or os.Exit",
-			types.ExprString(cc.List[0]), fset.Position(last.Pos()))
+		return false
+	}
+	for _, c := range sw.Body.List {
+		cc := c.(*ast.CaseClause)
+		if cc.List == nil {
+			// default: every name not named by an explicit case is looked up
+			// in commands or exitCommands; each lookup's own block must
+			// return or exit.
+			checked := 0
+			for _, stmt := range cc.Body {
+				ifs, ok := stmt.(*ast.IfStmt)
+				if !ok {
+					continue
+				}
+				checked++
+				if !endsInReturnOrExit(ifs.Body.List) {
+					t.Errorf("an if in main's default case at %s falls through to the UI: its last statement is not a return or os.Exit",
+						fset.Position(ifs.Pos()))
+				}
+			}
+			if checked == 0 {
+				t.Error("main's default case has no if to check; the command table dispatch may have moved")
+			}
+			continue
+		}
+		if !endsInReturnOrExit(cc.Body) {
+			t.Errorf("case %s at %s falls through to the UI: its last statement is not a return or os.Exit",
+				types.ExprString(cc.List[0]), fset.Position(cc.Body[len(cc.Body)-1].Pos()))
+		}
 	}
 }
 

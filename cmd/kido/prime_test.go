@@ -24,19 +24,15 @@ func TestBashHasPS0(t *testing.T) {
 	}
 }
 
-// TestPrimeModeFor pins the shell detection: the basename, and nothing
-// else, because it is all that can be known about a shell without running
-// it. A login shell kido does not know gets a working pane with no
-// markers.
-func TestPrimeModeFor(t *testing.T) {
-	cases := map[string]primeMode{
-		"/bin/zsh": primeZsh, "/opt/homebrew/bin/zsh": primeZsh,
-		"/bin/bash": primeBash, "/usr/local/bin/bash": primeBash,
-		"/bin/sh": primePlain, "/usr/bin/fish": primePlain, "/bin/ksh": primePlain,
-	}
-	for path, want := range cases {
-		if got := primeModeFor(path); got != want {
-			t.Errorf("primeModeFor(%q) = %v, want %v", path, got, want)
+// TestLocalPrimeModeIgnoresUnknownShells pins the basename decision that
+// used to be primeModeFor's own, now folded into localPrimeMode: a login
+// shell kido does not know by basename gets primePlain with neither gate
+// consulted, so this is safe to check against paths that do not exist on
+// disk (localPrimeMode would otherwise stat or exec them).
+func TestLocalPrimeModeIgnoresUnknownShells(t *testing.T) {
+	for _, path := range []string{"/bin/sh", "/usr/bin/fish", "/bin/ksh"} {
+		if got := localPrimeMode(path); got != primePlain {
+			t.Errorf("localPrimeMode(%q) = %v, want primePlain", path, got)
 		}
 	}
 }

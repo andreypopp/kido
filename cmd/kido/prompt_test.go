@@ -50,25 +50,3 @@ func TestPromptAgentPanesInExcludesSubagentWindows(t *testing.T) {
 		t.Fatalf("agentPanesIn (unmarked) = %v, want both %%2 and %%3", got)
 	}
 }
-
-// TestPromptFlagParsing checks parsePromptArgs directly for --window
-// (both spellings) and the default (unset).
-func TestPromptFlagParsing(t *testing.T) {
-	cases := []struct {
-		args   []string
-		window bool
-	}{
-		{nil, false},
-		{[]string{"--window"}, true},
-		{[]string{"-window"}, true},
-	}
-	for _, c := range cases {
-		window, err := parsePromptArgs(c.args)
-		if err != nil {
-			t.Fatalf("parsePromptArgs(%v): %v", c.args, err)
-		}
-		if window != c.window {
-			t.Errorf("parsePromptArgs(%v) = %v, want %v", c.args, window, c.window)
-		}
-	}
-}

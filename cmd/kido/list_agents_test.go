@@ -158,8 +158,8 @@ func TestBuildAgentsScopesToSession(t *testing.T) {
 	}
 }
 
-// TestBuildAgentsListsEveryAgentInACycle pins the one thing orderTree
-// owes its caller: an agent in the session is in the list. A bogus
+// TestBuildAgentsListsEveryAgentInACycle pins the one thing buildAgents'
+// ordering owes its caller: an agent in the session is in the list. A bogus
 // ParentSession can make a record name one of its own descendants - or
 // itself - as its parent, and a walk that starts at the roots reaches
 // neither. list_agents is the only way to discover an agent at all, so a
@@ -250,7 +250,8 @@ func TestBuildAgentsRecycledPIDNoEdge(t *testing.T) {
 	}
 }
 
-// TestBuildAgentsStableOrderOnTie pins the id tiebreak in olderFirst.
+// TestBuildAgentsStableOrderOnTie pins the id tiebreak in buildAgents'
+// sort.
 // Records are gathered by ranging a map, so two agents that last
 // reported inside the same clock tick would otherwise come back in a
 // different order on each call against identical state - and the

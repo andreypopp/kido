@@ -88,7 +88,21 @@ func listAgentsCmd(args []string) error {
 	if *asJSON {
 		return json.NewEncoder(os.Stdout).Encode(agents)
 	}
-	return printAgents(os.Stdout, agents)
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tNAME\tAGENT\tMODEL\tPANE\tWINDOW\tSTATUS\tSTALLED\tACTIVITY\tSINCE\tPARENT\tDEPTH\tSELF\tCWD")
+	for _, a := range agents {
+		self := ""
+		if a.Self {
+			self = "*"
+		}
+		stalled := ""
+		if a.Stalled {
+			stalled = "stalled"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\n",
+			a.ID, a.Name, a.Agent, a.Model, a.Pane, a.Window, a.Status, stalled, a.Activity, a.SinceReport, a.Parent, a.Depth, self, a.Cwd)
+	}
+	return tw.Flush()
 }
 
 // buildAgents assembles the AgentInfo rows for kido list_agents and pi's
@@ -101,12 +115,37 @@ func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, se
 	for _, s := range scoped {
 		inScope[s.ID] = true
 	}
-	ordered := orderTree(scoped, inScope)
+	// Parent-first, siblings oldest report first (a Session records no
+	// start time, so TS is the proxy for spawn order); tree.Order keeps
+	// the order it receives, so the sort comes first. The session id is a
+	// tiebreak: scoped comes from ranging a map, so without it two agents
+	// reporting in the same clock tick would reorder between two calls
+	// that saw the same state.
+	sorted := append([]state.Session(nil), scoped...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].TS.Equal(sorted[j].TS) {
+			return sorted[i].ID < sorted[j].ID
+		}
+		return sorted[i].TS.Before(sorted[j].TS)
+	})
+	ordered := tree.Order(sorted,
+		func(s state.Session) string { return s.ID },
+		func(s state.Session) string { return parentID(s, inScope) })
 
 	now := time.Now()
+	wake := state.Wake()
 	out := make([]AgentInfo, 0, len(ordered))
 	for _, s := range ordered {
 		p := byPane[s.Pane]
+		// CanReply is whether ask_agent may wait on this agent: it has an
+		// inbox, and its run record - if any - does not narrow its tools
+		// away from message_agent. No record (a root agent, or a pi/kido too
+		// old to write one) and an empty tools list both mean unrestricted.
+		canReply := false
+		if s.Inbox != "" {
+			meta, err := subrun.ReadMeta(s.ID)
+			canReply = err != nil || len(meta.Tools) == 0 || slices.Contains(meta.Tools, "message_agent")
+		}
 		out = append(out, AgentInfo{
 			ID:          s.ID,
 			Name:        displayName(s, byPane),
@@ -120,35 +159,13 @@ func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, se
 			Self:        s.Pane == self,
 			Cwd:         p.CurrentPath,
 			CanMessage:  s.Inbox != "",
-			CanReply:    s.Inbox != "" && canReplyTools(s.ID),
+			CanReply:    canReply,
 			Model:       s.Model,
 			SinceReport: int(now.Sub(s.TS).Seconds()),
-			Stalled:     state.Stalled(s, now),
+			Stalled:     state.StalledSince(s, wake, now),
 		})
 	}
 	return out
-}
-
-// orderTree sorts scoped parent-first, siblings oldest report first (a
-// Session records no start time, so TS is the proxy for spawn order).
-// tree.Order keeps the order it receives, so the sort comes first.
-func orderTree(scoped []state.Session, inScope map[string]bool) []state.Session {
-	sorted := append([]state.Session(nil), scoped...)
-	sort.SliceStable(sorted, func(i, j int) bool { return olderFirst(sorted[i], sorted[j]) })
-	return tree.Order(sorted,
-		func(s state.Session) string { return s.ID },
-		func(s state.Session) string { return parentID(s, inScope) })
-}
-
-// canReplyTools reports whether id's run record, if any, still allows
-// message_agent: no record (a root agent, or a pi/kido too old to write
-// one) and an empty tools list both mean unrestricted.
-func canReplyTools(id string) bool {
-	meta, err := subrun.ReadMeta(id)
-	if err != nil || len(meta.Tools) == 0 {
-		return true
-	}
-	return slices.Contains(meta.Tools, "message_agent")
 }
 
 // isAncestor reports whether ancestorID is an ancestor of targetID,
@@ -201,34 +218,4 @@ func parentID(s state.Session, inScope map[string]bool) string {
 		return s.ParentSession
 	}
 	return ""
-}
-
-// printAgents writes agents as a plain aligned table.
-func printAgents(w io.Writer, agents []AgentInfo) error {
-	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tNAME\tAGENT\tMODEL\tPANE\tWINDOW\tSTATUS\tSTALLED\tACTIVITY\tSINCE\tPARENT\tDEPTH\tSELF\tCWD")
-	for _, a := range agents {
-		self := ""
-		if a.Self {
-			self = "*"
-		}
-		stalled := ""
-		if a.Stalled {
-			stalled = "stalled"
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\n",
-			a.ID, a.Name, a.Agent, a.Model, a.Pane, a.Window, a.Status, stalled, a.Activity, a.SinceReport, a.Parent, a.Depth, self, a.Cwd)
-	}
-	return tw.Flush()
-}
-
-// olderFirst orders two records by when they last reported, with the
-// session id as a tiebreak: records come from ranging a map, so without
-// it two agents reporting in the same clock tick would reorder between
-// two calls that saw the same state.
-func olderFirst(a, b state.Session) bool {
-	if a.TS.Equal(b.TS) {
-		return a.ID < b.ID
-	}
-	return a.TS.Before(b.TS)
 }
