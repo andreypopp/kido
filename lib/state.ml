@@ -132,10 +132,7 @@ let held_message id s =
   Printf.sprintf "session %s is already open in pane %s (pid %d); this process is not tracked" id
     s.pane s.pid
 
-let stall_threshold () =
-  match Option.flat_map Int.of_string (Sys.getenv_opt "KIDO_STALL_THRESHOLD_MS") with
-  | Some ms when ms > 0 -> Float.of_int ms /. 1000.
-  | _ -> 180.
+let stall_threshold () = Cli.ms_env Sys.getenv_opt "KIDO_STALL_THRESHOLD_MS" 180.
 
 let stalled_since ~threshold ~wake ~now s =
   match s.status with

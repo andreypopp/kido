@@ -37,6 +37,53 @@ let ask_agent =
      and+ to_ = arg "TO" in
      Message_agent.{ kind = Ask; recipient = Named to_; reply_to = ""; id }
 
+let steer_subagent =
+  send "steer_subagent" "Steer a descendant agent mid-turn with a message read from stdin."
+  @@ let+ to_ = arg "AGENT" in
+     Message_agent.{ kind = Steer; recipient = Descendant to_; reply_to = ""; id = "" }
+
+let interrupt_subagent =
+  cmd "interrupt_subagent" "Abort a descendant agent's current turn."
+  @@ let+ to_ = arg "AGENT" in
+     fun () -> Control.interrupt ~dir:(State.dir ()) ~self:(env "TMUX_PANE") ~panes to_
+
+let release_ops = { Reap.kill_window = Tmux.Exec.kill_window; kill_pane = Tmux.Exec.kill_pane }
+
+let stop_subagent =
+  cmd "stop_subagent" "Stop a descendant agent, or an async run."
+  @@ let+ force =
+       flag "force" "Kill the target's window directly when it has no inbox to ask nicely over."
+     and+ to_ = arg "AGENT" in
+     fun () ->
+       Control.stop ~dir:(State.dir ()) ~self:(env "TMUX_PANE") ~list_panes:Tmux.Exec.list_panes
+         ~ops:release_ops ~escalation:(Control.stop_escalation ()) ~force to_
+
+let runs =
+  cmd "runs" "List subagent and async runs, or show one."
+  @@ let+ json = flag "json" "Print JSON instead of a table." and+ args = rest in
+     fun () -> Runs.runs ~dir:(State.dir ()) ~json args
+
+let run_outcome =
+  cmd "run-outcome" "Record a run's own outcome."
+  @@ let+ result = str "result" "RESULT" "completed or failed."
+     and+ text = str "text" "TEXT" "Optional detail."
+     and+ unreported = flag "unreported" "The child never called notify_parent: tell its parent so."
+     and+ id = arg "RUN_ID" in
+     fun () ->
+       Runs.run_outcome ~dir:(State.dir ()) ~capture:Reap.capture_pane ~result ~text ~unreported id
+
+let async_run =
+  cmd "async-run" "Run an async run's command, recording and reporting how it ended."
+  @@ let+ run_id =
+       str "run-id" "ID" "The run this window is running; defaults to $KIDO_AGENT_RUN_ID."
+     and+ stream = flag "stream" "Send the command's output to the parent in batches as it runs."
+     and+ args = rest in
+     fun () ->
+       Async_run.async_run ~dir:(State.dir ())
+         ~knobs:(Async_stream.knobs Sys.getenv_opt)
+         ~run_id:(if String.is_empty run_id then env "KIDO_AGENT_RUN_ID" else run_id)
+         ~stream args
+
 let notify_parent =
   cmd "notify_parent" "Send this subagent's report, read from stdin, to its parent."
   @@ let+ () = Term.const () in
@@ -235,8 +282,6 @@ let duration =
     ( (fun s -> Result.map_err (fun e -> `Msg e) (Ui.parse_duration s)),
       fun ppf d -> Format.fprintf ppf "%gs" d )
 
-let release_ops = { Reap.kill_window = Tmux.Exec.kill_window; kill_pane = Tmux.Exec.kill_pane }
-
 (* State.read_all, not a per-pane view: the orphan rule needs every record. *)
 let reap =
   Cmd.v (Cmd.info "reap" ~doc:"Close the finished subagent windows a sweep names.")
@@ -299,6 +344,12 @@ let () =
         message_agent;
         ask_agent;
         notify_parent;
+        steer_subagent;
+        interrupt_subagent;
+        stop_subagent;
+        runs;
+        run_outcome;
+        async_run;
         list_agents;
         set_status;
         agent_alive;

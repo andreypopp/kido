@@ -102,3 +102,28 @@ let start_inbox ~reply =
       let r = List.rev !received in
       Mutex.unlock mu;
       r )
+
+let run ~dir ?(name = "") ?kind ?(parent = "") ?(pane = "") ?(pid = 0) ?(cwd = "")
+    ?(started_at = 1_700_000_000.) ?command id =
+  let runs = Filename.concat dir "runs" in
+  let id = Result.get_exn (Subrun.parse_id id) in
+  Subrun.create ~dir:runs id "do the thing";
+  Option.iter (Subrun.write_command ~dir:runs id) command;
+  let meta : Subrun.meta =
+    {
+      id;
+      name;
+      kind;
+      parent_session = parent;
+      depth = 1;
+      pane;
+      pid;
+      cwd;
+      model = "";
+      tools = [];
+      keep_alive = false;
+      started_at;
+    }
+  in
+  Subrun.write_meta ~dir:runs meta;
+  meta

@@ -11,6 +11,8 @@ val delivered_path : dir:string -> id -> string
 
 type kind = Agent | Bash
 
+val string_of_kind : kind -> string
+
 type meta = {
   id : id;
   name : string;

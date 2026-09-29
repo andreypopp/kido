@@ -33,3 +33,20 @@ let to_yojson t = `String (to_string t)
 let of_yojson = function
   | `String s -> Option.to_result "not an RFC 3339 UTC timestamp" (of_string s)
   | _ -> Error "not a timestamp"
+
+let duration d =
+  let ms = Float.to_int (Float.round (d *. 1000.)) in
+  if ms = 0 then "0s"
+  else if abs ms < 1000 then Printf.sprintf "%dms" ms
+  else
+    let s = ms / 1000 in
+    let secs =
+      match ms mod 1000 with
+      | 0 -> string_of_int (s mod 60)
+      | f ->
+          Printf.sprintf "%d.%s" (s mod 60)
+            (String.rdrop_while (Char.equal '0') (Printf.sprintf "%03d" f))
+    in
+    if s >= 3600 then Printf.sprintf "%dh%dm%ss" (s / 3600) (s / 60 mod 60) secs
+    else if s >= 60 then Printf.sprintf "%dm%ss" (s / 60) secs
+    else secs ^ "s"

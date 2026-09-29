@@ -9,9 +9,6 @@ let kido args =
   in
   (code, List.hd (String.lines (Option.get_or ~default:"" (Kido.Fs.read err) ^ "\n")))
 
-(* Tools whose subcommand has not been ported yet; a name leaves this list with its port. *)
-let pending = [ "steer_subagent"; "interrupt_subagent"; "stop_subagent" ]
-
 (* pi's own suite pins that tools.json names exactly the tools it registers; this pins that each
    invokes a subcommand of its own name. *)
 let%expect_test "every pi tool has a kido subcommand of its name" =
@@ -20,11 +17,8 @@ let%expect_test "every pi tool has a kido subcommand of its name" =
   in
   List.iter
     (fun tool ->
-      let exists = fst (kido [ tool; "--help=plain" ]) = 0 in
-      let is_pending = List.mem ~eq:String.equal tool pending in
-      if Bool.equal exists is_pending then
-        Printf.printf "%s: %s\n" tool
-          (if exists then "ported: drop it from pending" else "no subcommand of its name"))
+      if fst (kido [ tool; "--help=plain" ]) <> 0 then
+        Printf.printf "%s: no subcommand of its name\n" tool)
     tools;
   Printf.printf "%d tools\n" (List.length tools);
   [%expect {| 10 tools |}]

@@ -15,3 +15,8 @@ let run ?(failure = 1) name body =
       fail
         (String.concat " " (List.filter (fun s -> not (String.is_empty s)) [ fn; arg ])
         ^ ": " ^ Unix.error_message e)
+
+let ms_env getenv name default =
+  match Option.flat_map Int.of_string (getenv name) with
+  | Some ms when ms > 0 -> Float.of_int ms /. 1000.
+  | _ -> default

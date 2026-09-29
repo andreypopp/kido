@@ -1,11 +1,7 @@
 type knobs = { batch : float; backoff_floor : float; backoff_cap : float }
 
 let knobs getenv =
-  let ms name default =
-    match Option.flat_map int_of_string_opt (getenv name) with
-    | Some n when n > 0 -> float_of_int n /. 1000.
-    | _ -> default
-  in
+  let ms = Cli.ms_env getenv in
   {
     batch = ms "KIDO_STREAM_BATCH_MS" 0.25;
     backoff_floor = ms "KIDO_STREAM_BACKOFF_MS" 0.5;

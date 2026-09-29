@@ -8,6 +8,10 @@ val resolve_target :
   string ->
   string * State.session
 
+val reaches : (string * State.session) list -> Tmux.Pane.t list -> self:string -> string -> bool
+(** Whether session [id] is the caller's own or its descendant, over a per-pane list; a caller that
+    is no agent reaches everything. *)
+
 val resolve :
   live:(string * State.session) list ->
   panes:Tmux.Pane.t list ->
@@ -23,7 +27,9 @@ val deliver :
   spec ->
   State.session ->
   string ->
-  [ `Inbox | `Pasted ]
+  ([ `Inbox | `Pasted ], [ `Unavailable of string | `Failed of string ]) result
+(** A plain message falls back to a paste; any other kind needs the inbox, and its error is the
+    whole sentence to print. [`Unavailable] is nothing listening there. *)
 
 val send :
   dir:string ->

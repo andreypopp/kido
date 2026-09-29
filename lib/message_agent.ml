@@ -39,22 +39,24 @@ let resolve_target states panes ~self to_ =
       | Some (Ok (id, _)) -> fail "%s (%s) is in another tmux session, not this one" to_ id
       | None -> fail "no agent session matches %S" to_)
 
+let reaches states panes ~self id =
+  match List.find_opt (fun (_, (s : State.session)) -> String.equal s.pane self) states with
+  | None -> true
+  | Some (caller, _) ->
+      String.equal caller id
+      ||
+      let parent_of =
+        List.filter_map
+          (fun e -> Option.map (fun p -> (fst e, p)) (List_agents.parent_edge e))
+          (List_agents.in_session panes states (caller_pane panes self).session_id)
+      in
+      List_agents.is_ancestor parent_of ~ancestor:caller id
+
 let descendant_target states panes ~self to_ =
   let ((id, target) as e) = resolve_target states panes ~self to_ in
   let name = List_agents.display_name panes target in
   if String.equal target.pane self then fail "%s is this agent" name;
-  let reaches =
-    match List.find_opt (fun (_, (s : State.session)) -> String.equal s.pane self) states with
-    | None -> true
-    | Some (caller, _) ->
-        let parent_of =
-          List.filter_map
-            (fun e -> Option.map (fun p -> (fst e, p)) (List_agents.parent_edge e))
-            (List_agents.in_session panes states (caller_pane panes self).session_id)
-        in
-        List_agents.is_ancestor parent_of ~ancestor:caller id
-  in
-  if not reaches then fail "%s is not this agent's descendant" name;
+  if not (reaches states panes ~self id) then fail "%s is not this agent's descendant" name;
   e
 
 let resolve ~live ~panes ~self = function
@@ -93,17 +95,18 @@ let deliver ~states ~panes ~self ~paste spec (target : State.session) text =
            })
   in
   if is_message then
-    Prompt.deliver_or_paste ~paste ~inbox:target.inbox ~payload ~pane:target.pane text
+    Ok (Prompt.deliver_or_paste ~paste ~inbox:target.inbox ~payload ~pane:target.pane text)
   else
     match Msg.deliver ~path:target.inbox payload with
-    | Ok () -> `Inbox
-    | Error (Refused _) -> fail "%s refused the %s" name kind
-    | Error (Unavailable why) ->
-        fail
-          "%s is not listening on its inbox; a %s cannot fall back to a paste: no agent listening \
-           on the inbox: %s"
-          name kind why
-    | Error (Failed m) -> failwith m
+    | Ok () -> Ok `Inbox
+    | Error (Refused _) -> Error (`Failed (Printf.sprintf "%s refused the %s" name kind))
+    | Error (Unavailable _ as e) ->
+        Error
+          (`Unavailable
+             (Printf.sprintf
+                "%s is not listening on its inbox; a %s cannot fall back to a paste: %s" name kind
+                (Msg.string_of_error e)))
+    | Error (Failed m) -> Error (`Failed m)
 
 let send ~dir ~self ~panes ~paste spec text =
   let text = String.chop_suffix ~suf:"\n" text |> Option.get_or ~default:text in
@@ -137,8 +140,9 @@ let send ~dir ~self ~panes ~paste spec text =
     let name = List_agents.display_name panes target in
     if String.equal target.pane self then fail "%s is this agent" name;
     (match deliver ~states ~panes ~self ~paste spec target text with
-    | `Pasted -> Printf.printf "pasted into %s's pane\n" name
-    | `Inbox -> Printf.printf "delivered to %s by inbox\n" name);
+    | Ok `Pasted -> Printf.printf "pasted into %s's pane\n" name
+    | Ok `Inbox -> Printf.printf "delivered to %s by inbox\n" name
+    | Error (`Unavailable m | `Failed m) -> failwith m);
     0
   end
 

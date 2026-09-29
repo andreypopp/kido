@@ -101,6 +101,10 @@ let new_id () =
 
 type error = Unavailable of string | Refused of string | Failed of string
 
+let string_of_error = function
+  | Unavailable why -> "no agent listening on the inbox: " ^ why
+  | Refused m | Failed m -> m
+
 exception Timeout
 
 let describe = function Unix.Unix_error (e, _, _) -> Unix.error_message e | _ -> "timed out"
