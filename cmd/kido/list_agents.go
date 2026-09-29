@@ -49,9 +49,6 @@ func listAgentsUsage() string {
 	return "usage: kido list_agents [--session ID] [--json]"
 }
 
-// listAgentsCmd implements `kido list_agents [--session ID] [--json]`:
-// every agent in a tmux session, defaulting to the session holding the
-// caller's own pane ($TMUX_PANE).
 func listAgentsCmd(args []string) error {
 	fs := flag.NewFlagSet("list_agents", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -105,22 +102,17 @@ func listAgentsCmd(args []string) error {
 	return tw.Flush()
 }
 
-// buildAgents assembles the AgentInfo rows for kido list_agents and pi's
-// list_agents tool: every live state.Session whose pane is currently in
-// session, decorated with its tmux.Pane.
 func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, self string) []AgentInfo {
 	byPane := paneIndex(panes)
 	scoped := sessionsInSession(states, panes, session)
-	inScope := map[string]bool{} // the agents Parent may be resolved against
+	inScope := map[string]bool{}
 	for _, s := range scoped {
 		inScope[s.ID] = true
 	}
-	// Parent-first, siblings oldest report first (a Session records no
-	// start time, so TS is the proxy for spawn order); tree.Order keeps
-	// the order it receives, so the sort comes first. The session id is a
-	// tiebreak: scoped comes from ranging a map, so without it two agents
-	// reporting in the same clock tick would reorder between two calls
-	// that saw the same state.
+	// TS is the proxy for spawn order (a Session records no start time);
+	// the session id is a tiebreak, since scoped comes from ranging a map
+	// and two agents reporting in the same clock tick would otherwise
+	// reorder between calls that saw the same state.
 	sorted := append([]state.Session(nil), scoped...)
 	sort.SliceStable(sorted, func(i, j int) bool {
 		if sorted[i].TS.Equal(sorted[j].TS) {
@@ -137,10 +129,6 @@ func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, se
 	out := make([]AgentInfo, 0, len(ordered))
 	for _, s := range ordered {
 		p := byPane[s.Pane]
-		// CanReply is whether ask_agent may wait on this agent: it has an
-		// inbox, and its run record - if any - does not narrow its tools
-		// away from message_agent. No record (a root agent, or a pi/kido too
-		// old to write one) and an empty tools list both mean unrestricted.
 		canReply := false
 		if s.Inbox != "" {
 			id, err := subrun.ParseID(s.ID)
@@ -172,12 +160,10 @@ func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, se
 	return out
 }
 
-// isAncestor reports whether ancestorID is an ancestor of targetID,
-// walking parentOf (a session id to its parent's); pi/kido-agents.ts's
-// isAncestor is the same walk and the two are kept in step. seen guards
-// a cyclic parent chain. ancestorID == targetID is refused outright: a
-// corrupt record naming itself as its parent would otherwise match on the
-// first comparison and let a session stop itself.
+// pi/kido-agents.ts's isAncestor is the same walk and the two are kept in
+// step. ancestorID == targetID is refused outright: a corrupt record
+// naming itself as its parent would otherwise match on the first
+// comparison and let a session stop itself.
 func isAncestor(parentOf map[string]string, ancestorID, targetID string) bool {
 	if ancestorID == targetID {
 		return false
@@ -194,7 +180,6 @@ func isAncestor(parentOf map[string]string, ancestorID, targetID string) bool {
 	return false
 }
 
-// paneIndex is panes indexed by PaneID.
 func paneIndex(panes []tmux.Pane) map[string]tmux.Pane {
 	byPane := map[string]tmux.Pane{}
 	for _, p := range panes {
@@ -203,10 +188,9 @@ func paneIndex(panes []tmux.Pane) map[string]tmux.Pane {
 	return byPane
 }
 
-// displayName is the name a session shows in kido list_agents:
-// its reported Title, falling back to its pane's title stripped the way
-// the sidebar strips it. matchTarget
-// (message_agent.go) resolves by the same name, so the two must not drift.
+// Falls back to its pane's title, stripped the way the sidebar strips it.
+// message_agent's matchTarget resolves by the same name, so the two must
+// not drift.
 func displayName(s state.Session, byPane map[string]tmux.Pane) string {
 	if s.Title != "" {
 		return s.Title
@@ -214,9 +198,7 @@ func displayName(s state.Session, byPane map[string]tmux.Pane) string {
 	return state.AgentTitle(byPane[s.Pane].Title)
 }
 
-// parentID resolves s's parent to an agent id, "" for a root: the
-// session it names, when that session is one of the agents in scope. A
-// self-edge is reported as a root.
+// A self-edge is reported as a root.
 func parentID(s state.Session, inScope map[string]bool) string {
 	if s.Parent != nil && s.Parent.Session != s.ID && inScope[s.Parent.Session] {
 		return s.Parent.Session

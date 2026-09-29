@@ -19,15 +19,9 @@ import (
 	"kido/internal/tmux"
 )
 
-// stopEscalation is how long kido stop_subagent waits, after asking a session to
-// stop over its inbox, for it to actually go before killing its pane.
 // Overridable via KIDO_STOP_ESCALATION_MS for the e2e suite.
 var stopEscalation = msFromEnv("KIDO_STOP_ESCALATION_MS", 5*time.Second)
 
-// msFromEnv reads a grace period the e2e suite shortens through the
-// environment: the value of name in milliseconds, or def when it is
-// unset, unreadable or not positive. Every knob cmd/kido exposes that
-// way goes through this (docs/design.md, "Knobs").
 func msFromEnv(name string, def time.Duration) time.Duration {
 	if n, err := strconv.Atoi(os.Getenv(name)); err == nil && n > 0 {
 		return time.Duration(n) * time.Millisecond
@@ -35,33 +29,13 @@ func msFromEnv(name string, def time.Duration) time.Duration {
 	return def
 }
 
-// stopPollInterval is how often stopCmd checks whether the target has
-// gone, while waiting out stopEscalation.
 var stopPollInterval = 100 * time.Millisecond
 
-// killPane is tmux.KillPane, indirected so a test can fake it.
 var killPane = tmux.KillPane
 
 func interruptUsage() string { return "usage: kido interrupt_subagent -- <agent>" }
 func stopUsage() string      { return "usage: kido stop_subagent [--force] -- <agent>" }
 
-// steerSubagentCmd implements `kido steer_subagent -- <agent>`: it reads
-// text from stdin and delivers it to a descendant as a v1 "steer"
-// envelope, which the receiving extension hands its model inside the
-// running turn rather than queueing for the end of it (docs/design.md,
-// "Steer and followUp").
-//
-// It lives here, beside interrupt and stop, rather than beside the
-// message-sending commands whose body it shares: what decides which
-// three commands are spelled _subagent is this file's rule, that a
-// caller may only act on its own descendants. Steering is the same axis
-// as interrupting with less force - it redirects work already underway -
-// and a steer anyone could send while an interrupt is a descendant's
-// alone would be incoherent.
-//
-// Unlike its neighbours it returns an exit code rather than an error:
-// it carries text, so it goes through send (message_agent.go), which
-// reports for itself the way every other stdin-reading command does.
 func steerSubagentCmd(args []string, stdin io.Reader) int {
 	const cmd = "steer_subagent"
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
@@ -77,10 +51,6 @@ func steerSubagentCmd(args []string, stdin io.Reader) int {
 	return send(cmd, sendSpec{kind: msg.KindSteer, to: descendant{fs.Arg(0)}}, stdin)
 }
 
-// interruptSubagentCmd implements `kido interrupt_subagent -- <agent>`: abort the target's
-// current turn without ending its session, as a v1 "interrupt" envelope
-// over its inbox. Unlike stop it has no escalation: there is no
-// destructive fallback that means "redirect this, do not kill it".
 func interruptSubagentCmd(args []string) error {
 	fs := flag.NewFlagSet("interrupt_subagent", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -102,11 +72,6 @@ func interruptSubagentCmd(args []string) error {
 	return nil
 }
 
-// stopSubagentCmd implements `kido stop_subagent [--force] -- <agent>`: ask over the inbox,
-// wait up to stopEscalation for the session's record to go, and kill its
-// pane if it has not. A target that cannot be asked at all degrades
-// straight to the kill, which needs --force. docs/design.md, "Interrupt
-// and stop".
 func stopSubagentCmd(args []string) error {
 	fs := flag.NewFlagSet("stop_subagent", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -118,11 +83,8 @@ func stopSubagentCmd(args []string) error {
 		return errors.New(stopUsage())
 	}
 
-	// Before the agent lookup, because a bash run is not one: it has no
-	// state record, so resolveTarget could only ever answer "no agent
-	// session matches" for a build that is plainly running. Only a run
-	// with no outcome yet is matched here, so a finished run's name never
-	// shadows an agent's.
+	// Before the agent lookup: a bash run has no state record, so resolveTarget
+	// would answer "no agent session matches" for a build that is plainly running.
 	if run, ok, err := liveBashRun(fs.Arg(0)); err != nil {
 		return err
 	} else if ok {
@@ -204,20 +166,11 @@ func waitFor(cond func() bool) bool {
 	return false
 }
 
-// killRunPane kills paneID, not its window, so a bystander pane sharing
-// the window survives. It refuses a pane that is the only one in its
-// session's only window, since killing it would end the session; it
-// deliberately does not refuse a focused window, because a stop was
-// asked for by name. A pane already gone is reported, not an error - an
-// agent or a bash run is over either way. beforeKill, if not nil, runs
-// once the guard has passed but before the kill itself, for a caller that
-// must record an outcome after every refusal and before any kill
-// (stopSubagentCmd's degrade).
-//
-// This guard cannot fire through kido stop_subagent today: resolveRecipient keeps
-// the caller's own pane in the target's session, so one of the two is
-// always false. It stays as defence for a future caller that reaches a
-// target without a live caller pane in the same session.
+// killRunPane refuses a pane that is the only one in its session's only
+// window, since killing it would end the session. A pane already gone is
+// reported, not an error. beforeKill, if not nil, runs once the guard has
+// passed but before the kill, so a caller can record an outcome after
+// every refusal and before any kill.
 func killRunPane(paneID string, beforeKill func()) (bool, error) {
 	panes, err := listPanes()
 	if err != nil {
@@ -242,31 +195,14 @@ func killRunPane(paneID string, beforeKill func()) (bool, error) {
 	return true, nil
 }
 
-// recordStopped marks target's run stopped, if it has one: target.ID is
-// a run id exactly when kido spawn_subagent created the target. Best-effort, since
-// the common case is a target with no run record at all.
 func recordStopped(target state.Session) {
 	if id, err := subrun.ParseID(target.ID); err == nil {
 		subrun.RecordOutcome(id, subrun.Outcome{Result: subrun.Stopped, At: time.Now()}) //nolint:errcheck // best effort
 	}
 }
 
-// stoppedText is what a bash run's outcome says when `kido
-// stop_subagent` is the one that had to record it: its wrapper was asked
-// to end the run and did not report within stopEscalation, so the stop
-// speaks for it. Distinct from the wrapper's own "killed by terminated"
-// and from a sweep's, so a parent reading the notice can tell which
-// observer found the ending.
 const stoppedText = "stopped by kido stop_subagent; its wrapper did not report"
 
-// liveBashRun resolves to as a `kido async_bash` run with no outcome
-// recorded yet - one that is still going - and enforces the same scope rule every
-// _subagent command shares: a caller with a state record of its own may
-// only reach its descendants (descendantTarget).
-//
-// A run is addressed by its name or by its id, the two things `kido
-// async_bash` printed; ok is false when nothing matches, which is what
-// lets stopSubagentCmd fall through to the agents.
 func liveBashRun(to string) (subrun.Meta, bool, error) {
 	ids, err := subrun.List()
 	if err != nil {
@@ -274,9 +210,6 @@ func liveBashRun(to string) (subrun.Meta, bool, error) {
 	}
 	var matches []subrun.Meta
 	for _, id := range ids {
-		// The name match before the outcome read, so a run that is not the
-		// one being addressed costs one file open rather than two: every run
-		// ever recorded is listed here, and most of them are long finished.
 		meta, err := subrun.ReadMeta(id)
 		if err != nil || meta.Kind != subrun.KindBash {
 			continue
@@ -307,18 +240,6 @@ func liveBashRun(to string) (subrun.Meta, bool, error) {
 	}
 }
 
-// bashRunInScope applies the descendant rule to a run, which has no
-// state record to apply it to: the edge is the parent session `kido
-// async_bash` recorded in its meta, which is an agent id the walk takes
-// as it is. A caller with no record of its own
-// is a human at the CLI and may act on anything, exactly as
-// descendantTarget lets one.
-//
-// Descendant, not child: a run started by the caller's own subagent is
-// reachable, which is the walk isAncestor does for agents.
-// runLabel names a run wherever one is spoken about - as the target of
-// stop_subagent, and in what it prints and refuses. A run nobody named
-// is its own id, which is at least addressable.
 func runLabel(name string, id subrun.ID) string {
 	if name == "" {
 		return string(id)
@@ -356,23 +277,12 @@ func bashRunInScope(meta subrun.Meta) error {
 // stopBashRun ends a running `kido async_bash`: signal the wrapper,
 // which forwards it to the command and reports the ending itself, and
 // only speak for the run if it did not.
-//
-// The --force gate is the one every inbox-less target is held to
-// (stopSubagentCmd), applied unchanged: a bash run has no inbox to ask
-// nicely over, so stopping it degrades straight to killing something.
-//
-// Which observer reports is settled the same way everywhere else: the
-// O_EXCL outcome write. A wrapper that reported inside the grace already
-// sent its own notice with its own exit status, and this says nothing.
 func stopBashRun(meta subrun.Meta, force bool) error {
 	label := fmt.Sprintf("async run %q", runLabel(meta.Name, meta.ID))
 	if !force {
 		return fmt.Errorf("%s has no inbox to ask nicely over; pass --force to kill its window instead", label)
 	}
 
-	// A wrapper that is already gone - SIGKILLed, or taken down with its
-	// window - will never report, and waiting out the grace for it would
-	// only delay the notice nobody else is going to send.
 	signalled := meta.PID > 0 && syscall.Kill(meta.PID, syscall.SIGTERM) == nil
 	if signalled && waitFor(func() bool {
 		_, done, _ := subrun.ReadOutcome(meta.ID)
@@ -399,20 +309,6 @@ func stopBashRun(meta subrun.Meta, force bool) error {
 	return nil
 }
 
-// descendantTarget resolves to the way kido message_agent does and then
-// enforces the scope rule every _subagent command shares: a caller with a
-// state record of its own may only reach its descendants; a human at the
-// CLI, who has none, may act on anything. It is one predicate for the
-// three commands named after it, so "descendant" cannot come to mean
-// three slightly different things.
-//
-// Descendant, not child: nesting goes two deep, so a grandchild is
-// reachable and isAncestor (list_agents.go) is the walk that says so.
-//
-// This is a semantic boundary and not a safeguard. Trust is uid-scoped
-// (docs/design.md, the inbox): any process that can reach the socket can
-// write an envelope claiming to be anyone, so what this buys is a
-// coherent vocabulary, not protection.
 func descendantTarget(states map[string]state.Session, panes []tmux.Pane, self, to string) (state.Session, error) {
 	target, err := resolveTarget(states, panes, self, to)
 	if err != nil {
@@ -432,14 +328,6 @@ func descendantTarget(states map[string]state.Session, panes []tmux.Pane, self, 
 	return target, nil
 }
 
-// callerReaches is the walk itself, shared by the two things a _subagent
-// command can be pointed at: an agent session (descendantTarget) and an
-// async run, which has no record of its own and is reached through the
-// parent session it named (bashRunInScope).
-//
-// A caller with no state record of its own is a human at the CLI and
-// reaches everything, which is why an empty id is still worth asking
-// about.
 func callerReaches(states map[string]state.Session, panes []tmux.Pane, self, id string) (bool, error) {
 	caller, isAgent := states[self]
 	if !isAgent {

@@ -39,9 +39,6 @@ func TestShellArgv(t *testing.T) {
 	}
 }
 
-// TestBareShellWord pins the syntax a parked default-command must have
-// to even be considered a shell's own name: one word, nothing a shell
-// would treat specially.
 func TestBareShellWord(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -69,12 +66,9 @@ func TestBareShellWord(t *testing.T) {
 	}
 }
 
-// TestShellCommand pins which parked default-commands shellCmd primes as
-// a shell rather than runs as one: a bare word naming zsh or bash, and
-// nothing else - a command with arguments stays a command, a shell kido
-// does not know stays a command, and a wrapper around a shell (the
-// reattach-to-user-namespace case people actually write) stays exactly
-// as it was, because it has arguments of its own.
+// TestShellCommand pins which parked default-commands shellCmd primes
+// as a shell rather than runs as one: a bare word naming zsh or bash,
+// and nothing else.
 func TestShellCommand(t *testing.T) {
 	const login = "/bin/zsh"
 	cases := []struct {
@@ -110,9 +104,6 @@ func TestShellCommand(t *testing.T) {
 		})
 	}
 
-	// A command naming the very same executable as the login shell, under
-	// a name that is not literally "zsh" or "bash", is primed as that
-	// login shell too.
 	real := filepath.Join(t.TempDir(), "myshell")
 	if err := os.WriteFile(real, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -124,9 +115,6 @@ func TestShellCommand(t *testing.T) {
 	}
 }
 
-// TestShellArgvForABareShellCommand pins shellArgv's output once
-// shellCommand has resolved a parked default-command: the same shape as
-// no default-command at all, primed with -l and no -c.
 func TestShellArgvForABareShellCommand(t *testing.T) {
 	path, command := shellCommand("/bin/zsh", "zsh")
 	got := shellArgv(path, primeZsh, command)
@@ -164,8 +152,6 @@ func TestWithEnv(t *testing.T) {
 	}
 }
 
-// TestResolveLoginShell pins the order, and that a default-shell naming a
-// shell this host does not have costs the pane nothing.
 func TestResolveLoginShell(t *testing.T) {
 	real := filepath.Join(t.TempDir(), "myshell")
 	if err := os.WriteFile(real, []byte("#!/bin/sh\n"), 0o755); err != nil {
@@ -194,13 +180,6 @@ func TestResolveLoginShell(t *testing.T) {
 // and the claim `kido shell` is for: a zsh whose dotfiles know nothing
 // about kido reports nothing, and the same zsh started the way `kido
 // shell` starts it reports a prompt, a command line and an exit status.
-// What ssh carries over the wire, this one does directly - which is the
-// whole difference between the two callers - so it drives the priming
-// plan and execs the shell itself rather than the command, whose one
-// further step is the exec.
-//
-// Nothing is left behind: the .zshenv removes its own directory as it
-// reads it, on this side exactly as on the far one.
 func TestPrimedZshReportsLocally(t *testing.T) {
 	zsh := interactiveZsh(t)
 	home := zshHome(t, "")
@@ -249,11 +228,8 @@ func TestPrimedZshReportsLocally(t *testing.T) {
 // TestPrimedZshPutsTheBinDirectoryFirst is why the prepend lives in the
 // integration rather than only in the environment the pane inherits: a
 // login file that rewrites PATH - macOS path_helper, run from
-// /etc/zprofile, is the one every Mac has - demotes an inherited entry,
-// and the integration runs after every login file. The unprimed run is the
-// control: the same inherited PATH, the same .zprofile, and the directory
-// no longer first. It is also run with the directory already inherited,
-// so a nested shell cannot grow PATH.
+// /etc/zprofile - demotes an inherited entry, and the integration runs
+// after every login file.
 func TestPrimedZshPutsTheBinDirectoryFirst(t *testing.T) {
 	zsh := interactiveZsh(t)
 	home := zshHome(t, "")
@@ -276,8 +252,6 @@ func TestPrimedZshPutsTheBinDirectoryFirst(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%q: %v\n%s", argv, err, out)
 		}
-		// The last match: a primed shell reports the command line too,
-		// with the unexpanded %s in it.
 		m := path.FindAllStringSubmatch(string(out), -1)
 		if m == nil {
 			t.Fatalf("%q printed no PATH: %q", argv, out)

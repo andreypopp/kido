@@ -24,9 +24,6 @@ type RunInfo struct {
 
 const runsUsage = "usage: kido runs [--json] [<run-id>]"
 
-// runsCmd implements `kido runs [--json] [<run-id>]`: every run kido
-// spawn has ever created, most recent first, or one shown in detail with
-// its task text and the command to resume or fork it.
 func runsCmd(args []string) error {
 	fs := flag.NewFlagSet("runs", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -45,28 +42,19 @@ func runsCmd(args []string) error {
 
 const runOutcomeUsage = "usage: kido run-outcome --result completed|failed [--text TEXT] [--unreported] <run-id>"
 
-// runOutcomeCmd implements `kido run-outcome`: a run's own child reports
-// how it ended. --result accepts only completed or failed; died and
-// stopped are kido's verdicts from the outside (docs/design.md, "Run
-// outcomes").
+// --result accepts only completed or failed; died and stopped are kido's
+// verdicts from the outside.
 //
-// --unreported says the child is ending without ever having called
-// notify_parent, and asks for the one notice that fact is owed. It goes
-// through reap.RecordEnding rather than writing the outcome directly,
-// because the outcome write is what decides who speaks: a run already
-// spoken for from outside - stopped, or swept - has had its parent told
-// once already, and this call then records nothing and says nothing.
+// --unreported goes through reap.RecordEnding rather than writing the
+// outcome directly, because the outcome write is what decides who speaks:
+// a run already spoken for from outside - stopped, or swept - has had its
+// parent told once already, and this call then records nothing and says
+// nothing.
 //
-// Before any of that, a failing run captures its own pane into the run
-// directory (subrun.CaptureOwnScreen): this call runs from inside the
-// child, whose pane is still alive at this instant, which is the one
-// chance to save what it actually showed before the process that reports
-// this exits and takes it with it - a sweep's own capture (internal/reap)
-// only ever sees a window already being closed, and `kido close-run`
-// captures nothing at all. A failure is the only ending whose screen
-// anyone reads, so a completion is not worth the capture-pane and the
-// file; the sweep, which keeps every screen it collects, cannot tell the
-// two apart beforehand and this can.
+// A failing run captures its own pane into the run directory before any
+// of that: this call runs from inside the child, whose pane is still
+// alive at this instant, the one chance to save what it showed before the
+// process that reports this exits and takes it with it.
 func runOutcomeCmd(args []string) error {
 	fs := flag.NewFlagSet("run-outcome", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -114,18 +102,10 @@ func runOutcomeCmd(args []string) error {
 // rather than parsed, since it is pi's own wording to change.
 const loginLine = "Use /login to log into a provider via OAuth or API key"
 
-// refineNoTurnDetail sharpens the idle-exit detail (pi/kido-agents.ts's
-// NO_FIRST_TURN_TEXT) when the screen just captured for it holds pi's own
-// explanation: a provider it could not authenticate for the requested
-// model. Any other text, or a screen without that line, is returned
-// unchanged - this is the one ending whose cause is knowable from the
-// screen, not a general rewrite of every detail string.
-//
-// What is left for it to catch is narrower than it was: validateModel
-// (spawn_subagent.go) refuses a model no configured provider can run
-// before any window is created, so the bare alias that used to end this
-// way never gets this far. A model of a configured provider whose auth
-// fails at run time - an expired key, a revoked token - still does.
+// refineNoTurnDetail sharpens the idle-exit detail when the captured
+// screen holds pi's own explanation: a provider it could not authenticate
+// for the requested model. Any other text, or a screen without that line,
+// is returned unchanged.
 func refineNoTurnDetail(text, screen string) string {
 	if !strings.Contains(text, "no turn ever ran") || !strings.Contains(screen, loginLine) {
 		return text
@@ -203,13 +183,8 @@ func showRun(w io.Writer, idStr string, asJSON bool) error {
 	screen, hasScreen, _ := subrun.ReadScreen(id)
 
 	// A bare `pi --session <id>` comes back an orphan: no parent edge, no
-	// @kido_run mark, not a descendant for stop/ask scoping, and a
-	// fresh run record that abandons this one's history. `kido spawn_subagent
-	// --resume` goes through the same window-creation path a fresh spawn
-	// uses instead, and continues this run rather than starting another
-	// (spawnSubagentCmd). pi sessions are project-scoped, so the `cd`
-	// prefix stays even though a resume itself reads the run's own cwd from
-	// its meta rather than trusting the invoking shell's.
+	// @kido_run mark, not a descendant for stop/ask scoping. `kido
+	// spawn_subagent --resume` continues this run instead of starting another.
 	resume := "cd " + tmux.Quote(info.Cwd) + " && kido spawn_subagent --resume " + idStr
 	// `pi --fork` stays bare: forking into a standalone session, with no
 	// parent edge or run record of its own, is a different, legitimate

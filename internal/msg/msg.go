@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 )
 
-// V1 is the only envelope version kido speaks so far.
 const V1 = 1
 
 // Kind is what an envelope carries.
@@ -29,7 +28,7 @@ const (
 )
 
 // From identifies who sent an envelope. It is advisory, not
-// authenticated: a sender fills it from its own state.Session record.
+// authenticated.
 type From struct {
 	Session string `json:"session"`
 	Name    string `json:"name,omitempty"`
@@ -37,8 +36,8 @@ type From struct {
 }
 
 // Envelope is kido's v1 inbox payload: one JSON object, sent over the
-// inbox socket exactly like v0 raw text - written whole, then CloseWrite,
-// with no other framing.
+// inbox socket exactly like v0 raw text - written whole, then
+// CloseWrite, with no other framing.
 type Envelope struct {
 	V       int    `json:"v"`
 	Kind    Kind   `json:"kind"`
@@ -47,10 +46,7 @@ type Envelope struct {
 	ReplyTo string `json:"replyTo,omitempty"`
 	Text    string `json:"text"`
 	// Run and Output are a "stream" envelope's own: which async run wrote
-	// these lines, and where every line of it can be read. The receiver
-	// buffers by Run - a name can be shared by two runs, an id cannot -
-	// and names Output in the batch it hands the model, so a tail the cap
-	// cut is still reachable.
+	// these lines, and where every line of it can be read.
 	Run    string `json:"run,omitempty"`
 	Output string `json:"output,omitempty"`
 }
@@ -78,8 +74,7 @@ func Parse(raw []byte) (Envelope, bool) {
 }
 
 // NewID returns a fresh envelope id, unique enough to correlate a reply
-// with its ask across a tmux session's lifetime. crypto/rand.Read does not
-// fail on any platform Go supports, so its error is not checked.
+// with its ask across a tmux session's lifetime.
 func NewID() string {
 	b := make([]byte, 16)
 	rand.Read(b) //nolint:errcheck // crypto/rand.Read never fails

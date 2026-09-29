@@ -3,23 +3,17 @@ package main
 import (
 	"testing"
 
+	"kido/internal/testutil"
 	"kido/internal/tmux"
 )
 
-// withCloseRunDeps points listPanes and killWindow at fakes so
-// closeRunCmd never talks to a real tmux server; killed records every
-// window killWindow was actually asked to close.
 func withCloseRunDeps(t *testing.T, panes []tmux.Pane) *[]string {
 	t.Helper()
-	prevPanes, prevKill := listPanes, killWindow
 	var killed []string
-	listPanes = func() ([]tmux.Pane, error) { return panes, nil }
-	killWindow = func(id string) error {
+	testutil.Swap(t, &listPanes, func() ([]tmux.Pane, error) { return panes, nil })
+	testutil.Swap(t, &killWindow, func(id string) error {
 		killed = append(killed, id)
 		return nil
-	}
-	t.Cleanup(func() {
-		listPanes, killWindow = prevPanes, prevKill
 	})
 	return &killed
 }
@@ -31,25 +25,17 @@ type collected struct {
 	panes   []string
 }
 
-// withCollectDeps is withCloseRunDeps for the tests whose subject is
-// the pane: the helper's unit of collection is a run's pane, so a test
-// that watched only killWindow could not tell "nothing was closed" from
-// "the run's pane was".
 func withCollectDeps(t *testing.T, panes []tmux.Pane) *collected {
 	t.Helper()
-	prevPanes, prevKillWindow, prevKillPane := listPanes, killWindow, killPane
 	var got collected
-	listPanes = func() ([]tmux.Pane, error) { return panes, nil }
-	killWindow = func(id string) error {
+	testutil.Swap(t, &listPanes, func() ([]tmux.Pane, error) { return panes, nil })
+	testutil.Swap(t, &killWindow, func(id string) error {
 		got.windows = append(got.windows, id)
 		return nil
-	}
-	killPane = func(id string) error {
+	})
+	testutil.Swap(t, &killPane, func(id string) error {
 		got.panes = append(got.panes, id)
 		return nil
-	}
-	t.Cleanup(func() {
-		listPanes, killWindow, killPane = prevPanes, prevKillWindow, prevKillPane
 	})
 	return &got
 }
@@ -61,11 +47,9 @@ func runPane(p tmux.Pane, runID string) tmux.Pane {
 	return p
 }
 
-// TestCloseRunKillsTheRunsPaneAndLeavesTheSplit is the incident this
-// helper's unit changed for: the user split a shell into a subagent's
-// window and the run finished, so what the linger is finished with is
-// the run's dead pane. Closing the window would take the user's shell
-// with it; leaving the window alone left a corpse beside them.
+// TestCloseRunKillsTheRunsPaneAndLeavesTheSplit: a user split a shell
+// into a subagent's window and the run finished, so the linger kills
+// only the run's dead pane, not the whole window with the user's shell.
 func TestCloseRunKillsTheRunsPaneAndLeavesTheSplit(t *testing.T) {
 	panes := []tmux.Pane{
 		{PaneID: "%1", SessionID: "$0", WindowID: "@1", Active: true, SessionAttached: true},
@@ -85,9 +69,9 @@ func TestCloseRunKillsTheRunsPaneAndLeavesTheSplit(t *testing.T) {
 	}
 }
 
-// TestCloseRunClosesTheWindowWhenTheRunIsAllOfIt is the negative control
-// for the test above and the ordinary case: nothing beside the run's
-// pane, so the window goes exactly as it always did.
+// TestCloseRunClosesTheWindowWhenTheRunIsAllOfIt is the negative
+// control for the test above: nothing beside the run's pane, so the
+// window goes.
 func TestCloseRunClosesTheWindowWhenTheRunIsAllOfIt(t *testing.T) {
 	panes := []tmux.Pane{
 		{PaneID: "%1", SessionID: "$0", WindowID: "@1", Active: true, SessionAttached: true},
@@ -106,8 +90,6 @@ func TestCloseRunClosesTheWindowWhenTheRunIsAllOfIt(t *testing.T) {
 	}
 }
 
-// TestCloseRunRefusesALiveRunsPane: a run still going is not collected
-// because the user's split beside it exited.
 func TestCloseRunRefusesALiveRunsPane(t *testing.T) {
 	panes := []tmux.Pane{
 		{PaneID: "%1", SessionID: "$0", WindowID: "@1", Active: true, SessionAttached: true},
@@ -124,9 +106,6 @@ func TestCloseRunRefusesALiveRunsPane(t *testing.T) {
 	}
 }
 
-// TestCloseRunRefusesAFocusedWindowWithASplit holds the focus rule to
-// one rule for both units: the user is in the window reading what the
-// run left, and the pane is theirs to keep until they leave.
 func TestCloseRunRefusesAFocusedWindowWithASplit(t *testing.T) {
 	panes := []tmux.Pane{
 		{PaneID: "%1", SessionID: "$0", WindowID: "@1", SessionAttached: true},

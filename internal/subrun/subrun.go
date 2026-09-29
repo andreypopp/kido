@@ -1,8 +1,7 @@
-// Package subrun is the durable record of one `kido spawn_subagent`: a directory
-// under <state>/runs/<run-id> holding the task text, a meta file
-// describing the spawn, and - once the run ends - an outcome. It is
-// deliberately not a state.Session, which is deleted the moment its pid
-// dies, and it is never pruned; see docs/design.md, "Run outcomes".
+// Package subrun is the durable record of one `kido spawn_subagent`: a
+// directory under <state>/runs/<run-id> holding the task text, a meta
+// file describing the spawn, and - once the run ends - an outcome. It is
+// never pruned.
 package subrun
 
 import (
@@ -23,9 +22,8 @@ import (
 type ID string
 
 // ParseID refuses a run id that would name something other than one
-// directory directly under Dir: `kido run-outcome <id>` takes the id from
-// a model-authored child, and "../<other-run>" would let one run claim an
-// outcome for another.
+// directory directly under Dir, since `kido run-outcome <id>` takes the
+// id from a model-authored child.
 func ParseID(s string) (ID, error) {
 	if s == "" || strings.ContainsAny(s, `/\`) || strings.HasPrefix(s, ".") {
 		return "", fmt.Errorf("invalid run id %q", s)
@@ -33,34 +31,28 @@ func ParseID(s string) (ID, error) {
 	return ID(s), nil
 }
 
-// Dir is the directory holding one subdirectory per run.
 func Dir() string { return filepath.Join(state.Dir(), "runs") }
 
 func dirFor(id ID) string { return filepath.Join(Dir(), string(id)) }
 
 // TaskPath is the file a spawned child reads its task from, and the one
-// kido spawn_subagent sets as KIDO_AGENT_TASK_FILE. Nothing here ever removes it.
-// The child writes a sibling "delivered" marker beside it once it has
-// handed the text to the model (pi/kido-agents.ts owns both halves of
-// that; no Go code reads the marker).
+// kido spawn_subagent sets as KIDO_AGENT_TASK_FILE. The child writes a
+// sibling "delivered" marker beside it once it has handed the text to
+// the model (pi/kido-agents.ts owns both halves; no Go code reads it).
 func TaskPath(id ID) string { return filepath.Join(dirFor(id), "task") }
 
-// CommandPath is the argv `kido async-run` execs, written by `kido
-// async_bash` before the window exists for the reason the task text is:
-// the wrapper may already be running before the meta file lands, and
-// model-authored text must reach it as a file rather than as a command
-// line.
+// CommandPath is the argv `kido async-run` execs, written before the
+// window exists: the wrapper may already be running before the meta
+// file lands, and model-authored text must reach it as a file rather
+// than a command line.
 func CommandPath(id ID) string { return filepath.Join(dirFor(id), "command") }
 
-// OutputPath is where a bash run's stdout and stderr are teed. It is the
-// whole of what the run said; the completion notice carries only its
-// tail.
+// OutputPath is where a bash run's stdout and stderr are teed in full;
+// the completion notice carries only its tail.
 func OutputPath(id ID) string { return filepath.Join(dirFor(id), "output") }
 
-// ReportPath is where a run's own notify_parent report is kept whole. The
-// parent is sent at most a notice's worth of it (cmd/kido, notifyParentCmd)
-// and this file is the rest: a report is a work product, and a cut one used
-// to be the only copy there was.
+// ReportPath keeps a run's own notify_parent report in full; the parent
+// is sent at most a notice's worth of it.
 func ReportPath(id ID) string { return filepath.Join(dirFor(id), "report") }
 
 func metaPath(id ID) string    { return filepath.Join(dirFor(id), "meta.json") }
@@ -72,17 +64,15 @@ func screenPath(id ID) string  { return filepath.Join(dirFor(id), "screen") }
 // deliver it twice.
 func DeliveredPath(id ID) string { return filepath.Join(dirFor(id), "delivered") }
 
-// NewID generates a run id. It is also the child's own pi session id, so
-// it must be safe both as a directory name and on pi's command line;
-// msg.NewID's hex alphabet satisfies both.
+// NewID generates a run id, also used as the child's own pi session id,
+// so it must be safe both as a directory name and on pi's command line.
 func NewID() ID { return ID(msg.NewID()) }
 
 // Meta is a run's own facts, written once by a fresh spawn. A resume
 // rewrites the ones that have actually changed - the window, pane and
 // pid it now lives in, the parent edge whoever resumed it claims, and
 // the keepAlive that attempt is running under - and leaves the rest,
-// which is what makes it one run rather than two (docs/design.md, "Idle
-// self-exit, and resuming a run").
+// which is what makes it one run rather than two.
 type Meta struct {
 	ID            ID       `json:"id"`
 	Name          string   `json:"name"`
@@ -90,15 +80,12 @@ type Meta struct {
 	ParentSession string   `json:"parentSession,omitempty"`
 	Depth         int      `json:"depth"`
 	Pane          string   `json:"pane"`
-	PID           int      `json:"pid"` // the child process's pid, for EffectiveOutcome's liveness guess
+	PID           int      `json:"pid"`
 	Cwd           string   `json:"cwd"`
 	Model         string   `json:"model,omitempty"`
 	Tools         []string `json:"tools,omitempty"`
-	// KeepAlive is the --keep-alive the run was spawned with. Recorded, like
-	// Model and Tools, because a resume has to start the run it was rather
-	// than a default one: a helper spawned to stay up came back arming a
-	// thirty-second idle timer, and a child narrowed to a few tools came
-	// back holding all of them.
+	// KeepAlive is recorded, like Model and Tools, because a resume has to
+	// start the run it was rather than a default one.
 	KeepAlive bool      `json:"keepAlive,omitempty"`
 	StartedAt time.Time `json:"startedAt"`
 }
@@ -107,11 +94,8 @@ type Meta struct {
 type Kind string
 
 const (
-	// KindAgent is a `kido spawn_subagent` run: a pi session with a task.
-	KindAgent Kind = "agent"
-	// KindBash is a `kido async_bash` run: a command under `kido async-run`,
-	// which reports the run's ending itself.
-	KindBash Kind = "bash"
+	KindAgent Kind = "agent" // a `kido spawn_subagent` run: a pi session with a task
+	KindBash  Kind = "bash"  // a `kido async_bash` run under `kido async-run`
 )
 
 // Result is how a run ended.
@@ -122,11 +106,8 @@ const (
 	// `kido run-outcome` on its shutdown.
 	Completed Result = "completed"
 	Failed    Result = "failed"
-	// Died is written by a sweep (internal/reap) closing a marked window
-	// with no outcome recorded.
-	Died Result = "died"
-	// Stopped is written by `kido stop_subagent` (cmd/kido/control.go).
-	Stopped Result = "stopped"
+	Died      Result = "died"    // written by a sweep closing a marked window with no outcome
+	Stopped   Result = "stopped" // written by `kido stop_subagent`
 )
 
 // Outcome is a run's end state, written exactly once (see RecordOutcome).
@@ -136,9 +117,9 @@ type Outcome struct {
 	At     time.Time `json:"at,omitzero"`
 }
 
-// Create writes a new run's directory and its task text. Called by kido
-// spawn before the tmux window exists, because the child may read its
-// task the instant tmux starts it.
+// Create writes a new run's directory and its task text, before the
+// tmux window exists: the child may read its task the instant tmux
+// starts it.
 func Create(id ID, task string) error {
 	if err := os.MkdirAll(dirFor(id), 0o755); err != nil {
 		return err
@@ -146,9 +127,6 @@ func Create(id ID, task string) error {
 	return os.WriteFile(TaskPath(id), []byte(task), 0o600)
 }
 
-// WriteCommand records the argv id's window runs, as `kido async-run`
-// will exec it: the shape written is the shape run, so the file is not a
-// rendering of a command line but the command line itself.
 func WriteCommand(id ID, argv []string) error {
 	b, err := json.Marshal(argv)
 	if err != nil {
@@ -158,8 +136,7 @@ func WriteCommand(id ID, argv []string) error {
 }
 
 // ReadCommand reads back what WriteCommand wrote. An empty argv is an
-// error rather than an empty exec: there is nothing to run and nothing
-// truthful to report about having run it.
+// error rather than an empty exec.
 func ReadCommand(id ID) ([]string, error) {
 	b, err := os.ReadFile(CommandPath(id))
 	if err != nil {
@@ -178,7 +155,7 @@ func ReadCommand(id ID) ([]string, error) {
 // WriteMeta writes m's run's meta file: a new run's before its window
 // exists, and again once tmux.NewWindow has returned the pane and pid
 // that complete it, while the run's own wrapper may be reading it -
-// hence writeAtomic. `kido runs` skips a run with no meta file.
+// hence writeAtomic.
 func WriteMeta(m Meta) error {
 	b, err := json.Marshal(m)
 	if err != nil {
@@ -187,7 +164,6 @@ func WriteMeta(m Meta) error {
 	return writeAtomic(metaPath(m.ID), b, 0o644)
 }
 
-// ReadMeta reads id's meta file.
 func ReadMeta(id ID) (Meta, error) {
 	b, err := os.ReadFile(metaPath(id))
 	if err != nil {
@@ -199,11 +175,8 @@ func ReadMeta(id ID) (Meta, error) {
 }
 
 // writeAtomic writes data to path via a same-directory temp file plus
-// os.Rename, so a reader never sees a partial write and two racing
-// writers never corrupt one another - os.Rename is the same-filesystem
-// atomic swap that buys that, and CreateTemp's unique name is what keeps
-// two racing writers of the same path from sharing (and truncating one
-// another's) temp file.
+// os.Rename, so a reader never sees a partial write and racing writers
+// never share (and truncate one another's) temp file.
 func writeAtomic(path string, data []byte, perm os.FileMode) error {
 	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
 	if err != nil {
@@ -231,32 +204,28 @@ func writeAtomic(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
-// WriteReport saves id's notify_parent report in full, last writer wins:
-// a child reporting twice is reporting on more work than the first call
-// covered. The run's directory is not created here - a sender kido never
-// spawned has none, and the error is what tells notifyParentCmd to fall
-// back to a plain truncation.
+// WriteReport saves id's notify_parent report in full, last writer wins.
+// The run's directory is not created here: a sender kido never spawned
+// has none, and the error tells notifyParentCmd to fall back to a plain
+// truncation.
 func WriteReport(id ID, text string) error {
 	return writeAtomic(ReportPath(id), []byte(text), 0o600)
 }
 
-// HasReport reports whether id's run has a report file, which only a
-// report too long for one notice ever leaves behind.
 func HasReport(id ID) bool {
 	_, err := os.Stat(ReportPath(id))
 	return err == nil
 }
 
-// ReadTask reads id's task text.
 func ReadTask(id ID) (string, error) {
 	b, err := os.ReadFile(TaskPath(id))
 	return string(b), err
 }
 
-// RecordOutcome writes id's outcome, once: it refuses (O_EXCL) to
-// overwrite one that already exists, so the first writer to observe how
-// a run ended wins and a later, cruder guess never clobbers it. An
-// existing outcome is a plain error; os.IsExist(err) tells it apart.
+// RecordOutcome writes id's outcome, once: O_EXCL refuses to overwrite
+// one that already exists, so the first writer to observe how a run
+// ended wins and a later, cruder guess never clobbers it. An existing
+// outcome is a plain error; os.IsExist(err) tells it apart.
 func RecordOutcome(id ID, o Outcome) error {
 	b, err := json.Marshal(o)
 	if err != nil {
@@ -273,31 +242,19 @@ func RecordOutcome(id ID, o Outcome) error {
 
 // WriteScreen saves id's captured final screen, last writer wins: unlike
 // RecordOutcome's outcomes, two captures of one run carry no precedence
-// to defend (docs/design.md, "The screen capture") - rule 1 photographs
-// the same frozen dead panes twice, and rule 2's live capture only gets
-// more complete the later it runs - so refusing a second write the way
-// RecordOutcome does would just let a losing-race capture pin a run to a
-// worse screen forever, and would permanently strand `kido spawn_subagent --resume`
-// after its first attempt, since nothing else ever removes this file.
-// Written via writeAtomic, the way state.Record is, so a reader never
-// sees a partial write and two racing writers never corrupt one another.
+// to defend, and refusing a second write would let a losing-race capture
+// pin a run to a worse screen forever and permanently strand `kido
+// spawn_subagent --resume` after its first attempt.
 func WriteScreen(id ID, data []byte) error {
 	return writeAtomic(screenPath(id), data, 0o644)
 }
 
 // ResetForResume clears the state a fresh attempt at id must not inherit
 // from a previous one: its recorded outcome and captured screen, always,
-// and its delivered marker when delivered is true. Its only caller is
-// `kido spawn_subagent --resume`: resuming a run is a deliberate act
-// telling kido the run is alive again, not one more exit path racing to
-// describe how it ended, so it does not compete with RecordOutcome's
-// "first writer wins" rule - it runs before any of those exit paths have
-// anything to say about the resumed run, not concurrently with one of
-// them. delivered is false when the resume mints a fresh session under
-// the run's id rather than resuming a pi session that exists on disk;
-// that fresh session's own deliverTask would otherwise find the marker
-// left by the attempt that never ran a turn and skip redelivering the
-// task altogether.
+// and its delivered marker when delivered is true - false when the
+// resume mints a fresh session under the run's id, whose own
+// deliverTask would otherwise find the old marker and skip redelivering
+// the task.
 func ResetForResume(id ID, delivered bool) error {
 	paths := []string{outcomePath(id), screenPath(id)}
 	if delivered {
@@ -311,7 +268,6 @@ func ResetForResume(id ID, delivered bool) error {
 	return nil
 }
 
-// ReadScreen reads id's captured final screen, if a sweep ever saved one.
 func ReadScreen(id ID) (string, bool, error) {
 	b, err := os.ReadFile(screenPath(id))
 	if err != nil {
@@ -323,7 +279,6 @@ func ReadScreen(id ID) (string, bool, error) {
 	return string(b), true, nil
 }
 
-// ReadOutcome reads id's outcome, if one has been recorded.
 func ReadOutcome(id ID) (Outcome, bool, error) {
 	b, err := os.ReadFile(outcomePath(id))
 	if err != nil {
@@ -340,11 +295,9 @@ func ReadOutcome(id ID) (Outcome, bool, error) {
 }
 
 // EffectiveOutcome is what `kido runs` shows: the recorded outcome if
-// there is one, or, when there is none and pid (Meta.PID) is no longer
-// alive, a Died guess that is never persisted. ok is false only when the
-// run is still alive. The guess inherits state.Alive's biases (EPERM and
-// a recycled pid both read as alive), which can only show a dead run as
-// running, never the reverse.
+// there is one, or, when there is none and pid is no longer alive, a
+// Died guess that is never persisted. ok is false only when the run is
+// still alive.
 func EffectiveOutcome(id ID, pid int) (Outcome, bool, error) {
 	o, ok, err := ReadOutcome(id)
 	if err != nil || ok {
@@ -356,7 +309,6 @@ func EffectiveOutcome(id ID, pid int) (Outcome, bool, error) {
 	return Outcome{}, false, nil
 }
 
-// List returns every run id under Dir, in no particular order.
 func List() ([]ID, error) {
 	entries, err := os.ReadDir(Dir())
 	if err != nil {

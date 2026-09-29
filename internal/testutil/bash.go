@@ -16,9 +16,8 @@ func BashHasPS0(path string) bool {
 	return err == nil
 }
 
-// lookModernBash is BashHasPS0 of the bash on PATH, with the reason to
-// skip when there is none. Every bash test asks, and the answer is a
-// process, so it is taken once per test binary.
+// lookModernBash is BashHasPS0 of the bash on PATH, cached once per test
+// binary since the answer costs a process.
 var lookModernBash = sync.OnceValues(func() (bash, skip string) {
 	path, err := exec.LookPath("bash")
 	if err != nil {

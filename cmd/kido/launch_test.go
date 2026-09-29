@@ -8,10 +8,6 @@ import (
 	"testing"
 )
 
-// serverConf generates the configuration the launcher starts a server
-// with, for a kido at exe, and returns its text. It owns the environment
-// the generator reads: the state directory it writes into and the config
-// home it points the user's file at.
 func serverConf(t *testing.T, exe string) string {
 	t.Helper()
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
@@ -31,9 +27,6 @@ func serverConf(t *testing.T, exe string) string {
 	return string(body)
 }
 
-// fakeKido writes an executable standing in for an installed kido, so
-// invokedPath has a real file to resolve and the generated configuration
-// names an absolute path.
 func fakeKido(t *testing.T) string {
 	t.Helper()
 	exe := filepath.Join(t.TempDir(), "kido")
@@ -44,8 +37,7 @@ func fakeKido(t *testing.T) string {
 }
 
 // lineAfter is the index of the first generated line containing sub, or
-// -1. The tests below are about the order of three layers, so they read
-// positions rather than presence.
+// -1.
 func lineAfter(conf, sub string) int {
 	for i, line := range strings.Split(conf, "\n") {
 		if strings.Contains(line, sub) {
@@ -55,11 +47,9 @@ func lineAfter(conf, sub string) int {
 	return -1
 }
 
-// lastLine is lineAfter from the other end, which is the one that counts
-// for an option set more than once: kido's defaults name side-status-command
-// by the bare word "kido", for a user running the sidebar inside their
-// own tmux, and it is the launcher's later line - the absolute path - that
-// the server ends up with.
+// lastLine is lineAfter from the other end, which is the one that
+// counts for an option set more than once: the server ends up with the
+// launcher's later line, not kido's own default.
 func lastLine(conf, sub string) int {
 	at := -1
 	for i, line := range strings.Split(conf, "\n") {
@@ -70,15 +60,13 @@ func lastLine(conf, sub string) int {
 	return at
 }
 
-// TestServerConfLayersInOrder is the whole of the configuration decision:
+// TestServerConfLayersInOrder pins the configuration's layer order:
 // kido's defaults first, then the user's kido.conf, then the two options
 // kido owns - and the user's own default-command captured in between,
-// because after the override there is nothing left to capture.
-//
-// It asserts positions rather than presence. Every line being there is
-// satisfied by a file that sources the user's config last, which is the
-// arrangement where a kido.conf setting side-status-command quietly
-// leaves the server with no sidebar at all.
+// since after the override there is nothing left to capture. It asserts
+// positions rather than presence: a file that sources the user's config
+// last would satisfy "every line is there" while quietly leaving the
+// server with no sidebar at all.
 func TestServerConfLayersInOrder(t *testing.T) {
 	exe := fakeKido(t)
 	conf := serverConf(t, exe)
@@ -111,8 +99,7 @@ func TestServerConfLayersInOrder(t *testing.T) {
 
 // TestServerConfNamesTheUsersKidoConf pins where the user's file is
 // looked for, and that ~/.tmux.conf is not among the places: a tmux
-// configuration written for stock tmux fights the side column, so reading
-// it is a decision, not an omission.
+// configuration written for stock tmux fights the side column.
 func TestServerConfNamesTheUsersKidoConf(t *testing.T) {
 	conf := serverConf(t, fakeKido(t))
 	if want := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "kido", "kido.conf"); !strings.Contains(conf, want) {
@@ -122,8 +109,6 @@ func TestServerConfNamesTheUsersKidoConf(t *testing.T) {
 		t.Errorf("the generated config reads the user's tmux.conf:\n%s", conf)
 	}
 
-	// The same file with no XDG_CONFIG_HOME set, which is where most
-	// users' is.
 	t.Setenv("XDG_CONFIG_HOME", "")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -136,16 +121,12 @@ func TestServerConfNamesTheUsersKidoConf(t *testing.T) {
 	}
 }
 
-// TestConfCommandLeavesAnUnquotedPathParseable is why confCommand only
-// double-quotes a path when it needs to: the result is not just tmux
-// configuration syntax, it is also what tmux's own default_window_name()
-// (third_party/tmux/names.c) parses to name a window when
-// automatic-rename is off, and that function undoes at most one layer of
-// quoting. A path with no space needs none, and leaving the extra layer
-// out is what turns the window name from a single backslash into the
-// command's own first word - see TestFirstWindowNameIsNotQuoteDebris
-// (e2e), which is the claim this cannot make on its own since the
-// parsing happens in tmux's C, not kido's Go.
+// TestConfCommandLeavesAnUnquotedPathParseable: confCommand only
+// double-quotes a path when it needs to. The result is also what tmux's
+// default_window_name() (third_party/tmux/names.c) parses to name a
+// window when automatic-rename is off, and that function undoes at most
+// one layer of quoting; see TestFirstWindowNameIsNotQuoteDebris (e2e)
+// for the claim on tmux's own C side.
 func TestConfCommandLeavesAnUnquotedPathParseable(t *testing.T) {
 	got, err := confCommand("/opt/homebrew/bin/kido", "shell")
 	if err != nil {
@@ -158,11 +139,7 @@ func TestConfCommandLeavesAnUnquotedPathParseable(t *testing.T) {
 
 // TestConfCommandQuotesAPathWithASpace is the case confCommand cannot
 // avoid double-quoting: the runtime shell (`$SHELL -c "<default-command>"`)
-// would otherwise split the path itself into two words. This is also the
-// residual TestFirstWindowNameIsNotQuoteDebris does not cover: a kido
-// installed under a path with a space in it still names the window a
-// single backslash with automatic-rename off, because default_window_name()
-// only undoes one layer of quoting and two are required here.
+// would otherwise split the path itself into two words.
 func TestConfCommandQuotesAPathWithASpace(t *testing.T) {
 	got, err := confCommand("/Application Support/kido", "shell")
 	if err != nil {
@@ -174,9 +151,9 @@ func TestConfCommandQuotesAPathWithASpace(t *testing.T) {
 }
 
 // TestServerConfRefusesAnUnquotablePath pins that a path no nesting of
-// tmux and sh quoting can carry is refused up front rather than written
-// into a file that would fail at server start with tmux's error, on a
-// line the user did not write.
+// tmux and sh quoting can carry is refused up front, rather than written
+// into a file that would fail at server start on a line the user did not
+// write.
 func TestServerConfRefusesAnUnquotablePath(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "we're here")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -196,10 +173,10 @@ func TestServerConfRefusesAnUnquotablePath(t *testing.T) {
 	}
 }
 
-// TestProbeServer pins the reading of the one tmux failure kido
-// translates. The mismatch wording is tmux's, from client.c; the other
-// two cases are what it says with no server and with a socket it cannot
-// reach, and both mean "start one".
+// TestProbeServer pins the reading of the tmux failures kido translates.
+// The mismatch wording is tmux's, from client.c; the other two cases are
+// what it says with no server and with a socket it cannot reach, and
+// both mean "start one".
 func TestProbeServer(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -230,9 +207,7 @@ func TestProbeServer(t *testing.T) {
 }
 
 // TestLaunchRefusesInsideTmux pins the refusal, and that it names the
-// socket the terminal is already on. Nothing is started: launch returns
-// before it has looked for a server at all, which is the only way a
-// refusal can be one.
+// socket the terminal is already on.
 func TestLaunchRefusesInsideTmux(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/tmux-501/kido,1234,0")
 	err := launch()

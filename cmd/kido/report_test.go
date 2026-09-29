@@ -14,9 +14,6 @@ import (
 	"kido/internal/tmux"
 )
 
-// withParentInbox is the fixture every notify_parent report test needs: a
-// live parent with a v1 inbox, and this process pointed at it the way a
-// spawned child is. It returns the inbox so a test can read what arrived.
 func withParentInbox(t *testing.T) *testutil.Inbox {
 	t.Helper()
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
@@ -33,7 +30,6 @@ func withParentInbox(t *testing.T) *testutil.Inbox {
 	return in
 }
 
-// sentNotice is the single notice on in, as the parent reads it.
 func sentNotice(t *testing.T, in *testutil.Inbox) string {
 	t.Helper()
 	msgs := in.Received()
@@ -50,11 +46,9 @@ func sentNotice(t *testing.T, in *testutil.Inbox) string {
 	return env.Text
 }
 
-// TestNotifyParentUnderTheCapIsUntouched is the negative control the
-// split is unsafe without: the whole feature is about a report too long
-// to send, and an ordinary one must arrive exactly as it was written,
-// with nothing appended and no file left behind. A split that fired on
-// every report would satisfy every assertion the long case makes.
+// TestNotifyParentUnderTheCapIsUntouched is the negative control: an
+// ordinary report must arrive exactly as it was written, with nothing
+// appended and no file left behind.
 func TestNotifyParentUnderTheCapIsUntouched(t *testing.T) {
 	in := withParentInbox(t)
 	runID := subrun.NewID()
@@ -75,11 +69,10 @@ func TestNotifyParentUnderTheCapIsUntouched(t *testing.T) {
 	}
 }
 
-// TestNotifyParentOverTheCapKeepsTheWholeReport is the bug: four reports
-// were cut mid-sentence and the rest of them was simply gone. What is
-// asserted is all three halves of the fix - the file has every byte, the
-// parent is told where it is, and what the parent got is still a notice
-// within the cap rather than the whole thing under a new name.
+// TestNotifyParentOverTheCapKeepsTheWholeReport pins the three halves of
+// the fix for a report too long to send whole: the file has every byte,
+// the parent is told where it is, and what the parent got is still a
+// notice within the cap.
 func TestNotifyParentOverTheCapKeepsTheWholeReport(t *testing.T) {
 	in := withParentInbox(t)
 	runID := subrun.NewID()
@@ -88,8 +81,6 @@ func TestNotifyParentOverTheCapKeepsTheWholeReport(t *testing.T) {
 	}
 	t.Setenv("KIDO_AGENT_RUN_ID", string(runID))
 
-	// A report whose end is the part that would be lost, so "the file has
-	// all of it" is a claim about the tail rather than about a length.
 	report := strings.Repeat("findings and more findings. ", 200) + "CONCLUSION: ship it"
 	if len(report) <= maxReportBytes {
 		t.Fatalf("fixture report is %d bytes, which is not over the %d byte cap", len(report), maxReportBytes)
@@ -132,8 +123,6 @@ func TestNotifyParentHeadIsCutOnARuneBoundary(t *testing.T) {
 	}
 	t.Setenv("KIDO_AGENT_RUN_ID", string(runID))
 
-	// Three-byte runes throughout, so wherever the cap lands it lands
-	// inside one unless the cut is moved back off it.
 	report := strings.Repeat("日", 3000)
 	if code := notifyParentCmd(nil, strings.NewReader(report)); code != 0 {
 		t.Fatalf("notify_parent = %d, want 0: a report of multi-byte runes must still be sendable", code)
@@ -151,11 +140,9 @@ func TestNotifyParentHeadIsCutOnARuneBoundary(t *testing.T) {
 }
 
 // TestNotifyParentWithNoRunDirectoryTruncates: a sender kido never
-// spawned - a pi started by hand inside an agent's pane, carrying that
-// agent's parent edge but no run of its own - has nowhere to keep a
-// report, and keeps the behaviour it always had. The notice must still
-// arrive: the failure mode worth avoiding is a long report that reaches
-// nobody.
+// spawned has nowhere to keep a report, so it is truncated rather than
+// dropped - the failure mode worth avoiding is a long report that
+// reaches nobody.
 func TestNotifyParentWithNoRunDirectoryTruncates(t *testing.T) {
 	in := withParentInbox(t)
 	t.Setenv("KIDO_AGENT_RUN_ID", "")

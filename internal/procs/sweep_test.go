@@ -5,10 +5,8 @@ import (
 	"testing"
 )
 
-// macOSFixture is real `ps -axo pid=,ppid=,comm=,args=` output captured on
-// this machine (macOS): comm is truncated to 16 characters, and args holds
-// the full command line, spaces and all - including a `zsh -c '...'`
-// wrapper whose argument is itself many words long.
+// macOSFixture is real `ps -axo pid=,ppid=,comm=,args=` output captured
+// on macOS: comm is truncated to 16 characters.
 const macOSFixture = `49417 71584 /bin/zsh         /bin/zsh -c source /Users/andrepopp/.claude/shell-snapshots/snapshot-zsh-1789943097813-ct8v62.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true
 49420 49417 /bin/zsh         /bin/zsh -c source /Users/andrepopp/.claude/shell-snapshots/snapshot-zsh-1789943097813-ct8v62.sh 2>/dev/null || true
 24619 64101 zsh              zsh
@@ -20,10 +18,8 @@ const macOSFixture = `49417 71584 /bin/zsh         /bin/zsh -c source /Users/and
 
 // linuxFixture is a hand-written, synthetic stand-in for `ps
 // -axo pid=,ppid=,comm=,args=` output on Linux, where comm is the bare
-// executable name (no truncation, no leading path) and pi's bash shim
-// execs node in place, so the outer pid still shows "node" while args
-// names pi's script - the shape isPi and markAncestors exist to see
-// through.
+// executable name and pi's bash shim execs node in place, so the outer
+// pid shows "node" while args names pi's script.
 const linuxFixture = `  600   500 bash     bash /opt/homebrew/Cellar/pi/1.2/libexec/bin/pi
   700   600 node     node /opt/homebrew/Cellar/pi/1.2/libexec/bin/pi
   500     1 zsh      zsh
@@ -41,10 +37,6 @@ func TestParseProcesses(t *testing.T) {
 		if parent[49417] != 71584 || parent[24710] != 24619 {
 			t.Errorf("parent map = %v, missing expected entries", parent)
 		}
-		// args is whatever strings.Fields split the rest of the line into:
-		// a quoted argument with spaces (the zsh -c payload) still lands
-		// as several separate elements, since parseProcesses only ever
-		// re-splits on whitespace.
 		if len(all[0].args) < 5 {
 			t.Errorf("args = %v, want the zsh -c payload split into several fields", all[0].args)
 		}
@@ -72,9 +64,6 @@ func TestParseProcesses(t *testing.T) {
 	})
 
 	t.Run("a command whose comm field itself has a leading path with spaces", func(t *testing.T) {
-		// A row where the program's own name/path contains a space shifts
-		// every field after it: parseProcesses only ever splits on
-		// whitespace, so this is columns misreading columns, not a crash.
 		all, _ := parseProcesses(splitPSFields([]byte("  10    1 My App    /Applications/My App.app/Contents/MacOS/My App --flag\n")))
 		if len(all) != 1 {
 			t.Fatalf("got %d rows, want 1", len(all))
@@ -99,10 +88,6 @@ func TestParseProcesses(t *testing.T) {
 	})
 }
 
-// TestParseSSHSplitsAtTheDestination pins where kido thinks the
-// destination is, which is the whole of what it needs from an ssh command
-// line: everything before it is passed through untouched, and anything
-// after it is a remote command kido must not displace.
 func TestParseSSHSplitsAtTheDestination(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -115,16 +100,11 @@ func TestParseSSHSplitsAtTheDestination(t *testing.T) {
 		{"user@host", []string{"deploy@host"}, nil, "deploy@host", nil},
 		{"flag then host", []string{"-A", "host"}, []string{"-A"}, "host", nil},
 		{"bundled flags", []string{"-tt", "host"}, []string{"-tt"}, "host", nil},
-		// -o takes its value from the next argument, so the host is the
-		// third: reading it as the second would send the bootstrap to a
-		// destination called "BatchMode=yes".
 		{"separate value", []string{"-o", "BatchMode=yes", "host"},
 			[]string{"-o", "BatchMode=yes"}, "host", nil},
 		{"attached value", []string{"-oBatchMode=yes", "host"},
 			[]string{"-oBatchMode=yes"}, "host", nil},
 		{"attached port", []string{"-p2222", "host"}, []string{"-p2222"}, "host", nil},
-		// -P is ssh's port flag, not to be confused with -p's value: it must
-		// consume "2222" as its own value, not be read as the destination.
 		{"-P port then host", []string{"-P", "2222", "host"},
 			[]string{"-P", "2222"}, "host", nil},
 		{"value after bundle", []string{"-4p", "2222", "host"},
@@ -149,9 +129,6 @@ func TestParseSSHSplitsAtTheDestination(t *testing.T) {
 	}
 }
 
-// TestSSHSession checks both halves of the argv walk: the destination,
-// and whether the session is a remote shell (a pty, so nothing "runs")
-// or a job.
 func TestSSHSession(t *testing.T) {
 	for _, c := range []struct {
 		args []string
@@ -174,10 +151,7 @@ func TestSSHSession(t *testing.T) {
 		{[]string{"ssh://me@h:22"}, "me@h:22", true},
 		{[]string{"-L", "8080:x:80", "--", "h"}, "h", true},
 		{[]string{"--", "h", "uptime"}, "h", false},
-		// A value that happens to contain flag letters is never scanned
-		// for them: this stays a plain interactive session.
 		{[]string{"-oProxyCommand=nc -T -N %h %p", "h"}, "h", true},
-		// No destination at all: nothing is known, so nothing is claimed.
 		{[]string{"-v", "-p", "2222"}, "", false},
 		{nil, "", false},
 	} {
@@ -209,7 +183,6 @@ func TestIsPi(t *testing.T) {
 }
 
 func TestMarkAncestors(t *testing.T) {
-	// 1 <- 500 (the pane's shell) <- 600 (the pi shim) <- 700 (node).
 	parent := map[int]int{700: 600, 600: 500, 500: 1}
 	set := map[int]bool{}
 	markAncestors(set, parent, 700)
@@ -221,6 +194,5 @@ func TestMarkAncestors(t *testing.T) {
 	if set[1] {
 		t.Error("pid 1 marked: every pane would look like pi")
 	}
-	// A ppid cycle must not hang the sweep.
 	markAncestors(map[int]bool{}, map[int]int{2: 3, 3: 2}, 2)
 }

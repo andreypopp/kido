@@ -6,11 +6,8 @@ import (
 	"testing"
 )
 
-// TestNewWindowArgsHasRequiredFlags pins the flags docs/design.md's
-// Spawning section calls load-bearing: -d, -c and one -e per env pair
-// must all be present, since a subagent whose window is missing any of
-// them starts in the wrong place, with the wrong environment, or steals
-// the caller's own turn.
+// TestNewWindowArgsHasRequiredFlags pins that -d, -c and one -e per env
+// pair are all present.
 func TestNewWindowArgsHasRequiredFlags(t *testing.T) {
 	command := []string{"pi", "--name", "worker-1"}
 	args := newWindowArgs("$3", "worker-1", "/home/dev/project",
@@ -39,9 +36,7 @@ func TestNewWindowArgsHasRequiredFlags(t *testing.T) {
 }
 
 // hasFlagValue reports whether args contains flag immediately followed by
-// value, anywhere - new-window accepts -e (and could, in principle, other
-// repeatable flags) more than once, so a plain slices.Contains on the pair
-// as two separate lookups would not confirm they are adjacent.
+// value, anywhere, since -e can repeat.
 func hasFlagValue(args []string, flag, value string) bool {
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == flag && args[i+1] == value {

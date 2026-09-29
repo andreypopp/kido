@@ -11,15 +11,6 @@ import (
 	"kido/internal/tmux"
 )
 
-// shellCmd implements `kido shell`, the default-command every pane of the
-// kido server starts with: it execs the user's login shell with kido's
-// integration arranged around it (see prime.go), so a pane reports its
-// prompts and command lines without a line of kido in the user's dotfiles.
-//
-// It replaces this process with the shell. Nothing of kido's is left in
-// the pane - not a wrapper process, not a file - which is what makes a
-// pane under kido indistinguishable from one under stock tmux for
-// everything except the markers.
 func shellCmd(args []string) error {
 	if len(args) > 0 {
 		return fmt.Errorf("usage: kido shell")
@@ -38,12 +29,6 @@ func shellCmd(args []string) error {
 	return syscall.Exec(path, argv, withEnv(env, add))
 }
 
-// bareShellWord reports whether command, trimmed, is a single word with
-// no shell metacharacters: the shape a parked default-command must have
-// to be considered a shell's own name rather than a command line with
-// arguments of its own. It is pure - no lookup, no filesystem - so
-// shellCommand's resolution is the only part of the decision that needs
-// either.
 func bareShellWord(command string) (word string, ok bool) {
 	word = strings.TrimSpace(command)
 	if word == "" || strings.ContainsAny(word, " \t\n\"'$`\\;|&<>(){}[]*?~!#") {
@@ -52,16 +37,6 @@ func bareShellWord(command string) (word string, ok bool) {
 	return word, true
 }
 
-// shellCommand decides what shellCmd execs for a parked default-command:
-// `set-option -g default-command "zsh"` names a shell, not a command to
-// run inside one, and a user who wrote that meant to skip the login
-// shell - not to lose OSC 133, the bin directory and the shims for every
-// pane, silently. A bare word whose basename is zsh or bash, or that
-// resolves to the very same executable as loginShellPath, is primed as
-// that shell instead, with no -c. Anything else - a command with
-// arguments, or a bare word naming something kido does not prime - is
-// unchanged.
-//
 // tmux itself would start a bare "zsh" as an interactive, non-login
 // shell; kido primes every shell with -l regardless (primeShellArgs), so
 // what the user gets here is a primed *login* zsh, not the exact shell
@@ -71,9 +46,6 @@ func shellCommand(loginShellPath, command string) (path, effective string) {
 	if !ok {
 		return loginShellPath, command
 	}
-	// syscall.Exec takes a path and does not search PATH itself, so a
-	// relative word has to be resolved here to be exec'd at all - but not
-	// to decide whether it names a shell, which only reads its basename.
 	resolved := word
 	if !strings.Contains(word, "/") {
 		if p, err := exec.LookPath(word); err == nil {
@@ -112,20 +84,11 @@ func withEnv(base, add []string) []string {
 	return append(out, add...)
 }
 
-// userCommandOption is where the launcher parks a default-command the
-// user set in their own kido.conf, before overriding it with `kido shell`
-// (see writeServerConf). Empty is the ordinary case: no command, so the
-// pane gets an interactive login shell.
 const userCommandOption = "@kido-user-command"
 
-// resolveLoginShell is the shell a kido pane runs, over values given so
-// it can be tested without a tmux server answering for the machine the
-// test runs on: the server's default-shell when there is a server to ask
-// - tmux itself defaults that to the $SHELL of whoever started the
-// server, so a user who set one wins and a user who did not loses
-// nothing - then $SHELL, then /bin/sh. A candidate that is not an
-// executable file is skipped: an option naming a shell this host does
-// not have must not cost the pane its shell.
+// tmux itself defaults default-shell to the $SHELL of whoever started
+// the server, so a user who set one wins and a user who did not loses
+// nothing.
 func resolveLoginShell(candidates ...string) string {
 	for _, candidate := range candidates {
 		if candidate == "" {
@@ -138,15 +101,11 @@ func resolveLoginShell(candidates ...string) string {
 	return "/bin/sh"
 }
 
-// shellArgv is how the shell at path is exec'd: the arguments its priming
-// mode needs, and the user's own default-command when they set one, in
-// the place tmux would have put it.
-//
 // An unprimed shell is started the way tmux itself starts one, by dashing
 // argv[0] rather than by passing -l: a shell kido knows nothing about is
-// exactly the shell that might not take -l, and this cannot be got wrong.
-// The ssh bootstrap has to pass -l there instead, because sh gives it no
-// way to set another process's argv[0], which is why it probes first.
+// exactly the shell that might not take -l. The ssh bootstrap has to pass
+// -l there instead, because sh gives it no way to set another process's
+// argv[0].
 func shellArgv(path string, mode primeMode, command string) []string {
 	argv := []string{path}
 	switch {

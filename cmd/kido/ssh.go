@@ -16,10 +16,6 @@ import (
 // connecting at all (-Q, -V, -G, -O).
 const sshNoShellOpts = "NTWfsnOQVG"
 
-// canPrime reports whether in is the one shape kido can prime: an
-// interactive login shell on a destination, with kido's own command free
-// to be the remote one. Everything else is passed to ssh untouched - a
-// plain ssh is never worse than no kido at all.
 func canPrime(in procs.SSHArgs, tty bool) bool {
 	return tty && in.Dest != "" && len(in.Command) == 0 &&
 		!strings.ContainsAny(in.Letters, sshNoShellOpts)
@@ -36,15 +32,8 @@ func sshArgs(args []string, tty bool) []string {
 	return append(out, "-t", in.Dest, sshBootstrap())
 }
 
-// sshCmd implements `kido ssh`: ssh to a host with its zsh primed to
-// report to kido's sidebar, by way of a bootstrap sent as the remote
-// command. It replaces this process with ssh, so signals, the exit status
-// and the tty all behave as they would without kido in front of them.
-//
-// The ssh it runs is the one past kido's bin directory, whose own ssh is
-// the shim that ran this - but `kido ssh` is also a supported interface
-// on its own (docs/design.md, the ssh_prime_test.go e2e suite), so it
-// resolves the real ssh itself rather than taking it as an argument.
+// `kido ssh` is also a supported interface on its own (docs/design.md),
+// so it resolves the real ssh itself rather than taking it as an argument.
 func sshCmd(args []string) error {
 	path, err := realOnPath("ssh")
 	if err != nil {

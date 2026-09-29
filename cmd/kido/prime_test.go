@@ -24,11 +24,9 @@ func TestBashHasPS0(t *testing.T) {
 	}
 }
 
-// TestLocalPrimeModeIgnoresUnknownShells pins the basename decision that
-// used to be primeModeFor's own, now folded into localPrimeMode: a login
-// shell kido does not know by basename gets primePlain with neither gate
-// consulted, so this is safe to check against paths that do not exist on
-// disk (localPrimeMode would otherwise stat or exec them).
+// TestLocalPrimeModeIgnoresUnknownShells: a login shell kido does not
+// know by basename gets primePlain with neither gate consulted, so this
+// is safe to check against paths that do not exist on disk.
 func TestLocalPrimeModeIgnoresUnknownShells(t *testing.T) {
 	for _, path := range []string{"/bin/sh", "/usr/bin/fish", "/bin/ksh"} {
 		if got := localPrimeMode(path); got != primePlain {
@@ -127,13 +125,10 @@ func valueOf(t *testing.T, env []string, name string) string {
 	return ""
 }
 
-// TestLocalPrimeModeLeavesAFirstLoginAlone is the guard kitty's ssh
-// kitten carries and kido's bootstrap already had: a zsh with no dotfiles
-// at all is about to be offered zsh-newuser-install, and a ZDOTDIR
-// pointing at kido's directory would suppress it - quietly changing what
-// that first login does. Its positive half is the same home with one
-// .zshrc in it, without which the guard could as easily be refusing
-// everything.
+// TestLocalPrimeModeLeavesAFirstLoginAlone: a zsh with no dotfiles at
+// all is about to be offered zsh-newuser-install, and a ZDOTDIR pointing
+// at kido's directory would suppress it. The positive half is the same
+// home with one .zshrc in it.
 func TestLocalPrimeModeLeavesAFirstLoginAlone(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

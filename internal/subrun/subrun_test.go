@@ -43,7 +43,6 @@ func TestCreateWritesMetaAndTask(t *testing.T) {
 	}
 }
 
-// TestKindRoundTrips pins Meta.Kind surviving the meta file.
 func TestKindRoundTrips(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	for _, c := range []struct {
@@ -69,11 +68,9 @@ func TestKindRoundTrips(t *testing.T) {
 	}
 }
 
-// TestCommandRoundTrips pins the wrapper's input. The command is
-// model-authored text that reaches `kido async-run` as a file rather
-// than a command line, so what matters is that the argv comes back
-// exactly as given - quotes, newlines and all - and that an empty one is
-// an error instead of an empty exec.
+// TestCommandRoundTrips pins that the argv comes back exactly as given -
+// quotes, newlines and all - and that an empty one is an error instead
+// of an empty exec.
 func TestCommandRoundTrips(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	id := ID("run-cmd")
@@ -117,8 +114,6 @@ func TestRecordOutcomeOnce(t *testing.T) {
 	if err := RecordOutcome(id, Outcome{Result: Completed, At: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	// A later writer - a sweep concluding Died, say - must not clobber
-	// the true story that was already recorded.
 	if err := RecordOutcome(id, Outcome{Result: Died, At: time.Now()}); err == nil {
 		t.Error("RecordOutcome over an existing outcome = nil error, want it refused")
 	}
@@ -131,13 +126,9 @@ func TestRecordOutcomeOnce(t *testing.T) {
 	}
 }
 
-// TestWriteScreenLastWriterWins pins WriteScreen against RecordOutcome's
-// own O_EXCL discipline on purpose: unlike an outcome, two captures of
-// one run's screen carry no precedence to defend (docs/design.md, "The
-// screen capture"), and refusing a second write would have permanently
-// stranded `kido spawn_subagent --resume`, whose only defence against a stale
-// screen is overwriting it with a fresh capture (or ClearScreen, see
-// TestClearScreen below).
+// TestWriteScreenLastWriterWins pins that, unlike RecordOutcome's
+// O_EXCL, a second WriteScreen wins: refusing it would have permanently
+// stranded `kido spawn_subagent --resume`.
 func TestWriteScreenLastWriterWins(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	id := ID("run-screen")
@@ -162,13 +153,9 @@ func TestWriteScreenLastWriterWins(t *testing.T) {
 	}
 }
 
-// TestWriteScreenConcurrentWritersLeaveOneWholePayload guards against the
-// corruption writeAtomic's per-writer temp file fixes: two racing writers
-// once shared one temp path, so one's os.WriteFile could truncate the
-// other's temp file before either renamed it away, and whichever renamed
-// second would find its own temp file already gone - reliably reproduced
-// against the old code as a bare "no such file or directory" from
-// os.Rename, not a silent mix.
+// TestWriteScreenConcurrentWritersLeaveOneWholePayload pins that racing
+// writers never share a temp file: the result is always one whole
+// payload, never a mix.
 func TestWriteScreenConcurrentWritersLeaveOneWholePayload(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	id := ID("run-screen-race")
@@ -210,7 +197,6 @@ func TestResetForResume(t *testing.T) {
 	if err := Create(id, "x"); err != nil {
 		t.Fatal(err)
 	}
-	// Clearing before anything was ever recorded must be a silent no-op.
 	if err := ResetForResume(id, true); err != nil {
 		t.Fatalf("ResetForResume with nothing to clear = %v", err)
 	}
@@ -238,8 +224,7 @@ func TestResetForResume(t *testing.T) {
 }
 
 // TestResetForResumeKeepsDeliveredUnlessAsked pins that ResetForResume
-// leaves the delivered marker alone when delivered is false: a resume of
-// a session still on disk must not have its task redelivered.
+// leaves the delivered marker alone when delivered is false.
 func TestResetForResumeKeepsDeliveredUnlessAsked(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	id := ID("run-screen-clear-2")
@@ -272,11 +257,8 @@ func TestEffectiveOutcomeRunningWhenAliveAndUnrecorded(t *testing.T) {
 	}
 }
 
-// TestEffectiveOutcomeDiedWhenDeadAndUnrecorded is the "a run whose
-// outcome is never written is itself informative" case: no outcome file
-// at all, but the recorded pid is provably gone, so a guess of Died beats
-// silence - and must not be confused with Completed, which is a claim
-// only the child itself gets to make.
+// TestEffectiveOutcomeDiedWhenDeadAndUnrecorded pins that a dead pid
+// with no outcome file guesses Died, never Completed.
 func TestEffectiveOutcomeDiedWhenDeadAndUnrecorded(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	id := ID("run-5")
@@ -328,14 +310,8 @@ func TestListReturnsRunDirectories(t *testing.T) {
 	}
 }
 
-// TestReadMetaMissingTruncatedOrMalformed pins loadRunInfo's (cmd/kido/runs.go)
-// only defence against a run directory that is not what it should be: a
-// run whose window was still being created when kido crashed (no
-// meta.json yet), a meta.json cut off mid-write by the same crash, and
-// one that is syntactically valid JSON but not a Meta at all. `kido runs`
-// depends on all three returning a plain error rather than panicking,
-// since one bad run directory must not take the whole listing down with
-// it.
+// TestReadMetaMissingTruncatedOrMalformed pins that a missing, truncated
+// or malformed meta.json each return a plain error rather than panic.
 func TestReadMetaMissingTruncatedOrMalformed(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	if err := Create("run-bad", "x"); err != nil {
@@ -362,12 +338,12 @@ func TestReadMetaMissingTruncatedOrMalformed(t *testing.T) {
 	}
 }
 
-// TestParseIDRefusesTraversal pins ParseID, the one checkID: `kido
-// run-outcome <id>` takes its run id from the child, which is a
-// model-authored process, so an id that escapes Dir must be refused
-// rather than resolved. Measured before the check existed: `kido
-// run-outcome --result completed ../../evil` wrote an outcome file two
-// directories above the state dir and exited 0.
+// TestParseIDRefusesTraversal pins ParseID against path traversal: `kido
+// run-outcome <id>` takes its run id from a model-authored child, and an
+// id that escapes Dir must be refused rather than resolved. Measured
+// before the check existed: `kido run-outcome --result completed
+// ../../evil` wrote an outcome file two directories above the state dir
+// and exited 0.
 func TestParseIDRefusesTraversal(t *testing.T) {
 	for _, id := range []string{"", ".", "..", "../evil", "a/b", `..\evil`, ".hidden"} {
 		if _, err := ParseID(id); err == nil {

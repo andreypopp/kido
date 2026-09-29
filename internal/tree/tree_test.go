@@ -18,12 +18,9 @@ func order(items []node) []string {
 	return ids
 }
 
-// TestOrderKeepsEveryItem is the invariant both callers depend on and
-// neither can restate for the other: whatever the parent edges say, the
-// output is a permutation of the input. An agent missing from `kido
-// agents` is unaddressable, and a window missing from the sidebar is
-// unreachable, so a dropped item is the one failure mode that matters
-// more than any ordering.
+// TestOrderKeepsEveryItem pins that whatever the parent edges say, the
+// output is always a permutation of the input: a dropped item is the
+// one failure mode that matters more than any ordering.
 func TestOrderKeepsEveryItem(t *testing.T) {
 	cases := map[string][]node{
 		"empty":               nil,
@@ -58,15 +55,12 @@ func TestOrderKeepsEveryItem(t *testing.T) {
 	}
 }
 
-// TestOrderIsParentFirstAndStable checks the ordering itself: a child
-// follows its parent, and anything not in a tree keeps the order it
-// arrived in - which is how each caller gets its own sibling order (kido
-// agents sorts oldest-report-first before calling; the sidebar hands over
-// tmux's own window order).
+// TestOrderIsParentFirstAndStable pins that a child follows its parent,
+// and anything not in a tree keeps the order it arrived in.
 func TestOrderIsParentFirstAndStable(t *testing.T) {
 	items := []node{
-		{"shell", ""},   // no part of any tree
-		{"kid2", "top"}, // arrived before its own sibling
+		{"shell", ""},
+		{"kid2", "top"},
 		{"top", ""},
 		{"kid1", "top"},
 		{"grandkid", "kid2"},
@@ -78,15 +72,13 @@ func TestOrderIsParentFirstAndStable(t *testing.T) {
 }
 
 // TestOrderIsDeterministic pins that repeated runs over identical input
-// agree: Order buckets children in map-keyed slices, and a walk that ever
-// depended on Go's map iteration order would make the sidebar reshuffle
-// itself on every 100ms tick.
+// agree, guarding against a walk depending on Go's map iteration order.
 func TestOrderIsDeterministic(t *testing.T) {
 	var items []node
 	for i := range 40 {
 		parent := ""
 		if i > 0 {
-			parent = fmt.Sprint(i % 7) // a wide, shallow forest, plus a self-parent at 0
+			parent = fmt.Sprint(i % 7)
 		}
 		items = append(items, node{fmt.Sprint(i), parent})
 	}

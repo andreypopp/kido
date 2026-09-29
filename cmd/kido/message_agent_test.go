@@ -14,35 +14,21 @@ import (
 	"kido/internal/tmux"
 )
 
-// withPanes points listPanes at a fixed list for the duration of the test,
-// so the message-sending commands never talk to a real tmux server.
 func withPanes(t *testing.T, panes []tmux.Pane) {
 	t.Helper()
-	prev := listPanes
-	listPanes = func() ([]tmux.Pane, error) { return panes, nil }
-	t.Cleanup(func() { listPanes = prev })
+	testutil.Swap(t, &listPanes, func() ([]tmux.Pane, error) { return panes, nil })
 }
 
-// withSendPrompt replaces sendPrompt with a fake that fails with err and
-// records its calls instead of talking to a real tmux server. The
-// returned func reports the calls made so far.
 func withSendPrompt(t *testing.T, err error) func() []string {
 	t.Helper()
-	prev := sendPrompt
 	var calls []string
-	sendPrompt = func(pane, text string) error {
+	testutil.Swap(t, &sendPrompt, func(pane, text string) error {
 		calls = append(calls, pane+": "+text)
 		return err
-	}
-	t.Cleanup(func() { sendPrompt = prev })
+	})
 	return func() []string { return calls }
 }
 
-// withAskingCaller records a live agent session for the caller pane (%1,
-// in samePane) with a v1 inbox of its own. kido ask_agent refuses to
-// deliver a question from a caller that could not receive the answer
-// (send's reply-path check), so every ask test needs one; none of the
-// one-way kinds do.
 func withAskingCaller(t *testing.T) {
 	t.Helper()
 	in := testutil.StartInbox(t, "ok\n")
@@ -54,20 +40,15 @@ func withAskingCaller(t *testing.T) {
 	}
 }
 
-// samePane is the one-session pane fixture most of these tests use: the
-// caller at %1 and every target somewhere in the same session, "$1".
 var samePane = []tmux.Pane{
 	{PaneID: "%1", SessionID: "$1"},
 	{PaneID: "%2", SessionID: "$1"},
 	{PaneID: "%3", SessionID: "$1"},
 }
 
-// TestMessageV1Envelope checks that a target advertising protocol 1 gets
-// a v1 JSON envelope with the text intact, and the reply rule the split
-// command surface introduced: --reply-to alone makes it a reply, both in
-// the envelope's kind and in its ReplyTo. There used to be a --kind flag
-// as well, and `--kind reply --reply-to ID` was the only correct
-// spelling of one thing.
+// TestMessageV1Envelope: a target gets a v1 JSON envelope with the text
+// intact, and --reply-to alone makes it a reply, both in the envelope's
+// kind and in its ReplyTo.
 func TestMessageV1Envelope(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -99,8 +80,6 @@ func TestMessageV1Envelope(t *testing.T) {
 	}
 }
 
-// TestMessageV1PlainKind is the other half of the rule above: without
-// --reply-to the same command sends a plain message, correlating nothing.
 func TestMessageV1PlainKind(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -129,16 +108,11 @@ func TestMessageV1PlainKind(t *testing.T) {
 	}
 }
 
-// TestNotifyParentSendsToTheSessionInTheEnvironment pins what makes
-// `kido notify_parent` take no target at all: the parent comes from
-// KIDO_AGENT_PARENT_SESSION, matched against the live registry. The
+// TestNotifyParentSendsToTheSessionInTheEnvironment: the parent comes
+// from KIDO_AGENT_PARENT_SESSION, matched against the live registry. The
 // only record here is reachable by nothing else - its pane is in another
-// tmux session, where resolveTarget's scope would refuse it, and no
-// name or id argument is given - so a delivery can only have come from
-// the session id in the environment. That is also the negative control
-// for the round trip this replaced: pi's notify_parent used to read its
-// own row out of the agent list, and the agent list cannot see this
-// target.
+// tmux session, out of resolveTarget's scope - so a delivery can only
+// have come from the session id in the environment.
 func TestNotifyParentSendsToTheSessionInTheEnvironment(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -173,10 +147,8 @@ func TestNotifyParentSendsToTheSessionInTheEnvironment(t *testing.T) {
 }
 
 // TestNotifyParentWithoutAParentRefuses: a root session has no parent to
-// tell, which must read as a refusal rather than a silent success - and
-// must send nothing, even though a perfectly addressable agent is sitting
-// there with an inbox. The second case pins that the parent is never an
-// argument: naming one is a usage error, not an address.
+// tell, and the parent is never an argument: naming one is a usage
+// error, not an address.
 func TestNotifyParentWithoutAParentRefuses(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -209,9 +181,6 @@ func TestNotifyParentWithoutAParentRefuses(t *testing.T) {
 	}
 }
 
-// TestNotifyParentGoneParent: the session in the environment naming
-// nobody live is the ordinary case of a parent that has since exited, and
-// is an error naming the session rather than a fallback to anything.
 func TestNotifyParentGoneParent(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -227,9 +196,6 @@ func TestNotifyParentGoneParent(t *testing.T) {
 	}
 }
 
-// TestMessageResolveByName checks that an exact, case-insensitive title
-// match wins outright, even when it would also be a valid id prefix of
-// something else.
 func TestMessageResolveByName(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -250,11 +216,11 @@ func TestMessageResolveByName(t *testing.T) {
 	}
 }
 
-// TestMessageResolveByPaneTitleFallback: buildAgents (agents.go) names a
-// session with no reported Title after its pane's title, and that is the
-// name a model reads off list_agents. matchTarget must accept that same
-// name, or kido message_agent refuses a target by the very name kido list_agents
-// just showed for it.
+// TestMessageResolveByPaneTitleFallback: buildAgents names a session
+// with no reported Title after its pane's title, and that is the name a
+// model reads off list_agents. matchTarget must accept that same name,
+// or kido message_agent refuses a target by the very name kido
+// list_agents just showed for it.
 func TestMessageResolveByPaneTitleFallback(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -271,16 +237,13 @@ func TestMessageResolveByPaneTitleFallback(t *testing.T) {
 	}
 
 	if code := messageAgentCmd([]string{"worker-2"}, strings.NewReader("hi")); code != 0 {
-		t.Fatalf("code = %d, want 0: worker-2 is the name kido list_agents shows for this session", code)
+		t.Fatalf("code = %d, want 0", code)
 	}
 	if msgs := in.Received(); len(msgs) != 1 {
 		t.Fatalf("server got %q, want one message", msgs)
 	}
 }
 
-// TestMessageResolveAmbiguity checks the three addressing rules and their
-// ambiguity errors: two sessions with the same title, an id prefix that
-// matches two ids, and a target found nowhere at all.
 func TestMessageResolveAmbiguity(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -324,9 +287,6 @@ func TestMessageResolveAmbiguity(t *testing.T) {
 	}
 }
 
-// TestMessageOutOfSession checks that an agent that exists but lives in a
-// different tmux session is reported as unaddressable, not "not found" -
-// resolveTarget must name the reason rather than pretend it saw nothing.
 func TestMessageOutOfSession(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -351,9 +311,6 @@ func TestMessageOutOfSession(t *testing.T) {
 	}
 }
 
-// TestMessageNoInboxPastes checks the Claude-pane fallback: a live agent
-// in scope that has reported no inbox at all still gets the message,
-// pasted into its pane exactly as kido prompt would.
 func TestMessageNoInboxPastes(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -372,18 +329,14 @@ func TestMessageNoInboxPastes(t *testing.T) {
 	}
 }
 
-// TestMessageInboxHardErrorNoFallback checks the AGENTS.md rule that a
-// non-msg.ErrInboxUnavailable failure must never fall back to a paste:
-// the message may already have reached the agent, and pasting it again
-// would double-send.
+// TestMessageInboxHardErrorNoFallback: a non-msg.ErrInboxUnavailable
+// failure must never fall back to a paste.
 func TestMessageInboxHardErrorNoFallback(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
 	withPanes(t, samePane)
 	pastes := withSendPrompt(t, errors.New("sendPrompt must not be called"))
 
-	// A reply other than "ok" is a hard error from msg.Deliver, not
-	// msg.ErrInboxUnavailable (see msg.TestDeliverBadReply).
 	in := testutil.StartInbox(t, "nope\n")
 	if err := state.Record("target", state.Session{
 		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path,
@@ -399,16 +352,12 @@ func TestMessageInboxHardErrorNoFallback(t *testing.T) {
 	}
 }
 
-// TestMessageEmptyStdin checks that empty input is rejected before kido
-// resolves a target at all.
 func TestMessageEmptyStdin(t *testing.T) {
 	if code := messageAgentCmd([]string{"whoever"}, strings.NewReader("")); code != 1 {
 		t.Errorf("code = %d, want 1", code)
 	}
 }
 
-// TestMessageUsage checks argument-count errors: no target and more than
-// one positional argument are both rejected.
 func TestMessageUsage(t *testing.T) {
 	if code := messageAgentCmd(nil, strings.NewReader("x")); code != 1 {
 		t.Errorf("no target: code = %d, want 1", code)
@@ -418,11 +367,9 @@ func TestMessageUsage(t *testing.T) {
 	}
 }
 
-// TestResolveTargetAmbiguousElsewhere checks the error for a name that
-// matches nothing in scope and several agents outside it. matchTarget
-// reports an ambiguity with a zero state.Session, so the out-of-session
-// branch must not name its id: it would print an empty one and claim a
-// single match where there were several.
+// TestResolveTargetAmbiguousElsewhere: matchTarget reports an ambiguity
+// with a zero state.Session, so the out-of-session branch must not name
+// its id, or it would print an empty one.
 func TestResolveTargetAmbiguousElsewhere(t *testing.T) {
 	panes := []tmux.Pane{
 		{PaneID: "%1", SessionID: "$1"},
@@ -449,10 +396,6 @@ func TestResolveTargetAmbiguousElsewhere(t *testing.T) {
 	}
 }
 
-// TestMessageRefusesSelf checks that an agent cannot address its own
-// pane. list_agents reports the caller alongside its peers, so a model
-// picking a name off that list can pick its own, and delivering would
-// hand it its own message back as a fresh user turn.
 func TestMessageRefusesSelf(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -474,8 +417,8 @@ func TestMessageRefusesSelf(t *testing.T) {
 
 // TestMessageRefusesInvalidUTF8 pins that a message is refused rather
 // than delivered differently by each path: the inbox marshals it into
-// JSON, which substitutes U+FFFD for an invalid byte, while a paste
-// writes the byte through untouched.
+// JSON, substituting U+FFFD for an invalid byte, while a paste writes
+// the byte through untouched.
 func TestMessageRefusesInvalidUTF8(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -495,10 +438,9 @@ func TestMessageRefusesInvalidUTF8(t *testing.T) {
 	}
 }
 
-// TestAskAgent checks that `kido ask_agent` sends an ask envelope with no
-// ReplyTo, and that the caller-supplied --id, not a generated one, is
-// what ends up on the wire - ask_agent (pi/kido-agents.ts) must know the
-// id before sending, to register what it is waiting for.
+// TestAskAgent checks that `kido ask_agent` sends an ask envelope with
+// no ReplyTo, and that the caller-supplied --id, not a generated one, is
+// what ends up on the wire.
 func TestAskAgent(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -528,14 +470,11 @@ func TestAskAgent(t *testing.T) {
 	}
 }
 
-// TestMessageKindCannotBeMisstated is what is left of a table that used
-// to reject three ways of naming a kind wrongly (a reply with no
-// --reply-to, an ask with one, a --kind nobody defines). The kind is no
-// longer said out loud at all: it comes from which command was run, so
-// the only spelling those rules still have is a flag on a command that
-// does not define it, and flag.FlagSet refuses that before anything is
-// resolved or delivered. A live target is recorded anyway, so a pass
-// cannot come from the target being unresolvable instead.
+// TestMessageKindCannotBeMisstated: the kind comes from which command
+// was run, so a flag naming a kind on a command that does not define it
+// is refused by flag.FlagSet before anything is resolved or delivered. A
+// live target is recorded anyway, so a pass cannot come from the target
+// being unresolvable instead.
 func TestMessageKindCannotBeMisstated(t *testing.T) {
 	cases := []struct {
 		name string
@@ -567,15 +506,13 @@ func TestMessageKindCannotBeMisstated(t *testing.T) {
 	}
 }
 
-// TestMessageKindNonMessageRequiresInbox checks that an ask/reply/notice
-// sent to a target with no inbox at all is refused outright, rather than
-// falling back to a paste that would strip the kind and id entirely.
+// TestMessageKindNonMessageRequiresInbox: an ask/reply/notice sent to a
+// target with no inbox at all is refused outright, rather than falling
+// back to a paste that would strip the kind and id entirely.
 func TestMessageKindNonMessageRequiresInbox(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
 	withPanes(t, samePane)
-	// The caller can be replied to, so the refusal under test is the
-	// target's missing inbox and not the asker's own.
 	withAskingCaller(t)
 	pastes := withSendPrompt(t, errors.New("sendPrompt must not be called"))
 
@@ -592,12 +529,9 @@ func TestMessageKindNonMessageRequiresInbox(t *testing.T) {
 	}
 }
 
-// TestMessageAskRefusalDoesNotPaste checks that a "refused" wire answer -
-// what a receiver sends when answering this ask would close a cycle (see
-// AGENTS.md's Cycles section) - surfaces as an error without ever falling
-// back to send-keys: the question was read and deliberately declined, not
-// mis-delivered, so pasting it again would just hand the target the same
-// cycle it refused.
+// TestMessageAskRefusalDoesNotPaste: a "refused" wire answer surfaces
+// as an error without ever falling back to send-keys, since the
+// question was read and deliberately declined, not mis-delivered.
 func TestMessageAskRefusalDoesNotPaste(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -621,27 +555,19 @@ func TestMessageAskRefusalDoesNotPaste(t *testing.T) {
 	}
 }
 
-// TestMessageNoticeToADeadV1AgentDoesNotPaste is the case the
-// inbox check above cannot see: a target that reported --inbox while it
-// was alive and has since gone, leaving a stale socket path in its
-// record. It passes the inbox check, and deliverInboxOrPaste's answer to
-// a socket nobody is listening on is to paste into the pane - which, for an agent that is no longer running,
-// means typing the text at the shell the pane fell back to and pressing
-// Enter. For a notice that text is model-authored (a subagent's completion
-// notice is built from its own title and activity, pi/kido-agents.ts), so
-// the paste would be a command line the model wrote, run in its parent's
-// pane. The rule for a dead parent is that there is nobody to tell; this
-// pins that it is not told by send-keys instead.
+// TestMessageNoticeToADeadV1AgentDoesNotPaste is the case the inbox
+// check above cannot see: a target that reported --inbox while alive and
+// has since gone, leaving a stale socket path in its record.
+// deliverInboxOrPaste's answer to a socket nobody is listening on is
+// normally to paste into the pane, but a notice's text is model-authored
+// and pasting it would run it as a command line in the parent's pane.
 func TestMessageNoticeToADeadV1AgentDoesNotPaste(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
 	withPanes(t, samePane)
-	withAskingCaller(t) // the ask below must fail on the target, not on itself
+	withAskingCaller(t)
 	pastes := withSendPrompt(t, nil)
 
-	// A path with nothing listening on it: exactly what a dead agent's
-	// record still names. Its session id is what makes the same record the
-	// parent notify_parent resolves out of the environment.
 	if err := state.Record("target", state.Session{
 		Pane: "%2", PID: os.Getpid(), Status: state.Idle,
 		Inbox: filepath.Join(t.TempDir(), "gone.sock"),
@@ -668,8 +594,7 @@ func TestMessageNoticeToADeadV1AgentDoesNotPaste(t *testing.T) {
 }
 
 // TestMessageNoInboxStillPastes is the negative control for the test
-// above: the fallback itself must survive, since it is the only way an
-// agent without an inbox at all (Claude Code) is reachable.
+// above: the fallback itself must survive.
 func TestMessageNoInboxStillPastes(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -690,44 +615,11 @@ func TestMessageNoInboxStillPastes(t *testing.T) {
 	}
 }
 
-// captureStderr returns what f wrote to os.Stderr. Every send prints its
-// refusal there and nowhere else, so a test about what a refusal tells
-// the caller has to read it back.
-func captureStderr(t *testing.T, f func()) string {
-	t.Helper()
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	prev := os.Stderr
-	os.Stderr = w
-	defer func() { os.Stderr = prev }()
-	f()
-	os.Stderr = prev
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-	out, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(out)
-}
-
 // TestAskAgentRefusesACallerWithNoReplyPath: an ask demands a correlated
-// answer, and the answer arrives on the asker's own inbox or not at all.
-// Measured from a bare shell, an ask without this check really was
-// delivered - the target spent a turn's attention on the question, then
-// found the asker unaddressable ("no agent session matches %47") and was
-// left holding a pending ask it could never discharge. So the refusal has
-// to happen here, before anything is sent, and it has to name
-// message_agent, which is what a shell actually wanted.
-//
-// The two callers below are the two ways to have no reply path: no state
-// record at all (a human at a shell), and a record with no kido inbox (a
-// Claude Code session, reachable only by paste - and a reply never
-// pastes). The third assertion is the point of the test: the target's
-// inbox got nothing.
+// answer, which arrives on the asker's own inbox or not at all, so a
+// caller with no reply path (no state record, or a record with no kido
+// inbox) is refused here before anything is sent. The third assertion
+// is the point of the test: the target's inbox got nothing.
 func TestAskAgentRefusesACallerWithNoReplyPath(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -759,7 +651,7 @@ func TestAskAgentRefusesACallerWithNoReplyPath(t *testing.T) {
 			}
 
 			var code int
-			stderr := captureStderr(t, func() {
+			stderr := capture(t, &os.Stderr, func() {
 				code = askAgentCmd([]string{"--id", "t1", "victim"}, strings.NewReader("are you done?"))
 			})
 			if code != 1 {
@@ -779,10 +671,7 @@ func TestAskAgentRefusesACallerWithNoReplyPath(t *testing.T) {
 }
 
 // TestAskAgentFromAnAgentWithAnInboxStillSends is the negative control
-// for the refusal above: the normal path is an extension asking on behalf
-// of a session whose inbox is bound, and a check that swallowed that
-// would take ask_agent away from the only caller it was ever for.
-// (TestAskAgent covers the envelope itself; this one is about the gate.)
+// for the refusal above.
 func TestAskAgentFromAnAgentWithAnInboxStillSends(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")

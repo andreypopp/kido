@@ -43,17 +43,13 @@ func dispatchTestBin(t *testing.T) string {
 
 // runDispatchTest runs the built kido binary with args and no environment
 // beyond PATH (in particular no TMUX, no TMUX_SIDE_CLIENT), so the UI
-// path - reached whenever dispatch does not recognise args[0] as a flag
-// error - fails fast on "must run inside tmux" rather than hanging or
+// path fails fast on "must run inside tmux" rather than hanging or
 // touching a real tmux server.
 func runDispatchTest(t *testing.T, args ...string) (stderr string, code int) {
 	t.Helper()
 	return runDispatchEnv(t, nil, args...)
 }
 
-// runDispatchEnv is runDispatchTest with extra environment, for the cases
-// that are about what main() reads from it rather than from its
-// arguments.
 func runDispatchEnv(t *testing.T, env []string, args ...string) (stderr string, code int) {
 	t.Helper()
 	bin := dispatchTestBin(t)
@@ -71,13 +67,9 @@ func runDispatchEnv(t *testing.T, env []string, args ...string) (stderr string, 
 	return errBuf.String(), code
 }
 
-// TestUnknownSubcommandNamesTheRealOnes pins DEFECT 1: an unrecognised
-// subcommand used to fall through to the interactive UI, which then
-// complained about a missing tmux client - actively misleading, since the
-// real problem (a typo, or a name that is not a subcommand) had nothing
-// to do with tmux. Reverting the default case in main's switch (or the
-// unknownSubcommand call it makes) turns this back into "kido: must run
-// inside tmux", which is what this test would show.
+// TestUnknownSubcommandNamesTheRealOnes: an unrecognised subcommand must
+// name itself, not fall through to the interactive UI's misleading
+// "must run inside tmux".
 func TestUnknownSubcommandNamesTheRealOnes(t *testing.T) {
 	stderr, code := runDispatchTest(t, "bogus-command")
 	if code != 1 {
@@ -94,17 +86,9 @@ func TestUnknownSubcommandNamesTheRealOnes(t *testing.T) {
 	}
 }
 
-// TestUnknownSubcommandSuggestsNearMiss used to run `kido list_agents`,
-// the defect report's own case: the pi TOOL was list_agents and the
-// SUBCOMMAND was `agents`, so the tool's name was a near miss to be
-// suggested against. That premise is gone, and the thing worth pinning
-// about it moved: that a tool's name and its command's cannot differ at
-// all is now TestEveryToolHasASubcommandOfItsName's, mechanically, and a
-// suggestion is a poor substitute for a name that is simply right.
-// What remains here is the suggestion's own job, genuine typos - of
-// which the likeliest is the shape the rename created: the OLD name,
-// typed by hand or by something that remembers it, for a command that
-// has since grown a suffix.
+// TestUnknownSubcommandSuggestsNearMiss covers a genuine typo: an old
+// command name, typed by hand or by something that remembers it, before
+// it grew a suffix.
 func TestUnknownSubcommandSuggestsNearMiss(t *testing.T) {
 	stderr, code := runDispatchTest(t, "agents")
 	if code != 1 {
@@ -117,10 +101,7 @@ func TestUnknownSubcommandSuggestsNearMiss(t *testing.T) {
 
 // TestLeadingFlagReachesUI pins that `kido -client NAME` (and any other
 // leading flag) still reaches the interactive UI path rather than being
-// treated as an unknown subcommand. Run with no $TMUX, the UI path fails
-// fast on "must run inside tmux"; if the default case in main's switch
-// ever stopped special-casing a leading "-", this would instead report
-// "unknown subcommand \"-client\"".
+// treated as an unknown subcommand.
 func TestLeadingFlagReachesUI(t *testing.T) {
 	stderr, code := runDispatchTest(t, "-client", "somebody")
 	if code != 1 {
@@ -134,14 +115,9 @@ func TestLeadingFlagReachesUI(t *testing.T) {
 	}
 }
 
-// TestBareIsTheLauncher pins both halves of what plain `kido` means now.
-// With no arguments it starts or attaches to kido's own server, so
-// inside a tmux it refuses instead - and the second case is what keeps
-// that from being a rule about arguments alone: the side column is run
-// as a bare `kido` too, by a fork that tells it apart with
-// $TMUX_SIDE_CLIENT, and it must still reach the UI. Without that half,
-// a refusal keyed on $TMUX alone passes here and leaves every kido
-// server with an empty side column.
+// TestBareIsTheLauncher pins both halves of what plain `kido` means:
+// inside a tmux it refuses, but the side column - a bare `kido` too,
+// told apart by $TMUX_SIDE_CLIENT - must still reach the UI.
 func TestBareIsTheLauncher(t *testing.T) {
 	t.Run("inside tmux it refuses", func(t *testing.T) {
 		stderr, code := runDispatchEnv(t, []string{"TMUX=/tmp/tmux-501/kido,1234,0"})
@@ -165,10 +141,7 @@ func TestBareIsTheLauncher(t *testing.T) {
 }
 
 // TestKnownSubcommandsDispatch checks that every name in subcommands is
-// still routed to its handler rather than unknownSubcommand: each is run
-// with no arguments of its own (most then fail their own usage or state
-// checks, which is fine - only "unknown subcommand" would mean the switch
-// in main stopped recognising it).
+// still routed to its handler rather than unknownSubcommand.
 func TestKnownSubcommandsDispatch(t *testing.T) {
 	for _, cmd := range subcommands {
 		cmd := cmd
@@ -181,22 +154,16 @@ func TestKnownSubcommandsDispatch(t *testing.T) {
 	}
 }
 
-// TestSuggestSubcommand exercises suggestSubcommand directly, in-process,
-// for cases beyond the one already covered end-to-end above.
 func TestSuggestSubcommand(t *testing.T) {
 	cases := []struct {
 		name string
 		want string
 	}{
-		// Every former name of a renamed command, which is what a near
-		// miss now looks like. Each is shorter than the command it means,
-		// the opposite of the shape suggestSubcommand originally matched.
 		{"agents", "list_agents"},
 		{"message", "message_agent"},
 		{"spawn", "spawn_subagent"},
 		{"stop", "stop_subagent"},
 		{"interrupt", "interrupt_subagent"},
-		// And an ordinary typo, still matched the long way round.
 		{"run-outcomes", "run-outcome"},
 		{"bogus-command", ""},
 	}

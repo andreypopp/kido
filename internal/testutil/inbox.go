@@ -70,7 +70,6 @@ func StartInbox(t testing.TB, reply string) *Inbox {
 	return in
 }
 
-// Received is the prompts delivered over the socket so far.
 func (in *Inbox) Received() []string {
 	in.mu.Lock()
 	defer in.mu.Unlock()

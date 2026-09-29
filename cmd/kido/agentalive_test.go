@@ -11,24 +11,12 @@ import (
 	"kido/internal/tmux"
 )
 
-// TestAgentAliveSurvivesAPaneCollisionOnTheParent is the regression test
-// for the incident a subagent's parent-liveness poll used to debounce
-// rather than avoid. A second live agent claiming the parent's own pane -
-// a `pi --print` that inherited TMUX_PANE - wins that pane in
-// state.Load's per-pane view, and the parent's record is then not in the
-// answer at all. The child read that view (through `kido list_agents --json`)
-// and could only conclude it might be an orphan.
-//
-// It is the same shape as internal/reap's
-// TestSweepSurvivesAPaneCollisionOnTheParent, for the same reason: the
-// records go through real state files, so the contract between the two
-// packages is what is under test rather than a hand-built slice agreeing
-// with itself, and the lossy view is exercised as a negative control. If
-// `kido list_agents` stopped losing the parent this test would no longer be
-// about anything.
-//
-// One reading decides it, exactly as the poll now does: there is no
-// second call here to absorb the first.
+// TestAgentAliveSurvivesAPaneCollisionOnTheParent: a second live agent
+// claiming the parent's own pane wins that pane in state.Load's
+// per-pane view, and the parent's record is then not in that answer at
+// all - but agent-alive must still say true. The lossy view is
+// exercised as a negative control below. Same shape as internal/reap's
+// TestSweepSurvivesAPaneCollisionOnTheParent.
 func TestAgentAliveSurvivesAPaneCollisionOnTheParent(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -51,7 +39,7 @@ func TestAgentAliveSurvivesAPaneCollisionOnTheParent(t *testing.T) {
 	}
 
 	var err error
-	out := captureStdout(t, func() { err = agentAliveCmd([]string{"parent"}) })
+	out := capture(t, &os.Stdout, func() { err = agentAliveCmd([]string{"parent"}) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,10 +47,6 @@ func TestAgentAliveSurvivesAPaneCollisionOnTheParent(t *testing.T) {
 		t.Errorf("agent-alive parent = %q, want %q: the parent is plainly running, collision or not", strings.TrimSpace(out), "true")
 	}
 
-	// The negative control: the reading the poll used to take. The
-	// intruder holds the parent's pane, so the child's own row resolves no
-	// parent - which is the false "my parent is gone" the debounce existed
-	// to ride out.
 	byPane, lerr := state.Load()
 	if lerr != nil {
 		t.Fatal(lerr)
@@ -94,7 +78,7 @@ func TestAgentAliveGoneAndUnknown(t *testing.T) {
 	}
 	for _, session := range []string{"dead-sess", "never-existed"} {
 		var err error
-		out := captureStdout(t, func() { err = agentAliveCmd([]string{session}) })
+		out := capture(t, &os.Stdout, func() { err = agentAliveCmd([]string{session}) })
 		if err != nil {
 			t.Fatalf("agent-alive %s: %v", session, err)
 		}
@@ -128,7 +112,7 @@ func TestAgentAliveFollowsARestartedSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	var err error
-	out := captureStdout(t, func() { err = agentAliveCmd([]string{"parent-sess"}) })
+	out := capture(t, &os.Stdout, func() { err = agentAliveCmd([]string{"parent-sess"}) })
 	if err != nil {
 		t.Fatal(err)
 	}

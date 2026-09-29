@@ -38,10 +38,8 @@ func TestAsyncRunReportsBeforeItExits(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	id := startAsyncRun(t, "build", "", "sh", "-c", "printf out; printf err >&2; exit 3")
 
-	// Captured only to keep the command's own output off the test log:
-	// the wrapper tees to its pane, which here is the test's stdout.
 	var code int
-	captureStdout(t, func() { code = asyncRunCmd([]string{"--run-id", string(id)}) })
+	capture(t, &os.Stdout, func() { code = asyncRunCmd([]string{"--run-id", string(id)}) })
 	if code != 3 {
 		t.Errorf("asyncRunCmd = %d, want the command's own exit status 3", code)
 	}
@@ -85,20 +83,13 @@ func TestAsyncRunSuccessRecordsCompleted(t *testing.T) {
 }
 
 // TestAsyncRunLeavesAnOutcomeItDidNotWin pins the wrapper's half of the
-// exactly-once rule: the outcome write is the arbiter of who observed the
-// ending first, so a wrapper finding one already recorded - by a sweep,
-// or by `kido stop_subagent` - keeps the story that is there and sends
-// nothing of its own, leaving the notice to whoever won.
-//
-// The assertion that carries it is silence, and silence needs the second
-// half of this test to mean anything: the same wrapper, the same absent
-// parent, a race it wins, and the send path complaining out loud. Without
-// that half every assertion here passes against a wrapper that never
-// notifies at all.
+// exactly-once rule: the outcome write is the arbiter of who observed
+// the ending first, so a wrapper finding one already recorded keeps the
+// story that is there and sends nothing of its own. Carried by silence,
+// which needs the second half of the test - the same wrapper winning the
+// race and complaining out loud - to mean anything.
 func TestAsyncRunLeavesAnOutcomeItDidNotWin(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	// A parent nothing can resolve: the send is attempted and fails
-	// loudly, which is exactly the tell this test reads.
 	const parent = "nobody-alive-reports-this"
 
 	lost := startAsyncRun(t, "raced", parent, "true")
@@ -106,7 +97,7 @@ func TestAsyncRunLeavesAnOutcomeItDidNotWin(t *testing.T) {
 		t.Fatal(err)
 	}
 	var code int
-	quiet := captureStderr(t, func() {
+	quiet := capture(t, &os.Stderr, func() {
 		code = asyncRunCmd([]string{"--run-id", string(lost)})
 	})
 	if code != 0 {
@@ -120,15 +111,14 @@ func TestAsyncRunLeavesAnOutcomeItDidNotWin(t *testing.T) {
 	}
 
 	won := startAsyncRun(t, "won", parent, "true")
-	loud := captureStderr(t, func() { asyncRunCmd([]string{"--run-id", string(won)}) })
+	loud := capture(t, &os.Stderr, func() { asyncRunCmd([]string{"--run-id", string(won)}) })
 	if loud == "" {
 		t.Error("wrapper that won the outcome race said nothing, so the silence above pins nothing; it should have tried to notify")
 	}
 }
 
-// TestAsyncRunSignalledRecordsAndReports is the signal path of
-// docs/design-subagents.md's "An async bash run": a wrapper being killed
-// is exactly the ending nobody else is watching for, so it records one
+// TestAsyncRunSignalledRecordsAndReports: a wrapper being killed is
+// exactly the ending nobody else is watching for, so it records one
 // itself rather than leaving the run looking like it is still going.
 func TestAsyncRunSignalledRecordsAndReports(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())

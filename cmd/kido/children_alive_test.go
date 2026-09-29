@@ -25,7 +25,7 @@ func childRun(t *testing.T, id subrun.ID, parent string, pid int) {
 
 func childrenAlive(t *testing.T, session string) string {
 	t.Helper()
-	out := captureStdout(t, func() {
+	out := capture(t, &os.Stdout, func() {
 		if err := childrenAliveCmd([]string{session}); err != nil {
 			t.Fatal(err)
 		}

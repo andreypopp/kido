@@ -10,10 +10,6 @@ import (
 	"kido/internal/tmux"
 )
 
-// snapshot writes a shell script that recreates the server's sessions,
-// windows, panes, directories and layouts, resuming Claude Code and pi
-// panes by their exact session id where a hook or agent-status call has
-// recorded one.
 func snapshot(w io.Writer) error {
 	panes, err := tmux.ListPanes()
 	if err != nil {
@@ -70,11 +66,8 @@ func snapshot(w io.Writer) error {
 	return nil
 }
 
-// paneCommand picks the command, if any, snapshot's script should send
-// into the pane it just recreated: from the pane's state record when it
-// has one, else from its foreground command or the process sweep. The
-// script always passes -c, which a resumed pi session needs: pi
-// namespaces sessions by working directory.
+// -c is always passed by the caller, which a resumed pi session needs:
+// pi namespaces sessions by working directory.
 func paneCommand(p tmux.Pane, states map[string]state.Session, piPanes map[int]bool) string {
 	if st, ok := states[p.PaneID]; ok {
 		switch st.Agent {

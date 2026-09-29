@@ -16,16 +16,13 @@ import (
 	"kido/internal/testutil"
 )
 
-// withPiSessionDir points piSessionFileExists at dir for the duration of the
-// test, so a resume test never depends on a real ~/.pi/agent/sessions.
 func withPiSessionDir(t *testing.T, dir string) {
 	t.Helper()
 	t.Setenv("PI_CODING_AGENT_SESSION_DIR", dir)
 }
 
 // writePiSessionFile creates the file piSessionFileExists looks for: pi's
-// own "<timestamp>_<id>.jsonl" naming (session-manager.js, see
-// piSessionFileExists's doc).
+// "<timestamp>_<id>.jsonl" naming (session-manager.js).
 func writePiSessionFile(t *testing.T, dir, runID string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -37,9 +34,6 @@ func writePiSessionFile(t *testing.T, dir, runID string) {
 	}
 }
 
-// newDeadRun sets up a run record for resume: created, met with a dead
-// pid, and (unless the caller wants a live-run test) an outcome recorded
-// so EffectiveOutcome reads it as not-running.
 func newDeadRun(t *testing.T, id subrun.ID, cwd string) {
 	t.Helper()
 	if err := subrun.Create(id, "do the thing"); err != nil {
@@ -87,8 +81,6 @@ func TestSpawnResumeRefusesLiveRun(t *testing.T) {
 	if err := subrun.WriteMeta(subrun.Meta{ID: "live-run", Name: "kid", PID: os.Getpid(), Cwd: cwd, StartedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	// No outcome recorded, and Meta.PID is this very test process: alive.
-
 	err := spawnSubagentCmd([]string{"--resume", "live-run"})
 	if err == nil {
 		t.Fatal("spawnSubagentCmd --resume on a live run = nil error, want a refusal")
@@ -101,16 +93,10 @@ func TestSpawnResumeRefusesLiveRun(t *testing.T) {
 	}
 }
 
-// TestSpawnResumeWithNoSessionFileRespawnsUnderTheSameRunID pins the fix
-// for the bug report where `kido runs <id>` printed a resume command that
-// `kido spawn_subagent --resume` itself then refused with "no pi session
-// file found ...; nothing to resume". The run id is also the child's own
-// pi session id (docs/design-subagents.md, "The run record"), and with no
-// file on disk that id is free rather than stale - so this mints a fresh
-// session under it with --session-id instead of --session, and clears
-// the "delivered" marker the never-started first attempt left, so the
-// stored task is redelivered rather than silently skipped by
-// pi/kido-agents.ts's deliverTask.
+// TestSpawnResumeWithNoSessionFileRespawnsUnderTheSameRunID: with no pi
+// session file on disk, the run id is free rather than stale, so this
+// mints a fresh session under it with --session-id instead of --session,
+// and clears the "delivered" marker so the stored task is redelivered.
 func TestSpawnResumeWithNoSessionFileRespawnsUnderTheSameRunID(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -142,11 +128,6 @@ func TestSpawnResumeWithNoSessionFileRespawnsUnderTheSameRunID(t *testing.T) {
 	}
 }
 
-// TestSpawnResumeContinuesRunRecord checks the success path: the run's
-// task, id and StartedAt survive, the outcome is cleared so the run reads
-// as running again, the window/pane/pid and parent edge are updated to
-// the new spawn, and the launched command resumes by session rather than
-// minting one.
 func TestSpawnResumeContinuesRunRecord(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -157,9 +138,6 @@ func TestSpawnResumeContinuesRunRecord(t *testing.T) {
 	writePiSessionFile(t, sessDir, "resume-run")
 	calls := withNewWindow(t, "@9", "%9", nil)
 
-	// --parent-session must name somebody currently alive, or the resume
-	// now refuses before ever reaching newWindow - see state.Find's own
-	// doc.
 	if err := state.Record("new-parent", state.Session{
 		Agent: state.AgentPi, Pane: "%other", PID: os.Getpid(), Status: state.Idle,
 	}); err != nil {
@@ -168,9 +146,6 @@ func TestSpawnResumeContinuesRunRecord(t *testing.T) {
 
 	cwd := t.TempDir()
 	newDeadRun(t, "resume-run", cwd)
-	// A screen captured for the first attempt describes that attempt, not
-	// the one about to run; resuming must clear it the same way it clears
-	// the stale outcome, or `kido runs` would show it as this attempt's own.
 	if err := subrun.WriteScreen("resume-run", []byte("first attempt's screen")); err != nil {
 		t.Fatal(err)
 	}
@@ -229,14 +204,11 @@ func TestSpawnResumeContinuesRunRecord(t *testing.T) {
 
 // TestSpawnResumeDefaultsParentFromCallersOwnRecord: when --parent-pid/
 // --parent-session are omitted, they come from the caller's own reported
-// identity, exactly as depth already does - the resumer becomes the new
-// parent without kido runs's printed line having to name it up front.
+// identity.
 func TestSpawnResumeDefaultsParentFromCallersOwnRecord(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	// Load() filters out any record whose pid is dead, so the caller's own
-	// record needs a real, live pid - this test process's own.
 	if err := state.Record("caller-sess", state.Session{
 		Agent: state.AgentPi, Pane: "%1", PID: os.Getpid(), Status: state.Idle,
 		Depth: 0,
@@ -290,13 +262,10 @@ func TestSpawnResumeRespectsDepthCeiling(t *testing.T) {
 	}
 }
 
-// TestSpawnResumeRefusesAnUnverifiableParentSession pins the fix for the
-// window that used to die within moments of a resume: internal/reap's
-// rule 2 closes any marked window whose child reports a ParentSession
-// nobody currently alive claims as their own, and KIDO_AGENT_PARENT_SESSION
-// is exactly what makes a resumed pi report one. Refusing here, before the
-// window is ever created, replaces that silent near-instant close (the run
-// left recording a useless "died") with an error at spawn time.
+// TestSpawnResumeRefusesAnUnverifiableParentSession: internal/reap's
+// rule 2 closes any marked window whose child reports a Parent nobody
+// currently alive claims as their own, so this is refused before the
+// window is ever created.
 func TestSpawnResumeRefusesAnUnverifiableParentSession(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -325,10 +294,6 @@ func TestSpawnResumeRefusesAnUnverifiableParentSession(t *testing.T) {
 	}
 }
 
-// TestSpawnResumeDefaultsModelFromMeta: a bare `--resume` with no `-- pi
-// --model ...` used to come up on pi's default provider, which may have no
-// API key configured - the run's own meta already remembers what it ran
-// under.
 func TestSpawnResumeDefaultsModelFromMeta(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -362,8 +327,6 @@ func TestSpawnResumeDefaultsModelFromMeta(t *testing.T) {
 	}
 }
 
-// TestSpawnResumeExplicitModelWinsOverMeta: a caller naming its own --model
-// in the command after -- is not overridden by the run's recorded one.
 func TestSpawnResumeExplicitModelWinsOverMeta(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -402,8 +365,6 @@ func TestSpawnResumeExplicitModelWinsOverMeta(t *testing.T) {
 	}
 }
 
-// withResumableRun is the whole setup a resume success path needs: a
-// dead run with a pi session file beside it, at a cwd of its own.
 func withResumableRun(t *testing.T, id string) {
 	t.Helper()
 	withPanes(t, samePane)
@@ -415,16 +376,12 @@ func withResumableRun(t *testing.T, id string) {
 	newDeadRun(t, subrun.ID(id), t.TempDir())
 }
 
-// TestSpawnResumePrintsWindowPaneRun: a resume is spawn_subagent's other
-// entry point and its caller parses the same line, so the resume path
-// owes stdout the same three fields - with the run id it continued, not
-// a new one.
 func TestSpawnResumePrintsWindowPaneRun(t *testing.T) {
 	withResumableRun(t, "printed-run")
 	withNewWindow(t, "@9", "%9", nil)
 
 	var err error
-	out := captureStdout(t, func() {
+	out := capture(t, &os.Stdout, func() {
 		err = spawnSubagentCmd([]string{"--resume", "printed-run"})
 	})
 	if err != nil {
@@ -435,26 +392,16 @@ func TestSpawnResumePrintsWindowPaneRun(t *testing.T) {
 	}
 }
 
-// TestSpawnResumeMarkFailureKillsTheWindowAndRecordsFailure is the fresh
-// spawn's own mark-failure test applied to the path nobody exercises by
-// hand: an unmarked window is invisible to internal/reap and so would
-// never be closed by anything, and a resume creates exactly the same kind
-// of window.
 func TestSpawnResumeMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
 	withResumableRun(t, "unmarkable-run")
 	withNewWindow(t, "@9", "%9", nil)
 
-	prevKill := killWindow
 	var killed []string
-	killWindow = func(id string) error {
+	testutil.Swap(t, &killWindow, func(id string) error {
 		killed = append(killed, id)
 		return nil
-	}
-	t.Cleanup(func() { killWindow = prevKill })
-
-	prevMark := markRun
-	markRun = func(paneID, runID string) error { return errors.New("option failed") }
-	t.Cleanup(func() { markRun = prevMark })
+	})
+	testutil.Swap(t, &markRun, func(paneID, runID string) error { return errors.New("option failed") })
 
 	if err := spawnSubagentCmd([]string{"--resume", "unmarkable-run"}); err == nil {
 		t.Fatal("spawnSubagentCmd --resume = nil, want the mark failure")
@@ -462,20 +409,14 @@ func TestSpawnResumeMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
 	if !slices.Contains(killed, "@9") {
 		t.Errorf("killWindow calls = %v, want @9 killed rather than left up unmarked", killed)
 	}
-	// The resume cleared the old outcome on its way through, so a failure
-	// recorded here is the only thing left saying what became of the run.
 	if out, ok, err := subrun.ReadOutcome("unmarkable-run"); err != nil || !ok || out.Result != subrun.Failed {
 		t.Errorf("ReadOutcome = %+v, %v, %v, want a recorded failure", out, ok, err)
 	}
 }
 
-// TestSpawnResumeWindowFailureIsAVisibleFailedRun: the resume cleared the
-// run's previous outcome before asking tmux for a window, so a window it
+// TestSpawnResumeWindowFailureIsAVisibleFailedRun: a window the resume
 // never got has to be recorded, or the run reads as running forever. The
-// meta, though, is left alone: a fresh spawn writes one here because it
-// has none and the outcome would be invisible without it, while an
-// attempt that never reached tmux has nothing truer to say about the run
-// than what the last attempt recorded.
+// meta is left alone, unlike a fresh spawn's.
 func TestSpawnResumeWindowFailureIsAVisibleFailedRun(t *testing.T) {
 	withResumableRun(t, "windowless-run")
 	withNewWindow(t, "", "", errors.New("no such session"))
@@ -515,18 +456,11 @@ func TestSpawnResumeRefusesNameAndTaskFile(t *testing.T) {
 	}
 }
 
-// TestSpawnResumeCarriesKeepAliveAndTools is the same bug --model had,
-// in the two things left: a run recorded neither keepAlive nor - on the
-// resume side - its tool allowlist, both being handed to the child
-// through the environment and the command line and then forgotten. So a
-// resumed keepAlive helper armed the thirty-second idle timer it was
-// spawned to opt out of, and a resumed tool-restricted child got the full
-// toolset back, which is the worse of the two: a narrow toolset is the
-// blast-radius bound the depth ceiling is not.
-//
+// TestSpawnResumeCarriesKeepAliveAndTools: a resumed run must carry
+// forward its recorded keepAlive and tool allowlist, not the defaults.
 // The fixture is a real fresh spawn rather than a hand-written meta, so
-// this fails if the recording half is dropped as readily as if the
-// carrying half is.
+// this fails if either the recording half or the carrying half is
+// dropped.
 func TestSpawnResumeCarriesKeepAliveAndTools(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -551,9 +485,6 @@ func TestSpawnResumeCarriesKeepAliveAndTools(t *testing.T) {
 		t.Fatalf("meta = %+v, want keepAlive and the tool allowlist recorded", meta)
 	}
 
-	// The run has to look finished before it can be resumed, and its own
-	// session file has to exist: the spawn above created a window through a
-	// fake, so neither is true yet.
 	if err := subrun.RecordOutcome(subrun.ID(runID), subrun.Outcome{Result: subrun.Completed, At: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
@@ -571,8 +502,6 @@ func TestSpawnResumeCarriesKeepAliveAndTools(t *testing.T) {
 	if i := slices.Index(resumed.command, "--tools"); i < 0 || resumed.command[i+1] != "read,bash" {
 		t.Errorf("command = %v, want the run's own recorded tool allowlist back", resumed.command)
 	}
-	// The meta is the run's living facts, so the resumed attempt's
-	// keepAlive is what it now says (the same way its parent edge is).
 	if meta, err := subrun.ReadMeta(subrun.ID(runID)); err != nil {
 		t.Fatal(err)
 	} else if !meta.KeepAlive {
@@ -580,11 +509,9 @@ func TestSpawnResumeCarriesKeepAliveAndTools(t *testing.T) {
 	}
 }
 
-// TestSpawnResumeWithoutRecordedKeepAliveOrTools is the compatibility
-// half: every meta.json written before these two keys existed has
-// neither, and json.Unmarshal leaves them zero. A resume of one must
-// behave exactly as it did - a plain child with the full toolset - rather
-// than fail or find nothing to read.
+// TestSpawnResumeWithoutRecordedKeepAliveOrTools: a meta.json with
+// neither key must resume as a plain child with the full toolset,
+// rather than fail or find nothing to read.
 func TestSpawnResumeWithoutRecordedKeepAliveOrTools(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -610,8 +537,6 @@ func TestSpawnResumeWithoutRecordedKeepAliveOrTools(t *testing.T) {
 			t.Errorf("env carries %q, want no keepAlive for a run that recorded none", kv)
 		}
 	}
-	// And an explicit --keep-alive still wins over an unrecorded one: the
-	// recorded value is the default, not a ceiling.
 	if err := subrun.ResetForResume("old-run", false); err != nil {
 		t.Fatal(err)
 	}
@@ -630,11 +555,7 @@ func TestSpawnResumeWithoutRecordedKeepAliveOrTools(t *testing.T) {
 }
 
 // TestSpawnResumeNoParentDropsTheCallersOwnEdge: --resume defaults the
-// parent edge to the caller's own record, which is right for an agent
-// picking a run up but is not always what is wanted - a human in a
-// tracked pane, or an agent handing a run over, may want it owned by
-// nobody. Before --no-parent the only way to get that was to have no
-// record at all.
+// parent edge to the caller's own record; --no-parent drops it.
 func TestSpawnResumeNoParentDropsTheCallersOwnEdge(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")

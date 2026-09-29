@@ -187,11 +187,11 @@ func TestRenderGroupsSiblingSubagents(t *testing.T) {
 }
 
 // TestRenderGroupsSiblingSubagentsWithTheirOwnShells is the two-pane
-// sibling in that same group: since this fix its own ┌…└ bracket keeps
-// its full span beside the group glyph, one column further in, rather
-// than losing row 0 to it - a two-pane child reads as its own window
-// with the group glyph marking it as anchored, not as a run of rows the
-// group glyph has partly swallowed.
+// sibling in that same group: its own ┌…└ bracket keeps its full span
+// beside the group glyph, one column further in, rather than losing row
+// 0 to it - a two-pane child reads as its own window with the group
+// glyph marking it as anchored, not as a run of rows the group glyph has
+// partly swallowed.
 func TestRenderGroupsSiblingSubagentsWithTheirOwnShells(t *testing.T) {
 	panes := []tmux.Pane{
 		agentPane("@13", "%22", "orchestrator"),
@@ -294,8 +294,8 @@ func TestRenderMultipleTopLevelAgentsInOneWindow(t *testing.T) {
 // pane. The parent's column is carried down the left of the child's rows
 // with a stem, so the bracket still reads as one window with a block
 // nested inside it. The child is also the lone-child-with-two-panes case:
-// since this fix its own ┌…└ bracket keeps its full span, one column in
-// from the group glyph (a group of one), rather than losing row 0 to it.
+// its own ┌…└ bracket keeps its full span, one column in from the group
+// glyph (a group of one), rather than losing row 0 to it.
 func TestRenderKeepsTheColumnAcrossANestedChild(t *testing.T) {
 	panes := []tmux.Pane{
 		shellPane("@13", "%10"),
@@ -526,10 +526,9 @@ func TestOrderWindowsByTreeNests(t *testing.T) {
 
 // TestOrderWindowsByTreeHandlesCycle checks that a bogus ParentSession
 // naming a window's own descendant (or itself) never drops a window from
-// the result - only from wherever the cycle would have placed it - the
-// same guarantee orderTree (cmd/kido/agents.go) makes. The placement
-// walk must survive it too: it runs over the ordered result exactly
-// once, so a ring cannot make it recurse.
+// the result - only from wherever the cycle would have placed it. The
+// placement walk must survive it too: it runs over the ordered result
+// exactly once, so a ring cannot make it recurse.
 func TestOrderWindowsByTreeHandlesCycle(t *testing.T) {
 	windows := [][]tmux.Pane{
 		{{PaneID: "%a", WindowID: "@a"}},
@@ -555,12 +554,11 @@ func TestOrderWindowsByTreeHandlesCycle(t *testing.T) {
 	}
 }
 
-// TestOrderWindowsByTreeFallsBackToLingeringWhenRecordGone is the bug
-// this walk used to have: a finished subagent's record is removed on
-// exit (kido agent-status --remove) while its window lingers for the
-// sweep. With no record at all for the window, the parent comes from
-// the run's own lingering entry (built from its meta file) instead of
-// dropping to a root.
+// TestOrderWindowsByTreeFallsBackToLingeringWhenRecordGone covers a
+// finished subagent whose record is removed on exit (kido agent-status
+// --remove) while its window lingers for the sweep. With no record at
+// all for the window, the parent comes from the run's own lingering
+// entry (built from its meta file) instead of dropping to a root.
 func TestOrderWindowsByTreeFallsBackToLingeringWhenRecordGone(t *testing.T) {
 	windows := [][]tmux.Pane{
 		{{PaneID: "%root", WindowID: "@root"}},
@@ -815,7 +813,7 @@ func TestRenderLiveSubagentWithRecordUnaffected(t *testing.T) {
 // TestRenderLingeringSubagentShowsOutcome checks the second half: when a
 // sweep or the subagent's own run-outcome call has recorded how the run
 // ended, the row shows it. A completed run also swaps the glyph for a
-// dimmed checkmark rather than the cross - see TestRenderLingeringSubagentGlyphByOutcome.
+// dimmed checkmark rather than the cross.
 func TestRenderLingeringSubagentShowsOutcome(t *testing.T) {
 	id := newRun(t, "subagent", "", subrun.Completed)
 	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id)}
@@ -862,8 +860,7 @@ func TestRenderLingeringSubagentGlyphByOutcome(t *testing.T) {
 // TestRenderLingeringSubagentNoOutcomeKeepsCross checks the honesty rule:
 // a window that has just died with no outcome recorded yet must not show
 // the checkmark, since nothing has confirmed it finished successfully -
-// only its arrival, already covered by TestRenderLingeringSubagentInventsNoOutcome,
-// turns the row from a name into a verdict.
+// only the outcome's arrival turns the row from a name into a verdict.
 func TestRenderLingeringSubagentNoOutcomeKeepsCross(t *testing.T) {
 	id := newRun(t, "subagent", "", "")
 	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id)}
@@ -891,10 +888,10 @@ func TestRenderLingeringSubagentInventsNoOutcome(t *testing.T) {
 	}
 }
 
-// TestRenderLiveSubagentUnaffectedByLingering is the regression that
-// matters most: a live subagent with a record still renders its status
-// indicator and title exactly as before, never the lingering label - the
-// lingering path is only reachable through paneLabel's !isAgent branch.
+// TestRenderLiveSubagentUnaffectedByLingering: a live subagent with a
+// record still renders its status indicator and title, never the
+// lingering label - the lingering path is only reachable through
+// paneLabel's !isAgent branch.
 func TestRenderLiveSubagentUnaffectedByLingering(t *testing.T) {
 	panes := []tmux.Pane{
 		agentPane("@13", "%22", "orchestrator"),
@@ -967,11 +964,11 @@ func TestLingeringSubagentsCarryForward(t *testing.T) {
 	}
 }
 
-// TestRenderLingeringSubagentStillNests is f430308's fix (a dead
-// subagent must stay nested under its parent's pane for the whole
-// linger, not jump to the left margin the instant its state record is
-// removed), checked with a real run id whose meta carries the parent,
-// since that is lingeringSubagents' only source once the record is gone.
+// TestRenderLingeringSubagentStillNests checks that a dead subagent
+// stays nested under its parent's pane for the whole linger, not
+// jumping to the left margin the instant its state record is removed;
+// checked with a real run id whose meta carries the parent, since that
+// is lingeringSubagents' only source once the record is gone.
 func TestRenderLingeringSubagentStillNests(t *testing.T) {
 	id := newRun(t, "subagent", "root-sess", "")
 	panes := []tmux.Pane{
@@ -993,8 +990,8 @@ func TestRenderLingeringSubagentStillNests(t *testing.T) {
 // session and no parent of its own (the user's top-level pi, and a
 // second pi split into the same window). A subagent spawned from the
 // second pane must nest under that pane's row, not become a root - and
-// a subagent of the first pane must keep nesting under it, which already
-// worked before the fix and is the negative control here.
+// a subagent of the first pane must keep nesting under it, the negative
+// control here.
 func TestOrderWindowsByTreeAnchorsToTheSecondAgentPaneInAWindow(t *testing.T) {
 	windows := [][]tmux.Pane{
 		{{PaneID: "%21", WindowID: "@13"}, {PaneID: "%101", WindowID: "@13"}},

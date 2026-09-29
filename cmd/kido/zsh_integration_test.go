@@ -44,11 +44,9 @@ func payload(t *testing.T, got string) string {
 }
 
 // TestZshIntegrationEmitsCmdline checks the literal bytes
-// kido_osc133_preexec writes. The command line goes out verbatim: tmux
-// sanitises the value it stores, and any escaping added here would be
-// escaped a second time there and reach the sidebar unreadable. The one
-// thing that must not survive is a control character, which would end the
-// OSC sequence early.
+// kido_osc133_preexec writes: the command line goes out verbatim, and
+// the one thing that must not survive is a control character, which
+// would end the OSC sequence early.
 func TestZshIntegrationEmitsCmdline(t *testing.T) {
 	ordinary := "git log --oneline | head -3"
 	if got := zshPreexec(t, ordinary); got != oscPrefix+ordinary+"\007" {

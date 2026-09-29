@@ -14,16 +14,11 @@ import (
 	"kido/internal/tmux"
 )
 
-// prompt implements `kido prompt [--window]`: it reads a prompt from
-// stdin (one trailing newline stripped) and sends it to the one
-// top-level agent pane in scope, over its inbox when it reported one and
-// pasted into the pane otherwise. The scope is the caller's window,
-// widening to the session only when the window has no top-level agent
-// pane at all; --window never widens. A candidate pane is any pane
-// state.IsAgentPane accepts whose window has no run pane (tmux.RunPane)
-// - a subagent is never a target, spawned by kido or not.
-//
-// Returns the process exit code, printing any error to stderr itself.
+// The scope is the caller's window, widening to the session only when
+// the window has no top-level agent pane at all; --window never widens.
+// A candidate pane is any pane state.IsAgentPane accepts whose window has
+// no run pane (tmux.RunPane) - a subagent is never a target, spawned by
+// kido or not.
 func prompt(args []string, stdin io.Reader) int {
 	fs := flag.NewFlagSet("prompt", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -89,17 +84,12 @@ func prompt(args []string, stdin io.Reader) int {
 	}
 }
 
-// sendPrompt is tmux.SendPrompt, indirected so tests can check the paste
-// fallback fires without a tmux server.
 var sendPrompt = tmux.SendPrompt
 
-// deliverInboxOrPaste hands a message to the agent listening on inbox,
-// falling back to a tmux paste of pasteText into pane only on
+// Falls back to a tmux paste of pasteText into pane only on
 // msg.ErrInboxUnavailable: any other error means the message may already
 // have been delivered (docs/design.md, "Delivery, and when a paste is
-// allowed"). The two payloads differ for kido message_agent: the inbox may get
-// a v1 envelope, a paste always types the raw text. paste reports which
-// path was used.
+// allowed"). paste reports which path was used.
 func deliverInboxOrPaste(inbox, inboxPayload, pane, pasteText string) (paste bool, err error) {
 	if inbox != "" {
 		err := msg.Deliver(inbox, inboxPayload)
@@ -117,8 +107,6 @@ func deliverInboxOrPaste(inbox, inboxPayload, pane, pasteText string) (paste boo
 	return true, nil
 }
 
-// inScope reports whether p is within the search scope: self's session,
-// narrowed to self's window unless wholeSession.
 func inScope(p tmux.Pane, self tmux.Pane, wholeSession bool) bool {
 	if p.SessionName != self.SessionName {
 		return false
@@ -126,9 +114,6 @@ func inScope(p tmux.Pane, self tmux.Pane, wholeSession bool) bool {
 	return wholeSession || p.WindowIndex == self.WindowIndex
 }
 
-// agentPanesIn returns the top-level agent panes (per state.IsAgentPane,
-// excluding any pane whose window has a run pane, tmux.RunPane) in
-// self's session, narrowed to self's window unless wholeSession.
 func agentPanesIn(panes []tmux.Pane, states map[string]state.Session, pi map[int]bool, self tmux.Pane, wholeSession bool) []tmux.Pane {
 	var out []tmux.Pane
 	for _, p := range panes {
@@ -145,9 +130,7 @@ func agentPanesIn(panes []tmux.Pane, states map[string]state.Session, pi map[int
 	return out
 }
 
-// needsSweep reports whether some in-scope pane's current command could
-// be pi and has not already reported a state record, i.e. whether
-// procs.Sweep() could change what agentPanesIn returns.
+// Reports whether procs.Sweep() could change what agentPanesIn returns.
 func needsSweep(panes []tmux.Pane, states map[string]state.Session, self tmux.Pane, wholeSession bool) bool {
 	for _, p := range panes {
 		if !inScope(p, self, wholeSession) {
@@ -163,7 +146,6 @@ func needsSweep(panes []tmux.Pane, states map[string]state.Session, self tmux.Pa
 	return false
 }
 
-// findPane returns the pane with the given id.
 func findPane(panes []tmux.Pane, id string) (tmux.Pane, bool) {
 	for _, p := range panes {
 		if p.PaneID == id {

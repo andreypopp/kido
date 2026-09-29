@@ -280,11 +280,6 @@ func TestShellDebounceRedraws(t *testing.T) {
 	}
 }
 
-// TestInteractivePaneLabel checks the bypass: a pane whose foreground
-// command owns the terminal draws no indicator however long it has been
-// "running", while an ordinary command in the same state draws the green
-// one. The panes are driven through track() on a controlled clock,
-// because the running glyph only appears once the debounce has drawn it.
 // TestInteractiveLeavesNoHold pins the fix for a row flashing green for
 // half a second when an editor is quit: while the program held the
 // terminal the pane must never look like a run the debounce has drawn, or
@@ -326,6 +321,11 @@ func TestInteractiveLeavesNoHold(t *testing.T) {
 	}
 }
 
+// TestInteractivePaneLabel checks the bypass: a pane whose foreground
+// command owns the terminal draws no indicator however long it has been
+// "running", while an ordinary command in the same state draws the green
+// one. The panes are driven through track() on a controlled clock,
+// because the running glyph only appears once the debounce has drawn it.
 func TestInteractivePaneLabel(t *testing.T) {
 	const pid = 4242
 	base := time.Unix(1700000000, 0)

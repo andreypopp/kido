@@ -39,17 +39,10 @@ func TestFindShared(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// The path is returned as spelled, not resolved: it is what
-			// goes into the server's configuration, and the unresolved
-			// spelling is the
-			// stable one.
 			if got != file {
 				t.Errorf("findShared = %q, want %q", got, file)
 			}
 
-			// The same binary reached through a symlink in a prefix with
-			// no share of its own: nothing is found beside the link, so
-			// the resolved location is the fallback that answers.
 			link := filepath.Join(t.TempDir(), "kido")
 			if err := os.Symlink(exe, link); err != nil {
 				t.Fatal(err)
@@ -62,7 +55,6 @@ func TestFindShared(t *testing.T) {
 				t.Errorf("findShared(symlink) = %q, %v; want %q, nil", got, err, resolved)
 			}
 
-			// A prefix with nothing in it fails, naming the path.
 			bare := filepath.Join(t.TempDir(), "bin")
 			if err := os.MkdirAll(bare, 0o755); err != nil {
 				t.Fatal(err)
@@ -101,8 +93,6 @@ func TestFindSharedPrefersUnresolved(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The stable prefix: bin/kido and share/kido both link into the
-	// versioned directory, the way brew links a formula.
 	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -174,8 +164,6 @@ func TestInvokedPathKeepsThePrefixSpelling(t *testing.T) {
 		t.Fatalf("InvokedPath = %q, want the unresolved %q", got, prefixBin)
 	}
 
-	// The whole point: what kido writes down goes through the prefix,
-	// not the versioned directory a cleanup removes.
 	found, err := findShared(got, "shell/zsh/integration.zsh")
 	if err != nil {
 		t.Fatal(err)

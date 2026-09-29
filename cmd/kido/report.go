@@ -7,24 +7,18 @@ import (
 )
 
 // maxReportBytes is how much of a notify_parent report the parent is
-// handed. It is spliced whole into the parent's next turn, so it is
-// bounded; what it is not is the whole report, which is kept on disk
-// (docs/design-subagents.md, "Reporting").
+// handed, spliced whole into its next turn; the whole report is kept on disk.
 const maxReportBytes = 4000
 
 // reportNotice is the notice text for a report, and the file the rest of
 // it was written to. A report within the cap is returned byte for byte
-// with no file: nothing was lost, so there is nothing to point at.
-//
-// Over the cap the report is written to the run's directory whole and
-// the notice is its head plus a line naming the file, the two together
-// still inside the cap - a parent reading a report cut mid-sentence used
-// to have no way of knowing there had been more of it, let alone where.
-// runID is the sender's own run ($KIDO_AGENT_RUN_ID); a sender kido never
-// spawned has no run directory to write to, and its report is simply
-// truncated as it always was. So is one whose write fails, which is why
-// the error is returned alongside a usable notice rather than instead of
-// one: the point of the call is that the parent hears something.
+// with no file. Over the cap the report is written to the run's
+// directory whole and the notice is its head plus a line naming the
+// file, the two together still inside the cap. runID is the sender's own
+// run ($KIDO_AGENT_RUN_ID); a sender kido never spawned has no run
+// directory to write to, and its report is simply truncated. So is one
+// whose write fails, which is why the error is returned alongside a
+// usable notice rather than instead of one.
 func reportNotice(report string, runID subrun.ID) (notice, path string, err error) {
 	if len(report) <= maxReportBytes {
 		return report, "", nil
@@ -41,10 +35,8 @@ func reportNotice(report string, runID subrun.ID) (notice, path string, err erro
 }
 
 // headWithin is the first max bytes of s, cut back off a partial UTF-8
-// rune - internal/reap's tailOfFile rule, in the other direction, and
-// for the same reason: the send path refuses a message that is not
-// valid UTF-8 outright, so a cut through a multi-byte character would
-// cost the report the one notice it gets.
+// rune: the send path refuses a message that is not valid UTF-8 outright,
+// so a cut through a multi-byte character would cost the report its notice.
 func headWithin(s string, max int) string {
 	if max <= 0 {
 		return ""

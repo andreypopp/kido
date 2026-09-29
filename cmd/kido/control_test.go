@@ -15,27 +15,16 @@ import (
 	"kido/internal/tmux"
 )
 
-// withKillPane replaces killPane with a fake that records its calls
-// instead of talking to a real tmux server, the same pattern
-// withSendPrompt (message_test.go) uses for sendPrompt - what stopSubagentCmd's
-// degrade and escalation actually call (see cmd/kido/control.go's
-// killRunPane).
 func withKillPane(t *testing.T) func() []string {
 	t.Helper()
-	prev := killPane
 	var calls []string
-	killPane = func(id string) error {
+	testutil.Swap(t, &killPane, func(id string) error {
 		calls = append(calls, id)
 		return nil
-	}
-	t.Cleanup(func() { killPane = prev })
+	})
 	return func() []string { return calls }
 }
 
-// TestStopNoForceRefusedAgainstInboxlessAgent checks the degrade rule: an
-// agent with no inbox at all cannot be asked to stop, so stopping one
-// must be refused unless --force says the caller means it, and must not
-// kill anything either way without it.
 func TestStopNoForceRefusedAgainstInboxlessAgent(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -53,8 +42,6 @@ func TestStopNoForceRefusedAgainstInboxlessAgent(t *testing.T) {
 	}
 }
 
-// TestStopForceKillsInboxlessAgent is the positive control: --force
-// degrades straight to killing the target's window.
 func TestStopForceKillsInboxlessAgent(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -75,19 +62,11 @@ func TestStopForceKillsInboxlessAgent(t *testing.T) {
 	}
 }
 
-// TestStopRefusesToKillASessionsOnlyWindow: a target in a different tmux
-// session from the caller is refused by resolveTarget's session scope,
-// before killRunPane's last-pane guard ever runs. The layout below is
-// the one that guard is about, but this test does not reach it (see
-// TestStopRefusedLeavesNoOutcome's "the session's last window" subtest,
-// which calls killRunPane directly); it pins that a cross-session
-// target is refused and --force does not buy it.
+// TestStopRefusesToKillASessionsOnlyWindow is refused by resolveTarget's
+// session scope, before killRunPane's last-pane guard ever runs.
 func TestStopRefusesToKillASessionsOnlyWindow(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
-	// The caller sits in a separate session ($2) so it cannot also be
-	// read as targeting itself; $1's only window (@1) holds only the
-	// target's own pane.
 	withPanes(t, []tmux.Pane{
 		{PaneID: "%1", SessionID: "$2", WindowID: "@9"},
 		{PaneID: "%2", SessionID: "$1", WindowID: "@1"},
@@ -109,9 +88,6 @@ func TestStopRefusesToKillASessionsOnlyWindow(t *testing.T) {
 	}
 }
 
-// TestStopKillsOneOfTwoPanesInAWindow: a window with a bystander pane
-// beside the target. Only the target's own pane may go; killing the
-// window would take the bystander with it.
 func TestStopKillsOneOfTwoPanesInAWindow(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -133,10 +109,6 @@ func TestStopKillsOneOfTwoPanesInAWindow(t *testing.T) {
 	}
 }
 
-// controlTreePanes and controlTreeStates set up a caller ("%1", session
-// "caller") who is the parent of "%2" (a child) and unrelated to "%3" (a
-// peer) - the shape both interrupt and stop's descendant-scope refusal
-// tests need.
 var controlTreePanes = []tmux.Pane{
 	{PaneID: "%1", SessionID: "$1", WindowID: "@1"},
 	{PaneID: "%2", SessionID: "$1", WindowID: "@2"},
@@ -164,10 +136,6 @@ func recordControlTree(t *testing.T, in *testutil.Inbox) {
 	}
 }
 
-// TestInterruptRefusesNonDescendant and TestStopRefusesNonDescendant check
-// the shared scope rule: an agent caller may reach its own descendants
-// only, so a confused peer cannot interrupt or stop something unrelated
-// to it. Reaching its actual child succeeds.
 func TestInterruptRefusesNonDescendant(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -195,9 +163,6 @@ func TestStopRefusesNonDescendant(t *testing.T) {
 	}
 }
 
-// TestInterruptHumanCallerUnrestricted checks that a caller with no state
-// record of its own (a human typing at the CLI, per AGENTS.md's Trust
-// section) is not scoped to descendants at all.
 func TestInterruptHumanCallerUnrestricted(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1") // no state record for %1 itself
@@ -215,8 +180,6 @@ func TestInterruptHumanCallerUnrestricted(t *testing.T) {
 	}
 }
 
-// TestInterruptSendsEnvelope checks that a successful interrupt puts a v1
-// "interrupt" envelope on the target's inbox.
 func TestInterruptSendsEnvelope(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -242,11 +205,9 @@ func TestInterruptSendsEnvelope(t *testing.T) {
 	}
 }
 
-// TestStopEscalatesToKillingWindow checks the escalation stopSubagentCmd's own
-// doc describes: a target that acknowledges the inbox message ("ok\n")
-// but whose record never goes (nothing ever calls state.Remove or lets
-// its pid die, exactly as a wedged extension would leave it) has its
-// pane killed once stopEscalation elapses.
+// TestStopEscalatesToKillingWindow: a target that acknowledges the inbox
+// message but whose record never goes has its pane killed once
+// stopEscalation elapses.
 func TestStopEscalatesToKillingWindow(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -256,10 +217,8 @@ func TestStopEscalatesToKillingWindow(t *testing.T) {
 	})
 	kills := withKillPane(t)
 
-	savedEscalation, savedPoll := stopEscalation, stopPollInterval
-	stopEscalation = 100 * time.Millisecond
-	stopPollInterval = 10 * time.Millisecond
-	t.Cleanup(func() { stopEscalation, stopPollInterval = savedEscalation, savedPoll })
+	testutil.Swap(t, &stopEscalation, 100*time.Millisecond)
+	testutil.Swap(t, &stopPollInterval, 10*time.Millisecond)
 
 	in := testutil.StartInbox(t, "ok\n")
 	if err := state.Record("target", state.Session{
@@ -277,8 +236,7 @@ func TestStopEscalatesToKillingWindow(t *testing.T) {
 }
 
 // TestStopNoEscalationWhenTargetGoes is the negative control: a target
-// whose record is removed before stopEscalation elapses (a healthy
-// session_shutdown, in reality) is never killed.
+// whose record is removed before stopEscalation elapses is never killed.
 func TestStopNoEscalationWhenTargetGoes(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -288,10 +246,8 @@ func TestStopNoEscalationWhenTargetGoes(t *testing.T) {
 	})
 	kills := withKillPane(t)
 
-	savedEscalation, savedPoll := stopEscalation, stopPollInterval
-	stopEscalation = 300 * time.Millisecond
-	stopPollInterval = 10 * time.Millisecond
-	t.Cleanup(func() { stopEscalation, stopPollInterval = savedEscalation, savedPoll })
+	testutil.Swap(t, &stopEscalation, 300*time.Millisecond)
+	testutil.Swap(t, &stopPollInterval, 10*time.Millisecond)
 
 	in := testutil.StartInbox(t, "ok\n")
 	if err := state.Record("target", state.Session{
@@ -313,13 +269,8 @@ func TestStopNoEscalationWhenTargetGoes(t *testing.T) {
 }
 
 // TestStopEscalatesWhenTheTargetDoesNotAgree pins the case the escalation
-// exists for: a wedged agent does not answer "ok". It holds the
-// connection open until the deadline, or answers something else, or its
-// own scope check refuses, and every one of those is a reason to
-// escalate rather than give up. Returning the send error instead leaves
-// kido stop_subagent failing outright, with the window intact, exactly when it is
-// needed most; --force does not help, because that flag is about having
-// no inbox, not about an inbox that answered badly.
+// exists for: a wedged agent that never answers "ok", or refuses, or
+// answers something else, still escalates rather than fails outright.
 func TestStopEscalatesWhenTheTargetDoesNotAgree(t *testing.T) {
 	for _, reply := range []struct{ name, answer string }{
 		{"never answers", ""},
@@ -335,11 +286,9 @@ func TestStopEscalatesWhenTheTargetDoesNotAgree(t *testing.T) {
 			})
 			kills := withKillPane(t)
 
-			savedEscalation, savedPoll, savedInbox := stopEscalation, stopPollInterval, msg.InboxTimeout
-			stopEscalation, stopPollInterval, msg.InboxTimeout = 100*time.Millisecond, 10*time.Millisecond, 200*time.Millisecond
-			t.Cleanup(func() {
-				stopEscalation, stopPollInterval, msg.InboxTimeout = savedEscalation, savedPoll, savedInbox
-			})
+			testutil.Swap(t, &stopEscalation, 100*time.Millisecond)
+			testutil.Swap(t, &stopPollInterval, 10*time.Millisecond)
+			testutil.Swap(t, &msg.InboxTimeout, 200*time.Millisecond)
 
 			in := testutil.StartInbox(t, reply.answer)
 			if err := state.Record("target", state.Session{
@@ -358,10 +307,8 @@ func TestStopEscalatesWhenTheTargetDoesNotAgree(t *testing.T) {
 	}
 }
 
-// TestStopStaleInboxStillNeedsForce is the one send failure that is not an
-// escalation: a recorded socket nobody is listening on means nothing was
-// asked and nothing could be, which is the same position as having no
-// inbox at all and carries the same --force requirement.
+// TestStopStaleInboxStillNeedsForce: a stale socket is the same position
+// as having no inbox at all, and carries the same --force requirement.
 func TestStopStaleInboxStillNeedsForce(t *testing.T) {
 	setup := func(t *testing.T) func() []string {
 		t.Helper()
@@ -401,10 +348,9 @@ func TestStopStaleInboxStillNeedsForce(t *testing.T) {
 	})
 }
 
-// TestControlErrorsAreNotDoublePrefixed pins that these commands leave the
-// "kido <verb>: " prefix to dispatch (main.go), which adds it to every
-// error it prints. Saying it here too printed "kido stop_subagent: kido stop_subagent: ..."
-// at the terminal.
+// TestControlErrorsAreNotDoublePrefixed pins that these commands leave
+// the "kido <verb>: " prefix to dispatch, which adds it to every error
+// it prints.
 func TestControlErrorsAreNotDoublePrefixed(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -425,8 +371,6 @@ func TestControlErrorsAreNotDoublePrefixed(t *testing.T) {
 	}
 }
 
-// TestInterruptRefusesSelf and TestStopRefusesSelf pin that a caller
-// cannot target its own pane, matching kido message_agent's own rule.
 func TestInterruptRefusesSelf(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -440,8 +384,7 @@ func TestInterruptRefusesSelf(t *testing.T) {
 }
 
 // TestInterruptRefusedAgainstInboxlessAgent: unlike stop, interrupt has
-// no --force degrade at all, so an agent with no inbox to carry the
-// request is simply refused, with nothing killed.
+// no --force degrade at all.
 func TestInterruptRefusedAgainstInboxlessAgent(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -459,15 +402,11 @@ func TestInterruptRefusedAgainstInboxlessAgent(t *testing.T) {
 	}
 }
 
-// TestStopRefusedLeavesNoOutcome pins the ordering in stopSubagentCmd: the Stopped
-// outcome goes in only once the stop request is actually away, because
-// subrun.RecordOutcome writes once and for all (O_EXCL), so an outcome
-// written on a path that then refuses marks a run that is still running
-// as stopped forever. Every refusal stop has is covered, and moving
-// recordStopped back above the guards fails all but the last of them.
+// TestStopRefusedLeavesNoOutcome pins the ordering in stopSubagentCmd:
+// the Stopped outcome goes in only once the stop request is actually
+// away, since subrun.RecordOutcome writes once and for all (O_EXCL).
+// Every refusal stopSubagentCmd has is covered here.
 func TestStopRefusedLeavesNoOutcome(t *testing.T) {
-	// A run record whose id is the target's session id, which is what makes
-	// target.ID a run id at all (see recordStopped).
 	setup := func(t *testing.T, runID string, panes []tmux.Pane, target state.Session) {
 		t.Helper()
 		t.Setenv("KIDO_STATE_DIR", t.TempDir())
@@ -521,8 +460,6 @@ func TestStopRefusedLeavesNoOutcome(t *testing.T) {
 			Agent: state.AgentPi, Pane: "%3", PID: os.Getpid(), Status: state.Idle,
 			Inbox: in.Path,
 		})
-		// The caller needs a record of its own for the descendant scope rule
-		// to apply at all (controlTarget).
 		if err := state.Record("caller", state.Session{
 			Agent: state.AgentPi, Pane: "%1", PID: os.Getpid(), Status: state.Idle,
 		}); err != nil {
@@ -534,14 +471,8 @@ func TestStopRefusedLeavesNoOutcome(t *testing.T) {
 		noOutcome(t, "run-peer")
 	})
 
-	// The session's-last-window refusal is checked against killRunPane
-	// directly, not through stopSubagentCmd: a caller may only stop something in
-	// its own tmux session (resolveTarget), and a session holding the
-	// caller's pane too always has a second pane for the guard to spare -
-	// so the layout the guard is about is one stopSubagentCmd's own scope rule
-	// turns away first, with a different error. TestStopRefusesToKillA
-	// SessionsOnlyWindow above takes that earlier refusal for the same
-	// reason.
+	// Checked against killRunPane directly: stopSubagentCmd's own scope
+	// rule would turn this layout away first, with a different error.
 	t.Run("the session's last window", func(t *testing.T) {
 		setup(t, "run-last", []tmux.Pane{
 			{PaneID: "%1", SessionID: "$2", WindowID: "@9"},
@@ -564,12 +495,8 @@ func TestControlUsage(t *testing.T) {
 	}
 }
 
-// steerTreePanes and recordSteerTree are the tree steer_subagent's scope
-// rule needs and controlTreePanes cannot express: a caller with an
-// ancestor of its own, and a descendant two deep. %1 caller is root's
-// child and child's parent; %5 is child's child, so it is the caller's
-// grandchild and must be reachable - nesting goes two deep, and a
-// parent-only rule would refuse it.
+// steerTreePanes and recordSteerTree give the caller an ancestor of its
+// own and a descendant two deep, so a parent-only scope rule would fail.
 var steerTreePanes = []tmux.Pane{
 	{PaneID: "%1", SessionID: "$1", WindowID: "@1"},
 	{PaneID: "%2", SessionID: "$1", WindowID: "@2"},
@@ -578,9 +505,6 @@ var steerTreePanes = []tmux.Pane{
 	{PaneID: "%5", SessionID: "$1", WindowID: "@5"},
 }
 
-// recordSteerTree records that tree, every reachable session sharing one
-// inbox: which of them received something is what the refusals are about,
-// and a refusal must leave the socket silent whoever it was aimed at.
 func recordSteerTree(t *testing.T, in *testutil.Inbox) {
 	t.Helper()
 	rows := []struct {
@@ -604,10 +528,7 @@ func recordSteerTree(t *testing.T, in *testutil.Inbox) {
 }
 
 // TestSteerReachesDescendants checks that steer_subagent delivers a v1
-// "steer" envelope - the kind, since the kind is the whole point: it is
-// what makes the receiving extension hand the text to its model inside
-// the running turn instead of queueing it (docs/design.md, "Steer and
-// followUp") - and that it reaches a grandchild as well as a child.
+// "steer" envelope, and reaches a grandchild as well as a child.
 func TestSteerReachesDescendants(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -638,11 +559,8 @@ func TestSteerReachesDescendants(t *testing.T) {
 	}
 }
 
-// TestSteerRefusesNonDescendants pins the rule the _subagent suffix
-// carries: a peer, an ancestor and the caller itself are all refused, and
-// nothing is sent to any of them. Steering redirects work already under
-// way, the same authority interrupt_subagent needs, so the two agree
-// about who may use it (cmd/kido/control.go, descendantTarget).
+// TestSteerRefusesNonDescendants: a peer, an ancestor and the caller
+// itself are all refused, and nothing is sent to any of them.
 func TestSteerRefusesNonDescendants(t *testing.T) {
 	for _, to := range []string{"peer", "root", "caller"} {
 		t.Run(to, func(t *testing.T) {
@@ -666,8 +584,6 @@ func TestSteerRefusesNonDescendants(t *testing.T) {
 	}
 }
 
-// TestSteerUsage: no target, two targets, and empty text are all refused
-// before anything is resolved or delivered.
 func TestSteerUsage(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -689,10 +605,6 @@ func TestSteerUsage(t *testing.T) {
 	}
 }
 
-// bashRunUnder writes a run `kido async_bash` would have created under
-// parent, still going: no outcome, a pane of its own, and a pid the
-// caller chooses so a test can decide whether its wrapper is still there
-// to be signalled.
 func bashRunUnder(t *testing.T, name, parent string, pid int) subrun.Meta {
 	t.Helper()
 	meta := subrun.Meta{ID: startAsyncRun(t, name, parent, "sleep", "600"), Name: name, Kind: subrun.KindBash,
@@ -703,34 +615,21 @@ func bashRunUnder(t *testing.T, name, parent string, pid int) subrun.Meta {
 	return meta
 }
 
-// withStopEscalation shortens the grace stopBashRun gives a wrapper to
-// report for itself. The package variable rather than the environment,
-// because it is read once at init and this is the only process reading
-// it here.
 func withStopEscalation(t *testing.T, d time.Duration) {
 	t.Helper()
-	prev := stopEscalation
-	stopEscalation = d
-	t.Cleanup(func() { stopEscalation = prev })
+	testutil.Swap(t, &stopEscalation, d)
 }
 
-// TestStopBashRunReportsWhenTheWrapperCannot is the other half of the
-// exactly-once invariant: a deliberate stop is an ending too, and when
-// the wrapper is not there to describe it the stop must. The run's pid
-// here belongs to nothing, which is the SIGKILLed-wrapper case and the
-// reason the grace is skipped rather than waited out - there is nobody
-// left who could report.
-//
-// The outcome text is the stop's own, distinct from the wrapper's "exit
-// status N" and from a sweep's, so a parent can tell which observer
-// found the ending.
+// TestStopBashRunReportsWhenTheWrapperCannot: a deliberate stop is an
+// ending too, and when the wrapper is not there to describe it (the
+// run's pid belongs to nothing) the stop must.
 func TestStopBashRunReportsWhenTheWrapperCannot(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	in := noticeParent(t, "root-sess")
 	killed := withKillPane(t)
 	meta := bashRunUnder(t, "doomed", "root-sess", testutil.DeadPID(t))
 
-	captureStdout(t, func() {
+	capture(t, &os.Stdout, func() {
 		if err := stopSubagentCmd([]string{"--force", "doomed"}); err != nil {
 			t.Fatal(err)
 		}
@@ -756,20 +655,14 @@ func TestStopBashRunReportsWhenTheWrapperCannot(t *testing.T) {
 }
 
 // TestStopBashRunLeavesTheWrapperToReportIfItCan is the negative control
-// for the test above, and the reason the stop signals before it speaks:
-// a wrapper that is still there reports the ending itself, with the exit
-// status and the output tail a stop can only guess at, and having asked
-// for the stop is no licence to tell a second story about it. The
-// outcome write is what arbitrates, exactly as it does for a sweep.
+// for the test above: a wrapper that is still there reports the ending
+// itself, and a stop must not tell a second story about it.
 func TestStopBashRunLeavesTheWrapperToReportIfItCan(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	in := noticeParent(t, "root-sess")
 	killed := withKillPane(t)
 	withStopEscalation(t, 2*time.Second)
 
-	// A real process to signal, so the wait is entered at all; the
-	// goroutine below stands in for the wrapper it would be, recording
-	// the ending inside the grace.
 	sleep := exec.Command("sleep", "30")
 	if err := sleep.Start(); err != nil {
 		t.Fatal(err)
@@ -782,7 +675,7 @@ func TestStopBashRunLeavesTheWrapperToReportIfItCan(t *testing.T) {
 			Result: subrun.Failed, Text: "killed by terminated", At: time.Now()})
 	}()
 
-	out := captureStdout(t, func() {
+	out := capture(t, &os.Stdout, func() {
 		if err := stopSubagentCmd([]string{"--force", "polite"}); err != nil {
 			t.Fatal(err)
 		}
@@ -801,16 +694,10 @@ func TestStopBashRunLeavesTheWrapperToReportIfItCan(t *testing.T) {
 	}
 }
 
-// TestStopBashRunStillNeedsForce pins that nothing here relaxed the
-// refusal every inbox-less target is held to. A bash run has no inbox to
-// ask nicely over, so stopping it degrades straight to killing
-// something, which is what --force means; whether that gate is right for
-// a build rather than an agent is a separate question and a separate
-// change to a refusal.
-//
-// The assertions that carry it are the absences: nothing killed, no
-// outcome recorded, nothing sent. A refusal that returned an error and
-// still stopped the run would satisfy the first one alone.
+// TestStopBashRunStillNeedsForce: a bash run has no inbox, so stopping
+// it degrades straight to killing something, gated by --force like any
+// other inbox-less target. Carried by the absences: nothing killed, no
+// outcome recorded, nothing sent.
 func TestStopBashRunStillNeedsForce(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	in := noticeParent(t, "root-sess")
@@ -835,10 +722,8 @@ func TestStopBashRunStillNeedsForce(t *testing.T) {
 	}
 }
 
-// TestStopBashRunRefusesANonDescendant: a run is reached by the same
-// scope rule as an agent, applied to the only parent edge it has - the
-// parent session `kido async_bash` recorded in its meta, since a bash run
-// writes no state record for descendantTarget to walk.
+// TestStopBashRunRefusesANonDescendant: a bash run writes no state
+// record, so it is reached by the parent session recorded in its meta.
 func TestStopBashRunRefusesANonDescendant(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -847,8 +732,6 @@ func TestStopBashRunRefusesANonDescendant(t *testing.T) {
 	recordControlTree(t, in)
 	withKillPane(t)
 
-	// "caller" is the caller's own session and "child" its child's, so a
-	// run under "peer" is nobody's business here.
 	stranger := bashRunUnder(t, "stranger", "peer", testutil.DeadPID(t))
 	if err := stopSubagentCmd([]string{"--force", "stranger"}); err == nil {
 		t.Fatal("stopSubagentCmd reached a run under an unrelated agent, want a refusal")
@@ -857,11 +740,8 @@ func TestStopBashRunRefusesANonDescendant(t *testing.T) {
 		t.Errorf("a refused stop recorded %+v, want nothing", o)
 	}
 
-	// The descendant half, so the refusal above is a rule about scope and
-	// not about bash runs being unreachable: a run under the caller's own
-	// child is a descendant.
 	mine := bashRunUnder(t, "mine", "child", testutil.DeadPID(t))
-	captureStdout(t, func() {
+	capture(t, &os.Stdout, func() {
 		if err := stopSubagentCmd([]string{"--force", "mine"}); err != nil {
 			t.Fatalf("stopSubagentCmd on a run started by this agent's own child = %v, want success", err)
 		}
@@ -872,8 +752,8 @@ func TestStopBashRunRefusesANonDescendant(t *testing.T) {
 }
 
 // TestStopIgnoresAFinishedBashRun: only a run with no outcome yet is
-// matched by name, so a finished run cannot shadow a live agent that
-// happens to share its name - and stop goes on meaning what it meant.
+// matched by name, so a finished run cannot shadow a live agent sharing
+// its name.
 func TestStopIgnoresAFinishedBashRun(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -887,7 +767,7 @@ func TestStopIgnoresAFinishedBashRun(t *testing.T) {
 	}
 	withKillPane(t)
 	withStopEscalation(t, 100*time.Millisecond)
-	captureStdout(t, func() {
+	capture(t, &os.Stdout, func() {
 		if err := stopSubagentCmd([]string{"child"}); err != nil {
 			t.Fatalf("stopSubagentCmd = %v, want the agent named \"child\" to be stopped over its inbox", err)
 		}

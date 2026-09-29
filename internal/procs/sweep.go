@@ -58,9 +58,6 @@ type SSHArgs struct {
 	Command []string
 }
 
-// ParseSSH splits an ssh command line at its destination. It only needs
-// to be right about where the destination is and which letters were
-// given; ssh itself parses the arguments again.
 func ParseSSH(args []string) SSHArgs {
 	var in SSHArgs
 	for i := 0; i < len(args); i++ {
@@ -96,10 +93,8 @@ func ParseSSH(args []string) SSHArgs {
 	return in
 }
 
-// sshSession picks the destination and interactivity out of an ssh
-// command line: -N wins over -t wins over -T, and with none of them a
-// pty is allocated only when there is no remote command to run instead
-// of a shell.
+// sshSession: -N wins over -t wins over -T; with none of them ssh
+// allocates a pty only when there is no remote command to run instead.
 func sshSession(args []string) SSHSession {
 	in := ParseSSH(args)
 	if in.Dest == "" {
@@ -113,7 +108,7 @@ func sshSession(args []string) SSHSession {
 	}
 }
 
-// Process is one row of the process table.
+// process is one row of the process table.
 type process struct {
 	pid, ppid int
 	comm      string
@@ -139,9 +134,9 @@ func Sweep() Scan {
 	return s
 }
 
-// parseProcesses turns psFields' rows (pid ppid comm args...) into process
-// rows and the pid->ppid map Sweep's ancestor walk needs. A row with fewer
-// than 4 fields - missing or malformed - is skipped.
+// parseProcesses turns psFields' rows (pid ppid comm args...) into
+// process rows and the pid->ppid map Sweep's ancestor walk needs. A row
+// with fewer than 4 fields is skipped.
 func parseProcesses(rows [][]string) (all []process, parent map[int]int) {
 	parent = map[int]int{}
 	for _, f := range rows {
@@ -164,19 +159,14 @@ func parseProcesses(rows [][]string) (all []process, parent map[int]int) {
 }
 
 // MaybePi reports whether a pane's foreground command could be pi, and
-// so whether the pane is worth a process sweep. pi is a bash shim around
-// node and renames itself in-process, which ps (and so tmux) never sees,
-// so "node" is what a pi pane usually reports; "pi" covers an install
-// that runs under its own name. A pane matching this that turns out not
-// to be pi costs one ps call a second, the same price an ssh pane whose
-// destination cannot be resolved has always paid.
+// so whether the pane is worth a process sweep. pi is a bash shim
+// around node and renames itself in-process, invisible to ps, so "node"
+// is what a pi pane usually reports; "pi" covers an install running
+// under its own name.
 func MaybePi(command string) bool {
 	return command == "node" || command == "pi"
 }
 
-// isPi reports whether p is a pi process: the bash shim and the node it
-// execs both name pi's script in their arguments, and a pi installed so
-// that it runs under its own name is matched by that name alone.
 func isPi(p process) bool {
 	if len(p.args) > 0 && filepath.Base(p.args[0]) == "pi" {
 		return true
@@ -189,10 +179,9 @@ func isPi(p process) bool {
 	return false
 }
 
-// markAncestors marks pid and everything above it, stopping at a pid with
-// no known parent, at pid 1, or at an already marked one (which carries
-// its own ancestors). The depth cap is belt and braces against a ps
-// snapshot whose ppids form a cycle.
+// markAncestors marks pid and everything above it, stopping at a pid
+// with no known parent, at pid 1, or at an already marked one. The
+// depth cap guards against a ps snapshot whose ppids form a cycle.
 func markAncestors(set map[int]bool, parent map[int]int, pid int) {
 	for range 64 {
 		if pid <= 1 || set[pid] {

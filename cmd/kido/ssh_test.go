@@ -28,8 +28,7 @@ func noTTY(cmd *exec.Cmd) *exec.Cmd {
 
 // TestParseSSHLettersExcludeValues pins that an option's value is not
 // read as more option letters: `-o ProxyCommand=none` carries an N, a T
-// and a W among others, every one of which would make kido decide this
-// connection has no shell to prime.
+// and a W among others.
 func TestParseSSHLettersExcludeValues(t *testing.T) {
 	in := procs.ParseSSH([]string{"-o", "ProxyCommand=none", "-p", "22", "host"})
 	if got, want := in.Letters, "op"; got != want {
@@ -40,10 +39,9 @@ func TestParseSSHLettersExcludeValues(t *testing.T) {
 	}
 }
 
-// TestSSHArgsPassesThroughWhatItCannotPrime is the degrade-never-break
-// half: every one of these must reach ssh exactly as the user spelled it,
-// with no -t and no remote command added. `kido ssh` is not allowed to be
-// worse than `ssh`.
+// TestSSHArgsPassesThroughWhatItCannotPrime: every one of these must
+// reach ssh exactly as the user spelled it, with no -t and no remote
+// command added.
 func TestSSHArgsPassesThroughWhatItCannotPrime(t *testing.T) {
 	cases := []struct {
 		name string
@@ -72,9 +70,8 @@ func TestSSHArgsPassesThroughWhatItCannotPrime(t *testing.T) {
 }
 
 // TestSSHArgsPrimes pins the primed command line: the user's options in
-// the order they were given, then -t (ssh allocates no tty for a command,
-// and the shell kido asks for is an interactive one), the destination,
-// and the bootstrap as the remote command.
+// order, then -t, the destination, and the bootstrap as the remote
+// command.
 func TestSSHArgsPrimes(t *testing.T) {
 	got := sshArgs([]string{"-o", "BatchMode=yes", "-A", "deploy@host"}, true)
 	if len(got) < 6 {
@@ -90,10 +87,6 @@ func TestSSHArgsPrimes(t *testing.T) {
 	}
 }
 
-// TestSSHBootstrapIsAShellProgram checks the bootstrap parses as POSIX
-// sh. It is assembled by string formatting and sent to a remote shell
-// that reports a syntax error as a broken login, so the cheapest possible
-// check is worth having.
 func TestSSHBootstrapIsAShellProgram(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
@@ -106,8 +99,6 @@ func TestSSHBootstrapIsAShellProgram(t *testing.T) {
 	}
 }
 
-// TestKidoZshenvIsAZshProgram is the same check for the .zshenv, which
-// the bootstrap only copies and never parses.
 func TestKidoZshenvIsAZshProgram(t *testing.T) {
 	zsh, err := exec.LookPath("zsh")
 	if err != nil {
@@ -120,12 +111,9 @@ func TestKidoZshenvIsAZshProgram(t *testing.T) {
 	}
 }
 
-// TestSSHBootstrapCarriesTheIntegration pins both payloads: the embedded
-// zsh and bash integrations, base64 of each and nothing else, and
-// quotable. The base64 alphabet holds no single quote, which is what
-// makes wrapping a payload in one pair of single quotes safe with no
-// escaping at all - a payload that ever grew one would end the quoting
-// early and hand the remote shell the rest of the file as commands.
+// TestSSHBootstrapCarriesTheIntegration pins both payloads: base64 of
+// each embedded integration, wrapped in single quotes with no escaping,
+// which is safe since the base64 alphabet holds no single quote.
 func TestSSHBootstrapCarriesTheIntegration(t *testing.T) {
 	boot := sshBootstrap()
 	cases := []struct {
@@ -167,11 +155,9 @@ func fakeShell(t *testing.T, name string) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, name)
-	// The bootstrap has two probes, and a stand-in that answers neither is
-	// read as a shell that cannot be primed: `$shell -c ...` asks a bash
-	// its version, which must be one new enough for PS0, and
-	// `$shell -l -c :` asks whether this shell takes -l at all, which must
-	// print nothing.
+	// The bootstrap probes with `$shell -c ...` (bash version, for PS0) and
+	// `$shell -l -c :` (does -l work at all); a stand-in answering neither
+	// is read as unprimable.
 	body := `#!/bin/sh
 [ "$1" = "-c" ] && { echo 5.2; exit 0; }
 [ "$2" = "-c" ] && exit 0
@@ -188,43 +174,23 @@ exit 0
 	return path
 }
 
-// envFrom reads the ENV line the stand-in shell printed.
-func envFrom(t *testing.T, out string) string {
-	t.Helper()
-	m := regexp.MustCompile(`(?m)^ENV=(.*)$`).FindStringSubmatch(out)
-	if m == nil {
-		t.Fatalf("output %q names no ENV", out)
-	}
-	return m[1]
-}
-
-// TestBootstrapPrimesBash is TestBootstrapPrimesZsh's counterpart: a
-// stand-in login shell named bash is exec'd with --login --posix and an
-// ENV pointing at a throwaway directory holding both env.bash and the
-// decoded integration.
 func TestBootstrapPrimesBash(t *testing.T) {
 	out, tmpdir := runBootstrap(t, bootstrapRun{home: t.TempDir(), shell: fakeShell(t, "bash")})
 	if !strings.Contains(out, "args=--login --posix") {
 		t.Errorf("output %q, want the login shell exec'd with --login --posix", out)
 	}
-	if envFrom(t, out) == "<unset>" {
+	m := regexp.MustCompile(`(?m)^ENV=(.*)$`).FindStringSubmatch(out)
+	if m == nil || m[1] == "<unset>" {
 		t.Fatalf("output %q names no ENV", out)
 	}
 	if !strings.Contains(out, "env.bash") || !strings.Contains(out, "integration.bash") {
 		t.Errorf("output %q, want the ENV directory to hold env.bash and integration.bash", out)
 	}
-	// As in TestBootstrapPrimesZsh: the stand-in shell never reads ENV, so
-	// nothing removed the directory and the trap could not run either,
-	// because the bootstrap exec'd.
 	if got := leftBehind(t, tmpdir); len(got) != 1 {
 		t.Errorf("temporary directories = %q, want the one this run made", got)
 	}
 }
 
-// bootstrapRun is one remote as the bootstrap finds it: the $HOME and
-// $SHELL of the login it was sent to, the PATH it may look for mktemp
-// and base64 on, what the shell it execs then reads on its stdin, and
-// anything else the environment has to carry.
 type bootstrapRun struct {
 	home  string
 	shell string
@@ -234,16 +200,12 @@ type bootstrapRun struct {
 }
 
 // runBootstrap runs the bootstrap under a real /bin/sh, as the remote's
-// login shell would run it. It returns everything the run printed and the
-// TMPDIR the bootstrap's `mktemp -d` had to work in, so a caller can see
-// what was left behind.
+// login shell would run it. It returns everything the run printed and
+// the TMPDIR the bootstrap's `mktemp -d` had to work in.
 //
-// TERM is dumb for every caller: each of these runs a shell whose output
-// is read back as escape sequences, and dumb is the one terminal readline
-// adds none of its own for. The environment is a fixed list, so the
-// developer's own TERM never reaches the shell either way - naming it
-// here is what makes the reading the same on every machine rather than
-// whatever an unset TERM happens to mean to the shell under test.
+// TERM is dumb for every caller: readline adds none of its own escape
+// sequences for it, which is what makes the reading the same on every
+// machine.
 func runBootstrap(t *testing.T, r bootstrapRun) (out, tmpdir string) {
 	t.Helper()
 	tmpdir = filepath.Join(t.TempDir(), "tmp")
@@ -272,9 +234,6 @@ func runBootstrap(t *testing.T, r bootstrapRun) (out, tmpdir string) {
 	return string(b), tmpdir
 }
 
-// zshHome is a home directory holding one .zshrc: a remote that has zsh
-// dotfiles but nothing of kido's, which is the host `kido ssh` exists
-// for. rc is appended to it.
 func zshHome(t *testing.T, rc string) string {
 	t.Helper()
 	home := t.TempDir()
@@ -285,8 +244,6 @@ func zshHome(t *testing.T, rc string) string {
 	return home
 }
 
-// leftBehind names what the bootstrap left in the directory its temporary
-// one was made in. Nothing kido sends may outlive the session.
 func leftBehind(t *testing.T, tmpdir string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(tmpdir)
@@ -300,9 +257,6 @@ func leftBehind(t *testing.T, tmpdir string) []string {
 	return names
 }
 
-// TestBootstrapPrimesZsh runs the bootstrap against a stand-in login
-// shell named zsh and reads back what it was handed: a ZDOTDIR that is
-// not the home directory, holding the .zshenv and the integration.
 func TestBootstrapPrimesZsh(t *testing.T) {
 	home := zshHome(t, "")
 	out, tmpdir := runBootstrap(t, bootstrapRun{home: home, shell: fakeShell(t, "zsh")})
@@ -316,17 +270,11 @@ func TestBootstrapPrimesZsh(t *testing.T) {
 	if !strings.Contains(out, ".zshenv") || !strings.Contains(out, "integration.zsh") {
 		t.Errorf("output %q, want the ZDOTDIR to hold .zshenv and integration.zsh", out)
 	}
-	// The stand-in shell is not zsh, so nothing read the .zshenv that
-	// would have removed the directory; the trap could not run either,
-	// because the bootstrap exec'd. That the directory is still here is
-	// what makes the pristine test below - where a real zsh does read it -
-	// the only evidence that the cleanup happens at all.
 	if got := leftBehind(t, tmpdir); len(got) != 1 {
 		t.Errorf("temporary directories = %q, want the one this run made", got)
 	}
 }
 
-// zdotdirFrom reads the ZDOTDIR line the stand-in shell printed.
 func zdotdirFrom(t *testing.T, out string) string {
 	t.Helper()
 	m := regexp.MustCompile(`(?m)^ZDOTDIR=(.*)$`).FindStringSubmatch(out)
@@ -336,12 +284,9 @@ func zdotdirFrom(t *testing.T, out string) string {
 	return m[1]
 }
 
-// TestBootstrapRedirectsAnExistingZDOTDIR pins the first half of keeping
-// a remote whose dotfiles are not in $HOME working: the swap happens
-// there too, rather than the bootstrap deciding this login has no zsh
-// dotfiles because $HOME holds none. The second half - that the session
-// still loads them - is TestSSHPrimesAZshWithItsOwnZDOTDIR, which needs a
-// real zsh to read the .zshenv that restores it.
+// TestBootstrapRedirectsAnExistingZDOTDIR: the swap happens even when a
+// remote's dotfiles are not in $HOME. The second half - that the session
+// still loads them - is TestSSHPrimesAZshWithItsOwnZDOTDIR.
 func TestBootstrapRedirectsAnExistingZDOTDIR(t *testing.T) {
 	dots := zshHome(t, "")
 	out, _ := runBootstrap(t, bootstrapRun{
@@ -355,9 +300,9 @@ func TestBootstrapRedirectsAnExistingZDOTDIR(t *testing.T) {
 	}
 }
 
-// TestBootstrapFallsBackToAPlainShell pins the degrade paths: each of
-// these must exec the login shell with nothing changed, and leave no
-// temporary directory behind.
+// TestBootstrapFallsBackToAPlainShell pins the degrade paths: each case
+// must exec the login shell with nothing changed, and leave no temporary
+// directory behind.
 func TestBootstrapFallsBackToAPlainShell(t *testing.T) {
 	t.Run("a login shell kido does not know", func(t *testing.T) {
 		out, tmpdir := runBootstrap(t, bootstrapRun{home: zshHome(t, ""), shell: fakeShell(t, "ksh")})
@@ -369,10 +314,8 @@ func TestBootstrapFallsBackToAPlainShell(t *testing.T) {
 		}
 	})
 
-	// kitty's own care, kept: a zsh user with no dotfiles at all is about
-	// to be offered zsh-newuser-install, and a ZDOTDIR pointing at kido's
-	// directory would suppress it - quietly changing what the user's first
-	// login does.
+	// A ZDOTDIR pointing at kido's directory would suppress
+	// zsh-newuser-install, quietly changing what the user's first login does.
 	t.Run("a zsh with no dotfiles, which has zsh-newuser-install to run", func(t *testing.T) {
 		out, tmpdir := runBootstrap(t, bootstrapRun{home: t.TempDir(), shell: fakeShell(t, "zsh")})
 		if got := zdotdirFrom(t, out); got != "<unset>" {
@@ -384,8 +327,6 @@ func TestBootstrapFallsBackToAPlainShell(t *testing.T) {
 	})
 
 	t.Run("a remote with no base64", func(t *testing.T) {
-		// A PATH holding the stand-in shell and nothing else: no base64,
-		// no mktemp, which is the bare remote the bootstrap has to survive.
 		shell := fakeShell(t, "zsh")
 		out, tmpdir := runBootstrap(t, bootstrapRun{
 			home: zshHome(t, ""), shell: shell, path: filepath.Dir(shell),
@@ -399,10 +340,9 @@ func TestBootstrapFallsBackToAPlainShell(t *testing.T) {
 	})
 }
 
-// TestBootstrapDecodesWithABSDBase64 pins the second decode attempt: a
-// remote whose base64 only understands -D must still be primed, not
-// quietly demoted to a plain session. The stand-in rejects -d the way
-// that base64 does, and delegates -D to the real one.
+// TestBootstrapDecodesWithABSDBase64: a remote whose base64 only
+// understands -D must still be primed, not quietly demoted to a plain
+// session.
 func TestBootstrapDecodesWithABSDBase64(t *testing.T) {
 	real, err := exec.LookPath("base64")
 	if err != nil {
@@ -428,10 +368,7 @@ func TestBootstrapDecodesWithABSDBase64(t *testing.T) {
 }
 
 // interactiveZsh writes a shell named zsh that is a real zsh forced
-// interactive, so a test can drive it down a pipe. $SHELL is what the
-// bootstrap execs, and zsh is only interactive on a tty; the pipe stands
-// in for the pty ssh -t provides, and -i for what that pty would have
-// made zsh decide on its own.
+// interactive with -i, standing in for the pty ssh -t would provide.
 func interactiveZsh(t *testing.T) string {
 	t.Helper()
 	real, err := exec.LookPath("zsh")
@@ -447,28 +384,19 @@ func interactiveZsh(t *testing.T) string {
 	return path
 }
 
-// osc133 matches any of kido's markers in a stream of shell output.
 var osc133 = regexp.MustCompile("\x1b\\]133;[ACD]")
 
 // TestSSHPrimesAPristineZsh is the claim `kido ssh` is for, with its
 // negative control: a zsh whose dotfiles know nothing about kido reports
 // nothing, and the same zsh started through kido's bootstrap reports a
-// prompt, a command line and an exit status.
-//
-// The far side here is this machine rather than another host, and the
-// bootstrap is run directly rather than carried by ssh: what ssh
-// contributes is a login shell reading dotfiles kido did not write, and
-// that is exactly what the pristine HOME is. A remote that already
-// sourced kido's integration - the developer's own localhost, most likely
-// - could not tell the two halves apart, which is why this test builds
-// its own home instead of logging in anywhere.
+// prompt, a command line and an exit status. Run against a fresh $HOME
+// directly rather than a real login, since a remote that already sourced
+// kido's integration could not tell the two halves apart.
 func TestSSHPrimesAPristineZsh(t *testing.T) {
 	shell := interactiveZsh(t)
 	home := zshHome(t, "")
 	script := "true\nexit\n"
 
-	// The control: the same pristine zsh, started the way ssh would start
-	// it with no kido in front of it.
 	plain := noTTY(exec.Command(shell, "-l"))
 	plain.Env = []string{
 		"PATH=" + os.Getenv("PATH"), "HOME=" + home, "SHELL=" + shell, "TERM=dumb",
@@ -488,14 +416,9 @@ func TestSSHPrimesAPristineZsh(t *testing.T) {
 			t.Errorf("primed output does not contain %q; it is %q", want, out)
 		}
 	}
-	// Nothing persists: the .zshenv removes the directory as it reads it,
-	// which is the only cleanup there is once the bootstrap has exec'd.
 	if got := leftBehind(t, tmpdir); len(got) != 0 {
 		t.Errorf("left %q behind on the remote", got)
 	}
-	// The user's own dotfiles still ran, from their own directory: a
-	// ZDOTDIR kido pointed elsewhere and forgot to restore would be a far
-	// worse thing to do to a login than not reporting at all.
 	if !strings.Contains(out, "remote%") {
 		t.Errorf("the pristine .zshrc did not run; output is %q", out)
 	}
@@ -516,10 +439,9 @@ func TestSSHPrimesAZshThatSplitsWords(t *testing.T) {
 	}
 }
 
-// TestSSHPrimesAZshWithItsOwnZDOTDIR is the same claim for a remote whose
-// dotfiles live outside $HOME: the .zshenv kido puts in front must hand
-// ZDOTDIR back before zsh looks for a .zshrc, or the session would lose
-// its own dotfiles - which is the one outcome worse than not reporting.
+// TestSSHPrimesAZshWithItsOwnZDOTDIR: the .zshenv kido puts in front
+// must hand ZDOTDIR back before zsh looks for a .zshrc, or the session
+// would lose its own dotfiles.
 func TestSSHPrimesAZshWithItsOwnZDOTDIR(t *testing.T) {
 	dots := zshHome(t, "")
 	out, tmpdir := runBootstrap(t, bootstrapRun{
@@ -540,13 +462,8 @@ func TestSSHPrimesAZshWithItsOwnZDOTDIR(t *testing.T) {
 }
 
 // interactiveBash writes a shell named bash that is a real bash forced
-// interactive, so a test can drive it down a pipe, the same trick
-// interactiveZsh plays. Order matters here in a way it does not for zsh:
-// bash's option parser treats a long option like --login as invalid once
-// it has seen a short one, so -i has to come after "$@", not before it.
-// Skips when the bash on PATH cannot run the primed integration at all -
-// the version floor itself is TestBootstrapFallsBackForOldBash's claim,
-// not this helper's.
+// interactive with -i, placed after "$@": bash's option parser treats a
+// long option like --login as invalid once it has seen a short one.
 func interactiveBash(t *testing.T) string {
 	t.Helper()
 	real := testutil.ModernBash(t)
@@ -559,11 +476,7 @@ func interactiveBash(t *testing.T) string {
 	return path
 }
 
-// TestSSHPrimesAPristineBash is TestSSHPrimesAPristineZsh's counterpart,
-// with the same negative control: a bash whose dotfiles know nothing
-// about kido reports nothing on its own, and the same bash started
-// through kido's bootstrap reports a prompt, a command line and an exit
-// status, with its own .bash_profile still the one that set the prompt.
+// TestSSHPrimesAPristineBash is TestSSHPrimesAPristineZsh's counterpart.
 func TestSSHPrimesAPristineBash(t *testing.T) {
 	shell := interactiveBash(t)
 	home := t.TempDir()
@@ -572,8 +485,6 @@ func TestSSHPrimesAPristineBash(t *testing.T) {
 	}
 	script := "true\nexit\n"
 
-	// The control: the same pristine bash, started the way ssh would start
-	// it with no kido in front of it.
 	plain := noTTY(exec.Command(shell, "--login"))
 	plain.Env = []string{
 		"PATH=" + os.Getenv("PATH"), "HOME=" + home, "SHELL=" + shell, "TERM=dumb",
@@ -593,24 +504,18 @@ func TestSSHPrimesAPristineBash(t *testing.T) {
 			t.Errorf("primed output does not contain %q; it is %q", want, out)
 		}
 	}
-	// Nothing persists: kidoBashEnv removes the directory as it reads it,
-	// the same way the .zshenv does for zsh.
 	if got := leftBehind(t, tmpdir); len(got) != 0 {
 		t.Errorf("left %q behind on the remote", got)
 	}
-	// The user's own dotfiles still ran, from their own $HOME: an ENV kido
-	// pointed elsewhere and forgot to restore would be a far worse thing to
-	// do to a login than not reporting at all.
 	if !strings.Contains(out, "remote$") {
 		t.Errorf("the pristine .bash_profile did not run; output is %q", out)
 	}
 }
 
-// TestSSHPrimesABashSourcesBashrc pins that both of a real bash login's
-// own files ran: kidoBashEnv sources only /etc/profile and the first of
-// .bash_profile, .bash_login, .profile itself, exactly as a login bash
-// with no kido in front of it would - so a .bashrc only runs if the
-// user's own .bash_profile sources it, which is what this one does.
+// TestSSHPrimesABashSourcesBashrc pins that kidoBashEnv sources only
+// /etc/profile and the first of .bash_profile, .bash_login, .profile
+// itself, exactly as a login bash with no kido in front of it would - so
+// a .bashrc only runs if the user's own .bash_profile sources it.
 func TestSSHPrimesABashSourcesBashrc(t *testing.T) {
 	shell := interactiveBash(t)
 	home := t.TempDir()
@@ -635,10 +540,6 @@ func TestSSHPrimesABashSourcesBashrc(t *testing.T) {
 	}
 }
 
-// TestSSHPrimesABashWithOnlyAProfile pins the fallback order kidoBashEnv
-// gives login files: a remote with a .profile and no .bash_profile or
-// .bash_login still gets it, the same order a login bash with no kido in
-// front of it uses.
 func TestSSHPrimesABashWithOnlyAProfile(t *testing.T) {
 	shell := interactiveBash(t)
 	home := t.TempDir()
@@ -663,14 +564,8 @@ func TestSSHPrimesABashWithOnlyAProfile(t *testing.T) {
 // TestBootstrapFallsBackForOldBash pins the version floor: a login bash
 // too old for PS0 (macOS ships 3.2 as /bin/bash) gets its own login files
 // and no markers, and is never taken through --posix on the way there.
-//
-// The last two assertions are what the floor being the bootstrap's
-// business rather than the $ENV file's buys. Apple's 3.2 does not read
-// $ENV under --posix at all, so a floor checked inside that file is one
-// this host never reads: the session it leaves behind reports nothing -
-// which the first two assertions cannot tell from this one - but spends
-// its whole life in posix mode, and the throwaway directory holding the
-// file nothing read outlives the session.
+// Apple's 3.2 does not read $ENV under --posix at all, so the floor must
+// be checked in the bootstrap itself, not in that file.
 func TestBootstrapFallsBackForOldBash(t *testing.T) {
 	const old = "/bin/bash"
 	if _, err := os.Stat(old); err != nil {
@@ -692,10 +587,6 @@ func TestBootstrapFallsBackForOldBash(t *testing.T) {
 	out, tmpdir := runBootstrap(t, bootstrapRun{
 		home:  home,
 		shell: path,
-		// The status of the test rather than a word for each outcome: an
-		// interactive bash reading a pipe echoes back the line it read, so a
-		// marker naming both outcomes is in the output whichever one holds,
-		// and only what the run itself expands can be asserted on.
 		stdin: "shopt -qo posix; echo KIDO_POSIX_SET=$?\nexit\n",
 	})
 	if osc133.MatchString(out) {

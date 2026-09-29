@@ -76,10 +76,8 @@ func TestRunHookDebugLog(t *testing.T) {
 	}
 }
 
-// TestHookDebugIsSwitchedOnByTheEnvironment covers the whole switch there
-// is: Claude Code runs the hook, from a settings file kido ships and does
-// not write, so no flag of kido's can reach it and the environment of the
-// pane Claude Code was started in is the only channel left.
+// TestHookDebugIsSwitchedOnByTheEnvironment: no flag of kido's can reach
+// the hook, so the pane's environment is the only channel.
 func TestHookDebugIsSwitchedOnByTheEnvironment(t *testing.T) {
 	bin := dispatchTestBin(t)
 	for _, on := range []bool{true, false} {
@@ -103,10 +101,6 @@ func TestHookDebugIsSwitchedOnByTheEnvironment(t *testing.T) {
 	}
 }
 
-// TestRunHookEndedPreservesEarlierEnd checks that an Ended effect keeps an
-// existing idle record's Ended time rather than overwriting it with now,
-// since a later event minting Ended for the same turn is a less
-// authoritative observation than the one already recorded.
 func TestRunHookEndedPreservesEarlierEnd(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("KIDO_STATE_DIR", dir)
@@ -143,10 +137,6 @@ func TestRunHookEndedPreservesEarlierEnd(t *testing.T) {
 	}
 }
 
-// TestRunHookBackgroundWait checks the full round trip of a turn that ends
-// with background work outstanding: the wait is recorded, survives the
-// subagent's own tool calls, and ends - with a fresh end time - on the
-// SubagentStop that reports nothing left running.
 func TestRunHookBackgroundWait(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("KIDO_STATE_DIR", dir)
@@ -223,8 +213,6 @@ func TestDebugLogPath(t *testing.T) {
 	}
 }
 
-// TestAgentStatus checks the record `kido agent-status` writes for an
-// agent that is not Claude Code.
 func TestAgentStatus(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("KIDO_STATE_DIR", dir)
@@ -282,11 +270,9 @@ func TestAgentStatus(t *testing.T) {
 	}
 }
 
-// reporter returns a function that runs one `kido agent-status` report
-// for session id - the standard flags plus whatever extra the caller
-// passes - and returns the record it wrote. The tests below all work by
-// repeating a report with one flag varied, to check that a report is a
-// whole fresh record rather than a patch on the previous one.
+// reporter runs one `kido agent-status` report for session id, the
+// standard flags plus whatever extra the caller passes, and returns the
+// record it wrote.
 func reporter(t *testing.T, id string) func(extra ...string) state.Session {
 	base := []string{"--agent", "pi", "--session", id, "--status", "running"}
 	return func(extra ...string) state.Session {
@@ -302,9 +288,6 @@ func reporter(t *testing.T, id string) func(extra ...string) state.Session {
 	}
 }
 
-// TestAgentStatusInbox checks --inbox: recorded when given, and reset to
-// empty by a later report that omits it - nothing is carried forward, so
-// a caller that wants the socket to persist reports it again every time.
 func TestAgentStatusInbox(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%12")
@@ -322,9 +305,6 @@ func TestAgentStatusInbox(t *testing.T) {
 	}
 }
 
-// TestAgentStatusActivity checks --activity: recorded when given, and
-// reset to empty by a later report that omits it - the same no-carry-
-// forward rule as --inbox.
 func TestAgentStatusActivity(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%12")
@@ -342,9 +322,6 @@ func TestAgentStatusActivity(t *testing.T) {
 	}
 }
 
-// TestAgentStatusModel checks --model: recorded when given, and reset to
-// empty by a later report that omits it - the same no-carry-forward rule
-// as --inbox and --activity.
 func TestAgentStatusModel(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%12")
@@ -362,14 +339,11 @@ func TestAgentStatusModel(t *testing.T) {
 	}
 }
 
-// TestAgentStatusActivityIsOneLine pins the sanitising --activity gets on
-// the way into a record. The text is model-authored, and both places kido
-// draws it assume one line of printable characters: the sidebar budgets
-// one terminal line per pane row, so a newline draws a line the row
-// accounting knows nothing about and shifts everything below it, and an
-// escape sequence would colour the rest of the column; `kido list_agents`
-// prints a tab-separated table a tab would split. The byte cap is cut on
-// a rune boundary, so a capped multi-byte string is still valid UTF-8.
+// TestAgentStatusActivityIsOneLine pins the sanitising --activity gets
+// on the way into a record: the text is model-authored, and both the
+// sidebar and `kido list_agents` assume one printable line with no tabs.
+// The byte cap is cut on a rune boundary, so a capped multi-byte string
+// is still valid UTF-8.
 func TestAgentStatusActivityIsOneLine(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%12")
@@ -393,11 +367,9 @@ func TestAgentStatusActivityIsOneLine(t *testing.T) {
 	}
 }
 
-// TestAgentStatusParentAndDepth checks that --parent-pid,
-// --parent-session and --depth are recorded exactly as given on every
-// call, with no carry-forward: the agent reports them fresh from its own
-// environment on every call, so an omitted flag means "root agent", not
-// "keep the last one".
+// TestAgentStatusParentAndDepth: --parent-pid, --parent-session and
+// --depth are recorded exactly as given, with no carry-forward - an
+// omitted flag means "root agent", not "keep the last one".
 func TestAgentStatusParentAndDepth(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%12")
@@ -409,14 +381,11 @@ func TestAgentStatusParentAndDepth(t *testing.T) {
 		t.Fatalf("record = %+v, want parent pid 4242, parent session parent-sess and depth 1", s)
 	}
 
-	// Omitting these on the next call resets them to zero, the same as
-	// every other field: a report is a whole fresh record.
 	if s := report(); s.Parent != nil || s.Depth != 0 {
 		t.Errorf("record = %+v, want a root agent (no carry-forward)", s)
 	}
 }
 
-// TestAgentStatusErrors checks the argument shapes that must fail.
 func TestAgentStatusErrors(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("KIDO_STATE_DIR", dir)
@@ -443,24 +412,14 @@ func TestAgentStatusErrors(t *testing.T) {
 	}
 }
 
-// TestEverySubcommandCaseReturns reads main's dispatch from the source: a
-// branch that dispatches and forgets to return falls into the sidebar's
-// startup, which fails on the missing TTY with exit 1 after the
-// subcommand has already printed its answer, and every caller that
-// shells out reads a nonzero exit as inconclusive and ignores it.
-// Measured live: `kido agent-alive` did exactly that, so an ask never saw
-// its target die and a child never saw its parent die. A binary run
-// cannot pin this for every subcommand, since most exit through a usage
-// error before the fallthrough is reached; the source can.
-//
-// main dispatches two ways: the switch's own irregular cases (hook,
-// agent-status, debug-log, inbox-path, async-run), checked the same way
-// as before, and the default case's two map lookups, one for commands and
-// one for exitCommands, each of which runs every name its table holds.
-// Because every table entry shares its one lookup-and-dispatch block,
-// checking that block once verifies the rule for every subcommand the
-// table names, not just the ones written here - unlike the old
-// hand-written switch, where each case needed its own checked return.
+// TestEverySubcommandCaseReturns reads main's dispatch from the source:
+// a branch that dispatches and forgets to return falls into the
+// sidebar's startup, which fails on the missing TTY after the subcommand
+// has already printed its answer, and a caller that shells out reads the
+// nonzero exit as inconclusive. Measured live: `kido agent-alive` did
+// exactly that. A binary run cannot pin this for every subcommand, since
+// most exit through a usage error before the fallthrough is reached; the
+// source can.
 func TestEverySubcommandCaseReturns(t *testing.T) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "main.go", nil, 0)
@@ -499,9 +458,6 @@ func TestEverySubcommandCaseReturns(t *testing.T) {
 	for _, c := range sw.Body.List {
 		cc := c.(*ast.CaseClause)
 		if cc.List == nil {
-			// default: every name not named by an explicit case is looked up
-			// in commands or exitCommands; each lookup's own block must
-			// return or exit.
 			checked := 0
 			for _, stmt := range cc.Body {
 				ifs, ok := stmt.(*ast.IfStmt)
@@ -526,9 +482,6 @@ func TestEverySubcommandCaseReturns(t *testing.T) {
 	}
 }
 
-// TestAgentAliveExitsCleanly is the live half: the built binary, asked
-// about a session nobody holds, answers false and exits 0 with nothing
-// on stderr, which is the reading every liveness poll depends on.
 func TestAgentAliveExitsCleanly(t *testing.T) {
 	bin := dispatchTestBin(t)
 	cmd := exec.Command(bin, "agent-alive", "nobody")

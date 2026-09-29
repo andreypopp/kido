@@ -29,7 +29,7 @@ import "strings"
 // conservative direction is to say no: a screen kido cannot read leaves the
 // status exactly as the hooks reported it. The caller re-reads the screen
 // while the pane stays waiting and recomputes the verdict, so a wrong yes
-// lasts one interval, not the session (see probe in ui.go).
+// lasts one interval, not the session.
 
 // footerLines is how many lines may follow the input box's closing rule.
 // The footer is one line; the allowance is for a wrapped one.

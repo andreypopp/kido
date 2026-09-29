@@ -18,12 +18,8 @@ var (
 	binaryPath = "tmux"
 )
 
-// Binary returns the tmux executable to run, in order: $KIDO_TMUX when
-// set; else "kido-tmux" beside the kido binary itself, the way an install
-// ships it; else whatever "tmux" resolves to on PATH, for a developer
-// running from a checkout with neither. It is also what a caller that has
-// to run tmux itself rather than through this package uses - the
-// launcher, which starts a server rather than talking to one.
+// Binary returns the tmux executable to run: $KIDO_TMUX if set, else
+// "kido-tmux" beside the kido binary, else "tmux" on PATH.
 func Binary() string {
 	binaryOnce.Do(func() {
 		binaryPath = resolveBinary(os.Getenv("KIDO_TMUX"), os.Args[0])
@@ -42,9 +38,6 @@ func GlobalOption(name string) string {
 	return out
 }
 
-// resolveBinary is Binary()'s logic taking its inputs as arguments, so the
-// order can be tested without a real KIDO_TMUX or a real kido binary on
-// disk.
 func resolveBinary(kidoTmuxEnv, arg0 string) string {
 	if kidoTmuxEnv != "" {
 		return kidoTmuxEnv
@@ -60,11 +53,9 @@ func resolveBinary(kidoTmuxEnv, arg0 string) string {
 
 // InvokedPath returns the path kido was started as, with symlinks left
 // alone. os.Executable is not it on Linux, where it reads /proc/self/exe
-// and always comes back fully resolved, which would defeat Candidates'
-// unresolved-first ordering on exactly the platform where nobody tests
-// it. argv[0] keeps the spelling: used as-is when it has a separator,
-// looked up on PATH when it does not. os.Executable stays the fallback,
-// for a caller that cleared argv[0] or a lookup that fails.
+// and always comes back fully resolved. argv[0] is used as-is when it
+// has a separator, looked up on PATH otherwise; os.Executable is the
+// fallback for a cleared argv[0] or a failed lookup.
 func InvokedPath(arg0 string) (string, error) {
 	var p string
 	switch {
@@ -86,11 +77,9 @@ func InvokedPath(arg0 string) (string, error) {
 }
 
 // Candidates returns exe and, if it differs, the path its symlinks
-// resolve to - unresolved first. A caller resolving something beside exe
-// (a sibling binary, a share directory) tries the unresolved spelling
-// first: Homebrew's bin directory is a symlink it repoints on every
-// upgrade, and the unresolved spelling survives a `brew cleanup` that
-// deletes the resolved one.
+// resolve to - unresolved first. Homebrew's bin directory is a symlink
+// repointed on every upgrade, so the unresolved spelling survives a
+// `brew cleanup` that deletes the resolved one.
 func Candidates(exe string) []string {
 	c := []string{exe}
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil && resolved != exe {
@@ -99,8 +88,6 @@ func Candidates(exe string) []string {
 	return c
 }
 
-// siblingTmux returns the absolute path of "kido-tmux" beside exe, or ""
-// when there is none.
 func siblingTmux(exe string) string {
 	for _, c := range Candidates(exe) {
 		sib := filepath.Join(filepath.Dir(c), "kido-tmux")
@@ -111,8 +98,6 @@ func siblingTmux(exe string) string {
 	return ""
 }
 
-// runStdin runs a tmux command, its standard input either empty or (for a
-// command that reads it, such as load-buffer -) the text to load.
 func runStdin(stdin string, args ...string) (string, error) {
 	cmd := exec.Command(Binary(), args...)
 	cmd.Stdin = strings.NewReader(stdin)
@@ -137,48 +122,32 @@ type Pane struct {
 	PanePID        int
 	CurrentCommand string
 	CurrentPath    string
-	// OSC 133 shell integration, reported by tmux only for shells that
-	// emit the markers (kido ships a zsh integration in shell/zsh, which
-	// every primed pane sources). A shell that
-	// never emits them leaves LastPromptTime zero; see Shell.
-	// AlternateOn is tmux's own answer to "a program owns this terminal":
-	// vim, a pager, top and friends all take the screen by switching to
-	// the alternate buffer. It is the innermost program that does so, so
-	// unlike pane_current_command - which names the process group leader -
-	// it sees less running under git, or nvim running under sudo.
+	// OSC 133 shell integration; a shell that never emits the markers
+	// (shell/zsh's is what kido ships) leaves LastPromptTime zero.
+	// AlternateOn is tmux's own #{alternate_on}: the innermost program
+	// that has taken the terminal (vim, a pager) by switching to the
+	// alternate buffer, unlike pane_current_command's process-group leader.
 	AlternateOn      bool
 	CommandRunning   bool
 	CommandStartTime int64 // unix time of the last 133;C
 	LastPromptTime   int64 // unix time of the last 133;A
-	// LastExit is the last finished command's exit status, from the last
-	// 133;D, or nil when tmux has none on record. tmux prints
-	// pane_command_status empty when it has none (it keeps -1 internally),
-	// which is what nil distinguishes from a clean exit.
+	// LastExit is nil when tmux has no exit status on record:
+	// pane_command_status prints empty rather than 0 for that case.
 	LastExit *Exit
-	// CommandLine is the command line the shell reported with its 133;C,
-	// empty for a shell that reports none. tmux keeps it until the next
-	// 133;C, so it still names the last command while the pane is idle.
-	// tmux sanitises it: control bytes are dropped and "#(" is rewritten,
-	// so it can carry neither the format separator nor a format
-	// substitution.
+	// CommandLine is the shell's last-reported 133;C command line, kept by
+	// tmux until the next one. tmux sanitises it: control bytes are
+	// dropped and "#(" is rewritten.
 	CommandLine string
-	// DeadAt is tmux's own #{pane_dead_time}: unix seconds since the
-	// command exited and remain-on-exit kept the pane on screen, or 0 for
-	// a live pane; unlike pane_command_duration it does not tick. tmux
-	// sets #{pane_dead} before #{pane_dead_time} (format.c vs
-	// server-fn.c), so a pane dead for less than one poll interval can
-	// read as alive here; every reader of DeadAt already treats that as
-	// harmless.
+	// DeadAt is tmux's #{pane_dead_time}, 0 for a live pane; unlike
+	// pane_command_duration it does not tick. tmux sets #{pane_dead}
+	// before #{pane_dead_time}, so a pane dead under one poll interval can
+	// still read as alive here.
 	DeadAt int64
-	// Run is @kido_run (RunOption), the pane-scoped option createRunWindow
-	// sets on the one pane a run actually runs in. It is a pane-scoped
-	// option ("set-option -p"), not a window one, so it does not fall
-	// back to the window the way most tmux options kido reads do: a pane
-	// the user splits off a run's window later reads "", which is what
-	// lets the sweep and the sidebar single out the run's own pane.
+	// Run is @kido_run (RunOption), pane-scoped so it does not fall back
+	// to the window: a pane split off a run's window later reads "".
 	Run string
 	// SessionAttached is whether any client is attached to this pane's
-	// session; see Watched.
+	// session.
 	SessionAttached bool
 	Title           string
 }
@@ -199,19 +168,14 @@ const (
 	ShellRunning              // a command is running
 )
 
-// Shell reports pane p's shell-integration state.
+// Shell reports pane p's shell-integration state. ShellNone means no OSC
+// 133 prompt has ever been marked - every pane started before the
+// integration loaded.
 //
-// ShellNone means no OSC 133 prompt has ever been marked, and the caller
-// must draw the pane exactly as it did before knowing anything about it.
-// Every pane started before the user loaded the integration is in that
-// state.
-//
-// The running rule is deliberately not just CommandRunning. A program that
-// emits 133;C and exits without the matching 133;D (pi does this, as does
-// anything else with partial integration) would leave tmux believing a
-// command is still running forever. The shell's own precmd emits 133;A at
-// the next prompt, which puts LastPromptTime after CommandStartTime, and
-// that is what heals such a pane back to idle.
+// The running rule is deliberately not just CommandRunning: a program
+// that emits 133;C without a matching 133;D (pi does this) would
+// otherwise read as running forever. The shell's next 133;A puts
+// LastPromptTime after CommandStartTime, healing the pane back to idle.
 func (p Pane) Shell() Shell {
 	if p.LastPromptTime == 0 {
 		return ShellNone
@@ -224,7 +188,6 @@ func (p Pane) Shell() Shell {
 
 const sep = "\x1f"
 
-// pane_title is last because it may contain anything.
 var paneFormat = strings.Join([]string{
 	"#{session_name}",
 	"#{session_id}",
@@ -238,8 +201,8 @@ var paneFormat = strings.Join([]string{
 	"#{pane_pid}",
 	"#{pane_current_command}",
 	"#{pane_current_path}",
-	// OSC 133. pane_command_duration is deliberately left out: it ticks
-	// every second, which would defeat the snapshot change-detection.
+	// pane_command_duration is deliberately left out: it ticks every
+	// second, which would defeat the snapshot change-detection.
 	"#{alternate_on}",
 	"#{pane_command_running}",
 	"#{pane_command_start_time}",
@@ -251,20 +214,18 @@ var paneFormat = strings.Join([]string{
 	"#{pane_dead_time}",
 	"#{session_attached}",
 	"#{" + RunOption + "}",
-	"#{pane_title}",
+	"#{pane_title}", // last: it may contain anything
 }, sep)
 
 // RunOption is the tmux pane-scoped option ("set-option -p") kido
-// spawn_subagent sets to a run id on the one pane a run actually runs in,
-// and the only thing that marks a window as kido's to close
-// (docs/design.md, "Pane options, for facts that must survive kido's own
-// cleanup"). It does not fall back to the window: a pane the user splits
-// off later reads "".
+// spawn_subagent sets to a run id on the one pane a run actually runs in;
+// it does not fall back to the window, so a pane the user splits off
+// later reads "".
 const RunOption = "@kido_run"
 
 // paneFields is the number of #{...} entries paneFormat asks tmux for;
 // parsePanes' SplitN count and len(f) guard both use it so the two cannot
-// drift apart (TestPaneFieldsMatchParsePanes).
+// drift apart (TestPaneFormatFieldCountMatchesConstant).
 const paneFields = 24
 
 // parsePanes turns list-panes output lines into panes. Shared by the exec
@@ -287,9 +248,7 @@ func parsePanes(lines []string) []Pane {
 		p.PanePID, _ = strconv.Atoi(f[9])
 		p.CommandStartTime, _ = strconv.ParseInt(f[14], 10, 64)
 		p.LastPromptTime, _ = strconv.ParseInt(f[15], 10, 64)
-		// An empty status field means tmux has no exit status for this
-		// pane, which is not the same as a status of 0.
-		if n, err := strconv.Atoi(f[16]); err == nil {
+		if n, err := strconv.Atoi(f[16]); err == nil { // empty means no exit status on record
 			at, _ := strconv.ParseInt(f[17], 10, 64)
 			p.LastExit = &Exit{Code: n, At: at}
 		}
@@ -302,9 +261,7 @@ func parsePanes(lines []string) []Pane {
 }
 
 // paneNum is the numeric part of a pane id ("%12" -> 12), tmux's own
-// creation-order counter. A pane id that fails to parse - which never
-// happens against a real tmux server - sorts first rather than panicking
-// or being dropped.
+// creation-order counter.
 func paneNum(id string) int {
 	n, _ := strconv.Atoi(strings.TrimPrefix(id, "%"))
 	return n
@@ -316,11 +273,10 @@ func paneNum(id string) int {
 // necessarily its lowest #{pane_index}.
 type Session struct {
 	Name string
-	// ID is the session id ("$3"), and it is what every command that
-	// targets this session must pass. A name goes through tmux's target
-	// parser, which splits on "." and ":" before it ever compares names,
-	// so a session called "team.build" is looked for as pane "build" of
-	// window "team" and not found. An id has neither character.
+	// ID is the session id ("$3") and what every command targeting this
+	// session must pass: a name goes through tmux's target parser, which
+	// splits on "." and ":", so "team.build" is looked for as pane
+	// "build" of window "team" and not found.
 	ID      string
 	Windows [][]Pane
 }
@@ -328,16 +284,10 @@ type Session struct {
 // OrderSessions groups panes into sessions and windows in kido's order:
 // sessions oldest first (session_created), ties broken by name, and
 // within a session each window's own panes oldest first - the numeric
-// part of the pane id, which tmux allocates monotonically, so a pane
-// never changes place once made regardless of where a later split lands
-// it in tmux's own list-panes order. #{pane_index} is a layout position,
-// not an age: `split-window -b` puts the new pane first, which is
-// exactly the case this sidebar has to draw a run's own pane before a
-// split the user made afterwards (see tmux.Pane.Run, whose
-// first-pane-is-the-run assumption this ordering exists to keep true).
-// This is kido's one true order, derived from one list-panes: the
-// sidebar's grouping, `kido switch-session` and `kido switch-window` all
-// walk it, so they cannot drift apart.
+// part of the pane id, which tmux allocates monotonically, unlike
+// #{pane_index} (a layout position: `split-window -b` puts the new pane
+// first). The sidebar's grouping, `kido switch-session` and `kido
+// switch-window` all walk this one order.
 func OrderSessions(panes []Pane) []Session {
 	type group struct {
 		created int64
@@ -403,10 +353,7 @@ func CapturePane(pane string) ([]string, error) {
 // CaptureScreen returns pane's visible screen plus up to 1000 lines of
 // scrollback, joined as a single block of text. The bound keeps a pane
 // with a large history-limit from turning one capture-pane call into
-// megabytes before internal/reap's own byte cap even gets a chance to
-// trim it. It exists for internal/reap, which saves a subagent window's
-// last screen before closing it; unlike CapturePane it does not split
-// into lines, since the caller only writes the block to a file.
+// megabytes before internal/reap's own byte cap gets a chance to trim it.
 func CaptureScreen(pane string) (string, error) {
 	return runStdin("", "capture-pane", "-p", "-t", pane, "-S", "-1000")
 }
@@ -418,11 +365,11 @@ func CurrentClient() string {
 	return out
 }
 
-// SwitchSession switches client to the session adjacent to its current one
-// in kido's order (OrderSessions: oldest first, ties by name), wrapping
-// around. next selects the following session, otherwise the preceding one.
-// A server with one session, or a client not attached to any session kido
-// can find, is a no-op.
+// SwitchSession switches client to the session adjacent to its current
+// one in kido's order (OrderSessions), wrapping around. next selects the
+// following session, otherwise the preceding one. A server with one
+// session, or a client not attached to any session kido can find, is a
+// no-op.
 func SwitchSession(client string, next bool) error {
 	panes, err := ListPanes()
 	if err != nil {
@@ -454,27 +401,17 @@ func SwitchSession(client string, next bool) error {
 	return err
 }
 
-// SwitchWindow switches client to the window adjacent to its current one in
-// kido's order (OrderSessions: sessions oldest first, windows in tmux's own
-// order within a session), wrapping around the whole server. This crosses
-// session boundaries: advancing past a session's last window moves to the
-// next session's first window, unlike tmux's own next-window/previous-window
-// which wrap inside one session.
+// SwitchWindow switches client to the window adjacent to its current one
+// in kido's order (OrderSessions), wrapping around the whole server and
+// crossing session boundaries - unlike tmux's own next-window/
+// previous-window, which wrap inside one session.
 //
-// A subagent's window (one with a run pane, RunOption; see reap.Sweep,
-// which keys off the same option for the same reason - a state record can
-// lag or outlive the pane it names, but the option cannot) is skipped over rather
-// than visited, dead or alive: the user asked to move between top-level
-// windows, and a window still readable through the sidebar's Enter should
-// not also flicker in and out of ⇧↓'s reach as its pane dies and is later
-// swept. The walk steps through the full list, wrapping, until it lands on
-// an unmarked window; landing back on the window it started from - because
-// that is the only unmarked window on the server - is the one true no-op.
-// Starting from a subagent window with exactly one top-level window
-// elsewhere still reaches it: only the truly degenerate case (the current
-// window is that lone top-level window, or every window is a subagent's)
-// stays put. A client whose current window kido cannot find is also a
-// no-op.
+// A subagent's window (one with a run pane, RunOption) is skipped over
+// rather than visited: it stays reachable through the sidebar's Enter
+// without flickering in and out of ⇧↓'s reach as its pane dies and is
+// swept. Landing back on the starting window means it is the only
+// unmarked one on the server. A client whose current window kido cannot
+// find is a no-op.
 func SwitchWindow(client string, next bool) error {
 	panes, err := ListPanes()
 	if err != nil {
@@ -537,10 +474,9 @@ func SwitchWindow(client string, next bool) error {
 const sideFocusFlag = "side-status-focus"
 
 // clientFormat is what ClientState asks for, one line per client.
-// display-message -c would be shorter, but it only honours -c for the
-// formats when the target client happens to be on the command's own target
-// session (cmd-display-message.c), which is not so over the control
-// connection: that client has a session of its own.
+// display-message -c only honours -c for the formats when the target
+// client is on the command's own target session (cmd-display-message.c),
+// which is not so over the control connection.
 var clientFormat = strings.Join([]string{
 	"#{client_name}",
 	"#{client_session}",
@@ -548,7 +484,6 @@ var clientFormat = strings.Join([]string{
 	"#{client_control_mode}",
 }, sep)
 
-// parseClientState picks client's line out of list-clients output.
 func parseClientState(lines []string, client string) (session string, focused bool) {
 	for _, line := range lines {
 		f := strings.SplitN(line, sep, 4)
@@ -572,12 +507,9 @@ func ClientState(client string) (session string, focused bool) {
 
 // realClients picks out the non-control-mode client names attached to a
 // session from list-clients output in clientFormat. Kido's own control
-// connections (Conn, one dialled per real client by side-status-command)
-// are attached to that same session and would otherwise be counted as
-// people to jump; #{client_control_mode} is the literal property that
-// makes a client unjumpable, unlike an empty #{client_tty} - which a
-// control client happens to have too, but so would some future client
-// type that is not one.
+// connections would otherwise be counted as people to jump;
+// #{client_control_mode} is what makes a client unjumpable, unlike an
+// empty #{client_tty} which a control client happens to have too.
 func realClients(lines []string) []string {
 	var out []string
 	for _, line := range lines {
@@ -591,15 +523,12 @@ func realClients(lines []string) []string {
 }
 
 // paneSessionTarget resolves the session a standalone kido should look at
-// to find its own client: pane's own session from a live lookup, when
-// pane still names a pane tmux knows about (panes move, so nothing but a
-// fresh query is trustworthy) - or, when pane names nothing tmux can find,
-// the session id tmux substituted into $TMUX (tmuxEnv) at launch. That
-// fallback is what a popup needs: display-popup gives its command no pane
-// of its own, so the popup's $TMUX_PANE is absent from tmux's pane list
-// entirely, but its $TMUX carries "socket,pid,session-id" for the session
-// it was opened from - safe to trust for a popup's few-second life, which
-// cannot outlast a session rename or move.
+// to find its own client: pane's own session from a live lookup, or,
+// when pane names nothing tmux can find, the session id tmux substituted
+// into $TMUX (tmuxEnv) at launch. That fallback is what a popup needs:
+// display-popup gives its command no pane of its own, so $TMUX_PANE is
+// absent from tmux's pane list, but $TMUX carries "socket,pid,session-id"
+// for the session it was opened from.
 func paneSessionTarget(pane, tmuxEnv string) string {
 	if pane != "" {
 		if out, err := runStdin("", "display-message", "-p", "-t", pane, "#{session_id}"); err == nil && out != "" {
@@ -613,13 +542,11 @@ func paneSessionTarget(pane, tmuxEnv string) string {
 	return "$" + f[2]
 }
 
-// ResolveClient answers "who is attached to this pane's session", ignoring
-// kido's own control connections, so a standalone kido (a plain pane, or a
-// popup with no -client of its own) can pick its client without asking
-// tmux the unanswerable #{client_name} question - see the comment on
-// Options.Client in cmd/kido/main.go for why that is a different question
-// with no good answer from inside. It returns "" - the caller's existing
-// ambiguous case - when zero or more than one real client is attached.
+// ResolveClient answers "who is attached to this pane's session",
+// ignoring kido's own control connections, so a standalone kido (a plain
+// pane, or a popup with no -client of its own) can pick its client
+// without asking tmux the unanswerable #{client_name} question. It
+// returns "" when zero or more than one real client is attached.
 func ResolveClient(pane, tmuxEnv string) string {
 	target := paneSessionTarget(pane, tmuxEnv)
 	if target == "" {
@@ -648,14 +575,9 @@ func ActivePane(panes []Pane, session string) string {
 }
 
 // Jump makes paneID the active pane of client, switching session and
-// window as needed, and hands it the keyboard.
-//
-// The side-focus flag is cleared here in every mode, standalone included.
-// Clearing a flag a client does not have is a no-op, checked by hand on a
-// server with side-status off, where the jump goes through unharmed; and
-// when the client does happen to be showing a focused sidebar, a jump made
-// from a popup should hand it the keyboard just as one made from the
-// sidebar does.
+// window as needed, and hands it the keyboard. The side-focus flag is
+// cleared unconditionally: clearing a flag the client does not have is a
+// no-op.
 func Jump(client, paneID string) error {
 	_, err := runStdin("", "switch-client", "-c", client, "-t", paneID, ";",
 		"select-window", "-t", paneID, ";",
@@ -673,37 +595,28 @@ func ReleaseSideFocus(client string) error {
 
 // promptKeyDelay is the pause between delivering a prompt's text and
 // pressing Enter: without it, a paste-sensitive reader (Claude Code
-// included) can see the Enter as part of the pasted text rather than a
-// submission.
+// included) can see the Enter as part of the pasted text.
 const promptKeyDelay = 100 * time.Millisecond
 
 // SendPrompt delivers text to pane as a paste, then presses Enter after
 // promptKeyDelay.
 //
-// A paste rather than literal keys, because send-keys -l writes the bytes
-// to the pty as they are: an application that has enabled bracketed paste
-// - Claude Code, zsh's zle, most TUIs - reads a bare newline as a submit,
-// so a multi-line prompt would arrive as one input per line, the first
-// submitted alone and the rest left dangling. paste-buffer -p wraps the
-// text in the paste brackets when the application asked for them, which
-// makes its newlines part of a single input; when it did not ask, -p
-// pastes the raw bytes, exactly today's behaviour for a plain shell pane.
+// A paste rather than literal keys: send-keys -l writes raw bytes, and
+// under bracketed paste (Claude Code, zsh's zle, most TUIs) a bare
+// newline submits, splitting a multi-line prompt into one input per
+// line. paste-buffer -p brackets the text when the application asked for
+// it, and pastes raw otherwise.
 //
-// Enter stays a separate key after promptKeyDelay: sent before the text
-// has landed, the submit cuts the paste mid-line.
+// Enter is a separate key after promptKeyDelay: sent with the paste, it
+// cuts the paste mid-line.
 func SendPrompt(pane, text string) error {
-	// tmux's own buffers are named buffer0, buffer1 and so on, and a name
-	// a user picks by hand is theirs to choose, so nothing of theirs can
-	// carry this prefix; the pid keeps two kido processes on one server
-	// off each other's buffer. Pasting with -d deletes it again, leaving
-	// the user's buffer stack and its ordering exactly as it was.
+	// pid keeps two kido processes on one server off each other's buffer.
 	buf := fmt.Sprintf("kido-prompt-%d", os.Getpid())
 	if _, err := runStdin(text, "load-buffer", "-b", buf, "-"); err != nil {
 		return err
 	}
 	if _, err := runStdin("", "paste-buffer", "-b", buf, "-d", "-t", pane, "-p"); err != nil {
-		// -d never ran, so the buffer would otherwise outlive the failure.
-		runStdin("", "delete-buffer", "-b", buf)
+		runStdin("", "delete-buffer", "-b", buf) // -d never ran
 		return err
 	}
 	time.Sleep(promptKeyDelay)
@@ -711,12 +624,11 @@ func SendPrompt(pane, text string) error {
 	return err
 }
 
-// newWindowArgs builds the new-window invocation NewWindow runs, split out
-// so it can be checked without a tmux server. -d keeps the caller's turn
-// where it is; -c is needed because the new pane otherwise starts in the
-// session's default directory; -e because new-window otherwise runs
-// command with the server's environment, not the caller's; -P -F returns
-// the new ids synchronously.
+// newWindowArgs builds the new-window invocation NewWindow runs. -d keeps
+// the caller's turn where it is; -c is needed because the new pane
+// otherwise starts in the session's default directory; -e because
+// new-window otherwise runs command with the server's environment; -P -F
+// returns the new ids synchronously.
 func newWindowArgs(session, name, cwd string, env, command []string) []string {
 	args := []string{
 		"new-window", "-d", "-P", "-F", "#{window_id}:#{pane_id}:#{pane_pid}",
@@ -733,21 +645,15 @@ func newWindowArgs(session, name, cwd string, env, command []string) []string {
 // pane's shell instead), in cwd, with env (each "KEY=VALUE") set for that
 // command alone. It returns the new window and pane ids and the pid of
 // the exec'd command itself, and turns on remain-on-exit for the pane it
-// made - a pane-scoped option ("-p"), not a window-scoped one: the
-// latter applies to every pane of the window including one a user splits
-// off later, and would keep an ordinary shell pane on screen as a
-// "Pane is dead" corpse once its own command exits.
+// made - pane-scoped ("-p"), since a window-scoped one would keep an
+// ordinary shell pane split off later on screen as a corpse once its own
+// command exits.
 //
 // remain-on-exit is set by a second tmux call, and a command that exits
-// fast enough beats it every time: measured against the fork, a window
+// fast enough beats it every time (measured against the fork: a window
 // running /bin/true was gone before the option landed in 20 attempts out
-// of 20. The fixes all cost more than the gap: folding the option into
-// one invocation means naming the window before its id is known, and
-// `-t '{end}'` is only usually right (new-window takes the lowest free
-// index, and two spawns can race); a shell wrapper reintroduces the
-// three-parser quoting hazard; creating the window empty and
-// respawn-pane'ing into it costs two more round-trips and a second query
-// for the pid.
+// of 20). Folding it into one invocation, a shell wrapper, and a
+// respawn-pane approach were all tried and cost more than the gap.
 func NewWindow(session, name, cwd string, env, command []string) (windowID, paneID string, panePID int, err error) {
 	out, err := runStdin("", newWindowArgs(session, name, cwd, env, command)...)
 	if err != nil {
@@ -763,11 +669,8 @@ func NewWindow(session, name, cwd string, env, command []string) (windowID, pane
 		return "", "", 0, fmt.Errorf("new-window: unexpected pane_pid %q", parts[2])
 	}
 	if _, err := runStdin("", "set-option", "-p", "-t", paneID, "remain-on-exit", "on"); err != nil {
-		// Losing the race above is not a failure to create the window: the
-		// command ran, and what it cost is the corpse on screen. A window
-		// tmux can no longer find is exactly that case, and reporting it as
-		// an error would make every fast-exiting command - the typo, the
-		// `true` - look like a window that was never made.
+		// Losing the remain-on-exit race is not a failure to create the
+		// window: the command ran, and what it cost is the corpse on screen.
 		if !WindowExists(windowID) {
 			return windowID, paneID, pid, nil
 		}
@@ -776,16 +679,11 @@ func NewWindow(session, name, cwd string, env, command []string) (windowID, pane
 	return windowID, paneID, pid, nil
 }
 
-// WindowExists reports whether the server still has windowID. It answers
-// the one question that tells a tmux command failing because the server
-// is unreachable from one failing because the window it named has since
-// closed - which, for a window holding a command of its own, is an
-// ordinary ending rather than an error.
-//
-// The answer is the id it echoes back, not the exit status: measured on
-// the fork, `display-message -p -t @1 '#{window_id}'` for a window that
-// has closed exits 0 and prints an empty line, where `set-window-option
-// -t @1` on the same window fails with "no such window: @1".
+// WindowExists reports whether the server still has windowID: for a
+// window holding a command of its own, its absence is an ordinary
+// ending, not an error. The answer is the id echoed back, not the exit
+// status: measured on the fork, `display-message -p -t @1
+// '#{window_id}'` on a closed window exits 0 and prints an empty line.
 func WindowExists(windowID string) bool {
 	out, err := runStdin("", "display-message", "-p", "-t", windowID, "#{window_id}")
 	return err == nil && out == windowID

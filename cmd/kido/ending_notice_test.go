@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -12,9 +13,6 @@ import (
 	"kido/internal/tmux"
 )
 
-// noticeParent records a parent agent on %2 with a live inbox and puts
-// the caller on %1, which is the shape every observer of a run's ending
-// sends from: a process whose own pane is not the parent's.
 func noticeParent(t *testing.T, session string) *testutil.Inbox {
 	t.Helper()
 	t.Setenv("TMUX_PANE", "%1")
@@ -32,8 +30,6 @@ func noticeParent(t *testing.T, session string) *testutil.Inbox {
 	return in
 }
 
-// envelopes parses everything an inbox received, failing on anything
-// that is not a v1 envelope.
 func envelopes(t *testing.T, in *testutil.Inbox) []msg.Envelope {
 	t.Helper()
 	var out []msg.Envelope
@@ -47,18 +43,15 @@ func envelopes(t *testing.T, in *testutil.Inbox) []msg.Envelope {
 	return out
 }
 
-// TestAsyncNoticeSaysItIsFromTheRun pins the sender's name. A bash run
-// writes no state record, so the From kido can fill in names whichever
-// process observed the ending - the wrapper's own pane, which is no
-// agent, leaving a parent reading "notification from %47", or worse the
-// unrelated agent that typed `kido stop_subagent`. The run's name is the
-// only honest answer and the only one a model can act on.
+// TestAsyncNoticeSaysItIsFromTheRun pins the sender's name: a bash run
+// writes no state record, so the run's own name is the only honest
+// answer for From.
 func TestAsyncNoticeSaysItIsFromTheRun(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	in := noticeParent(t, "root-sess")
 
 	id := startAsyncRun(t, "build", "root-sess", "true")
-	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", string(id)}) })
+	capture(t, &os.Stdout, func() { asyncRunCmd([]string{"--run-id", string(id)}) })
 
 	got := envelopes(t, in)
 	if len(got) != 1 {
@@ -76,9 +69,8 @@ func TestAsyncNoticeSaysItIsFromTheRun(t *testing.T) {
 }
 
 // deadRunWindow is the pane list a sweep sees once a run's window has
-// gone: marked with the run, every pane a remain-on-exit corpse, dead
-// long enough for the linger to have passed. The second window keeps the
-// sweep off the last-window rule.
+// gone, dead long enough for the linger to have passed. The second
+// window keeps the sweep off the last-window rule.
 func deadRunWindow(runID subrun.ID) []tmux.Pane {
 	return []tmux.Pane{
 		{PaneID: "%2", SessionID: "$1", WindowID: "@2"},
@@ -87,21 +79,16 @@ func deadRunWindow(runID subrun.ID) []tmux.Pane {
 	}
 }
 
-// withKillWindow records what a sweep closes instead of talking to tmux.
 func withKillWindow(t *testing.T) func() []string {
 	t.Helper()
 	var closed []string
-	prev := killWindow
-	killWindow = func(id string) error {
+	testutil.Swap(t, &killWindow, func(id string) error {
 		closed = append(closed, id)
 		return nil
-	}
-	t.Cleanup(func() { killWindow = prev })
+	})
 	return func() []string { return closed }
 }
 
-// startedRun writes the run `kido async_bash` would have left behind:
-// kind bash, a parent to tell, and some output for the notice to carry.
 func startedRun(t *testing.T, name, parent string) subrun.Meta {
 	t.Helper()
 	meta := subrun.Meta{ID: startAsyncRun(t, name, parent, "sleep", "600"), Name: name, Kind: subrun.KindBash,
@@ -112,11 +99,9 @@ func startedRun(t *testing.T, name, parent string) subrun.Meta {
 	return meta
 }
 
-// TestReapNotifiesForARunWhoseWrapperNeverSpoke is the exactly-once
-// invariant from the command an operator (or a test) types: the ending
-// nobody saw still reaches the parent, once, with the run's name on it.
-// The wrapper is never run here at all, which is the whole scenario -
-// SIGKILLed, or taken down with its window, it never got to report.
+// TestReapNotifiesForARunWhoseWrapperNeverSpoke: an ending nobody saw
+// (the wrapper is never run here at all) still reaches the parent, once,
+// with the run's name on it.
 func TestReapNotifiesForARunWhoseWrapperNeverSpoke(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	in := noticeParent(t, "root-sess")
@@ -124,7 +109,7 @@ func TestReapNotifiesForARunWhoseWrapperNeverSpoke(t *testing.T) {
 	withPanes(t, deadRunWindow(meta.ID))
 	closed := withKillWindow(t)
 
-	captureStdout(t, func() {
+	capture(t, &os.Stdout, func() {
 		if err := reapCmd(nil); err != nil {
 			t.Fatal(err)
 		}
@@ -147,10 +132,7 @@ func TestReapNotifiesForARunWhoseWrapperNeverSpoke(t *testing.T) {
 		t.Errorf("outcome = %+v (recorded %v), want failed", o, ok)
 	}
 
-	// The second sweep sees exactly what the first saw - the window is
-	// only closed in the fake above - so anything it sends is a second
-	// notice for one ending.
-	captureStdout(t, func() {
+	capture(t, &os.Stdout, func() {
 		if err := reapCmd(nil); err != nil {
 			t.Fatal(err)
 		}
@@ -160,11 +142,8 @@ func TestReapNotifiesForARunWhoseWrapperNeverSpoke(t *testing.T) {
 	}
 }
 
-// TestReapSaysNothingForARunItsWrapperReported is the negative control
-// that carries the invariant, and without it every assertion above
-// passes against a reap that notifies unconditionally. The window here
-// is indistinguishable from the one above; only the outcome already on
-// disk tells them apart, and reading it is the whole mechanism.
+// TestReapSaysNothingForARunItsWrapperReported is the negative control:
+// only the outcome already on disk tells the two windows apart.
 func TestReapSaysNothingForARunItsWrapperReported(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	in := noticeParent(t, "root-sess")
@@ -176,7 +155,7 @@ func TestReapSaysNothingForARunItsWrapperReported(t *testing.T) {
 	withPanes(t, deadRunWindow(meta.ID))
 	closed := withKillWindow(t)
 
-	captureStdout(t, func() {
+	capture(t, &os.Stdout, func() {
 		if err := reapCmd(nil); err != nil {
 			t.Fatal(err)
 		}
@@ -192,9 +171,6 @@ func TestReapSaysNothingForARunItsWrapperReported(t *testing.T) {
 	}
 }
 
-// startedAgentRun writes the run `kido spawn_subagent` would have left
-// behind: no kind at all, which every reader takes as an agent run, and a
-// parent to tell.
 func startedAgentRun(t *testing.T, name, parent string) subrun.Meta {
 	t.Helper()
 	id := subrun.NewID()
@@ -209,11 +185,9 @@ func startedAgentRun(t *testing.T, name, parent string) subrun.Meta {
 	return meta
 }
 
-// TestReapNotifiesForAnAgentRunNobodyReported is the sweep's half of
-// "a child that ends without reporting says so anyway", end to end from
-// the command an operator types. The child never ran at all here, which
-// is the scenario: killed, reaped, or crashed before it reached
-// notify_parent, it left a marked window and nothing else.
+// TestReapNotifiesForAnAgentRunNobodyReported: a child that never ran
+// at all - killed, reaped, or crashed before it reached notify_parent -
+// left a marked window and nothing else, and a sweep still reports it.
 func TestReapNotifiesForAnAgentRunNobodyReported(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	in := noticeParent(t, "root-sess")
@@ -221,7 +195,7 @@ func TestReapNotifiesForAnAgentRunNobodyReported(t *testing.T) {
 	withPanes(t, deadRunWindow(meta.ID))
 	withKillWindow(t)
 
-	captureStdout(t, func() {
+	capture(t, &os.Stdout, func() {
 		if err := reapCmd(nil); err != nil {
 			t.Fatal(err)
 		}
@@ -241,13 +215,10 @@ func TestReapNotifiesForAnAgentRunNobodyReported(t *testing.T) {
 	}
 }
 
-// TestReapNoticeClaimsOnlyWhatTheSweepKnows is the incident behind it: a
-// child called notify_parent, exited cleanly on its idle clock, and its
-// own `kido run-outcome` never ran (the binary was mid-upgrade), so the
-// sweep found the dead window with no outcome and told the parent the
-// child "never called notify_parent". A sweep reads the window and the
-// outcome file and nothing else; whether the child reported is not among
-// what it can know, so its notice must not say either way.
+// TestReapNoticeClaimsOnlyWhatTheSweepKnows: a sweep reads the window
+// and the outcome file and nothing else, so whether a child actually
+// reported is not among what it can know, and its notice must not say
+// either way.
 func TestReapNoticeClaimsOnlyWhatTheSweepKnows(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	in := noticeParent(t, "root-sess")
@@ -255,7 +226,7 @@ func TestReapNoticeClaimsOnlyWhatTheSweepKnows(t *testing.T) {
 	withPanes(t, deadRunWindow(meta.ID))
 	withKillWindow(t)
 
-	captureStdout(t, func() {
+	capture(t, &os.Stdout, func() {
 		if err := reapCmd(nil); err != nil {
 			t.Fatal(err)
 		}
@@ -272,12 +243,9 @@ func TestReapNoticeClaimsOnlyWhatTheSweepKnows(t *testing.T) {
 	}
 }
 
-// TestRunOutcomeUnreportedNotifiesTheParent is the child's own half: a
-// session shutting down without having called notify_parent records its
-// outcome and, from the same write, tells its parent that is all there
-// is going to be. Before this an idle self-exit was silent, and a parent
-// that had dispatched work learnt nothing from a child that simply timed
-// itself out.
+// TestRunOutcomeUnreportedNotifiesTheParent: a session shutting down
+// without having called notify_parent records its outcome and, from the
+// same write, tells its parent that is all there is going to be.
 func TestRunOutcomeUnreportedNotifiesTheParent(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	in := noticeParent(t, "root-sess")
@@ -304,11 +272,9 @@ func TestRunOutcomeUnreportedNotifiesTheParent(t *testing.T) {
 	}
 }
 
-// TestRunOutcomeWithoutUnreportedSaysNothing is the negative control the
-// test above is worthless without: a child that did call notify_parent
-// has already told its parent what it had to say, and a second notice on
-// the way out is the parent hearing about one run twice. The only thing
-// that differs here is the flag, and the outcome is recorded either way.
+// TestRunOutcomeWithoutUnreportedSaysNothing is the negative control: a
+// child that did call notify_parent gets no second notice on the way
+// out.
 func TestRunOutcomeWithoutUnreportedSaysNothing(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	in := noticeParent(t, "root-sess")
@@ -326,11 +292,10 @@ func TestRunOutcomeWithoutUnreportedSaysNothing(t *testing.T) {
 	}
 }
 
-// TestRunOutcomeUnreportedThatLosesTheWriteSaysNothing: the arbiter is
-// the outcome write and nothing else here either. A run stopped from
-// outside already has its `stopped` on disk and its stopper has already
-// spoken, so the child's own shutdown - which reports the same ending a
-// beat later - finds the write taken and stays quiet.
+// TestRunOutcomeUnreportedThatLosesTheWriteSaysNothing: a run stopped
+// from outside already has its `stopped` on disk and its stopper has
+// already spoken, so the child's own shutdown finds the write taken and
+// stays quiet.
 func TestRunOutcomeUnreportedThatLosesTheWriteSaysNothing(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	in := noticeParent(t, "root-sess")

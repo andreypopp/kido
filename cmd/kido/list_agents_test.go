@@ -14,9 +14,8 @@ import (
 )
 
 // TestDisplayNameStripsPisMarker checks that list_agents' name fallback
-// goes through the same pi-marker stripping as the sidebar, so a name
-// list_agents prints is always the one the sidebar shows and can be typed
-// back as an @ mention or a message_agent target.
+// goes through the same pi-marker stripping as the sidebar, so a name it
+// prints is always the one the sidebar shows.
 func TestDisplayNameStripsPisMarker(t *testing.T) {
 	byPane := map[string]tmux.Pane{
 		"%1": {PaneID: "%1", Title: "π - kido"},
@@ -38,10 +37,6 @@ func TestDisplayNameStripsPisMarker(t *testing.T) {
 	}
 }
 
-// TestAgentsCmdDefaultsToTheCallersSession drives the command itself,
-// not buildAgents: the scoping it applies is chosen here, from $TMUX_PANE
-// against tmux's pane list, and an agent in another tmux session is one
-// nothing in this one can reach.
 func TestAgentsCmdDefaultsToTheCallersSession(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
@@ -59,7 +54,7 @@ func TestAgentsCmdDefaultsToTheCallersSession(t *testing.T) {
 	}
 
 	var err error
-	out := captureStdout(t, func() { err = listAgentsCmd([]string{"--json"}) })
+	out := capture(t, &os.Stdout, func() { err = listAgentsCmd([]string{"--json"}) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,9 +66,7 @@ func TestAgentsCmdDefaultsToTheCallersSession(t *testing.T) {
 		t.Fatalf("agents --json = %+v, want only the caller's own session's agent, marked self", got)
 	}
 
-	// An explicit --session reaches the other one, so the filtering above
-	// is the default rather than the only answer available.
-	out = captureStdout(t, func() { err = listAgentsCmd([]string{"--json", "--session", "$2"}) })
+	out = capture(t, &os.Stdout, func() { err = listAgentsCmd([]string{"--json", "--session", "$2"}) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,8 +80,8 @@ func TestAgentsCmdDefaultsToTheCallersSession(t *testing.T) {
 }
 
 // TestAgentsCmdWithNoCallerPane: run from outside tmux, or from a pane
-// tmux no longer knows, there is no session to default to. It says so
-// rather than guessing at one, and --session is still answered.
+// tmux no longer knows, there is no session to default to, and --session
+// is still answered.
 func TestAgentsCmdWithNoCallerPane(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "")
@@ -101,7 +94,7 @@ func TestAgentsCmdWithNoCallerPane(t *testing.T) {
 	if !strings.Contains(err.Error(), "pass --session") {
 		t.Errorf("error = %q, want it to point at --session", err)
 	}
-	out := captureStdout(t, func() { err = listAgentsCmd([]string{"--json", "--session", "$1"}) })
+	out := capture(t, &os.Stdout, func() { err = listAgentsCmd([]string{"--json", "--session", "$1"}) })
 	if err != nil {
 		t.Fatalf("agents --session from outside tmux = %v, want it answered", err)
 	}
@@ -110,11 +103,9 @@ func TestAgentsCmdWithNoCallerPane(t *testing.T) {
 	}
 }
 
-// TestIsAncestorRefusesSelfEdge pins the explicit refusal at the top of
-// isAncestor: without it, a corrupted record whose own Parent field named
-// itself would make isAncestor(parentOf, X, X) true, and control.go's
-// descendant-only check would let a session's stop/interrupt of itself
-// through on that basis.
+// TestIsAncestorRefusesSelfEdge: a corrupted record whose own Parent
+// field named itself must not make isAncestor(parentOf, X, X) true,
+// which would let a session's stop/interrupt of itself through.
 func TestIsAncestorRefusesSelfEdge(t *testing.T) {
 	parentOf := map[string]string{"x": "x"} // corrupted: names itself as its own parent
 	if isAncestor(parentOf, "x", "x") {
@@ -122,9 +113,6 @@ func TestIsAncestorRefusesSelfEdge(t *testing.T) {
 	}
 }
 
-// TestBuildAgentsScopesToSession checks that buildAgents includes only
-// agents whose pane is in the target session, excluding a live agent in
-// a different one.
 func TestBuildAgentsScopesToSession(t *testing.T) {
 	states := map[string]state.Session{
 		"%1": {ID: "a", Pane: "%1", PID: 100, Agent: state.AgentPi, Status: state.Running},
@@ -160,7 +148,7 @@ func TestBuildAgentsScopesToSession(t *testing.T) {
 
 // TestBuildAgentsListsEveryAgentInACycle pins the one thing buildAgents'
 // ordering owes its caller: an agent in the session is in the list. A bogus
-// ParentSession can make a record name one of its own descendants - or
+// Parent.Session can make a record name one of its own descendants - or
 // itself - as its parent, and a walk that starts at the roots reaches
 // neither. list_agents is the only way to discover an agent at all, so a
 // ring that drops out of it is an agent nothing can address; it comes out
@@ -196,7 +184,7 @@ func TestBuildAgentsListsEveryAgentInACycle(t *testing.T) {
 }
 
 // TestBuildAgentsParentTree checks that a subagent is ordered right after
-// its parent (matched by ParentSession against the parent's own session
+// its parent (matched by Parent.Session against the parent's own session
 // id), and that siblings come out oldest first.
 func TestBuildAgentsParentTree(t *testing.T) {
 	t0 := time.Unix(1000, 0)
@@ -228,7 +216,7 @@ func TestBuildAgentsParentTree(t *testing.T) {
 }
 
 // TestBuildAgentsRecycledPIDNoEdge checks that a parent edge is matched on
-// ParentSession, not ParentPID: a pid can be recycled by an unrelated
+// Parent.Session, not Parent.PID: a pid can be recycled by an unrelated
 // process, and alive() cannot tell the difference (it reports EPERM as
 // alive), so a pid-keyed edge could wrongly attach a child to a process
 // that merely reused its parent's old pid.
@@ -238,24 +226,22 @@ func TestBuildAgentsRecycledPIDNoEdge(t *testing.T) {
 	}
 	states := map[string]state.Session{
 		"%1": {ID: "root", Pane: "%1", PID: 100},
-		// child's ParentPID (100) matches root's PID, but its ParentSession
+		// child's Parent.PID (100) matches root's PID, but its Parent.Session
 		// names some other, unrelated session.
 		"%2": {ID: "child", Pane: "%2", PID: 200, Parent: state.NewParent("someone-else", 100)},
 	}
 	got := buildAgents(states, panes, "$1", "%1")
 	for _, a := range got {
 		if a.ID == "child" && a.Parent != "" {
-			t.Errorf("child's parent = %q, want none: ParentPID matching root's PID must not create an edge", a.Parent)
+			t.Errorf("child's parent = %q, want none: Parent.PID matching root's PID must not create an edge", a.Parent)
 		}
 	}
 }
 
 // TestBuildAgentsStableOrderOnTie pins the id tiebreak in buildAgents'
-// sort.
-// Records are gathered by ranging a map, so two agents that last
+// sort: records are gathered by ranging a map, so two agents that last
 // reported inside the same clock tick would otherwise come back in a
-// different order on each call against identical state - and the
-// sidebar tree is built from this list.
+// different order on each call against identical state.
 func TestBuildAgentsStableOrderOnTie(t *testing.T) {
 	ts := time.Now().UTC()
 	states := map[string]state.Session{}
@@ -280,10 +266,9 @@ func TestBuildAgentsStableOrderOnTie(t *testing.T) {
 }
 
 // TestBuildAgentsCanReply pins the three run-record shapes that decide
-// whether a target can answer an ask_agent: no record, an empty tools
-// list, and a tools list that excludes message_agent - each keeps
-// CanReply false despite having an inbox; a tools list including
-// message_agent, and no record at all, both leave it true.
+// whether a target can answer an ask_agent: a tools list that excludes
+// message_agent keeps CanReply false despite having an inbox; a tools
+// list including it, and no record at all, both leave it true.
 func TestBuildAgentsCanReply(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	states := map[string]state.Session{
@@ -325,9 +310,6 @@ func TestBuildAgentsCanReply(t *testing.T) {
 	}
 }
 
-// TestBuildAgentsParentEdgeSurvivesARestart: the child names its
-// parent's session, which a restart keeps, so the row still hangs off
-// the parent after the parent has been quit and resumed.
 func TestBuildAgentsParentEdgeSurvivesARestart(t *testing.T) {
 	states := map[string]state.Session{
 		"%p": {ID: "parent-sess", Pane: "%p", Agent: state.AgentPi, Status: state.Idle},

@@ -27,21 +27,17 @@ import (
 // Options configures the sidebar.
 type Options struct {
 	// Interval is how often the sidebar re-reads tmux and the state
-	// files. A tick is a write and a read on the control connection, not a
-	// process, so it can be short; tmux changes arrive as notifications in
-	// between, and the tick is what catches the things tmux does not
-	// report (a pane's command changing, the side-status-focus flag).
+	// files. A tick is cheap - a write and a read on the control
+	// connection, not a process - and tmux does not notify on a pane's
+	// command changing or the side-status-focus flag, so the tick is what
+	// catches those.
 	Interval time.Duration
 	Client   string // tmux client the sidebar belongs to
 
 	// Standalone runs kido as a one-shot picker rather than as a client's
 	// side status line: q, Esc and C-c quit, and picking a pane jumps and
 	// then quits. It is set when $TMUX_SIDE_CLIENT is empty, which the
-	// fork sets only for the side-status-command job, so a popup (`tmux
-	// display-popup -E "kido -client '#{client_name}'"`) and a plain pane
-	// both run standalone. Without it there is no way out of the program:
-	// the sidebar hands the keyboard back to the pane instead of exiting,
-	// which only means anything when kido owns a side column.
+	// fork sets only for the side-status-command job.
 	Standalone bool
 }
 
@@ -57,28 +53,21 @@ type snapshot struct {
 	probed  time.Time                // when the process table was last read
 	// wake is the shared "the machine just woke" baseline (state.Wake),
 	// read once per tick so every stalled verdict drawn from this
-	// snapshot, and stallPending's comparison of two instants, uses one
-	// reading of it. See state.StalledSince.
+	// snapshot uses one consistent reading of it.
 	wake time.Time
 	err  error
 
 	// probes remembers the last screen read of each waiting pane, so the
 	// screen is read at most once per probeInterval rather than on every
-	// tick. See screen.go.
+	// tick.
 	probes map[string]probe
 
 	// lingering carries the name and outcome of a subagent window whose
 	// state record is already gone but whose run pane (@kido_run) still
-	// names its run - the sweep's ~30s read window (docs/design.md,
-	// "Window lifecycle"). Both live in files under internal/subrun, not
-	// in tmux or the state directory, so they must be read here and
-	// carried in the snapshot rather than read from paneLabel: rendering
-	// is a pure function of the snapshot, and same() must see a changed
-	// outcome the same way it sees a changed pane - reading the files at
-	// render time would let two "equal" snapshots draw differently, and
-	// an outcome recorded after the record was already gone (a slow
-	// run-outcome call outracing the removal report, a kill-window that
-	// has to retry) would never redraw.
+	// names its run. It is read here and carried in the snapshot rather
+	// than read from paneLabel: rendering must be a pure function of the
+	// snapshot, or an outcome recorded after the record is already gone
+	// would never redraw.
 	lingering lingeringMap
 }
 
@@ -92,20 +81,11 @@ type lingering struct {
 type lingeringMap map[subrun.ID]lingering
 
 // lingeringSubagents reads the name and outcome of every subagent window
-// this snapshot's panes show as marked but with no state record for the
-// pane the mark is on - the only panes lingeringLabel ever needs this
-// for, so a run's files are read only for such a window, and never for a
-// live agent pane or a plain shell.
+// with no state record for its pane.
 //
-// prev is the last tick's answer, and an entry in it is reused rather
-// than re-read. Both files behind an entry are written once and never
-// rewritten (subrun.WriteMeta at spawn, RecordOutcome under O_EXCL), so a
-// name is final as soon as it is read and an outcome as soon as there is
-// one - and a window lingers for ~30s, which at tick rate is some 600
-// re-reads of two immutable files. An entry with no outcome yet is the
-// one thing still worth asking about: that is the file the sweep or the
-// child itself may still write, and the redraw when it lands is what
-// turns the row's label from a name into a verdict.
+// prev entries are reused rather than re-read: subrun.WriteMeta and
+// RecordOutcome (O_EXCL) each write their file once, so only an entry
+// with no outcome yet is worth re-reading.
 func lingeringSubagents(panes []tmux.Pane, states map[string]state.Session, prev lingeringMap) lingeringMap {
 	var out lingeringMap
 	keep := func(runID subrun.ID, l lingering) {
@@ -136,9 +116,6 @@ func lingeringSubagents(panes []tmux.Pane, states map[string]state.Session, prev
 		}
 		meta, err := subrun.ReadMeta(runID)
 		if err != nil {
-			// A run directory that is missing or unreadable is not this
-			// pane's business to explain; paneLabel falls back to the plain
-			// pane command the way it always has.
 			continue
 		}
 		l := lingering{name: meta.Name, parent: meta.ParentSession}
@@ -307,7 +284,7 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 	s.active = tmux.ActivePane(s.panes, s.current)
 	// One read of the state directory, two views of it: the rows want one
 	// record per pane, the sweep wants every live record and would read a
-	// parent whose pane something else has claimed as dead (see reap.Sweep).
+	// parent whose pane something else has claimed as dead.
 	var live []state.Session
 	live, s.err = state.LoadLive()
 	s.states = state.ByPane(live)
@@ -334,9 +311,6 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 			}
 		case procs.MaybePi(p.CurrentCommand):
 			if _, reported := s.states[p.PaneID]; reported {
-				// The agent already says what this pane is; the process
-				// table is only asked about panes that have said nothing,
-				// so an install the sweep cannot match costs no ps calls.
 				continue
 			}
 			if !scan.Pi[p.PanePID] {
@@ -348,9 +322,7 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 		}
 	}
 	// live, not the per-pane s.states: rule 2 asks whether a parent session
-	// is running anywhere, which the per-pane view cannot answer (see
-	// reap.Sweep). Called from the snapshot goroutine and deliberately not
-	// from state.Load, which `kido prompt` also calls.
+	// is running anywhere, which the per-pane view cannot answer.
 	if len(s.panes) > 0 {
 		reap.Collect(s.panes, live, time.Now(), reap.Ops{KillWindow: tmux.KillWindow, KillPane: tmux.KillPane})
 	}
@@ -386,11 +358,9 @@ func dismissals(conn *tmux.Conn, prev map[string]probe, states map[string]state.
 	}
 	now := time.Now()
 	for pane, s := range states {
-		// Claude Code only: atInputPrompt reads a Claude Code screen (see
-		// screen.go), and the gap it stands in for is Claude Code's own.
-		// Another agent reports its own transitions, so reading its screen
-		// would be a capture-pane a second spent on a guess that cannot
-		// apply.
+		// Claude Code only: atInputPrompt reads a Claude Code screen, and
+		// the gap it stands in for is Claude Code's own. Another agent
+		// reports its own transitions.
 		if s.Agent != state.AgentClaude {
 			continue
 		}
@@ -440,18 +410,12 @@ func (m model) tick() tea.Cmd {
 //
 // Panes are compared by exclusion, not by a list of the fields that
 // matter: a field left off such a list would fail toward a frozen row,
-// where zeroing the few that reach no row - WindowIndex, WindowName,
-// WindowLayout, CurrentPath, and Active (snapshot.active is compared
-// separately above) - fails toward an extra redraw instead, the safe
-// direction. LastExit is a pointer and so needs its own comparison:
-// == would compare addresses, not the exit it points to. Everything
-// else, DeadAt and Run included, is compared as it stands: DeadAt and
-// SessionAttached reach no row either, but change rarely enough that
-// comparing them costs only an occasional redundant redraw, and Run
-// must be compared because orderWindowsByTree reads it to place a window
-// once its agent record is gone.
+// where zeroing the few that reach no row (WindowIndex, WindowName,
+// WindowLayout, CurrentPath, Active) fails toward an extra redraw
+// instead, the safe direction. LastExit is a pointer and needs its own
+// comparison: == would compare addresses, not the exit pointed to.
 //
-// States are compared with TS excluded: TS reaches only the stalled
+// States are compared with TS excluded: it reaches only the stalled
 // indicator, which stallPending reads directly, and the heartbeat moves
 // it every ~30s with nothing else changing, which would otherwise force
 // a rebuild per running agent on that timer.
@@ -695,11 +659,10 @@ func (m *model) setFilter(f string) {
 // records what this tick observed of every integrated shell pane.
 //
 // Both maps are per pane, not per agent session: a plain shell pane is in
-// seen too, because shellOutcome dates a command's outcome against the last
-// visit the same way done() dates a turn's end. So a remembered pane is
-// forgotten when the pane itself is gone, not when an agent record is -
-// dropping shell panes here would leave every failed row stuck red. phases
-// is garbage-collected against the same live pane list for the same reason.
+// seen too, because shellOutcome dates a command's outcome against the
+// last visit the same way done() dates a turn's end. A remembered pane
+// is forgotten when the pane itself is gone, not when an agent record
+// is, or every failed row on a plain shell would stick red.
 func (m *model) track() {
 	if m.snap.active != "" {
 		m.seen[m.snap.active] = m.at
@@ -720,8 +683,7 @@ func (m *model) track() {
 			prev := m.phases[p.PaneID]
 			ph := m.observe(prev, running)
 			// The outcome is readable only while the pane is idle, so
-			// take it then and carry it through the run that follows
-			// (see shellPhase.held).
+			// take it then and carry it through the run that follows.
 			if running {
 				ph.held = prev.held
 			} else {
@@ -756,25 +718,21 @@ func (m *model) sshInteractive(p tmux.Pane) bool {
 
 // observeRemote notes whether an interactive ssh pane's far side emits
 // OSC 133, in which case the pane's own #{pane_command_*} fields describe
-// the remote shell: tmux parses the markers off the pane's output stream
-// and does not know they crossed a network.
+// the remote shell rather than the local one: tmux parses the markers
+// off the pane's output stream and does not know they crossed a network.
 //
 // The tell is a prompt marked strictly after the local shell marked the
 // ssh command as started, since nothing local can mark one while ssh
-// holds the terminal. Strictly: tmux's timestamps are whole seconds, and
-// an ssh launched in the same second as the prompt before it would
-// otherwise pass this on a host with no integration at all, which is the
-// permanently-busy row the suppression exists for. The price is a
-// connection that reaches its first remote prompt inside that same
-// second - a local one, mostly: the far side goes on being suppressed
-// until it returns to a prompt in a later second, so the session's first
-// command is missed and every one after it is not.
+// holds the terminal. Strictly, because tmux's timestamps are whole
+// seconds: an ssh launched in the same second as the prompt before it
+// would otherwise permanently pass this on a host with no integration
+// at all. The price is that a connection reaching its first remote
+// prompt inside that same second is suppressed until a later prompt.
 //
-// The reading latches because tmux overwrites pane_command_start_time on
-// the remote shell's own 133;C: mid-command a reporting pane carries the
-// same fields as a silent one. It is dropped the moment the pane stops
-// being an interactive ssh, so a second ssh from that pane is judged on
-// its own.
+// The reading latches - dropped only when the pane stops being an
+// interactive ssh - because tmux overwrites pane_command_start_time on
+// the remote shell's own 133;C, so a mid-command reporting pane would
+// otherwise look identical to a silent one.
 func (m *model) observeRemote(p tmux.Pane) {
 	if !m.sshInteractive(p) {
 		delete(m.sshRemote, p.PaneID)
@@ -916,7 +874,7 @@ func (m *model) shellOutcome(p tmux.Pane) *tmux.Exit {
 }
 
 // shellIndicator is the indicator for an integrated shell pane, debounced
-// against kido's own observations of it (see shellPhase). "" draws nothing.
+// against kido's own observations of it. "" draws nothing.
 // Only shell panes go through it: an agent pane's status comes from hooks,
 // which report transitions rather than a flag sampled every 100ms, and does
 // not flicker. It reads the phase alone, which track() has already brought
@@ -1071,8 +1029,7 @@ func glyph(i, n int) string {
 // continuation is what stands in the column of a window whose rows a
 // nested subagent has interrupted: a stem while panes of that window are
 // still to come below the interruption, and nothing once the last one has
-// been drawn. See appendWindows for why a window's column is carried on
-// rather than restarted.
+// been drawn.
 func continuation(i, n int) string {
 	if i < n-1 {
 		return stDim.Render("│")
@@ -1082,18 +1039,11 @@ func continuation(i, n int) string {
 
 // groupGlyph is glyph's counterpart one level up: not a window's own
 // panes, but the subagent window(s) anchored to one parent pane.
-// Anchored siblings share one visual group - tree(1)'s ├/└, never ┌ - so
-// ownership reads at a glance instead of as a run of identical dots. It
-// applies even to a group of one: for a subagent row, which child you are
-// is more useful than how many panes your own window has, so the sibling
-// glyph displaces row 0's window bracket in the lone case too, same as it
-// does for a real group. The cost is that a lone child with several panes
-// of its own loses the ┌…└ span on row 0 - the group glyph, not glyph,
-// draws that row - but a sibling of its own still gets its own └ on the
-// row below, exactly as row 1 of a two-pane sibling in a larger group
-// does; groupGlyph never touches any row but row 0. A group's own
-// continuation is continuation itself - what stands below a ├ is a │ for
-// the same reason one level down, so there is nothing to specialise.
+// Anchored siblings share one visual group - tree(1)'s ├/└, never ┌ -
+// even a group of one, since for a subagent row which child you are
+// matters more than how many panes your own window has. groupGlyph only
+// ever draws row 0; a group's own continuation below it is continuation
+// itself.
 func groupGlyph(i, n int) string {
 	if i == n-1 {
 		return stDim.Render("└")
@@ -1141,20 +1091,11 @@ func indicator(s state.Status) string {
 // at, rendered on demand for the reason above.
 func indicatorDone() string { return stDone.Render("✓") }
 
-// indicatorGone marks a lingering subagent window: its process is dead and
-// its record is already gone, so field("") - the "kido knows nothing about
-// this pane" tell a plain uninstrumented shell earns - would say the wrong
-// thing about a row kido actually knows more about than a live one (its
-// name, and often its outcome). A run that completed gets the same glyph
-// indicatorDone uses for a live agent's finished turn, dimmed instead of
-// green-bold: the two are the same claim, "this went well", at different
-// strengths, which is the axis every other pair in this table already uses
-// to tell live from gone (compare a shell's own failed-command ◼ to its
-// dim stems). Anything that did not finish cleanly - failed, died, or a run
-// somebody stopped before it was done, none of which is a claim of success
-// - keeps ×, and so does a window whose outcome has not landed yet: it is
-// not this function's business to guess one. Rendered on demand for the
-// same package-init reason as the rest of this table.
+// indicatorGone marks a lingering subagent window: its process is dead
+// and its record is already gone, so field("") would wrongly say kido
+// knows nothing about the row. A completed run gets indicatorDone's
+// glyph, dimmed rather than green-bold; anything else - failed, died,
+// stopped early, or no outcome recorded yet - keeps ×.
 func indicatorGone(l lingering) string {
 	if l.outcome == subrun.Completed {
 		return stDim.Render("✓")
@@ -1168,10 +1109,10 @@ func indicatorGone(l lingering) string {
 // shell with no OSC 133 integration and a program that has taken the
 // terminal - both draw no glyph, but the column stays.
 //
-// appendWindows no longer puts a space of its own between the tree glyph
-// and this field - field's own leading character (the indicator, or the
-// first of its two filler spaces) sits directly against the tree glyph -
-// so a running agent reads "└◼ title", not "└ ◼ title".
+// appendWindows puts no space of its own between the tree glyph and this
+// field - field's own leading character (the indicator, or the first of
+// its two filler spaces) sits directly against the tree glyph - so a
+// running agent reads "└◼ title", not "└ ◼ title".
 func field(ind string) string {
 	if ind == "" {
 		return "  "
@@ -1184,16 +1125,10 @@ func field(ind string) string {
 // having reported); otherwise "", false.
 //
 // A recorded Title (from kido agent-status --title) wins over the pane
-// title: it is the exact name the agent reported, not something kido must
-// guess at by stripping a marker off whatever the agent painted in the
-// terminal title, and splitting on a fixed marker cannot be fooled by a
-// session name that happens to contain one. Claude Code never records a
-// Title, so its rows keep going through state.AgentTitle(p.Title)
-// unchanged. An agent that reports no title (or hasn't reported at all
-// yet) falls back to the pane title the same way, with the sidebar's own
-// fallback for an empty result: a row always shows something, where a
-// name resolved for addressing (list_agents, message_agent) is better
-// left empty.
+// title: it is the exact name the agent reported, not a guess made by
+// stripping a marker off the terminal title. Claude Code never records
+// one, so its rows go through state.AgentTitle(p.Title) instead, which
+// is also the fallback for an agent that hasn't reported a title yet.
 func (m *model) agentTitleOf(p tmux.Pane) (string, bool) {
 	if !state.IsAgentPane(m.snap.states, m.snap.pi, p) {
 		return "", false
@@ -1208,16 +1143,13 @@ func (m *model) agentTitleOf(p tmux.Pane) (string, bool) {
 }
 
 // interactivePane reports whether a program has taken pane p's terminal,
-// so kido has nothing to say about it: it runs for as long as the user is
-// working in it, and "a command is running" is not news. tmux answers that
-// directly - taking the screen means switching to the alternate buffer -
-// and answers it for the innermost program, where pane_current_command
-// would name the process group leader (git, for a pager; sudo, for an
+// so kido has nothing to say about it. tmux's alternate-buffer flag
+// answers for the innermost program, where pane_current_command would
+// only name the process-group leader (git, for a pager; sudo, for an
 // editor under it). An ssh sitting at a remote shell takes no alternate
-// buffer of its own, so it is decided from its arguments instead - unless
-// the far side is reporting (observeRemote), when the pane's OSC 133
-// state is the remote shell's and is worth drawing. A full-screen program
-// on the far side still shows here.
+// buffer of its own, so it is decided from its arguments instead, unless
+// the far side is known to be reporting (observeRemote), when the
+// pane's OSC 133 state is the remote shell's and worth drawing.
 func (m *model) interactivePane(p tmux.Pane) bool {
 	if m.sshInteractive(p) && !m.sshRemote[p.PaneID] {
 		return true
@@ -1226,8 +1158,7 @@ func (m *model) interactivePane(p tmux.Pane) bool {
 }
 
 // lingeringLabel is the row text for a marked pane whose run has no live
-// record for this pane (see lingeringSubagents, which does the file reads
-// this only looks up) - or "", false when p is not one. A pane still
+// record for this pane, or "", false when p is not one. A pane still
 // alive is a run in progress, not yet reporting for whatever reason (a
 // bash run never will; an agent run might just be between new-window and
 // its first status report), so it gets the same running row a reporting
@@ -1256,18 +1187,12 @@ func (m *model) lingeringLabel(p tmux.Pane) (string, bool) {
 }
 
 // runningCommand is the command line pane p's integrated shell is
-// running right now, local or remote, or "" when there is none to show -
-// no integration, idle, or the program has taken the terminal
-// (interactivePane). For ssh it replaces the destination only once the
-// far side is known to be reporting (m.sshInteractive, the caller's
-// gate): before that, the pane's #{pane_command_line} is still the local
-// shell's own - the ssh invocation itself - which would draw the
-// destination twice and say nothing. For a local shell it replaces
-// #{pane_current_command} rather than qualifying it: the shell reported
-// it is authoritative where pane_current_command only infers the
-// process-group leader. tmux keeps the value after the command ends, so
-// an idle pane is excluded by the shell status rather than by the field
-// being empty.
+// running right now, local or remote, or "" when there is none to show.
+// For ssh it replaces the destination only once the far side is known
+// to be reporting: before that, #{pane_command_line} is still the local
+// shell's own ssh invocation, which would draw the destination twice.
+// tmux keeps the value after the command ends, so an idle pane is
+// excluded by the shell status rather than by the field being empty.
 func (m *model) runningCommand(p tmux.Pane) string {
 	if m.interactivePane(p) || p.Shell() != tmux.ShellRunning {
 		return ""
@@ -1327,10 +1252,7 @@ func (m *model) paneLabel(p tmux.Pane) string {
 
 // windowPlacement is where one window sits in the sidebar tree: its
 // panes and the pane row it hangs off - the pane of the agent that
-// spawned it, or "" for a window drawn as a root. There is no depth:
-// appendWindows indents by recursing through the anchors, so a number
-// here would be a second account of the same thing with nobody to read
-// it.
+// spawned it, or "" for a window drawn as a root.
 type windowPlacement struct {
 	panes  []tmux.Pane
 	anchor string // pane id of the spawning agent; "" for a root
@@ -1345,13 +1267,11 @@ type windowPlacement struct {
 //
 // The parent normally comes from the agent's own state record
 // (ParentSession); a window whose record names none - a finished
-// subagent lingering for the sweep, its record removed - falls back to
-// the run's own meta file instead, so it keeps its place in the tree for
-// the whole linger rather than un-nesting to the left margin the instant
-// its record is removed. A record that does name a parent wins over the
-// meta even when the two disagree: a live subagent can move or be
-// reparented (kido spawn_subagent --resume), and the meta is written
-// once at spawn and not rewritten to match every move.
+// subagent lingering for the sweep - falls back to the run's own meta
+// file instead, so it keeps its place in the tree for the whole linger.
+// A record that does name a parent wins over the meta even when the two
+// disagree, since a live subagent can move or be reparented
+// (kido spawn_subagent --resume) after the meta was written.
 func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session, lingering lingeringMap) []windowPlacement {
 	type loc struct{ windowID, paneID string }
 	bySession := map[string]loc{}
@@ -1389,13 +1309,8 @@ func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session, 
 		parentOf)
 
 	// Order emits a window after its parent, or as a root with no parent
-	// yet seen (a ring, or a parent outside this session), so one pass
-	// suffices and a cycle cannot recurse. A window whose parent is not
-	// already placed is a root, anchor and all: the anchor is only ever
-	// an edge the walk itself found.
+	// yet seen (a ring, or a parent outside this session).
 	out := make([]windowPlacement, 0, len(ordered))
-	// A window is a child only if its parent was itself placed by this
-	// walk, which is what the map's presence records.
 	placed := make(map[string]bool, len(ordered))
 	for _, w := range ordered {
 		pl := windowPlacement{panes: w}
@@ -1410,41 +1325,21 @@ func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session, 
 
 // appendWindows draws one session's windows, each window's panes joined
 // into a column by the ┌ ├ └ glyphs, with a subagent's window nested
-// directly under the row of the pane that spawned it.
+// directly under the row of the pane that spawned it, cutting the
+// parent window's column in two and carrying it on with a │ stem.
 //
-// Nesting cuts the parent window's column in two, so the column is
-// carried on down the left of the child's rows with a │ stem rather than
-// restarted: a three-pane window with a subagent hanging off its middle
-// pane reads as one bracket with an indented block inside it, which is
-// what it is. The stem stops as soon as the parent has no rows left
-// below, so a child of the last pane hangs free.
-//
-// A window anchored to a pane - a subagent spawned from it, whether or
-// not it has siblings - gets a ├/└ group glyph of its own, marking which
-// pane spawned it the way none of glyph's own dot-or-bracket glyphs can.
-// A one-pane child still collapses to the group glyph alone, exactly as
-// before: a bracket around a single row says nothing a plain glyph
-// would not already say just as well, and the group glyph already marks
-// it as anchored. A child with more than one pane of its own is
-// different: since this fix, its own ┌ ├ └ bracket keeps its full span
-// rather than losing row 0 to the group glyph, so the split pane a user
-// adds to a running child's window still reads as that window's own
-// second pane and not as a row the group glyph swallowed. The group
-// glyph and the window's own bracket are two columns side by side on
-// every row of such a child, not one column that only shows up on row
-// 0: row 0 carries the group's opening glyph (├ or └) beside the
-// window's own opening bracket (┌), and every row below it carries the
-// group's plain continuation (│ or a blank, from continuation, exactly
-// what a further sibling below would need to keep its own stem
-// unbroken) beside the window's own continuing bracket glyph. depth > 1
-// is the same recursion again: a subagent's own subagents are just
-// another anchor lookup, off its own first pane.
+// A window anchored to a pane gets a ├/└ group glyph of its own, marking
+// which pane spawned it. A one-pane child collapses to the group glyph
+// alone; a child with more than one pane of its own keeps its full
+// ┌ ├ └ span beside the group glyph, two columns side by side on every
+// row, so a split added to a running child's window still reads as that
+// window's own second pane. depth > 1 is the same recursion, off the
+// child's own first pane.
 //
 // The price is that a window hoisted under a parent's pane no longer
-// appears in tmux's own window order - a subagent's window can sit above
-// a lower-numbered one, and a parent's own later panes sit below a whole
-// foreign window. That is deliberate: the spawn tree is what the sidebar
-// is for, and tmux's order is still one ⇧↓ away.
+// appears in tmux's own window order: `kido switch-window` and
+// shift+down/up (tmux.SwitchWindow) skip subagent windows precisely
+// because that order does not match the tree drawn here.
 func (m *model) appendWindows(placements []windowPlacement) {
 	byAnchor := map[string][]int{}
 	for i, pl := range placements {
@@ -1454,11 +1349,7 @@ func (m *model) appendWindows(placements []windowPlacement) {
 	}
 	drawn := make([]bool, len(placements))
 	// prefix is the ambient stem to the left of a window's own columns,
-	// the same for every row of it: by construction (see the recursive
-	// call below) it is always what a row's fuller stem was built from
-	// before the group's own character and a trailing space were appended,
-	// so there is never a need to peel it back out of a styled string to
-	// recover it.
+	// the same for every row of it.
 	//
 	// lead is the group's opening glyph (├ or └), drawn on row 0 only;
 	// groupStem is its plain continuation (│ or a blank, from
@@ -1485,8 +1376,7 @@ func (m *model) appendWindows(placements []windowPlacement) {
 				nested = prefix + groupStem + " "
 			default:
 				// Two columns, not one: the group's own glyph beside this
-				// window's own bracket, present on every row - see the doc
-				// comment above for why row 0 no longer swallows the other.
+				// window's own bracket, present on every row.
 				stem := lead
 				if j > 0 {
 					stem = groupStem

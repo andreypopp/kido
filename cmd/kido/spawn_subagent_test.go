@@ -16,6 +16,7 @@ import (
 	"kido/internal/reap"
 	"kido/internal/state"
 	"kido/internal/subrun"
+	"kido/internal/testutil"
 	"kido/internal/tmux"
 )
 
@@ -25,45 +26,29 @@ type newWindowCall struct {
 	env, command       []string
 }
 
-// marks records what markRun was asked to set, pane id to run id;
-// withNewWindow resets it.
 var marks map[string]string
 
-// withNewWindow points newWindow and markRun at fakes that record their
-// calls, so spawnSubagentCmd never talks to a real tmux server. newWindow
-// returns (windowID, paneID, a fixed fake pid, err).
 const fakePanePID = 42424242
 
 func withNewWindow(t *testing.T, windowID, paneID string, err error) *[]newWindowCall {
 	t.Helper()
-	prev, prevMark, prevExists := newWindow, markRun, windowExists
 	var calls []newWindowCall
-	newWindow = func(session, name, cwd string, env, command []string) (string, string, int, error) {
+	testutil.Swap(t, &newWindow, func(session, name, cwd string, env, command []string) (string, string, int, error) {
 		calls = append(calls, newWindowCall{session, name, cwd, env, command})
 		return windowID, paneID, fakePanePID, err
-	}
+	})
 	marks = map[string]string{}
-	markRun = func(paneID, runID string) error {
+	testutil.Swap(t, &markRun, func(paneID, runID string) error {
 		marks[paneID] = runID
 		return nil
-	}
-	// The window a fake newWindow returned is in no tmux server, so the
-	// question createRunWindow asks about it on a failure has to be
-	// answered here too; the ordinary answer is that it is still there.
-	windowExists = func(string) bool { return true }
-	t.Cleanup(func() {
-		newWindow, markRun, windowExists = prev, prevMark, prevExists
 	})
+	// The fake window is in no real tmux server for createRunWindow to check on a failure.
+	testutil.Swap(t, &windowExists, func(string) bool { return true })
 	return &calls
 }
 
-// withListModels stubs listModels for the duration of a test, so
-// validateModel never shells out to a real pi. rows are "provider/model"
-// pairs; the fake table matches pi --list-models's own shape: a header
-// line, skipped by position rather than read, then one row per model.
 func withListModels(t *testing.T, rows ...string) {
 	t.Helper()
-	prev := listModels
 	var b strings.Builder
 	b.WriteString("PROVIDER\tMODEL\n")
 	for _, r := range rows {
@@ -71,24 +56,21 @@ func withListModels(t *testing.T, rows ...string) {
 		b.WriteString(parts[0] + "\t" + parts[1] + "\n")
 	}
 	out := []byte(b.String())
-	listModels = func() ([]byte, error) { return out, nil }
-	t.Cleanup(func() { listModels = prev })
+	testutil.Swap(t, &listModels, func() ([]byte, error) { return out, nil })
 }
 
-// captureStdout returns what f wrote to os.Stdout. The line kido spawn_subagent
-// prints is parsed by pi/kido-agents.ts, so it is contract rather than
-// logging and has to be read back verbatim.
-func captureStdout(t *testing.T, f func()) string {
+// capture returns what f wrote to *target (os.Stdout or os.Stderr).
+func capture(t *testing.T, target **os.File, f func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	prev := os.Stdout
-	os.Stdout = w
-	defer func() { os.Stdout = prev }()
+	prev := *target
+	*target = w
+	defer func() { *target = prev }()
 	f()
-	os.Stdout = prev
+	*target = prev
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -100,9 +82,7 @@ func captureStdout(t *testing.T, f func()) string {
 }
 
 // TestSpawnPrintsWindowPaneRun pins the one line spawn writes to stdout:
-// pi/kido-agents.ts splits it on spaces to learn what it has just
-// created, and a reordered or extra field would be read as garbage by a
-// parser that lives outside this repo's tests.
+// pi/kido-agents.ts splits it on spaces to learn what it has just created.
 func TestSpawnPrintsWindowPaneRun(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -110,7 +90,7 @@ func TestSpawnPrintsWindowPaneRun(t *testing.T) {
 	withNewWindow(t, "@9", "%9", nil)
 
 	var err error
-	out := captureStdout(t, func() {
+	out := capture(t, &os.Stdout, func() {
 		err = spawnSubagentCmd([]string{
 			"--parent-pid", "1", "--parent-session", testParentSession,
 			"--name", "kid", "--task-file", writeTaskFile(t, "task"),
@@ -132,8 +112,7 @@ func TestSpawnPrintsWindowPaneRun(t *testing.T) {
 }
 
 // TestSpawnMarksThePane pins what makes a spawned window reapable at
-// all: without @kido_run (internal/reap) nothing will ever close it,
-// since a sweep refuses every window with no run pane.
+// all: without @kido_run nothing will ever close it.
 func TestSpawnMarksThePane(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -150,9 +129,6 @@ func TestSpawnMarksThePane(t *testing.T) {
 	}
 }
 
-// writeTaskFile returns a path to a real, readable file under maxTaskBytes,
-// which every spawnSubagentCmd call needs since --task-file existence and size
-// are checked.
 func writeTaskFile(t *testing.T, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "task.txt")
@@ -162,36 +138,13 @@ func writeTaskFile(t *testing.T, contents string) string {
 	return path
 }
 
-// testParentSession is the session id every fresh-spawn test hands to
-// --parent-session. It is a constant rather than a literal per test
-// because spawnSubagentCmd refuses a session no live agent holds
-// (state.Find), so the fixture below has to be that session - and the
-// honest fixture is the caller's own id, since a fresh spawn's caller is
-// the parent it names.
 const testParentSession = "parent-sess"
 
-// withCallerDepth records a state.Session for the caller pane (%1, in
-// samePane) reporting depth, so spawnSubagentCmd's derivation of the child's depth
-// from the caller's own record (see spawn.go) has something to read.
 func withCallerDepth(t *testing.T, depth int) {
 	t.Helper()
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	if err := state.Record(testParentSession, state.Session{
 		Agent: state.AgentPi, Pane: "%1", PID: os.Getpid(), Status: state.Idle, Depth: depth,
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// withLiveParent records a live agent, on a pane of its own, holding
-// session: what a spawn needs when the parent it names is somebody other
-// than the caller - a human at a shell parenting a child onto a running
-// agent. The pid is this test process's, since state.Load drops a record
-// whose pid is dead.
-func withLiveParent(t *testing.T, session string) {
-	t.Helper()
-	if err := state.Record(session, state.Session{
-		Agent: state.AgentPi, Pane: "%parent", PID: os.Getpid(), Status: state.Idle,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -218,9 +171,9 @@ func TestSpawnRefusedAtMaxDepth(t *testing.T) {
 	}
 }
 
-// TestSpawnCannotEscapeCeilingWithSmallerDepth: a caller already at the
-// ceiling still cannot spawn. Only the caller's own state record decides
-// the depth, so the ceiling holds regardless of what the caller asks for.
+// TestSpawnCannotEscapeCeilingWithSmallerDepth: only the caller's own
+// state record decides the depth, so the ceiling holds regardless of
+// what the caller asks for.
 func TestSpawnCannotEscapeCeilingWithSmallerDepth(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -263,17 +216,17 @@ func TestSpawnAllowsMaxDepth(t *testing.T) {
 	}
 }
 
-// TestSpawnUnreportedCallerIsDepthZero is the documented fallback for a
-// caller with no state record at all (a human running kido spawn_subagent by hand,
-// or an agent that has not reported yet): treated as depth 0, so its
-// child lands at depth 1.
+// TestSpawnUnreportedCallerIsDepthZero: a caller with no state record
+// at all is treated as depth 0, so its child lands at depth 1.
 func TestSpawnUnreportedCallerIsDepthZero(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
 	t.Setenv("KIDO_STATE_DIR", t.TempDir()) // empty: no record for the caller
-	// The parent it names is therefore somebody else, which is the shape a
-	// human at a shell is in - and it still has to be alive.
-	withLiveParent(t, testParentSession)
+	if err := state.Record(testParentSession, state.Session{
+		Agent: state.AgentPi, Pane: "%parent", PID: os.Getpid(), Status: state.Idle,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	calls := withNewWindow(t, "@1", "%1", nil)
 	taskFile := writeTaskFile(t, "do the thing")
 	if err := spawnSubagentCmd([]string{
@@ -303,8 +256,6 @@ func TestSpawnRejectsUnsafeName(t *testing.T) {
 	}
 }
 
-// TestSpawnRejectsLongName: the tmuxConfUnsafe check rejects dangerous
-// characters but does not cap length.
 func TestSpawnRejectsLongName(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -341,9 +292,6 @@ func TestSpawnAllowsSpaceInName(t *testing.T) {
 	}
 }
 
-// TestSpawnMissingTaskFile: a typo in --task-file must not create the
-// window, which would leave a child with no task and no sign anything was
-// lost.
 func TestSpawnMissingTaskFile(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -361,8 +309,6 @@ func TestSpawnMissingTaskFile(t *testing.T) {
 	}
 }
 
-// TestSpawnRejectsOversizedTaskFile: the inbox drops a payload over
-// MAX_PROMPT_BYTES, and the task-file path must apply the same cap.
 func TestSpawnRejectsOversizedTaskFile(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -399,9 +345,8 @@ func TestSpawnAllowsTaskFileAtCap(t *testing.T) {
 	}
 }
 
-// TestSpawnTaskNeverOnCommandLine checks that the task's own text - which
-// only ever exists in the file --task-file names - never appears in any
-// argument or environment entry handed to tmux; only the file's path does.
+// TestSpawnTaskNeverOnCommandLine checks that the task's own text never
+// appears in any argument or environment entry handed to tmux.
 func TestSpawnTaskNeverOnCommandLine(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -427,9 +372,6 @@ func TestSpawnTaskNeverOnCommandLine(t *testing.T) {
 			t.Errorf("task text leaked into the tmux invocation: %q", arg)
 		}
 	}
-	// The task lives in the run's own directory: KIDO_AGENT_TASK_FILE does
-	// not name the caller's --task-file, but its content must still be
-	// exactly the task.
 	relocated := envValue(t, call.env, "KIDO_AGENT_TASK_FILE")
 	if relocated == taskFile {
 		t.Errorf("KIDO_AGENT_TASK_FILE = %s, want it relocated into the run directory, not the caller's own path", relocated)
@@ -440,8 +382,6 @@ func TestSpawnTaskNeverOnCommandLine(t *testing.T) {
 	}
 }
 
-// envValue returns the value of key=... in env, failing the test if key
-// is not present at all.
 func envValue(t *testing.T, env []string, key string) string {
 	t.Helper()
 	prefix := key + "="
@@ -454,9 +394,6 @@ func envValue(t *testing.T, env []string, key string) string {
 	return ""
 }
 
-// TestSpawnPassesParentAndDepth checks the full environment kido spawn_subagent
-// sets, the target session (the caller's own, not any other), and that a
-// command given after -- is passed through unmodified.
 func TestSpawnPassesParentAndDepth(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -510,19 +447,16 @@ func TestSpawnDefaultsCommandToPi(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A plain "pi" command gets --session-id inserted, tying the run id to
-	// the child's own session from birth (see spawn.go's doc comment).
+	// the child's own session from birth.
 	got := (*calls)[0].command
 	if len(got) != 3 || got[0] != "pi" || got[1] != "--session-id" || got[2] == "" {
 		t.Errorf("command = %v, want [pi --session-id <run-id>]", got)
 	}
 }
 
-// TestSpawnFailureIsAVisibleFailedRun: a spawn whose window creation fails
-// records that as the run's outcome, rather than leaving a caller of `kido
-// runs` to work out why a run has no window. Read back through listRuns
-// rather than subrun directly, because the meta file the failure path
-// writes is exactly what makes the outcome visible there - a run directory
-// without one is skipped, outcome and all.
+// TestSpawnFailureIsAVisibleFailedRun: a spawn whose window creation
+// fails records that as the run's outcome, read back through listRuns
+// rather than subrun directly.
 func TestSpawnFailureIsAVisibleFailedRun(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -549,10 +483,7 @@ func TestSpawnFailureIsAVisibleFailedRun(t *testing.T) {
 }
 
 // TestSpawnMarkFailureKillsTheWindowAndRecordsFailure: a failed markRun
-// must not leave the window up unmarked, which no sweep would ever find
-// since internal/reap only touches a window with a run pane. It kills
-// the window and records the run as failed, the same as the
-// newWindow-failure path. Its negative control is
+// must not leave the window up unmarked. Its negative control is
 // TestSpawnMarkFailureOnAVanishedWindowIsNotAFailure.
 func TestSpawnMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
 	withPanes(t, samePane)
@@ -560,17 +491,12 @@ func TestSpawnMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
 	withCallerDepth(t, 0)
 	withNewWindow(t, "@9", "%9", nil)
 
-	prevKill := killWindow
 	var killed []string
-	killWindow = func(id string) error {
+	testutil.Swap(t, &killWindow, func(id string) error {
 		killed = append(killed, id)
 		return nil
-	}
-	t.Cleanup(func() { killWindow = prevKill })
-
-	prevMark := markRun
-	markRun = func(paneID, runID string) error { return errors.New("option failed") }
-	t.Cleanup(func() { markRun = prevMark })
+	})
+	testutil.Swap(t, &markRun, func(paneID, runID string) error { return errors.New("option failed") })
 
 	if err := spawnSubagentCmd([]string{
 		"--parent-pid", "1", "--parent-session", testParentSession,
@@ -588,27 +514,18 @@ func TestSpawnMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
 	}
 }
 
-// withVanishedMark makes the mark fail the way it does for a window tmux
-// has already lost, and reports which windows were killed.
 func withVanishedMark(t *testing.T) func() []string {
 	t.Helper()
-	prevKill := killWindow
 	var killed []string
-	killWindow = func(id string) error {
+	testutil.Swap(t, &killWindow, func(id string) error {
 		killed = append(killed, id)
 		return nil
-	}
-	prevMark, prevExists := markRun, windowExists
-	markRun = func(paneID, runID string) error { return errors.New("cannot find window @9") }
-	windowExists = func(string) bool { return false }
-	t.Cleanup(func() {
-		killWindow, markRun, windowExists = prevKill, prevMark, prevExists
 	})
+	testutil.Swap(t, &markRun, func(paneID, runID string) error { return errors.New("cannot find window @9") })
+	testutil.Swap(t, &windowExists, func(string) bool { return false })
 	return func() []string { return killed }
 }
 
-// runOutcomes is what `kido runs --json` says about every run recorded so
-// far.
 func runOutcomes(t *testing.T) []RunInfo {
 	t.Helper()
 	var buf bytes.Buffer
@@ -623,23 +540,10 @@ func runOutcomes(t *testing.T) []RunInfo {
 }
 
 // TestSpawnMarkFailureOnAVanishedWindowIsNotAFailure is the negative
-// control for the test above, and the case that made the distinction
-// necessary: tmux sets remain-on-exit in a second call after new-window,
-// and a command that exits fast enough beats it, taking the window with
-// it. Everything after new-window then fails - the option, then the
-// mark - for a window that did its job and ended.
-//
-// Measured before the two were told apart, `kido async_bash -- true`
-// answered "kido async_bash: tmux set-window-option -t @1 remain-on-exit
-// on: exit status 1" and recorded the run failed, over the outcome the
-// command's own wrapper had already recorded truthfully. So what this
-// asserts is the absence of the two things a real mark failure does:
-// killing a window (there is none to kill) and writing an outcome (the
-// run's own is the true one).
-//
-// It is a bash run, because that is the whole of the argument: the
-// wrapper in the window has already recorded and reported. Its sibling
-// below is the same race with no wrapper behind it.
+// control for the test above: a command that exits fast enough can take
+// the window with it before remain-on-exit and the mark are set, and
+// that is not a mark failure when the run's own wrapper already recorded
+// and reported truthfully.
 func TestSpawnMarkFailureOnAVanishedWindowIsNotAFailure(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	withNewWindow(t, "@9", "%9", nil)
@@ -652,7 +556,7 @@ func TestSpawnMarkFailureOnAVanishedWindowIsNotAFailure(t *testing.T) {
 	meta := subrun.Meta{ID: runID, Name: "build", Kind: subrun.KindBash, ParentSession: testParentSession}
 
 	var err error
-	out := captureStdout(t, func() {
+	out := capture(t, &os.Stdout, func() {
 		err = createRunWindow(meta, "$0", nil, []string{"kido", "async-run"})
 	})
 	if err != nil {
@@ -674,13 +578,8 @@ func TestSpawnMarkFailureOnAVanishedWindowIsNotAFailure(t *testing.T) {
 }
 
 // TestAgentMarkFailureOnAVanishedWindowIsStillAFailure is the other half
-// of the distinction above, and the reason it is a distinction rather
-// than one rule: an agent run has no wrapper in the window to describe
-// its own ending, and nothing else ever will. A window tmux has lost
-// carries no marked pane, so neither of internal/reap's rules can find
-// it - rule 1 needs dead panes to linger over and rule 2 needs a live
-// state record - and a pi that vanished before it could be marked never
-// reached its task to report on. The failure recorded here is the only
+// of the distinction above: an agent run has no wrapper in the window to
+// describe its own ending, so the failure recorded here is the only
 // account of the run there will be.
 func TestAgentMarkFailureOnAVanishedWindowIsStillAFailure(t *testing.T) {
 	withPanes(t, samePane)
@@ -704,18 +603,10 @@ func TestAgentMarkFailureOnAVanishedWindowIsStillAFailure(t *testing.T) {
 	}
 }
 
-// TestSpawnNoParentIsNotReaped: a human at a shell has no agent identity
-// to hand over, and until --no-parent existed there was no way through
-// this command at all - the only ways were to name a real agent, which
-// makes the child that agent's, or to invent one, which left the child an
-// orphan that internal/reap closes on its next sweep. The point of the
-// flag is that the third thing is coherent: an agent in a window, owned
-// by nobody, that nothing will collect.
-//
-// So the assertion that matters is the sweep, not the field. A record with
-// no ParentSession is exempt from rule 2 by the first clause of its own
-// condition, and reading that clause back off the meta file would pin
-// nothing - the sweep is the reader whose verdict the flag is claiming.
+// TestSpawnNoParentIsNotReaped: --no-parent makes a child owned by
+// nobody that nothing will collect. The assertion that matters is a real
+// sweep, not the field: a record with no Parent is exempt from
+// internal/reap's rule 2.
 func TestSpawnNoParentIsNotReaped(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -727,10 +618,6 @@ func TestSpawnNoParentIsNotReaped(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("spawnSubagentCmd --no-parent = %v, want it allowed", err)
 	}
-	// Neither variable is set at all, rather than set empty: the child's
-	// extension tests for their presence to decide it is a subagent, so an
-	// empty KIDO_AGENT_PARENT_SESSION would arm an idle timer for a parent
-	// that does not exist.
 	for _, kv := range (*calls)[0].env {
 		if strings.HasPrefix(kv, "KIDO_AGENT_PARENT_") {
 			t.Errorf("env carries %q, want no parent edge at all", kv)
@@ -746,9 +633,6 @@ func TestSpawnNoParentIsNotReaped(t *testing.T) {
 		t.Errorf("meta.ParentSession = %q, want it empty", meta.ParentSession)
 	}
 
-	// A real sweep over the window the spawn just made, with the record the
-	// child would report: alive, marked, and naming no parent - exactly
-	// what KIDO_AGENT_PARENT_SESSION's absence produces.
 	panes := []tmux.Pane{
 		{PaneID: "%other", WindowID: "@other", SessionID: "$1"},
 		{PaneID: "%9", WindowID: "@9", SessionID: "$1", Run: marks["%9"]},
@@ -762,17 +646,9 @@ func TestSpawnNoParentIsNotReaped(t *testing.T) {
 	}
 }
 
-// TestSpawnRefusesAFabricatedParentSession pins the other half of the
-// decision above: --no-parent is the way to spawn without a parent, so a
-// session nobody holds is a mistake rather than a spelling of it. It
-// used to be accepted - only --resume checked liveness - and the child
-// was then closed by internal/reap's rule 2 within moments, with the run
-// left recording a useless "died" and no error anywhere for a human to
-// read, since the read that explains it happens in another process after
-// this command has already exited successfully.
-//
-// --parent-pid names a live process (1 is init) so that the pid cannot be
-// what is doing the refusing: the session id is the parent edge proper.
+// TestSpawnRefusesAFabricatedParentSession: --no-parent is the way to
+// spawn without a parent, so a session nobody holds is a mistake rather
+// than a spelling of it.
 func TestSpawnRefusesAFabricatedParentSession(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -794,9 +670,6 @@ func TestSpawnRefusesAFabricatedParentSession(t *testing.T) {
 	}
 }
 
-// TestSpawnNoParentRefusesAParentToo: the flag and the flags it replaces
-// are contradictory, and a caller passing both has not said what it
-// wants. Refusing is cheap and the alternative is picking one silently.
 func TestSpawnNoParentRefusesAParentToo(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -810,8 +683,6 @@ func TestSpawnNoParentRefusesAParentToo(t *testing.T) {
 	if err == nil {
 		t.Fatal("spawnSubagentCmd --no-parent with a parent = nil error, want a refusal")
 	}
-	// Named, so that a build where --no-parent does not exist at all fails
-	// this rather than passing on flag.Parse's own complaint.
 	if !strings.Contains(err.Error(), "contradicts") {
 		t.Errorf("error = %q, want it to say the two contradict each other", err)
 	}
@@ -820,24 +691,17 @@ func TestSpawnNoParentRefusesAParentToo(t *testing.T) {
 	}
 }
 
-// TestSpawnForkCarriesBothFlagsOntoThePiCommandLine: a forked child is
-// still a run, so it must come up holding the run id its whole identity
-// proof is read from (pi/kido-agents.ts's ownRunID) as well as the
-// caller's transcript. Measured against pi 0.85.1, --fork and
-// --session-id compose - createSessionManager forks the resolved source
-// through SessionManager.forkFrom with the given id - so both belong on
-// the line, and the order is the one that was measured.
-//
-// The task is read back out of the run directory alongside it: a fork
-// replaces where the child's context comes from, not how it is given its
-// work.
+// TestSpawnForkCarriesBothFlagsOntoThePiCommandLine: a forked child must
+// come up holding both the run id and the caller's transcript. Measured
+// against pi 0.85.1: --fork and --session-id compose on the line, in the
+// order measured.
 func TestSpawnForkCarriesBothFlagsOntoThePiCommandLine(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
 	withCallerDepth(t, 0)
 	calls := withNewWindow(t, "@7", "%7", nil)
 
-	out := captureStdout(t, func() {
+	out := capture(t, &os.Stdout, func() {
 		if err := spawnSubagentCmd([]string{
 			"--parent-pid", "1", "--parent-session", testParentSession,
 			"--name", "kid", "--task-file", writeTaskFile(t, "merge the two branches"),
@@ -859,11 +723,7 @@ func TestSpawnForkCarriesBothFlagsOntoThePiCommandLine(t *testing.T) {
 }
 
 // TestSpawnForkKeepsTheChildsOwnFlags: --fork is inserted into the pi
-// command the caller asked for rather than replacing it, so a forked
-// child still gets its name, model and tool ceiling. The insertion point
-// matters - pi reads --fork and --session-id wherever they appear, but a
-// command line that put them after a flag's value would be handing the
-// wrong argument to that flag.
+// command the caller asked for rather than replacing it.
 func TestSpawnForkKeepsTheChildsOwnFlags(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -871,7 +731,7 @@ func TestSpawnForkKeepsTheChildsOwnFlags(t *testing.T) {
 	withListModels(t, "acme/claude-sonnet-5")
 	calls := withNewWindow(t, "@7", "%7", nil)
 
-	out := captureStdout(t, func() {
+	out := capture(t, &os.Stdout, func() {
 		if err := spawnSubagentCmd([]string{
 			"--parent-pid", "1", "--parent-session", testParentSession,
 			"--name", "kid", "--task-file", writeTaskFile(t, "x"),
@@ -889,11 +749,6 @@ func TestSpawnForkKeepsTheChildsOwnFlags(t *testing.T) {
 	}
 }
 
-// TestSpawnForkRefusals: neither refusal can be discovered from the
-// child's window. A --fork alongside --resume asks for two different
-// sessions at once, and a fork id carrying a character tmux's parsers
-// cannot pass through is the window name's rule applied to the other
-// piece of model-adjacent text on that command line.
 func TestSpawnForkRefusals(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -915,10 +770,9 @@ func TestSpawnForkRefusals(t *testing.T) {
 	}
 }
 
-// TestValidateModelExactProviderMatch pins the gate itself: a full model
-// id is accepted only when its own provider is in the configured list, a
-// bare alias like "sonnet" is refused exactly as an id whose provider was
-// never configured is, and the refusal names every model that is.
+// TestValidateModelExactProviderMatch: a full model id is accepted only
+// when its own provider is in the configured list; a bare alias like
+// "sonnet" is refused the same as an unconfigured provider.
 func TestValidateModelExactProviderMatch(t *testing.T) {
 	withListModels(t, "acme/claude-sonnet-5", "acme/claude-opus-5", "other/gemini-pro")
 
@@ -937,17 +791,12 @@ func TestValidateModelExactProviderMatch(t *testing.T) {
 	}
 }
 
-// TestValidateModelAcceptsNoModelGiven: a spawn naming no model at all
-// must never pay for or be refused by a check that only applies when one
-// was asked for.
 func TestValidateModelAcceptsNoModelGiven(t *testing.T) {
-	prev := listModels
 	called := false
-	listModels = func() ([]byte, error) {
+	testutil.Swap(t, &listModels, func() ([]byte, error) {
 		called = true
 		return nil, errors.New("should never be called")
-	}
-	t.Cleanup(func() { listModels = prev })
+	})
 
 	for _, command := range [][]string{{"pi"}, {"sh", "--model", "sonnet"}} {
 		if err := validateModel(command); err != nil {
@@ -959,13 +808,8 @@ func TestValidateModelAcceptsNoModelGiven(t *testing.T) {
 	}
 }
 
-// TestValidateModelRefusesWhenListModelsFails: a pi that cannot even list
-// its models cannot start one either, so the spawn is refused rather than
-// let through unchecked.
 func TestValidateModelRefusesWhenListModelsFails(t *testing.T) {
-	prev := listModels
-	listModels = func() ([]byte, error) { return nil, errors.New("exec: \"pi\": executable file not found in $PATH") }
-	t.Cleanup(func() { listModels = prev })
+	testutil.Swap(t, &listModels, func() ([]byte, error) { return nil, errors.New("exec: \"pi\": executable file not found in $PATH") })
 
 	err := validateModel([]string{"pi", "--model", "acme/claude-sonnet-5"})
 	if err == nil || !strings.Contains(err.Error(), "pi --list-models") {
@@ -973,9 +817,8 @@ func TestValidateModelRefusesWhenListModelsFails(t *testing.T) {
 	}
 }
 
-// TestSpawnRefusesUnconfiguredModel is the fresh-spawn path end to end:
-// the model on the child's own pi command line is checked before any
-// window is created, the same shape as TestSpawnFabricatedParentIsRefusedUpFront.
+// TestSpawnRefusesUnconfiguredModel: the model on the child's own pi
+// command line is checked before any window is created.
 func TestSpawnRefusesUnconfiguredModel(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")

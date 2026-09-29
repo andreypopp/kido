@@ -22,17 +22,8 @@ const asyncSignalGrace = 2 * time.Second
 
 const asyncRunUsage = "usage: kido async-run [--run-id ID] [--stream]"
 
-// asyncRunCmd implements `kido async-run`, the command a `kido
-// async_bash` window actually runs. It execs the run's recorded argv with
-// stdout and stderr teed to the run's output file, waits, records the
-// outcome, and - if it was the one that recorded it - sends the
-// completion notice to the parent. It returns the process exit code,
-// which is the command's own, so the dead pane's #{pane_dead_status}
-// says what happened too.
-//
-// Everything is reported before this process exits, which is what makes
-// the feature independent of the window surviving: see
-// docs/design-subagents.md, "An async bash run".
+// asyncRunCmd returns the command's own exit code, so the dead pane's
+// #{pane_dead_status} says what happened too.
 func asyncRunCmd(args []string) int {
 	const cmd = "async-run"
 	fail := func(what any) int {

@@ -14,22 +14,12 @@ import (
 	tmuxconf "kido/tmux"
 )
 
-// kidoSocket is the tmux socket kido's own server answers on. It is a
-// name rather than a path, so the server lands under $TMUX_TMPDIR exactly
-// where tmux would put it, and kido-tmux never shares a server with a
-// stock tmux: the two speak different protocol versions.
+// kido-tmux never shares a server with a stock tmux: the two speak
+// different protocol versions.
 const kidoSocket = "kido"
 
-// launch is bare `kido`: attach to the kido server, starting it first if
-// nobody has. It replaces this process with the tmux client, so the
-// terminal, the signals and the exit status are the client's own; it only
-// returns when there is nothing to attach to.
 func launch() error {
 	if inside := os.Getenv("TMUX"); inside != "" {
-		// A multiplexer already owns this terminal, kido's own included:
-		// nesting gives a second prefix and a second status line for no
-		// gain, and inside a kido pane the server being asked for is the
-		// one already there.
 		return fmt.Errorf("already inside tmux (%s); run kido from a plain terminal",
 			strings.SplitN(inside, ",", 2)[0])
 	}
@@ -46,9 +36,6 @@ func launch() error {
 	if err != nil {
 		return err
 	}
-	// -s main: a session name of tmux's own choosing is a bare integer
-	// ("0"), and this only runs once, starting a fresh server, so no
-	// session named main can already exist to collide with.
 	env := os.Environ()
 	if dir, ok := ownBinDir(); ok {
 		env = withEnv(env, []string{"PATH=" + pathWithFirst(dir, os.Getenv("PATH"))})
@@ -56,7 +43,6 @@ func launch() error {
 	return execTmux(bin, env, "-L", kidoSocket, "-f", conf, "new-session", "-s", "main")
 }
 
-// execTmux replaces this process with tmux. It returns only on failure.
 func execTmux(bin string, env []string, args ...string) error {
 	path, err := exec.LookPath(bin)
 	if err != nil {
@@ -69,22 +55,14 @@ func execTmux(bin string, env []string, args ...string) error {
 type serverState int
 
 const (
-	serverDown     serverState = iota // nothing is listening, or the socket is stale
-	serverUp                          // a server kido can talk to
-	serverMismatch                    // a server, refusing this client's protocol
+	serverDown serverState = iota
+	serverUp
+	serverMismatch
 )
 
-// probeServer asks the kido socket for its sessions, which is the
-// cheapest question that needs a whole client handshake, and reads the
-// answer for the one failure worth naming. Every other failure is treated
-// as "no server": starting one reports tmux's own error if the socket is
-// unusable for some further reason, which is a better message than a
-// guess made here would be.
-//
-// The one failure worth telling apart is tmux's own wording from
-// client.c, "protocol version mismatch (client N, server M)", which is
-// what a kido-tmux upgraded under a running server answers every new
-// client until that server restarts.
+// tmux's own wording, from client.c, is "protocol version mismatch
+// (client N, server M)" - what a kido-tmux upgraded under a running
+// server answers every new client until that server restarts.
 func probeServer(bin string) serverState {
 	cmd := exec.Command(bin, "-L", kidoSocket, "list-sessions")
 	var errb bytes.Buffer
@@ -98,11 +76,8 @@ func probeServer(bin string) serverState {
 	return serverDown
 }
 
-// userConfPath is the user's own kido configuration, in tmux's syntax:
-// $XDG_CONFIG_HOME/kido/kido.conf, else ~/.config/kido/kido.conf. The
-// user's ~/.tmux.conf is deliberately not read - a config written for
-// stock tmux fights the side column, and a user who wants theirs writes
-// one source-file line in this file.
+// The user's own ~/.tmux.conf is deliberately not read: a config written
+// for stock tmux fights the side column.
 func userConfPath() (string, error) {
 	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
 		return filepath.Join(dir, "kido", "kido.conf"), nil
@@ -119,8 +94,7 @@ func userConfPath() (string, error) {
 // and tmux's again for anything that reaches a further tmux command. No
 // escape survives all three - a single quote would end tmux's string, and
 // `$`, `#`, a backslash or a backtick would be expanded by sh or by tmux
-// rather than taken literally. Spaces are fine, which is the case that
-// actually happens; the rest is refused rather than written broken.
+// rather than taken literally.
 const tmuxConfUnsafe = "'\"$#\\`\n\r"
 
 func tmuxSafe(what, s string) error {
@@ -130,23 +104,16 @@ func tmuxSafe(what, s string) error {
 	return nil
 }
 
-// confCommand quotes a path, with any fixed arguments after it, as one
-// command word of the generated configuration.
-// Both places a path is written there - side-status-command and
-// default-command - are command strings tmux hands to /bin/sh after
-// expanding them as formats, so the word is single-quoted for tmux and,
-// only when the path itself needs it (a space, the case that actually
-// happens), double-quoted for the shell inside that. The characters no
-// such nesting can carry are refused rather than written broken.
+// Both side-status-command and default-command are command strings tmux
+// hands to /bin/sh after expanding them as formats, so the word is
+// single-quoted for tmux and, only when the path itself needs it, double-
+// quoted for the shell inside that.
 //
 // The inner double quotes are otherwise left off on purpose: this string
 // is also what tmux's own default_window_name() (third_party/tmux/names.c)
 // parses to name a window with automatic-rename off, and it strips at
 // most one layer of quoting - a path wrapped in quotes it does not need
-// survives as a single backslash, not as its basename. Unquoted, a
-// window using this as its default-command is named after the command's
-// first word, matching what stock tmux does for an unquoted
-// default-command.
+// survives as a single backslash, not as its basename.
 func confCommand(path string, args ...string) (string, error) {
 	if err := tmuxSafe("path", path); err != nil {
 		return "", fmt.Errorf("cannot start a kido server: %w", err)
@@ -162,16 +129,6 @@ func confCommand(path string, args ...string) (string, error) {
 	return word + "'", nil
 }
 
-// writeServerConf generates the file the kido server starts with and
-// returns its path. Three layers, in this order:
-//
-//   - kido's defaults, `tmux/kido-tmux.conf` verbatim;
-//   - the user's kido.conf, which may override any of them;
-//   - what kido owns, which the user may not: the side column runs this
-//     kido by absolute path, and every pane's shell is primed by it.
-//
-// The user's own default-command is captured before it is overridden, so
-// `kido shell` can still run it (see shellCmd).
 func writeServerConf() (string, error) {
 	exe, err := tmux.InvokedPath(os.Args[0])
 	if err != nil {

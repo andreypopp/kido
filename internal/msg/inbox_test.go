@@ -12,9 +12,8 @@ import (
 	"kido/internal/testutil"
 )
 
-// TestDeliverHappy checks that the message arrives byte for byte,
-// including newlines and non-ASCII, with no framing or trailing newline
-// added, and that "ok" is taken as delivered.
+// TestDeliverHappy pins that the message arrives byte for byte, with no
+// framing added.
 func TestDeliverHappy(t *testing.T) {
 	for _, text := range []string{
 		"hello there",
@@ -32,9 +31,9 @@ func TestDeliverHappy(t *testing.T) {
 	}
 }
 
-// TestDeliverNoReply checks that a server that accepts and then says
-// nothing is a plain error, not ErrInboxUnavailable: the message did go
-// out, so the caller must not send it again with send-keys.
+// TestDeliverNoReply pins that a server that accepts and says nothing
+// is a plain error, not ErrInboxUnavailable: the message did go out, so
+// the caller must not send it again with send-keys.
 func TestDeliverNoReply(t *testing.T) {
 	defer func(d time.Duration) { InboxTimeout = d }(InboxTimeout)
 	InboxTimeout = 300 * time.Millisecond
@@ -48,10 +47,6 @@ func TestDeliverNoReply(t *testing.T) {
 	if errors.Is(err, ErrInboxUnavailable) {
 		t.Errorf("err = %v, want a hard error (the message was already written)", err)
 	}
-	// One deadline covers the whole exchange, connect included, so a peer
-	// that never answers costs one timeout and not two. (A unix connect()
-	// returns at once while the listen backlog has room, so this fixture
-	// exercises the read half; the bound is what pins the contract.)
 	if elapsed := time.Since(start); elapsed > InboxTimeout+InboxTimeout/2 {
 		t.Errorf("took %v, want under %v: the one deadline must bound the whole exchange",
 			elapsed, InboxTimeout+InboxTimeout/2)
@@ -61,8 +56,6 @@ func TestDeliverNoReply(t *testing.T) {
 	}
 }
 
-// TestDeliverBadReply checks that an answer other than "ok" is a hard
-// error too, for the same reason.
 func TestDeliverBadReply(t *testing.T) {
 	in := testutil.StartInbox(t, "nope\n")
 	err := Deliver(in.Path, "hi")
@@ -71,10 +64,9 @@ func TestDeliverBadReply(t *testing.T) {
 	}
 }
 
-// TestDeliverRefused checks that a "refused" reply is reported as
-// ErrAskRefused, distinct from both "ok" and a generic bad reply, and
-// that it is not ErrInboxUnavailable - the send-keys fallback must never
-// fire on a deliberate refusal.
+// TestDeliverRefused pins that a "refused" reply is ErrAskRefused, not
+// ErrInboxUnavailable: the send-keys fallback must never fire on a
+// deliberate refusal.
 func TestDeliverRefused(t *testing.T) {
 	in := testutil.StartInbox(t, "refused\n")
 	err := Deliver(in.Path, "hi")
@@ -86,10 +78,8 @@ func TestDeliverRefused(t *testing.T) {
 	}
 }
 
-// TestDeliverUnavailable checks the cases that mean nothing was
-// delivered and send-keys is still open: no path at all, a path that does
-// not exist, a stale socket a dead agent left behind, and a path too long
-// for sun_path.
+// TestDeliverUnavailable pins the cases that mean nothing was
+// delivered and send-keys is still open.
 func TestDeliverUnavailable(t *testing.T) {
 	cases := map[string]string{
 		"empty":   "",
@@ -105,12 +95,7 @@ func TestDeliverUnavailable(t *testing.T) {
 	}
 }
 
-// TestInboxPath checks the contract `kido inbox-path NAME` publishes: an
-// absolute <state dir>/inbox/<name>.sock, with the inbox directory created
-// private to the user.
 func TestInboxPath(t *testing.T) {
-	// SocketDir rather than t.TempDir(): the path gets a socket bound on
-	// it below, and t.TempDir() embeds the test's name.
 	dir := testutil.SocketDir(t)
 	t.Setenv("KIDO_STATE_DIR", dir)
 
@@ -132,8 +117,6 @@ func TestInboxPath(t *testing.T) {
 	if !fi.IsDir() || fi.Mode().Perm() != 0o700 {
 		t.Errorf("inbox directory mode = %v, want drwx------", fi.Mode())
 	}
-	// A socket really can be bound there: the whole point of the length
-	// check is that the path kido hands out is one the kernel accepts.
 	ln, err := net.Listen("unix", got)
 	if err != nil {
 		t.Fatalf("listen on %s: %v", got, err)
@@ -141,9 +124,6 @@ func TestInboxPath(t *testing.T) {
 	ln.Close()
 }
 
-// TestInboxPathTooLong checks that a path over sun_path's limit is an
-// error with nothing usable returned, so the caller skips having an inbox
-// rather than listening where kido cannot dial.
 func TestInboxPathTooLong(t *testing.T) {
 	deep := filepath.Join(os.TempDir(), "kido-"+strings.Repeat("deep", 30))
 	t.Setenv("KIDO_STATE_DIR", deep)
@@ -161,8 +141,6 @@ func TestInboxPathTooLong(t *testing.T) {
 	}
 }
 
-// TestInboxPathBadName checks that a name that could reach outside the
-// inbox directory is rejected.
 func TestInboxPathBadName(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	for _, name := range []string{"", "..", "../escape", "sub/agent", "a..b"} {

@@ -89,9 +89,8 @@ func bashPreexec(t *testing.T, cmdline string) string {
 
 // TestBashIntegrationMarksACommand is the whole cycle for one command
 // line: a prompt, the command starting with its text, and the command
-// ending with its status. The first prompt carries no D - nothing has run
-// - and the exit status reported is the command's own, not whatever ran
-// after it on the way to the next prompt.
+// ending with its status. The first prompt carries no D since nothing
+// has run yet.
 func TestBashIntegrationMarksACommand(t *testing.T) {
 	got := bashSession(t, "true", "false")
 	want := []string{
@@ -127,27 +126,11 @@ func TestBashIntegrationMarksAPipelineOnce(t *testing.T) {
 	}
 }
 
-// lastStart is the last command-start marker in a session's markers.
-func lastStart(t *testing.T, seqs []string) string {
-	t.Helper()
-	var start string
-	for _, s := range seqs {
-		if strings.HasPrefix(s, oscPrefix) {
-			start = s
-		}
-	}
-	if start == "" {
-		t.Fatalf("no command-start marker in %q", seqs)
-	}
-	return start
-}
-
 // TestBashIntegrationEmitsCmdline checks the literal bytes of the
-// command-start marker. The command line goes out verbatim: tmux
-// sanitises the value it stores, and any escaping added here would be
-// escaped a second time there and reach the sidebar unreadable. The one
-// thing that must not survive is a control character, which would end the
-// OSC sequence early.
+// command-start marker: the command line goes out verbatim, since tmux
+// sanitises the value it stores and any escaping added here would be
+// escaped a second time there. A control character must not survive,
+// since it would end the OSC sequence early.
 func TestBashIntegrationEmitsCmdline(t *testing.T) {
 	ordinary := "git log --oneline | head -3"
 	if got := bashPreexec(t, ordinary); got != oscPrefix+ordinary+"\x07" {
@@ -175,7 +158,16 @@ func TestBashIntegrationEmitsCmdline(t *testing.T) {
 // that it cuts by character, so a multibyte rune is never split.
 func TestBashIntegrationTruncatesCmdline(t *testing.T) {
 	line := "true " + strings.Repeat("héllo", 300) // multibyte, 1505 characters
-	start := lastStart(t, bashSession(t, line))
+	seqs := bashSession(t, line)
+	var start string
+	for _, s := range seqs {
+		if strings.HasPrefix(s, oscPrefix) {
+			start = s
+		}
+	}
+	if start == "" {
+		t.Fatalf("no command-start marker in %q", seqs)
+	}
 	cmdline := payload(t, start)
 	if n := len([]rune(cmdline)); n != 1024 {
 		t.Fatalf("truncated command line is %d runes, want 1024 (marker %q)", n, start)

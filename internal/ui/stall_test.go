@@ -14,8 +14,7 @@ import (
 // its pane is alive, tmux has nothing new to say about it, and its state
 // record stopped moving when it stopped reporting.
 //
-// This is the regression stallPending exists for, and it is the same trap
-// TestShellDebounceRedraws pins for shellPending: state.Stalled is driven
+// This is the regression stallPending exists for: state.Stalled is driven
 // by kido's own clock, so with the gate gone - or read after the tick
 // instead of before it, when m.at already equals now and the comparison
 // can never differ - paneLabel still returns the right glyph and the row
@@ -25,9 +24,9 @@ func TestStallRedrawsOnAQuietTick(t *testing.T) {
 	base := time.Unix(1700000000, 0)
 	clock := base
 
-	// state.Stalled now consults a wake marker on disk (see
-	// state.RecordPause); isolate it so this test's verdict cannot depend
-	// on whatever the machine running it happens to have recorded.
+	// state.Stalled consults a wake marker on disk; isolate it so this
+	// test's verdict cannot depend on whatever the machine running it
+	// happens to have recorded.
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 
 	saved := state.StallThreshold
@@ -81,13 +80,11 @@ func TestStallRedrawsOnAQuietTick(t *testing.T) {
 	}
 }
 
-// TestSnapshotSameIgnoresHeartbeatTS pins sameStates' exclusion of
-// state.Session.TS: pi/kido-status.ts now re-sends a running session's
+// TestSnapshotSameIgnoresHeartbeatTS pins same()'s exclusion of
+// state.Session.TS: pi/kido-status.ts re-sends a running session's
 // unchanged status every HEARTBEAT_MS purely to keep TS fresh for
-// state.Stalled, and without the exclusion that alone would make same()
-// report a change - forcing a full sidebar rebuild on every agent's
-// heartbeat, the same objection AGENTS.md raises against
-// pane_command_duration.
+// state.Stalled, and without the exclusion that alone would force a
+// full sidebar rebuild on every agent's heartbeat.
 func TestSnapshotSameIgnoresHeartbeatTS(t *testing.T) {
 	base := time.Unix(1700000000, 0)
 	a := snapshot{states: map[string]state.Session{
@@ -102,9 +99,8 @@ func TestSnapshotSameIgnoresHeartbeatTS(t *testing.T) {
 }
 
 // TestSnapshotSameCatchesOtherSessionChanges is the negative control for
-// the exclusion above: it must not widen past TS. same() fails toward
-// extra redraws (AGENTS.md), so a change to any other Session field must
-// still be caught.
+// the exclusion above: it must not widen past TS, so a change to any
+// other Session field must still be caught.
 func TestSnapshotSameCatchesOtherSessionChanges(t *testing.T) {
 	base := time.Unix(1700000000, 0)
 	a := snapshot{states: map[string]state.Session{

@@ -20,11 +20,9 @@ import (
 // flag. A shim that dropped the quotes around "$@", or globbed, loses one.
 var awkwardArgs = []string{"a  b", "", "*", "$HOME", "-x"}
 
-// install is one kido install for the shims to run from: <prefix>/bin
-// holding a kido and a kido-tmux that record how they were run, and
-// <prefix>/share/kido as scripts/install-share.sh lays it out. The prefix
-// has a space in it, because nothing in a shim may depend on its
-// location being a single word.
+// install is one kido install for the shims to run from. The prefix has
+// a space in it, because nothing in a shim may depend on its location
+// being a single word.
 type install struct {
 	prefix, bin, share, shims string
 }
@@ -61,9 +59,9 @@ func recorder(t *testing.T, dir, name string) string {
 	return path
 }
 
-// runShim runs name the way a shell in a kido pane does, by looking it up
-// on path (or by path, when name has a slash), and returns the program that ended up running and its
-// arguments. The deadline is what a shim that ran itself would hit.
+// runShim runs name the way a shell in a kido pane does, and returns the
+// program that ended up running and its arguments. The deadline is what
+// a shim that ran itself would hit.
 func runShim(t *testing.T, path string, env []string, name string, args ...string) (string, []string) {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "argv")
@@ -84,8 +82,6 @@ func runShim(t *testing.T, path string, env []string, name string, args ...strin
 
 func pathOf(dirs ...string) string { return strings.Join(dirs, ":") + ":/usr/bin:/bin" }
 
-// sameFile reports whether a and b name one file, however each is spelled
-// - a shim's paths come out with the `..` it worked them out with.
 func sameFile(t *testing.T, a, b string) bool {
 	t.Helper()
 	fa, err := os.Stat(a)
@@ -101,11 +97,6 @@ func sameFile(t *testing.T, a, b string) bool {
 	return os.SameFile(fa, fb)
 }
 
-// TestShimsRunWhatTheyStandFor is each shim's contract: the program it
-// runs, the arguments kido adds in front, and the user's arguments after
-// them exactly as given. The files the pi and claude shims name are
-// checked to be there, since a shim naming a file the package does not
-// ship fails only when that program starts.
 func TestShimsRunWhatTheyStandFor(t *testing.T) {
 	root := t.TempDir()
 	in := newInstall(t, root)
@@ -186,10 +177,8 @@ func TestPiShimLeavesSubcommandsAlone(t *testing.T) {
 }
 
 // TestShimFindsTheProgramPastItsOwnDirectory: the real program is the
-// first one after the shim's directory on PATH - not one ahead of it, and
-// never the shim again. A second kido install ahead of the real one is
-// the case that makes "after" matter: its shim is a different file, so a
-// rule of "anything but myself" would hand over to it and it back.
+// first one after the shim's directory on PATH, never one ahead of it or
+// the shim again.
 func TestShimFindsTheProgramPastItsOwnDirectory(t *testing.T) {
 	root := t.TempDir()
 	in := newInstall(t, root)
@@ -236,9 +225,8 @@ func TestShimFindsTheProgramPastItsOwnDirectory(t *testing.T) {
 }
 
 // TestTmuxShimResolvesLikeKido is internal/tmux's order, in the shim:
-// $KIDO_TMUX, then the kido-tmux beside kido, then a tmux on PATH past the
-// shim. A bare-name KIDO_TMUX is looked up past the shim as well, since
-// exec would otherwise find the shim itself.
+// $KIDO_TMUX, then the kido-tmux beside kido, then a tmux on PATH past
+// the shim.
 func TestTmuxShimResolvesLikeKido(t *testing.T) {
 	root := t.TempDir()
 	in := newInstall(t, root)
@@ -264,8 +252,6 @@ func TestTmuxShimResolvesLikeKido(t *testing.T) {
 	}
 }
 
-// TestLookPathPast is the shims' rule on kido's side, which `kido ssh`
-// uses to find the ssh the ssh shim stands in for.
 func TestLookPathPast(t *testing.T) {
 	root := t.TempDir()
 	in := newInstall(t, root)
@@ -308,11 +294,10 @@ func TestPathWithFirst(t *testing.T) {
 	}
 }
 
-// TestPathPrependScript runs the prepend in every shell that sources it,
-// twice over a PATH that already has the directory in the middle: the
-// case a login file's rewrite and a nested shell each produce. The
-// directory is the worst a bin directory can be - a space, a quote and a
-// pattern character - since the script embeds it.
+// TestPathPrependScript runs the prepend twice over a PATH that already
+// has the directory in the middle, the case a login file's rewrite and a
+// nested shell each produce. The directory has a space, a quote and a
+// pattern character, the worst a bin directory can be.
 func TestPathPrependScript(t *testing.T) {
 	dir := `/opt/it's a [kido]*/bin`
 	start := "/usr/bin:" + dir + ":/bin"
@@ -337,10 +322,9 @@ func TestPathPrependScript(t *testing.T) {
 	}
 }
 
-// TestOnlyALocalPrimeMovesPATH is the seam between the two primings: the
-// local one carries the bin directory, and what `kido ssh` sends carries
-// nothing of it. The far side has no kido and no shims, and a PATH
-// starting with a directory that is not there would at best be noise.
+// TestOnlyALocalPrimeMovesPATH: the local priming carries the bin
+// directory, but what `kido ssh` sends carries nothing of it, since the
+// far side has no kido and no shims.
 func TestOnlyALocalPrimeMovesPATH(t *testing.T) {
 	marker := pathPrependScript("/k/bin")
 	for _, mode := range []primeMode{primeZsh, primeBash} {
@@ -358,8 +342,6 @@ func TestOnlyALocalPrimeMovesPATH(t *testing.T) {
 			}
 		}
 	}
-	// The bootstrap's payloads are the shipped integrations byte for byte
-	// (TestSSHBootstrapCarriesTheIntegration), so they are what is checked.
 	if strings.Contains(sshBootstrap(), "_kido_bin") ||
 		strings.Contains(string(shell.ZshIntegration), "_kido_bin") ||
 		strings.Contains(string(shell.BashIntegration), "_kido_bin") {
@@ -367,9 +349,6 @@ func TestOnlyALocalPrimeMovesPATH(t *testing.T) {
 	}
 }
 
-// TestShippedClaudeSettingsAreKidosHooks pins the shipped file to the
-// event table: every event kido maps, each running `kido hook`, and only
-// SessionEnd waited for.
 func TestShippedClaudeSettingsAreKidosHooks(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "claude", "settings.json"))
 	if err != nil {

@@ -133,9 +133,7 @@ func Send(to state.Session, env Envelope) error {
 }
 
 // Notify sends text as a "notice" envelope from from to the live agent
-// holding parentSession. It is every ending's sender: cmd/kido has no
-// business knowing the inbox wire, so a run's ending is reported through
-// here rather than back through package main.
+// holding parentSession.
 func Notify(parentSession string, from From, text string) error {
 	live, err := state.LoadLive()
 	if err != nil {

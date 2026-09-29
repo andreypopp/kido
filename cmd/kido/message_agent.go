@@ -17,17 +17,8 @@ import (
 	"kido/internal/tmux"
 )
 
-// listPanes is tmux.ListPanes, indirected so tests can supply a fixed
-// pane list instead of talking to a tmux server.
 var listPanes = tmux.ListPanes
 
-// messageAgentCmd implements `kido message_agent [--reply-to ID] -- <to>`:
-// it reads text from stdin (one trailing newline stripped) and delivers
-// it to the agent to names, resolved within the caller's own tmux
-// session. Delivery, the v0/v1 choice and when a paste is allowed are in
-// docs/design.md.
-//
-// Returns the process exit code, printing any error to stderr itself.
 func messageAgentCmd(args []string, stdin io.Reader) int {
 	const cmd = "message_agent"
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
@@ -41,10 +32,6 @@ func messageAgentCmd(args []string, stdin io.Reader) int {
 		fmt.Fprintln(os.Stderr, "usage: kido message_agent [--reply-to ID] -- <to>")
 		return 1
 	}
-	// --reply-to alone picks the kind. The wire still correlates a reply on
-	// kind "reply" (internal/msg), but there is nothing else --reply-to
-	// could mean, and asking a caller to spell both was exactly the
-	// redundancy this command surface exists to remove.
 	kind := msg.KindMessage
 	if *replyTo != "" {
 		kind = msg.KindReply
@@ -52,15 +39,6 @@ func messageAgentCmd(args []string, stdin io.Reader) int {
 	return send(cmd, sendSpec{kind: kind, to: named{fs.Arg(0)}, replyTo: *replyTo}, stdin)
 }
 
-// askAgentCmd implements `kido ask_agent [--id ID] -- <to>`: the same
-// delivery as message_agent, as an "ask" envelope. --id lets pi's
-// ask_agent assign the id it registers a waiter under before sending;
-// nothing here waits for the answer, which arrives on the asker's own
-// inbox and so only reaches a long-lived process (docs/design.md, "Ask
-// and reply").
-//
-// Because the answer comes back that way and no other, a caller with no
-// inbox is refused rather than delivered: see send's reply-path check.
 func askAgentCmd(args []string, stdin io.Reader) int {
 	const cmd = "ask_agent"
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
@@ -77,23 +55,6 @@ func askAgentCmd(args []string, stdin io.Reader) int {
 	return send(cmd, sendSpec{kind: msg.KindAsk, to: named{fs.Arg(0)}, id: *idFlag}, stdin)
 }
 
-// notifyParentCmd implements `kido notify_parent`: it sends stdin to the
-// agent that spawned this one as a "notice" envelope, and takes no
-// target. The parent comes from KIDO_AGENT_PARENT_SESSION, the parent
-// edge kido spawn_subagent itself put in the child's environment
-// (docs/design.md, "Identity"), so a child reporting home names nobody -
-// and cannot name anybody else. pi's notify_parent tool used to list the
-// agents, find its own row and read `parent` off it to hand back to kido;
-// that round trip asked a display for a fact kido had already given the
-// process.
-//
-// A session with no such variable is a root session with nobody to tell,
-// which is a clear refusal rather than a silent success.
-//
-// The report a child writes is its work product and is kept whole: over
-// the notice cap it goes to the run's own directory and the parent is
-// sent the head of it plus the path (reportNotice, report.go). The cap
-// used to be the tool's, and applied by throwing the rest away.
 func notifyParentCmd(args []string, stdin io.Reader) int {
 	const cmd = "notify_parent"
 	if len(args) > 0 {
@@ -118,28 +79,22 @@ func notifyParentCmd(args []string, stdin io.Reader) int {
 	return send(cmd, sendSpec{kind: msg.KindNotice, to: parentRecipient{parent}}, strings.NewReader(notice))
 }
 
-// recipient resolves a send's target against the live registry.
 type recipient interface {
 	resolve(live []state.Session, panes []tmux.Pane, self string) (state.Session, error)
 }
 
-// named is an address typed by a caller, resolved by resolveTarget.
 type named struct{ to string }
 
 func (n named) resolve(live []state.Session, panes []tmux.Pane, self string) (state.Session, error) {
 	return resolveTarget(state.ByPane(live), panes, self, n.to)
 }
 
-// descendant is the same address, held to the _subagent scope rule.
 type descendant struct{ to string }
 
 func (d descendant) resolve(live []state.Session, panes []tmux.Pane, self string) (state.Session, error) {
 	return descendantTarget(state.ByPane(live), panes, self, d.to)
 }
 
-// parentRecipient is a session id, notify_parent's own target: read out
-// of the environment rather than typed, and resolved against every live
-// record rather than the caller's own tmux session.
 type parentRecipient struct{ session string }
 
 func (p parentRecipient) resolve(live []state.Session, _ []tmux.Pane, _ string) (state.Session, error) {
@@ -150,25 +105,14 @@ func (p parentRecipient) resolve(live []state.Session, _ []tmux.Pane, _ string) 
 	return target, nil
 }
 
-// sendSpec is one outbound envelope as its command described it: the
-// kind, who it goes to, and the correlation ids that kind allows.
 type sendSpec struct {
-	kind    msg.Kind
-	to      recipient
-	replyTo string
-	id      string
-	// fromName replaces the envelope's whole From with that name alone,
-	// for a sender that is not an agent session: a bash run's completion
-	// notice speaks for the run, which has no state record and so no
-	// identity kido could look up. Without it the receiver labels the
-	// notice by whatever the *sending process* is - a pane id, or worse,
-	// the unrelated agent that happened to run `kido stop_subagent`.
+	kind     msg.Kind
+	to       recipient
+	replyTo  string
+	id       string
 	fromName string
 }
 
-// send is the body every message-sending command shares: read the text,
-// resolve the target, deliver. cmd names the calling subcommand, for the
-// errors it prints to stderr. It returns the process exit code.
 func send(cmd string, spec sendSpec, stdin io.Reader) int {
 	fail := func(what any) int {
 		fmt.Fprintf(os.Stderr, "kido %s: %v\n", cmd, what)
@@ -185,18 +129,11 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 		return 1
 	}
 	// The inbox marshals into JSON (which substitutes U+FFFD) while a paste
-	// writes the bytes through, so the same message would arrive
-	// differently by path.
+	// writes the bytes through, so invalid UTF-8 would arrive differently by path.
 	if !utf8.ValidString(text) {
 		return fail("message is not valid UTF-8")
 	}
 
-	// One read, two views of it: the per-pane map for the sender's own
-	// record and for resolving an address, and the whole live slice for
-	// finding a parent by session id - the question `kido agent-alive` asks
-	// of the same registry, and for its reason, since a pane collision
-	// drops a record from the per-pane view and a parent's is exactly the
-	// record that gets dropped.
 	live, err := state.LoadLive()
 	if err != nil {
 		return fail(err)
@@ -209,23 +146,8 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 	byPane := paneIndex(panes)
 	self := os.Getenv("TMUX_PANE")
 
-	// Before anything is resolved, let alone sent: an ask whose caller
-	// cannot be answered is refused rather than delivered. The test is the
-	// one send already applies to the recipient of any non-message
-	// envelope, turned on the sender, because that is literally what a
-	// reply is: a live state record for the pane (so `kido message_agent
-	// -- <asker>` can resolve it at all) whose Inbox is bound (so a
-	// "reply" envelope, which never falls back to a paste, has somewhere
-	// to land).
-	//
-	// Measured from a bare shell, an ask without this really did arrive:
-	// the target spent a turn's attention on a question, then found the
-	// asker unaddressable ("no agent session matches %47") and was left
-	// holding a pending ask it could never discharge. A question with
-	// nowhere to send the answer is a one-way interrupt wearing a
-	// question's costume, so it is refused the way `kido notify_parent`
-	// refuses a root session - and the refusal names the thing a shell
-	// actually wants.
+	// An ask whose caller cannot be answered is refused rather than delivered:
+	// the target would spend a turn on a question with nowhere to send the answer.
 	if spec.kind == msg.KindAsk {
 		const alternative = "use kido message_agent instead, which is one-way and needs no reply"
 		caller, ok := states[self]
@@ -241,8 +163,6 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 	if err != nil {
 		return fail(err)
 	}
-	// list_agents reports the caller alongside everyone else, so a model
-	// can pick its own name and hand itself its message as a fresh turn.
 	if target.Pane == self {
 		return fail(fmt.Sprintf("%s is this agent", displayName(target, byPane)))
 	}
@@ -259,10 +179,6 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 	return 0
 }
 
-// resolveRecipient resolves to for a caller that needs the target (the
-// per-pane view, for senderOf, and the pane index, for displayName)
-// before it decides whether to send at all - unlike send, which always
-// sends once a target is found.
 func resolveRecipient(to recipient) (state.Session, map[string]state.Session, map[string]tmux.Pane, error) {
 	live, err := state.LoadLive()
 	if err != nil {
@@ -277,14 +193,7 @@ func resolveRecipient(to recipient) (state.Session, map[string]state.Session, ma
 	return target, states, paneIndex(panes), err
 }
 
-// deliverEnvelope builds spec's envelope for text and delivers it to
-// target, already resolved. It reports whether text reached target by a
-// paste rather than its inbox - always false for a non-message kind: the
-// inbox check below reads a record written while the target was alive,
-// and a dead target's pane is a shell that would run the pasted text as a
-// command line.
 func deliverEnvelope(target state.Session, states map[string]state.Session, byPane map[string]tmux.Pane, spec sendSpec, text string) (bool, error) {
-	// v0 text has nowhere to carry a kind or an id.
 	if spec.kind != msg.KindMessage && target.Inbox == "" {
 		return false, fmt.Errorf("%s has no inbox to send a %s to; only a plain message can be sent as v0 text", displayName(target, byPane), spec.kind)
 	}
@@ -331,8 +240,6 @@ func deliverEnvelope(target state.Session, states map[string]state.Session, byPa
 	return deliverInboxOrPaste(target.Inbox, payload, target.Pane, text)
 }
 
-// senderOf fills an envelope's From from the caller's own state record,
-// found by its pane ($TMUX_PANE); a pane with no record sends only Pane.
 func senderOf(states map[string]state.Session) msg.From {
 	pane := os.Getenv("TMUX_PANE")
 	self, ok := states[pane]
@@ -342,10 +249,6 @@ func senderOf(states map[string]state.Session) msg.From {
 	return msg.From{Session: self.ID, Name: self.Title, Pane: pane}
 }
 
-// sessionsInSession is every state.Session whose pane is currently in
-// tmux session, per a fresh pane list: a record names a pane and nothing
-// above it, since a pane can move between sessions while its process
-// runs.
 func sessionsInSession(states map[string]state.Session, panes []tmux.Pane, session string) []state.Session {
 	byPane := paneIndex(panes)
 	var out []state.Session
@@ -357,11 +260,6 @@ func sessionsInSession(states map[string]state.Session, panes []tmux.Pane, sessi
 	return out
 }
 
-// resolveTarget finds the agent to names, scoped to the caller's own tmux
-// session. An agent in another session is reported as such rather than
-// as not found. The addressing rules are matchTarget's. notify_parent
-// does not come through here: it holds a session id rather than an
-// address, and resolves it against the whole live registry (see send).
 func resolveTarget(states map[string]state.Session, panes []tmux.Pane, self, to string) (state.Session, error) {
 	caller, ok := findPane(panes, self)
 	if !ok {
@@ -375,9 +273,6 @@ func resolveTarget(states map[string]state.Session, panes []tmux.Pane, self, to 
 		return s, nil
 	}
 
-	// Nothing in scope: check the rest of the world so the error can say
-	// why. An ambiguity out there is reported as one: matchTarget returns
-	// a zero session for it, so naming its id would print an empty one.
 	var all []state.Session
 	for _, s := range states {
 		all = append(all, s)
@@ -391,12 +286,6 @@ func resolveTarget(states map[string]state.Session, panes []tmux.Pane, self, to 
 	return state.Session{}, fmt.Errorf("no agent session matches %q", to)
 }
 
-// matchTarget applies the addressing rules to a set of candidate
-// sessions, in order, each erroring on its own ambiguity rather than
-// falling through: an exact case-insensitive name (displayName, so a name
-// shown by kido list_agents always resolves back), then an exact id, then a
-// unique id prefix. found reports whether any rule matched at all, so
-// resolveTarget can tell "ambiguous" from "look elsewhere".
 func matchTarget(sessions []state.Session, byPane map[string]tmux.Pane, to string) (target state.Session, found bool, err error) {
 	var byName []state.Session
 	for _, s := range sessions {
@@ -423,9 +312,6 @@ func matchTarget(sessions []state.Session, byPane map[string]tmux.Pane, to strin
 	return decide(byPrefix, byPane, to, "id")
 }
 
-// decide turns one rule's candidate set into matchTarget's verdict: no
-// candidate means look further, one is the answer, and several are an
-// ambiguity error naming them. by is the rule they matched on.
 func decide(candidates []state.Session, byPane map[string]tmux.Pane, to, by string) (state.Session, bool, error) {
 	switch len(candidates) {
 	case 0:
@@ -437,9 +323,6 @@ func decide(candidates []state.Session, byPane map[string]tmux.Pane, to, by stri
 	}
 }
 
-// describeCandidates names each session in sessions as "id (name)", name
-// being displayName's - the one kido list_agents shows and matchTarget
-// resolves back - sorted so the error text is deterministic.
 func describeCandidates(sessions []state.Session, byPane map[string]tmux.Pane) string {
 	names := make([]string, len(sessions))
 	for i, s := range sessions {

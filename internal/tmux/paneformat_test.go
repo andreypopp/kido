@@ -8,31 +8,24 @@ import (
 	"testing"
 )
 
-// TestPaneFormatEndsWithPaneTitle pins AGENTS.md's rule (a): pane_title may
-// contain anything, including bytes that look like the separator, so it
-// must stay the last field parsePanes ever reads. Moving anything after it
-// would let a hostile title swallow that field's own data.
+// TestPaneFormatEndsWithPaneTitle pins that pane_title, which may contain
+// anything including bytes that look like the separator, stays last.
 func TestPaneFormatEndsWithPaneTitle(t *testing.T) {
 	if !strings.HasSuffix(paneFormat, "#{pane_title}") {
 		t.Errorf("paneFormat does not end with #{pane_title}: %q", paneFormat)
 	}
 }
 
-// TestPaneFormatNoCommandDuration pins AGENTS.md's rule (c): pane_command_duration
-// ticks every second, and including it would defeat the snapshot
-// change-detection that keeps the sidebar from redrawing once a second
-// forever.
+// TestPaneFormatNoCommandDuration pins that pane_command_duration, which
+// ticks every second, stays out of paneFormat.
 func TestPaneFormatNoCommandDuration(t *testing.T) {
 	if strings.Contains(paneFormat, "pane_command_duration") {
 		t.Error("paneFormat includes pane_command_duration, which would defeat snapshot change-detection")
 	}
 }
 
-// TestPaneFormatFieldCountMatchesConstant pins AGENTS.md's rule (b): the
-// field count in paneFormat and the paneFields constant parsePanes' SplitN
-// and len(f) guard both use must move together. Without this test, adding
-// a field to paneFormat but forgetting paneFields compiles clean and only
-// misbehaves against a real tmux server.
+// TestPaneFormatFieldCountMatchesConstant pins that paneFormat's field
+// count and paneFields move together.
 func TestPaneFormatFieldCountMatchesConstant(t *testing.T) {
 	n := strings.Count(paneFormat, sep) + 1
 	if n != paneFields {
@@ -40,24 +33,15 @@ func TestPaneFormatFieldCountMatchesConstant(t *testing.T) {
 	}
 }
 
-// TestPaneFormatFixtureFromFormat generates its parse fixture from
-// paneFormat itself, rather than a hand-written slice like TestParsePanes
-// does, and asserts every field lands in the struct member parsePanes says
-// it should. TestParsePanes' own fixture is hand-typed: if someone adds a
-// field to paneFormat and forgets to update SplitN and
-// the len(f) guard together, that fixture is one element short and every
-// existing parse test stays green while real tmux output silently loses a
-// field into pane_title. Driving the fixture from paneFormat's own field
-// count is what catches that drift immediately instead.
+// TestPaneFormatFixtureFromFormat generates its fixture from paneFormat's
+// own field count, unlike TestParsePanes' hand-typed one, so a field
+// added to paneFormat but not to SplitN/len(f) is caught here.
 func TestPaneFormatFixtureFromFormat(t *testing.T) {
 	tokens := strings.Split(paneFormat, sep)
 	if len(tokens) != paneFields {
 		t.Fatalf("paneFormat has %d fields, paneFields const says %d; update both", len(tokens), paneFields)
 	}
 
-	// One distinguishable value per field: string fields get a field-named
-	// string, numeric and boolean fields get a value derived from the
-	// index so it round-trips through strconv and is still unique.
 	values := make([]string, len(tokens))
 	for i := range values {
 		values[i] = fmt.Sprintf("str%d", i)

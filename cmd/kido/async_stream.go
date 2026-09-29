@@ -14,15 +14,6 @@ import (
 	"kido/internal/subrun"
 )
 
-// The streaming half of `kido async-run --stream`: the wrapper's tee gains
-// a third writer that batches the command's output lines and sends them to
-// the run's parent as "stream" envelopes. The rules it implements - why a
-// batch is safe where a line is not, what is dropped and what is counted -
-// are in docs/design-subagents.md, "Streaming a run's output".
-
-// The batch interval and the two backoff figures are knobs for the e2e
-// suite, which drives kido as a separately built binary and can only reach
-// it through the environment (docs/design.md, "Knobs").
 var (
 	streamBatchInterval = msFromEnv("KIDO_STREAM_BATCH_MS", 250*time.Millisecond)
 	streamBackoffFloor  = msFromEnv("KIDO_STREAM_BACKOFF_MS", 500*time.Millisecond)
@@ -205,7 +196,7 @@ func (s *streamer) credit(lines, n int) {
 // parent never acknowledged. It flushes what is left first - including a
 // last line the command wrote without a newline - and waits for any send
 // already in flight, so the completion notice its caller sends next is
-// strictly after the final chunk (docs/design-subagents.md).
+// strictly after the final chunk.
 func (s *streamer) Close() int {
 	close(s.stop)
 	<-s.done
@@ -286,10 +277,8 @@ var errNoStreamParent = errors.New("no live parent listening for this run's outp
 
 func (s *streamer) send(text string) error {
 	if s.inbox == "" {
-		// The gate is send()'s (message_agent.go), unchanged: a non-message
-		// kind needs an inbox bound, since it can never fall back to a
-		// paste. This has nobody to say anything to, so every way of having
-		// no parent is one error.
+		// A non-message kind needs an inbox bound, since it can never fall back
+		// to a paste; every way of having no parent is one error.
 		if s.meta.ParentSession == "" {
 			return errNoStreamParent
 		}

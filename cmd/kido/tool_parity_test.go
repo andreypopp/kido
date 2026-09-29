@@ -14,22 +14,11 @@ const toolsFixture = "../../pi/testdata/tools.json"
 
 // TestEveryToolHasASubcommandOfItsName is the mechanical half of "each
 // tool gets its own subcommand" (docs/design-subagents.md, "The tools,
-// and their commands"). Until this test existed the rule was a
-// convention, and the confusion that produced the rule was exactly its
-// drift: a `list_agents` tool whose subcommand was called `agents`, and a
-// user who ran `kido list_agents` and got an error about a tmux client.
-//
-// It takes the discriminator-table shape (internal/msg/testdata/
-// discriminator.json) rather than a list hardcoded here, because one list
-// in one language cannot close the gap that matters. The drift to catch
-// is a tool ADDED without a subcommand, and a Go test reading its own
-// copy of the tool names would not notice one: nobody editing
-// pi/kido-agents.ts has a reason to come here. So the fixture is the one
-// list, and the two suites pin its two ends - pi's own suite asserts the
-// registered tools are exactly these names, so a new tool fails there
-// until the fixture names it, and this test then fails until kido has the
-// subcommand. Neither half is load-bearing alone; together they mean a
-// tool cannot exist without a command of its own name.
+// and their commands"). Reads the shared fixture rather than a list
+// hardcoded here, so a tool added in pi/kido-agents.ts without a
+// subcommand fails here too: pi's own suite pins that the fixture names
+// exactly the registered tools, and this test pins that kido has a
+// subcommand for each. Neither half is load-bearing alone.
 func TestEveryToolHasASubcommandOfItsName(t *testing.T) {
 	raw, err := os.ReadFile(filepath.FromSlash(toolsFixture))
 	if err != nil {
@@ -39,10 +28,6 @@ func TestEveryToolHasASubcommandOfItsName(t *testing.T) {
 	if err := json.Unmarshal(raw, &tools); err != nil {
 		t.Fatalf("parsing %s: %v", toolsFixture, err)
 	}
-	// An emptied or truncated fixture would pass every assertion below by
-	// having nothing to check. The other end of that guard is pi's own
-	// suite, which compares this list against what the extension actually
-	// registers.
 	if len(tools) == 0 {
 		t.Fatalf("%s names no tools; it is the list both suites check against", toolsFixture)
 	}
@@ -57,15 +42,10 @@ func TestEveryToolHasASubcommandOfItsName(t *testing.T) {
 	}
 }
 
-// TestSubcommandsListIsSound guards what the parity test above leans on.
-// `subcommands` is a hand-kept list, so the name it answers a tool with
-// could be one main's switch never dispatches - and then parity is being
-// checked against a lie. That the list is real is
-// TestKnownSubcommandsDispatch's job (dispatch_test.go), which runs every
-// name through the built binary; all this adds is the cheap part that
-// test cannot see, since a duplicate dispatches perfectly well and only
-// shows up in the "subcommands:" line the unknown-subcommand error
-// prints.
+// TestSubcommandsListIsSound guards what the parity test above leans on:
+// `subcommands` is a hand-kept list, so it must name each subcommand
+// exactly once. That every name in it actually dispatches is
+// TestKnownSubcommandsDispatch's job (dispatch_test.go).
 func TestSubcommandsListIsSound(t *testing.T) {
 	if len(subcommands) == 0 {
 		t.Fatal("subcommands is empty; unknownSubcommand has nothing to name and the tool parity test checks nothing")

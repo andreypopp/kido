@@ -15,16 +15,9 @@ type discriminatorCase struct {
 }
 
 // TestParseAgreesWithSharedDiscriminatorTable drives Parse over
-// testdata/discriminator.json, the 11-payload matrix proven to agree
-// between Parse and pi/kido-status.ts's parseEnvelope (a TypeScript test
-// drives the same file - see its test for "discriminator.json"). msg.Parse
-// and parseEnvelope are two implementations of one rule, and the whole
-// v0/v1 contract rests on them never drifting apart: a payload one side
-// calls an envelope and the other calls raw text is exactly how a user's
-// prompt gets swallowed as a control message, or a control message
-// reaches the user as literal text. Editing this fixture without updating
-// the TypeScript side breaks that guarantee silently; keeping both sides
-// reading the same file is what closes that gap.
+// testdata/discriminator.json, the same 11-payload matrix a TypeScript
+// test drives against pi/kido-status.ts's parseEnvelope, so the v0/v1
+// contract cannot drift between the two implementations.
 func TestParseAgreesWithSharedDiscriminatorTable(t *testing.T) {
 	raw, err := os.ReadFile("testdata/discriminator.json")
 	if err != nil {
@@ -45,8 +38,6 @@ func TestParseAgreesWithSharedDiscriminatorTable(t *testing.T) {
 	}
 }
 
-// TestParseEnvelopeFields checks that a real envelope round-trips its
-// fields, replyTo included.
 func TestParseEnvelopeFields(t *testing.T) {
 	raw := `{"v":1,"kind":"reply","id":"abc","replyTo":"xyz","from":{"session":"s1","name":"worker-2","pane":"%18"},"text":"42"}`
 	env, ok := Parse([]byte(raw))
@@ -63,8 +54,6 @@ func TestParseEnvelopeFields(t *testing.T) {
 	}
 }
 
-// TestNewIDUnique checks that consecutive ids differ, which is all NewID
-// promises.
 func TestNewIDUnique(t *testing.T) {
 	a, b := NewID(), NewID()
 	if a == "" || b == "" {

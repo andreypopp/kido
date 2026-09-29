@@ -12,41 +12,11 @@ import (
 	"kido/internal/testutil"
 )
 
-// withStdinBytes points os.Stdin at data for the duration of the test, so
-// spawnSubagentCmd's --task-file - path (reading the task from stdin) can be
-// exercised without a real pipe or subprocess.
-func withStdinBytes(t *testing.T, data []byte) {
-	t.Helper()
-	f, err := os.CreateTemp(t.TempDir(), "stdin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.Write(data); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		t.Fatal(err)
-	}
-	prev := os.Stdin
-	os.Stdin = f
-	t.Cleanup(func() {
-		os.Stdin = prev
-		f.Close()
-	})
-}
-
-// TestSpawnHostileWindowNameMatrix is the adversarial matrix p5v item 2
-// ran and threw away: every character tmuxConfUnsafe rejects, refused
-// before any tmux call, plus the edge cases around it. If tmuxConfUnsafe's
-// rejection loosened, or --name were ever handed to a shell instead of
-// straight into newWindow's argv, one of these would create a window (or
-// worse) instead of refusing. TestSpawnRejectsUnsafeName already pins the
-// quote/dollar/hash/backtick/backslash/newline set; this adds \r (also in
-// tmuxConfUnsafe but untested elsewhere) and the boundary cases: an empty
-// name, a 500-byte name, a name that is a bare -d or --name (these are not
-// re-parsed as flags - Go's flag package takes the very next argument as a
-// string flag's value unconditionally), and a name built to look like a
-// shell command, which must land as one literal, inert argv element.
+// TestSpawnHostileWindowNameMatrix pins every character tmuxConfUnsafe
+// rejects for --name, refused before any tmux call, plus the boundary
+// cases: an empty name, a 500-byte name, a name that is a bare -d or
+// --name (not re-parsed as flags), and a name built to look like a shell
+// command, which must land as one literal, inert argv element.
 func TestSpawnHostileWindowNameMatrix(t *testing.T) {
 	type tc struct {
 		name        string
@@ -92,14 +62,9 @@ func TestSpawnHostileWindowNameMatrix(t *testing.T) {
 	}
 }
 
-// TestSpawnHostileTaskTextRoundTrip is p5v item 2's task-text half: the
-// verifier proved a hostile task survives the whole chain (extension
-// write -> kido spawn_subagent -> child read) byte for byte; this pins kido's own
-// half of that chain, both when --task-file names a file and when it is
-// "-" (stdin). If readTask or the env plumbing that carries
-// KIDO_AGENT_TASK_FILE ever quoted, trimmed, re-encoded, or otherwise
-// touched the bytes on the way into the run directory, one of these would
-// come back different from what went in.
+// TestSpawnHostileTaskTextRoundTrip pins that a task survives byte for
+// byte into the run directory, both when --task-file names a file and
+// when it is "-" (stdin).
 func TestSpawnHostileTaskTextRoundTrip(t *testing.T) {
 	cases := []struct {
 		name string
@@ -147,7 +112,18 @@ func TestSpawnHostileTaskTextRoundTrip(t *testing.T) {
 			t.Setenv("TMUX_PANE", "%1")
 			withCallerDepth(t, 0)
 			calls := withNewWindow(t, "@1", "%1", nil)
-			withStdinBytes(t, c.task)
+			f, err := os.CreateTemp(t.TempDir(), "stdin")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.Write(c.task); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.Seek(0, io.SeekStart); err != nil {
+				t.Fatal(err)
+			}
+			testutil.Swap(t, &os.Stdin, f)
+			t.Cleanup(func() { f.Close() })
 
 			if err := spawnSubagentCmd([]string{
 				"--parent-pid", "1", "--parent-session", testParentSession,
@@ -168,11 +144,8 @@ func TestSpawnHostileTaskTextRoundTrip(t *testing.T) {
 }
 
 // TestMessageAddressingDashPrefixedTarget: a model-authored target
-// beginning with "-" must not be parsed as a kido flag. pi/kido-agents.ts
-// passes "--" before the target, and this pins that "--" does what that
-// assumes on kido's end: if message_agent ever stopped relying on
-// flag.FlagSet's ordinary "--" handling, one of these would come back
-// "flag provided but not defined" instead of reaching the target.
+// beginning with "-" must not be parsed as a kido flag; pi/kido-agents.ts
+// passes "--" before the target to prevent that.
 func TestMessageAddressingDashPrefixedTarget(t *testing.T) {
 	for _, target := range []string{"-weird", "--help", "-"} {
 		t.Run(target, func(t *testing.T) {

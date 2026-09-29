@@ -21,8 +21,6 @@ func tasks(statuses ...string) []struct {
 }
 
 func TestApply(t *testing.T) {
-	// PreToolUse is running plus the note that a tool call is open; the
-	// pending flag rides along with whatever parked says.
 	inTool := Report{Status: state.Running, ToolPending: true}
 	backgroundedInTool := Report{Status: state.Running, Background: true, ToolPending: true}
 
@@ -36,19 +34,12 @@ func TestApply(t *testing.T) {
 		{Input{Event: "Stop", SessionID: "s", BackgroundTasks: tasks("running")}, false, backgrounded},
 		{Input{Event: "Stop", SessionID: "s", BackgroundTasks: tasks("completed")}, false, ended},
 		{Input{Event: "Stop", SessionID: "s", BackgroundTasks: tasks()}, false, ended},
-		// A turn parked at running by background work ends when the last
-		// of it finishes, and only then: SubagentStop fires on every
-		// subagent turn, and says nothing about a session that was not
-		// waiting on one.
 		{Input{Event: "SubagentStop", SessionID: "s"}, true, ended},
 		{Input{Event: "SubagentStop", SessionID: "s", BackgroundTasks: tasks("completed")}, true, ended},
 		{Input{Event: "SubagentStop", SessionID: "s", BackgroundTasks: tasks("running")}, true, ignore},
 		{Input{Event: "SubagentStop", SessionID: "s", BackgroundTasks: tasks()}, false, ignore},
 		{Input{Event: "SubagentStop", SessionID: "s", BackgroundTasks: tasks("running")}, false, ignore},
 		{Input{Event: "PreToolUse", SessionID: "s", ToolName: "Bash"}, false, inTool},
-		// The main loop working again ends the wait; a background
-		// subagent's own tool calls, which arrive under the same session
-		// id, do not.
 		{Input{Event: "PreToolUse", SessionID: "s", ToolName: "Bash"}, true, inTool},
 		{Input{Event: "PostToolUse", SessionID: "s"}, true, running},
 		{Input{Event: "UserPromptSubmit", SessionID: "s"}, true, running},
@@ -58,9 +49,6 @@ func TestApply(t *testing.T) {
 		{Input{Event: "PreToolUse", SessionID: "s", ToolName: "AskUserQuestion"}, false, waiting},
 		{Input{Event: "Notification", SessionID: "s", NotificationType: "permission_prompt"}, false, waiting},
 		{Input{Event: "Notification", SessionID: "s", NotificationType: "idle_prompt"}, false, ended},
-		// idle_prompt fires a minute after every turn ends, knowing nothing
-		// of background work: it must not end a turn Stop parked, nor must
-		// a prompt raised on the background work's behalf clear the wait.
 		{Input{Event: "Notification", SessionID: "s", NotificationType: "idle_prompt"}, true, ignore},
 		{Input{Event: "Notification", SessionID: "s", NotificationType: "permission_prompt"}, true, Report{Status: state.Waiting, Background: true}},
 		{Input{Event: "PermissionRequest", SessionID: "s"}, true, Report{Status: state.Waiting, Background: true}},
@@ -72,7 +60,7 @@ func TestApply(t *testing.T) {
 		{Input{Event: "PostCompact", SessionID: "s", Trigger: "manual"}, false, ended},
 		{Input{Event: "SessionEnd", SessionID: "s"}, false, Remove{}},
 		{Input{Event: "Unknown", SessionID: "s"}, false, ignore},
-		{Input{Event: "Stop"}, false, ignore}, // no session id
+		{Input{Event: "Stop"}, false, ignore},
 	} {
 		if got := Apply(c.in, c.parked); got != c.want {
 			t.Errorf("%+v parked=%v: got %+v want %+v", c.in, c.parked, got, c.want)
@@ -106,11 +94,9 @@ func TestDescribe(t *testing.T) {
 	}
 }
 
-// A tool call is the one stretch where Claude Code reports nothing and
-// has no bound on how long that lasts, so PreToolUse says so and
-// PostToolUse takes it back. AskUserQuestion is not a tool call in this
-// sense: it blocks on the user, which is a status of its own and is
-// legitimately quiet.
+// TestToolPendingSpansTheToolCall pins that PreToolUse sets ToolPending
+// and PostToolUse clears it; AskUserQuestion is not a tool call in this
+// sense, since it blocks on the user instead.
 func TestToolPendingSpansTheToolCall(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

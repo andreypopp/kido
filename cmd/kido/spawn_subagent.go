@@ -30,8 +30,6 @@ const maxTaskBytes = 1024 * 1024
 // failure visible to the model instead of quietly mangling the name.
 const maxWindowNameLen = 64
 
-// newWindow and markRun are tmux.NewWindow and tmux.MarkRun, indirected
-// so tests can run spawnCmd without a tmux server.
 var (
 	newWindow    = tmux.NewWindow
 	markRun      = tmux.MarkRun
@@ -81,14 +79,6 @@ func parseSpawn(args []string) (spawnReq, error) {
 	resumeID := fs.String("resume", "", "resume an existing run's own session instead of starting a new one")
 	forkSession := fs.String("fork", "", "seed the child's session with this pi session's transcript, so it starts holding the caller's context")
 	keepAlive := fs.Bool("keep-alive", false, "the child does not self-reap after going idle (KIDO_AGENT_KEEP_ALIVE)")
-	// --no-parent is the whole surface for a child owned by nobody, and it
-	// is a flag rather than an empty --parent-session because the two
-	// failures are not alike: a script whose parent session came out empty means
-	// to name a parent and has lost it, and silently spawning an
-	// uncollectable window for it would be the wrong reading. A flag cannot
-	// be arrived at by accident. spawn_subagent the tool never passes it -
-	// a pi session spawning always names itself - so this is a human's
-	// entrance only.
 	noParent := fs.Bool("no-parent", false, "spawn with no parent edge at all: the child reports to nobody, arms no idle timer, and is never reaped as an orphan")
 	if err := fs.Parse(args); err != nil {
 		return spawnReq{}, fmt.Errorf("%w\n%s", err, spawnUsage)
@@ -165,13 +155,6 @@ func checkWindowName(name string) error {
 	return nil
 }
 
-// spawnSubagentCmd implements `kido spawn_subagent`: it creates a detached window in the
-// caller's own tmux session (found from $TMUX_PANE) running COMMAND,
-// defaulting to `pi`, with KIDO_AGENT_* set in its environment, and
-// prints the new window id, pane id and run id, space-separated. The
-// task goes in a file in the run's directory, never on the command line;
-// the window name does go on the command line and is checked with
-// tmuxConfUnsafe. See docs/design.md, "Spawning".
 func spawnSubagentCmd(args []string) error {
 	req, err := parseSpawn(args)
 	if err != nil {
@@ -182,15 +165,6 @@ func spawnSubagentCmd(args []string) error {
 		return err
 	}
 
-	// The child's depth is derived from the caller's own state record. A
-	// caller with no record is depth 0, which can only make the ceiling
-	// stricter (docs/design.md, "The depth ceiling is derived").
-	//
-	// One read, two views of it: the pane-keyed one settles who owns the
-	// caller's pane, and the whole live slice answers "is this session
-	// running anywhere" for state.Find below - a parent's own record is
-	// exactly the one a pane collision drops from the per-pane view
-	// (AGENTS.md, "Agent state").
 	live, err := state.LoadLive()
 	if err != nil {
 		return err
@@ -296,11 +270,6 @@ func spawnSubagentCmd(args []string) error {
 	return createRunWindow(meta, pane.SessionID, runEnv(meta.ID, parent, depth, meta.KeepAlive), command)
 }
 
-// callerPane resolves the pane kido was run from - $TMUX_PANE, which tmux
-// sets in every process it starts - against tmux's own pane list, which
-// it returns alongside. A command that acts "here" rather than on a named
-// target needs both: the pane says which session and which directory, the
-// list is what everything else is looked up in.
 func callerPane() (tmux.Pane, []tmux.Pane, error) {
 	panes, err := listPanes()
 	if err != nil {
@@ -314,13 +283,10 @@ func callerPane() (tmux.Pane, []tmux.Pane, error) {
 	return pane, panes, nil
 }
 
-// runEnv is the KIDO_AGENT_* environment a run's window is created with,
-// the only channel a child has: new-window runs its command with the tmux
-// server's environment, not the caller's. The parent edge is left out
-// when there is nobody to name - a --no-parent spawn, or a run resumed
-// from a bare human shell - rather than reported as zero or empty: the
-// child's own subagent test reads whether the variable is there at all,
-// and internal/reap would read a zero as an orphan's.
+// new-window runs its command with the tmux server's environment, not the
+// caller's, so KIDO_AGENT_* is the only channel a child has. The parent
+// edge is left out when there is nobody to name, rather than reported as
+// zero or empty, because internal/reap would read a zero as an orphan's.
 func runEnv(runID subrun.ID, parent *parentEdge, depth int, keepAlive bool) []string {
 	env := []string{
 		"KIDO_AGENT_TASK_FILE=" + subrun.TaskPath(runID),
@@ -340,20 +306,10 @@ func runEnv(runID subrun.ID, parent *parentEdge, depth int, keepAlive bool) []st
 	return env
 }
 
-// createRunWindow is the tail both a spawn and an async run end in:
-// create the detached window in sessionID, stamp what tmux answered into
-// meta, mark the run's own pane and print what was created. meta arrives
-// fully assembled - its Name and Cwd are what the window is made with -
-// and a new run's is already on disk, so a wrapper started in the window
-// can read it; a resume's is rewritten only once its window exists.
-//
 // The mark is the only thing that makes the window reapable: the sweep,
 // the sidebar's tree and the window-cycling keys all key off it, so an
 // unmarked window is uncollectable forever and a failed mark kills the
-// window rather than strand it. Both failures record the run failed,
-// since an error returned here is all the caller ever sees of it.
-//
-// What it prints is contract; printCreated owns that line.
+// window rather than strand it.
 func createRunWindow(meta subrun.Meta, sessionID string, env, command []string) error {
 	windowID, paneID, panePID, err := newWindow(sessionID, meta.Name, meta.Cwd, env, command)
 	if err != nil {
@@ -365,19 +321,10 @@ func createRunWindow(meta subrun.Meta, sessionID string, env, command []string) 
 		return err
 	}
 	if err := markRun(paneID, string(meta.ID)); err != nil {
-		// A window that has already closed cannot be marked and does not
-		// need to be: the mark is what makes a window reapable, and there
-		// is nothing left to reap. For a bash run that is an ordinary
-		// ending - the command in it ran, and `kido async-run` records and
-		// reports how it went from inside the window - which is why no
-		// outcome is recorded over its own here. Otherwise a creation error
-		// is the standing answer for every command fast enough to beat
-		// remain-on-exit, which is every typo.
-		//
-		// An agent run has no such wrapper, and nothing else ever reaches
-		// it: a window tmux has lost carries no marked pane, so neither
-		// sweep rule can find it, and a pi that vanished this fast never
-		// reached its task. It keeps the recorded failure it always got.
+		// A window that has already closed cannot be marked and does not need
+		// to be. A bash run's own wrapper already records and reports its
+		// ending from inside the window; an agent run has no such wrapper, so
+		// it keeps the recorded failure below instead.
 		if meta.Kind == subrun.KindBash && !windowExists(windowID) {
 			printCreated(meta, windowID, paneID)
 			return nil
@@ -390,11 +337,9 @@ func createRunWindow(meta subrun.Meta, sessionID string, env, command []string) 
 	return nil
 }
 
-// printCreated prints what a spawn made, the line pi/kido-agents.ts
-// parses the window, pane and run ids back out of. A bash run carries a
-// fourth field, the file its output is teed to: where kido keeps a run's
-// output is kido's own to say, and a tool deriving it would be a second
-// copy of state.Dir's KIDO_STATE_DIR/XDG precedence.
+// printCreated's output is contract: pi/kido-agents.ts parses the window,
+// pane and run ids back out of it. A bash run carries a fourth field, the
+// file its output is teed to.
 func printCreated(meta subrun.Meta, windowID, paneID string) {
 	if meta.Kind == subrun.KindBash {
 		fmt.Printf("%s %s %s %s\n", windowID, paneID, meta.ID, subrun.OutputPath(meta.ID))
@@ -445,28 +390,18 @@ func piSessionFileExists(cwd string, id subrun.ID) bool {
 	return false
 }
 
-// listModels runs `pi --list-models`, indirected so a test never shells
-// out to a real pi. It is run with kido's own environment untouched -
-// the caller's PATH and HOME, exactly what the spawn itself would use to
-// resolve a bare "pi" - since which providers are configured is a
-// per-user setting, not kido's to guess at.
+// Run with kido's own environment untouched, since which providers are
+// configured is a per-user setting.
 var listModels = func() ([]byte, error) {
 	return exec.Command("pi", "--list-models").Output()
 }
 
-// validateModel refuses a model no configured pi provider can actually
-// run, rather than letting pi accept it, print "Use /login to log into a
-// provider via OAuth or API key" and exit 0 having run no turn thirty
-// seconds later (the failure mode a bare alias like "sonnet" - never a
-// pi model id - used to produce). It checks against `pi --list-models`,
-// the same resolution pi's own --model flag is handed to, and by exact
-// "provider/model" match: a full id whose provider is not configured is
-// refused exactly as a bare alias is. A pi that cannot even list its
-// models cannot start one either, so a failure running the command
-// refuses the spawn rather than letting it through unchecked.
-//
-// The model checked is the --model argument on a `pi` command line; any
-// other command's is not pi's to resolve.
+// A model no configured pi provider can run would otherwise let pi accept
+// it, print "Use /login to log into a provider via OAuth or API key" and
+// exit 0 having run no turn. This checks against `pi --list-models` by
+// exact "provider/model" match, the same resolution pi's own --model flag
+// gets; a bare alias like "sonnet" is never a pi model id and is refused
+// the same way a misconfigured full id is.
 func validateModel(command []string) error {
 	model := ""
 	if command[0] == "pi" {

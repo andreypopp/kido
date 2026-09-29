@@ -13,33 +13,24 @@ import (
 // comfortably smaller than StallThreshold.
 var PauseSlack = 5 * time.Second
 
-// DetectPause reports whether the interval between two ticks, read once
-// as prev and once as now, is the signature of the machine having slept
-// in between: the wall clock's account of the gap outrunning the
-// monotonic clock's by more than PauseSlack.
+// DetectPause reports whether the gap between two ticks is the signature
+// of the machine having slept: the wall clock's account of the interval
+// outrunning the monotonic clock's by more than PauseSlack. On both
+// macOS and Linux the monotonic reading (Darwin's mach_absolute_time,
+// Linux's CLOCK_MONOTONIC) does not advance across a suspend, unlike the
+// wall clock; now.Round(0).Sub(prev.Round(0)) strips the monotonic
+// reading to get the wall clock's own account.
 //
-// time.Time.Sub uses the monotonic reading when both operands carry one,
-// and on both macOS and Linux that reading does not advance across a
-// suspend: Linux's CLOCK_MONOTONIC and Darwin's mach_absolute_time (what
-// runtime.nanotime reads on each, confirmed against both runtimes'
-// source) are defined not to include suspended time, unlike
-// CLOCK_BOOTTIME or mach_continuous_time. now.Round(0).Sub(prev.Round(0))
-// strips the monotonic reading from both and so is the wall clock's own
-// account of the same interval.
-//
-// prev and now must be ordinary time.Now() readings, never one that has
-// been round-tripped through Round(0), Unix(), or JSON: either loses the
-// monotonic reading, and Sub then silently falls back to wall-clock
-// subtraction for both terms, so the gap reads as zero.
+// prev and now must be plain time.Now() readings: one round-tripped
+// through Round(0), Unix() or JSON loses its monotonic reading, and Sub
+// then falls back to wall-clock subtraction for both terms, reading the
+// gap as zero.
 func DetectPause(prev, now time.Time) bool {
 	wall := now.Round(0).Sub(prev.Round(0))
 	mono := now.Sub(prev)
 	return pauseGap(wall, mono)
 }
 
-// pauseGap is DetectPause's arithmetic, split out so a test can drive it
-// with synthetic durations: only an actual suspend produces a genuine
-// wall/monotonic divergence.
 func pauseGap(wall, mono time.Duration) bool {
 	return wall-mono > PauseSlack
 }
@@ -53,10 +44,9 @@ type pauseMarker struct {
 	At time.Time `json:"at"`
 }
 
-// RecordPause persists at as the new staleness baseline (see Stalled),
-// but only if it is newer than whatever is already recorded, so two
-// sidebars racing to record roughly the same wake cannot clobber each
-// other with an older value.
+// RecordPause persists at as the new staleness baseline, but only if
+// newer than what is already recorded, so two sidebars racing to record
+// the same wake cannot clobber each other with an older value.
 func RecordPause(at time.Time) error {
 	if prev := Wake(); !at.After(prev) {
 		return nil

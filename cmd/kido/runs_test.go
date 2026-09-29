@@ -12,8 +12,6 @@ import (
 	"kido/internal/testutil"
 )
 
-// newRun creates a run record the way kido spawn_subagent does, in two calls, and
-// returns the buffer helpers below something to read back.
 func newRun(t *testing.T, meta subrun.Meta, task string) {
 	t.Helper()
 	if err := subrun.Create(meta.ID, task); err != nil {
@@ -89,9 +87,6 @@ func TestRunsShowsRunningForALiveUnrecordedRun(t *testing.T) {
 	}
 }
 
-// TestRunsShowsDiedForADeadUnrecordedRun is the "a run whose outcome is
-// never written is itself informative" case, from `kido runs` rather than
-// from subrun.EffectiveOutcome directly.
 func TestRunsShowsDiedForADeadUnrecordedRun(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	newRun(t, subrun.Meta{ID: "run-dead", PID: testutil.DeadPID(t), StartedAt: time.Now()}, "x")
@@ -121,8 +116,7 @@ func TestRunOutcomeCmdRecordsCompletedOrFailed(t *testing.T) {
 
 // TestRunOutcomeCompletedCapturesNoScreen is the negative control for
 // TestRunOutcomeCapturesTheChildsOwnScreen: a screen is only ever read
-// off a failure, so a completion is not worth the capture-pane or the
-// file it would leave in the run's directory.
+// off a failure.
 func TestRunOutcomeCompletedCapturesNoScreen(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	if err := subrun.Create("run-ok", "x"); err != nil {
@@ -132,12 +126,10 @@ func TestRunOutcomeCompletedCapturesNoScreen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prev := subrun.CapturePane
-	subrun.CapturePane = func(string) (string, error) {
+	testutil.Swap(t, &subrun.CapturePane, func(string) (string, error) {
 		t.Error("capture-pane run for a completed ending, want no capture at all")
 		return "", nil
-	}
-	t.Cleanup(func() { subrun.CapturePane = prev })
+	})
 
 	if err := runOutcomeCmd([]string{"--result", "completed", "run-ok"}); err != nil {
 		t.Fatal(err)
@@ -165,13 +157,10 @@ func TestRunOutcomeCmdRejectsDiedAndStopped(t *testing.T) {
 	}
 }
 
-// TestRunOutcomeCapturesTheChildsOwnScreen pins the fix for the bug report
-// where a run failing with "no turn ever ran" pointed at a screen file
-// that did not exist: `kido run-outcome` is called from inside the child
-// itself, whose pane is still alive at that instant, and must save it
-// before returning rather than leaving it to a sweep that may never run
-// before the window closes (`kido close-run` never captures anything at
-// all).
+// TestRunOutcomeCapturesTheChildsOwnScreen: `kido run-outcome` is called
+// from inside the child itself, whose pane is still alive at that
+// instant, and must save it before returning rather than leaving it to a
+// sweep that may never run before the window closes.
 func TestRunOutcomeCapturesTheChildsOwnScreen(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	if err := subrun.Create("run-screen", "x"); err != nil {
@@ -181,14 +170,12 @@ func TestRunOutcomeCapturesTheChildsOwnScreen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prev := subrun.CapturePane
-	subrun.CapturePane = func(pane string) (string, error) {
+	testutil.Swap(t, &subrun.CapturePane, func(pane string) (string, error) {
 		if pane != "%9" {
 			t.Fatalf("captured pane = %q, want %q", pane, "%9")
 		}
 		return "pi's last screen before it exited\n", nil
-	}
-	t.Cleanup(func() { subrun.CapturePane = prev })
+	})
 
 	if err := runOutcomeCmd([]string{"--result", "failed", "--unreported", "run-screen"}); err != nil {
 		t.Fatal(err)
@@ -199,13 +186,9 @@ func TestRunOutcomeCapturesTheChildsOwnScreen(t *testing.T) {
 	}
 }
 
-// TestRunOutcomeRefinesNoTurnDetailWhenAuthFailsAtRunTime checks the one
-// ending whose cause is knowable from the screen: a run that never ran a
-// turn because pi could not authenticate a provider prints "Use /login
-// ..." and exits 0. The bare alias that used to produce it is refused
-// before the spawn now (validateModel), so what is left for this to
-// catch is a model of a configured provider whose auth fails at run
-// time - an expired key, a revoked token.
+// TestRunOutcomeRefinesNoTurnDetailWhenAuthFailsAtRunTime: a run that
+// never ran a turn because pi could not authenticate a provider prints
+// "Use /login ..." and exits 0, which the outcome text must carry.
 func TestRunOutcomeRefinesNoTurnDetailWhenAuthFailsAtRunTime(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	if err := subrun.Create("run-login", "x"); err != nil {
@@ -215,11 +198,9 @@ func TestRunOutcomeRefinesNoTurnDetailWhenAuthFailsAtRunTime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prev := subrun.CapturePane
-	subrun.CapturePane = func(string) (string, error) {
+	testutil.Swap(t, &subrun.CapturePane, func(string) (string, error) {
 		return "Use /login to log into a provider via OAuth or API key\n", nil
-	}
-	t.Cleanup(func() { subrun.CapturePane = prev })
+	})
 
 	const noTurnText = "no turn ever ran: the task was delivered and the session never started work on it (the pane's own screen, kept with the run, is the only account of why)"
 	if err := runOutcomeCmd([]string{"--result", "failed", "--unreported", "--text", noTurnText, "run-login"}); err != nil {

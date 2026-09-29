@@ -22,41 +22,36 @@ import (
 type Status string
 
 const (
-	Running    Status = "running"    // model or a tool is executing
-	Waiting    Status = "waiting"    // blocked on a permission prompt
-	Compacting Status = "compacting" // context is being compacted
-	Idle       Status = "idle"       // turn finished, waiting for user input
+	Running    Status = "running"
+	Waiting    Status = "waiting"
+	Compacting Status = "compacting"
+	Idle       Status = "idle"
 )
 
 // Statuses lists the statuses an agent may report, in the order a usage
 // message lists them.
 func Statuses() []Status { return []Status{Running, Waiting, Compacting, Idle} }
 
-// Valid reports whether s is a status an agent may report.
 func Valid(s Status) bool { return slices.Contains(Statuses(), s) }
 
-// Agent names the program a session belongs to. The sidebar renders every
-// agent the same way; the name only decides which record wins for a pane
-// (see Load) and which agent-specific guesswork applies (internal/ui).
+// Agent names the program a session belongs to.
 type Agent string
 
 const (
-	AgentClaude Agent = "claude" // Claude Code, reporting through kido hook
-	AgentPi     Agent = "pi"     // pi, reporting through kido agent-status
+	AgentClaude Agent = "claude"
+	AgentPi     Agent = "pi"
 )
 
-// Parent identifies the agent that spawned a session, one edge rather
-// than two parallel fields: Session is the identity the edge is matched
-// on, and PID is recorded only as a cheap first liveness check
-// (docs/design.md, "Identity"). A root agent has no Parent at all.
+// Parent is one edge to the agent that spawned a session; nil for a
+// root agent. PID is a cheap first liveness check, not the identity:
+// that is matched on Session.
 type Parent struct {
 	Session string `json:"session"`
 	PID     int    `json:"pid,omitempty"`
 }
 
-// NewParent returns a Parent naming session and pid, or nil when session
-// is empty: identity is matched on Session (docs/design.md, "Identity"),
-// so a pid with no session names nothing.
+// NewParent returns nil when session is empty: a pid with no session
+// names nothing.
 func NewParent(session string, pid int) *Parent {
 	if session == "" {
 		return nil
@@ -66,67 +61,41 @@ func NewParent(session string, pid int) *Parent {
 
 // Session is one state file.
 type Session struct {
-	ID string `json:"-"` // agent session id (the file name)
-	// Agent is the program that reported this session, AgentClaude or
-	// AgentPi. Files written before kido knew about other agents have no
-	// agent, and are read as AgentClaude.
+	ID string `json:"-"`
+	// Agent unset reads as AgentClaude: files written before kido knew
+	// about other agents have no agent key.
 	Agent  Agent     `json:"agent,omitempty"`
-	Pane   string    `json:"pane"` // TMUX_PANE, e.g. "%18"
-	PID    int       `json:"pid"`  // agent process pid
+	Pane   string    `json:"pane"`
+	PID    int       `json:"pid"`
 	Status Status    `json:"status"`
 	TS     time.Time `json:"ts"`
-	// Title is the session name an agent reported with --title (kido
-	// agent-status). Empty for Claude Code, and for an agent that has not
-	// reported one; the UI falls back to the pane title in that case.
+	// Title is set with --title (kido agent-status); empty for Claude
+	// Code, which the UI falls back to the pane title for.
 	Title string `json:"title,omitempty"`
-	// Inbox is the path of a unix socket that speaks kido's own inbox
-	// protocol (see cmd/kido/inbox.go). It is not a general "send a
-	// message here" address: an agent with a socket of its own that frames
-	// messages differently (Claude Code's per-session socket, for one)
-	// cannot be named here. Empty for any agent without a kido inbox.
-	Inbox string `json:"inbox,omitempty"`
-	// When the last turn ended (Stop or equivalent); zero if the session
-	// is idle for another reason, such as having just started.
+	// Inbox is a unix socket speaking kido's own inbox protocol, not a
+	// general address: an agent framing messages differently (Claude
+	// Code's own per-session socket) cannot be named here.
+	Inbox string    `json:"inbox,omitempty"`
 	Ended time.Time `json:"ended,omitempty"`
-	// Background says the session's main loop has already stopped and it
-	// is running only because background work (a subagent, a background
-	// shell) is still in flight. It is how the next hook event knows that
-	// the end of that work ends the turn. Files written by a kido that
-	// predates it have no such key and read as false, which is the state
-	// of every session that is not waiting on background work.
-	//
-	// Nothing clears it explicitly: every report writes a whole fresh
-	// Session, so it survives only as long as events keep setting it.
+	// Background says the main loop has already stopped and the session
+	// is running only because a subagent or background shell is still in
+	// flight; the next hook event ending that work ends the turn.
 	Background bool `json:"background,omitempty"`
-	// ToolPending says a tool call is in flight: PreToolUse has fired and
-	// the matching PostToolUse has not. Claude Code emits nothing in
-	// between, and a tool call has no upper bound - a build, a test run,
-	// an ssh to a slow host - so the record cannot be refreshed while one
-	// runs and would otherwise read as stale (see StalledSince).
-	//
-	// Like Background, nothing clears it explicitly: every report writes a
-	// whole fresh Session, so PostToolUse, a Stop, or an interrupted turn's
-	// idle all leave it false simply by not setting it.
-	ToolPending bool `json:"toolPending,omitempty"`
-	// Activity is free text the agent sets ("refactoring internal/ui").
-	// Unlike Status it is not a closed vocabulary and does not drive
-	// colour.
-	Activity string `json:"activity,omitempty"`
-	// Parent is the agent that spawned this one, nil for a root agent.
-	Parent *Parent `json:"parent,omitempty"`
-	// Depth is 0 for a root agent, 1 for its subagent, 2 for that
-	// subagent's.
-	Depth int `json:"depth,omitempty"`
-	// Model is the name of the model the agent is currently running,
-	// e.g. "claude-sonnet-5".
-	Model string `json:"model,omitempty"`
+	// ToolPending says PreToolUse fired without a matching PostToolUse
+	// yet. Claude Code emits nothing in between and a tool call has no
+	// upper bound, so the record would otherwise read as stale (StalledSince).
+	ToolPending bool    `json:"toolPending,omitempty"`
+	Activity    string  `json:"activity,omitempty"`
+	Parent      *Parent `json:"parent,omitempty"`
+	Depth       int     `json:"depth,omitempty"`
+	Model       string  `json:"model,omitempty"`
 }
 
 // StallThreshold is how long a session may claim Running without a fresh
-// report before Stalled treats it as wedged rather than busy: six of the
-// ~30s heartbeats pi/kido-status.ts sends while running (docs/design.md,
-// Heartbeat and staleness). Overridable via KIDO_STALL_THRESHOLD_MS for
-// the e2e suite, which drives a separately built binary.
+// report before Stalled treats it as wedged: six of the ~30s heartbeats
+// pi/kido-status.ts sends while running. Overridable via
+// KIDO_STALL_THRESHOLD_MS for the e2e suite, which drives a separately
+// built binary.
 var StallThreshold = func() time.Duration {
 	if n, err := strconv.Atoi(os.Getenv("KIDO_STALL_THRESHOLD_MS")); err == nil && n > 0 {
 		return time.Duration(n) * time.Millisecond
@@ -134,34 +103,16 @@ var StallThreshold = func() time.Duration {
 	return 3 * time.Minute
 }()
 
-// StalledSince reports whether s claims to be running but has gone quiet
-// for longer than StallThreshold, measured from s.TS or from wake - the
-// last recorded wake (RecordPause), zero if none - whichever is later.
-// Never true for anything but Running.
+// StalledSince reports whether s claims Running but has gone quiet past
+// StallThreshold, measured from s.TS or wake (the last recorded wake),
+// whichever is later. Never true while a tool call is in flight or the
+// session is parked on background work: neither has a heartbeat to go
+// stale, so the verdict would be wrong every time rather than uncertain.
 //
-// Never true either while a tool call is in flight, for the same reason
-// in a different shape: Claude Code says nothing between PreToolUse and
-// PostToolUse, and a tool call is unbounded, so a session seven minutes
-// into one is working exactly as intended.
-//
-// Never true either for a session parked on background work. Staleness
-// asks whether an agent that should be reporting has stopped, and the
-// threshold is six of the thirty-second heartbeats pi sends while it
-// runs. A session Stop parked with work outstanding has no such clock:
-// its main loop has ended, Claude Code emits nothing while a background
-// shell runs, and the next event may be the user's own next prompt. The
-// verdict there is not uncertain but wrong every time, three minutes
-// after every backgrounded turn. Detecting background work that has
-// genuinely wedged needs evidence of the work itself, which is a
-// different signal from the one this function reads.
-//
-// The baseline is a parameter because a caller that asks about many
-// sessions, or about one session at two instants, must use one reading
-// of it for all of them: the sidebar compares this verdict at two times
-// to decide whether to redraw (internal/ui, stallPending), and two
-// separately read baselines could differ across that comparison and make
-// it meaningless. Reading the marker per call also put a file open in
-// the sidebar's 100ms path for a value that changes once per suspend.
+// wake is a parameter rather than read here because a caller comparing
+// this verdict at two instants (internal/ui, stallPending) needs one
+// reading for both, and reading it per call would put a file open on the
+// sidebar's 100ms path.
 func StalledSince(s Session, wake, now time.Time) bool {
 	if s.Status != Running || s.Background || s.ToolPending {
 		return false
@@ -173,17 +124,14 @@ func StalledSince(s Session, wake, now time.Time) bool {
 	return now.Sub(baseline) >= StallThreshold
 }
 
-// Stalled is StalledSince with the wake marker read for this one call:
-// the one-shot form, for a CLI command that asks once and exits. A
-// caller on a poll reads Wake itself and uses StalledSince.
+// Stalled is StalledSince for a one-shot caller that reads Wake once
+// and exits; a caller polling reads Wake itself and uses StalledSince.
 func Stalled(s Session, now time.Time) bool {
 	return StalledSince(s, Wake(), now)
 }
 
 // Wake is the last recorded wake (RecordPause), or the zero time if the
-// machine has never been seen to sleep or the marker cannot be read - in
-// which case the baseline is the session's own TS, which is what it was
-// before pause detection existed.
+// machine has never been seen to sleep or the marker cannot be read.
 func Wake() time.Time {
 	b, err := os.ReadFile(filepath.Join(Dir(), pauseFile))
 	if err != nil {
@@ -209,16 +157,10 @@ func Dir() string {
 }
 
 // Load reads every state file whose agent process is still alive, keyed
-// by pane id. A file belonging to a dead process is removed rather than
-// skipped, and when several files claim one pane the outer agent wins
-// regardless of timestamp (see beats). Both policies are explained in
-// docs/design.md, "Who is authoritative for what".
-//
-// Keying by pane drops records: of two live agents sharing a pane only
-// one survives the map. That is right for the sidebar's rows, where a
-// pane has one label, and wrong for any caller asking whether some agent
-// is running at all. Such a caller wants LoadLive, which is the same
-// read without the last step.
+// by pane id: of two live agents sharing a pane only one survives the
+// map (see beats), which is right for the sidebar's one row per pane and
+// wrong for a caller asking whether some agent is running at all, who
+// wants LoadLive instead.
 func Load() (map[string]Session, error) {
 	live, err := LoadLive()
 	if err != nil {
@@ -227,14 +169,11 @@ func Load() (map[string]Session, error) {
 	return ByPane(live), nil
 }
 
-// LoadLive reads every state file whose agent process is still alive and
-// returns all of them, one entry per session, dropping nothing. It has
-// Load's deletion side effect - a file whose pid is dead is removed as it
-// is read - and not Load's per-pane collapse.
-//
-// A caller that needs both views (internal/ui takes a snapshot per 100ms
-// tick and both draws rows and sweeps from it) calls this once and passes
-// the result to ByPane, rather than reading the directory twice.
+// LoadLive reads every state file whose agent process is still alive,
+// one entry per session, dropping nothing. It removes a file whose pid
+// is dead as it reads it, same as Load, but skips Load's per-pane
+// collapse: a caller needing both views calls this once and passes the
+// result to ByPane rather than reading the directory twice.
 func LoadLive() ([]Session, error) {
 	files, err := readFiles()
 	if err != nil {
@@ -251,9 +190,6 @@ func LoadLive() ([]Session, error) {
 	return out, nil
 }
 
-// Find returns the record in live whose ID is id, the one way anything
-// addresses a parent or a session id it did not look up: a parent knows
-// its own session id and nothing else about it.
 func Find(live []Session, id string) (Session, bool) {
 	for _, s := range live {
 		if s.ID == id {
@@ -265,8 +201,7 @@ func Find(live []Session, id string) (Session, bool) {
 
 // ByPane collapses sessions to one per pane, the outer agent winning a
 // shared pane regardless of timestamp (see beats). It is Load's last
-// step, exported so a caller holding a LoadLive slice can take the same
-// view of it without a second read.
+// step, exported for a caller already holding a LoadLive slice.
 func ByPane(sessions []Session) map[string]Session {
 	out := make(map[string]Session, len(sessions))
 	for _, s := range sessions {
@@ -277,19 +212,13 @@ func ByPane(sessions []Session) map[string]Session {
 	return out
 }
 
-// ReadAll reads every state file exactly as recorded, one entry per
-// session, without either of Load's side effects: it neither deletes a
-// dead-pid file nor keeps only one record per pane. `kido reap` is its
-// one caller; a command that reasons about dead agents should not be
-// what deletes the evidence.
+// ReadAll reads every state file exactly as recorded, without either of
+// Load's side effects. `kido reap` is its one caller: a command
+// reasoning about dead agents should not be what deletes the evidence.
 func ReadAll() ([]Session, error) {
 	return readFiles()
 }
 
-// parse unmarshals a state file's raw bytes into a Session with id set,
-// the read readFiles and Get each do once they have the file's bytes in
-// hand. Malformed JSON is not an error worth reporting on either path: a
-// session behind a mangled file simply is not there.
 func parse(id string, b []byte) (Session, bool) {
 	var s Session
 	if json.Unmarshal(b, &s) != nil {
@@ -312,8 +241,7 @@ func readFiles() ([]Session, error) {
 	}
 	var out []Session
 	for _, e := range entries {
-		// Skipping directories is what keeps runs/ and inbox/ invisible to
-		// Load; nothing may come to depend on that changing (docs/design.md).
+		// Skipping directories keeps runs/ and inbox/ invisible to Load.
 		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
 			continue
 		}
@@ -330,14 +258,11 @@ func readFiles() ([]Session, error) {
 	return out, nil
 }
 
-// outer reports whether agent is the outer agent of a pane it shares with
-// Claude Code: pi runs Claude Code inside itself, so a pi record always
-// wins a pane over a claude one. An unknown agent is treated as outer too,
-// since a bare claude record is the one kido knows can come from inside.
-//
-// This is a two-agent test, not a general ranking: two non-Claude agents
-// nested in one pane would both report "outer" and fall through to beats'
-// timestamp comparison, flip-flopping the pane between them.
+// outer reports whether agent is the outer agent of a pane it may share
+// with Claude Code: pi runs Claude Code inside itself, so a pi record
+// always wins over a claude one there. Two non-Claude agents nested in
+// one pane both report outer and fall through to beats' timestamp
+// comparison.
 func outer(agent Agent) bool {
 	return agent != AgentClaude
 }
@@ -353,10 +278,8 @@ func beats(s, prev Session) bool {
 	return s.TS.After(prev.TS)
 }
 
-// Get reads the state file for session id, if one exists. It does not
-// filter by pane or process liveness the way Load does: callers that want
-// the raw last-recorded record for a specific session (e.g. to compare
-// against a new observation) use this instead.
+// Get reads the state file for session id, if one exists, without
+// Load's pane or liveness filtering.
 func Get(id string) (Session, bool, error) {
 	b, err := os.ReadFile(filepath.Join(Dir(), id+".json"))
 	if err != nil {
@@ -369,8 +292,6 @@ func Get(id string) (Session, bool, error) {
 	return s, ok, nil
 }
 
-// Alive reports whether pid exists (a file whose agent died without
-// reporting the end of its session is stale).
 func Alive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -380,9 +301,7 @@ func Alive(pid int) bool {
 }
 
 // HeldError is what Record and Remove answer a process that is not the
-// live holder of the session id it named (docs/design.md, "One holder
-// per session id"). PID is the holder's, Pane the pane it reported, so
-// the caller can tell its user where the other one is.
+// live holder of the session id it named. PID and Pane are the holder's.
 type HeldError struct {
 	ID   string
 	PID  int
@@ -393,8 +312,6 @@ func (e *HeldError) Error() string {
 	return fmt.Sprintf("session %s is already open in pane %s (pid %d); this process is not tracked", e.ID, e.Pane, e.PID)
 }
 
-// held reports the live holder of id, if the record on disk names a
-// process other than pid that is still running.
 func held(id string, pid int) *HeldError {
 	prev, ok, err := Get(id)
 	if err != nil || !ok || prev.PID == pid || !Alive(prev.PID) {
@@ -403,24 +320,14 @@ func held(id string, pid int) *HeldError {
 	return &HeldError{ID: id, PID: prev.PID, Pane: prev.Pane}
 }
 
-// Record writes the state file for session id atomically, and only for
-// the process that holds that session: one live holder per session id.
-// A second process opening a session another live process already has -
-// two pi sessions started from one session file - would otherwise
-// overwrite the running one's pane, pid and inbox, and take its record
-// with it when it exited. It gets a *HeldError and writes nothing.
-//
-// The claim needs no lock. A first writer creates the record with
-// os.Link from its own temp file, which is atomic and fails if the name
-// is taken, so of two processes starting at once exactly one can be
-// first and the other reads its record and stands down. Every later
-// write is by definition over an existing record: it is allowed when the
-// record is the caller's own (every report after the first) or when the
-// holder's pid is dead (a restart taking its own session id back), and
-// refused otherwise. Two processes taking over one dead holder both
-// write, so the takeover re-reads what landed and whoever lost it is
-// told; nothing else needs a second reading, the holder's own writes
-// being the only ones left.
+// Record writes the state file for session id, and only for the process
+// that holds that session: one live holder per session id, enforced
+// lock-free. A first writer creates the record with os.Link from its
+// own temp file, atomic and failing if the name is taken, so of two
+// processes starting at once exactly one wins and the other stands down
+// with a *HeldError. A later write is allowed over the caller's own
+// record or a dead holder's, refused otherwise; two processes taking
+// over one dead holder both write, then re-read to tell the loser.
 func Record(id string, s Session) error {
 	dir := Dir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -431,11 +338,9 @@ func Record(id string, s Session) error {
 		return err
 	}
 	path := filepath.Join(dir, id+".json")
-	// Named after the writing process, not the agent: two `kido hook`
-	// invocations for one Claude Code session are two processes reporting
-	// the same pid, and a shared temp name would let one read the other's
-	// half-written bytes. The extension is not .json, which is what keeps
-	// it out of readFiles.
+	// Named after the writing process: two `kido hook` invocations for one
+	// Claude Code session share a pid, and a shared temp name would let one
+	// read the other's half-written bytes. Not .json, to stay out of readFiles.
 	tmp := filepath.Join(dir, fmt.Sprintf("%s.json.tmp.%d", id, os.Getpid()))
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {
 		return err
@@ -463,20 +368,16 @@ func Record(id string, s Session) error {
 }
 
 // piPrefix is what pi puts before the title it sets: "π - <session> -
-// <cwd>", or "π - <cwd>" when the session is unnamed. Only the marker is
-// dropped; what the agent chose to name itself is shown whole.
+// <cwd>", or "π - <cwd>" when the session is unnamed.
 const piPrefix = "π - "
 
 // AgentTitle extracts the session name from the pane title an agent sets,
 // e.g. "✳ Tmux config" → "Tmux config" for Claude Code and "π - kido -
-// internal" → "kido - internal" for pi. Anything else is left as it is.
-// Empty in, empty out - callers that want a placeholder (the sidebar's
-// "-") supply their own.
+// internal" → "kido - internal" for pi. Empty in, empty out.
 //
 // pi's marker is a letter as far as unicode is concerned, so it needs its
-// own prefix test; Claude Code's keeps the older rule of trimming leading
-// punctuation and symbols, which is what every Claude Code title kido has
-// ever shown went through.
+// own prefix test; Claude Code's title is trimmed of leading punctuation
+// and symbols instead.
 func AgentTitle(title string) string {
 	t, ok := strings.CutPrefix(title, piPrefix)
 	if !ok {
@@ -487,20 +388,17 @@ func AgentTitle(title string) string {
 	return t
 }
 
-// IsAgentPane reports whether p runs an agent: one that has reported (its
-// state file still names this pane, by key in states, which Load keys by
-// pane id), one currently running the claude command with no reported data
-// yet, or one whose process tree holds a pi that has not reported either.
-// piPanes is procs.Scan().Pi, keyed by pane pid; a nil map just means no
-// process sweep was made.
+// IsAgentPane reports whether p runs an agent: one that has reported, one
+// running the claude command with no reported data yet, or one whose
+// process tree holds a pi that has not reported either. piPanes is
+// procs.Scan().Pi, keyed by pane pid; nil means no process sweep was made.
 func IsAgentPane(states map[string]Session, piPanes map[int]bool, p tmux.Pane) bool {
 	_, reported := states[p.PaneID]
 	return reported || p.CurrentCommand == "claude" || piPanes[p.PanePID]
 }
 
 // Remove deletes the state file for session id on behalf of pid, which
-// must be its live holder: an intruder exiting may not take the running
-// session's record with it (see Record).
+// must be its live holder.
 func Remove(id string, pid int) error {
 	if e := held(id, pid); e != nil {
 		return e
