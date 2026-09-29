@@ -80,14 +80,11 @@ func setup(m *testing.M) (int, error) {
 	// kido is laid out as an install lays it out, <prefix>/bin beside
 	// <prefix>/share/kido, so a kido pane gets the bin directory's shims
 	// and a shim finds the kido and kido-tmux it works back to.
-	kidoBin = filepath.Join(dir, "bin", "kido")
-	if err := buildKido(kidoBin); err != nil {
+	if err := installKido(dir); err != nil {
 		return 0, err
 	}
+	kidoBin = filepath.Join(dir, "bin", "kido")
 	shareDir = filepath.Join(dir, "share", "kido")
-	if out, err := exec.Command("../scripts/install-share.sh", shareDir).CombinedOutput(); err != nil {
-		return 0, fmt.Errorf("install-share.sh: %v\n%s", err, out)
-	}
 	if claudeBin, err = buildFakeAgent(dir, dir, "claude"); err != nil {
 		return 0, err
 	}
@@ -148,28 +145,26 @@ func setup(m *testing.M) (int, error) {
 	return m.Run(), nil
 }
 
-// buildKido builds the OCaml kido with dune from the repository root and
-// copies it to out: a copy, not a symlink, so kido's own lookups start
-// from out rather than from _build. DUNE_BUILD_DIR is dune's own, which
-// scripts/ci-like points outside the bind-mounted checkout.
-func buildKido(out string) error {
-	build := exec.Command("dune", "build", "./bin/main.exe")
+// installKido builds dune's install tree from the repository root and
+// copies its bin and share into prefix, dereferenced, so kido's own
+// lookups start from prefix rather than from _build. DUNE_BUILD_DIR is
+// dune's own, which scripts/ci-like points outside the bind-mounted
+// checkout.
+func installKido(prefix string) error {
+	build := exec.Command("dune", "build", "@install")
 	build.Dir = ".."
 	if b, err := build.CombinedOutput(); err != nil {
-		return fmt.Errorf("dune build kido: %v\n%s", err, b)
+		return fmt.Errorf("dune build @install: %v\n%s", err, b)
 	}
-	buildDir := cmp.Or(os.Getenv("DUNE_BUILD_DIR"), "_build")
-	if !filepath.IsAbs(buildDir) {
-		buildDir = filepath.Join("..", buildDir)
+	tree := filepath.Join(cmp.Or(os.Getenv("DUNE_BUILD_DIR"), "_build"), "install", "default")
+	if !filepath.IsAbs(tree) {
+		tree = filepath.Join("..", tree)
 	}
-	b, err := os.ReadFile(filepath.Join(buildDir, "default", "bin", "main.exe"))
-	if err != nil {
-		return err
+	cp := exec.Command("cp", "-RL", filepath.Join(tree, "bin"), filepath.Join(tree, "share"), prefix)
+	if b, err := cp.CombinedOutput(); err != nil {
+		return fmt.Errorf("copy the install tree: %v\n%s", err, b)
 	}
-	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(out, b, 0o755)
+	return nil
 }
 
 // buildFakeAgent compiles a binary named name that sleeps (copying

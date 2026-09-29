@@ -11,14 +11,14 @@ build:
 $(PREFIX)/bin/kido-tmux:
 	./scripts/install-tmux-fork.sh $(PREFIX)
 
-# the tmux config, the shell integration, the bin directory's shims, the
-# pi extensions and the Claude Code settings go where kido looks for them
-# relative to its own binary, the same layout Homebrew's pkgshare gives it
+# dune lays out bin/kido and share/kido (the root dune file) as symlinks
+# to read-only build outputs; `dune install` refuses under package
+# management, so they are copied, dereferenced and made writable again
+DUNE_INSTALL := $(or $(DUNE_BUILD_DIR),_build)/install/default
 install: $(PREFIX)/bin/kido-tmux
-	dune build ./bin/main.exe
-	install -d $(PREFIX)/bin
-	install -m 755 $(or $(DUNE_BUILD_DIR),_build)/default/bin/main.exe $(PREFIX)/bin/kido
-	./scripts/install-share.sh $(PREFIX)/share/kido
+	dune build @install
+	cp -RL $(DUNE_INSTALL)/bin $(DUNE_INSTALL)/share $(PREFIX)/
+	chmod -R u+w $(PREFIX)/bin/kido $(PREFIX)/share/kido
 
 # unit tests; the end-to-end suite needs the patched tmux and is separate.
 # test-ts covers pi's two extensions under node and skips without one, so

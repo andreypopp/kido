@@ -1,0 +1,13 @@
+(install
+ (section share)
+ (files
+  (shell/zsh/integration.zsh as shell/zsh/integration.zsh)
+  (shell/bash/integration.bash as shell/bash/integration.bash)
+  (shims/shim.sh as shim.sh)
+  (shims/bin/tmux as bin/tmux)
+  (shims/bin/ssh as bin/ssh)
+  (shims/bin/pi as bin/pi)
+  (shims/bin/claude as bin/claude)
+  (pi/kido-status.ts as pi/kido-status.ts)
+  (pi/kido-agents.ts as pi/kido-agents.ts)
+  (claude/settings.json as claude/settings.json)))

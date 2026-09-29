@@ -2031,16 +2031,17 @@ installed into `~/.pi/agent/extensions` by an older kido has no guard,
 loads after the shipped copy and conflicts; the fix is to delete
 `~/.pi/agent/extensions/kido-*.ts`.
 
-**Install layout.** `scripts/install-share.sh <prefix>/share/kido` is
+**Install layout.** The `install` stanza in the root `dune` file is
 the one description of share/kido: the two shell integrations,
-`shim.sh`, `bin/*`, `pi/*.ts` and `claude/settings.json`. `kido-tmux.conf`
-is not among them - the launcher writes the embedded copy into the
-configuration it starts the server with, and nothing reads it from disk.
-`make install` runs it, with `PREFIX` (`~/.local` by default) naming the
-tree that holds `bin/kido`, `bin/kido-tmux` and `share/kido` together; so
-does the e2e harness, which builds kido as `<tmp>/bin/kido` with
-`<tmp>/share/kido` beside it. The Homebrew formula installs the same set
-into its own prefix.
+`shim.sh`, `bin/*`, `pi/*.ts` and `claude/settings.json`, beside
+`bin/kido`. `kido-tmux.conf` is not among them - the launcher writes the
+embedded copy into the configuration it starts the server with, and
+nothing reads it from disk. `dune build @install` lays the tree out in
+`_build/install/default`; `dune install` refuses under package
+management, so `make install` copies its `bin` and `share` into `PREFIX`
+(`~/.local` by default), the tree that holds `bin/kido`, `bin/kido-tmux`
+and `share/kido` together. The e2e harness copies the same tree into
+`<tmp>`. The Homebrew formula installs the same set into its own prefix.
 
 ## Knobs
 

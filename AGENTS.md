@@ -138,8 +138,8 @@ Conventions:
     tmux/              kido-tmux.conf, the defaults the launcher writes into server.conf
     shims/             the bin directory's sh shims (tmux, ssh, pi, claude) and shim.sh
     claude/            settings.json, the hooks file the claude shim hands to Claude Code
-    scripts/           install-share.sh, the one description of share/kido; the fork build;
-                       ci-watch.sh, which waits for a commit's CI run (async_bash it);
+    dune               the install stanza, the one description of share/kido
+    scripts/           the fork build; ci-watch.sh, which waits for a commit's CI run (async_bash it);
                        ci-like.sh; test-ts.sh; dump-prompts.ts, every prompt text pi registers
     third_party/tmux   the tmux fork, a git submodule built as kido-tmux
     pi/                the two pi extensions, which the pi shim loads with --extension
