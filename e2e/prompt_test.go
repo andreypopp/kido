@@ -149,7 +149,7 @@ func TestPromptMultiLine(t *testing.T) {
 		return fmt.Sprintf("pane %s to reach a zsh prompt (is %q)", pane, h.paneText(pane))
 	})
 
-	// No inbox socket: kido delivers through tmux.SendPrompt, not the
+	// No inbox socket: kido delivers through Tmux.Exec.send_prompt, not the
 	// socket path (TestPromptInboxNative).
 	h.agentStatus("pi-1", pane, "pi", "idle")
 

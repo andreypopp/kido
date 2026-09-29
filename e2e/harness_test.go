@@ -46,7 +46,7 @@ var (
 	// kido's directory, so a bare "kido" in tmux/kido-tmux.conf's bindings
 	// resolves to the binary this harness just built rather than to
 	// whatever is installed on the machine running the suite (or nothing,
-	// on CI) - mirroring what launch (cmd/kido/launch.go) does for a
+	// on CI) - mirroring what launch (lib/launch.ml) does for a
 	// real launch - plus tmuxDir, for the one binding that runs a literal
 	// "tmux" (the C-s popup).
 	serverPathPrefix string
@@ -99,7 +99,7 @@ func setup(m *testing.M) (int, error) {
 	if nodeBin, err = buildFakeAgent(dir, dir, "node"); err != nil {
 		return 0, err
 	}
-	// A resume that names no command defaults to "pi" (spawn_subagent.go),
+	// A resume that names no command defaults to "pi" (lib/spawn_subagent.ml),
 	// which is where the tool allowlist is spelled onto the command line -
 	// so that one fixture needs the literal name "pi" to resolve, not a
 	// fake standing in under some other name. The only way to make a name
@@ -120,7 +120,7 @@ func setup(m *testing.M) (int, error) {
 	}
 	tmuxBin, tmuxWhy = findTmux()
 	// A production kido resolves the tmux binary through a "kido-tmux"
-	// sibling (internal/tmux.resolveBinary); cleanEnv strips KIDO_TMUX from
+	// sibling (Tmux.Exec.resolve_binary); cleanEnv strips KIDO_TMUX from
 	// every environment this harness builds, including the servers' own, so
 	// without this symlink the built kidoBin would fall through to "tmux" on
 	// PATH instead - exercising a resolution step no install ever takes.
@@ -174,7 +174,7 @@ func buildKido(out string) error {
 // reads, so a test can drive a claudePane with send-keys and read back
 // what arrived. Two lines are commands instead: "busy" and "esc" redraw
 // the pane as real Claude Code would, since kido reads a waiting pane's
-// screen to notice a dismissed prompt (internal/ui/screen.go).
+// screen to notice a dismissed prompt (lib/screen.ml).
 func buildFakeAgent(srcRoot, outDir, name string) (string, error) {
 	src := filepath.Join(srcRoot, "fakeagent-"+name)
 	if err := os.MkdirAll(src, 0o755); err != nil {
@@ -350,7 +350,7 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 	// itself inherit it rather than touching the developer's real state
 	// dir; h.hook and h.agentStatus set their own copies out of band.
 	// KIDO_LINGER_SECONDS/KIDO_STALL_THRESHOLD_MS/KIDO_STREAM_* shorten the
-	// window-lifecycle grace, state.StallThreshold and the streaming
+	// window-lifecycle grace, State.stall_threshold and the streaming
 	// wrapper's batch/backoff the same way for everything the inner server
 	// runs, so real production values (30s, 3min, 250ms) don't put every
 	// timing test past the 5s settle; global per server, so 3s (not
@@ -390,8 +390,8 @@ set -g side-status-command "%s%s"
 		// which could not distinguish this server's control client from one
 		// belonging to some other tmux server started during the test.
 		pids := controlClientPIDs(h.inner)
-		// More than one is a real bug: Conn's supervise loop kills the old
-		// child before dialling a new one (internal/tmux/conn.go).
+		// More than one is a real bug: Tmux.Conn kills the old child
+		// before dialling a new one (lib_tmux/conn.ml).
 		if len(pids) > 1 {
 			t.Errorf("more than one control client attached to %s: %v", h.inner, pids)
 		}
@@ -587,7 +587,7 @@ var sgrOn = map[string]*regexp.Regexp{
 
 // indField is the sidebar's two-column indicator field as the tests spell
 // it: the glyph and a space, or two spaces when there is none. It mirrors
-// field() in internal/ui.
+// Ui.field (lib/ui.ml).
 func indField(glyph string) string {
 	if glyph == "" {
 		return "  "

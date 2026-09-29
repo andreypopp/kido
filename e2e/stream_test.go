@@ -24,8 +24,8 @@ import (
 //
 // The batch window is set far wider than writeEvery, and the envelope
 // budget is judged against the number of windows the run actually
-// spanned (elapsed/batch + 2, cmd/kido/async_stream_test.go's
-// TestStreamCoalescesAndStripsAnsi): on a loaded runner a 50ms gap
+// spanned (elapsed/batch + 2, test/test_async_stream.ml's "lines
+// written one at a time arrive as a few chunks"): on a loaded runner a 50ms gap
 // between lines can stretch well past a 100ms window, and a fixed count
 // of envelopes would then measure how far it stretched, not whether the
 // wrapper batches at all.

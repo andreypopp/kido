@@ -110,7 +110,7 @@ func matchesAll(s string, subs []string) bool {
 }
 
 // `_subagent` tools reach the caller's own descendants, checked by
-// descendantTarget (cmd/kido/control.go), which begins by looking the
+// Message_agent.reaches (lib/message_agent.ml), which begins by looking the
 // caller up: a caller with no record is not an agent, so it is not held
 // to a rule about which agents it may act on. Deliberate - the guard is
 // a boundary between agents, and a human is not one - and a test is what

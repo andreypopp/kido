@@ -13,14 +13,14 @@ const DEPTH = process.env.KIDO_AGENT_DEPTH ? Number(process.env.KIDO_AGENT_DEPTH
 // Read once at module scope; a test re-imports the module to change it.
 const HEARTBEAT_MS = Number(process.env.KIDO_HEARTBEAT_MS) || 30000;
 
-// A timeout here is not a refusal: internal/state.Record's write path is what actually decides who holds the id.
+// A timeout here is not a refusal: State.record's write path (lib/state.ml) is what actually decides who holds the id.
 const CLAIM_TIMEOUT_MS = 5000;
 
 export type Status = "running" | "waiting" | "compacting" | "idle";
 
 export type RunKidoResult = { ok: true; out: string } | { ok: false; error: string; code?: number };
 
-// cmd/kido/main.go's exit code when another live process already holds this session id.
+// lib/reporting.ml's exit code when another live process already holds this session id.
 const EXIT_SESSION_HELD = 6;
 
 const MAX_PROMPT_BYTES = 1024 * 1024;
@@ -39,7 +39,7 @@ export type Envelope = { id: string; from: Sender; text: string } & (
   | { kind: "unrecognised"; claimed: string }
 );
 
-// Mirrors internal/msg.Parse: a payload is a v1 envelope only if it parses as a
+// Mirrors Msg.parse (lib/msg.ml): a payload is a v1 envelope only if it parses as a
 // JSON object carrying both "v" and "kind"; anything else is v0 raw prompt text.
 export function parseEnvelope(text: string): Envelope | null {
   let parsed: unknown;
@@ -53,7 +53,7 @@ export function parseEnvelope(text: string): Envelope | null {
   }
   const obj = parsed as Record<string, unknown>;
   if (!("v" in obj) || !("kind" in obj)) return null;
-  // Coerced rather than required, to match msg.Parse: Go reads a missing string field as the zero string.
+  // Coerced rather than required, to match Msg.parse, which reads a missing string field as "".
   const str = (v: unknown): string => (typeof v === "string" ? v : "");
   const from = (typeof obj.from === "object" && obj.from !== null ? obj.from : {}) as Record<string, unknown>;
   const [session, name, pane] = [str(from.session), str(from.name), str(from.pane)];

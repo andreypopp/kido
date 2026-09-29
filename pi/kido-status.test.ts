@@ -177,8 +177,8 @@ switch (args[0]) {
   case "async_bash": {
     const logFile = process.env.KIDO_FAKE_ASYNC_BASH_LOG;
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
-    // Four fields, the last the run's output file, exactly as cmd/kido's
-    // printCreated writes them for a bash run.
+    // Four fields, the last the run's output file, exactly as
+    // Spawn_subagent.create_run_window writes them for a bash run.
     const runID = "fake-async-run-id";
     const output = process.env.KIDO_FAKE_STATE_DIR + "/runs/" + runID + "/output";
     process.stdout.write("@9 %9 " + runID + " " + output + "\\n");
@@ -1104,7 +1104,7 @@ test("a /reload leaves exactly one listener, on the same socket", async () => {
 });
 
 // This half asserts the registered tools are exactly the names in
-// pi/testdata/tools.json; cmd/kido's TestEveryToolHasASubcommandOfItsName asserts
+// pi/testdata/tools.json; test/test_tool_parity.ml asserts
 // every name in that file is a kido subcommand, so a tool added here fails until
 // both are updated.
 test("the registered tools are exactly the shared list both suites check subcommand parity against", async () => {
@@ -1133,9 +1133,9 @@ test("the registered tools are exactly the shared list both suites check subcomm
   }
 });
 
-// Driven from the same fixture internal/msg's own discriminator table test
+// Driven from the same fixture test/test_msg.ml's own discriminator table test
 // drives, so the two suites cannot drift apart by someone editing only one list.
-test("parseEnvelope agrees with internal/msg.Parse's v0/v1 discriminator table", () => {
+test("parseEnvelope agrees with Msg.parse's v0/v1 discriminator table", () => {
   const fixturePath = join(dirname(fileURLToPath(import.meta.url)), "..", "internal", "msg", "testdata", "discriminator.json");
   const cases: { name: string; raw: string; ok: boolean }[] = JSON.parse(readFileSync(fixturePath, "utf8"));
   assert.ok(cases.length >= 11, `expected at least 11 cases in the shared fixture, got ${cases.length}`);
@@ -2180,7 +2180,7 @@ test("spawn_subagent(fork) passes --fork with this session's own id, and nothing
   }
 });
 
-// kido spawn_subagent (cmd/kido/spawn_subagent.go) refuses these combinations;
+// kido spawn_subagent (lib/spawn_subagent.ml) refuses these combinations;
 // the tool forwards what it was given rather than deciding a second time.
 test("spawn_subagent forwards resume alongside task, name or fork, and a call with neither, for kido to refuse", async () => {
   const fx = makeFixture();
@@ -2600,7 +2600,7 @@ test("a batch is the tail, with one line saying how many it left out and where t
 });
 
 // A run's completion notice must never reach the model before the output it is
-// the ending of; cmd/kido/async_run.go sends the last chunk first, and this is
+// the ending of; lib/async_run.ml sends the last chunk first, and this is
 // the receiving half, where a held batch is flushed by the notice's own arrival.
 test("a completion notice flushes whatever output was still held, and arrives after it", async () => {
   const fx = makeFixture();
@@ -2675,7 +2675,7 @@ test("notify_parent's schema accepts a summary over the byte cap, and execute() 
   }
 });
 
-// The cap that matters is kido's own (cmd/kido/main.go's oneLine); only the
+// The cap that matters is kido's own (Reporting.one_line, lib/reporting.ml); only the
 // schema wrongly rejected past 256 characters. The report is still checked since
 // the local copy setActivity keeps is what every later report carries.
 test("set_status's schema accepts an activity over the byte cap, and setActivity sends it whole as kido set_status", async () => {
@@ -3195,7 +3195,7 @@ test("interleaving: an inbound ask from the same target is refused even while th
 });
 
 // Guaranteed to belong to no process by the time the caller uses it (the same
-// trick internal/state/state_test.go uses on the Go side).
+// trick test/fixture.ml's dead_pid uses on the OCaml side).
 function deadPid(): number {
   const r = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
   return r.pid!;
@@ -3338,7 +3338,7 @@ async function withHeartbeatEnv<T>(ms: number, fn: () => Promise<T>): Promise<T>
 }
 
 // The second incident: two pi processes on one session id. kido refuses
-// the newcomer's claim (exit 6, internal/state.Record), and what this
+// the newcomer's claim (exit 6, State.record), and what this
 // pins is everything that must then NOT happen - no second report, no
 // heartbeat, no removal report on the way out, all of which would be
 // writes to a record that belongs to the process still running. The

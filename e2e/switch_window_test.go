@@ -47,7 +47,7 @@ func (h *harness) addWindow(session, name string) {
 }
 
 // markSubagent sets @kido_run on session's window's active pane - the
-// pane-scoped mark internal/tmux.SwitchWindow and internal/reap.Sweep
+// pane-scoped mark Tmux.Exec.switch_window and Reap.sweep
 // trust to know a window is a subagent's, with no status record needed.
 func (h *harness) markSubagent(session, window string) {
 	h.t.Helper()

@@ -70,7 +70,7 @@ const TASK_FILE = process.env.KIDO_AGENT_TASK_FILE || undefined;
 
 // Read once at module scope; a test re-imports the module to change one.
 
-// Shared with internal/reap's sweep - both must read the same variable, or one side closes a window first.
+// Shared with lib/reap.ml's sweep - both must read the same variable, or one side closes a window first.
 const LINGER_SECONDS = Number(process.env.KIDO_LINGER_SECONDS) || 30;
 
 // A subagent's pi is a child of the tmux server, not of the parent's pi, so no OS parent-death signal reaches it; it polls instead.
@@ -85,7 +85,7 @@ const KEEP_ALIVE = process.env.KIDO_AGENT_KEEP_ALIVE === "1";
 
 const SPAWN_TIMEOUT_MS = Number(process.env.KIDO_SPAWN_TIMEOUT_MS) || 5000;
 
-// Must comfortably exceed stopEscalation (cmd/kido/control.go, default 5s), which `kido stop_subagent` can itself block for.
+// Must comfortably exceed Control.stop_escalation (lib/control.ml, default 5s), which `kido stop_subagent` can itself block for.
 const STOP_TIMEOUT_MS = Number(process.env.KIDO_STOP_TIMEOUT_MS) || 8000;
 
 const DEFAULT_ASK_TIMEOUT_MS = 5 * 60 * 1000;
@@ -185,7 +185,7 @@ const SPAWN_RESULT_RULE =
 const NO_FIRST_TURN_TEXT =
   "no turn ever ran: the task was delivered and the session never started work on it (the pane's own screen, kept with the run, is the only account of why)";
 
-// AgentInfo mirrors cmd/kido/list_agents.go's AgentInfo, what `kido
+// AgentInfo mirrors lib/list_agents.ml's agent_info, what `kido
 // list_agents --json` prints. Only the fields read here are declared.
 interface AgentInfo {
   id: string;
@@ -243,7 +243,7 @@ function agentCompletionItems(agents: AgentInfo[], token: string): CompletionIte
     });
 }
 
-// Mirrors kido message_agent's resolveTarget (cmd/kido/message_agent.go): exact name, then exact id, then unique id prefix.
+// Mirrors kido message_agent's Message_agent.resolve_target (lib/message_agent.ml): exact name, then exact id, then unique id prefix.
 function resolveAgent(agents: AgentInfo[], to: string): { agent?: AgentInfo; error?: string } {
   const byName = agents.filter((a) => a.name && a.name.toLowerCase() === to.toLowerCase());
   if (byName.length === 1) return { agent: byName[0] };
@@ -259,7 +259,7 @@ function resolveAgent(agents: AgentInfo[], to: string): { agent?: AgentInfo; err
   return { error: `no agent matches "${to}"` };
 }
 
-// Mirrors cmd/kido/agents.go's isAncestor, the same walk kept in step. seen guards a cyclic parent chain.
+// Mirrors lib/list_agents.ml's is_ancestor, the same walk kept in step. seen guards a cyclic parent chain.
 export function isAncestor(agents: AgentInfo[], self: AgentInfo, target: AgentInfo): boolean {
   if (self.id === target.id) return false;
   const byId = new Map(agents.map((a) => [a.id, a]));
@@ -373,8 +373,7 @@ export default function (pi: ExtensionAPI) {
     wakeInFlight = false;
   });
 
-  // labelFrom names an envelope's sender for the model to read, in the
-  // same fallback order targetLabel (cmd/kido/message.go) uses. It is a
+  // labelFrom names an envelope's sender for the model to read. It is a
   // label only, shown to the model, never the address a reply actually
   // resolves against - see pendingInboundAsks below for why.
   const labelFrom = (from: Sender): string => {
@@ -535,7 +534,7 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // Mirrors descendantTarget (cmd/kido/control.go). Checked here too because `from` is
+  // Mirrors Message_agent.resolve's Descendant recipient (lib/message_agent.ml). Checked here too because `from` is
   // advisory: a process that can write this socket can claim to be anyone.
   const senderIsAncestor = async (env: Envelope): Promise<boolean> => {
     const listed = await fetchAgents();

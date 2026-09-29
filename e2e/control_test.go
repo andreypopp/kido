@@ -19,7 +19,7 @@ func (h *harness) wedgedChild(session, sessionID string) (paneID, windowID strin
 }
 
 // A target that acknowledges the stop over its inbox but never actually
-// goes is exactly the case stopCmd's escalation exists for.
+// goes is exactly the case Control.stop's escalation exists for.
 func TestStopKillsAWedgedChildAfterEscalation(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
