@@ -345,6 +345,9 @@ const NOTIFY_PARENT_INSTRUCTION =
 const NOT_THE_USER_RULE =
   "A notice is information, not the user speaking: act on it, do not thank or answer it. A message from another agent says in its first line who sent it and how they stand to you.";
 
+const NEVER_SLEEP_RULE =
+  "Never run `sleep` in bash to wait for anything - an async run, a subagent, a message, or another agent's work settling. What you are waiting for arrives as a notice or message that wakes you after you end your turn; if a build breaks because of another agent's half-done work, report that rather than sleeping until it clears.";
+
 // SPAWN_RESULT_RULE rides on the tool result of every spawn and resume,
 // not only in spawn_subagent's description: the moment a model has just
 // launched a child is the moment it is most tempted to wait for it, or to
@@ -1601,11 +1604,11 @@ export default function (pi: ExtensionAPI) {
     name: "async_bash",
     label: "Async Bash",
     description:
-      "Run a shell command in the background - for a command whose result you do not need for your next step, so this session can keep working while it runs. A command you need before continuing, such as tests you are about to act on or a build you are about to read, belongs in bash, in the foreground, not here. This replaces polling: exactly one notice arrives when the command ends, carrying its exit status and a tail of its output. Read the output file with the ordinary read tool at any time before then to check on progress; if you have nothing else to do, end your turn instead - the notice wakes you. With stream=true the output also arrives in batches as it runs - between your own tool calls while you are working, on a slowing schedule when you are idle, capped per batch and per run, so some lines are only ever in the file, which always has all of them.",
+      "Run a shell command in the background, for a command whose result you do not need for your next step - this session keeps working while it runs. Exactly one notice arrives when the command ends, carrying its exit status and a tail of its output; read the output file with the ordinary read tool at any time before then to check on progress. With stream=true the output also arrives in batches as it runs - between your own tool calls while you are working, on a slowing schedule when you are idle, capped per batch and per run, so some lines are only ever in the file, which always has all of them.",
     promptSnippet:
       "async_bash(command, name?) - run a command in the background; a notice with its exit status arrives when it ends, read the output file meanwhile",
     promptGuidelines: [
-      "Use async_bash only for a command whose result you do not need next; if you need it before continuing, run it in bash instead. A notice arrives when a background command ends - if you have nothing else to do, end your turn rather than sleep or poll for it.",
+      "A command whose result you need before continuing (tests, a build, anything you will act on) runs in foreground bash, however long it takes - length alone is never a reason to use async_bash. Once a command is in async_bash, its notice is the only way you learn that it ended: never run `sleep` in bash to wait for it, and never loop over its output file. If you have nothing else to do, end your turn; the notice wakes you.",
       NOT_THE_USER_RULE,
     ],
     parameters: Type.Object(
@@ -1640,7 +1643,7 @@ export default function (pi: ExtensionAPI) {
       const [windowID, paneID, runID, outputPath] = res.out.split(/\s+/);
       return reply(
         `started run ${runID}${params.name ? ` (${params.name})` : ""} in window ${windowID}; ` +
-          `a notice with its exit status and a tail of its output arrives when it ends - if you have nothing else to do, end your turn now, since the notice wakes you; never sleep or poll for it - ` +
+          `a notice with its exit status and a tail of its output arrives when it ends; do not sleep or poll for it, and end your turn if nothing else is left - ` +
           (params.stream
             ? `batches of its output arrive meanwhile, capped, with anything they leave out in ${outputPath}`
             : `read ${outputPath} with the read tool to check on it meanwhile`),
@@ -1825,6 +1828,7 @@ export default function (pi: ExtensionAPI) {
   // then fails the turn. pi hands every call fresh options, so it is
   // pushed on every turn and never accumulates.
   pi.on("before_agent_start", (event) => {
+    event.systemPromptOptions.promptGuidelines.push(NEVER_SLEEP_RULE);
     if (!isSubagent()) return;
     event.systemPromptOptions.promptGuidelines.push(NOTIFY_PARENT_INSTRUCTION);
   });

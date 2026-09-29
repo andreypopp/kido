@@ -2122,17 +2122,18 @@ test("a subagent's before_agent_start hook adds the notify_parent instruction to
       const event: any = { systemPrompt: "base prompt", systemPromptOptions: { promptGuidelines: [] } };
       const results = await s.emit("before_agent_start", event);
       assert.ok(results.every((r) => r === undefined), "the handler must not force a whole-prompt replacement");
-      assert.equal(event.systemPromptOptions.promptGuidelines.length, 1, "the instruction is added as one guideline");
-      assert.match(event.systemPromptOptions.promptGuidelines[0], /notify_parent/, "names the tool the model must call");
+      assert.equal(event.systemPromptOptions.promptGuidelines.length, 2, "the never-sleep rule and the notify_parent instruction are each added as one guideline");
+      assert.match(event.systemPromptOptions.promptGuidelines[0], /sleep/, "the always-on never-sleep rule rides first");
+      assert.match(event.systemPromptOptions.promptGuidelines[1], /notify_parent/, "names the tool the model must call");
       assert.match(
-        event.systemPromptOptions.promptGuidelines[0],
+        event.systemPromptOptions.promptGuidelines[1],
         /entire response|whole response/i,
         "also carries the stop-after-replying instruction",
       );
 
       const event2: any = { systemPrompt: "base prompt", systemPromptOptions: { promptGuidelines: [] } };
       await s.emit("before_agent_start", event2);
-      assert.equal(event2.systemPromptOptions.promptGuidelines.length, 1, "a second turn's own fresh options get the instruction once, not accumulated onto the first turn's");
+      assert.equal(event2.systemPromptOptions.promptGuidelines.length, 2, "a second turn's own fresh options get the instructions once, not accumulated onto the first turn's");
     });
   } finally {
     fx.restore();
@@ -2145,7 +2146,8 @@ test("a subagent's before_agent_start hook adds the notify_parent instruction to
     const event: any = { systemPrompt: "base prompt", systemPromptOptions: { promptGuidelines: [] } };
     const results = await s.emit("before_agent_start", event);
     assert.ok(results.every((r) => r === undefined), "a root session's system prompt is left alone");
-    assert.equal(event.systemPromptOptions.promptGuidelines.length, 0, "and no guideline is added either");
+    assert.equal(event.systemPromptOptions.promptGuidelines.length, 1, "the never-sleep rule still applies to a root session; the notify_parent instruction does not");
+    assert.match(event.systemPromptOptions.promptGuidelines[0], /sleep/, "the always-on never-sleep rule");
   } finally {
     rootFx.restore();
   }
@@ -2283,8 +2285,8 @@ test("spawn_subagent and async_bash carry promptGuidelines pi will merge into it
       "spawn_subagent: a child's report is what it meant to do, so the diff is what to check before relaying success",
     );
     assert.ok(
-      bashRules.some((r) => /do not need next/.test(r) && /end your turn/.test(r) && /sleep or poll/.test(r)),
-      "async_bash: only for a result you do not need next, and end the turn rather than wait for its notice",
+      bashRules.some((r) => /before continuing/.test(r) && /end your turn/.test(r) && /never run `sleep`/.test(r)),
+      "async_bash: a needed result runs in foreground bash, and end the turn rather than wait for its notice",
     );
 
     // One string, not two similar ones: buildRules de-duplicates by exact
@@ -2817,11 +2819,6 @@ test("async_bash's result carries the run id and the output path kido printed, a
     assert.match(result.content[0].text, new RegExp(wantOutput.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the result text names the output path");
     assert.match(result.content[0].text, /notice/, "the result text says a notice arrives on completion");
     assert.match(result.content[0].text, /read/, "the result text says the output file can be read meanwhile");
-    assert.match(
-      result.content[0].text,
-      /end your turn now, since the notice wakes you; never sleep or poll for it/,
-      "and says what to do with the turn it just freed, at the moment the model is most tempted to wait",
-    );
   } finally {
     fx.restore();
   }
@@ -3472,7 +3469,8 @@ test("a process that merely inherited a subagent's environment is not a subagent
         // This process's own session id: minted by pi, not the run id.
         const s = await startWithShutdownSpy(fx, factory, "a-nested-pis-own-session");
 
-        const results = await s.emit("before_agent_start", { systemPrompt: "base prompt" });
+        const event: any = { systemPrompt: "base prompt", systemPromptOptions: { promptGuidelines: [] } };
+        const results = await s.emit("before_agent_start", event);
         assert.ok(results.every((r) => r === undefined), "it is told nothing about a parent it does not have");
 
         const result = await s.tools.get("notify_parent").execute("call-1", { summary: "not mine to send" });
@@ -3573,8 +3571,10 @@ test("an unresolved session id is not a subagent, whatever the environment claim
         const factory = await freshExtensions();
         const s = await startWithShutdownSpy(fx, factory);
 
-        const results = await s.emit("before_agent_start", { systemPrompt: "base prompt" });
+        const event: any = { systemPrompt: "base prompt", systemPromptOptions: { promptGuidelines: [] } };
+        const results = await s.emit("before_agent_start", event);
         assert.ok(results.every((r) => r === undefined), "no standing instruction for a session that may not be a child at all");
+        assert.equal(event.systemPromptOptions.promptGuidelines.length, 1, "the always-on never-sleep rule still applies");
 
         await s.emit("agent_settled", {}, { isIdle: () => true });
         await new Promise((r) => setTimeout(r, 300));
