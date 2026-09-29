@@ -124,7 +124,7 @@ Conventions:
       set_status.ml, list_agents.ml, spawn_subagent.ml, async_bash.ml,
       async_run.ml (its wrapper), async_stream.ml, runs.ml, snapshot.ml,
       ssh.ml (the remote bootstrap), agent_alive.ml,
-      control.ml (steer/stop/interrupt_subagent, window switching)
+      control.ml (stop/interrupt_subagent, window switching)
                        one subcommand or family each
       cli.ml, fs.ml, timestamp.ml  failure printing and tables, files, time
     lib_tmux/          the library tmux: pane.ml (the pane format and its
@@ -477,7 +477,7 @@ prints (the separate `tmux` formula is retired). A release is
 
 Do not add a tag. `brew audit`/`brew style` vendor gems into the
 Homebrew checkout itself, which can leave it dirty. Verify against a real
-tmux server before releasing — unit tests do not run tmux, and e2e skips
+tmux server before releasing — the ppx_expect tests do not need tmux, and e2e skips
 silently without the fork.
 
 ## Commit style

@@ -95,10 +95,11 @@ in `~/.config/kido/kido.conf` now.
 kido is OCaml, built with dune in a local opam switch; the e2e suite is Go.
 
 ```sh
+git clone --recurse-submodules https://github.com/andreypopp/kido.git && cd kido
 opam switch create . 5.5.1 --no-install
-opam install . --deps-only --with-test
+opam install . --deps-only --with-test --with-dev-setup
 opam exec -- make install   # binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
-opam exec -- make test      # the unit tests and the pi extensions' node suite
+opam exec -- make test      # the unit tests and the pi extensions' suite (needs node 24)
 opam exec -- make e2e       # drives kido inside a real tmux server
 ```
 
