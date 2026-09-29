@@ -38,20 +38,38 @@ var (
 	windowExists = tmux.WindowExists
 )
 
-func spawnUsage() string {
-	return "usage: kido spawn_subagent --parent-pid PID --parent-session ID --name NAME --task-file FILE|- [--fork SESSION_ID] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
-		"   or: kido spawn_subagent --no-parent --name NAME --task-file FILE|- [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
-		"   or: kido spawn_subagent --resume RUN_ID [--parent-pid PID --parent-session ID | --no-parent] [--keep-alive] [-- COMMAND...]"
+const spawnUsage = "usage: kido spawn_subagent --parent-pid PID --parent-session ID --name NAME --task-file FILE|- [--fork SESSION_ID] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
+	"   or: kido spawn_subagent --no-parent --name NAME --task-file FILE|- [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
+	"   or: kido spawn_subagent --resume RUN_ID [--parent-pid PID --parent-session ID | --no-parent] [--keep-alive] [-- COMMAND...]"
+
+type parentEdge struct {
+	pid     int
+	session string
 }
 
-// spawnSubagentCmd implements `kido spawn_subagent`: it creates a detached window in the
-// caller's own tmux session (found from $TMUX_PANE) running COMMAND,
-// defaulting to `pi`, with KIDO_AGENT_* set in its environment, and
-// prints the new window id, pane id and run id, space-separated. The
-// task goes in a file in the run's directory, never on the command line;
-// the window name does go on the command line and is checked with
-// tmuxConfUnsafe. See docs/design.md, "Spawning".
-func spawnSubagentCmd(args []string) error {
+type spawnMode interface{ isSpawn() }
+
+type fresh struct {
+	name, task, fork, model string
+	tools                   []string
+}
+
+type resume struct {
+	runID string
+	adopt bool
+}
+
+func (fresh) isSpawn()  {}
+func (resume) isSpawn() {}
+
+type spawnReq struct {
+	mode      spawnMode
+	parent    *parentEdge
+	keepAlive bool
+	command   []string
+}
+
+func parseSpawn(args []string) (spawnReq, error) {
 	fs := flag.NewFlagSet("spawn_subagent", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	parentPID := fs.Int("parent-pid", 0, "pid of the agent spawning this one")
@@ -73,64 +91,88 @@ func spawnSubagentCmd(args []string) error {
 	// entrance only.
 	noParent := fs.Bool("no-parent", false, "spawn with no parent edge at all: the child reports to nobody, arms no idle timer, and is never reaped as an orphan")
 	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("%w\n%s", err, spawnUsage())
+		return spawnReq{}, fmt.Errorf("%w\n%s", err, spawnUsage)
 	}
-	resuming := *resumeID != ""
-	parentGiven := *parentPID > 0 || *parentSession != ""
+	refuse := func(why string) (spawnReq, error) {
+		return spawnReq{}, fmt.Errorf("%s\n%s", why, spawnUsage)
+	}
+
+	req := spawnReq{keepAlive: *keepAlive, command: fs.Args()}
+	if len(req.command) == 0 {
+		req.command = []string{"pi"}
+	}
+	switch {
+	case *noParent && (*parentPID > 0 || *parentSession != ""):
+		return refuse("--no-parent contradicts --parent-pid/--parent-session; pass one or the other")
+	case *parentPID > 0 && *parentSession != "":
+		req.parent = &parentEdge{pid: *parentPID, session: *parentSession}
+	case *parentPID > 0 || *parentSession != "":
+		return refuse("--parent-pid and --parent-session name one parent and are given together")
+	}
+
+	if *resumeID != "" {
+		switch {
+		case *taskFile != "":
+			return refuse("--resume keeps the run's original task; --task-file is refused alongside it")
+		case *name != "":
+			return refuse("--resume keeps the run's original window name; --name is refused alongside it")
+		case *forkSession != "":
+			return refuse("--resume continues a run's own session; --fork starts a new one from somebody else's, and the two cannot both be asked for")
+		}
+		req.mode = resume{runID: *resumeID, adopt: req.parent == nil && !*noParent}
+		return req, nil
+	}
 
 	switch {
-	case *noParent && parentGiven:
-		return fmt.Errorf("--no-parent contradicts --parent-pid/--parent-session; pass one or the other\n%s", spawnUsage())
-	case !resuming && !*noParent && *parentPID <= 0:
-		return fmt.Errorf("--parent-pid is required (or --no-parent for a child owned by nobody)\n%s", spawnUsage())
-	case !resuming && !*noParent && *parentSession == "":
-		return fmt.Errorf("--parent-session is required (or --no-parent for a child owned by nobody)\n%s", spawnUsage())
-	case !resuming && *name == "":
-		return fmt.Errorf("--name is required\n%s", spawnUsage())
-	case !resuming && *taskFile == "":
-		return fmt.Errorf("--task-file is required\n%s", spawnUsage())
-	case resuming && *taskFile != "":
-		return fmt.Errorf("--resume keeps the run's original task; --task-file is refused alongside it\n%s", spawnUsage())
-	case resuming && *name != "":
-		return fmt.Errorf("--resume keeps the run's original window name; --name is refused alongside it\n%s", spawnUsage())
-	case resuming && *forkSession != "":
-		return fmt.Errorf("--resume continues a run's own session; --fork starts a new one from somebody else's, and the two cannot both be asked for\n%s", spawnUsage())
+	case req.parent == nil && !*noParent:
+		return refuse("--parent-pid and --parent-session are required (or --no-parent for a child owned by nobody)")
+	case *name == "":
+		return refuse("--name is required")
+	case *taskFile == "":
+		return refuse("--task-file is required")
 	}
-
-	if resuming {
-		return spawnResume(*resumeID, *parentPID, *parentSession, fs.Args(), *keepAlive, *noParent)
-	}
-
-	if i := strings.IndexAny(*name, tmuxConfUnsafe); i >= 0 {
-		return fmt.Errorf("refusing window name %q: it contains %q, which cannot survive tmux's own command-line parsing", *name, (*name)[i:i+1])
-	}
-	if len(*name) > maxWindowNameLen {
-		return fmt.Errorf("refusing window name %q: %d bytes is over the %d byte limit", *name, len(*name), maxWindowNameLen)
+	if err := checkWindowName(*name); err != nil {
+		return spawnReq{}, err
 	}
 	// --fork goes on the child's command line, so it is held to what a
 	// window name is held to: tmux's own parsers are what it has to survive.
-	if i := strings.IndexAny(*forkSession, tmuxConfUnsafe); i >= 0 {
-		return fmt.Errorf("refusing --fork %q: it contains %q, which cannot survive tmux's own command-line parsing", *forkSession, (*forkSession)[i:i+1])
+	if err := tmuxSafe("--fork", *forkSession); err != nil {
+		return spawnReq{}, err
 	}
-
 	task, err := readTask(*taskFile)
+	if err != nil {
+		return spawnReq{}, err
+	}
+	m := fresh{name: *name, task: task, fork: *forkSession, model: *model}
+	if *toolsFlag != "" {
+		m.tools = strings.Split(*toolsFlag, ",")
+	}
+	req.mode = m
+	return req, nil
+}
+
+func checkWindowName(name string) error {
+	if err := tmuxSafe("window name", name); err != nil {
+		return err
+	}
+	if len(name) > maxWindowNameLen {
+		return fmt.Errorf("refusing window name %q: %d bytes is over the %d byte limit", name, len(name), maxWindowNameLen)
+	}
+	return nil
+}
+
+// spawnSubagentCmd implements `kido spawn_subagent`: it creates a detached window in the
+// caller's own tmux session (found from $TMUX_PANE) running COMMAND,
+// defaulting to `pi`, with KIDO_AGENT_* set in its environment, and
+// prints the new window id, pane id and run id, space-separated. The
+// task goes in a file in the run's directory, never on the command line;
+// the window name does go on the command line and is checked with
+// tmuxConfUnsafe. See docs/design.md, "Spawning".
+func spawnSubagentCmd(args []string) error {
+	req, err := parseSpawn(args)
 	if err != nil {
 		return err
 	}
-
-	var tools []string
-	if *toolsFlag != "" {
-		tools = strings.Split(*toolsFlag, ",")
-	}
-
-	command := fs.Args()
-	if len(command) == 0 {
-		command = []string{"pi"}
-	}
-	if err := validateModel(extractModel(command)); err != nil {
-		return err
-	}
-
 	pane, _, err := callerPane()
 	if err != nil {
 		return err
@@ -149,49 +191,114 @@ func spawnSubagentCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	states := state.ByPane(live)
-	depth := states[pane.PaneID].Depth + 1
+	self := state.ByPane(live)[pane.PaneID]
+	parent := req.parent
+	if r, ok := req.mode.(resume); ok && r.adopt && self.ID != "" {
+		parent = &parentEdge{pid: self.PID, session: self.ID}
+	}
+	depth := self.Depth + 1
 	if depth > maxDepth {
 		return fmt.Errorf("refusing to spawn at depth %d: maximum nesting is %d (root 0, subagent 1, subagent 2)", depth, maxDepth)
 	}
-	// A made-up parent edge used to be accepted here and cost the child its
-	// window moments later: internal/reap's rule 2 closes any marked window
-	// whose child names a ParentSession no live record claims, and it keeps
-	// no history, so an invented session and one whose process has died
-	// read identically to it - there was never going to be an error message
-	// for the human to see. The tool cannot trip this, since a pi session
-	// spawning names itself; a human at a shell could, and --no-parent is
-	// now the honest spelling of what they were reaching for.
-	if _, ok := state.Find(live, *parentSession); *parentSession != "" && !ok {
-		return fmt.Errorf("--parent-session %q names no currently live agent; the child would be closed within moments as an orphan (internal/reap's rule 2) - pass --no-parent for a child owned by nobody, or name an agent that is actually running", *parentSession)
+	if parent != nil {
+		if _, ok := state.Find(live, parent.session); !ok {
+			return fmt.Errorf("--parent-session %q names no currently live agent; the child would be closed within moments as an orphan (internal/reap's rule 2) - pass --no-parent for a child owned by nobody, or name an agent that is actually running", parent.session)
+		}
 	}
 
-	runID := subrun.NewID()
-	if err := subrun.Create(runID, task); err != nil {
+	command := req.command
+	var meta subrun.Meta
+	mint := false
+	switch m := req.mode.(type) {
+	case fresh:
+		meta = subrun.Meta{
+			ID: subrun.NewID(), Name: m.name, Kind: subrun.KindAgent,
+			Cwd: pane.CurrentPath, Model: m.model, Tools: m.tools, StartedAt: time.Now(),
+		}
+		// The run id is the child's own pi session id; any other command has
+		// no session to name and is left as given. Measured against pi 0.85.1,
+		// --fork and --session-id compose: createSessionManager (main.js) forks
+		// the resolved source through SessionManager.forkFrom with the given id,
+		// so a forked child still holds the run id its identity proof is read
+		// from (docs/design-subagents.md, "Forking the caller's context").
+		if command[0] == "pi" {
+			var flags []string
+			if m.fork != "" {
+				flags = append(flags, "--fork", m.fork)
+			}
+			flags = append(flags, "--session-id", meta.ID)
+			command = slices.Insert(command, 1, flags...)
+		}
+	case resume:
+		if meta, err = subrun.ReadMeta(m.runID); err != nil {
+			return fmt.Errorf("run %q: %w", m.runID, err)
+		}
+		if _, ok, err := subrun.EffectiveOutcome(meta.ID, meta.PID); err != nil {
+			return err
+		} else if !ok {
+			return fmt.Errorf("run %q is still running (pid %d); resuming a live agent makes no sense", meta.ID, meta.PID)
+		}
+		// A run with no pi session file on disk has nothing for `pi --session`
+		// to resume - the id is free, not stale, since it is also the child's
+		// own session id (docs/design-subagents.md, "The run record") - so
+		// --session-id mints a fresh session under that same id instead, and
+		// the stored task is redelivered as if this were a fresh spawn.
+		mint = !piSessionFileExists(meta.Cwd, meta.ID)
+		if command[0] == "pi" {
+			if mint {
+				command = slices.Insert(command, 1, "--session-id", meta.ID)
+			} else {
+				command = slices.Insert(command, 1, "--session", meta.ID)
+			}
+			if meta.Model != "" && !slices.Contains(command[1:], "--model") {
+				command = append(command, "--model", meta.Model)
+			}
+			if len(meta.Tools) > 0 && !slices.Contains(command[1:], "--tools") {
+				command = append(command, "--tools", strings.Join(meta.Tools, ","))
+			}
+		}
+	}
+	if err := validateModel(command); err != nil {
 		return err
 	}
-	meta := subrun.Meta{
-		ID: runID, Name: *name, Kind: subrun.KindAgent, ParentSession: *parentSession, Depth: depth,
-		Cwd: pane.CurrentPath, Model: *model, Tools: tools, KeepAlive: *keepAlive,
-		StartedAt: time.Now(),
-	}
 
-	// The run id is the child's own pi session id; any other command has
-	// no session to name and is left as given. Measured against pi 0.85.1,
-	// --fork and --session-id compose: createSessionManager (main.js) forks
-	// the resolved source through SessionManager.forkFrom with the given id,
-	// so a forked child still holds the run id its identity proof is read
-	// from (docs/design-subagents.md, "Forking the caller's context").
-	if command[0] == "pi" {
-		var flags []string
-		if *forkSession != "" {
-			flags = append(flags, "--fork", *forkSession)
+	// meta.Cwd is left as the run's own on a resume: pi sessions are
+	// project-scoped, and `pi --session` run from any other directory asks
+	// to fork into the current one instead of resuming, so the window is
+	// created there rather than at the caller's.
+	meta.ParentSession, meta.Depth, meta.KeepAlive = "", depth, meta.KeepAlive || req.keepAlive
+	if parent != nil {
+		meta.ParentSession = parent.session
+	}
+	switch m := req.mode.(type) {
+	case fresh:
+		if err := subrun.Create(meta.ID, m.task); err != nil {
+			return err
 		}
-		flags = append(flags, "--session-id", runID)
-		command = slices.Insert(command, 1, flags...)
+		if err := subrun.WriteMeta(meta); err != nil {
+			return err
+		}
+	case resume:
+		// A resumed run is running again: its old outcome and the first
+		// attempt's captured screen no longer describe it, and
+		// RecordOutcome's O_EXCL would otherwise refuse every exit path that
+		// follows this one.
+		if err := subrun.ClearOutcome(meta.ID); err != nil {
+			return err
+		}
+		if err := subrun.ClearScreen(meta.ID); err != nil {
+			return err
+		}
+		// A minted session starts holding the same task file, and
+		// pi/kido-agents.ts's deliverTask skips it while the "delivered"
+		// marker the earlier attempt left exists.
+		if mint {
+			if err := subrun.ClearDelivered(meta.ID); err != nil {
+				return err
+			}
+		}
 	}
-
-	return createRunWindow(meta, pane.SessionID, runEnv(runID, *parentPID, *parentSession, depth, *keepAlive), command)
+	return createRunWindow(meta, pane.SessionID, runEnv(meta.ID, parent, depth, meta.KeepAlive), command)
 }
 
 // callerPane resolves the pane kido was run from - $TMUX_PANE, which tmux
@@ -216,11 +323,10 @@ func callerPane() (tmux.Pane, []tmux.Pane, error) {
 // the only channel a child has: new-window runs its command with the tmux
 // server's environment, not the caller's. The parent edge is left out
 // when there is nobody to name - a --no-parent spawn, or a run resumed
-// from a bare human shell - so an empty pid or session is omitted rather
-// than reported as zero or empty: the child's own subagent test reads
-// whether the variable is there at all, and internal/reap would read a
-// zero as an orphan's.
-func runEnv(runID string, parentPID int, parentSession string, depth int, keepAlive bool) []string {
+// from a bare human shell - rather than reported as zero or empty: the
+// child's own subagent test reads whether the variable is there at all,
+// and internal/reap would read a zero as an orphan's.
+func runEnv(runID string, parent *parentEdge, depth int, keepAlive bool) []string {
 	env := []string{
 		"KIDO_AGENT_TASK_FILE=" + subrun.TaskPath(runID),
 		// Unconditional: a child that is not pi has no --session-id to learn
@@ -228,11 +334,10 @@ func runEnv(runID string, parentPID int, parentSession string, depth int, keepAl
 		"KIDO_AGENT_RUN_ID=" + runID,
 		"KIDO_AGENT_DEPTH=" + strconv.Itoa(depth),
 	}
-	if parentPID > 0 {
-		env = append(env, "KIDO_AGENT_PARENT_PID="+strconv.Itoa(parentPID))
-	}
-	if parentSession != "" {
-		env = append(env, "KIDO_AGENT_PARENT_SESSION="+parentSession)
+	if parent != nil {
+		env = append(env,
+			"KIDO_AGENT_PARENT_PID="+strconv.Itoa(parent.pid),
+			"KIDO_AGENT_PARENT_SESSION="+parent.session)
 	}
 	if keepAlive {
 		env = append(env, "KIDO_AGENT_KEEP_ALIVE=1")
@@ -240,11 +345,12 @@ func runEnv(runID string, parentPID int, parentSession string, depth int, keepAl
 	return env
 }
 
-// createRunWindow is the tail both a fresh spawn and a resume end in:
+// createRunWindow is the tail both a spawn and an async run end in:
 // create the detached window in sessionID, stamp what tmux answered into
 // meta, mark the run's own pane and print what was created. meta arrives
 // fully assembled - its Name and Cwd are what the window is made with -
-// and the caller is finished once this returns.
+// and a new run's is already on disk, so a wrapper started in the window
+// can read it; a resume's is rewritten only once its window exists.
 //
 // The mark is the only thing that makes the window reapable: the sweep,
 // the sidebar's tree and the window-cycling keys all key off it, so an
@@ -256,15 +362,6 @@ func runEnv(runID string, parentPID int, parentSession string, depth int, keepAl
 func createRunWindow(meta subrun.Meta, sessionID string, env, command []string) error {
 	windowID, paneID, panePID, err := newWindow(sessionID, meta.Name, meta.Cwd, env, command)
 	if err != nil {
-		// A meta has to exist before the outcome, or the outcome is
-		// invisible: `kido runs` passes over a run directory that has no
-		// meta file. A fresh spawn has none yet, so this is where it gets
-		// one; a resume's is already on disk and is left exactly as it was,
-		// since this attempt never got as far as a window and has nothing
-		// truer to say about the run than the last attempt already recorded.
-		if _, err := subrun.ReadMeta(meta.ID); err != nil {
-			subrun.WriteMeta(meta) //nolint:errcheck // best effort
-		}
 		subrun.RecordOutcome(meta.ID, subrun.Outcome{Result: subrun.Failed, Text: err.Error(), At: time.Now()}) //nolint:errcheck // best effort
 		return err
 	}
@@ -311,162 +408,13 @@ func printCreated(meta subrun.Meta, windowID, paneID string) {
 	fmt.Printf("%s %s %s\n", windowID, paneID, meta.ID)
 }
 
-// spawnResume implements `kido spawn_subagent --resume RUN_ID`: it creates a
-// detached window through the identical tmux.NewWindow / markRun
-// path a fresh spawn uses, but launches `pi --session RUN_ID` instead of
-// minting a new one, and continues run id's existing run record instead
-// of creating a second one - its task, its history and its id stay
-// (docs/design.md, "kido spawn_subagent --resume"). command is fs.Args(): the
-// COMMAND after "--", defaulting to plain pi exactly as a fresh spawn
-// does.
-func spawnResume(runID string, parentPID int, parentSession string, command []string, keepAlive, noParent bool) error {
-	meta, err := subrun.ReadMeta(runID)
-	if err != nil {
-		return fmt.Errorf("run %q: %w", runID, err)
-	}
-
-	// EffectiveOutcome's ok is false exactly when the run is still alive
-	// and has recorded nothing about itself yet - the one case resuming
-	// makes no sense, since the run's own process already holds the
-	// session. Any recorded outcome, whatever it says, means the pid is
-	// gone (or kido stop_subagent said so), and resuming is what this command is for.
-	if _, ok, err := subrun.EffectiveOutcome(runID, meta.PID); err != nil {
-		return err
-	} else if !ok {
-		return fmt.Errorf("run %q is still running (pid %d); resuming a live agent makes no sense", runID, meta.PID)
-	}
-
-	// A run with no pi session file on disk has nothing for `pi --session`
-	// to resume - the id is free, not stale, since it is also the child's
-	// own session id (docs/design-subagents.md, "The run record") - so this
-	// mints a fresh session under that same id instead, further down, and
-	// redelivers the stored task as if this were a fresh spawn.
-	sessionExists := piSessionFileExists(meta.Cwd, runID)
-
-	pane, _, err := callerPane()
-	if err != nil {
-		return err
-	}
-
-	// A caller with no state record - a bare human shell - gets no parent
-	// pid or session defaulted for it, exactly as an unreported caller's
-	// own depth defaults to 0 below: the resumed run simply has no current
-	// parent, same as any other pi session kido never spawned. A caller
-	// that does have a record (another agent, or `kido runs`'s printed
-	// resume line run from inside a kido-tracked pane) becomes the run's
-	// new parent without --parent-pid/--parent-session having to name it.
-	// Given explicitly, those flags still win, the same as a fresh spawn,
-	// and --no-parent asks for a parentless resume outright: an agent that
-	// does have a record can hand over a run it does not want to own.
-	live, err := state.LoadLive()
-	if err != nil {
-		return err
-	}
-	self := state.ByPane(live)[pane.PaneID]
-	if !noParent {
-		if parentPID == 0 {
-			parentPID = self.PID
-		}
-		if parentSession == "" {
-			parentSession = self.ID
-		}
-	}
-	// internal/reap's rule 2 closes any marked window whose child reports
-	// a ParentSession that names nobody currently alive - it has no
-	// memory of history, so "never heard of that session" and "that
-	// session's process has since died" read identically to it, and
-	// KIDO_AGENT_PARENT_SESSION below is exactly what makes the resumed
-	// pi report one. A fresh spawn can never trigger this: its caller is
-	// always the live process asking for itself. --resume's whole point
-	// is letting a *different*, by-hand caller claim the parent edge, so
-	// an unverifiable value here is not a hypothetical - refusing before
-	// the window exists turns a silent close within moments (the run left
-	// recording a useless "died") into an actionable error up front.
-	depth := self.Depth + 1
-	if depth > maxDepth {
-		return fmt.Errorf("refusing to resume at depth %d: maximum nesting is %d (root 0, subagent 1, subagent 2)", depth, maxDepth)
-	}
-	if _, ok := state.Find(live, parentSession); parentSession != "" && !ok {
-		return fmt.Errorf("--parent-session %q names no currently live agent; the resumed run would be reaped within moments as an orphan (internal/reap's rule 2) - omit --parent-pid/--parent-session for a parentless resume, or give the session id of an agent that is actually running", parentSession)
-	}
-
-	if len(command) == 0 {
-		command = []string{"pi"}
-	}
-	if command[0] == "pi" {
-		if sessionExists {
-			command = slices.Insert(command, 1, "--session", runID)
-		} else {
-			// No pi session file for this run id, so there is nothing to
-			// resume by --session; --session-id mints a fresh one under the
-			// same id instead, which is free precisely because no file claims
-			// it.
-			command = slices.Insert(command, 1, "--session-id", runID)
-		}
-		// A bare `--resume` with no `-- pi --model ...` used to come up on
-		// pi's default provider, which may have no API key configured -
-		// the run's own meta already remembers what it ran under, and a
-		// caller who wants something else still wins by naming --model
-		// explicitly in the command after --.
-		if meta.Model != "" && !slices.Contains(command[1:], "--model") {
-			command = append(command, "--model", meta.Model)
-		}
-		// The tool allowlist comes back for the same reason the model does,
-		// and more urgently: a narrow toolset is the blast-radius bound the
-		// depth ceiling is not, and a resume that quietly handed the full set
-		// back widened it without anyone asking. A command naming its own
-		// --tools still wins.
-		if len(meta.Tools) > 0 && !slices.Contains(command[1:], "--tools") {
-			command = append(command, "--tools", strings.Join(meta.Tools, ","))
-		}
-	}
-	if err := validateModel(extractModel(command)); err != nil {
-		return err
-	}
-	// keepAlive is the run's own too: a deliberately long-lived helper that
-	// came back arming a thirty-second idle timer was not the helper that
-	// was spawned. An explicit --keep-alive still wins, and there is no way
-	// to turn it back off, which is the same asymmetry --model has - the
-	// recorded value is the default, not a ceiling.
-	keepAlive = keepAlive || meta.KeepAlive
-
-	// A resumed run is running again: its old outcome, if any, no longer
-	// describes it, and RecordOutcome's O_EXCL would otherwise refuse every
-	// exit path that follows this one. Cleared before any of those paths
-	// runs again, not racing one of them - see ClearOutcome's own doc.
-	if err := subrun.ClearOutcome(runID); err != nil {
-		return err
-	}
-	// The first attempt's captured screen, if a sweep saved one, describes
-	// that attempt and not this one; clearing it here keeps `kido runs
-	// <id>` from showing it as this attempt's own until a sweep captures a
-	// fresh one - see ClearScreen's own doc.
-	if err := subrun.ClearScreen(runID); err != nil {
-		return err
-	}
-	if !sessionExists {
-		// The fresh session minted above starts holding the same task file,
-		// and pi/kido-agents.ts's deliverTask skips redelivering it once the
-		// sibling "delivered" marker exists - which it does, left by the
-		// attempt that read the task and then never ran a turn on it. Without
-		// clearing it here the respawned session would come up idle with no
-		// task at all, and thirty seconds later end exactly as the one before
-		// it did.
-		if err := subrun.ClearDelivered(runID); err != nil {
-			return err
-		}
-	}
-
-	// The parent edge the resume claims is the run's from here on, and
-	// meta.Cwd is left as the run's own: pi sessions are project-scoped,
-	// and `pi --session` run from any other directory asks to fork into
-	// the current one instead of resuming, so the window is created there
-	// rather than at the caller's.
-	meta.ParentSession, meta.Depth, meta.KeepAlive = parentSession, depth, keepAlive
-	return createRunWindow(meta, pane.SessionID, runEnv(runID, parentPID, parentSession, depth, keepAlive), command)
-}
-
-// piSessionDir mirrors pi 0.85.1's own getDefaultSessionDirPath
+// piSessionFileExists reports whether id has a pi session file under
+// cwd's session directory: pi names one "<timestamp>_<id>.jsonl", so any
+// entry ending in "_<id>.jsonl" is a match. An unresolvable directory (no
+// $HOME) reads as present, so a check kido has no way to actually perform
+// fails open rather than blocking every resume on a guess.
+//
+// The directory mirrors pi 0.85.1's own getDefaultSessionDirPath
 // (session-manager.js): PI_CODING_AGENT_SESSION_DIR overrides outright;
 // otherwise it is <agentDir>/sessions/--<cwd, its slashes and colons
 // turned to dashes>--, with PI_CODING_AGENT_DIR overriding <agentDir> the
@@ -475,32 +423,19 @@ func spawnResume(runID string, parentPID int, parentSession string, command []st
 // setting) - a real gap, noted in docs/design.md, rather than kido
 // reimplementing pi's full settings resolution just to check one file's
 // existence.
-func piSessionDir(cwd string) string {
-	if d := os.Getenv("PI_CODING_AGENT_SESSION_DIR"); d != "" {
-		return d
-	}
-	agentDir := os.Getenv("PI_CODING_AGENT_DIR")
-	if agentDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		agentDir = filepath.Join(home, ".pi", "agent")
-	}
-	trimmed := strings.TrimPrefix(cwd, "/")
-	safe := "--" + strings.NewReplacer("/", "-", "\\", "-", ":", "-").Replace(trimmed) + "--"
-	return filepath.Join(agentDir, "sessions", safe)
-}
-
-// piSessionFileExists reports whether id has a pi session file under
-// cwd's session directory: pi names one "<timestamp>_<id>.jsonl", so any
-// entry ending in "_<id>.jsonl" is a match. An unresolvable directory (no
-// $HOME) reads as present, so a check kido has no way to actually perform
-// fails open rather than blocking every resume on a guess.
 func piSessionFileExists(cwd, id string) bool {
-	dir := piSessionDir(cwd)
+	dir := os.Getenv("PI_CODING_AGENT_SESSION_DIR")
 	if dir == "" {
-		return true
+		agentDir := os.Getenv("PI_CODING_AGENT_DIR")
+		if agentDir == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return true
+			}
+			agentDir = filepath.Join(home, ".pi", "agent")
+		}
+		safe := "--" + strings.NewReplacer("/", "-", "\\", "-", ":", "-").Replace(strings.TrimPrefix(cwd, "/")) + "--"
+		dir = filepath.Join(agentDir, "sessions", safe)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -524,65 +459,6 @@ var listModels = func() ([]byte, error) {
 	return exec.Command("pi", "--list-models").Output()
 }
 
-// extractModel returns the --model argument on a `pi` command line, or ""
-// when there is none or command is not literally pi: that is the one
-// value that will actually reach pi's own model resolution, whether it
-// arrived as a fresh spawn's child argv or spawnResume's meta-derived
-// default.
-func extractModel(command []string) string {
-	if len(command) == 0 || command[0] != "pi" {
-		return ""
-	}
-	for i, a := range command {
-		if a == "--model" && i+1 < len(command) {
-			return command[i+1]
-		}
-	}
-	return ""
-}
-
-// modelRow is one line of `pi --list-models`'s table.
-type modelRow struct{ provider, id string }
-
-// parseModelRows reads pi --list-models's own table: a header line,
-// then one row per model with the provider in column 1 and the model id
-// in column 2, whitespace-separated. The header is skipped by position,
-// not matched by wording, since that wording is pi's to change.
-func parseModelRows(out []byte) []modelRow {
-	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-	var rows []modelRow
-	for i, line := range lines {
-		if i == 0 || strings.TrimSpace(line) == "" {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		rows = append(rows, modelRow{provider: fields[0], id: fields[1]})
-	}
-	return rows
-}
-
-// describeModels renders a refusal's "configured: ..." list, grouped by
-// provider so a machine with many models does not spell every one of them
-// out on its own line.
-func describeModels(rows []modelRow) string {
-	byProvider := map[string][]string{}
-	var providers []string
-	for _, r := range rows {
-		if _, ok := byProvider[r.provider]; !ok {
-			providers = append(providers, r.provider)
-		}
-		byProvider[r.provider] = append(byProvider[r.provider], r.id)
-	}
-	parts := make([]string, len(providers))
-	for i, p := range providers {
-		parts[i] = p + "/{" + strings.Join(byProvider[p], ",") + "}"
-	}
-	return strings.Join(parts, ", ")
-}
-
 // validateModel refuses a model no configured pi provider can actually
 // run, rather than letting pi accept it, print "Use /login to log into a
 // provider via OAuth or API key" and exit 0 having run no turn thirty
@@ -593,7 +469,16 @@ func describeModels(rows []modelRow) string {
 // refused exactly as a bare alias is. A pi that cannot even list its
 // models cannot start one either, so a failure running the command
 // refuses the spawn rather than letting it through unchecked.
-func validateModel(model string) error {
+//
+// The model checked is the --model argument on a `pi` command line; any
+// other command's is not pi's to resolve.
+func validateModel(command []string) error {
+	model := ""
+	if command[0] == "pi" {
+		if i := slices.Index(command, "--model"); i >= 0 && i+1 < len(command) {
+			model = command[i+1]
+		}
+	}
 	if model == "" {
 		return nil
 	}
@@ -601,13 +486,29 @@ func validateModel(model string) error {
 	if err != nil {
 		return fmt.Errorf("could not validate model %q: pi --list-models: %w", model, err)
 	}
-	rows := parseModelRows(out)
-	for _, row := range rows {
-		if row.provider+"/"+row.id == model {
+	// pi --list-models's own table: a header line, skipped by position
+	// rather than matched by wording, then one row per model with the
+	// provider in column 1 and the model id in column 2. The refusal's list
+	// is grouped by provider.
+	byProvider := map[string][]string{}
+	var providers []string
+	for i, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		fields := strings.Fields(line)
+		if i == 0 || len(fields) < 2 {
+			continue
+		}
+		if fields[0]+"/"+fields[1] == model {
 			return nil
 		}
+		if _, ok := byProvider[fields[0]]; !ok {
+			providers = append(providers, fields[0])
+		}
+		byProvider[fields[0]] = append(byProvider[fields[0]], fields[1])
 	}
-	return fmt.Errorf("model %q is not a model of a configured provider; configured: %s", model, describeModels(rows))
+	for i, p := range providers {
+		providers[i] = p + "/{" + strings.Join(byProvider[p], ",") + "}"
+	}
+	return fmt.Errorf("model %q is not a model of a configured provider; configured: %s", model, strings.Join(providers, ", "))
 }
 
 // readTask reads the task text from path, or from stdin when path is "-".

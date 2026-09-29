@@ -49,10 +49,13 @@ const (
 // every send, so nothing is ever in flight twice and the completion notice
 // can be ordered after the last chunk simply by closing first.
 type streamer struct {
-	// sender owns the run's identifiers as well as the wire: they are
-	// what an envelope is addressed and attributed with, and nothing on
-	// this side needs a second copy of them.
-	sender *streamSender
+	meta subrun.Meta
+	// The parent's inbox, resolved once and held: a stream makes thousands
+	// of sends, so the resolution - a state directory read - happens once
+	// rather than per chunk, and again only after a failure, which is the
+	// one event that can mean the address has changed. Only the sender
+	// goroutine and Close, after it has stopped, touch it.
+	inbox string
 
 	mu       sync.Mutex
 	partial  []byte   // a line the command has not finished writing
@@ -68,18 +71,13 @@ type streamer struct {
 	done chan struct{}
 }
 
-// newStreamer starts the sender goroutine for run runID. A parent that
+// newStreamer starts the sender goroutine for run meta. A parent that
 // cannot be resolved is not an error here: every send simply fails, every
 // line is counted as unstreamed, and the run carries on - the output file
 // is the source of truth and the child must never wait on an LLM.
-func newStreamer(runID, name, parentSession string) *streamer {
+func newStreamer(meta subrun.Meta) *streamer {
 	s := &streamer{
-		sender: &streamSender{
-			parentSession: parentSession,
-			name:          name,
-			runID:         runID,
-			output:        subrun.OutputPath(runID),
-		},
+		meta: meta,
 		wake: make(chan struct{}, 1),
 		stop: make(chan struct{}),
 		done: make(chan struct{}),
@@ -96,11 +94,8 @@ func (s *streamer) Write(p []byte) (int, error) {
 		if i < 0 {
 			break
 		}
-		line := sanitizeStreamLine(string(s.partial[:i]))
+		s.push(s.partial[:i])
 		s.partial = s.partial[i+1:]
-		s.total++
-		s.pending = append(s.pending, line)
-		s.bytes += len(line) + 1
 	}
 	// The bounded buffer, applied after the append so one enormous burst
 	// leaves the newest lines rather than the oldest.
@@ -114,6 +109,14 @@ func (s *streamer) Write(p []byte) (int, error) {
 		s.signal()
 	}
 	return len(p), nil
+}
+
+// push queues one complete line; s.mu is held.
+func (s *streamer) push(line []byte) {
+	l := sanitizeStreamLine(string(line))
+	s.total++
+	s.pending = append(s.pending, l)
+	s.bytes += len(l) + 1
 }
 
 // signal asks the sender to take a batch now. Never blocks: the channel
@@ -147,7 +150,7 @@ func (s *streamer) run() {
 		if batch == "" {
 			continue
 		}
-		if err := s.sender.send(batch); err != nil {
+		if err := s.send(batch); err != nil {
 			// The batch is gone: it is not retried, and the lines in it are
 			// counted for the completion notice. Retrying would deliver a
 			// build's output out of date and out of order, and the file has
@@ -180,7 +183,7 @@ func (s *streamer) take() (text string, lines, n int) {
 		}
 		s.overrun = true
 		s.pending, s.bytes = nil, 0
-		return "... " + strconv.Itoa(streamRunBudget) + " bytes streamed for this run; the rest is only in " + s.sender.output, 0, 0
+		return "... " + strconv.Itoa(streamRunBudget) + " bytes streamed for this run; the rest is only in " + subrun.OutputPath(s.meta.ID), 0, 0
 	}
 	text = strings.Join(s.pending, "\n")
 	lines, n = len(s.pending), s.bytes
@@ -209,16 +212,13 @@ func (s *streamer) Close() int {
 
 	s.mu.Lock()
 	if len(s.partial) > 0 {
-		line := sanitizeStreamLine(string(s.partial))
+		s.push(s.partial)
 		s.partial = nil
-		s.total++
-		s.pending = append(s.pending, line)
-		s.bytes += len(line) + 1
 	}
 	s.mu.Unlock()
 
 	if batch, lines, n := s.take(); batch != "" {
-		if err := s.sender.send(batch); err == nil {
+		if err := s.send(batch); err == nil {
 			s.credit(lines, n)
 		}
 	}
@@ -284,37 +284,33 @@ func escapeLen(s string) int {
 // non-message kind to.
 var errNoStreamParent = errors.New("no live parent listening for this run's output")
 
-// streamSender is the wire half: the parent's inbox, resolved once and
-// held. A send is one connection with its own deadline, exactly as every
-// other envelope is; what is different is that a stream makes thousands of
-// them, so the resolution - a state directory read and a tmux pane listing
-// in send() (message_agent.go) - happens once rather than per chunk, and
-// again only after a failure, which is the one event that can mean the
-// address has changed.
-type streamSender struct {
-	parentSession string
-	name          string
-	runID         string
-	output        string
-	inbox         string
-}
-
-func (s *streamSender) send(text string) error {
+func (s *streamer) send(text string) error {
 	if s.inbox == "" {
-		inbox, err := resolveParentInbox(s.parentSession)
+		// The gate is send()'s (message_agent.go), unchanged: a non-message
+		// kind needs an inbox bound, since it can never fall back to a
+		// paste. This has nobody to say anything to, so every way of having
+		// no parent is one error.
+		if s.meta.ParentSession == "" {
+			return errNoStreamParent
+		}
+		live, err := state.LoadLive()
 		if err != nil {
 			return err
 		}
-		s.inbox = inbox
+		parent, ok := state.Find(live, s.meta.ParentSession)
+		if !ok || parent.Inbox == "" {
+			return errNoStreamParent
+		}
+		s.inbox = parent.Inbox
 	}
 	raw, err := json.Marshal(msg.Envelope{
 		V:      msg.V1,
 		Kind:   msg.KindStream,
 		ID:     msg.NewID(),
-		From:   msg.From{Name: s.name},
+		From:   msg.From{Name: s.meta.Name},
 		Text:   text,
-		Run:    s.runID,
-		Output: s.output,
+		Run:    s.meta.ID,
+		Output: subrun.OutputPath(s.meta.ID),
 	})
 	if err != nil {
 		return err
@@ -324,29 +320,4 @@ func (s *streamSender) send(text string) error {
 		return err
 	}
 	return nil
-}
-
-// resolveParentInbox finds the inbox of the live agent reporting
-// session, through the same registry scan `kido notify_parent` resolves
-// its own target with (state.Find, message_agent.go).
-//
-// The gate on what it finds is send()'s, unchanged: a non-message kind
-// needs an inbox bound, since it can
-// never fall back to a paste. What differs is only what is said about a
-// parent that fails it - send names the target and the rule, and this
-// has nobody to say anything to, so every way of having no parent is one
-// error.
-func resolveParentInbox(session string) (string, error) {
-	if session == "" {
-		return "", errNoStreamParent
-	}
-	live, err := state.LoadLive()
-	if err != nil {
-		return "", err
-	}
-	parent, ok := state.Find(live, session)
-	if !ok || parent.Inbox == "" {
-		return "", errNoStreamParent
-	}
-	return parent.Inbox, nil
 }

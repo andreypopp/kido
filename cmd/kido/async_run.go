@@ -20,9 +20,7 @@ import (
 // else will speak - so the wait is short and never conditional.
 const asyncSignalGrace = 2 * time.Second
 
-func asyncRunUsage() string {
-	return "usage: kido async-run [--run-id ID] [--name NAME] [--stream]"
-}
+const asyncRunUsage = "usage: kido async-run [--run-id ID] [--stream]"
 
 // asyncRunCmd implements `kido async-run`, the command a `kido
 // async_bash` window actually runs. It execs the run's recorded argv with
@@ -45,18 +43,21 @@ func asyncRunCmd(args []string) int {
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	runID := fs.String("run-id", os.Getenv("KIDO_AGENT_RUN_ID"), "the run this window is running")
-	name := fs.String("name", "", "the run's name, carried in the completion notice")
 	stream := fs.Bool("stream", false, "send the command's output to the parent in batches as it runs")
 	if err := fs.Parse(args); err != nil {
-		return fail(fmt.Sprintf("%v\n%s", err, asyncRunUsage()))
+		return fail(fmt.Sprintf("%v\n%s", err, asyncRunUsage))
 	}
 	if fs.NArg() > 0 {
-		return fail(fmt.Sprintf("unknown argument %q; the command comes from the run's own record, not the command line\n%s", fs.Arg(0), asyncRunUsage()))
+		return fail(fmt.Sprintf("unknown argument %q; the command comes from the run's own record, not the command line\n%s", fs.Arg(0), asyncRunUsage))
 	}
 	if *runID == "" {
-		return fail("--run-id is required (or $KIDO_AGENT_RUN_ID)\n" + asyncRunUsage())
+		return fail("--run-id is required (or $KIDO_AGENT_RUN_ID)\n" + asyncRunUsage)
 	}
 
+	meta, err := subrun.ReadMeta(*runID)
+	if err != nil {
+		return fail(err)
+	}
 	argv, err := subrun.ReadCommand(*runID)
 	if err != nil {
 		return fail(err)
@@ -77,7 +78,7 @@ func asyncRunCmd(args []string) int {
 	writers := []io.Writer{os.Stdout, out}
 	var stripe *streamer
 	if *stream {
-		stripe = newStreamer(*runID, *name, os.Getenv("KIDO_AGENT_PARENT_SESSION"))
+		stripe = newStreamer(meta)
 		writers = append(writers, stripe)
 	}
 	w := io.MultiWriter(writers...)
@@ -100,7 +101,17 @@ func asyncRunCmd(args []string) int {
 		if stripe != nil {
 			unstreamed = stripe.Close()
 		}
-		reportAsyncRun(*runID, *name, result, status, unstreamed)
+		o := subrun.Outcome{Result: result, Text: status, At: time.Now()}
+		if err := subrun.RecordOutcome(meta.ID, o); err != nil {
+			if !os.IsExist(err) {
+				fmt.Fprintln(os.Stderr, "kido async-run:", err)
+			}
+			return
+		}
+		e := reap.Ending{Meta: meta, Outcome: o, Detail: reap.BashEnding{Unstreamed: unstreamed}}
+		if err := e.Send(); err != nil {
+			fmt.Fprintln(os.Stderr, "kido async-run:", err)
+		}
 	}
 
 	if err := command.Start(); err != nil {
@@ -134,29 +145,5 @@ func asyncRunCmd(args []string) int {
 		}
 		report(subrun.Failed, "killed by "+s.String())
 		return 1
-	}
-}
-
-// reportAsyncRun is the wrapper's whole ending, in the order it must
-// happen in: record the outcome, then notify. The outcome write is the
-// arbiter of who observed the ending first (subrun.RecordOutcome's
-// O_EXCL), so a wrapper that loses it - to a sweep, or to `kido
-// stop_subagent` - stays quiet and leaves the notice to whoever won.
-func reportAsyncRun(runID, name string, result subrun.Result, status string, unstreamed int) {
-	o := subrun.Outcome{Result: result, Text: status, At: time.Now()}
-	if err := subrun.RecordOutcome(runID, o); err != nil {
-		if !os.IsExist(err) {
-			fmt.Fprintln(os.Stderr, "kido async-run:", err)
-		}
-		return
-	}
-	e := reap.Ending{
-		Meta: subrun.Meta{ID: runID, Name: name, Kind: subrun.KindBash,
-			ParentSession: os.Getenv("KIDO_AGENT_PARENT_SESSION")},
-		Outcome: o,
-		Detail:  reap.BashEnding{Unstreamed: unstreamed},
-	}
-	if err := e.Send(); err != nil {
-		fmt.Fprintln(os.Stderr, "kido async-run:", err)
 	}
 }

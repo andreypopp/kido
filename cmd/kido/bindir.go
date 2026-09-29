@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"kido/internal/tmux"
 )
 
 // kido's bin directory is <prefix>/share/kido/bin: the shims standing in
@@ -54,30 +56,6 @@ func pathWithFirst(dir, path string) string {
 		}
 	}
 	return strings.Join(out, string(filepath.ListSeparator))
-}
-
-// pathPrependScript is sh, and zsh and bash with it, that moves dir to
-// the front of PATH as pathWithFirst does. It is the last thing a primed
-// shell's integration runs. dir is single-quoted, which carries any byte
-// sh can hold; binDir has already refused the one character PATH cannot.
-func pathPrependScript(dir string) string {
-	return fmt.Sprintf(`
-# Written by kido shell: its bin directory goes first on PATH, after the
-# login files that may have rewritten PATH, and only once.
-_kido_bin=%s
-_kido_rest=":$PATH:"
-while :; do
-  case $_kido_rest in
-  *":$_kido_bin:"*) _kido_rest="${_kido_rest%%%%":$_kido_bin:"*}:${_kido_rest#*":$_kido_bin:"}" ;;
-  *) break ;;
-  esac
-done
-_kido_rest=${_kido_rest#:}
-_kido_rest=${_kido_rest%%:}
-PATH="$_kido_bin${_kido_rest:+:$_kido_rest}"
-export PATH
-unset _kido_bin _kido_rest
-`, shellQuote(dir))
 }
 
 // realOnPath finds name on PATH the way the shims do (shims/shim.sh): the
@@ -129,4 +107,28 @@ func lookPathPast(name, dir, path string) (string, error) {
 		return "", fmt.Errorf("no %s on PATH past %s", name, dir)
 	}
 	return found, nil
+}
+
+// pathPrependScript is sh, and zsh and bash with it, that moves dir to
+// the front of PATH as pathWithFirst does. It is the last thing a primed
+// shell's integration runs. dir is single-quoted, which carries any byte
+// sh can hold; binDir has already refused the one character PATH cannot.
+func pathPrependScript(dir string) string {
+	return fmt.Sprintf(`
+# Written by kido shell: its bin directory goes first on PATH, after the
+# login files that may have rewritten PATH, and only once.
+_kido_bin=%s
+_kido_rest=":$PATH:"
+while :; do
+  case $_kido_rest in
+  *":$_kido_bin:"*) _kido_rest="${_kido_rest%%%%":$_kido_bin:"*}:${_kido_rest#*":$_kido_bin:"}" ;;
+  *) break ;;
+  esac
+done
+_kido_rest=${_kido_rest#:}
+_kido_rest=${_kido_rest%%:}
+PATH="$_kido_bin${_kido_rest:+:$_kido_rest}"
+export PATH
+unset _kido_bin _kido_rest
+`, tmux.Quote(dir))
 }

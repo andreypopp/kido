@@ -1101,7 +1101,7 @@ fresh spawn uses, but:
 It refuses an unknown run id (`ReadMeta` fails), a run that is still alive
 (`EffectiveOutcome`'s `ok` is false exactly when nothing has been recorded
 and the pid is live - resuming a live agent makes no sense), and a run whose
-pi session file is gone (`piSessionDir`, mirroring pi 0.85.1's own
+pi session file is gone (`piSessionFileExists`, mirroring pi 0.85.1's own
 `getDefaultSessionDirPath`: `PI_CODING_AGENT_SESSION_DIR` if set, else
 `<agentDir>/sessions/--<cwd, its slashes and colons dashed>--`; it does not
 walk pi's own per-project `sessionDir` setting, a known gap). The depth
@@ -1982,7 +1982,7 @@ directory: its shim is a different file, so "anything but me" would hand
 the call to it, and it would hand the call straight back.
 
 **PATH.** The bin directory goes first on PATH in two places. The
-launcher starts the server with it first (`serverEnv`); the server keeps
+launcher starts the server with it first; the server keeps
 the environment it started with, so this is the PATH of everything tmux
 runs with no user shell in between: `run-shell`, plugins, a `new-window`
 command, and the `pi` of every `spawn_subagent` window. And the

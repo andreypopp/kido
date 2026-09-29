@@ -56,10 +56,9 @@ func envelopes(t *testing.T, in *testutil.Inbox) []msg.Envelope {
 func TestAsyncNoticeSaysItIsFromTheRun(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	in := noticeParent(t, "root-sess")
-	t.Setenv("KIDO_AGENT_PARENT_SESSION", "root-sess")
 
-	id := startAsyncRun(t, "true")
-	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", id, "--name", "build"}) })
+	id := startAsyncRun(t, "build", "root-sess", "true")
+	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", id}) })
 
 	got := envelopes(t, in)
 	if len(got) != 1 {
@@ -105,7 +104,7 @@ func withKillWindow(t *testing.T) func() []string {
 // kind bash, a parent to tell, and some output for the notice to carry.
 func startedRun(t *testing.T, name, parent string) subrun.Meta {
 	t.Helper()
-	meta := subrun.Meta{ID: startAsyncRun(t, "sleep", "600"), Name: name, Kind: subrun.KindBash,
+	meta := subrun.Meta{ID: startAsyncRun(t, name, parent, "sleep", "600"), Name: name, Kind: subrun.KindBash,
 		ParentSession: parent, Pane: "%9", StartedAt: time.Now()}
 	if err := subrun.WriteMeta(meta); err != nil {
 		t.Fatal(err)

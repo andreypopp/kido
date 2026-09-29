@@ -49,19 +49,11 @@ func launch() error {
 	// -s main: a session name of tmux's own choosing is a bare integer
 	// ("0"), and this only runs once, starting a fresh server, so no
 	// session named main can already exist to collide with.
-	return execTmux(bin, serverEnv(os.Environ()), "-L", kidoSocket, "-f", conf, "new-session", "-s", "main")
-}
-
-// serverEnv is the environment a kido server starts with: the launcher's
-// own, with kido's bin directory first on PATH (bindir.go). The server
-// keeps the environment it started with, so this is the PATH of
-// everything it runs without a shell in between.
-func serverEnv(env []string) []string {
-	dir, ok := ownBinDir()
-	if !ok {
-		return env
+	env := os.Environ()
+	if dir, ok := ownBinDir(); ok {
+		env = withEnv(env, []string{"PATH=" + pathWithFirst(dir, os.Getenv("PATH"))})
 	}
-	return withEnv(env, []string{"PATH=" + pathWithFirst(dir, os.Getenv("PATH"))})
+	return execTmux(bin, env, "-L", kidoSocket, "-f", conf, "new-session", "-s", "main")
 }
 
 // execTmux replaces this process with tmux. It returns only on failure.
@@ -88,32 +80,23 @@ const (
 // as "no server": starting one reports tmux's own error if the socket is
 // unusable for some further reason, which is a better message than a
 // guess made here would be.
+//
+// The one failure worth telling apart is tmux's own wording from
+// client.c, "protocol version mismatch (client N, server M)", which is
+// what a kido-tmux upgraded under a running server answers every new
+// client until that server restarts.
 func probeServer(bin string) serverState {
 	cmd := exec.Command(bin, "-L", kidoSocket, "list-sessions")
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
-	return classifyProbe(cmd.Run(), errb.String())
-}
-
-// classifyProbe reads the probe's outcome. The one failure worth telling
-// apart is tmux's own wording from client.c, "protocol version mismatch
-// (client N, server M)", which is what a kido-tmux upgraded under a
-// running server answers every new client until that server restarts.
-func classifyProbe(err error, stderr string) serverState {
 	switch {
-	case err == nil:
+	case cmd.Run() == nil:
 		return serverUp
-	case strings.Contains(stderr, "protocol version mismatch"):
+	case strings.Contains(errb.String(), "protocol version mismatch"):
 		return serverMismatch
 	}
 	return serverDown
 }
-
-// serverConfPath is the file kido starts its server with. It is generated
-// on every launch and lives with kido's state rather than with the user's
-// configuration, because nothing the user writes there would survive the
-// next start.
-func serverConfPath() string { return filepath.Join(state.Dir(), "server.conf") }
 
 // userConfPath is the user's own kido configuration, in tmux's syntax:
 // $XDG_CONFIG_HOME/kido/kido.conf, else ~/.config/kido/kido.conf. The
@@ -140,6 +123,13 @@ func userConfPath() (string, error) {
 // actually happens; the rest is refused rather than written broken.
 const tmuxConfUnsafe = "'\"$#\\`\n\r"
 
+func tmuxSafe(what, s string) error {
+	if i := strings.IndexAny(s, tmuxConfUnsafe); i >= 0 {
+		return fmt.Errorf("refusing %s %q: it contains %q, which cannot survive tmux's own command-line parsing", what, s, s[i:i+1])
+	}
+	return nil
+}
+
 // confCommand quotes a path, with any fixed arguments after it, as one
 // command word of the generated configuration.
 // Both places a path is written there - side-status-command and
@@ -158,8 +148,8 @@ const tmuxConfUnsafe = "'\"$#\\`\n\r"
 // first word, matching what stock tmux does for an unquoted
 // default-command.
 func confCommand(path string, args ...string) (string, error) {
-	if i := strings.IndexAny(path, tmuxConfUnsafe); i >= 0 {
-		return "", fmt.Errorf("cannot start a kido server: the path %s contains %q", path, path[i:i+1])
+	if err := tmuxSafe("path", path); err != nil {
+		return "", fmt.Errorf("cannot start a kido server: %w", err)
 	}
 	inner := path
 	if strings.ContainsAny(path, " \t") {
@@ -170,15 +160,6 @@ func confCommand(path string, args ...string) (string, error) {
 		word += " " + a
 	}
 	return word + "'", nil
-}
-
-// sourceWord quotes a path for source-file, which takes a filename
-// rather than a command: one level of tmux quoting and no shell.
-func sourceWord(path string) (string, error) {
-	if strings.ContainsAny(path, "'\n\r") {
-		return "", fmt.Errorf("cannot source %s: the path contains a quote or a newline", path)
-	}
-	return "'" + path + "'", nil
 }
 
 // writeServerConf generates the file the kido server starts with and
@@ -208,9 +189,8 @@ func writeServerConf() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	user, err := sourceWord(userConf)
-	if err != nil {
-		return "", err
+	if strings.ContainsAny(userConf, "'\n\r") {
+		return "", fmt.Errorf("cannot source %s: the path contains a quote or a newline", userConf)
 	}
 
 	var b bytes.Buffer
@@ -218,7 +198,7 @@ func writeServerConf() (string, error) {
 		"# Your own configuration belongs in %s.\n\n", userConf)
 	b.Write(tmuxconf.Defaults)
 	fmt.Fprintf(&b, "\n# The user's configuration, if there is one: -q, because there\n"+
-		"# usually is not.\nsource-file -q %s\n", user)
+		"# usually is not.\nsource-file -q '%s'\n", userConf)
 	fmt.Fprintf(&b, "\n# What kido owns, set last so nothing above can take it away. The\n"+
 		"# side column and every pane's shell run this kido by the path it\n"+
 		"# was started as, so a second install elsewhere on PATH cannot\n"+
@@ -228,7 +208,7 @@ func writeServerConf() (string, error) {
 		"set -g side-status-command %s\n"+
 		"set -g default-command %s\n", userCommandOption, kido, kidoShell)
 
-	path := serverConfPath()
+	path := filepath.Join(state.Dir(), "server.conf")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
 	}

@@ -543,7 +543,7 @@ func TestSpawnFailureIsAVisibleFailedRun(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &infos); err != nil {
 		t.Fatalf("runs --json: %v (%q)", err, out.String())
 	}
-	if len(infos) != 1 || infos[0].Outcome != "failed" {
+	if len(infos) != 1 || infos[0].Outcome == nil || infos[0].Outcome.Result != subrun.Failed {
 		t.Errorf("runs --json = %+v, want one failed run", infos)
 	}
 }
@@ -583,7 +583,7 @@ func TestSpawnMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
 		t.Errorf("killWindow calls = %v, want @9 killed rather than left up unmarked", killed)
 	}
 
-	if infos := runOutcomes(t); len(infos) != 1 || infos[0].Outcome != "failed" {
+	if infos := runOutcomes(t); len(infos) != 1 || infos[0].Outcome == nil || infos[0].Outcome.Result != subrun.Failed {
 		t.Errorf("runs --json = %+v, want one failed run", infos)
 	}
 }
@@ -668,7 +668,7 @@ func TestSpawnMarkFailureOnAVanishedWindowIsNotAFailure(t *testing.T) {
 		t.Errorf("killWindow calls = %v, want none: the window is already gone", killed())
 	}
 
-	if infos := runOutcomes(t); len(infos) != 1 || infos[0].Outcome == "failed" {
+	if infos := runOutcomes(t); len(infos) != 1 || (infos[0].Outcome != nil && infos[0].Outcome.Result == subrun.Failed) {
 		t.Errorf("runs --json = %+v, want the run left for its own command to describe rather than recorded failed here", infos)
 	}
 }
@@ -699,7 +699,7 @@ func TestAgentMarkFailureOnAVanishedWindowIsStillAFailure(t *testing.T) {
 	if !slices.Contains(killed(), "@9") {
 		t.Errorf("killWindow calls = %v, want @9 killed as any other mark failure is", killed())
 	}
-	if infos := runOutcomes(t); len(infos) != 1 || infos[0].Outcome != "failed" {
+	if infos := runOutcomes(t); len(infos) != 1 || infos[0].Outcome == nil || infos[0].Outcome.Result != subrun.Failed {
 		t.Errorf("runs --json = %+v, want one failed run", infos)
 	}
 }
@@ -922,14 +922,11 @@ func TestSpawnForkRefusals(t *testing.T) {
 func TestValidateModelExactProviderMatch(t *testing.T) {
 	withListModels(t, "acme/claude-sonnet-5", "acme/claude-opus-5", "other/gemini-pro")
 
-	if err := validateModel("acme/claude-sonnet-5"); err != nil {
+	if err := validateModel([]string{"pi", "--model", "acme/claude-sonnet-5"}); err != nil {
 		t.Errorf("validateModel(%q) = %v, want nil: it is a configured provider's own model", "acme/claude-sonnet-5", err)
 	}
-	for _, bad := range []string{"sonnet", "claude-sonnet-5", "nope/claude-sonnet-5", ""} {
-		if bad == "" {
-			continue // "" means "no model given" and is always accepted; see next test
-		}
-		err := validateModel(bad)
+	for _, bad := range []string{"sonnet", "claude-sonnet-5", "nope/claude-sonnet-5"} {
+		err := validateModel([]string{"pi", "--model", bad})
 		if err == nil {
 			t.Errorf("validateModel(%q) = nil, want a refusal", bad)
 			continue
@@ -952,8 +949,10 @@ func TestValidateModelAcceptsNoModelGiven(t *testing.T) {
 	}
 	t.Cleanup(func() { listModels = prev })
 
-	if err := validateModel(""); err != nil {
-		t.Errorf("validateModel(\"\") = %v, want nil", err)
+	for _, command := range [][]string{{"pi"}, {"sh", "--model", "sonnet"}} {
+		if err := validateModel(command); err != nil {
+			t.Errorf("validateModel(%q) = %v, want nil", command, err)
+		}
 	}
 	if called {
 		t.Error("listModels was called for an empty model; want it skipped entirely")
@@ -968,7 +967,7 @@ func TestValidateModelRefusesWhenListModelsFails(t *testing.T) {
 	listModels = func() ([]byte, error) { return nil, errors.New("exec: \"pi\": executable file not found in $PATH") }
 	t.Cleanup(func() { listModels = prev })
 
-	err := validateModel("acme/claude-sonnet-5")
+	err := validateModel([]string{"pi", "--model", "acme/claude-sonnet-5"})
 	if err == nil || !strings.Contains(err.Error(), "pi --list-models") {
 		t.Errorf("validateModel = %v, want a refusal naming pi --list-models", err)
 	}

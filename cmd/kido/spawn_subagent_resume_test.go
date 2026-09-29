@@ -15,7 +15,7 @@ import (
 	"kido/internal/subrun"
 )
 
-// withPiSessionDir points piSessionDir at dir for the duration of the
+// withPiSessionDir points piSessionFileExists at dir for the duration of the
 // test, so a resume test never depends on a real ~/.pi/agent/sessions.
 func withPiSessionDir(t *testing.T, dir string) {
 	t.Helper()
@@ -24,7 +24,7 @@ func withPiSessionDir(t *testing.T, dir string) {
 
 // writePiSessionFile creates the file piSessionFileExists looks for: pi's
 // own "<timestamp>_<id>.jsonl" naming (session-manager.js, see
-// spawn.go's piSessionDir doc).
+// piSessionFileExists's doc).
 func writePiSessionFile(t *testing.T, dir, runID string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -156,7 +156,7 @@ func TestSpawnResumeContinuesRunRecord(t *testing.T) {
 	writePiSessionFile(t, sessDir, "resume-run")
 	calls := withNewWindow(t, "@9", "%9", nil)
 
-	// --parent-session must name somebody currently alive, or spawnResume
+	// --parent-session must name somebody currently alive, or the resume
 	// now refuses before ever reaching newWindow - see state.Find's own
 	// doc.
 	if err := state.Record("new-parent", state.Session{
@@ -352,7 +352,7 @@ func TestSpawnResumeDefaultsModelFromMeta(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := spawnSubagentCmd([]string{"--resume", "modeled-run", "--parent-pid", "1"}); err != nil {
+	if err := spawnSubagentCmd([]string{"--resume", "modeled-run"}); err != nil {
 		t.Fatalf("spawnSubagentCmd --resume = %v, want it to succeed", err)
 	}
 	call := (*calls)[0]
@@ -388,7 +388,7 @@ func TestSpawnResumeExplicitModelWinsOverMeta(t *testing.T) {
 	}
 
 	if err := spawnSubagentCmd([]string{
-		"--resume", "modeled-run-2", "--parent-pid", "1",
+		"--resume", "modeled-run-2",
 		"--", "pi", "--model", "acme/claude-opus-5",
 	}); err != nil {
 		t.Fatalf("spawnSubagentCmd --resume = %v, want it to succeed", err)
@@ -424,7 +424,7 @@ func TestSpawnResumePrintsWindowPaneRun(t *testing.T) {
 
 	var err error
 	out := captureStdout(t, func() {
-		err = spawnSubagentCmd([]string{"--resume", "printed-run", "--parent-pid", "1"})
+		err = spawnSubagentCmd([]string{"--resume", "printed-run"})
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -455,7 +455,7 @@ func TestSpawnResumeMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
 	markRun = func(paneID, runID string) error { return errors.New("option failed") }
 	t.Cleanup(func() { markRun = prevMark })
 
-	if err := spawnSubagentCmd([]string{"--resume", "unmarkable-run", "--parent-pid", "1"}); err == nil {
+	if err := spawnSubagentCmd([]string{"--resume", "unmarkable-run"}); err == nil {
 		t.Fatal("spawnSubagentCmd --resume = nil, want the mark failure")
 	}
 	if !slices.Contains(killed, "@9") {
@@ -483,7 +483,7 @@ func TestSpawnResumeWindowFailureIsAVisibleFailedRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := spawnSubagentCmd([]string{"--resume", "windowless-run", "--parent-pid", "1"}); err == nil {
+	if err := spawnSubagentCmd([]string{"--resume", "windowless-run"}); err == nil {
 		t.Fatal("spawnSubagentCmd --resume = nil, want the window creation failure")
 	}
 	if out, ok, err := subrun.ReadOutcome("windowless-run"); err != nil || !ok || out.Result != subrun.Failed {
@@ -503,6 +503,7 @@ func TestSpawnResumeRefusesNameAndTaskFile(t *testing.T) {
 	for _, args := range [][]string{
 		{"--resume", "x", "--name", "kid"},
 		{"--resume", "x", "--task-file", "/tmp/task"},
+		{"--resume", "x", "--parent-pid", "1"},
 	} {
 		if err := spawnSubagentCmd(args); err == nil {
 			t.Errorf("spawnSubagentCmd(%v) = nil error, want --resume and %s refused together", args, args[2])

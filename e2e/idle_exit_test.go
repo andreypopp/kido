@@ -73,7 +73,7 @@ func TestSpawnKeepAliveSetsEnv(t *testing.T) {
 // pi is not available in CI, so the launched command is a fake one (as
 // every other spawn e2e test uses); PI_CODING_AGENT_SESSION_DIR is set to
 // a directory this test controls, holding a file at the exact path
-// spawn.go's piSessionDir computes, standing in for pi's own project
+// piSessionFileExists (spawn_subagent.go) computes, standing in for pi's own project
 // session directory.
 func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 	t.Parallel()

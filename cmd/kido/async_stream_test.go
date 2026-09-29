@@ -125,13 +125,12 @@ func TestStreamCoalescesAndStripsAnsi(t *testing.T) {
 
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	in := streamParent(t, "root-sess", "ok\n")
-	t.Setenv("KIDO_AGENT_PARENT_SESSION", "root-sess")
 	withStreamKnobs(t, batch, 20*time.Millisecond, 100*time.Millisecond)
 
 	script := fmt.Sprintf(`for i in $(seq 1 %d); do printf '\033[32mline %%s\033[0m\n' $i; sleep %.3f; done`, lines, writeEvery.Seconds())
-	id := startAsyncRun(t, "sh", "-c", script)
+	id := startAsyncRun(t, "chatty", "root-sess", "sh", "-c", script)
 	start := time.Now()
-	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", id, "--name", "chatty", "--stream"}) })
+	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", id, "--stream"}) })
 	elapsed := time.Since(start)
 
 	chunks := streamText(t, envelopes(t, in))
@@ -173,7 +172,6 @@ func TestStreamCoalescesAndStripsAnsi(t *testing.T) {
 func TestCompletionNoticeFollowsTheFinalChunk(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	in := streamParent(t, "root-sess", "ok\n")
-	t.Setenv("KIDO_AGENT_PARENT_SESSION", "root-sess")
 	// A batch interval longer than the whole run, so the only chunk there
 	// is comes from the close - which is exactly the chunk the ordering
 	// rule is about, and the one a wrapper that spoke before closing
@@ -181,8 +179,8 @@ func TestCompletionNoticeFollowsTheFinalChunk(t *testing.T) {
 	// the same reason: it can only be flushed by the close.
 	withStreamKnobs(t, 5*time.Second, 20*time.Millisecond, 100*time.Millisecond)
 
-	id := startAsyncRun(t, "sh", "-c", `printf 'line 1\nline 2\nline 3\nline 4 unterminated'; exit 2`)
-	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", id, "--name", "chatty", "--stream"}) })
+	id := startAsyncRun(t, "chatty", "root-sess", "sh", "-c", `printf 'line 1\nline 2\nline 3\nline 4 unterminated'; exit 2`)
+	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", id, "--stream"}) })
 
 	got := envelopes(t, in)
 	if len(got) < 2 {
@@ -232,9 +230,8 @@ func TestWrapperDoesNotBlockOnADeadParent(t *testing.T) {
 	const writeEvery = 10 * time.Millisecond
 
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	t.Setenv("KIDO_AGENT_PARENT_SESSION", "")
 	withStreamKnobs(t, 20*time.Millisecond, 20*time.Millisecond, 100*time.Millisecond)
-	_, baseline := runStreamingChild(t, lines, writeEvery)
+	_, baseline := runStreamingChild(t, "", lines, writeEvery)
 
 	// A parent that cannot take the output may cost the command as much
 	// again as it cost with no parent at all - room for the run-to-run
@@ -262,10 +259,9 @@ func TestWrapperDoesNotBlockOnADeadParent(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv("KIDO_AGENT_PARENT_SESSION", "root-sess")
 		withStreamKnobs(t, 20*time.Millisecond, 20*time.Millisecond, 100*time.Millisecond)
 
-		id, child := runStreamingChild(t, lines, writeEvery)
+		id, child := runStreamingChild(t, "root-sess", lines, writeEvery)
 		if child > budget {
 			t.Errorf("the command took %v, want under %v (%v with no parent at all): a parent that cannot be reached must cost it nothing", child, budget, baseline)
 		}
@@ -277,11 +273,10 @@ func TestWrapperDoesNotBlockOnADeadParent(t *testing.T) {
 	t.Run("listening and never answering", func(t *testing.T) {
 		t.Setenv("KIDO_STATE_DIR", t.TempDir())
 		in := streamParent(t, "root-sess", "")
-		t.Setenv("KIDO_AGENT_PARENT_SESSION", "root-sess")
 		withStreamKnobs(t, 20*time.Millisecond, 20*time.Millisecond, 100*time.Millisecond)
 		withInboxTimeout(t, stalledWire)
 
-		id, child := runStreamingChild(t, lines, writeEvery)
+		id, child := runStreamingChild(t, "root-sess", lines, writeEvery)
 		if child > budget {
 			t.Errorf("the command took %v, want under %v (%v with no parent at all, and a %v wire deadline to block on): a stalled parent must not be waited on by the child",
 				child, budget, baseline, stalledWire)
@@ -308,16 +303,16 @@ func TestWrapperDoesNotBlockOnADeadParent(t *testing.T) {
 	})
 }
 
-// runStreamingChild runs a streaming wrapper over a command that writes
-// lines lines, one every every, and reports how long the command itself
+// runStreamingChild runs a streaming wrapper, under parent, over a
+// command that writes lines lines, one every every, and reports how long the command itself
 // took - the output file's last write is the command's last line, and a
 // wrapper that made the child wait on a send delays every write after it.
-func runStreamingChild(t *testing.T, lines int, every time.Duration) (string, time.Duration) {
+func runStreamingChild(t *testing.T, parent string, lines int, every time.Duration) (string, time.Duration) {
 	t.Helper()
 	script := fmt.Sprintf("for i in $(seq 1 %d); do echo line $i; sleep %.3f; done", lines, every.Seconds())
-	id := startAsyncRun(t, "sh", "-c", script)
+	id := startAsyncRun(t, "chatty", parent, "sh", "-c", script)
 	start := time.Now()
-	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", id, "--name", "chatty", "--stream"}) })
+	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", id, "--stream"}) })
 	fi, err := os.Stat(subrun.OutputPath(id))
 	if err != nil {
 		t.Fatal(err)

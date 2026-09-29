@@ -46,7 +46,7 @@ var (
 	// kido's directory, so a bare "kido" in tmux/kido-tmux.conf's bindings
 	// resolves to the binary this harness just built rather than to
 	// whatever is installed on the machine running the suite (or nothing,
-	// on CI) - mirroring what serverEnv (cmd/kido/launch.go) does for a
+	// on CI) - mirroring what launch (cmd/kido/launch.go) does for a
 	// real launch - plus tmuxDir, for the one binding that runs a literal
 	// "tmux" (the C-s popup).
 	serverPathPrefix string

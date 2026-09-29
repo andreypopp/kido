@@ -519,7 +519,8 @@ The run comes back as what it was: its recorded model, tool allowlist and
 "Idle self-exit, and resuming a run").
 
 The parent edge is whoever resumes. Given `--parent-pid` and
-`--parent-session`, they are used; omitted, they default to the
+`--parent-session` - together, since they name one edge and one without
+the other is refused - they are used; omitted, they default to the
 caller's own record, so an agent resuming becomes the run's new parent
 and a human at a bare shell resumes a parentless session that will not
 self-exit. `--no-parent` asks for that outright, so an agent that does
@@ -527,8 +528,11 @@ have a record can hand a run over instead of adopting it. A named session must b
 the window exists: the sweep keeps no history, and a stale edge would
 have the window closed as an orphan within seconds with nothing to say
 why. `spawn_subagent(resume)` always passes the caller's own live
-identity, and refuses `task`, `name` or `fork` alongside `resume` rather
-than guessing which the model wanted. The `pi --fork <run-id>` line `kido
+identity, and kido refuses `--task-file`, `--name` or `--fork` alongside
+`--resume` rather than guessing which the model wanted. A fresh spawn and
+a resume are two variants of one parsed request and share everything
+after the variant's own part: the depth ceiling, the parent check, the
+model check and the window creation. The `pi --fork <run-id>` line `kido
 runs` prints stays a bare command: forking a *finished run* from a shell
 is a standalone session with no record, which is a different thing from
 `spawn_subagent(fork)` forking the *caller's live session* into a child
@@ -547,9 +551,12 @@ what distinguishes the two records.
 One word after `--` is a shell command line and is run under `bash -c`,
 which is the shape a model writes ("make -j8 && ./run"); several words
 are an argv and are exec'd as given. Either way what will run is written
-to the run's `command` file before the window exists, and the window's
-own command line is only ever `kido async-run --run-id ID --name NAME` -
-model-authored text never reaches tmux's parser. `--name` is optional;
+to the run's `command` file before the window exists, and so is the
+run's `meta.json`, which gives the wrapper the run's name and parent; the
+window's pane and pid are added to it, atomically, once tmux has
+answered. The window's own command line is only ever `kido async-run
+--run-id ID [--stream]` - model-authored text never reaches tmux's
+parser. `--name` is optional;
 without one the window is named after the first word of the command.
 
 The parent is the caller's own state record, found from `$TMUX_PANE`,
@@ -569,9 +576,9 @@ observed. Then, in this order and never concurrently:
 1. the outcome: `completed` for exit 0, `failed` otherwise, with the
    status as its text ("exit status 3", "signal: killed");
 2. the completion notice, once, to the parent - a `notice` envelope over
-   the parent's inbox, addressed to the session in its own environment
-   and needing no record of its own, exactly as a spawned child's report
-   home is.
+   the parent's inbox, addressed to the parent session in the run's
+   meta and needing no record of its own, exactly as a spawned child's
+   report home is.
 
 Everything is reported **before this process exits**, which is what makes
 the feature independent of the window surviving. tmux sets
@@ -658,7 +665,7 @@ process happened to notice, and write-then-decide is one function
 (`reap.RecordEnding`) for the observers that find an ending from outside
 the run, so a third finds a call site rather than reimplementing the
 invariant. The wrapper writes for itself: it is inside the run's own
-process, holds no meta file, and is the one observer that can tell a
+process and is the one observer that can tell a
 write failing from a write lost. `reap.Sweep` itself sends nothing: it
 returns the runs whose parents are now the caller's to tell, and
 `reap.Collect` - called from `kido reap` and from the sidebar's poll -

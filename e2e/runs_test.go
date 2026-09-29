@@ -11,13 +11,32 @@ import (
 	"kido/internal/testutil"
 )
 
-// runInfo mirrors cmd/kido/runs.go's RunInfo, just the fields these tests
-// read.
+// runInfo is cmd/kido/runs.go's RunInfo, just the fields these tests
+// read, with the outcome flattened: "running" when there is none.
 type runInfo struct {
-	ID          string `json:"id"`
-	Kind        string `json:"kind"`
-	Outcome     string `json:"outcome"`
-	OutcomeText string `json:"outcomeText"`
+	ID          string
+	Kind        string
+	Outcome     string
+	OutcomeText string
+}
+
+func (r *runInfo) UnmarshalJSON(b []byte) error {
+	var raw struct {
+		ID      string `json:"id"`
+		Kind    string `json:"kind"`
+		Outcome *struct {
+			Result string `json:"result"`
+			Text   string `json:"text"`
+		} `json:"outcome"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	*r = runInfo{ID: raw.ID, Kind: raw.Kind, Outcome: "running"}
+	if raw.Outcome != nil {
+		r.Outcome, r.OutcomeText = raw.Outcome.Result, raw.Outcome.Text
+	}
+	return nil
 }
 
 // spawnRun drives `kido spawn_subagent` with a fake command, exactly as runSpawn

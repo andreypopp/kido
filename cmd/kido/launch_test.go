@@ -1,7 +1,7 @@
 package main
 
 import (
-	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -196,29 +196,34 @@ func TestServerConfRefusesAnUnquotablePath(t *testing.T) {
 	}
 }
 
-// TestClassifyProbe pins the reading of the one tmux failure kido
+// TestProbeServer pins the reading of the one tmux failure kido
 // translates. The mismatch wording is tmux's, from client.c; the other
 // two cases are what it says with no server and with a socket it cannot
 // reach, and both mean "start one".
-func TestClassifyProbe(t *testing.T) {
+func TestProbeServer(t *testing.T) {
 	cases := []struct {
 		name   string
-		err    error
+		exit   int
 		stderr string
 		want   serverState
 	}{
-		{"a server that answered", nil, "", serverUp},
-		{"an older kido-tmux still running", errors.New("exit status 1"),
-			"protocol version mismatch (client 8, server 7)\n", serverMismatch},
-		{"no server at all", errors.New("exit status 1"),
-			"no server running on /tmp/tmux-501/kido\n", serverDown},
-		{"a socket that cannot be reached", errors.New("exit status 1"),
-			"error connecting to /tmp/tmux-501/kido (No such file or directory)\n", serverDown},
+		{"a server that answered", 0, "", serverUp},
+		{"an older kido-tmux still running", 1,
+			"protocol version mismatch (client 8, server 7)", serverMismatch},
+		{"no server at all", 1,
+			"no server running on /tmp/tmux-501/kido", serverDown},
+		{"a socket that cannot be reached", 1,
+			"error connecting to /tmp/tmux-501/kido (No such file or directory)", serverDown},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := classifyProbe(c.err, c.stderr); got != c.want {
-				t.Errorf("classifyProbe = %v, want %v", got, c.want)
+			bin := filepath.Join(t.TempDir(), "tmux")
+			script := fmt.Sprintf("#!/bin/sh\necho '%s' >&2\nexit %d\n", c.stderr, c.exit)
+			if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if got := probeServer(bin); got != c.want {
+				t.Errorf("probeServer = %v, want %v", got, c.want)
 			}
 		})
 	}

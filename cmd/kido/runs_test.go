@@ -51,7 +51,7 @@ func TestRunsListsAndShows(t *testing.T) {
 	if err := json.Unmarshal(list.Bytes(), &infos); err != nil {
 		t.Fatalf("runs --json: %v (%q)", err, list.String())
 	}
-	if len(infos) != 1 || infos[0].ID != "run-a" || infos[0].Outcome != "completed" {
+	if len(infos) != 1 || infos[0].ID != "run-a" || infos[0].Outcome == nil || infos[0].Outcome.Result != subrun.Completed {
 		t.Errorf("runs --json = %+v, want one completed run-a", infos)
 	}
 

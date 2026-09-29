@@ -13,9 +13,7 @@ import (
 	"kido/internal/subrun"
 )
 
-func asyncBashUsage() string {
-	return "usage: kido async_bash [--name NAME] [--stream] -- COMMAND [ARG...]"
-}
+const asyncBashUsage = "usage: kido async_bash [--name NAME] [--stream] -- COMMAND [ARG...]"
 
 // asyncBashCmd implements `kido async_bash`: it creates a detached window
 // in the caller's own tmux session running COMMAND under `kido
@@ -35,21 +33,19 @@ func asyncBashCmd(args []string) error {
 	name := fs.String("name", "", "window name; derived from the command when omitted")
 	stream := fs.Bool("stream", false, "send the command's output to this caller in batches as it runs")
 	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("%w\n%s", err, asyncBashUsage())
+		return fmt.Errorf("%w\n%s", err, asyncBashUsage)
 	}
 	argv := commandArgv(fs.Args())
 	if len(argv) == 0 {
-		return fmt.Errorf("no command given\n%s", asyncBashUsage())
+		return fmt.Errorf("no command given\n%s", asyncBashUsage)
 	}
 
 	windowName := *name
 	if windowName == "" {
 		windowName = derivedName(fs.Args())
-	} else if i := strings.IndexAny(windowName, tmuxConfUnsafe); i >= 0 {
-		return fmt.Errorf("refusing window name %q: it contains %q, which cannot survive tmux's own command-line parsing", windowName, windowName[i:i+1])
 	}
-	if len(windowName) > maxWindowNameLen {
-		return fmt.Errorf("refusing window name %q: %d bytes is over the %d byte limit", windowName, len(windowName), maxWindowNameLen)
+	if err := checkWindowName(windowName); err != nil {
+		return err
 	}
 
 	self, err := invokedPath(os.Args[0])
@@ -82,6 +78,9 @@ func asyncBashCmd(args []string) error {
 		ParentSession: caller.ID, Depth: caller.Depth + 1,
 		Cwd: pane.CurrentPath, StartedAt: time.Now(),
 	}
+	if err := subrun.WriteMeta(meta); err != nil {
+		return err
+	}
 	// The depth ceiling a spawn is held to is not applied: nesting is what
 	// it bounds, and a bash run starts no agents. An agent already at the
 	// ceiling may still run a build.
@@ -90,9 +89,12 @@ func asyncBashCmd(args []string) error {
 	// wrapper is kido itself: it must find the same run directory this
 	// command just wrote, and new-window otherwise gives it the tmux
 	// server's environment rather than this process's.
-	env := append(runEnv(runID, caller.PID, caller.ID, meta.Depth, false),
-		"KIDO_STATE_DIR="+state.Dir())
-	command := []string{self, "async-run", "--run-id", runID, "--name", windowName}
+	var parent *parentEdge
+	if caller.ID != "" {
+		parent = &parentEdge{pid: caller.PID, session: caller.ID}
+	}
+	env := append(runEnv(runID, parent, meta.Depth, false), "KIDO_STATE_DIR="+state.Dir())
+	command := []string{self, "async-run", "--run-id", runID}
 	if *stream {
 		command = append(command, "--stream")
 	}

@@ -695,7 +695,7 @@ func TestSteerUsage(t *testing.T) {
 // to be signalled.
 func bashRunUnder(t *testing.T, name, parent string, pid int) subrun.Meta {
 	t.Helper()
-	meta := subrun.Meta{ID: startAsyncRun(t, "sleep", "600"), Name: name, Kind: subrun.KindBash,
+	meta := subrun.Meta{ID: startAsyncRun(t, name, parent, "sleep", "600"), Name: name, Kind: subrun.KindBash,
 		ParentSession: parent, Pane: "%2", PID: pid, StartedAt: time.Now()}
 	if err := subrun.WriteMeta(meta); err != nil {
 		t.Fatal(err)

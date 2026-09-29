@@ -128,7 +128,7 @@ const (
 type Outcome struct {
 	Result Result    `json:"result"`
 	Text   string    `json:"text,omitempty"`
-	At     time.Time `json:"at"`
+	At     time.Time `json:"at,omitzero"`
 }
 
 // Create writes a new run's directory and its task text. Called by kido
@@ -179,9 +179,10 @@ func ReadCommand(id string) ([]string, error) {
 	return argv, nil
 }
 
-// WriteMeta writes m's run's meta file. Called once, by kido spawn_subagent, after
-// tmux.NewWindow has returned the window, pane and pid that complete it;
-// `kido runs` skips a run with no meta file.
+// WriteMeta writes m's run's meta file: a new run's before its window
+// exists, and again once tmux.NewWindow has returned the pane and pid
+// that complete it, while the run's own wrapper may be reading it -
+// hence writeAtomic. `kido runs` skips a run with no meta file.
 func WriteMeta(m Meta) error {
 	if err := checkID(m.ID); err != nil {
 		return err
@@ -190,7 +191,7 @@ func WriteMeta(m Meta) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(metaPath(m.ID), b, 0o644)
+	return writeAtomic(metaPath(m.ID), b, 0o644)
 }
 
 // ReadMeta reads id's meta file.
@@ -329,7 +330,7 @@ func WriteScreen(id string, data []byte) error {
 // ClearDelivered removes id's delivered marker, if any: `kido
 // spawn_subagent --resume`'s fallback when no pi session file exists for
 // the run mints a fresh session under the same id instead of resuming one
-// (spawn_subagent.go's spawnResume), and that fresh session's own
+// (spawnSubagentCmd), and that fresh session's own
 // deliverTask would otherwise find the marker left by the attempt that
 // never ran a turn and skip redelivering the task altogether.
 func ClearDelivered(id string) error {
