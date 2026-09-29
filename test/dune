@@ -8,17 +8,9 @@
    ../pi/testdata/discriminator.json
    ../pi/testdata/tools.json
    ../bin/main.exe
-   share.tar
+   (source_tree %{project_root}/shims)
    %{project_root}/pi/kido-status.ts
+   %{project_root}/pi/kido-agents.ts
    %{project_root}/claude/settings.json))
  (preprocess
   (pps ppx_expect)))
-
-(rule
- ; the inline-test sandbox creates _build/install's directories but none
- ; of its files, so the share tree reaches test_bin_dir.ml as a tarball
- (target share.tar)
- (deps
-  (package kido))
- (action
-  (run tar -chf %{target} -C %{workspace_root}/../install/default/share kido)))

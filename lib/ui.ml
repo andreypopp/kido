@@ -396,23 +396,18 @@ let agent_title_of m (p : P.t) =
     | _ -> ( match State.agent_title p.title with "" -> Some "-" | t -> Some t)
 
 let lingering_label (p : P.t) l =
+  let base = { lead = []; title = []; tail = []; pane_id = Some p.pane_id } in
   match p.dead_at with
-  | None ->
-      {
-        lead = field (indicator (Status Running));
-        title = [ plain l.name ];
-        tail = [];
-        pane_id = Some p.pane_id;
-      }
+  | None -> { base with lead = field (indicator (Status Running)); title = [ plain l.name ] }
   | Some _ ->
       {
+        base with
         lead = field (indicator (Gone l.outcome));
         title = [ span st_dim l.name ];
         tail =
           Option.map_or ~default:[]
             (fun o -> [ plain "  "; span st_dim (Subrun.string_of_result o) ])
             l.outcome;
-        pane_id = Some p.pane_id;
       }
 
 let running_command m (p : P.t) =
