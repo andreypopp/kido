@@ -332,10 +332,10 @@ stanzas on a git commit, and resolved into the committed `dune.lock`;
 `dune pkg lock` regenerates the lock and always resolves against the
 newest opam-repository, so a re-lock is a reviewed change. There is no
 `kido.opam`: `dune-project` is the one dependency list. The first build
-of a checkout compiles OCaml and 48 packages (a few minutes); the
-workspace's `(cache enabled)` puts them in dune's shared cache, which
-the default cache mode would skip, so a later clean `_build` restores
-them in seconds. ocamlformat is a dev tool, not a dependency:
+of a checkout compiles OCaml and every package in `dune.lock` (a few
+minutes); dune's shared cache (see `dune-workspace`) restores them in
+seconds after a clean `_build`, and `dune cache trim --size 5GB` bounds
+it. ocamlformat is a dev tool, not a dependency:
 `dune tools install ocamlformat` once, then `dune fmt`. `dune show
 depexts` prints nothing; there are none.
 

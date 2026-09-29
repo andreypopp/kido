@@ -95,7 +95,7 @@ jobs:
         run: dune build
 
       - name: Unit tests
-        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux dune test
+        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux dune test --force
 
       - name: E2E tests
         run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux KIDO_E2E_REQUIRED=1 make e2e

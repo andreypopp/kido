@@ -23,7 +23,7 @@ install: $(PREFIX)/bin/kido-tmux
 # test-ts covers pi's two extensions under node and skips without one, so
 # the OCaml tests above never gain a node dependency of their own.
 test:
-	dune test
+	dune test --force
 	./scripts/test-ts.sh
 
 # the fork the e2e suite runs kido inside, built into the checkout under
