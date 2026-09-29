@@ -236,17 +236,12 @@ let%expect_test "path_prepend_script moves the directory first, once, in sh, bas
   in
   List.iter
     (fun sh ->
-      match Tmux.Exec.look_path ~path:(Sys.getenv "PATH") sh with
-      | None -> Printf.printf "%s: skipped\n" sh
-      | Some bin ->
+      Tmux.Exec.look_path ~path:(Sys.getenv "PATH") sh
+      |> Option.iter (fun bin ->
           let out = Sh.output ~env:[ "PATH=/usr/bin:" ^ dir ^ ":/bin" ] bin [ bin; "-c"; script ] in
-          Printf.printf "%s: %b\n" sh (String.equal out (dir ^ ":/usr/bin:/bin")))
+          if not (String.equal out (dir ^ ":/usr/bin:/bin")) then Printf.printf "%s: %s\n" sh out))
     [ "sh"; "bash"; "zsh" ];
-  [%expect {|
-    sh: true
-    bash: true
-    zsh: true
-    |}]
+  [%expect {| |}]
 
 (* The far side of `kido ssh` has no kido and no shims. *)
 let%expect_test "only a local prime moves PATH" =

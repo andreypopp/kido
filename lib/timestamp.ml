@@ -22,16 +22,28 @@ let days_from_civil y m d =
 
 let of_string s =
   try
-    Scanf.sscanf s "%4d-%2d-%2dT%2d:%2d:%2d%[.0-9]Z%!" (fun y mo d h mi sec frac ->
-        let whole = (((((days_from_civil y mo d * 24) + h) * 60) + mi) * 60) + sec in
-        Some
-          (Float.of_int whole +. if String.is_empty frac then 0. else Float.of_string ("0" ^ frac)))
+    Scanf.sscanf s "%4d-%2d-%2dT%2d:%2d:%2d%[.0-9]%s@!" (fun y mo d h mi sec frac zone ->
+        let offset =
+          match zone with
+          | "Z" -> Some 0
+          | _ ->
+              Scanf.sscanf zone "%c%2d:%2d%!" (fun sign oh om ->
+                  match sign with
+                  | '+' -> Some ((oh * 60) + om)
+                  | '-' -> Some (-((oh * 60) + om))
+                  | _ -> None)
+        in
+        Option.map
+          (fun offset ->
+            let whole = (((((days_from_civil y mo d * 24) + h) * 60) + mi - offset) * 60) + sec in
+            Float.of_int whole +. if String.is_empty frac then 0. else Float.of_string ("0" ^ frac))
+          offset)
   with Scanf.Scan_failure _ | End_of_file | Failure _ -> None
 
 let to_yojson t = `String (to_string t)
 
 let of_yojson = function
-  | `String s -> Option.to_result "not an RFC 3339 UTC timestamp" (of_string s)
+  | `String s -> Option.to_result "not an RFC 3339 timestamp" (of_string s)
   | _ -> Error "not a timestamp"
 
 let duration d =

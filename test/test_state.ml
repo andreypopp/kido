@@ -27,12 +27,19 @@ let%expect_test "timestamps round-trip through RFC 3339" =
         (Option.exists (fun t' -> Float.(abs (t' - t) < 1e-6)) (Timestamp.of_string s)))
     [ 0.; 1_700_000_000.; 1_700_000_000.5; 951_782_400.123456 ];
   print_endline (Option.map_or ~default:"none" Timestamp.to_string (Timestamp.of_string "junk"));
+  List.iter
+    (fun s ->
+      print_endline (Option.map_or ~default:"none" Timestamp.to_string (Timestamp.of_string s)))
+    [ "2026-09-29T16:36:24.275927+02:00"; "2026-09-29T11:06:24-03:30"; "2026-09-29T14:36:24+2" ];
   [%expect
     {|
     1970-01-01T00:00:00Z true
     2023-11-14T22:13:20Z true
     2023-11-14T22:13:20.5Z true
     2000-02-29T00:00:00.123456Z true
+    none
+    2026-09-29T14:36:24.275927Z
+    2026-09-29T14:36:24Z
     none
     |}]
 
