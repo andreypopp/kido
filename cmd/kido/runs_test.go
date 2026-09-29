@@ -4,24 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
 	"kido/internal/subrun"
+	"kido/internal/testutil"
 )
-
-// deadPID starts and waits for a trivial child process, returning its
-// pid: guaranteed to belong to no process by the time the caller uses it.
-func deadPID(t *testing.T) int {
-	t.Helper()
-	cmd := exec.Command("true")
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
-	}
-	return cmd.Process.Pid
-}
 
 // newRun creates a run record the way kido spawn_subagent does, in two calls, and
 // returns the buffer helpers below something to read back.
@@ -105,7 +94,7 @@ func TestRunsShowsRunningForALiveUnrecordedRun(t *testing.T) {
 // from subrun.EffectiveOutcome directly.
 func TestRunsShowsDiedForADeadUnrecordedRun(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	newRun(t, subrun.Meta{ID: "run-dead", PID: deadPID(t), StartedAt: time.Now()}, "x")
+	newRun(t, subrun.Meta{ID: "run-dead", PID: testutil.DeadPID(t), StartedAt: time.Now()}, "x")
 
 	var out bytes.Buffer
 	if err := showRun(&out, "run-dead", false); err != nil {

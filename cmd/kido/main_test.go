@@ -405,13 +405,13 @@ func TestAgentStatusParentAndDepth(t *testing.T) {
 	report := reporter(t, "p1")
 
 	s := report("--parent-pid", "4242", "--parent-session", "parent-sess", "--depth", "1")
-	if s.ParentPID != 4242 || s.ParentSession != "parent-sess" || s.Depth != 1 {
+	if s.Parent == nil || s.Parent.PID != 4242 || s.Parent.Session != "parent-sess" || s.Depth != 1 {
 		t.Fatalf("record = %+v, want parent pid 4242, parent session parent-sess and depth 1", s)
 	}
 
 	// Omitting these on the next call resets them to zero, the same as
 	// every other field: a report is a whole fresh record.
-	if s := report(); s.ParentPID != 0 || s.ParentSession != "" || s.Depth != 0 {
+	if s := report(); s.Parent != nil || s.Depth != 0 {
 		t.Errorf("record = %+v, want a root agent (no carry-forward)", s)
 	}
 }

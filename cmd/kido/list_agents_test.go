@@ -170,8 +170,8 @@ func TestBuildAgentsListsEveryAgentInACycle(t *testing.T) {
 		{PaneID: "%1", SessionID: "$1"}, {PaneID: "%2", SessionID: "$1"}, {PaneID: "%3", SessionID: "$1"},
 	}
 	states := map[string]state.Session{
-		"%1": {ID: "a", Pane: "%1", PID: 100, ParentSession: "b"},
-		"%2": {ID: "b", Pane: "%2", PID: 200, ParentSession: "a"},
+		"%1": {ID: "a", Pane: "%1", PID: 100, Parent: state.NewParent("b", 0)},
+		"%2": {ID: "b", Pane: "%2", PID: 200, Parent: state.NewParent("a", 0)},
 		"%3": {ID: "root", Pane: "%3", PID: 300},
 	}
 	got := buildAgents(states, panes, "$1", "%3")
@@ -187,7 +187,7 @@ func TestBuildAgentsListsEveryAgentInACycle(t *testing.T) {
 
 	// A record that is its own parent is a root, not a child of itself.
 	self := map[string]state.Session{
-		"%1": {ID: "a", Pane: "%1", PID: 100, ParentSession: "a"},
+		"%1": {ID: "a", Pane: "%1", PID: 100, Parent: state.NewParent("a", 0)},
 	}
 	got = buildAgents(self, panes, "$1", "%1")
 	if len(got) != 1 || got[0].Parent != "" {
@@ -202,8 +202,8 @@ func TestBuildAgentsParentTree(t *testing.T) {
 	t0 := time.Unix(1000, 0)
 	states := map[string]state.Session{
 		"%1": {ID: "root", Pane: "%1", PID: 100, Status: state.Running, TS: t0},
-		"%2": {ID: "child2", Pane: "%2", PID: 201, ParentSession: "root", Depth: 1, Status: state.Running, TS: t0.Add(2 * time.Second)},
-		"%3": {ID: "child1", Pane: "%3", PID: 202, ParentSession: "root", Depth: 1, Status: state.Running, TS: t0.Add(1 * time.Second)},
+		"%2": {ID: "child2", Pane: "%2", PID: 201, Parent: state.NewParent("root", 0), Depth: 1, Status: state.Running, TS: t0.Add(2 * time.Second)},
+		"%3": {ID: "child1", Pane: "%3", PID: 202, Parent: state.NewParent("root", 0), Depth: 1, Status: state.Running, TS: t0.Add(1 * time.Second)},
 	}
 	panes := []tmux.Pane{
 		{PaneID: "%1", SessionID: "$1"}, {PaneID: "%2", SessionID: "$1"}, {PaneID: "%3", SessionID: "$1"},
@@ -240,7 +240,7 @@ func TestBuildAgentsRecycledPIDNoEdge(t *testing.T) {
 		"%1": {ID: "root", Pane: "%1", PID: 100},
 		// child's ParentPID (100) matches root's PID, but its ParentSession
 		// names some other, unrelated session.
-		"%2": {ID: "child", Pane: "%2", PID: 200, ParentPID: 100, ParentSession: "someone-else"},
+		"%2": {ID: "child", Pane: "%2", PID: 200, Parent: state.NewParent("someone-else", 100)},
 	}
 	got := buildAgents(states, panes, "$1", "%1")
 	for _, a := range got {
@@ -298,7 +298,7 @@ func TestBuildAgentsCanReply(t *testing.T) {
 		{PaneID: "%3", SessionID: "$1", WindowID: "@3"},
 		{PaneID: "%4", SessionID: "$1", WindowID: "@4"},
 	}
-	for id, tools := range map[string][]string{
+	for id, tools := range map[subrun.ID][]string{
 		"empty-tools":      {},
 		"no-message-tool":  {"read", "bash"},
 		"has-message-tool": {"read", "message_agent"},
@@ -332,7 +332,7 @@ func TestBuildAgentsParentEdgeSurvivesARestart(t *testing.T) {
 	states := map[string]state.Session{
 		"%p": {ID: "parent-sess", Pane: "%p", Agent: state.AgentPi, Status: state.Idle},
 		"%1": {ID: "child-sess", Pane: "%1", Agent: state.AgentPi, Status: state.Idle,
-			ParentSession: "parent-sess", Depth: 1},
+			Parent: state.NewParent("parent-sess", 0), Depth: 1},
 	}
 	panes := []tmux.Pane{
 		{PaneID: "%p", SessionID: "$1", WindowID: "@p"},

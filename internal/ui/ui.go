@@ -79,7 +79,7 @@ type snapshot struct {
 	// an outcome recorded after the record was already gone (a slow
 	// run-outcome call outracing the removal report, a kill-window that
 	// has to retry) would never redraw.
-	lingering map[string]lingering
+	lingering lingeringMap
 }
 
 // lingering is one lingering subagent window's label, keyed by run id.
@@ -88,6 +88,8 @@ type lingering struct {
 	parent  string
 	outcome subrun.Result // "" until one is recorded
 }
+
+type lingeringMap map[subrun.ID]lingering
 
 // lingeringSubagents reads the name and outcome of every subagent window
 // this snapshot's panes show as marked but with no state record for the
@@ -104,17 +106,17 @@ type lingering struct {
 // one thing still worth asking about: that is the file the sweep or the
 // child itself may still write, and the redraw when it lands is what
 // turns the row's label from a name into a verdict.
-func lingeringSubagents(panes []tmux.Pane, states map[string]state.Session, prev map[string]lingering) map[string]lingering {
-	var out map[string]lingering
-	keep := func(runID string, l lingering) {
+func lingeringSubagents(panes []tmux.Pane, states map[string]state.Session, prev lingeringMap) lingeringMap {
+	var out lingeringMap
+	keep := func(runID subrun.ID, l lingering) {
 		if out == nil {
-			out = map[string]lingering{}
+			out = lingeringMap{}
 		}
 		out[runID] = l
 	}
 	for _, p := range panes {
-		runID := p.Run
-		if runID == "" {
+		runID, err := subrun.ParseID(p.Run)
+		if err != nil {
 			continue
 		}
 		if _, reported := states[p.PaneID]; reported {
@@ -473,7 +475,9 @@ func (a snapshot) same(b snapshot) bool {
 	}
 	return maps.EqualFunc(a.states, b.states, func(x, y state.Session) bool {
 		x.TS, y.TS = time.Time{}, time.Time{}
-		return x == y
+		xp, yp := x.Parent, y.Parent
+		x.Parent, y.Parent = nil, nil
+		return x == y && (xp == nil) == (yp == nil) && (xp == nil || *xp == *yp)
 	}) && maps.Equal(a.ssh, b.ssh) && maps.Equal(a.pi, b.pi) && maps.Equal(a.lingering, b.lingering)
 }
 
@@ -1237,7 +1241,7 @@ func (m *model) lingeringLabel(p tmux.Pane) (string, bool) {
 	if p.Run == "" {
 		return "", false
 	}
-	l, ok := m.snap.lingering[p.Run]
+	l, ok := m.snap.lingering[subrun.ID(p.Run)]
 	if !ok {
 		return "", false
 	}
@@ -1348,7 +1352,7 @@ type windowPlacement struct {
 // meta even when the two disagree: a live subagent can move or be
 // reparented (kido spawn_subagent --resume), and the meta is written
 // once at spawn and not rewritten to match every move.
-func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session, lingering map[string]lingering) []windowPlacement {
+func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session, lingering lingeringMap) []windowPlacement {
 	type loc struct{ windowID, paneID string }
 	bySession := map[string]loc{}
 	for _, w := range windows {
@@ -1362,15 +1366,15 @@ func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session, 
 	for _, w := range windows {
 		parent := ""
 		for _, p := range w {
-			if s, ok := states[p.PaneID]; ok && s.ParentSession != "" {
-				parent = s.ParentSession
+			if s, ok := states[p.PaneID]; ok && s.Parent != nil {
+				parent = s.Parent.Session
 				break
 			}
 		}
 		if parent == "" {
 			for _, p := range w {
 				if p.Run != "" {
-					parent = lingering[p.Run].parent
+					parent = lingering[subrun.ID(p.Run)].parent
 					break
 				}
 			}

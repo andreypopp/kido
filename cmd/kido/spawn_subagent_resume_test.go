@@ -13,6 +13,7 @@ import (
 
 	"kido/internal/state"
 	"kido/internal/subrun"
+	"kido/internal/testutil"
 )
 
 // withPiSessionDir points piSessionFileExists at dir for the duration of the
@@ -39,14 +40,14 @@ func writePiSessionFile(t *testing.T, dir, runID string) {
 // newDeadRun sets up a run record for resume: created, met with a dead
 // pid, and (unless the caller wants a live-run test) an outcome recorded
 // so EffectiveOutcome reads it as not-running.
-func newDeadRun(t *testing.T, id, cwd string) {
+func newDeadRun(t *testing.T, id subrun.ID, cwd string) {
 	t.Helper()
 	if err := subrun.Create(id, "do the thing"); err != nil {
 		t.Fatal(err)
 	}
 	if err := subrun.WriteMeta(subrun.Meta{
 		ID: id, Name: "kid", ParentSession: "old-parent", Depth: 1,
-		Pane: "%1", PID: deadPID(t), Cwd: cwd, StartedAt: time.Now(),
+		Pane: "%1", PID: testutil.DeadPID(t), Cwd: cwd, StartedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +345,7 @@ func TestSpawnResumeDefaultsModelFromMeta(t *testing.T) {
 	}
 	if err := subrun.WriteMeta(subrun.Meta{
 		ID: "modeled-run", Name: "kid", Depth: 1, Model: "acme/claude-sonnet-5",
-		Pane: "%1", PID: deadPID(t), Cwd: cwd, StartedAt: time.Now(),
+		Pane: "%1", PID: testutil.DeadPID(t), Cwd: cwd, StartedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +380,7 @@ func TestSpawnResumeExplicitModelWinsOverMeta(t *testing.T) {
 	}
 	if err := subrun.WriteMeta(subrun.Meta{
 		ID: "modeled-run-2", Name: "kid", Depth: 1, Model: "acme/claude-sonnet-5",
-		Pane: "%1", PID: deadPID(t), Cwd: cwd, StartedAt: time.Now(),
+		Pane: "%1", PID: testutil.DeadPID(t), Cwd: cwd, StartedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +412,7 @@ func withResumableRun(t *testing.T, id string) {
 	sessDir := t.TempDir()
 	withPiSessionDir(t, sessDir)
 	writePiSessionFile(t, sessDir, id)
-	newDeadRun(t, id, t.TempDir())
+	newDeadRun(t, subrun.ID(id), t.TempDir())
 }
 
 // TestSpawnResumePrintsWindowPaneRun: a resume is spawn_subagent's other
@@ -544,7 +545,7 @@ func TestSpawnResumeCarriesKeepAliveAndTools(t *testing.T) {
 		t.Fatalf("fresh spawn = %v, want it to succeed", err)
 	}
 	runID := marks["%9"]
-	if meta, err := subrun.ReadMeta(runID); err != nil {
+	if meta, err := subrun.ReadMeta(subrun.ID(runID)); err != nil {
 		t.Fatal(err)
 	} else if !meta.KeepAlive || !reflect.DeepEqual(meta.Tools, []string{"read", "bash"}) {
 		t.Fatalf("meta = %+v, want keepAlive and the tool allowlist recorded", meta)
@@ -553,7 +554,7 @@ func TestSpawnResumeCarriesKeepAliveAndTools(t *testing.T) {
 	// The run has to look finished before it can be resumed, and its own
 	// session file has to exist: the spawn above created a window through a
 	// fake, so neither is true yet.
-	if err := subrun.RecordOutcome(runID, subrun.Outcome{Result: subrun.Completed, At: time.Now()}); err != nil {
+	if err := subrun.RecordOutcome(subrun.ID(runID), subrun.Outcome{Result: subrun.Completed, At: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	writePiSessionFile(t, sessDir, runID)
@@ -572,7 +573,7 @@ func TestSpawnResumeCarriesKeepAliveAndTools(t *testing.T) {
 	}
 	// The meta is the run's living facts, so the resumed attempt's
 	// keepAlive is what it now says (the same way its parent edge is).
-	if meta, err := subrun.ReadMeta(runID); err != nil {
+	if meta, err := subrun.ReadMeta(subrun.ID(runID)); err != nil {
 		t.Fatal(err)
 	} else if !meta.KeepAlive {
 		t.Errorf("meta.KeepAlive = false after a resume that kept it alive")
@@ -611,7 +612,7 @@ func TestSpawnResumeWithoutRecordedKeepAliveOrTools(t *testing.T) {
 	}
 	// And an explicit --keep-alive still wins over an unrecorded one: the
 	// recorded value is the default, not a ceiling.
-	if err := subrun.ClearOutcome("old-run"); err != nil {
+	if err := subrun.ResetForResume("old-run", false); err != nil {
 		t.Fatal(err)
 	}
 	if err := subrun.RecordOutcome("old-run", subrun.Outcome{Result: subrun.Died, At: time.Now()}); err != nil {

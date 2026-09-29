@@ -13,6 +13,7 @@ import (
 
 	"kido/internal/msg"
 	"kido/internal/state"
+	"kido/internal/subrun"
 	"kido/internal/tmux"
 )
 
@@ -109,7 +110,8 @@ func notifyParentCmd(args []string, stdin io.Reader) int {
 		fmt.Fprintf(os.Stderr, "kido %s: %v\n", cmd, err)
 		return 1
 	}
-	notice, _, err := reportNotice(strings.TrimSuffix(string(b), "\n"), os.Getenv("KIDO_AGENT_RUN_ID"))
+	runID, _ := subrun.ParseID(os.Getenv("KIDO_AGENT_RUN_ID"))
+	notice, _, err := reportNotice(strings.TrimSuffix(string(b), "\n"), runID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "kido %s: keeping the whole report failed (%v); sending a truncated one\n", cmd, err)
 	}

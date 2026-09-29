@@ -83,7 +83,10 @@ func runOutcomeCmd(args []string) error {
 	if r != subrun.Completed && r != subrun.Failed {
 		return fmt.Errorf("--result must be %q or %q\n%s", subrun.Completed, subrun.Failed, runOutcomeUsage)
 	}
-	id := fs.Arg(0)
+	id, err := subrun.ParseID(fs.Arg(0))
+	if err != nil {
+		return err
+	}
 	o := subrun.Outcome{Result: r, Text: *text, At: time.Now()}
 
 	meta, metaErr := subrun.ReadMeta(id)
@@ -130,7 +133,7 @@ func refineNoTurnDetail(text, screen string) string {
 	return text + ` (the pane showed: "` + loginLine + `")`
 }
 
-func loadRunInfo(id string) (RunInfo, error) {
+func loadRunInfo(id subrun.ID) (RunInfo, error) {
 	meta, err := subrun.ReadMeta(id)
 	if err != nil {
 		return RunInfo{}, err
@@ -178,13 +181,17 @@ func listRuns(w io.Writer, asJSON bool) error {
 			}
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			info.ID, info.Name, info.ParentSession, info.StartedAt.Format(time.RFC3339),
+			string(info.ID), info.Name, info.ParentSession, info.StartedAt.Format(time.RFC3339),
 			duration, outcome, info.Cwd)
 	}
 	return tw.Flush()
 }
 
-func showRun(w io.Writer, id string, asJSON bool) error {
+func showRun(w io.Writer, idStr string, asJSON bool) error {
+	id, err := subrun.ParseID(idStr)
+	if err != nil {
+		return err
+	}
 	info, err := loadRunInfo(id)
 	if err != nil {
 		return fmt.Errorf("run %q: %w", id, err)
@@ -203,11 +210,11 @@ func showRun(w io.Writer, id string, asJSON bool) error {
 	// (spawnSubagentCmd). pi sessions are project-scoped, so the `cd`
 	// prefix stays even though a resume itself reads the run's own cwd from
 	// its meta rather than trusting the invoking shell's.
-	resume := "cd " + tmux.Quote(info.Cwd) + " && kido spawn_subagent --resume " + id
+	resume := "cd " + tmux.Quote(info.Cwd) + " && kido spawn_subagent --resume " + idStr
 	// `pi --fork` stays bare: forking into a standalone session, with no
 	// parent edge or run record of its own, is a different, legitimate
 	// thing from resuming this run.
-	fork := "cd " + tmux.Quote(info.Cwd) + " && pi --fork " + id
+	fork := "cd " + tmux.Quote(info.Cwd) + " && pi --fork " + idStr
 
 	if asJSON {
 		out := struct {

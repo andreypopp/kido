@@ -61,7 +61,7 @@ func TestNotifyParentUnderTheCapIsUntouched(t *testing.T) {
 	if err := subrun.Create(runID, "task"); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("KIDO_AGENT_RUN_ID", runID)
+	t.Setenv("KIDO_AGENT_RUN_ID", string(runID))
 
 	report := "the merge is done; two conflicts, both in README.md"
 	if code := notifyParentCmd(nil, strings.NewReader(report)); code != 0 {
@@ -86,7 +86,7 @@ func TestNotifyParentOverTheCapKeepsTheWholeReport(t *testing.T) {
 	if err := subrun.Create(runID, "task"); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("KIDO_AGENT_RUN_ID", runID)
+	t.Setenv("KIDO_AGENT_RUN_ID", string(runID))
 
 	// A report whose end is the part that would be lost, so "the file has
 	// all of it" is a claim about the tail rather than about a length.
@@ -130,7 +130,7 @@ func TestNotifyParentHeadIsCutOnARuneBoundary(t *testing.T) {
 	if err := subrun.Create(runID, "task"); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("KIDO_AGENT_RUN_ID", runID)
+	t.Setenv("KIDO_AGENT_RUN_ID", string(runID))
 
 	// Three-byte runes throughout, so wherever the cap lands it lands
 	// inside one unless the cut is moved back off it.

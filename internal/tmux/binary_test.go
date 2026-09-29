@@ -57,3 +57,42 @@ func TestResolveBinaryKidoTmuxWinsOverSibling(t *testing.T) {
 		t.Errorf("got %q, want /elsewhere/tmux", got)
 	}
 }
+
+// argv[0] with no separator is a PATH lookup, and that must not resolve
+// symlinks either.
+func TestInvokedPathLooksUpABareName(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real-kido")
+	if err := os.WriteFile(target, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "kido-under-test")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	got, err := InvokedPath("kido-under-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != link {
+		t.Errorf("InvokedPath = %q, want the unresolved %q", got, link)
+	}
+}
+
+// Nothing usable in argv[0] falls back to os.Executable rather than
+// failing: the test binary's own path.
+func TestInvokedPathFallsBackToExecutable(t *testing.T) {
+	want, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := InvokedPath("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("InvokedPath = %q, want %q", got, want)
+	}
+}

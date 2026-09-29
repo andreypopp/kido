@@ -246,7 +246,9 @@ func killRunPane(paneID string, beforeKill func()) (bool, error) {
 // a run id exactly when kido spawn_subagent created the target. Best-effort, since
 // the common case is a target with no run record at all.
 func recordStopped(target state.Session) {
-	subrun.RecordOutcome(target.ID, subrun.Outcome{Result: subrun.Stopped, At: time.Now()}) //nolint:errcheck // best effort
+	if id, err := subrun.ParseID(target.ID); err == nil {
+		subrun.RecordOutcome(id, subrun.Outcome{Result: subrun.Stopped, At: time.Now()}) //nolint:errcheck // best effort
+	}
 }
 
 // stoppedText is what a bash run's outcome says when `kido
@@ -279,7 +281,7 @@ func liveBashRun(to string) (subrun.Meta, bool, error) {
 		if err != nil || meta.Kind != subrun.KindBash {
 			continue
 		}
-		if !strings.EqualFold(meta.Name, to) && meta.ID != to {
+		if !strings.EqualFold(meta.Name, to) && string(meta.ID) != to {
 			continue
 		}
 		if _, done, err := subrun.ReadOutcome(id); err != nil || done {
@@ -298,7 +300,7 @@ func liveBashRun(to string) (subrun.Meta, bool, error) {
 	default:
 		ids := make([]string, len(matches))
 		for i, m := range matches {
-			ids[i] = m.ID
+			ids[i] = string(m.ID)
 		}
 		sort.Strings(ids)
 		return subrun.Meta{}, false, fmt.Errorf("%q matches several running async runs: %s", to, strings.Join(ids, ", "))
@@ -317,9 +319,9 @@ func liveBashRun(to string) (subrun.Meta, bool, error) {
 // runLabel names a run wherever one is spoken about - as the target of
 // stop_subagent, and in what it prints and refuses. A run nobody named
 // is its own id, which is at least addressable.
-func runLabel(name, id string) string {
+func runLabel(name string, id subrun.ID) string {
 	if name == "" {
-		return id
+		return string(id)
 	}
 	return name
 }
@@ -449,8 +451,8 @@ func callerReaches(states map[string]state.Session, panes []tmux.Pane, self, id 
 	}
 	parentOf := map[string]string{}
 	for _, s := range sessionsInSession(states, panes, callerPane.SessionID) {
-		if s.ParentSession != s.ID {
-			parentOf[s.ID] = s.ParentSession
+		if s.Parent != nil && s.Parent.Session != s.ID {
+			parentOf[s.ID] = s.Parent.Session
 		}
 	}
 	return isAncestor(parentOf, caller.ID, id), nil

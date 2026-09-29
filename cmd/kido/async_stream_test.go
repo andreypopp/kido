@@ -130,7 +130,7 @@ func TestStreamCoalescesAndStripsAnsi(t *testing.T) {
 	script := fmt.Sprintf(`for i in $(seq 1 %d); do printf '\033[32mline %%s\033[0m\n' $i; sleep %.3f; done`, lines, writeEvery.Seconds())
 	id := startAsyncRun(t, "chatty", "root-sess", "sh", "-c", script)
 	start := time.Now()
-	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", id, "--stream"}) })
+	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", string(id), "--stream"}) })
 	elapsed := time.Since(start)
 
 	chunks := streamText(t, envelopes(t, in))
@@ -180,7 +180,7 @@ func TestCompletionNoticeFollowsTheFinalChunk(t *testing.T) {
 	withStreamKnobs(t, 5*time.Second, 20*time.Millisecond, 100*time.Millisecond)
 
 	id := startAsyncRun(t, "chatty", "root-sess", "sh", "-c", `printf 'line 1\nline 2\nline 3\nline 4 unterminated'; exit 2`)
-	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", id, "--stream"}) })
+	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", string(id), "--stream"}) })
 
 	got := envelopes(t, in)
 	if len(got) < 2 {
@@ -307,12 +307,12 @@ func TestWrapperDoesNotBlockOnADeadParent(t *testing.T) {
 // command that writes lines lines, one every every, and reports how long the command itself
 // took - the output file's last write is the command's last line, and a
 // wrapper that made the child wait on a send delays every write after it.
-func runStreamingChild(t *testing.T, parent string, lines int, every time.Duration) (string, time.Duration) {
+func runStreamingChild(t *testing.T, parent string, lines int, every time.Duration) (subrun.ID, time.Duration) {
 	t.Helper()
 	script := fmt.Sprintf("for i in $(seq 1 %d); do echo line $i; sleep %.3f; done", lines, every.Seconds())
 	id := startAsyncRun(t, "chatty", parent, "sh", "-c", script)
 	start := time.Now()
-	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", id, "--stream"}) })
+	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", string(id), "--stream"}) })
 	fi, err := os.Stat(subrun.OutputPath(id))
 	if err != nil {
 		t.Fatal(err)

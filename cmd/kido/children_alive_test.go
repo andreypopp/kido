@@ -12,12 +12,12 @@ import (
 // childRun writes the run record a spawn leaves behind, under parent and
 // with pid as the child process's. A pid of 0 is a process that is gone,
 // which is what a run with no outcome and no live process looks like.
-func childRun(t *testing.T, id, parent string, pid int) {
+func childRun(t *testing.T, id subrun.ID, parent string, pid int) {
 	t.Helper()
 	if err := subrun.Create(id, "do a thing"); err != nil {
 		t.Fatal(err)
 	}
-	if err := subrun.WriteMeta(subrun.Meta{ID: id, Name: id, ParentSession: parent,
+	if err := subrun.WriteMeta(subrun.Meta{ID: id, Name: string(id), ParentSession: parent,
 		PID: pid, StartedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}

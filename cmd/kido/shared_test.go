@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"kido/internal/tmux"
 )
 
 // shipped are the files kido installs under share/kido, by the relative
@@ -128,9 +130,9 @@ func TestFindSharedPrefersUnresolved(t *testing.T) {
 
 // A Homebrew-shaped install: bin/kido and share/kido are symlinks the
 // package manager repoints on upgrade, and the versioned directory they
-// point at is what `brew cleanup` later deletes. invokedPath has to keep
-// the prefix spelling, so findShared resolves through the symlinks that
-// survive.
+// point at is what `brew cleanup` later deletes. tmux.InvokedPath has to
+// keep the prefix spelling, so findShared resolves through the symlinks
+// that survive.
 func TestInvokedPathKeepsThePrefixSpelling(t *testing.T) {
 	root := t.TempDir()
 	versioned := filepath.Join(root, "Cellar", "kido", "HEAD-abc1234")
@@ -164,12 +166,12 @@ func TestInvokedPathKeepsThePrefixSpelling(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := invokedPath(prefixBin)
+	got, err := tmux.InvokedPath(prefixBin)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != prefixBin {
-		t.Fatalf("invokedPath = %q, want the unresolved %q", got, prefixBin)
+		t.Fatalf("InvokedPath = %q, want the unresolved %q", got, prefixBin)
 	}
 
 	// The whole point: what kido writes down goes through the prefix,
@@ -180,44 +182,5 @@ func TestInvokedPathKeepsThePrefixSpelling(t *testing.T) {
 	}
 	if strings.Contains(found, "Cellar") {
 		t.Errorf("findShared = %q, want a path that avoids the versioned directory", found)
-	}
-}
-
-// argv[0] with no separator is a PATH lookup, and that must not resolve
-// symlinks either.
-func TestInvokedPathLooksUpABareName(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "real-kido")
-	if err := os.WriteFile(target, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(dir, "kido-under-test")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir)
-
-	got, err := invokedPath("kido-under-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != link {
-		t.Errorf("invokedPath = %q, want the unresolved %q", got, link)
-	}
-}
-
-// Nothing usable in argv[0] falls back to os.Executable rather than
-// failing: the test binary's own path.
-func TestInvokedPathFallsBackToExecutable(t *testing.T) {
-	want, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := invokedPath("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != want {
-		t.Errorf("invokedPath = %q, want %q", got, want)
 	}
 }

@@ -49,7 +49,7 @@ func resolveBinary(kidoTmuxEnv, arg0 string) string {
 	if kidoTmuxEnv != "" {
 		return kidoTmuxEnv
 	}
-	exe, err := invokedPath(arg0)
+	exe, err := InvokedPath(arg0)
 	if err == nil {
 		if sib := siblingTmux(exe); sib != "" {
 			return sib
@@ -58,12 +58,14 @@ func resolveBinary(kidoTmuxEnv, arg0 string) string {
 	return "tmux"
 }
 
-// invokedPath returns the path kido was started as, with symlinks left
-// alone. Mirrors cmd/kido/setup.go's invokedPath, and for the same reason:
-// os.Executable resolves through /proc/self/exe on Linux and always comes
-// back fully resolved, which would defeat siblingTmux's unresolved-first
-// ordering below on exactly the platform where nobody tests it.
-func invokedPath(arg0 string) (string, error) {
+// InvokedPath returns the path kido was started as, with symlinks left
+// alone. os.Executable is not it on Linux, where it reads /proc/self/exe
+// and always comes back fully resolved, which would defeat Candidates'
+// unresolved-first ordering on exactly the platform where nobody tests
+// it. argv[0] keeps the spelling: used as-is when it has a separator,
+// looked up on PATH when it does not. os.Executable stays the fallback,
+// for a caller that cleared argv[0] or a lookup that fails.
+func InvokedPath(arg0 string) (string, error) {
 	var p string
 	switch {
 	case strings.ContainsRune(arg0, filepath.Separator):
@@ -83,18 +85,24 @@ func invokedPath(arg0 string) (string, error) {
 	return os.Executable()
 }
 
-// siblingTmux returns the absolute path of "kido-tmux" beside exe, or ""
-// when there is none. The unresolved exe is tried first and its symlink
-// target only as a fallback - the same ordering findShared uses in
-// cmd/kido/setup.go, and for the same reason: Homebrew's bin directory is
-// a symlink it repoints on every upgrade, and the unresolved spelling
-// survives a `brew cleanup` that deletes the resolved one.
-func siblingTmux(exe string) string {
-	candidates := []string{exe}
+// Candidates returns exe and, if it differs, the path its symlinks
+// resolve to - unresolved first. A caller resolving something beside exe
+// (a sibling binary, a share directory) tries the unresolved spelling
+// first: Homebrew's bin directory is a symlink it repoints on every
+// upgrade, and the unresolved spelling survives a `brew cleanup` that
+// deletes the resolved one.
+func Candidates(exe string) []string {
+	c := []string{exe}
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil && resolved != exe {
-		candidates = append(candidates, resolved)
+		c = append(c, resolved)
 	}
-	for _, c := range candidates {
+	return c
+}
+
+// siblingTmux returns the absolute path of "kido-tmux" beside exe, or ""
+// when there is none.
+func siblingTmux(exe string) string {
+	for _, c := range Candidates(exe) {
 		sib := filepath.Join(filepath.Dir(c), "kido-tmux")
 		if fi, err := os.Stat(sib); err == nil && !fi.IsDir() {
 			return sib

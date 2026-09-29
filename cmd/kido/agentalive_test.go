@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"kido/internal/state"
+	"kido/internal/testutil"
 	"kido/internal/tmux"
 )
 
@@ -40,7 +41,7 @@ func TestAgentAliveSurvivesAPaneCollisionOnTheParent(t *testing.T) {
 		{ID: "parent", Pane: "%p", PID: os.Getpid(), Agent: state.AgentPi,
 			Status: state.Idle, TS: live},
 		{ID: "child", Pane: "%1", PID: os.Getpid(), Agent: state.AgentPi,
-			Status: state.Idle, ParentSession: "parent", TS: live},
+			Status: state.Idle, Parent: state.NewParent("parent", 0), TS: live},
 		{ID: "intruder", Pane: "%p", PID: os.Getpid(), Agent: state.AgentPi,
 			Status: state.Idle, TS: live.Add(time.Second)},
 	} {
@@ -87,7 +88,7 @@ func TestAgentAliveSurvivesAPaneCollisionOnTheParent(t *testing.T) {
 // must never come with one.
 func TestAgentAliveGoneAndUnknown(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	if err := state.Record("dead-sess", state.Session{Pane: "%9", PID: deadPID(t),
+	if err := state.Record("dead-sess", state.Session{Pane: "%9", PID: testutil.DeadPID(t),
 		Agent: state.AgentPi, Status: state.Idle, TS: time.Now()}); err != nil {
 		t.Fatal(err)
 	}

@@ -13,7 +13,7 @@ import (
 // startAsyncRun writes a run named name under parent holding argv and
 // returns its id, the way `kido async_bash` would before the window
 // exists.
-func startAsyncRun(t *testing.T, name, parent string, argv ...string) string {
+func startAsyncRun(t *testing.T, name, parent string, argv ...string) subrun.ID {
 	t.Helper()
 	id := subrun.NewID()
 	if err := subrun.Create(id, strings.Join(argv, " ")); err != nil {
@@ -41,7 +41,7 @@ func TestAsyncRunReportsBeforeItExits(t *testing.T) {
 	// Captured only to keep the command's own output off the test log:
 	// the wrapper tees to its pane, which here is the test's stdout.
 	var code int
-	captureStdout(t, func() { code = asyncRunCmd([]string{"--run-id", id}) })
+	captureStdout(t, func() { code = asyncRunCmd([]string{"--run-id", string(id)}) })
 	if code != 3 {
 		t.Errorf("asyncRunCmd = %d, want the command's own exit status 3", code)
 	}
@@ -75,7 +75,7 @@ func TestAsyncRunSuccessRecordsCompleted(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	id := startAsyncRun(t, "ok", "", "true")
 
-	if code := asyncRunCmd([]string{"--run-id", id}); code != 0 {
+	if code := asyncRunCmd([]string{"--run-id", string(id)}); code != 0 {
 		t.Errorf("asyncRunCmd = %d, want 0", code)
 	}
 	o, ok, _ := subrun.ReadOutcome(id)
@@ -107,7 +107,7 @@ func TestAsyncRunLeavesAnOutcomeItDidNotWin(t *testing.T) {
 	}
 	var code int
 	quiet := captureStderr(t, func() {
-		code = asyncRunCmd([]string{"--run-id", lost})
+		code = asyncRunCmd([]string{"--run-id", string(lost)})
 	})
 	if code != 0 {
 		t.Errorf("asyncRunCmd = %d, want 0: losing the outcome race is not the wrapper's failure", code)
@@ -120,7 +120,7 @@ func TestAsyncRunLeavesAnOutcomeItDidNotWin(t *testing.T) {
 	}
 
 	won := startAsyncRun(t, "won", parent, "true")
-	loud := captureStderr(t, func() { asyncRunCmd([]string{"--run-id", won}) })
+	loud := captureStderr(t, func() { asyncRunCmd([]string{"--run-id", string(won)}) })
 	if loud == "" {
 		t.Error("wrapper that won the outcome race said nothing, so the silence above pins nothing; it should have tried to notify")
 	}
@@ -135,7 +135,7 @@ func TestAsyncRunSignalledRecordsAndReports(t *testing.T) {
 	id := startAsyncRun(t, "killed", "", "sleep", "30")
 
 	done := make(chan int, 1)
-	go func() { done <- asyncRunCmd([]string{"--run-id", id}) }()
+	go func() { done <- asyncRunCmd([]string{"--run-id", string(id)}) }()
 	// The wrapper arms its handler before Start, so wait for the run to
 	// actually be under way rather than racing the signal against it.
 	deadline := time.Now().Add(5 * time.Second)

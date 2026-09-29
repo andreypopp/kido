@@ -55,7 +55,7 @@ type fresh struct {
 }
 
 type resume struct {
-	runID string
+	runID subrun.ID
 	adopt bool
 }
 
@@ -119,7 +119,11 @@ func parseSpawn(args []string) (spawnReq, error) {
 		case *forkSession != "":
 			return refuse("--resume continues a run's own session; --fork starts a new one from somebody else's, and the two cannot both be asked for")
 		}
-		req.mode = resume{runID: *resumeID, adopt: req.parent == nil && !*noParent}
+		runID, err := subrun.ParseID(*resumeID)
+		if err != nil {
+			return refuse(err.Error())
+		}
+		req.mode = resume{runID: runID, adopt: req.parent == nil && !*noParent}
 		return req, nil
 	}
 
@@ -226,7 +230,7 @@ func spawnSubagentCmd(args []string) error {
 			if m.fork != "" {
 				flags = append(flags, "--fork", m.fork)
 			}
-			flags = append(flags, "--session-id", meta.ID)
+			flags = append(flags, "--session-id", string(meta.ID))
 			command = slices.Insert(command, 1, flags...)
 		}
 	case resume:
@@ -246,9 +250,9 @@ func spawnSubagentCmd(args []string) error {
 		mint = !piSessionFileExists(meta.Cwd, meta.ID)
 		if command[0] == "pi" {
 			if mint {
-				command = slices.Insert(command, 1, "--session-id", meta.ID)
+				command = slices.Insert(command, 1, "--session-id", string(meta.ID))
 			} else {
-				command = slices.Insert(command, 1, "--session", meta.ID)
+				command = slices.Insert(command, 1, "--session", string(meta.ID))
 			}
 			if meta.Model != "" && !slices.Contains(command[1:], "--model") {
 				command = append(command, "--model", meta.Model)
@@ -282,20 +286,11 @@ func spawnSubagentCmd(args []string) error {
 		// A resumed run is running again: its old outcome and the first
 		// attempt's captured screen no longer describe it, and
 		// RecordOutcome's O_EXCL would otherwise refuse every exit path that
-		// follows this one.
-		if err := subrun.ClearOutcome(meta.ID); err != nil {
+		// follows this one. A minted session starts holding the same task
+		// file, and pi/kido-agents.ts's deliverTask skips it while the
+		// "delivered" marker the earlier attempt left exists.
+		if err := subrun.ResetForResume(meta.ID, mint); err != nil {
 			return err
-		}
-		if err := subrun.ClearScreen(meta.ID); err != nil {
-			return err
-		}
-		// A minted session starts holding the same task file, and
-		// pi/kido-agents.ts's deliverTask skips it while the "delivered"
-		// marker the earlier attempt left exists.
-		if mint {
-			if err := subrun.ClearDelivered(meta.ID); err != nil {
-				return err
-			}
 		}
 	}
 	return createRunWindow(meta, pane.SessionID, runEnv(meta.ID, parent, depth, meta.KeepAlive), command)
@@ -326,12 +321,12 @@ func callerPane() (tmux.Pane, []tmux.Pane, error) {
 // from a bare human shell - rather than reported as zero or empty: the
 // child's own subagent test reads whether the variable is there at all,
 // and internal/reap would read a zero as an orphan's.
-func runEnv(runID string, parent *parentEdge, depth int, keepAlive bool) []string {
+func runEnv(runID subrun.ID, parent *parentEdge, depth int, keepAlive bool) []string {
 	env := []string{
 		"KIDO_AGENT_TASK_FILE=" + subrun.TaskPath(runID),
 		// Unconditional: a child that is not pi has no --session-id to learn
 		// the run id from, and `kido run-outcome` needs it.
-		"KIDO_AGENT_RUN_ID=" + runID,
+		"KIDO_AGENT_RUN_ID=" + string(runID),
 		"KIDO_AGENT_DEPTH=" + strconv.Itoa(depth),
 	}
 	if parent != nil {
@@ -369,7 +364,7 @@ func createRunWindow(meta subrun.Meta, sessionID string, env, command []string) 
 	if err := subrun.WriteMeta(meta); err != nil {
 		return err
 	}
-	if err := markRun(paneID, meta.ID); err != nil {
+	if err := markRun(paneID, string(meta.ID)); err != nil {
 		// A window that has already closed cannot be marked and does not
 		// need to be: the mark is what makes a window reapable, and there
 		// is nothing left to reap. For a bash run that is an ordinary
@@ -423,7 +418,7 @@ func printCreated(meta subrun.Meta, windowID, paneID string) {
 // setting) - a real gap, noted in docs/design.md, rather than kido
 // reimplementing pi's full settings resolution just to check one file's
 // existence.
-func piSessionFileExists(cwd, id string) bool {
+func piSessionFileExists(cwd string, id subrun.ID) bool {
 	dir := os.Getenv("PI_CODING_AGENT_SESSION_DIR")
 	if dir == "" {
 		agentDir := os.Getenv("PI_CODING_AGENT_DIR")
@@ -441,7 +436,7 @@ func piSessionFileExists(cwd, id string) bool {
 	if err != nil {
 		return false
 	}
-	suffix := "_" + id + ".jsonl"
+	suffix := "_" + string(id) + ".jsonl"
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), suffix) {
 			return true

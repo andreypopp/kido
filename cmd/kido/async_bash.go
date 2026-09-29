@@ -11,6 +11,7 @@ import (
 
 	"kido/internal/state"
 	"kido/internal/subrun"
+	"kido/internal/tmux"
 )
 
 const asyncBashUsage = "usage: kido async_bash [--name NAME] [--stream] -- COMMAND [ARG...]"
@@ -48,7 +49,7 @@ func asyncBashCmd(args []string) error {
 		return err
 	}
 
-	self, err := invokedPath(os.Args[0])
+	self, err := tmux.InvokedPath(os.Args[0])
 	if err != nil {
 		return err
 	}
@@ -94,7 +95,7 @@ func asyncBashCmd(args []string) error {
 		parent = &parentEdge{pid: caller.PID, session: caller.ID}
 	}
 	env := append(runEnv(runID, parent, meta.Depth, false), "KIDO_STATE_DIR="+state.Dir())
-	command := []string{self, "async-run", "--run-id", runID}
+	command := []string{self, "async-run", "--run-id", string(runID)}
 	if *stream {
 		command = append(command, "--stream")
 	}

@@ -37,7 +37,7 @@ func binDir(exe string) (string, bool) {
 
 // ownBinDir is binDir for this kido.
 func ownBinDir() (string, bool) {
-	exe, err := invokedPath(os.Args[0])
+	exe, err := tmux.InvokedPath(os.Args[0])
 	if err != nil {
 		return "", false
 	}

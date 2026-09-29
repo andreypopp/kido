@@ -89,7 +89,9 @@ alive, so a pid reused by another user's process looks like a living
 parent. The parent pid is still recorded and still passed, but only as a
 cheap first check for the liveness poll: ESRCH is a definite "gone", and
 anything else defers to whether some live process still holds the parent
-session.
+session. `state.Session` stores that edge as it is used - one
+`Parent *state.Parent{Session, PID}`, nil for a root agent - rather than
+two parallel fields a caller could set one of and not the other.
 
 What this buys is the restart. A user who quits pi and resumes the same
 session (`pi --resume`) has a new process on the same session id, and

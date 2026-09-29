@@ -149,9 +149,9 @@ func TestRecordPauseKeepsTheLatest(t *testing.T) {
 	if err := RecordPause(earlier); err != nil {
 		t.Fatal(err)
 	}
-	got, ok, err := readPause()
-	if err != nil || !ok {
-		t.Fatalf("readPause: %v, %v, %v", got, ok, err)
+	got := Wake()
+	if got.IsZero() {
+		t.Fatalf("Wake: %v", got)
 	}
 	if !got.Equal(later) {
 		t.Errorf("wake marker = %v, want the later write %v to survive", got, later)

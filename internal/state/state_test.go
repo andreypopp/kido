@@ -3,11 +3,11 @@ package state
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"kido/internal/testutil"
 	"kido/internal/tmux"
 )
 
@@ -21,35 +21,6 @@ func write(t *testing.T, id string, s Session) {
 	}
 	if err := os.WriteFile(filepath.Join(Dir(), id+".json"), b, 0o644); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// TestStallThresholdFromEnv pins KIDO_STALL_THRESHOLD_MS: the e2e suite
-// drives kido as a built binary, so an override that only ever reassigns
-// the package variable (as TestStalled does) is invisible to it.
-func TestStallThresholdFromEnv(t *testing.T) {
-	saved := os.Getenv("KIDO_STALL_THRESHOLD_MS")
-	t.Cleanup(func() {
-		if saved == "" {
-			os.Unsetenv("KIDO_STALL_THRESHOLD_MS")
-		} else {
-			os.Setenv("KIDO_STALL_THRESHOLD_MS", saved)
-		}
-	})
-
-	os.Unsetenv("KIDO_STALL_THRESHOLD_MS")
-	if got := stallThresholdFromEnv(3 * time.Minute); got != 3*time.Minute {
-		t.Errorf("unset: got %v, want the default", got)
-	}
-
-	os.Setenv("KIDO_STALL_THRESHOLD_MS", "250")
-	if got := stallThresholdFromEnv(3 * time.Minute); got != 250*time.Millisecond {
-		t.Errorf("set to 250: got %v, want 250ms", got)
-	}
-
-	os.Setenv("KIDO_STALL_THRESHOLD_MS", "not-a-number")
-	if got := stallThresholdFromEnv(3 * time.Minute); got != 3*time.Minute {
-		t.Errorf("garbage: got %v, want the default", got)
 	}
 }
 
@@ -206,17 +177,6 @@ func TestIsAgentPane(t *testing.T) {
 	}
 }
 
-// deadPID starts and waits for a trivial child process, returning its pid:
-// guaranteed to belong to no process by the time the caller uses it.
-func deadPID(t *testing.T) int {
-	t.Helper()
-	cmd := exec.Command("true")
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
-	}
-	return cmd.Process.Pid
-}
-
 // TestLoadDeletesDeadRecords checks the three cases the state directory can
 // hold: a live session's file survives, a dead one's file is both skipped
 // and removed from disk, and a malformed file is skipped without stopping
@@ -227,7 +187,7 @@ func TestLoadDeletesDeadRecords(t *testing.T) {
 
 	write(t, "live", Session{Pane: "%1", Status: Idle, TS: time.Now().UTC()}) // write sets PID = os.Getpid()
 
-	dead := deadPID(t)
+	dead := testutil.DeadPID(t)
 	b, err := json.Marshal(Session{Pane: "%2", PID: dead, Status: Idle, TS: time.Now().UTC()})
 	if err != nil {
 		t.Fatal(err)
@@ -377,7 +337,7 @@ func TestRemoveLeavesAnotherHoldersRecord(t *testing.T) {
 // level: the previous process is gone, so its session id is free.
 func TestRecordTakesOverADeadHolder(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	if err := Record("s", Session{Pane: "%1", PID: deadPID(t), Status: Idle, TS: time.Now().UTC()}); err != nil {
+	if err := Record("s", Session{Pane: "%1", PID: testutil.DeadPID(t), Status: Idle, TS: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	if err := Record("s", Session{Pane: "%2", PID: os.Getpid(), Status: Running, TS: time.Now().UTC()}); err != nil {

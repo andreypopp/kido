@@ -144,10 +144,7 @@ func Collect(panes []tmux.Pane, sessions []state.Session, now time.Time, ops Ops
 // and there is no cheap way to tell the two apart beforehand - Died is
 // only mark's own guess, written moments after this, and rule 2 closes a
 // pane whose subagent never got to record anything at all.
-func captureScreen(runID string, paneIDs []string) {
-	if runID == "" {
-		return
-	}
+func captureScreen(runID subrun.ID, paneIDs []string) {
 	var b strings.Builder
 	for _, paneID := range paneIDs {
 		text, err := subrun.CapturePane(paneID)
@@ -213,7 +210,7 @@ type AgentEnding struct{ Unreported bool }
 // at least addressable.
 func (e Ending) label() string {
 	if e.Meta.Name == "" {
-		return e.Meta.ID
+		return string(e.Meta.ID)
 	}
 	return e.Meta.Name
 }
@@ -366,13 +363,17 @@ func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) ([]Close,
 		if paneID == "" && tmux.LastWindow(panes, id) {
 			return
 		}
+		runID, err := subrun.ParseID(w.run.Run)
+		if err != nil {
+			return
+		}
 		closing[id] = true
 		going := []string{paneID}
 		if paneID == "" {
 			going = w.paneIDs
 		}
-		captureScreen(w.run.Run, going)
-		if e, ok := recordEnding(w.run.Run, now); ok {
+		captureScreen(runID, going)
+		if e, ok := recordEnding(runID, now); ok {
 			endings = append(endings, e)
 		}
 		out = append(out, Close{WindowID: id, PaneID: paneID})
@@ -398,10 +399,10 @@ func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) ([]Close,
 		// A dead subagent is rule 1's business: acting on its record here
 		// would let a state file left by a previous tmux server close a
 		// window by pane id alone.
-		if s.ParentSession == "" || !live[s.ID] {
+		if s.Parent == nil || !live[s.ID] {
 			continue
 		}
-		if live[s.ParentSession] {
+		if live[s.Parent.Session] {
 			continue
 		}
 		if id, ok := byPane[s.Pane]; ok {
@@ -449,7 +450,7 @@ func RecordEnding(meta subrun.Meta, o subrun.Outcome) (Ending, bool) {
 // and what it may guess depends on the kind. A bash run ended without
 // its wrapper reporting; an agent run keeps the Died it always got, and
 // the notice says only that nobody reported it.
-func recordEnding(runID string, now time.Time) (Ending, bool) {
+func recordEnding(runID subrun.ID, now time.Time) (Ending, bool) {
 	meta, err := subrun.ReadMeta(runID)
 	if err != nil {
 		// No meta is an agent-shaped run as far as every reader of it is

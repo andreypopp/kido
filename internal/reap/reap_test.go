@@ -3,7 +3,6 @@ package reap
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -12,22 +11,11 @@ import (
 
 	"kido/internal/state"
 	"kido/internal/subrun"
+	"kido/internal/testutil"
 	"kido/internal/tmux"
 )
 
 var now = time.Unix(1700000000, 0)
-
-// deadPID starts and waits for a trivial child process, returning its pid:
-// guaranteed to belong to no process by the time the caller uses it. The
-// same trick internal/state/state_test.go uses.
-func deadPID(t *testing.T) int {
-	t.Helper()
-	cmd := exec.Command("true")
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
-	}
-	return cmd.Process.Pid
-}
 
 // pane builds one pane of a one-pane window in session $0, which is what
 // a spawned subagent's window is. The variations each test needs - the
@@ -107,7 +95,7 @@ func TestSweepWaitsOutTheGrace(t *testing.T) {
 // list, Sweep says so without folding the windows at all.
 func TestSweepNeverTouchesAnUnmarkedWindow(t *testing.T) {
 	stale := state.Session{Pane: "%1", PID: os.Getpid(),
-		ID: "child-sess", ParentSession: "long-gone-sess"}
+		ID: "child-sess", Parent: state.NewParent("long-gone-sess", 0)}
 	panes := []tmux.Pane{other, dead(pane("%1", "@1"), 600)}
 	check(t, sweep(panes, []state.Session{stale}, now))
 }
@@ -136,10 +124,10 @@ func TestSweepCollectsAFocusedWindowOnceTheUserLeaves(t *testing.T) {
 func TestSweepCancelsSubagentOfDeadParent(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	child := state.Session{Pane: "%1", PID: os.Getpid(),
-		ID: "child-sess", ParentSession: "root-sess"}
+		ID: "child-sess", Parent: state.NewParent("root-sess", 0)}
 	// The parent record is still on disk (ReadAll keeps it) but its
 	// process is gone, which is the reading that decides this.
-	parent := state.Session{Pane: "%p", PID: deadPID(t), ID: "root-sess"}
+	parent := state.Session{Pane: "%p", PID: testutil.DeadPID(t), ID: "root-sess"}
 	panes := []tmux.Pane{other, runPane(pane("%1", "@1"), "run-cancelled")}
 	check(t, sweep(panes, []state.Session{child, parent}, now), winClose("@1"))
 }
@@ -174,7 +162,7 @@ func TestSweepSurvivesAPaneCollisionOnTheParent(t *testing.T) {
 	record(t, "parent-sess", state.Session{Pane: "%p", PID: os.Getpid(),
 		Agent: state.AgentPi, TS: live})
 	record(t, "child-sess", state.Session{Pane: "%1", PID: os.Getpid(),
-		Agent: state.AgentPi, ParentSession: "parent-sess", TS: live})
+		Agent: state.AgentPi, Parent: state.NewParent("parent-sess", 0), TS: live})
 	record(t, "intruder-sess", state.Session{Pane: "%p", PID: os.Getpid(),
 		Agent: state.AgentPi, TS: live.Add(time.Second)})
 	panes := []tmux.Pane{other, runPane(pane("%1", "@1"), "run-collision")}
@@ -348,7 +336,7 @@ func record(t *testing.T, id string, s state.Session) {
 
 func TestSweepLeavesSubagentOfLiveParentAlone(t *testing.T) {
 	child := state.Session{Pane: "%1", PID: os.Getpid(),
-		ID: "child-sess", ParentSession: "root-sess"}
+		ID: "child-sess", Parent: state.NewParent("root-sess", 0)}
 	parent := state.Session{Pane: "%p", PID: os.Getpid(), ID: "root-sess"}
 	panes := []tmux.Pane{other, runPane(pane("%1", "@1"), "run-live-parent")}
 	check(t, sweep(panes, []state.Session{child, parent}, now))
@@ -359,7 +347,7 @@ func TestSweepLeavesSubagentOfLiveParentAlone(t *testing.T) {
 // its window marked and its process gone, which is as close to reapable
 // as a root record can look.
 func TestSweepNeverTouchesARootAgent(t *testing.T) {
-	root := state.Session{Pane: "%1", PID: deadPID(t), ID: "root-sess"}
+	root := state.Session{Pane: "%1", PID: testutil.DeadPID(t), ID: "root-sess"}
 	panes := []tmux.Pane{other, runPane(pane("%1", "@1"), "run-root")}
 	check(t, sweep(panes, []state.Session{root}, now))
 }
@@ -369,7 +357,7 @@ func TestSweepNeverTouchesARootAgent(t *testing.T) {
 // must still be closed once.
 func TestSweepReturnsAWindowOnce(t *testing.T) {
 	child := state.Session{Pane: "%1", PID: os.Getpid(),
-		ID: "child-sess", ParentSession: "gone-sess"}
+		ID: "child-sess", Parent: state.NewParent("gone-sess", 0)}
 	panes := []tmux.Pane{other, dead(runPane(pane("%1", "@1"), "run-once"), 600)}
 	check(t, sweep(panes, []state.Session{child}, now), winClose("@1"))
 }
@@ -527,7 +515,7 @@ func TestSweepBoundsTheCapturedScreen(t *testing.T) {
 // bashRun writes the meta a `kido async_bash` window's run has: kind
 // bash, and a parent to tell. parent may be empty, which is a run
 // started from a shell nobody was tracking.
-func bashRun(t *testing.T, id, name, parent string) {
+func bashRun(t *testing.T, id subrun.ID, name, parent string) {
 	t.Helper()
 	if err := subrun.Create(id, "make -j8"); err != nil {
 		t.Fatal(err)
@@ -626,7 +614,7 @@ func TestSweepNotifiesOnceUnderTwoObservers(t *testing.T) {
 // agentRun writes the meta a `kido spawn_subagent` window's run has: no
 // kind at all, which every reader takes as an agent run, and a parent to
 // tell.
-func agentRun(t *testing.T, id, name, parent string) {
+func agentRun(t *testing.T, id subrun.ID, name, parent string) {
 	t.Helper()
 	if err := subrun.Create(id, "do a thing"); err != nil {
 		t.Fatal(err)
@@ -817,8 +805,8 @@ func TestSweepNotifiesOnceForARunsPane(t *testing.T) {
 // part of the cancellation.
 func TestSweepCancelsAnOrphanByItsOwnPane(t *testing.T) {
 	child := state.Session{Pane: "%1", PID: os.Getpid(),
-		ID: "child-sess", ParentSession: "root-sess"}
-	parent := state.Session{Pane: "%p", PID: deadPID(t), ID: "root-sess"}
+		ID: "child-sess", Parent: state.NewParent("root-sess", 0)}
+	parent := state.Session{Pane: "%p", PID: testutil.DeadPID(t), ID: "root-sess"}
 	panes := []tmux.Pane{other, runPane(pane("%1", "@1"), "run-orphan"), pane("%2", "@1")}
 	check(t, sweep(panes, []state.Session{child, parent}, now), paneClose("@1", "%1"))
 }
@@ -831,7 +819,7 @@ func TestSweepCancelsAnOrphanByItsOwnPane(t *testing.T) {
 // tick of the restart.
 func TestSweepLeavesAChildOfARestartedParentAlone(t *testing.T) {
 	child := state.Session{ID: "child-sess", Pane: "%1", PID: os.Getpid(),
-		ParentSession: "parent-sess"}
+		Parent: state.NewParent("parent-sess", 0)}
 	parent := state.Session{ID: "parent-sess", Pane: "%p", PID: os.Getpid()}
 	panes := []tmux.Pane{other, runPane(pane("%1", "@1"), "run-restarted")}
 	check(t, sweep(panes, []state.Session{child, parent}, now))

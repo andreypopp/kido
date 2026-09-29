@@ -58,7 +58,7 @@ func TestAsyncNoticeSaysItIsFromTheRun(t *testing.T) {
 	in := noticeParent(t, "root-sess")
 
 	id := startAsyncRun(t, "build", "root-sess", "true")
-	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", id}) })
+	captureStdout(t, func() { asyncRunCmd([]string{"--run-id", string(id)}) })
 
 	got := envelopes(t, in)
 	if len(got) != 1 {
@@ -79,10 +79,10 @@ func TestAsyncNoticeSaysItIsFromTheRun(t *testing.T) {
 // gone: marked with the run, every pane a remain-on-exit corpse, dead
 // long enough for the linger to have passed. The second window keeps the
 // sweep off the last-window rule.
-func deadRunWindow(runID string) []tmux.Pane {
+func deadRunWindow(runID subrun.ID) []tmux.Pane {
 	return []tmux.Pane{
 		{PaneID: "%2", SessionID: "$1", WindowID: "@2"},
-		{PaneID: "%9", SessionID: "$1", WindowID: "@9", Run: runID,
+		{PaneID: "%9", SessionID: "$1", WindowID: "@9", Run: string(runID),
 			DeadAt: time.Now().Add(-time.Hour).Unix()},
 	}
 }
@@ -234,7 +234,7 @@ func TestReapNotifiesForAnAgentRunNobodyReported(t *testing.T) {
 	if got[0].From.Name != "ttyfix" {
 		t.Errorf("notice is from %+v, want it to name the run", got[0].From)
 	}
-	for _, want := range []string{"ttyfix", string(subrun.Died), meta.ID, "spawn_subagent(resume: \"" + meta.ID + "\")"} {
+	for _, want := range []string{"ttyfix", string(subrun.Died), string(meta.ID), "spawn_subagent(resume: \"" + string(meta.ID) + "\")"} {
 		if !strings.Contains(got[0].Text, want) {
 			t.Errorf("notice text = %q, want it to carry %q", got[0].Text, want)
 		}
@@ -283,7 +283,7 @@ func TestRunOutcomeUnreportedNotifiesTheParent(t *testing.T) {
 	in := noticeParent(t, "root-sess")
 	meta := startedAgentRun(t, "ttyfix", "root-sess")
 
-	if err := runOutcomeCmd([]string{"--result", "completed", "--unreported", meta.ID}); err != nil {
+	if err := runOutcomeCmd([]string{"--result", "completed", "--unreported", string(meta.ID)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -294,7 +294,7 @@ func TestRunOutcomeUnreportedNotifiesTheParent(t *testing.T) {
 	if got[0].Kind != msg.KindNotice || got[0].From.Name != "ttyfix" {
 		t.Errorf("envelope = %+v, want a notice from the run", got[0])
 	}
-	for _, want := range []string{"ttyfix", "never called notify_parent", string(subrun.Completed), meta.ID, "spawn_subagent(resume: \"" + meta.ID + "\")"} {
+	for _, want := range []string{"ttyfix", "never called notify_parent", string(subrun.Completed), string(meta.ID), "spawn_subagent(resume: \"" + string(meta.ID) + "\")"} {
 		if !strings.Contains(got[0].Text, want) {
 			t.Errorf("notice text = %q, want it to carry %q", got[0].Text, want)
 		}
@@ -314,7 +314,7 @@ func TestRunOutcomeWithoutUnreportedSaysNothing(t *testing.T) {
 	in := noticeParent(t, "root-sess")
 	meta := startedAgentRun(t, "ttyfix", "root-sess")
 
-	if err := runOutcomeCmd([]string{"--result", "completed", meta.ID}); err != nil {
+	if err := runOutcomeCmd([]string{"--result", "completed", string(meta.ID)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -339,7 +339,7 @@ func TestRunOutcomeUnreportedThatLosesTheWriteSaysNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := runOutcomeCmd([]string{"--result", "completed", "--unreported", meta.ID}); err != nil {
+	if err := runOutcomeCmd([]string{"--result", "completed", "--unreported", string(meta.ID)}); err != nil {
 		t.Fatal(err)
 	}
 

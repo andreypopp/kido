@@ -88,7 +88,7 @@ func shellPane(w, pane string) tmux.Pane {
 func agentState(id, parent, title string) state.Session {
 	return state.Session{
 		Agent: state.AgentPi, Status: state.Running, Title: title,
-		ID: id, ParentSession: parent, TS: testAt,
+		ID: id, Parent: state.NewParent(parent, 0), TS: testAt,
 	}
 }
 
@@ -351,9 +351,9 @@ func TestRenderNestsRecursively(t *testing.T) {
 	states := map[string]state.Session{
 		"%1": agentState("root-sess", "", "root"),
 		"%2": {Agent: state.AgentPi, Status: state.Running, Title: "kid",
-			ID: "kid-sess", ParentSession: "root-sess", Depth: 1, TS: testAt},
+			ID: "kid-sess", Parent: state.NewParent("root-sess", 0), Depth: 1, TS: testAt},
 		"%3": {Agent: state.AgentPi, Status: state.Running, Title: "grandkid",
-			ID: "gk-sess", ParentSession: "kid-sess", Depth: 1, TS: testAt},
+			ID: "gk-sess", Parent: state.NewParent("kid-sess", 0), Depth: 1, TS: testAt},
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -375,7 +375,7 @@ func TestRenderDrawsAnOrphanAsARoot(t *testing.T) {
 	states := map[string]state.Session{
 		"%1": agentState("other-sess", "", "unrelated"),
 		"%2": {Agent: state.AgentPi, Status: state.Running, Title: "orphan",
-			ID: "orphan-sess", ParentSession: "elsewhere-sess", Depth: 1, TS: testAt},
+			ID: "orphan-sess", Parent: state.NewParent("elsewhere-sess", 0), Depth: 1, TS: testAt},
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -453,8 +453,8 @@ func TestOrderWindowsByTreePutsChildRightAfterParent(t *testing.T) {
 	}
 	states := map[string]state.Session{
 		"%root":   {ID: "root-sess"},
-		"%child2": {ParentSession: "root-sess", Depth: 1},
-		"%child1": {ParentSession: "root-sess", Depth: 1},
+		"%child2": {Parent: state.NewParent("root-sess", 0), Depth: 1},
+		"%child1": {Parent: state.NewParent("root-sess", 0), Depth: 1},
 	}
 	got := orderWindowsByTree(windows, states, nil)
 	want := []string{"@shell", "@root", "@child2", "@child1"}
@@ -482,7 +482,7 @@ func TestOrderWindowsByTreeIndentsOnlyRealChildren(t *testing.T) {
 		{{PaneID: "%orphan", WindowID: "@orphan"}},
 	}
 	states := map[string]state.Session{
-		"%orphan": {ID: "orphan-sess", ParentSession: "elsewhere-sess", Depth: 1},
+		"%orphan": {ID: "orphan-sess", Parent: state.NewParent("elsewhere-sess", 0), Depth: 1},
 	}
 	got := orderWindowsByTree(windows, states, nil)
 	if !sameIDs(windowIDs(got), []string{"@shell", "@orphan"}) {
@@ -508,8 +508,8 @@ func TestOrderWindowsByTreeNests(t *testing.T) {
 	}
 	states := map[string]state.Session{
 		"%root":     {ID: "root-sess"},
-		"%kid":      {ID: "kid-sess", ParentSession: "root-sess", Depth: 1},
-		"%grandkid": {ID: "gk-sess", ParentSession: "kid-sess", Depth: 1},
+		"%kid":      {ID: "kid-sess", Parent: state.NewParent("root-sess", 0), Depth: 1},
+		"%grandkid": {ID: "gk-sess", Parent: state.NewParent("kid-sess", 0), Depth: 1},
 	}
 	got := orderWindowsByTree(windows, states, nil)
 	if !sameIDs(windowIDs(got), []string{"@root", "@kid", "@grandkid"}) {
@@ -536,8 +536,8 @@ func TestOrderWindowsByTreeHandlesCycle(t *testing.T) {
 		{{PaneID: "%b", WindowID: "@b"}},
 	}
 	states := map[string]state.Session{
-		"%a": {ID: "a-sess", ParentSession: "b-sess"},
-		"%b": {ID: "b-sess", ParentSession: "a-sess"},
+		"%a": {ID: "a-sess", Parent: state.NewParent("b-sess", 0)},
+		"%b": {ID: "b-sess", Parent: state.NewParent("a-sess", 0)},
 	}
 	got := orderWindowsByTree(windows, states, nil)
 	if len(got) != 2 {
@@ -569,7 +569,7 @@ func TestOrderWindowsByTreeFallsBackToLingeringWhenRecordGone(t *testing.T) {
 	states := map[string]state.Session{
 		"%root": {ID: "root-sess"},
 	}
-	lingering := map[string]lingering{"run-1": {parent: "root-sess"}}
+	lingering := lingeringMap{"run-1": {parent: "root-sess"}}
 	got := orderWindowsByTree(windows, states, lingering)
 	if !sameIDs(windowIDs(got), []string{"@root", "@kid"}) {
 		t.Fatalf("order = %v, want the marked window to follow its marked parent", windowIDs(got))
@@ -593,9 +593,9 @@ func TestOrderWindowsByTreeRecordBeatsStaleMark(t *testing.T) {
 	states := map[string]state.Session{
 		"%root":  {ID: "root-sess"},
 		"%other": {ID: "other-sess"},
-		"%kid":   {ID: "kid-sess", ParentSession: "root-sess"},
+		"%kid":   {ID: "kid-sess", Parent: state.NewParent("root-sess", 0)},
 	}
-	lingering := map[string]lingering{"run-1": {parent: "other-sess"}}
+	lingering := lingeringMap{"run-1": {parent: "other-sess"}}
 	got := orderWindowsByTree(windows, states, lingering)
 	for _, pl := range got {
 		if pl.panes[0].WindowID == "@kid" && pl.anchor != "%root" {
@@ -614,7 +614,7 @@ func TestOrderWindowsByTreeMarkedOrphanIsRoot(t *testing.T) {
 		{{PaneID: "%shell", WindowID: "@shell"}},
 		{deadSubagentPane("@kid", "%kid", "run-1")},
 	}
-	lingering := map[string]lingering{"run-1": {parent: "elsewhere-sess"}}
+	lingering := lingeringMap{"run-1": {parent: "elsewhere-sess"}}
 	got := orderWindowsByTree(windows, map[string]state.Session{}, lingering)
 	if !sameIDs(windowIDs(got), []string{"@shell", "@kid"}) {
 		t.Fatalf("order = %v, want both windows kept in tmux's own order", windowIDs(got))
@@ -637,7 +637,7 @@ func TestOrderWindowsByTreeMarkFallbackDropsNothing(t *testing.T) {
 	windows := [][]tmux.Pane{
 		{deadSubagentPane("@kid", "%kid", "run-1")},
 	}
-	lingering := map[string]lingering{"run-1": {parent: "nonexistent-sess"}}
+	lingering := lingeringMap{"run-1": {parent: "nonexistent-sess"}}
 	got := orderWindowsByTree(windows, map[string]state.Session{}, lingering)
 	if !sameIDs(windowIDs(got), []string{"@kid"}) {
 		t.Fatalf("order = %v, want the window kept even though its named parent doesn't exist", windowIDs(got))
@@ -676,7 +676,7 @@ func newRun(t *testing.T, name, parent string, result subrun.Result) string {
 			t.Fatal(err)
 		}
 	}
-	return id
+	return string(id)
 }
 
 // TestRenderLingeringSubagentShowsItsOwnName is the identity half of the
@@ -780,7 +780,7 @@ func TestRenderReproducesTheLiveSplitBugReport(t *testing.T) {
 	}
 	states := map[string]state.Session{
 		"%22": agentState("root-sess", "", "working-on-kido"),
-		"%4":  {Agent: state.AgentPi, Status: state.Idle, Title: "helper", ID: "helper-sess", ParentSession: "root-sess", TS: testAt},
+		"%4":  {Agent: state.AgentPi, Status: state.Idle, Title: "helper", ID: "helper-sess", Parent: state.NewParent("root-sess", 0), TS: testAt},
 	}
 	wantRows(t, renderRows(panes, states), []string{
 		"sess",
@@ -945,24 +945,25 @@ func TestLingeringSubagentsCarryForward(t *testing.T) {
 	id := newRun(t, "subagent", "", "")
 	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id)}
 
+	runID := subrun.ID(id)
 	first := lingeringSubagents(panes, nil, nil)
-	if first[id].name != "subagent" || first[id].outcome != "" {
-		t.Fatalf("first read = %+v, want the run's name and no outcome yet", first[id])
+	if first[runID].name != "subagent" || first[runID].outcome != "" {
+		t.Fatalf("first read = %+v, want the run's name and no outcome yet", first[runID])
 	}
 
 	if err := os.Remove(filepath.Join(subrun.Dir(), id, "meta.json")); err != nil {
 		t.Fatal(err)
 	}
-	if err := subrun.RecordOutcome(id, subrun.Outcome{Result: subrun.Completed}); err != nil {
+	if err := subrun.RecordOutcome(runID, subrun.Outcome{Result: subrun.Completed}); err != nil {
 		t.Fatal(err)
 	}
 
 	next := lingeringSubagents(panes, nil, first)
-	if next[id].name != "subagent" {
-		t.Errorf("name = %q, want it carried forward from the previous tick rather than re-read", next[id].name)
+	if next[runID].name != "subagent" {
+		t.Errorf("name = %q, want it carried forward from the previous tick rather than re-read", next[runID].name)
 	}
-	if next[id].outcome != subrun.Completed {
-		t.Errorf("outcome = %+v, want the outcome recorded since the previous tick to be picked up", next[id])
+	if next[runID].outcome != subrun.Completed {
+		t.Errorf("outcome = %+v, want the outcome recorded since the previous tick to be picked up", next[runID])
 	}
 }
 
@@ -1003,8 +1004,8 @@ func TestOrderWindowsByTreeAnchorsToTheSecondAgentPaneInAWindow(t *testing.T) {
 	states := map[string]state.Session{
 		"%21":   {ID: "top-sess"},
 		"%101":  {ID: "second-sess"},
-		"%kid1": {ID: "kid1-sess", ParentSession: "top-sess", Depth: 1},
-		"%kid2": {ID: "kid2-sess", ParentSession: "second-sess", Depth: 1},
+		"%kid1": {ID: "kid1-sess", Parent: state.NewParent("top-sess", 0), Depth: 1},
+		"%kid2": {ID: "kid2-sess", Parent: state.NewParent("second-sess", 0), Depth: 1},
 	}
 	got := orderWindowsByTree(windows, states, nil)
 	anchors := anchorsOf(got)
@@ -1049,7 +1050,7 @@ func TestOrderWindowsByTreeFollowsARestartedParent(t *testing.T) {
 	}
 	states := map[string]state.Session{
 		"%root": {ID: "root-sess"},
-		"%kid":  {ID: "kid-sess", ParentSession: "root-sess", Depth: 1},
+		"%kid":  {ID: "kid-sess", Parent: state.NewParent("root-sess", 0), Depth: 1},
 	}
 	got := orderWindowsByTree(windows, states, nil)
 	if a := anchorsOf(got)["@kid"]; a != "%root" {

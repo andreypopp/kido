@@ -17,60 +17,65 @@ import (
 	"kido/internal/state"
 )
 
-// checkID refuses a run id that would name something other than one
+// ID is a run id: the name of its directory directly under Dir, and also
+// the child's own pi session id. The only way to get one is ParseID or
+// NewID, so every function below can trust it names nothing outside Dir.
+type ID string
+
+// ParseID refuses a run id that would name something other than one
 // directory directly under Dir: `kido run-outcome <id>` takes the id from
 // a model-authored child, and "../<other-run>" would let one run claim an
 // outcome for another.
-func checkID(id string) error {
-	if id == "" || strings.ContainsAny(id, `/\`) || strings.HasPrefix(id, ".") {
-		return fmt.Errorf("invalid run id %q", id)
+func ParseID(s string) (ID, error) {
+	if s == "" || strings.ContainsAny(s, `/\`) || strings.HasPrefix(s, ".") {
+		return "", fmt.Errorf("invalid run id %q", s)
 	}
-	return nil
+	return ID(s), nil
 }
 
 // Dir is the directory holding one subdirectory per run.
 func Dir() string { return filepath.Join(state.Dir(), "runs") }
 
-func dirFor(id string) string { return filepath.Join(Dir(), id) }
+func dirFor(id ID) string { return filepath.Join(Dir(), string(id)) }
 
 // TaskPath is the file a spawned child reads its task from, and the one
 // kido spawn_subagent sets as KIDO_AGENT_TASK_FILE. Nothing here ever removes it.
 // The child writes a sibling "delivered" marker beside it once it has
 // handed the text to the model (pi/kido-agents.ts owns both halves of
 // that; no Go code reads the marker).
-func TaskPath(id string) string { return filepath.Join(dirFor(id), "task") }
+func TaskPath(id ID) string { return filepath.Join(dirFor(id), "task") }
 
 // CommandPath is the argv `kido async-run` execs, written by `kido
 // async_bash` before the window exists for the reason the task text is:
 // the wrapper may already be running before the meta file lands, and
 // model-authored text must reach it as a file rather than as a command
 // line.
-func CommandPath(id string) string { return filepath.Join(dirFor(id), "command") }
+func CommandPath(id ID) string { return filepath.Join(dirFor(id), "command") }
 
 // OutputPath is where a bash run's stdout and stderr are teed. It is the
 // whole of what the run said; the completion notice carries only its
 // tail.
-func OutputPath(id string) string { return filepath.Join(dirFor(id), "output") }
+func OutputPath(id ID) string { return filepath.Join(dirFor(id), "output") }
 
 // ReportPath is where a run's own notify_parent report is kept whole. The
 // parent is sent at most a notice's worth of it (cmd/kido, notifyParentCmd)
 // and this file is the rest: a report is a work product, and a cut one used
 // to be the only copy there was.
-func ReportPath(id string) string { return filepath.Join(dirFor(id), "report") }
+func ReportPath(id ID) string { return filepath.Join(dirFor(id), "report") }
 
-func metaPath(id string) string    { return filepath.Join(dirFor(id), "meta.json") }
-func outcomePath(id string) string { return filepath.Join(dirFor(id), "outcome") }
-func screenPath(id string) string  { return filepath.Join(dirFor(id), "screen") }
+func metaPath(id ID) string    { return filepath.Join(dirFor(id), "meta.json") }
+func outcomePath(id ID) string { return filepath.Join(dirFor(id), "outcome") }
+func screenPath(id ID) string  { return filepath.Join(dirFor(id), "screen") }
 
 // DeliveredPath is the sibling marker pi/kido-agents.ts's deliverTask
 // writes once it has handed id's task to the model, so a /reload does not
 // deliver it twice.
-func DeliveredPath(id string) string { return filepath.Join(dirFor(id), "delivered") }
+func DeliveredPath(id ID) string { return filepath.Join(dirFor(id), "delivered") }
 
 // NewID generates a run id. It is also the child's own pi session id, so
 // it must be safe both as a directory name and on pi's command line;
 // msg.NewID's hex alphabet satisfies both.
-func NewID() string { return msg.NewID() }
+func NewID() ID { return ID(msg.NewID()) }
 
 // Meta is a run's own facts, written once by a fresh spawn. A resume
 // rewrites the ones that have actually changed - the window, pane and
@@ -79,7 +84,7 @@ func NewID() string { return msg.NewID() }
 // which is what makes it one run rather than two (docs/design.md, "Idle
 // self-exit, and resuming a run").
 type Meta struct {
-	ID            string   `json:"id"`
+	ID            ID       `json:"id"`
 	Name          string   `json:"name"`
 	Kind          Kind     `json:"kind,omitempty"`
 	ParentSession string   `json:"parentSession,omitempty"`
@@ -134,10 +139,7 @@ type Outcome struct {
 // Create writes a new run's directory and its task text. Called by kido
 // spawn before the tmux window exists, because the child may read its
 // task the instant tmux starts it.
-func Create(id, task string) error {
-	if err := checkID(id); err != nil {
-		return err
-	}
+func Create(id ID, task string) error {
 	if err := os.MkdirAll(dirFor(id), 0o755); err != nil {
 		return err
 	}
@@ -147,10 +149,7 @@ func Create(id, task string) error {
 // WriteCommand records the argv id's window runs, as `kido async-run`
 // will exec it: the shape written is the shape run, so the file is not a
 // rendering of a command line but the command line itself.
-func WriteCommand(id string, argv []string) error {
-	if err := checkID(id); err != nil {
-		return err
-	}
+func WriteCommand(id ID, argv []string) error {
 	b, err := json.Marshal(argv)
 	if err != nil {
 		return err
@@ -161,10 +160,7 @@ func WriteCommand(id string, argv []string) error {
 // ReadCommand reads back what WriteCommand wrote. An empty argv is an
 // error rather than an empty exec: there is nothing to run and nothing
 // truthful to report about having run it.
-func ReadCommand(id string) ([]string, error) {
-	if err := checkID(id); err != nil {
-		return nil, err
-	}
+func ReadCommand(id ID) ([]string, error) {
 	b, err := os.ReadFile(CommandPath(id))
 	if err != nil {
 		return nil, err
@@ -184,9 +180,6 @@ func ReadCommand(id string) ([]string, error) {
 // that complete it, while the run's own wrapper may be reading it -
 // hence writeAtomic. `kido runs` skips a run with no meta file.
 func WriteMeta(m Meta) error {
-	if err := checkID(m.ID); err != nil {
-		return err
-	}
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
@@ -195,10 +188,7 @@ func WriteMeta(m Meta) error {
 }
 
 // ReadMeta reads id's meta file.
-func ReadMeta(id string) (Meta, error) {
-	if err := checkID(id); err != nil {
-		return Meta{}, err
-	}
+func ReadMeta(id ID) (Meta, error) {
 	b, err := os.ReadFile(metaPath(id))
 	if err != nil {
 		return Meta{}, err
@@ -246,28 +236,19 @@ func writeAtomic(path string, data []byte, perm os.FileMode) error {
 // covered. The run's directory is not created here - a sender kido never
 // spawned has none, and the error is what tells notifyParentCmd to fall
 // back to a plain truncation.
-func WriteReport(id, text string) error {
-	if err := checkID(id); err != nil {
-		return err
-	}
+func WriteReport(id ID, text string) error {
 	return writeAtomic(ReportPath(id), []byte(text), 0o600)
 }
 
 // HasReport reports whether id's run has a report file, which only a
 // report too long for one notice ever leaves behind.
-func HasReport(id string) bool {
-	if err := checkID(id); err != nil {
-		return false
-	}
+func HasReport(id ID) bool {
 	_, err := os.Stat(ReportPath(id))
 	return err == nil
 }
 
 // ReadTask reads id's task text.
-func ReadTask(id string) (string, error) {
-	if err := checkID(id); err != nil {
-		return "", err
-	}
+func ReadTask(id ID) (string, error) {
 	b, err := os.ReadFile(TaskPath(id))
 	return string(b), err
 }
@@ -276,10 +257,7 @@ func ReadTask(id string) (string, error) {
 // overwrite one that already exists, so the first writer to observe how
 // a run ended wins and a later, cruder guess never clobbers it. An
 // existing outcome is a plain error; os.IsExist(err) tells it apart.
-func RecordOutcome(id string, o Outcome) error {
-	if err := checkID(id); err != nil {
-		return err
-	}
+func RecordOutcome(id ID, o Outcome) error {
 	b, err := json.Marshal(o)
 	if err != nil {
 		return err
@@ -293,23 +271,6 @@ func RecordOutcome(id string, o Outcome) error {
 	return err
 }
 
-// ClearOutcome removes id's recorded outcome, if any, so a later
-// RecordOutcome can write a fresh one. Its only caller is `kido spawn_subagent
-// --resume`: resuming a run is a deliberate act telling kido the run is
-// alive again, not one more exit path racing to describe how it ended,
-// so it does not compete with RecordOutcome's "first writer wins" rule -
-// it runs before any of those exit paths have anything to say about the
-// resumed run, not concurrently with one of them.
-func ClearOutcome(id string) error {
-	if err := checkID(id); err != nil {
-		return err
-	}
-	if err := os.Remove(outcomePath(id)); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
 // WriteScreen saves id's captured final screen, last writer wins: unlike
 // RecordOutcome's outcomes, two captures of one run carry no precedence
 // to defend (docs/design.md, "The screen capture") - rule 1 photographs
@@ -320,50 +281,38 @@ func ClearOutcome(id string) error {
 // after its first attempt, since nothing else ever removes this file.
 // Written via writeAtomic, the way state.Record is, so a reader never
 // sees a partial write and two racing writers never corrupt one another.
-func WriteScreen(id string, data []byte) error {
-	if err := checkID(id); err != nil {
-		return err
-	}
+func WriteScreen(id ID, data []byte) error {
 	return writeAtomic(screenPath(id), data, 0o644)
 }
 
-// ClearDelivered removes id's delivered marker, if any: `kido
-// spawn_subagent --resume`'s fallback when no pi session file exists for
-// the run mints a fresh session under the same id instead of resuming one
-// (spawnSubagentCmd), and that fresh session's own
-// deliverTask would otherwise find the marker left by the attempt that
-// never ran a turn and skip redelivering the task altogether.
-func ClearDelivered(id string) error {
-	if err := checkID(id); err != nil {
-		return err
+// ResetForResume clears the state a fresh attempt at id must not inherit
+// from a previous one: its recorded outcome and captured screen, always,
+// and its delivered marker when delivered is true. Its only caller is
+// `kido spawn_subagent --resume`: resuming a run is a deliberate act
+// telling kido the run is alive again, not one more exit path racing to
+// describe how it ended, so it does not compete with RecordOutcome's
+// "first writer wins" rule - it runs before any of those exit paths have
+// anything to say about the resumed run, not concurrently with one of
+// them. delivered is false when the resume mints a fresh session under
+// the run's id rather than resuming a pi session that exists on disk;
+// that fresh session's own deliverTask would otherwise find the marker
+// left by the attempt that never ran a turn and skip redelivering the
+// task altogether.
+func ResetForResume(id ID, delivered bool) error {
+	paths := []string{outcomePath(id), screenPath(id)}
+	if delivered {
+		paths = append(paths, DeliveredPath(id))
 	}
-	if err := os.Remove(DeliveredPath(id)); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
-// ClearScreen removes id's captured screen, if any, the same way
-// ClearOutcome clears an outcome: `kido spawn_subagent --resume`'s only caller,
-// so that a screen captured for the run's first attempt is not shown
-// under `kido runs <id>` as though it were the resumed attempt's own,
-// for however long the resumed attempt takes to end and capture a new
-// one of its own.
-func ClearScreen(id string) error {
-	if err := checkID(id); err != nil {
-		return err
-	}
-	if err := os.Remove(screenPath(id)); err != nil && !os.IsNotExist(err) {
-		return err
+	for _, p := range paths {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	return nil
 }
 
 // ReadScreen reads id's captured final screen, if a sweep ever saved one.
-func ReadScreen(id string) (string, bool, error) {
-	if err := checkID(id); err != nil {
-		return "", false, err
-	}
+func ReadScreen(id ID) (string, bool, error) {
 	b, err := os.ReadFile(screenPath(id))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -375,10 +324,7 @@ func ReadScreen(id string) (string, bool, error) {
 }
 
 // ReadOutcome reads id's outcome, if one has been recorded.
-func ReadOutcome(id string) (Outcome, bool, error) {
-	if err := checkID(id); err != nil {
-		return Outcome{}, false, err
-	}
+func ReadOutcome(id ID) (Outcome, bool, error) {
 	b, err := os.ReadFile(outcomePath(id))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -399,7 +345,7 @@ func ReadOutcome(id string) (Outcome, bool, error) {
 // run is still alive. The guess inherits state.Alive's biases (EPERM and
 // a recycled pid both read as alive), which can only show a dead run as
 // running, never the reverse.
-func EffectiveOutcome(id string, pid int) (Outcome, bool, error) {
+func EffectiveOutcome(id ID, pid int) (Outcome, bool, error) {
 	o, ok, err := ReadOutcome(id)
 	if err != nil || ok {
 		return o, ok, err
@@ -411,7 +357,7 @@ func EffectiveOutcome(id string, pid int) (Outcome, bool, error) {
 }
 
 // List returns every run id under Dir, in no particular order.
-func List() ([]string, error) {
+func List() ([]ID, error) {
 	entries, err := os.ReadDir(Dir())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -419,10 +365,10 @@ func List() ([]string, error) {
 		}
 		return nil, err
 	}
-	var ids []string
+	var ids []ID
 	for _, e := range entries {
 		if e.IsDir() {
-			ids = append(ids, e.Name())
+			ids = append(ids, ID(e.Name()))
 		}
 	}
 	return ids, nil

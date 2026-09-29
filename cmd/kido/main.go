@@ -422,18 +422,17 @@ func agentStatus(args []string) error {
 		return fmt.Errorf("unknown status %q\n%s", *status, agentStatusUsage())
 	}
 	return record(*session, state.Session{
-		Agent:         *agent,
-		Pane:          os.Getenv("TMUX_PANE"),
-		PID:           os.Getppid(),
-		Status:        state.Status(*status),
-		TS:            time.Now().UTC(),
-		Title:         *title,
-		Inbox:         *inbox,
-		Activity:      oneLine(*activity, maxActivity),
-		ParentPID:     *parentPID,
-		ParentSession: *parentSession,
-		Depth:         *depth,
-		Model:         *model,
+		Agent:    state.Agent(*agent),
+		Pane:     os.Getenv("TMUX_PANE"),
+		PID:      os.Getppid(),
+		Status:   state.Status(*status),
+		TS:       time.Now().UTC(),
+		Title:    *title,
+		Inbox:    *inbox,
+		Activity: oneLine(*activity, maxActivity),
+		Parent:   state.NewParent(*parentSession, *parentPID),
+		Depth:    *depth,
+		Model:    *model,
 	}, *ended)
 }
 

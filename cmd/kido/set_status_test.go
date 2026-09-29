@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -26,8 +27,8 @@ func TestSetStatusSetsOnlyTheActivity(t *testing.T) {
 		Agent: state.AgentPi, Pane: "%7", PID: os.Getpid(), Status: state.Running, Title: "worker",
 		Inbox: "/tmp/nope.sock", Background: true,
 		Ended: time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC), TS: time.Date(2024, 3, 1, 12, 5, 0, 0, time.UTC),
-		Activity: "the old one", ParentSession: "parent-sess",
-		ParentPID: 4242, Depth: 1, Model: "claude-sonnet-5",
+		Activity: "the old one", Parent: state.NewParent("parent-sess", 4242),
+		Depth: 1, Model: "claude-sonnet-5",
 	}
 	if err := state.Record("worker-session", before); err != nil {
 		t.Fatal(err)
@@ -46,7 +47,7 @@ func TestSetStatusSetsOnlyTheActivity(t *testing.T) {
 	}
 	want := before
 	want.ID, want.Activity = after.ID, after.Activity
-	if after != want {
+	if !reflect.DeepEqual(after, want) {
 		t.Errorf("record = %+v, want %+v: only the activity may change", after, want)
 	}
 }

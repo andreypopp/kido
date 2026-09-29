@@ -50,19 +50,20 @@ func asyncRunCmd(args []string) int {
 	if fs.NArg() > 0 {
 		return fail(fmt.Sprintf("unknown argument %q; the command comes from the run's own record, not the command line\n%s", fs.Arg(0), asyncRunUsage))
 	}
-	if *runID == "" {
+	id, err := subrun.ParseID(*runID)
+	if err != nil {
 		return fail("--run-id is required (or $KIDO_AGENT_RUN_ID)\n" + asyncRunUsage)
 	}
 
-	meta, err := subrun.ReadMeta(*runID)
+	meta, err := subrun.ReadMeta(id)
 	if err != nil {
 		return fail(err)
 	}
-	argv, err := subrun.ReadCommand(*runID)
+	argv, err := subrun.ReadCommand(id)
 	if err != nil {
 		return fail(err)
 	}
-	out, err := os.Create(subrun.OutputPath(*runID))
+	out, err := os.Create(subrun.OutputPath(id))
 	if err != nil {
 		return fail(err)
 	}

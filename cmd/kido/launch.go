@@ -173,7 +173,7 @@ func confCommand(path string, args ...string) (string, error) {
 // The user's own default-command is captured before it is overridden, so
 // `kido shell` can still run it (see shellCmd).
 func writeServerConf() (string, error) {
-	exe, err := invokedPath(os.Args[0])
+	exe, err := tmux.InvokedPath(os.Args[0])
 	if err != nil {
 		return "", err
 	}

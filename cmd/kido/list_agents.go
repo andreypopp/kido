@@ -143,13 +143,17 @@ func buildAgents(states map[string]state.Session, panes []tmux.Pane, session, se
 		// old to write one) and an empty tools list both mean unrestricted.
 		canReply := false
 		if s.Inbox != "" {
-			meta, err := subrun.ReadMeta(s.ID)
+			id, err := subrun.ParseID(s.ID)
+			var meta subrun.Meta
+			if err == nil {
+				meta, err = subrun.ReadMeta(id)
+			}
 			canReply = err != nil || len(meta.Tools) == 0 || slices.Contains(meta.Tools, "message_agent")
 		}
 		out = append(out, AgentInfo{
 			ID:          s.ID,
 			Name:        displayName(s, byPane),
-			Agent:       s.Agent,
+			Agent:       string(s.Agent),
 			Pane:        s.Pane,
 			Window:      p.WindowID,
 			Status:      string(s.Status),
@@ -214,8 +218,8 @@ func displayName(s state.Session, byPane map[string]tmux.Pane) string {
 // session it names, when that session is one of the agents in scope. A
 // self-edge is reported as a root.
 func parentID(s state.Session, inScope map[string]bool) string {
-	if s.ParentSession != s.ID && inScope[s.ParentSession] {
-		return s.ParentSession
+	if s.Parent != nil && s.Parent.Session != s.ID && inScope[s.Parent.Session] {
+		return s.Parent.Session
 	}
 	return ""
 }

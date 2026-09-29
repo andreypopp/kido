@@ -37,7 +37,7 @@ var CapturePane = tmux.CaptureScreen
 // own, still alive at the moment of the call. A capture-pane error - the
 // pane already gone, or tmux unreachable - is silently skipped: an ending
 // must still be recorded with or without a screen to show for it.
-func CaptureOwnScreen(id, paneID string) (string, bool) {
+func CaptureOwnScreen(id ID, paneID string) (string, bool) {
 	if id == "" || paneID == "" {
 		return "", false
 	}

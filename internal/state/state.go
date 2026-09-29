@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -32,22 +33,36 @@ const (
 func Statuses() []Status { return []Status{Running, Waiting, Compacting, Idle} }
 
 // Valid reports whether s is a status an agent may report.
-func Valid(s Status) bool {
-	for _, v := range Statuses() {
-		if s == v {
-			return true
-		}
-	}
-	return false
-}
+func Valid(s Status) bool { return slices.Contains(Statuses(), s) }
 
 // Agent names the program a session belongs to. The sidebar renders every
 // agent the same way; the name only decides which record wins for a pane
 // (see Load) and which agent-specific guesswork applies (internal/ui).
+type Agent string
+
 const (
-	AgentClaude = "claude" // Claude Code, reporting through kido hook
-	AgentPi     = "pi"     // pi, reporting through kido agent-status
+	AgentClaude Agent = "claude" // Claude Code, reporting through kido hook
+	AgentPi     Agent = "pi"     // pi, reporting through kido agent-status
 )
+
+// Parent identifies the agent that spawned a session, one edge rather
+// than two parallel fields: Session is the identity the edge is matched
+// on, and PID is recorded only as a cheap first liveness check
+// (docs/design.md, "Identity"). A root agent has no Parent at all.
+type Parent struct {
+	Session string `json:"session"`
+	PID     int    `json:"pid,omitempty"`
+}
+
+// NewParent returns a Parent naming session and pid, or nil when session
+// is empty: identity is matched on Session (docs/design.md, "Identity"),
+// so a pid with no session names nothing.
+func NewParent(session string, pid int) *Parent {
+	if session == "" {
+		return nil
+	}
+	return &Parent{Session: session, PID: pid}
+}
 
 // Session is one state file.
 type Session struct {
@@ -55,7 +70,7 @@ type Session struct {
 	// Agent is the program that reported this session, AgentClaude or
 	// AgentPi. Files written before kido knew about other agents have no
 	// agent, and are read as AgentClaude.
-	Agent  string    `json:"agent,omitempty"`
+	Agent  Agent     `json:"agent,omitempty"`
 	Pane   string    `json:"pane"` // TMUX_PANE, e.g. "%18"
 	PID    int       `json:"pid"`  // agent process pid
 	Status Status    `json:"status"`
@@ -97,12 +112,8 @@ type Session struct {
 	// Unlike Status it is not a closed vocabulary and does not drive
 	// colour.
 	Activity string `json:"activity,omitempty"`
-	// ParentPID is the pid of the agent that spawned this one, used only
-	// as a first liveness check; a parent edge is matched on
-	// ParentSession, the session id of the agent that spawned this one
-	// (docs/design.md, Identity).
-	ParentPID     int    `json:"parentPid,omitempty"`
-	ParentSession string `json:"parentSession,omitempty"`
+	// Parent is the agent that spawned this one, nil for a root agent.
+	Parent *Parent `json:"parent,omitempty"`
 	// Depth is 0 for a root agent, 1 for its subagent, 2 for that
 	// subagent's.
 	Depth int `json:"depth,omitempty"`
@@ -116,14 +127,12 @@ type Session struct {
 // ~30s heartbeats pi/kido-status.ts sends while running (docs/design.md,
 // Heartbeat and staleness). Overridable via KIDO_STALL_THRESHOLD_MS for
 // the e2e suite, which drives a separately built binary.
-var StallThreshold = stallThresholdFromEnv(3 * time.Minute)
-
-func stallThresholdFromEnv(def time.Duration) time.Duration {
+var StallThreshold = func() time.Duration {
 	if n, err := strconv.Atoi(os.Getenv("KIDO_STALL_THRESHOLD_MS")); err == nil && n > 0 {
 		return time.Duration(n) * time.Millisecond
 	}
-	return def
-}
+	return 3 * time.Minute
+}()
 
 // StalledSince reports whether s claims to be running but has gone quiet
 // for longer than StallThreshold, measured from s.TS or from wake - the
@@ -176,10 +185,15 @@ func Stalled(s Session, now time.Time) bool {
 // which case the baseline is the session's own TS, which is what it was
 // before pause detection existed.
 func Wake() time.Time {
-	if at, ok, err := readPause(); err == nil && ok {
-		return at
+	b, err := os.ReadFile(filepath.Join(Dir(), pauseFile))
+	if err != nil {
+		return time.Time{}
 	}
-	return time.Time{}
+	var m pauseMarker
+	if json.Unmarshal(b, &m) != nil {
+		return time.Time{}
+	}
+	return m.At
 }
 
 // Dir returns the directory holding state files.
@@ -228,7 +242,7 @@ func LoadLive() ([]Session, error) {
 	}
 	out := files[:0]
 	for _, s := range files {
-		if !alive(s.PID) {
+		if !Alive(s.PID) {
 			os.Remove(filepath.Join(Dir(), s.ID+".json")) //nolint:errcheck // best effort; a concurrent writer may recreate it
 			continue
 		}
@@ -272,8 +286,21 @@ func ReadAll() ([]Session, error) {
 	return readFiles()
 }
 
-// readFiles reads every well-formed state file in Dir, normalising Agent
-// but applying none of Load's filtering.
+// parse unmarshals a state file's raw bytes into a Session with id set,
+// the read readFiles and Get each do once they have the file's bytes in
+// hand. Malformed JSON is not an error worth reporting on either path: a
+// session behind a mangled file simply is not there.
+func parse(id string, b []byte) (Session, bool) {
+	var s Session
+	if json.Unmarshal(b, &s) != nil {
+		return Session{}, false
+	}
+	s.ID = id
+	return s, true
+}
+
+// readFiles reads every well-formed state file in Dir, applying none of
+// Load's filtering.
 func readFiles() ([]Session, error) {
 	dir := Dir()
 	entries, err := os.ReadDir(dir)
@@ -294,11 +321,10 @@ func readFiles() ([]Session, error) {
 		if err != nil {
 			continue
 		}
-		var s Session
-		if json.Unmarshal(b, &s) != nil || s.Pane == "" {
+		s, ok := parse(strings.TrimSuffix(e.Name(), ".json"), b)
+		if !ok || s.Pane == "" {
 			continue
 		}
-		s.ID = strings.TrimSuffix(e.Name(), ".json")
 		out = append(out, s)
 	}
 	return out, nil
@@ -312,7 +338,7 @@ func readFiles() ([]Session, error) {
 // This is a two-agent test, not a general ranking: two non-Claude agents
 // nested in one pane would both report "outer" and fall through to beats'
 // timestamp comparison, flip-flopping the pane between them.
-func outer(agent string) bool {
+func outer(agent Agent) bool {
 	return agent != AgentClaude
 }
 
@@ -339,27 +365,19 @@ func Get(id string) (Session, bool, error) {
 		}
 		return Session{}, false, err
 	}
-	var s Session
-	if err := json.Unmarshal(b, &s); err != nil {
-		return Session{}, false, err
-	}
-	s.ID = id
-	return s, true, nil
+	s, ok := parse(id, b)
+	return s, ok, nil
 }
 
-// alive reports whether pid exists (a file whose agent died without
+// Alive reports whether pid exists (a file whose agent died without
 // reporting the end of its session is stale).
-func alive(pid int) bool {
+func Alive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
 	err := syscall.Kill(pid, 0)
 	return err == nil || err == syscall.EPERM
 }
-
-// Alive is alive, exported so callers outside the package apply the same
-// liveness test Load does rather than a second opinion.
-func Alive(pid int) bool { return alive(pid) }
 
 // HeldError is what Record and Remove answer a process that is not the
 // live holder of the session id it named (docs/design.md, "One holder
@@ -379,7 +397,7 @@ func (e *HeldError) Error() string {
 // process other than pid that is still running.
 func held(id string, pid int) *HeldError {
 	prev, ok, err := Get(id)
-	if err != nil || !ok || prev.PID == pid || !alive(prev.PID) {
+	if err != nil || !ok || prev.PID == pid || !Alive(prev.PID) {
 		return nil
 	}
 	return &HeldError{ID: id, PID: prev.PID, Pane: prev.Pane}
@@ -430,7 +448,7 @@ func Record(id string, s Session) error {
 	}
 	prev, ok, _ := Get(id)
 	takeover := ok && prev.PID != s.PID
-	if takeover && alive(prev.PID) {
+	if takeover && Alive(prev.PID) {
 		return &HeldError{ID: id, PID: prev.PID, Pane: prev.Pane}
 	}
 	if err := os.Rename(tmp, path); err != nil {

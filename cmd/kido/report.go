@@ -25,7 +25,7 @@ const maxReportBytes = 4000
 // truncated as it always was. So is one whose write fails, which is why
 // the error is returned alongside a usable notice rather than instead of
 // one: the point of the call is that the parent hears something.
-func reportNotice(report, runID string) (notice, path string, err error) {
+func reportNotice(report string, runID subrun.ID) (notice, path string, err error) {
 	if len(report) <= maxReportBytes {
 		return report, "", nil
 	}

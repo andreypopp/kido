@@ -4,29 +4,17 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
-)
 
-// deadPID starts and waits for a trivial child process, returning its
-// pid: guaranteed to belong to no process by the time the caller uses it.
-// The same trick internal/reap/reap_test.go and internal/state's own
-// tests use.
-func deadPID(t *testing.T) int {
-	t.Helper()
-	cmd := exec.Command("true")
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
-	}
-	return cmd.Process.Pid
-}
+	"kido/internal/testutil"
+)
 
 func TestCreateWritesMetaAndTask(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	id := "run-1"
+	id := ID("run-1")
 	if err := Create(id, "do the thing"); err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +38,7 @@ func TestCreateWritesMetaAndTask(t *testing.T) {
 		t.Errorf("ReadTask = %q, want %q", task, "do the thing")
 	}
 
-	if _, err := os.Stat(filepath.Join(Dir(), id)); err != nil {
+	if _, err := os.Stat(filepath.Join(Dir(), string(id))); err != nil {
 		t.Errorf("run directory not found under Dir(): %v", err)
 	}
 }
@@ -59,7 +47,7 @@ func TestCreateWritesMetaAndTask(t *testing.T) {
 func TestKindRoundTrips(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	for _, c := range []struct {
-		id      string
+		id      ID
 		written Kind
 	}{
 		{"run-bash", KindBash},
@@ -68,7 +56,7 @@ func TestKindRoundTrips(t *testing.T) {
 		if err := Create(c.id, "x"); err != nil {
 			t.Fatal(err)
 		}
-		if err := WriteMeta(Meta{ID: c.id, Name: c.id, Kind: c.written}); err != nil {
+		if err := WriteMeta(Meta{ID: c.id, Name: string(c.id), Kind: c.written}); err != nil {
 			t.Fatal(err)
 		}
 		got, err := ReadMeta(c.id)
@@ -88,7 +76,7 @@ func TestKindRoundTrips(t *testing.T) {
 // an error instead of an empty exec.
 func TestCommandRoundTrips(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	id := "run-cmd"
+	id := ID("run-cmd")
 	if err := Create(id, "x"); err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +110,7 @@ func TestCommandRoundTrips(t *testing.T) {
 
 func TestRecordOutcomeOnce(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	id := "run-3"
+	id := ID("run-3")
 	if err := Create(id, "x"); err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +140,7 @@ func TestRecordOutcomeOnce(t *testing.T) {
 // TestClearScreen below).
 func TestWriteScreenLastWriterWins(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	id := "run-screen"
+	id := ID("run-screen")
 	if err := Create(id, "x"); err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +171,7 @@ func TestWriteScreenLastWriterWins(t *testing.T) {
 // os.Rename, not a silent mix.
 func TestWriteScreenConcurrentWritersLeaveOneWholePayload(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	id := "run-screen-race"
+	id := ID("run-screen-race")
 	if err := Create(id, "x"); err != nil {
 		t.Fatal(err)
 	}
@@ -216,31 +204,62 @@ func TestWriteScreenConcurrentWritersLeaveOneWholePayload(t *testing.T) {
 	t.Errorf("screen on disk matches none of the %d whole payloads: %q", writers, got)
 }
 
-func TestClearScreen(t *testing.T) {
+func TestResetForResume(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	id := "run-screen-clear"
+	id := ID("run-screen-clear")
 	if err := Create(id, "x"); err != nil {
 		t.Fatal(err)
 	}
-	// Clearing before anything was ever captured must be a silent no-op,
-	// the same as ClearOutcome's own.
-	if err := ClearScreen(id); err != nil {
-		t.Fatalf("ClearScreen with nothing to clear = %v", err)
+	// Clearing before anything was ever recorded must be a silent no-op.
+	if err := ResetForResume(id, true); err != nil {
+		t.Fatalf("ResetForResume with nothing to clear = %v", err)
 	}
 	if err := WriteScreen(id, []byte("captured")); err != nil {
 		t.Fatal(err)
 	}
-	if err := ClearScreen(id); err != nil {
+	if err := RecordOutcome(id, Outcome{Result: Died}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(DeliveredPath(id), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ResetForResume(id, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := ReadScreen(id); err != nil || ok {
-		t.Fatalf("ReadScreen after ClearScreen = %v, %v, want it gone", ok, err)
+		t.Fatalf("ReadScreen after ResetForResume = %v, %v, want it gone", ok, err)
+	}
+	if _, ok, err := ReadOutcome(id); err != nil || ok {
+		t.Fatalf("ReadOutcome after ResetForResume = %v, %v, want it gone", ok, err)
+	}
+	if _, err := os.Stat(DeliveredPath(id)); !os.IsNotExist(err) {
+		t.Fatalf("delivered marker after ResetForResume(delivered=true) = %v, want removed", err)
+	}
+}
+
+// TestResetForResumeKeepsDeliveredUnlessAsked pins that ResetForResume
+// leaves the delivered marker alone when delivered is false: a resume of
+// a session still on disk must not have its task redelivered.
+func TestResetForResumeKeepsDeliveredUnlessAsked(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	id := ID("run-screen-clear-2")
+	if err := Create(id, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(DeliveredPath(id), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ResetForResume(id, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(DeliveredPath(id)); err != nil {
+		t.Fatalf("delivered marker after ResetForResume(delivered=false) = %v, want kept", err)
 	}
 }
 
 func TestEffectiveOutcomeRunningWhenAliveAndUnrecorded(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	id := "run-4"
+	id := ID("run-4")
 	if err := Create(id, "x"); err != nil {
 		t.Fatal(err)
 	}
@@ -260,8 +279,8 @@ func TestEffectiveOutcomeRunningWhenAliveAndUnrecorded(t *testing.T) {
 // only the child itself gets to make.
 func TestEffectiveOutcomeDiedWhenDeadAndUnrecorded(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	id := "run-5"
-	pid := deadPID(t)
+	id := ID("run-5")
+	pid := testutil.DeadPID(t)
 	if err := Create(id, "x"); err != nil {
 		t.Fatal(err)
 	}
@@ -276,8 +295,8 @@ func TestEffectiveOutcomeDiedWhenDeadAndUnrecorded(t *testing.T) {
 
 func TestEffectiveOutcomePrefersRecorded(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	id := "run-6"
-	pid := deadPID(t)
+	id := ID("run-6")
+	pid := testutil.DeadPID(t)
 	if err := Create(id, "x"); err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +314,7 @@ func TestEffectiveOutcomePrefersRecorded(t *testing.T) {
 
 func TestListReturnsRunDirectories(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	for _, id := range []string{"a", "b"} {
+	for _, id := range []ID{"a", "b"} {
 		if err := Create(id, "x"); err != nil {
 			t.Fatal(err)
 		}
@@ -343,28 +362,16 @@ func TestReadMetaMissingTruncatedOrMalformed(t *testing.T) {
 	}
 }
 
-// TestRefusesTraversingID pins checkID: `kido run-outcome <id>` takes its
-// run id from the child, which is a model-authored process, so an id that
-// escapes Dir must be refused rather than resolved. Measured before the
-// check existed: `kido run-outcome --result completed ../../evil` wrote an
-// outcome file two directories above the state dir and exited 0.
-func TestRefusesTraversingID(t *testing.T) {
-	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+// TestParseIDRefusesTraversal pins ParseID, the one checkID: `kido
+// run-outcome <id>` takes its run id from the child, which is a
+// model-authored process, so an id that escapes Dir must be refused
+// rather than resolved. Measured before the check existed: `kido
+// run-outcome --result completed ../../evil` wrote an outcome file two
+// directories above the state dir and exited 0.
+func TestParseIDRefusesTraversal(t *testing.T) {
 	for _, id := range []string{"", ".", "..", "../evil", "a/b", `..\evil`, ".hidden"} {
-		if err := Create(id, "x"); err == nil {
-			t.Errorf("Create(%q) = nil error, want it refused", id)
-		}
-		if err := RecordOutcome(id, Outcome{Result: Completed, At: time.Now()}); err == nil {
-			t.Errorf("RecordOutcome(%q) = nil error, want it refused", id)
-		}
-		if _, err := ReadMeta(id); err == nil {
-			t.Errorf("ReadMeta(%q) = nil error, want it refused", id)
-		}
-		if _, err := ReadTask(id); err == nil {
-			t.Errorf("ReadTask(%q) = nil error, want it refused", id)
-		}
-		if _, _, err := ReadOutcome(id); err == nil {
-			t.Errorf("ReadOutcome(%q) = nil error, want it refused", id)
+		if _, err := ParseID(id); err == nil {
+			t.Errorf("ParseID(%q) = nil error, want it refused", id)
 		}
 	}
 }

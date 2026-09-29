@@ -249,7 +249,12 @@ child's window if it somehow does not.
 ## The run record
 
 Each spawn owns `<state>/runs/<run-id>/`, written before the window is
-created so the child can read its task the instant tmux starts it:
+created so the child can read its task the instant tmux starts it. The
+run id is `subrun.ID`, not a bare string: `subrun.ParseID` is the one
+check that it names nothing outside that directory, applied at every edge
+the id crosses from outside the package (`kido run-outcome`, `spawn_subagent
+--resume`, a `tmux.Pane.Run` reader, a `KIDO_AGENT_RUN_ID` reader); every
+function inside the package trusts an `ID` it is handed.
 
 - `task`, the text as given, never deleted;
 - `delivered`, written by the child after it has read the task, so a

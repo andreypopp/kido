@@ -659,7 +659,7 @@ func TestSpawnMarkFailureOnAVanishedWindowIsNotAFailure(t *testing.T) {
 		t.Fatalf("createRunWindow = %v, want a window that has already ended reported as the ordinary ending it is", err)
 	}
 	fields := strings.Fields(out)
-	if len(fields) != 4 || fields[0] != "@9" || fields[1] != "%9" || fields[2] != runID {
+	if len(fields) != 4 || fields[0] != "@9" || fields[1] != "%9" || fields[2] != string(runID) {
 		t.Errorf("stdout = %q, want the window, pane and run ids the caller parses, and the output path", out)
 	} else if fields[3] != subrun.OutputPath(runID) {
 		t.Errorf("output field = %q, want %q", fields[3], subrun.OutputPath(runID))
@@ -738,7 +738,7 @@ func TestSpawnNoParentIsNotReaped(t *testing.T) {
 	}
 
 	runID := marks["%9"]
-	meta, err := subrun.ReadMeta(runID)
+	meta, err := subrun.ReadMeta(subrun.ID(runID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -755,7 +755,7 @@ func TestSpawnNoParentIsNotReaped(t *testing.T) {
 	}
 	sessions := []state.Session{{
 		Agent: state.AgentPi, Pane: "%9", PID: os.Getpid(), Status: state.Idle,
-		ID: "loner-sess", ParentSession: meta.ParentSession, Depth: meta.Depth,
+		ID: "loner-sess", Parent: state.NewParent(meta.ParentSession, 0), Depth: meta.Depth,
 	}}
 	if closed, _ := reap.Sweep(panes, sessions, time.Now()); len(closed) != 0 {
 		t.Errorf("Sweep closed %v, want nothing: a child owned by nobody is not an orphan", closed)

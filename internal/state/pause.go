@@ -58,7 +58,7 @@ type pauseMarker struct {
 // sidebars racing to record roughly the same wake cannot clobber each
 // other with an older value.
 func RecordPause(at time.Time) error {
-	if prev, ok, err := readPause(); err == nil && ok && !at.After(prev) {
+	if prev := Wake(); !at.After(prev) {
 		return nil
 	}
 	dir := Dir()
@@ -74,21 +74,4 @@ func RecordPause(at time.Time) error {
 		return err
 	}
 	return os.Rename(tmp, filepath.Join(dir, pauseFile))
-}
-
-// readPause reads the wake marker, if any. A missing file is not an
-// error: most of the time nothing has ever paused.
-func readPause() (time.Time, bool, error) {
-	b, err := os.ReadFile(filepath.Join(Dir(), pauseFile))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return time.Time{}, false, nil
-		}
-		return time.Time{}, false, err
-	}
-	var m pauseMarker
-	if err := json.Unmarshal(b, &m); err != nil {
-		return time.Time{}, false, err
-	}
-	return m.At, true, nil
 }

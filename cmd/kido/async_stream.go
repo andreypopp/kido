@@ -309,7 +309,7 @@ func (s *streamer) send(text string) error {
 		ID:     msg.NewID(),
 		From:   msg.From{Name: s.meta.Name},
 		Text:   text,
-		Run:    s.meta.ID,
+		Run:    string(s.meta.ID),
 		Output: subrun.OutputPath(s.meta.ID),
 	})
 	if err != nil {
