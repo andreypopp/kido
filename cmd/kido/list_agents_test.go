@@ -112,15 +112,13 @@ func TestAgentsCmdWithNoCallerPane(t *testing.T) {
 
 // TestIsAncestorRefusesSelfEdge pins the explicit refusal at the top of
 // isAncestor: without it, a corrupted record whose own Parent field named
-// itself would make isAncestor(agents, X, X) true, and control.go's
+// itself would make isAncestor(parentOf, X, X) true, and control.go's
 // descendant-only check would let a session's stop/interrupt of itself
 // through on that basis.
 func TestIsAncestorRefusesSelfEdge(t *testing.T) {
-	agents := []AgentInfo{
-		{ID: "x", Parent: "x"}, // corrupted: names itself as its own parent
-	}
-	if isAncestor(agents, "x", "x") {
-		t.Error("isAncestor(agents, X, X) = true, want false even with a self-parent record")
+	parentOf := map[string]string{"x": "x"} // corrupted: names itself as its own parent
+	if isAncestor(parentOf, "x", "x") {
+		t.Error("isAncestor(parentOf, X, X) = true, want false even with a self-parent record")
 	}
 }
 

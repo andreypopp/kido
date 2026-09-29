@@ -41,7 +41,7 @@ func withSendPrompt(t *testing.T, err error) func() []string {
 // withAskingCaller records a live agent session for the caller pane (%1,
 // in samePane) with a v1 inbox of its own. kido ask_agent refuses to
 // deliver a question from a caller that could not receive the answer
-// (senderCanBeRepliedTo), so every ask test needs one; none of the
+// (send's reply-path check), so every ask test needs one; none of the
 // one-way kinds do.
 func withAskingCaller(t *testing.T) {
 	t.Helper()

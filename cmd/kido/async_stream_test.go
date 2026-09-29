@@ -89,7 +89,7 @@ func TestStreamNeverPastes(t *testing.T) {
 
 	var code int
 	stderr := captureStderr(t, func() {
-		code = send("async-run", sendSpec{kind: msg.KindStream, to: "victim"}, strings.NewReader("line 1\nline 2"))
+		code = send("async-run", sendSpec{kind: msg.KindStream, to: named{"victim"}}, strings.NewReader("line 1\nline 2"))
 	})
 	if code != 1 {
 		t.Fatalf("send = %d, want 1: there is nothing listening", code)

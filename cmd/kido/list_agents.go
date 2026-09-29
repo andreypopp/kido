@@ -151,28 +151,24 @@ func canReplyTools(id string) bool {
 	return slices.Contains(meta.Tools, "message_agent")
 }
 
-// isAncestor reports whether ancestorID is an ancestor of targetID within
-// agents, walking each agent's Parent edge; pi/kido-agents.ts's
+// isAncestor reports whether ancestorID is an ancestor of targetID,
+// walking parentOf (a session id to its parent's); pi/kido-agents.ts's
 // isAncestor is the same walk and the two are kept in step. seen guards
 // a cyclic parent chain. ancestorID == targetID is refused outright: a
 // corrupt record naming itself as its parent would otherwise match on the
 // first comparison and let a session stop itself.
-func isAncestor(agents []AgentInfo, ancestorID, targetID string) bool {
+func isAncestor(parentOf map[string]string, ancestorID, targetID string) bool {
 	if ancestorID == targetID {
 		return false
 	}
-	byID := map[string]AgentInfo{}
-	for _, a := range agents {
-		byID[a.ID] = a
-	}
 	seen := map[string]bool{}
-	cur := byID[targetID].Parent
+	cur := parentOf[targetID]
 	for cur != "" && !seen[cur] {
 		if cur == ancestorID {
 			return true
 		}
 		seen[cur] = true
-		cur = byID[cur].Parent
+		cur = parentOf[cur]
 	}
 	return false
 }

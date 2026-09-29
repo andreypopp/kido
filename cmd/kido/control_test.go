@@ -19,7 +19,7 @@ import (
 // instead of talking to a real tmux server, the same pattern
 // withSendPrompt (message_test.go) uses for sendPrompt - what stopSubagentCmd's
 // degrade and escalation actually call (see cmd/kido/control.go's
-// killTargetPane).
+// killRunPane).
 func withKillPane(t *testing.T) func() []string {
 	t.Helper()
 	prev := killPane
@@ -77,10 +77,10 @@ func TestStopForceKillsInboxlessAgent(t *testing.T) {
 
 // TestStopRefusesToKillASessionsOnlyWindow: a target in a different tmux
 // session from the caller is refused by resolveTarget's session scope,
-// before killTargetPane's last-pane guard ever runs. The layout below is
+// before killRunPane's last-pane guard ever runs. The layout below is
 // the one that guard is about, but this test does not reach it (see
 // TestStopRefusedLeavesNoOutcome's "the session's last window" subtest,
-// which calls killTargetPane directly); it pins that a cross-session
+// which calls killRunPane directly); it pins that a cross-session
 // target is refused and --force does not buy it.
 func TestStopRefusesToKillASessionsOnlyWindow(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
@@ -534,7 +534,7 @@ func TestStopRefusedLeavesNoOutcome(t *testing.T) {
 		noOutcome(t, "run-peer")
 	})
 
-	// The session's-last-window refusal is checked against killTargetPane
+	// The session's-last-window refusal is checked against killRunPane
 	// directly, not through stopSubagentCmd: a caller may only stop something in
 	// its own tmux session (resolveTarget), and a session holding the
 	// caller's pane too always has a second pane for the guard to spare -
@@ -547,8 +547,9 @@ func TestStopRefusedLeavesNoOutcome(t *testing.T) {
 			{PaneID: "%1", SessionID: "$2", WindowID: "@9"},
 			{PaneID: "%2", SessionID: "$1", WindowID: "@1"},
 		}, state.Session{Pane: "%2", PID: os.Getpid(), Status: state.Idle})
-		if err := killTargetPane(state.Session{ID: "run-last", Pane: "%2"}); err == nil {
-			t.Fatal("killTargetPane succeeded, want the last-window refusal")
+		target := state.Session{ID: "run-last", Pane: "%2"}
+		if _, err := killRunPane(target.Pane, func() { recordStopped(target) }); err == nil {
+			t.Fatal("killRunPane succeeded, want the last-window refusal")
 		}
 		noOutcome(t, "run-last")
 	})

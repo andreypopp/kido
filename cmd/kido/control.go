@@ -74,7 +74,7 @@ func steerSubagentCmd(args []string, stdin io.Reader) int {
 		fmt.Fprintln(os.Stderr, "usage: kido steer_subagent -- <agent>")
 		return 1
 	}
-	return send(cmd, sendSpec{kind: msg.KindSteer, to: fs.Arg(0), descendantsOnly: true}, stdin)
+	return send(cmd, sendSpec{kind: msg.KindSteer, to: descendant{fs.Arg(0)}}, stdin)
 }
 
 // interruptSubagentCmd implements `kido interrupt_subagent -- <agent>`: abort the target's
@@ -91,14 +91,14 @@ func interruptSubagentCmd(args []string) error {
 		return errors.New(interruptUsage())
 	}
 
-	target, states, err := controlTarget(fs.Arg(0))
+	target, states, byPane, err := resolveRecipient(descendant{fs.Arg(0)})
 	if err != nil {
 		return err
 	}
-	if err := sendControl(target, states, msg.KindInterrupt); err != nil {
+	if _, err := deliverEnvelope(target, states, byPane, sendSpec{kind: msg.KindInterrupt}, ""); err != nil {
 		return err
 	}
-	fmt.Printf("interrupted %s\n", targetLabel(target))
+	fmt.Printf("interrupted %s\n", displayName(target, byPane))
 	return nil
 }
 
@@ -129,23 +129,29 @@ func stopSubagentCmd(args []string) error {
 		return stopBashRun(run, *force)
 	}
 
-	target, states, err := controlTarget(fs.Arg(0))
+	target, states, byPane, err := resolveRecipient(descendant{fs.Arg(0)})
 	if err != nil {
 		return err
 	}
 
-	// killTargetPane records the run's outcome itself.
 	degrade := func() error {
-		if err := killTargetPane(target); err != nil {
-			return err
+		// recordStopped runs only once killRunPane's own guard has passed, so
+		// a refusal (the session's last pane) leaves no outcome behind.
+		killed, err := killRunPane(target.Pane, func() { recordStopped(target) })
+		if err != nil {
+			return fmt.Errorf("%s %w", displayName(target, byPane), err)
 		}
-		fmt.Printf("killed %s's pane\n", targetLabel(target))
+		if killed {
+			fmt.Printf("killed %s's pane\n", displayName(target, byPane))
+		} else {
+			fmt.Printf("%s's pane was already gone\n", displayName(target, byPane))
+		}
 		return nil
 	}
 
 	if target.Inbox == "" {
 		if !*force {
-			return fmt.Errorf("%s has no inbox to ask nicely over; pass --force to kill its window instead", targetLabel(target))
+			return fmt.Errorf("%s has no inbox to ask nicely over; pass --force to kill its window instead", displayName(target, byPane))
 		}
 		return degrade()
 	}
@@ -153,10 +159,10 @@ func stopSubagentCmd(args []string) error {
 	// A send error other than msg.ErrInboxUnavailable is a reason to
 	// escalate, not to give up: a wedged agent answers late, wrongly, or
 	// not at all.
-	sendErr := sendControl(target, states, msg.KindStop)
+	_, sendErr := deliverEnvelope(target, states, byPane, sendSpec{kind: msg.KindStop}, "")
 	if errors.Is(sendErr, msg.ErrInboxUnavailable) {
 		if !*force {
-			return fmt.Errorf("%s could not be asked to stop (%v); pass --force to kill its window instead", targetLabel(target), sendErr)
+			return fmt.Errorf("%s could not be asked to stop (%v); pass --force to kill its window instead", displayName(target, byPane), sendErr)
 		}
 		return degrade()
 	}
@@ -166,53 +172,74 @@ func stopSubagentCmd(args []string) error {
 	// Completed a moment later).
 	recordStopped(target)
 
-	deadline := time.Now().Add(stopEscalation)
-	for time.Now().Before(deadline) {
-		if s, ok, _ := state.Get(target.ID); !ok || !state.Alive(s.PID) {
-			fmt.Printf("stopped %s\n", targetLabel(target))
-			return nil
-		}
-		time.Sleep(stopPollInterval)
+	if waitFor(func() bool {
+		s, ok, _ := state.Get(target.ID)
+		return !ok || !state.Alive(s.PID)
+	}) {
+		fmt.Printf("stopped %s\n", displayName(target, byPane))
+		return nil
 	}
 
 	why := fmt.Sprintf("did not stop within %s", stopEscalation)
 	if sendErr != nil {
 		why = fmt.Sprintf("did not accept the stop request (%v) and was still there after %s", sendErr, stopEscalation)
 	}
-	if err := killTargetPane(target); err != nil {
-		return fmt.Errorf("%s %s, and its pane could not be killed: %w", targetLabel(target), why, err)
+	if _, err := killRunPane(target.Pane, nil); err != nil {
+		return fmt.Errorf("%s %s, and its pane could not be killed: %w", displayName(target, byPane), why, err)
 	}
-	fmt.Printf("%s %s; killed its pane\n", targetLabel(target), why)
+	fmt.Printf("%s %s; killed its pane\n", displayName(target, byPane), why)
 	return nil
 }
 
-// killTargetPane kills target's own pane, not its window, so a bystander
-// pane sharing the window survives. It refuses a pane that is the only
-// one in its session's only window, since killing it would end the
-// session; it deliberately does not refuse a focused window, because a
-// stop was asked for by name. The caller says which path got here.
-func killTargetPane(target state.Session) error {
+// waitFor polls cond every stopPollInterval until it reports true or
+// stopEscalation elapses since the call, reporting which happened.
+func waitFor(cond func() bool) bool {
+	deadline := time.Now().Add(stopEscalation)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(stopPollInterval)
+	}
+	return false
+}
+
+// killRunPane kills paneID, not its window, so a bystander pane sharing
+// the window survives. It refuses a pane that is the only one in its
+// session's only window, since killing it would end the session; it
+// deliberately does not refuse a focused window, because a stop was
+// asked for by name. A pane already gone is reported, not an error - an
+// agent or a bash run is over either way. beforeKill, if not nil, runs
+// once the guard has passed but before the kill itself, for a caller that
+// must record an outcome after every refusal and before any kill
+// (stopSubagentCmd's degrade).
+//
+// This guard cannot fire through kido stop_subagent today: resolveRecipient keeps
+// the caller's own pane in the target's session, so one of the two is
+// always false. It stays as defence for a future caller that reaches a
+// target without a live caller pane in the same session.
+func killRunPane(paneID string, beforeKill func()) (bool, error) {
 	panes, err := listPanes()
 	if err != nil {
-		return err
+		return false, err
 	}
-	pane, ok := findPane(panes, target.Pane)
+	pane, ok := findPane(panes, paneID)
 	if !ok {
-		return fmt.Errorf("no pane found for %s", targetLabel(target))
+		return false, nil
 	}
-	// This guard cannot fire through kido stop_subagent today: controlTarget keeps
-	// the caller's own pane in the target's session, so one of the two is
-	// always false. It stays as defence for a future caller that reaches a
-	// target without a live caller pane in the same session.
 	if tmux.LastWindow(panes, pane.WindowID) && tmux.LastPane(panes, pane.WindowID) {
-		return fmt.Errorf("%s is its session's only pane; killing it would destroy the session", targetLabel(target))
+		return false, errors.New("it is its session's only pane; killing it would destroy the session")
 	}
-	// After the refusal, before the kill (see stopCmd).
-	recordStopped(target)
+	if beforeKill != nil {
+		beforeKill()
+	}
 	// The pane and not the window, even when it is the window's only one:
 	// a stop kills what it was pointed at, and the refusal above is what
 	// guards the session.
-	return releaseOps().Release(reap.Close{WindowID: pane.WindowID, PaneID: pane.PaneID})
+	if err := releaseOps().Release(reap.Close{WindowID: pane.WindowID, PaneID: pane.PaneID}); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // recordStopped marks target's run stopped, if it has one: target.ID is
@@ -314,7 +341,7 @@ func bashRunInScope(meta subrun.Meta) error {
 	if err != nil {
 		return err
 	}
-	ok, err := callerReaches(states, panes, self, []string{meta.ParentSession})
+	ok, err := callerReaches(states, panes, self, meta.ParentSession)
 	if err != nil {
 		return err
 	}
@@ -345,15 +372,12 @@ func stopBashRun(meta subrun.Meta, force bool) error {
 	// window - will never report, and waiting out the grace for it would
 	// only delay the notice nobody else is going to send.
 	signalled := meta.PID > 0 && syscall.Kill(meta.PID, syscall.SIGTERM) == nil
-	if signalled {
-		deadline := time.Now().Add(stopEscalation)
-		for time.Now().Before(deadline) {
-			if _, done, _ := subrun.ReadOutcome(meta.ID); done {
-				fmt.Printf("stopped %s; its wrapper reported the ending\n", label)
-				return nil
-			}
-			time.Sleep(stopPollInterval)
-		}
+	if signalled && waitFor(func() bool {
+		_, done, _ := subrun.ReadOutcome(meta.ID)
+		return done
+	}) {
+		fmt.Printf("stopped %s; its wrapper reported the ending\n", label)
+		return nil
 	}
 
 	if n, won := reap.RecordEnding(meta, subrun.Outcome{Result: subrun.Stopped, Text: stoppedText, At: time.Now()}); won {
@@ -361,7 +385,7 @@ func stopBashRun(meta subrun.Meta, force bool) error {
 			fmt.Fprintln(os.Stderr, "kido stop_subagent:", err)
 		}
 	}
-	killed, err := killBashRunPane(meta)
+	killed, err := killRunPane(meta.Pane, nil)
 	if err != nil {
 		return fmt.Errorf("%s was recorded stopped, but its pane could not be killed: %w", label, err)
 	}
@@ -371,47 +395,6 @@ func stopBashRun(meta subrun.Meta, force bool) error {
 		fmt.Printf("stopped %s; its pane was already gone\n", label)
 	}
 	return nil
-}
-
-// killBashRunPane kills the pane a run's window is in, with the guard
-// killTargetPane applies for the same reason: killing a session's only
-// pane destroys the session. A pane already gone is not a failure -
-// the run is over either way, and its outcome is already recorded.
-func killBashRunPane(meta subrun.Meta) (bool, error) {
-	panes, err := listPanes()
-	if err != nil {
-		return false, err
-	}
-	pane, ok := findPane(panes, meta.Pane)
-	if !ok {
-		return false, nil
-	}
-	if tmux.LastWindow(panes, pane.WindowID) && tmux.LastPane(panes, pane.WindowID) {
-		return false, errors.New("it is its session's only pane; killing it would destroy the session")
-	}
-	if err := releaseOps().Release(reap.Close{WindowID: pane.WindowID, PaneID: pane.PaneID}); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-// controlTarget resolves interrupt/stop's argument, reading the state
-// the rule is applied to. steer_subagent shares the rule but not this
-// read: it has both views in hand already (send, message_agent.go).
-func controlTarget(to string) (target state.Session, states map[string]state.Session, err error) {
-	states, err = state.Load()
-	if err != nil {
-		return state.Session{}, nil, err
-	}
-	panes, err := listPanes()
-	if err != nil {
-		return state.Session{}, nil, err
-	}
-	target, err = descendantTarget(states, panes, os.Getenv("TMUX_PANE"), to)
-	if err != nil {
-		return state.Session{}, nil, err
-	}
-	return target, states, nil
 }
 
 // descendantTarget resolves to the way kido message_agent does and then
@@ -433,15 +416,16 @@ func descendantTarget(states map[string]state.Session, panes []tmux.Pane, self, 
 	if err != nil {
 		return state.Session{}, err
 	}
+	byPane := paneIndex(panes)
 	if target.Pane == self {
-		return state.Session{}, fmt.Errorf("%s is this agent", targetLabel(target))
+		return state.Session{}, fmt.Errorf("%s is this agent", displayName(target, byPane))
 	}
-	ok, err := callerReaches(states, panes, self, []string{target.ID})
+	ok, err := callerReaches(states, panes, self, target.ID)
 	if err != nil {
 		return state.Session{}, err
 	}
 	if !ok {
-		return state.Session{}, fmt.Errorf("%s is not this agent's descendant", targetLabel(target))
+		return state.Session{}, fmt.Errorf("%s is not this agent's descendant", displayName(target, byPane))
 	}
 	return target, nil
 }
@@ -449,13 +433,12 @@ func descendantTarget(states map[string]state.Session, panes []tmux.Pane, self, 
 // callerReaches is the walk itself, shared by the two things a _subagent
 // command can be pointed at: an agent session (descendantTarget) and an
 // async run, which has no record of its own and is reached through the
-// parent session it named (bashRunInScope). ids are the candidate
-// targets, and any one of them being reachable is enough.
+// parent session it named (bashRunInScope).
 //
 // A caller with no state record of its own is a human at the CLI and
-// reaches everything, which is why an empty ids is still worth asking
+// reaches everything, which is why an empty id is still worth asking
 // about.
-func callerReaches(states map[string]state.Session, panes []tmux.Pane, self string, ids []string) (bool, error) {
+func callerReaches(states map[string]state.Session, panes []tmux.Pane, self, id string) (bool, error) {
 	caller, isAgent := states[self]
 	if !isAgent {
 		return true, nil
@@ -464,27 +447,11 @@ func callerReaches(states map[string]state.Session, panes []tmux.Pane, self stri
 	if !ok {
 		return false, fmt.Errorf("pane %q not found", self)
 	}
-	agents := buildAgents(states, panes, callerPane.SessionID, self)
-	for _, id := range ids {
-		if isAncestor(agents, caller.ID, id) {
-			return true, nil
+	parentOf := map[string]string{}
+	for _, s := range sessionsInSession(states, panes, callerPane.SessionID) {
+		if s.ParentSession != s.ID {
+			parentOf[s.ID] = s.ParentSession
 		}
 	}
-	return false, nil
-}
-
-// sendControl delivers a control-kind envelope (interrupt or stop) to
-// target's inbox. There is deliberately no version gate
-// (docs/design.md, "v0 and v1").
-func sendControl(target state.Session, states map[string]state.Session, kind msg.Kind) error {
-	env := msg.Envelope{V: msg.V1, Kind: kind, ID: msg.NewID(), From: senderOf(states)}
-	// "refused" for a control kind is the receiver's scope check saying
-	// no, not the ask-cycle rule msg.ErrAskRefused's text describes.
-	if err := msg.Send(target, env); err != nil {
-		if errors.Is(err, msg.ErrAskRefused) {
-			return fmt.Errorf("%s refused the %s", targetLabel(target), kind)
-		}
-		return err
-	}
-	return nil
+	return isAncestor(parentOf, caller.ID, id), nil
 }
