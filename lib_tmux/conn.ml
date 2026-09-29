@@ -199,13 +199,17 @@ let wait t timeout =
   let rec go deadline =
     let now = Unix.gettimeofday () in
     let deadline = if t.changed then Float.min deadline (now +. debounce) else deadline in
-    if Float.(now < deadline) then (
-      (match live t with
-      | Some ch -> pump t ch ~deadline
+    if Float.(now < deadline) then
+      match live t with
+      | Some ch ->
+          (* A redial inside live is itself a change: pump to the debounce, not the interval. *)
+          let deadline = if t.changed then Float.min deadline (now +. debounce) else deadline in
+          pump t ch ~deadline;
+          go deadline
       | None ->
           let until = if t.closed then deadline else Float.min deadline t.next_dial in
-          Unix.sleepf (Float.max 0. (until -. now)));
-      go deadline)
+          Unix.sleepf (Float.max 0. (until -. now));
+          go deadline
   in
   go (Unix.gettimeofday () +. timeout);
   t.changed <- false

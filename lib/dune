@@ -2,6 +2,16 @@
  (name kido)
  (flags
   (:standard -open Containers))
- (libraries containers unix yojson mtime mtime.clock tmux)
+ (libraries
+  containers
+  unix
+  yojson
+  mtime
+  mtime.clock
+  tmux
+  mosaic
+  matrix
+  matrix.text
+  threads.posix)
  (preprocess
   (pps ppx_deriving_yojson)))

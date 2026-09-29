@@ -10,7 +10,7 @@ import (
 // second can have come from a poll: only tmux's control-mode
 // notifications, delivered over kido's persistent connection, are that
 // fast.
-const slowPoll = "-interval=5s"
+const slowPoll = "--interval=5s"
 
 func (h *harness) controlClients() []string {
 	h.t.Helper()

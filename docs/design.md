@@ -1866,7 +1866,7 @@ those; a shell that only has to emit four escape sequences does not.
 
 `kido` with no arguments is the program the user runs; a first argument
 that is a word is a subcommand, and one that is a flag is the interactive
-UI - `kido -client <name>`, the one-shot picker the `C-s` binding opens in
+UI - `kido --client <name>`, the one-shot picker the `C-s` binding opens in
 a popup. The side column is the exception to the first rule: the fork
 starts it as a bare `kido`, and `TMUX_SIDE_CLIENT` in its environment is
 what tells the two apart (and what `ui.Options.Standalone` reads). The

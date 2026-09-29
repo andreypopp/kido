@@ -3,4 +3,4 @@
  (public_name kido)
  (flags
   (:standard -open Containers))
- (libraries kido containers cmdliner))
+ (libraries kido tmux containers cmdliner unix))

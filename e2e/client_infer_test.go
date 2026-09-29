@@ -11,7 +11,7 @@ import (
 // A kido with no argument at all is the launcher now
 // (TestKidoInsideAKidoPaneRefuses), so -interval is passed to keep this a
 // standalone.
-var pickerArgs = []string{"-interval", "100ms"}
+var pickerArgs = []string{"--interval", "100ms"}
 
 func startPickerNoClient(h *harness, session string) *picker {
 	h.t.Helper()
