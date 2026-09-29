@@ -1,4 +1,5 @@
-let error name msg = Printf.eprintf "kido %s: %s\n%!" name msg
+let error name msg =
+  Printf.eprintf "%s: %s\n%!" (if String.is_empty name then "kido" else "kido " ^ name) msg
 
 let run ?(failure = 1) name body =
   let fail msg =

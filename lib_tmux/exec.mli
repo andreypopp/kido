@@ -1,3 +1,4 @@
+val look_path : path:string -> string -> string option
 val invoked_path : path:string -> string -> string
 val candidates : string -> string list
 val resolve_binary : kido_tmux:string option -> path:string -> string -> string

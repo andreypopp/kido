@@ -3,6 +3,13 @@
  (flags
   (:standard -open Containers))
  (libraries kido tmux containers unix yojson mtime threads.posix)
- (inline_tests)
+ (inline_tests
+  (deps
+   %{project_root}/scripts/install-share.sh
+   (source_tree %{project_root}/shims)
+   (source_tree %{project_root}/shell)
+   %{project_root}/pi/kido-status.ts
+   %{project_root}/pi/kido-agents.ts
+   %{project_root}/claude/settings.json))
  (preprocess
   (pps ppx_expect)))
