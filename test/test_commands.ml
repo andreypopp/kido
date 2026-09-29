@@ -42,7 +42,7 @@ let%expect_test "agent-alive: a pane collision, a dead or unknown session, and a
   record ~dir "intruder" (session ~pane:"%p" ~ts:1001. Idle);
   record ~dir "dead-sess" (session ~pane:"%9" ~pid:(dead_pid ()) Idle);
   Printf.printf "per-pane view holds %s\n"
-    (fst (State.Panes.find "%p" (State.by_pane (State.load_live ~dir))));
+    (fst (State.String_map.find "%p" (State.by_pane (State.load_live ~dir))));
   List.iter
     (fun s -> attempt (fun () -> Agent_alive.agent_alive ~dir s))
     [ "parent"; "dead-sess"; "never-existed"; "" ];
@@ -137,7 +137,7 @@ let%expect_test "prompt never targets a subagent's window" =
   in
   List.iter
     (fun run ->
-      Prompt.agent_panes_in (panes run) State.Panes.empty ~pi:Procs.Int_set.empty self
+      Prompt.agent_panes_in (panes run) State.String_map.empty ~pi:Procs.Int_set.empty self
         ~whole_session:true
       |> List.map (fun (p : Tmux.Pane.t) -> p.pane_id)
       |> String.concat " " |> print_endline)

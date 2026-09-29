@@ -1,14 +1,9 @@
 open Tmux
 
-let is_window_id s =
-  String.length s > 1
-  && Char.equal s.[0] '@'
-  && String.for_all Char.Ascii.is_digit (String.drop 1 s)
-
 let window_focused ~panes window =
   if String.is_empty window then failwith "usage: kido window-focused WINDOW_ID";
-  if not (is_window_id window) then
-    failwith (Printf.sprintf "window-focused: %S is not a window id (@N)" window);
+  if not (Pane.is_window_id window) then
+    Cli.failf "window-focused: %S is not a window id (@N)" window;
   print_endline (Bool.to_string (Pane.window_focused (Lazy.force panes) window));
   0
 
@@ -20,7 +15,6 @@ let switch f ~client ~side_client ~next =
     ~next;
   0
 
-let fail fmt = Printf.ksprintf failwith fmt
 let stop_escalation () = Cli.ms_env Sys.getenv_opt "KIDO_STOP_ESCALATION_MS" 5.
 
 let wait_for within cond =
@@ -37,7 +31,7 @@ let wait_for within cond =
 
 let kill_run_pane ~list_panes ~ops ?(before = ignore) pane_id =
   let panes = list_panes () in
-  match List_agents.find_pane panes pane_id with
+  match Pane.find panes pane_id with
   | None -> Ok `Gone
   | Some p when Pane.last_window panes p.window_id && Pane.last_pane panes p.window_id ->
       Error "it is its session's only pane; killing it would destroy the session"
@@ -95,9 +89,9 @@ let live_bash_run ~dir ~self ~list_panes to_ =
   | [ meta ] ->
       let live = List_agents.per_pane (State.load_live ~dir) in
       if Message_agent.reaches live (list_panes ()) ~self meta.parent_session then Some meta
-      else fail "%s is not this agent's descendant" (run_label meta)
+      else Cli.failf "%s is not this agent's descendant" (run_label meta)
   | many ->
-      fail "%S matches several running async runs: %s" to_
+      Cli.failf "%S matches several running async runs: %s" to_
         (String.concat ", "
            (List.sort String.compare
               (List.map (fun (m : Subrun.meta) -> Subrun.string_of_id m.id) many)))
@@ -123,12 +117,12 @@ let stop_bash_run ~dir ~list_panes ~ops ~escalation (meta : Subrun.meta) =
     match kill_run_pane ~list_panes ~ops meta.pane with
     | Ok `Killed -> Printf.printf "stopped %s; killed its pane\n" label
     | Ok `Gone -> Printf.printf "stopped %s; its pane was already gone\n" label
-    | Error m -> fail "%s was recorded stopped, but its pane could not be killed: %s" label m
+    | Error m -> Cli.failf "%s was recorded stopped, but its pane could not be killed: %s" label m
   end
 
 let stop ~dir ~self ~list_panes ~ops ~escalation ~force to_ =
   let refuse_unforced what =
-    if not force then fail "%s; pass --force to kill its window instead" what
+    if not force then Cli.failf "%s; pass --force to kill its window instead" what
   in
   (match live_bash_run ~dir ~self ~list_panes to_ with
   | Some meta ->
@@ -145,7 +139,7 @@ let stop ~dir ~self ~list_panes ~ops ~escalation ~force to_ =
         with
         | Ok `Killed -> Printf.printf "killed %s's pane\n" name
         | Ok `Gone -> Printf.printf "%s's pane was already gone\n" name
-        | Error m -> fail "%s %s" name m
+        | Error m -> Cli.failf "%s %s" name m
       in
       let escalate refusal =
         record_stopped ~dir id;
@@ -164,7 +158,7 @@ let stop ~dir ~self ~list_panes ~ops ~escalation ~force to_ =
           in
           match kill_run_pane ~list_panes ~ops target.pane with
           | Ok _ -> Printf.printf "%s %s; killed its pane\n" name why
-          | Error m -> fail "%s %s, and its pane could not be killed: %s" name why m
+          | Error m -> Cli.failf "%s %s, and its pane could not be killed: %s" name why m
       in
       if String.is_empty target.inbox then begin
         refuse_unforced (name ^ " has no inbox to ask nicely over");

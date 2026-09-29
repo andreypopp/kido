@@ -68,8 +68,8 @@ let format =
 let fields = 24
 
 let rec split_n n s =
-  match String.index_opt s '\x1f' with
-  | Some i when n > 1 ->
+  match String.find ~sub:sep s with
+  | i when i >= 0 && n > 1 ->
       String.sub s 0 i :: split_n (n - 1) (String.sub s (i + 1) (String.length s - i - 1))
   | _ -> [ s ]
 
@@ -111,6 +111,12 @@ let parse_line line =
         }
 
 let parse lines = List.filter_map parse_line lines
+let find panes id = List.find_opt (fun p -> String.equal p.pane_id id) panes
+
+let is_window_id s =
+  String.length s > 1
+  && Char.equal s.[0] '@'
+  && String.for_all Char.Ascii.is_digit (String.drop 1 s)
 
 type session = { name : string; id : string; windows : t list list }
 

@@ -1,6 +1,14 @@
 let of_exe exe =
-  Shared.find ~exe "bin/tmux" |> Option.map Filename.dirname
+  Tmux.Exec.candidates exe
+  |> List.map (fun c ->
+      Filename.concat (Filename.dirname (Filename.dirname c)) "share/kido/bin/tmux")
+  |> List.find_opt (fun p -> Sys.file_exists p && not (Sys.is_directory p))
+  |> Option.map Filename.dirname
   |> Option.filter (fun d -> not (String.contains d ':'))
+
+let own () =
+  of_exe
+    (Tmux.Exec.invoked_path ~path:(Option.get_or ~default:"" (Sys.getenv_opt "PATH")) Sys.argv.(0))
 
 let split path = if String.is_empty path then [] else String.split_on_char ':' path
 
@@ -13,6 +21,8 @@ let same a b =
   match (a, b) with
   | Some (a : Unix.stats), Some (b : Unix.stats) -> a.st_dev = b.st_dev && a.st_ino = b.st_ino
   | _ -> false
+
+let same_file a b = same (stat a) (stat b)
 
 let look_path_past ~path ~dir name =
   let dir_st = stat dir and shim_st = stat (Filename.concat dir name) in

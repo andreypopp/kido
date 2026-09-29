@@ -78,7 +78,7 @@ let show (closes, endings) =
   List.iter
     (fun (e : Reap.ending) ->
       Printf.printf "ending %S parent %S %s %S\n" e.meta.name e.meta.parent_session
-        (Reap.string_of_result e.outcome.result)
+        (Subrun.string_of_result e.outcome.result)
         e.outcome.text)
     endings;
   if List.is_empty closes && List.is_empty endings then print_endline "nothing"
@@ -106,7 +106,7 @@ let run ~dir ?(kind : Subrun.kind option) ?(parent = "") name id_s =
 let outcome ~dir id_s =
   match Subrun.read_outcome ~dir:(runs dir) (id id_s) with
   | None -> "no outcome"
-  | Some o -> Reap.string_of_result o.result ^ " " ^ o.text
+  | Some o -> Subrun.string_of_result o.result ^ " " ^ o.text
 
 let%expect_test "rule 1: a finished run pane closes its window after the grace, with no record" =
   show (sweep [ other; pane ~run:"run-finished" ~dead:60 "%1" "@1" ]);
@@ -167,7 +167,7 @@ let%expect_test "a pane collision on the parent: the complete record set keeps t
   let panes = [ other; pane ~run:"run-collision" "%1" "@1" ] in
   show (sweep ~dir ~sessions:(State.load_live ~dir) panes);
   print_endline (outcome ~dir "run-collision");
-  let lossy = State.Panes.bindings (State.by_pane (State.load_live ~dir)) |> List.map snd in
+  let lossy = State.String_map.bindings (State.by_pane (State.load_live ~dir)) |> List.map snd in
   Printf.printf "intruder won the pane: %b\n"
     (List.exists (fun (id, _) -> String.equal id "intruder-sess") lossy);
   show (sweep ~dir ~sessions:lossy panes);

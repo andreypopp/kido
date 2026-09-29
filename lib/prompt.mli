@@ -10,7 +10,7 @@ val deliver_or_paste :
 
 val agent_panes_in :
   Tmux.Pane.t list ->
-  (string * State.session) State.Panes.t ->
+  (string * State.session) State.String_map.t ->
   pi:Procs.Int_set.t ->
   Tmux.Pane.t ->
   whole_session:bool ->

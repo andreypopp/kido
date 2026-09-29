@@ -32,6 +32,7 @@ type meta = {
 type result = Completed | Failed | Died | Stopped
 type outcome = { result : result; text : string; at : Timestamp.t option } [@@deriving yojson]
 
+val string_of_result : result -> string
 val create : dir:string -> id -> string -> unit
 val write_command : dir:string -> id -> string list -> unit
 val read_command : dir:string -> id -> string list option
@@ -56,3 +57,11 @@ val effective_outcome : dir:string -> id -> pid:int -> outcome option
 val list : dir:string -> id list
 val max_screen_bytes : int
 val truncate_screen : string -> string
+
+val capture_pane : string -> string option
+(** A pane's screen with 1000 lines of history, or [None] when tmux could not capture it. *)
+
+val capture_own_screen :
+  dir:string -> capture:(string -> string option) -> id -> string -> string option
+(** Saves a run's own pane into its run directory and returns what was saved; [None] for an empty
+    pane id or a failed capture. *)

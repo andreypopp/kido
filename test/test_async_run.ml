@@ -26,7 +26,7 @@ let async_run ?(stream = false) ~dir run_id =
 let outcome ~dir (meta : Subrun.meta) =
   match Subrun.read_outcome ~dir:(runs dir) meta.id with
   | None -> print_endline "no outcome"
-  | Some o -> Printf.printf "outcome %s %S\n" (Reap.string_of_result o.result) o.text
+  | Some o -> Printf.printf "outcome %s %S\n" (Subrun.string_of_result o.result) o.text
 
 let bash ?parent ~dir name command = run ~dir ~name ~kind:Bash ?parent ~command name
 

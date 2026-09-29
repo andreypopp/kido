@@ -20,22 +20,23 @@ type agent_info = {
 }
 [@@deriving to_yojson]
 
-let find_pane panes id = List.find_opt (fun (p : Pane.t) -> String.equal p.pane_id id) panes
+let caller_pane panes self =
+  match Pane.find panes self with Some p -> p | None -> Cli.failf "pane %S not found" self
 
 let display_name panes (s : State.session) =
   if not (String.is_empty s.title) then s.title
   else
     Option.map_or ~default:""
       (fun (p : Pane.t) -> State.agent_title p.title)
-      (find_pane panes s.pane)
+      (Pane.find panes s.pane)
 
-let per_pane live = List.map snd (State.Panes.bindings (State.by_pane live))
+let per_pane live = List.map snd (State.String_map.bindings (State.by_pane live))
 
 let in_session panes states session =
   List.filter
     (fun (_, (s : State.session)) ->
       String.equal session
-        (Option.map_or ~default:"" (fun (p : Pane.t) -> p.session_id) (find_pane panes s.pane)))
+        (Option.map_or ~default:"" (fun (p : Pane.t) -> p.session_id) (Pane.find panes s.pane)))
     states
 
 let parent_edge (id, (s : State.session)) =
@@ -68,7 +69,7 @@ let build ~runs ~threshold ~wake ~now states panes ~session ~self =
     scoped
   |> Tree.order ~id:fst ~parent
   |> List.map (fun ((id, (s : State.session)) as e) ->
-      let p = find_pane panes s.pane in
+      let p = Pane.find panes s.pane in
       {
         id;
         name = display_name panes s;
@@ -94,14 +95,13 @@ let list_agents ~dir ~threshold ~self ~panes ~session ~json =
   let session =
     if not (String.is_empty session) then session
     else
-      match find_pane panes self with
+      match Pane.find panes self with
       | Some p -> p.session_id
       | None ->
-          failwith
-            (Printf.sprintf
-               "no tmux session for pane %S; pass --session\n\
-                usage: kido list_agents [--session ID] [--json]"
-               self)
+          Cli.failf
+            "no tmux session for pane %S; pass --session\n\
+             usage: kido list_agents [--session ID] [--json]"
+            self
   in
   let agents =
     build ~runs:(Filename.concat dir "runs") ~threshold ~wake:(State.wake ~dir)

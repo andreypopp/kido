@@ -36,7 +36,7 @@ let outcome w run =
     Subrun.read_outcome ~dir:(Filename.concat w.dir "runs") (Result.get_exn (Subrun.parse_id run))
   with
   | None -> print_endline "no outcome"
-  | Some o -> Printf.printf "outcome %s %S\n" (Reap.string_of_result o.result) o.text
+  | Some o -> Printf.printf "outcome %s %S\n" (Subrun.string_of_result o.result) o.text
 
 let two_windows =
   [ pane ~session_id:"$1" ~window:"@1" "%1"; pane ~session_id:"$1" ~window:"@2" "%2" ]

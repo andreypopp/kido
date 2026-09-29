@@ -90,9 +90,8 @@ type request = {
 let check_window_name name =
   Result.iter_err failwith (Launch.tmux_safe "window name" name);
   if String.length name > max_window_name_len then
-    failwith
-      (Printf.sprintf "refusing window name %S: %d bytes is over the %d byte limit" name
-         (String.length name) max_window_name_len)
+    Cli.failf "refusing window name %S: %d bytes is over the %d byte limit" name
+      (String.length name) max_window_name_len
 
 let read_task path =
   if String.equal path "-" then begin
@@ -106,25 +105,23 @@ let read_task path =
             Buffer.add_subbytes buf chunk 0 n;
             fill ()
     in
-    (try fill () with Sys_error e -> failwith (Printf.sprintf "reading task from stdin: %s" e));
+    (try fill () with Sys_error e -> Cli.failf "reading task from stdin: %s" e);
     if Buffer.length buf > max_task_bytes then
-      failwith (Printf.sprintf "task on stdin is over the %d byte task limit" max_task_bytes);
+      Cli.failf "task on stdin is over the %d byte task limit" max_task_bytes;
     Buffer.contents buf
   end
   else
-    let fail e = failwith (Printf.sprintf "--task-file %S: %s" path (Unix.error_message e)) in
+    let fail e = Cli.failf "--task-file %S: %s" path (Unix.error_message e) in
     match Unix.stat path with
     | exception Unix.Unix_error (e, _, _) -> fail e
-    | { st_kind = S_DIR; _ } ->
-        failwith (Printf.sprintf "--task-file %S is a directory, not a task file" path)
+    | { st_kind = S_DIR; _ } -> Cli.failf "--task-file %S is a directory, not a task file" path
     | { st_size; _ } when st_size > max_task_bytes ->
-        failwith
-          (Printf.sprintf "--task-file %S is %d bytes, over the %d byte task limit" path st_size
-             max_task_bytes)
+        Cli.failf "--task-file %S is %d bytes, over the %d byte task limit" path st_size
+          max_task_bytes
     | _ -> (
         match In_channel.with_open_bin path In_channel.input_all with
         | task -> task
-        | exception Sys_error e -> failwith (Printf.sprintf "--task-file %S: %s" path e))
+        | exception Sys_error e -> Cli.failf "--task-file %S: %s" path e)
 
 let parse (f : flags) =
   let refuse why = failwith (why ^ "\n" ^ usage) in
@@ -169,11 +166,6 @@ let parse (f : flags) =
   in
   { mode; parent; keep_alive = f.keep_alive; command }
 
-let fields line =
-  String.map (fun c -> if Char.is_whitespace_ascii c then ' ' else c) line
-  |> String.split_on_char ' '
-  |> List.filter (fun f -> not (String.is_empty f))
-
 (* A model no configured provider can run makes pi print "Use /login ..." and exit 0 having run
    no turn. pi --list-models prints a header, then one row per model: provider, model id. *)
 let validate_model list_models command =
@@ -186,12 +178,12 @@ let validate_model list_models command =
   in
   if not (String.is_empty model) then
     match list_models () with
-    | Error e ->
-        failwith (Printf.sprintf "could not validate model %S: pi --list-models: %s" model e)
+    | Error e -> Cli.failf "could not validate model %S: pi --list-models: %s" model e
     | Ok out ->
         let rows =
           List.filter_map
-            (fun line -> match fields line with p :: m :: _ -> Some (p, m) | _ -> None)
+            (fun line ->
+              match Procs.split_fields line with [ p :: m :: _ ] -> Some (p, m) | _ -> None)
             (List.drop 1 (String.lines out))
         in
         if not (List.exists (fun (p, m) -> String.equal (p ^ "/" ^ m) model) rows) then
@@ -207,9 +199,8 @@ let validate_model list_models command =
                 (List.filter_map (fun (q, m) -> if String.equal p q then Some m else None) rows)
             ^ "}"
           in
-          failwith
-            (Printf.sprintf "model %S is not a model of a configured provider; configured: %s" model
-               (String.concat ", " (List.map group providers)))
+          Cli.failf "model %S is not a model of a configured provider; configured: %s" model
+            (String.concat ", " (List.map group providers))
 
 (* pi 0.85.1's getDefaultSessionDirPath (session-manager.js): PI_CODING_AGENT_SESSION_DIR, else
    <PI_CODING_AGENT_DIR or ~/.pi/agent>/sessions/--<cwd, / \ : as ->--, files named
@@ -239,13 +230,6 @@ let pi_session_file_exists pi cwd id =
       | exception Sys_error _ -> false
       | names -> Array.exists (String.suffix ~suf:suffix) names)
 
-let caller_pane panes self =
-  match List_agents.find_pane panes self with
-  | Some p -> p
-  | None -> failwith (Printf.sprintf "pane %S not found" self)
-
-(* new-window gives the child the tmux server's environment, so KIDO_AGENT_* is its only channel;
-   internal/reap reads a zero parent as an orphan's, so an absent one is left out. *)
 let run_env ~runs id parent depth ~keep_alive =
   [
     "KIDO_AGENT_TASK_FILE=" ^ Subrun.task_path ~dir:runs id;
@@ -263,9 +247,6 @@ let failed ~runs (meta : Subrun.meta) text =
     (Subrun.record_outcome ~dir:runs meta.id
        { result = Failed; text; at = Some (Timestamp.now ()) })
 
-(* The mark is what makes a window reapable at all, so a failed mark kills the window. A window
-   already gone cannot be marked: a bash run's wrapper reports its own ending, an agent run has
-   nobody else to. *)
 let create_run_window ~runs tmux (meta : Subrun.meta) ~session ~env command =
   let w =
     match tmux.new_window ~session ~name:meta.name ~cwd:meta.cwd ~env command with
@@ -279,13 +260,13 @@ let create_run_window ~runs tmux (meta : Subrun.meta) ~session ~env command =
   let id = Subrun.string_of_id meta.id in
   (match tmux.mark_run w.pane_id id with
   | () -> ()
-  | exception Failure _ when Stdlib.(meta.kind = Some Bash) && not (tmux.window_exists w.window_id)
-    ->
-      ()
-  | exception Failure e ->
-      (try tmux.kill_window w.window_id with Failure _ -> ());
-      failed ~runs meta e;
-      failwith e);
+  | exception Failure e -> (
+      match meta.kind with
+      | Some Bash when not (tmux.window_exists w.window_id) -> ()
+      | Some Bash | Some Agent | None ->
+          (try tmux.kill_window w.window_id with Failure _ -> ());
+          failed ~runs meta e;
+          failwith e));
   match meta.kind with
   | Some Bash ->
       String.concat " " [ w.window_id; w.pane_id; id; Subrun.output_path ~dir:runs meta.id ]
@@ -295,9 +276,9 @@ let insert_after_head extra = function head :: rest -> (head :: extra) @ rest | 
 
 let spawn ~dir ~self ~panes ~tmux ~pi req =
   let runs = Filename.concat dir "runs" in
-  let pane = caller_pane (Lazy.force panes) self in
+  let pane = List_agents.caller_pane (Lazy.force panes) self in
   let live = State.load_live ~dir in
-  let own = State.Panes.find_opt pane.pane_id (State.by_pane live) in
+  let own = State.String_map.find_opt pane.pane_id (State.by_pane live) in
   let parent =
     match (req.mode, own) with
     | Resume { adopt = true; _ }, Some (id, s) -> Some State.{ pid = s.pid; session = id }
@@ -305,19 +286,17 @@ let spawn ~dir ~self ~panes ~tmux ~pi req =
   in
   let depth = 1 + Option.map_or ~default:0 (fun (_, (s : State.session)) -> s.depth) own in
   if depth > max_depth then
-    failwith
-      (Printf.sprintf
-         "refusing to spawn at depth %d: maximum nesting is %d (root 0, subagent 1, subagent 2)"
-         depth max_depth);
+    Cli.failf
+      "refusing to spawn at depth %d: maximum nesting is %d (root 0, subagent 1, subagent 2)" depth
+      max_depth;
   Option.iter
     (fun ({ session; _ } : State.parent) ->
       if not (List.mem_assoc ~eq:String.equal session live) then
-        failwith
-          (Printf.sprintf
-             "--parent-session %S names no currently live agent; the child would be closed within \
-              moments as an orphan (internal/reap's rule 2) - pass --no-parent for a child owned \
-              by nobody, or name an agent that is actually running"
-             session))
+        Cli.failf
+          "--parent-session %S names no currently live agent; the child would be closed within \
+           moments as an orphan (internal/reap's rule 2) - pass --no-parent for a child owned by \
+           nobody, or name an agent that is actually running"
+          session)
     parent;
   let is_pi = match req.command with "pi" :: _ -> true | _ -> false in
   let meta, command, mint =
@@ -352,14 +331,12 @@ let spawn ~dir ~self ~panes ~tmux ~pi req =
           match Subrun.read_meta ~dir:runs run with
           | Some m -> m
           | None ->
-              failwith
-                (Printf.sprintf "run %S: no readable %s" (Subrun.string_of_id run)
-                   (Filename.concat (Filename.concat runs (Subrun.string_of_id run)) "meta.json"))
+              Cli.failf "run %S: no readable %s" (Subrun.string_of_id run)
+                (Filename.concat (Filename.concat runs (Subrun.string_of_id run)) "meta.json")
         in
         if Option.is_none (Subrun.effective_outcome ~dir:runs meta.id ~pid:meta.pid) then
-          failwith
-            (Printf.sprintf "run %S is still running (pid %d); resuming a live agent makes no sense"
-               (Subrun.string_of_id meta.id) meta.pid);
+          Cli.failf "run %S is still running (pid %d); resuming a live agent makes no sense"
+            (Subrun.string_of_id meta.id) meta.pid;
         (* With no pi session file the id is free rather than stale, so --session-id mints one
            under it and the stored task is delivered again. *)
         let mint = not (pi_session_file_exists pi meta.cwd meta.id) in

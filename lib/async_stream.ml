@@ -76,7 +76,6 @@ let push t line =
   Queue.push l t.pending;
   t.bytes <- t.bytes + String.length l + 1
 
-(* The pipe holds a pending wake, which is all "there is something to send" needs. *)
 let signal t =
   try ignore (Unix.write_substring t.wake_w "x" 0 1)
   with Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) -> ()
@@ -106,7 +105,6 @@ let write { stream = t; _ } s =
   in
   if ready then signal t
 
-(* Past the budget, the one line saying so, and after it nothing. *)
 let take t =
   Mutex.protect t.mu (fun () ->
       if Queue.is_empty t.pending then None
@@ -129,14 +127,11 @@ let take t =
         t.bytes <- 0;
         Some batch)
 
-(* Only an acknowledged chunk counts as streamed. *)
 let credit t lines n =
   Mutex.protect t.mu (fun () ->
       t.sent <- t.sent + lines;
       t.streamed <- t.streamed + n)
 
-(* A stream can never fall back to a paste, so it needs a parent with a bound inbox; the failed
-   batch is gone, not retried: the output file has it, and a retry would arrive out of order. *)
 let send t text =
   let resolved =
     if (not (String.is_empty t.inbox)) || String.is_empty t.meta.parent_session then t.inbox
@@ -183,7 +178,6 @@ let drain fd =
     done
   with Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) -> ()
 
-(* One batch at a time, at most one send in flight, none while a failure's backoff runs. *)
 let run t =
   let rec loop ~tick ~backoff ~retry_at =
     let now = Unix.gettimeofday () in

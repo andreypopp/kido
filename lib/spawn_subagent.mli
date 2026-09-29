@@ -44,10 +44,8 @@ type flags = {
 type request
 
 val parse : flags -> request
-val fields : string -> string list
 val check_window_name : string -> unit
 val validate_model : (unit -> (string, string) result) -> string list -> unit
-val caller_pane : Tmux.Pane.t list -> string -> Tmux.Pane.t
 
 val run_env :
   runs:string -> Subrun.id -> State.parent option -> int -> keep_alive:bool -> string list

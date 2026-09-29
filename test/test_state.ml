@@ -7,7 +7,7 @@ let write ~dir id s =
 let temp () = Filename.temp_dir "kido-state" ""
 
 let show_panes live =
-  State.Panes.iter (fun pane (id, _) -> Printf.printf "%s: %s\n" pane id) (State.by_pane live)
+  State.String_map.iter (fun pane (id, _) -> Printf.printf "%s: %s\n" pane id) (State.by_pane live)
 
 let outcome = function
   | Ok () -> print_endline "ok"

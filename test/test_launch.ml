@@ -39,9 +39,12 @@ let%expect_test "server.conf layers kido's defaults, kido.conf, the capture, the
 let%expect_test "kido.conf is under XDG_CONFIG_HOME, else ~/.config" =
   print_endline (Launch.user_conf ~xdg_config_home:"/x" ~home:"/h");
   print_endline (Launch.user_conf ~xdg_config_home:"" ~home:"/h");
+  (try print_endline (Launch.user_conf ~xdg_config_home:"" ~home:"")
+   with Failure msg -> print_endline msg);
   [%expect {|
     /x/kido/kido.conf
     /h/.config/kido/kido.conf
+    $HOME is not defined
     |}]
 
 (* The result is also what tmux's default_window_name() (third_party/tmux/names.c) parses, undoing

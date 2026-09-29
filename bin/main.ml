@@ -66,7 +66,8 @@ let run_outcome =
      and+ unreported = flag "unreported" "The child never called notify_parent: tell its parent so."
      and+ id = arg "RUN_ID" in
      fun () ->
-       Runs.run_outcome ~dir:(State.dir ()) ~capture:Reap.capture_pane ~result ~text ~unreported id
+       Runs.run_outcome ~dir:(State.dir ()) ~capture:Subrun.capture_pane ~result ~text ~unreported
+         id
 
 let async_run =
   cmd "async-run" "Run an async run's command, recording and reporting how it ended."
@@ -285,7 +286,7 @@ let reap =
      Cli.run "reap" (fun () ->
          if not (List.is_empty args) then failwith "usage: kido reap";
          let dir = State.dir () in
-         Reap.collect ~dir ~capture:Reap.capture_pane ~grace:(Reap.grace ())
+         Reap.collect ~dir ~capture:Subrun.capture_pane ~grace:(Reap.grace ())
            (Tmux.Exec.list_panes ()) (State.read_all ~dir) ~now:(Unix.gettimeofday ()) release_ops;
          0)
 
@@ -300,8 +301,8 @@ let close_run =
            | [ w ] when not (String.is_empty w) -> w
            | _ -> failwith "usage: kido close-run WINDOW_ID"
          in
-         if not (Control.is_window_id window_id) then
-           failwith (Printf.sprintf "close-run: %S is not a window id (@N)" window_id);
+         if not (Tmux.Pane.is_window_id window_id) then
+           Cli.failf "close-run: %S is not a window id (@N)" window_id;
          (match Reap.decide (Tmux.Exec.list_panes ()) window_id with
          | Ok c -> Reap.release release_ops c
          | Error refusal -> Cli.error "close-run" refusal);

@@ -9,7 +9,7 @@ let args argv ~tty =
 let run argv =
   let path = Option.get_or ~default:"" (Sys.getenv_opt "PATH") in
   let ssh =
-    match Bin_dir.of_exe (Tmux.Exec.invoked_path ~path Sys.argv.(0)) with
+    match Bin_dir.own () with
     | Some dir ->
         Bin_dir.look_path_past ~path ~dir "ssh"
         |> Option.get_lazy (fun () -> failwith ("no ssh on PATH past " ^ dir))

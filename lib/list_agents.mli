@@ -18,7 +18,7 @@ type agent_info = {
 }
 [@@deriving to_yojson]
 
-val find_pane : Tmux.Pane.t list -> string -> Tmux.Pane.t option
+val caller_pane : Tmux.Pane.t list -> string -> Tmux.Pane.t
 val display_name : Tmux.Pane.t list -> State.session -> string
 val per_pane : (string * State.session) list -> (string * State.session) list
 

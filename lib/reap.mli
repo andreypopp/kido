@@ -1,7 +1,3 @@
-(** Which subagent panes are finished with, decided from tmux's [@kido_run] option, never from a
-    state record; and an ending's notice text and its send to the parent's inbox. [dir] is the state
-    directory throughout. *)
-
 val grace : unit -> float
 (** Seconds a finished subagent's window is left alone before a sweep may close it, from
     [KIDO_LINGER_SECONDS] (default 30), the same knob pi/kido-agents.ts reads. *)
@@ -15,16 +11,6 @@ val release : ops -> close -> unit
 
 val decide : Tmux.Pane.t list -> string -> (close, string) result
 (** [kido close-run]'s decision for a window: the close to release, or the refusal to print. *)
-
-val capture_pane : string -> string option
-(** A pane's screen with 1000 lines of history, or [None] when tmux could not capture it. *)
-
-val capture_own_screen :
-  dir:string -> capture:(string -> string option) -> Subrun.id -> string -> string option
-(** Saves a run's own pane into its run directory and returns what was saved; [None] for an empty
-    pane id or a failed capture. *)
-
-val string_of_result : Subrun.result -> string
 
 type detail = Bash of { unstreamed : int } | Agent of { unreported : bool }
 type ending = { meta : Subrun.meta; outcome : Subrun.outcome; detail : detail }

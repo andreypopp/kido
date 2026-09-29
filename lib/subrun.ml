@@ -170,3 +170,15 @@ let max_screen_bytes = 64 * 1024
 let truncate_screen data =
   let n = String.length data in
   if n > max_screen_bytes then String.sub data (n - max_screen_bytes) max_screen_bytes else data
+
+let capture_pane pane = try Some (Tmux.Exec.capture_screen pane) with Failure _ -> None
+
+let capture_own_screen ~dir ~capture id pane =
+  if String.is_empty pane then None
+  else
+    Option.map
+      (fun text ->
+        let data = truncate_screen text in
+        write_screen ~dir id data;
+        data)
+      (capture pane)

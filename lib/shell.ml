@@ -6,11 +6,6 @@ let bare_shell_word command =
   | word when String.exists (String.contains " \t\n\"'$`\\;|&<>(){}[]*?~!#") word -> None
   | word -> Some word
 
-let same_file a b =
-  match (Unix.stat a, Unix.stat b) with
-  | a, b -> a.st_dev = b.st_dev && a.st_ino = b.st_ino
-  | exception Unix.Unix_error _ -> false
-
 let command ~path ~login user =
   match Option.flat_map bare_shell_word user with
   | None -> (login, user)
@@ -21,7 +16,7 @@ let command ~path ~login user =
       in
       match Filename.basename resolved with
       | "zsh" | "bash" -> (resolved, None)
-      | _ when same_file resolved login -> (login, None)
+      | _ when Bin_dir.same_file resolved login -> (login, None)
       | _ -> (login, user))
 
 let with_env base add =
@@ -60,9 +55,8 @@ let run () =
       (match Tmux.Exec.global_option user_command_option with "" -> None | c -> Some c)
   in
   let mode = Prime.local_mode ~dotdir:(match env "ZDOTDIR" with "" -> env "HOME" | d -> d) path in
-  let bin_dir = Bin_dir.of_exe (Tmux.Exec.invoked_path ~path:(env "PATH") Sys.argv.(0)) in
   let mode, add =
-    match Prime.local ~zdotdir:(Sys.getenv_opt "ZDOTDIR") ~bin_dir mode with
+    match Prime.local ~zdotdir:(Sys.getenv_opt "ZDOTDIR") ~bin_dir:(Bin_dir.own ()) mode with
     | add -> (mode, add)
     | exception (Sys_error _ | Unix.Unix_error _) -> (Prime.Plain, [])
   in

@@ -67,13 +67,21 @@ let write_all fd s =
   in
   go 0
 
+type process = { pid : int; stdin : Unix.file_descr; stdout : Unix.file_descr }
+
 let spawn args =
   let bin = Lazy.force binary in
   let in_r, in_w = Unix.pipe ~cloexec:true () in
   let out_r, out_w = Unix.pipe ~cloexec:true () in
   let null = Unix.openfile "/dev/null" [ O_WRONLY; O_CLOEXEC ] 0 in
   let spawned =
-    try Ok (Unix.create_process bin (Array.of_list (bin :: args)) in_r out_w null, in_w, out_r)
+    try
+      Ok
+        {
+          pid = Unix.create_process bin (Array.of_list (bin :: args)) in_r out_w null;
+          stdin = in_w;
+          stdout = out_r;
+        }
     with Unix.Unix_error (e, _, _) ->
       List.iter Unix.close [ in_w; out_r ];
       Error (Unix.error_message e)
@@ -85,11 +93,13 @@ let exec ?(stdin = "") args =
   let failed why = Error (Printf.sprintf "tmux %s: %s" (String.concat " " args) why) in
   match spawn args with
   | Error e -> failed e
-  | Ok (pid, in_w, out_r) -> (
-      (try write_all in_w stdin with Unix.Unix_error (EPIPE, _, _) -> ());
-      Unix.close in_w;
-      let out = Fun.protect ~finally:(fun () -> Unix.close out_r) (fun () -> read_all out_r) in
-      match snd (Unix.waitpid [] pid) with
+  | Ok p -> (
+      (try write_all p.stdin stdin with Unix.Unix_error (EPIPE, _, _) -> ());
+      Unix.close p.stdin;
+      let out =
+        Fun.protect ~finally:(fun () -> Unix.close p.stdout) (fun () -> read_all p.stdout)
+      in
+      match snd (Unix.waitpid [] p.pid) with
       | WEXITED 0 -> Ok (String.trim out)
       | WEXITED n -> failed (Printf.sprintf "exit status %d" n)
       | WSIGNALED n | WSTOPPED n -> failed (Printf.sprintf "signal %d" n))
@@ -162,16 +172,17 @@ let step ~next i n = (i + (if next then 1 else -1) + n) mod n
 
 let switch_session ~client ~next =
   let sessions = Array.of_list (Pane.order_sessions (list_panes ())) in
-  let current = client_state client in
-  match
-    Array.find_idx
-      (fun (s : Pane.session) -> Option.exists (fun c -> String.equal c.session s.name) current)
-      sessions
-  with
-  | Some (i, _) when Array.length sessions >= 2 ->
-      let target = sessions.(step ~next i (Array.length sessions)) in
-      ignore (run [ "switch-client"; "-c"; client; "-t"; target.id ])
-  | _ -> ()
+  if Array.length sessions >= 2 then
+    let current = client_state client in
+    match
+      Array.find_idx
+        (fun (s : Pane.session) -> Option.exists (fun c -> String.equal c.session s.name) current)
+        sessions
+    with
+    | Some (i, _) ->
+        let target = sessions.(step ~next i (Array.length sessions)) in
+        ignore (run [ "switch-client"; "-c"; client; "-t"; target.id ])
+    | None -> ()
 
 let switch_window ~client ~next =
   let panes = list_panes () in

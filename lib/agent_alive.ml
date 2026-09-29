@@ -2,8 +2,7 @@ let answer b =
   print_endline (Bool.to_string b);
   0
 
-let usage cmd session =
-  if String.is_empty session then failwith (Printf.sprintf "usage: kido %s SESSION" cmd)
+let usage cmd session = if String.is_empty session then Cli.failf "usage: kido %s SESSION" cmd
 
 let agent_alive ~dir session =
   usage "agent-alive" session;

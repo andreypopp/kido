@@ -51,14 +51,11 @@ let min_backoff = 0.1
 let max_backoff = 2.
 
 type child = {
-  pid : int;
-  stdin : Unix.file_descr;
-  stdout : Unix.file_descr;
+  process : Exec.process;
   partial : Buffer.t;
   mutable parser : parser;
   replies : block Queue.t;
   mutable attached : string;
-  mutable dead : bool;
 }
 
 type t = {
@@ -70,30 +67,38 @@ type t = {
   mutable closed : bool;
 }
 
-let kill ch =
-  if not ch.dead then (
-    ch.dead <- true;
-    List.iter Unix.close [ ch.stdin; ch.stdout ];
-    (try Unix.kill ch.pid Sys.sigkill with Unix.Unix_error _ -> ());
-    ignore (Unix.waitpid [] ch.pid))
+let kill t =
+  Option.iter
+    (fun ch ->
+      let p = ch.process in
+      List.iter Unix.close [ p.stdin; p.stdout ];
+      (try Unix.kill p.pid Sys.sigkill with Unix.Unix_error _ -> ());
+      ignore (Unix.waitpid [] p.pid))
+    t.child;
+  t.child <- None
+
+let drop t =
+  kill t;
+  t.next_dial <- Unix.gettimeofday () +. t.backoff;
+  t.backoff <- Float.min max_backoff (t.backoff *. 2.)
 
 let feed t ch line =
   let parser, event = step ch.parser (String.rdrop_while (Char.equal '\r') line) in
   ch.parser <- parser;
   match event with
   | Some (Block b) -> Queue.push b ch.replies
-  | Some (Notification "%exit") -> kill ch
+  | Some (Notification "%exit") -> drop t
   | Some (Notification n) when List.mem ~eq:String.equal n notifications -> t.changed <- true
   | Some (Notification _) | None -> ()
 
 let pump t ch ~deadline =
   let left = deadline -. Unix.gettimeofday () in
-  match Unix.select [ ch.stdout ] [] [] (Float.max 0. left) with
+  match Unix.select [ ch.process.stdout ] [] [] (Float.max 0. left) with
   | [], _, _ -> ()
   | _ -> (
       let chunk = Bytes.create 65536 in
-      match Unix.read ch.stdout chunk 0 (Bytes.length chunk) with
-      | 0 -> kill ch
+      match Unix.read ch.process.stdout chunk 0 (Bytes.length chunk) with
+      | 0 -> drop t
       | n -> (
           Buffer.add_subbytes ch.partial chunk 0 n;
           match List.rev (String.split_on_char '\n' (Buffer.contents ch.partial)) with
@@ -108,7 +113,7 @@ let pump t ch ~deadline =
 let rec reply t ch ~deadline =
   match Queue.take_opt ch.replies with
   | Some b -> `Reply b
-  | None when ch.dead -> `Dead
+  | None when Option.is_none t.child -> `Dead
   | None when Float.(Unix.gettimeofday () >= deadline) -> `Timeout
   | None ->
       pump t ch ~deadline;
@@ -123,56 +128,35 @@ let dial t =
     @ Option.map_or ~default:[] (fun s -> [ "-t"; s ]) session
   in
   match Exec.spawn args with
-  | Error e -> Error e
-  | Ok (pid, in_w, out_r) -> (
+  | Error _ -> drop t
+  | Ok process -> (
       let ch =
         {
-          pid;
-          stdin = in_w;
-          stdout = out_r;
+          process;
           partial = Buffer.create 4096;
           parser = Outside;
           replies = Queue.create ();
           attached = Option.get_or ~default:"" session;
-          dead = false;
         }
       in
+      t.child <- Some ch;
       match reply t ch ~deadline:(Unix.gettimeofday () +. run_timeout) with
-      | `Reply (Ok _) -> Ok ch
-      | `Reply (Error e) ->
-          kill ch;
-          Error e
-      | `Dead -> Error "tmux -C: client exited before attaching"
-      | `Timeout ->
-          kill ch;
-          Error "tmux -C: timed out attaching")
+      | `Reply (Ok _) ->
+          t.backoff <- min_backoff;
+          t.changed <- true
+      | `Reply (Error _) | `Timeout -> drop t
+      | `Dead -> ())
 
 let connect client =
   { client; child = None; backoff = min_backoff; next_dial = 0.; changed = false; closed = false }
 
-let drop t =
-  Option.iter kill t.child;
-  t.child <- None;
-  t.next_dial <- Unix.gettimeofday () +. t.backoff;
-  t.backoff <- Float.min max_backoff (t.backoff *. 2.)
-
 let live t =
   match t.child with
-  | Some ch when ch.dead ->
-      drop t;
-      None
   | Some ch -> Some ch
   | None when t.closed || Float.(Unix.gettimeofday () < t.next_dial) -> None
-  | None -> (
-      match dial t with
-      | Ok ch ->
-          t.child <- Some ch;
-          t.backoff <- min_backoff;
-          t.changed <- true;
-          Some ch
-      | Error _ ->
-          drop t;
-          None)
+  | None ->
+      dial t;
+      t.child
 
 let down = Error "tmux: control connection is down"
 
@@ -181,16 +165,14 @@ let run t cmd =
   | None -> down
   | Some ch -> (
       Queue.clear ch.replies;
-      match Exec.write_all ch.stdin (cmd ^ "\n") with
+      match Exec.write_all ch.process.stdin (cmd ^ "\n") with
       | exception Unix.Unix_error _ ->
           drop t;
           down
       | () -> (
           match reply t ch ~deadline:(Unix.gettimeofday () +. run_timeout) with
           | `Reply b -> b
-          | `Dead ->
-              drop t;
-              down
+          | `Dead -> down
           | `Timeout ->
               drop t;
               Error (Printf.sprintf "tmux -C %s: timed out" cmd)))
@@ -216,8 +198,7 @@ let wait t timeout =
 
 let close t =
   t.closed <- true;
-  Option.iter kill t.child;
-  t.child <- None
+  kill t
 
 let quote s = "'" ^ String.replace ~sub:"'" ~by:{|'\''|} s ^ "'"
 

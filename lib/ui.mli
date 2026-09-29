@@ -1,9 +1,6 @@
-(** The sidebar: sessions and their panes, with agent panes badged by the status the agent reported.
-    Every [Tmux.Conn] call happens inside the one tick [Cmd.perform]; update and view spawn tmux
-    commands through [Tmux.Exec] only. *)
+(** Every [Tmux.Conn] call happens inside the one tick [Cmd.perform]. *)
 
-module Panes = State.Panes
-module Runs : Map.S with type key = string
+module String_map = State.String_map
 module Style = Mosaic.Ansi.Style
 
 type options = {
@@ -24,14 +21,14 @@ type snapshot = {
   active : string;
   focused : bool;
   panes : Tmux.Pane.t list;
-  states : (string * State.session) Panes.t;
+  states : (string * State.session) String_map.t;
   ssh : Procs.ssh_session Procs.Int_map.t;
   pi : Procs.Int_set.t;
   probed : float;
   wake : float option;
   err : string option;
-  probes : probe Panes.t;
-  lingering : lingering Runs.t;
+  probes : probe String_map.t;
+  lingering : lingering String_map.t;
 }
 
 val empty : snapshot
@@ -41,9 +38,9 @@ val shell_run_hold : float
 val lingering_subagents :
   dir:string ->
   Tmux.Pane.t list ->
-  (string * State.session) Panes.t ->
-  lingering Runs.t ->
-  lingering Runs.t
+  (string * State.session) String_map.t ->
+  lingering String_map.t ->
+  lingering String_map.t
 
 val same : snapshot -> snapshot -> bool
 
@@ -65,8 +62,8 @@ type model = {
   searching : bool;
   g_pend : bool;
   started : float;
-  seen : float Panes.t;
-  phases : phase Panes.t;
+  seen : float String_map.t;
+  phases : phase String_map.t;
   ssh_remote : string list;
   now : unit -> float;
   at : float;
@@ -97,9 +94,13 @@ val pane_label : model -> Tmux.Pane.t -> span list
 type placement = { panes : Tmux.Pane.t list; anchor : string option }
 
 val order_windows_by_tree :
-  Tmux.Pane.t list list -> (string * State.session) Panes.t -> lingering Runs.t -> placement list
+  Tmux.Pane.t list list ->
+  (string * State.session) String_map.t ->
+  lingering String_map.t ->
+  placement list
 
 val row_text : row -> string
+val truncate : int -> span list -> span list
 val rebuild : model -> model
 
 type msg =

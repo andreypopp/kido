@@ -16,7 +16,7 @@ let outcome ~dir run result =
 let show_outcome ~dir run =
   match Subrun.read_outcome ~dir:(runs dir) (id run) with
   | None -> print_endline "no outcome"
-  | Some o -> Printf.printf "outcome %s %S\n" (Reap.string_of_result o.result) o.text
+  | Some o -> Printf.printf "outcome %s %S\n" (Subrun.string_of_result o.result) o.text
 
 let%expect_test "runs: the table newest first, one run shown, and --json" =
   let dir = Filename.temp_dir "kido-state" "" in

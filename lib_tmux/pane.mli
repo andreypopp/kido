@@ -33,6 +33,8 @@ val sep : string
 val format : string
 val fields : int
 val parse : string list -> t list
+val find : t list -> string -> t option
+val is_window_id : string -> bool
 
 type session = { name : string; id : string; windows : t list list }
 

@@ -81,10 +81,15 @@ let bash_has_ps0 out =
 let local ~zdotdir ~bin_dir mode =
   let prime env =
     let dir = Filename.temp_dir "kido-shell." "" in
-    List.iter
-      (fun (name, body) -> Fs.write ~perm:0o600 (Filename.concat dir name) body)
-      (files ~bin_dir mode);
-    env dir
+    match
+      List.iter
+        (fun (name, body) -> Fs.write ~perm:0o600 (Filename.concat dir name) body)
+        (files ~bin_dir mode)
+    with
+    | () -> env dir
+    | exception e ->
+        ignore (Sys.command ("rm -rf -- " ^ Filename.quote dir));
+        raise e
   in
   match mode with
   | Plain -> []

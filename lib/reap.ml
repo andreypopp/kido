@@ -30,25 +30,6 @@ let decide panes window_id =
              window_id)
     | Some _ -> Ok { window_id; pane_id = None }
 
-let capture_pane pane =
-  Result.to_opt (Tmux.Exec.exec [ "capture-pane"; "-p"; "-t"; pane; "-S"; "-1000" ])
-
-let capture_own_screen ~dir ~capture id pane =
-  if String.is_empty pane then None
-  else
-    Option.map
-      (fun text ->
-        let data = Subrun.truncate_screen text in
-        Subrun.write_screen ~dir:(runs dir) id data;
-        data)
-      (capture pane)
-
-let string_of_result : Subrun.result -> string = function
-  | Completed -> "completed"
-  | Failed -> "failed"
-  | Died -> "died"
-  | Stopped -> "stopped"
-
 type detail = Bash of { unstreamed : int } | Agent of { unreported : bool }
 type ending = { meta : Subrun.meta; outcome : Subrun.outcome; detail : detail }
 
@@ -103,7 +84,7 @@ let tail_of_file path max =
 
 let body ~dir e =
   let b = Buffer.create 256 in
-  let result = string_of_result e.outcome.result in
+  let result = Subrun.string_of_result e.outcome.result in
   (match e.detail with
   | Bash { unstreamed } -> (
       let output = Subrun.output_path ~dir:(runs dir) e.meta.id in
@@ -202,7 +183,7 @@ let guess_ending ~dir run_id ~now =
   in
   record_ending ~dir meta outcome
 
-type window = { id : string; pane_ids : string list; run : P.t option; focused : bool }
+type window = { id : string; pane_ids : string list; run : (P.t * string) option; focused : bool }
 
 let fold_windows panes =
   List.fold_left
@@ -216,7 +197,7 @@ let fold_windows panes =
         {
           w with
           pane_ids = w.pane_ids @ [ p.pane_id ];
-          run = (if Option.is_some p.run then Some p else w.run);
+          run = Option.map_or ~default:w.run (fun r -> Some (p, r)) p.run;
           focused = w.focused || P.watched p;
         }
       in
@@ -227,44 +208,45 @@ let sweep ~dir ~capture ~grace panes sessions ~now =
   if not (List.exists (fun (p : P.t) -> Option.is_some p.run) panes) then ([], [])
   else
     let windows = fold_windows panes in
-    let closing = ref [] and endings = ref [] in
-    let mark id pane_id =
+    let mark ((closing, endings) as acc) id pane_id =
       match List.find_opt (fun w -> String.equal w.id id) windows with
-      | Some { run = Some run; focused = false; pane_ids; _ }
-        when not (List.exists (fun c -> String.equal c.window_id id) !closing) -> (
+      | Some { run = Some (_, run); focused = false; pane_ids; _ }
+        when not (List.exists (fun c -> String.equal c.window_id id) closing) -> (
           let pane_id = match pane_ids with [ _ ] -> None | _ -> Some pane_id in
-          match (pane_id, Subrun.parse_id (Option.get_exn_or "run" run.run)) with
-          | None, _ when P.last_window panes id -> ()
-          | _, Error _ -> ()
+          match (pane_id, Subrun.parse_id run) with
+          | None, _ when P.last_window panes id -> acc
+          | _, Error _ -> acc
           | _, Ok run_id ->
-              closing := !closing @ [ { window_id = id; pane_id } ];
               capture_screen ~dir ~capture run_id
                 (Option.map_or ~default:pane_ids (fun p -> [ p ]) pane_id);
-              Option.iter (fun e -> endings := !endings @ [ e ]) (guess_ending ~dir run_id ~now))
-      | _ -> ()
+              ( closing @ [ { window_id = id; pane_id } ],
+                endings @ Option.to_list (guess_ending ~dir run_id ~now) ))
+      | _ -> acc
     in
-    List.iter
-      (fun w ->
-        match w.run with
-        | Some { dead_at = Some d; pane_id; _ } when Float.(now - d >= grace) -> mark w.id pane_id
-        | _ -> ())
-      windows;
+    let acc =
+      List.fold_left
+        (fun acc w ->
+          match w.run with
+          | Some ({ dead_at = Some d; pane_id; _ }, _) when Float.(now - d >= grace) ->
+              mark acc w.id pane_id
+          | _ -> acc)
+        ([], []) windows
+    in
     let live =
       List.filter_map
         (fun (id, (s : State.session)) -> if State.alive s.pid then Some id else None)
         sessions
     in
     let live id = List.mem ~eq:String.equal id live in
-    List.iter
-      (fun (id, (s : State.session)) ->
+    List.fold_left
+      (fun acc (id, (s : State.session)) ->
         match s.parent with
         | Some parent when live id && not (live parent.session) ->
-            Option.iter
-              (fun (p : P.t) -> mark p.window_id s.pane)
+            Option.map_or ~default:acc
+              (fun (p : P.t) -> mark acc p.window_id s.pane)
               (List.find_opt (fun (p : P.t) -> String.equal p.pane_id s.pane) panes)
-        | _ -> ())
-      sessions;
-    (!closing, !endings)
+        | _ -> acc)
+      acc sessions
 
 let collect ~dir ~capture ~grace panes sessions ~now ops =
   let closing, endings = sweep ~dir ~capture ~grace panes sessions ~now in

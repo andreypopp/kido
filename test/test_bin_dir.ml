@@ -1,50 +1,39 @@
 open Kido
 
-let shipped = [ "shell/zsh/integration.zsh"; "claude/settings.json" ]
 let ( // ) = Filename.concat
 
-let%expect_test "Shared.find: share/kido beside bin/kido, through a symlinked binary, or nothing" =
-  List.iter
-    (fun rel ->
-      let prefix = Sh.temp () in
-      let file = Sh.write ~perm:0o644 (prefix // "share/kido" // rel) "# shipped\n" in
-      let exe = Sh.write (prefix // "bin/kido") "" in
-      let link = Sh.temp () // "kido" in
-      Unix.symlink exe link;
-      Printf.printf "%s: direct %b, symlink %b, empty prefix %b\n" rel
-        (Option.equal String.equal (Shared.find ~exe rel) (Some file))
-        (Option.equal String.equal (Shared.find ~exe:link rel) (Some (Unix.realpath file)))
-        (Option.is_none (Shared.find ~exe:(Sh.temp () // "bin/kido") rel)))
-    shipped;
-  [%expect
-    {|
-    shell/zsh/integration.zsh: direct true, symlink true, empty prefix true
-    claude/settings.json: direct true, symlink true, empty prefix true
-    |}]
+let%expect_test
+    "Bin_dir.of_exe: share/kido/bin beside bin/kido, through a symlinked binary, or nothing" =
+  let prefix = Sh.temp () in
+  ignore (Sh.write (prefix // "share/kido/bin/tmux") "#!/bin/sh\n");
+  let exe = Sh.write (prefix // "bin/kido") "" in
+  let link = Sh.temp () // "kido" in
+  Unix.symlink exe link;
+  Printf.printf "direct %b, symlink %b, empty prefix %b\n"
+    (Option.equal String.equal (Bin_dir.of_exe exe) (Some (prefix // "share/kido/bin")))
+    (Option.equal String.equal (Bin_dir.of_exe link)
+       (Some (Unix.realpath (prefix // "share/kido/bin"))))
+    (Option.is_none (Bin_dir.of_exe (Sh.temp () // "bin/kido")));
+  [%expect {| direct true, symlink true, empty prefix true |}]
 
 (* bin/kido and share/kido are both symlinks Homebrew repoints on upgrade; only the unresolved
    spelling survives `brew cleanup` of the versioned directory. *)
-let%expect_test "Shared.find prefers the unresolved, version-stable spelling" =
+let%expect_test "Bin_dir.of_exe prefers the unresolved, version-stable spelling" =
   let root = Sh.temp () in
   let versioned = root // "Cellar/kido/1.0.0" in
   let real = Sh.write (versioned // "bin/kido") "#!/bin/sh\n" in
-  List.iter (fun rel -> ignore (Sh.write ~perm:0o644 (versioned // "share/kido" // rel) "")) shipped;
+  ignore (Sh.write (versioned // "share/kido/bin/tmux") "#!/bin/sh\n");
   Fs.mkdir_p (root // "bin");
   Fs.mkdir_p (root // "share");
   Unix.symlink real (root // "bin/kido");
   Unix.symlink (versioned // "share/kido") (root // "share/kido");
   let exe = Tmux.Exec.invoked_path ~path:"" (root // "bin/kido") in
   Printf.printf "invoked_path unresolved: %b\n" (String.equal exe (root // "bin/kido"));
-  List.iter
-    (fun rel ->
-      Printf.printf "%s: %b\n" rel
-        (Option.equal String.equal (Shared.find ~exe rel) (Some (root // "share/kido" // rel))))
-    shipped;
-  [%expect
-    {|
+  Printf.printf "bin dir unresolved: %b\n"
+    (Option.equal String.equal (Bin_dir.of_exe exe) (Some (root // "share/kido/bin")));
+  [%expect {|
     invoked_path unresolved: true
-    shell/zsh/integration.zsh: true
-    claude/settings.json: true
+    bin dir unresolved: true
     |}]
 
 let same a b =

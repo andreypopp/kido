@@ -60,8 +60,8 @@ let agent_state id parent title = (id, session ~title ~parent "")
 
 let states l =
   List.fold_left
-    (fun m (pane, (id, s)) -> Ui.Panes.add pane (id, { s with State.pane }) m)
-    Ui.Panes.empty l
+    (fun m (pane, (id, s)) -> State.String_map.add pane (id, { s with State.pane }) m)
+    State.String_map.empty l
 
 let model ?(dir = temp ()) ?(clock = ref test_at) ?(started = test_at -. 3600.) () =
   let m = Ui.make ~now:(fun () -> !clock) (opts ~dir ()) in
@@ -76,7 +76,7 @@ let render ?dir ?(current = "sess") panes st =
       current;
       panes;
       states;
-      lingering = Ui.lingering_subagents ~dir:m.opts.dir panes states Ui.Runs.empty;
+      lingering = Ui.lingering_subagents ~dir:m.opts.dir panes states State.String_map.empty;
     }
   in
   Array.iter (fun r -> print_endline (Ui.row_text r)) (Ui.rebuild { m with snap }).rows
@@ -325,11 +325,11 @@ let%expect_test "order_windows_by_tree: child after parent, anchored to the pare
       ("%child2", ("", session ~parent:"root-sess" ~depth:1 ""));
       ("%child1", ("", session ~parent:"root-sess" ~depth:1 ""));
     ]
-    Ui.Runs.empty;
+    State.String_map.empty;
   placements
     [ w "shell"; w "orphan" ]
     [ ("%orphan", ("orphan-sess", session ~parent:"elsewhere-sess" ~depth:1 "")) ]
-    Ui.Runs.empty;
+    State.String_map.empty;
   placements
     [ w "root"; w "kid"; w "grandkid" ]
     [
@@ -337,14 +337,14 @@ let%expect_test "order_windows_by_tree: child after parent, anchored to the pare
       ("%kid", ("kid-sess", session ~parent:"root-sess" ~depth:1 ""));
       ("%grandkid", ("gk-sess", session ~parent:"kid-sess" ~depth:1 ""));
     ]
-    Ui.Runs.empty;
+    State.String_map.empty;
   placements
     [ w "a"; w "b" ]
     [
       ("%a", ("a-sess", session ~parent:"b-sess" ""));
       ("%b", ("b-sess", session ~parent:"a-sess" ""));
     ]
-    Ui.Runs.empty;
+    State.String_map.empty;
   [%expect
     {|
     @shell anchor=-
@@ -361,7 +361,9 @@ let%expect_test "order_windows_by_tree: child after parent, anchored to the pare
     |}]
 
 let%expect_test "order_windows_by_tree: the lingering fallback, and a record beating a stale mark" =
-  let lingering parent = Ui.Runs.singleton "run-1" { Ui.name = ""; parent; outcome = None } in
+  let lingering parent =
+    State.String_map.singleton "run-1" { Ui.name = ""; parent; outcome = None }
+  in
   placements
     [ w "root"; w ~run:"run-1" "kid" ]
     [ ("%root", ("root-sess", session "")) ]
@@ -384,7 +386,7 @@ let%expect_test "order_windows_by_tree: the lingering fallback, and a record bea
       ("%kid1", ("kid1-sess", session ~parent:"top-sess" ~depth:1 ""));
       ("%kid2", ("kid2-sess", session ~parent:"second-sess" ~depth:1 ""));
     ]
-    Ui.Runs.empty;
+    State.String_map.empty;
   [%expect
     {|
     @root anchor=-
@@ -504,10 +506,10 @@ let%expect_test "lingering entries carry forward; only a missing outcome is re-r
   let dir = temp () in
   let id = new_run ~dir "subagent" in
   let panes = [ pane ~window:"@20" ~dead_at:1. ~run:id "%30" ] in
-  let first = Ui.lingering_subagents ~dir panes Ui.Panes.empty Ui.Runs.empty in
+  let first = Ui.lingering_subagents ~dir panes State.String_map.empty State.String_map.empty in
   let show l =
-    let (l : Ui.lingering) = Ui.Runs.find id l in
-    Printf.printf "%s %s\n" l.name (Option.map_or ~default:"-" Reap.string_of_result l.outcome)
+    let (l : Ui.lingering) = State.String_map.find id l in
+    Printf.printf "%s %s\n" l.name (Option.map_or ~default:"-" Subrun.string_of_result l.outcome)
   in
   show first;
   Sys.remove (Filename.concat dir ("runs/" ^ id ^ "/meta.json"));
@@ -515,7 +517,7 @@ let%expect_test "lingering entries carry forward; only a missing outcome is re-r
     (Subrun.record_outcome ~dir:(Filename.concat dir "runs")
        (Result.get_exn (Subrun.parse_id id))
        { result = Completed; text = ""; at = None });
-  show (Ui.lingering_subagents ~dir panes Ui.Panes.empty first);
+  show (Ui.lingering_subagents ~dir panes State.String_map.empty first);
   [%expect {|
     subagent -
     subagent completed
@@ -576,17 +578,17 @@ let%expect_test "shell_outcome: the last command's exit since the pane was last 
          (fun (e : Tmux.Pane.exit) -> Printf.sprintf "exit %d at %.0f" e.code e.at)
          (Ui.shell_outcome m p))
   in
-  show "no integration" (m Ui.Panes.empty) (pane ~exit:(1, ended) "%1");
-  show "running" (m Ui.Panes.empty)
+  show "no integration" (m State.String_map.empty) (pane ~exit:(1, ended) "%1");
+  show "running" (m State.String_map.empty)
     (integrated ~running:true ~start:(ended +. 1.) ~exit:(1, ended) ());
-  show "clean exit, not yet visited" (m Ui.Panes.empty) (integrated ~exit:(0, ended) ());
-  show "nonzero exit, not yet visited" (m Ui.Panes.empty) (integrated ~exit:(1, ended) ());
+  show "clean exit, not yet visited" (m State.String_map.empty) (integrated ~exit:(0, ended) ());
+  show "nonzero exit, not yet visited" (m State.String_map.empty) (integrated ~exit:(1, ended) ());
   show "nonzero exit, pane visited since"
-    (m (Ui.Panes.singleton "%1" visited))
+    (m (State.String_map.singleton "%1" visited))
     (integrated ~exit:(1, ended) ());
-  show "no status on record" (m Ui.Panes.empty) (integrated ());
-  show "no command has run" (m Ui.Panes.empty) (pane ~prompt:ended ~exit:(0, ended) "%1");
-  show "no end time" (m Ui.Panes.empty) (integrated ~exit:(1, 0.) ());
+  show "no status on record" (m State.String_map.empty) (integrated ());
+  show "no command has run" (m State.String_map.empty) (pane ~prompt:ended ~exit:(0, ended) "%1");
+  show "no end time" (m State.String_map.empty) (integrated ~exit:(1, 0.) ());
   [%expect
     {|
     no integration: none
@@ -682,7 +684,7 @@ let%expect_test "shell_indicator debounce on a controlled clock" =
                 snap = { Ui.empty with panes = [ p ]; active = (if on_pane then "%1" else "") };
               };
           Printf.printf "  +%dms: %s%s\n" adv
-            (indicator_name (Ui.shell_indicator !m (Ui.Panes.find "%1" !m.phases)))
+            (indicator_name (Ui.shell_indicator !m (State.String_map.find "%1" !m.phases)))
             (if Ui.shell_pending !m then " pending" else ""))
         steps)
     cases;
@@ -756,9 +758,9 @@ let%expect_test "phases and latches are forgotten with their panes" =
           };
       }
   in
-  Printf.printf "phase recorded: %b\n" (Ui.Panes.mem "%1" m.phases);
+  Printf.printf "phase recorded: %b\n" (State.String_map.mem "%1" m.phases);
   let m = Ui.track { m with snap = Ui.empty } in
-  Printf.printf "phases after the pane is gone: %d\n" (Ui.Panes.cardinal m.phases);
+  Printf.printf "phases after the pane is gone: %d\n" (State.String_map.cardinal m.phases);
   [%expect {|
     phase recorded: true
     phases after the pane is gone: 0
@@ -919,7 +921,8 @@ let%expect_test
     clock := !clock +. d;
     m := ssh_tick clock !m p;
     Printf.printf "interactive=%b %s: %s\n" (Ui.interactive_pane !m p)
-      (indicator_name (Option.flat_map (Ui.shell_indicator !m) (Ui.Panes.find_opt "%1" !m.phases)))
+      (indicator_name
+         (Option.flat_map (Ui.shell_indicator !m) (State.String_map.find_opt "%1" !m.phases)))
       (label !m p)
   in
   step 0. (ssh_pane ~command_line:("ssh " ^ ssh_host) (test_at -. 1.) test_at true (-1));
@@ -938,7 +941,7 @@ let%expect_test
         m := ssh_tick clock !m p;
         Ui.interactive_pane !m p
         && Option.is_none
-             (Option.flat_map (Ui.shell_indicator !m) (Ui.Panes.find_opt "%1" !m.phases)))
+             (Option.flat_map (Ui.shell_indicator !m) (State.String_map.find_opt "%1" !m.phases)))
       (List.range 1 10)
   in
   Printf.printf "quiet for ten ticks: %b\n" quiet;
@@ -1005,7 +1008,7 @@ let%expect_test
   let m = ref (model ~clock ()) in
   let warm p ssh =
     clock := test_at;
-    m := { (model ~clock ()) with phases = Ui.Panes.empty };
+    m := { (model ~clock ()) with phases = State.String_map.empty };
     let tick () =
       m := Ui.track { !m with at = !clock; snap = { Ui.empty with panes = [ p ]; ssh } }
     in
@@ -1091,4 +1094,27 @@ let%expect_test
     "zz":
     "kido": beta | ╶◼ kido
     "a": alpha | ╶  zsh | gamma | ╶  zsh | beta | ╶◼ kido
+    |}]
+
+let%expect_test "a row wider than the sidebar is cut to its width, ellipsis included" =
+  let show width texts =
+    let cut =
+      Ui.truncate width
+        (List.map (fun text -> { Ui.text; style = Mosaic.Ansi.Style.default }) texts)
+    in
+    let text = String.concat "" (List.map (fun (s : Ui.span) -> s.text) cut) in
+    Printf.printf "%d %S -> %S\n" width (String.concat "" texts) text
+  in
+  show 4 [ "ab"; "cd" ];
+  show 4 [ "abcd"; "ef" ];
+  show 4 [ "ab"; "cd"; "e" ];
+  show 4 [ "abcdef" ];
+  show 4 [ "ab"; "cdef" ];
+  [%expect
+    {|
+    4 "abcd" -> "abcd"
+    4 "abcdef" -> "abc\226\128\166"
+    4 "abcde" -> "abc\226\128\166"
+    4 "abcdef" -> "abc\226\128\166"
+    4 "abcdef" -> "abc\226\128\166"
     |}]

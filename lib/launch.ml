@@ -20,14 +20,14 @@ let conf_command path args =
   "'" ^ String.concat " " (inner :: args) ^ "'"
 
 let user_conf ~xdg_config_home ~home =
-  Filename.concat
-    (if String.is_empty xdg_config_home then Filename.concat home ".config" else xdg_config_home)
-    "kido/kido.conf"
+  if not (String.is_empty xdg_config_home) then Filename.concat xdg_config_home "kido/kido.conf"
+  else if String.is_empty home then failwith "$HOME is not defined"
+  else Filename.concat home ".config/kido/kido.conf"
 
 let server_conf ~exe ~user_conf =
   let kido = conf_command exe [] and kido_shell = conf_command exe [ "shell" ] in
   if String.exists (String.contains "'\n\r") user_conf then
-    failwith (Printf.sprintf "cannot source %s: the path contains a quote or a newline" user_conf);
+    Cli.failf "cannot source %s: the path contains a quote or a newline" user_conf;
   String.concat ""
     [
       Printf.sprintf
@@ -70,19 +70,16 @@ let probe_server bin =
 
 let run ~tmux =
   if not (String.is_empty tmux) then
-    failwith
-      (Printf.sprintf "already inside tmux (%s); run kido from a plain terminal"
-         (List.hd (String.split_on_char ',' tmux)));
+    Cli.failf "already inside tmux (%s); run kido from a plain terminal"
+      (List.hd (String.split_on_char ',' tmux));
   let bin = Lazy.force Tmux.Exec.binary in
   let exec env args = Unix.execvpe bin (Array.of_list (bin :: "-L" :: socket :: args)) env in
   match probe_server bin with
   | Mismatch ->
-      failwith
-        (Printf.sprintf
-           "the kido server on socket %S is running an older kido-tmux than this one, so it \
-            refuses this client; restart it once its windows are free (detach, then %s -L %s \
-            kill-server)"
-           socket bin socket)
+      Cli.failf
+        "the kido server on socket %S is running an older kido-tmux than this one, so it refuses \
+         this client; restart it once its windows are free (detach, then %s -L %s kill-server)"
+        socket bin socket
   | Up -> exec (Unix.environment ()) [ "attach-session" ]
   | Down ->
       let env name = Option.get_or ~default:"" (Sys.getenv_opt name) in

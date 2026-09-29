@@ -1,6 +1,5 @@
 module P = Tmux.Pane
-module Panes = State.Panes
-module Runs = Map.Make (String)
+module String_map = State.String_map
 module Style = Mosaic.Ansi.Style
 module Color = Mosaic.Ansi.Color
 
@@ -21,14 +20,14 @@ type snapshot = {
   active : string;
   focused : bool;
   panes : P.t list;
-  states : (string * State.session) Panes.t;
+  states : (string * State.session) String_map.t;
   ssh : Procs.ssh_session Procs.Int_map.t;
   pi : Procs.Int_set.t;
   probed : float;
   wake : float option;
   err : string option;
-  probes : probe Panes.t;
-  lingering : lingering Runs.t;
+  probes : probe String_map.t;
+  lingering : lingering String_map.t;
 }
 
 let empty =
@@ -37,14 +36,14 @@ let empty =
     active = "";
     focused = false;
     panes = [];
-    states = Panes.empty;
+    states = String_map.empty;
     ssh = Procs.Int_map.empty;
     pi = Procs.Int_set.empty;
     probed = 0.;
     wake = None;
     err = None;
-    probes = Panes.empty;
-    lingering = Runs.empty;
+    probes = String_map.empty;
+    lingering = String_map.empty;
   }
 
 let prompt_grace = 0.5
@@ -59,37 +58,38 @@ let lingering_subagents ~dir panes states prev =
     (fun out (p : P.t) ->
       match Option.map Subrun.parse_id p.run with
       | Some (Ok run_id)
-        when not (Panes.mem p.pane_id states || Runs.mem (Subrun.string_of_id run_id) out) -> (
+        when not (String_map.mem p.pane_id states || String_map.mem (Subrun.string_of_id run_id) out)
+        -> (
           let key = Subrun.string_of_id run_id in
           let outcome () =
             Option.map (fun (o : Subrun.outcome) -> o.result) (Subrun.read_outcome ~dir:runs run_id)
           in
-          match Runs.find_opt key prev with
+          match String_map.find_opt key prev with
           | Some l ->
-              Runs.add key
+              String_map.add key
                 { l with outcome = (if Option.is_some l.outcome then l.outcome else outcome ()) }
                 out
           | None -> (
               match Subrun.read_meta ~dir:runs run_id with
               | None -> out
               | Some meta ->
-                  Runs.add key
+                  String_map.add key
                     { name = meta.name; parent = meta.parent_session; outcome = outcome () }
                     out))
       | _ -> out)
-    Runs.empty panes
+    String_map.empty panes
 
 (* Claude Code only, and Waiting only: the probe stands in for the dismissal gap in the events table
    in hook.ml, which no other agent or status has. *)
 let dismissals conn prev states =
   let now = Unix.gettimeofday () in
-  Panes.fold
+  String_map.fold
     (fun pane ((_, s) : string * State.session) out ->
       match (s.agent, s.status) with
       | State.Claude, State.Waiting -> (
-          match Panes.find_opt pane prev with
+          match String_map.find_opt pane prev with
           | Some p when Float.(p.reported = s.ts && now - p.read < probe_interval) ->
-              Panes.add pane p out
+              String_map.add pane p out
           | _ when Float.(now - s.ts < prompt_grace) -> out
           | _ ->
               let dismissed =
@@ -97,9 +97,9 @@ let dismissals conn prev states =
                 | lines -> Screen.at_input_prompt lines
                 | exception Failure _ -> false
               in
-              Panes.add pane { reported = s.ts; read = now; dismissed } out)
+              String_map.add pane { reported = s.ts; read = now; dismissed } out)
       | _ -> out)
-    states Panes.empty
+    states String_map.empty
 
 let take ~opts conn prev =
   let current, focused =
@@ -132,7 +132,7 @@ let take ~opts conn prev =
               | Some sess -> (Procs.Int_map.add p.pane_pid sess ssh, pi)
               | None -> (ssh, pi)
             end
-            else if Procs.maybe_pi p.current_command && not (Panes.mem p.pane_id states) then begin
+            else if Procs.maybe_pi p.current_command && not (String_map.mem p.pane_id states) then begin
               if not (Procs.Int_set.mem p.pane_pid !scan.pi) then sweep ();
               ( ssh,
                 if Procs.Int_set.mem p.pane_pid !scan.pi then Procs.Int_set.add p.pane_pid pi
@@ -143,16 +143,16 @@ let take ~opts conn prev =
           panes
       in
       if not (List.is_empty panes) then
-        Reap.collect ~dir:opts.dir ~capture:Reap.capture_pane ~grace:opts.grace panes live
+        Reap.collect ~dir:opts.dir ~capture:Subrun.capture_pane ~grace:opts.grace panes live
           ~now:(Unix.gettimeofday ())
           { kill_window = Tmux.Exec.kill_window; kill_pane = Tmux.Exec.kill_pane };
       let probes = dismissals conn prev.probes states in
       let states =
-        Panes.fold
+        String_map.fold
           (fun pane p states ->
             if not p.dismissed then states
             else
-              Panes.update pane
+              String_map.update pane
                 (Option.map (fun (id, (s : State.session)) ->
                      (id, { s with status = Idle; ended = Some p.reported })))
                 states)
@@ -189,10 +189,10 @@ let same a b =
   && Bool.equal a.focused b.focused && Option.is_none a.err && Option.is_none b.err
   && Option.equal Float.equal a.wake b.wake
   && List.equal (fun x y -> Stdlib.( = ) (drawn x) (drawn y)) a.panes b.panes
-  && Panes.equal (fun x y -> Stdlib.( = ) (session x) (session y)) a.states b.states
+  && String_map.equal (fun x y -> Stdlib.( = ) (session x) (session y)) a.states b.states
   && Procs.Int_map.equal (fun x y -> Stdlib.( = ) x y) a.ssh b.ssh
   && Procs.Int_set.equal a.pi b.pi
-  && Runs.equal (fun x y -> Stdlib.( = ) x y) a.lingering b.lingering
+  && String_map.equal (fun x y -> Stdlib.( = ) x y) a.lingering b.lingering
 
 type span = Mosaic.span = { text : string; style : Style.t }
 type row = { spans : span list; pane_id : string option }
@@ -212,9 +212,9 @@ type model = {
   searching : bool;
   g_pend : bool;
   started : float;
-  seen : float Panes.t;
-  phases : phase Panes.t;
-  ssh_remote : Panes.key list;
+  seen : float String_map.t;
+  phases : phase String_map.t;
+  ssh_remote : String_map.key list;
   now : unit -> float;
   at : float;
   clock : State.reading;
@@ -236,8 +236,8 @@ let make ?conn ~now opts =
     searching = false;
     g_pend = false;
     started = at;
-    seen = Panes.empty;
-    phases = Panes.empty;
+    seen = String_map.empty;
+    phases = String_map.empty;
     ssh_remote = [];
     now;
     at;
@@ -279,7 +279,7 @@ let observe m prev running =
   | false, prev ->
       { running = false; since = m.at; drawn = Option.exists (fun p -> p.drawn) prev; held = None }
 
-let seen_at m pane = Option.value ~default:m.started (Panes.find_opt pane m.seen)
+let seen_at m pane = Option.value ~default:m.started (String_map.find_opt pane m.seen)
 
 let shell_outcome m (p : P.t) =
   match (P.shell p, p.last_exit, p.command_start) with
@@ -289,7 +289,7 @@ let shell_outcome m (p : P.t) =
 let track m =
   let m =
     if String.is_empty m.snap.active then m
-    else { m with seen = Panes.add m.snap.active m.at m.seen }
+    else { m with seen = String_map.add m.snap.active m.at m.seen }
   in
   if Option.is_some m.snap.err then m
   else
@@ -304,25 +304,25 @@ let track m =
               let running =
                 (match s with Running -> true | _ -> false) && not (interactive_pane m p)
               in
-              let prev = Panes.find_opt p.pane_id m.phases in
+              let prev = String_map.find_opt p.pane_id m.phases in
               let ph = observe m prev running in
               let held =
                 if running then Option.flat_map (fun p -> p.held) prev else shell_outcome m p
               in
-              { m with phases = Panes.add p.pane_id { ph with held } m.phases })
+              { m with phases = String_map.add p.pane_id { ph with held } m.phases })
         m m.snap.panes
     in
-    let keep _ = List.mem ~eq:String.equal in
+    let live_pane k = List.mem ~eq:String.equal k live in
     {
       m with
-      seen = Panes.filter (fun k _ -> keep () k live) m.seen;
-      phases = Panes.filter (fun k _ -> keep () k live) m.phases;
-      ssh_remote = List.filter (fun k -> keep () k live) m.ssh_remote;
+      seen = String_map.filter (fun k _ -> live_pane k) m.seen;
+      phases = String_map.filter (fun k _ -> live_pane k) m.phases;
+      ssh_remote = List.filter live_pane m.ssh_remote;
     }
 
 let stall_pending m =
   let now = m.now () in
-  Panes.exists
+  String_map.exists
     (fun _ (_, (s : State.session)) ->
       (match s.status with Running -> true | _ -> false)
       && not
@@ -332,14 +332,14 @@ let stall_pending m =
     m.snap.states
 
 let shell_pending m =
-  Panes.exists
+  String_map.exists
     (fun _ ph ->
       (ph.running && not ph.drawn)
       || ((not ph.running) && ph.drawn && Float.(m.at - ph.since < shell_run_hold)))
     m.phases
 
 let done_ m pane =
-  match Panes.find_opt pane m.snap.states with
+  match String_map.find_opt pane m.snap.states with
   | Some (_, { status = Idle; ended = Some ended; _ }) -> Float.(ended > seen_at m pane)
   | _ -> false
 
@@ -392,12 +392,12 @@ let shell_indicator m ph =
 let agent_title_of m (p : P.t) =
   if not (State.is_agent_pane m.snap.states ~pi:m.snap.pi p) then None
   else
-    match Panes.find_opt p.pane_id m.snap.states with
+    match String_map.find_opt p.pane_id m.snap.states with
     | Some (_, { title; _ }) when not (String.is_empty title) -> Some title
     | _ -> ( match State.agent_title p.title with "" -> Some "-" | t -> Some t)
 
 let lingering_label m (p : P.t) =
-  match Option.flat_map (fun run -> Runs.find_opt run m.snap.lingering) p.run with
+  match Option.flat_map (fun run -> String_map.find_opt run m.snap.lingering) p.run with
   | None -> None
   | Some l when Option.is_none p.dead_at ->
       Some (field (indicator (Status Running)) @ [ plain l.name ])
@@ -406,7 +406,7 @@ let lingering_label m (p : P.t) =
         (field (indicator (Gone l.outcome))
         @ [ span st_dim l.name ]
         @ Option.map_or ~default:[]
-            (fun o -> [ plain "  "; span st_dim (Reap.string_of_result o) ])
+            (fun o -> [ plain "  "; span st_dim (Subrun.string_of_result o) ])
             l.outcome)
 
 let running_command m (p : P.t) =
@@ -434,12 +434,12 @@ let pane_label m (p : P.t) =
             | Unintegrated -> None
             | Idle | Running ->
                 if interactive_pane m p then None
-                else Option.flat_map (shell_indicator m) (Panes.find_opt p.pane_id m.phases)
+                else Option.flat_map (shell_indicator m) (String_map.find_opt p.pane_id m.phases)
           in
           field (Option.flat_map indicator ind) @ text)
   | Some title ->
       let ind, activity =
-        match Panes.find_opt p.pane_id m.snap.states with
+        match String_map.find_opt p.pane_id m.snap.states with
         | None -> (Unknown, "")
         | Some (_, s) ->
             ( (if State.stalled_since ~threshold:m.opts.threshold ~wake:m.snap.wake ~now:m.at s then
@@ -461,11 +461,12 @@ let order_windows_by_tree windows states lingering =
       (fun acc w ->
         List.fold_left
           (fun acc (p : P.t) ->
-            match Panes.find_opt p.pane_id states with
-            | Some (id, _) when not (String.is_empty id) -> Runs.add id (window_id w, p.pane_id) acc
+            match String_map.find_opt p.pane_id states with
+            | Some (id, _) when not (String.is_empty id) ->
+                String_map.add id (window_id w, p.pane_id) acc
             | _ -> acc)
           acc w)
-      Runs.empty windows
+      String_map.empty windows
   in
   let parent_of_window (w : P.t list) =
     match
@@ -474,7 +475,7 @@ let order_windows_by_tree windows states lingering =
           Option.flat_map
             (fun (_, (s : State.session)) ->
               Option.map (fun (pa : State.parent) -> pa.session) s.parent)
-            (Panes.find_opt p.pane_id states))
+            (String_map.find_opt p.pane_id states))
         w
     with
     | Some parent -> parent
@@ -484,16 +485,18 @@ let order_windows_by_tree windows states lingering =
              (fun (p : P.t) ->
                Option.map
                  (fun l -> l.parent)
-                 (Option.flat_map (fun r -> Runs.find_opt r lingering) p.run))
+                 (Option.flat_map (fun r -> String_map.find_opt r lingering) p.run))
              w)
   in
-  let parent w = Option.map_or ~default:"" fst (Runs.find_opt (parent_of_window w) by_session) in
+  let parent w =
+    Option.map_or ~default:"" fst (String_map.find_opt (parent_of_window w) by_session)
+  in
   let ordered = Tree.order ~id:window_id ~parent windows in
   List.fold_left
     (fun (placed, out) w ->
       let anchor =
         if List.mem ~eq:String.equal (parent w) placed then
-          Option.map snd (Runs.find_opt (parent_of_window w) by_session)
+          Option.map snd (String_map.find_opt (parent_of_window w) by_session)
         else None
       in
       (window_id w :: placed, out @ [ { panes = w; anchor } ]))
@@ -641,7 +644,7 @@ let next_attention m delta =
     match m.rows.(i).pane_id with
     | None -> false
     | Some pane ->
-        (match Panes.find_opt pane m.snap.states with
+        (match String_map.find_opt pane m.snap.states with
           | Some (_, { status = Waiting; _ }) -> true
           | _ -> false)
         || done_ m pane
@@ -804,20 +807,20 @@ let measure = Matrix_text.measure ~width_method:`Unicode ~tab_width:2
    a flex row of texts would shrink its children instead. The bottom line is always reserved, for
    the search prompt or an error, so the frame never changes height. *)
 let truncate width spans =
-  let rec go x = function
-    | [] -> []
+  let rec go room = function
+    | [] -> [ plain "…" ]
     | s :: rest ->
         let w = measure s.text in
-        if x + w <= width then s :: go (x + w) rest
+        if w <= room then s :: go (room - w) rest
         else
           let cut =
-            (Matrix_text.find_wrap_pos ~width_method:`Unicode ~tab_width:2 s.text
-               ~max_columns:(width - 1 - x))
+            (Matrix_text.find_wrap_pos ~width_method:`Unicode ~tab_width:2 s.text ~max_columns:room)
               .byte_offset
           in
           [ { s with text = String.sub s.text 0 cut }; plain "…" ]
   in
-  if width <= 0 then spans else go 0 spans
+  if width <= 0 || List.fold_left (fun x s -> x + measure s.text) 0 spans <= width then spans
+  else go (width - 1) spans
 
 let view m =
   let h = view_rows m in
@@ -878,7 +881,7 @@ let run ~interval ~client =
           {
             interval;
             client;
-            standalone = Option.is_none side || String.is_empty (Option.get_exn_or "side" side);
+            standalone = Option.map_or ~default:true String.is_empty side;
             dir = State.dir ();
             threshold = State.stall_threshold ();
             grace = Reap.grace ();

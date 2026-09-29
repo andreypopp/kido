@@ -40,7 +40,7 @@ type session = {
 }
 [@@deriving yojson { strict = false }]
 
-module Panes = Map.Make (String)
+module String_map = Map.Make (String)
 
 let dir () =
   match (Sys.getenv_opt "KIDO_STATE_DIR", Sys.getenv_opt "XDG_STATE_HOME") with
@@ -96,13 +96,13 @@ let by_pane sessions =
   in
   List.fold_left
     (fun m ((_, s) as e) ->
-      Panes.update s.pane
+      String_map.update s.pane
         (function Some (_, prev) as kept when not (beats s prev) -> kept | _ -> Some e)
         m)
-    Panes.empty sessions
+    String_map.empty sessions
 
 let is_agent_pane states ~pi (p : Tmux.Pane.t) =
-  Panes.mem p.pane_id states
+  String_map.mem p.pane_id states
   || String.equal p.current_command "claude"
   || Procs.Int_set.mem p.pane_pid pi
 

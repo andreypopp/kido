@@ -1,4 +1,3 @@
-let fail fmt = Printf.ksprintf failwith fmt
 let usage = "usage: kido runs [--json] [<run-id>]"
 
 let run_outcome_usage =
@@ -37,7 +36,7 @@ let list ~runs ~json ~now =
              let outcome, duration =
                match outcome with
                | None -> ("running", Some now)
-               | Some o -> (Reap.string_of_result o.result, o.at)
+               | Some o -> (Subrun.string_of_result o.result, o.at)
              in
              [
                Subrun.string_of_id m.id;
@@ -54,7 +53,9 @@ let list ~runs ~json ~now =
 
 let show ~runs ~json id_str =
   let id = Result.get_or_failwith (Subrun.parse_id id_str) in
-  let info = match load ~runs id with Some i -> i | None -> fail "run %S: no such run" id_str in
+  let info =
+    match load ~runs id with Some i -> i | None -> Cli.failf "run %S: no such run" id_str
+  in
   let m = info.meta in
   let task = Option.get_or ~default:"" (Subrun.read_task ~dir:runs id) in
   let screen = Subrun.read_screen ~dir:runs id in
@@ -83,7 +84,7 @@ let show ~runs ~json id_str =
     (match info.outcome with
     | None -> line "outcome" "running"
     | Some o ->
-        line "outcome" (Reap.string_of_result o.result);
+        line "outcome" (Subrun.string_of_result o.result);
         Option.iter (fun at -> line "ended" (seconds at)) o.at;
         if not (String.is_empty o.text) then line "detail" o.text);
     if Subrun.has_report ~dir:runs id then line "report" (Subrun.report_path ~dir:runs id);
@@ -98,7 +99,7 @@ let runs ~dir ~json args =
   (match args with
   | [] -> list ~runs ~json ~now:(Timestamp.now ())
   | [ id ] -> show ~runs ~json id
-  | _ :: extra :: _ -> fail "unknown argument %S\n%s" extra usage);
+  | _ :: extra :: _ -> Cli.failf "unknown argument %S\n%s" extra usage);
   0
 
 (* pi prints this and exits 0 when it cannot resolve a provider for the model it was given: the one
@@ -115,7 +116,7 @@ let run_outcome ~dir ~capture ~result ~text ~unreported id_str =
     match result with
     | "completed" -> Completed
     | "failed" -> Failed
-    | _ -> fail "--result must be \"completed\" or \"failed\"\n%s" run_outcome_usage
+    | _ -> Cli.failf "--result must be \"completed\" or \"failed\"\n%s" run_outcome_usage
   in
   let id = Result.get_or_failwith (Subrun.parse_id id_str) in
   let runs = Filename.concat dir "runs" in
@@ -124,7 +125,7 @@ let run_outcome ~dir ~capture ~result ~text ~unreported id_str =
     match (meta, result) with
     | Some m, Failed ->
         Option.map_or ~default:text (refine_no_turn_detail text)
-          (Reap.capture_own_screen ~dir ~capture id m.pane)
+          (Subrun.capture_own_screen ~dir:runs ~capture id m.pane)
     | _ -> text
   in
   let outcome : Subrun.outcome = { result; text; at = Some (Timestamp.now ()) } in
@@ -138,5 +139,5 @@ let run_outcome ~dir ~capture ~result ~text ~unreported id_str =
         (Reap.record_ending ~dir meta outcome)
   | _ ->
       if not (Subrun.record_outcome ~dir:runs id outcome) then
-        fail "run %s already has an outcome, or is gone" id_str);
+        Cli.failf "run %s already has an outcome, or is gone" id_str);
   0

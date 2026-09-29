@@ -21,7 +21,7 @@ val resolve :
   string * State.session
 
 val deliver :
-  states:(string * State.session) State.Panes.t ->
+  states:(string * State.session) State.String_map.t ->
   panes:Tmux.Pane.t list ->
   self:string ->
   paste:(string -> string -> unit) ->

@@ -4,7 +4,10 @@ val candidates : string -> string list
 val resolve_binary : kido_tmux:string option -> path:string -> string -> string
 val binary : string Lazy.t
 val write_all : Unix.file_descr -> string -> unit
-val spawn : string list -> (int * Unix.file_descr * Unix.file_descr, string) result
+
+type process = { pid : int; stdin : Unix.file_descr; stdout : Unix.file_descr }
+
+val spawn : string list -> (process, string) result
 val exec : ?stdin:string -> string list -> (string, string) result
 val run : ?stdin:string -> string list -> string
 val global_option : string -> string

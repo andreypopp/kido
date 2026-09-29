@@ -3,7 +3,7 @@ open Tmux
 type window = { session : string; index : int; layout : string; n : int }
 
 let pane_command (p : Pane.t) states ~pi =
-  match State.Panes.find_opt p.pane_id states with
+  match State.String_map.find_opt p.pane_id states with
   | Some (id, ({ agent = Pi; _ } : State.session)) ->
       if String.is_empty id then "pi" else "pi --session " ^ id
   | Some (id, { agent = Claude; _ }) ->

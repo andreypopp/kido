@@ -6,7 +6,7 @@ let command_argv = function [] -> [] | [ line ] -> [ "bash"; "-c"; line ] | argv
 let derived_name args =
   let first =
     match args with
-    | a :: _ -> ( match Spawn_subagent.fields a with w :: _ -> Filename.basename w | [] -> "")
+    | a :: _ -> ( match Procs.split_fields a with (w :: _) :: _ -> Filename.basename w | _ -> "")
     | [] -> ""
   in
   let name = String.filter (fun c -> Char.Ascii.is_alphanum c || String.contains "-_." c) first in
@@ -18,8 +18,8 @@ let async_bash ~dir ~self ~exe ~panes ~tmux ~name ~stream args =
   if List.is_empty argv then failwith ("no command given\n" ^ usage);
   let name = if String.is_empty name then derived_name args else name in
   Spawn_subagent.check_window_name name;
-  let pane = Spawn_subagent.caller_pane (Lazy.force panes) self in
-  let own = State.Panes.find_opt pane.pane_id (State.by_pane (State.load_live ~dir)) in
+  let pane = List_agents.caller_pane (Lazy.force panes) self in
+  let own = State.String_map.find_opt pane.pane_id (State.by_pane (State.load_live ~dir)) in
   let runs = Filename.concat dir "runs" in
   let id = Subrun.new_id () in
   Subrun.create ~dir:runs id (String.concat " " args);
@@ -44,7 +44,6 @@ let async_bash ~dir ~self ~exe ~panes ~tmux ~name ~stream args =
   let parent =
     Option.map (fun (session, (s : State.session)) -> State.{ pid = s.pid; session }) own
   in
-  (* new-window gives the wrapper the server's environment, and it must find this run. *)
   let env =
     Spawn_subagent.run_env ~runs id parent meta.depth ~keep_alive:false
     @ [ "KIDO_STATE_DIR=" ^ dir ]

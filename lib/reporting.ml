@@ -90,9 +90,7 @@ let agent_status ~agent ~session:id ~status ~title ~inbox ~activity ~parent_pid 
     ^ " [--title TITLE] [--inbox PATH] [--activity TEXT] [--parent-pid PID] [--parent-session ID] \
        [--depth N] [--model NAME] [--ended] [--remove]"
   in
-  (match args with
-  | arg :: _ -> failwith (Printf.sprintf "unknown argument %S\n%s" arg usage)
-  | [] -> ());
+  (match args with arg :: _ -> Cli.failf "unknown argument %S\n%s" arg usage | [] -> ());
   if String.is_empty agent || String.is_empty id then
     failwith ("--agent and --session are required\n" ^ usage);
   let dir = State.dir () in
@@ -100,7 +98,7 @@ let agent_status ~agent ~session:id ~status ~title ~inbox ~activity ~parent_pid 
     if remove then State.remove ~dir id ~pid:(Unix.getppid ())
     else
       match List.assoc_opt ~eq:String.equal status State.statuses with
-      | None -> failwith (Printf.sprintf "unknown status %S\n%s" status usage)
+      | None -> Cli.failf "unknown status %S\n%s" status usage
       | Some status ->
           record ~dir id
             {

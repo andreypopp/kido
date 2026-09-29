@@ -1,5 +1,4 @@
 let usage = "usage: kido async-run [--run-id ID] [--stream]"
-let fail fmt = Printf.ksprintf failwith fmt
 let signal_grace = 2.
 
 (* Go's names, which the outcome text has always carried. *)
@@ -67,7 +66,7 @@ let async_run ~dir ~knobs ~run_id ~stream args =
   (match args with
   | [] -> ()
   | a :: _ ->
-      fail
+      Cli.failf
         "unknown argument %S; the command comes from the run's own record, not the command line\n%s"
         a usage);
   let id =
@@ -79,12 +78,12 @@ let async_run ~dir ~knobs ~run_id ~stream args =
   let meta =
     match Subrun.read_meta ~dir:runs id with
     | Some m -> m
-    | None -> fail "run %s has no meta" run_id
+    | None -> Cli.failf "run %s has no meta" run_id
   in
   let argv =
     match Subrun.read_command ~dir:runs id with
     | Some (_ :: _ as argv) -> argv
-    | _ -> fail "run %s has no command" run_id
+    | _ -> Cli.failf "run %s has no command" run_id
   in
   (* Armed before the output file exists, and so before the spawn: a signal arriving from then on is
      still ours to report. *)
