@@ -29,8 +29,8 @@ func (h *harness) windowID(paneID string) string {
 }
 
 // subagentWindow opens a window in session that looks to kido exactly
-// like one `kido spawn_subagent` created: marked with @kido_subagent and
-// @kido_subagent_pane, keeping its pane after the command exits
+// like one `kido spawn_subagent` created: marked with @kido_run on the
+// run's own pane, keeping its pane after the command exits
 // (remain-on-exit, which tmux.NewWindow sets for the same reason), and
 // running a command that reports itself as a subagent through `kido
 // agent-status` before becoming a long sleep.
@@ -48,8 +48,7 @@ func (h *harness) subagentWindow(session, name, sessionID, parentSession string)
 	h.waitPaneCommand(paneID, "sleep")
 	windowID = h.windowID(paneID)
 	h.in("set-window-option", "-t", windowID, "remain-on-exit", "on")
-	h.in("set-option", "-w", "-t", windowID, "@kido_subagent", "parent="+parentSession+" depth=1")
-	h.in("set-option", "-p", "-t", paneID, "@kido_subagent_pane", sessionID)
+	h.in("set-option", "-p", "-t", paneID, "@kido_run", sessionID)
 	return paneID, windowID
 }
 
@@ -144,7 +143,7 @@ func (h *harness) stays(cond func() bool, why string) {
 // side effect of reading it, so a sweep that needed that record lost it
 // within a tick of the subagent dying - which is why this test waits for
 // the record to be gone *first* and only then for the window to close.
-// Reaping from the @kido_subagent mark and #{pane_dead} instead needs no
+// Reaping from the @kido_run mark and #{pane_dead} instead needs no
 // record at all, and the assertions below pass in that order or not at
 // all.
 func TestSidebarReapsFinishedSubagentWindow(t *testing.T) {
@@ -211,8 +210,7 @@ func TestReapNeverClosesASessionsLastWindow(t *testing.T) {
 	paneID := h.in("list-panes", "-t", "solo", "-F", "#{pane_id}")
 	windowID := h.windowID(paneID)
 	h.in("set-window-option", "-t", windowID, "remain-on-exit", "on")
-	h.in("set-option", "-w", "-t", windowID, "@kido_subagent", "parent=root-e2e depth=1")
-	h.in("set-option", "-p", "-t", paneID, "@kido_subagent_pane", "solo-e2e")
+	h.in("set-option", "-p", "-t", paneID, "@kido_run", "solo-e2e")
 	h.killPane(paneID)
 
 	h.runKido("alpha", "last.out", "reap")
@@ -272,19 +270,6 @@ func (h *harness) paneExists(paneID string) bool {
 	return false
 }
 
-// windowMark is the @kido_subagent window option's value, empty for a
-// window that carries none. Straight through h.tmux: show-options for an
-// option that is not set exits nonzero, which h.in would fail the test
-// over, and "not set" is exactly what half of this asks about.
-func (h *harness) windowMark(windowID string) string {
-	h.t.Helper()
-	out, err := h.tmux(h.inner, "show-options", "-w", "-t", windowID, "@kido_subagent")
-	if err != nil {
-		return ""
-	}
-	return out
-}
-
 // TestSplitPaneSurvivesAFinishedRunAndTheWindowGoesPlain is the incident
 // the unit of collection changed for, in the order the user hit it: they
 // split a shell into a subagent's window and the run in it finished. The
@@ -338,11 +323,10 @@ func TestSplitPaneSurvivesAFinishedRunAndTheWindowGoesPlain(t *testing.T) {
 		t.Fatalf("the user's split %s went with the run's pane", splitPaneID)
 	}
 
-	// With its run collected the window is nobody's subagent: unmarked, so
-	// the tree stops nesting it, switch-window stops skipping it and no
-	// later sweep considers it.
-	h.waitFor(func() bool { return h.windowMark(runWindowID) == "" }, settle,
-		msgf("window %s to be unmarked, is %q", runWindowID, h.windowMark(runWindowID)))
+	// @kido_run lived on the run's own pane alone, so with that pane
+	// already gone (waited for above) the window carries no run pane at
+	// all: the tree stops nesting it, switch-window stops skipping it and
+	// no later sweep considers it.
 	// And the sidebar draws it as the plain window it now is: the session,
 	// the client's own shell and the user's split, with no row left for the
 	// run - neither its name nor the outcome its label carried, and no
@@ -419,7 +403,7 @@ func TestSidebarSurvivesAParentPaneCollision(t *testing.T) {
 	h.waitPaneCommand(childPane, "sleep")
 	windowID := h.windowID(childPane)
 	h.in("set-window-option", "-t", windowID, "remain-on-exit", "on")
-	h.in("set-option", "-w", "-t", windowID, "@kido_subagent", "parent=parent-collision-e2e depth=1")
+	h.in("set-option", "-p", "-t", childPane, "@kido_run", "child-collision-e2e")
 
 	// The collision: an intruder claims the parent's own pane with a
 	// newer timestamp, the same way a `pi --print` inheriting TMUX_PANE

@@ -19,9 +19,8 @@ import (
 // pasted into the pane otherwise. The scope is the caller's window,
 // widening to the session only when the window has no top-level agent
 // pane at all; --window never widens. A candidate pane is any pane
-// state.IsAgentPane accepts whose window carries no @kido_subagent mark
-// (tmux.Pane.Subagent) - a subagent is never a target, spawned by kido
-// or not.
+// state.IsAgentPane accepts whose window has no run pane (tmux.RunPane)
+// - a subagent is never a target, spawned by kido or not.
 //
 // Returns the process exit code, printing any error to stderr itself.
 func prompt(args []string, stdin io.Reader) int {
@@ -140,7 +139,7 @@ func inScope(p tmux.Pane, self tmux.Pane, wholeSession bool) bool {
 }
 
 // agentPanesIn returns the top-level agent panes (per state.IsAgentPane,
-// excluding any pane whose window carries the @kido_subagent mark) in
+// excluding any pane whose window has a run pane, tmux.RunPane) in
 // self's session, narrowed to self's window unless wholeSession.
 func agentPanesIn(panes []tmux.Pane, states map[string]state.Session, pi map[int]bool, self tmux.Pane, wholeSession bool) []tmux.Pane {
 	var out []tmux.Pane
@@ -148,7 +147,7 @@ func agentPanesIn(panes []tmux.Pane, states map[string]state.Session, pi map[int
 		if !inScope(p, self, wholeSession) {
 			continue
 		}
-		if p.Subagent != "" {
+		if _, ok := tmux.RunPane(panes, p.WindowID); ok {
 			continue
 		}
 		if state.IsAgentPane(states, pi, p) {

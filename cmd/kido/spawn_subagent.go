@@ -30,13 +30,12 @@ const maxTaskBytes = 1024 * 1024
 // failure visible to the model instead of quietly mangling the name.
 const maxWindowNameLen = 64
 
-// newWindow and markSubagent are tmux.NewWindow and tmux.MarkSubagent,
-// indirected so tests can run spawnCmd without a tmux server.
+// newWindow and markRun are tmux.NewWindow and tmux.MarkRun, indirected
+// so tests can run spawnCmd without a tmux server.
 var (
-	newWindow        = tmux.NewWindow
-	markSubagent     = tmux.MarkSubagent
-	markSubagentPane = tmux.MarkSubagentPane
-	windowExists     = tmux.WindowExists
+	newWindow    = tmux.NewWindow
+	markRun      = tmux.MarkRun
+	windowExists = tmux.WindowExists
 )
 
 func spawnUsage() string {
@@ -243,9 +242,9 @@ func runEnv(runID string, parentPID int, parentSession string, depth int, keepAl
 
 // createRunWindow is the tail both a fresh spawn and a resume end in:
 // create the detached window in sessionID, stamp what tmux answered into
-// meta, mark the window as a subagent's and print what was created. meta
-// arrives fully assembled - its Name and Cwd are what the window is made
-// with - and the caller is finished once this returns.
+// meta, mark the run's own pane and print what was created. meta arrives
+// fully assembled - its Name and Cwd are what the window is made with -
+// and the caller is finished once this returns.
 //
 // The mark is the only thing that makes the window reapable: the sweep,
 // the sidebar's tree and the window-cycling keys all key off it, so an
@@ -269,11 +268,11 @@ func createRunWindow(meta subrun.Meta, sessionID string, env, command []string) 
 		subrun.RecordOutcome(meta.ID, subrun.Outcome{Result: subrun.Failed, Text: err.Error(), At: time.Now()}) //nolint:errcheck // best effort
 		return err
 	}
-	meta.Window, meta.Pane, meta.PID = windowID, paneID, panePID
+	meta.Pane, meta.PID = paneID, panePID
 	if err := subrun.WriteMeta(meta); err != nil {
 		return err
 	}
-	if err := markSubagent(windowID, tmux.SubagentMark(meta.ID, meta.ParentSession, meta.Depth)); err != nil {
+	if err := markRun(paneID, meta.ID); err != nil {
 		// A window that has already closed cannot be marked and does not
 		// need to be: the mark is what makes a window reapable, and there
 		// is nothing left to reap. For a bash run that is an ordinary
@@ -295,11 +294,6 @@ func createRunWindow(meta subrun.Meta, sessionID string, env, command []string) 
 		subrun.RecordOutcome(meta.ID, subrun.Outcome{Result: subrun.Failed, Text: err.Error(), At: time.Now()}) //nolint:errcheck // best effort
 		return err
 	}
-	// Best effort: a failure here only costs this run the pane-level
-	// disambiguation lingeringLabel uses to tell a later split pane apart
-	// from the run's own, and it falls back to today's window-wide
-	// behaviour for this window rather than losing the run itself.
-	markSubagentPane(paneID, meta.ID) //nolint:errcheck // best effort, see above
 	printCreated(meta, windowID, paneID)
 	return nil
 }
@@ -336,7 +330,7 @@ func liveSession(sessions []state.Session, session string) bool {
 }
 
 // spawnResume implements `kido spawn_subagent --resume RUN_ID`: it creates a
-// detached window through the identical tmux.NewWindow / markSubagent
+// detached window through the identical tmux.NewWindow / markRun
 // path a fresh spawn uses, but launches `pi --session RUN_ID` instead of
 // minting a new one, and continues run id's existing run record instead
 // of creating a second one - its task, its history and its id stay

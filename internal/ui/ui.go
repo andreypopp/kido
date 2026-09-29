@@ -68,7 +68,7 @@ type snapshot struct {
 	probes map[string]probe
 
 	// lingering carries the name and outcome of a subagent window whose
-	// state record is already gone but whose @kido_subagent mark still
+	// state record is already gone but whose run pane (@kido_run) still
 	// names its run - the sweep's ~30s read window (docs/design.md,
 	// "Window lifecycle"). Both live in files under internal/subrun, not
 	// in tmux or the state directory, so they must be read here and
@@ -85,12 +85,9 @@ type snapshot struct {
 // lingering is one lingering subagent window's label, keyed by run id.
 type lingering struct {
 	name      string
+	parent    string
 	outcome   subrun.Result
 	outcomeOK bool // whether an outcome has been recorded at all
-	// pane is the id of the one pane that carries tmux.SubagentPaneOption
-	// for this run. lingeringLabel draws the run's label only on this
-	// pane.
-	pane string
 }
 
 // lingeringSubagents reads the name and outcome of every subagent window
@@ -116,24 +113,12 @@ func lingeringSubagents(panes []tmux.Pane, states map[string]state.Session, prev
 		}
 		out[runID] = l
 	}
-	// paneOf finds each run's own pane before the main loop below can need
-	// it: SubagentPane may sit on a pane later in this slice than the one
-	// that first creates the run's entry.
-	paneOf := map[string]string{}
 	for _, p := range panes {
-		if p.SubagentPane != "" {
-			paneOf[p.SubagentPane] = p.PaneID
-		}
-	}
-	for _, p := range panes {
-		if p.Subagent == "" {
+		runID := p.Run
+		if runID == "" {
 			continue
 		}
 		if _, reported := states[p.PaneID]; reported {
-			continue
-		}
-		runID := tmux.SubagentRunID(p.Subagent)
-		if runID == "" {
 			continue
 		}
 		if _, ok := out[runID]; ok {
@@ -145,17 +130,6 @@ func lingeringSubagents(panes []tmux.Pane, states map[string]state.Session, prev
 					l.outcome, l.outcomeOK = o.Result, true
 				}
 			}
-			if l.pane == "" {
-				// The pane option is a separate, later tmux command than the
-				// window option (createRunWindow issues them as two distinct
-				// execs), so a tick that reacts to the window's own
-				// %window-add notification can poll in between them and cache
-				// an entry before its pane is known. Re-derive it from this
-				// tick's panes until it is, the same way outcomeOK is
-				// rechecked above, rather than freezing "" in for the run's
-				// whole life.
-				l.pane = paneOf[runID]
-			}
 			keep(runID, l)
 			continue
 		}
@@ -166,7 +140,7 @@ func lingeringSubagents(panes []tmux.Pane, states map[string]state.Session, prev
 			// pane command the way it always has.
 			continue
 		}
-		l := lingering{name: meta.Name, pane: paneOf[runID]}
+		l := lingering{name: meta.Name, parent: meta.ParentSession}
 		if o, ok, err := subrun.ReadOutcome(runID); err == nil && ok {
 			l.outcome, l.outcomeOK = o.Result, true
 		}
@@ -462,9 +436,8 @@ func listPanes(conn *tmux.Conn) ([]tmux.Pane, error) {
 // indirected so a test can watch what the reaper closes without a tmux
 // server.
 var (
-	killWindow     = tmux.KillWindow
-	killPane       = tmux.KillPane
-	unmarkSubagent = tmux.UnmarkSubagent
+	killWindow = tmux.KillWindow
+	killPane   = tmux.KillPane
 )
 
 // NotifyRunEnded is told about a bash run whose ending this sidebar's
@@ -490,9 +463,9 @@ func reapSubagentWindows(panes []tmux.Pane, sessions []state.Session) {
 		return
 	}
 	closing, notices := reap.Sweep(panes, sessions, time.Now())
-	ops := reap.Ops{KillWindow: killWindow, KillPane: killPane, Unmark: unmarkSubagent}
+	ops := reap.Ops{KillWindow: killWindow, KillPane: killPane}
 	for _, c := range closing {
-		ops.Release(panes, c) //nolint:errcheck // best effort; another sweep, or the linger helper, may have got there first
+		ops.Release(c) //nolint:errcheck // best effort; another sweep, or the linger helper, may have got there first
 	}
 	for _, n := range notices {
 		NotifyRunEnded(n)
@@ -1375,17 +1348,11 @@ func (m *model) interactivePane(p tmux.Pane) bool {
 // actually says "dead", since a dim row inside an already-dim nested
 // block does not otherwise stand out at a glance.
 func (m *model) lingeringLabel(p tmux.Pane) (string, bool) {
-	runID := tmux.SubagentRunID(p.Subagent)
-	if runID == "" {
+	if p.Run == "" {
 		return "", false
 	}
-	l, ok := m.snap.lingering[runID]
+	l, ok := m.snap.lingering[p.Run]
 	if !ok {
-		return "", false
-	}
-	if l.pane != p.PaneID {
-		// A pane in the run's window that is not the run's own - a split
-		// the user made later - draws as the ordinary pane it is.
 		return "", false
 	}
 	if !p.Dead {
@@ -1482,31 +1449,6 @@ func (m *model) paneLabel(p tmux.Pane) string {
 	return label
 }
 
-// windowParent is the parent session named by the first record in w that
-// names one, or "" for a window whose records are all root sessions -
-// or which has no record at all, the case orderWindowsByTree falls back
-// to the window mark for.
-func windowParent(w []tmux.Pane, states map[string]state.Session) string {
-	for _, p := range w {
-		if s, ok := states[p.PaneID]; ok && s.ParentSession != "" {
-			return s.ParentSession
-		}
-	}
-	return ""
-}
-
-// markParentOf is the parent session carried in w's window mark
-// (tmux.SubagentOption), read by orderWindowsByTree only once windowAgent
-// finds no record at all: it is the fallback, not the source of truth.
-func markParentOf(w []tmux.Pane) string {
-	for _, p := range w {
-		if id := tmux.SubagentParentSession(p.Subagent); id != "" {
-			return id
-		}
-	}
-	return ""
-}
-
 // windowPlacement is where one window sits in the sidebar tree: its
 // panes and the pane row it hangs off - the pane of the agent that
 // spawned it, or "" for a window drawn as a root. There is no depth:
@@ -1528,13 +1470,13 @@ type windowPlacement struct {
 // The parent normally comes from the agent's own state record
 // (ParentSession); a window whose record names none - a finished
 // subagent lingering for the sweep, its record removed - falls back to
-// its window mark instead, so it keeps its place in the tree for the
-// whole linger rather than un-nesting to the left margin the instant its
-// record is removed. See markParentOf. A record that does name a parent
-// wins over the mark even when the two disagree: a live subagent can
-// move or be reparented (kido spawn_subagent --resume), and the mark is
-// written once at window creation and never rewritten to match.
-func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) []windowPlacement {
+// the run's own meta file instead, so it keeps its place in the tree for
+// the whole linger rather than un-nesting to the left margin the instant
+// its record is removed. A record that does name a parent wins over the
+// meta even when the two disagree: a live subagent can move or be
+// reparented (kido spawn_subagent --resume), and the meta is written
+// once at spawn and not rewritten to match every move.
+func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session, lingering map[string]lingering) []windowPlacement {
 	type loc struct{ windowID, paneID string }
 	bySession := map[string]loc{}
 	for _, w := range windows {
@@ -1546,9 +1488,20 @@ func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) 
 	}
 	parentByWindow := make(map[string]string, len(windows))
 	for _, w := range windows {
-		parent := windowParent(w, states)
+		parent := ""
+		for _, p := range w {
+			if s, ok := states[p.PaneID]; ok && s.ParentSession != "" {
+				parent = s.ParentSession
+				break
+			}
+		}
 		if parent == "" {
-			parent = markParentOf(w)
+			for _, p := range w {
+				if p.Run != "" {
+					parent = lingering[p.Run].parent
+					break
+				}
+			}
 		}
 		parentByWindow[w[0].WindowID] = parent
 	}
@@ -1565,20 +1518,15 @@ func orderWindowsByTree(windows [][]tmux.Pane, states map[string]state.Session) 
 	// already placed is a root, anchor and all: the anchor is only ever
 	// an edge the walk itself found.
 	out := make([]windowPlacement, 0, len(ordered))
-	// depth is not drawn, but placed-ness is: a window is a child only if
-	// its parent was itself placed by this walk, which is what the map's
-	// presence records. The number is how a later window learns its own.
-	depth := make(map[string]int, len(ordered))
+	// A window is a child only if its parent was itself placed by this
+	// walk, which is what the map's presence records.
+	placed := make(map[string]bool, len(ordered))
 	for _, w := range ordered {
 		pl := windowPlacement{panes: w}
-		d, placed := depth[parentOf(w)]
-		if placed {
+		if placed[parentOf(w)] {
 			pl.anchor = bySession[parentByWindow[w[0].WindowID]].paneID
-			d++
-		} else {
-			d = 0
 		}
-		depth[w[0].WindowID] = d
+		placed[w[0].WindowID] = true
 		out = append(out, pl)
 	}
 	return out
@@ -1762,7 +1710,7 @@ func (m *model) rebuild() {
 		}
 		m.rows = append(m.rows, row{text: name})
 
-		m.appendWindows(orderWindowsByTree(s.Windows, m.snap.states))
+		m.appendWindows(orderWindowsByTree(s.Windows, m.snap.states, m.snap.lingering))
 	}
 
 	if m.cursor = m.indexOf(prev); m.cursor < 0 {

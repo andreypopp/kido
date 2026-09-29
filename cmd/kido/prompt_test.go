@@ -25,17 +25,17 @@ func TestPromptUnknownArg(t *testing.T) {
 	}
 }
 
-// TestPromptAgentPanesInExcludesSubagentWindows checks that a pane whose window
-// carries the @kido_subagent mark is never a candidate, even though it
-// looks like an agent pane otherwise (CurrentCommand "claude"): a
-// subagent is never a target for kido prompt. The negative control is an
-// unmarked second agent pane, which must still make two candidates.
+// TestPromptAgentPanesInExcludesSubagentWindows checks that a pane whose
+// window has a run pane is never a candidate, even though it looks like
+// an agent pane otherwise (CurrentCommand "claude"): a subagent is never
+// a target for kido prompt. The negative control is a second agent pane
+// with no run pane in its window, which must still make two candidates.
 func TestPromptAgentPanesInExcludesSubagentWindows(t *testing.T) {
-	self := tmux.Pane{PaneID: "%1", SessionName: "alpha", WindowIndex: 0}
+	self := tmux.Pane{PaneID: "%1", SessionName: "alpha", WindowID: "@0", WindowIndex: 0}
 	panes := []tmux.Pane{
 		self,
-		{PaneID: "%2", SessionName: "alpha", WindowIndex: 1, CurrentCommand: "claude"},
-		{PaneID: "%3", SessionName: "alpha", WindowIndex: 2, CurrentCommand: "claude", Subagent: "run=abc"},
+		{PaneID: "%2", SessionName: "alpha", WindowID: "@1", WindowIndex: 1, CurrentCommand: "claude"},
+		{PaneID: "%3", SessionName: "alpha", WindowID: "@2", WindowIndex: 2, CurrentCommand: "claude", Run: "run-abc"},
 	}
 
 	got := agentPanesIn(panes, nil, nil, self, true)
@@ -43,8 +43,8 @@ func TestPromptAgentPanesInExcludesSubagentWindows(t *testing.T) {
 		t.Fatalf("agentPanesIn = %v, want only %%2 (the subagent window's pane must be excluded)", got)
 	}
 
-	// Negative control: without the mark, both are candidates.
-	panes[2].Subagent = ""
+	// Negative control: with no run pane, both are candidates.
+	panes[2].Run = ""
 	got = agentPanesIn(panes, nil, nil, self, true)
 	if len(got) != 2 {
 		t.Fatalf("agentPanesIn (unmarked) = %v, want both %%2 and %%3", got)

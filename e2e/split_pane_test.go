@@ -42,9 +42,9 @@ func countRows(lines []string, sub string) int {
 // TestSidebarShowsASplitBashRunPaneAsAnOrdinaryShell is the live bug this
 // change fixes, end to end: a user splits a running async_bash run's
 // window, and the split pane must draw as the plain shell it is - not as
-// a second copy of the run, which is what a marked window with no
-// pane-scoped option to tell its own pane apart from the split drew
-// before createRunWindow started setting @kido_subagent_pane.
+// a second copy of the run: @kido_run is pane-scoped and carries no
+// window-scoped fallback, so the split - which createRunWindow never
+// marked - just isn't the run's pane.
 func TestSidebarShowsASplitBashRunPaneAsAnOrdinaryShell(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

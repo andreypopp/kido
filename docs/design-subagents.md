@@ -156,31 +156,26 @@ pass through, or exceeds 64 bytes; the extension generates a hex name
 when the model gives none. The task is refused over 1MB.
 
 The pane gets `remain-on-exit` (a pane option, so a later split does
-not inherit it), so it survives its command exiting,
-and the window option `@kido_subagent`, valued `run=<id>
-parent=<session> depth=<n>`. The mark is what makes the window a
-subagent's to every reader that comes later: the sweep, the sidebar's
-tree, and the window-cycling keys all key off it, because a state record
-is deleted within a tick of its process dying and the mark lasts as long
-as the window (design.md, "Who is authoritative for what"). A window
-that cannot be marked is killed rather than left uncollectable.
+not inherit it), so it survives its command exiting, and the pane-scoped
+option `@kido_run` (`set-option -p`), valued with the run id alone. It is
+what makes the window a subagent's to every reader that comes later: the
+sweep, the sidebar's tree, and the window-cycling keys all key off it,
+because a state record is deleted within a tick of its process dying and
+the option lasts as long as the pane (design.md, "Who is authoritative
+for what"). A window whose pane cannot be marked is killed rather than
+left uncollectable.
 
-The pane `new-window` made gets a second, pane-scoped option,
-`@kido_subagent_pane`, set with `set-option -p`. A window option is
-answered for every pane of the window, split panes included, so the
-window mark alone cannot tell the run's own pane from one the user
-split off later; a pane option has no such fallback and reads empty on
-the split. The sidebar draws the run's row - running, or the tombstone
-with its outcome - on the pane carrying it, and every other pane of the
-window as the shell or command it is. A window with the window mark and
-no pane carrying the pane option, one marked by an older kido on a
-server still running, draws the run on every unreported pane as before,
-since nothing about it can say which pane is the run's. The two marks
-are two tmux commands, so a tick reacting to the window's creation can
-see the first and not the second; the sidebar re-reads the pane on
-every tick until it has one rather than caching the gap. The sweep and
-`kido stop_subagent` act on the whole window, as before: the user's
-split dies with the run it was split from.
+Being pane-scoped rather than a window option is what tells the run's
+own pane from one the user splits off later: a window option would
+answer for every pane of the window, split panes included, and nothing
+about it could say which pane is the run's. A pane option has no such
+fallback and reads empty on the split. The sidebar draws the run's row -
+running, or the tombstone with its outcome - on the pane carrying it,
+and every other pane of the window as the shell or command it is. The
+sweep and `kido stop_subagent` act on the run's own pane specifically,
+not the whole window: the user's split is left standing, and killing the
+run's pane clears `@kido_run` with it, with no separate unmark step,
+since the option never lived anywhere else.
 
 The tool returns `spawned <name> (window @N, pane %N, run <id>)` at
 once. It does not wait for anything the child does. The result, and a
@@ -252,7 +247,7 @@ created so the child can read its task the instant tmux starts it:
 - `task`, the text as given, never deleted;
 - `delivered`, written by the child after it has read the task, so a
   `/reload` does not deliver it twice;
-- `meta.json`, the name, parent session, depth, window, pane, pid,
+- `meta.json`, the name, parent session, depth, pane, pid,
   cwd, model, tools, `keepAlive` and start time - everything a spawn was
   given that a resume has to start it with again, which is why `keepAlive`
   is there at all (design.md, "Idle self-exit, and resuming a run");
@@ -537,7 +532,7 @@ that has one ("Forking the caller's context", above).
 `kido async_bash [--name NAME] [--stream] -- COMMAND...` runs a command in a
 detached window of its own and tells the caller once it has ended. It is
 structurally a spawn whose child is a command rather than a pi session:
-the same `createRunWindow`, the same `runEnv`, the same `@kido_subagent`
+the same `createRunWindow`, the same `runEnv`, the same `@kido_run`
 mark, the same run record and the same sweep. `meta.json` carries a
 `kind` - `agent` or `bash`, always written - and that is the whole of
 what distinguishes the two records.
@@ -831,9 +826,9 @@ window still closes with its own `└` on the row below, now one column
 further in. A one-pane window that is nobody's child keeps its dot; only
 an anchored window is affected. The anchor is the parent edge
 the walk found, from the child's record while it exists and from the
-mark's `parent=` token once the record is gone, so a finished child
-stays nested while its window lingers. A child whose parent is in
-another session, or gone, is drawn as a root.
+run's own meta file (its `parentSession`) once the record is gone, so a
+finished child stays nested while its window lingers. A child whose
+parent is in another session, or gone, is drawn as a root.
 
 A lingering window carries its run's verdict in the field column: a
 dimmed `✓` for a run that completed, and a dimmed `×` for every other
@@ -846,8 +841,8 @@ collide with the green one a live agent gets for a finished turn is on
 `indicatorGone` (internal/ui), which owns the argument.
 
 The cost is that hoisted windows leave tmux's own order. Shift-Up and
-Shift-Down skip any marked window, dead or alive, so the keys cycle the
-windows the user opened and a subagent's is reached through the
+Shift-Down skip any window with a run pane, dead or alive, so the keys
+cycle the windows the user opened and a subagent's is reached through the
 sidebar. Skipping a dead one without a liveness test is deliberate: the
 key would otherwise change behaviour under the user's fingers as a
 window aged out.

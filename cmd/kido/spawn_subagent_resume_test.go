@@ -13,7 +13,6 @@ import (
 
 	"kido/internal/state"
 	"kido/internal/subrun"
-	"kido/internal/tmux"
 )
 
 // withPiSessionDir points piSessionDir at dir for the duration of the
@@ -47,7 +46,7 @@ func newDeadRun(t *testing.T, id, cwd string) {
 	}
 	if err := subrun.WriteMeta(subrun.Meta{
 		ID: id, Name: "kid", ParentSession: "old-parent", Depth: 1,
-		Window: "@1", Pane: "%1", PID: deadPID(t), Cwd: cwd, StartedAt: time.Now(),
+		Pane: "%1", PID: deadPID(t), Cwd: cwd, StartedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +209,7 @@ func TestSpawnResumeContinuesRunRecord(t *testing.T) {
 	if got.ID != originalMeta.ID || got.Name != originalMeta.Name || !got.StartedAt.Equal(originalMeta.StartedAt) {
 		t.Errorf("meta = %+v, want id/name/startedAt unchanged from %+v", got, originalMeta)
 	}
-	if got.ParentSession != "new-parent" || got.Window != "@9" || got.Pane != "%9" || got.PID != fakePanePID {
+	if got.ParentSession != "new-parent" || got.Pane != "%9" || got.PID != fakePanePID {
 		t.Errorf("meta = %+v, want the new window/pane/pid and parent edge", got)
 	}
 
@@ -345,7 +344,7 @@ func TestSpawnResumeDefaultsModelFromMeta(t *testing.T) {
 	}
 	if err := subrun.WriteMeta(subrun.Meta{
 		ID: "modeled-run", Name: "kid", Depth: 1, Model: "acme/claude-sonnet-5",
-		Window: "@1", Pane: "%1", PID: deadPID(t), Cwd: cwd, StartedAt: time.Now(),
+		Pane: "%1", PID: deadPID(t), Cwd: cwd, StartedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +379,7 @@ func TestSpawnResumeExplicitModelWinsOverMeta(t *testing.T) {
 	}
 	if err := subrun.WriteMeta(subrun.Meta{
 		ID: "modeled-run-2", Name: "kid", Depth: 1, Model: "acme/claude-sonnet-5",
-		Window: "@1", Pane: "%1", PID: deadPID(t), Cwd: cwd, StartedAt: time.Now(),
+		Pane: "%1", PID: deadPID(t), Cwd: cwd, StartedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -452,9 +451,9 @@ func TestSpawnResumeMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { killWindow = prevKill })
 
-	prevMark := markSubagent
-	markSubagent = func(windowID, info string) error { return errors.New("option failed") }
-	t.Cleanup(func() { markSubagent = prevMark })
+	prevMark := markRun
+	markRun = func(paneID, runID string) error { return errors.New("option failed") }
+	t.Cleanup(func() { markRun = prevMark })
 
 	if err := spawnSubagentCmd([]string{"--resume", "unmarkable-run", "--parent-pid", "1"}); err == nil {
 		t.Fatal("spawnSubagentCmd --resume = nil, want the mark failure")
@@ -543,7 +542,7 @@ func TestSpawnResumeCarriesKeepAliveAndTools(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("fresh spawn = %v, want it to succeed", err)
 	}
-	runID := tmux.SubagentRunID(marks["@9"])
+	runID := marks["%9"]
 	if meta, err := subrun.ReadMeta(runID); err != nil {
 		t.Fatal(err)
 	} else if !meta.KeepAlive || !reflect.DeepEqual(meta.Tools, []string{"read", "bash"}) {

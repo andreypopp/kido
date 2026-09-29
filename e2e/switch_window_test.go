@@ -52,15 +52,15 @@ func (h *harness) addWindow(session, name string) {
 	}, settle, msgf("session %s has window %s", session, name))
 }
 
-// markSubagent marks session's window (by name) with @kido_subagent - the
-// tmux window option `kido spawn_subagent` sets and the only thing
-// internal/tmux.SwitchWindow (and internal/reap.Sweep, for the same
-// reason) trusts to know a window is a subagent's. No status record is
-// involved: a live plain shell pane with the mark looks to switch-window
-// exactly like a live subagent's pane does.
+// markSubagent marks session's window (by name) with @kido_run, on its
+// active pane - the pane-scoped option `kido spawn_subagent` sets and
+// the only thing internal/tmux.SwitchWindow (and internal/reap.Sweep,
+// for the same reason) trusts to know a window is a subagent's. No
+// status record is involved: a live plain shell pane with the mark looks
+// to switch-window exactly like a live subagent's pane does.
 func (h *harness) markSubagent(session, window string) {
 	h.t.Helper()
-	h.in("set-option", "-w", "-t", session+":"+window, "@kido_subagent", "parent=root-e2e depth=1")
+	h.in("set-option", "-p", "-t", session+":"+window, "@kido_run", "run-"+session+"-"+window)
 }
 
 // selectWindow puts the client directly on session's window (by name),
@@ -211,7 +211,7 @@ func TestSwitchWindowSingleWindow(t *testing.T) {
 }
 
 // TestSwitchWindowSkipsSubagentWindows checks that a1 and c1, each marked
-// @kido_subagent, are stepped over entirely: the flat list next/prev walk
+// @kido_run, are stepped over entirely: the flat list next/prev walk
 // becomes a0, c0, b0, b1 - not the six-window list TestSwitchWindowOrder
 // walks - in both directions.
 func TestSwitchWindowSkipsSubagentWindows(t *testing.T) {

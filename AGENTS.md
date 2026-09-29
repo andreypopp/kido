@@ -332,11 +332,9 @@ Negative controls are load-bearing: never delete one half of a pair.
   (`tmux.OrderSessions`), not in list-panes layout order (`split-window
   -b` puts a new pane first). The tree, the group glyph's row 0,
   `kido switch-session` and `kido switch-window` rely on that one sort.
-- **A pane option that must not fall back to the window needs
-  `set-option -p`.** `@kido_subagent` (`-w`) answers for every pane;
-  `@kido_subagent_pane` (`SubagentPaneOption`) reads empty on a user's
-  split. They are set by two commands, so a tick can see the window mark
-  first; `lingeringSubagents` re-reads until the pane has one.
+- **`@kido_run` is pane-scoped (`set-option -p`).** It marks the one
+  pane a run actually runs in; a user's split off that window reads "",
+  with no window-scoped fallback to inherit.
 - **`field()` is the column-alignment contract.** Every pane-label
   branch routes through it. An unintegrated shell and a program that has
   taken the terminal get an empty field — no glyph, column kept. Anything

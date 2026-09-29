@@ -16,8 +16,7 @@ func TestReapClosesWhatTheSweepNames(t *testing.T) {
 	// the session survives losing it.
 	panes := []tmux.Pane{
 		{PaneID: "%1", SessionID: "$0", WindowID: "@1"},
-		{PaneID: "%2", SessionID: "$0", WindowID: "@2",
-			Subagent: "run=run-x parent=root-inst depth=1", SubagentPane: "run-x", Dead: true, DeadTime: 1},
+		{PaneID: "%2", SessionID: "$0", WindowID: "@2", Run: "run-x", Dead: true, DeadTime: 1},
 	}
 	killed := withCloseRunDeps(t, panes)
 
@@ -31,17 +30,15 @@ func TestReapClosesWhatTheSweepNames(t *testing.T) {
 
 // TestReapKillsTheRunsPaneWhenTheWindowIsShared is the command's half of
 // the collection unit: what a sweep names is a pane, and the command
-// kills that pane and hands the window back by unmarking it. Without the
-// unmark the window goes on being drawn, nested and swept as a subagent's
-// with nothing of kido's left in it.
+// kills that pane and hands the window back. @kido_run is pane-scoped, so
+// killing the run's pane clears it with no separate unmark step: the
+// window goes on being drawn, but as the plain window it now is.
 func TestReapKillsTheRunsPaneWhenTheWindowIsShared(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	mark := "run=run-shared parent=root-inst depth=1"
 	panes := []tmux.Pane{
 		{PaneID: "%1", SessionID: "$0", WindowID: "@1"},
-		{PaneID: "%2", SessionID: "$0", WindowID: "@2", Subagent: mark,
-			SubagentPane: "run-shared", Dead: true, DeadTime: 1},
-		{PaneID: "%3", SessionID: "$0", WindowID: "@2", Subagent: mark},
+		{PaneID: "%2", SessionID: "$0", WindowID: "@2", Run: "run-shared", Dead: true, DeadTime: 1},
+		{PaneID: "%3", SessionID: "$0", WindowID: "@2"},
 	}
 	got := withCollectDeps(t, panes)
 
@@ -53,9 +50,6 @@ func TestReapKillsTheRunsPaneWhenTheWindowIsShared(t *testing.T) {
 	}
 	if len(got.windows) != 0 {
 		t.Errorf("killWindow called for %v, want the user's split left standing", got.windows)
-	}
-	if len(got.unmarked) != 1 || got.unmarked[0] != "@2" {
-		t.Errorf("unmarked = %v, want [@2]", got.unmarked)
 	}
 }
 

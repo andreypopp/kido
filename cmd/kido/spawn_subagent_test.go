@@ -25,35 +25,34 @@ type newWindowCall struct {
 	env, command       []string
 }
 
-// marks records what markSubagent was asked to set, window id to value;
+// marks records what markRun was asked to set, pane id to run id;
 // withNewWindow resets it.
 var marks map[string]string
 
-// withNewWindow points newWindow and markSubagent at fakes that record
-// their calls, so spawnSubagentCmd never talks to a real tmux server. newWindow
+// withNewWindow points newWindow and markRun at fakes that record their
+// calls, so spawnSubagentCmd never talks to a real tmux server. newWindow
 // returns (windowID, paneID, a fixed fake pid, err).
 const fakePanePID = 42424242
 
 func withNewWindow(t *testing.T, windowID, paneID string, err error) *[]newWindowCall {
 	t.Helper()
-	prev, prevMark, prevPaneMark, prevExists := newWindow, markSubagent, markSubagentPane, windowExists
+	prev, prevMark, prevExists := newWindow, markRun, windowExists
 	var calls []newWindowCall
 	newWindow = func(session, name, cwd string, env, command []string) (string, string, int, error) {
 		calls = append(calls, newWindowCall{session, name, cwd, env, command})
 		return windowID, paneID, fakePanePID, err
 	}
 	marks = map[string]string{}
-	markSubagent = func(windowID, info string) error {
-		marks[windowID] = info
+	markRun = func(paneID, runID string) error {
+		marks[paneID] = runID
 		return nil
 	}
-	markSubagentPane = func(paneID, runID string) error { return nil }
 	// The window a fake newWindow returned is in no tmux server, so the
 	// question createRunWindow asks about it on a failure has to be
 	// answered here too; the ordinary answer is that it is still there.
 	windowExists = func(string) bool { return true }
 	t.Cleanup(func() {
-		newWindow, markSubagent, markSubagentPane, windowExists = prev, prevMark, prevPaneMark, prevExists
+		newWindow, markRun, windowExists = prev, prevMark, prevExists
 	})
 	return &calls
 }
@@ -127,19 +126,15 @@ func TestSpawnPrintsWindowPaneRun(t *testing.T) {
 	if len(fields) != 3 || fields[0] != "@9" || fields[1] != "%9" {
 		t.Fatalf("stdout = %q, want \"@9 %%9 <run-id>\"", out)
 	}
-	if got := tmux.SubagentRunID(marks["@9"]); got != fields[2] {
+	if got := marks["%9"]; got != fields[2] {
 		t.Errorf("stdout run id %q, mark's run id %q; the two name the same run", fields[2], got)
 	}
 }
 
-// TestSpawnMarksTheWindow pins what makes a spawned window reapable at
-// all: without the @kido_subagent option (internal/reap) nothing will
-// ever close it, since a sweep refuses every window it did not create.
-// The run id in it is checked by reading it back with the parser a sweep
-// uses, which is the only thing holding the two ends of that mini-format
-// together (see tmux.SubagentMark); the consumer's own half is pinned
-// against a literal in internal/reap's tests.
-func TestSpawnMarksTheWindow(t *testing.T) {
+// TestSpawnMarksThePane pins what makes a spawned window reapable at
+// all: without @kido_run (internal/reap) nothing will ever close it,
+// since a sweep refuses every window with no run pane.
+func TestSpawnMarksThePane(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
 	withCallerDepth(t, 0)
@@ -150,12 +145,8 @@ func TestSpawnMarksTheWindow(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	got := marks["@9"]
-	if !strings.Contains(got, testParentSession) {
-		t.Errorf("mark on @9 = %q, want it to name the parent session", got)
-	}
-	if tmux.SubagentRunID(got) == "" {
-		t.Errorf("mark on @9 = %q, want a run= token a sweep can read back", got)
+	if marks["%9"] == "" {
+		t.Errorf("mark on %%9 = %q, want a run id a sweep can read back", marks["%9"])
 	}
 }
 
@@ -557,11 +548,11 @@ func TestSpawnFailureIsAVisibleFailedRun(t *testing.T) {
 	}
 }
 
-// TestSpawnMarkFailureKillsTheWindowAndRecordsFailure: a failed
-// markSubagent must not leave the window up unmarked, which no sweep
-// would ever find since internal/reap only touches a window carrying
-// @kido_subagent. It kills the window and records the run as failed, the
-// same as the newWindow-failure path. Its negative control is
+// TestSpawnMarkFailureKillsTheWindowAndRecordsFailure: a failed markRun
+// must not leave the window up unmarked, which no sweep would ever find
+// since internal/reap only touches a window with a run pane. It kills
+// the window and records the run as failed, the same as the
+// newWindow-failure path. Its negative control is
 // TestSpawnMarkFailureOnAVanishedWindowIsNotAFailure.
 func TestSpawnMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
 	withPanes(t, samePane)
@@ -577,9 +568,9 @@ func TestSpawnMarkFailureKillsTheWindowAndRecordsFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { killWindow = prevKill })
 
-	prevMark := markSubagent
-	markSubagent = func(windowID, info string) error { return errors.New("option failed") }
-	t.Cleanup(func() { markSubagent = prevMark })
+	prevMark := markRun
+	markRun = func(paneID, runID string) error { return errors.New("option failed") }
+	t.Cleanup(func() { markRun = prevMark })
 
 	if err := spawnSubagentCmd([]string{
 		"--parent-pid", "1", "--parent-session", testParentSession,
@@ -607,11 +598,11 @@ func withVanishedMark(t *testing.T) func() []string {
 		killed = append(killed, id)
 		return nil
 	}
-	prevMark, prevExists := markSubagent, windowExists
-	markSubagent = func(windowID, info string) error { return errors.New("cannot find window @9") }
+	prevMark, prevExists := markRun, windowExists
+	markRun = func(paneID, runID string) error { return errors.New("cannot find window @9") }
 	windowExists = func(string) bool { return false }
 	t.Cleanup(func() {
-		killWindow, markSubagent, windowExists = prevKill, prevMark, prevExists
+		killWindow, markRun, windowExists = prevKill, prevMark, prevExists
 	})
 	return func() []string { return killed }
 }
@@ -746,7 +737,7 @@ func TestSpawnNoParentIsNotReaped(t *testing.T) {
 		}
 	}
 
-	runID := tmux.SubagentRunID(marks["@9"])
+	runID := marks["%9"]
 	meta, err := subrun.ReadMeta(runID)
 	if err != nil {
 		t.Fatal(err)
@@ -760,7 +751,7 @@ func TestSpawnNoParentIsNotReaped(t *testing.T) {
 	// what KIDO_AGENT_PARENT_SESSION's absence produces.
 	panes := []tmux.Pane{
 		{PaneID: "%other", WindowID: "@other", SessionID: "$1"},
-		{PaneID: "%9", WindowID: "@9", SessionID: "$1", Subagent: marks["@9"]},
+		{PaneID: "%9", WindowID: "@9", SessionID: "$1", Run: marks["%9"]},
 	}
 	sessions := []state.Session{{
 		Agent: state.AgentPi, Pane: "%9", PID: os.Getpid(), Status: state.Idle,

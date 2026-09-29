@@ -84,7 +84,6 @@ type Meta struct {
 	Kind          Kind     `json:"kind,omitempty"`
 	ParentSession string   `json:"parentSession,omitempty"`
 	Depth         int      `json:"depth"`
-	Window        string   `json:"window"`
 	Pane          string   `json:"pane"`
 	PID           int      `json:"pid"` // the child process's pid, for EffectiveOutcome's liveness guess
 	Cwd           string   `json:"cwd"`

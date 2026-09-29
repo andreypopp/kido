@@ -25,12 +25,10 @@ func withCloseRunDeps(t *testing.T, panes []tmux.Pane) *[]string {
 }
 
 // collected is everything the linger helper did to a tmux server in one
-// call: the windows it closed, the panes it killed and the windows it
-// unmarked.
+// call: the windows it closed and the panes it killed.
 type collected struct {
-	windows  []string
-	panes    []string
-	unmarked []string
+	windows []string
+	panes   []string
 }
 
 // withCollectDeps is withCloseRunDeps for the tests whose subject is
@@ -39,7 +37,7 @@ type collected struct {
 // "the run's pane was".
 func withCollectDeps(t *testing.T, panes []tmux.Pane) *collected {
 	t.Helper()
-	prevPanes, prevKillWindow, prevKillPane, prevUnmark := listPanes, killWindow, killPane, unmarkSubagent
+	prevPanes, prevKillWindow, prevKillPane := listPanes, killWindow, killPane
 	var got collected
 	listPanes = func() ([]tmux.Pane, error) { return panes, nil }
 	killWindow = func(id string) error {
@@ -50,29 +48,16 @@ func withCollectDeps(t *testing.T, panes []tmux.Pane) *collected {
 		got.panes = append(got.panes, id)
 		return nil
 	}
-	unmarkSubagent = func(id string) error {
-		got.unmarked = append(got.unmarked, id)
-		return nil
-	}
 	t.Cleanup(func() {
-		listPanes, killWindow, killPane, unmarkSubagent = prevPanes, prevKillWindow, prevKillPane, prevUnmark
+		listPanes, killWindow, killPane = prevPanes, prevKillWindow, prevKillPane
 	})
 	return &got
 }
 
-// runPane is the one pane a run runs in: the pane-scoped
-// @kido_subagent_pane option, which no pane the user splits off later
-// carries.
+// runPane is the one pane a run runs in: @kido_run (tmux.RunOption),
+// which no pane the user splits off later carries.
 func runPane(p tmux.Pane, runID string) tmux.Pane {
-	p.Subagent = "run=" + runID + " parent=root-inst depth=1"
-	p.SubagentPane = runID
-	return p
-}
-
-// splitPane is a pane the user added to a run's window: it reads the
-// window mark through tmux's own option fallback and nothing else.
-func splitPane(p tmux.Pane, runID string) tmux.Pane {
-	p.Subagent = "run=" + runID + " parent=root-inst depth=1"
+	p.Run = runID
 	return p
 }
 
@@ -85,7 +70,7 @@ func TestCloseRunKillsTheRunsPaneAndLeavesTheSplit(t *testing.T) {
 	panes := []tmux.Pane{
 		{PaneID: "%1", SessionID: "$0", WindowID: "@1", Active: true, SessionAttached: true},
 		dead(runPane(tmux.Pane{PaneID: "%2", SessionID: "$0", WindowID: "@2"}, "run-x")),
-		splitPane(tmux.Pane{PaneID: "%3", SessionID: "$0", WindowID: "@2"}, "run-x"),
+		{PaneID: "%3", SessionID: "$0", WindowID: "@2"},
 	}
 	got := withCollectDeps(t, panes)
 
@@ -97,9 +82,6 @@ func TestCloseRunKillsTheRunsPaneAndLeavesTheSplit(t *testing.T) {
 	}
 	if len(got.windows) != 0 {
 		t.Errorf("killWindow called for %v, want the window left standing for the user's split", got.windows)
-	}
-	if len(got.unmarked) != 1 || got.unmarked[0] != "@2" {
-		t.Errorf("unmarked = %v, want [@2]: a window whose run is collected is an ordinary window", got.unmarked)
 	}
 }
 
@@ -130,7 +112,7 @@ func TestCloseRunRefusesALiveRunsPane(t *testing.T) {
 	panes := []tmux.Pane{
 		{PaneID: "%1", SessionID: "$0", WindowID: "@1", Active: true, SessionAttached: true},
 		runPane(tmux.Pane{PaneID: "%2", SessionID: "$0", WindowID: "@2"}, "run-x"),
-		dead(splitPane(tmux.Pane{PaneID: "%3", SessionID: "$0", WindowID: "@2"}, "run-x")),
+		dead(tmux.Pane{PaneID: "%3", SessionID: "$0", WindowID: "@2"}),
 	}
 	got := withCollectDeps(t, panes)
 
@@ -149,7 +131,7 @@ func TestCloseRunRefusesAFocusedWindowWithASplit(t *testing.T) {
 	panes := []tmux.Pane{
 		{PaneID: "%1", SessionID: "$0", WindowID: "@1", SessionAttached: true},
 		dead(runPane(tmux.Pane{PaneID: "%2", SessionID: "$0", WindowID: "@2"}, "run-x")),
-		splitPane(tmux.Pane{PaneID: "%3", SessionID: "$0", WindowID: "@2", Active: true, SessionAttached: true}, "run-x"),
+		{PaneID: "%3", SessionID: "$0", WindowID: "@2", Active: true, SessionAttached: true},
 	}
 	got := withCollectDeps(t, panes)
 
@@ -167,7 +149,7 @@ func TestCloseRunRefusesAFocusedWindowWithASplit(t *testing.T) {
 func TestCloseRunKillsARunsPaneInASessionsLastWindow(t *testing.T) {
 	panes := []tmux.Pane{
 		dead(runPane(tmux.Pane{PaneID: "%1", SessionID: "$0", WindowID: "@1"}, "run-x")),
-		splitPane(tmux.Pane{PaneID: "%2", SessionID: "$0", WindowID: "@1"}, "run-x"),
+		{PaneID: "%2", SessionID: "$0", WindowID: "@1"},
 	}
 	got := withCollectDeps(t, panes)
 

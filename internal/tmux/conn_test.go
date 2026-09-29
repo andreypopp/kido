@@ -94,7 +94,7 @@ func TestQuote(t *testing.T) {
 func TestParsePanes(t *testing.T) {
 	line := strings.Join([]string{"work", "$1", "1700000000", "2", "@7", "win", "layout",
 		"%3", "1", "4242", "claude", "/tmp", "0", "1", "1700000100", "1700000050",
-		"2", "1700000090", "make test", "0", "", "1", "", "", "✳ Title"}, sep)
+		"2", "1700000090", "make test", "0", "", "1", "", "✳ Title"}, sep)
 	p := parsePanes([]string{line, "junk"})
 	if len(p) != 1 {
 		t.Fatalf("got %d panes, want 1", len(p))
@@ -116,7 +116,7 @@ func TestParsePanes(t *testing.T) {
 func TestParsePanesEmptyCommandStatus(t *testing.T) {
 	line := strings.Join([]string{"work", "$1", "1700000000", "2", "@7", "win", "layout",
 		"%3", "0", "4242", "zsh", "/tmp", "1", "0", "", "1700000050",
-		"", "", "", "0", "", "0", "", "", "zsh"}, sep)
+		"", "", "", "0", "", "0", "", "zsh"}, sep)
 	p := parsePanes([]string{line})
 	if len(p) != 1 {
 		t.Fatalf("got %d panes, want 1", len(p))
@@ -130,14 +130,14 @@ func TestParsePanesEmptyCommandStatus(t *testing.T) {
 	}
 }
 
-// TestParsePanesDeadSubagent covers the fields the window lifecycle reads
-// (internal/reap): a remain-on-exit corpse in a window kido spawn_subagent marked.
-// They sit before pane_title, which stays last because it may contain
-// anything - including the separator this format is joined with.
-func TestParsePanesDeadSubagent(t *testing.T) {
+// TestParsePanesDeadRun covers the fields the window lifecycle reads
+// (internal/reap): a remain-on-exit corpse in a window kido spawn_subagent
+// marked. They sit before pane_title, which stays last because it may
+// contain anything - including the separator this format is joined with.
+func TestParsePanesDeadRun(t *testing.T) {
 	line := strings.Join([]string{"work", "$1", "1700000000", "2", "@7", "kid", "layout",
 		"%3", "0", "4242", "", "/tmp", "0", "0", "", "",
-		"", "", "", "1", "1700000200", "1", "parent=abc depth=1", "", "kid"}, sep)
+		"", "", "", "1", "1700000200", "1", "run-abc", "kid"}, sep)
 	p := parsePanes([]string{line})
 	if len(p) != 1 {
 		t.Fatalf("got %d panes, want 1", len(p))
@@ -145,8 +145,8 @@ func TestParsePanesDeadSubagent(t *testing.T) {
 	if !p[0].Dead || p[0].DeadTime != 1700000200 {
 		t.Errorf("got dead=%v at %d, want a pane dead since 1700000200", p[0].Dead, p[0].DeadTime)
 	}
-	if p[0].Subagent != "parent=abc depth=1" {
-		t.Errorf("got %s = %q, want the mark kido spawn_subagent set", SubagentOption, p[0].Subagent)
+	if p[0].Run != "run-abc" {
+		t.Errorf("got %s = %q, want the run id kido spawn_subagent set", RunOption, p[0].Run)
 	}
 	if p[0].Title != "kid" {
 		t.Errorf("got title %q, want the last field", p[0].Title)
@@ -241,7 +241,7 @@ func TestOrderSessions(t *testing.T) {
 // TestOrderSessionsSortsPanesByCreationOrder pins that a window's panes
 // come out oldest pane first, not in list-panes' own order: `split-window
 // -b` puts a new pane ahead of an older one in that order, and the
-// sidebar's "row 0 is the run" assumption (internal/ui's SubagentPane)
+// sidebar's "row 0 is the run" assumption (tmux.Pane.Run)
 // depends on the run's own, older pane staying first regardless of where
 // a later split lands it.
 func TestOrderSessionsSortsPanesByCreationOrder(t *testing.T) {

@@ -83,8 +83,7 @@ func TestAsyncNoticeSaysItIsFromTheRun(t *testing.T) {
 func deadRunWindow(runID string) []tmux.Pane {
 	return []tmux.Pane{
 		{PaneID: "%2", SessionID: "$1", WindowID: "@2"},
-		{PaneID: "%9", SessionID: "$1", WindowID: "@9",
-			Subagent: tmux.SubagentMark(runID, "root-sess", 1), SubagentPane: runID,
+		{PaneID: "%9", SessionID: "$1", WindowID: "@9", Run: runID,
 			Dead: true, DeadTime: time.Now().Add(-time.Hour).Unix()},
 	}
 }
@@ -107,7 +106,7 @@ func withKillWindow(t *testing.T) func() []string {
 func startedRun(t *testing.T, name, parent string) subrun.Meta {
 	t.Helper()
 	meta := subrun.Meta{ID: startAsyncRun(t, "sleep", "600"), Name: name, Kind: subrun.KindBash,
-		ParentSession: parent, Pane: "%9", Window: "@9", StartedAt: time.Now()}
+		ParentSession: parent, Pane: "%9", StartedAt: time.Now()}
 	if err := subrun.WriteMeta(meta); err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +203,7 @@ func startedAgentRun(t *testing.T, name, parent string) subrun.Meta {
 		t.Fatal(err)
 	}
 	meta := subrun.Meta{ID: id, Name: name, ParentSession: parent,
-		Pane: "%9", Window: "@9", StartedAt: time.Now()}
+		Pane: "%9", StartedAt: time.Now()}
 	if err := subrun.WriteMeta(meta); err != nil {
 		t.Fatal(err)
 	}

@@ -240,7 +240,7 @@ func showRun(w io.Writer, id string, asJSON bool) error {
 	}
 
 	// A bare `pi --session <id>` comes back an orphan: no parent edge, no
-	// @kido_subagent mark, not a descendant for stop/ask scoping, and a
+	// @kido_run mark, not a descendant for stop/ask scoping, and a
 	// fresh run record that abandons this one's history. `kido spawn_subagent
 	// --resume` goes through the same window-creation path a fresh spawn
 	// uses instead, and continues this run rather than starting another

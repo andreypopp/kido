@@ -115,7 +115,7 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 	if len(fields) != 3 {
 		t.Fatalf("kido spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", out)
 	}
-	newWindowID, gotRunID := fields[0], fields[2]
+	newWindowID, newPaneID, gotRunID := fields[0], fields[1], fields[2]
 	if gotRunID != runID {
 		t.Errorf("kido spawn_subagent --resume printed run id %q, want the original %q", gotRunID, runID)
 	}
@@ -128,9 +128,9 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 		t.Errorf("KIDO_AGENT_RUN_ID = %q, want the original run id %q", got, runID)
 	}
 
-	mark := h.in("show-options", "-w", "-v", "-t", newWindowID, "@kido_subagent")
-	if !strings.Contains(mark, "run="+runID) {
-		t.Errorf("@kido_subagent on the resumed window = %q, want it to name run %s", mark, runID)
+	mark := h.in("show-options", "-p", "-v", "-t", newPaneID, "@kido_run")
+	if mark != runID {
+		t.Errorf("@kido_run on the resumed pane = %q, want it to name run %s", mark, runID)
 	}
 
 	if got := h.runOutcomeNamed("after", runID); got != "running" {

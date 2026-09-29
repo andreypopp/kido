@@ -1,7 +1,7 @@
 // Package reap decides which subagent panes are finished with: the
 // backstop behind the linger helper (`kido close-run`), run from the
 // sidebar's poll (internal/ui) and from `kido reap`. What a sweep may
-// close is decided from tmux's @kido_subagent mark, never from a state
+// close is decided from tmux's @kido_run option, never from a state
 // record; docs/design.md's "Window lifecycle" says why.
 package reap
 
@@ -34,21 +34,17 @@ func graceFromEnv(def time.Duration) time.Duration {
 type window struct {
 	id      string
 	paneIDs []string // every pane in the window, in list-panes order
-	marked  bool     // carries tmux.SubagentOption: a window kido spawn_subagent created
-	runID   string   // the run id embedded in that mark, see tmux.SubagentRunID
-	// runPane is the pane the run itself is in, from
-	// tmux.SubagentPaneOption. Its own death is what rule 1 reads.
-	runPane     string
-	runPaneDead bool
-	runDeadTime int64
-	focused     bool
+	// run is the pane carrying tmux.RunOption - the pane kido
+	// spawn_subagent actually runs the run in - or the zero Pane if this
+	// window has none. Its Dead/DeadTime is what rule 1 reads.
+	run     tmux.Pane
+	focused bool
 }
 
 // Close is one thing a sweep wants closed, and the unit is the run's
 // pane: a window is only ever the user's, and what kido put in it is one
 // pane of it. PaneID is that pane; it is "" when the window itself is
-// what is to be closed - the run's pane is all the window has, or the
-// window was marked before kido knew which pane the run was in. The two
+// what is to be closed - the run's pane is all the window has. The two
 // are not interchangeable even when a window has one pane: only closing
 // a window can destroy a session, and only that case is held to the
 // last-window refusal.
@@ -68,35 +64,22 @@ func (c Close) Window() bool { return c.PaneID == "" }
 type Ops struct {
 	KillWindow func(string) error
 	KillPane   func(string) error
-	Unmark     func(string) error
 }
 
 // Release carries out c against a server whose panes are panes: close
 // the window when the run was all of it, or kill the run's own pane and
-// hand the window back to whatever the user left in it. Unmarking is
-// what stops the tree nesting that window, switch-window skipping it and
-// a later sweep considering it.
+// hand the window back to whatever the user left in it. RunOption is
+// pane-scoped, so killing the run's pane clears it with no separate
+// unmark step: the tree, switch-window and a later sweep all stop
+// considering the window the instant tmux itself drops the pane.
 //
 // It is every collector's one act - the sidebar's sweep, `kido reap`,
-// `kido close-run` and the kill `kido stop_subagent` degrades to - so
-// "kill the run's pane, then unmark unless that pane was the window's
-// last" has one spelling. A Close from Sweep never needs that last
-// exception, since mark already promotes a lone pane to a window close;
-// a caller that found the run's pane some other way does.
-//
-// What comes back is the kill's error, which is the act that either
-// happened or did not. The unmark is best effort: the window may have
-// gone between the listing and now, and a mark left on a window nobody
-// can find is not a reason to call a collected run uncollected.
-func (o Ops) Release(panes []tmux.Pane, c Close) error {
+// `kido close-run` and the kill `kido stop_subagent` degrades to.
+func (o Ops) Release(c Close) error {
 	if c.Window() {
 		return o.KillWindow(c.WindowID)
 	}
-	err := o.KillPane(c.PaneID)
-	if !tmux.LastPane(panes, c.WindowID) {
-		o.Unmark(c.WindowID) //nolint:errcheck // best effort, see doc comment
-	}
-	return err
+	return o.KillPane(c.PaneID)
 }
 
 // captureScreen saves the final screen of the panes a sweep is about to
@@ -178,13 +161,11 @@ const sweptText = "ended without its wrapper reporting"
 // process transiently claimed (state.beats) as a dead parent, and closes
 // a healthy child's window.
 //
-// Two rules, both restricted to a window carrying tmux.SubagentOption:
+// Two rules, both restricted to a window carrying a run pane
+// (tmux.RunOption):
 //
 //  1. the run's own pane is dead and has been for Grace. This rule reads
-//     no state record at all. A window marked before
-//     tmux.SubagentPaneOption existed has no run pane to single out, and
-//     falls back to the older rule: every pane of it is dead, and the
-//     window is the unit.
+//     no state record at all.
 //  2. a live subagent no live record claims as a parent is orphaned, and
 //     is cancelled by closing the pane it runs in. One reading of the
 //     complete set decides it, so a one-shot `kido reap` applies this
@@ -194,7 +175,7 @@ const sweptText = "ended without its wrapper reporting"
 // user may be reading the very pane that would go - and neither closes a
 // session's last window.
 func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) ([]Close, []Notice) {
-	if !anyMarked(panes) {
+	if !anyRunPane(panes) {
 		// Nothing kido spawn_subagent created is on screen, so neither rule can
 		// close anything. The common case on a machine with no subagents
 		// running, and this runs on every sidebar tick.
@@ -211,7 +192,7 @@ func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) ([]Close,
 	// that guards a session belongs on that act.
 	mark := func(id, paneID string) {
 		w, ok := byID[id]
-		if !ok || closing[id] || !w.marked || w.focused {
+		if !ok || closing[id] || w.run.PaneID == "" || w.focused {
 			return
 		}
 		if len(w.paneIDs) == 1 {
@@ -221,25 +202,23 @@ func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) ([]Close,
 			return
 		}
 		closing[id] = true
-		if w.runID != "" {
-			going := []string{paneID}
-			if paneID == "" {
-				going = w.paneIDs
-			}
-			captureScreen(w.runID, going)
-			if n, ok := recordEnding(w.runID, now); ok {
-				notices = append(notices, n)
-			}
+		going := []string{paneID}
+		if paneID == "" {
+			going = w.paneIDs
+		}
+		captureScreen(w.run.Run, going)
+		if n, ok := recordEnding(w.run.Run, now); ok {
+			notices = append(notices, n)
 		}
 		out = append(out, Close{WindowID: id, PaneID: paneID})
 	}
 
 	for _, w := range windows {
-		if !w.marked { // rule 1
+		if w.run.PaneID == "" { // rule 1 needs a run pane to check
 			continue
 		}
-		if w.runPane != "" && w.runPaneDead && w.runDeadTime > 0 && now.Sub(time.Unix(w.runDeadTime, 0)) >= Grace {
-			mark(w.id, w.runPane)
+		if w.run.Dead && w.run.DeadTime > 0 && now.Sub(time.Unix(w.run.DeadTime, 0)) >= Grace {
+			mark(w.id, w.run.PaneID)
 		}
 	}
 
@@ -315,11 +294,11 @@ func recordEnding(runID string, now time.Time) (Notice, bool) {
 	return RecordEnding(meta, o)
 }
 
-// anyMarked reports whether any pane belongs to a window kido spawn_subagent
-// created, the precondition both rules share.
-func anyMarked(panes []tmux.Pane) bool {
+// anyRunPane reports whether any pane carries tmux.RunOption, the
+// precondition both rules share.
+func anyRunPane(panes []tmux.Pane) bool {
 	for _, p := range panes {
-		if p.Subagent != "" {
+		if p.Run != "" {
 			return true
 		}
 	}
@@ -341,12 +320,8 @@ func foldWindows(panes []tmux.Pane) ([]*window, map[string]*window, map[string]s
 			windows = append(windows, w)
 		}
 		w.paneIDs = append(w.paneIDs, p.PaneID)
-		if p.Subagent != "" {
-			w.marked = true
-			w.runID = tmux.SubagentRunID(p.Subagent)
-		}
-		if p.SubagentPane != "" {
-			w.runPane, w.runPaneDead, w.runDeadTime = p.PaneID, p.Dead, p.DeadTime
+		if p.Run != "" {
+			w.run = p
 		}
 		if p.Watched() {
 			w.focused = true // tmux.WindowFocused, for a window already folded

@@ -212,7 +212,7 @@ func killTargetPane(target state.Session) error {
 	// The pane and not the window, even when it is the window's only one:
 	// a stop kills what it was pointed at, and the refusal above is what
 	// guards the session.
-	return releaseOps().Release(panes, reap.Close{WindowID: pane.WindowID, PaneID: pane.PaneID})
+	return releaseOps().Release(reap.Close{WindowID: pane.WindowID, PaneID: pane.PaneID})
 }
 
 // recordStopped marks target's run stopped, if it has one: target.ID is
@@ -377,7 +377,7 @@ func killBashRunPane(meta subrun.Meta) (bool, error) {
 	if tmux.LastWindow(panes, pane.WindowID) && tmux.LastPane(panes, pane.WindowID) {
 		return false, errors.New("it is its session's only pane; killing it would destroy the session")
 	}
-	if err := releaseOps().Release(panes, reap.Close{WindowID: pane.WindowID, PaneID: pane.PaneID}); err != nil {
+	if err := releaseOps().Release(reap.Close{WindowID: pane.WindowID, PaneID: pane.PaneID}); err != nil {
 		return false, err
 	}
 	return true, nil

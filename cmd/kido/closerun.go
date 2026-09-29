@@ -24,15 +24,12 @@ var windowIDPattern = regexp.MustCompile(`^@[0-9]+$`)
 // server. killPane is the same, in control.go.
 var killWindow = tmux.KillWindow
 
-// unmarkSubagent is tmux.UnmarkSubagent, indirected for the same reason.
-var unmarkSubagent = tmux.UnmarkSubagent
-
-// releaseOps binds cmd/kido's three indirected tmux acts to the one
-// helper that carries out a close (reap.Ops.Release). It is a function
-// rather than a value so a test swapping any of the three is read at the
-// call, not at package init.
+// releaseOps binds cmd/kido's two indirected tmux acts to the one helper
+// that carries out a close (reap.Ops.Release). It is a function rather
+// than a value so a test swapping either is read at the call, not at
+// package init.
 func releaseOps() reap.Ops {
-	return reap.Ops{KillWindow: killWindow, KillPane: killPane, Unmark: unmarkSubagent}
+	return reap.Ops{KillWindow: killWindow, KillPane: killPane}
 }
 
 // closeRunCmd implements `kido close-run <window-id>`, what the linger
@@ -63,7 +60,7 @@ func closeRunCmd(args []string) error {
 		return nil
 	}
 
-	runPane, ok := runPaneOf(panes, windowID)
+	runPane, ok := tmux.RunPane(panes, windowID)
 	if ok && !runPane.Dead {
 		fmt.Fprintf(os.Stderr, "kido close-run: %s's run is still going; leaving it\n", windowID)
 		return nil
@@ -71,7 +68,7 @@ func closeRunCmd(args []string) error {
 	if ok && !tmux.LastPane(panes, windowID) {
 		// The user's own split is in there, so what is collected is the run's
 		// pane and the window becomes theirs (reap.Ops.Release).
-		return releaseOps().Release(panes, reap.Close{WindowID: windowID, PaneID: runPane.PaneID})
+		return releaseOps().Release(reap.Close{WindowID: windowID, PaneID: runPane.PaneID})
 	}
 	if !ok {
 		fmt.Fprintf(os.Stderr, "kido close-run: %s has no run pane; leaving it\n", windowID)
@@ -83,16 +80,5 @@ func closeRunCmd(args []string) error {
 		fmt.Fprintf(os.Stderr, "kido close-run: %s is its session's only window; closing it would destroy the session\n", windowID)
 		return nil
 	}
-	return releaseOps().Release(panes, reap.Close{WindowID: windowID})
-}
-
-// runPaneOf is the pane of windowID the run itself is in
-// (tmux.SubagentPaneOption), and false for a window kido never created.
-func runPaneOf(panes []tmux.Pane, windowID string) (tmux.Pane, bool) {
-	for _, p := range panes {
-		if p.WindowID == windowID && p.SubagentPane != "" {
-			return p, true
-		}
-	}
-	return tmux.Pane{}, false
+	return releaseOps().Release(reap.Close{WindowID: windowID})
 }

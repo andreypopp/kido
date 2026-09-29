@@ -50,18 +50,21 @@ agent is gone within a tick of its death. Anything that has to reason
 about an agent after it has died cannot read its record, because there
 will not be one.
 
-**Window options, for facts that must survive kido's own cleanup.** `kido
-spawn_subagent` sets `@kido_subagent` on the window it creates. The option
-lives in the tmux server: nothing races it away, it names a window that
-exists now rather than a pane id some later server may hand to somebody
-else, and it can only ever be on a window kido itself made. It is the sole
-thing that makes a window reapable. Its value is free text for a human
-reading `show-options -w`, of which one token, `run=<id>`, is parsed back
-out so a sweep can record an outcome for the run whose window it is closing.
+**Pane options, for facts that must survive kido's own cleanup.** `kido
+spawn_subagent` sets `@kido_run` (`set-option -p`) to the run id on the
+one pane a run actually runs in. The option lives in the tmux server:
+nothing races it away, it names a pane that exists now rather than one a
+later server may hand to somebody else, and it can only ever be on a
+pane kido itself made. It is the sole thing that makes a window reapable,
+and it dies with the pane it is on - killing the run's pane clears it
+with no separate unmark step. Being pane-scoped rather than window-scoped
+is what lets a sweep and the sidebar tell the run's own pane apart from
+one a user splits off later: a window option would answer for that pane
+too, with nothing to say it is not the run's.
 
 **The runs directory, for facts that must outlive the process.** Under
 `<state>/runs/<run-id>/`: the task text, a meta file written at spawn time
-and rewritten by a resume (window, pane, pid, cwd, model, tools, parent,
+and rewritten by a resume (pane, pid, cwd, model, tools, parent,
 depth), and once the run has ended, an outcome. A run record is
 deliberately not a state record,
 since a state record is deleted the moment its pid dies and a run record
@@ -471,8 +474,8 @@ a paste or a v0 payload has nowhere to carry a kind or an id and
 silently downgrading an ask to a plain prompt would strip the thing that
 made it one. `kido prompt` stays v0 forever: it is the agent-agnostic
 path and has to keep working against Claude Code panes. It targets a
-top-level agent only: a pane whose window carries the `@kido_subagent`
-mark is never a candidate, the same reader the sweep and `switch-window`
+top-level agent only: a pane whose window has a run pane (`@kido_run`)
+is never a candidate, the same reader the sweep and `switch-window`
 use, which covers a child between its spawn and its first report. The
 search widens from the caller's window to the session when the window
 holds no candidate, and without the exclusion one agent and one live
@@ -840,8 +843,9 @@ process whose event loop is gone by the time the sleep would fire. It is
 given the window, and what it collects in it is the run's own pane: the
 window belongs to whoever is in it, and what kido put there is one pane.
 A window the run is all of is closed; a window holding the user's split
-beside it keeps the split and is unmarked, since with the run collected
-it is an ordinary window. The helper refuses a window that is some
+beside it keeps the split - killing the run's own pane is what hands the
+window back, since @kido_run lives on that pane alone and goes with it,
+with no separate unmark step. The helper refuses a window that is some
 client's current one, because the user may have switched there to read
 the subagent's last screen, and that covers both units, since a pane
 killed under them takes the screen away and resizes what is left. It
@@ -868,13 +872,13 @@ and outlive it, so a stale record names a pane somebody else holds now. A
 sweep with no mark to check closes a plain shell window that is nobody's
 subagent, which is measured rather than hypothetical.
 
-So there are two rules, and both may only act on a window carrying the
-mark. First: the run's own pane is dead and has been for the linger
+So there are two rules, and both may only act on a window carrying a run
+pane. First: the run's own pane is dead and has been for the linger
 grace. This reads no record at all. Second: a live subagent whose parent
 is gone is cancelled by killing the pane it runs in, a forced stop
 rather than the graceful one the child's own poll asks for, but the only
 lever a process outside pi has. This one needs the records, since
-nothing in tmux knows who spawned whom, and the mark is what keeps a
+nothing in tmux knows who spawned whom, and the run pane is what keeps a
 stale record naming a recycled pane id from closing an unrelated
 window. A record with no parent session is a root agent and nobody's to
 cancel. Neither rule acts on a window that is any client's current one,
@@ -886,26 +890,25 @@ run's pane, not the window it was made in: a window finished only once
 every pane in it is dead leaves the run's corpse beside the user's own
 shell until they leave (measured live). So a sweep names either a pane
 or a window (`reap.Close`), and the caller does the killing: the run's
-pane goes with `kill-pane` and the window is unmarked (`set-option -wu
-@kido_subagent`), or, when that pane is all the window has, the window
-goes with `kill-window`. The two are not spellings of one act: killing
-a window's last pane closes the window anyway, but only the window case
-can destroy a session, and only it is held to the last-window refusal.
+pane goes with `kill-pane`, or, when that pane is all the window has,
+the window goes with `kill-window`. The two are not spellings of one
+act: killing a window's last pane closes the window anyway, but only
+the window case can destroy a session, and only it is held to the
+last-window refusal.
 
-Unmarking is what hands the window back. Every other reader keys on the
-mark: the tree nests the window under its parent, `switch-window` skips
-it, the sidebar draws the run's label on it, and a later sweep would
-consider it again. With the mark gone the window is drawn as the plain
+`@kido_run` being pane-scoped is what hands the window back with no
+separate unmark step: kill the run's pane and the option is gone with
+it, since it never lived anywhere else. Every other reader keys on it:
+the tree nests the window under its parent, `switch-window` skips it,
+the sidebar draws the run's label on it, and a later sweep would
+consider it again. With the pane gone the window is drawn as the plain
 window it is, with whatever the user left in it. The same holds for a
 stop's escalation and a bash run stopped with `--force`: the target's
-pane is killed, and the window is unmarked when something of the user's
-is left in it.
-
-Which pane is the run's is `@kido_subagent_pane` (`set-option -p`),
-which no pane the user splits off later carries. A window with no run
-pane to single out is left alone by both closers. A pane the user splits
-off carries no `remain-on-exit` of its own, so it closes on exit like any
-pane, and the window then goes like any window.
+pane is killed, and the window goes back to being an ordinary one the
+same way. A pane the user splits off carries no `@kido_run` of its own -
+there is no window-scoped fallback to inherit it through - and no
+`remain-on-exit` either, so it closes on exit like any pane, and the
+window then goes like any window.
 
 The second rule fires on one reading, and what makes that safe is which
 reading it is. "Gone" means no live process holds the parent session - a
@@ -1055,7 +1058,7 @@ waiting to be swept), and read from different environment variables.
 **`kido spawn_subagent --resume <run-id>`.** Since idle children are
 routinely reaped, resuming one is the normal way to keep working with it,
 and a bare `pi --session <id>` comes back an orphan: no parent edge, no
-`@kido_subagent` mark, not a descendant for stop/ask scoping, and - worse - a *second* run record, since `kido
+`@kido_run` mark, not a descendant for stop/ask scoping, and - worse - a *second* run record, since `kido
 spawn_subagent` normally mints a fresh run id from the command line it is
 given and a bare `pi` is never given one at all. `--resume` instead runs
 through the identical window-creation path (`tmux.NewWindow`, the mark) a
@@ -1078,7 +1081,7 @@ fresh spawn uses, but:
   or a command naming its own `--model`/`--tools`, still wins; the
   recorded value is the default, not a ceiling. There is deliberately no way to turn
   `keepAlive` back *off* on a resume, the same asymmetry `--model` has;
-- writes the *new* window, pane, pid and parent edge into that same meta
+- writes the *new* pane, pid and parent edge into that same meta
   file - `WriteMeta` is only documented as being called once by a fresh
   spawn, not enforced to be, and a resumed run's living facts have
   changed;
@@ -1685,7 +1688,7 @@ and a parent's later panes sit below a whole foreign window. That is the
 trade, not a bug - the spawn tree is what the sidebar is for. Nor is
 tmux's order one ⇧↓ away: `kido switch-window` (S-Up/S-Down) skips a
 subagent's window on purpose - the user asked to cycle top-level windows,
-keyed off the same `@kido_subagent` mark reap.Sweep uses and for the same
+keyed off the same run pane (`@kido_run`) reap.Sweep uses and for the same
 reason - so a hoisted window is reachable through the sidebar and not by
 cycling. The walk also draws as a root
 anything whose anchor row never appeared, for the same reason the

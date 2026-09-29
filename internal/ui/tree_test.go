@@ -94,13 +94,12 @@ func agentState(id, parent, title string) state.Session {
 
 // deadSubagentPane is a finished subagent's window as the sweep sees it
 // during its linger: its record is gone (nothing in states names its
-// pane), but the window mark kido spawn_subagent wrote survives, since only the
-// state record and the mark's own "run=" prefix are removed by
-// kido agent-status --remove.
-func deadSubagentPane(w, pane, parentSession string) tmux.Pane {
+// pane), but its @kido_run pane option survives, since only the state
+// record is removed by kido agent-status --remove.
+func deadSubagentPane(w, pane, runID string) tmux.Pane {
 	return tmux.Pane{
 		SessionName: "sess", WindowID: w, PaneID: pane,
-		Dead: true, Subagent: tmux.SubagentMark("", parentSession, 1),
+		Dead: true, Run: runID,
 	}
 }
 
@@ -251,11 +250,11 @@ func TestRenderGroupsSiblingSubagentsAtDepthTwo(t *testing.T) {
 // survives grouping: a lingering dead sibling keeps its dim × and label
 // while still taking its ├/└ place among its live siblings.
 func TestRenderGroupsSiblingSubagentsWithADeadOne(t *testing.T) {
-	id := newRun(t, "subagent-b", "")
+	id := newRun(t, "subagent-b", "root-sess", "")
 	panes := []tmux.Pane{
 		agentPane("@13", "%22", "orchestrator"),
 		agentPane("@20", "%30", "subagent-a"),
-		lingeringSubagentPane("@21", "%31", id, "root-sess"),
+		lingeringSubagentPane("@21", "%31", id),
 	}
 	states := map[string]state.Session{
 		"%22": agentState("root-sess", "", "orchestrator"),
@@ -457,7 +456,7 @@ func TestOrderWindowsByTreePutsChildRightAfterParent(t *testing.T) {
 		"%child2": {ParentSession: "root-sess", Depth: 1},
 		"%child1": {ParentSession: "root-sess", Depth: 1},
 	}
-	got := orderWindowsByTree(windows, states)
+	got := orderWindowsByTree(windows, states, nil)
 	want := []string{"@shell", "@root", "@child2", "@child1"}
 	if !sameIDs(windowIDs(got), want) {
 		t.Fatalf("order = %v, want %v", windowIDs(got), want)
@@ -485,7 +484,7 @@ func TestOrderWindowsByTreeIndentsOnlyRealChildren(t *testing.T) {
 	states := map[string]state.Session{
 		"%orphan": {ID: "orphan-sess", ParentSession: "elsewhere-sess", Depth: 1},
 	}
-	got := orderWindowsByTree(windows, states)
+	got := orderWindowsByTree(windows, states, nil)
 	if !sameIDs(windowIDs(got), []string{"@shell", "@orphan"}) {
 		t.Fatalf("order = %v, want tmux's own order kept", windowIDs(got))
 	}
@@ -512,7 +511,7 @@ func TestOrderWindowsByTreeNests(t *testing.T) {
 		"%kid":      {ID: "kid-sess", ParentSession: "root-sess", Depth: 1},
 		"%grandkid": {ID: "gk-sess", ParentSession: "kid-sess", Depth: 1},
 	}
-	got := orderWindowsByTree(windows, states)
+	got := orderWindowsByTree(windows, states, nil)
 	if !sameIDs(windowIDs(got), []string{"@root", "@kid", "@grandkid"}) {
 		t.Fatalf("order = %v, want parent-first", windowIDs(got))
 	}
@@ -540,7 +539,7 @@ func TestOrderWindowsByTreeHandlesCycle(t *testing.T) {
 		"%a": {ID: "a-sess", ParentSession: "b-sess"},
 		"%b": {ID: "b-sess", ParentSession: "a-sess"},
 	}
-	got := orderWindowsByTree(windows, states)
+	got := orderWindowsByTree(windows, states, nil)
 	if len(got) != 2 {
 		t.Fatalf("order = %v, want both windows exactly once", windowIDs(got))
 	}
@@ -556,68 +555,72 @@ func TestOrderWindowsByTreeHandlesCycle(t *testing.T) {
 	}
 }
 
-// TestOrderWindowsByTreeFallsBackToMarkWhenRecordGone is the bug this
-// walk used to have: a finished subagent's record is removed on exit
-// (kido agent-status --remove) while its window lingers for the sweep.
-// With no record at all for the window, the parent comes from the
-// window mark instead of dropping to a root.
-func TestOrderWindowsByTreeFallsBackToMarkWhenRecordGone(t *testing.T) {
+// TestOrderWindowsByTreeFallsBackToLingeringWhenRecordGone is the bug
+// this walk used to have: a finished subagent's record is removed on
+// exit (kido agent-status --remove) while its window lingers for the
+// sweep. With no record at all for the window, the parent comes from
+// the run's own lingering entry (built from its meta file) instead of
+// dropping to a root.
+func TestOrderWindowsByTreeFallsBackToLingeringWhenRecordGone(t *testing.T) {
 	windows := [][]tmux.Pane{
 		{{PaneID: "%root", WindowID: "@root"}},
-		{deadSubagentPane("@kid", "%kid", "root-sess")},
+		{deadSubagentPane("@kid", "%kid", "run-1")},
 	}
 	states := map[string]state.Session{
 		"%root": {ID: "root-sess"},
 	}
-	got := orderWindowsByTree(windows, states)
+	lingering := map[string]lingering{"run-1": {parent: "root-sess"}}
+	got := orderWindowsByTree(windows, states, lingering)
 	if !sameIDs(windowIDs(got), []string{"@root", "@kid"}) {
 		t.Fatalf("order = %v, want the marked window to follow its marked parent", windowIDs(got))
 	}
 	if a := anchorsOf(got)["@kid"]; a != "%root" {
-		t.Errorf("anchor[@kid] = %q, want %%root: the mark says its parent is @root", a)
+		t.Errorf("anchor[@kid] = %q, want %%root: the run's meta says its parent is @root", a)
 	}
 }
 
 // TestOrderWindowsByTreeRecordBeatsStaleMark checks requirement 1: the
 // record stays authoritative whenever it exists, even one that disagrees
-// with the mark - a live subagent moved or reparented by
-// kido spawn_subagent --resume, whose window mark was written once at creation
+// with the lingering entry - a live subagent moved or reparented by
+// kido spawn_subagent --resume, whose meta was written once at creation
 // and is never rewritten to match.
 func TestOrderWindowsByTreeRecordBeatsStaleMark(t *testing.T) {
 	windows := [][]tmux.Pane{
 		{{PaneID: "%root", WindowID: "@root"}},
 		{{PaneID: "%other", WindowID: "@other"}},
-		{{PaneID: "%kid", WindowID: "@kid", Subagent: tmux.SubagentMark("run-1", "other-sess", 1)}},
+		{{PaneID: "%kid", WindowID: "@kid", Run: "run-1"}},
 	}
 	states := map[string]state.Session{
 		"%root":  {ID: "root-sess"},
 		"%other": {ID: "other-sess"},
 		"%kid":   {ID: "kid-sess", ParentSession: "root-sess"},
 	}
-	got := orderWindowsByTree(windows, states)
+	lingering := map[string]lingering{"run-1": {parent: "other-sess"}}
+	got := orderWindowsByTree(windows, states, lingering)
 	for _, pl := range got {
 		if pl.panes[0].WindowID == "@kid" && pl.anchor != "%root" {
-			t.Errorf("anchor[@kid] = %q, want %%root: the live record names root-sess, not the mark's other-sess", pl.anchor)
+			t.Errorf("anchor[@kid] = %q, want %%root: the live record names root-sess, not the lingering entry's other-sess", pl.anchor)
 		}
 	}
 }
 
-// TestOrderWindowsByTreeMarkedOrphanIsRoot is the marked counterpart of
+// TestOrderWindowsByTreeMarkedOrphanIsRoot is the fallback counterpart of
 // TestOrderWindowsByTreeIndentsOnlyRealChildren: a window whose record is
-// gone and whose mark names a parent session that is not in this
-// session (moved away, or a stale mark from a previous server) is drawn
-// flush left, not hung off whatever row precedes it.
+// gone and whose run names a parent session that is not in this session
+// (moved away, or a stale meta from a previous server) is drawn flush
+// left, not hung off whatever row precedes it.
 func TestOrderWindowsByTreeMarkedOrphanIsRoot(t *testing.T) {
 	windows := [][]tmux.Pane{
 		{{PaneID: "%shell", WindowID: "@shell"}},
-		{deadSubagentPane("@kid", "%kid", "elsewhere-sess")},
+		{deadSubagentPane("@kid", "%kid", "run-1")},
 	}
-	got := orderWindowsByTree(windows, map[string]state.Session{})
+	lingering := map[string]lingering{"run-1": {parent: "elsewhere-sess"}}
+	got := orderWindowsByTree(windows, map[string]state.Session{}, lingering)
 	if !sameIDs(windowIDs(got), []string{"@shell", "@kid"}) {
 		t.Fatalf("order = %v, want both windows kept in tmux's own order", windowIDs(got))
 	}
 	if a := anchorsOf(got)["@kid"]; a != "" {
-		t.Errorf("anchor[@kid] = %q, want none: its marked parent is in no window of this session", a)
+		t.Errorf("anchor[@kid] = %q, want none: its named parent is in no window of this session", a)
 	}
 	for _, pl := range got {
 		if pl.anchor != "" {
@@ -627,75 +630,45 @@ func TestOrderWindowsByTreeMarkedOrphanIsRoot(t *testing.T) {
 }
 
 // TestOrderWindowsByTreeMarkFallbackDropsNothing is requirement 4 for the
-// mark fallback specifically: a mark naming a parent session that
+// lingering fallback specifically: a run naming a parent session that
 // exists nowhere at all - not even in another session's row - still
 // keeps the window in the result, drawn as a root.
 func TestOrderWindowsByTreeMarkFallbackDropsNothing(t *testing.T) {
 	windows := [][]tmux.Pane{
-		{deadSubagentPane("@kid", "%kid", "nonexistent-sess")},
+		{deadSubagentPane("@kid", "%kid", "run-1")},
 	}
-	got := orderWindowsByTree(windows, map[string]state.Session{})
+	lingering := map[string]lingering{"run-1": {parent: "nonexistent-sess"}}
+	got := orderWindowsByTree(windows, map[string]state.Session{}, lingering)
 	if !sameIDs(windowIDs(got), []string{"@kid"}) {
-		t.Fatalf("order = %v, want the window kept even though its marked parent doesn't exist", windowIDs(got))
+		t.Fatalf("order = %v, want the window kept even though its named parent doesn't exist", windowIDs(got))
 	}
-}
-
-// TestRenderNestsADeadSubagentForTheWholeLinger is the bug report itself,
-// as a rendered screen: a finished subagent's record is removed while
-// its dead-paned window lingers for the sweep, and it must stay nested
-// under its parent's pane rather than jump to the left margin for the
-// whole linger.
-func TestRenderNestsADeadSubagentForTheWholeLinger(t *testing.T) {
-	panes := []tmux.Pane{
-		agentPane("@13", "%22", "orchestrator"),
-		deadSubagentPane("@20", "%30", "root-sess"),
-	}
-	states := map[string]state.Session{
-		"%22": agentState("root-sess", "", "orchestrator"),
-	}
-	// Before the fix this rendered as two flush-left rows: "sess",
-	// "╶◼ orchestrator", "╶ " (the dead pane un-nested at the left
-	// margin, no longer indented under its parent) - exactly during the
-	// window the user is most likely to be looking at it to read its last
-	// screen.
-	wantRows(t, renderRows(panes, states), []string{
-		"sess",
-		"╶◼ orchestrator",
-		"  └  ",
-	})
 }
 
 // lingeringSubagentPane is a finished subagent's window carrying a real
-// run id in its mark, unlike deadSubagentPane's empty one, so
-// lingeringSubagents has something to look up on disk.
-func lingeringSubagentPane(w, pane, runID, parentSession string) tmux.Pane {
-	return tmux.Pane{
-		SessionName: "sess", WindowID: w, PaneID: pane,
-		Dead: true, Subagent: tmux.SubagentMark(runID, parentSession, 1), SubagentPane: runID,
-	}
+// run id in its @kido_run option, so lingeringSubagents has something to
+// look up on disk.
+func lingeringSubagentPane(w, pane, runID string) tmux.Pane {
+	return tmux.Pane{SessionName: "sess", WindowID: w, PaneID: pane, Dead: true, Run: runID}
 }
 
-// liveSubagentPane is lingeringSubagentPane's alive twin: a marked window
-// with a real run id but no state record for its pane, and Dead false -
-// a plain `bash` run for its whole life, or an agent run in the window
-// between new-window and its first status report.
-func liveSubagentPane(w, pane, runID, parentSession string) tmux.Pane {
-	return tmux.Pane{
-		SessionName: "sess", WindowID: w, PaneID: pane,
-		Dead: false, Subagent: tmux.SubagentMark(runID, parentSession, 1), SubagentPane: runID,
-	}
+// liveSubagentPane is lingeringSubagentPane's alive twin: a run pane with
+// no state record for it yet, and Dead false - a plain `bash` run for its
+// whole life, or an agent run in the window between new-window and its
+// first status report.
+func liveSubagentPane(w, pane, runID string) tmux.Pane {
+	return tmux.Pane{SessionName: "sess", WindowID: w, PaneID: pane, Dead: false, Run: runID}
 }
 
 // newRun writes a run's meta (and, if result != "", its outcome) under a
 // fresh KIDO_STATE_DIR and returns its id.
-func newRun(t *testing.T, name string, result subrun.Result) string {
+func newRun(t *testing.T, name, parent string, result subrun.Result) string {
 	t.Helper()
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	id := subrun.NewID()
 	if err := subrun.Create(id, "task"); err != nil {
 		t.Fatal(err)
 	}
-	if err := subrun.WriteMeta(subrun.Meta{ID: id, Name: name}); err != nil {
+	if err := subrun.WriteMeta(subrun.Meta{ID: id, Name: name, ParentSession: parent}); err != nil {
 		t.Fatal(err)
 	}
 	if result != "" {
@@ -712,8 +685,8 @@ func newRun(t *testing.T, name string, result subrun.Result) string {
 // a dead pane's is; the live bug reads "pi", but either way it is not
 // the run's name).
 func TestRenderLingeringSubagentShowsItsOwnName(t *testing.T) {
-	id := newRun(t, "fix the flaky test", "")
-	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
+	id := newRun(t, "fix the flaky test", "", "")
+	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id)}
 	rows := renderRows(panes, nil)
 	wantRows(t, rows, []string{
 		"sess",
@@ -726,8 +699,8 @@ func TestRenderLingeringSubagentShowsItsOwnName(t *testing.T) {
 // this task adds must not collide with anything indicator() or
 // indicatorDone()/indicatorFailed() already draws for a live pane.
 func TestRenderLingeringSubagentLooksDead(t *testing.T) {
-	id := newRun(t, "subagent", "")
-	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
+	id := newRun(t, "subagent", "", "")
+	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id)}
 	rows := renderRows(panes, nil)
 	row := rows[1]
 	if !strings.Contains(row, "×") {
@@ -748,8 +721,8 @@ func TestRenderLingeringSubagentLooksDead(t *testing.T) {
 // gets - labelled from the run's own meta name, not dimmed like the
 // tombstone.
 func TestRenderLiveMarkedPaneWithNoRecordShowsRunning(t *testing.T) {
-	id := newRun(t, "make build", "")
-	panes := []tmux.Pane{liveSubagentPane("@20", "%30", id, "")}
+	id := newRun(t, "make build", "", "")
+	panes := []tmux.Pane{liveSubagentPane("@20", "%30", id)}
 	wantRows(t, renderRows(panes, nil), []string{
 		"sess",
 		"╶◼ make build",
@@ -763,8 +736,8 @@ func TestRenderLiveMarkedPaneWithNoRecordShowsRunning(t *testing.T) {
 // A dead pane keeps exactly today's tombstone: the dimmed name and, once
 // recorded, its outcome.
 func TestRenderDeadMarkedPaneWithNoRecordStaysTombstone(t *testing.T) {
-	id := newRun(t, "make build", "")
-	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
+	id := newRun(t, "make build", "", "")
+	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id)}
 	wantRows(t, renderRows(panes, nil), []string{
 		"sess",
 		"╶× make build",
@@ -773,17 +746,13 @@ func TestRenderDeadMarkedPaneWithNoRecordStaysTombstone(t *testing.T) {
 
 // TestRenderSplitPaneOfALiveRunIsAnOrdinaryPane is the bug itself: the
 // user split a running bash/agent window, and the split pane must draw
-// as a plain shell rather than as a second copy of the run. Only the
-// pane createRunWindow actually marked with SubagentPane carries the
-// running label; its sibling, which inherits the window-scoped Subagent
-// through tmux's own option fallback but carries no SubagentPane of its
-// own, falls through to the ordinary pane path.
+// as a plain shell rather than as a second copy of the run. @kido_run is
+// pane-scoped and never falls back, so the split - which carries no
+// option of its own - just isn't the run's pane.
 func TestRenderSplitPaneOfALiveRunIsAnOrdinaryPane(t *testing.T) {
-	id := newRun(t, "make build", "")
-	runPane := liveSubagentPane("@20", "%30", id, "")
-	runPane.SubagentPane = id
+	id := newRun(t, "make build", "", "")
+	runPane := liveSubagentPane("@20", "%30", id)
 	split := shellPane("@20", "%31")
-	split.Subagent = runPane.Subagent // the window mark, inherited by every pane
 	wantRows(t, renderRows([]tmux.Pane{runPane, split}, nil), []string{
 		"sess",
 		"┌◼ make build",
@@ -796,16 +765,14 @@ func TestRenderSplitPaneOfALiveRunIsAnOrdinaryPane(t *testing.T) {
 // idle) and split it, leaving the window [zsh split %5, pi %4] in tmux's
 // own list-panes order - the split newer and so, under split -b, listed
 // first. Sorted to creation order (tmux.OrderSessions) the reported pi
-// %4 comes first regardless, its own SubagentPane keeps the zsh split
-// from ever being mistaken for the run, and the two-pane anchored window
+// %4 comes first regardless, its own @kido_run keeps the zsh split from
+// ever being mistaken for the run, and the two-pane anchored window
 // draws its own bracket beside the group glyph rather than losing row 0
 // to it.
 func TestRenderReproducesTheLiveSplitBugReport(t *testing.T) {
 	pi := agentPane("@20", "%4", "helper")
-	pi.SubagentPane = "run-1"
-	pi.Subagent = tmux.SubagentMark("run-1", "root-sess", 1)
+	pi.Run = "run-1"
 	split := shellPane("@20", "%5")
-	split.Subagent = pi.Subagent // the window mark, inherited by every pane
 	panes := []tmux.Pane{
 		agentPane("@13", "%22", "working-on-kido"),
 		split, // listed before pi, as tmux would after `split-window -b`
@@ -850,8 +817,8 @@ func TestRenderLiveSubagentWithRecordUnaffected(t *testing.T) {
 // ended, the row shows it. A completed run also swaps the glyph for a
 // dimmed checkmark rather than the cross - see TestRenderLingeringSubagentGlyphByOutcome.
 func TestRenderLingeringSubagentShowsOutcome(t *testing.T) {
-	id := newRun(t, "subagent", subrun.Completed)
-	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
+	id := newRun(t, "subagent", "", subrun.Completed)
+	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id)}
 	wantRows(t, renderRows(panes, nil), []string{
 		"sess",
 		"╶✓ subagent  completed",
@@ -876,8 +843,8 @@ func TestRenderLingeringSubagentGlyphByOutcome(t *testing.T) {
 		{subrun.Stopped, "×"},
 	}
 	for _, c := range cases {
-		id := newRun(t, "subagent", c.result)
-		panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
+		id := newRun(t, "subagent", "", c.result)
+		panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id)}
 		row := renderRows(panes, nil)[1]
 		if !strings.Contains(row, c.glyph) {
 			t.Errorf("result %q: row = %q, want glyph %q", c.result, row, c.glyph)
@@ -898,8 +865,8 @@ func TestRenderLingeringSubagentGlyphByOutcome(t *testing.T) {
 // only its arrival, already covered by TestRenderLingeringSubagentInventsNoOutcome,
 // turns the row from a name into a verdict.
 func TestRenderLingeringSubagentNoOutcomeKeepsCross(t *testing.T) {
-	id := newRun(t, "subagent", "")
-	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
+	id := newRun(t, "subagent", "", "")
+	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id)}
 	row := renderRows(panes, nil)[1]
 	if !strings.Contains(row, "×") {
 		t.Errorf("row = %q, want the cross while no outcome is recorded", row)
@@ -914,8 +881,8 @@ func TestRenderLingeringSubagentNoOutcomeKeepsCross(t *testing.T) {
 // writes Died a moment later for a genuine crash and "not known yet" is
 // the honest answer until then.
 func TestRenderLingeringSubagentInventsNoOutcome(t *testing.T) {
-	id := newRun(t, "subagent", "")
-	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
+	id := newRun(t, "subagent", "", "")
+	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id)}
 	row := renderRows(panes, nil)[1]
 	for _, guess := range []string{"completed", "failed", "stopped", "died"} {
 		if strings.Contains(row, guess) {
@@ -952,7 +919,7 @@ func TestRenderLiveSubagentUnaffectedByLingering(t *testing.T) {
 // the row falls back to the plain pane-command label it always had.
 func TestRenderLingeringSubagentMissingRunDirDegradesGracefully(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", "no-such-run", "")}
+	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", "no-such-run")}
 	rows := renderRows(panes, nil)
 	wantRows(t, rows, []string{
 		"sess",
@@ -975,8 +942,8 @@ func TestRenderLingeringSubagentMissingRunDirDegradesGracefully(t *testing.T) {
 // sweep on its behalf - and it is the only thing about the row still
 // able to change.
 func TestLingeringSubagentsCarryForward(t *testing.T) {
-	id := newRun(t, "subagent", "")
-	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id, "")}
+	id := newRun(t, "subagent", "", "")
+	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id)}
 
 	first := lingeringSubagents(panes, nil, nil)
 	if first[id].name != "subagent" || first[id].outcomeOK {
@@ -999,45 +966,16 @@ func TestLingeringSubagentsCarryForward(t *testing.T) {
 	}
 }
 
-// TestLingeringSubagentsRecoversPaneSeenLate pins the real race the split
-// fix has: createRunWindow issues the window mark and the pane mark as
-// two separate tmux commands, so a tick that reacts to the window's own
-// %window-add notification can poll in between them, before the pane
-// mark exists at all - measured live, in
-// TestSidebarShowsASplitBashRunPaneAsAnOrdinaryShell (e2e), which failed
-// every run against the version of this function that only ever set
-// `pane` once, at creation. Reusing that first, paneless reading forever
-// would draw every unreported pane of the window as the run for its
-// whole life, exactly the bug this whole change fixes - so the pane must
-// be recovered from a later tick's panes rather than frozen empty.
-func TestLingeringSubagentsRecoversPaneSeenLate(t *testing.T) {
-	id := newRun(t, "split-e2e", "")
-	runPane := liveSubagentPane("@20", "%1", id, "")
-	// The first tick observes the window mark but not yet the pane mark,
-	// as a tick landing between the two separate set-option calls would.
-	runPane.SubagentPane = ""
-	first := lingeringSubagents([]tmux.Pane{runPane}, nil, nil)
-	if first[id].pane != "" {
-		t.Fatalf("first read pane = %q, want \"\" (the pane mark not observed yet)", first[id].pane)
-	}
-
-	runPane.SubagentPane = id
-	split := shellPane("@20", "%2")
-	split.Subagent = runPane.Subagent
-	next := lingeringSubagents([]tmux.Pane{runPane, split}, nil, first)
-	if next[id].pane != "%1" {
-		t.Errorf("pane = %q after the pane mark appeared, want %%1 recovered rather than staying \"\" forever", next[id].pane)
-	}
-}
-
-// TestRenderLingeringSubagentStillNests is f430308's fix, checked again
-// with a real run id in the mark rather than the empty one
-// deadSubagentPane uses: the identity fix must not cost the place fix.
+// TestRenderLingeringSubagentStillNests is f430308's fix (a dead
+// subagent must stay nested under its parent's pane for the whole
+// linger, not jump to the left margin the instant its state record is
+// removed), checked with a real run id whose meta carries the parent,
+// since that is lingeringSubagents' only source once the record is gone.
 func TestRenderLingeringSubagentStillNests(t *testing.T) {
-	id := newRun(t, "subagent", "")
+	id := newRun(t, "subagent", "root-sess", "")
 	panes := []tmux.Pane{
 		agentPane("@13", "%22", "orchestrator"),
-		lingeringSubagentPane("@20", "%30", id, "root-sess"),
+		lingeringSubagentPane("@20", "%30", id),
 	}
 	states := map[string]state.Session{
 		"%22": agentState("root-sess", "", "orchestrator"),
@@ -1068,7 +1006,7 @@ func TestOrderWindowsByTreeAnchorsToTheSecondAgentPaneInAWindow(t *testing.T) {
 		"%kid1": {ID: "kid1-sess", ParentSession: "top-sess", Depth: 1},
 		"%kid2": {ID: "kid2-sess", ParentSession: "second-sess", Depth: 1},
 	}
-	got := orderWindowsByTree(windows, states)
+	got := orderWindowsByTree(windows, states, nil)
 	anchors := anchorsOf(got)
 	if anchors["@kid1"] != "%21" {
 		t.Errorf("anchor[@kid1] = %q, want %%21 (negative control: a child of the window's first agent pane)", anchors["@kid1"])
@@ -1113,7 +1051,7 @@ func TestOrderWindowsByTreeFollowsARestartedParent(t *testing.T) {
 		"%root": {ID: "root-sess"},
 		"%kid":  {ID: "kid-sess", ParentSession: "root-sess", Depth: 1},
 	}
-	got := orderWindowsByTree(windows, states)
+	got := orderWindowsByTree(windows, states, nil)
 	if a := anchorsOf(got)["@kid"]; a != "%root" {
 		t.Errorf("anchor[@kid] = %q, want %%root", a)
 	}

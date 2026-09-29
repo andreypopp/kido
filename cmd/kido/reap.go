@@ -34,7 +34,7 @@ func reapCmd(args []string) error {
 	// Every close is best effort - another sweep, or the linger helper, may
 	// have got there first, and each of them is racing the others by design.
 	for _, c := range closing {
-		releaseOps().Release(panes, c) //nolint:errcheck // best effort, see above
+		releaseOps().Release(c) //nolint:errcheck // best effort, see above
 	}
 	// After the closes, because this is the one observer that may block:
 	// a notice is a socket round trip to an agent that might be wedged,

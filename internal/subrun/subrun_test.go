@@ -30,7 +30,7 @@ func TestCreateWritesMetaAndTask(t *testing.T) {
 	if err := Create(id, "do the thing"); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteMeta(Meta{ID: id, Name: "kid", Depth: 1, Window: "@1", Pane: "%1", Cwd: "/tmp", StartedAt: time.Now()}); err != nil {
+	if err := WriteMeta(Meta{ID: id, Name: "kid", Depth: 1, Pane: "%1", Cwd: "/tmp", StartedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -38,7 +38,7 @@ func TestCreateWritesMetaAndTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Name != "kid" || got.Depth != 1 || got.Window != "@1" {
+	if got.Name != "kid" || got.Depth != 1 || got.Pane != "%1" {
 		t.Errorf("ReadMeta = %+v, want it to round-trip what WriteMeta wrote", got)
 	}
 
