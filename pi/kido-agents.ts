@@ -1,35 +1,3 @@
-/**
- * kido-agents — let a pi session see, message and delegate to the other
- * agents in its tmux session.
- *
- * This is the agent-coordination half of kido's pi support; the other half,
- * kido-status.ts, reports this session's status and owns the inbox socket.
- * They meet at the seam kido-status.ts declares; nothing but types is
- * imported from it. Install them together (see pi/README.md); this half
- * alone registers its tools but reports kido as unavailable from all of
- * them.
- *
- * Tools:
- *   `list_agents()`, `set_status(activity)`, `message_agent(to, message,
- *   replyTo?)`, `ask_agent(to, question, timeoutMs?)`, `spawn_subagent(task,
- *   name?, model?, tools?)`, `interrupt_subagent(to)`, `stop_subagent(to,
- *   force?)`, `async_bash(command, name?)` and `notify_parent(summary)` all
- *   shell out to a kido subcommand, asynchronously. They register
- *   unconditionally at factory time and no-op at call time until
- *   session_start has resolved kido and a session id, since pi may run
- *   the factory in invocations that never start a session. ask_agent
- *   waits here, in the extension, because only a
- *   long-lived process has an inbox for the reply to arrive on. A subagent
- *   is told to call notify_parent by a standing instruction appended to its
- *   own system prompt (before_agent_start), since nothing calls it for the
- *   model. The rules behind each tool are in docs/design.md.
- *
- * Inbox dispatch:
- *   Everything arriving on kido-status.ts's inbox socket that parses as a
- *   v1 envelope is handed to handleEnvelope below and dispatched by kind;
- *   plain v0 prompt text never reaches this file at all.
- */
-
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -50,9 +18,7 @@ import type {
   Status,
 } from "./kido-status.ts";
 
-// The seam kido-status.ts declares, spelled out again rather than
-// imported: importing a runtime value from kido-status.ts would evaluate
-// a second copy of that file.
+// Spelled out again rather than imported: importing kido-status.ts would evaluate a second copy of it.
 const SEAM = Symbol.for("kido.pi.extension.seam");
 
 function seam(): Seam {
@@ -60,55 +26,23 @@ function seam(): Seam {
   return (g[SEAM] ??= { host: null, agents: null });
 }
 
-// Every call into kido goes through the status half, which is read at
-// call time, never at factory time: pi may run this factory first.
+// Read at call time, not factory time: pi may run this factory before session_start.
 function runKido(args: string[], opts: { input?: string; timeoutMs: number }): Promise<RunKidoResult> {
   return seam().host?.runKido(args, opts) ?? Promise.resolve({ ok: false, error: "kido-status.ts is not loaded" });
 }
 
 const reply = (text: string, details: unknown = {}) => ({ content: [{ type: "text" as const, text }], details });
 
-// Read again here rather than shared across the seam: constants of this
-// process, so two readers cannot disagree. This session's own id, which
-// pi hands out rather than the environment, comes from the host instead.
-// What kido spawn_subagent set for a child is not the same as what this
-// process is - see ownRunID below.
 const PARENT_PID = process.env.KIDO_AGENT_PARENT_PID ? Number(process.env.KIDO_AGENT_PARENT_PID) : undefined;
 const PARENT_SESSION = process.env.KIDO_AGENT_PARENT_SESSION || undefined;
 const RUN_ID = process.env.KIDO_AGENT_RUN_ID || undefined;
 
-// ownRunID answers the only question every subagent-specific behaviour
-// below actually means: is THIS process the child of that run, or
-// something that merely inherited a child's environment? It returns the
-// run id when it is ours, and null otherwise.
-//
-// The environment alone cannot answer it. Every KIDO_AGENT_* variable is
-// inherited by anything an agent's process starts - a human running `pi`
-// or `pi --print` in an agent's pane, a tool shelling out to one - so a
-// parent edge is a claim any descendant can make, and this file used to
-// take it. A nested pi then resolved "self" by pane, found the real
-// agent's record, scheduled `kido close-run` on the real agent's
-// window on its way out, and would have offered someone else's parent a
-// report. Two live agents were killed that way.
-//
-// So the claim is checked against a fact about this process instead. By
-// design the run id IS the child's pi session id (docs/design.md, "The
-// run id is the child's session id"): a fresh spawn runs
-// `pi --session-id <run-id>` and a resume `pi --session <run-id>`. A
-// nested pi inherits the run id but mints a session id of its own, so it
-// can never satisfy the equality, while the real child satisfies it on
-// both paths. The one thing this gives up is a child spawned as some
-// wrapper command that itself execs pi: that pi is a session of its own,
-// not the run, and is now treated as the root session it is.
-//
-// A session id that is not known yet reads as "not a subagent". That is
-// the safe direction - the damage in the incident was all in acting - and
-// it costs a real child nothing: kido-status.ts resolves the id inside
-// session_start, before it calls any hook here and long before any turn
-// or tool call, so every caller below already has it. The states where it
-// stays null are the ones where pi is outside tmux or kido is off PATH,
-// where a child could not report an outcome, close a window or reach a
-// parent anyway.
+// Whether this process is the actual child of the run named by RUN_ID, not merely a
+// process that inherited a subagent's environment (any descendant of an agent's shell
+// does, e.g. a nested `pi` or `pi --print`). The run id is by design the child's own pi
+// session id (docs/design.md, "The run id is the child's session id"): a nested pi mints
+// a session id of its own and can never satisfy the equality, while the real child
+// always does. An id not known yet reads as "not a subagent", the safe direction.
 function ownRunID(): string | null {
   if (PARENT_SESSION === undefined || RUN_ID === undefined) return null;
   return seam().host?.sessionId() === RUN_ID ? RUN_ID : null;
@@ -116,16 +50,9 @@ function ownRunID(): string | null {
 
 const isSubagent = (): boolean => ownRunID() !== null;
 
-// What notify_parent's schema tells the model, and nothing more. The bound
-// is `kido notify_parent`'s own: a report over it is written to the run's
-// directory whole and the parent is sent its head plus that path.
-// Enforcing it here too would be the tool throwing away what the command
-// exists to keep.
 const MAX_NOTICE_BYTES = 4000;
 
-// capBytes cuts on a code-point boundary, never mid-sequence, mirroring
-// kido-status.ts's own (a naive byte slice can split a multi-byte
-// character and come back longer than the cap it was enforcing).
+// Cuts on a code-point boundary, never mid-sequence, so a multi-byte character is never split.
 function capBytes(text: string, max: number): string {
   if (Buffer.byteLength(text, "utf8") <= max) return text;
   let out = "";
@@ -139,94 +66,50 @@ function capBytes(text: string, max: number): string {
   return out;
 }
 
-// The task text `kido spawn_subagent` left for us to deliver as our first message.
 const TASK_FILE = process.env.KIDO_AGENT_TASK_FILE || undefined;
 
-// The knobs below are read once at module scope, so they are set only via
-// the environment and a test re-imports the module to change them.
+// Read once at module scope; a test re-imports the module to change one.
 
-// LINGER_SECONDS is how long a finished subagent's window stays open
-// before the linger helper may close it. kido's sweep (internal/reap)
-// reads the same variable, and must, or one side closes it first.
+// Shared with internal/reap's sweep - both must read the same variable, or one side closes a window first.
 const LINGER_SECONDS = Number(process.env.KIDO_LINGER_SECONDS) || 30;
 
-// A subagent's pi is a child of the tmux server, not of the parent's pi,
-// so no OS parent-death signal reaches it; it polls instead.
+// A subagent's pi is a child of the tmux server, not of the parent's pi, so no OS parent-death signal reaches it; it polls instead.
 const PARENT_LIVENESS_POLL_MS = Number(process.env.KIDO_PARENT_POLL_MS) || 5000;
 
-// IDLE_EXIT_MS is how long a subagent sits idle after a settled turn
-// before it shuts itself down (docs/design.md, "Idle self-exit"). Not the
-// same figure as LINGER_SECONDS above, even though both default to 30:
-// this one is idle-to-self-shutdown, entirely inside the child's own
-// process, and only once it fires does endOwnRun's linger helper
-// start the second, independent 30s window-linger
-// clock. The two stack; nothing here may fold them into one number.
+// Idle-to-self-shutdown, entirely inside the child's process; only once it fires does
+// endOwnRun's linger helper start the second, independent LINGER_SECONDS clock. The two
+// stack, even though both default to 30 - not the same clock.
 const IDLE_EXIT_MS = (Number(process.env.KIDO_IDLE_EXIT_SECONDS) || 30) * 1000;
 
-// KEEP_ALIVE opts a child out of idle self-exit entirely, for a
-// deliberately long-lived helper (spawn_subagent's keepAlive argument,
-// plumbed through as KIDO_AGENT_KEEP_ALIVE by kido spawn_subagent --keep-alive).
 const KEEP_ALIVE = process.env.KIDO_AGENT_KEEP_ALIVE === "1";
 
-// How long spawn_subagent waits for `kido spawn_subagent` before treating it as hung.
 const SPAWN_TIMEOUT_MS = Number(process.env.KIDO_SPAWN_TIMEOUT_MS) || 5000;
 
-// How long stop_subagent waits for `kido stop_subagent`, which can itself
-// block for stopEscalation (cmd/kido/control.go, default 5s), so this
-// must comfortably exceed that.
+// Must comfortably exceed stopEscalation (cmd/kido/control.go, default 5s), which `kido stop_subagent` can itself block for.
 const STOP_TIMEOUT_MS = Number(process.env.KIDO_STOP_TIMEOUT_MS) || 8000;
 
-// ask_agent's default wait: a full turn of the target's latency, not a
-// round-trip.
 const DEFAULT_ASK_TIMEOUT_MS = 5 * 60 * 1000;
 
-// How often a waiting ask re-reads whether its target is still running.
-// Nothing pushes a death at the asker, and an answer can only come from a
-// process that still exists, so this is the one thing standing between a
-// target dying mid-wait and the asker sitting out its whole timeoutMs.
+// Nothing pushes a target's death at the asker; this is what stops the asker sitting out its whole timeoutMs after the target dies mid-wait.
 const ASK_LIVENESS_POLL_MS = Number(process.env.KIDO_ASK_POLL_MS) || 5000;
 
-// How stale the `@name` completion's agent list may get before a
-// keystroke kicks a background refresh. Never waited on: the list in hand
-// is what the editor is offered, however old it is.
+// Never waited on: the list in hand is what the editor is offered, however old it is.
 const AGENT_LIST_TTL_MS = Number(process.env.KIDO_AGENT_LIST_TTL_MS) || 1000;
 
-// The most agents `@` offers at once, ahead of whatever files the
-// built-in provider found for the same token.
 const MAX_AGENT_COMPLETIONS = 10;
 
-// atToken reads the `@`-token the cursor sits in, or undefined for a
-// cursor that is not in one. It must agree with pi's own
-// CombinedAutocompleteProvider (extractAtPrefix: the token back to the
-// last delimiter, when it starts with "@"), since the merged list below
-// carries one prefix for the agents and the files both.
+// Must agree with pi's own CombinedAutocompleteProvider (extractAtPrefix), since the merged list below carries one prefix for the agents and the files both.
 function atToken(textBeforeCursor: string): string | undefined {
   const m = textBeforeCursor.match(/(?:^|\s)@([^\s@]*)$/);
   return m ? m[1] : undefined;
 }
 
-// The custom message type an inbound notice is delivered as, matched by
-// registerMessageRenderer below.
 const NOTICE_CUSTOM_TYPE = "kido-notice";
 
-// noticeHeader is the one line prefixed to a notice's own text before the
-// model sees it: a notice arrives in the middle of a turn and otherwise
-// reads exactly like the user having typed it. The renderer below takes
-// this same line back off, since the transcript already says who a
-// notification is from. The plain "message" kind deliberately carries no
-// such label (docs/design.md, "The inbox").
 const noticeHeader = (from: string): string => `notice from ${from} (a subagent or background run's report, not the user):`;
 
-// The custom message type an inbound plain message from another agent is
-// delivered as, matched by registerMessageRenderer below. A message with
-// no agent behind it is the user speaking and is not one of these.
 const MESSAGE_CUSTOM_TYPE = "kido-message";
 
-// How a message's sender stands to this session. The three are not
-// interchangeable: a parent is the nearest thing a child has to the user,
-// so its instructions carry that weight and the header says so rather
-// than disclaiming it; a child's message is a report from work this
-// session started; anything else is a peer, whose message is neither.
 type SenderRelation = "parent" | "child" | "peer";
 
 const MESSAGE_RELATION: Record<SenderRelation, string> = {
@@ -235,34 +118,14 @@ const MESSAGE_RELATION: Record<SenderRelation, string> = {
   peer: "another agent in this session, not the user",
 };
 
-// senderHeader is the one line prefixed to an agent's message or ask
-// before the model sees it, for the reason noticeHeader exists: delivered
-// as a user message, it otherwise reads exactly like the user typing, and
-// who is talking is the one thing the model cannot infer from the text.
-// An ask is headed the same way a message is, since who is asking and how
-// they stand to this session is the same question either kind raises. The
-// message renderer below takes the line back off and leaves the sender,
-// since a human reading the transcript has the sidebar's tree beside it.
 const senderHeader = (kind: "message" | "ask", from: string, relation: SenderRelation): string =>
   `${kind} from @${from} (${MESSAGE_RELATION[relation]}):`;
 
-// The custom message type an inbound ask is delivered as, matched by
-// registerMessageRenderer below - the same treatment an agent's plain
-// message gets, so the id and reply instructions the model needs
-// do not also land in a human's transcript.
 const ASK_CUSTOM_TYPE = "kido-ask";
 
-// The custom message type a batch of a streaming run's output is
-// delivered as, rendered collapsed exactly as a notice is.
 const STREAM_CUSTOM_TYPE = "kido-stream";
 
-// The user-role line that starts a turn for an arrival that found the
-// session idle (see wake below). Short and neutral by necessity: pi has no
-// renderer for a user message - registerMessageRenderer covers custom
-// messages only - so whatever this says is in the transcript for good, and
-// the model reads it as the user's own words. The arrival itself follows
-// immediately, carrying the sender, the text and every instruction, so
-// this says no more than which kind is coming.
+// pi has no renderer for a user message, so this line is in the transcript for good; kept short and neutral.
 type CustomType = "kido-message" | "kido-notice" | "kido-ask" | "kido-stream";
 
 const WAKE_TRIGGERS: Record<CustomType, string> = {
@@ -272,37 +135,21 @@ const WAKE_TRIGGERS: Record<CustomType, string> = {
   "kido-stream": "(kido: a background run's output follows)",
 };
 
-// STREAM_FLUSH_MS and STREAM_FLUSH_CAP_MS are the idle flush schedule: a
-// batch held because no turn was free is flushed after the first, then
-// after twice that, capped at the second. Each one of those costs a turn,
-// which is why it slows down; the doubling and the cap are the whole
-// bound on what a long-running build costs an idle agent
-// (docs/design-subagents.md, "Streaming a run's output").
+// The idle flush schedule: a held batch is flushed after the first delay, then after
+// twice that, capped at the second - the whole bound on what a long-running build costs
+// an idle agent, each flush costing a turn.
 const STREAM_FLUSH_MS = Number(process.env.KIDO_STREAM_FLUSH_MS) || 10000;
 const STREAM_FLUSH_CAP_MS = Number(process.env.KIDO_STREAM_FLUSH_CAP_MS) || 300000;
 
-// nextStreamFlushDelay is the idle schedule, as a function of nothing but
-// the last delay: double it, stop at the cap.
 export function nextStreamFlushDelay(prev: number): number {
   return Math.min(prev * 2, STREAM_FLUSH_CAP_MS);
 }
 
-// What one batch may carry: the last of it, for the reason the completion
-// notice carries a tail rather than a head. Everything cut is still in
-// the run's output file, which the batch names.
 const STREAM_BATCH_LINES = 200;
 const STREAM_BATCH_BYTES = 16 * 1024;
 
-// How many lines a held buffer keeps before it starts dropping its own
-// oldest. Above the batch cap by enough that the omitted count a batch
-// reports is the real one for any ordinary burst, and bounded because a
-// parent that never gets a free turn must not grow without limit.
 const STREAM_BUFFER_LINES = 5000;
 
-// streamBatch is the per-batch cap, as a function of nothing but its
-// arguments so it can be checked as one: the last STREAM_BATCH_LINES
-// lines or STREAM_BATCH_BYTES, whichever binds first, preceded by one
-// line saying how many were left out and where they can be read.
 export function streamBatch(lines: string[], output: string, alreadyDropped = 0): string {
   let start = Math.max(0, lines.length - STREAM_BATCH_LINES);
   let bytes = 0;
@@ -313,53 +160,28 @@ export function streamBatch(lines: string[], output: string, alreadyDropped = 0)
       break;
     }
   }
-  // Never nothing: one line longer than the whole budget still goes, cut
-  // to it, since a batch of pure bookkeeping tells the model less than a
-  // truncated line does.
+  // One line longer than the whole budget still goes, cut to it: never nothing.
   if (start >= lines.length && lines.length > 0) start = lines.length - 1;
   const kept = lines.slice(start).map((l) => capBytes(l, STREAM_BATCH_BYTES));
-  // Lines the buffer itself dropped while waiting for a free turn count
-  // here too: one number the model can trust, not one per mechanism.
   const omitted = lines.length - kept.length + alreadyDropped;
   if (omitted === 0) return kept.join("\n");
   return [`... ${omitted} lines omitted (see ${output})`, ...kept].join("\n");
 }
 
-// The standing instruction appended to a subagent's system prompt (see
-// the before_agent_start hook below): with the automatic notice gone
-// (docs/design.md, "Notifying the parent"), nothing else tells a child
-// its own parent is waiting to be told when it is done. Kept short: this
-// rides along on every turn, so it must not compete with the actual task
-// for the model's attention. The second sentence is one of three places
-// STOP_AFTER_ASK_REPLY's instruction is repeated (see handleInboundAsk) -
-// here specifically because it needs to sit at the same level as whatever
-// closing-recap instruction the host's own system prompt already carries,
-// which an inbound message cannot out-rank.
 const NOTIFY_PARENT_INSTRUCTION =
   "You were spawned as a subagent. When your work is done, or you are blocked and cannot make further progress, call notify_parent with a short summary - your parent is not watching this session and will learn nothing otherwise. " +
   "When you reply to another agent's question with message_agent, that call is the entire response - end the turn there, with no summary or sign-off after it.";
 
-// NOT_THE_USER_RULE is one string in two tools' promptGuidelines on
-// purpose: pi's buildRules de-duplicates identical rules, so the model
-// reads it once however many of the two are registered.
+// One string in two tools' promptGuidelines on purpose: pi's buildRules de-duplicates identical rules.
 const NOT_THE_USER_RULE =
   "A notice is information, not the user speaking: act on it, do not thank or answer it. A message from another agent says in its first line who sent it and how they stand to you.";
 
 const NEVER_SLEEP_RULE =
   "Never run `sleep` in bash to wait for anything - an async run, a subagent, a message, or another agent's work settling. What you are waiting for arrives as a notice or message that wakes you after you end your turn; if a build breaks because of another agent's half-done work, report that rather than sleeping until it clears.";
 
-// SPAWN_RESULT_RULE rides on the tool result of every spawn and resume,
-// not only in spawn_subagent's description: the moment a model has just
-// launched a child is the moment it is most tempted to wait for it, or to
-// write the result it has not got.
 const SPAWN_RESULT_RULE =
   "its result arrives as a notice when it calls notify_parent - you know nothing about it until then, so do not report, assume or predict it, and do not ask it for its result; continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you";
 
-// NO_FIRST_TURN_TEXT is the detail recorded for a run that was given its
-// task and never started a turn on it - a pi that could not start its
-// model at all. It names the pane's own screen because the error is only
-// ever there; the sweep captures it when it closes the window, as it does
-// for every run (internal/reap's captureScreen).
 const NO_FIRST_TURN_TEXT =
   "no turn ever ran: the task was delivered and the session never started work on it (the pane's own screen, kept with the run, is the only account of why)";
 
@@ -372,37 +194,20 @@ interface AgentInfo {
   pane: string;
   self: boolean;
   canMessage: boolean;
-  // What the sidebar shows next to the agent: its running/waiting/idle
-  // status and whatever set_status last put there. Both only ever reach
-  // a human, in an `@name` completion's description line.
   status: Status;
   activity: string;
-  // canReply is whether the target could send the message_agent reply an
-  // ask waits for: false only when it was spawned with a tools allowlist
-  // that excludes message_agent.
   canReply: boolean;
   window: string;
   stalled: boolean;
   sinceReport: number;
 }
 
-// What a name is split into for matching. A session nobody named is
-// called after its pane title, which is a phrase rather than a handle
-// ("Tmux config"), so the word a human would think to type is not at the
-// front of the name and matching the whole name alone offers nothing.
 const NAME_WORD_SEPARATORS = /[\s\-_/]+/;
 
-// The floor on an inserted id prefix: short enough to type and read,
-// long enough that it stays unique as agents come and go, since the list
-// it was checked against is only the one on screen at the time.
 const MIN_ID_PREFIX = 8;
 
-// completionValue is what accepting a row inserts. A name carrying
-// whitespace cannot survive as one `@` token - the editor's own token
-// ends at the space, and so does atToken - so that agent is addressed by
-// the shortest prefix of its id that is at least MIN_ID_PREFIX long and
-// unique among the agents listed, which resolveAgent accepts exactly as
-// it accepts a name. Every other name inserts itself.
+// A name carrying whitespace cannot survive as one `@` token, so it is addressed by the
+// shortest unique id prefix instead.
 function completionValue(agents: AgentInfo[], agent: AgentInfo): string {
   if (!/\s/.test(agent.name)) return `@${agent.name}`;
   const others = agents.filter((a) => a.id !== agent.id);
@@ -413,13 +218,6 @@ function completionValue(agents: AgentInfo[], agent: AgentInfo): string {
   return `@${agent.id}`;
 }
 
-// agentCompletionItems is the `@name` half of the editor's completion
-// list: every agent in this tmux session whose name, or any word of it,
-// starts with the token - this session itself excluded (nobody addresses
-// themselves) - with the whole-name matches first, a subagent's row
-// naming the parent it belongs to. `parent` is the parent's session id
-// (cmd/kido/list_agents.go's parentID), so the name is looked up in the
-// same list and the id stands in when the parent is not in it.
 function agentCompletionItems(agents: AgentInfo[], token: string): CompletionItem[] {
   const nameByID = new Map(agents.map((a) => [a.id, a.name]));
   const wanted = token.toLowerCase();
@@ -430,8 +228,6 @@ function agentCompletionItems(agents: AgentInfo[], token: string): CompletionIte
     if (name.startsWith(wanted)) matched.push({ agent: a, rank: 0 });
     else if (name.split(NAME_WORD_SEPARATORS).some((word) => word.startsWith(wanted))) matched.push({ agent: a, rank: 1 });
   }
-  // A stable sort, so agents matching equally well keep the order kido
-  // listed them in.
   matched.sort((x, y) => x.rank - y.rank);
   return matched
     .slice(0, MAX_AGENT_COMPLETIONS)
@@ -441,19 +237,13 @@ function agentCompletionItems(agents: AgentInfo[], token: string): CompletionIte
       const description = [
         a.activity ? `${a.status || "agent"} - ${a.activity}` : a.status || "agent",
         parent ? `subagent of ${parent}` : "",
-        // Only worth saying when the label and the insertion differ; a
-        // row that reads `@Tmux config` and types an id otherwise does
-        // it without warning.
         value === `@${a.name}` ? "" : `inserts ${value}`,
       ].filter(Boolean).join(", ");
       return { value, label: `@${a.name}`, description };
     });
 }
 
-// resolveAgent applies the same addressing rules kido message_agent's
-// resolveTarget (cmd/kido/message_agent.go) does: an exact, case-insensitive
-// name, then an exact id, then a unique id prefix, each erroring on its
-// own ambiguity rather than falling through.
+// Mirrors kido message_agent's resolveTarget (cmd/kido/message_agent.go): exact name, then exact id, then unique id prefix.
 function resolveAgent(agents: AgentInfo[], to: string): { agent?: AgentInfo; error?: string } {
   const byName = agents.filter((a) => a.name && a.name.toLowerCase() === to.toLowerCase());
   if (byName.length === 1) return { agent: byName[0] };
@@ -469,12 +259,8 @@ function resolveAgent(agents: AgentInfo[], to: string): { agent?: AgentInfo; err
   return { error: `no agent matches "${to}"` };
 }
 
-// isAncestor reports whether self is an ancestor of target, walking
-// target's parent chain; cmd/kido/agents.go's isAncestor is the same walk
-// and the two are kept in step. seen guards a cyclic parent chain.
+// Mirrors cmd/kido/agents.go's isAncestor, the same walk kept in step. seen guards a cyclic parent chain.
 export function isAncestor(agents: AgentInfo[], self: AgentInfo, target: AgentInfo): boolean {
-  // Refused outright: a corrupt record naming itself as its parent would
-  // otherwise match on the first comparison.
   if (self.id === target.id) return false;
   const byId = new Map(agents.map((a) => [a.id, a]));
   const seen = new Set<string>();
@@ -487,8 +273,6 @@ export function isAncestor(agents: AgentInfo[], self: AgentInfo, target: AgentIn
   return false;
 }
 
-// One copy per process, for the reason kido-status.ts gives beside its
-// own slot; spelled out again rather than imported, as the seam is.
 const COPY_SLOT = Symbol.for("kido.pi.extension.agents.copy");
 
 function isFirstCopy(): boolean {
@@ -530,74 +314,28 @@ export default function (pi: ExtensionAPI) {
     ui.setWidget(NOTICE_WIDGET_KEY, lines);
   };
 
-  // How a waiting ask_agent ends. "The answer never came" and "there is
-  // no longer anywhere for it to come to" are different things to tell a
-  // model: only the first leaves an id a late reply can be surfaced
-  // against.
   type GaveUp = "timeout" | "inbox" | "unsent" | "gone" | "aborted";
   type AskOutcome = { reply: string } | { gaveUp: GaveUp };
 
-  // Asks this session has sent and is still waiting on, keyed by the
-  // ask's own id. Whichever comes first (a matching reply, the timeout,
-  // the inbox going away) settles the waiter and drops it. This map is
-  // also the cycle-refusal edge set (handleInboundAsk): the write
-  // happens synchronously before the await that starts the send, so an
-  // inbound ask dispatched while the send is in flight already sees the
-  // edge, and settle is idempotent, so a late "unsent" after a reply is a
-  // no-op. docs/design.md, "The cycle edge".
+  // Also the cycle-refusal edge set (handleInboundAsk): written synchronously before the
+  // send's await, so an inbound ask dispatched while the send is in flight already sees
+  // the edge (docs/design.md, "The cycle edge").
   const pendingOutbound = new Map<string, { targetSession: string; settle: (outcome: AskOutcome) => void }>();
 
-  // abandonPending releases every waiting ask because this session's
-  // inbox has gone away and is not coming back (a /reload that rebinds
-  // at the same path is not that). Iterated over a copy, since settle
-  // deletes from the map it walks.
   const abandonPending = (): void => {
     for (const waiter of [...pendingOutbound.values()]) waiter.settle({ gaveUp: "inbox" });
   };
 
-
-  // A trigger that has been sent and whose turn has not started yet. One
-  // is enough for any number of arrivals: prompt() injects every pending
-  // "nextTurn" message into the one turn it builds, so an arrival behind a
-  // trigger rides the turn already on its way and asking for a second
-  // would only buy a second turn. Two asks in one turn are accepted: each
-  // carries its own id and is answered with replyTo, so nothing is
-  // misattributed by them sharing the turn.
-  //
-  // Cleared at pi's turn_start, which is later than the point prompt()
-  // drains those pending messages - but in 0.87.1 the drain is followed
-  // synchronously by the run going active (_runAgentPrompt sets
-  // _isAgentRunActive before its first await), so an arrival that still
-  // reads the session as idle is always still ahead of the drain. What
-  // arrives after it reads a streaming session and takes the ordinary
-  // steer or followUp path instead.
+  // A trigger already sent whose turn has not started yet; one is enough for any number of
+  // arrivals, since prompt() injects every pending "nextTurn" message into the turn it
+  // builds. Cleared at pi's turn_start.
   let wakeInFlight = false;
 
-  // wake hands one arrival to the model and makes sure a turn runs for it.
-  //
-  // While pi is streaming that is what it always was: sendMessage with
-  // triggerTurn, steered into the running turn or queued behind it, since a
-  // later turn is prepared by pi's own next-turn machinery. An idle session
-  // is the workaround. pi 0.87.1's sendCustomMessage takes the
-  // triggerTurn branch straight to _runAgentPrompt (its agent-session.ts),
-  // which skips everything prompt() does first: the before_agent_start
-  // emit, so NOTIFY_PARENT_INSTRUCTION is missing from exactly the turns a
-  // message woke, and the system-prompt diff, so a resumed session whose
-  // extensions or tools have changed sends a stale prompt and
-  // pi-claude-bridge refuses the turn ("prompt-capture: no capture for this
-  // N-char system prompt"). Queueing the arrival as "nextTurn" and starting
-  // the turn with sendUserMessage goes through prompt(), which emits
-  // before_agent_start, persists the prompt diff, and injects every pending
-  // nextTurn message immediately after the user message - so the arrival
-  // keeps its custom type, its header and its renderer, and the turn it
-  // rides is a properly prepared one. Remove this when pi's own
-  // triggerTurn path runs prompt().
-  //
-  // Idleness is read live off the session ctx rather than off kido's own
-  // reported status: a wake has to be decided by the same boolean pi's own
-  // sendCustomMessage branches on. ctx.hasPendingMessages() is deliberately
-  // not read - it counts queued user *text* (pi's _steeringMessages,
-  // emptied as each one lands) and never a queued custom message.
+  // pi 0.87.1's sendMessage(triggerTurn) on an idle session skips prompt() - no
+  // before_agent_start, and a resumed session's stale system prompt makes
+  // pi-claude-bridge refuse the turn. Queueing as "nextTurn" and starting it with
+  // sendUserMessage goes through prompt() instead, keeping the arrival's custom type,
+  // header and renderer. Remove once pi's own triggerTurn path runs prompt().
   const wake = (
     message: { customType: CustomType; content: string; display: boolean; details?: unknown },
     deliverAs: DeliverAs,
@@ -606,8 +344,7 @@ export default function (pi: ExtensionAPI) {
     try {
       idle = !!session?.isIdle();
     } catch {
-      // A ctx pi has retired throws rather than answering (its
-      // assertActive): mid-/reload, which is no session to prompt.
+      // A ctx pi has retired (its assertActive) throws rather than answering: mid-/reload.
       idle = false;
     }
     if (!idle) {
@@ -617,25 +354,14 @@ export default function (pi: ExtensionAPI) {
     pi.sendMessage(message, { deliverAs: "nextTurn" });
     if (wakeInFlight) return;
     wakeInFlight = true;
-    // The trigger carries the kind's own mode for the one race this cannot
-    // close: pi decides whether it is streaming inside prompt(), after this
-    // call has returned, so a turn that starts in between queues the
-    // trigger the way the kind asked for instead of pi throwing "Agent is
-    // already processing". The arrival then waits in pi for the next
-    // prompt() - the next wake, or the user typing - which costs it a turn
-    // of lateness and nothing else. expandPromptTemplates is spelled out
-    // because the trigger is user-role text and must never be dispatched
-    // as a command.
+    // expandPromptTemplates is spelled out because the trigger is user-role text and must
+    // never be dispatched as a command.
     const trigger = WAKE_TRIGGERS[message.customType];
     const clear = (): void => {
       wakeInFlight = false;
     };
-    // sendUserMessage is prompt(), and prompt() can fail before any turn
-    // starts - a compaction in progress, an unconfigured model - so
-    // turn_start would never come and a flag cleared there alone would
-    // leave every later arrival queued behind a turn that is not coming.
-    // The queued arrivals stay queued either way and ride the next
-    // prompt(); what the failure must not do is stop the next one asking.
+    // prompt() can fail before any turn starts (compaction in progress, unconfigured
+    // model); clearing the flag here stops that from blocking every later arrival.
     try {
       void Promise.resolve(pi.sendUserMessage(trigger, { deliverAs, expandPromptTemplates: false })).catch(clear);
     } catch {
@@ -662,27 +388,9 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // messageSender answers who an inbound plain message is from and how
-  // they stand to this session, or null for "no agent at all" - which is
-  // the user speaking, and is delivered as their own words, unlabelled.
-  //
-  // A human running `kido message_agent` from a bare pane has no state
-  // record, so kido puts no session in `from` and only a pane (senderOf,
-  // cmd/kido/message_agent.go), and no listed agent owns that pane: the
-  // same pair senderIsAncestor reads to recognise a human, so an agent
-  // would have to get two things wrong at once to be mistaken for one.
-  //
-  // The relationship is read from the list rather than from `from`: a
-  // parent is the session that spawned this run (and only for a real
-  // child of it - the environment alone is a claim any descendant
-  // inherits, see ownRunID), and a child is an agent whose own parent edge
-  // points at this session.
+  // null means no agent at all: the user speaking, delivered as their own words, unlabelled.
   const messageSender = async (from: Sender): Promise<{ name: string; relation: SenderRelation } | null> => {
     const listed = await fetchAgents();
-    // No list to check against: a `from` carrying a session is an agent's,
-    // since a human's never does. Labelling it as a peer beats falling
-    // back to the unlabelled delivery this replaced, which would tell the
-    // model the sender was the user.
     if (!listed.ok) return from.kind === "agent" ? { name: labelFrom(from), relation: "peer" } : null;
     const sender = listed.agents.find((a) =>
       from.kind === "agent" ? a.id === from.session : from.kind === "human" && !!from.pane && a.pane === from.pane,
@@ -694,11 +402,6 @@ export default function (pi: ExtensionAPI) {
     return { name: sender.name || labelFrom(from), relation: isParent ? "parent" : isChild ? "child" : "peer" };
   };
 
-  // An agent's message goes to the model as a custom message, for the
-  // reason a notice does: the TUI can then draw it with its sender while
-  // the model reads the header. Queued (`followUp`) and waking an idle
-  // session exactly as the unlabelled delivery it replaces - only the
-  // labelling changed, not when a message arrives.
   const handleInboundMessage = async (env: Envelope): Promise<void> => {
     if (!env.text) return;
     const sender = await messageSender(env.from);
@@ -726,18 +429,11 @@ export default function (pi: ExtensionAPI) {
     wake({ customType: NOTICE_CUSTOM_TYPE, content: `${noticeHeader(from)}\n${text}`, display: true, details: { from, noticeId } }, "steer");
   };
 
-  // streamBuffers holds, per async run, the lines that have arrived and
-  // not yet been handed to the model. A "stream" envelope never reaches
-  // the model on arrival, which is the whole feature: pi drains one
-  // steering message per poll, so one message per chunk would be one LLM
-  // turn per chunk. Flushed as one message at the moments flushStreams
-  // is called from, and nowhere else.
+  // A "stream" envelope never reaches the model on arrival: pi drains one steering message
+  // per poll, so one message per chunk would be one LLM turn per chunk.
   const streamBuffers = new Map<string, { name: string; output: string; lines: string[]; dropped: number }>();
 
-  // The idle flush schedule: one timer for the session, and the delay it
-  // was last armed with. Both are reset when a run completes, since the
-  // next run's first lines deserve the floor rather than whatever the
-  // last one escalated to.
+  // Reset when a run completes: the next run's first lines deserve the floor, not whatever the last one escalated to.
   const streamFlush: { timer: NodeJS.Timeout | null; delay: number } = { timer: null, delay: STREAM_FLUSH_MS };
 
   const clearStreamTimer = (): void => {
@@ -747,9 +443,7 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // armStreamFlush schedules the next idle flush, doubling the delay each
-  // time up to the cap. Only ever one timer: a second run's lines ride
-  // the one already ticking rather than buying a turn of their own.
+  // Only ever one timer: a second run's lines ride the one already ticking.
   const armStreamFlush = (): void => {
     if (streamFlush.timer) return;
     streamFlush.timer = setTimeout(() => {
@@ -760,7 +454,6 @@ export default function (pi: ExtensionAPI) {
     streamFlush.timer.unref?.(); // a held batch must never hold pi's event loop open
   };
 
-  // handleInboundStream buffers one chunk. Nothing is delivered here.
   const handleInboundStream = (env: Envelope & { kind: "stream" }): void => {
     const run = env.run;
     const entry = streamBuffers.get(run) ?? {
@@ -778,12 +471,8 @@ export default function (pi: ExtensionAPI) {
     armStreamFlush();
   };
 
-  // flushStreams hands every held batch to the model, one collapsed
-  // custom message per run, and is the only place a stream chunk is
-  // delivered. Its callers are the schedule: a turn that had tool calls
-  // (free - the next LLM call is already committed), the idle timer
-  // above, and a run's own completion notice, which must not arrive
-  // before the output it is the ending of.
+  // The only place a stream chunk is delivered; called from the idle timer, a turn that
+  // ran tools, and a run's own completion notice, which must not arrive before this.
   const flushStreams = (): void => {
     if (streamBuffers.size === 0) return;
     clearStreamTimer();
@@ -804,37 +493,12 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // pendingInboundAsks remembers, for an ask still awaiting our reply,
-  // the asker's pane - the one part of `from` a `/reload` cannot change.
-  // labelFrom's own fallback (session id, absent a name) is exactly what
-  // a `/reload` invalidates: pi mints a fresh session id, so the address
-  // an unnamed asker was told to reply to at ask-delivery time can go
-  // stale before this session's model gets around to answering. Rather
-  // than trying to keep that label fresh, message_agent re-resolves the
-  // target from this pane at the moment a reply is actually sent (see
-  // message_agent) - a pane is the one address a reload cannot
-  // invalidate, and every pane is already in `kido list_agents --json`. Entries are
-  // removed once a reply consumes them; a never-answered ask leaves one
-  // behind for this session's lifetime, the same bound as an unanswered
-  // ask's own wire round trip already accepts.
+  // The asker's pane, the one part of `from` a `/reload` cannot change (it mints a fresh
+  // session id): message_agent re-resolves the reply target from this pane rather than a
+  // label that can go stale.
   const pendingInboundAsks = new Map<string, string>(); // ask id -> asker's pane
 
-  // handleInboundAsk delivers an ask to the model with an explicit
-  // instruction that a reply is expected, unless answering would close a
-  // cycle, in which case it is refused on the wire and not delivered at
-  // all. A model replying to an ask routinely called message_agent
-  // correctly and then went on to write a user-facing summary of what it
-  // had just done - wasted, since the asker already has the answer
-  // (delivered by message_agent, not by this session's own output) and no
-  // user is waiting on a report in this session. STOP_AFTER_ASK_REPLY below
-  // targets exactly that trailing narration, not "how to reply" (the
-  // existing tool-call line already gets that right). It is the weakest of
-  // three places this same instruction is repeated (see
-  // NOTIFY_PARENT_INSTRUCTION and message_agent's own result text) - a
-  // prompt instruction competes with whatever system prompt the host
-  // already set and does not reliably win, so this reduces the sign-off
-  // rather than eliminating it; the other two are closer to where the
-  // model actually decides whether to keep talking.
+  // Answering would close a cycle is refused on the wire, not delivered at all.
   const STOP_AFTER_ASK_REPLY =
     "That message_agent call is the entire response - end the turn there, with no summary or sign-off after it.";
   const handleInboundAsk = async (env: Envelope): Promise<"ok" | "refused"> => {
@@ -860,9 +524,6 @@ export default function (pi: ExtensionAPI) {
     return "ok";
   };
 
-  // handleInboundReply resolves a waiting ask_agent when its id matches a
-  // pending outbound ask; otherwise the answer is delivered as an
-  // ordinary message rather than dropped.
   const handleInboundReply = (env: Envelope & { kind: "reply" }): void => {
     const waiter = pendingOutbound.get(env.replyTo);
     if (waiter) {
@@ -874,38 +535,24 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // senderIsAncestor answers the question every _subagent kind asks on
-  // arrival: did this come from someone entitled to act on this session -
-  // one of its ancestors, or a human at the CLI. One predicate for steer,
-  // interrupt and stop, mirroring descendantTarget (cmd/kido/control.go),
-  // which asks it of the same tree from the other end.
-  //
-  // Checked here as well as by kido because `from` is advisory, and for
-  // coherence rather than for protection: a process that can write this
-  // socket can claim to be anyone (docs/design.md, the inbox).
+  // Mirrors descendantTarget (cmd/kido/control.go). Checked here too because `from` is
+  // advisory: a process that can write this socket can claim to be anyone.
   const senderIsAncestor = async (env: Envelope): Promise<boolean> => {
     const listed = await fetchAgents();
     if (!listed.ok) return false;
     const self = listed.agents.find((a) => a.self);
     if (!self) return false;
     const sender = env.from;
-    // A human has no state record, so kido puts no session in `from`;
-    // recognised by the pair, so an agent has to get two things wrong at
-    // once to be mistaken for one.
     if (sender.kind === "kido") return true;
     if (sender.kind === "human") return !listed.agents.some((a) => a.pane === sender.pane);
     const from = listed.agents.find((a) => a.id === sender.session);
     return !!from && isAncestor(listed.agents, from, self);
   };
 
-  // handleInboundControl answers an "interrupt" or "stop" envelope, but
-  // only for a sender senderIsAncestor accepts (docs/design.md, "Steer,
-  // interrupt and stop").
   const handleInboundControl = async (env: Envelope, kind: "interrupt" | "stop"): Promise<"ok" | "refused"> => {
     if (!(await senderIsAncestor(env))) return "refused";
     if (kind === "interrupt") {
-      // Awaited, so a message sent after the reply finds the turn ended
-      // rather than in a queue the abort skips.
+      // Awaited, so a message sent after the reply finds the turn ended rather than in a queue the abort skips.
       await session?.abort();
     } else {
       session?.shutdown();
@@ -913,24 +560,13 @@ export default function (pi: ExtensionAPI) {
     return "ok";
   };
 
-  // handleInboundSteer delivers a course correction into the turn already
-  // running, rather than queueing it for the end of one like every other
-  // text-carrying kind (docs/design.md, "Steer and followUp"). Same
-  // sender rule as interrupt and stop: steering redirects work under way,
-  // which is the same authority with less force, and a steer anyone could
-  // send while an interrupt is a descendant's alone would be incoherent.
-  //
-  // Labelled with its sender because it arrives mid-task, where an
-  // unattributed instruction reads as if the session had told itself.
+  // Delivered into the turn already running, not queued for the end of one (docs/design.md, "Steer and followUp").
   const handleInboundSteer = async (env: Envelope): Promise<"ok" | "refused"> => {
     if (!(await senderIsAncestor(env))) return "refused";
     if (env.text) seam().host?.deliver(`${labelFrom(env.from)} is redirecting this work: ${env.text}`, "steer");
     return "ok";
   };
 
-  // handleEnvelope dispatches one v1 envelope off the inbox and returns
-  // the wire answer. Every branch delivers something to the model rather
-  // than dropping it, an unrecognised kind included.
   const handleEnvelope = async (env: Envelope): Promise<"ok" | "refused"> => {
     switch (env.kind) {
       case "message":
@@ -942,9 +578,7 @@ export default function (pi: ExtensionAPI) {
         handleInboundReply(env);
         return "ok";
       case "notice":
-        // Before the notice itself, never after: a run's ending must not
-        // reach the model ahead of the output tail it refers to. The
-        // schedule starts over too - this run is done escalating.
+        // Before the notice itself: a run's ending must not reach the model ahead of the output tail it refers to.
         flushStreams();
         streamFlush.delay = STREAM_FLUSH_MS;
         if (env.text) deliverNotice(env.text, labelFrom(env.from));
@@ -975,35 +609,17 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // The list the `@name` completion is served from, and nothing else: a
-  // keystroke must never wait on `kido list_agents --json`, so the editor
-  // gets whatever the last call returned - stale, or empty before the
-  // first one lands - while a refresh runs behind it. A failed lookup
-  // still stamps the clock, so a kido that cannot answer is asked once a
-  // TTL rather than once a keystroke. Null until the provider is
-  // registered (sessionStarting).
+  // A keystroke must never wait on `kido list_agents --json`: the editor gets whatever the
+  // last call returned, stale or empty, while a refresh runs behind it. Null until the
+  // provider is registered (sessionStarting).
   let completion: { agents: AgentInfo[]; at: number; refreshing: Promise<void> | null } | null = null;
 
-  // The registry is asked whether PARENT_SESSION is still running: only a
-  // definite "false" is evidence, and anything else - an error, a kido that
-  // does not know the subcommand - says nothing. `kido agent-alive` reads
-  // every live state record and answers that one bit. It is deliberately not `kido list_agents --json`, which the
-  // poll used to read: that is a display command, and it both scopes
-  // itself to the caller's tmux session and collapses its result to one
-  // record per pane. A `pi --print` started inside the parent's pane
-  // inherits TMUX_PANE and wins that pane, which dropped the parent's
-  // record out of the answer entirely and made a healthy parent look
-  // gone. A debounce here used to absorb that, treating a wrong answer as
-  // a slow one; asking a question no pane collision can disturb removes
-  // the need for it (docs/design.md, "Identity"). It also costs one
-  // process and no tmux round trip, on a timer that never stops.
-  // parentIsAlive: kill(pid, 0) first, where ESRCH is a definite "gone" -
-  // answered without a subprocess, so keepAlive gives no protection
-  // against a genuinely dead parent. Success or EPERM is not proof of life
-  // (a pid can be recycled), so anything else defers to the registry, on
-  // one reading: with the collision above gone there is no known way for a
-  // live parent's record to be missing from it. An unreachable kido stays
-  // the one inconclusive case - never shut down on a guess.
+  // Only a definite "false" from `kido agent-alive` is evidence; anything else - an error, an
+  // unreachable kido - is inconclusive and never shuts the session down on a guess. Not
+  // `kido list_agents --json`: it scopes to the caller's tmux session and collapses to one
+  // record per pane, so a `pi --print` started in the parent's pane and inheriting
+  // TMUX_PANE would win that pane and make a healthy parent look gone.
+  // kill(pid, 0) success or EPERM is not proof of life - a pid can be recycled.
   const parentIsAlive = async (): Promise<boolean> => {
     if (PARENT_PID === undefined || PARENT_SESSION === undefined) return true;
     try {
@@ -1015,25 +631,13 @@ export default function (pi: ExtensionAPI) {
     return !(res.ok && res.out === "false");
   };
 
-  // Idempotent: a /reload re-runs session_start and must not pile up a
-  // second timer. Unref'd so it never holds the event loop open.
-  // pollInFlight stops a tick from starting a second parentIsAlive() call
-  // while the previous one is still awaiting its subprocess round trip.
-  // It outlives the debounce it was first written for, on its own merits:
-  // setInterval fires on schedule regardless of whether its callback's own
-  // async work has finished, so a reading slower than
-  // PARENT_LIVENESS_POLL_MS - a loaded machine, a slow kido - would have
-  // every tick spawn another process on top of the ones already waiting,
-  // which is a pile-up on exactly the machine least able to afford it.
-  // Overlapping readings no longer corrupt a verdict, since each is now
-  // independently trustworthy; they are simply waste. Skipping the tick
-  // delays the next real reading and never suppresses one.
+  // Stops a tick from starting a second parentIsAlive() call while the previous one is
+  // still awaiting its subprocess round trip: setInterval fires on schedule regardless of
+  // whether the callback's own async work has finished, so a slow reading would otherwise
+  // pile up processes.
   let pollInFlight = false;
 
   const startParentLivenessPoll = (): void => {
-    // Only the child of the run watches the parent that spawned it: a
-    // process that merely inherited the pid would end itself over a death
-    // that says nothing about it (see ownRunID).
     if (PARENT_PID === undefined || !isSubagent()) return;
     stopParentLivenessPoll();
     parentPollTimer = setInterval(() => {
@@ -1042,7 +646,6 @@ export default function (pi: ExtensionAPI) {
       parentIsAlive().then((alive) => {
         pollInFlight = false;
         if (alive) return;
-        // Stop first, or a slow shutdown is asked for again every tick.
         stopParentLivenessPoll();
         session?.shutdown();
       });
@@ -1058,31 +661,16 @@ export default function (pi: ExtensionAPI) {
     pollInFlight = false;
   };
 
-  // reportedToParent records that this run has spoken for itself, which
-  // is what its ending is judged against: a child that never called the
-  // tool has its silence reported for it (see endOwnRun). Module state
-  // rather than a fact on disk because it is a fact about this process's
-  // own conversation, and it survives a /reload for the same reason the
-  // run does - the session carries straight on in the same process.
   let reportedToParent = false;
 
-  // "awaiting-first-turn" lasts from the task being handed to the model
-  // until the first sign that anything began. A child whose pi cannot
-  // start its model at all - no API key for it, the failure this came
-  // from - settles at startup looking exactly like an idle child, so its
-  // ending has to be told apart from one that worked and stopped: this is
-  // what makes the outcome a failure rather than a completion, and what
-  // puts "no turn ever ran" in the notice its parent gets. lastError is
-  // the errorMessage of the last turn when it stopped on "error"; an abort
-  // is not an error. notified keeps one notice per failure, since
-  // agent_settled can fire again with nothing new.
+  // "awaiting-first-turn" lasts until the first sign a turn began; a child whose pi could
+  // not start its model at all settles at startup looking exactly like an idle child
+  // otherwise, which is what puts "no turn ever ran" in its parent's notice. lastError is
+  // set only when a turn stopped on "error" (not an abort); notified keeps one notice per
+  // failure, since agent_settled can fire again with nothing new.
   type RunPhase = { phase: "awaiting-first-turn" } | { phase: "worked"; lastError?: { text: string; notified: boolean } };
   let phase: RunPhase = { phase: "worked" };
 
-  // idleExitTimer is the idle self-exit clock: armed on every settled turn
-  // (agent_settled) and on the delivery of the task a child was spawned
-  // with (deliverTask), cleared by any sign of new work (workStarted).
-  // Only a child arms it at all (see armIdleExit's own gate).
   let idleExitTimer: NodeJS.Timeout | null = null;
 
   const clearIdleExit = (): void => {
@@ -1092,34 +680,18 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // What every arrival that is about to produce a turn does, whether it
-  // came through the status half's deliver() or was sent from here as a
-  // custom message: the idle self-exit timer must not fire in the gap
-  // before pi's own turn_start, and a child that has been given work is no
-  // longer waiting for its first.
   const workStarted = (): void => {
     if (phase.phase === "awaiting-first-turn") phase = { phase: "worked" };
     clearIdleExit();
   };
 
-  // armIdleExit starts (or restarts) the idle-to-self-shutdown clock. Only
-  // a child arms it (isSubagent, exactly as notify_parent's own refusal
-  // check), and only when it has not opted out with keepAlive. Unref'd so
-  // it can never hold the process alive on its own, the same as the
-  // parent-liveness poll.
   const armIdleExit = (): void => {
     if (!isSubagent() || KEEP_ALIVE) return;
     clearIdleExit();
     idleExitTimer = setTimeout(async () => {
-      // A session with a child of its own still running is not idle,
-      // however quiet it has been: "I have spawned it and I am waiting for
-      // its report" settles a turn exactly as finished work does, and
-      // exiting there orphans the child, which the sweep then closes
-      // mid-work. The clock re-arms, so the last child ending resumes it -
-      // as does the child's notice, which is new work like any other. The
-      // reading is of the run records, not of anything this process
-      // remembers: a child outlives the turn that spawned it and a /reload
-      // forgets everything in memory. An unreachable kido answers false.
+      // A session with a child of its own still running is not idle, however quiet it has
+      // been; exiting would orphan the child for the sweep to close mid-work. Read from the
+      // run records, not process memory, since a child outlives the turn that spawned it.
       const children = await runKido(["children-alive", seam().host?.sessionId() ?? ""], { timeoutMs: 2000 });
       if (children.ok && children.out.trim() === "true") {
         armIdleExit();
@@ -1127,21 +699,15 @@ export default function (pi: ExtensionAPI) {
       }
       const listed = await fetchAgents();
       const self = listed.ok ? listed.agents.find((a) => a.self) : undefined;
-      // A window a client is currently looking at is not reaped out from
-      // under them; the timer re-arms instead of giving up, so the window
-      // is collected once the user looks away (docs/design.md, "Idle
-      // self-exit"). kido window-focused is the same test close-run and
-      // the sweep (internal/reap) use.
+      // A window a client is currently looking at is not reaped out from under them; the
+      // timer re-arms instead, so it is collected once the user looks away.
       const focused = self?.window ? await runKido(["window-focused", self.window], { timeoutMs: 2000 }) : null;
       if (focused?.ok && focused.out.trim() === "true") {
         armIdleExit();
         return;
       }
-      // pi's own shutdown handler only ends the session once it is not
-      // mid-compaction, and only re-checks that on its own next
-      // agent_settled - so a request made here while pi is compacting can
-      // be recorded and never acted on. Re-arming costs nothing once the
-      // session does end: sessionEnding clears the timer first.
+      // pi's shutdown only ends the session once it is not mid-compaction, re-checked on
+      // its next agent_settled; re-arming costs nothing once the session does end.
       session?.shutdown();
       armIdleExit();
     }, IDLE_EXIT_MS);
@@ -1156,7 +722,6 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute() {
       const res = await fetchAgents();
-      // Any failure reads as an empty session: nothing the model can do.
       if (!res.ok) return reply("[]", []);
       return reply(JSON.stringify(res.agents), res.agents);
     },
@@ -1189,12 +754,6 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "message_agent",
     label: "Message Agent",
-    // The waiting clause is the cost a caller needs at the moment it
-    // chooses, which is here and not in the system prompt: a model
-    // reaching for "send my subagent a correction" reads this as the
-    // general-purpose choice, with nothing saying the message sits queued
-    // until the work it meant to redirect is already done. steer's own
-    // description names this one for the same reason, the other way round.
     description:
       "Send a message to another agent in this tmux session, addressed by name, session id, or a unique id prefix. It waits for the receiver to finish its current turn; use steer_subagent for a correction that is useless once the work is done.",
     promptSnippet: "message_agent(to, message, replyTo?) - send a message to another agent in this tmux session",
@@ -1212,35 +771,22 @@ export default function (pi: ExtensionAPI) {
     ),
     async execute(_toolCallId, params) {
       const args = ["message_agent"];
-      // --reply-to alone makes it a reply; kido derives the kind the wire
-      // correlates on from the flag, since nothing else it could mean.
       if (params.replyTo) args.push("--reply-to", params.replyTo);
-      // The tool result's own chance to say STOP_AFTER_ASK_REPLY, and the
-      // strongest of the three places it is repeated (see
-      // handleInboundAsk) - a tool result is the last thing the model reads
-      // before deciding whether to keep talking, closer to that decision
-      // than either system prompt it competes with. Only for a reply to an
-      // ask this session actually has pending, not every replyTo: a reply
-      // to a notice, or a stale id, has nothing to stop after.
+      // Only set for a reply to an ask this session actually has pending: a reply to a
+      // notice, or a stale id, has nothing to stop after.
       const askerPane = params.replyTo ? pendingInboundAsks.get(params.replyTo) : undefined;
-      // Re-resolved from the asker's pane when this is a reply to a
-      // still-remembered ask, since the model's own `to` was handed to it
-      // when the ask arrived and a `/reload` since then can have moved the
-      // asker to a new session id (docs/design.md's addressing rules have
-      // nothing that survives that; the pane does). Falls back to the
-      // model's own `to` when the pane no longer resolves to anyone.
+      // Re-resolved from the asker's pane, not the model's `to`: a `/reload` since the ask
+      // arrived can have moved the asker to a new session id, but not its pane.
       let to = params.to;
       if (askerPane) {
         pendingInboundAsks.delete(params.replyTo!);
         const listed = await fetchAgents();
         if (listed.ok) to = listed.agents.find((a) => a.pane === askerPane)?.id ?? to;
       }
-      // "--" first: a model-authored `to` beginning with a dash would
-      // otherwise be parsed as a kido flag.
+      // "--" first: a model-authored `to` beginning with a dash would otherwise be parsed as a kido flag.
       args.push("--", to);
       const res = await runKido(args, { input: params.message, timeoutMs: 5000 });
       if (!res.ok) return reply(`could not message ${params.to}: ${res.error}`);
-      // kido message_agent says whether it delivered by inbox or pasted.
       const delivered = res.out || `message delivered to ${params.to}`;
       return reply(askerPane ? `${delivered} ${STOP_AFTER_ASK_REPLY}` : delivered);
     },
@@ -1276,16 +822,11 @@ export default function (pi: ExtensionAPI) {
       const self = agents.find((a) => a.self);
       if (!self) return reply("could not find this agent among kido's agents; cannot ask");
 
-      // kido list_agents --json is already scoped to this tmux session, so a
-      // target outside it simply does not resolve here.
       const { agent: target, error } = resolveAgent(agents, params.to);
       if (!target) return reply(`could not ask ${params.to}: ${error}`);
       if (target.id === self.id) return reply("cannot ask yourself");
       const who = target.name || target.id;
-      // isAncestor(agents, target, self): is the TARGET an ancestor of ME?
-      // A child asking its parent (or any ancestor) is what this refuses;
-      // a parent asking its own child is the ordinary case and must fall
-      // through.
+      // A child asking an ancestor is refused; a parent asking its own child falls through.
       if (isAncestor(agents, target, self)) {
         return reply(`${who} is an ancestor; the parent stays free to orchestrate, so it cannot be asked`);
       }
@@ -1295,24 +836,15 @@ export default function (pi: ExtensionAPI) {
       if (!target.canReply) {
         return reply(`${who} was spawned without the message_agent tool and cannot reply; use message_agent, or wait for its notify_parent notice`);
       }
-      // Fail fast rather than wait out the timeout against a target that
-      // is never going to answer.
+      // Fail fast rather than wait out the timeout against a target that is never going to answer.
       if (target.stalled) {
         return reply(`${who} has been quiet for ${target.sinceReport}s while reporting running; likely stalled, refusing to wait for a reply`);
       }
-      // Same fail-fast reasoning, for the case stalled cannot catch: a
-      // target that died seconds ago is not stalled (that takes minutes
-      // of silence), and every listed agent is named by the session id
-      // this asks about. An inconclusive answer (an error, or a kido too
-      // old to know the subcommand) is never treated as "dead".
       const alive = await runKido(["agent-alive", target.id], { timeoutMs: 2000 });
       if (alive.ok && alive.out === "false") return reply(`${who} is no longer running; refusing to wait for a reply`);
 
-      // The inbox may have gone away while fetchAgents() was in flight.
-      // Checked synchronously, with no await between here and
-      // pendingOutbound.set below, so a teardown either already caught
-      // this waiter with abandonPending or closed the inbox before this
-      // check (docs/design.md, "When the inbox goes away").
+      // Checked synchronously, with no await before pendingOutbound.set below, so a teardown
+      // either already caught this waiter with abandonPending or closed the inbox first.
       if (!seam().host?.inboxOpen()) {
         return reply(`this session's inbox is unavailable; no reply from ${params.to} can be waited for`);
       }
@@ -1320,9 +852,7 @@ export default function (pi: ExtensionAPI) {
       const id = randomUUID();
       const timeoutMs = params.timeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
 
-      // One waiter, settled by whoever gets there first; settle drops it
-      // and cancels the timer itself. Registered before the send, so a
-      // reply cannot race past it.
+      // Registered before the send, so a reply cannot race past it.
       let deliverReply: (outcome: AskOutcome) => void = () => {};
       let watch: NodeJS.Timeout | null = null;
       const answered = new Promise<AskOutcome>((resolve) => {
@@ -1341,40 +871,21 @@ export default function (pi: ExtensionAPI) {
       const timer = setTimeout(() => settle({ gaveUp: "timeout" }), timeoutMs);
       timer.unref(); // a wait must never hold pi's event loop open
       pendingOutbound.set(id, { targetSession: target.id, settle });
-      // pi hands every tool the turn's AbortSignal, and Esc aborts it. A
-      // wait that ignores it is a turn the human cannot end, since pi's
-      // own abort path waits for the tool call to return. addEventListener
-      // on an already-aborted signal never fires - true of the signal pi
-      // hands in, but not of this one any more: the prechecks above this
-      // point are themselves awaits, and an abort landing during one of
-      // them reaches this line already aborted. Checked explicitly rather
-      // than relied on to have already fired, since "pi does not call a
-      // tool whose signal is already aborted" is a fact about the call,
-      // not about every await inside it.
+      // Esc aborts pi's AbortSignal; checked explicitly rather than relied on to have
+      // already fired, since the prechecks above are awaits an abort can land during.
       if (signal?.aborted) onAbort();
       else signal?.addEventListener("abort", onAbort, { once: true });
 
-      // target.id, not params.to: passing the resolved id removes a second
-      // resolution inside kido ask_agent that could disagree with this one.
+      // target.id, not params.to: removes a second resolution inside kido ask_agent that could disagree with this one.
       const sent = await runKido(["ask_agent", "--id", id, "--", target.id], {
         input: params.question,
         timeoutMs: 5000,
       });
       if (!sent.ok) settle({ gaveUp: "unsent" });
 
-      // The precheck above only rules out a target that was already gone.
-      // One that dies while this waits - the ordinary case of a child that
-      // finishes and exits without replying - leaves nothing to release
-      // the waiter, since the answer could only have come from that
-      // process. Same reading as the precheck: a definite "false" settles,
-      // an unanswerable kido never does. Unref'd, so a wait still never
-      // holds pi's event loop open, and guarded against a reading that
-      // outlives its own tick, since setInterval fires whether or not the
-      // last callback finished.
-      // Not started once the wait is already over: an abort or a timeout
-      // during the send settles before this point is reached, and an
-      // interval armed after its own settle is one nothing will ever
-      // clear.
+      // A target that dies while this waits - the ordinary case of a child finishing and
+      // exiting without replying - leaves nothing to release the waiter, so this polls too.
+      // Not started once the wait is already over (settled by an abort or a send failure).
       if (!settled) {
         const targetID = target.id;
         let reading = false;
@@ -1409,12 +920,8 @@ export default function (pi: ExtensionAPI) {
       "Create a subagent in its own tmux window with a task, or resume a dead or finished one by its run id. With fork: true it starts holding this session's context, for a judgement step that has to know what was already decided. Returns its identity immediately without waiting for it to finish. Its result arrives as a notice when it calls notify_parent; do not ask_agent a child for its result.",
     promptSnippet:
       "spawn_subagent(task, name?, model?, tools?, keepAlive?, fork?) or spawn_subagent(resume, model?, tools?, keepAlive?) - delegate a task to a new subagent, optionally forked from your own context, or resume a dead one, in its own window",
-    // pi merges these into the rules section of the system prompt while
-    // the tool is registered (buildRules in pi's system-prompt.js), which
-    // is where a standing rule about waiting belongs: a description is
-    // read when the tool is called, and these are about the turns after.
-    // NOT_THE_USER_RULE is the identical string in async_bash's list, so
-    // buildRules' own de-duplication keeps it to one bullet.
+    // pi's buildRules (system-prompt.js) merges these into the system prompt's rules section;
+    // NOT_THE_USER_RULE is the same string in async_bash's list, de-duplicated to one bullet.
     promptGuidelines: [
       "A subagent's result arrives on its own as a notice when it finishes; never ask a child for its result and never poll list_agents for it.",
       "Trust but verify: a child's report says what it intended to do, not what it did - check the diff before relaying success.",
@@ -1436,10 +943,6 @@ export default function (pi: ExtensionAPI) {
               "A name for the subagent's window and session; a name is generated when omitted. Refused together with resume - a resumed run keeps its original window name.",
           }),
         ),
-        // "provider/model-id" (e.g. claude-bridge/claude-sonnet-5), never a
-        // bare alias like "sonnet" - kido spawn_subagent checks it against
-        // `pi --list-models` and refuses up front rather than letting pi
-        // accept it, print "Use /login ..." and exit having run no turn.
         model: Type.Optional(
           Type.String({
             description:
@@ -1473,18 +976,10 @@ export default function (pi: ExtensionAPI) {
       { additionalProperties: false },
     ),
     async execute(_toolCallId, params) {
-      // The child's parent edge is this session's id, so a pi that has
-      // none - outside tmux, or not tracked - has no edge to give it.
       const own = seam().host?.sessionId();
       if (!own) return reply("this session has no id of its own to parent a subagent with; cannot spawn");
-      // A generated name goes on a tmux command line, so it must avoid the
-      // characters tmuxConfUnsafe rejects; hex does. A resume keeps its
-      // run's own name, so none is generated for it.
+      // A generated name goes on a tmux command line, so it must avoid the characters tmuxConfUnsafe rejects; hex does.
       const name = params.name || (params.resume ? "" : `sub-${randomUUID().slice(0, 8)}`);
-      // Every argument is forwarded as given, and kido spawn_subagent
-      // refuses the combinations that make no sense. pi's own
-      // --model/--tools constrain the child; kido spawn_subagent's
-      // identically named pair goes in the run record.
       const modelAndTools = [
         ...(params.model ? ["--model", params.model] : []),
         ...(params.tools && params.tools.length > 0 ? ["--tools", params.tools.join(",")] : []),
@@ -1492,12 +987,7 @@ export default function (pi: ExtensionAPI) {
       const args = ["spawn_subagent", "--parent-pid", String(process.pid), "--parent-session", own];
       if (params.resume) args.push("--resume", params.resume);
       if (name) args.push("--name", name);
-      // The task goes to kido spawn_subagent as text on stdin; kido decides it
-      // becomes a file.
       if (params.task) args.push("--task-file", "-");
-      // The session to fork is this one, named by the same id the child's
-      // parent edge is: `pi --fork` resolves a session by id and there is
-      // exactly one right answer here.
       if (params.fork) args.push("--fork", own);
       if (params.keepAlive) args.push("--keep-alive");
       args.push(...modelAndTools, "--", "pi", ...(name ? ["--name", name] : []), ...modelAndTools);
@@ -1505,11 +995,6 @@ export default function (pi: ExtensionAPI) {
       if (!res.ok) return reply(params.resume ? `could not resume ${params.resume}: ${res.error}` : `could not spawn subagent: ${res.error}`);
       const [windowID, paneID, runID] = res.out.split(/\s+/);
       if (params.resume) {
-        // A resumed run keeps its original task, which it was already
-        // given, so nothing is delivered to it and it comes back idle.
-        // Saying so is the whole of this line's job: a parent that
-        // resumed a run and then waited for it waited on a child that was
-        // waiting on it.
         return reply(
           `resumed ${runID} (window ${windowID}, pane ${paneID}); it is back with its context and idle - send it a message to continue, since it is waiting for one; ${SPAWN_RESULT_RULE}`,
           { window: windowID, pane: paneID, run: runID },
@@ -1638,8 +1123,6 @@ export default function (pi: ExtensionAPI) {
       args.push("--", params.command);
       const res = await runKido(args, { timeoutMs: SPAWN_TIMEOUT_MS });
       if (!res.ok) return reply(`could not start background command: ${res.error}`);
-      // Four fields for a bash run, the last of them where the output is
-      // being written; kido says where that is (cmd/kido's printCreated).
       const [windowID, paneID, runID, outputPath] = res.out.split(/\s+/);
       return reply(
         `started run ${runID}${params.name ? ` (${params.name})` : ""} in window ${windowID}; ` +
@@ -1660,11 +1143,8 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "notify_parent(summary) - tell your parent your work is done, once it actually is",
     parameters: Type.Object(
       {
-        // No maxLength here, for the same reason set_status's schema has
-        // none: it is a character count checked against a byte budget, and
-        // typebox rejects the whole call on it rather than truncating -
-        // measured live, a model given a long report had to redo the call
-        // after "summary must not have more than N characters".
+        // No maxLength: typebox rejects the whole call on it rather than truncating, and it
+        // counts characters against a byte budget - measured live, forcing a model to redo the call.
         summary: Type.String({
           description:
             `A short summary of the finished work to send to your parent. Your parent reads the first ${MAX_NOTICE_BYTES} bytes; ` +
@@ -1674,26 +1154,11 @@ export default function (pi: ExtensionAPI) {
       { additionalProperties: false },
     ),
     async execute(_toolCallId, params) {
-      // The one refusal that has nothing to do with kido being reachable:
-      // a session that is not itself a spawned child (a human's own
-      // interactive pi, or one started from inside an agent's pane with
-      // that agent's environment around it) has no parent of its own to
-      // tell, so this must read as a clear refusal rather than the same
-      // silent no-op every other tool gives an unavailable kido.
+      // The one refusal unrelated to kido being reachable: a session that is not itself a
+      // spawned child has no parent to tell, unlike every other tool's silent no-op.
       if (!isSubagent()) {
         return reply("this session has no parent (it was not spawned as a subagent); notify_parent has nobody to tell");
       }
-      // No target, and nothing listed to find one: `kido notify_parent`
-      // reads the parent edge out of KIDO_AGENT_PARENT_SESSION, the same
-      // environment this file's own PARENT_SESSION comes from. This used
-      // to fetch every agent, find its own row and read `parent` off it -
-      // a whole subprocess and a tmux pane listing to recover something
-      // kido had handed the process at spawn.
-      // The summary goes through untouched: what a report over the cap
-      // costs is decided by `kido notify_parent`, which keeps the whole of
-      // it in the run's directory and sends the parent its head and that
-      // path. This tool used to cut it to the cap here, and the rest of a
-      // long report was simply gone.
       const res = await runKido(["notify_parent"], { input: params.summary, timeoutMs: 5000 });
       if (!res.ok) return reply(`could not notify parent: ${res.error}`);
       reportedToParent = true;
@@ -1710,24 +1175,15 @@ export default function (pi: ExtensionAPI) {
     renderNoticeWidget();
   });
 
-  // The free flush, and the guard that is the whole of why streaming is
-  // affordable. pi awaits this handler before it polls the steering queue
-  // (measured against pi 0.85.1's agent-loop.js), so a batch sent from
-  // here is drained by the very next poll. A turn that ran tools has its
-  // next LLM call already committed and the batch costs nothing; a turn
-  // that ran none was the agent stopping, and flushing there buys a turn
-  // whose own turn_end has no tool calls either - which, with output
-  // still arriving, is a loop that ends when the command does. Those
-  // batches wait for the idle schedule instead.
+  // pi awaits this handler before it polls the steering queue (measured against pi
+  // 0.85.1's agent-loop.js), so a batch sent here is drained by the very next poll. A turn
+  // that ran no tools was the agent stopping; flushing there would loop for as long as
+  // output keeps arriving, so those batches wait for the idle schedule instead.
   pi.on("turn_end", (event: { toolResults?: unknown[] }) => {
     if (!event?.toolResults?.length) return;
     flushStreams();
   });
 
-  // A streamed batch collapses the way a notice does, and for the same
-  // reason: it is bulk the model reads and a human only wants one line of.
-  // Its own first line names the run, so the collapsed row does not repeat
-  // a sender the way a notice's does.
   pi.registerMessageRenderer<{ from: string }>(STREAM_CUSTOM_TYPE, (message, options, theme) => {
     const content = typeof message.content === "string" ? message.content : "";
     const [firstLine, ...rest] = content.split("\n");
@@ -1737,11 +1193,9 @@ export default function (pi: ExtensionAPI) {
     return { render: () => [theme.fg("dim", firstLine), ...rest] };
   });
 
-  // A renderer that returns its own component skips the box pi paints in
-  // customMessageBg behind an extension message, so it is painted here.
+  // A renderer that returns its own component skips the box pi paints in customMessageBg behind an extension message, so it is painted here.
   const stripAnsi = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, "");
-  // Padded to the visible width before theme.bg, which does not pad;
-  // cached per width, since pi calls render on every redraw.
+  // Padded to the visible width before theme.bg, which does not pad; cached per width, since pi calls render on every redraw.
   const withBackground = (theme: { bg: (color: string, text: string) => string }, lines: string[]) => {
     let cachedWidth = -1;
     let cached: string[] = [];
@@ -1762,14 +1216,7 @@ export default function (pi: ExtensionAPI) {
     render: withBackground(theme, [theme.fg("dim", headerLine), ...body.split("\n")]),
   });
 
-  // A message is never collapsed, which is the one way this renderer
-  // differs from the notice's: a notice is a report a human wants one line
-  // of, and a message is something another agent wrote to be read. What
-  // the row drops is the header's parenthetical - it tells the model what
-  // it is reading, while a human has the sidebar's tree beside the
-  // transcript. Any of the three headers is recognised, so a transcript
-  // reloaded without details still shows the message rather than its
-  // framing.
+  // A message is never collapsed (unlike a notice); any of the three MESSAGE_RELATION headers is recognised, so a transcript reloaded without details still shows it.
   pi.registerMessageRenderer<{ from: string }>(MESSAGE_CUSTOM_TYPE, (message, _options, theme) => {
     const from = message.details?.from || "another agent";
     const raw = typeof message.content === "string" ? message.content : "";
@@ -1780,39 +1227,24 @@ export default function (pi: ExtensionAPI) {
     return renderInbound(theme, `message from @${from}:`, content);
   });
 
-  // An ask shows only the question, never the id or the reply
-  // instructions the model needs but a human reading the transcript does
-  // not - those live in message.details.question, put there by
-  // handleInboundAsk, not parsed back out of the full content. A
-  // transcript entry reloaded with no details at all falls back to the
-  // raw content, id and instructions included, being the best available.
+  // Shows only the question, not the id or reply instructions the model needs; a reload with no details falls back to the raw content.
   pi.registerMessageRenderer<{ from: string; question: string }>(ASK_CUSTOM_TYPE, (message, _options, theme) => {
     const from = message.details?.from || "another agent";
     const question = message.details?.question ?? (typeof message.content === "string" ? message.content : "");
     return renderInbound(theme, `ask from @${from}:`, question);
   });
 
-  // Every notice, whatever kind of sender wrote it, collapses to one line
-  // by default; ctrl-o expansion is pi's own built-in toggle
-  // (options.expanded), not a keybinding registered here, so this does not
-  // fight another extension (pi-plain.ts) that reads the same toggle. The
-  // component below satisfies pi-tui's Component interface (render(width):
-  // string[]) without importing @earendil-works/pi-tui: pi's own runtime
-  // always resolves it (a dependency of pi-coding-agent itself), but this
-  // package's own test suite does not install it, and the interface is one
-  // method wide.
+  // ctrl-o expansion is pi's own built-in toggle (options.expanded), not a keybinding
+  // registered here. The returned object satisfies pi-tui's Component interface without
+  // importing @earendil-works/pi-tui, which this package's test suite does not install.
   pi.registerMessageRenderer<{ from: string }>(NOTICE_CUSTOM_TYPE, (message, options, theme) => {
     const from = message.details?.from || "another agent";
     const raw = typeof message.content === "string" ? message.content : "";
     const header = `${noticeHeader(from)}\n`;
     const content = raw.startsWith(header) ? raw.slice(header.length) : raw;
     if (!options.expanded) {
-      // The collapsed row is the notice's own first line - true today of
-      // every sender (an async run's "async run NAME result: status", a
-      // subagent's own one-sentence report) - and nothing past it: a
-      // sender that wants a better collapsed summary writes it as line
-      // one, rather than this file parsing further into text it did not
-      // produce.
+      // The collapsed row is the notice's own first line and nothing past it; a sender that
+      // wants a better summary writes it as line one.
       const firstLine = content.split("\n", 1)[0];
       const summary = firstLine ? `: ${firstLine}` : "";
       const line = theme.fg("dim", `notification from ${from}${summary} — ctrl-o to expand`);
@@ -1823,19 +1255,15 @@ export default function (pi: ExtensionAPI) {
 
   const trimErrorMessage = (msg: string): string => (msg.length > 400 ? `${msg.slice(0, 400)}…` : msg);
 
-  // The instruction goes in as a guideline, not a returned systemPrompt:
-  // a forced prompt is opaque to pi-claude-bridge, whose prompt capture
-  // then fails the turn. pi hands every call fresh options, so it is
-  // pushed on every turn and never accumulates.
+  // As a guideline, not a returned systemPrompt: a forced prompt is opaque to
+  // pi-claude-bridge, whose prompt capture then fails the turn.
   pi.on("before_agent_start", (event) => {
     event.systemPromptOptions.promptGuidelines.push(NEVER_SLEEP_RULE);
     if (!isSubagent()) return;
     event.systemPromptOptions.promptGuidelines.push(NOTIFY_PARENT_INSTRUCTION);
   });
 
-  // agent_end fires once per attempt, retries included, and agent_settled
-  // once after them, so the last agent_end before a settle is the turn's
-  // outcome and only agent_settled speaks.
+  // agent_end fires once per attempt, retries included; agent_settled fires once after them and is the only one that speaks.
   pi.on("agent_end", (event: { messages?: { role?: string; stopReason?: string; errorMessage?: string }[] }) => {
     const assistants = (event?.messages ?? []).filter((m) => m?.role === "assistant");
     const last = assistants[assistants.length - 1];
@@ -1846,9 +1274,6 @@ export default function (pi: ExtensionAPI) {
     };
   });
 
-  // A settled idle turn arms the idle self-exit clock, and a failed one is
-  // told to the parent at once. reportedToParent stays as it was: the
-  // child has still said nothing about its work.
   pi.on("agent_settled", async (_event: unknown, ctx: { isIdle(): boolean }) => {
     if (!ctx.isIdle() || !isSubagent()) return;
     armIdleExit();
@@ -1862,12 +1287,8 @@ export default function (pi: ExtensionAPI) {
     await runKido(["notify_parent"], { input: text, timeoutMs: 5000 });
   });
 
-  // deliverTask hands the model the task kido spawn_subagent left for us, the same
-  // way an inbox prompt is delivered. A missing or unreadable file is
-  // nothing to deliver, never a reason to fail startup. The task file is
-  // never unlinked (it is the run's record); the sibling "delivered"
-  // marker, written only after a successful read, is what stops a /reload
-  // from delivering it twice.
+  // The task file is never unlinked (it is the run's record); the sibling "delivered"
+  // marker, written only after a successful read, is what stops a /reload from delivering it twice.
   const deliverTask = (): void => {
     if (!TASK_FILE) return;
     const marker = join(dirname(TASK_FILE), "delivered");
@@ -1881,43 +1302,24 @@ export default function (pi: ExtensionAPI) {
     }
     if (!task.trim()) return;
     seam().host?.deliver(task);
-    // deliver() is not work beginning: it hands pi a message and returns,
-    // and everything that follows is pi's. So the clock goes on here,
-    // after deliver's own workStarted has cleared it - a child that gets
-    // as far as a turn clears it again within milliseconds (agent_start),
-    // and one that never does is collected by the shutdown path every
-    // other ending already takes.
+    // deliver() only hands pi a message and returns; the clock goes on here, after
+    // deliver's own workStarted has cleared it.
     phase = { phase: "awaiting-first-turn" };
     armIdleExit();
   };
 
-  // endOwnRun does the two things that happen exactly once, when this
-  // process's own run actually ends: record how it ended, and schedule
-  // its window's linger. One function because they share one gate, asked
-  // once here rather than twice - is this process the run's own child
-  // (ownRunID), can kido be reached at all, and is this shutdown the run
-  // ending rather than a /reload rebuilding the extension runtime in the
-  // same process. The last part is not pedantry: an outcome is O_EXCL, so
-  // a reload recording "completed" leaves the run's real ending
-  // unrecordable, and an ungated linger, measured against pi 0.85.1,
-  // closed a live subagent's window out from under it ~30s after a
-  // /reload. What this session has to say about its work is still
-  // notify_parent's alone, on the model's own judgement (docs/design.md,
-  // "Notifying the parent"); --unreported claims nothing about the work
-  // and only asks kido to tell the parent that the run ended with nothing
-  // said about it, which is what an idle self-exit or a crash used to
-  // leave a waiting parent to guess at.
+  // The two things that happen exactly once, when this process's own run actually ends:
+  // record how it ended, and schedule its window's linger. Gated on it actually being the
+  // run's own child (ownRunID) and this being the run ending, not a /reload rebuilding the
+  // extension runtime in the same process - an outcome is O_EXCL, so a reload recording
+  // "completed" would leave the run's real ending unrecordable.
   const endOwnRun = async (reason?: ShutdownReason): Promise<void> => {
     const host = seam().host;
     const runID = ownRunID();
-    // pi fires session_shutdown for five reasons; only "quit" ends the
-    // run, the rest rebuild the extension runtime in the same process. An
-    // absent reason is a quit.
+    // pi fires session_shutdown for five reasons; only "quit" (or an absent reason) ends the run.
     if (!runID || !host || (reason !== undefined && reason !== "quit")) return;
-    // The run id is this session's id verbatim; "idle" is the only status
-    // a turn finishes on, so anything else at shutdown is a failure - and
-    // so is a session still waiting for its first turn, which reports
-    // idle and has done nothing at all.
+    // "idle" is the only status a turn finishes on, so anything else at shutdown is a
+    // failure - and so is a session still waiting for its first turn.
     const [result, text] =
       phase.phase === "awaiting-first-turn"
         ? ["failed", NO_FIRST_TURN_TEXT]
@@ -1929,49 +1331,28 @@ export default function (pi: ExtensionAPI) {
     const listed = await fetchAgents();
     const window = listed.ok ? listed.agents.find((a) => a.self)?.window : undefined;
     const kido = host.kidoPath();
-    // The detached linger helper: sleep, then `kido close-run`, as its own
-    // process since this one's event loop is gone by the time the sleep
-    // fires. The helper is given this session's window and collects the
-    // run's own pane in it, closing the window when that pane is all it
-    // has. windowID and kido's path are passed as sh's $0/$1 so neither
-    // needs shell-quoting.
+    // sleep, then `kido close-run`, as its own process since this one's event loop is gone
+    // by the time the sleep fires. windowID and kido's path go as sh's $0/$1 so neither needs shell-quoting.
     if (window && kido) host.spawnDetached("sh", ["-c", `sleep ${LINGER_SECONDS} && exec "$0" close-run "$1"`, kido, window]);
   };
 
-  // Published at factory time, with nothing read back until an event
-  // fires, so load order does not matter.
   const hooks: AgentHooks = {
     sessionStarting(ctx: SessionContext) {
       session = ctx;
-      // A /reload's fresh ctx has already had pi clear the previous
-      // widgets out from under it (resetExtensionUI); drop our own record
-      // of what was pending so a later renderNoticeWidget call does not
-      // resurrect rows for notices this session no longer remembers.
+      // A /reload's fresh ctx has already had pi clear the previous widgets (resetExtensionUI); drop our own record so renderNoticeWidget does not resurrect rows for it.
       pendingNotices.clear();
       clearStreamTimer();
       streamBuffers.clear();
       streamFlush.delay = STREAM_FLUSH_MS;
-      // A trigger whose turn the reload took with it will never reach a
-      // turn_start, so the next arrival must be free to send one of its
-      // own against the session that exists now.
       wakeInFlight = false;
-      // A headless session has no ui at all, and a pi older than 0.87.1 has
-      // one without this method; both simply get no `@name` completion.
-      // Registered once: session_start fires again on a /reload, and a
-      // second wrapper would ask kido for the same list twice per keystroke.
-      // Nothing is fetched here: a session that never types `@` never asks
-      // kido for a list, and the first `@` keystroke kicks the refresh that
-      // the keystroke after it is served from.
+      // A headless session has no ui, and a pi older than 0.87.1 has one without this
+      // method; both simply get no `@name` completion. Registered once: session_start fires
+      // again on a /reload, and nothing is fetched until the first `@` keystroke.
       if (!ctx.ui?.addAutocompleteProvider || completion) return;
       const cache: NonNullable<typeof completion> = { agents: [], at: 0, refreshing: null };
       completion = cache;
-      // `@` is pi's own file-reference trigger, so this wraps the built-in
-      // provider rather than replacing it: matching agents first, then
-      // whatever files pi found for the same token, under the one prefix both
-      // halves share. `@src/...` therefore still completes files, and a token
-      // matching no agent is the built-in's answer untouched. The await here
-      // is pi's own file lookup, unchanged; kido's half of the list is never
-      // awaited (see completion).
+      // `@` is pi's own file-reference trigger; this wraps the built-in provider rather than
+      // replacing it, agent matches first then whatever files pi found for the same token.
       ctx.ui.addAutocompleteProvider((current: CompletionProvider): CompletionProvider => ({
         triggerCharacters: current.triggerCharacters,
         async getSuggestions(lines, cursorLine, cursorCol, options) {
@@ -1992,16 +1373,10 @@ export default function (pi: ExtensionAPI) {
           const files = await current.getSuggestions(lines, cursorLine, cursorCol, options);
           if (items.length === 0) return files;
           const prefix = `@${token}`;
-          // Only a file half that answered the same token can be merged: pi
-          // returns the prefix its own items are to replace, and two prefixes
-          // in one list would have the editor cut the wrong text.
+          // Only a file half that answered the same token can be merged: two prefixes in one list would have the editor cut the wrong text.
           const fileItems = files && files.prefix === prefix ? files.items : [];
           return { items: [...items, ...fileItems], prefix };
         },
-        // An agent item's value is `@name`, which is what pi's own
-        // applyCompletion inserts for any `@` prefix - so the insertion, the
-        // trailing space and the cursor are pi's, not a second implementation
-        // of them here.
         applyCompletion: current.applyCompletion.bind(current),
         shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
           return current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? true;
@@ -2014,20 +1389,13 @@ export default function (pi: ExtensionAPI) {
     },
     inboxLost: abandonPending,
     async sessionEnding(reason?: ShutdownReason) {
-      // This prefix runs before the first await, in the same uninterrupted
-      // stretch as the status half's stopInbox (see ask_agent's inboxOpen
-      // check). abandonPending runs on every reason, reload included: a
-      // reload still tears the inbox down.
+      // abandonPending runs on every reason, reload included: a reload still tears the inbox down.
       stopParentLivenessPoll();
       clearIdleExit();
       clearStreamTimer();
       abandonPending();
       await endOwnRun(reason);
     },
-    // Any sign of work stops the clock and settles what this session's
-    // ending will be called: it got as far as working. clearIdleExit
-    // alone does not, since a shutdown clears the timer too and must
-    // leave that judgement as it found it.
     workStarted,
     handleEnvelope,
   };

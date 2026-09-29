@@ -1,21 +1,13 @@
-// Regression suite for the reply correlation, timeout, cycle refusal and
-// inbox teardown logic in kido-status.ts and its companion extension
-// kido-agents.ts. One suite covers the pair because the pair is what a pi
-// host loads: every case here needs the status half's inbox and the agent
-// half's dispatch at once, and splitting them would mean two suites
-// sharing one fixture and each loading both files anyway. It drives the
-// extensions only through what a real pi host and a real peer agent would
-// use: the registered tools, the registered lifecycle events, and a real
-// unix socket speaking the inbox wire protocol - never by reaching into
-// either module's closures.
+// One suite covers kido-status.ts and kido-agents.ts together, since that pair is
+// what a real pi host loads and every case here needs both the status half's
+// inbox and the agent half's dispatch. It drives the extensions only through what
+// a real pi host and peer agent would use: registered tools, registered lifecycle
+// events, and a real unix socket speaking the inbox wire protocol - never by
+// reaching into either module's closures.
 //
-// A fake `kido` executable stands in for the real binary: it is what
-// findKido() discovers on PATH, and every call the extension shells out
-// to (list_agents --json, agent-status, message_agent) is answered by it.
-// It never actually delivers a message anywhere - the "reply" half of a
-// conversation is always injected directly onto the extension's own
-// inbox socket, exactly as a real peer's `kido message_agent` would
-// arrive.
+// A fake `kido` executable stands in for the real binary on PATH; a "reply" is
+// never actually delivered anywhere, but injected directly onto the extension's
+// own inbox socket, exactly as a real peer's `kido message_agent` would arrive.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -29,9 +21,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import kidoStatus, { parseEnvelope } from "./kido-status.ts";
 import kidoAgents, { isAncestor, nextStreamFlushDelay, streamBatch } from "./kido-agents.ts";
 
-// The fake kido binary. Written to disk once per fixture so it can be
-// found on PATH as a file literally named "kido" - findKido() joins a
-// PATH entry with that name and checks it is executable, nothing fancier.
+// Written to disk once per fixture as a file literally named "kido": findKido()
+// joins a PATH entry with that name and checks it is executable, nothing fancier.
 const FAKE_KIDO = `#!/usr/bin/env node
 const fs = require("fs");
 const path = require("path");
@@ -57,22 +48,15 @@ switch (args[0]) {
       process.stdout.write(file && fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "[]");
       process.exit(0);
     };
-    // KIDO_FAKE_AGENTS_DELAY_MS: how long this child holds its stdout
-    // open before exiting, so a test can make the lookup slower than a
-    // fixed wait the caller might otherwise use to guess at it.
     const delay = Number(process.env.KIDO_FAKE_AGENTS_DELAY_MS || 0);
     if (delay > 0) setTimeout(respond, delay); else respond();
     break;
   }
   case "agent-alive": {
-    // The parent-liveness poll's whole query. KIDO_FAKE_PARENT_ALIVE is
-    // "1" (alive, the default so no other case's poll ends its session),
-    // "0" (gone), or "fail" for a kido that cannot answer at all.
     const logFile = process.env.KIDO_FAKE_PARENT_ALIVE_LOG;
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
-    // Named sessions answer "false" whatever the global mode says, and a
-    // test can add one mid-run, which is how a target dies while an asker
-    // is already waiting on it.
+    // Named sessions answer "false" whatever the global mode says, so a test can
+    // kill one mid-run while an asker is already waiting on it.
     const deadFile = process.env.KIDO_FAKE_DEAD_FILE;
     if (deadFile && fs.existsSync(deadFile)) {
       const dead = fs.readFileSync(deadFile, "utf8").split("\\n").filter(Boolean);
@@ -95,9 +79,6 @@ switch (args[0]) {
     break;
   }
   case "children-alive": {
-    // The idle self-exit clock's whole query: has this session got a run
-    // of its own that has not ended. KIDO_FAKE_CHILDREN_ALIVE is "1" for
-    // a live child, and anything else (the default) for none.
     const logFile = process.env.KIDO_FAKE_CHILDREN_ALIVE_LOG;
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
     process.stdout.write((process.env.KIDO_FAKE_CHILDREN_ALIVE === "1" ? "true" : "false") + "\\n");
@@ -106,10 +87,8 @@ switch (args[0]) {
   case "agent-status": {
     const logFile = process.env.KIDO_FAKE_STATUS_LOG;
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
-    // KIDO_FAKE_SESSION_HELD makes every report the refusal a second pi
-    // on one session id gets: exit 6, with the holder named on stderr.
-    // Logged first, so a test can tell "the claim was attempted and
-    // refused" from "nothing was ever sent".
+    // Logged first, so a test can tell "the claim was attempted and refused" from
+    // "nothing was ever sent".
     if (process.env.KIDO_FAKE_SESSION_HELD) {
       process.stderr.write("session " + args[args.indexOf("--session") + 1] +
         " is already open in pane %9 (pid 4242); this process is not tracked\\n");
@@ -122,12 +101,9 @@ switch (args[0]) {
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
     process.exit(0);
   }
-  // The three commands that send an envelope. They share one log, keyed
-  // by the kind each of them implies, because what every test here asks
-  // is what went out on the wire - and the kind is no longer a flag any
-  // of them carries. notify_parent's target is the one that is not an
-  // argument at all: the real command reads it out of its own
-  // environment, so the fake does too.
+  // Share one log, keyed by the kind each implies, since what every test here asks
+  // is what went out on the wire. notify_parent's target is not an argument: the
+  // real command reads it out of its own environment, so the fake does too.
   case "message_agent":
   case "ask_agent":
   case "steer_subagent":
@@ -148,8 +124,8 @@ switch (args[0]) {
     const text = readStdin();
     const respond = () => {
       const failed = !!(process.env.KIDO_FAKE_MESSAGE_FAIL_TO && to === process.env.KIDO_FAKE_MESSAGE_FAIL_TO);
-      // Logged either way: a test asserting a dropped delivery still needs
-      // to see the attempt was made, with the right kind and target.
+      // Logged either way: a test asserting a dropped delivery still needs to see
+      // the attempt was made, with the right kind and target.
       const logFile = process.env.KIDO_FAKE_LOG;
       if (logFile) fs.appendFileSync(logFile, JSON.stringify({ kind, replyTo, id, to, text, failed }) + "\\n");
       if (failed) {
@@ -201,8 +177,8 @@ switch (args[0]) {
   case "async_bash": {
     const logFile = process.env.KIDO_FAKE_ASYNC_BASH_LOG;
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
-    // Four fields, the last of them the run's output file, exactly as
-    // cmd/kido's printCreated writes them for a bash run.
+    // Four fields, the last the run's output file, exactly as cmd/kido's
+    // printCreated writes them for a bash run.
     const runID = "fake-async-run-id";
     const output = process.env.KIDO_FAKE_STATE_DIR + "/runs/" + runID + "/output";
     process.stdout.write("@9 %9 " + runID + " " + output + "\\n");
@@ -219,9 +195,6 @@ interface Fixture {
   inboxDir: string;
   setAgents(agents: unknown[]): void;
   setParentAlive(mode: "alive" | "gone" | "fail"): void;
-  // killSession kills one named session without touching what every
-  // other session answers, and takes effect mid-run: the fake kido reads
-  // the file on every call.
   killSession(session: string): void;
   setParentAliveDelay(ms: number): void;
   parentAliveCalls(): string[][];
@@ -246,13 +219,10 @@ interface Fixture {
   statusReportsWithRemove(): string[][];
   agentsCallCount(): number;
   lastControlArgs(): string[] | undefined;
-  // waitForLog polls lastLogFor until it has a match (see pollUntil).
   waitForLog(to: string, kind?: string, ms?: number): Promise<{ id: string; replyTo: string; to: string; text: string; failed?: boolean }>;
   restore(): void;
 }
 
-// jsonLines reads back one of the fake kido's JSONL logs; an empty file is
-// simply no entries. last is the most recent of them, or undefined.
 function jsonLines(file: string): any[] {
   return readFileSync(file, "utf8")
     .trim()
@@ -365,10 +335,6 @@ function makeFixture(): Fixture {
     setAgents(agents) {
       writeFileSync(agentsFile, JSON.stringify(agents));
     },
-    // What `kido agent-alive` answers the parent-liveness poll with. A
-    // fixture's parent is alive until a test says otherwise, so no case
-    // that merely happens to have a parent in its environment has its
-    // session ended by the poll.
     setParentAlive(mode) {
       if (mode === "alive") delete process.env.KIDO_FAKE_PARENT_ALIVE;
       else process.env.KIDO_FAKE_PARENT_ALIVE = mode === "gone" ? "0" : "fail";
@@ -438,9 +404,8 @@ function makeFixture(): Fixture {
     statusReportsWithRemove() {
       return jsonLines(statusLogFile).filter((args: string[]) => args.includes("--remove"));
     },
-    // Unfiltered by status, unlike statusReportsWith: a heartbeat that kept
-    // firing after idle would report the now-current status ("idle"), not
-    // "running", so a check scoped to one status would miss it.
+    // Unfiltered by status, unlike statusReportsWith: a heartbeat firing after idle
+    // reports the now-current status ("idle"), which a check scoped to one status would miss.
     statusReportCount() {
       return jsonLines(statusLogFile).length;
     },
@@ -450,8 +415,7 @@ function makeFixture(): Fixture {
     lastControlArgs() {
       return last(jsonLines(controlLogFile));
     },
-    // Named after this test process's own pid, exactly as startInbox asks
-    // kido for - the same reason a /reload rebinds at the same path.
+    // Named after this test process's own pid, exactly as startInbox asks kido for.
     selfInboxPath() {
       return join(inboxDir, String(process.pid) + ".sock");
     },
@@ -468,36 +432,28 @@ function makeFixture(): Fixture {
         if (v === undefined) delete process.env[k];
         else process.env[k] = v;
       }
-      // maxRetries/retryDelay, not a bare rmSync: a liveness or send poll's
-      // real subprocess can still be writing its log line into dir after a
-      // test's own assertions are done with it, which rmSync alone reads
-      // as ENOTEMPTY rather than retrying past.
+      // maxRetries/retryDelay: a liveness or send poll's real subprocess can still be
+      // writing its log line after a test's own assertions are done, which a bare
+      // rmSync reads as ENOTEMPTY rather than retrying past.
       rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     },
   };
 }
 
-// A fake pi host: enough of ExtensionAPI to register tools and lifecycle
-// handlers and to record what the extension tried to say to the model.
 function createFakePi() {
   const tools = new Map<string, any>();
   const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
-  // seq is one counter across both recorders: a wake is two calls whose
-  // order is load-bearing (the custom message has to be queued before the
-  // trigger reaches prompt(), which drains the queue), and two arrays
-  // cannot be compared without it.
+  // One counter across both recorders: a wake is two calls whose order is
+  // load-bearing, and two arrays cannot be compared without it.
   let seq = 0;
   const delivered: Array<{ text: string; opts: unknown; seq: number }> = [];
   const messages: Array<{ message: any; opts: unknown; seq: number }> = [];
   const renderers = new Map<string, (message: any, options: any, theme: any) => unknown>();
-  // widgets is setWidget's own record, keyed the same way the real UI
-  // keys a widget: content undefined means "cleared", exactly as
-  // pi.ExtensionUIContext.setWidget itself treats it.
+  // Keyed the same way the real UI keys a widget: content undefined means "cleared".
   const widgets = new Map<string, { content: string[] | undefined; options?: unknown }>();
-  // What the host does with a user message, which in pi is to start a turn
-  // for it when the session is idle (its prompt()). Wired by
-  // startSessionCore; a case that wants pi's gap between the two held open
-  // replaces it, and one that wants prompt() to fail returns a rejection.
+  // What the host does with a user message: in pi, start a turn for it when the
+  // session is idle. Wired by startSessionCore; a case wanting the gap between the
+  // two held open replaces it.
   let onUserMessage: (() => unknown) | null = null;
   const pi = {
     registerTool(tool: any) {
@@ -508,8 +464,8 @@ function createFakePi() {
     },
     sendUserMessage(text: string, opts: unknown) {
       delivered.push({ text, opts, seq: seq++ });
-      // Returned, not discarded: pi's own sendUserMessage is prompt() and
-      // rejects when the turn cannot start, which kido reads.
+      // Returned, not discarded: pi's own sendUserMessage is prompt() and rejects
+      // when the turn cannot start, which kido reads.
       return onUserMessage?.();
     },
     sendMessage(message: any, opts: unknown) {
@@ -519,17 +475,11 @@ function createFakePi() {
       renderers.set(customType, renderer);
     },
   };
-  // emit returns each handler's own return value, in registration order,
-  // so a test can read what a hook like before_agent_start would hand
-  // back to a real pi host - the fake host applies none of it itself.
   async function emit(event: string, ...args: unknown[]): Promise<unknown[]> {
     const results: unknown[] = [];
     for (const h of handlers.get(event) ?? []) results.push(await h(...args));
     return results;
   }
-  // Every factory handed to ui.addAutocompleteProvider, in registration
-  // order: pi stacks them over its own built-in provider, so a test
-  // builds the same stack by calling one with a provider of its own.
   const autocompleteFactories: Array<(current: any) => any> = [];
   const notifications: Array<{ message: string; type?: string }> = [];
   const ui = {
@@ -561,12 +511,9 @@ function createFakePi() {
   };
 }
 
-// fakeTheme is the minimal Theme surface a message renderer reads: fg()
-// applied as an identity function, so a rendered line's text is asserted
-// on directly rather than through a colour-code-stripping helper. bg() is
-// identity too, for the same reason, but records every call it was given
-// so a test can assert a renderer painted a background without every
-// other assertion in this file having to see through it.
+// fg() is identity, so a rendered line's text is asserted on directly rather than
+// through a colour-code-stripping helper. bg() is identity too but records every
+// call, so a test can assert a renderer painted a background.
 const fakeTheme = {
   fg: (_color: string, text: string) => text,
   bgCalls: [] as Array<{ color: string; text: string }>,
@@ -576,18 +523,13 @@ const fakeTheme = {
   },
 } as any;
 
-// A real pi ctx always answers abort() and shutdown(); this one answers
-// them with nothing, which is what a case that is not about either wants.
-// They are not decoration: the two extensions find each other through one
-// global slot, so a session_start here rebinds the ctx of whichever agents
-// module owns the seam - including a fresh one from an earlier case whose
-// idle-exit or liveness timer is still armed. A ctx missing shutdown()
-// crashes the whole run when that timer fires, after every case has
-// already passed.
-// idle is a function, not a boolean, because pi's own ctx.isIdle() is one
-// and a case that watches a turn start has to be able to answer
-// differently on the next call. hasPendingMessages is pi's too, and
-// answers for queued user text alone.
+// abort()/shutdown() are not decoration: the extensions find each other through
+// one global slot, so a session_start here rebinds the ctx of whichever agents
+// module owns the seam - including a stale one from an earlier case whose
+// idle-exit or liveness timer is still armed. A ctx missing shutdown() crashes
+// the run when that timer later fires. idle is a function, not a boolean,
+// because pi's own ctx.isIdle() is one and a case watching a turn start has to
+// answer differently on the next call.
 function fakeCtx(sessionId = "self-session", ui?: unknown, idle: () => boolean = () => true) {
   return {
     sessionManager: { getSessionId: () => sessionId, getSessionName: () => undefined },
@@ -600,21 +542,16 @@ function fakeCtx(sessionId = "self-session", ui?: unknown, idle: () => boolean =
   };
 }
 
-// startSessionCore is the shape every session-starting helper below
-// shares: build a fake pi, run one or more extension factories against
-// it, emit session_start with a ctx the caller assembles (buildCtx gets
-// the fake pi's own bundle, so it can hand back ctx.ui or leave it out,
-// exactly as the caller needs), and hand back everything the fake pi
-// recorded plus this session's inbox path.
+// The shape every session-starting helper below shares: build a fake pi, run one
+// or more extension factories against it, emit session_start with a ctx buildCtx
+// assembles from the fake pi's own bundle.
 async function startSessionCore(fx: Fixture, factory: (pi: unknown) => void, buildCtx: (created: ReturnType<typeof createFakePi>) => unknown) {
   const created = createFakePi();
   factory(created.pi);
   const ctx = buildCtx(created) as { isIdle?: () => boolean };
-  // pi's prompt() starts a turn for a user message when the session is
-  // idle, and queues it when it is not. Nothing else in this fake ever
-  // fires turn_start, and kido waits for it before letting a second
-  // arrival through (wake, kido-agents.ts), so without this every case
-  // that delivers twice would be reading a session pi had abandoned.
+  // pi's prompt() starts a turn when idle and queues otherwise; nothing else in this
+  // fake fires turn_start, and kido waits for it before letting a second arrival
+  // through, so without this a case delivering twice reads a session pi abandoned.
   created.setOnUserMessage(() => {
     if (ctx.isIdle?.()) void created.emit("turn_start", {});
   });
@@ -622,8 +559,6 @@ async function startSessionCore(fx: Fixture, factory: (pi: unknown) => void, bui
   return { ...created, inboxPath: fx.selfInboxPath() };
 }
 
-// factory is loadExtensions unless a case needs the modules' constants
-// recomputed from the environment (freshExtensions below).
 async function startSession(
   fx: Fixture,
   { factory = loadExtensions, sessionId, idle }: { factory?: (pi: unknown) => void; sessionId?: string; idle?: () => boolean } = {},
@@ -631,23 +566,18 @@ async function startSession(
   return startSessionCore(fx, factory, (c) => fakeCtx(sessionId, c.ui, idle));
 }
 
-// loadExtensions is what a pi host does with the pair: run both factories
-// against the same host. The order is deliberately agents-last here and
-// asserted both ways in its own test below - neither extension may depend
-// on the other's factory having run first (see the seam note in
-// kido-status.ts), since pi discovers a directory and picks its own order.
+// Order is deliberately agents-last here and asserted both ways in its own test
+// below: neither extension may depend on the other's factory having run first,
+// since pi discovers a directory and picks its own order.
 function loadExtensions(pi: unknown): void {
   (kidoStatus as (pi: unknown) => void)(pi);
   (kidoAgents as (pi: unknown) => void)(pi);
 }
 
-// freshExtensions reimports both extensions under a cache-busting
-// specifier, so the module-scope constants each reads from the
-// environment (KIDO_AGENT_TASK_FILE, KIDO_AGENT_PARENT_SESSION and the
-// knobs) are recomputed. Both, and with the same counter: they are
-// two modules that find each other through globalThis rather than through
-// an import (see the seam note in kido-status.ts), so a fresh half and a
-// cached half would silently pair up and serve a session neither started.
+// Reimports both extensions under a cache-busting specifier, so the module-scope
+// constants each reads from the environment are recomputed. Both, with the same
+// counter: the two find each other through globalThis rather than an import, so a
+// fresh half and a cached half would silently pair up.
 let freshImportCounter = 0;
 async function freshExtensions(order: "status-first" | "agents-first" = "status-first"): Promise<(pi: unknown) => void> {
   const fresh = `?fresh=${process.pid}-${freshImportCounter++}`;
@@ -660,27 +590,20 @@ async function freshExtensions(order: "status-first" | "agents-first" = "status-
   };
 }
 
-// The session id fakeCtx hands out when a case names none. A subagent's
-// session id is its run id (docs/design.md, "The run id is the child's
-// session id"), so a case playing one has to keep the two in step.
+// A subagent's session id is its run id, so a case playing one has to keep the two in step.
 const DEFAULT_SESSION = "self-session";
 
-// asSubagent makes this process look like the child kido spawned for a
-// run: the parent edge, and the run id that must equal the session id the
-// case then starts. An inherited parent edge alone no longer makes a
-// subagent (kido-agents.ts, ownRunID), which is the whole point of the
-// incident this pins - so every case that plays one sets both, here, in
-// one place. extra carries whatever else a case needs in the same
-// save/restore; the extensions read all of it once at module scope, so
-// each case still goes through freshExtensions() to pick it up.
+// Sets the parent edge and the run id equal to the session id the case then
+// starts: an inherited parent edge alone does not make a subagent
+// (kido-agents.ts, ownRunID). extra carries whatever else a case needs in the
+// same save/restore; the extensions read all of it once at module scope, so each
+// case still goes through freshExtensions() to pick it up.
 async function asSubagent<T>(sessionId: string, fn: () => Promise<T>, extra: Record<string, string> = {}): Promise<T> {
   return withEnv({ KIDO_AGENT_PARENT_SESSION: "boss-session", KIDO_AGENT_RUN_ID: sessionId, ...extra }, fn);
 }
 
-// withEnv runs fn with vars set (an undefined one unset), restoring
-// whatever was there. The extensions read their knobs once at module
-// scope, so a case that sets one has to go through freshExtensions()
-// inside this.
+// Restores whatever was there. The extensions read their knobs once at module
+// scope, so a case that sets one has to go through freshExtensions() inside this.
 async function withEnv<T>(vars: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
   const saved: Record<string, string | undefined> = {};
   for (const [k, v] of Object.entries(vars)) {
@@ -698,15 +621,9 @@ async function withEnv<T>(vars: Record<string, string | undefined>, fn: () => Pr
   }
 }
 
-// A second copy of either file, at another path, registers nothing: pi
-// dedupes by real path alone, so the copy kido's bin directory passes
-// with --extension and one an earlier kido installed into pi's extensions
-// directory both reach a factory. The copy lives under this directory
-// only so its own imports resolve against node_modules here. The second
-// half is the control the refusal is unsafe without: the file that
-// claimed the slot still registers everything when run again, which is
-// what a /reload does - a guard that refused every second factory call
-// would pass the first half and leave a reloaded session with no tools.
+// Negative control: the file that claimed the slot still registers everything
+// when run again (what a /reload does) - a guard refusing every second factory
+// call would pass the first half and leave a reloaded session with no tools.
 test("a second copy of the extensions at another path registers nothing, and a reload of the first still does", async () => {
   const first = createFakePi();
   loadExtensions(first.pi);
@@ -733,14 +650,9 @@ test("a second copy of the extensions at another path registers nothing, and a r
   assert.deepEqual([...reloaded.handlers.keys()].sort(), [...first.handlers.keys()].sort());
 });
 
-// pi discovers extensions in a directory and picks its own order, so
-// neither half may read the other at factory time (see the seam note in
-// kido-status.ts). Loaded the other way round, the pair must still wire
-// up whole: the agent half's tools registered, and an envelope arriving
-// on the status half's inbox dispatched by kind rather than falling back
-// to the plain-text path. Through freshExtensions only because that is
-// what lets a case choose the order; nothing here depends on the
-// constants a fresh import recomputes.
+// pi discovers extensions in a directory and picks its own order: loaded agents
+// first, the pair must still wire up whole, dispatching an envelope by kind
+// rather than falling back to the plain-text path.
 test("either load order wires the pair up: agents first, status second", async () => {
   const fx = makeFixture();
   try {
@@ -759,14 +671,9 @@ test("either load order wires the pair up: agents first, status second", async (
   }
 });
 
-// pollUntil waits for a condition to become true, polling rather than
-// listening for anything: several assertions below observe work this
-// extension does fire-and-forget (a detached, unref'd status report) or
-// asynchronously via a real subprocess (runKido shells out via spawn, not
-// execFileSync), so there is no promise to await and no event to subscribe
-// to - only a file on disk to keep checking. In particular ask_agent's
-// execute() can return control to its caller before the fake kido
-// subprocess for the outbound send has appended its log entry.
+// Polls rather than listening for anything: several assertions below observe
+// fire-and-forget or real-subprocess work with no promise to await and no event
+// to subscribe to, only a file on disk to keep checking.
 async function pollUntil(cond: () => boolean | Promise<boolean>, ms = 2000, what = "a condition"): Promise<void> {
   const deadline = Date.now() + ms;
   for (;;) {
@@ -776,12 +683,9 @@ async function pollUntil(cond: () => boolean | Promise<boolean>, ms = 2000, what
   }
 }
 
-// pollForStable waits for `read()` to stop changing for a full `quietMs`
-// window, not merely for two samples some fixed delay apart to happen to
-// match - a late-arriving in-flight call can land at any point on a loaded
-// runner, so only "nothing changed for a whole quiet window" tells a drain
-// apart from a heartbeat that is still running. A source that never goes
-// quiet (the negative control this exists for) times out instead of
+// Waits for `read()` to stop changing for a full `quietMs` window, not merely two
+// samples some fixed delay apart: a late-arriving in-flight call can land at any
+// point on a loaded runner. A source that never goes quiet times out rather than
 // returning a false-stable reading.
 async function pollForStable(read: () => number, quietMs: number, timeoutMs: number, what: string): Promise<number> {
   const deadline = Date.now() + timeoutMs;
@@ -941,9 +845,6 @@ test("cycle refusal: an inbound ask from a session we're already asking is refus
     const s = await startSession(fx);
     const ask = s.tools.get("ask_agent");
     const p1 = ask.execute("c1", { to: "peer-a", question: "outbound q" }); // holds an edge to peer-a
-    // pendingOutbound.set runs strictly before the send that produces this
-    // log entry (see its comment in kido-agents.ts), so waiting for the
-    // entry is a safe way to know the edge is already registered.
     await fx.waitForLog("peer-a", "ask");
 
     const refused = await sendToInbox(s.inboxPath, envelope("ask", "are you free?", { id: "inbound-1", from: { session: "peer-a", name: "peer-a" } }));
@@ -954,7 +855,6 @@ test("cycle refusal: an inbound ask from a session we're already asking is refus
     assert.equal(ok, "ok");
     assert.ok(askSent(s, "another question"), "an ask from anyone else is shown");
 
-    // Release the edge so p1 does not dangle past the test.
     const sent = fx.lastLogFor("peer-a", "ask");
     await sendToInbox(s.inboxPath, envelope("reply", "done", { replyTo: sent!.id, from: { session: "peer-a" } }));
     await p1;
@@ -999,11 +899,9 @@ test("the cycle edge is released by a correlated reply or a timeout, but not by 
   }
 });
 
-// A pi session with no title falls back to its session id as the reply
-// address (labelFrom); a /reload changes that id while leaving the
-// sender's pane untouched. message_agent must re-resolve
-// the reply against the sender's current session, found by pane, not
-// the stale one the model was told about when the ask arrived.
+// A /reload changes a session's id while leaving its pane untouched; message_agent
+// must re-resolve the reply against the sender's current session, found by pane,
+// not the stale one the model was told about when the ask arrived.
 test("a reply to an unnamed asker still reaches it after the asker reloads and its session id changes", async () => {
   const fx = makeFixture();
   try {
@@ -1022,15 +920,11 @@ test("a reply to an unnamed asker still reaches it after the asker reloads and i
     assert.ok(asked, "the ask was delivered to the model");
     assert.match(asked!.message.content, /message_agent\(to="peer-a-old"/, "an unnamed asker's fallback label is its session id");
 
-    // The asker reloads: same pane and agent, a new session id, before
-    // this session gets around to replying.
     fx.setAgents([
       { id: "self", name: "self", parent: "", self: true, canMessage: true },
       { id: "peer-a-new", name: "", pane: "%42", parent: "", self: false, canMessage: true, canReply: true },
     ]);
 
-    // The model does exactly what it was told: replies to the now-stale
-    // "peer-a-old" label.
     const reply = await s.tools.get("message_agent").execute("c1", { to: "peer-a-old", message: "still here", replyTo: "ask-reload-1" });
     assert.doesNotMatch(reply.content[0].text, /could not message/, "the reply must not fail just because the asker reloaded");
 
@@ -1042,12 +936,8 @@ test("a reply to an unnamed asker still reaches it after the asker reloads and i
   }
 });
 
-// message_agent's own returned text is the strongest of the three places
-// the stop-after instruction is repeated - the last thing the model reads
-// before deciding whether to keep talking - so it must carry it, but only
-// when replyTo genuinely answers an ask this session has pending; a
-// reply to a notice, or a stale/unknown id, is not that and must not gain
-// an instruction that makes no sense attached to it.
+// The stop-after instruction belongs only when replyTo genuinely answers an ask
+// this session has pending; a reply to a notice, or a stale/unknown id, must not gain it.
 test("message_agent's result says to stop after replying to a pending ask, but not after any other send", async () => {
   const fx = makeFixture();
   try {
@@ -1057,8 +947,7 @@ test("message_agent's result says to stop after replying to a pending ask, but n
     ]);
     const s = await startSession(fx);
 
-    // pane set: handleInboundAsk only remembers a pending ask when the
-    // envelope carries one (pendingInboundAsks is keyed by pane).
+    // pendingInboundAsks is keyed by pane, so the envelope must carry one.
     await sendToInbox(s.inboxPath, envelope("ask", "you there?", { id: "ask-z", from: { session: "peer-a", name: "peer-a", pane: "%2" } }));
     const toAsk = await s.tools.get("message_agent").execute("c1", { to: "peer-a", message: "yes", replyTo: "ask-z" });
     assert.match(toAsk.content[0].text, /entire response|whole response/i, "a reply to a pending ask carries the stop-after instruction");
@@ -1082,26 +971,18 @@ test("abandonPending: session_shutdown and a failed rebind settle a waiting ask 
   try {
     fx.setAgents(twoPeers.slice(0, 2)); // self, peer-a
 
-    // session_shutdown: nothing is coming back, so the wait must not run
-    // out its own (5-minute default) timeout.
+    // session_shutdown: nothing is coming back, so the wait must not run out its
+    // own (5-minute default) timeout.
     {
       const s = await startSession(fx);
       const ask = s.tools.get("ask_agent");
       const p = ask.execute("c1", { to: "peer-a", question: "q" });
       await s.emit("session_shutdown");
       const out = await settlesWithin(p, 500);
-      // Which message comes back depends on whether ask_agent had already
-      // registered its waiter (fetchAgents is async - see the `!inbox`
-      // check in kido-status.ts) by the time
-      // session_shutdown ran: either abandonPending caught an
-      // already-registered waiter, or the check turned away a
-      // registration that had not happened yet. Both are "gave up because
-      // of shutdown", never "will try again later".
       assert.match(out.content[0].text, /inbox closed|inbox is unavailable/);
       assert.doesNotMatch(out.content[0].text, /will still arrive/, "must not promise a reply that can no longer land");
     }
 
-    // A /reload whose rebind fails abandons the same way.
     {
       const s = await startSession(fx);
       const ask = s.tools.get("ask_agent");
@@ -1113,9 +994,6 @@ test("abandonPending: session_shutdown and a failed rebind settle a waiting ask 
       fx.setInboxFail(false);
     }
 
-    // A plain reload whose rebind succeeds must not abandon anything: the
-    // waiter survives and a reply on the rebound (same-path) inbox still
-    // resolves it.
     {
       const s = await startSession(fx);
       const ask = s.tools.get("ask_agent");
@@ -1132,11 +1010,6 @@ test("abandonPending: session_shutdown and a failed rebind settle a waiting ask 
   }
 });
 
-// A /reload keeps the process, the pid and the session id, so nothing
-// requires the inbox to go down with the module. These four cases are the
-// live incident: an async run's notice, which never falls back to a paste
-// and is sent exactly once, landed while its parent was mid-/reload and
-// was lost for good.
 function noticesIn(s: { messages: Array<{ message: any; opts: unknown }> }, text: string) {
   return customMessages(s, "kido-notice").filter((m) => m.message.content.includes(text));
 }
@@ -1148,7 +1021,6 @@ test("a notice sent across a /reload is delivered to the reloaded session exactl
     const s1 = await startSession(fx, { factory: await freshExtensions() });
     await s1.emit("session_shutdown", { reason: "reload" });
 
-    // The gap: the old module is done, the reloaded one has not started.
     const sent = sendToInbox(s1.inboxPath, envelope("notice", "ci run finished", { from: { session: "peer-a", name: "peer-a" } }));
 
     const s2 = await startSession(fx, { factory: await freshExtensions() });
@@ -1161,10 +1033,8 @@ test("a notice sent across a /reload is delivered to the reloaded session exactl
   }
 });
 
-// The holding claim, with the ordering that carries it: the connection is
-// accepted in the gap and answered only once the new handler is in place.
-// The gap is still a shutdown as far as ask_agent is concerned - the
-// inbox this module was serving is gone even though the socket is not.
+// A shutdown module must still refuse to wait for a reply: the inbox it was
+// serving is gone even though the socket is not.
 test("an envelope that arrives in the /reload gap is held, then answered and delivered once", async () => {
   const fx = makeFixture();
   try {
@@ -1180,8 +1050,6 @@ test("an envelope that arrives in the /reload gap is held, then answered and del
 
     const s2 = await startSession(fx, { factory: await freshExtensions() });
     assert.equal(await settlesWithin(sent, 2000), "ok");
-    // A message from a known agent reaches the model as a labelled
-    // kido-message, not as plain delivered text, so both are counted.
     const inGap = (s: { delivered: Array<{ text: string }>; messages: Array<{ message: any }> }) =>
       s.delivered.filter((d) => d.text.includes("in the gap")).length +
       s.messages.filter((m) => String(m.message.content).includes("in the gap")).length;
@@ -1193,8 +1061,7 @@ test("an envelope that arrives in the /reload gap is held, then answered and del
   }
 });
 
-// The negative control: every other reason still closes and unlinks, and
-// a send afterwards fails exactly as it always has.
+// Negative control: every other reason still closes and unlinks.
 test("a session_shutdown that is not a reload still closes the inbox", async () => {
   const fx = makeFixture();
   try {
@@ -1213,10 +1080,8 @@ test("a session_shutdown that is not a reload still closes the inbox", async () 
   }
 });
 
-// One listener, read off the socket file itself: a rebind unlinks and
-// creates a new one, so the inode is what tells "handed forward" from
-// "torn down and replaced". The deliveries are the other half - a second
-// listener on a stolen path shows up as an answer nobody delivers.
+// The inode is what tells "handed forward" from "torn down and replaced": a
+// rebind unlinks and creates a new one.
 test("a /reload leaves exactly one listener, on the same socket", async () => {
   const fx = makeFixture();
   try {
@@ -1238,19 +1103,10 @@ test("a /reload leaves exactly one listener, on the same socket", async () => {
   }
 });
 
-// The extension's end of "each tool gets its own subcommand"
-// (docs/design-subagents.md, "The tools, and their commands"). This half
-// asserts the registered tools are exactly the names in
-// pi/testdata/tools.json; cmd/kido's own
-// TestEveryToolHasASubcommandOfItsName asserts every name in that file is
-// a kido subcommand. Split that way because the drift worth catching is a
-// tool added here - which this test fails until the fixture names it, and
-// the Go test then fails until kido has the subcommand. A Go-side list of
-// tool names on its own would never notice, since nobody adding a tool to
-// this file has a reason to go and edit one.
-//
-// Registration is unconditional at factory time, so a plain session sees
-// every tool; nothing here depends on a session having resolved kido.
+// This half asserts the registered tools are exactly the names in
+// pi/testdata/tools.json; cmd/kido's TestEveryToolHasASubcommandOfItsName asserts
+// every name in that file is a kido subcommand, so a tool added here fails until
+// both are updated.
 test("the registered tools are exactly the shared list both suites check subcommand parity against", async () => {
   const fx = makeFixture();
   try {
@@ -1277,13 +1133,8 @@ test("the registered tools are exactly the shared list both suites check subcomm
   }
 });
 
-// parseEnvelope mirrors internal/msg.Parse: the same v0/v1 discriminator
-// rule implemented twice, once in Go and once here. A disagreement
-// between the two is how a user's prompt gets silently swallowed as a
-// control message (or the reverse: a real envelope treated as raw text).
-// Driven from internal/msg/testdata/discriminator.json, the fixture
-// internal/msg's own discriminator table test drives, so the two suites
-// cannot drift apart by someone editing only one list.
+// Driven from the same fixture internal/msg's own discriminator table test
+// drives, so the two suites cannot drift apart by someone editing only one list.
 test("parseEnvelope agrees with internal/msg.Parse's v0/v1 discriminator table", () => {
   const fixturePath = join(dirname(fileURLToPath(import.meta.url)), "..", "internal", "msg", "testdata", "discriminator.json");
   const cases: { name: string; raw: string; ok: boolean }[] = JSON.parse(readFileSync(fixturePath, "utf8"));
@@ -1294,12 +1145,8 @@ test("parseEnvelope agrees with internal/msg.Parse's v0/v1 discriminator table",
   }
 });
 
-// A model answering an ask correctly calls message_agent - that part
-// already worked - and then went on to write a user-facing summary of
-// what it had just done, in the same turn. That trailing narration
-// reaches nobody: the asker already has its answer, and no user is
-// waiting on a report in this session. The delivered text must say the
-// message_agent call IS the whole response, not merely how to make it.
+// The asker already has its answer and no user is waiting on a report in this
+// session, so trailing narration after the message_agent call reaches nobody.
 test("an inbound ask's delivered text says the message_agent reply is the whole response, with no summary after it", async () => {
   const fx = makeFixture();
   try {
@@ -1319,8 +1166,7 @@ test("an inbound ask's delivered text says the message_agent reply is the whole 
 test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 raw text all reach the model", async () => {
   const fx = makeFixture();
   try {
-    // peer-a is listed, so its message is an agent's rather than the
-    // user's - the distinction the message kind now turns on.
+    // peer-a is listed, so its message is an agent's rather than the user's.
     fx.setAgents([
       { id: "self", name: "self", parent: "", self: true, canMessage: true },
       { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, canReply: true },
@@ -1360,14 +1206,9 @@ test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 r
   }
 });
 
-// A message from an agent arrives under a header naming the sender and
-// what they are to this session, the way a notice does: a message steered
-// or queued into a session otherwise reads exactly like the user typing,
-// and who is talking is the one thing the model cannot infer. The three
-// relationships are not interchangeable - a parent's message is the
-// nearest thing a child has to the user speaking, a child's is a report
-// from work this session started, a peer's is neither - so the header
-// says which, and only the peer's says "not the user".
+// A message steered or queued into a session otherwise reads exactly like the
+// user typing, and who is talking is the one thing the model cannot infer: the
+// header names the sender and their relationship, and only a peer's says "not the user".
 test("a message from an agent is labelled with its sender and their relationship; one from a shell stays the user's own words", async () => {
   const fx = makeFixture();
   try {
@@ -1377,9 +1218,6 @@ test("a message from an agent is labelled with its sender and their relationship
       { id: "kid-session", name: "kid", parent: DEFAULT_SESSION, pane: "%3", self: false, canMessage: true, canReply: true },
       { id: "peer-session", name: "peer-a", parent: "", pane: "%4", self: false, canMessage: true, canReply: true },
     ]);
-    // A subagent of "boss-session", which is what asSubagent sets: the
-    // parent header is only right for the agent that actually spawned
-    // this session.
     await asSubagent(DEFAULT_SESSION, async () => {
       const s = await startSession(fx, { factory: await freshExtensions() });
       const labelled = () => customMessages(s, "kido-message").map((m) => m.message);
@@ -1408,11 +1246,8 @@ test("a message from an agent is labelled with its sender and their relationship
         "and a message is drawn in full without expanding: unlike a report, it is meant to be read",
       );
 
-      // The negative control, and the rule the whole feature turns on: a
-      // human running `kido message_agent` from a bare pane has no state
-      // record, so kido puts no session in `from` (senderOf,
-      // cmd/kido/message_agent.go) and no listed agent owns that pane.
-      // That is the user speaking, and it must stay exactly as typed.
+      // Negative control: a human at a bare pane has no state record, so kido puts
+      // no session in `from` and no listed agent owns that pane - the user speaking, unlabelled.
       await sendToInbox(s.inboxPath, envelope("message", "do this instead", { from: { session: "", pane: "%99" } as any }));
       assert.ok(s.delivered.some((d) => d.text === "do this instead"), "a shell's message is the user's own words, delivered unlabelled");
       assert.equal(labelled().length, 3, "and it is not dressed up as an agent's message");
@@ -1422,13 +1257,8 @@ test("a message from an agent is labelled with its sender and their relationship
   }
 });
 
-// An ask gets the same treatment deliverAgentMessage gives a plain
-// message, and for the same reason: delivered as a user message it
-// otherwise reads as the user typing, and the id plus reply instructions
-// the model needs are not something a human reading the transcript wants
-// to see. Headed the way a message is (same relation wording), but the
-// renderer shows only the question - the id, the reply call and the
-// parenthetical are for the model alone.
+// Headed the way a message is, but the renderer shows only the question - the id,
+// reply call and parenthetical are for the model alone.
 test("an inbound ask is headed like a message and renders as just the question, with the id and reply instructions hidden", async () => {
   const fx = makeFixture();
   try {
@@ -1460,9 +1290,8 @@ test("an inbound ask is headed like a message and renders as just the question, 
       assert.ok(!drawn.includes("message_agent"), "the reply instructions are hidden");
       assert.ok(!drawn.includes("who spawned you"), "the parenthetical is for the model, not the transcript");
 
-      // A transcript entry reloaded with no details at all - the one case
-      // the renderer cannot recover a clean question from - falls back to
-      // the raw content rather than showing nothing.
+      // A transcript entry reloaded with no details at all falls back to the raw
+      // content rather than showing nothing.
       const noDetails = { ...sent.message, details: undefined };
       const fallback = renderer!(noDetails, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
       assert.ok(fallback.includes("is the build green?"), "the fallback still shows the question, from the raw content");
@@ -1472,14 +1301,9 @@ test("an inbound ask is headed like a message and renders as just the question, 
   }
 });
 
-// Part 4 of the notify_parent refactor (docs/design.md, "Notifying the
-// parent"): an inbound notice renders collapsed by default and expands
-// under pi's own ctrl-o toggle (options.expanded), which this extension
-// never binds itself - see kido-agents.ts's registerMessageRenderer call.
-// The collapsed line is the notice's own first line (e.g. an async run's
-// own `async run "build" failed: exit status 3`), not a generic
-// placeholder - kido-agents.ts's registerMessageRenderer takes only that
-// much off the notice text, nothing further into whatever body follows.
+// Collapses under pi's own ctrl-o toggle (options.expanded), which this
+// extension never binds itself; the collapsed line is the notice's own first
+// line, not a generic placeholder.
 test("an inbound notice renders collapsed by default, naming the sender and its own first line, and expands to the full text", async () => {
   const fx = makeFixture();
   try {
@@ -1511,12 +1335,8 @@ test("an inbound notice renders collapsed by default, naming the sender and its 
   }
 });
 
-// A notice is steered into a running turn, where it reads exactly like
-// the user having typed - the confusion Claude Code's "[SYSTEM
-// NOTIFICATION - NOT USER INPUT]" header exists to end. The header is
-// model-facing only: the transcript already says who a notification is
-// from, so the renderer takes it back off, and the collapsed row is still
-// the child's own first line rather than a row of identical headers.
+// The header is model-facing only: the transcript already says who a
+// notification is from, so the renderer takes it back off.
 test("a notice reaches the model under a header naming what it is, and the header is not what the TUI shows", async () => {
   const fx = makeFixture();
   try {
@@ -1537,9 +1357,6 @@ test("a notice reaches the model under a header naming what it is, and the heade
     assert.ok(!expanded.includes("not the user"), "nor does expanding show a header the transcript already carries");
     assert.ok(expanded.includes("needs a decision"), "expanding still shows the whole text");
 
-    // A message from no agent at all is the user speaking, and stays
-    // plain unlabelled text (docs/design.md, "The inbox"); nothing here
-    // may leak onto it.
     await sendToInbox(s.inboxPath, envelope("message", "do the other thing", { from: { session: "", pane: "%99" } as any }));
     assert.ok(s.delivered.some((d) => d.text === "do the other thing"), "a shell's message is delivered unlabelled");
   } finally {
@@ -1552,9 +1369,7 @@ test("a notice from a nameless sender still renders sanely, collapsed and expand
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     const s = await startSession(fx);
-    // No name and no session: what a human running `kido notify_parent`
-    // from a bare pane looks like on the wire (labelFrom's own
-    // fallback order: name, session, pane, "another agent").
+    // labelFrom's fallback order: name, session, pane, "another agent".
     await sendToInbox(s.inboxPath, envelope("notice", "from a human", { from: { session: "", pane: "%12" } as any }));
     const sent = customMessages(s, "kido-notice")[0];
     assert.equal(sent!.message.details.from, "%12", "the pane stands in for a name when there is none");
@@ -1567,15 +1382,9 @@ test("a notice from a nameless sender still renders sanely, collapsed and expand
   }
 });
 
-// A message, an ask and a notice all draw on the same background pi's own
-// CustomMessageComponent already paints behind an extension's default
-// rendering ("customMessageBg", modes/interactive/components/custom-
-// message.js): each of these three renders its own component instead, and
-// bypassing that box without repainting it would leave every inbound entry
-// on the plain background a user's own typing sits on. The row must fill
-// the width in both a notice's collapsed and its expanded form, since a
-// background that stops short of the edge is not a boundary a glance can
-// see.
+// Each renders its own component instead of pi's own CustomMessageComponent box,
+// so bypassing it without repainting would leave the entry on the plain
+// background a user's own typing sits on.
 test("a message, an ask and a notice each paint the full-width customMessageBg background pi's own box uses", async () => {
   const fx = makeFixture();
   try {
@@ -1633,12 +1442,9 @@ test("a message, an ask and a notice each paint the full-width customMessageBg b
   }
 });
 
-// `@` completion. pi stacks an extension's provider over its own
-// built-in one (ctx.ui.addAutocompleteProvider, pi 0.87.1), which is what
-// lets agent names share the trigger `@` already uses for file
-// references instead of taking it away: stackOver builds that stack the
-// way pi does, with a stand-in for the built-in half that records what it
-// was asked and answers the same `@token` prefix pi's own
+// pi stacks an extension's provider over its own built-in one
+// (ctx.ui.addAutocompleteProvider, pi 0.87.1); this builds that stack, with a
+// stand-in for the built-in half answering the same `@token` prefix pi's own
 // CombinedAutocompleteProvider returns.
 function stackOver(
   factories: Array<(current: any) => any>,
@@ -1667,11 +1473,9 @@ function stackOver(
 const suggest = (provider: any, line: string, cursorCol = line.length) =>
   provider.getSuggestions([line], 0, cursorCol, { signal: new AbortController().signal });
 
-// Nothing is fetched until the first `@`, and that first keystroke is
-// served before its own refresh lands - the editor never waits on a
-// subprocess. So every assertion about what is offered polls keystrokes
-// until the list is there, which is what a typing human does, rather
-// than sleeping a guess at how long one subprocess takes.
+// Nothing is fetched until the first `@`, and that first keystroke is served
+// before its own refresh lands - the editor never waits on a subprocess - so
+// every assertion polls keystrokes rather than sleeping a guess at the subprocess's time.
 async function suggestOnceListed(provider: any, line: string, ms = 2000) {
   let suggestions: any;
   await pollUntil(
@@ -1767,9 +1571,7 @@ test("@ completion matches a word inside an agent's name, and inserts an id pref
     const applied = provider.applyCompletion(["@config"], 0, 7, unnamed, "@config");
     assert.equal(applied.lines[0], "@01a0d843-7 ", "accepting it leaves an address kido can resolve, not an untypeable name");
 
-    // The negative control: a name that survives as a token is still
-    // inserted as itself. An id prefix everywhere would pass every
-    // assertion above and make every completion unreadable.
+    // Negative control: an id prefix everywhere would pass the assertions above too.
     const spaceless = suggestions.items.find((i: any) => i.label === "@config-linter");
     assert.equal(spaceless.value, "@config-linter", "a spaceless name inserts the name");
   } finally {
@@ -1788,8 +1590,6 @@ test("a token that is not an @ reference is handed to the built-in provider unto
     assert.equal(calls.length, 1, "the built-in provider was asked");
     assert.deepEqual(suggestions.items.map((i: any) => i.value), ["src/main.ts"], "and its answer is returned as it came");
 
-    // An @ token that matches no agent is the same delegation: the file
-    // half's own answer, with nothing added and nothing dropped.
     const files = await suggest(provider, "@src/ma");
     assert.deepEqual(files.items.map((i: any) => i.value), ["src/main.ts"], "@src/... still completes files");
   } finally {
@@ -1797,12 +1597,8 @@ test("a token that is not an @ reference is handed to the built-in provider unto
   }
 });
 
-// A keystroke may never wait on `kido list_agents --json`: the editor is
-// offered the list in hand and the refresh runs behind it. The fake kido
-// holds its answer for 400ms here, far longer than the completion is
-// allowed to take, and the assertion with teeth is that the slow call
-// happened at all - a provider that simply never refreshed would satisfy
-// the deadline and go stale forever.
+// The assertion with teeth: the slow call happened at all - a provider that
+// never refreshed would satisfy the deadline and go stale forever.
 test("@ completion serves the last agent list without waiting for the subprocess behind it", async () => {
   const fx = makeFixture();
   const savedTTL = process.env.KIDO_AGENT_LIST_TTL_MS;
@@ -1816,7 +1612,7 @@ test("@ completion serves the last agent list without waiting for the subprocess
 
     process.env.KIDO_FAKE_AGENTS_DELAY_MS = "400";
     const callsBefore = fx.agentsCallCount();
-    await new Promise((r) => setTimeout(r, 60)); // past the TTL: the next keystroke refreshes
+    await new Promise((r) => setTimeout(r, 60)); // past the TTL
 
     const started = Date.now();
     const suggestions = await suggest(provider, "@hel");
@@ -1832,13 +1628,9 @@ test("@ completion serves the last agent list without waiting for the subprocess
   }
 });
 
-// The render path and the model path are different code paths (see the
-// user's own report: two subagents' notices sat invisible for minutes,
-// both appearing only when the parent's turn happened to end). This is
-// the render half in isolation: a widget row must appear the instant the
-// envelope lands, before pi ever gets around to actually delivering the
-// steered message to the model - nothing here waits on a turn ending,
-// because the fake host never ends one.
+// Pins a real bug: the render path and the model path are different code paths,
+// and two subagents' notices sat invisible for minutes, appearing only when the
+// parent's turn happened to end.
 test("an inbound notice renders a widget the instant it is received, not when it is later delivered", async () => {
   const fx = makeFixture();
   try {
@@ -1853,9 +1645,6 @@ test("an inbound notice renders a widget the instant it is received, not when it
     assert.ok(widget!.content, "the widget has content, not a clear");
     assert.ok(widget!.content!.some((line) => line.includes("peer-a")), "the widget row names the sender");
 
-    // The model-visible message was already handed to sendMessage in the
-    // very same call - the widget is in addition to that, not instead of
-    // it.
     const sent = customMessages(s, "kido-notice")[0];
     assert.ok(sent, "the notice was also handed to sendMessage, unconditionally");
   } finally {
@@ -1863,16 +1652,8 @@ test("an inbound notice renders a widget the instant it is received, not when it
   }
 });
 
-// A notice is the one envelope kind delivered by steer rather than
-// followUp (docs/design.md, "The inbox", carries the exception and why):
-// a parent whose own turn runs long must not sit on a finished child's
-// report until its turn happens to end, since that defeats doing the work
-// in a subagent at all. Plain messages and asks are the negative control -
-// they must stay on followUp, unchanged.
-//
-// Driven against a streaming session, which is the only state the modes
-// are about: while pi is idle neither queue is consulted at all and the
-// arrival is woken through prompt() instead (see the wake cases below).
+// A parent whose own turn runs long must not sit on a finished child's report
+// until its turn ends. Negative control: plain messages and asks stay on followUp, unchanged.
 test("a notice is delivered by steer, not followUp; plain messages and asks are unaffected", async () => {
   const fx = makeFixture();
   try {
@@ -1903,30 +1684,16 @@ test("a notice is delivered by steer, not followUp; plain messages and asks are 
   }
 });
 
-// triggers is every wake trigger a session typed as the user - the
-// user-role line kido sends to start a turn for an arrival that found the
-// session idle. Matched by the prefix every one of them shares, so a case
-// can assert on how many there were without naming the wording.
+// Every wake trigger a session typed as the user, matched by the shared prefix.
 function triggers(s: { delivered: Array<{ text: string; opts: unknown; seq: number }> }) {
   return s.delivered.filter((d) => d.text.startsWith("(kido:"));
 }
 
-// pi 0.87.1's sendCustomMessage({triggerTurn: true}) hands an idle session
-// straight to the agent loop (agent-session.ts, the triggerTurn branch
-// calling _runAgentPrompt), skipping everything prompt() does first: the
-// before_agent_start emit, so a message-woken turn is missing this file's
-// own NOTIFY_PARENT_INSTRUCTION, and the system-prompt diff, so a resumed
-// session whose extensions or tools have changed sends a stale prompt and
-// pi-claude-bridge refuses the turn ("prompt-capture: no capture for this
-// N-char system prompt"). Waking through sendUserMessage is the one way in
-// that runs both.
-//
-// Asserted per kind, and in both halves each time: the arrival is queued
-// as "nextTurn" - which pi injects right after the user message - and the
-// trigger is what actually starts the turn. Either alone passes a
-// half-applied fix: a nextTurn message with no trigger is a message
-// nothing delivers until the user happens to type, and a trigger with a
-// triggerTurn message beside it is two turns for one arrival.
+// pi 0.87.1's sendCustomMessage({triggerTurn: true}) skips prompt()'s
+// before_agent_start emit and system-prompt diff; waking through
+// sendUserMessage is the one way in that runs both. Either half alone passes a
+// half-applied fix: a nextTurn message with no trigger delivers nothing until the
+// user types, and a trigger beside a triggerTurn message is two turns for one arrival.
 test("an idle session is woken through prompt(): the arrival is queued as nextTurn and a user trigger starts the turn", async () => {
   const fx = makeFixture();
   try {
@@ -1961,10 +1728,8 @@ test("an idle session is woken through prompt(): the arrival is queued as nextTu
   }
 });
 
-// A held batch of a run's output is the fourth kind that wakes an idle
-// session, and the one that can be flushed with no turn in sight at all -
-// its idle schedule fires on kido's own timer. Same rule, checked where
-// the flush comes from a timer rather than from an envelope.
+// A held batch is the fourth kind that wakes an idle session, and the one that
+// can be flushed with no turn in sight at all - its idle schedule fires on kido's own timer.
 test("a stream batch flushed while the session is idle wakes it the same way", async () => {
   const fx = makeFixture();
   try {
@@ -2024,12 +1789,9 @@ test("two asks arriving while idle ride one turn: one trigger, both delivered", 
   }
 });
 
-// The clear turn_start cannot do. pi's prompt() can fail before any turn
-// starts - a compaction in progress, an unconfigured model - and
-// sendUserMessage *is* prompt(), so its rejection is the only word kido
-// gets that the turn is not coming. Without clearing the flag there too,
-// one failed trigger leaves every later arrival queued behind it for the
-// life of the session, each waiting on a turn_start that never arrives.
+// A rejected sendUserMessage - prompt() itself - is the only word kido gets that
+// a turn is not coming; without clearing the flag too, one failed trigger leaves
+// every later arrival queued behind it for the life of the session.
 test("a trigger whose turn never starts does not hold the next arrival back", async () => {
   const fx = makeFixture();
   try {
@@ -2038,8 +1800,6 @@ test("a trigger whose turn never starts does not hold the next arrival back", as
       { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, canReply: true },
     ]);
     const s = await startSession(fx, { idle: () => true });
-    // prompt()'s own wording for the case, failing the way prompt() fails:
-    // a rejection, after the call kido makes has already returned.
     s.setOnUserMessage(() => Promise.reject(new Error("Cannot submit a prompt while compaction is in progress")));
     const from = { session: "peer-a", name: "peer-a" };
 
@@ -2054,11 +1814,6 @@ test("a trigger whose turn never starts does not hold the next arrival back", as
   }
 });
 
-// The other half of the same defect: once the identical steered message
-// actually reaches the model (message_start, matched by the noticeId this
-// extension mints), the model has the full text exactly once, and the
-// stand-in widget row is removed rather than left to show a notice twice
-// over.
 test("a notice reaches the model exactly once, and its widget row is removed once delivery actually happens", async () => {
   const fx = makeFixture();
   try {
@@ -2076,15 +1831,10 @@ test("a notice reaches the model exactly once, and its widget row is removed onc
 
     assert.ok(s.widgets.get("kido-notice-pending")?.content, "the widget is still up before delivery actually happens");
 
-    // Simulate what a real pi host does once the steered message actually
-    // lands in the transcript: fires message_start with the same message
-    // this extension handed to sendMessage.
     await s.emit("message_start", { message: { ...sent, role: "custom" } });
 
     assert.equal(s.widgets.get("kido-notice-pending")?.content, undefined, "the widget is cleared once the real entry has taken over");
 
-    // A second, unrelated message_start (an outbound reply, say) must not
-    // resurrect or otherwise disturb an already-cleared widget.
     await s.emit("message_start", { message: { role: "custom", customType: "some-other-type" } });
     assert.equal(s.widgets.get("kido-notice-pending")?.content, undefined, "an unrelated message_start leaves the cleared widget alone");
   } finally {
@@ -2092,25 +1842,14 @@ test("a notice reaches the model exactly once, and its widget row is removed onc
   }
 });
 
-// Part 3 of the notify_parent refactor: a spawned child must be told
-// reporting is its own job now that nothing does it automatically. Fires
-// on every prompt, not just the child's first, since a task delivered
-// once via deliverTask is the wrong lifetime for a standing rule (a
-// parent's later message_agent call produces a follow-up turn with no
-// other memory of it).
-// The handler must not return `systemPrompt` (or set forceSystemPrompt):
-// pi 0.87.1's docs/extensions.md says that "replaces the whole prompt for
-// that run" and to "prefer changing prompt sections, selected tools, or
-// guidelines" instead - an opaque forced prompt is what broke
-// pi-claude-bridge's prompt-capture, which keys its cache off the
-// structured sections a forced prompt bypasses. So this asserts the
-// opposite of what it used to: no handler may return a systemPrompt
-// override, and the instruction must show up in
-// systemPromptOptions.promptGuidelines instead - added exactly once per
-// call, never accumulated, which the second emit here is what would
-// catch (pi hands every call its own freshly normalized copy of the
-// prompt options; a handler that mutated something shared would show it
-// here as two entries after two turns).
+// Fires on every prompt, not just the child's first: a task delivered once via
+// deliverTask is the wrong lifetime for a standing rule.
+// The handler must not return `systemPrompt` (or set forceSystemPrompt): pi
+// 0.87.1's docs/extensions.md warns that replaces the whole prompt, which broke
+// pi-claude-bridge's prompt-capture. The instruction goes in
+// systemPromptOptions.promptGuidelines instead, added exactly once per call, never
+// accumulated - the second emit here is what would catch a handler mutating
+// something shared.
 test("a subagent's before_agent_start hook adds the notify_parent instruction to systemPromptOptions rather than forcing a whole prompt; a root session's does not", async () => {
   const fx = makeFixture();
   try {
@@ -2142,7 +1881,7 @@ test("a subagent's before_agent_start hook adds the notify_parent instruction to
   const rootFx = makeFixture();
   try {
     rootFx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
-    const s = await startSession(rootFx); // root session: no KIDO_AGENT_PARENT_SESSION
+    const s = await startSession(rootFx); // root session
     const event: any = { systemPrompt: "base prompt", systemPromptOptions: { promptGuidelines: [] } };
     const results = await s.emit("before_agent_start", event);
     assert.ok(results.every((r) => r === undefined), "a root session's system prompt is left alone");
@@ -2174,20 +1913,14 @@ test("interrupt_subagent runs kido interrupt_subagent with the target, and stop_
   }
 });
 
-// argAfter reads the value following a flag in an argv-shaped array, the
-// same way the args a fake kido logged are read back apart.
 function argAfter(args: string[] | undefined, flag: string): string | undefined {
   if (!args) return undefined;
   const i = args.indexOf(flag);
   return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
 }
 
-// A bare alias like "sonnet" (what AGENTS.md files in the wild have told
-// orchestrators to pass) used to reach pi's own --model unresolved, where
-// it silently matched no provider and ran no turn for thirty seconds
-// before failing; kido spawn_subagent now checks it against `pi
-// --list-models` up front. The schema is the only place a model-calling
-// caller ever reads the expected shape, so it has to say it.
+// A bare alias like "sonnet" reaching pi's own --model unresolved fails silently
+// after thirty seconds; the schema is the only place the expected shape is read.
 test("spawn_subagent's model parameter documents the provider/model-id format", async () => {
   const fx = makeFixture();
   try {
@@ -2202,11 +1935,8 @@ test("spawn_subagent's model parameter documents the provider/model-id format", 
   }
 });
 
-// The incident these two descriptions exist to prevent: a parent spawned
-// reviewers with no message_agent tool, then ask_agent'd each for its
-// result and blocked. Both sentences ride along on every turn, so they
-// are pinned here rather than left to the tests above that only exercise
-// the behaviour.
+// Pins the incident these descriptions prevent: a parent spawned reviewers with
+// no message_agent tool, then ask_agent'd each for its result and blocked.
 test("spawn_subagent and ask_agent's descriptions teach the notify_parent pattern, not ask_agent for a child's result", async () => {
   const fx = makeFixture();
   try {
@@ -2225,11 +1955,8 @@ test("spawn_subagent and ask_agent's descriptions teach the notify_parent patter
   }
 });
 
-// The same incident from the other end: the description is read when the
-// tool is called, and a launch result is read at the one moment the model
-// has a child and no result from it - which is when it invents one, or
-// blocks. Claude Code puts the rule in its own launch result for exactly
-// that reason; both spawns and resumes carry it here.
+// Same incident, from the launch result: read at the one moment the model has a
+// child and no result from it, which is when it invents one or blocks.
 test("a spawn and a resume both end by saying the result arrives as a notice and must not be waited on, reported or predicted", async () => {
   const fx = makeFixture();
   try {
@@ -2250,14 +1977,9 @@ test("a spawn and a resume both end by saying the result arrives as a notice and
   }
 });
 
-// promptGuidelines is pi's own field (core/extensions/types.d.ts): each
-// string becomes a bullet in the system prompt's rules section while the
-// tool is registered, merged by buildRules in pi's system-prompt.js. It
-// is where a rule about the turns *after* a call belongs, a description
-// being read only when the tool is called. The shape assertions are
-// pi's _normalizePromptGuidelines (agent-session.js), which trims, drops
-// the empty and de-duplicates: a guideline that survives it unchanged is
-// one the model reads as written.
+// pi quirk: promptGuidelines strings become rules-section bullets, merged by
+// buildRules (system-prompt.js); the shape assertions mirror
+// _normalizePromptGuidelines (agent-session.js), which trims, drops empty and de-duplicates.
 test("spawn_subagent and async_bash carry promptGuidelines pi will merge into its rules section", async () => {
   const fx = makeFixture();
   try {
@@ -2289,9 +2011,7 @@ test("spawn_subagent and async_bash carry promptGuidelines pi will merge into it
       "async_bash: a needed result runs in foreground bash, and end the turn rather than wait for its notice",
     );
 
-    // One string, not two similar ones: buildRules de-duplicates by exact
-    // text, so the shared rule is a single bullet however many of the two
-    // tools a session has.
+    // buildRules de-duplicates by exact text, so the shared rule is one bullet.
     const shared = spawnRules.filter((r) => bashRules.includes(r));
     assert.equal(shared.length, 1, "exactly one rule is shared between the two tools");
     assert.match(shared[0]!, /not the user speaking/, "the shared rule is the one about what a notice is");
@@ -2323,9 +2043,7 @@ test("spawn_subagent passes its task as text on stdin and calls kido spawn_subag
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     const s = await startSession(fx);
-    // send()'s agent-status report is fire-and-forget (a detached, unref'd
-    // subprocess), so there is nothing to await here but the file it
-    // eventually writes.
+    // Fire-and-forget: nothing to await but the file it eventually writes.
     await pollUntil(() => fx.lastStatusArgs() !== undefined);
     const own = argAfter(fx.lastStatusArgs(), "--session");
     assert.equal(own, DEFAULT_SESSION, "session_start reported under its own session id");
@@ -2393,9 +2111,6 @@ test("spawn_subagent(resume) calls kido spawn_subagent --resume with its own ide
     assert.equal(argAfter(spawnArgs, "--parent-session"), own);
     assert.ok(!spawnArgs!.includes("--task-file"), "a resume keeps its own original task; no task file is written for it");
     assert.ok(!spawnArgs!.includes("--name"), "a resume keeps its own original window name");
-    // No model/tools override given: kido spawn_subagent --resume already carries
-    // the run's own recorded model forward on its own, so the command
-    // after -- is the bare pi it defaults to anyway.
     assert.deepEqual(spawnArgs!.slice(spawnArgs!.indexOf("--") + 1), ["pi"], "no command override is sent when neither model nor tools is given");
   } finally {
     fx.restore();
@@ -2422,11 +2137,9 @@ test("spawn_subagent(resume) with model/tools overrides them in the resumed pi's
   }
 });
 
-// A resume brings a run back idle: it keeps its original task, which it
-// has already been given, so nothing is delivered to it and it waits.
-// The result text used to say only that the run was resumed, and a
-// parent that resumed a killed run then waited on a child that was
-// waiting on it. Clarity only - what the tool does is unchanged.
+// A resume brings a run back idle: it keeps its original task, which it has
+// already been given, so nothing is delivered to it and it waits - the result
+// text must say so, or a parent resuming a killed run waits on a child that is waiting on it.
 test("spawn_subagent(resume) tells the caller the run is idle and needs a message", async () => {
   const fx = makeFixture();
   try {
@@ -2442,11 +2155,8 @@ test("spawn_subagent(resume) tells the caller the run is idle and needs a messag
   }
 });
 
-// fork is the one spawn parameter whose value the model never supplies:
-// the session to fork is this one, and the tool reads its id from pi
-// rather than letting a model name a session. So what is asserted is
-// that the id on the command line is this session's own - a tool that
-// passed a plausible-looking anything would satisfy "--fork is present".
+// The assertion with teeth: the id on the command line is this session's own,
+// not a plausible-looking value the model supplied.
 test("spawn_subagent(fork) passes --fork with this session's own id, and nothing at all without it", async () => {
   const fx = makeFixture();
   try {
@@ -2463,9 +2173,6 @@ test("spawn_subagent(fork) passes --fork with this session's own id, and nothing
     assert.equal(argAfter(spawnArgs, "--task-file"), "-", "a forked child is still given its task the ordinary way");
     assert.equal(fx.lastSpawnTask(), "decide");
     assert.match(result.content[0].text, /forked from this session/, "the model is told the child holds its context");
-    // The kido flag is the whole of it: the child's own `pi --fork ... 
-    // --session-id RUN` command line is kido's to build, so the tool must
-    // not be spelling a second, divergent copy of it after "--".
     const command = spawnArgs.slice(spawnArgs.indexOf("--") + 1);
     assert.deepEqual(command, ["pi", "--name", "kid-fork"], "the child command is untouched: --fork is kido's to place");
   } finally {
@@ -2473,9 +2180,8 @@ test("spawn_subagent(fork) passes --fork with this session's own id, and nothing
   }
 });
 
-// kido spawn_subagent is the one place these combinations are refused
-// (cmd/kido/spawn_subagent.go), and the depth ceiling with them: the tool
-// forwards what it was given rather than deciding a second time.
+// kido spawn_subagent (cmd/kido/spawn_subagent.go) refuses these combinations;
+// the tool forwards what it was given rather than deciding a second time.
 test("spawn_subagent forwards resume alongside task, name or fork, and a call with neither, for kido to refuse", async () => {
   const fx = makeFixture();
   try {
@@ -2504,16 +2210,13 @@ test("spawn_subagent forwards resume alongside task, name or fork, and a call wi
   }
 });
 
-// A timeout is reported as a timeout, not folded into a generic failure:
-// kido may already have done its work, and a caller that treats the two
-// alike can end up cleaning up after something that succeeded.
 test("spawn_subagent reports a kido spawn_subagent timeout as a timeout, not a generic failure", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     const savedTimeout = process.env.KIDO_SPAWN_TIMEOUT_MS;
     process.env.KIDO_SPAWN_TIMEOUT_MS = "300";
-    process.env.KIDO_FAKE_SPAWN_DELAY_MS = "2000"; // longer than the timeout: an in-flight, not a failed, spawn
+    process.env.KIDO_FAKE_SPAWN_DELAY_MS = "2000"; // longer than the timeout: in-flight, not failed
     try {
       const factory = await freshExtensions();
       const s = await startSession(fx, { factory });
@@ -2547,10 +2250,8 @@ test("a child started with KIDO_AGENT_TASK_FILE delivers its task as the first m
         s.delivered.some((d) => d.text === "do the important thing"),
         "the task reached the model as a user message, the same way an inbox prompt is delivered",
       );
-      // Kept, not unlinked: the task file is the run's own permanent
-      // record, read back later by `kido runs <run-id>`. A sibling marker,
-      // not the file's absence, is what stops a later /reload from
-      // delivering it again.
+      // Kept, not unlinked: read back later by `kido runs <run-id>`. A sibling marker
+      // is what stops a later /reload from delivering it again.
       assert.equal(existsSync(taskFile), true, "the task file survives delivery");
       assert.equal(existsSync(join(dirname(taskFile), "delivered")), true, "a delivered marker is written");
     } finally {
@@ -2576,9 +2277,8 @@ test("a /reload does not deliver an already-delivered task a second time", async
       const s = await startSession(fx, { factory });
       assert.equal(s.delivered.filter((d) => d.text === "do the important thing").length, 1);
 
-      // A /reload re-runs session_start with a fresh ctx, but not the
-      // factory: the delivered marker, not the module's own state, is what
-      // must stop a second delivery.
+      // A /reload re-runs session_start with a fresh ctx, not the factory, so the
+      // delivered marker must be what stops a second delivery, not module state.
       await s.emit("session_start", {}, fakeCtx());
       assert.equal(
         s.delivered.filter((d) => d.text === "do the important thing").length,
@@ -2594,8 +2294,6 @@ test("a /reload does not deliver an already-delivered task a second time", async
   }
 });
 
-// An unreadable task file must leave no delivered marker, so a later
-// /reload gets another try rather than never showing the task at all.
 test("an unreadable KIDO_AGENT_TASK_FILE delivers nothing, breaks nothing, and leaves nothing behind", async () => {
   const fx = makeFixture();
   try {
@@ -2640,20 +2338,10 @@ test("a missing KIDO_AGENT_TASK_FILE does not break session_start", async () => 
   }
 });
 
-// The startup failure this pair exists for, observed: a child came up
-// with pi unable to start its model at all ("No API key found for
-// amazon-bedrock" on its pane) and never ran a turn. The idle self-exit
-// was armed from a settled turn alone, so a child that never reached a first
-// turn armed nothing, never shut itself down, never recorded an outcome
-// and told its parent nothing: `kido runs` showed it running
-// indefinitely, and to the parent it was indistinguishable from a child
-// hard at work. The clock is armed from the task's own delivery instead
-// - the moment a child has everything it needs and nothing has begun -
-// and the first sign of work clears it exactly as it always did.
-//
-// The outcome has to say which of the two endings it was, since
-// "failed" alone reads as work that went wrong: what is asserted is the
-// --text, not merely the failure.
+// Pins a real incident: a child whose pi could not start a model at all never ran
+// a turn, so the old settled-turn-only idle-exit armed nothing and it ran forever,
+// indistinguishable to its parent from a child hard at work. The clock is now
+// armed from the task's own delivery instead.
 test("a child whose task is delivered but whose first turn never starts self-exits and records that no turn ever ran", async () => {
   const fx = makeFixture();
   try {
@@ -2667,8 +2355,6 @@ test("a child whose task is delivered but whose first turn never starts self-exi
         const s = await startWithShutdownSpy(fx, factory, "never-started-run");
         assert.ok(s.delivered.some((d) => d.text === "do the important thing"), "the task was delivered, as it was in the incident");
 
-        // No agent_start, no turn_start, no agent_settled: pi never got
-        // as far as a turn.
         await pollUntil(() => s.shutdowns() > 0, 2000, "the idle self-exit to fire for a child that never started a turn");
 
         await s.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
@@ -2681,7 +2367,7 @@ test("a child whose task is delivered but whose first turn never starts self-exi
       },
       {
         KIDO_AGENT_TASK_FILE: taskFile,
-        KIDO_AGENT_PARENT_PID: String(process.pid), // alive: the parent poll must not be what ends this session
+        KIDO_AGENT_PARENT_PID: String(process.pid), // alive: the parent poll must not end this session
         KIDO_PARENT_POLL_MS: "5000",
         KIDO_IDLE_EXIT_SECONDS: "0.05",
         KIDO_LINGER_SECONDS: "0.05",
@@ -2692,12 +2378,7 @@ test("a child whose task is delivered but whose first turn never starts self-exi
   }
 });
 
-// The negative control, and the whole reason the clock is armed from the
-// delivery rather than from session start: a child whose task does start
-// a turn must be affected in no way at all. It is held for several times
-// the idle window with the turn still running, which is what a child
-// doing its work looks like, and then ends the ordinary way - completed,
-// with no detail claiming it never ran.
+// Negative control: a child whose task does start a turn is unaffected.
 test("a child whose task starts a turn is untouched by the startup clock", async () => {
   const fx = makeFixture();
   try {
@@ -2736,10 +2417,8 @@ test("a child whose task starts a turn is untouched by the startup clock", async
   }
 });
 
-// Part 1 of the notify_parent refactor (docs/design.md, "Notifying the
-// parent"): a settled turn and a plain shutdown must no longer tell the
-// parent anything on their own. A subagent that wants that now calls
-// notify_parent itself - see its own tests below.
+// A settled turn and a plain shutdown must not tell the parent anything on their
+// own; a subagent that wants that calls notify_parent itself.
 test("a settled turn sends no automatic notice, and neither does a plain shutdown", async () => {
   const fx = makeFixture();
   try {
@@ -2759,11 +2438,6 @@ test("a settled turn sends no automatic notice, and neither does a plain shutdow
   }
 });
 
-// async_bash: kido async_bash is invoked exactly the way spawn_subagent
-// invokes its own subcommand - a single -- separating flags from the
-// command text, which travels through unchanged regardless of how many
-// words it contains, since kido's own commandArgv is what decides bash -c
-// vs argv, not this file (docs/design-subagents.md, "An async bash run").
 test("async_bash passes -- and the command unchanged, with --name only when given", async () => {
   const fx = makeFixture();
   try {
@@ -2824,11 +2498,9 @@ test("async_bash's result carries the run id and the output path kido printed, a
   }
 });
 
-// Streaming a run's output: the receiver half. A "stream" envelope is
-// buffered on arrival and reaches the model only when flushStreams runs,
-// so every case below asserts on pi.sendMessage calls of the stream
-// custom type - what the model would actually be handed - never on what
-// arrived on the wire.
+// A "stream" envelope is buffered on arrival and reaches the model only when
+// flushStreams runs, so every case below asserts on pi.sendMessage calls, never on
+// what arrived on the wire.
 const streamMessages = (messages: Array<{ message: any }>) =>
   messages.filter((m) => m.message.customType === "kido-stream");
 
@@ -2836,27 +2508,14 @@ function streamEnvelope(text: string, run = "run-1", output = "/state/runs/run-1
   return JSON.stringify({ v: 1, kind: "stream", id: "env-" + Math.random().toString(36).slice(2), from: { session: "", name: "chatty" }, text, run, output });
 }
 
-// TestStreamBatchRidesAToolTurn. The negative control is the whole test,
-// and it is the second half: the same chunks after a turn with no tool
-// calls must produce nothing until the idle timer fires. A receiver that
-// flushed on every turn_end passes the first half and reintroduces the
-// seizure this feature exists to avoid - flushing after a tool-less turn
-// buys a turn, that turn has no tool calls either, more lines arrive
-// during it, and the loop ends when the command does.
-//
-// "From inside the turn_end handler" is asserted by when the message
-// appears: nothing before the emit, the batch after it. pi awaits
-// extension handlers before polling the steering queue, so a batch that
-// is there when the emit resolves rides the LLM call the tool turn had
-// already committed to.
+// Negative control (second half): the same chunks after a turn with no tool calls
+// must produce nothing until the idle timer fires - flushing on every turn_end
+// would buy an endless run of empty turns.
 test("a batch rides a turn that ran tools, and a turn that ran none leaves it held for the idle schedule (TestStreamBatchRidesAToolTurn)", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     const factory = await withEnv({ KIDO_STREAM_FLUSH_MS: "120", KIDO_STREAM_FLUSH_CAP_MS: "400" }, () => freshExtensions());
-    // Streaming throughout: a turn_end is a turn boundary inside a run, and
-    // a batch's mode is only consulted while a run is under way. An idle
-    // flush wakes the session instead, which is its own case above.
     const s = await startSession(fx, { factory, idle: () => false });
 
     for (const text of ["line 1\nline 2", "line 3", "line 4\nline 5"]) {
@@ -2870,7 +2529,6 @@ test("a batch rides a turn that ran tools, and a turn that ran none leaves it he
     assert.match(sent[0].message.content, /line 1[\s\S]*line 5/, "the one message carries every line that arrived");
     assert.equal((sent[0].opts as any).deliverAs, "steer", "a batch is steered, so the turn already committed to is the one that carries it");
 
-    // The negative control.
     for (const text of ["line 6", "line 7"]) {
       assert.equal(await sendToInbox(s.inboxPath, streamEnvelope(text)), "ok");
     }
@@ -2884,10 +2542,8 @@ test("a batch rides a turn that ran tools, and a turn that ran none leaves it he
   }
 });
 
-// TestStreamBackoffDoubles, in the two halves the claim has. The schedule
-// itself is a pure function and is checked as one, with no clock at all;
-// what a clock could only measure badly is then checked as a count of
-// flushes over a fixed window, never as elapsed time.
+// The schedule is a pure function, checked with no clock at all; what a clock
+// could only measure badly is checked as a flush count over a fixed window instead.
 test("the idle flush schedule doubles up to its cap, and the flushes over a window are the few that implies (TestStreamBackoffDoubles)", async () => {
   assert.equal(nextStreamFlushDelay(10000), 20000, "each idle flush costs a turn, so the next one waits twice as long");
   assert.equal(nextStreamFlushDelay(20000), 40000);
@@ -2900,8 +2556,6 @@ test("the idle flush schedule doubles up to its cap, and the flushes over a wind
     const factory = await withEnv({ KIDO_STREAM_FLUSH_MS: "40", KIDO_STREAM_FLUSH_CAP_MS: "120" }, () => freshExtensions());
     const s = await startSession(fx, { factory });
 
-    // Output all the way through the window, and never a turn to ride, so
-    // every flush in it is one the schedule chose.
     const window = 600;
     const deadline = Date.now() + window;
     let n = 0;
@@ -2910,8 +2564,6 @@ test("the idle flush schedule doubles up to its cap, and the flushes over a wind
       await new Promise((r) => setTimeout(r, 15));
     }
     const flushes = streamMessages(s.messages).length;
-    // Unbacked-off, a 40ms floor over this window is ~15 flushes, i.e. ~15
-    // turns; doubling to a 120ms cap is ~5.
     assert.ok(flushes >= 2, `only ${flushes} flushes in ${window}ms: a held batch must still get through`);
     assert.ok(flushes <= 8, `${flushes} flushes in ${window}ms: the schedule is not slowing down`);
   } finally {
@@ -2919,12 +2571,8 @@ test("the idle flush schedule doubles up to its cap, and the flushes over a wind
   }
 });
 
-// TestBatchTailAndOmittedCount. The cap lives in the receiver, because
-// the receiver is what spends the parent's context. Tail, not head, for
-// the reason the completion notice carries one: what a failure has to
-// say, it says last. The count is checked against the pure function too,
-// where "first line" is a fact about the batch rather than about the
-// header the flush puts above it.
+// The cap lives in the receiver, since it is what spends the parent's context;
+// tail, not head, since what a failure has to say, it says last.
 test("a batch is the tail, with one line saying how many it left out and where they are (TestBatchTailAndOmittedCount)", async () => {
   const thousand = Array.from({ length: 1000 }, (_, i) => `line ${i + 1}`);
   const batch = streamBatch(thousand, "/state/runs/run-1/output").split("\n");
@@ -2951,11 +2599,9 @@ test("a batch is the tail, with one line saying how many it left out and where t
   }
 });
 
-// The ordering rule, on the receiving side: a run's completion notice
-// must never reach the model before the output it is the ending of. The
-// wrapper sends the last chunk first (cmd/kido/async_run.go); this is the
-// other half, where a batch held for want of a free turn is flushed by
-// the notice's own arrival rather than left behind it.
+// A run's completion notice must never reach the model before the output it is
+// the ending of; cmd/kido/async_run.go sends the last chunk first, and this is
+// the receiving half, where a held batch is flushed by the notice's own arrival.
 test("a completion notice flushes whatever output was still held, and arrives after it", async () => {
   const fx = makeFixture();
   try {
@@ -2975,18 +2621,12 @@ test("a completion notice flushes whatever output was still held, and arrives af
   }
 });
 
-// Part 2: notify_parent is the only way a subagent tells its parent
-// anything now; unlike the automatic notices it replaced, it is sent via
-// runKido and awaited, since a deliberate tool call has no reason to race
-// this process's own exit the way session_shutdown's notice used to.
+// notify_parent is sent via runKido and awaited, since a deliberate tool call has
+// no reason to race this process's own exit.
 //
-// It is also where the parent comes from that is pinned here. The agent
-// list says this session's parent is "parent-x"; the environment says
-// "boss-session", which is what `kido notify_parent` reads and what the
-// notice must therefore be addressed to. The tool used to take the
-// former, through a whole `kido list_agents` call - so asserting the
-// latter, and that nothing was listed at all, is what tells the two
-// implementations apart.
+// The agent list says this session's parent is "parent-x"; the environment says
+// "boss-session", which is what `kido notify_parent` reads and what the notice
+// must be addressed to - asserting the latter, and that nothing was listed, pins that.
 test("notify_parent sends a notice to the parent in its environment, carrying the given summary, without listing agents", async () => {
   const fx = makeFixture();
   try {
@@ -3008,14 +2648,8 @@ test("notify_parent sends a notice to the parent in its environment, carrying th
   }
 });
 
-// A long report survives two separate ways of being thrown away, and
-// this pins both: the schema's own maxLength used to reject the call
-// outright (a character count against a byte budget - a model given a
-// long report had to redo it), and the tool then cut the summary to the
-// cap itself, which lost the rest of it for good. The cap is now `kido
-// notify_parent`'s alone, and it keeps what it cannot send, so what the
-// tool must do with a long summary is pass it on whole - byte for byte,
-// which is the assertion with teeth here.
+// The cap is `kido notify_parent`'s alone: the schema must not reject a long call,
+// and the tool must pass the summary on whole, byte for byte, rather than cutting it.
 test("notify_parent's schema accepts a summary over the byte cap, and execute() hands the whole of it to kido rather than cutting it", async () => {
   const fx = makeFixture();
   try {
@@ -3041,20 +2675,9 @@ test("notify_parent's schema accepts a summary over the byte cap, and execute() 
   }
 });
 
-// set_status's schema had the identical defect (maxLength counting
-// characters against a byte-denominated cap the tool's own description
-// promises, and rejecting instead of truncating) - the cap that matters
-// is kido's own (cmd/kido/main.go's oneLine), since any same-uid process
-// can call `kido set_status` or `kido agent-status` directly regardless
-// of what a model's tool call is checked against; only the schema was
-// wrong.
-//
-// The activity leaves via `kido set_status`, the narrow command behind
-// the narrow tool, rather than by re-sending the session's whole `kido
-// agent-status` report; this reads that call. The report is still
-// checked, because the local copy setActivity keeps is what every later
-// report carries, and a version that only shelled out would have the
-// next report clear the activity it had just set.
+// The cap that matters is kido's own (cmd/kido/main.go's oneLine); only the
+// schema wrongly rejected past 256 characters. The report is still checked since
+// the local copy setActivity keeps is what every later report carries.
 test("set_status's schema accepts an activity over the byte cap, and setActivity sends it whole as kido set_status", async () => {
   const fx = makeFixture();
   try {
@@ -3069,18 +2692,12 @@ test("set_status's schema accepts an activity over the byte cap, and setActivity
     );
 
     await tool.execute("call-1", { activity: longActivity });
-    // Fire-and-forget through a detached subprocess, so there is nothing
-    // to await but the file it eventually writes.
     let call: string[] | undefined;
     await pollUntil(() => (call = last(fx.setStatusCalls())) !== undefined, 2000, "a kido set_status call");
     assert.equal(call![0], "set_status");
     assert.equal(call![1], "--", "the activity is positional, behind --, so one beginning with a dash is still an activity");
     assert.equal(call![2], longActivity, "the extension no longer truncates; kido's own cap is what enforces the bound");
 
-    // And the same text rides the session's next ordinary report, which
-    // is how it survives one: an implementation that only shelled out
-    // would have that report carry the stale (empty) activity and undo
-    // this call a turn later.
     await s.emit("agent_settled", {}, { isIdle: () => true });
     let report: string[] | undefined;
     await pollUntil(() => {
@@ -3111,13 +2728,9 @@ test("notify_parent from a session with no parent refuses clearly, and sends not
   }
 });
 
-// The report this fixes: a subagent's turn ended with a provider error
-// (pi-claude-bridge's own "Error: prompt-capture: ...", stopReason
-// "error") and the child then sat idle until the idle-exit clock ended
-// it, so the parent's only notice was "completed without reporting" -
-// the error itself never reached it; the user had to read the child's
-// pane. This is the immediate notice, sent as the turn settles, before
-// any idle-exit backstop.
+// Pins a real bug: a turn ending with a provider error left a child idle until
+// the idle-exit clock ended it, so the parent's only notice was "completed
+// without reporting" - the error itself never reached it.
 test("a subagent's errored turn notifies the parent at once, naming the error and how to continue", async () => {
   const fx = makeFixture();
   try {
@@ -3174,10 +2787,8 @@ test("a top-level session's errored turn sends no notice: it has nobody to tell"
 });
 
 // Once per error, not per retry: pi 0.87.1 can fire agent_end more than
-// once per loop (an automatic retry) but agent_settled only once, after
-// retries are exhausted - so a redundant settle with no new agent_end
-// must not repeat the notice, and a later, genuinely new failure (the
-// parent messaged the child to retry, and it failed again) must.
+// agent_end fires once per retry but agent_settled only once retries are
+// exhausted, so a redundant settle must not repeat the notice, and a genuinely new failure must.
 test("once per error: a redundant settle does not resend, and a later fresh failure does", async () => {
   const fx = makeFixture();
   try {
@@ -3207,10 +2818,8 @@ test("once per error: a redundant settle does not resend, and a later fresh fail
   }
 });
 
-// The backstop: even if the immediate notice above never landed, the
-// idle-exit ending notice a silent child gets is still supposed to carry
-// the whole account, per docs/design-subagents.md's "exactly one ending
-// notice" - and now that includes the last turn's own error.
+// The backstop: even with no immediate notice, the idle-exit ending notice a
+// silent child gets must carry the last turn's own error.
 test("the idle-exit ending's outcome text carries the last turn's error when the child never reported", async () => {
   const fx = makeFixture();
   try {
@@ -3220,7 +2829,7 @@ test("the idle-exit ending's outcome text carries the last turn's error when the
       const s = await startSession(fx, { factory, sessionId: "run-error-idle" });
       await s.emit("agent_end", { messages: [{ role: "assistant", stopReason: "error", errorMessage: "prompt-capture: no capture" }] });
       await s.emit("agent_settled", {}, { isIdle: () => true });
-      await fx.waitForLog("boss-session", "notice"); // the immediate notice, not the subject here
+      await fx.waitForLog("boss-session", "notice");
       await s.emit("session_shutdown");
       const args = fx.lastRunOutcomeArgs();
       assert.deepEqual(args?.slice(0, 4), ["run-outcome", "--result", "completed", "--unreported"]);
@@ -3239,7 +2848,6 @@ test("session_shutdown schedules the window linger helper for a subagent", async
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@7" }]);
 
-    // sleep(1) accepts fractional seconds on macOS and Linux
     await asSubagent(DEFAULT_SESSION, async () => {
       const factory = await freshExtensions();
       const s = await startSession(fx, { factory });
@@ -3252,9 +2860,6 @@ test("session_shutdown schedules the window linger helper for a subagent", async
   }
 });
 
-// --unreported rides both results here because neither of these sessions
-// ever called notify_parent; which flag is passed is the other test's
-// subject ("a child that never called notify_parent...").
 test("session_shutdown records this run's own outcome as completed when it ends idle, or failed otherwise", async () => {
   const fx = makeFixture();
   try {
@@ -3275,7 +2880,7 @@ test("session_shutdown records this run's own outcome as completed when it ends 
     await asSubagent("run-failed", async () => {
       const factory = await freshExtensions();
       const s = await startSession(fx2, { factory, sessionId: "run-failed" });
-      await s.emit("ui_prompt_start"); // leaves current = "waiting", not idle
+      await s.emit("ui_prompt_start"); // leaves current = "waiting"
       await s.emit("session_shutdown");
       assert.deepEqual(fx2.lastRunOutcomeArgs(), ["run-outcome", "--result", "failed", "--unreported", "--", "run-failed"]);
     });
@@ -3284,13 +2889,9 @@ test("session_shutdown records this run's own outcome as completed when it ends 
   }
 });
 
-// pi fires session_shutdown on /reload too (reason "reload"), with the
-// session carrying straight on in the same process - so an outcome
-// written there reports a live run as finished, and since RecordOutcome
-// is O_EXCL the run's real ending can never be recorded afterwards.
-// Measured against a real pi 0.85.1 subagent: a /reload left the run
-// reading "completed" while it was still in kido list_agents, and a later
-// kido stop_subagent was silently discarded.
+// A reload (reason "reload") carries the session straight on in the same
+// process; recording an outcome there would report a live run as finished, and
+// since RecordOutcome is O_EXCL the real ending could never be recorded after.
 test("a session_shutdown that is a reload or a session replacement records no outcome", async () => {
   for (const reason of ["reload", "new", "resume", "fork"]) {
     const fx = makeFixture();
@@ -3307,8 +2908,7 @@ test("a session_shutdown that is a reload or a session replacement records no ou
     }
   }
 
-  // The negative control: an explicit "quit" still records, so the guard
-  // above cannot pass by never recording anything at all.
+  // Negative control: an explicit "quit" still records.
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
@@ -3323,17 +2923,10 @@ test("a session_shutdown that is a reload or a session replacement records no ou
   }
 });
 
-// The parent-side fix for the incident the child-side poll above used to
-// carry a debounce for: session_shutdown used to remove this session's
-// own record unconditionally, including on a reload, which is what left
-// a gap for a child's poll to land in. It matters more now that the poll
-// acts on a single reading: this is what keeps the gap from existing. Measured against a real pi 0.85.1
-// session_start/session_shutdown pair: a /reload delivers reason "reload"
-// and keeps the same session id (session_start's own
-// ctx.sessionManager.getSessionId() call returns it unchanged), while
-// "new", "resume" and "fork" each hand back a different one in the same
-// process - so those three must still remove the old record, or it is a
-// live-pid file that nothing ever cleans up, claiming this pane alongside
+// A /reload delivers reason "reload" and keeps the same session id
+// (measured against pi 0.85.1), while "new", "resume" and "fork" each hand back a
+// different one in the same process - so those three must still remove the old
+// record, or it is a live-pid file that nothing ever cleans up, claiming this pane alongside
 // the fresh one under the new id.
 test("session_shutdown removes the record for every reason except a reload", async () => {
   for (const reason of ["new", "resume", "fork", "quit", undefined]) {
@@ -3349,17 +2942,13 @@ test("session_shutdown removes the record for every reason except a reload", asy
     }
   }
 
-  // The case under test: a reload must not remove the record at all.
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     const s = await startSession(fx, { sessionId: "sess-reload" });
     await pollUntil(() => fx.lastStatusArgs() !== undefined, 2000, "the initial idle report");
     await s.emit("session_shutdown", { type: "session_shutdown", reason: "reload" });
-    // No event to wait on for a negative outcome - the reload branch
-    // returns before ever calling send(), so there is no spawnDetached
-    // call in flight to race against. The grace period is only margin
-    // against a regression that makes the call asynchronously instead.
+    // No event to wait on: the reload branch returns before ever calling send().
     await new Promise((r) => setTimeout(r, 200));
     assert.equal(fx.statusReportsWithRemove().length, 0, "a reload must never report --remove");
   } finally {
@@ -3379,13 +2968,8 @@ test("session_shutdown never records an outcome for a root session", async () =>
   }
 });
 
-// The same reason/reload gate that keeps recordOwnOutcome from
-// recording a live run as finished must also keep scheduleCompletionLinger
-// from scheduling the child's own window to be closed out from under it
-// ~30s later. Measured against a real pi 0.85.1 subagent: typing /reload
-// in a live subagent left its window closed, plus an orphaned
-// `sh -c sleep ...` helper in `ps` on top of the one the real ending
-// later spawns.
+// The same reload gate that keeps recordOwnOutcome from recording a live run as
+// finished must also keep the linger from closing the child's window under it.
 test("a reload shutdown schedules no linger; a quit does", async () => {
   const reload = makeFixture();
   try {
@@ -3404,8 +2988,7 @@ test("a reload shutdown schedules no linger; a quit does", async () => {
     reload.restore();
   }
 
-  // Negative control: an actual quit still schedules the linger, so the
-  // assertion above cannot pass by disabling it outright.
+  // Negative control: an actual quit still schedules the linger.
   const quit = makeFixture();
   try {
     quit.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@9" }]);
@@ -3421,10 +3004,6 @@ test("a reload shutdown schedules no linger; a quit does", async () => {
   }
 });
 
-// A root session (no KIDO_AGENT_PARENT_SESSION) must never get its own
-// window auto-closed: PARENT_SESSION undefined is what sendCompletionNotice
-// already reads as "not a subagent", and the linger is scheduled from
-// inside that same early return.
 test("session_shutdown never schedules a window linger for a root session", async () => {
   const fx = makeFixture();
   try {
@@ -3446,17 +3025,11 @@ test("session_shutdown never schedules a window linger for a root session", asyn
   }
 });
 
-// The incident this whole identity check exists for. Every KIDO_AGENT_*
-// variable is inherited by anything an agent's process starts, so a pi
-// run from inside an agent's pane - a human debugging, a tool shelling
-// out, a `pi --print` - arrives with a child's entire environment around
-// it. Trusting it made that process believe it was the child: it resolved
-// "self" by pane and found the REAL agent's record, so its shutdown
-// scheduled `kido close-run` on the real agent's window, it armed idle
-// self-exit, and notify_parent would have reported to someone else's
-// parent. Two live agents were killed this way. What tells the two apart
-// is a fact rather than a claim: the real child runs under the run id as
-// its pi session id, and a nested pi mints its own.
+// Pins a real incident: every KIDO_AGENT_* variable is inherited by anything an
+// agent's process starts, so a nested pi run (a human debugging, a tool shelling
+// out) arrives with a child's entire environment. Trusting it killed two live
+// agents. What tells the two apart: the real child's pi session id is the run id,
+// a nested pi mints its own.
 test("a process that merely inherited a subagent's environment is not a subagent", async () => {
   const fx = makeFixture();
   try {
@@ -3504,12 +3077,9 @@ test("a process that merely inherited a subagent's environment is not a subagent
   }
 });
 
-// The negative control for the test above, and the reason it cannot be
-// satisfied by simply never behaving as a subagent. Both spawn paths are
-// covered because both are what makes the equality true: a fresh spawn
-// runs `pi --session-id <run-id>` and a resume `pi --session <run-id>`,
-// so either way the child's own session id is the run id (docs/design.md,
-// "The run id is the child's session id").
+// Negative control for the test above: a fresh spawn (`pi --session-id
+// <run-id>`) and a resume (`pi --session <run-id>`) both give the child's own
+// session id as the run id.
 test("a real subagent, fresh or resumed, is still a subagent in every respect", async () => {
   for (const runID of ["fresh-spawn-run", "resumed-run"]) {
     const fx = makeFixture();
@@ -3538,7 +3108,7 @@ test("a real subagent, fresh or resumed, is still a subagent in every respect", 
           assert.deepEqual(await fx.waitForCloseRun(), ["close-run", "@7"], `${runID}: its own window is still lingered`);
         },
         {
-          KIDO_AGENT_PARENT_PID: String(process.pid), // alive: the poll must not be what ends this session
+          KIDO_AGENT_PARENT_PID: String(process.pid), // alive: the poll must not end this session
           KIDO_PARENT_POLL_MS: "5000",
           KIDO_IDLE_EXIT_SECONDS: "0.05",
           KIDO_LINGER_SECONDS: "0.05",
@@ -3550,16 +3120,10 @@ test("a real subagent, fresh or resumed, is still a subagent in every respect", 
   }
 });
 
-// The decision about the third case, recorded: a session id that is not
-// known yet - null until session_start resolves one, and forever in a pi
-// outside tmux or with no kido on PATH - reads as "not a subagent", not
-// as "probably one". A real child is unaffected (kido-status.ts resolves
-// the id inside session_start, before it calls any hook in the agent half
-// and long before any turn or tool call), and the states where it stays
-// null are exactly the states where a child could not record an outcome,
-// close a window or reach a parent anyway. Driven here by taking TMUX_PANE
-// away, which is what leaves the id unresolved while the full child
-// environment - a matching run id included - is still in place.
+// A session id not yet known - null until session_start resolves one, and
+// forever outside tmux or with no kido on PATH - reads as "not a subagent", not
+// "probably one". Driven by taking TMUX_PANE away, which leaves the id
+// unresolved while the rest of a child's environment is in place.
 test("an unresolved session id is not a subagent, whatever the environment claims", async () => {
   const fx = makeFixture();
   try {
@@ -3600,27 +3164,15 @@ test("interleaving: an inbound ask from the same target is refused even while th
       const s = await startSession(fx);
       const ask = s.tools.get("ask_agent");
 
-      // ask_agent's own kido ask_agent send is held for 800ms by the fake
-      // kido below - this only races at all because runKido shells out via
-      // spawn rather than execFileSync; the old blocking call could never
-      // let an inbound connection be dispatched before the send finished.
+      // Held for 800ms by the fake kido: this only races because runKido shells
+      // out via spawn rather than execFileSync, which could never let an inbound
+      // connection be dispatched before the send finished.
       const p1 = ask.execute("c1", { to: "peer-a", question: "q1" });
 
-      // The cycle edge (pendingOutbound.set in kido-agents.ts) is observed
-      // through its only effect: an inbound ask from the target is
-      // refused. Asked until it is, since nothing outside the process sees
-      // the moment the edge is registered; the asks that land before it
-      // are delivered like any other.
-      //
-      // The load-bearing half of this test. "Refused" alone is true
-      // whether or not the send is still running: the waiter is not
-      // dropped until a reply or a timeout, so a runKido that blocked the
-      // event loop for the whole 800ms would finish the send first and
-      // still refuse afterwards - verified by making runKido
-      // execFileSync-based again, at which point the refusal still came.
-      // The fake kido appends its log entry in the same breath as its
-      // reply, so an absent entry before the refused ask is the only
-      // available evidence that the send really had not finished yet.
+      // The load-bearing assertion: "refused" alone is true whether or not the
+      // send is still running (the waiter is not dropped until a reply or
+      // timeout), so `inFlight` - the fake kido's log entry not yet written - is
+      // the only evidence the send really had not finished yet.
       let inFlight = false;
       let n = 0;
       await pollUntil(async () => {
@@ -3642,29 +3194,18 @@ test("interleaving: an inbound ask from the same target is refused even while th
   }
 });
 
-// deadPid starts and waits for a trivial child process, returning its pid:
-// guaranteed to belong to no process by the time the caller uses it. The
-// same trick internal/state/state_test.go uses on the Go side.
+// Guaranteed to belong to no process by the time the caller uses it (the same
+// trick internal/state/state_test.go uses on the Go side).
 function deadPid(): number {
   const r = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
   return r.pid!;
 }
 
-// withParentEnv sets KIDO_AGENT_PARENT_PID/SESSION/RUN_ID and a short
-// poll interval, restoring whatever was there before on the way out - the
-// extensions read all of them once at module scope, so every case below
-// goes through freshExtensions() to pick them up. The run id is the
-// default session id these cases start with: the parent poll and the idle
-// timer belong to the child of that run, not to whatever else inherited
-// its environment (kido-agents.ts, ownRunID).
 async function withParentEnv<T>(pid: number, session: string, pollMs: number, fn: () => Promise<T>): Promise<T> {
   const vars = { KIDO_AGENT_PARENT_PID: String(pid), KIDO_AGENT_PARENT_SESSION: session, KIDO_PARENT_POLL_MS: String(pollMs) };
   return withEnv({ ...vars, KIDO_AGENT_RUN_ID: DEFAULT_SESSION }, fn);
 }
 
-// startWithShutdownSpy is startSession but with a ctx.shutdown() the
-// test can observe - fakeCtx has no such spy, since no other test needs
-// one.
 async function startWithShutdownSpy(fx: Fixture, factory: (pi: unknown) => void, sessionId?: string) {
   let shutdowns = 0;
   const s = await startSessionCore(fx, factory, () => ({ ...fakeCtx(sessionId), shutdown: () => { shutdowns++; } }));
@@ -3687,12 +3228,8 @@ test("parent-liveness poll: shuts the session down when the parent's process is 
   }
 });
 
-// Also pins what the poll asks, and of what: `kido agent-alive` naming
-// this session's own parent session, and never `kido list_agents`. The
-// command matters as much as the answer - `kido list_agents` is a display,
-// scoped to one tmux session and collapsed to one record per pane, and
-// reading a liveness fact out of it is the defect this replaced
-// (docs/design.md, "Identity").
+// Also pins what the poll asks: `kido agent-alive` naming its own parent
+// session, never `kido list_agents`, whose per-pane view is the wrong source for a liveness fact.
 test("parent-liveness poll: does not shut down while the parent is alive, and asks agent-alive about its own parent session", async () => {
   const fx = makeFixture();
   try {
@@ -3702,9 +3239,6 @@ test("parent-liveness poll: does not shut down while the parent is alive, and as
       const factory = await freshExtensions();
       const s = await startWithShutdownSpy(fx, factory);
       const agentsBefore = fx.agentsCallCount();
-      // Long enough for several poll ticks at 20ms; still short by test
-      // standards, and this is what proves the poll ran and chose not to
-      // shut down, not merely that it hadn't fired yet.
       await pollUntil(() => fx.parentAliveCalls().length >= 3, 2000, "several agent-alive polls");
       assert.equal(s.shutdowns(), 0, "a live, correctly-matched parent must never trigger a shutdown");
       assert.deepEqual(
@@ -3724,11 +3258,8 @@ test("parent-liveness poll: does not shut down while the parent is alive, and as
   }
 });
 
-// The one reading that is still not evidence. Everything else the poll
-// can see is now trustworthy on a single look, which is why there is no
-// debounce left to absorb anything - but a kido that cannot answer has
-// said nothing about the parent, and a child must never end itself on
-// that.
+// A kido that cannot answer has said nothing about the parent, so it must never
+// be read as a dead one.
 test("parent-liveness poll: a kido that cannot answer is not evidence, and never ends the child", async () => {
   const fx = makeFixture();
   try {
@@ -3746,19 +3277,10 @@ test("parent-liveness poll: a kido that cannot answer is not evidence, and never
   }
 });
 
-// The other direction, and the one that must not be defanged: an orphan
-// outliving its parent forever is worse than a child that exits early.
-// kill(pid, 0) succeeds here - this process's own pid is certainly alive
-// - but no live record holds the parent session, exactly as if the
-// real parent exited and something else now holds its old pid.
-// state.Alive (internal/state) reports EPERM as alive for the same reason
-// a pid alone is not proof here (see AGENTS.md).
-//
-// The timing assertion is what pins the absence of the debounce: one
-// "false" reading ends the session, so shutdown lands within about one
-// poll interval rather than the two the old missedParentPolls counter
-// required. Two intervals of slack keeps it honest on a loaded machine
-// while still failing if a counter ever comes back.
+// kill(pid, 0) success is not proof: this process's own pid is alive, but no
+// live record holds the parent session, as if the real parent exited and
+// something else now holds its old pid. Pins the absence of a debounce: one
+// "false" reading ends the session, within about one poll interval.
 test("parent-liveness poll: a recycled pid with no live record of the session counts as gone, on the first reading", async () => {
   const fx = makeFixture();
   try {
@@ -3776,17 +3298,9 @@ test("parent-liveness poll: a recycled pid with no live record of the session co
   }
 });
 
-// pollInFlight, on what is left of its merits. It was written to stop
-// overlapping ticks each incrementing the debounce counter and reaching
-// its threshold off one slow gap; with the counter gone, overlapping
-// readings corrupt no verdict, since each is independently trustworthy.
-// What it still prevents is a pile-up: setInterval fires on schedule
-// whether or not the previous callback's async work has finished, so a
-// reading slower than the interval would have every tick spawn another
-// process on top of those already waiting. A slow fake kido
-// (KIDO_FAKE_PARENT_ALIVE_DELAY_MS well over the poll interval) makes
-// that visible - unguarded, the calls track the interval; guarded, they
-// can only track the round trip.
+// setInterval fires on schedule whether or not the previous callback finished,
+// so a reading slower than the interval would have every tick spawn another
+// process on top of those already waiting; pollInFlight guards against that pile-up.
 test("parent-liveness poll: a slow reply does not let ticks pile up concurrent readings", async () => {
   const fx = makeFixture();
   try {
@@ -3798,11 +3312,6 @@ test("parent-liveness poll: a slow reply does not let ticks pile up concurrent r
     await withParentEnv(process.pid, "boss-session", pollMs, async () => {
       const factory = await freshExtensions();
       const s = await startWithShutdownSpy(fx, factory);
-      // A fixed window rather than a poll on the call count: the thing
-      // being measured is how many readings a span of time produces, and
-      // stopping at the first few would stop before the pile-up the
-      // unguarded version builds is distinguishable from the handful of
-      // sequential calls the guarded one makes.
       const started = Date.now();
       await new Promise((r) => setTimeout(r, 500));
       const elapsed = Date.now() - started;
@@ -3855,17 +3364,12 @@ test("a second pi on one session id claims nothing, reports nothing, and says so
     assert.match(notified[0].message, /already open in pane %9 \(pid 4242\)/, "names where the holder is");
     assert.equal(notified[0].type, "warning");
 
-    // Everything that would otherwise report. A turn's worth of events,
-    // then the shutdown whose --remove would delete the live session's
-    // own record - the half of the incident that took the running pi's
-    // record away when the intruder exited.
     await s.emit("turn_start");
     await s.emit("tool_call");
     await s.emit("agent_settled", {}, { isIdle: () => true });
     await s.emit("session_shutdown", { reason: "quit" });
-    // Watched over a span, not sampled once: a report is a detached
-    // subprocess appending to a file, so "nothing yet" and "nothing ever"
-    // are the same reading at any single instant.
+    // Watched over a span, not sampled once: a report is a detached subprocess
+    // appending to a file, so "nothing yet" and "nothing ever" read the same at any single instant.
     const until = Date.now() + 300;
     while (Date.now() < until) {
       assert.equal(fx.statusReportCount(), 1, "an untracked pi reports nothing after the refusal");
@@ -3877,9 +3381,7 @@ test("a second pi on one session id claims nothing, reports nothing, and says so
   }
 });
 
-// The negative control: the same path with kido accepting the claim. A
-// gate that refused every session would pass every assertion above and
-// leave no pi tracked at all.
+// Negative control: a gate that refused every session would pass the tests above too.
 test("the first pi on a session id is tracked and goes on reporting", async () => {
   const fx = makeFixture();
   try {
@@ -3901,9 +3403,6 @@ test("a running session re-sends its status on a heartbeat, bypassing the coales
     await withHeartbeatEnv(20, async () => {
       const factory = await freshExtensions();
       const s = await startSession(fx, { factory });
-      // turn_start, tool_execution_start and tool_call all send the same
-      // "running" key: without the heartbeat bypass this is exactly the
-      // sequence send()'s coalescing collapses to a single report.
       await s.emit("turn_start");
       await s.emit("tool_execution_start");
       await s.emit("tool_call");
@@ -3926,24 +3425,13 @@ test("the heartbeat stops once the session is no longer running", async () => {
       const factory = await freshExtensions();
       const s = await startSession(fx, { factory });
       await s.emit("turn_start");
-      // Wait for the heartbeat to have actually fired at least once, not
-      // merely the first (turn_start's own) report - otherwise stopping it
-      // immediately would prove nothing.
+      // Wait for a heartbeat to have actually fired, not merely the first report.
       await pollUntil(() => fx.statusReportsWith("running").length >= 2, 2000, "a heartbeat re-report");
-      await s.emit("agent_settled", {}, { isIdle: () => true }); // the true idle signal; see the handler in kido-status.ts
-      // Each spawnDetached call already made before the stop still lands in
-      // the log asynchronously, so the count can keep growing briefly after
-      // this point regardless - a fixed "sleep, then sleep again" window is
-      // exactly what a loaded CI runner can beat, by letting a late arrival
-      // land in the second window rather than the first. Poll for a window
-      // with NO growth at all instead: a stopped heartbeat produces one, an
-      // unstopped 15ms one never does, which a fixed pair of samples cannot
-      // tell apart from "stopped, but slow to drain". The count is every
-      // report regardless of status, not just "running": send() flips
-      // `current` to "idle" before stopHeartbeat() runs, so a heartbeat
-      // that failed to stop would keep resending "idle" (its opts.heartbeat
-      // flag bypasses the coalescing that would otherwise drop an identical
-      // repeat) - a check scoped to "running" would not see that at all.
+      await s.emit("agent_settled", {}, { isIdle: () => true });
+      // Polled for a window with no growth, rather than sampled twice: a fixed
+      // "sleep, then sleep again" lets a late arrival land in the second window
+      // instead of the first on a loaded runner. Counted regardless of status,
+      // not just "running": a heartbeat that failed to stop keeps resending "idle".
       await pollForStable(
         () => fx.statusReportCount(),
         200,
@@ -3957,9 +3445,6 @@ test("the heartbeat stops once the session is no longer running", async () => {
   }
 });
 
-// startWithControlSpies is startSession but with ctx.abort()/ctx.shutdown()
-// spies the tests below observe - what an inbound "interrupt"/"stop"
-// envelope (handleInboundControl) actually calls.
 async function startWithControlSpies(fx: Fixture, idle?: () => boolean) {
   let aborts = 0;
   let shutdowns = 0;
@@ -3971,31 +3456,21 @@ async function startWithControlSpies(fx: Fixture, idle?: () => boolean) {
   return { ...s, aborts: () => aborts, shutdowns: () => shutdowns };
 }
 
-// controlTree is a self whose parent is "root-1", the shape
-// handleInboundControl's ancestor check needs: isAncestor walks self's own
-// parent chain looking for the envelope's sender.
 const controlTree = [
   { id: "self", name: "self", parent: "root-1", pane: "%1", self: true, canMessage: true },
   { id: "root-1", name: "root-1", parent: "", pane: "%2", self: false, canMessage: true, canReply: true },
   { id: "peer-x", name: "peer-x", parent: "", pane: "%3", self: false, canMessage: true, canReply: true },
 ];
 
-// TestIsAncestorRefusesSelfEdge's TS twin: without the explicit refusal
-// at the top of isAncestor, a record whose own "parent" named itself
-// would make isAncestor(agents, X, X) true, and handleInboundControl's
-// ancestor check would let a session act on a "stop" or "interrupt" that
-// claimed to be from itself. Nothing writes such a record today (see the
-// function's own doc); this pins the belt-and-braces refusal anyway.
+// TestIsAncestorRefusesSelfEdge's TS twin: a corrupted record whose "parent"
+// names itself must not make isAncestor(agents, X, X) true.
 test("isAncestor refuses a self-edge, even with a corrupted self-parent record", () => {
   const self = { id: "x", name: "x", parent: "x", pane: "%1", self: true, canMessage: true, window: "@1", stalled: false, sinceReport: 0 };
   assert.equal(isAncestor([self], self, self), false);
 });
 
-// isAncestor's `seen` set is what stands between a corrupted parent chain
-// and a hang: internal/tree's own cycle safety (AGENTS.md) has a Go twin,
-// but nothing here pinned the TS walk directly. Without `seen`, a genuine
-// cycle among records none of which is self would loop forever instead of
-// eventually returning false.
+// Without the `seen` set, a genuine cycle among records none of which is self
+// would loop forever instead of returning false.
 test("isAncestor terminates on a parent cycle that never reaches self", () => {
   const a = { id: "a", name: "a", parent: "b", pane: "%1", self: false, canMessage: true, canReply: true, window: "@1", stalled: false, sinceReport: 0 };
   const b = { id: "b", name: "b", parent: "a", pane: "%2", self: false, canMessage: true, canReply: true, window: "@2", stalled: false, sinceReport: 0 };
@@ -4004,18 +3479,14 @@ test("isAncestor terminates on a parent cycle that never reaches self", () => {
   assert.equal(isAncestor([self, a, b], self, b), false);
 });
 
-// A dangling parent id - one that names no agent in the list at all, the
-// shape a race between a spawn and an exit can leave behind - must end
-// the walk rather than loop on `cur` never changing.
+// A dangling parent id (a race between a spawn and an exit can leave one) must
+// end the walk rather than loop on `cur` never changing.
 test("isAncestor terminates when a parent names nobody in the list", () => {
   const orphan = { id: "orphan", name: "orphan", parent: "ghost-parent", pane: "%1", self: false, canMessage: true, canReply: true, window: "@1", stalled: false, sinceReport: 0 };
   const self = { id: "self", name: "self", parent: "", pane: "%2", self: true, canMessage: true, window: "@2", stalled: false, sinceReport: 0 };
   assert.equal(isAncestor([self, orphan], self, orphan), false);
 });
 
-// isAncestor must also find self two levels up, not merely the immediate
-// parent - the shape a grandparent's `kido interrupt_subagent grandchild` relies
-// on.
 test("isAncestor finds a two-level ancestor", () => {
   const grand = { id: "grand", name: "grand", parent: "", pane: "%1", self: true, canMessage: true, window: "@1", stalled: false, sinceReport: 0 };
   const mid = { id: "mid", name: "mid", parent: "grand", pane: "%2", self: false, canMessage: true, canReply: true, window: "@2", stalled: false, sinceReport: 0 };
@@ -4070,13 +3541,8 @@ test("interrupt and stop are both refused, and neither abort nor shutdown is cal
   }
 });
 
-// A control envelope naming a session id that is not in kido's agents
-// list at all - not a peer, not a descendant, just unknown - must be
-// refused the same way a peer is. isAncestor's `byId.get(cur)?.parent`
-// already tolerates a missing sender, but handleInboundControl's own
-// `listed.agents.find((a) => a.id === env.from.session)` lookup is a
-// second, independent place this could be gotten wrong: nothing stops a
-// forged envelope from naming an id that never existed.
+// An id not in kido's agents list at all - not a peer, not a descendant, just
+// unknown - must be refused the same way a peer is.
 test("interrupt and stop are refused when the sender's id matches no agent kido knows about", async () => {
   const fx = makeFixture();
   try {
@@ -4091,12 +3557,8 @@ test("interrupt and stop are refused when the sender's id matches no agent kido 
   }
 });
 
-// An interrupt leaves the session alive and able to take a following
-// message, which is more than "shutdown was not
-// called" - the inbox itself must still be answering. And an interrupt of
-// an idle agent (the shape here: session_start with no turn begun) must
-// be harmless, not refused or treated specially just because there was
-// nothing to abort.
+// An interrupt leaves the session alive and able to take a following message -
+// more than "shutdown was not called", the inbox itself must still answer.
 test("an interrupt of an idle agent is harmless, and the session still answers a following message", async () => {
   const fx = makeFixture();
   try {
@@ -4119,10 +3581,8 @@ test("an interrupt of an idle agent is harmless, and the session still answers a
   }
 });
 
-// startWithDelayedAbort is startWithControlSpies but ctx.abort() settles
-// only after delayMs - the shape pi's own AgentSession.abort() takes
-// while it waits out a live run (agent-session.js: `await
-// this.waitForIdle()`), instead of resolving in the same tick.
+// ctx.abort() settles only after delayMs, the shape pi's own AgentSession.abort()
+// takes while it waits out a live run (agent-session.js: `await this.waitForIdle()`).
 async function startWithDelayedAbort(fx: Fixture, delayMs: number) {
   let aborts = 0;
   let abortSettledAt = 0;
@@ -4140,15 +3600,13 @@ async function startWithDelayedAbort(fx: Fixture, delayMs: number) {
   return { ...s, aborts: () => aborts, abortSettledAt: () => abortSettledAt };
 }
 
-// The bug this pins: handleInboundControl used to call ctxAbort?.() without
-// awaiting it, so the interrupt's inbox reply - and any envelope handled
-// after it - could race pi's own abort still settling. A message sent
-// right after an interrupt (kido interrupt_subagent then message_agent,
-// exactly what a caller does) would land while pi still thought it was
-// streaming, routing it into pi's low-level followUp queue instead of the
-// run-starting path - and nothing ever drained that queue once the abort's
-// own turn exited without checking it. Pre-fix, this failed on the second
-// assertion: the reply came back in a handful of ms while ctx.abort() was
+// The bug this pins: an unawaited ctxAbort?.() let the interrupt's inbox reply -
+// and any envelope handled after it - race pi's own abort still settling. A
+// message sent right after an interrupt (kido interrupt_subagent then
+// message_agent) would land while pi still thought it was streaming, routing it
+// into pi's low-level followUp queue instead of the run-starting path, which
+// nothing ever drained. Pre-fix, this failed on the second assertion: the reply
+// came back in a handful of ms while ctx.abort() was
 // still 150ms from settling.
 test("an interrupt does not answer until ctx.abort() settles, so a message sent right after is not orphaned", async () => {
   const fx = makeFixture();
@@ -4170,10 +3628,6 @@ test("an interrupt does not answer until ctx.abort() settles, so a message sent 
       "ctx.abort() must have already settled by the time the reply is sent",
     );
 
-    // Sent only once the interrupt's own reply came back, exactly as a
-    // caller who awaits interrupt_subagent before calling message_agent
-    // does - by now pi genuinely is idle, so this must reach the model
-    // rather than sit in a queue nothing drains.
     const msgResp = await sendToInbox(s.inboxPath, envelope("message", "still there?", { from: { session: "root-1", name: "root-1" } }));
     assert.equal(msgResp, "ok");
     assert.ok(
@@ -4185,9 +3639,8 @@ test("an interrupt does not answer until ctx.abort() settles, so a message sent 
   }
 });
 
-// Negative control: an already-idle agent's ctx.abort() settles at once
-// (nothing to unwind), so the fix must not have added a fixed wait of its
-// own - the reply tracks ctx.abort()'s own delay, not a constant.
+// Negative control: an already-idle abort() settles at once, so the fix must
+// not have added a fixed wait of its own.
 test("an interrupt to an idle session still answers promptly", async () => {
   const fx = makeFixture();
   try {
@@ -4204,14 +3657,9 @@ test("an interrupt to an idle session still answers promptly", async () => {
   }
 });
 
-// A person running `kido interrupt_subagent`/`kido stop_subagent` by hand has no state
-// record, so kido has no session id to put in the envelope's `from` - and
-// the scope rule deliberately lets that caller reach anything
-// (cmd/kido/control.go's isAgent check). Matching only on `from.session`
-// would refuse them here, so the two enforcement layers would disagree
-// and a human's stop could not stop anything. Recognised by the
-// empty session *and* a pane no agent occupies, so an agent that simply
-// omits its session id is still held to the descendant rule.
+// A human running `kido interrupt_subagent` by hand has no session id for `from`;
+// recognised by the empty session *and* a pane no agent occupies, so an agent
+// that simply omits its session id is still held to the descendant rule.
 test("a control envelope from a human at the CLI is honoured; one merely missing a session id is not", async () => {
   const fx = makeFixture();
   try {
@@ -4230,27 +3678,16 @@ test("a control envelope from a human at the CLI is honoured; one merely missing
   }
 });
 
-// askTree is grand -> mid -> child, three levels, used below to pin
-// ask_agent's ancestor guard in both directions: which of self/target is
-// the caller decides which one gets marked self:true per case.
+// grand -> mid -> child; which of self/target is the caller decides which one
+// gets marked self:true per case below.
 const askTree = [
   { id: "grand", name: "grand", parent: "", self: false, canMessage: true, canReply: true },
   { id: "mid", name: "mid", parent: "grand", self: false, canMessage: true, canReply: true },
   { id: "child", name: "child", parent: "mid", self: false, canMessage: true, canReply: true },
 ];
 
-// isAncestor(agents, self, target) means "self is an ancestor of target"
-// (see its own doc above); ask_agent's guard must refuse a child asking
-// upward, not a parent asking downward. The inverted check refused the
-// ordinary case and let the dangerous one through - a subagent could
-// block its own parent for the full ask timeout, exactly the deadlock
-// docs/design.md's cycle-edge section exists to prevent - so each case
-// below checks not just the refusal text but that nothing was actually
-// sent (or was), off the fake kido's own log.
-// steer_subagent's own end-to-end pair. The tool shells out like every
-// other one; what is worth pinning here is the argument shape, since a
-// model-authored `to` beginning with a dash would otherwise be read as a
-// kido flag.
+// Worth pinning: a model-authored `to` beginning with a dash would otherwise be
+// read as a kido flag.
 test("steer_subagent runs kido steer_subagent with the target behind -- and the message on stdin", async () => {
   const fx = makeFixture();
   try {
@@ -4265,24 +3702,14 @@ test("steer_subagent runs kido steer_subagent with the target behind -- and the 
   }
 });
 
-// The mode is the whole point of the kind, so this asserts the mode and
-// not merely that something arrived: a steer delivered as "followUp"
-// would be drained only after the agent had decided to stop, which is
-// exactly the wait steering exists to skip (docs/design.md, "Steer and
-// followUp").
-//
-// The second half is the negative control, and it is the reason this test
-// is one test: a later simplification that unified the delivery paths
-// would keep every assertion about arrival true. An ask must stay
-// followUp in particular - it carries a reply-correlation id, so two asks
-// interleaved inside one turn risk an answer reaching the wrong asker.
+// Asserts the mode, not merely that something arrived: a steer delivered as
+// followUp would wait for the agent to decide to stop, exactly what steering
+// exists to skip. Negative control: an ask must stay followUp - it carries a
+// reply-correlation id, so two interleaved asks risk an answer reaching the wrong asker.
 test("an inbound steer is delivered as steer; a message and an ask stay followUp", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents(controlTree);
-    // Streaming, which is the only state these modes are about: an arrival
-    // that finds the session idle is woken through prompt() instead (see
-    // "an idle session is woken through prompt()").
     const s = await startWithControlSpies(fx, () => false);
     const from = { session: "root-1", name: "root-1", pane: "%2" };
 
@@ -4306,9 +3733,6 @@ test("an inbound steer is delivered as steer; a message and an ask stay followUp
   }
 });
 
-// Same sender rule as interrupt and stop, checked on arrival because
-// `from` is advisory - and refused on the wire, so the sender hears about
-// it rather than the text landing silently.
 test("an inbound steer from a non-ancestor is refused and delivers nothing", async () => {
   const fx = makeFixture();
   try {
@@ -4406,11 +3830,8 @@ test("ask_agent refuses a stalled target immediately, without sending anything",
   }
 });
 
-// A target that died seconds ago is not stalled - that takes minutes of
-// silence - so target.stalled alone lets ask_agent commit to the full
-// timeoutMs against a target that will never answer. The timeoutMs of
-// 600000 against settlesWithin(..., 500) is the point: a version missing
-// the liveness check would still answer correctly, only 600000ms later.
+// The assertion with teeth: timeoutMs 600000 against settlesWithin(..., 500) -
+// a version missing the liveness check would still answer correctly, only 600000ms later.
 test("ask_agent refuses a target that is not alive, promptly and without sending anything", async () => {
   const fx = makeFixture();
   try {
@@ -4434,10 +3855,8 @@ test("ask_agent refuses a target that is not alive, promptly and without sending
   }
 });
 
-// canReply is a run record's fact, not canMessage's: a target with an
-// inbox but no message_agent tool has somewhere to send a reply, and
-// still cannot send one. Checked before any send, the same shape as the
-// stalled and not-alive prechecks above.
+// canReply is a run record's fact, not canMessage's: a target with an inbox but
+// no message_agent tool has somewhere to send a reply, and still cannot send one.
 test("ask_agent refuses a target spawned without the message_agent tool, without sending anything", async () => {
   const fx = makeFixture();
   try {
@@ -4526,8 +3945,6 @@ test("a waiting ask honours pi's abort signal, so the turn can be interrupted", 
     const result = await settlesWithin(p, 1000);
     assert.match(result.content[0].text, /interrupted/);
 
-    // The waiter is gone, not merely unawaited: a reply naming that id now
-    // arrives the way any unmatched reply does, as a message to the model.
     const resp = await sendToInbox(s.inboxPath, envelope("reply", "late answer", { replyTo: sent!.id, from: { session: "peer-a", name: "peer-a" } }));
     assert.equal(resp, "ok");
     assert.ok(
@@ -4539,10 +3956,8 @@ test("a waiting ask honours pi's abort signal, so the turn can be interrupted", 
   }
 });
 
-// The abort can also land while the outbound send is still in flight,
-// which is the one ordering where the wait is over before the liveness
-// watch is armed. An interval started after its own settle is one
-// nothing will ever clear: the readings simply never stop.
+// The one ordering where the wait is over before the liveness watch is armed:
+// an interval started after its own settle is one nothing will ever clear.
 test("an ask aborted while its send is in flight leaves no liveness watch running", async () => {
   const fx = makeFixture();
   try {
@@ -4560,12 +3975,8 @@ test("an ask aborted while its send is in flight leaves no liveness watch runnin
       const p = ask.execute("c1", { to: "peer-a", question: "q", timeoutMs: 600000 }, ac.signal);
       await new Promise((r) => setTimeout(r, 100)); // still inside the send
       ac.abort();
-      // Not instant, unlike the case above: execute cannot return before
-      // the send it is awaiting does, and that await is capped at 5s by
-      // runKido's own timeoutMs - a real subprocess spawn, not a mock -
-      // so the bound here has to clear 5s with room for a loaded runner's
-      // scheduling on top, not merely clear the 400ms delay this send is
-      // given in the fast case.
+      // Not instant: execute cannot return before the send it is awaiting does,
+      // capped at 5s by runKido's own timeoutMs, a real subprocess spawn.
       const result = await settlesWithin(p, 9000);
       assert.match(result.content[0].text, /interrupted/);
 
@@ -4577,11 +3988,8 @@ test("an ask aborted while its send is in flight leaves no liveness watch runnin
   }
 });
 
-// The negative control for both of the above, and the more important half
-// of the pair: giving up on a healthy target that is merely slow would be
-// worse than the hang. The wait outlives many liveness readings and an
-// abort signal that is never fired, and still ends with the target's own
-// answer.
+// Negative control: giving up on a healthy target that is merely slow would be
+// worse than the hang.
 test("a live target that takes its time is still waited for, and its reply is what arrives", async () => {
   const fx = makeFixture();
   try {
@@ -4599,10 +4007,6 @@ test("a live target that takes its time is still waited for, and its reply is wh
       const sent = await fx.waitForLog("peer-a", "ask");
 
       const readings = () => fx.parentAliveCalls().filter((args) => args.includes("peer-a")).length;
-      // Polled for, not slept for a fixed distance: each reading is a real
-      // subprocess round trip, so a run-to-run-constant sleep either wastes
-      // time on a fast machine or comes up short of 3 on a loaded one -
-      // which is exactly how this test was flaky on CI.
       await pollUntil(() => readings() >= 3, 6000, "several liveness readings that came back alive");
       assert.equal(await pendingState(p), "pending", "a slow but live target must still be waited for");
 
@@ -4615,10 +4019,6 @@ test("a live target that takes its time is still waited for, and its reply is wh
   }
 });
 
-// withIdleExitEnv sets KIDO_IDLE_EXIT_SECONDS and, optionally,
-// KIDO_AGENT_KEEP_ALIVE, restoring whatever was there before - both are
-// read once at module scope, so every case below goes through
-// freshExtensions() to pick them up (see withParentEnv).
 async function withIdleExitEnv<T>(seconds: number, keepAlive: boolean, fn: () => Promise<T>): Promise<T> {
   return withEnv({ KIDO_IDLE_EXIT_SECONDS: String(seconds), KIDO_AGENT_KEEP_ALIVE: keepAlive ? "1" : undefined }, fn);
 }
@@ -4717,9 +4117,6 @@ test("idle self-exit: a focused window re-arms instead of shutting down, then ex
         const factory = await freshExtensions();
         const s = await startWithShutdownSpy(fx, factory);
         await s.emit("agent_settled", {}, { isIdle: () => true });
-        // Each re-arm check costs a fake-kido subprocess start (tens of ms),
-        // so the wait has to be generous relative to the 50ms interval to
-        // actually observe more than one of them.
         await new Promise((r) => setTimeout(r, 600));
         assert.equal(s.shutdowns(), 0, "a focused window must not be closed out from under the user");
         assert.ok(
@@ -4736,13 +4133,9 @@ test("idle self-exit: a focused window re-arms instead of shutting down, then ex
   }
 });
 
-// idle self-exit and live children. The incident: a parent spawned a
-// child, said "I'll wait for its report", and settled the turn - which
-// is exactly what a finished session looks like. Thirty seconds later it
-// exited, and the orphan rule closed the child's window mid-work. The
-// clock now asks kido whether any run of this session's own is still
-// going, and a session with one is not idle however long it has been
-// quiet.
+// Pins a real incident: a parent spawned a child, settled its own turn to wait
+// for the report - indistinguishable from a finished session - and the orphan
+// rule closed the child's window mid-work 30s later.
 test("idle self-exit: a live child run re-arms the clock, and the session exits once that child has ended", async () => {
   const fx = makeFixture();
   try {
@@ -4753,8 +4146,6 @@ test("idle self-exit: a live child run re-arms the clock, and the session exits 
         const factory = await freshExtensions();
         const s = await startWithShutdownSpy(fx, factory);
         await s.emit("agent_settled", {}, { isIdle: () => true });
-        // Generous relative to the 50ms interval, since each re-arm costs
-        // a fake-kido subprocess start: the point is to observe several.
         await new Promise((r) => setTimeout(r, 600));
         assert.equal(s.shutdowns(), 0, "a session waiting on a child it spawned is not idle");
         assert.ok(
@@ -4762,8 +4153,7 @@ test("idle self-exit: a live child run re-arms the clock, and the session exits 
           `children-alive was asked ${fx.childrenAliveCalls().length} times, want re-arming to have asked more than once`,
         );
 
-        // The negative control, and the half that keeps idle self-exit
-        // working at all: the last child ends and the clock resumes.
+        // Negative control: the last child ends and the clock resumes.
         fx.setChildrenAlive(false);
         await pollUntil(() => s.shutdowns() > 0, 2000, "ctx.shutdown() once the child has ended");
       });
@@ -4773,13 +4163,8 @@ test("idle self-exit: a live child run re-arms the clock, and the session exits 
   }
 });
 
-// pi's interactive-mode shutdown handler only acts on a shutdown request
-// once it is not mid-compaction (isIdle), and only re-checks that flag on
-// its own next agent_settled - so a shutdown requested while a compaction
-// is in flight can be recorded and never acted on. The clock must not
-// take ctx.shutdown() at its word: it re-arms after calling it, so a
-// declined request is asked for again rather than left as the one attempt
-// a child ever gets.
+// pi may decline a shutdown request while mid-compaction; the clock must not
+// take ctx.shutdown() at its word, and re-arms so a declined request is asked for again.
 test("idle self-exit: a shutdown pi declined is asked for again", async () => {
   const fx = makeFixture();
   try {
@@ -4787,10 +4172,6 @@ test("idle self-exit: a shutdown pi declined is asked for again", async () => {
     await withParentEnv(process.pid, "boss-session", 5000, async () => {
       await withIdleExitEnv(0.05, false, async () => {
         const factory = await freshExtensions();
-        // A shutdown pi declines because it is compacting still returns
-        // from ctx.shutdown() - pi just does not end the session. Mirror
-        // the real sequence around the first firing without it changing
-        // anything: kido-agents.ts does not listen for either event.
         const s = await startWithShutdownSpy(fx, factory);
         await s.emit("agent_settled", {}, { isIdle: () => true });
         await pollUntil(() => s.shutdowns() > 0, 2000, "the first ctx.shutdown() attempt");
@@ -4808,10 +4189,6 @@ test("idle self-exit: a shutdown pi declined is asked for again", async () => {
   }
 });
 
-// A child that ends without ever calling notify_parent owes its parent
-// one notice saying so - the ending was silent, and a parent that
-// dispatched work learnt nothing from a child that idled out. The flag
-// is what kido reads; the outcome write decides whether it is acted on.
 test("a child that never called notify_parent flags its silence as it ends, and one that did does not", async () => {
   const fx = makeFixture();
   try {
@@ -4828,9 +4205,7 @@ test("a child that never called notify_parent flags its silence as it ends, and 
     fx.restore();
   }
 
-  // The negative control: a child that reported has already said what it
-  // had to say, and a second notice on the way out is the parent hearing
-  // about one run twice. Nothing differs here but the tool call.
+  // Negative control: a child that reported must not get a second notice too.
   const fx2 = makeFixture();
   try {
     fx2.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
