@@ -88,8 +88,8 @@ const injected: Array<[string, string, string]> = [
 for (const [when, text, how] of injected) {
   out.push(`### ${when}`, "", "```", text, "```", how ? `delivered as: ${how}` : "", "");
 }
-out.push("## Notices kido itself composes (Go)", "");
-out.push("cmd/kido/ending_notice.go, sent to the parent when a run ends without the child reporting; cmd/kido/report.go for a report over the cap.", "");
+out.push("## Notices kido itself composes (OCaml)", "");
+out.push("lib/reap.ml (Reap.body), sent to the parent when a run ends without the child reporting; lib/message_agent.ml (Message_agent.notify_parent) for a report over the cap.", "");
 out.push("```", `async run "<name>" <result>: <text>
 run: <id>
 output: <path>

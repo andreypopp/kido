@@ -28,7 +28,7 @@ type picker struct {
 
 // startPicker's window keeps remain-on-exit on, so the pane survives
 // kido's exit and its status can be read: a test must be able to tell
-// tea.Quit from a crash or a signal.
+// a clean quit from a crash or a signal.
 func startPicker(h *harness, session string) *picker {
 	h.t.Helper()
 	h.keepDeadPanes()

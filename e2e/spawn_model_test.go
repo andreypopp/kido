@@ -9,7 +9,7 @@ import (
 )
 
 // writeFakeListModelsPi answers `pi --list-models` with a fixed two-row
-// table matching the shape validateModel parses, and exits nonzero for
+// table matching the shape Spawn_subagent.validate_model parses, and exits nonzero for
 // anything else - only to test the model gate refusing before any
 // window is created.
 func writeFakeListModelsPi(t *testing.T, dir string) {
@@ -87,7 +87,7 @@ func TestRunOutcomeCapturesScreenBeforeWindowCloses(t *testing.T) {
 	// spawnRun wraps the script in single quotes (shellQuote), so the
 	// detail text needs only its own double quotes, not a second layer.
 	// The sleep before run-outcome is not decoration: kido spawn_subagent
-	// writes meta.json only after tmux.NewWindow returns, so calling
+	// writes meta.json only after Tmux.Exec.new_window returns, so calling
 	// run-outcome immediately could win the race against that file existing.
 	script := fmt.Sprintf(`echo %s; sleep 0.3; %s run-outcome --result failed --unreported --text "%s" -- "$KIDO_AGENT_RUN_ID"; sleep 300`,
 		marker, kidoBin, noTurnText)

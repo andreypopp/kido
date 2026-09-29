@@ -174,8 +174,8 @@ func TestSpawnRefusesDepthBeyondCeiling(t *testing.T) {
 	}
 }
 
-// maxDepthForTest mirrors cmd/kido/spawn.go's maxDepth; kept independent
-// since the e2e binary is not linked against the cmd/kido package.
+// maxDepthForTest mirrors Spawn_subagent.max_depth; kept independent
+// since the e2e binary is not linked against kido's OCaml library.
 const maxDepthForTest = 2
 
 // A human at a shell has no agent identity to hand over: naming a real

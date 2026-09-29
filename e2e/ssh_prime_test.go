@@ -18,7 +18,7 @@ const sshSettle = 20 * time.Second
 // integratedShellPane's shell carries kido's own integration. An ssh
 // pane needs one: kido only believes a far side is reporting once it
 // marks a prompt later than the local shell marked the ssh as started
-// (internal/ui, observeRemote).
+// (Ui.observe_remote).
 func integratedShellPane(t *testing.T, h *harness) string {
 	t.Helper()
 	zsh, err := exec.LookPath("zsh")
@@ -55,7 +55,8 @@ func integratedShellPane(t *testing.T, h *harness) string {
 // either way - most often the developer's own localhost - and this test
 // can prove nothing about priming there: it skips rather than passing on
 // the far side's own rc files. The pristine-remote evidence lives where
-// a pristine remote can be built - cmd/kido's TestSSHPrimesAPristineZsh.
+// a pristine remote can be built - test/test_prime.ml's "the bootstrap
+// primes a pristine zsh".
 func TestKidoSSHPrimesARemoteShell(t *testing.T) {
 	t.Parallel()
 	requireLocalSSH(t)

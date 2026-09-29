@@ -31,8 +31,7 @@ func TestFreshServerSessionIsMain(t *testing.T) {
 // the inner quoting when the path does not need it, reducing to the
 // basename of the command's first word - "kido", not the "zsh" a plain
 // `default-command zsh` would give, since what actually runs is `kido
-// shell`. That residual gap is accepted (cmd/kido/launch.go's
-// confCommand); this asserts it stays there rather than regressing to
+// shell`. That residual gap is accepted (Launch.conf_command); this asserts it stays there rather than regressing to
 // quote debris.
 func TestFirstWindowNameIsNotQuoteDebris(t *testing.T) {
 	t.Parallel()

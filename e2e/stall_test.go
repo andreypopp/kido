@@ -9,7 +9,7 @@ import (
 )
 
 // stallAgent decodes just the fields these tests need from one
-// `kido list_agents --json` row, not the whole of cmd/kido.AgentInfo.
+// `kido list_agents --json` row, not the whole of List_agents.agent_info.
 type stallAgent struct {
 	ID      string `json:"id"`
 	Pane    string `json:"pane"`

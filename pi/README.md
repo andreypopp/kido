@@ -103,7 +103,7 @@ given work.
 On `session_start` the extension binds a unix **stream** socket and reports its
 path once, as `--inbox <path> --protocol <n>` on the first status report; kido
 carries both values forward, so later reports omit them. `--protocol` is the
-highest inbox envelope version this extension speaks (kido's `internal/msg`;
+highest inbox envelope version this extension speaks (kido's `lib/msg.ml`;
 see AGENTS.md), and a sender that sees no advertised protocol sends plain v0
 text instead of a JSON envelope. On `session_shutdown` the socket is closed and
 the file unlinked.

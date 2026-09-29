@@ -92,10 +92,14 @@ in `~/.config/kido/kido.conf` now.
 
 ## Development
 
+kido is OCaml, built with dune in a local opam switch; the e2e suite is Go.
+
 ```sh
-make install          # binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
-make test             # go vet, the unit tests, and the pi extensions' node suite
-make e2e              # drives kido inside a real tmux server
+opam switch create . 5.5.1 --no-install
+opam install . --deps-only --with-test
+opam exec -- make install   # binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
+opam exec -- make test      # the unit tests and the pi extensions' node suite
+opam exec -- make e2e       # drives kido inside a real tmux server
 ```
 
 CI runs both suites on every push to `main` and every pull request, on Linux

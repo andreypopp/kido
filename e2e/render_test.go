@@ -139,7 +139,7 @@ func TestShellStatusRow(t *testing.T) {
 	pane := h.newWindow("alpha", "") // no argv, so the pane runs the default shell
 	h.waitPaneCommand(pane, "zsh")
 	// The first prompt fires an OSC 133 "D" carrying the rc's exit status
-	// with no "C" before it; shellOutcome's start-time guard is what keeps
+	// with no "C" before it; Ui.shell_outcome's start-time guard is what keeps
 	// that from marking the pane as having run something.
 	h.waitShellRow("╶  zsh", "")
 
@@ -164,7 +164,7 @@ func TestShellStatusRow(t *testing.T) {
 	h.in("select-pane", "-t", home)
 	h.waitShellRow("╶  zsh", "")
 
-	// CommandEndTime has one-second resolution and shellOutcome's seen
+	// pane_command_end_time has one-second resolution and Ui.shell_outcome's seen
 	// comparison is strict, so age past the visit's second or the two land
 	// in the same tick and the outcome goes uncounted.
 	time.Sleep(1200 * time.Millisecond)
