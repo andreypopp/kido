@@ -1,6 +1,9 @@
 package procs
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // macOSFixture is real `ps -axo pid=,ppid=,comm=,args=` output captured on
 // this machine (macOS): comm is truncated to 16 characters, and args holds
@@ -94,6 +97,56 @@ func TestParseProcesses(t *testing.T) {
 			t.Errorf("parent[99] = %d, want 1", parent[99])
 		}
 	})
+}
+
+// TestParseSSHSplitsAtTheDestination pins where kido thinks the
+// destination is, which is the whole of what it needs from an ssh command
+// line: everything before it is passed through untouched, and anything
+// after it is a remote command kido must not displace.
+func TestParseSSHSplitsAtTheDestination(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		opts    []string
+		dest    string
+		command []string
+	}{
+		{"bare", []string{"host"}, nil, "host", nil},
+		{"user@host", []string{"deploy@host"}, nil, "deploy@host", nil},
+		{"flag then host", []string{"-A", "host"}, []string{"-A"}, "host", nil},
+		{"bundled flags", []string{"-tt", "host"}, []string{"-tt"}, "host", nil},
+		// -o takes its value from the next argument, so the host is the
+		// third: reading it as the second would send the bootstrap to a
+		// destination called "BatchMode=yes".
+		{"separate value", []string{"-o", "BatchMode=yes", "host"},
+			[]string{"-o", "BatchMode=yes"}, "host", nil},
+		{"attached value", []string{"-oBatchMode=yes", "host"},
+			[]string{"-oBatchMode=yes"}, "host", nil},
+		{"attached port", []string{"-p2222", "host"}, []string{"-p2222"}, "host", nil},
+		// -P is ssh's port flag, not to be confused with -p's value: it must
+		// consume "2222" as its own value, not be read as the destination.
+		{"-P port then host", []string{"-P", "2222", "host"},
+			[]string{"-P", "2222"}, "host", nil},
+		{"value after bundle", []string{"-4p", "2222", "host"},
+			[]string{"-4p", "2222"}, "host", nil},
+		{"remote command", []string{"host", "uptime", "-a"}, nil, "host", []string{"uptime", "-a"}},
+		{"no destination", []string{"-V"}, []string{"-V"}, "", nil},
+		{"nothing", nil, nil, "", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			in := ParseSSH(c.args)
+			if !slices.Equal(in.Opts, c.opts) {
+				t.Errorf("opts = %q, want %q", in.Opts, c.opts)
+			}
+			if in.Dest != c.dest {
+				t.Errorf("dest = %q, want %q", in.Dest, c.dest)
+			}
+			if !slices.Equal(in.Command, c.command) {
+				t.Errorf("command = %q, want %q", in.Command, c.command)
+			}
+		})
+	}
 }
 
 // TestSSHSession checks both halves of the argv walk: the destination,

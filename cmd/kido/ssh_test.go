@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"testing"
 
+	"kido/internal/procs"
 	"kido/internal/testutil"
 	"kido/shell"
 )
@@ -25,62 +26,16 @@ func noTTY(cmd *exec.Cmd) *exec.Cmd {
 	return cmd
 }
 
-// TestParseSSHSplitsAtTheDestination pins where kido thinks the
-// destination is, which is the whole of what it needs from an ssh command
-// line: everything before it is passed through untouched, and anything
-// after it is a remote command kido must not displace.
-func TestParseSSHSplitsAtTheDestination(t *testing.T) {
-	cases := []struct {
-		name    string
-		args    []string
-		opts    []string
-		dest    string
-		command []string
-	}{
-		{"bare", []string{"host"}, nil, "host", nil},
-		{"user@host", []string{"deploy@host"}, nil, "deploy@host", nil},
-		{"flag then host", []string{"-A", "host"}, []string{"-A"}, "host", nil},
-		{"bundled flags", []string{"-tt", "host"}, []string{"-tt"}, "host", nil},
-		// -o takes its value from the next argument, so the host is the
-		// third: reading it as the second would send the bootstrap to a
-		// destination called "BatchMode=yes".
-		{"separate value", []string{"-o", "BatchMode=yes", "host"},
-			[]string{"-o", "BatchMode=yes"}, "host", nil},
-		{"attached value", []string{"-oBatchMode=yes", "host"},
-			[]string{"-oBatchMode=yes"}, "host", nil},
-		{"attached port", []string{"-p2222", "host"}, []string{"-p2222"}, "host", nil},
-		{"value after bundle", []string{"-4p", "2222", "host"},
-			[]string{"-4p", "2222"}, "host", nil},
-		{"remote command", []string{"host", "uptime", "-a"}, nil, "host", []string{"uptime", "-a"}},
-		{"no destination", []string{"-V"}, []string{"-V"}, "", nil},
-		{"nothing", nil, nil, "", nil},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			in := parseSSH(c.args)
-			if !slices.Equal(in.opts, c.opts) {
-				t.Errorf("opts = %q, want %q", in.opts, c.opts)
-			}
-			if in.dest != c.dest {
-				t.Errorf("dest = %q, want %q", in.dest, c.dest)
-			}
-			if !slices.Equal(in.command, c.command) {
-				t.Errorf("command = %q, want %q", in.command, c.command)
-			}
-		})
-	}
-}
-
 // TestParseSSHLettersExcludeValues pins that an option's value is not
 // read as more option letters: `-o ProxyCommand=none` carries an N, a T
 // and a W among others, every one of which would make kido decide this
 // connection has no shell to prime.
 func TestParseSSHLettersExcludeValues(t *testing.T) {
-	in := parseSSH([]string{"-o", "ProxyCommand=none", "-p", "22", "host"})
-	if got, want := in.letters, "op"; got != want {
+	in := procs.ParseSSH([]string{"-o", "ProxyCommand=none", "-p", "22", "host"})
+	if got, want := in.Letters, "op"; got != want {
 		t.Errorf("letters = %q, want %q", got, want)
 	}
-	if !in.canPrime(true) {
+	if !canPrime(in, true) {
 		t.Error("an ssh with -o and -p is an ordinary interactive session; kido should prime it")
 	}
 }

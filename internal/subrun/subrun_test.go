@@ -1,9 +1,12 @@
 package subrun
 
 import (
+	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -178,6 +181,48 @@ func TestWriteScreenLastWriterWins(t *testing.T) {
 	if got != "second capture" {
 		t.Errorf("screen = %q, want the later write to win", got)
 	}
+}
+
+// TestWriteScreenConcurrentWritersLeaveOneWholePayload guards against the
+// corruption writeAtomic's per-writer temp file fixes: two racing writers
+// once shared one temp path, so one's os.WriteFile could truncate the
+// other's temp file before either renamed it away, and whichever renamed
+// second would find its own temp file already gone - reliably reproduced
+// against the old code as a bare "no such file or directory" from
+// os.Rename, not a silent mix.
+func TestWriteScreenConcurrentWritersLeaveOneWholePayload(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	id := "run-screen-race"
+	if err := Create(id, "x"); err != nil {
+		t.Fatal(err)
+	}
+	const writers = 8
+	payloads := make([][]byte, writers)
+	for i := range payloads {
+		payloads[i] = bytes.Repeat([]byte(fmt.Sprintf("%d", i)), 4096)
+	}
+	var wg sync.WaitGroup
+	for _, p := range payloads {
+		wg.Add(1)
+		go func(p []byte) {
+			defer wg.Done()
+			if err := WriteScreen(id, p); err != nil {
+				t.Error(err)
+			}
+		}(p)
+	}
+	wg.Wait()
+
+	got, ok, err := ReadScreen(id)
+	if err != nil || !ok {
+		t.Fatalf("ReadScreen = %v, %v, %v", got, ok, err)
+	}
+	for _, p := range payloads {
+		if got == string(p) {
+			return
+		}
+	}
+	t.Errorf("screen on disk matches none of the %d whole payloads: %q", writers, got)
 }
 
 func TestClearScreen(t *testing.T) {

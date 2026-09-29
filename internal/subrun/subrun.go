@@ -220,16 +220,35 @@ func ReadMeta(id string) (Meta, error) {
 
 // writeAtomic writes data to path via a same-directory temp file plus
 // os.Rename, so a reader never sees a partial write and two racing
-// writers never corrupt one another - os.Rename is the
-// same-filesystem atomic swap that buys that. The temp file lives
-// beside path, so a caller whose directory does not exist yet gets its
-// error from the temp write.
+// writers never corrupt one another - os.Rename is the same-filesystem
+// atomic swap that buys that, and CreateTemp's unique name is what keeps
+// two racing writers of the same path from sharing (and truncating one
+// another's) temp file.
 func writeAtomic(path string, data []byte, perm os.FileMode) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmp := f.Name()
+	_, werr := f.Write(data)
+	cerr := f.Close()
+	if werr != nil {
+		os.Remove(tmp)
+		return werr
+	}
+	if cerr != nil {
+		os.Remove(tmp)
+		return cerr
+	}
+	if err := os.Chmod(tmp, perm); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // WriteReport saves id's notify_parent report in full, last writer wins:

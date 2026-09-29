@@ -38,6 +38,81 @@ type SSHSession struct {
 // npm) install: the shim and the node process both carry it in argv.
 const piSuffix = "/libexec/bin/pi"
 
+// sshValueOpts are the ssh option letters that take a value, so the
+// parser can tell `-o BatchMode=yes` (two arguments) from `-tt` (one) and
+// find where the destination starts. From ssh(1); a letter kido does not
+// know about can only cost it the priming a caller may build on top of
+// SSHArgs, never the connection, since an unparsed argument leaves no
+// destination and an invocation with no destination is passed through
+// untouched.
+const sshValueOpts = "BbcDEeFIiJLlmOoPpQRSWw"
+
+// SSHArgs is an ssh command line split at its destination: everything
+// before it, in order (Opts) and as option letters with values excluded
+// (Letters), the destination itself (Dest, with any "ssh://" left in
+// place), and the remote command, if one was given (Command).
+type SSHArgs struct {
+	Opts    []string
+	Letters string
+	Dest    string
+	Command []string
+}
+
+// ParseSSH splits an ssh command line at its destination. It only needs
+// to be right about where the destination is and which letters were
+// given; ssh itself parses the arguments again.
+func ParseSSH(args []string) SSHArgs {
+	var in SSHArgs
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if in.Dest != "" {
+			in.Command = append(in.Command, arg)
+			continue
+		}
+		if arg == "--" {
+			if i+1 < len(args) {
+				in.Dest = args[i+1]
+				in.Command = append(in.Command, args[i+2:]...)
+			}
+			return in
+		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			in.Dest = arg
+			continue
+		}
+		in.Opts = append(in.Opts, arg)
+		for j := 1; j < len(arg); j++ {
+			in.Letters += string(arg[j])
+			if strings.IndexByte(sshValueOpts, arg[j]) >= 0 {
+				// The value is the rest of this argument, or the next one.
+				if j == len(arg)-1 && i+1 < len(args) {
+					i++
+					in.Opts = append(in.Opts, args[i])
+				}
+				break
+			}
+		}
+	}
+	return in
+}
+
+// sshSession picks the destination and interactivity out of an ssh
+// command line: -N wins over -t wins over -T, and with none of them a
+// pty is allocated only when there is no remote command to run instead
+// of a shell.
+func sshSession(args []string) SSHSession {
+	in := ParseSSH(args)
+	if in.Dest == "" {
+		return SSHSession{}
+	}
+	return SSHSession{
+		Host: strings.TrimPrefix(in.Dest, "ssh://"),
+		Interactive: strings.ContainsRune(in.Letters, 'N') ||
+			strings.ContainsRune(in.Letters, 't') ||
+			(!strings.ContainsRune(in.Letters, 'T') && len(in.Command) == 0),
+	}
+}
+
 // Process is one row of the process table.
 type process struct {
 	pid, ppid int
@@ -130,55 +205,4 @@ func markAncestors(set map[int]bool, parent map[int]int, pid int) {
 		}
 		pid = ppid
 	}
-}
-
-// sshValueOpts are ssh options that take a separate value, so the value is
-// not mistaken for the destination.
-const sshValueOpts = "BbcDEeFIiJLlmOoPpQRSWw"
-
-// sshSession picks the destination out of ssh's arguments and works out
-// whether the session is interactive. Everything after the destination is
-// the remote command, so the destination's index answers both questions in
-// one walk; the pty flags are picked up on the way there.
-func sshSession(args []string) SSHSession {
-	var forceTTY, noTTY, noCommand bool
-	// done finishes the walk at the destination: dest is its index, so
-	// anything past it is the remote command. -N wins over -t wins over
-	// -T, and with none of them a pty is allocated only when there is no
-	// remote command to run instead of a shell.
-	done := func(dest int, host string) SSHSession {
-		hasCommand := dest+1 < len(args)
-		return SSHSession{
-			Host:        host,
-			Interactive: noCommand || forceTTY || (!noTTY && !hasCommand),
-		}
-	}
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if a == "--" {
-			if i+1 < len(args) {
-				return done(i+1, args[i+1])
-			}
-			return SSHSession{}
-		}
-		if strings.HasPrefix(a, "-") && len(a) > 1 {
-			// Flags bundle ("-tt", "-vN"), and an option taking a value
-			// ends the bundle: "-p 2222" takes the next argument, while
-			// "-p2222" and "-oProxyCommand=..." carry it themselves.
-			// Either way the value must not be read as flag letters.
-			flags := a[1:]
-			if k := strings.IndexAny(flags, sshValueOpts); k >= 0 {
-				if k == len(flags)-1 {
-					i++ // the value is the next argument
-				}
-				flags = flags[:k]
-			}
-			forceTTY = forceTTY || strings.ContainsRune(flags, 't')
-			noTTY = noTTY || strings.ContainsRune(flags, 'T')
-			noCommand = noCommand || strings.ContainsRune(flags, 'N')
-			continue
-		}
-		return done(i, strings.TrimPrefix(a, "ssh://"))
-	}
-	return SSHSession{}
 }

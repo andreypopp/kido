@@ -8,6 +8,10 @@
 #                            [--cpu-shares N] [--contend N] [--budget N]
 #                            -- <command...>
 #
+# Any KIDO_AGENT_* variable in the caller's own environment names its
+# parent edge as a tracked agent, not the command under test; it is
+# never forwarded, so the container runs as a CI runner would.
+#
 #   --cpus N        CPU quota handed to the container (default 0.5)
 #   --memory SIZE   memory limit, podman syntax e.g. 1g (default 1g)
 #   --timeout SEC   kill the container if it runs longer than this (default 300)
@@ -53,10 +57,6 @@
 # under a rootful podman the mapping is already the identity, so the uid
 # is passed with --user instead. The locale is the image's (C.UTF-8, see
 # its Dockerfile), so no caller has to pass one.
-#
-# The env -u list is the one AGENTS.md's "Working here as a spawned agent"
-# gives for running the suites: it strips the agent-tracking variables so
-# the command runs as it would on a CI runner, not as a spawned subagent.
 #
 # The image is built once per tmux fork revision and cached by a tag that
 # includes it and a digest of the Dockerfile (kido-ci-like:<sha>-<digest>),
@@ -110,7 +110,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ $# -eq 0 ]; then
-	echo "usage: scripts/ci-like.sh [--cpus N] [--memory SIZE] [--timeout SECONDS] [--cpu-shares N] [--contend N] -- <command...>" >&2
+	echo "usage: scripts/ci-like.sh [--cpus N] [--memory SIZE] [--timeout SECONDS] [--cpu-shares N] [--contend N] [--budget N] -- <command...>" >&2
 	exit 1
 fi
 
@@ -173,6 +173,7 @@ env_args=()
 for var in $(env | awk -F= '/^KIDO_/{print $1}'); do
 	case "$var" in
 	KIDO_TMUX | KIDO_STATE_DIR) continue ;; # always the container's own, below
+	KIDO_AGENT_*) continue ;; # the host's own parent edge, never the container's
 	esac
 	env_args+=(-e "$var")
 done
@@ -231,7 +232,6 @@ status=0
 	-v kido-ci-like-gocache:/gocache \
 	-w /repo \
 	"$image" \
-	env -u KIDO_AGENT_PARENT_INSTANCE -u KIDO_AGENT_DEPTH -u KIDO_AGENT_TASK_FILE -u KIDO_AGENT_PARENT_PID -u TMUX_PANE \
 	"$@" || status=$?
 
 if [ -n "$watcher_pid" ]; then
