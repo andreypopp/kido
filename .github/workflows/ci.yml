@@ -95,7 +95,7 @@ jobs:
         run: opam exec -- dune build
 
       - name: Unit tests
-        run: opam exec -- dune test
+        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux opam exec -- dune test
 
       - name: E2E tests
         run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux KIDO_E2E_REQUIRED=1 opam exec -- make e2e
