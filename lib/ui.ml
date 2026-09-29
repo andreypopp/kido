@@ -808,7 +808,7 @@ let measure = Matrix_text.measure ~width_method:`Unicode ~tab_width:2
    the search prompt or an error, so the frame never changes height. *)
 let truncate width spans =
   let rec go room = function
-    | [] -> [ plain "…" ]
+    | [] -> []
     | s :: rest ->
         let w = measure s.text in
         if w <= room then s :: go (room - w) rest

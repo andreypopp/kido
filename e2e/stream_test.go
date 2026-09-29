@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"kido/internal/msg"
 )
 
 // Asserts the shape of the traffic, not any one envelope: twenty lines
@@ -50,19 +48,19 @@ func TestAsyncBashStreamCoalescesAndEndsWithTheNotice(t *testing.T) {
 	time.Sleep(300 * time.Millisecond) // the notice is last, but let anything ahead of it land too
 
 	var chunks, notices int
-	var notice msg.Envelope
+	var notice envelope
 	for i, raw := range in.Received() {
-		env, ok := msg.Parse([]byte(raw))
+		env, ok := parseEnvelope(raw)
 		if !ok {
 			t.Fatalf("envelope %d is not v1: %q", i, raw)
 		}
 		switch env.Kind {
-		case msg.KindStream:
+		case "stream":
 			chunks++
 			if notices > 0 {
 				t.Errorf("envelope %d is a chunk after the completion notice; the notice must be last", i)
 			}
-		case msg.KindNotice:
+		case "notice":
 			notices, notice = notices+1, env
 		default:
 			t.Errorf("envelope %d is a %q, want only chunks and one notice", i, env.Kind)
@@ -88,7 +86,7 @@ func TestAsyncBashStreamCoalescesAndEndsWithTheNotice(t *testing.T) {
 func lastNotice(h *harness, in interface{ Received() []string }) string {
 	h.t.Helper()
 	for _, raw := range in.Received() {
-		if env, ok := msg.Parse([]byte(raw)); ok && env.Kind == msg.KindNotice {
+		if env, ok := parseEnvelope(raw); ok && env.Kind == "notice" {
 			return env.Text
 		}
 	}

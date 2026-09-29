@@ -5,7 +5,7 @@
  (libraries kido tmux containers unix yojson mtime threads.posix)
  (inline_tests
   (deps
-   ../internal/msg/testdata/discriminator.json
+   ../pi/testdata/discriminator.json
    ../pi/testdata/tools.json
    ../bin/main.exe
    %{project_root}/scripts/install-share.sh

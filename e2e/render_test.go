@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"kido/internal/testutil"
 )
 
 // Checks the list's shape: sessions oldest first, client's session bold,
@@ -213,7 +211,7 @@ func (h *harness) waitShellRow(want string, color string) {
 // OSC 133 markers, through the same states.
 func TestBashShellStatusRow(t *testing.T) {
 	t.Parallel()
-	bash := testutil.ModernBash(t)
+	bash := modernBash(t)
 	h := start(t, "alpha")
 
 	home := ""

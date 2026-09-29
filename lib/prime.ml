@@ -88,7 +88,8 @@ let local ~zdotdir ~bin_dir mode =
     with
     | () -> env dir
     | exception e ->
-        ignore (Sys.command ("rm -rf -- " ^ Filename.quote dir));
+        List.iter (fun (name, _) -> Fs.remove (Filename.concat dir name)) (files ~bin_dir mode);
+        Unix.rmdir dir;
         raise e
   in
   match mode with

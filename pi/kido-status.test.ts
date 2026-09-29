@@ -1136,7 +1136,7 @@ test("the registered tools are exactly the shared list both suites check subcomm
 // Driven from the same fixture internal/msg's own discriminator table test
 // drives, so the two suites cannot drift apart by someone editing only one list.
 test("parseEnvelope agrees with internal/msg.Parse's v0/v1 discriminator table", () => {
-  const fixturePath = join(dirname(fileURLToPath(import.meta.url)), "..", "internal", "msg", "testdata", "discriminator.json");
+  const fixturePath = join(dirname(fileURLToPath(import.meta.url)), "testdata", "discriminator.json");
   const cases: { name: string; raw: string; ok: boolean }[] = JSON.parse(readFileSync(fixturePath, "utf8"));
   assert.ok(cases.length >= 11, `expected at least 11 cases in the shared fixture, got ${cases.length}`);
   for (const c of cases) {

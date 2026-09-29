@@ -1,6 +1,6 @@
 #!/bin/sh
 # Install the files kido reads beside its binary into <dest>, the layout
-# findShared looks for.
+# Bin_dir looks for and the shims source.
 #
 #   scripts/install-share.sh <dest>
 

@@ -9,11 +9,9 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
-
-	"kido/internal/testutil"
 )
 
-func (h *harness) waitInbox(in *testutil.Inbox, want ...string) {
+func (h *harness) waitInbox(in *inbox, want ...string) {
 	h.t.Helper()
 	h.waitFor(func() bool {
 		got := in.Received()
@@ -276,7 +274,7 @@ func TestPromptInboxNative(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	pane := h.piPane("alpha", "π - alpha")
-	in := testutil.StartInbox(t, "ok\n")
+	in := startInbox(t, "ok\n")
 	h.agentStatus("pi-1", pane, "pi", "idle", "--inbox", in.Path)
 
 	h.runPrompt("over the socket")
@@ -293,7 +291,7 @@ func TestPromptInboxStaleFallsBack(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	pane := h.piPane("alpha", "π - alpha")
-	h.agentStatus("pi-1", pane, "pi", "idle", "--inbox", testutil.StaleSocket(t))
+	h.agentStatus("pi-1", pane, "pi", "idle", "--inbox", staleSocket(t))
 
 	h.runPrompt("fall back to keys")
 	h.waitMain("rc=0")

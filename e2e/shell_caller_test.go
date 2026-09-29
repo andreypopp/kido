@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"kido/internal/testutil"
 )
 
 // The human-as-caller path, end to end. A bare shell is, to kido, a pane
@@ -88,7 +86,7 @@ func TestMessageFromAShellReachesTheAgent(t *testing.T) {
 // waitEnvelope waits until one payload on in contains every one of subs.
 // Unlike waitInbox's exact-string compare (prompt_test.go, for the v0
 // raw-text path), targets here advertise protocol 1 and get a JSON envelope.
-func (h *harness) waitEnvelope(in *testutil.Inbox, subs ...string) {
+func (h *harness) waitEnvelope(in *inbox, subs ...string) {
 	h.t.Helper()
 	h.waitFor(func() bool {
 		for _, got := range in.Received() {

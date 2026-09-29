@@ -4,15 +4,13 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"kido/internal/testutil"
 )
 
 // wedgedChild's inbox answers "ok" to anything and does nothing else: a
 // pi extension that received the request but never acted on it, wedged
 // the way a real one was once observed for hours after a laptop slept
 // and its provider connection died.
-func (h *harness) wedgedChild(session, sessionID string) (paneID, windowID string, in *testutil.Inbox) {
+func (h *harness) wedgedChild(session, sessionID string) (paneID, windowID string, in *inbox) {
 	h.t.Helper()
 	in, paneID = h.agentWithInbox(session, sessionID)
 	return paneID, h.windowID(paneID), in

@@ -42,7 +42,7 @@ e2e: $(if $(KIDO_TMUX),,$(TMUX_FORK)/bin/kido-tmux)
 
 # reproduces a CI-runner-only failure in a CPU/memory-capped Linux
 # container instead of by loading the host, e.g.:
-#   make ci-like ARGS="--cpus 0.25 -- go test ./cmd/kido/ -run TestFoo"
+#   make ci-like ARGS="--cpus 0.25 -- go test ./e2e/ -run TestFoo"
 # a run is bounded to --budget host cores in total (default 2), siblings
 # included; --contend is for one named failure, not for a whole suite
 ci-like:

@@ -1,7 +1,7 @@
 open Kido
 
 let discriminator_cases =
-  Yojson.Safe.from_file "../internal/msg/testdata/discriminator.json"
+  Yojson.Safe.from_file "../pi/testdata/discriminator.json"
   |> Yojson.Safe.Util.to_list
   |> List.map (fun c ->
       Yojson.Safe.Util.

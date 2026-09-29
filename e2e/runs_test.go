@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"kido/internal/testutil"
 )
 
 // runInfo is cmd/kido/runs.go's RunInfo, just the fields these tests
@@ -151,7 +149,7 @@ func TestStopRecordsStoppedOutcome(t *testing.T) {
 	// wedged pi extension, reporting under the run's own id (target.ID
 	// must equal the run id for stopCmd's outcome write to land anywhere).
 	paneID := h.in("list-panes", "-t", windowID, "-F", "#{pane_id}")
-	in := testutil.StartInbox(h.t, "ok\n")
+	in := startInbox(h.t, "ok\n")
 	h.agentStatus(runID, paneID, "pi", "idle", "--inbox", in.Path)
 
 	out := h.runKido("alpha", "stop.out", "stop_subagent", runID)

@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"kido/internal/testutil"
 )
 
 // The delivery leg of the turn-completion notice: the settle-to-notice
@@ -23,7 +21,7 @@ func TestSpawnedChildNoticeReachesParentInboxQuickly(t *testing.T) {
 	h := start(t, "alpha")
 
 	// A real inbox so the notice goes over the socket, not a paste fallback.
-	in := testutil.StartInbox(t, "ok\n")
+	in := startInbox(t, "ok\n")
 	parentPane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 	h.agentStatus("parent-notice-e2e", parentPane, "pi", "idle",
 		"--inbox", in.Path)

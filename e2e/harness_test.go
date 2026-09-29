@@ -15,6 +15,7 @@ package e2e
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -28,9 +29,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
-
-	"kido/internal/testutil"
-	tmuxconf "kido/tmux"
 )
 
 var (
@@ -152,14 +150,19 @@ func setup(m *testing.M) (int, error) {
 
 // buildKido builds the OCaml kido with dune from the repository root and
 // copies it to out: a copy, not a symlink, so kido's own lookups start
-// from out rather than from _build.
+// from out rather than from _build. DUNE_BUILD_DIR is dune's own, which
+// scripts/ci-like points outside the bind-mounted checkout.
 func buildKido(out string) error {
 	build := exec.Command("dune", "build", "./bin/main.exe")
 	build.Dir = ".."
 	if b, err := build.CombinedOutput(); err != nil {
 		return fmt.Errorf("dune build kido: %v\n%s", err, b)
 	}
-	b, err := os.ReadFile("../_build/default/bin/main.exe")
+	buildDir := cmp.Or(os.Getenv("DUNE_BUILD_DIR"), "_build")
+	if !filepath.IsAbs(buildDir) {
+		buildDir = filepath.Join("..", buildDir)
+	}
+	b, err := os.ReadFile(filepath.Join(buildDir, "default", "bin", "main.exe"))
 	if err != nil {
 		return err
 	}
@@ -357,14 +360,18 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 	// shorter) leaves room for tests that sleep up to a second before
 	// checking a status is still shown running.
 	// The shipped defaults are written first, byte for byte
-	// (tmux/kido-tmux.conf via tmuxconf.Defaults, as a real launch does),
+	// (tmux/kido-tmux.conf, as a real launch does),
 	// then the harness's own overrides.
 	prefix := serverPathPrefix
 	if pathDir != "" {
 		prefix = pathDir + string(os.PathListSeparator) + prefix
 	}
+	defaults, err := os.ReadFile("../tmux/kido-tmux.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
 	var body bytes.Buffer
-	body.Write(tmuxconf.Defaults)
+	body.Write(defaults)
 	fmt.Fprintf(&body, `
 set-environment -g KIDO_STATE_DIR "%s"
 set-environment -g KIDO_LINGER_SECONDS 1
@@ -970,11 +977,11 @@ func (h *harness) agentStatus(sessionID, pane, agent, status string, extra ...st
 // record (via agentStatus, so its pid is this test binary's own and
 // stays alive) naming a real unix socket that answers "ok\n" to anything
 // and otherwise does nothing.
-func (h *harness) agentWithInbox(session, sessionID string) (*testutil.Inbox, string) {
+func (h *harness) agentWithInbox(session, sessionID string) (*inbox, string) {
 	h.t.Helper()
 	paneID := h.newWindow(session, "", "sh", "-c", "exec sleep 300")
 	h.waitPaneCommand(paneID, "sleep")
-	in := testutil.StartInbox(h.t, "ok\n")
+	in := startInbox(h.t, "ok\n")
 	h.agentStatus(sessionID, paneID, "pi", "idle",
 		"--inbox", in.Path)
 	return in, paneID
