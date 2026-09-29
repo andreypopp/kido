@@ -15,8 +15,9 @@ $(PREFIX)/bin/kido-tmux:
 # pi extensions and the Claude Code settings go where kido looks for them
 # relative to its own binary, the same layout Homebrew's pkgshare gives it
 install: $(PREFIX)/bin/kido-tmux
-	dune build @install
-	dune install --prefix $(PREFIX) --sections bin kido
+	dune build ./bin/main.exe
+	install -d $(PREFIX)/bin
+	install -m 755 $(or $(DUNE_BUILD_DIR),_build)/default/bin/main.exe $(PREFIX)/bin/kido
 	./scripts/install-share.sh $(PREFIX)/share/kido
 
 # unit tests; the end-to-end suite needs the patched tmux and is separate.
