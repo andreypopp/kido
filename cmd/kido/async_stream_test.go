@@ -30,9 +30,9 @@ func withStreamKnobs(t *testing.T, batch, floor, ceiling time.Duration) {
 // stalled parent costs a sender.
 func withInboxTimeout(t *testing.T, d time.Duration) {
 	t.Helper()
-	saved := inboxTimeout
-	inboxTimeout = d
-	t.Cleanup(func() { inboxTimeout = saved })
+	saved := msg.InboxTimeout
+	msg.InboxTimeout = d
+	t.Cleanup(func() { msg.InboxTimeout = saved })
 }
 
 // streamParent is noticeParent with a chosen reply: "ok\n" for a parent

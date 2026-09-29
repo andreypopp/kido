@@ -52,33 +52,10 @@ func closeRunCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	if tmux.WindowFocused(panes, windowID) {
-		// The whole window, for either unit: the user switched here to read
-		// what the run left, and a pane killed under them takes that screen
-		// away and resizes what is left of the window.
-		fmt.Fprintf(os.Stderr, "kido close-run: %s is a client's current window; leaving it for the user to read\n", windowID)
+	c, refusal := reap.Decide(panes, windowID)
+	if refusal != "" {
+		fmt.Fprintf(os.Stderr, "kido close-run: %s\n", refusal)
 		return nil
 	}
-
-	runPane, ok := tmux.RunPane(panes, windowID)
-	if ok && !runPane.Dead {
-		fmt.Fprintf(os.Stderr, "kido close-run: %s's run is still going; leaving it\n", windowID)
-		return nil
-	}
-	if ok && !tmux.LastPane(panes, windowID) {
-		// The user's own split is in there, so what is collected is the run's
-		// pane and the window becomes theirs (reap.Ops.Release).
-		return releaseOps().Release(reap.Close{WindowID: windowID, PaneID: runPane.PaneID})
-	}
-	if !ok {
-		fmt.Fprintf(os.Stderr, "kido close-run: %s has no run pane; leaving it\n", windowID)
-		return nil
-	}
-	// Verified against a real server: kill-window on a session's last
-	// window ends the session and every client attached to it.
-	if tmux.LastWindow(panes, windowID) {
-		fmt.Fprintf(os.Stderr, "kido close-run: %s is its session's only window; closing it would destroy the session\n", windowID)
-		return nil
-	}
-	return releaseOps().Release(reap.Close{WindowID: windowID})
+	return releaseOps().Release(c)
 }

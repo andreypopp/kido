@@ -373,17 +373,17 @@ func TestMessageNoInboxPastes(t *testing.T) {
 }
 
 // TestMessageInboxHardErrorNoFallback checks the AGENTS.md rule that a
-// non-errInboxUnavailable failure must never fall back to a paste: the
-// message may already have reached the agent, and pasting it again would
-// double-send.
+// non-msg.ErrInboxUnavailable failure must never fall back to a paste:
+// the message may already have reached the agent, and pasting it again
+// would double-send.
 func TestMessageInboxHardErrorNoFallback(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
 	withPanes(t, samePane)
 	pastes := withSendPrompt(t, errors.New("sendPrompt must not be called"))
 
-	// A reply other than "ok" is a hard error from deliverInbox, not
-	// errInboxUnavailable (see TestDeliverInboxBadReply).
+	// A reply other than "ok" is a hard error from msg.Deliver, not
+	// msg.ErrInboxUnavailable (see msg.TestDeliverBadReply).
 	in := testutil.StartInbox(t, "nope\n")
 	if err := state.Record("target", state.Session{
 		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path,

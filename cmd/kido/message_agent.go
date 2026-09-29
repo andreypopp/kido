@@ -194,7 +194,7 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 	var target state.Session
 	if spec.parentSession != "" {
 		var found bool
-		if target, found = liveParent(live, spec.parentSession); !found {
+		if target, found = state.Find(live, spec.parentSession); !found {
 			return fail(fmt.Sprintf("no live process holds session %q; the parent is gone, nothing sent", spec.parentSession))
 		}
 	} else if spec.descendantsOnly {
@@ -245,10 +245,10 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 	// is a shell that would run the pasted text as a command line.
 	var paste bool
 	if spec.kind != msg.KindMessage {
-		if err := deliverInbox(target.Inbox, payload); err != nil {
+		if err := msg.Deliver(target.Inbox, payload); err != nil {
 			// "ask refused" keeps its wording: pi's ask_agent reads it back
 			// off stderr to tell a cycle refusal from an absent target.
-			if errors.Is(err, errInboxUnavailable) {
+			if errors.Is(err, msg.ErrInboxUnavailable) {
 				return fail(fmt.Sprintf("%s is not listening on its inbox; a %s cannot fall back to a paste", targetLabel(target), spec.kind))
 			}
 			return fail(err)
@@ -262,24 +262,6 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 		fmt.Printf("delivered to %s by inbox\n", targetLabel(target))
 	}
 	return 0
-}
-
-// liveParent finds the live agent holding session: the one way anything
-// addresses a parent, which is named rather than resolved like an
-// ordinary target, since a child knows its parent's session id and
-// nothing else about it.
-//
-// It takes the whole live slice rather than the pane-keyed view for the
-// reason `kido agent-alive` does: a pane collision drops a record from
-// the per-pane map, and a parent's is exactly the record that gets
-// dropped (docs/design.md, and internal/state's Load).
-func liveParent(live []state.Session, session string) (state.Session, bool) {
-	for _, s := range live {
-		if s.ID == session {
-			return s, true
-		}
-	}
-	return state.Session{}, false
 }
 
 // senderCanBeRepliedTo reports whether an answer to an ask sent from pane

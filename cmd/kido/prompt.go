@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"kido/internal/msg"
 	"kido/internal/procs"
 	"kido/internal/state"
 	"kido/internal/tmux"
@@ -92,18 +93,18 @@ var sendPrompt = tmux.SendPrompt
 
 // deliverInboxOrPaste hands a message to the agent listening on inbox,
 // falling back to a tmux paste of pasteText into pane only on
-// errInboxUnavailable: any other error means the message may already
+// msg.ErrInboxUnavailable: any other error means the message may already
 // have been delivered (docs/design.md, "Delivery, and when a paste is
 // allowed"). The two payloads differ for kido message_agent: the inbox may get
 // a v1 envelope, a paste always types the raw text. paste reports which
 // path was used.
 func deliverInboxOrPaste(inbox, inboxPayload, pane, pasteText string) (paste bool, err error) {
 	if inbox != "" {
-		err := deliverInbox(inbox, inboxPayload)
+		err := msg.Deliver(inbox, inboxPayload)
 		switch {
 		case err == nil:
 			return false, nil
-		case errors.Is(err, errInboxUnavailable):
+		case errors.Is(err, msg.ErrInboxUnavailable):
 		default:
 			return false, err
 		}

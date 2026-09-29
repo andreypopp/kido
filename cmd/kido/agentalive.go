@@ -49,11 +49,9 @@ func agentAliveCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	for _, s := range live {
-		if s.ID == args[0] {
-			fmt.Println("true")
-			return nil
-		}
+	if _, ok := state.Find(live, args[0]); ok {
+		fmt.Println("true")
+		return nil
 	}
 	fmt.Println("false")
 	return nil

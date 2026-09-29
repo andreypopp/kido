@@ -1,4 +1,4 @@
-package main
+package msg
 
 import (
 	"errors"
@@ -12,18 +12,18 @@ import (
 	"kido/internal/testutil"
 )
 
-// TestDeliverInboxHappy checks that the message arrives byte for byte,
+// TestDeliverHappy checks that the message arrives byte for byte,
 // including newlines and non-ASCII, with no framing or trailing newline
 // added, and that "ok" is taken as delivered.
-func TestDeliverInboxHappy(t *testing.T) {
+func TestDeliverHappy(t *testing.T) {
 	for _, text := range []string{
 		"hello there",
 		"first line\nsecond line\n\nfourth",
 		"héllo — π agents, ünicode ✳",
 	} {
 		in := testutil.StartInbox(t, "ok\n")
-		if err := deliverInbox(in.Path, text); err != nil {
-			t.Fatalf("deliverInbox(%q): %v", text, err)
+		if err := Deliver(in.Path, text); err != nil {
+			t.Fatalf("Deliver(%q): %v", text, err)
 		}
 		msgs := in.Received()
 		if len(msgs) != 1 || msgs[0] != text {
@@ -32,65 +32,65 @@ func TestDeliverInboxHappy(t *testing.T) {
 	}
 }
 
-// TestDeliverInboxNoReply checks that a server that accepts and then says
-// nothing is a plain error, not errInboxUnavailable: the message did go
+// TestDeliverNoReply checks that a server that accepts and then says
+// nothing is a plain error, not ErrInboxUnavailable: the message did go
 // out, so the caller must not send it again with send-keys.
-func TestDeliverInboxNoReply(t *testing.T) {
-	defer func(d time.Duration) { inboxTimeout = d }(inboxTimeout)
-	inboxTimeout = 300 * time.Millisecond
+func TestDeliverNoReply(t *testing.T) {
+	defer func(d time.Duration) { InboxTimeout = d }(InboxTimeout)
+	InboxTimeout = 300 * time.Millisecond
 
 	in := testutil.StartInbox(t, "")
 	start := time.Now()
-	err := deliverInbox(in.Path, "hi")
+	err := Deliver(in.Path, "hi")
 	if err == nil {
-		t.Fatal("deliverInbox: no error, want a deadline error")
+		t.Fatal("Deliver: no error, want a deadline error")
 	}
-	if errors.Is(err, errInboxUnavailable) {
+	if errors.Is(err, ErrInboxUnavailable) {
 		t.Errorf("err = %v, want a hard error (the message was already written)", err)
 	}
 	// One deadline covers the whole exchange, connect included, so a peer
 	// that never answers costs one timeout and not two. (A unix connect()
 	// returns at once while the listen backlog has room, so this fixture
 	// exercises the read half; the bound is what pins the contract.)
-	if elapsed := time.Since(start); elapsed > inboxTimeout+inboxTimeout/2 {
+	if elapsed := time.Since(start); elapsed > InboxTimeout+InboxTimeout/2 {
 		t.Errorf("took %v, want under %v: the one deadline must bound the whole exchange",
-			elapsed, inboxTimeout+inboxTimeout/2)
+			elapsed, InboxTimeout+InboxTimeout/2)
 	}
 	if msgs := in.Received(); len(msgs) != 1 || msgs[0] != "hi" {
 		t.Errorf("server got %q, want [\"hi\"]", msgs)
 	}
 }
 
-// TestDeliverInboxBadReply checks that an answer other than "ok" is a hard
+// TestDeliverBadReply checks that an answer other than "ok" is a hard
 // error too, for the same reason.
-func TestDeliverInboxBadReply(t *testing.T) {
+func TestDeliverBadReply(t *testing.T) {
 	in := testutil.StartInbox(t, "nope\n")
-	err := deliverInbox(in.Path, "hi")
-	if err == nil || errors.Is(err, errInboxUnavailable) {
+	err := Deliver(in.Path, "hi")
+	if err == nil || errors.Is(err, ErrInboxUnavailable) {
 		t.Errorf("err = %v, want a hard error", err)
 	}
 }
 
-// TestDeliverInboxRefused checks that a "refused" reply is reported as
-// errAskRefused, distinct from both "ok" and a generic bad reply, and
-// that it is not errInboxUnavailable - the send-keys fallback must never
+// TestDeliverRefused checks that a "refused" reply is reported as
+// ErrAskRefused, distinct from both "ok" and a generic bad reply, and
+// that it is not ErrInboxUnavailable - the send-keys fallback must never
 // fire on a deliberate refusal.
-func TestDeliverInboxRefused(t *testing.T) {
+func TestDeliverRefused(t *testing.T) {
 	in := testutil.StartInbox(t, "refused\n")
-	err := deliverInbox(in.Path, "hi")
-	if !errors.Is(err, errAskRefused) {
-		t.Fatalf("err = %v, want errAskRefused", err)
+	err := Deliver(in.Path, "hi")
+	if !errors.Is(err, ErrAskRefused) {
+		t.Fatalf("err = %v, want ErrAskRefused", err)
 	}
-	if errors.Is(err, errInboxUnavailable) {
-		t.Errorf("err = %v, want not errInboxUnavailable: a refusal must never trigger the paste fallback", err)
+	if errors.Is(err, ErrInboxUnavailable) {
+		t.Errorf("err = %v, want not ErrInboxUnavailable: a refusal must never trigger the paste fallback", err)
 	}
 }
 
-// TestDeliverInboxUnavailable checks the cases that mean nothing was
+// TestDeliverUnavailable checks the cases that mean nothing was
 // delivered and send-keys is still open: no path at all, a path that does
 // not exist, a stale socket a dead agent left behind, and a path too long
 // for sun_path.
-func TestDeliverInboxUnavailable(t *testing.T) {
+func TestDeliverUnavailable(t *testing.T) {
 	cases := map[string]string{
 		"empty":   "",
 		"missing": filepath.Join(testutil.SocketDir(t), "nothing-here.sock"),
@@ -98,9 +98,9 @@ func TestDeliverInboxUnavailable(t *testing.T) {
 		"toolong": "/tmp/" + strings.Repeat("x", 200) + ".sock",
 	}
 	for name, path := range cases {
-		err := deliverInbox(path, "hi")
-		if !errors.Is(err, errInboxUnavailable) {
-			t.Errorf("%s: err = %v, want errInboxUnavailable", name, err)
+		err := Deliver(path, "hi")
+		if !errors.Is(err, ErrInboxUnavailable) {
+			t.Errorf("%s: err = %v, want ErrInboxUnavailable", name, err)
 		}
 	}
 }
@@ -114,16 +114,16 @@ func TestInboxPath(t *testing.T) {
 	dir := testutil.SocketDir(t)
 	t.Setenv("KIDO_STATE_DIR", dir)
 
-	got, err := inboxPath("pi-123")
+	got, err := InboxPath("pi-123")
 	if err != nil {
-		t.Fatalf("inboxPath: %v", err)
+		t.Fatalf("InboxPath: %v", err)
 	}
 	want := filepath.Join(dir, "inbox", "pi-123.sock")
 	if got != want {
-		t.Errorf("inboxPath = %q, want %q", got, want)
+		t.Errorf("InboxPath = %q, want %q", got, want)
 	}
 	if !filepath.IsAbs(got) {
-		t.Errorf("inboxPath = %q, want an absolute path", got)
+		t.Errorf("InboxPath = %q, want an absolute path", got)
 	}
 	fi, err := os.Stat(filepath.Join(dir, "inbox"))
 	if err != nil {
@@ -148,12 +148,12 @@ func TestInboxPathTooLong(t *testing.T) {
 	deep := filepath.Join(os.TempDir(), "kido-"+strings.Repeat("deep", 30))
 	t.Setenv("KIDO_STATE_DIR", deep)
 
-	got, err := inboxPath("agent")
+	got, err := InboxPath("agent")
 	if err == nil {
-		t.Fatalf("inboxPath = %q, want an error for a path over %d bytes", got, sunPathMax)
+		t.Fatalf("InboxPath = %q, want an error for a path over %d bytes", got, sunPathMax)
 	}
 	if got != "" {
-		t.Errorf("inboxPath = %q, want no path alongside the error", got)
+		t.Errorf("InboxPath = %q, want no path alongside the error", got)
 	}
 	if _, err := os.Stat(deep); err == nil {
 		os.RemoveAll(deep)
@@ -166,8 +166,8 @@ func TestInboxPathTooLong(t *testing.T) {
 func TestInboxPathBadName(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	for _, name := range []string{"", "..", "../escape", "sub/agent", "a..b"} {
-		if got, err := inboxPath(name); err == nil {
-			t.Errorf("inboxPath(%q) = %q, want an error", name, got)
+		if got, err := InboxPath(name); err == nil {
+			t.Errorf("InboxPath(%q) = %q, want an error", name, got)
 		}
 	}
 }

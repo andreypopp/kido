@@ -347,7 +347,13 @@ func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 			}
 		}
 	}
-	reapSubagentWindows(s.panes, live)
+	// live, not the per-pane s.states: rule 2 asks whether a parent session
+	// is running anywhere, which the per-pane view cannot answer (see
+	// reap.Sweep). Called from the snapshot goroutine and deliberately not
+	// from state.Load, which `kido prompt` also calls.
+	if len(s.panes) > 0 {
+		reap.Collect(s.panes, live, time.Now(), reap.Ops{KillWindow: tmux.KillWindow, KillPane: tmux.KillPane})
+	}
 	s.lingering = lingeringSubagents(s.panes, s.states, prev.lingering)
 	s.probes = dismissals(conn, prev.probes, s.states)
 	for pane, p := range s.probes {
@@ -430,46 +436,6 @@ func listPanes(conn *tmux.Conn) ([]tmux.Pane, error) {
 		}
 	}
 	return tmux.ListPanes()
-}
-
-// killWindow, killPane and unmarkSubagent are their tmux counterparts,
-// indirected so a test can watch what the reaper closes without a tmux
-// server.
-var (
-	killWindow = tmux.KillWindow
-	killPane   = tmux.KillPane
-)
-
-// NotifyRunEnded is told about a bash run whose ending this sidebar's
-// sweep discovered and recorded, and whose parent is therefore the
-// sweep's to tell (reap.Notice). A seam rather than a call: the notice
-// goes over an agent's inbox socket, whose client half lives in
-// cmd/kido, which this package cannot import. main sets it before
-// ui.Run, and the default is silence - a sidebar with nobody wired up
-// must not be the reason a run is reported twice, or once wrongly.
-var NotifyRunEnded = func(reap.Notice) {}
-
-// reapSubagentWindows closes what this snapshot shows as finished: a
-// run's own dead pane, or its window when the run is all of it. Called
-// from take, on the snapshot goroutine, and deliberately
-// not from state.Load, which `kido prompt` calls too. The standalone
-// picker shares take and so sweeps as well; a second poll is as harmless
-// as a second sidebar.
-// sessions is every live record, not the snapshot's per-pane view: rule
-// 2 asks whether a parent session is running anywhere, and the per-pane
-// view answers a different question - see reap.Sweep.
-func reapSubagentWindows(panes []tmux.Pane, sessions []state.Session) {
-	if len(panes) == 0 {
-		return
-	}
-	closing, notices := reap.Sweep(panes, sessions, time.Now())
-	ops := reap.Ops{KillWindow: killWindow, KillPane: killPane}
-	for _, c := range closing {
-		ops.Release(c) //nolint:errcheck // best effort; another sweep, or the linger helper, may have got there first
-	}
-	for _, n := range notices {
-		NotifyRunEnded(n)
-	}
 }
 
 func capturePane(conn *tmux.Conn, pane string) ([]string, error) {

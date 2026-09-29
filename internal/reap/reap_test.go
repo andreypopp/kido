@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"kido/internal/state"
 	"kido/internal/subrun"
@@ -206,6 +207,133 @@ func TestSweepSurvivesAPaneCollisionOnTheParent(t *testing.T) {
 	check(t, closing, winClose("@1"))
 	if len(told) != 1 {
 		t.Errorf("the lossy reading produced %d notices, want the 1 that shows what it costs", len(told))
+	}
+}
+
+// TestBashEndingNamesTheRun is the finding a bash run cannot work
+// without: it writes no state record, so the receiving extension labels
+// the sender from what it can find and falls through to the pane id -
+// "notification from %47". The name has to be in the text itself, and so
+// do the status and the output.
+func TestBashEndingNamesTheRun(t *testing.T) {
+	t.Setenv("KIDO_STATE_DIR", t.TempDir())
+	if err := subrun.Create("run-named", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(subrun.OutputPath("run-named"), []byte("boom\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	e := Ending{Meta: subrun.Meta{ID: "run-named", Name: "build"},
+		Outcome: subrun.Outcome{Result: subrun.Failed, Text: "exit status 3"}}
+	text := BashEnding{}.body(e)
+	for _, want := range []string{`"build"`, "failed", "exit status 3", "run-named", "boom"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("notice = %q, want it to carry %q", text, want)
+		}
+	}
+
+	// With no name to carry, the run id is what is left; a notice saying
+	// only "async run" would name nothing at all.
+	unnamed := Ending{Meta: subrun.Meta{ID: "run-named"},
+		Outcome: subrun.Outcome{Result: subrun.Completed, Text: "exit status 0"}}
+	if text := (BashEnding{}).body(unnamed); !strings.Contains(text, "run-named") {
+		t.Errorf("unnamed run's notice = %q, want it to fall back to the run id", text)
+	}
+}
+
+// TestTailOfFileKeepsTheEnd pins the direction of the cut. What a
+// failure has to say, it says last: a notice built from the head of a
+// thousand-line build log carries a thousand lines of progress and not
+// the error.
+func TestTailOfFileKeepsTheEnd(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/output"
+	var b strings.Builder
+	for i := 0; i < 1000; i++ {
+		fmt.Fprintf(&b, "line %04d\n", i) // 10 bytes each: 10000 in all
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tail, omitted, err := tailOfFile(path, maxNoticeTailBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tail) != maxNoticeTailBytes {
+		t.Errorf("tail is %d bytes, want the %d byte cap", len(tail), maxNoticeTailBytes)
+	}
+	if want := int64(b.Len() - maxNoticeTailBytes); omitted != want {
+		t.Errorf("omitted = %d, want %d", omitted, want)
+	}
+	if !strings.HasSuffix(tail, "line 0999\n") {
+		t.Errorf("tail ends %q, want the last line of the file", tail[len(tail)-20:])
+	}
+	if strings.Contains(tail, "line 0000\n") {
+		t.Errorf("tail = %q..., want the head of the file dropped", tail[:20])
+	}
+
+	// Under the cap nothing is omitted, and the whole file is carried.
+	short := dir + "/short"
+	if err := os.WriteFile(short, []byte("all of it\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if tail, omitted, err := tailOfFile(short, maxNoticeTailBytes); err != nil || omitted != 0 || tail != "all of it\n" {
+		t.Errorf("tailOfFile(short) = %q, %d, %v, want the whole file and nothing omitted", tail, omitted, err)
+	}
+}
+
+// TestTailOfFileDropsPartialRune pins tailOfFile's cut: anywhere inside
+// a 4-byte rune, it must produce valid UTF-8 with exactly that rune
+// dropped. cmd/kido's TestHeadWithinDropsPartialRune pins the mirror
+// case for the backward direction.
+func TestTailOfFileDropsPartialRune(t *testing.T) {
+	const r = "🎉" // 4-byte rune
+	s := "ab" + r + "cd"
+	start := strings.Index(s, r)
+	for cut := start + 1; cut < start+len(r); cut++ {
+		t.Run(fmt.Sprintf("cut=%d", cut), func(t *testing.T) {
+			path := t.TempDir() + "/output"
+			if err := os.WriteFile(path, []byte(s), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			tail, _, err := tailOfFile(path, int64(len(s)-cut))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !utf8.ValidString(tail) {
+				t.Errorf("tailOfFile cut at %d is not valid UTF-8: %q", cut, tail)
+			}
+			if tail != s[start+len(r):] {
+				t.Errorf("tailOfFile cut at %d = %q, want %q (the partial rune dropped)", cut, tail, s[start+len(r):])
+			}
+		})
+	}
+}
+
+// TestTailOfFileIsValidUTF8 is not cosmetic: the send path refuses a
+// message that is not valid UTF-8 outright, so a log cut mid-character -
+// an ordinary consequence of cutting at a byte offset - would cost the
+// run its only notice.
+func TestTailOfFileIsValidUTF8(t *testing.T) {
+	path := t.TempDir() + "/output"
+	// Ten three-byte runes: a cut at 4 bytes lands inside the second.
+	if err := os.WriteFile(path, []byte(strings.Repeat("☃", 10)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tail, omitted, err := tailOfFile(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.ValidString(tail) {
+		t.Errorf("tail = %q, want valid UTF-8", tail)
+	}
+	if omitted != 27 {
+		t.Errorf("omitted = %d, want 27: the two bytes of the partial rune count as dropped too", omitted)
+	}
+	if tail != "☃" {
+		t.Errorf("tail = %q, want the one whole rune that fits", tail)
 	}
 }
 
@@ -411,7 +539,7 @@ func bashRun(t *testing.T, id, name, parent string) {
 }
 
 // notices is Sweep's second return, for the tests that are about it.
-func notices(t *testing.T, panes []tmux.Pane, sessions []state.Session) []Notice {
+func notices(t *testing.T, panes []tmux.Pane, sessions []state.Session) []Ending {
 	t.Helper()
 	_, out := Sweep(panes, sessions, now)
 	return out
@@ -437,11 +565,12 @@ func TestSweepNotifiesForABashRunNobodyReported(t *testing.T) {
 	if got[0].Meta.Name != "build" || got[0].Meta.ParentSession != "root-sess" {
 		t.Errorf("notice names %+v, want the run's own name and parent", got[0].Meta)
 	}
-	if got[0].Outcome.Result != subrun.Failed || got[0].Outcome.Text != sweptText {
-		t.Errorf("notice carries %+v, want %q/%q", got[0].Outcome, subrun.Failed, sweptText)
+	const wantText = "ended without its wrapper reporting"
+	if got[0].Outcome.Result != subrun.Failed || got[0].Outcome.Text != wantText {
+		t.Errorf("notice carries %+v, want %q/%q", got[0].Outcome, subrun.Failed, wantText)
 	}
 	o, ok, err := subrun.ReadOutcome("run-killed")
-	if err != nil || !ok || o.Result != subrun.Failed || o.Text != sweptText {
+	if err != nil || !ok || o.Result != subrun.Failed || o.Text != wantText {
 		t.Errorf("ReadOutcome = %+v, %v, %v, want the same story on disk", o, ok, err)
 	}
 }

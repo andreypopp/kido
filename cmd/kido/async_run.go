@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"kido/internal/reap"
 	"kido/internal/subrun"
 )
 
@@ -142,16 +143,20 @@ func asyncRunCmd(args []string) int {
 // O_EXCL), so a wrapper that loses it - to a sweep, or to `kido
 // stop_subagent` - stays quiet and leaves the notice to whoever won.
 func reportAsyncRun(runID, name string, result subrun.Result, status string, unstreamed int) {
-	err := subrun.RecordOutcome(runID, subrun.Outcome{Result: result, Text: status, At: time.Now()})
-	if err != nil {
+	o := subrun.Outcome{Result: result, Text: status, At: time.Now()}
+	if err := subrun.RecordOutcome(runID, o); err != nil {
 		if !os.IsExist(err) {
 			fmt.Fprintln(os.Stderr, "kido async-run:", err)
 		}
 		return
 	}
-	endingNotice{
-		runID: runID, name: name, kind: subrun.KindBash,
-		parentSession: os.Getenv("KIDO_AGENT_PARENT_SESSION"),
-		result:        result, text: status, unstreamed: unstreamed,
-	}.send("async-run")
+	e := reap.Ending{
+		Meta: subrun.Meta{ID: runID, Name: name, Kind: subrun.KindBash,
+			ParentSession: os.Getenv("KIDO_AGENT_PARENT_SESSION")},
+		Outcome: o,
+		Detail:  reap.BashEnding{Unstreamed: unstreamed},
+	}
+	if err := e.Send(); err != nil {
+		fmt.Fprintln(os.Stderr, "kido async-run:", err)
+	}
 }

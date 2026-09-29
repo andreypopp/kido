@@ -165,7 +165,7 @@ func writeTaskFile(t *testing.T, contents string) string {
 // testParentSession is the session id every fresh-spawn test hands to
 // --parent-session. It is a constant rather than a literal per test
 // because spawnSubagentCmd refuses a session no live agent holds
-// (liveSession), so the fixture below has to be that session - and the
+// (state.Find), so the fixture below has to be that session - and the
 // honest fixture is the caller's own id, since a fresh spawn's caller is
 // the parent it names.
 const testParentSession = "parent-sess"

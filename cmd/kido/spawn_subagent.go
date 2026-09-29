@@ -142,7 +142,7 @@ func spawnSubagentCmd(args []string) error {
 	//
 	// One read, two views of it: the pane-keyed one settles who owns the
 	// caller's pane, and the whole live slice answers "is this session
-	// running anywhere" for liveSession below - a parent's own record is
+	// running anywhere" for state.Find below - a parent's own record is
 	// exactly the one a pane collision drops from the per-pane view
 	// (AGENTS.md, "Agent state").
 	live, err := state.LoadLive()
@@ -162,7 +162,7 @@ func spawnSubagentCmd(args []string) error {
 	// for the human to see. The tool cannot trip this, since a pi session
 	// spawning names itself; a human at a shell could, and --no-parent is
 	// now the honest spelling of what they were reaching for.
-	if *parentSession != "" && !liveSession(live, *parentSession) {
+	if _, ok := state.Find(live, *parentSession); *parentSession != "" && !ok {
 		return fmt.Errorf("--parent-session %q names no currently live agent; the child would be closed within moments as an orphan (internal/reap's rule 2) - pass --no-parent for a child owned by nobody, or name an agent that is actually running", *parentSession)
 	}
 
@@ -311,24 +311,6 @@ func printCreated(meta subrun.Meta, windowID, paneID string) {
 	fmt.Printf("%s %s %s\n", windowID, paneID, meta.ID)
 }
 
-// liveSession reports whether some record in states is session's, and
-// its own and is still alive - the same reading internal/reap's rule 2
-// uses to decide a subagent's parent is gone, spelled out here so a
-// spawn can refuse before creating a window rule 2 would only close
-// moments later.
-//
-// It takes the whole live slice rather than the pane-keyed map for the
-// reason the sweep does: the question is whether a session is running
-// anywhere, and a pane collision drops a record from the per-pane view.
-func liveSession(sessions []state.Session, session string) bool {
-	for _, s := range sessions {
-		if s.ID == session && state.Alive(s.PID) {
-			return true
-		}
-	}
-	return false
-}
-
 // spawnResume implements `kido spawn_subagent --resume RUN_ID`: it creates a
 // detached window through the identical tmux.NewWindow / markRun
 // path a fresh spawn uses, but launches `pi --session RUN_ID` instead of
@@ -404,7 +386,7 @@ func spawnResume(runID string, parentPID int, parentSession string, command []st
 	if depth > maxDepth {
 		return fmt.Errorf("refusing to resume at depth %d: maximum nesting is %d (root 0, subagent 1, subagent 2)", depth, maxDepth)
 	}
-	if parentSession != "" && !liveSession(live, parentSession) {
+	if _, ok := state.Find(live, parentSession); parentSession != "" && !ok {
 		return fmt.Errorf("--parent-session %q names no currently live agent; the resumed run would be reaped within moments as an orphan (internal/reap's rule 2) - omit --parent-pid/--parent-session for a parentless resume, or give the session id of an agent that is actually running", parentSession)
 	}
 

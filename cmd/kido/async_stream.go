@@ -319,7 +319,7 @@ func (s *streamSender) send(text string) error {
 	if err != nil {
 		return err
 	}
-	if err := deliverInbox(s.inbox, string(raw)); err != nil {
+	if err := msg.Deliver(s.inbox, string(raw)); err != nil {
 		s.inbox = "" // resolve again next time; this address answered for nothing
 		return err
 	}
@@ -328,7 +328,7 @@ func (s *streamSender) send(text string) error {
 
 // resolveParentInbox finds the inbox of the live agent reporting
 // session, through the same registry scan `kido notify_parent` resolves
-// its own target with (liveParent, message_agent.go).
+// its own target with (state.Find, message_agent.go).
 //
 // The gate on what it finds is send()'s, unchanged: a non-message kind
 // needs an inbox bound, since it can
@@ -344,7 +344,7 @@ func resolveParentInbox(session string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	parent, ok := liveParent(live, session)
+	parent, ok := state.Find(live, session)
 	if !ok || parent.Inbox == "" {
 		return "", errNoStreamParent
 	}

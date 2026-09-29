@@ -46,6 +46,13 @@ registered tools are exactly those names, and `cmd/kido`'s
 `TestEveryToolHasASubcommandOfItsName` asserts each is in `subcommands`.
 A tool added without a command fails the first, then the second.
 
+A tool forwards what it was given and lets its command refuse.
+`spawn_subagent`'s schema cannot say that `resume` excludes `task`,
+`name` and `fork`, or that a spawn needs a task, and the tool does not
+check it either: every argument goes to `kido spawn_subagent`, which
+refuses those combinations and the nesting depth ceiling, so the rules
+live in one place and the model reads kido's own refusal.
+
 **The suffix is the scope.** The two halves of a tool's name each carry
 something, and the second one is a rule:
 
@@ -320,8 +327,8 @@ Head and line together stay inside the cap, so the notice is no larger
 than the cap allows. A report within the cap is delivered byte for byte
 and leaves no file: nothing was lost, so there is nothing to point at. The
 head is cut back off a partial rune, because the send path refuses a
-message that is not valid UTF-8 outright - `tailOfFile`'s rule
-(`ending_notice.go`) in the other direction. A sender with no run
+message that is not valid UTF-8 outright - `internal/reap`'s `tailOfFile`
+in the other direction. A sender with no run
 directory - a session kido never spawned, carrying somebody else's parent
 edge - has nowhere to keep it and is truncated instead; so is one whose
 write fails, since the point of the call is that the parent hears
@@ -645,19 +652,19 @@ for it ("Reporting", above) - the outcome recorded is still the `died`
 it always was. A run with no parent session is told to nobody either
 way, which is what `kido async_bash` typed at a human's shell produces.
 
-The three observers share one notice builder (`cmd/kido`'s
-`endingNotice`), so a parent cannot tell how its build ended by which
+The three observers share one notice builder (`internal/reap`'s
+`Ending`), so a parent cannot tell how its build ended by which
 process happened to notice, and write-then-decide is one function
 (`reap.RecordEnding`) for the observers that find an ending from outside
 the run, so a third finds a call site rather than reimplementing the
 invariant. The wrapper writes for itself: it is inside the run's own
 process, holds no meta file, and is the one observer that can tell a
-write failing from a write lost. The sweep itself sends nothing: `reap.Sweep`
-returns the runs whose parents are now the caller's to tell, and the
-caller - `kido reap`, or the sidebar through a seam `main` fills in -
-does the sending. A window sweep has no business knowing what an inbox
-is, and the one thing it can know is that a run ended with nothing said
-about it.
+write failing from a write lost. `reap.Sweep` itself sends nothing: it
+returns the runs whose parents are now the caller's to tell, and
+`reap.Collect` - called from `kido reap` and from the sidebar's poll -
+is what sweeps, releases, and then sends each `Ending`. A window sweep
+has no business knowing what an inbox is, and the one thing it can know
+is that a run ended with nothing said about it.
 
 **Stopping one.** `kido stop_subagent --force -- <name>` ends a run,
 addressed by the name or the run id `kido async_bash` printed. A run has

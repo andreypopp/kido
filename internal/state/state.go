@@ -238,6 +238,18 @@ func LoadLive() ([]Session, error) {
 	return out, nil
 }
 
+// Find returns the record in live whose ID is id, the one way anything
+// addresses a parent or a session id it did not look up: a parent knows
+// its own session id and nothing else about it.
+func Find(live []Session, id string) (Session, bool) {
+	for _, s := range live {
+		if s.ID == id {
+			return s, true
+		}
+	}
+	return Session{}, false
+}
+
 // ByPane collapses sessions to one per pane, the outer agent winning a
 // shared pane regardless of timestamp (see beats). It is Load's last
 // step, exported so a caller holding a LoadLive slice can take the same
@@ -252,21 +264,13 @@ func ByPane(sessions []Session) map[string]Session {
 	return out
 }
 
-// ReadAll reads every state file exactly as recorded, keyed by session id
-// rather than pane, without either of Load's side effects: it neither
-// deletes a dead-pid file nor keeps only one record per pane. `kido reap`
-// is its one caller; a command that reasons about dead agents should not
-// be what deletes the evidence.
-func ReadAll() (map[string]Session, error) {
-	files, err := readFiles()
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]Session, len(files))
-	for _, s := range files {
-		out[s.ID] = s
-	}
-	return out, nil
+// ReadAll reads every state file exactly as recorded, one entry per
+// session, without either of Load's side effects: it neither deletes a
+// dead-pid file nor keeps only one record per pane. `kido reap` is its
+// one caller; a command that reasons about dead agents should not be
+// what deletes the evidence.
+func ReadAll() ([]Session, error) {
+	return readFiles()
 }
 
 // readFiles reads every well-formed state file in Dir, normalising Agent

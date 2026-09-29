@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"strings"
 	"syscall"
@@ -165,101 +164,6 @@ func TestAsyncRunSignalledRecordsAndReports(t *testing.T) {
 		t.Errorf("outcome text = %q, want it to say what killed the run", o.Text)
 	}
 }
-
-// TestAsyncNoticeNamesTheRun is the finding a bash run cannot work
-// without: it writes no state record, so the receiving extension labels
-// the sender from what it can find and falls through to the pane id -
-// "notification from %47". The name has to be in the text itself, and so
-// do the status and the output.
-func TestAsyncNoticeNamesTheRun(t *testing.T) {
-	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	id := startAsyncRun(t, "true")
-	if err := os.WriteFile(subrun.OutputPath(id), []byte("boom\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	text := endingNotice{runID: id, name: "build", kind: subrun.KindBash, result: subrun.Failed, text: "exit status 3"}.body()
-	for _, want := range []string{`"build"`, "failed", "exit status 3", id, "boom"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("notice = %q, want it to carry %q", text, want)
-		}
-	}
-
-	// With no name to carry, the run id is what is left; a notice saying
-	// only "async run" would name nothing at all.
-	if text := (endingNotice{runID: id, kind: subrun.KindBash, result: subrun.Completed, text: "exit status 0"}).body(); !strings.Contains(text, id) {
-		t.Errorf("unnamed run's notice = %q, want it to fall back to the run id", text)
-	}
-}
-
-// TestAsyncNoticeTailKeepsTheEnd pins the direction of the cut. What a
-// failure has to say, it says last: a notice built from the head of a
-// thousand-line build log carries a thousand lines of progress and not
-// the error.
-func TestAsyncNoticeTailKeepsTheEnd(t *testing.T) {
-	dir := t.TempDir()
-	path := dir + "/output"
-	var b strings.Builder
-	for i := 0; i < 1000; i++ {
-		fmt.Fprintf(&b, "line %04d\n", i) // 10 bytes each: 10000 in all
-	}
-	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	tail, omitted, err := tailOfFile(path, maxNoticeTailBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(tail) != maxNoticeTailBytes {
-		t.Errorf("tail is %d bytes, want the %d byte cap", len(tail), maxNoticeTailBytes)
-	}
-	if want := int64(b.Len() - maxNoticeTailBytes); omitted != want {
-		t.Errorf("omitted = %d, want %d", omitted, want)
-	}
-	if !strings.HasSuffix(tail, "line 0999\n") {
-		t.Errorf("tail ends %q, want the last line of the file", tail[len(tail)-20:])
-	}
-	if strings.Contains(tail, "line 0000\n") {
-		t.Errorf("tail = %q..., want the head of the file dropped", tail[:20])
-	}
-
-	// Under the cap nothing is omitted, and the whole file is carried.
-	short := dir + "/short"
-	if err := os.WriteFile(short, []byte("all of it\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if tail, omitted, err := tailOfFile(short, maxNoticeTailBytes); err != nil || omitted != 0 || tail != "all of it\n" {
-		t.Errorf("tailOfFile(short) = %q, %d, %v, want the whole file and nothing omitted", tail, omitted, err)
-	}
-}
-
-// TestAsyncNoticeTailIsValidUTF8 is not cosmetic: the send path refuses a
-// message that is not valid UTF-8 outright, so a log cut mid-character -
-// an ordinary consequence of cutting at a byte offset - would cost the
-// run its only notice.
-func TestAsyncNoticeTailIsValidUTF8(t *testing.T) {
-	path := t.TempDir() + "/output"
-	// Ten three-byte runes: a cut at 4 bytes lands inside the second.
-	if err := os.WriteFile(path, []byte(strings.Repeat("☃", 10)), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	tail, omitted, err := tailOfFile(path, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !utf8Valid(tail) {
-		t.Errorf("tail = %q, want valid UTF-8", tail)
-	}
-	if omitted != 27 {
-		t.Errorf("omitted = %d, want 27: the two bytes of the partial rune count as dropped too", omitted)
-	}
-	if tail != "☃" {
-		t.Errorf("tail = %q, want the one whole rune that fits", tail)
-	}
-}
-
-func utf8Valid(s string) bool { return strings.ToValidUTF8(s, "\uFFFD") == s }
 
 // TestCommandArgv pins the one-word rule. A model writes a command line
 // ("make -j8 && ./run"), which has to reach a shell; an argv given as

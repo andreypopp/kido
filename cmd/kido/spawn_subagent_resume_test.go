@@ -157,7 +157,7 @@ func TestSpawnResumeContinuesRunRecord(t *testing.T) {
 	calls := withNewWindow(t, "@9", "%9", nil)
 
 	// --parent-session must name somebody currently alive, or spawnResume
-	// now refuses before ever reaching newWindow - see liveSession's own
+	// now refuses before ever reaching newWindow - see state.Find's own
 	// doc.
 	if err := state.Record("new-parent", state.Session{
 		Agent: state.AgentPi, Pane: "%other", PID: os.Getpid(), Status: state.Idle,

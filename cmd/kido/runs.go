@@ -127,10 +127,11 @@ func runOutcomeCmd(args []string) error {
 		// nobody to tell; the outcome is still this child's to record.
 		return subrun.RecordOutcome(id, o)
 	}
-	if n, won := reap.RecordEnding(meta, o); won {
-		notice := noticeFor(n)
-		notice.unreported = true
-		notice.send("run-outcome")
+	if e, won := reap.RecordEnding(meta, o); won {
+		e.Detail = reap.AgentEnding{Unreported: true}
+		if err := e.Send(); err != nil {
+			fmt.Fprintln(os.Stderr, "kido run-outcome:", err)
+		}
 	}
 	return nil
 }

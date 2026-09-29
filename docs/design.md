@@ -852,7 +852,11 @@ killed under them takes the screen away and resizes what is left. It
 also refuses a session's only window, because closing that destroys the
 session and detaches every client, and a run whose pane is still alive.
 It checks once and does not retry: what it leaves is what the sweep
-collects on a later pass.
+collects on a later pass. The decision itself is `reap.Decide`: the same
+checks, in order - focus, whether the run is still going, which unit to
+release, the last-window refusal - answering with either a `reap.Close`
+for the caller to release or a refusal to print. `kido close-run` is the
+flag parsing and the printing around that one call.
 
 **The sweep.** `reap.Sweep` runs on the sidebar's own poll, every tick,
 and is what actually collects a subagent window in a live session; `kido
@@ -1293,6 +1297,15 @@ so no observer has to make one; and a parent waiting on a child that has
 stopped existing is a wait that never ends, which is worse than a thin
 notice.
 
+The sender for an ending's notice is `msg.Notify` (`internal/msg`), and
+the text it sends is `reap.Ending.Send` (`internal/reap`): an ending is
+never routed back through package main the way `notify_parent`'s own
+send is, since `internal/reap` already sits below `cmd/kido` and can
+talk to the inbox directly. `internal/ui`'s sweep calls `reap.Collect`
+and needs no seam of its own into `cmd/kido` for it, unlike a plain
+message or an ask, which still resolve their target and marshal their
+envelope in `cmd/kido/message_agent.go`.
+
 **Telling a child this is its job.** Nothing else does, so a standing
 instruction is appended to a subagent's system prompt on every turn
 (`before_agent_start`, gated on the same identity test
@@ -1598,21 +1611,21 @@ belongs in `session_start`.
 **The hooks exist because ordering within one lifecycle event is
 load-bearing**, and nothing says pi runs two extensions' handlers in any
 particular order. The status half calls the agent half's hooks at exact
-points in its own handlers: the session context is captured first thing
-in `session_start` so a `/reload`'s fresh context replaces the old one
-even in a session with no kido; the parent poll and task delivery run
-after the inbox is bound or adopted (so a task's first turn can already
-be answered) and before the first report (which is what carries
+points in its own handlers: the session context - its UI included, which
+the notice widget and the `@name` completion live in - is captured first
+thing in `session_start` so a `/reload`'s fresh context replaces the old
+one even in a session with no kido; the parent poll and task delivery
+run after the inbox is bound or adopted (so a task's first turn can
+already be answered) and before the first report (which is what carries
 `--inbox`); on shutdown the outcome is recorded and the window linger
 scheduled after this module has stopped serving the inbox and before the
 removal report, so kido still resolves
-this session's parent edge and window while they run; and the idle
-self-exit timer ("Idle self-exit, and resuming a run", above) is armed
-from `agent_settled`, driven through the same hook mechanism rather than
-the agent half registering its own `pi.on("agent_settled", ...)`
-handler, for the same ordering reason. Nothing goes to the parent from
-any of these points: a subagent reports by calling `notify_parent`, on
-its own judgement.
+this session's parent edge and window while they run. Where nothing
+orders against the status half, the agent half listens for itself: the
+idle self-exit timer ("Idle self-exit, and resuming a run", above) is
+armed from its own `agent_settled` listener, which depends on nothing the
+status report does. Nothing goes to the parent from any of these points:
+a subagent reports by calling `notify_parent`, on its own judgement.
 
 `runKido` is asynchronous, via `spawn`, never `execFileSync`. A blocking
 call parks the whole process for as long as kido takes, up to five

@@ -173,30 +173,22 @@ func TestNotifyParentWithNoRunDirectoryTruncates(t *testing.T) {
 	}
 }
 
-// TestTrimPartialRuneAgreesInBothDirections pins headWithin and
-// tailOfFile to the one primitive both are built on: cut anywhere inside
-// a 4-byte rune, either direction must produce valid UTF-8 with exactly
-// that rune dropped, not just "not the same bug in both places".
-func TestTrimPartialRuneAgreesInBothDirections(t *testing.T) {
+// TestHeadWithinDropsPartialRune pins headWithin's cut: anywhere inside a
+// 4-byte rune, it must produce valid UTF-8 with exactly that rune
+// dropped. internal/reap.tailOfFile pins the mirror case for the forward
+// direction, over its own file-reading primitive.
+func TestHeadWithinDropsPartialRune(t *testing.T) {
 	const r = "🎉" // 4-byte rune
 	s := "ab" + r + "cd"
 	start := strings.Index(s, r)
 	for cut := start + 1; cut < start+len(r); cut++ {
 		t.Run(fmt.Sprintf("cut=%d", cut), func(t *testing.T) {
-			back := trimPartialRune([]byte(s[:cut]), false)
-			if !utf8.Valid(back) {
-				t.Errorf("backward trim at %d is not valid UTF-8: %q", cut, back)
+			got := headWithin(s, cut)
+			if !utf8.ValidString(got) {
+				t.Errorf("headWithin cut at %d is not valid UTF-8: %q", cut, got)
 			}
-			if string(back) != s[:start] {
-				t.Errorf("backward trim at %d = %q, want %q (the partial rune dropped)", cut, back, s[:start])
-			}
-
-			front := trimPartialRune([]byte(s[cut:]), true)
-			if !utf8.Valid(front) {
-				t.Errorf("forward trim at %d is not valid UTF-8: %q", cut, front)
-			}
-			if string(front) != s[start+len(r):] {
-				t.Errorf("forward trim at %d = %q, want %q (the partial rune dropped)", cut, front, s[start+len(r):])
+			if got != s[:start] {
+				t.Errorf("headWithin cut at %d = %q, want %q (the partial rune dropped)", cut, got, s[:start])
 			}
 		})
 	}

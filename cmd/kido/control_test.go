@@ -335,10 +335,10 @@ func TestStopEscalatesWhenTheTargetDoesNotAgree(t *testing.T) {
 			})
 			kills := withKillPane(t)
 
-			savedEscalation, savedPoll, savedInbox := stopEscalation, stopPollInterval, inboxTimeout
-			stopEscalation, stopPollInterval, inboxTimeout = 100*time.Millisecond, 10*time.Millisecond, 200*time.Millisecond
+			savedEscalation, savedPoll, savedInbox := stopEscalation, stopPollInterval, msg.InboxTimeout
+			stopEscalation, stopPollInterval, msg.InboxTimeout = 100*time.Millisecond, 10*time.Millisecond, 200*time.Millisecond
 			t.Cleanup(func() {
-				stopEscalation, stopPollInterval, inboxTimeout = savedEscalation, savedPoll, savedInbox
+				stopEscalation, stopPollInterval, msg.InboxTimeout = savedEscalation, savedPoll, savedInbox
 			})
 
 			in := testutil.StartInbox(t, reply.answer)

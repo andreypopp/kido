@@ -72,15 +72,17 @@ changes, grep for the prose that described it.
                        set_status, list_agents, spawn_subagent,
                        async_bash and its async-run wrapper,
                        steer/stop/interrupt_subagent, reap, runs,
-                       snapshot, inbox, ssh (the remote bootstrap)
+                       snapshot, ssh (the remote bootstrap)
     internal/ui/       the Bubble Tea model, rendering, shell-status debounce
     internal/tmux/     pane listing and formats (tmux.go), control-mode client (conn.go)
     internal/state/    one JSON file per agent session, keyed by pane
     internal/hook/     Claude Code hook event -> status table
     internal/procs/    process-tree scan: agent panes, ssh destinations
-    internal/msg/      the inbox wire protocol: v0 raw prompt, v1 envelope
+    internal/msg/      the inbox wire protocol and its client: v0 raw prompt,
+                       v1 envelope, the unix-socket sender and Notify
     internal/tree/     the parent-first walk behind list_agents and the sidebar
-    internal/reap/     which subagent windows are finished with, and when
+    internal/reap/     which subagent windows are finished with, and when;
+                       an ending's text and its send to the parent's inbox
     internal/subrun/   the durable record of one `kido spawn_subagent`
     internal/testutil/ test scaffolding shared by more than one package
     shell/             the zsh and bash OSC 133 integrations every primed shell sources

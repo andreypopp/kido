@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -151,10 +150,11 @@ func stopSubagentCmd(args []string) error {
 		return degrade()
 	}
 
-	// A send error other than errInboxUnavailable is a reason to escalate,
-	// not to give up: a wedged agent answers late, wrongly, or not at all.
+	// A send error other than msg.ErrInboxUnavailable is a reason to
+	// escalate, not to give up: a wedged agent answers late, wrongly, or
+	// not at all.
 	sendErr := sendControl(target, states, msg.KindStop)
-	if errors.Is(sendErr, errInboxUnavailable) {
+	if errors.Is(sendErr, msg.ErrInboxUnavailable) {
 		if !*force {
 			return fmt.Errorf("%s could not be asked to stop (%v); pass --force to kill its window instead", targetLabel(target), sendErr)
 		}
@@ -287,6 +287,16 @@ func liveBashRun(to string) (subrun.Meta, bool, error) {
 //
 // Descendant, not child: a run started by the caller's own subagent is
 // reachable, which is the walk isAncestor does for agents.
+// runLabel names a run wherever one is spoken about - as the target of
+// stop_subagent, and in what it prints and refuses. A run nobody named
+// is its own id, which is at least addressable.
+func runLabel(name, id string) string {
+	if name == "" {
+		return id
+	}
+	return name
+}
+
 func bashRunInScope(meta subrun.Meta) error {
 	states, err := state.Load()
 	if err != nil {
@@ -347,7 +357,9 @@ func stopBashRun(meta subrun.Meta, force bool) error {
 	}
 
 	if n, won := reap.RecordEnding(meta, subrun.Outcome{Result: subrun.Stopped, Text: stoppedText, At: time.Now()}); won {
-		noticeFor(n).send("stop_subagent")
+		if err := n.Send(); err != nil {
+			fmt.Fprintln(os.Stderr, "kido stop_subagent:", err)
+		}
 	}
 	killed, err := killBashRunPane(meta)
 	if err != nil {
@@ -465,18 +477,11 @@ func callerReaches(states map[string]state.Session, panes []tmux.Pane, self stri
 // target's inbox. There is deliberately no version gate
 // (docs/design.md, "v0 and v1").
 func sendControl(target state.Session, states map[string]state.Session, kind msg.Kind) error {
-	if target.Inbox == "" {
-		return fmt.Errorf("%w: %s has no inbox", errInboxUnavailable, targetLabel(target))
-	}
 	env := msg.Envelope{V: msg.V1, Kind: kind, ID: msg.NewID(), From: senderOf(states)}
-	raw, err := json.Marshal(env)
-	if err != nil {
-		return err
-	}
 	// "refused" for a control kind is the receiver's scope check saying
-	// no, not the ask-cycle rule errAskRefused's text describes.
-	if err := deliverInbox(target.Inbox, string(raw)); err != nil {
-		if errors.Is(err, errAskRefused) {
+	// no, not the ask-cycle rule msg.ErrAskRefused's text describes.
+	if err := msg.Send(target, env); err != nil {
+		if errors.Is(err, msg.ErrAskRefused) {
 			return fmt.Errorf("%s refused the %s", targetLabel(target), kind)
 		}
 		return err
