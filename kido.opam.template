@@ -1,0 +1,6 @@
+pin-depends: [
+  ["mosaic.dev" "git+https://github.com/invariant-hq/mosaic#0ef02a5690365f8f7518c54755287f905814529f"]
+  ["matrix.dev" "git+https://github.com/invariant-hq/mosaic#0ef02a5690365f8f7518c54755287f905814529f"]
+  ["toffee.dev" "git+https://github.com/invariant-hq/mosaic#0ef02a5690365f8f7518c54755287f905814529f"]
+  ["tree-sitter.dev" "git+https://github.com/invariant-hq/mosaic#0ef02a5690365f8f7518c54755287f905814529f"]
+]

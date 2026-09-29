@@ -64,6 +64,42 @@ suppression hiding a correctness failure means fixing the cause. A stale
 comment is worse than none because it is trusted: when a mechanism
 changes, grep for the prose that described it.
 
+## OCaml
+
+kido is being rewritten from Go to OCaml; the Go stays as the reference
+until the cutover deletes it. These are fixed:
+
+- **Layout.** `bin/main.ml` is the cmdliner command table and nothing
+  else of substance. `lib/` is the library `kido`, one module per Go
+  package or `cmd/kido` file. `lib_tmux/` is the library `tmux` (so call
+  sites read `Tmux.Conn`, as the Go read `tmux.`). Tests are ppx_expect in
+  `test/`.
+- **Every stanza compiles with `-open Containers`.** Every `.ml` has an
+  `.mli` unless it holds only types. JSON is yojson with
+  ppx_deriving_yojson. The TUI is Mosaic, pinned in `kido.opam.template`.
+  Concurrency is `unix` and `threads.posix`; no Eio, no Lwt.
+- **The Go binary's contract holds**: subcommands, flags, exit codes,
+  every parsed or asserted stdout/stderr line, JSON shapes, env vars.
+  cmdliner wants `--name`; fix a single-dash caller in the same change.
+
+Conventions:
+
+- **Errors.** An outcome a caller branches on is a `result` or a variant
+  (`State.record` returns `Error holder`). A failure that is only
+  reported raises: `failwith` with the Go message, or the `Unix_error`
+  and `Sys_error` the I/O raised. Nothing catches to rethrow.
+- **Subcommands.** A subcommand is a `lib/` function returning its exit
+  code, run under `Cli.run name`, which prints a raised failure as
+  `kido <name>: <message>` and returns 1. A special code is returned
+  after `Cli.error`. cmdliner's own parse errors exit 1.
+- **Environment.** Read it at the edge and pass the value: functions
+  take `~dir`, `~threshold`, `~now`. Tests pass a temp dir; nothing in a
+  test sets an env var or swaps a global.
+- **Time** is `Timestamp.t`, unix seconds as a float, on disk as RFC 3339
+  UTC.
+- `dune build`, `dune test`, `dune fmt` via
+  `opam exec --switch=<checkout> --`.
+
 ## Layout
 
     cmd/kido/          subcommand dispatch (main.go), the launcher

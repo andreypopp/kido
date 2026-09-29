@@ -83,8 +83,8 @@ func setup(m *testing.M) (int, error) {
 	// <prefix>/share/kido, so a kido pane gets the bin directory's shims
 	// and a shim finds the kido and kido-tmux it works back to.
 	kidoBin = filepath.Join(dir, "bin", "kido")
-	if out, err := exec.Command("go", "build", "-o", kidoBin, "kido/cmd/kido").CombinedOutput(); err != nil {
-		return 0, fmt.Errorf("go build kido: %v\n%s", err, out)
+	if err := buildKido(kidoBin); err != nil {
+		return 0, err
 	}
 	shareDir = filepath.Join(dir, "share", "kido")
 	if out, err := exec.Command("../scripts/install-share.sh", shareDir).CombinedOutput(); err != nil {
@@ -148,6 +148,25 @@ func setup(m *testing.M) (int, error) {
 		}
 	}
 	return m.Run(), nil
+}
+
+// buildKido builds the OCaml kido with dune from the repository root and
+// copies it to out: a copy, not a symlink, so kido's own lookups start
+// from out rather than from _build.
+func buildKido(out string) error {
+	build := exec.Command("dune", "build", "./bin/main.exe")
+	build.Dir = ".."
+	if b, err := build.CombinedOutput(); err != nil {
+		return fmt.Errorf("dune build kido: %v\n%s", err, b)
+	}
+	b, err := os.ReadFile("../_build/default/bin/main.exe")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(out, b, 0o755)
 }
 
 // buildFakeAgent compiles a binary named name that sleeps (copying

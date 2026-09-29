@@ -1,0 +1,7 @@
+(library
+ (name kido)
+ (flags
+  (:standard -open Containers))
+ (libraries containers unix yojson mtime mtime.clock)
+ (preprocess
+  (pps ppx_deriving_yojson)))

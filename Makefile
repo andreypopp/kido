@@ -1,10 +1,9 @@
 PREFIX ?= $(HOME)/.local
-GO_LDFLAGS ?=
 
 .PHONY: build install test e2e
 
 build:
-	go build -o bin/kido ./cmd/kido
+	dune build
 
 # built straight into $(PREFIX) - the same tree the binary and the shared
 # files land in - keyed on the binary it produces, so a second `make
@@ -16,16 +15,15 @@ $(PREFIX)/bin/kido-tmux:
 # pi extensions and the Claude Code settings go where kido looks for them
 # relative to its own binary, the same layout Homebrew's pkgshare gives it
 install: $(PREFIX)/bin/kido-tmux
-	mkdir -p $(PREFIX)/bin
-	go build -ldflags '$(GO_LDFLAGS)' -o $(PREFIX)/bin/kido ./cmd/kido
+	dune build @install
+	dune install --prefix $(PREFIX) --sections bin kido
 	./scripts/install-share.sh $(PREFIX)/share/kido
 
 # unit tests; the end-to-end suite needs the patched tmux and is separate.
 # test-ts covers pi's two extensions under node and skips without one, so
-# the Go tests above never gain a node dependency of their own.
+# the OCaml tests above never gain a node dependency of their own.
 test:
-	go vet ./...
-	go test ./cmd/... ./internal/...
+	dune test
 	./scripts/test-ts.sh
 
 # the fork the e2e suite runs kido inside, built into the checkout under
