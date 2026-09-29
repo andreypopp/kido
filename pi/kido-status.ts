@@ -31,13 +31,6 @@
  *   delivered as a user message here; a v1 envelope is handed to the agent
  *   half, kido-agents.ts. The v0/v1 rule and the seam the two halves meet at
  *   are in docs/design.md.
- *
- * Install:
- *   mkdir -p ~/.pi/agent/extensions
- *   cp kido-status.ts kido-agents.ts ~/.pi/agent/extensions/
- *
- * Or, for a one-off run:
- *   pi -e /path/to/kido-status.ts -e /path/to/kido-agents.ts
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -69,34 +62,33 @@ export type Status = "running" | "waiting" | "compacting" | "idle";
 // code is the subcommand's exit status, absent when kido could not be
 // run at all or was killed on the timeout. Only the session claim reads
 // it (EXIT_SESSION_HELD); everything else acts on error alone.
-export type RunKidoResult = { out: string } | { error: string; code?: number };
+export type RunKidoResult = { ok: true; out: string } | { ok: false; error: string; code?: number };
 
 // What `kido agent-status` exits with when another live process holds
 // this session id (cmd/kido/main.go). Two pi processes on one session
 // file is the case: the second must not report, and says so once.
-export const EXIT_SESSION_HELD = 6;
+const EXIT_SESSION_HELD = 6;
 
 // Anything larger than this is dropped rather than buffered.
 const MAX_PROMPT_BYTES = 1024 * 1024;
-
-export type EnvelopeKind = "message" | "ask" | "reply" | "notice" | "stream" | "steer" | "interrupt" | "stop";
 
 // How pi is asked to schedule a delivered message: "followUp" waits for
 // the session to finish what it is doing, "steer" joins it.
 export type DeliverAs = "followUp" | "steer";
 
-export interface Envelope {
-  v: number;
-  kind: EnvelopeKind;
-  id: string;
-  from: { session: string; name?: string; pane?: string };
-  replyTo?: string;
-  text: string;
-  // A "stream" envelope's own pair (internal/msg): the async run these
-  // lines came from, and the file that has every one of them.
-  run?: string;
-  output?: string;
-}
+// Who an envelope is from: an agent with a state record, a sender kido
+// composes itself (an async run, the sweep), or a human at a bare pane.
+export type Sender =
+  | { kind: "agent"; session: string; name?: string; pane?: string }
+  | { kind: "kido"; name: string }
+  | { kind: "human"; pane: string };
+
+export type Envelope = { id: string; from: Sender; text: string } & (
+  | { kind: "message" | "ask" | "notice" | "steer" | "interrupt" | "stop" }
+  | { kind: "reply"; replyTo: string }
+  | { kind: "stream"; run: string; output: string }
+  | { kind: "unrecognised"; claimed: string }
+);
 
 // parseEnvelope mirrors internal/msg.Parse: a payload is a v1 envelope
 // only if it parses as a JSON object carrying both "v" and "kind";
@@ -114,9 +106,32 @@ export function parseEnvelope(text: string): Envelope | null {
   const obj = parsed as Record<string, unknown>;
   if (!("v" in obj) || !("kind" in obj)) return null;
   // Coerced rather than required, to match msg.Parse: Go reads a missing
-  // "text" as the zero string.
-  const body = typeof obj.text === "string" ? obj.text : "";
-  return { ...obj, text: body } as unknown as Envelope;
+  // string field as the zero string.
+  const str = (v: unknown): string => (typeof v === "string" ? v : "");
+  const from = (typeof obj.from === "object" && obj.from !== null ? obj.from : {}) as Record<string, unknown>;
+  const [session, name, pane] = [str(from.session), str(from.name), str(from.pane)];
+  const sender: Sender = session
+    ? { kind: "agent", session, name: name || undefined, pane: pane || undefined }
+    : name
+      ? { kind: "kido", name }
+      : { kind: "human", pane };
+  const base = { id: str(obj.id), from: sender, text: str(obj.text) };
+  const kind = str(obj.kind);
+  switch (kind) {
+    case "message":
+    case "ask":
+    case "notice":
+    case "steer":
+    case "interrupt":
+    case "stop":
+      return { ...base, kind };
+    case "reply":
+      return { ...base, kind, replyTo: str(obj.replyTo) };
+    case "stream":
+      return { ...base, kind, run: str(obj.run), output: str(obj.output) };
+    default:
+      return { ...base, kind: "unrecognised", claimed: kind };
+  }
 }
 
 function findKido(): string | null {
@@ -136,34 +151,14 @@ function findKido(): string | null {
 }
 
 // spawnDetached runs one fire-and-forget child: detached and
-// stdio-ignored (or stdin-piped, when opts.input is given), so a Ctrl+C
-// on pi's process group does not kill it and it outlives this process.
-// Both failure paths are swallowed, the synchronous throw and the async
-// "error" event; an unhandled "error" event is an uncaught exception on
-// this process, not a failed spawn.
-//
-// With opts.input, the write is queued and the child unref'd without
-// waiting for it to run at all - proven against a real child process,
-// not assumed: a write that fits in the pipe's kernel buffer (every
-// caller's payload does; kido's own caps keep it that way) is handed to
-// the kernel synchronously, so it survives this process calling
-// process.exit() on the very next line. Once the kernel has it, the
-// child - detached, its own process group - runs to completion
-// regardless of what becomes of this process, which is the whole point:
-// a slow or wedged peer on the far end of what that child does (an inbox
-// dial, say) costs the child seconds, never this one.
-function spawnDetached(cmd: string, args: string[], opts: { input?: string } = {}): void {
+// stdio-ignored, so a Ctrl+C on pi's process group does not kill it and it
+// outlives this process. Both failure paths are swallowed, the synchronous
+// throw and the async "error" event; an unhandled "error" event is an
+// uncaught exception on this process, not a failed spawn.
+function spawnDetached(cmd: string, args: string[]): void {
   try {
-    const child = spawn(cmd, args, {
-      stdio: [opts.input !== undefined ? "pipe" : "ignore", "ignore", "ignore"],
-      detached: true,
-    });
+    const child = spawn(cmd, args, { stdio: "ignore", detached: true });
     child.on("error", () => {});
-    if (opts.input !== undefined) {
-      // EPIPE if the child exits before reading stdin at all.
-      child.stdin?.on("error", () => {});
-      child.stdin?.end(opts.input);
-    }
     child.unref();
   } catch {
     // never let a spawn failure reach pi
@@ -181,8 +176,9 @@ function spawnDetached(cmd: string, args: string[], opts: { input?: string } = {
 // between them".
 
 // SessionContext is the part of pi's session ctx the agent half uses: how
-// it answers an inbound interrupt or stop, and how the parent-liveness
-// poll ends a session whose parent is gone.
+// it answers an inbound interrupt or stop, how the parent-liveness poll
+// ends a session whose parent is gone, and the UI its notice widget and
+// `@name` completion live in.
 export interface SessionContext {
   abort(): void;
   shutdown(): void;
@@ -190,7 +186,43 @@ export interface SessionContext {
   // envelope: only an idle session has to be woken through a prompt (wake,
   // kido-agents.ts).
   isIdle(): boolean;
+  // Absent in a headless session.
+  ui?: SessionUI;
 }
+
+// pi-tui's autocomplete surface, as far as kido-agents.ts uses it.
+export interface CompletionItem {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+export interface CompletionProvider {
+  triggerCharacters?: string[];
+  getSuggestions(
+    lines: string[],
+    cursorLine: number,
+    cursorCol: number,
+    options: { signal: AbortSignal; force?: boolean },
+  ): Promise<{ items: CompletionItem[]; prefix: string } | null>;
+  applyCompletion(
+    lines: string[],
+    cursorLine: number,
+    cursorCol: number,
+    item: CompletionItem,
+    prefix: string,
+  ): { lines: string[]; cursorLine: number; cursorCol: number };
+  shouldTriggerFileCompletion?(lines: string[], cursorLine: number, cursorCol: number): boolean;
+}
+
+interface SessionUI {
+  setWidget(key: string, content: string[] | undefined, options?: { placement?: "aboveEditor" | "belowEditor" }): void;
+  notify?(message: string, type?: string): void;
+  // Missing before pi 0.87.1.
+  addAutocompleteProvider?(factory: (current: CompletionProvider) => CompletionProvider): void;
+}
+
+export type ShutdownReason = "quit" | "reload" | "new" | "resume" | "fork";
 
 // StatusHost is what this half lends the agent half, as accessors rather
 // than shared variables, so there is exactly one owner of each.
@@ -210,7 +242,7 @@ export interface StatusHost {
   setActivity(text: string): void;
   deliver(text: string, deliverAs?: DeliverAs): void;
   runKido(args: string[], opts: { input?: string; timeoutMs: number }): Promise<RunKidoResult>;
-  spawnDetached(cmd: string, args: string[], opts?: { input?: string }): void;
+  spawnDetached(cmd: string, args: string[]): void;
 }
 
 // AgentHooks is the reverse: the points in this half's lifecycle where
@@ -224,16 +256,12 @@ export interface AgentHooks {
   // even in a session with no kido.
   sessionStarting(ctx: SessionContext): void;
   // Called once the inbox is bound and before the first status report.
-  sessionStarted(ctx: SessionContext): Promise<void>;
+  sessionStarted(): Promise<void>;
   // The inbox has gone away and is not coming back.
   inboxLost(): void;
   // Called from session_shutdown after the inbox is down and before the
   // removal report.
-  sessionEnding(reason?: string): Promise<void>;
-  // Called on every agent_settled where ctx.isIdle() is true - this is the
-  // idle self-exit timer's only arming signal (docs/design.md, "Idle
-  // self-exit").
-  turnEnded(): void;
+  sessionEnding(reason?: ShutdownReason): Promise<void>;
   // Called on every signal kido-status.ts already treats as "this session
   // has work to do" - a running report, or a message about to be handed
   // to the model - so the idle self-exit timer resets rather than firing
@@ -256,15 +284,11 @@ export interface Seam {
 // /reload re-evaluates this file but keeps the process, the pid and the
 // session id, and the socket path is keyed by pid, so nothing requires the
 // listener to go down with the module. handler is whichever module owns
-// the inbox now - null in the gap between a reload's shutdown and the
-// reloaded module's session_start, during which connections are parked in
-// waiting rather than refused. docs/design.md, "The inbox".
-interface InboxHold {
-  server: Server;
-  path: string;
-  handler: ((sock: Socket) => void) | null;
-  waiting: Socket[];
-}
+// the inbox now; in the gap between a reload's shutdown and the reloaded
+// module's session_start it is parked, and connections wait rather than
+// being refused. docs/design.md, "The inbox".
+type InboxHold = { server: Server; path: string } &
+  ({ state: "owned"; handler: (sock: Socket) => void } | { state: "parked"; waiting: Socket[] });
 
 const INBOX_SLOT = Symbol.for("kido.pi.extension.inbox");
 
@@ -287,7 +311,7 @@ function dispatchInbox(sock: Socket): void {
     sock.destroy();
     return;
   }
-  if (hold.handler) {
+  if (hold.state === "owned") {
     hold.handler(sock);
     return;
   }
@@ -329,19 +353,18 @@ function isFirstCopy(): boolean {
 export default function (pi: ExtensionAPI) {
   if (!isFirstCopy()) return;
   let kido: string | null = null;
-  let sessionId: string | null = null;
+  // Who reports, and under which session id: null with no kido or no
+  // tmux, and once kido has answered that another live process holds
+  // this session id - this pi is then not tracked, and must neither
+  // report nor bind an inbox for the rest of the session (docs/design.md,
+  // "One holder per session id").
+  let reporter: { kido: string; sessionId: string } | null = null;
   let title: string | undefined;
   let activity = "";
   let model: string | undefined;
   let lastKey: string | null = null;
   let current: Status = "idle";
   let beforeCompact: Status = "idle";
-
-  // false once kido has answered that another live process holds this
-  // session id: this pi is not tracked, and must neither report nor bind
-  // an inbox for the rest of the session (docs/design.md, "One holder per
-  // session id").
-  let tracked = true;
 
   // null whenever the last reported status was not "running".
   let heartbeatTimer: NodeJS.Timeout | null = null;
@@ -416,10 +439,12 @@ export default function (pi: ExtensionAPI) {
   const stopInbox = (opts: { keepListening?: boolean } = {}): void => {
     const hold = heldInbox();
     if (!hold) return;
-    hold.handler = null;
-    if (opts.keepListening) return;
+    if (opts.keepListening) {
+      if (hold.state === "owned") setHeldInbox({ server: hold.server, path: hold.path, state: "parked", waiting: [] });
+      return;
+    }
     setHeldInbox(null);
-    for (const sock of hold.waiting.splice(0)) sock.destroy();
+    if (hold.state === "parked") for (const sock of hold.waiting.splice(0)) sock.destroy();
     try {
       hold.server.close();
     } catch {
@@ -437,8 +462,8 @@ export default function (pi: ExtensionAPI) {
   // included.
   const adoptInbox = (): boolean => {
     const hold = heldInbox();
-    if (!hold || hold.handler) return false;
-    hold.handler = onConnection;
+    if (hold?.state !== "parked") return false;
+    setHeldInbox({ server: hold.server, path: hold.path, state: "owned", handler: onConnection });
     for (const sock of hold.waiting.splice(0)) onConnection(sock);
     return true;
   };
@@ -447,14 +472,17 @@ export default function (pi: ExtensionAPI) {
   // path only a live handler answers, and a reload's gap or a torn-down
   // session must read as closed even though the socket file may still
   // exist.
-  const inboxOpen = (): boolean => heldInbox()?.handler === onConnection;
+  const inboxOpen = (): boolean => {
+    const hold = heldInbox();
+    return hold?.state === "owned" && hold.handler === onConnection;
+  };
 
   const startInbox = async (): Promise<void> => {
     // Where to bind is kido's decision; a refusal means no inbox. The name
     // is this process's pid, so a leftover file at that path cannot belong
     // to a running listener and is always safe to remove.
     const asked = await runKido(["inbox-path", String(process.pid)], { timeoutMs: 2000 });
-    if ("error" in asked) return;
+    if (!asked.ok) return;
     const path = asked.out;
     if (!path || !isAbsolute(path)) return;
     try {
@@ -470,7 +498,7 @@ export default function (pi: ExtensionAPI) {
     });
     if (!bound) return; // never publish a path we are not listening on
     server.unref(); // never hold pi's event loop open
-    setHeldInbox({ server, path, handler: onConnection, waiting: [] });
+    setHeldInbox({ server, path, state: "owned", handler: onConnection });
   };
 
   // Both idempotent, so every report() calls one of them without tracking
@@ -493,13 +521,13 @@ export default function (pi: ExtensionAPI) {
   // is the one thing this extension needs back from kido. Every report is
   // whole: title, model and inbox ride on every call, empty when there is
   // none, since kido no longer carries any field forward between reports.
-  const statusArgs = (status: Status, opts: { ended?: boolean; remove?: boolean; inbox: string } = { inbox: "" }): string[] => {
+  const statusArgs = (sessionId: string, status: Status, opts: { ended?: boolean; remove?: boolean; inbox: string } = { inbox: "" }): string[] => {
     const args = [
       "agent-status",
       "--agent",
       "pi",
       "--session",
-      sessionId as string,
+      sessionId,
       "--status",
       status,
       "--activity",
@@ -530,7 +558,7 @@ export default function (pi: ExtensionAPI) {
   // session_start is still awaiting the bind - is never dropped as a
   // duplicate of an idle report already sent without it.
   const report = (r: Report): void => {
-    if (!kido || !sessionId || !tracked) return;
+    if (!reporter) return;
     const status = r.kind === "heartbeat" ? current : r.kind === "status" ? r.status : "idle";
     const ended = r.kind === "settled";
     const remove = r.kind === "removed";
@@ -543,7 +571,7 @@ export default function (pi: ExtensionAPI) {
     if (status === "running") startHeartbeat();
     else stopHeartbeat();
 
-    spawnDetached(kido, statusArgs(status, { ended, remove, inbox: inboxPath }));
+    spawnDetached(reporter.kido, statusArgs(reporter.sessionId, status, { ended, remove, inbox: inboxPath }));
   };
 
   // runKido is how every call into kido is made: via spawn, awaited but
@@ -552,7 +580,7 @@ export default function (pi: ExtensionAPI) {
   // "Two extensions"). On failure it yields the line kido printed on
   // stderr, the only part a model can act on. Every outcome is a value.
   const runKido = (args: string[], opts: { input?: string; timeoutMs: number }): Promise<RunKidoResult> => {
-    if (!kido) return Promise.resolve({ error: "kido is not on PATH" });
+    if (!kido) return Promise.resolve({ ok: false, error: "kido is not on PATH" });
     return new Promise((resolve) => {
       const child = spawn(kido as string, args, { stdio: ["pipe", "pipe", "pipe"] });
       // Whoever gets there first wins; clearing a cleared timer and
@@ -565,7 +593,7 @@ export default function (pi: ExtensionAPI) {
         child.kill();
         // Unknown, not failed: kido may already have done its work, which
         // is why the message says "timed out" rather than naming a failure.
-        finish({ error: `kido ${args[0]} timed out after ${opts.timeoutMs}ms` });
+        finish({ ok: false, error: `kido ${args[0]} timed out after ${opts.timeoutMs}ms` });
       }, opts.timeoutMs);
       timer.unref(); // a hung kido must never hold pi's event loop open
 
@@ -573,13 +601,13 @@ export default function (pi: ExtensionAPI) {
       const stderr: Buffer[] = [];
       child.stdout?.on("data", (c: Buffer) => stdout.push(c));
       child.stderr?.on("data", (c: Buffer) => stderr.push(c));
-      child.on("error", (err) => finish({ error: err instanceof Error ? err.message : String(err) }));
+      child.on("error", (err) => finish({ ok: false, error: err instanceof Error ? err.message : String(err) }));
       child.on("close", (code) => {
         if (code === 0) {
-          finish({ out: Buffer.concat(stdout).toString("utf8").trim() });
+          finish({ ok: true, out: Buffer.concat(stdout).toString("utf8").trim() });
         } else {
           const errText = Buffer.concat(stderr).toString("utf8").trim();
-          finish({ error: errText || `kido ${args[0]} exited with code ${code}`, code: code ?? undefined });
+          finish({ ok: false, error: errText || `kido ${args[0]} exited with code ${code}`, code: code ?? undefined });
         }
       });
       // A child that exits before reading all of stdin turns the write
@@ -592,7 +620,7 @@ export default function (pi: ExtensionAPI) {
 
   seam().host = {
     kidoPath: () => kido,
-    sessionId: () => sessionId,
+    sessionId: () => reporter?.sessionId ?? null,
     status: () => current,
     inboxOpen,
     setActivity: (text: string) => {
@@ -618,12 +646,12 @@ export default function (pi: ExtensionAPI) {
     // Resource lookup belongs here, not in the factory: the factory may run in
     // invocations that never start a session.
     kido = process.env.TMUX_PANE ? findKido() : null;
+    reporter = null;
     if (!kido) return;
-    sessionId = ctx.sessionManager.getSessionId() ?? null;
+    const sessionId = ctx.sessionManager.getSessionId();
     title = ctx.sessionManager.getSessionName() || undefined;
     model = ctx.model?.id;
     lastKey = null;
-    tracked = true;
     stopHeartbeat();
 
     // The claim, before anything else is done in kido's name: this same
@@ -634,9 +662,8 @@ export default function (pi: ExtensionAPI) {
     // named after this pid and would collide with nothing, but nothing
     // could address it, since only a state record publishes one.
     if (sessionId) {
-      const claim = await runKido(statusArgs("idle"), { timeoutMs: CLAIM_TIMEOUT_MS });
-      if ("error" in claim && claim.code === EXIT_SESSION_HELD) {
-        tracked = false;
+      const claim = await runKido(statusArgs(sessionId, "idle"), { timeoutMs: CLAIM_TIMEOUT_MS });
+      if (!claim.ok && claim.code === EXIT_SESSION_HELD) {
         try {
           ctx.ui?.notify?.(`kido: ${claim.error}`, "warning");
         } catch {
@@ -645,6 +672,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       lastKey = null; // the claim is not a report the coalescing may match against
+      reporter = { kido, sessionId };
     }
 
     // A /reload re-runs this handler: take over the listener it handed
@@ -663,7 +691,7 @@ export default function (pi: ExtensionAPI) {
     if (!inboxOpen()) seam().agents?.inboxLost();
 
     // After the inbox, before the first report (which carries --inbox).
-    await seam().agents?.sessionStarted(ctx);
+    await seam().agents?.sessionStarted();
 
     report({ kind: "status", status: "idle" });
   });
@@ -715,10 +743,9 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_settled", (_event, ctx) => {
     if (!ctx.isIdle()) return;
     report({ kind: "settled" });
-    seam().agents?.turnEnded();
   });
 
-  pi.on("session_shutdown", async (event?: { reason?: string }) => {
+  pi.on("session_shutdown", async (event?: { reason?: ShutdownReason }) => {
     // stopInbox and sessionEnding's synchronous prefix run before this
     // handler's first await, which is what lets ask_agent's inboxOpen()
     // check stand in for "this session is shutting down".

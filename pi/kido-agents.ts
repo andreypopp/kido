@@ -28,22 +28,27 @@
  *   Everything arriving on kido-status.ts's inbox socket that parses as a
  *   v1 envelope is handed to handleEnvelope below and dispatched by kind;
  *   plain v0 prompt text never reaches this file at all.
- *
- * Install:
- *   mkdir -p ~/.pi/agent/extensions
- *   cp kido-status.ts kido-agents.ts ~/.pi/agent/extensions/
- *
- * Or, for a one-off run:
- *   pi -e /path/to/kido-status.ts -e /path/to/kido-agents.ts
  */
 
-import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
-import type { AgentHooks, DeliverAs, Envelope, Seam, SessionContext, StatusHost } from "./kido-status.ts";
+import type {
+  AgentHooks,
+  CompletionItem,
+  CompletionProvider,
+  DeliverAs,
+  Envelope,
+  RunKidoResult,
+  Seam,
+  Sender,
+  SessionContext,
+  ShutdownReason,
+  Status,
+} from "./kido-status.ts";
 
 // The seam kido-status.ts declares, spelled out again rather than
 // imported: importing a runtime value from kido-status.ts would evaluate
@@ -55,11 +60,13 @@ function seam(): Seam {
   return (g[SEAM] ??= { host: null, agents: null });
 }
 
-// The status half, or null when it is not loaded. Read at call time,
-// never at factory time: pi may run this factory first.
-function status(): StatusHost | null {
-  return seam().host;
+// Every call into kido goes through the status half, which is read at
+// call time, never at factory time: pi may run this factory first.
+function runKido(args: string[], opts: { input?: string; timeoutMs: number }): Promise<RunKidoResult> {
+  return seam().host?.runKido(args, opts) ?? Promise.resolve({ ok: false, error: "kido-status.ts is not loaded" });
 }
+
+const reply = (text: string, details: unknown = {}) => ({ content: [{ type: "text" as const, text }], details });
 
 // Read again here rather than shared across the seam: constants of this
 // process, so two readers cannot disagree. This session's own id, which
@@ -68,7 +75,6 @@ function status(): StatusHost | null {
 // process is - see ownRunID below.
 const PARENT_PID = process.env.KIDO_AGENT_PARENT_PID ? Number(process.env.KIDO_AGENT_PARENT_PID) : undefined;
 const PARENT_SESSION = process.env.KIDO_AGENT_PARENT_SESSION || undefined;
-const DEPTH = process.env.KIDO_AGENT_DEPTH ? Number(process.env.KIDO_AGENT_DEPTH) : undefined;
 const RUN_ID = process.env.KIDO_AGENT_RUN_ID || undefined;
 
 // ownRunID answers the only question every subagent-specific behaviour
@@ -105,14 +111,10 @@ const RUN_ID = process.env.KIDO_AGENT_RUN_ID || undefined;
 // parent anyway.
 function ownRunID(): string | null {
   if (PARENT_SESSION === undefined || RUN_ID === undefined) return null;
-  return status()?.sessionId() === RUN_ID ? RUN_ID : null;
+  return seam().host?.sessionId() === RUN_ID ? RUN_ID : null;
 }
 
 const isSubagent = (): boolean => ownRunID() !== null;
-
-// What set_status's schema tells the model; the enforced cap is
-// kido-status.ts's own.
-const MAX_ACTIVITY_BYTES = 256;
 
 // What notify_parent's schema tells the model, and nothing more. The bound
 // is `kido notify_parent`'s own: a report over it is written to the run's
@@ -140,10 +142,6 @@ function capBytes(text: string, max: number): string {
 // The task text `kido spawn_subagent` left for us to deliver as our first message.
 const TASK_FILE = process.env.KIDO_AGENT_TASK_FILE || undefined;
 
-// spawnCmd (cmd/kido/spawn.go) is the actual ceiling; this is only a cheap
-// early refusal that skips a subprocess.
-const MAX_SPAWN_DEPTH = 2;
-
 // The knobs below are read once at module scope, so they are set only via
 // the environment and a test re-imports the module to change them.
 
@@ -160,8 +158,8 @@ const PARENT_LIVENESS_POLL_MS = Number(process.env.KIDO_PARENT_POLL_MS) || 5000;
 // before it shuts itself down (docs/design.md, "Idle self-exit"). Not the
 // same figure as LINGER_SECONDS above, even though both default to 30:
 // this one is idle-to-self-shutdown, entirely inside the child's own
-// process, and only once it fires does scheduleCompletionLinger's own
-// scheduleWindowLinger start the second, independent 30s window-linger
+// process, and only once it fires does endOwnRun's linger helper
+// start the second, independent 30s window-linger
 // clock. The two stack; nothing here may fold them into one number.
 const IDLE_EXIT_MS = (Number(process.env.KIDO_IDLE_EXIT_SECONDS) || 30) * 1000;
 
@@ -197,46 +195,12 @@ const AGENT_LIST_TTL_MS = Number(process.env.KIDO_AGENT_LIST_TTL_MS) || 1000;
 // built-in provider found for the same token.
 const MAX_AGENT_COMPLETIONS = 10;
 
-// pi's autocomplete shapes (@earendil-works/pi-tui's AutocompleteItem,
-// AutocompleteSuggestions and AutocompleteProvider), declared here for
-// the same reason the notice renderer's component is: pi's own runtime
-// always resolves that package, this one's test suite does not install
-// it, and the surface used is this small.
-interface CompletionItem {
-  value: string;
-  label: string;
-  description?: string;
-}
-
-interface CompletionSuggestions {
-  items: CompletionItem[];
-  prefix: string;
-}
-
-interface CompletionProvider {
-  triggerCharacters?: string[];
-  getSuggestions(
-    lines: string[],
-    cursorLine: number,
-    cursorCol: number,
-    options: { signal: AbortSignal; force?: boolean },
-  ): Promise<CompletionSuggestions | null>;
-  applyCompletion(
-    lines: string[],
-    cursorLine: number,
-    cursorCol: number,
-    item: CompletionItem,
-    prefix: string,
-  ): { lines: string[]; cursorLine: number; cursorCol: number };
-  shouldTriggerFileCompletion?(lines: string[], cursorLine: number, cursorCol: number): boolean;
-}
-
 // atToken reads the `@`-token the cursor sits in, or undefined for a
 // cursor that is not in one. It must agree with pi's own
 // CombinedAutocompleteProvider (extractAtPrefix: the token back to the
 // last delimiter, when it starts with "@"), since the merged list below
 // carries one prefix for the agents and the files both.
-export function atToken(textBeforeCursor: string): string | undefined {
+function atToken(textBeforeCursor: string): string | undefined {
   const m = textBeforeCursor.match(/(?:^|\s)@([^\s@]*)$/);
   return m ? m[1] : undefined;
 }
@@ -283,8 +247,8 @@ const senderHeader = (kind: "message" | "ask", from: string, relation: SenderRel
   `${kind} from @${from} (${MESSAGE_RELATION[relation]}):`;
 
 // The custom message type an inbound ask is delivered as, matched by
-// registerMessageRenderer below - the same treatment deliverAgentMessage
-// gives a plain message, so the id and reply instructions the model needs
+// registerMessageRenderer below - the same treatment an agent's plain
+// message gets, so the id and reply instructions the model needs
 // do not also land in a human's transcript.
 const ASK_CUSTOM_TYPE = "kido-ask";
 
@@ -299,16 +263,14 @@ const STREAM_CUSTOM_TYPE = "kido-stream";
 // the model reads it as the user's own words. The arrival itself follows
 // immediately, carrying the sender, the text and every instruction, so
 // this says no more than which kind is coming.
-const WAKE_TRIGGERS: Record<string, string> = {
-  [MESSAGE_CUSTOM_TYPE]: "(kido: a message arrived; it follows)",
-  [NOTICE_CUSTOM_TYPE]: "(kido: a notification arrived; it follows)",
-  [ASK_CUSTOM_TYPE]: "(kido: a question arrived; it follows)",
-  [STREAM_CUSTOM_TYPE]: "(kido: a background run's output follows)",
-};
+type CustomType = "kido-message" | "kido-notice" | "kido-ask" | "kido-stream";
 
-// One arrival as wake takes it: what pi.sendMessage is given, minus the
-// delivery options wake itself decides.
-type WakeMessage = { customType: string; content: string; display: boolean; details?: unknown };
+const WAKE_TRIGGERS: Record<CustomType, string> = {
+  "kido-message": "(kido: a message arrived; it follows)",
+  "kido-notice": "(kido: a notification arrived; it follows)",
+  "kido-ask": "(kido: a question arrived; it follows)",
+  "kido-stream": "(kido: a background run's output follows)",
+};
 
 // STREAM_FLUSH_MS and STREAM_FLUSH_CAP_MS are the idle flush schedule: a
 // batch held because no turn was free is flushed after the first, then
@@ -410,14 +372,12 @@ interface AgentInfo {
   // What the sidebar shows next to the agent: its running/waiting/idle
   // status and whatever set_status last put there. Both only ever reach
   // a human, in an `@name` completion's description line.
-  status?: string;
-  activity?: string;
+  status: Status;
+  activity: string;
   // canReply is whether the target could send the message_agent reply an
   // ask waits for: false only when it was spawned with a tools allowlist
-  // that excludes message_agent. Missing (older test doubles, never a real
-  // kido) reads as true, since a target that cannot reply at all is
-  // already caught by canMessage.
-  canReply?: boolean;
+  // that excludes message_agent.
+  canReply: boolean;
   window: string;
   stalled: boolean;
   sinceReport: number;
@@ -491,7 +451,7 @@ function agentCompletionItems(agents: AgentInfo[], token: string): CompletionIte
 // resolveTarget (cmd/kido/message_agent.go) does: an exact, case-insensitive
 // name, then an exact id, then a unique id prefix, each erroring on its
 // own ambiguity rather than falling through.
-export function resolveAgent(agents: AgentInfo[], to: string): { agent?: AgentInfo; error?: string } {
+function resolveAgent(agents: AgentInfo[], to: string): { agent?: AgentInfo; error?: string } {
   const byName = agents.filter((a) => a.name && a.name.toLowerCase() === to.toLowerCase());
   if (byName.length === 1) return { agent: byName[0] };
   if (byName.length > 1) return { error: `"${to}" matches several agents by name` };
@@ -524,18 +484,6 @@ export function isAncestor(agents: AgentInfo[], self: AgentInfo, target: AgentIn
   return false;
 }
 
-// onAskEdgeRegistered fires synchronously the instant an outbound ask's
-// cycle edge is registered (pendingOutbound.set below, docs/design.md's
-// "The cycle edge") - a test seam only, since nothing about that moment
-// is otherwise observable from outside the process: the agents-lookup
-// subprocess it follows writes its own log line well before the parent's
-// await on it resolves, so watching for that write is not a reliable
-// proxy for "the edge exists now".
-let onAskEdgeRegistered: ((target: string) => void) | undefined;
-export function setAskEdgeListener(fn: ((target: string) => void) | undefined): void {
-  onAskEdgeRegistered = fn;
-}
-
 // One copy per process, for the reason kido-status.ts gives beside its
 // own slot; spelled out again rather than imported, as the seam is.
 const COPY_SLOT = Symbol.for("kido.pi.extension.agents.copy");
@@ -550,19 +498,12 @@ export default function (pi: ExtensionAPI) {
   if (!isFirstCopy()) return;
   let parentPollTimer: NodeJS.Timeout | null = null;
 
-  // How an inbound "interrupt"/"stop" envelope reaches pi: captured in
-  // sessionStarting, null until a session has started.
-  let ctxAbort: (() => Promise<void>) | null = null;
-  let ctxShutdown: (() => void) | null = null;
-
-  // widgetUi is the raw pi.on("session_start") ctx.ui, captured directly
-  // (not through the seam's SessionContext, which is deliberately narrower
-  // - kido-status.ts's own use never needed a widget). Null until a
-  // session_start has fired, and re-captured on every one - a /reload
-  // hands out a fresh ctx and pi itself tears down the previous widgets
+  // The session ctx, captured in sessionStarting and null until a session
+  // has started. Re-captured on every session_start: a /reload hands out a
+  // fresh ctx and pi itself tears down the previous widgets
   // (resetExtensionUI's own clearExtensionWidgets), so holding on to a
   // stale ui would call setWidget on a UI nobody is drawing any more.
-  let widgetUi: { setWidget(key: string, content: string[] | undefined, options?: { placement?: "aboveEditor" | "belowEditor" }): void } | null = null;
+  let session: SessionContext | null = null;
 
   // pendingNotices is the visual half of an inbound notice, kept separate
   // from model delivery on purpose (see deliverNotice below): an id minted
@@ -576,27 +517,27 @@ export default function (pi: ExtensionAPI) {
   const NOTICE_WIDGET_KEY = "kido-notice-pending";
 
   const renderNoticeWidget = (): void => {
-    if (!widgetUi) return;
+    const ui = session?.ui;
+    if (!ui) return;
     if (pendingNotices.size === 0) {
-      widgetUi.setWidget(NOTICE_WIDGET_KEY, undefined);
+      ui.setWidget(NOTICE_WIDGET_KEY, undefined);
       return;
     }
     const lines = [...pendingNotices.values()].map((from) => `notification from ${from}`);
-    widgetUi.setWidget(NOTICE_WIDGET_KEY, lines);
+    ui.setWidget(NOTICE_WIDGET_KEY, lines);
   };
 
   // How a waiting ask_agent ends. "The answer never came" and "there is
   // no longer anywhere for it to come to" are different things to tell a
   // model: only the first leaves an id a late reply can be surfaced
   // against.
-  type AskOutcome =
-    | { reply: string }
-    | { gaveUp: "timeout" | "inbox" | "unsent" | "gone" | "aborted" };
+  type GaveUp = "timeout" | "inbox" | "unsent" | "gone" | "aborted";
+  type AskOutcome = { reply: string } | { gaveUp: GaveUp };
 
   // Asks this session has sent and is still waiting on, keyed by the
   // ask's own id. Whichever comes first (a matching reply, the timeout,
   // the inbox going away) settles the waiter and drops it. This map is
-  // also the cycle-refusal edge set (hasAskOutstandingTo): the write
+  // also the cycle-refusal edge set (handleInboundAsk): the write
   // happens synchronously before the await that starts the send, so an
   // inbound ask dispatched while the send is in flight already sees the
   // edge, and settle is idempotent, so a late "unsent" after a reply is a
@@ -611,34 +552,6 @@ export default function (pi: ExtensionAPI) {
     for (const waiter of [...pendingOutbound.values()]) waiter.settle({ gaveUp: "inbox" });
   };
 
-  // The cycle-refusal edge set, read off the waiters themselves: an edge
-  // to a target exists exactly as long as an ask to it is waiting, and a
-  // reply-shaped envelope that matched nothing drops no waiter.
-  const hasAskOutstandingTo = (session: string): boolean => {
-    if (!session) return false;
-    for (const waiter of pendingOutbound.values()) {
-      if (waiter.targetSession === session) return true;
-    }
-    return false;
-  };
-
-  // Delivery goes through the status half: a task, an ask and a plain
-  // inbox prompt are all the same kind of arrival. deliverAs is how the
-  // one arrival that is not - a steer, which joins the turn already
-  // running instead of queueing behind it - says so; everything else
-  // takes the default (docs/design.md, "Steer and followUp").
-  const deliver = (text: string, deliverAs?: DeliverAs): void => {
-    status()?.deliver(text, deliverAs);
-  };
-
-  // Whether pi has a run in flight, read live off the session ctx captured
-  // in sessionStarting rather than off kido's own reported status: a wake
-  // has to be decided by the same boolean pi's own sendCustomMessage
-  // branches on. ctx.hasPendingMessages() is deliberately not read - it
-  // counts queued user *text* (pi's _steeringMessages, emptied as each one
-  // lands) and never a queued custom message, so it cannot answer this
-  // question.
-  let ctxIsIdle: (() => boolean) | null = null;
 
   // A trigger that has been sent and whose turn has not started yet. One
   // is enough for any number of arrivals: prompt() injects every pending
@@ -676,10 +589,19 @@ export default function (pi: ExtensionAPI) {
   // keeps its custom type, its header and its renderer, and the turn it
   // rides is a properly prepared one. Remove this when pi's own
   // triggerTurn path runs prompt().
-  const wake = (message: WakeMessage, deliverAs: DeliverAs): void => {
+  //
+  // Idleness is read live off the session ctx rather than off kido's own
+  // reported status: a wake has to be decided by the same boolean pi's own
+  // sendCustomMessage branches on. ctx.hasPendingMessages() is deliberately
+  // not read - it counts queued user *text* (pi's _steeringMessages,
+  // emptied as each one lands) and never a queued custom message.
+  const wake = (
+    message: { customType: CustomType; content: string; display: boolean; details?: unknown },
+    deliverAs: DeliverAs,
+  ): void => {
     let idle = false;
     try {
-      idle = !!ctxIsIdle?.();
+      idle = !!session?.isIdle();
     } catch {
       // A ctx pi has retired throws rather than answering (its
       // assertActive): mid-/reload, which is no session to prompt.
@@ -701,7 +623,7 @@ export default function (pi: ExtensionAPI) {
     // of lateness and nothing else. expandPromptTemplates is spelled out
     // because the trigger is user-role text and must never be dispatched
     // as a command.
-    const trigger = WAKE_TRIGGERS[message.customType] ?? WAKE_TRIGGERS[MESSAGE_CUSTOM_TYPE];
+    const trigger = WAKE_TRIGGERS[message.customType];
     const clear = (): void => {
       wakeInFlight = false;
     };
@@ -726,61 +648,17 @@ export default function (pi: ExtensionAPI) {
   // same fallback order targetLabel (cmd/kido/message.go) uses. It is a
   // label only, shown to the model, never the address a reply actually
   // resolves against - see pendingInboundAsks below for why.
-  const labelFrom = (from: Envelope["from"]): string => from.name || from.session || from.pane || "another agent";
+  const labelFrom = (from: Sender): string => {
+    switch (from.kind) {
+      case "agent":
+        return from.name || from.session;
+      case "kido":
+        return from.name;
+      case "human":
+        return from.pane || "another agent";
+    }
+  };
 
-  // deliverNotice hands an inbound notice to the model as a custom
-  // message rather than an ordinary user message, so the TUI can render
-  // it collapsed (registerMessageRenderer(NOTICE_CUSTOM_TYPE, ...) below)
-  // while the model still sees the notice's full text - collapsing is a
-  // transcript-display concern only. Every notice collapses the same way
-  // regardless of who sent it: kind, not identity, is what a sender chose
-  // when it ran `kido notify_parent` instead of `kido message_agent`,
-  // and `from` is advisory anyway (docs/design.md, the inbox), so
-  // nothing here does a lookup to decide.
-  //
-  // The two halves of "deliver a notice" run on purpose different
-  // schedules. Visual arrival is immediate: renderNoticeWidget puts a
-  // "notification from X" row up above the editor the instant this
-  // function runs, before anything is awaited, so a human watching sees
-  // it the moment the envelope lands rather than whenever the current
-  // turn happens to end.
-  //
-  // Model delivery changed, deliberately, from what every other envelope
-  // kind still uses: deliverAs is "steer", not "followUp". A notice is
-  // the one kind where a parent not knowing a child is done defeats the
-  // reason the child was spawned at all - the point of doing work in a
-  // subagent is to keep going in parallel, and a parent whose own turn
-  // runs long (its own tool calls, orchestrating other children) could
-  // otherwise sit on a finished child's report for however long that
-  // takes: measured live, two subagents' notices both sat invisible for
-  // several minutes and then landed together the instant the parent's
-  // turn happened to end, which is the followUp queueing this replaces.
-  // Steer does not knock the running turn off course the way an abort
-  // would: measured against pi 0.85.1's agent loop
-  // (@earendil-works/pi-agent-core's agent-loop.js), a steering message is
-  // only ever drained between a completed turn's tool results and the
-  // next model call (getSteeringMessages is polled at turn_end and at the
-  // top of the next iteration, never mid-tool-call), so it can never land
-  // between an assistant's tool call and that call's own result. The
-  // model decides whether to act on it now or keep going - the judgement
-  // an orchestrator is meant to make, just with the information in front
-  // of it instead of withheld until its own turn happens to end. Plain
-  // messages and asks stay on followUp: an ask is answered synchronously
-  // by a `message_agent` call the model makes on its own schedule
-  // regardless, and a plain message has no analogous "the sender is now
-  // blocked waiting to hear back" urgency. docs/design.md's "The inbox"
-  // section describes followUp as universal; this is the one documented
-  // exception.
-  //
-  // The two halves meet exactly once each: the widget's entry is removed
-  // when (and only when) the identical steered message actually reaches
-  // the transcript (the message_start listener below, matched by
-  // noticeId - fired identically whether the message arrived by steer, by
-  // followUp or injected into the turn a wake started, so nothing else
-  // here needed to change), so the model text is sent through wake here
-  // and nowhere else - one wire call,
-  // one entry, one widget row that hands off to it rather than a second
-  // rendering of the same notice.
   // messageSender answers who an inbound plain message is from and how
   // they stand to this session, or null for "no agent at all" - which is
   // the user speaking, and is delivered as their own words, unlabelled.
@@ -796,14 +674,16 @@ export default function (pi: ExtensionAPI) {
   // child of it - the environment alone is a claim any descendant
   // inherits, see ownRunID), and a child is an agent whose own parent edge
   // points at this session.
-  const messageSender = async (from: Envelope["from"]): Promise<{ name: string; relation: SenderRelation } | null> => {
+  const messageSender = async (from: Sender): Promise<{ name: string; relation: SenderRelation } | null> => {
     const listed = await fetchAgents();
     // No list to check against: a `from` carrying a session is an agent's,
     // since a human's never does. Labelling it as a peer beats falling
     // back to the unlabelled delivery this replaced, which would tell the
     // model the sender was the user.
-    if ("error" in listed) return from.session ? { name: labelFrom(from), relation: "peer" } : null;
-    const sender = listed.agents.find((a) => (from.session ? a.id === from.session : !!from.pane && a.pane === from.pane));
+    if (!listed.ok) return from.kind === "agent" ? { name: labelFrom(from), relation: "peer" } : null;
+    const sender = listed.agents.find((a) =>
+      from.kind === "agent" ? a.id === from.session : from.kind === "human" && !!from.pane && a.pane === from.pane,
+    );
     if (!sender) return null;
     const self = listed.agents.find((a) => a.self);
     const isParent = isSubagent() && !!PARENT_SESSION && sender.id === PARENT_SESSION;
@@ -811,32 +691,28 @@ export default function (pi: ExtensionAPI) {
     return { name: sender.name || labelFrom(from), relation: isParent ? "parent" : isChild ? "child" : "peer" };
   };
 
-  // deliverAgentMessage hands an agent's message to the model as a custom
-  // message, for the reason deliverNotice does: the TUI can then draw it
-  // with its sender while the model reads the header. Queued (`followUp`)
-  // and waking an idle session exactly as the unlabelled delivery it
-  // replaces - only the labelling changed, not when a message arrives.
-  const deliverAgentMessage = (text: string, from: string, relation: SenderRelation): void => {
-    workStarted();
-    wake(
-      {
-        customType: MESSAGE_CUSTOM_TYPE,
-        content: `${senderHeader("message", from, relation)}\n${text}`,
-        display: true,
-        details: { from, relation },
-      },
-      "followUp",
-    );
-  };
-
+  // An agent's message goes to the model as a custom message, for the
+  // reason a notice does: the TUI can then draw it with its sender while
+  // the model reads the header. Queued (`followUp`) and waking an idle
+  // session exactly as the unlabelled delivery it replaces - only the
+  // labelling changed, not when a message arrives.
   const handleInboundMessage = async (env: Envelope): Promise<void> => {
     if (!env.text) return;
     const sender = await messageSender(env.from);
     if (!sender) {
-      deliver(env.text);
+      seam().host?.deliver(env.text);
       return;
     }
-    deliverAgentMessage(env.text, sender.name, sender.relation);
+    workStarted();
+    wake(
+      {
+        customType: MESSAGE_CUSTOM_TYPE,
+        content: `${senderHeader("message", sender.name, sender.relation)}\n${env.text}`,
+        display: true,
+        details: { from: sender.name, relation: sender.relation },
+      },
+      "followUp",
+    );
   };
 
   const deliverNotice = (text: string, from: string): void => {
@@ -859,13 +735,12 @@ export default function (pi: ExtensionAPI) {
   // was last armed with. Both are reset when a run completes, since the
   // next run's first lines deserve the floor rather than whatever the
   // last one escalated to.
-  let streamTimer: NodeJS.Timeout | null = null;
-  let streamDelay = STREAM_FLUSH_MS;
+  const streamFlush: { timer: NodeJS.Timeout | null; delay: number } = { timer: null, delay: STREAM_FLUSH_MS };
 
   const clearStreamTimer = (): void => {
-    if (streamTimer) {
-      clearTimeout(streamTimer);
-      streamTimer = null;
+    if (streamFlush.timer) {
+      clearTimeout(streamFlush.timer);
+      streamFlush.timer = null;
     }
   };
 
@@ -873,22 +748,21 @@ export default function (pi: ExtensionAPI) {
   // time up to the cap. Only ever one timer: a second run's lines ride
   // the one already ticking rather than buying a turn of their own.
   const armStreamFlush = (): void => {
-    if (streamTimer) return;
-    const delay = streamDelay;
-    streamTimer = setTimeout(() => {
-      streamTimer = null;
-      streamDelay = nextStreamFlushDelay(streamDelay);
+    if (streamFlush.timer) return;
+    streamFlush.timer = setTimeout(() => {
+      streamFlush.timer = null;
+      streamFlush.delay = nextStreamFlushDelay(streamFlush.delay);
       flushStreams();
-    }, delay);
-    streamTimer.unref?.(); // a held batch must never hold pi's event loop open
+    }, streamFlush.delay);
+    streamFlush.timer.unref?.(); // a held batch must never hold pi's event loop open
   };
 
   // handleInboundStream buffers one chunk. Nothing is delivered here.
-  const handleInboundStream = (env: Envelope): void => {
-    const run = env.run || env.from.name || env.from.session || "run";
+  const handleInboundStream = (env: Envelope & { kind: "stream" }): void => {
+    const run = env.run;
     const entry = streamBuffers.get(run) ?? {
-      name: env.from.name || run,
-      output: env.output || "the run's output file",
+      name: (env.from.kind !== "human" && env.from.name) || run,
+      output: env.output,
       lines: [],
       dropped: 0,
     };
@@ -935,31 +809,12 @@ export default function (pi: ExtensionAPI) {
   // stale before this session's model gets around to answering. Rather
   // than trying to keep that label fresh, message_agent re-resolves the
   // target from this pane at the moment a reply is actually sent (see
-  // resolveReplyTarget) - a pane is the one address a reload cannot
+  // message_agent) - a pane is the one address a reload cannot
   // invalidate, and every pane is already in `kido list_agents --json`. Entries are
   // removed once a reply consumes them; a never-answered ask leaves one
   // behind for this session's lifetime, the same bound as an unanswered
   // ask's own wire round trip already accepts.
   const pendingInboundAsks = new Map<string, string>(); // ask id -> asker's pane
-
-  // resolveReplyTarget re-resolves a reply's destination from the
-  // asker's pane, freshly, rather than trusting the label the model was
-  // given when the ask arrived (see pendingInboundAsks). Falls back to
-  // the model's own `to` when there is no pending ask to re-resolve from
-  // (an unprompted message_agent call, or a replyTo this session never
-  // saw an ask for, including a second reply to one already answered) or
-  // when the pane no longer resolves to anyone (the asker really is
-  // gone, and the caller's own `to` will fail exactly as it would have
-  // without this).
-  const resolveReplyTarget = async (to: string, replyTo: string | undefined): Promise<string> => {
-    const pane = replyTo ? pendingInboundAsks.get(replyTo) : undefined;
-    if (!pane) return to;
-    pendingInboundAsks.delete(replyTo!);
-    const listed = await fetchAgents();
-    if ("error" in listed) return to;
-    const current = listed.agents.find((a) => a.pane === pane);
-    return current?.id ?? to;
-  };
 
   // handleInboundAsk delivers an ask to the model with an explicit
   // instruction that a reply is expected, unless answering would close a
@@ -972,7 +827,7 @@ export default function (pi: ExtensionAPI) {
   // targets exactly that trailing narration, not "how to reply" (the
   // existing tool-call line already gets that right). It is the weakest of
   // three places this same instruction is repeated (see
-  // NOTIFY_PARENT_INSTRUCTION and messageAgentTool's own result text) - a
+  // NOTIFY_PARENT_INSTRUCTION and message_agent's own result text) - a
   // prompt instruction competes with whatever system prompt the host
   // already set and does not reliably win, so this reduces the sign-off
   // rather than eliminating it; the other two are closer to where the
@@ -980,9 +835,10 @@ export default function (pi: ExtensionAPI) {
   const STOP_AFTER_ASK_REPLY =
     "That message_agent call is the entire response - end the turn there, with no summary or sign-off after it.";
   const handleInboundAsk = async (env: Envelope): Promise<"ok" | "refused"> => {
-    if (hasAskOutstandingTo(env.from.session)) return "refused";
-    const sender = await messageSender(env.from);
-    const from = sender?.name ?? labelFrom(env.from);
+    const asker = env.from;
+    if (asker.kind === "agent" && [...pendingOutbound.values()].some((w) => w.targetSession === asker.session)) return "refused";
+    const sender = await messageSender(asker);
+    const from = sender?.name ?? labelFrom(asker);
     const relation = sender?.relation ?? "peer";
     if (env.from.pane) pendingInboundAsks.set(env.id, env.from.pane);
     workStarted();
@@ -1004,14 +860,14 @@ export default function (pi: ExtensionAPI) {
   // handleInboundReply resolves a waiting ask_agent when its id matches a
   // pending outbound ask; otherwise the answer is delivered as an
   // ordinary message rather than dropped.
-  const handleInboundReply = (env: Envelope): void => {
-    const waiter = env.replyTo ? pendingOutbound.get(env.replyTo) : undefined;
+  const handleInboundReply = (env: Envelope & { kind: "reply" }): void => {
+    const waiter = pendingOutbound.get(env.replyTo);
     if (waiter) {
       waiter.settle({ reply: env.text });
       return;
     }
     if (env.text) {
-      deliver(`${labelFrom(env.from)} replied (to ask ${env.replyTo || "?"}): ${env.text}`);
+      seam().host?.deliver(`${labelFrom(env.from)} replied (to ask ${env.replyTo}): ${env.text}`);
     }
   };
 
@@ -1026,14 +882,16 @@ export default function (pi: ExtensionAPI) {
   // socket can claim to be anyone (docs/design.md, the inbox).
   const senderIsAncestor = async (env: Envelope): Promise<boolean> => {
     const listed = await fetchAgents();
-    if ("error" in listed) return false;
+    if (!listed.ok) return false;
     const self = listed.agents.find((a) => a.self);
     if (!self) return false;
+    const sender = env.from;
     // A human has no state record, so kido puts no session in `from`;
     // recognised by the pair, so an agent has to get two things wrong at
     // once to be mistaken for one.
-    if (!env.from.session && !listed.agents.some((a) => a.pane === env.from.pane)) return true;
-    const from = listed.agents.find((a) => a.id === env.from.session);
+    if (sender.kind === "kido") return true;
+    if (sender.kind === "human") return !listed.agents.some((a) => a.pane === sender.pane);
+    const from = listed.agents.find((a) => a.id === sender.session);
     return !!from && isAncestor(listed.agents, from, self);
   };
 
@@ -1045,9 +903,9 @@ export default function (pi: ExtensionAPI) {
     if (kind === "interrupt") {
       // Awaited, so a message sent after the reply finds the turn ended
       // rather than in a queue the abort skips.
-      await ctxAbort?.();
+      await session?.abort();
     } else {
-      ctxShutdown?.();
+      session?.shutdown();
     }
     return "ok";
   };
@@ -1063,7 +921,7 @@ export default function (pi: ExtensionAPI) {
   // unattributed instruction reads as if the session had told itself.
   const handleInboundSteer = async (env: Envelope): Promise<"ok" | "refused"> => {
     if (!(await senderIsAncestor(env))) return "refused";
-    if (env.text) deliver(`${labelFrom(env.from)} is redirecting this work: ${env.text}`, "steer");
+    if (env.text) seam().host?.deliver(`${labelFrom(env.from)} is redirecting this work: ${env.text}`, "steer");
     return "ok";
   };
 
@@ -1085,7 +943,7 @@ export default function (pi: ExtensionAPI) {
         // reach the model ahead of the output tail it refers to. The
         // schedule starts over too - this run is done escalating.
         flushStreams();
-        streamDelay = STREAM_FLUSH_MS;
+        streamFlush.delay = STREAM_FLUSH_MS;
         if (env.text) deliverNotice(env.text, labelFrom(env.from));
         return "ok";
       case "stream":
@@ -1096,23 +954,21 @@ export default function (pi: ExtensionAPI) {
       case "interrupt":
       case "stop":
         return handleInboundControl(env, env.kind);
-      default:
+      case "unrecognised":
         if (env.text) {
-          deliver(`[unrecognised message kind ${JSON.stringify(env.kind)} from ${labelFrom(env.from)}] ${env.text}`);
+          seam().host?.deliver(`[unrecognised message kind ${JSON.stringify(env.claimed)} from ${labelFrom(env.from)}] ${env.text}`);
         }
         return "ok";
     }
   };
 
-  const fetchAgents = async (): Promise<{ agents: AgentInfo[] } | { error: string }> => {
-    const host = status();
-    if (!host) return { error: "kido-status.ts is not loaded" };
-    const res = await host.runKido(["list_agents", "--json"], { timeoutMs: 2000 });
-    if ("error" in res) return res;
+  const fetchAgents = async (): Promise<{ ok: true; agents: AgentInfo[] } | { ok: false; error: string }> => {
+    const res = await runKido(["list_agents", "--json"], { timeoutMs: 2000 });
+    if (!res.ok) return res;
     try {
-      return { agents: res.out ? JSON.parse(res.out) : [] };
+      return { ok: true, agents: res.out ? JSON.parse(res.out) : [] };
     } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err) };
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   };
 
@@ -1121,64 +977,14 @@ export default function (pi: ExtensionAPI) {
   // gets whatever the last call returned - stale, or empty before the
   // first one lands - while a refresh runs behind it. A failed lookup
   // still stamps the clock, so a kido that cannot answer is asked once a
-  // TTL rather than once a keystroke.
-  let completionRegistered = false;
-  let completionAgents: AgentInfo[] = [];
-  let completionAgentsAt = 0;
-  let completionRefresh: Promise<void> | null = null;
+  // TTL rather than once a keystroke. Null until the provider is
+  // registered (sessionStarting).
+  let completion: { agents: AgentInfo[]; at: number; refreshing: Promise<void> | null } | null = null;
 
-  const refreshCompletionAgents = (): void => {
-    if (completionRefresh || Date.now() - completionAgentsAt < AGENT_LIST_TTL_MS) return;
-    completionRefresh = (async () => {
-      const listed = await fetchAgents();
-      if ("agents" in listed) completionAgents = listed.agents;
-      completionAgentsAt = Date.now();
-    })()
-      .catch(() => {})
-      .finally(() => {
-        completionRefresh = null;
-      });
-  };
-
-  // `@` is pi's own file-reference trigger, so this wraps the built-in
-  // provider rather than replacing it: matching agents first, then
-  // whatever files pi found for the same token, under the one prefix both
-  // halves share. `@src/...` therefore still completes files, and a token
-  // matching no agent is the built-in's answer untouched. The await here
-  // is pi's own file lookup, unchanged; kido's half of the list is never
-  // awaited (see refreshCompletionAgents).
-  const createAgentCompletionProvider = (current: CompletionProvider): CompletionProvider => ({
-    triggerCharacters: current.triggerCharacters,
-    async getSuggestions(lines, cursorLine, cursorCol, options) {
-      const token = atToken((lines[cursorLine] ?? "").slice(0, cursorCol));
-      if (token === undefined) return current.getSuggestions(lines, cursorLine, cursorCol, options);
-      refreshCompletionAgents();
-      const items = agentCompletionItems(completionAgents, token);
-      const files = await current.getSuggestions(lines, cursorLine, cursorCol, options);
-      if (items.length === 0) return files;
-      const prefix = `@${token}`;
-      // Only a file half that answered the same token can be merged: pi
-      // returns the prefix its own items are to replace, and two prefixes
-      // in one list would have the editor cut the wrong text.
-      const fileItems = files && files.prefix === prefix ? files.items : [];
-      return { items: [...items, ...fileItems], prefix };
-    },
-    // An agent item's value is `@name`, which is what pi's own
-    // applyCompletion inserts for any `@` prefix - so the insertion, the
-    // trailing space and the cursor are pi's, not a second implementation
-    // of them here.
-    applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
-      return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
-    },
-    shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
-      return current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? true;
-    },
-  });
-
-  // parentInRegistry asks kido whether PARENT_SESSION is still running:
-  // true, false, or null for "no answer", which is not evidence either
-  // way. `kido agent-alive` reads every live state record and answers
-  // that one bit. It is deliberately not `kido list_agents --json`, which the
+  // The registry is asked whether PARENT_SESSION is still running: only a
+  // definite "false" is evidence, and anything else - an error, a kido that
+  // does not know the subcommand - says nothing. `kido agent-alive` reads
+  // every live state record and answers that one bit. It is deliberately not `kido list_agents --json`, which the
   // poll used to read: that is a display command, and it both scopes
   // itself to the caller's tmux session and collapses its result to one
   // record per pane. A `pi --print` started inside the parent's pane
@@ -1188,16 +994,6 @@ export default function (pi: ExtensionAPI) {
   // a slow one; asking a question no pane collision can disturb removes
   // the need for it (docs/design.md, "Identity"). It also costs one
   // process and no tmux round trip, on a timer that never stops.
-  const parentInRegistry = async (): Promise<boolean | null> => {
-    const host = status();
-    if (!host || PARENT_SESSION === undefined) return null;
-    const res = await host.runKido(["agent-alive", PARENT_SESSION], { timeoutMs: 2000 });
-    if ("error" in res) return null;
-    if (res.out === "true") return true;
-    if (res.out === "false") return false;
-    return null; // some kido that does not know this subcommand; say nothing
-  };
-
   // parentIsAlive: kill(pid, 0) first, where ESRCH is a definite "gone" -
   // answered without a subprocess, so keepAlive gives no protection
   // against a genuinely dead parent. Success or EPERM is not proof of life
@@ -1206,13 +1002,14 @@ export default function (pi: ExtensionAPI) {
   // live parent's record to be missing from it. An unreachable kido stays
   // the one inconclusive case - never shut down on a guess.
   const parentIsAlive = async (): Promise<boolean> => {
-    if (PARENT_PID === undefined) return true;
+    if (PARENT_PID === undefined || PARENT_SESSION === undefined) return true;
     try {
       process.kill(PARENT_PID, 0);
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code === "ESRCH") return false;
     }
-    return (await parentInRegistry()) ?? true;
+    const res = await runKido(["agent-alive", PARENT_SESSION], { timeoutMs: 2000 });
+    return !(res.ok && res.out === "false");
   };
 
   // Idempotent: a /reload re-runs session_start and must not pile up a
@@ -1230,7 +1027,7 @@ export default function (pi: ExtensionAPI) {
   // delays the next real reading and never suppresses one.
   let pollInFlight = false;
 
-  const startParentLivenessPoll = (shutdown: () => void): void => {
+  const startParentLivenessPoll = (): void => {
     // Only the child of the run watches the parent that spawned it: a
     // process that merely inherited the pid would end itself over a death
     // that says nothing about it (see ownRunID).
@@ -1244,7 +1041,7 @@ export default function (pi: ExtensionAPI) {
         if (alive) return;
         // Stop first, or a slow shutdown is asked for again every tick.
         stopParentLivenessPoll();
-        shutdown();
+        session?.shutdown();
       });
     }, PARENT_LIVENESS_POLL_MS);
     parentPollTimer.unref();
@@ -1266,25 +1063,24 @@ export default function (pi: ExtensionAPI) {
   // run does - the session carries straight on in the same process.
   let reportedToParent = false;
 
-  // lastTurnError is the errorMessage of the last turn when it stopped on
-  // "error"; an abort is not an error. notified keeps one notice per
-  // failure, since agent_settled can fire again with nothing new.
-  let lastTurnError: { text: string; notified: boolean } | undefined;
+  // "awaiting-first-turn" lasts from the task being handed to the model
+  // until the first sign that anything began. A child whose pi cannot
+  // start its model at all - no API key for it, the failure this came
+  // from - settles at startup looking exactly like an idle child, so its
+  // ending has to be told apart from one that worked and stopped: this is
+  // what makes the outcome a failure rather than a completion, and what
+  // puts "no turn ever ran" in the notice its parent gets. lastError is
+  // the errorMessage of the last turn when it stopped on "error"; an abort
+  // is not an error. notified keeps one notice per failure, since
+  // agent_settled can fire again with nothing new.
+  type RunPhase = { phase: "awaiting-first-turn" } | { phase: "worked"; lastError?: { text: string; notified: boolean } };
+  let phase: RunPhase = { phase: "worked" };
 
   // idleExitTimer is the idle self-exit clock: armed on every settled turn
-  // (turnEnded) and on the delivery of the task a child was spawned with
-  // (deliverTask), cleared by any sign of new work (workStarted). Only a
-  // child arms it at all (see armIdleExit's own gate).
+  // (agent_settled) and on the delivery of the task a child was spawned
+  // with (deliverTask), cleared by any sign of new work (workStarted).
+  // Only a child arms it at all (see armIdleExit's own gate).
   let idleExitTimer: NodeJS.Timeout | null = null;
-
-  // awaitingFirstWork is true between the task being handed to the model
-  // and the first sign that anything began. A child whose pi cannot start
-  // its model at all - no API key for it, the failure this came from -
-  // settles at startup looking exactly like an idle child, so its ending
-  // has to be told apart from one that worked and stopped: this is what
-  // makes the outcome a failure rather than a completion, and what puts
-  // "no turn ever ran" in the notice its parent gets.
-  let awaitingFirstWork = false;
 
   const clearIdleExit = (): void => {
     if (idleExitTimer) {
@@ -1299,36 +1095,8 @@ export default function (pi: ExtensionAPI) {
   // before pi's own turn_start, and a child that has been given work is no
   // longer waiting for its first.
   const workStarted = (): void => {
-    awaitingFirstWork = false;
+    if (phase.phase === "awaiting-first-turn") phase = { phase: "worked" };
     clearIdleExit();
-  };
-
-  // windowFocused asks kido whether this session's own window is the one
-  // some client is currently looking at - the same test close-run and
-  // the sweep (internal/reap) use, via a dedicated kido subcommand rather
-  // than fetchAgents, since kido list_agents --json carries no focus field.
-  const windowFocused = async (windowID: string): Promise<boolean> => {
-    const host = status();
-    if (!host?.kidoPath()) return false; // no kido, no way to check; do not block on a guess either way
-    const res = await host.runKido(["window-focused", windowID], { timeoutMs: 2000 });
-    return "out" in res && res.out.trim() === "true";
-  };
-
-  // hasLiveChildren asks kido whether any run this session started is
-  // still going. The reading is of the run records, not of anything this
-  // process remembers: a child outlives the turn that spawned it and a
-  // /reload forgets everything in memory, while the record carries the
-  // parent edge and the outcome for as long as the run exists. An
-  // unreachable kido answers false, the same direction every other
-  // unavailable-kido path takes - the idle clock is the behaviour this
-  // session had before there was a query at all.
-  const hasLiveChildren = async (): Promise<boolean> => {
-    const host = status();
-    if (!host?.kidoPath()) return false;
-    const own = host.sessionId();
-    if (!own) return false;
-    const res = await host.runKido(["children-alive", own], { timeoutMs: 2000 });
-    return "out" in res && res.out.trim() === "true";
   };
 
   // armIdleExit starts (or restarts) the idle-to-self-shutdown clock. Only
@@ -1336,7 +1104,7 @@ export default function (pi: ExtensionAPI) {
   // check), and only when it has not opted out with keepAlive. Unref'd so
   // it can never hold the process alive on its own, the same as the
   // parent-liveness poll.
-  const armIdleExit = (shutdown: () => void): void => {
+  const armIdleExit = (): void => {
     if (!isSubagent() || KEEP_ALIVE) return;
     clearIdleExit();
     idleExitTimer = setTimeout(async () => {
@@ -1345,19 +1113,25 @@ export default function (pi: ExtensionAPI) {
       // its report" settles a turn exactly as finished work does, and
       // exiting there orphans the child, which the sweep then closes
       // mid-work. The clock re-arms, so the last child ending resumes it -
-      // as does the child's notice, which is new work like any other.
-      if (await hasLiveChildren()) {
-        armIdleExit(shutdown);
+      // as does the child's notice, which is new work like any other. The
+      // reading is of the run records, not of anything this process
+      // remembers: a child outlives the turn that spawned it and a /reload
+      // forgets everything in memory. An unreachable kido answers false.
+      const children = await runKido(["children-alive", seam().host?.sessionId() ?? ""], { timeoutMs: 2000 });
+      if (children.ok && children.out.trim() === "true") {
+        armIdleExit();
         return;
       }
       const listed = await fetchAgents();
-      const self = "agents" in listed ? listed.agents.find((a) => a.self) : undefined;
+      const self = listed.ok ? listed.agents.find((a) => a.self) : undefined;
       // A window a client is currently looking at is not reaped out from
       // under them; the timer re-arms instead of giving up, so the window
       // is collected once the user looks away (docs/design.md, "Idle
-      // self-exit").
-      if (self?.window && (await windowFocused(self.window))) {
-        armIdleExit(shutdown);
+      // self-exit"). kido window-focused is the same test close-run and
+      // the sweep (internal/reap) use.
+      const focused = self?.window ? await runKido(["window-focused", self.window], { timeoutMs: 2000 }) : null;
+      if (focused?.ok && focused.out.trim() === "true") {
+        armIdleExit();
         return;
       }
       // pi's own shutdown handler only ends the session once it is not
@@ -1365,69 +1139,51 @@ export default function (pi: ExtensionAPI) {
       // agent_settled - so a request made here while pi is compacting can
       // be recorded and never acted on. Re-arming costs nothing once the
       // session does end: sessionEnding clears the timer first.
-      shutdown();
-      armIdleExit(shutdown);
+      session?.shutdown();
+      armIdleExit();
     }, IDLE_EXIT_MS);
     idleExitTimer.unref();
   };
 
-  const listAgentsParams = Type.Object({}, { additionalProperties: false });
-  const listAgentsTool: ToolDefinition<typeof listAgentsParams> = {
+  pi.registerTool({
     name: "list_agents",
     label: "List Agents",
     description: "List every agent visible in this tmux session, including yourself.",
     promptSnippet: "list_agents() - see every agent in this tmux session",
-    parameters: listAgentsParams,
+    parameters: Type.Object({}, { additionalProperties: false }),
     async execute() {
       const res = await fetchAgents();
       // Any failure reads as an empty session: nothing the model can do.
-      if ("error" in res) {
-        return { content: [{ type: "text", text: "[]" }], details: [] };
-      }
-      return { content: [{ type: "text", text: JSON.stringify(res.agents) }], details: res.agents };
+      if (!res.ok) return reply("[]", []);
+      return reply(JSON.stringify(res.agents), res.agents);
     },
-  };
+  });
 
-  const setStatusParams = Type.Object(
-    {
-      // No maxLength here: it would count UTF-16 code units against a
-      // byte budget and reject a call the tool would otherwise happily
-      // truncate - status()?.setActivity (kido-status.ts) already enforces
-      // MAX_ACTIVITY_BYTES itself, in bytes, by truncating rather than
-      // refusing. The schema states the cap for the model to read; only
-      // one place enforces it.
-      activity: Type.String({
-        description: 'What you are doing right now ("refactoring internal/ui"), or "" to clear it. Capped at 256 bytes.',
-      }),
-    },
-    { additionalProperties: false },
-  );
-  const setStatusTool: ToolDefinition<typeof setStatusParams> = {
+  pi.registerTool({
     name: "set_status",
     label: "Set Status",
     description:
       "Set the free-text activity shown next to you in kido's tmux sidebar. Separate from your running/waiting/idle status.",
     promptSnippet: "set_status(activity) - tell everyone else what you are doing, visible in list_agents()",
-    parameters: setStatusParams,
+    parameters: Type.Object(
+      {
+        // No maxLength here: it would count UTF-16 code units against a
+        // byte budget and reject a call kido would otherwise happily
+        // truncate, in bytes. The schema states the cap for the model to
+        // read; only kido enforces it.
+        activity: Type.String({
+          description: 'What you are doing right now ("refactoring internal/ui"), or "" to clear it. Capped at 256 bytes.',
+        }),
+      },
+      { additionalProperties: false },
+    ),
     async execute(_toolCallId, params) {
-      status()?.setActivity(params.activity);
-      return { content: [{ type: "text", text: "ok" }], details: {} };
+      seam().host?.setActivity(params.activity);
+      return reply("ok");
     },
-  };
+  });
 
-  const messageAgentParams = Type.Object(
-    {
-      to: Type.String({
-        description: "Who to message: an agent's exact name, exact session id, or a unique prefix of its session id.",
-      }),
-      message: Type.String({ description: "The message text to deliver." }),
-      replyTo: Type.Optional(
-        Type.String({ description: "The id of an earlier ask this message answers, if any." }),
-      ),
-    },
-    { additionalProperties: false },
-  );
-  const messageAgentTool: ToolDefinition<typeof messageAgentParams> = {
+  pi.registerTool({
     name: "message_agent",
     label: "Message Agent",
     // The waiting clause is the cost a caller needs at the moment it
@@ -1439,161 +1195,123 @@ export default function (pi: ExtensionAPI) {
     description:
       "Send a message to another agent in this tmux session, addressed by name, session id, or a unique id prefix. It waits for the receiver to finish its current turn; use steer_subagent for a correction that is useless once the work is done.",
     promptSnippet: "message_agent(to, message, replyTo?) - send a message to another agent in this tmux session",
-    parameters: messageAgentParams,
+    parameters: Type.Object(
+      {
+        to: Type.String({
+          description: "Who to message: an agent's exact name, exact session id, or a unique prefix of its session id.",
+        }),
+        message: Type.String({ description: "The message text to deliver." }),
+        replyTo: Type.Optional(
+          Type.String({ description: "The id of an earlier ask this message answers, if any." }),
+        ),
+      },
+      { additionalProperties: false },
+    ),
     async execute(_toolCallId, params) {
-      const host = status();
-      if (!host?.kidoPath()) {
-        return { content: [{ type: "text", text: "kido is not available; cannot message other agents" }], details: {} };
-      }
       const args = ["message_agent"];
       // --reply-to alone makes it a reply; kido derives the kind the wire
       // correlates on from the flag, since nothing else it could mean.
       if (params.replyTo) args.push("--reply-to", params.replyTo);
-      // Captured before resolveReplyTarget consumes the entry: this is the
-      // tool result's own chance to say STOP_AFTER_ASK_REPLY, and the
+      // The tool result's own chance to say STOP_AFTER_ASK_REPLY, and the
       // strongest of the three places it is repeated (see
       // handleInboundAsk) - a tool result is the last thing the model reads
       // before deciding whether to keep talking, closer to that decision
       // than either system prompt it competes with. Only for a reply to an
       // ask this session actually has pending, not every replyTo: a reply
       // to a notice, or a stale id, has nothing to stop after.
-      const wasPendingAsk = !!params.replyTo && pendingInboundAsks.has(params.replyTo);
+      const askerPane = params.replyTo ? pendingInboundAsks.get(params.replyTo) : undefined;
       // Re-resolved from the asker's pane when this is a reply to a
       // still-remembered ask, since the model's own `to` was handed to it
       // when the ask arrived and a `/reload` since then can have moved the
       // asker to a new session id (docs/design.md's addressing rules have
-      // nothing that survives that; the pane does).
-      const to = await resolveReplyTarget(params.to, params.replyTo);
+      // nothing that survives that; the pane does). Falls back to the
+      // model's own `to` when the pane no longer resolves to anyone.
+      let to = params.to;
+      if (askerPane) {
+        pendingInboundAsks.delete(params.replyTo!);
+        const listed = await fetchAgents();
+        if (listed.ok) to = listed.agents.find((a) => a.pane === askerPane)?.id ?? to;
+      }
       // "--" first: a model-authored `to` beginning with a dash would
       // otherwise be parsed as a kido flag.
       args.push("--", to);
-      const res = await host.runKido(args, { input: params.message, timeoutMs: 5000 });
-      if ("error" in res) {
-        return { content: [{ type: "text", text: `could not message ${params.to}: ${res.error}` }], details: {} };
-      }
+      const res = await runKido(args, { input: params.message, timeoutMs: 5000 });
+      if (!res.ok) return reply(`could not message ${params.to}: ${res.error}`);
       // kido message_agent says whether it delivered by inbox or pasted.
       const delivered = res.out || `message delivered to ${params.to}`;
-      return {
-        content: [{ type: "text", text: wasPendingAsk ? `${delivered} ${STOP_AFTER_ASK_REPLY}` : delivered }],
-        details: {},
-      };
+      return reply(askerPane ? `${delivered} ${STOP_AFTER_ASK_REPLY}` : delivered);
     },
-  };
+  });
 
-  const askAgentParams = Type.Object(
-    {
-      to: Type.String({
-        description: "Who to ask: an agent's exact name, exact session id, or a unique prefix of its session id.",
-      }),
-      question: Type.String({ description: "The question to ask." }),
-      timeoutMs: Type.Optional(
-        Type.Integer({
-          description: `How long to wait for a reply, in milliseconds. Defaults to ${DEFAULT_ASK_TIMEOUT_MS} (5 minutes) - expect a full turn of the target's latency, not a round-trip.`,
-          minimum: 1,
-        }),
-      ),
-    },
-    { additionalProperties: false },
-  );
-  const askAgentTool: ToolDefinition<typeof askAgentParams> = {
+  pi.registerTool({
     name: "ask_agent",
     label: "Ask Agent",
     description:
       "Ask another agent a question and block until it replies - one full turn of the target's latency, not a round-trip, since a busy target does not see the question until it would otherwise have stopped. Refused for an ancestor, a target outside this tmux session, one with no inbox or no message_agent tool, or yourself. Not for collecting a subagent's result: that arrives on its own as a notice when the child finishes, and an ask blocks this turn until the target answers, so the notice cannot be read until the ask returns.",
     promptSnippet:
       "ask_agent(to, question, timeoutMs?) - ask another agent a question and wait for its reply (DO NOT use to get subagent results, wait for notification instead)",
-    parameters: askAgentParams,
+    parameters: Type.Object(
+      {
+        to: Type.String({
+          description: "Who to ask: an agent's exact name, exact session id, or a unique prefix of its session id.",
+        }),
+        question: Type.String({ description: "The question to ask." }),
+        timeoutMs: Type.Optional(
+          Type.Integer({
+            description: `How long to wait for a reply, in milliseconds. Defaults to ${DEFAULT_ASK_TIMEOUT_MS} (5 minutes) - expect a full turn of the target's latency, not a round-trip.`,
+            minimum: 1,
+          }),
+        ),
+      },
+      { additionalProperties: false },
+    ),
     async execute(_toolCallId, params, signal) {
-      const host = status();
-      if (!host?.kidoPath()) {
-        return { content: [{ type: "text", text: "kido is not available; cannot ask other agents" }], details: {} };
-      }
-
       const listed = await fetchAgents();
-      if ("error" in listed) {
-        return { content: [{ type: "text", text: `could not list agents: ${listed.error}` }], details: {} };
-      }
+      if (!listed.ok) return reply(`could not list agents: ${listed.error}`);
       const agents = listed.agents;
 
       const self = agents.find((a) => a.self);
-      if (!self) {
-        return { content: [{ type: "text", text: "could not find this agent among kido's agents; cannot ask" }], details: {} };
-      }
+      if (!self) return reply("could not find this agent among kido's agents; cannot ask");
 
       // kido list_agents --json is already scoped to this tmux session, so a
       // target outside it simply does not resolve here.
       const { agent: target, error } = resolveAgent(agents, params.to);
-      if (!target) {
-        return { content: [{ type: "text", text: `could not ask ${params.to}: ${error}` }], details: {} };
-      }
-      if (target.id === self.id) {
-        return { content: [{ type: "text", text: "cannot ask yourself" }], details: {} };
-      }
+      if (!target) return reply(`could not ask ${params.to}: ${error}`);
+      if (target.id === self.id) return reply("cannot ask yourself");
+      const who = target.name || target.id;
       // isAncestor(agents, target, self): is the TARGET an ancestor of ME?
       // A child asking its parent (or any ancestor) is what this refuses;
       // a parent asking its own child is the ordinary case and must fall
       // through.
       if (isAncestor(agents, target, self)) {
-        return {
-          content: [{ type: "text", text: `${target.name || target.id} is an ancestor; the parent stays free to orchestrate, so it cannot be asked` }],
-          details: {},
-        };
+        return reply(`${who} is an ancestor; the parent stays free to orchestrate, so it cannot be asked`);
       }
       if (!target.canMessage) {
-        return {
-          content: [{ type: "text", text: `${target.name || target.id} has no inbox; an ask cannot work over a paste, there is no way back` }],
-          details: {},
-        };
+        return reply(`${who} has no inbox; an ask cannot work over a paste, there is no way back`);
       }
-      if (target.canReply === false) {
-        return {
-          content: [{
-            type: "text",
-            text: `${target.name || target.id} was spawned without the message_agent tool and cannot reply; use message_agent, or wait for its notify_parent notice`,
-          }],
-          details: {},
-        };
+      if (!target.canReply) {
+        return reply(`${who} was spawned without the message_agent tool and cannot reply; use message_agent, or wait for its notify_parent notice`);
       }
       // Fail fast rather than wait out the timeout against a target that
       // is never going to answer.
       if (target.stalled) {
-        return {
-          content: [{
-            type: "text",
-            text: `${target.name || target.id} has been quiet for ${target.sinceReport}s while reporting running; likely stalled, refusing to wait for a reply`,
-          }],
-          details: {},
-        };
+        return reply(`${who} has been quiet for ${target.sinceReport}s while reporting running; likely stalled, refusing to wait for a reply`);
       }
       // Same fail-fast reasoning, for the case stalled cannot catch: a
       // target that died seconds ago is not stalled (that takes minutes
       // of silence), and every listed agent is named by the session id
       // this asks about. An inconclusive answer (an error, or a kido too
       // old to know the subcommand) is never treated as "dead".
-      const alive = await host.runKido(["agent-alive", target.id], { timeoutMs: 2000 });
-      if (!("error" in alive) && alive.out === "false") {
-        return {
-          content: [{
-            type: "text",
-            text: `${target.name || target.id} is no longer running; refusing to wait for a reply`,
-          }],
-          details: {},
-        };
-      }
+      const alive = await runKido(["agent-alive", target.id], { timeoutMs: 2000 });
+      if (alive.ok && alive.out === "false") return reply(`${who} is no longer running; refusing to wait for a reply`);
 
       // The inbox may have gone away while fetchAgents() was in flight.
       // Checked synchronously, with no await between here and
       // pendingOutbound.set below, so a teardown either already caught
       // this waiter with abandonPending or closed the inbox before this
       // check (docs/design.md, "When the inbox goes away").
-      if (!host.inboxOpen()) {
-        return {
-          content: [{
-            type: "text",
-            text: `this session's inbox is unavailable; no reply from ${params.to} can be waited for`,
-          }],
-          details: {},
-        };
+      if (!seam().host?.inboxOpen()) {
+        return reply(`this session's inbox is unavailable; no reply from ${params.to} can be waited for`);
       }
 
       const id = randomUUID();
@@ -1604,7 +1322,7 @@ export default function (pi: ExtensionAPI) {
       // reply cannot race past it.
       let deliverReply: (outcome: AskOutcome) => void = () => {};
       let watch: NodeJS.Timeout | null = null;
-      const reply = new Promise<AskOutcome>((resolve) => {
+      const answered = new Promise<AskOutcome>((resolve) => {
         deliverReply = resolve;
       });
       let settled = false;
@@ -1620,7 +1338,6 @@ export default function (pi: ExtensionAPI) {
       const timer = setTimeout(() => settle({ gaveUp: "timeout" }), timeoutMs);
       timer.unref(); // a wait must never hold pi's event loop open
       pendingOutbound.set(id, { targetSession: target.id, settle });
-      onAskEdgeRegistered?.(target.id);
       // pi hands every tool the turn's AbortSignal, and Esc aborts it. A
       // wait that ignores it is a turn the human cannot end, since pi's
       // own abort path waits for the tool call to return. addEventListener
@@ -1636,14 +1353,11 @@ export default function (pi: ExtensionAPI) {
 
       // target.id, not params.to: passing the resolved id removes a second
       // resolution inside kido ask_agent that could disagree with this one.
-      const sent = await host.runKido(["ask_agent", "--id", id, "--", target.id], {
+      const sent = await runKido(["ask_agent", "--id", id, "--", target.id], {
         input: params.question,
         timeoutMs: 5000,
       });
-      if ("error" in sent) {
-        settle({ gaveUp: "unsent" });
-        return { content: [{ type: "text", text: `could not ask ${params.to}: ${sent.error}` }], details: {} };
-      }
+      if (!sent.ok) settle({ gaveUp: "unsent" });
 
       // The precheck above only rules out a target that was already gone.
       // One that dies while this waits - the ordinary case of a child that
@@ -1664,113 +1378,28 @@ export default function (pi: ExtensionAPI) {
         watch = setInterval(() => {
           if (reading) return;
           reading = true;
-          host.runKido(["agent-alive", targetID], { timeoutMs: 2000 }).then((res) => {
+          runKido(["agent-alive", targetID], { timeoutMs: 2000 }).then((res) => {
             reading = false;
-            if (!("error" in res) && res.out === "false") settle({ gaveUp: "gone" });
+            if (res.ok && res.out === "false") settle({ gaveUp: "gone" });
           });
         }, ASK_LIVENESS_POLL_MS);
         watch.unref();
       }
 
-      const outcome = await reply;
-      if ("reply" in outcome) {
-        return { content: [{ type: "text", text: outcome.reply }], details: {} };
-      }
-      if (outcome.gaveUp === "aborted") {
-        return {
-          content: [{
-            type: "text",
-            text: `the ask to ${params.to} was interrupted (ask id ${id}); a later reply naming this id will still arrive as a message`,
-          }],
-          details: {},
-        };
-      }
-      if (outcome.gaveUp === "gone") {
-        return {
-          content: [{
-            type: "text",
-            text: `${target.name || target.id} stopped running before answering (ask id ${id}); no reply can come from it now`,
-          }],
-          details: {},
-        };
-      }
-      if (outcome.gaveUp === "inbox") {
-        return {
-          content: [{
-            type: "text",
-            text: `this session's inbox closed before ${params.to} answered (ask id ${id}); no reply can reach it now, so ask again if the answer still matters`,
-          }],
-          details: {},
-        };
-      }
-      return {
-        content: [{
-          type: "text",
-          text: `no reply from ${params.to} within ${timeoutMs}ms (ask id ${id}); a later reply naming this id will still arrive as a message`,
-        }],
-        details: {},
+      const outcome = await answered;
+      if ("reply" in outcome) return reply(outcome.reply);
+      const gaveUpText: Record<GaveUp, string> = {
+        unsent: `could not ask ${params.to}: ${sent.ok ? "" : sent.error}`,
+        aborted: `the ask to ${params.to} was interrupted (ask id ${id}); a later reply naming this id will still arrive as a message`,
+        gone: `${who} stopped running before answering (ask id ${id}); no reply can come from it now`,
+        inbox: `this session's inbox closed before ${params.to} answered (ask id ${id}); no reply can reach it now, so ask again if the answer still matters`,
+        timeout: `no reply from ${params.to} within ${timeoutMs}ms (ask id ${id}); a later reply naming this id will still arrive as a message`,
       };
+      return reply(gaveUpText[outcome.gaveUp]);
     },
-  };
+  });
 
-  // safeSubagentName generates a name when the caller gives none. It goes
-  // on a tmux command line, so it must avoid the characters tmuxConfUnsafe
-  // rejects; hex does, and a name that reads better might not.
-  const safeSubagentName = (): string => `sub-${randomUUID().slice(0, 8)}`;
-
-  const spawnSubagentParams = Type.Object(
-    {
-      task: Type.Optional(
-        Type.String({
-          description:
-            "The task to give the new subagent, delivered as its first message. Required unless resume is given - a resumed run keeps its own original task and refuses a new one. " +
-            "The subagent starts with no context beyond this text (a fork excepted), so name the files, the lines and the specific change, say what it must report back, and say whether it is to write code or only research. " +
-            "Synthesize what you already know into the task rather than writing \"based on your findings\".",
-        }),
-      ),
-      name: Type.Optional(
-        Type.String({
-          description:
-            "A name for the subagent's window and session; a name is generated when omitted. Refused together with resume - a resumed run keeps its original window name.",
-        }),
-      ),
-      // "provider/model-id" (e.g. claude-bridge/claude-sonnet-5), never a
-      // bare alias like "sonnet" - kido spawn_subagent checks it against
-      // `pi --list-models` and refuses up front rather than letting pi
-      // accept it, print "Use /login ..." and exit having run no turn.
-      model: Type.Optional(
-        Type.String({
-          description:
-            'Model for the subagent to run, as "provider/model-id" (e.g. claude-bridge/claude-sonnet-5) - see `pi --list-models`. A bare alias like "sonnet" is refused, not resolved.',
-        }),
-      ),
-      tools: Type.Optional(
-        Type.Array(Type.String(), {
-          description: "Tool names the subagent may use - its capability ceiling. Omit to leave it at pi's default set.",
-        }),
-      ),
-      keepAlive: Type.Optional(
-        Type.Boolean({
-          description:
-            "Keep the subagent alive after it goes idle instead of letting it self-reap after a short timeout. For a deliberately long-lived helper; defaults to false.",
-        }),
-      ),
-      resume: Type.Optional(
-        Type.String({
-          description:
-            "Resume a dead or finished subagent by its own run id (from this tool's earlier result, or `kido runs`) instead of starting a new one, in its own new window. Refused together with task or name.",
-        }),
-      ),
-      fork: Type.Optional(
-        Type.Boolean({
-          description:
-            "Start the subagent holding this session's context: it is forked from this conversation and then given the task. For a short judgement or merge step that has to know what was already decided - the whole context is replayed on every one of its turns, so it is a poor choice for a long worker. Refused together with resume; defaults to false.",
-        }),
-      ),
-    },
-    { additionalProperties: false },
-  );
-  const spawnSubagentTool: ToolDefinition<typeof spawnSubagentParams> = {
+  pi.registerTool({
     name: "spawn_subagent",
     label: "Spawn Subagent",
     description:
@@ -1788,258 +1417,187 @@ export default function (pi: ExtensionAPI) {
       "Trust but verify: a child's report says what it intended to do, not what it did - check the diff before relaying success.",
       NOT_THE_USER_RULE,
     ],
-    parameters: spawnSubagentParams,
+    parameters: Type.Object(
+      {
+        task: Type.Optional(
+          Type.String({
+            description:
+              "The task to give the new subagent, delivered as its first message. Required unless resume is given - a resumed run keeps its own original task and refuses a new one. " +
+              "The subagent starts with no context beyond this text (a fork excepted), so name the files, the lines and the specific change, say what it must report back, and say whether it is to write code or only research. " +
+              "Synthesize what you already know into the task rather than writing \"based on your findings\".",
+          }),
+        ),
+        name: Type.Optional(
+          Type.String({
+            description:
+              "A name for the subagent's window and session; a name is generated when omitted. Refused together with resume - a resumed run keeps its original window name.",
+          }),
+        ),
+        // "provider/model-id" (e.g. claude-bridge/claude-sonnet-5), never a
+        // bare alias like "sonnet" - kido spawn_subagent checks it against
+        // `pi --list-models` and refuses up front rather than letting pi
+        // accept it, print "Use /login ..." and exit having run no turn.
+        model: Type.Optional(
+          Type.String({
+            description:
+              'Model for the subagent to run, as "provider/model-id" (e.g. claude-bridge/claude-sonnet-5) - see `pi --list-models`. A bare alias like "sonnet" is refused, not resolved.',
+          }),
+        ),
+        tools: Type.Optional(
+          Type.Array(Type.String(), {
+            description: "Tool names the subagent may use - its capability ceiling. Omit to leave it at pi's default set.",
+          }),
+        ),
+        keepAlive: Type.Optional(
+          Type.Boolean({
+            description:
+              "Keep the subagent alive after it goes idle instead of letting it self-reap after a short timeout. For a deliberately long-lived helper; defaults to false.",
+          }),
+        ),
+        resume: Type.Optional(
+          Type.String({
+            description:
+              "Resume a dead or finished subagent by its own run id (from this tool's earlier result, or `kido runs`) instead of starting a new one, in its own new window. Refused together with task or name.",
+          }),
+        ),
+        fork: Type.Optional(
+          Type.Boolean({
+            description:
+              "Start the subagent holding this session's context: it is forked from this conversation and then given the task. For a short judgement or merge step that has to know what was already decided - the whole context is replayed on every one of its turns, so it is a poor choice for a long worker. Refused together with resume; defaults to false.",
+          }),
+        ),
+      },
+      { additionalProperties: false },
+    ),
     async execute(_toolCallId, params) {
-      const host = status();
-      if (!host?.kidoPath()) {
-        return { content: [{ type: "text", text: "kido is not available; cannot spawn a subagent" }], details: {} };
-      }
       // The child's parent edge is this session's id, so a pi that has
       // none - outside tmux, or not tracked - has no edge to give it.
-      const own = host.sessionId();
-      if (!own) {
-        return { content: [{ type: "text", text: "this session has no id of its own to parent a subagent with; cannot spawn" }], details: {} };
-      }
-      // resume keeps the run's own original task and window name - the same
-      // pair `kido spawn_subagent --resume` itself refuses alongside --task-file and
-      // --name - so a call naming both is ambiguous about which one the
-      // model actually wants and is refused rather than silently picking
-      // one.
-      if (params.resume) {
-        if (params.task) {
-          return {
-            content: [{ type: "text", text: "resume and task cannot both be given: a resumed run keeps its own original task" }],
-            details: {},
-          };
-        }
-        if (params.name) {
-          return {
-            content: [{ type: "text", text: "resume and name cannot both be given: a resumed run keeps its own original window name" }],
-            details: {},
-          };
-        }
-        if (params.fork) {
-          return {
-            content: [{ type: "text", text: "resume and fork cannot both be given: a resumed run continues its own session, a fork starts a new one from this session's context" }],
-            details: {},
-          };
-        }
-      } else if (!params.task) {
-        return { content: [{ type: "text", text: "task is required unless resume is given" }], details: {} };
-      }
-      const depth = (DEPTH ?? 0) + 1;
-      if (depth > MAX_SPAWN_DEPTH) {
-        return {
-          content: [{ type: "text", text: `already at the maximum subagent nesting depth (${MAX_SPAWN_DEPTH}); cannot spawn another` }],
-          details: {},
-        };
-      }
-
-      // Spelled once for both spawn and resume: pi's own --model/--tools
-      // constrain the child, kido spawn_subagent's identically named pair
-      // goes in the run record (spawn only - --resume has no top-level
-      // --tools of its own, and only defaults --model from the run's own
-      // meta when neither this nor an explicit command overrides it).
+      const own = seam().host?.sessionId();
+      if (!own) return reply("this session has no id of its own to parent a subagent with; cannot spawn");
+      // A generated name goes on a tmux command line, so it must avoid the
+      // characters tmuxConfUnsafe rejects; hex does. A resume keeps its
+      // run's own name, so none is generated for it.
+      const name = params.name || (params.resume ? "" : `sub-${randomUUID().slice(0, 8)}`);
+      // Every argument is forwarded as given, and kido spawn_subagent
+      // refuses the combinations that make no sense. pi's own
+      // --model/--tools constrain the child; kido spawn_subagent's
+      // identically named pair goes in the run record.
       const modelAndTools = [
         ...(params.model ? ["--model", params.model] : []),
         ...(params.tools && params.tools.length > 0 ? ["--tools", params.tools.join(",")] : []),
       ];
-      const keepAliveArgs = params.keepAlive ? ["--keep-alive"] : [];
-
+      const args = ["spawn_subagent", "--parent-pid", String(process.pid), "--parent-session", own];
+      if (params.resume) args.push("--resume", params.resume);
+      if (name) args.push("--name", name);
+      // The task goes to kido spawn_subagent as text on stdin; kido decides it
+      // becomes a file.
+      if (params.task) args.push("--task-file", "-");
+      // The session to fork is this one, named by the same id the child's
+      // parent edge is: `pi --fork` resolves a session by id and there is
+      // exactly one right answer here.
+      if (params.fork) args.push("--fork", own);
+      if (params.keepAlive) args.push("--keep-alive");
+      args.push(...modelAndTools, "--", "pi", ...(name ? ["--name", name] : []), ...modelAndTools);
+      const res = await runKido(args, { input: params.task, timeoutMs: SPAWN_TIMEOUT_MS });
+      if (!res.ok) return reply(params.resume ? `could not resume ${params.resume}: ${res.error}` : `could not spawn subagent: ${res.error}`);
+      const [windowID, paneID, runID] = res.out.split(/\s+/);
       if (params.resume) {
-        const args = [
-          "spawn_subagent",
-          "--resume",
-          params.resume,
-          "--parent-pid",
-          String(process.pid),
-          "--parent-session",
-          own,
-          ...keepAliveArgs,
-        ];
-        // Only named after "--" if there is something to override - an
-        // absent --model already gets the run's own recorded one back from
-        // kido spawn_subagent --resume itself.
-        if (modelAndTools.length > 0) args.push("--", "pi", ...modelAndTools);
-        const res = await host.runKido(args, { timeoutMs: SPAWN_TIMEOUT_MS });
-        if ("error" in res) {
-          return { content: [{ type: "text", text: `could not resume ${params.resume}: ${res.error}` }], details: {} };
-        }
-        const [windowID, paneID, runID] = res.out.split(/\s+/);
         // A resumed run keeps its original task, which it was already
         // given, so nothing is delivered to it and it comes back idle.
         // Saying so is the whole of this line's job: a parent that
         // resumed a run and then waited for it waited on a child that was
         // waiting on it.
-        return {
-          content: [{
-            type: "text",
-            text: `resumed ${runID} (window ${windowID}, pane ${paneID}); it is back with its context and idle - send it a message to continue, since it is waiting for one; ${SPAWN_RESULT_RULE}`,
-          }],
-          details: { window: windowID, pane: paneID, run: runID },
-        };
+        return reply(
+          `resumed ${runID} (window ${windowID}, pane ${paneID}); it is back with its context and idle - send it a message to continue, since it is waiting for one; ${SPAWN_RESULT_RULE}`,
+          { window: windowID, pane: paneID, run: runID },
+        );
       }
-
-      // The session to fork is this one, named by the same id the child's
-      // parent edge is: `pi --fork` resolves a session by id and there is
-      // exactly one right answer here.
-      const forkArgs = params.fork ? ["--fork", own] : [];
-
-      const name = params.name || safeSubagentName();
-      const child = ["pi", "--name", name, ...modelAndTools];
-
-      // The task goes to kido spawn_subagent as text on stdin; kido decides it
-      // becomes a file.
-      const res = await host.runKido(
-        [
-          "spawn_subagent",
-          "--parent-pid",
-          String(process.pid),
-          "--parent-session",
-          own,
-          "--name",
-          name,
-          "--task-file",
-          "-",
-          ...modelAndTools,
-          ...keepAliveArgs,
-          ...forkArgs,
-          "--",
-          ...child,
-        ],
-        { input: params.task!, timeoutMs: SPAWN_TIMEOUT_MS },
+      return reply(
+        `spawned ${name} (window ${windowID}, pane ${paneID}, run ${runID})${params.fork ? ", forked from this session's context" : ""}; ` +
+          SPAWN_RESULT_RULE,
+        { name, window: windowID, pane: paneID, run: runID, fork: !!params.fork },
       );
-      if ("error" in res) {
-        return { content: [{ type: "text", text: `could not spawn subagent: ${res.error}` }], details: {} };
-      }
-      const [windowID, paneID, runID] = res.out.split(/\s+/);
-      return {
-        content: [{
-          type: "text",
-          text:
-            `spawned ${name} (window ${windowID}, pane ${paneID}, run ${runID})${params.fork ? ", forked from this session's context" : ""}; ` +
-            SPAWN_RESULT_RULE,
-        }],
-        details: { name, window: windowID, pane: paneID, run: runID, fork: !!params.fork },
-      };
     },
-  };
+  });
 
-  const steerSubagentParams = Type.Object(
+  const controlTools = [
     {
-      to: Type.String({
-        description: "Who to steer: a descendant's exact name, exact session id, or a unique prefix of its session id.",
-      }),
-      message: Type.String({ description: "The course correction to deliver." }),
-    },
-    { additionalProperties: false },
-  );
-  const steerSubagentTool: ToolDefinition<typeof steerSubagentParams> = {
-    name: "steer_subagent",
-    label: "Steer Subagent",
-    description:
-      "Redirect a descendant that is already working, without aborting its turn: the message joins the run it is in rather than waiting for it to finish. For a correction that is useless once the work is done. Refused for anything but a descendant. Use message_agent when the message can wait for the current turn to end.",
-    promptSnippet: "steer_subagent(to, message) - redirect a descendant mid-task, without aborting its turn",
-    parameters: steerSubagentParams,
-    async execute(_toolCallId, params) {
-      const host = status();
-      if (!host?.kidoPath()) {
-        return { content: [{ type: "text", text: "kido is not available; cannot steer other agents" }], details: {} };
-      }
-      const res = await host.runKido(["steer_subagent", "--", params.to], { input: params.message, timeoutMs: 5000 });
-      if ("error" in res) {
-        return { content: [{ type: "text", text: `could not steer ${params.to}: ${res.error}` }], details: {} };
-      }
-      return { content: [{ type: "text", text: res.out || `steered ${params.to}` }], details: {} };
-    },
-  };
-
-  const interruptSubagentParams = Type.Object(
-    {
-      to: Type.String({
-        description: "Who to interrupt: an agent's exact name, exact session id, or a unique prefix of its session id.",
-      }),
-    },
-    { additionalProperties: false },
-  );
-  const interruptSubagentTool: ToolDefinition<typeof interruptSubagentParams> = {
-    name: "interrupt_subagent",
-    label: "Interrupt Subagent",
-    description:
-      "Abort a descendant's current turn without ending its session - it stays alive and idle, ready for a corrected instruction. Refused for anything but a descendant.",
-    promptSnippet: "interrupt_subagent(to) - abort a descendant's current turn, without ending its session",
-    parameters: interruptSubagentParams,
-    async execute(_toolCallId, params) {
-      const host = status();
-      if (!host?.kidoPath()) {
-        return { content: [{ type: "text", text: "kido is not available; cannot interrupt other agents" }], details: {} };
-      }
-      const res = await host.runKido(["interrupt_subagent", "--", params.to], { timeoutMs: 5000 });
-      if ("error" in res) {
-        return { content: [{ type: "text", text: `could not interrupt ${params.to}: ${res.error}` }], details: {} };
-      }
-      return { content: [{ type: "text", text: res.out || `interrupted ${params.to}` }], details: {} };
-    },
-  };
-
-  const stopSubagentParams = Type.Object(
-    {
-      to: Type.String({
-        description: "Who to stop: an agent's exact name, exact session id, or a unique prefix of its session id.",
-      }),
-      force: Type.Optional(
-        Type.Boolean({
-          description:
-            "Kill the target's window directly if it has no inbox to ask nicely over. Destructive and irreversible - only set this when you mean it.",
-        }),
+      name: "steer_subagent",
+      label: "Steer Subagent",
+      description:
+        "Redirect a descendant that is already working, without aborting its turn: the message joins the run it is in rather than waiting for it to finish. For a correction that is useless once the work is done. Refused for anything but a descendant. Use message_agent when the message can wait for the current turn to end.",
+      promptSnippet: "steer_subagent(to, message) - redirect a descendant mid-task, without aborting its turn",
+      parameters: Type.Object(
+        {
+          to: Type.String({
+            description: "Who to steer: a descendant's exact name, exact session id, or a unique prefix of its session id.",
+          }),
+          message: Type.String({ description: "The course correction to deliver." }),
+        },
+        { additionalProperties: false },
       ),
+      verb: "steer",
+      done: "steered",
+      timeoutMs: 5000,
     },
-    { additionalProperties: false },
-  );
-  const stopSubagentTool: ToolDefinition<typeof stopSubagentParams> = {
-    name: "stop_subagent",
-    label: "Stop Subagent",
-    description:
-      "End a descendant's session. Asks it to shut down over its inbox and, if it does not within a few seconds, kills its window instead. Refused for anything but a descendant.",
-    promptSnippet: "stop_subagent(to, force?) - end a descendant's session, killing its window if it does not respond",
-    parameters: stopSubagentParams,
-    async execute(_toolCallId, params) {
-      const host = status();
-      if (!host?.kidoPath()) {
-        return { content: [{ type: "text", text: "kido is not available; cannot stop other agents" }], details: {} };
-      }
-      const args = ["stop_subagent"];
-      if (params.force) args.push("--force");
-      args.push("--", params.to);
-      const res = await host.runKido(args, { timeoutMs: STOP_TIMEOUT_MS });
-      if ("error" in res) {
-        return { content: [{ type: "text", text: `could not stop ${params.to}: ${res.error}` }], details: {} };
-      }
-      return { content: [{ type: "text", text: res.out || `stopped ${params.to}` }], details: {} };
-    },
-  };
-
-  const asyncBashParams = Type.Object(
     {
-      command: Type.String({
-        description:
-          'The command to run in the background, as a shell command line (e.g. "make -j8 && ./run"), run under bash -c.',
-      }),
-      name: Type.Optional(
-        Type.String({
-          description: "A name for the run and its window; derived from the command's first word when omitted.",
-        }),
+      name: "interrupt_subagent",
+      label: "Interrupt Subagent",
+      description:
+        "Abort a descendant's current turn without ending its session - it stays alive and idle, ready for a corrected instruction. Refused for anything but a descendant.",
+      promptSnippet: "interrupt_subagent(to) - abort a descendant's current turn, without ending its session",
+      parameters: Type.Object(
+        {
+          to: Type.String({
+            description: "Who to interrupt: an agent's exact name, exact session id, or a unique prefix of its session id.",
+          }),
+        },
+        { additionalProperties: false },
       ),
-      stream: Type.Optional(
-        Type.Boolean({
-          description:
-            "Send the command's output to this session in batches while it runs, instead of only at the end. Off by default.",
-        }),
-      ),
+      verb: "interrupt",
+      done: "interrupted",
+      timeoutMs: 5000,
     },
-    { additionalProperties: false },
-  );
-  const asyncBashTool: ToolDefinition<typeof asyncBashParams> = {
+    {
+      name: "stop_subagent",
+      label: "Stop Subagent",
+      description:
+        "End a descendant's session. Asks it to shut down over its inbox and, if it does not within a few seconds, kills its window instead. Refused for anything but a descendant.",
+      promptSnippet: "stop_subagent(to, force?) - end a descendant's session, killing its window if it does not respond",
+      parameters: Type.Object(
+        {
+          to: Type.String({
+            description: "Who to stop: an agent's exact name, exact session id, or a unique prefix of its session id.",
+          }),
+          force: Type.Optional(
+            Type.Boolean({
+              description:
+                "Kill the target's window directly if it has no inbox to ask nicely over. Destructive and irreversible - only set this when you mean it.",
+            }),
+          ),
+        },
+        { additionalProperties: false },
+      ),
+      verb: "stop",
+      done: "stopped",
+      timeoutMs: STOP_TIMEOUT_MS,
+    },
+  ];
+  for (const { verb, done, timeoutMs, ...tool } of controlTools) {
+    pi.registerTool({
+      ...tool,
+      async execute(_toolCallId: string, params: { to: string; message?: string; force?: boolean }) {
+        const args = [tool.name];
+        if (params.force) args.push("--force");
+        args.push("--", params.to);
+        const res = await runKido(args, { input: params.message, timeoutMs });
+        if (!res.ok) return reply(`could not ${verb} ${params.to}: ${res.error}`);
+        return reply(res.out || `${done} ${params.to}`);
+      },
+    });
+  }
+
+  pi.registerTool({
     name: "async_bash",
     label: "Async Bash",
     description:
@@ -2050,60 +1608,68 @@ export default function (pi: ExtensionAPI) {
       "Use async_bash only for a command whose result you do not need next; if you need it before continuing, run it in bash instead. A notice arrives when a background command ends - if you have nothing else to do, end your turn rather than sleep or poll for it.",
       NOT_THE_USER_RULE,
     ],
-    parameters: asyncBashParams,
+    parameters: Type.Object(
+      {
+        command: Type.String({
+          description:
+            'The command to run in the background, as a shell command line (e.g. "make -j8 && ./run"), run under bash -c.',
+        }),
+        name: Type.Optional(
+          Type.String({
+            description: "A name for the run and its window; derived from the command's first word when omitted.",
+          }),
+        ),
+        stream: Type.Optional(
+          Type.Boolean({
+            description:
+              "Send the command's output to this session in batches while it runs, instead of only at the end. Off by default.",
+          }),
+        ),
+      },
+      { additionalProperties: false },
+    ),
     async execute(_toolCallId, params) {
-      const host = status();
-      if (!host?.kidoPath()) {
-        return { content: [{ type: "text", text: "kido is not available; cannot run a background command" }], details: {} };
-      }
       const args = ["async_bash"];
       if (params.name) args.push("--name", params.name);
       if (params.stream) args.push("--stream");
       args.push("--", params.command);
-      const res = await host.runKido(args, { timeoutMs: SPAWN_TIMEOUT_MS });
-      if ("error" in res) {
-        return { content: [{ type: "text", text: `could not start background command: ${res.error}` }], details: {} };
-      }
+      const res = await runKido(args, { timeoutMs: SPAWN_TIMEOUT_MS });
+      if (!res.ok) return reply(`could not start background command: ${res.error}`);
       // Four fields for a bash run, the last of them where the output is
       // being written; kido says where that is (cmd/kido's printCreated).
       const [windowID, paneID, runID, outputPath] = res.out.split(/\s+/);
-      return {
-        content: [{
-          type: "text",
-          text:
-            `started run ${runID}${params.name ? ` (${params.name})` : ""} in window ${windowID}; ` +
-            `a notice with its exit status and a tail of its output arrives when it ends - if you have nothing else to do, end your turn now, since the notice wakes you; never sleep or poll for it - ` +
-            (params.stream
-              ? `batches of its output arrive meanwhile, capped, with anything they leave out in ${outputPath}`
-              : `read ${outputPath} with the read tool to check on it meanwhile`),
-        }],
-        details: { name: params.name, window: windowID, pane: paneID, run: runID, output: outputPath, stream: !!params.stream },
-      };
+      return reply(
+        `started run ${runID}${params.name ? ` (${params.name})` : ""} in window ${windowID}; ` +
+          `a notice with its exit status and a tail of its output arrives when it ends - if you have nothing else to do, end your turn now, since the notice wakes you; never sleep or poll for it - ` +
+          (params.stream
+            ? `batches of its output arrive meanwhile, capped, with anything they leave out in ${outputPath}`
+            : `read ${outputPath} with the read tool to check on it meanwhile`),
+        { name: params.name, window: windowID, pane: paneID, run: runID, output: outputPath, stream: !!params.stream },
+      );
     },
-  };
+  });
 
-  const notifyParentParams = Type.Object(
-    {
-      // No maxLength here, for the same reason set_status's schema has
-      // none: it is a character count checked against a byte budget, and
-      // typebox rejects the whole call on it rather than truncating -
-      // measured live, a model given a long report had to redo the call
-      // after "summary must not have more than N characters".
-      summary: Type.String({
-        description:
-          `A short summary of the finished work to send to your parent. Your parent reads the first ${MAX_NOTICE_BYTES} bytes; ` +
-          `anything longer is kept in full in this run's directory and the notice says where, so nothing is lost.`,
-      }),
-    },
-    { additionalProperties: false },
-  );
-  const notifyParentTool: ToolDefinition<typeof notifyParentParams> = {
+  pi.registerTool({
     name: "notify_parent",
     label: "Notify Parent",
     description:
       "Tell your parent your work is done, carrying a short summary. Call this once, when you have an answer or have given up - nothing else reports it. Only meaningful for a subagent; refused for a session with no parent.",
     promptSnippet: "notify_parent(summary) - tell your parent your work is done, once it actually is",
-    parameters: notifyParentParams,
+    parameters: Type.Object(
+      {
+        // No maxLength here, for the same reason set_status's schema has
+        // none: it is a character count checked against a byte budget, and
+        // typebox rejects the whole call on it rather than truncating -
+        // measured live, a model given a long report had to redo the call
+        // after "summary must not have more than N characters".
+        summary: Type.String({
+          description:
+            `A short summary of the finished work to send to your parent. Your parent reads the first ${MAX_NOTICE_BYTES} bytes; ` +
+            `anything longer is kept in full in this run's directory and the notice says where, so nothing is lost.`,
+        }),
+      },
+      { additionalProperties: false },
+    ),
     async execute(_toolCallId, params) {
       // The one refusal that has nothing to do with kido being reachable:
       // a session that is not itself a spawned child (a human's own
@@ -2112,11 +1678,7 @@ export default function (pi: ExtensionAPI) {
       // tell, so this must read as a clear refusal rather than the same
       // silent no-op every other tool gives an unavailable kido.
       if (!isSubagent()) {
-        return { content: [{ type: "text", text: "this session has no parent (it was not spawned as a subagent); notify_parent has nobody to tell" }], details: {} };
-      }
-      const host = status();
-      if (!host?.kidoPath()) {
-        return { content: [{ type: "text", text: "kido is not available; cannot notify the parent" }], details: {} };
+        return reply("this session has no parent (it was not spawned as a subagent); notify_parent has nobody to tell");
       }
       // No target, and nothing listed to find one: `kido notify_parent`
       // reads the parent edge out of KIDO_AGENT_PARENT_SESSION, the same
@@ -2129,55 +1691,13 @@ export default function (pi: ExtensionAPI) {
       // it in the run's directory and sends the parent its head and that
       // path. This tool used to cut it to the cap here, and the rest of a
       // long report was simply gone.
-      const res = await host.runKido(["notify_parent"], { input: params.summary, timeoutMs: 5000 });
-      if ("error" in res) {
-        return { content: [{ type: "text", text: `could not notify parent: ${res.error}` }], details: {} };
-      }
+      const res = await runKido(["notify_parent"], { input: params.summary, timeoutMs: 5000 });
+      if (!res.ok) return reply(`could not notify parent: ${res.error}`);
       reportedToParent = true;
-      return { content: [{ type: "text", text: res.out || "notified parent" }], details: {} };
+      return reply(res.out || "notified parent");
     },
-  };
-
-  pi.registerTool(listAgentsTool);
-  pi.registerTool(setStatusTool);
-  pi.registerTool(messageAgentTool);
-  pi.registerTool(askAgentTool);
-  pi.registerTool(spawnSubagentTool);
-  pi.registerTool(steerSubagentTool);
-  pi.registerTool(interruptSubagentTool);
-  pi.registerTool(stopSubagentTool);
-  pi.registerTool(asyncBashTool);
-  pi.registerTool(notifyParentTool);
-
-  // Captured directly from pi, not through the seam: kido-status.ts's
-  // SessionContext deliberately does not carry ui (it never needed one),
-  // and a /reload fires session_start again with a fresh ctx, so this is
-  // re-captured exactly like ctxAbort/ctxShutdown above rather than read
-  // once. Registering a second "session_start" listener here is fine -
-  // pi calls every extension's registration for a given event, and this
-  // one only ever reads ctx, never races kido-status.ts's own.
-  pi.on("session_start", (_event: unknown, ctx: { ui?: (NonNullable<typeof widgetUi> & { addAutocompleteProvider?: (factory: (current: CompletionProvider) => CompletionProvider) => void }) | null }) => {
-    widgetUi = ctx.ui ?? null;
-    // A headless session has no ui at all, and a pi older than 0.87.1 has
-    // one without this method; both simply get no `@name` completion.
-    // Registered once: session_start fires again on a /reload, and a
-    // second wrapper would ask kido for the same list twice per keystroke.
-    if (!ctx.ui?.addAutocompleteProvider || completionRegistered) return;
-    completionRegistered = true;
-    // Nothing is fetched here: a session that never types `@` never asks
-    // kido for a list, and the first `@` keystroke kicks the refresh that
-    // the keystroke after it is served from.
-    ctx.ui.addAutocompleteProvider((current) => createAgentCompletionProvider(current));
   });
 
-  // The other end of deliverNotice's hand-off: once the identical
-  // followUp message actually reaches the transcript (matched by the
-  // noticeId minted there), pi's own registerMessageRenderer above is
-  // now showing it, so the stand-in widget row for that one notice is
-  // done its job. Filtered to our own custom type and a noticeId we
-  // actually minted, since message_start fires for every message this
-  // session sends or receives, ours included (an outbound message_agent
-  // reply, for one).
   pi.on("message_start", (event: { message?: { role?: string; customType?: string; details?: { noticeId?: string } } }) => {
     const m = event?.message;
     if (m?.role !== "custom" || m.customType !== NOTICE_CUSTOM_TYPE) return;
@@ -2216,7 +1736,6 @@ export default function (pi: ExtensionAPI) {
 
   // A renderer that returns its own component skips the box pi paints in
   // customMessageBg behind an extension message, so it is painted here.
-  const INBOUND_BG = "customMessageBg";
   const stripAnsi = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, "");
   // Padded to the visible width before theme.bg, which does not pad;
   // cached per width, since pi calls render on every redraw.
@@ -2226,7 +1745,7 @@ export default function (pi: ExtensionAPI) {
     return (width: number): string[] => {
       if (width !== cachedWidth) {
         cachedWidth = width;
-        cached = lines.map((line) => theme.bg(INBOUND_BG, line + " ".repeat(Math.max(0, width - stripAnsi(line).length))));
+        cached = lines.map((line) => theme.bg("customMessageBg", line + " ".repeat(Math.max(0, width - stripAnsi(line).length))));
       }
       return cached;
     };
@@ -2299,8 +1818,7 @@ export default function (pi: ExtensionAPI) {
     return renderInbound(theme, `notification from ${from}:`, content);
   });
 
-  const ERROR_NOTICE_LIMIT = 400;
-  const trimErrorMessage = (msg: string): string => (msg.length > ERROR_NOTICE_LIMIT ? `${msg.slice(0, ERROR_NOTICE_LIMIT)}…` : msg);
+  const trimErrorMessage = (msg: string): string => (msg.length > 400 ? `${msg.slice(0, 400)}…` : msg);
 
   // The instruction goes in as a guideline, not a returned systemPrompt:
   // a forced prompt is opaque to pi-claude-bridge, whose prompt capture
@@ -2318,26 +1836,26 @@ export default function (pi: ExtensionAPI) {
     const assistants = (event?.messages ?? []).filter((m) => m?.role === "assistant");
     const last = assistants[assistants.length - 1];
     if (!last) return;
-    if (last.stopReason === "error") {
-      lastTurnError = { text: last.errorMessage || "no error message given", notified: false };
-    } else {
-      lastTurnError = undefined;
-    }
+    phase = {
+      phase: "worked",
+      lastError: last.stopReason === "error" ? { text: last.errorMessage || "no error message given", notified: false } : undefined,
+    };
   });
 
-  // A failed turn is told to the parent at once. reportedToParent stays
-  // as it was: the child has still said nothing about its work.
+  // A settled idle turn arms the idle self-exit clock, and a failed one is
+  // told to the parent at once. reportedToParent stays as it was: the
+  // child has still said nothing about its work.
   pi.on("agent_settled", async (_event: unknown, ctx: { isIdle(): boolean }) => {
-    if (!ctx.isIdle() || !isSubagent() || !lastTurnError || lastTurnError.notified) return;
-    lastTurnError.notified = true;
-    const host = status();
-    if (!host?.kidoPath()) return;
+    if (!ctx.isIdle() || !isSubagent()) return;
+    armIdleExit();
+    if (phase.phase !== "worked" || !phase.lastError || phase.lastError.notified) return;
+    phase.lastError.notified = true;
     const runID = ownRunID();
     const text =
-      `subagent stopped on an error: ${trimErrorMessage(lastTurnError.text)}\n` +
+      `subagent stopped on an error: ${trimErrorMessage(phase.lastError.text)}\n` +
       `run: ${runID}\n` +
       `message it to retry, or spawn_subagent(resume: "${runID}") once it has exited`;
-    await host.runKido(["notify_parent"], { input: text, timeoutMs: 5000 });
+    await runKido(["notify_parent"], { input: text, timeoutMs: 5000 });
   });
 
   // deliverTask hands the model the task kido spawn_subagent left for us, the same
@@ -2358,36 +1876,16 @@ export default function (pi: ExtensionAPI) {
       // no marker written, so a later /reload gets another try
     }
     if (!task.trim()) return;
-    deliver(task);
+    seam().host?.deliver(task);
     // deliver() is not work beginning: it hands pi a message and returns,
     // and everything that follows is pi's. So the clock goes on here,
     // after deliver's own workStarted has cleared it - a child that gets
     // as far as a turn clears it again within milliseconds (agent_start),
     // and one that never does is collected by the shutdown path every
     // other ending already takes.
-    awaitingFirstWork = true;
-    armIdleExit(() => ctxShutdown?.());
+    phase = { phase: "awaiting-first-turn" };
+    armIdleExit();
   };
-
-  // scheduleWindowLinger spawns the detached linger helper: sleep, then
-  // `kido close-run`, as its own process since this one's event loop is
-  // gone by the time the sleep fires. The helper is given this session's
-  // window and collects the run's own pane in it, closing the window when
-  // that pane is all it has. windowID and kido's path are passed as sh's
-  // $0/$1 so neither needs shell-quoting.
-  const scheduleWindowLinger = (windowID: string): void => {
-    const host = status();
-    const kido = host?.kidoPath();
-    if (!host || !kido) return;
-    host.spawnDetached("sh", ["-c", `sleep ${LINGER_SECONDS} && exec "$0" close-run "$1"`, kido, windowID]);
-  };
-
-  // isRunEnding tells a shutdown that ends the run apart from one that
-  // rebuilds the extension runtime in the same process. pi fires
-  // session_shutdown for five reasons ("quit", "reload", "new", "resume",
-  // "fork"); only "quit" ends the run. An absent reason is a quit: that
-  // is what every pi too old to send one meant by it.
-  const isRunEnding = (reason?: string): boolean => reason === undefined || reason === "quit";
 
   // endOwnRun does the two things that happen exactly once, when this
   // process's own run actually ends: record how it ended, and schedule
@@ -2405,35 +1903,42 @@ export default function (pi: ExtensionAPI) {
   // and only asks kido to tell the parent that the run ended with nothing
   // said about it, which is what an idle self-exit or a crash used to
   // leave a waiting parent to guess at.
-  const endOwnRun = async (reason?: string): Promise<void> => {
-    const host = status();
+  const endOwnRun = async (reason?: ShutdownReason): Promise<void> => {
+    const host = seam().host;
     const runID = ownRunID();
-    if (!runID || !host?.kidoPath() || !isRunEnding(reason)) return;
+    // pi fires session_shutdown for five reasons; only "quit" ends the
+    // run, the rest rebuild the extension runtime in the same process. An
+    // absent reason is a quit.
+    if (!runID || !host || (reason !== undefined && reason !== "quit")) return;
     // The run id is this session's id verbatim; "idle" is the only status
     // a turn finishes on, so anything else at shutdown is a failure - and
     // so is a session still waiting for its first turn, which reports
     // idle and has done nothing at all.
-    const result = host.status() === "idle" && !awaitingFirstWork ? "completed" : "failed";
+    const [result, text] =
+      phase.phase === "awaiting-first-turn"
+        ? ["failed", NO_FIRST_TURN_TEXT]
+        : [host.status() === "idle" ? "completed" : "failed", phase.lastError && `its last turn failed: ${trimErrorMessage(phase.lastError.text)}`];
     const args = ["run-outcome", "--result", result];
     if (!reportedToParent) args.push("--unreported");
-    if (awaitingFirstWork) args.push("--text", NO_FIRST_TURN_TEXT);
-    else if (lastTurnError) args.push("--text", `its last turn failed: ${trimErrorMessage(lastTurnError.text)}`);
-    await host.runKido([...args, "--", runID], { timeoutMs: 3000 });
+    if (text) args.push("--text", text);
+    await runKido([...args, "--", runID], { timeoutMs: 3000 });
     const listed = await fetchAgents();
-    if ("error" in listed) return;
-    const self = listed.agents.find((a) => a.self);
-    if (self?.window) scheduleWindowLinger(self.window);
+    const window = listed.ok ? listed.agents.find((a) => a.self)?.window : undefined;
+    const kido = host.kidoPath();
+    // The detached linger helper: sleep, then `kido close-run`, as its own
+    // process since this one's event loop is gone by the time the sleep
+    // fires. The helper is given this session's window and collects the
+    // run's own pane in it, closing the window when that pane is all it
+    // has. windowID and kido's path are passed as sh's $0/$1 so neither
+    // needs shell-quoting.
+    if (window && kido) host.spawnDetached("sh", ["-c", `sleep ${LINGER_SECONDS} && exec "$0" close-run "$1"`, kido, window]);
   };
 
   // Published at factory time, with nothing read back until an event
   // fires, so load order does not matter.
   const hooks: AgentHooks = {
     sessionStarting(ctx: SessionContext) {
-      ctxAbort = async () => {
-        await ctx.abort();
-      };
-      ctxShutdown = () => ctx.shutdown();
-      ctxIsIdle = () => ctx.isIdle();
+      session = ctx;
       // A /reload's fresh ctx has already had pi clear the previous
       // widgets out from under it (resetExtensionUI); drop our own record
       // of what was pending so a later renderNoticeWidget call does not
@@ -2441,18 +1946,70 @@ export default function (pi: ExtensionAPI) {
       pendingNotices.clear();
       clearStreamTimer();
       streamBuffers.clear();
-      streamDelay = STREAM_FLUSH_MS;
+      streamFlush.delay = STREAM_FLUSH_MS;
       // A trigger whose turn the reload took with it will never reach a
       // turn_start, so the next arrival must be free to send one of its
       // own against the session that exists now.
       wakeInFlight = false;
+      // A headless session has no ui at all, and a pi older than 0.87.1 has
+      // one without this method; both simply get no `@name` completion.
+      // Registered once: session_start fires again on a /reload, and a
+      // second wrapper would ask kido for the same list twice per keystroke.
+      // Nothing is fetched here: a session that never types `@` never asks
+      // kido for a list, and the first `@` keystroke kicks the refresh that
+      // the keystroke after it is served from.
+      if (!ctx.ui?.addAutocompleteProvider || completion) return;
+      const cache: NonNullable<typeof completion> = { agents: [], at: 0, refreshing: null };
+      completion = cache;
+      // `@` is pi's own file-reference trigger, so this wraps the built-in
+      // provider rather than replacing it: matching agents first, then
+      // whatever files pi found for the same token, under the one prefix both
+      // halves share. `@src/...` therefore still completes files, and a token
+      // matching no agent is the built-in's answer untouched. The await here
+      // is pi's own file lookup, unchanged; kido's half of the list is never
+      // awaited (see completion).
+      ctx.ui.addAutocompleteProvider((current: CompletionProvider): CompletionProvider => ({
+        triggerCharacters: current.triggerCharacters,
+        async getSuggestions(lines, cursorLine, cursorCol, options) {
+          const token = atToken((lines[cursorLine] ?? "").slice(0, cursorCol));
+          if (token === undefined) return current.getSuggestions(lines, cursorLine, cursorCol, options);
+          if (!cache.refreshing && Date.now() - cache.at >= AGENT_LIST_TTL_MS) {
+            cache.refreshing = fetchAgents()
+              .then((listed) => {
+                if (listed.ok) cache.agents = listed.agents;
+                cache.at = Date.now();
+              })
+              .catch(() => {})
+              .finally(() => {
+                cache.refreshing = null;
+              });
+          }
+          const items = agentCompletionItems(cache.agents, token);
+          const files = await current.getSuggestions(lines, cursorLine, cursorCol, options);
+          if (items.length === 0) return files;
+          const prefix = `@${token}`;
+          // Only a file half that answered the same token can be merged: pi
+          // returns the prefix its own items are to replace, and two prefixes
+          // in one list would have the editor cut the wrong text.
+          const fileItems = files && files.prefix === prefix ? files.items : [];
+          return { items: [...items, ...fileItems], prefix };
+        },
+        // An agent item's value is `@name`, which is what pi's own
+        // applyCompletion inserts for any `@` prefix - so the insertion, the
+        // trailing space and the cursor are pi's, not a second implementation
+        // of them here.
+        applyCompletion: current.applyCompletion.bind(current),
+        shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
+          return current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? true;
+        },
+      }));
     },
-    async sessionStarted(ctx: SessionContext) {
-      startParentLivenessPoll(ctx.shutdown);
+    async sessionStarted() {
+      startParentLivenessPoll();
       deliverTask();
     },
     inboxLost: abandonPending,
-    async sessionEnding(reason?: string) {
+    async sessionEnding(reason?: ShutdownReason) {
       // This prefix runs before the first await, in the same uninterrupted
       // stretch as the status half's stopInbox (see ask_agent's inboxOpen
       // check). abandonPending runs on every reason, reload included: a
@@ -2462,9 +2019,6 @@ export default function (pi: ExtensionAPI) {
       clearStreamTimer();
       abandonPending();
       await endOwnRun(reason);
-    },
-    turnEnded() {
-      armIdleExit(() => ctxShutdown?.());
     },
     // Any sign of work stops the clock and settles what this session's
     // ending will be called: it got as far as working. clearIdleExit

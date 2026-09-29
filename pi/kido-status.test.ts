@@ -27,7 +27,7 @@ import { join, delimiter, dirname } from "node:path";
 import net from "node:net";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import kidoStatus, { parseEnvelope } from "./kido-status.ts";
-import kidoAgents, { isAncestor, nextStreamFlushDelay, setAskEdgeListener, streamBatch } from "./kido-agents.ts";
+import kidoAgents, { isAncestor, nextStreamFlushDelay, streamBatch } from "./kido-agents.ts";
 
 // The fake kido binary. Written to disk once per fixture so it can be
 // found on PATH as a file literally named "kido" - findKido() joins a
@@ -622,8 +622,13 @@ async function startSessionCore(fx: Fixture, factory: (pi: unknown) => void, bui
   return { ...created, inboxPath: fx.selfInboxPath() };
 }
 
-async function startSession(fx: Fixture, sessionId?: string, idle?: () => boolean) {
-  return startSessionCore(fx, loadExtensions, (c) => fakeCtx(sessionId, c.ui, idle));
+// factory is loadExtensions unless a case needs the modules' constants
+// recomputed from the environment (freshExtensions below).
+async function startSession(
+  fx: Fixture,
+  { factory = loadExtensions, sessionId, idle }: { factory?: (pi: unknown) => void; sessionId?: string; idle?: () => boolean } = {},
+) {
+  return startSessionCore(fx, factory, (c) => fakeCtx(sessionId, c.ui, idle));
 }
 
 // loadExtensions is what a pi host does with the pair: run both factories
@@ -636,19 +641,10 @@ function loadExtensions(pi: unknown): void {
   (kidoAgents as (pi: unknown) => void)(pi);
 }
 
-// startSessionUsing is startSession but for factories that are not the
-// modules' static default exports - needed by tests that must vary
-// KIDO_AGENT_TASK_FILE or KIDO_AGENT_PARENT_SESSION, which the extensions
-// read once, at module scope, when they are first imported.
-// freshExtensions below reloads both so those module-scope constants are
-// recomputed from whatever the environment holds at that moment.
-async function startSessionUsing(factory: (pi: unknown) => void, fx: Fixture, sessionId?: string, idle?: () => boolean) {
-  return startSessionCore(fx, factory, (c) => fakeCtx(sessionId, c.ui, idle));
-}
-
 // freshExtensions reimports both extensions under a cache-busting
 // specifier, so the module-scope constants each reads from the
-// environment are recomputed. Both, and with the same counter: they are
+// environment (KIDO_AGENT_TASK_FILE, KIDO_AGENT_PARENT_SESSION and the
+// knobs) are recomputed. Both, and with the same counter: they are
 // two modules that find each other through globalThis rather than through
 // an import (see the seam note in kido-status.ts), so a fresh half and a
 // cached half would silently pair up and serve a session neither started.
@@ -677,20 +673,20 @@ const DEFAULT_SESSION = "self-session";
 // one place. extra carries whatever else a case needs in the same
 // save/restore; the extensions read all of it once at module scope, so
 // each case still goes through freshExtensions() to pick it up.
-async function asSubagent<T>(
-  sessionId: string,
-  fn: () => Promise<T>,
-  extra: Record<string, string> = {},
-): Promise<T> {
-  const vars: Record<string, string> = {
-    KIDO_AGENT_PARENT_SESSION: "boss-session",
-    KIDO_AGENT_RUN_ID: sessionId,
-    ...extra,
-  };
+async function asSubagent<T>(sessionId: string, fn: () => Promise<T>, extra: Record<string, string> = {}): Promise<T> {
+  return withEnv({ KIDO_AGENT_PARENT_SESSION: "boss-session", KIDO_AGENT_RUN_ID: sessionId, ...extra }, fn);
+}
+
+// withEnv runs fn with vars set (an undefined one unset), restoring
+// whatever was there. The extensions read their knobs once at module
+// scope, so a case that sets one has to go through freshExtensions()
+// inside this.
+async function withEnv<T>(vars: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
   const saved: Record<string, string | undefined> = {};
   for (const [k, v] of Object.entries(vars)) {
     saved[k] = process.env[k];
-    process.env[k] = v;
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
   }
   try {
     return await fn();
@@ -750,7 +746,7 @@ test("either load order wires the pair up: agents first, status second", async (
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     const factory = await freshExtensions("agents-first");
-    const s = await startSessionUsing(factory, fx);
+    const s = await startSession(fx, { factory });
     assert.ok(s.tools.get("ask_agent"), "the agent half registered its tools");
     const resp = await sendToInbox(s.inboxPath, envelope("notice", "loaded either way", { from: { session: "peer-a", name: "peer-a" } }));
     assert.equal(resp, "ok");
@@ -865,8 +861,8 @@ function settlesWithin<T>(p: Promise<T>, ms: number): Promise<T> {
 
 const twoPeers = [
   { id: "self", name: "self", parent: "", self: true, canMessage: true },
-  { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true },
-  { id: "peer-b", name: "peer-b", parent: "", self: false, canMessage: true },
+  { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, canReply: true },
+  { id: "peer-b", name: "peer-b", parent: "", self: false, canMessage: true, canReply: true },
 ];
 
 test("reply correlation: a foreign replyTo settles nothing and is surfaced; the right id settles only that ask", async () => {
@@ -1013,7 +1009,7 @@ test("a reply to an unnamed asker still reaches it after the asker reloads and i
   try {
     fx.setAgents([
       { id: "self", name: "self", parent: "", self: true, canMessage: true },
-      { id: "peer-a-old", name: "", pane: "%42", parent: "", self: false, canMessage: true },
+      { id: "peer-a-old", name: "", pane: "%42", parent: "", self: false, canMessage: true, canReply: true },
     ]);
     const s = await startSession(fx);
 
@@ -1030,7 +1026,7 @@ test("a reply to an unnamed asker still reaches it after the asker reloads and i
     // this session gets around to replying.
     fx.setAgents([
       { id: "self", name: "self", parent: "", self: true, canMessage: true },
-      { id: "peer-a-new", name: "", pane: "%42", parent: "", self: false, canMessage: true },
+      { id: "peer-a-new", name: "", pane: "%42", parent: "", self: false, canMessage: true, canReply: true },
     ]);
 
     // The model does exactly what it was told: replies to the now-stale
@@ -1057,7 +1053,7 @@ test("message_agent's result says to stop after replying to a pending ask, but n
   try {
     fx.setAgents([
       { id: "self", name: "self", parent: "", self: true, canMessage: true },
-      { id: "peer-a", name: "peer-a", pane: "%2", parent: "", self: false, canMessage: true },
+      { id: "peer-a", name: "peer-a", pane: "%2", parent: "", self: false, canMessage: true, canReply: true },
     ]);
     const s = await startSession(fx);
 
@@ -1149,13 +1145,13 @@ test("a notice sent across a /reload is delivered to the reloaded session exactl
   const fx = makeFixture();
   try {
     fx.setAgents(twoPeers);
-    const s1 = await startSessionUsing(await freshExtensions(), fx);
+    const s1 = await startSession(fx, { factory: await freshExtensions() });
     await s1.emit("session_shutdown", { reason: "reload" });
 
     // The gap: the old module is done, the reloaded one has not started.
     const sent = sendToInbox(s1.inboxPath, envelope("notice", "ci run finished", { from: { session: "peer-a", name: "peer-a" } }));
 
-    const s2 = await startSessionUsing(await freshExtensions(), fx);
+    const s2 = await startSession(fx, { factory: await freshExtensions() });
     assert.equal(await settlesWithin(sent, 2000), "ok");
     await pollUntil(() => noticesIn(s2, "ci run finished").length > 0, 2000, "the notice to reach the reloaded session");
     assert.equal(noticesIn(s2, "ci run finished").length, 1, "the reloaded session was told more than once");
@@ -1173,7 +1169,7 @@ test("an envelope that arrives in the /reload gap is held, then answered and del
   const fx = makeFixture();
   try {
     fx.setAgents(twoPeers);
-    const s1 = await startSessionUsing(await freshExtensions(), fx);
+    const s1 = await startSession(fx, { factory: await freshExtensions() });
     await s1.emit("session_shutdown", { reason: "reload" });
 
     const sent = sendToInbox(s1.inboxPath, envelope("message", "in the gap", { from: { session: "peer-a", name: "peer-a" } }));
@@ -1182,7 +1178,7 @@ test("an envelope that arrives in the /reload gap is held, then answered and del
     const refused = await s1.tools.get("ask_agent").execute("c1", { to: "peer-b", question: "q" });
     assert.match(refused.content[0].text, /inbox is unavailable/, "a shut-down module must still refuse to wait for a reply");
 
-    const s2 = await startSessionUsing(await freshExtensions(), fx);
+    const s2 = await startSession(fx, { factory: await freshExtensions() });
     assert.equal(await settlesWithin(sent, 2000), "ok");
     // A message from a known agent reaches the model as a labelled
     // kido-message, not as plain delivered text, so both are counted.
@@ -1203,7 +1199,7 @@ test("a session_shutdown that is not a reload still closes the inbox", async () 
   const fx = makeFixture();
   try {
     fx.setAgents(twoPeers);
-    const s = await startSessionUsing(await freshExtensions(), fx);
+    const s = await startSession(fx, { factory: await freshExtensions() });
     assert.equal(await sendToInbox(s.inboxPath, envelope("message", "before", { from: { session: "peer-a", name: "peer-a" } })), "ok");
 
     await s.emit("session_shutdown", { reason: "quit" });
@@ -1225,11 +1221,11 @@ test("a /reload leaves exactly one listener, on the same socket", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents(twoPeers);
-    const s1 = await startSessionUsing(await freshExtensions(), fx);
+    const s1 = await startSession(fx, { factory: await freshExtensions() });
     const before = statSync(s1.inboxPath).ino;
 
     await s1.emit("session_shutdown", { reason: "reload" });
-    const s2 = await startSessionUsing(await freshExtensions(), fx);
+    const s2 = await startSession(fx, { factory: await freshExtensions() });
     assert.equal(statSync(s2.inboxPath).ino, before, "the reload rebound the socket instead of keeping it");
 
     for (const text of ["after one", "after two"]) {
@@ -1327,7 +1323,7 @@ test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 r
     // user's - the distinction the message kind now turns on.
     fx.setAgents([
       { id: "self", name: "self", parent: "", self: true, canMessage: true },
-      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, canReply: true },
     ]);
     const s = await startSession(fx);
     const from = { session: "peer-a", name: "peer-a" };
@@ -1377,15 +1373,15 @@ test("a message from an agent is labelled with its sender and their relationship
   try {
     fx.setAgents([
       { id: DEFAULT_SESSION, name: "worker", parent: "boss-session", pane: "%1", self: true, canMessage: true },
-      { id: "boss-session", name: "boss", parent: "", pane: "%2", self: false, canMessage: true },
-      { id: "kid-session", name: "kid", parent: DEFAULT_SESSION, pane: "%3", self: false, canMessage: true },
-      { id: "peer-session", name: "peer-a", parent: "", pane: "%4", self: false, canMessage: true },
+      { id: "boss-session", name: "boss", parent: "", pane: "%2", self: false, canMessage: true, canReply: true },
+      { id: "kid-session", name: "kid", parent: DEFAULT_SESSION, pane: "%3", self: false, canMessage: true, canReply: true },
+      { id: "peer-session", name: "peer-a", parent: "", pane: "%4", self: false, canMessage: true, canReply: true },
     ]);
     // A subagent of "boss-session", which is what asSubagent sets: the
     // parent header is only right for the agent that actually spawned
     // this session.
     await asSubagent(DEFAULT_SESSION, async () => {
-      const s = await startSessionUsing(await freshExtensions(), fx);
+      const s = await startSession(fx, { factory: await freshExtensions() });
       const labelled = () => customMessages(s, "kido-message").map((m) => m.message);
 
       await sendToInbox(s.inboxPath, envelope("message", "fix the failing test\nthen report", { from: { session: "boss-session", name: "boss" } }));
@@ -1438,10 +1434,10 @@ test("an inbound ask is headed like a message and renders as just the question, 
   try {
     fx.setAgents([
       { id: DEFAULT_SESSION, name: "worker", parent: "boss-session", pane: "%1", self: true, canMessage: true },
-      { id: "boss-session", name: "boss", parent: "", pane: "%2", self: false, canMessage: true },
+      { id: "boss-session", name: "boss", parent: "", pane: "%2", self: false, canMessage: true, canReply: true },
     ]);
     await asSubagent(DEFAULT_SESSION, async () => {
-      const s = await startSessionUsing(await freshExtensions(), fx);
+      const s = await startSession(fx, { factory: await freshExtensions() });
 
       await sendToInbox(s.inboxPath, envelope("ask", "is the build green?", { id: "ask-hdr", from: { session: "boss-session", name: "boss" } }));
       const sent = customMessages(s, "kido-ask")[0]!;
@@ -1585,10 +1581,10 @@ test("a message, an ask and a notice each paint the full-width customMessageBg b
   try {
     fx.setAgents([
       { id: DEFAULT_SESSION, name: "worker", parent: "boss-session", pane: "%1", self: true, canMessage: true },
-      { id: "boss-session", name: "boss", parent: "", pane: "%2", self: false, canMessage: true },
+      { id: "boss-session", name: "boss", parent: "", pane: "%2", self: false, canMessage: true, canReply: true },
     ]);
     await asSubagent(DEFAULT_SESSION, async () => {
-      const s = await startSessionUsing(await freshExtensions(), fx);
+      const s = await startSession(fx, { factory: await freshExtensions() });
 
       await sendToInbox(s.inboxPath, envelope("message", "ping", { from: { session: "boss-session", name: "boss" } }));
       await sendToInbox(s.inboxPath, envelope("ask", "still there?", { id: "ask-bg", from: { session: "boss-session", name: "boss" } }));
@@ -1691,17 +1687,17 @@ async function suggestOnceListed(provider: any, line: string, ms = 2000) {
 
 const completionAgents = [
   { id: "self", name: "self", parent: "", self: true, canMessage: true, status: "running" },
-  { id: "p1", name: "helm", parent: "", self: false, canMessage: true, status: "idle" },
-  { id: "c1", name: "helper-one", parent: "p1", self: false, canMessage: true, status: "running", activity: "refactoring internal/ui" },
-  { id: "c2", name: "builder", parent: "p1", self: false, canMessage: true, status: "waiting" },
+  { id: "p1", name: "helm", parent: "", self: false, canMessage: true, canReply: true, status: "idle" },
+  { id: "c1", name: "helper-one", parent: "p1", self: false, canMessage: true, canReply: true, status: "running", activity: "refactoring internal/ui" },
+  { id: "c2", name: "builder", parent: "p1", self: false, canMessage: true, canReply: true, status: "waiting" },
   // A session the user never named: `kido list_agents` falls back to the
   // pane title, which is a phrase with spaces in it (a Claude Code title
   // here) rather than a handle. Its id shares eight characters with the
   // next agent's, so the prefix that identifies it has to be longer than
   // the floor.
-  { id: "01a0d843-7f2e-4b5a-9c31-8de0f1a2b3c4", name: "Tmux config", parent: "", self: false, canMessage: true, status: "running" },
-  { id: "01a0d843-ffff-4b5a-9c31-8de0f1a2b3c4", name: "scribe", parent: "", self: false, canMessage: true, status: "idle" },
-  { id: "k9", name: "config-linter", parent: "", self: false, canMessage: true, status: "idle" },
+  { id: "01a0d843-7f2e-4b5a-9c31-8de0f1a2b3c4", name: "Tmux config", parent: "", self: false, canMessage: true, canReply: true, status: "running" },
+  { id: "01a0d843-ffff-4b5a-9c31-8de0f1a2b3c4", name: "scribe", parent: "", self: false, canMessage: true, canReply: true, status: "idle" },
+  { id: "k9", name: "config-linter", parent: "", self: false, canMessage: true, canReply: true, status: "idle" },
 ];
 
 test("@ completion offers this session's agents first and still returns the built-in provider's file items", async () => {
@@ -1813,7 +1809,7 @@ test("@ completion serves the last agent list without waiting for the subprocess
   try {
     fx.setAgents(completionAgents);
     process.env.KIDO_AGENT_LIST_TTL_MS = "50";
-    const s = await startSessionUsing(await freshExtensions(), fx);
+    const s = await startSession(fx, { factory: await freshExtensions() });
     const { provider } = stackOver(s.autocompleteFactories);
 
     await suggestOnceListed(provider, "@hel");
@@ -1882,9 +1878,9 @@ test("a notice is delivered by steer, not followUp; plain messages and asks are 
   try {
     fx.setAgents([
       { id: "self", name: "self", parent: "", self: true, canMessage: true },
-      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, canReply: true },
     ]);
-    const s = await startSession(fx, undefined, () => false);
+    const s = await startSession(fx, { idle: () => false });
     const from = { session: "peer-a", name: "peer-a" };
 
     await sendToInbox(s.inboxPath, envelope("notice", "build finished", { from }));
@@ -1936,7 +1932,7 @@ test("an idle session is woken through prompt(): the arrival is queued as nextTu
   try {
     fx.setAgents([
       { id: "self", name: "self", parent: "", self: true, canMessage: true },
-      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, canReply: true },
     ]);
     const s = await startSession(fx);
     const from = { session: "peer-a", name: "peer-a" };
@@ -1974,7 +1970,7 @@ test("a stream batch flushed while the session is idle wakes it the same way", a
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     const factory = await withEnv({ KIDO_STREAM_FLUSH_MS: "40", KIDO_STREAM_FLUSH_CAP_MS: "120" }, () => freshExtensions());
-    const s = await startSessionUsing(factory, fx);
+    const s = await startSession(fx, { factory });
 
     assert.equal(await sendToInbox(s.inboxPath, streamEnvelope("line 1")), "ok");
     await pollUntil(() => streamMessages(s.messages).length === 1, 2000, "the idle schedule to flush the batch");
@@ -2004,10 +2000,10 @@ test("two asks arriving while idle ride one turn: one trigger, both delivered", 
   try {
     fx.setAgents([
       { id: "self", name: "self", parent: "", self: true, canMessage: true },
-      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true },
-      { id: "peer-b", name: "peer-b", parent: "", self: false, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, canReply: true },
+      { id: "peer-b", name: "peer-b", parent: "", self: false, canMessage: true, canReply: true },
     ]);
-    const s = await startSession(fx, undefined, () => true);
+    const s = await startSession(fx, { idle: () => true });
     s.setOnUserMessage(null); // pi's gap, held open: no turn starts under either ask
 
     await sendToInbox(s.inboxPath, envelope("ask", "first question", { id: "ask-1", from: { session: "peer-a", name: "peer-a" } }));
@@ -2039,9 +2035,9 @@ test("a trigger whose turn never starts does not hold the next arrival back", as
   try {
     fx.setAgents([
       { id: "self", name: "self", parent: "", self: true, canMessage: true },
-      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, canReply: true },
     ]);
-    const s = await startSession(fx, undefined, () => true);
+    const s = await startSession(fx, { idle: () => true });
     // prompt()'s own wording for the case, failing the way prompt() fails:
     // a rejection, after the call kido makes has already returned.
     s.setOnUserMessage(() => Promise.reject(new Error("Cannot submit a prompt while compaction is in progress")));
@@ -2121,7 +2117,7 @@ test("a subagent's before_agent_start hook adds the notify_parent instruction to
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
     await asSubagent(DEFAULT_SESSION, async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
+      const s = await startSession(fx, { factory });
 
       const event: any = { systemPrompt: "base prompt", systemPromptOptions: { promptGuidelines: [] } };
       const results = await s.emit("before_agent_start", event);
@@ -2396,9 +2392,9 @@ test("spawn_subagent(resume) calls kido spawn_subagent --resume with its own ide
     assert.ok(!spawnArgs!.includes("--task-file"), "a resume keeps its own original task; no task file is written for it");
     assert.ok(!spawnArgs!.includes("--name"), "a resume keeps its own original window name");
     // No model/tools override given: kido spawn_subagent --resume already carries
-    // the run's own recorded model forward on its own, so nothing after
-    // -- is needed here at all.
-    assert.ok(!spawnArgs!.includes("--"), "no command override is sent when neither model nor tools is given");
+    // the run's own recorded model forward on its own, so the command
+    // after -- is the bare pi it defaults to anyway.
+    assert.deepEqual(spawnArgs!.slice(spawnArgs!.indexOf("--") + 1), ["pi"], "no command override is sent when neither model nor tools is given");
   } finally {
     fx.restore();
   }
@@ -2475,48 +2471,32 @@ test("spawn_subagent(fork) passes --fork with this session's own id, and nothing
   }
 });
 
-test("spawn_subagent refuses resume combined with task or name, and refuses no task without resume, before calling kido", async () => {
+// kido spawn_subagent is the one place these combinations are refused
+// (cmd/kido/spawn_subagent.go), and the depth ceiling with them: the tool
+// forwards what it was given rather than deciding a second time.
+test("spawn_subagent forwards resume alongside task, name or fork, and a call with neither, for kido to refuse", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     const s = await startSession(fx);
     const spawn = s.tools.get("spawn_subagent");
 
-    let result = await spawn.execute("c1", { resume: "run-abc", task: "a new task" });
-    assert.match(result.content[0].text, /resume and task cannot both be given/);
+    await spawn.execute("c1", { resume: "run-abc", task: "a new task" });
+    assert.equal(argAfter(fx.lastSpawnArgs(), "--resume"), "run-abc");
+    assert.equal(argAfter(fx.lastSpawnArgs(), "--task-file"), "-");
+    assert.equal(fx.lastSpawnTask(), "a new task");
 
-    result = await spawn.execute("c2", { resume: "run-abc", name: "kid-1" });
-    assert.match(result.content[0].text, /resume and name cannot both be given/);
+    await spawn.execute("c2", { resume: "run-abc", name: "kid-1" });
+    assert.equal(argAfter(fx.lastSpawnArgs(), "--resume"), "run-abc");
+    assert.equal(argAfter(fx.lastSpawnArgs(), "--name"), "kid-1");
 
-    result = await spawn.execute("c3", {});
-    assert.match(result.content[0].text, /task is required unless resume is given/);
+    await spawn.execute("c3", { resume: "run-abc", fork: true });
+    assert.equal(argAfter(fx.lastSpawnArgs(), "--resume"), "run-abc");
+    assert.equal(argAfter(fx.lastSpawnArgs(), "--fork"), DEFAULT_SESSION);
 
-    result = await spawn.execute("c4", { resume: "run-abc", fork: true });
-    assert.match(result.content[0].text, /resume and fork cannot both be given/);
-
-    assert.equal(fx.lastSpawnArgs(), undefined, "kido spawn_subagent must not be invoked for any refused combination");
-  } finally {
-    fx.restore();
-  }
-});
-
-test("spawn_subagent is refused at the depth ceiling without writing a task file or calling kido", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
-    const saved = process.env.KIDO_AGENT_DEPTH;
-    process.env.KIDO_AGENT_DEPTH = "2"; // already a subagent at the ceiling; +1 would be 3
-    try {
-      const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
-      const spawn = s.tools.get("spawn_subagent");
-      const result = await spawn.execute("c1", { task: "t" });
-      assert.match(result.content[0].text, /maximum subagent nesting depth/);
-      assert.equal(fx.lastSpawnArgs(), undefined, "kido spawn_subagent must not be invoked for a refused depth");
-    } finally {
-      if (saved === undefined) delete process.env.KIDO_AGENT_DEPTH;
-      else process.env.KIDO_AGENT_DEPTH = saved;
-    }
+    await spawn.execute("c4", {});
+    assert.ok(!fx.lastSpawnArgs()!.includes("--resume"), "no resume to forward");
+    assert.ok(!fx.lastSpawnArgs()!.includes("--task-file"), "no task to forward, which kido refuses");
   } finally {
     fx.restore();
   }
@@ -2534,7 +2514,7 @@ test("spawn_subagent reports a kido spawn_subagent timeout as a timeout, not a g
     process.env.KIDO_FAKE_SPAWN_DELAY_MS = "2000"; // longer than the timeout: an in-flight, not a failed, spawn
     try {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
+      const s = await startSession(fx, { factory });
       const spawn = s.tools.get("spawn_subagent");
       const result = await spawn.execute("c1", { task: "go do the thing", name: "kid-1" });
       assert.match(result.content[0].text, /timed out/);
@@ -2560,7 +2540,7 @@ test("a child started with KIDO_AGENT_TASK_FILE delivers its task as the first m
     process.env.KIDO_AGENT_TASK_FILE = taskFile;
     try {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
+      const s = await startSession(fx, { factory });
       assert.ok(
         s.delivered.some((d) => d.text === "do the important thing"),
         "the task reached the model as a user message, the same way an inbox prompt is delivered",
@@ -2591,7 +2571,7 @@ test("a /reload does not deliver an already-delivered task a second time", async
     process.env.KIDO_AGENT_TASK_FILE = taskFile;
     try {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
+      const s = await startSession(fx, { factory });
       assert.equal(s.delivered.filter((d) => d.text === "do the important thing").length, 1);
 
       // A /reload re-runs session_start with a fresh ctx, but not the
@@ -2626,7 +2606,7 @@ test("an unreadable KIDO_AGENT_TASK_FILE delivers nothing, breaks nothing, and l
     process.env.KIDO_AGENT_TASK_FILE = taskFile;
     try {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
+      const s = await startSession(fx, { factory });
       assert.ok(!s.delivered.some((d) => d.text.length > 0), "nothing is delivered from a file that could not be read");
       assert.equal(existsSync(join(dirname(taskFile), "delivered")), false, "no marker is written for a read that failed, so a later /reload gets another try");
     } finally {
@@ -2647,7 +2627,7 @@ test("a missing KIDO_AGENT_TASK_FILE does not break session_start", async () => 
     process.env.KIDO_AGENT_TASK_FILE = join(fx.inboxDir, "..", "no-such-task.txt");
     try {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
+      const s = await startSession(fx, { factory });
       assert.ok(!s.delivered.some((d) => d.text.length > 0), "nothing spurious is delivered when the task file is absent");
     } finally {
       if (saved === undefined) delete process.env.KIDO_AGENT_TASK_FILE;
@@ -2661,7 +2641,7 @@ test("a missing KIDO_AGENT_TASK_FILE does not break session_start", async () => 
 // The startup failure this pair exists for, observed: a child came up
 // with pi unable to start its model at all ("No API key found for
 // amazon-bedrock" on its pane) and never ran a turn. The idle self-exit
-// was armed from turnEnded alone, so a child that never reached a first
+// was armed from a settled turn alone, so a child that never reached a first
 // turn armed nothing, never shut itself down, never recorded an outcome
 // and told its parent nothing: `kido runs` showed it running
 // indefinitely, and to the parent it was indistinguishable from a child
@@ -2682,7 +2662,7 @@ test("a child whose task is delivered but whose first turn never starts self-exi
       "never-started-run",
       async () => {
         const factory = await freshExtensions();
-        const s = await startWithShutdownSpy(factory, "never-started-run");
+        const s = await startWithShutdownSpy(fx, factory, "never-started-run");
         assert.ok(s.delivered.some((d) => d.text === "do the important thing"), "the task was delivered, as it was in the incident");
 
         // No agent_start, no turn_start, no agent_settled: pi never got
@@ -2726,7 +2706,7 @@ test("a child whose task starts a turn is untouched by the startup clock", async
       "working-run",
       async () => {
         const factory = await freshExtensions();
-        const s = await startWithShutdownSpy(factory, "working-run");
+        const s = await startWithShutdownSpy(fx, factory, "working-run");
         await s.emit("agent_start", {});
 
         await new Promise((r) => setTimeout(r, 300)); // six idle windows
@@ -2764,7 +2744,7 @@ test("a settled turn sends no automatic notice, and neither does a plain shutdow
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
     await asSubagent(DEFAULT_SESSION, async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
+      const s = await startSession(fx, { factory });
       await s.emit("agent_settled", {}, { isIdle: () => true });
       await new Promise((r) => setTimeout(r, 200));
       assert.equal(jsonLines(fx.logFile).filter((l) => l.kind === "notice").length, 0, "a settle must send no notice on its own");
@@ -2859,25 +2839,6 @@ function streamEnvelope(text: string, run = "run-1", output = "/state/runs/run-1
   return JSON.stringify({ v: 1, kind: "stream", id: "env-" + Math.random().toString(36).slice(2), from: { session: "", name: "chatty" }, text, run, output });
 }
 
-// withEnv runs fn with vars set, restoring whatever was there. The
-// extensions read their knobs once at module scope, so a case that sets
-// one has to go through freshExtensions() inside this.
-async function withEnv<T>(vars: Record<string, string>, fn: () => Promise<T>): Promise<T> {
-  const saved: Record<string, string | undefined> = {};
-  for (const [k, v] of Object.entries(vars)) {
-    saved[k] = process.env[k];
-    process.env[k] = v;
-  }
-  try {
-    return await fn();
-  } finally {
-    for (const [k, v] of Object.entries(saved)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
-  }
-}
-
 // TestStreamBatchRidesAToolTurn. The negative control is the whole test,
 // and it is the second half: the same chunks after a turn with no tool
 // calls must produce nothing until the idle timer fires. A receiver that
@@ -2899,7 +2860,7 @@ test("a batch rides a turn that ran tools, and a turn that ran none leaves it he
     // Streaming throughout: a turn_end is a turn boundary inside a run, and
     // a batch's mode is only consulted while a run is under way. An idle
     // flush wakes the session instead, which is its own case above.
-    const s = await startSessionUsing(factory, fx, undefined, () => false);
+    const s = await startSession(fx, { factory, idle: () => false });
 
     for (const text of ["line 1\nline 2", "line 3", "line 4\nline 5"]) {
       assert.equal(await sendToInbox(s.inboxPath, streamEnvelope(text)), "ok");
@@ -2940,7 +2901,7 @@ test("the idle flush schedule doubles up to its cap, and the flushes over a wind
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     const factory = await withEnv({ KIDO_STREAM_FLUSH_MS: "40", KIDO_STREAM_FLUSH_CAP_MS: "120" }, () => freshExtensions());
-    const s = await startSessionUsing(factory, fx);
+    const s = await startSession(fx, { factory });
 
     // Output all the way through the window, and never a turn to ride, so
     // every flush in it is one the schedule chose.
@@ -3035,7 +2996,7 @@ test("notify_parent sends a notice to the parent in its environment, carrying th
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
     await asSubagent(DEFAULT_SESSION, async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
+      const s = await startSession(fx, { factory });
       const listedBefore = fx.agentsCallCount();
       const tool = s.tools.get("notify_parent");
       const result = await tool.execute("call-1", { summary: "the answer is 42" });
@@ -3064,7 +3025,7 @@ test("notify_parent's schema accepts a summary over the byte cap, and execute() 
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
     await asSubagent(DEFAULT_SESSION, async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
+      const s = await startSession(fx, { factory });
       const tool = s.tools.get("notify_parent");
       const longSummary = "x".repeat(4500);
 
@@ -3166,7 +3127,7 @@ test("a subagent's errored turn notifies the parent at once, naming the error an
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
     await asSubagent("run-errored", async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx, "run-errored");
+      const s = await startSession(fx, { factory, sessionId: "run-errored" });
       await s.emit("agent_end", {
         messages: [{ role: "assistant", stopReason: "error", errorMessage: "prompt-capture: no capture for this system prompt" }],
       });
@@ -3190,7 +3151,7 @@ test("an aborted turn sends no error notice", async () => {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
     await asSubagent("run-aborted", async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx, "run-aborted");
+      const s = await startSession(fx, { factory, sessionId: "run-aborted" });
       await s.emit("agent_end", { messages: [{ role: "assistant", stopReason: "aborted" }] });
       await s.emit("agent_settled", {}, { isIdle: () => true });
       await new Promise((r) => setTimeout(r, 30));
@@ -3226,7 +3187,7 @@ test("once per error: a redundant settle does not resend, and a later fresh fail
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
     await asSubagent("run-retry", async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx, "run-retry");
+      const s = await startSession(fx, { factory, sessionId: "run-retry" });
 
       await s.emit("agent_end", { messages: [{ role: "assistant", stopReason: "error", errorMessage: "first failure" }] });
       await s.emit("agent_settled", {}, { isIdle: () => true });
@@ -3259,7 +3220,7 @@ test("the idle-exit ending's outcome text carries the last turn's error when the
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
     await asSubagent("run-error-idle", async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx, "run-error-idle");
+      const s = await startSession(fx, { factory, sessionId: "run-error-idle" });
       await s.emit("agent_end", { messages: [{ role: "assistant", stopReason: "error", errorMessage: "prompt-capture: no capture" }] });
       await s.emit("agent_settled", {}, { isIdle: () => true });
       await fx.waitForLog("boss-session", "notice"); // the immediate notice, not the subject here
@@ -3284,7 +3245,7 @@ test("session_shutdown schedules the window linger helper for a subagent", async
     // sleep(1) accepts fractional seconds on macOS and Linux
     await asSubagent(DEFAULT_SESSION, async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
+      const s = await startSession(fx, { factory });
       await s.emit("session_shutdown");
       const args = await fx.waitForCloseRun();
       assert.deepEqual(args, ["close-run", "@7"], "the linger helper closes this session's own window");
@@ -3303,7 +3264,7 @@ test("session_shutdown records this run's own outcome as completed when it ends 
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
     await asSubagent("run-completed", async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx, "run-completed");
+      const s = await startSession(fx, { factory, sessionId: "run-completed" });
       await s.emit("session_shutdown");
       assert.deepEqual(fx.lastRunOutcomeArgs(), ["run-outcome", "--result", "completed", "--unreported", "--", "run-completed"]);
     });
@@ -3316,7 +3277,7 @@ test("session_shutdown records this run's own outcome as completed when it ends 
     fx2.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
     await asSubagent("run-failed", async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx2, "run-failed");
+      const s = await startSession(fx2, { factory, sessionId: "run-failed" });
       await s.emit("ui_prompt_start"); // leaves current = "waiting", not idle
       await s.emit("session_shutdown");
       assert.deepEqual(fx2.lastRunOutcomeArgs(), ["run-outcome", "--result", "failed", "--unreported", "--", "run-failed"]);
@@ -3340,7 +3301,7 @@ test("a session_shutdown that is a reload or a session replacement records no ou
       fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
       await asSubagent(`run-${reason}`, async () => {
         const factory = await freshExtensions();
-        const s = await startSessionUsing(factory, fx, `run-${reason}`);
+        const s = await startSession(fx, { factory, sessionId: `run-${reason}` });
         await s.emit("session_shutdown", { type: "session_shutdown", reason });
         assert.equal(fx.lastRunOutcomeArgs(), undefined, `a "${reason}" shutdown does not end the run`);
       });
@@ -3356,7 +3317,7 @@ test("a session_shutdown that is a reload or a session replacement records no ou
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
     await asSubagent("run-quit", async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx, "run-quit");
+      const s = await startSession(fx, { factory, sessionId: "run-quit" });
       await s.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
       assert.deepEqual(fx.lastRunOutcomeArgs(), ["run-outcome", "--result", "completed", "--unreported", "--", "run-quit"]);
     });
@@ -3382,7 +3343,7 @@ test("session_shutdown removes the record for every reason except a reload", asy
     const fx = makeFixture();
     try {
       fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
-      const s = await startSession(fx, `sess-${reason}`);
+      const s = await startSession(fx, { sessionId: `sess-${reason}` });
       await pollUntil(() => fx.lastStatusArgs() !== undefined, 2000, "the initial idle report");
       await s.emit("session_shutdown", reason === undefined ? undefined : { type: "session_shutdown", reason });
       await pollUntil(() => fx.statusReportsWithRemove().length >= 1, 2000, `a "${reason}" shutdown to report --remove`);
@@ -3395,7 +3356,7 @@ test("session_shutdown removes the record for every reason except a reload", asy
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
-    const s = await startSession(fx, "sess-reload");
+    const s = await startSession(fx, { sessionId: "sess-reload" });
     await pollUntil(() => fx.lastStatusArgs() !== undefined, 2000, "the initial idle report");
     await s.emit("session_shutdown", { type: "session_shutdown", reason: "reload" });
     // No event to wait on for a negative outcome - the reload branch
@@ -3413,7 +3374,7 @@ test("session_shutdown never records an outcome for a root session", async () =>
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
-    const s = await startSession(fx, "root-session");
+    const s = await startSession(fx, { sessionId: "root-session" });
     await s.emit("session_shutdown");
     assert.equal(fx.lastRunOutcomeArgs(), undefined, "a root session has no run record to write into");
   } finally {
@@ -3434,7 +3395,7 @@ test("a reload shutdown schedules no linger; a quit does", async () => {
     reload.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@9" }]);
     await asSubagent(DEFAULT_SESSION, async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, reload);
+      const s = await startSession(reload, { factory });
       await s.emit("session_shutdown", { type: "session_shutdown", reason: "reload" });
       const closeRunLog = await reload
         .waitForCloseRun(50)
@@ -3453,7 +3414,7 @@ test("a reload shutdown schedules no linger; a quit does", async () => {
     quit.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@9" }]);
     await asSubagent(DEFAULT_SESSION, async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, quit);
+      const s = await startSession(quit, { factory });
       await s.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
       const args = await quit.waitForCloseRun();
       assert.deepEqual(args, ["close-run", "@9"], "a quit still schedules this session's own window to close");
@@ -3509,7 +3470,7 @@ test("a process that merely inherited a subagent's environment is not a subagent
       async () => {
         const factory = await freshExtensions();
         // This process's own session id: minted by pi, not the run id.
-        const s = await startWithShutdownSpy(factory, "a-nested-pis-own-session");
+        const s = await startWithShutdownSpy(fx, factory, "a-nested-pis-own-session");
 
         const results = await s.emit("before_agent_start", { systemPrompt: "base prompt" });
         assert.ok(results.every((r) => r === undefined), "it is told nothing about a parent it does not have");
@@ -3560,7 +3521,7 @@ test("a real subagent, fresh or resumed, is still a subagent in every respect", 
         runID,
         async () => {
           const factory = await freshExtensions();
-          const s = await startWithShutdownSpy(factory, runID);
+          const s = await startWithShutdownSpy(fx, factory, runID);
 
           const event: any = { systemPrompt: "base prompt", systemPromptOptions: { promptGuidelines: [] } };
           await s.emit("before_agent_start", event);
@@ -3610,7 +3571,7 @@ test("an unresolved session id is not a subagent, whatever the environment claim
       DEFAULT_SESSION, // would match the session id, had one ever been resolved
       async () => {
         const factory = await freshExtensions();
-        const s = await startWithShutdownSpy(factory);
+        const s = await startWithShutdownSpy(fx, factory);
 
         const results = await s.emit("before_agent_start", { systemPrompt: "base prompt" });
         assert.ok(results.every((r) => r === undefined), "no standing instruction for a session that may not be a child at all");
@@ -3635,11 +3596,6 @@ test("interleaving: an inbound ask from the same target is refused even while th
     fx.setAgents(twoPeers.slice(0, 2)); // self, peer-a
     fx.setMessageFailTo(undefined);
     process.env.KIDO_FAKE_MESSAGE_DELAY_MS = "800";
-    // Slower than any fixed wait a caller might have guessed at, so a
-    // test synchronising on wall-clock time instead of the real signal
-    // (the cycle edge actually being registered) fails deterministically
-    // rather than only on a loaded runner. See setAskEdgeListener.
-    process.env.KIDO_FAKE_AGENTS_DELAY_MS = "400";
     try {
       const s = await startSession(fx);
       const ask = s.tools.get("ask_agent");
@@ -3648,50 +3604,38 @@ test("interleaving: an inbound ask from the same target is refused even while th
       // kido below - this only races at all because runKido shells out via
       // spawn rather than execFileSync; the old blocking call could never
       // let an inbound connection be dispatched before the send finished.
-      let edgeRegistered: (() => void) | undefined;
-      const registered = new Promise<void>((resolve) => {
-        edgeRegistered = resolve;
-      });
-      setAskEdgeListener((target) => {
-        if (target === "peer-a") edgeRegistered?.();
-      });
       const p1 = ask.execute("c1", { to: "peer-a", question: "q1" });
-      // The real synchronisation point: the cycle edge (pendingOutbound.set
-      // in kido-agents.ts) is registered synchronously, in-process, right
-      // after the agents-lookup subprocess's await resolves. There is no
-      // honest way to observe that moment from outside the process: the
-      // lookup child writes its own log line well before the parent's
-      // spawn 'close' event fires at the end of its life, so watching for
-      // that write is not a reliable proxy for "the edge exists now". A
-      // fixed wait guessing at the lookup's duration is what this
-      // replaces, and with the lookup slowed above a 120ms guess is
-      // routinely too short.
-      await registered;
-      setAskEdgeListener(undefined);
 
+      // The cycle edge (pendingOutbound.set in kido-agents.ts) is observed
+      // through its only effect: an inbound ask from the target is
+      // refused. Asked until it is, since nothing outside the process sees
+      // the moment the edge is registered; the asks that land before it
+      // are delivered like any other.
+      //
       // The load-bearing half of this test. "Refused" alone is true
       // whether or not the send is still running: the waiter is not
       // dropped until a reply or a timeout, so a runKido that blocked the
       // event loop for the whole 800ms would finish the send first and
       // still refuse afterwards - verified by making runKido
-      // execFileSync-based again, at which point everything below this
-      // line still passed. The fake kido appends its log entry in the same
-      // breath as its reply, so an absent entry here is the only available
-      // evidence that the send really had not finished yet.
-      const inFlight = fx.lastLogFor("peer-a", "ask") === undefined;
-      const refused = await sendToInbox(s.inboxPath, envelope("ask", "sneaky", { id: "race-1", from: { session: "peer-a" } }));
-      assert.ok(inFlight, "the outbound send must still be in flight when the inbound ask is dispatched, or this pins nothing");
-      assert.equal(refused, "refused", "the cycle edge is registered before the send resolves, not after");
+      // execFileSync-based again, at which point the refusal still came.
+      // The fake kido appends its log entry in the same breath as its
+      // reply, so an absent entry before the refused ask is the only
+      // available evidence that the send really had not finished yet.
+      let inFlight = false;
+      let n = 0;
+      await pollUntil(async () => {
+        inFlight = fx.lastLogFor("peer-a", "ask") === undefined;
+        const resp = await sendToInbox(s.inboxPath, envelope("ask", "sneaky", { id: `race-${n++}`, from: { session: "peer-a" } }));
+        return resp === "refused";
+      }, 2000, "an inbound ask from the target to be refused");
+      assert.ok(inFlight, "the outbound send must still be in flight when the inbound ask is refused, or this pins nothing");
 
       const sent = await fx.waitForLog("peer-a", "ask");
       await sendToInbox(s.inboxPath, envelope("reply", "done", { replyTo: sent.id, from: { session: "peer-a" } }));
       const outcome = await p1;
       assert.equal(outcome.content[0].text, "done");
     } finally {
-      setAskEdgeListener(undefined);
       delete process.env.KIDO_FAKE_MESSAGE_DELAY_MS;
-      delete process.env.KIDO_FAKE_AGENTS_DELAY_MS;
-  delete process.env.KIDO_FAKE_SESSION_HELD;
     }
   } finally {
     fx.restore();
@@ -3714,36 +3658,17 @@ function deadPid(): number {
 // timer belong to the child of that run, not to whatever else inherited
 // its environment (kido-agents.ts, ownRunID).
 async function withParentEnv<T>(pid: number, session: string, pollMs: number, fn: () => Promise<T>): Promise<T> {
-  const saved = {
-    KIDO_AGENT_PARENT_PID: process.env.KIDO_AGENT_PARENT_PID,
-    KIDO_AGENT_PARENT_SESSION: process.env.KIDO_AGENT_PARENT_SESSION,
-    KIDO_AGENT_RUN_ID: process.env.KIDO_AGENT_RUN_ID,
-    KIDO_PARENT_POLL_MS: process.env.KIDO_PARENT_POLL_MS,
-  };
-  process.env.KIDO_AGENT_PARENT_PID = String(pid);
-  process.env.KIDO_AGENT_PARENT_SESSION = session;
-  process.env.KIDO_AGENT_RUN_ID = DEFAULT_SESSION;
-  process.env.KIDO_PARENT_POLL_MS = String(pollMs);
-  try {
-    return await fn();
-  } finally {
-    for (const [k, v] of Object.entries(saved)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
-  }
+  const vars = { KIDO_AGENT_PARENT_PID: String(pid), KIDO_AGENT_PARENT_SESSION: session, KIDO_PARENT_POLL_MS: String(pollMs) };
+  return withEnv({ ...vars, KIDO_AGENT_RUN_ID: DEFAULT_SESSION }, fn);
 }
 
-// startWithShutdownSpy is startSessionUsing but with a ctx.shutdown() the
+// startWithShutdownSpy is startSession but with a ctx.shutdown() the
 // test can observe - fakeCtx has no such spy, since no other test needs
 // one.
-async function startWithShutdownSpy(factory: (pi: unknown) => void, sessionId?: string) {
-  const { pi, tools, delivered, emit } = createFakePi();
+async function startWithShutdownSpy(fx: Fixture, factory: (pi: unknown) => void, sessionId?: string) {
   let shutdowns = 0;
-  const ctx = { ...fakeCtx(sessionId), shutdown: () => { shutdowns++; } };
-  factory(pi);
-  await emit("session_start", {}, ctx);
-  return { tools, delivered, emit, shutdowns: () => shutdowns };
+  const s = await startSessionCore(fx, factory, () => ({ ...fakeCtx(sessionId), shutdown: () => { shutdowns++; } }));
+  return { ...s, shutdowns: () => shutdowns };
 }
 
 test("parent-liveness poll: shuts the session down when the parent's process is gone", async () => {
@@ -3752,7 +3677,7 @@ test("parent-liveness poll: shuts the session down when the parent's process is 
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true, window: "@1" }]);
     await withParentEnv(deadPid(), "boss-session", 20, async () => {
       const factory = await freshExtensions();
-      const s = await startWithShutdownSpy(factory);
+      const s = await startWithShutdownSpy(fx, factory);
       await pollUntil(() => s.shutdowns() > 0, 2000, "ctx.shutdown() to be called for a dead parent pid");
       assert.equal(fx.parentAliveCalls().length, 0, "ESRCH is definite, and answered without spawning anything");
       await s.emit("session_shutdown"); // stop the poll, as a real shutdown would
@@ -3775,7 +3700,7 @@ test("parent-liveness poll: does not shut down while the parent is alive, and as
     fx.setParentAlive("alive");
     await withParentEnv(process.pid, "boss-session", 20, async () => {
       const factory = await freshExtensions();
-      const s = await startWithShutdownSpy(factory);
+      const s = await startWithShutdownSpy(fx, factory);
       const agentsBefore = fx.agentsCallCount();
       // Long enough for several poll ticks at 20ms; still short by test
       // standards, and this is what proves the poll ran and chose not to
@@ -3811,7 +3736,7 @@ test("parent-liveness poll: a kido that cannot answer is not evidence, and never
     fx.setParentAlive("fail");
     await withParentEnv(process.pid, "boss-session", 20, async () => {
       const factory = await freshExtensions();
-      const s = await startWithShutdownSpy(factory);
+      const s = await startWithShutdownSpy(fx, factory);
       await pollUntil(() => fx.parentAliveCalls().length >= 4, 2000, "several failed agent-alive polls");
       assert.equal(s.shutdowns(), 0, "a failing query says nothing; it must not be read as a dead parent");
       await s.emit("session_shutdown");
@@ -3841,7 +3766,7 @@ test("parent-liveness poll: a recycled pid with no live record of the session co
     fx.setParentAlive("gone");
     await withParentEnv(process.pid, "boss-session", 20, async () => {
       const factory = await freshExtensions();
-      const s = await startWithShutdownSpy(factory);
+      const s = await startWithShutdownSpy(fx, factory);
       await pollUntil(() => s.shutdowns() > 0, 2000, "ctx.shutdown() to be called for a recycled pid with no live record of the session");
       assert.equal(fx.parentAliveCalls().length, 1, "one reading is conclusive; nothing waits for a second");
       await s.emit("session_shutdown");
@@ -3872,7 +3797,7 @@ test("parent-liveness poll: a slow reply does not let ticks pile up concurrent r
     fx.setParentAliveDelay(delayMs);
     await withParentEnv(process.pid, "boss-session", pollMs, async () => {
       const factory = await freshExtensions();
-      const s = await startWithShutdownSpy(factory);
+      const s = await startWithShutdownSpy(fx, factory);
       // A fixed window rather than a poll on the call count: the thing
       // being measured is how many readings a span of time produces, and
       // stopping at the first few would stop before the pile-up the
@@ -3900,14 +3825,7 @@ test("parent-liveness poll: a slow reply does not let ticks pile up concurrent r
 // before - kido-status.ts reads it once at module scope, so a case using
 // it goes through freshExtensions() to pick it up (see withParentEnv).
 async function withHeartbeatEnv<T>(ms: number, fn: () => Promise<T>): Promise<T> {
-  const saved = process.env.KIDO_HEARTBEAT_MS;
-  process.env.KIDO_HEARTBEAT_MS = String(ms);
-  try {
-    return await fn();
-  } finally {
-    if (saved === undefined) delete process.env.KIDO_HEARTBEAT_MS;
-    else process.env.KIDO_HEARTBEAT_MS = saved;
-  }
+  return withEnv({ KIDO_HEARTBEAT_MS: String(ms) }, fn);
 }
 
 // The second incident: two pi processes on one session id. kido refuses
@@ -3982,7 +3900,7 @@ test("a running session re-sends its status on a heartbeat, bypassing the coales
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     await withHeartbeatEnv(20, async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
+      const s = await startSession(fx, { factory });
       // turn_start, tool_execution_start and tool_call all send the same
       // "running" key: without the heartbeat bypass this is exactly the
       // sequence send()'s coalescing collapses to a single report.
@@ -4006,7 +3924,7 @@ test("the heartbeat stops once the session is no longer running", async () => {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     await withHeartbeatEnv(15, async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
+      const s = await startSession(fx, { factory });
       await s.emit("turn_start");
       // Wait for the heartbeat to have actually fired at least once, not
       // merely the first (turn_start's own) report - otherwise stopping it
@@ -4058,8 +3976,8 @@ async function startWithControlSpies(fx: Fixture, idle?: () => boolean) {
 // parent chain looking for the envelope's sender.
 const controlTree = [
   { id: "self", name: "self", parent: "root-1", pane: "%1", self: true, canMessage: true },
-  { id: "root-1", name: "root-1", parent: "", pane: "%2", self: false, canMessage: true },
-  { id: "peer-x", name: "peer-x", parent: "", pane: "%3", self: false, canMessage: true },
+  { id: "root-1", name: "root-1", parent: "", pane: "%2", self: false, canMessage: true, canReply: true },
+  { id: "peer-x", name: "peer-x", parent: "", pane: "%3", self: false, canMessage: true, canReply: true },
 ];
 
 // TestIsAncestorRefusesSelfEdge's TS twin: without the explicit refusal
@@ -4079,8 +3997,8 @@ test("isAncestor refuses a self-edge, even with a corrupted self-parent record",
 // cycle among records none of which is self would loop forever instead of
 // eventually returning false.
 test("isAncestor terminates on a parent cycle that never reaches self", () => {
-  const a = { id: "a", name: "a", parent: "b", pane: "%1", self: false, canMessage: true, window: "@1", stalled: false, sinceReport: 0 };
-  const b = { id: "b", name: "b", parent: "a", pane: "%2", self: false, canMessage: true, window: "@2", stalled: false, sinceReport: 0 };
+  const a = { id: "a", name: "a", parent: "b", pane: "%1", self: false, canMessage: true, canReply: true, window: "@1", stalled: false, sinceReport: 0 };
+  const b = { id: "b", name: "b", parent: "a", pane: "%2", self: false, canMessage: true, canReply: true, window: "@2", stalled: false, sinceReport: 0 };
   const self = { id: "self", name: "self", parent: "", pane: "%3", self: true, canMessage: true, window: "@3", stalled: false, sinceReport: 0 };
   assert.equal(isAncestor([self, a, b], self, a), false);
   assert.equal(isAncestor([self, a, b], self, b), false);
@@ -4090,7 +4008,7 @@ test("isAncestor terminates on a parent cycle that never reaches self", () => {
 // shape a race between a spawn and an exit can leave behind - must end
 // the walk rather than loop on `cur` never changing.
 test("isAncestor terminates when a parent names nobody in the list", () => {
-  const orphan = { id: "orphan", name: "orphan", parent: "ghost-parent", pane: "%1", self: false, canMessage: true, window: "@1", stalled: false, sinceReport: 0 };
+  const orphan = { id: "orphan", name: "orphan", parent: "ghost-parent", pane: "%1", self: false, canMessage: true, canReply: true, window: "@1", stalled: false, sinceReport: 0 };
   const self = { id: "self", name: "self", parent: "", pane: "%2", self: true, canMessage: true, window: "@2", stalled: false, sinceReport: 0 };
   assert.equal(isAncestor([self, orphan], self, orphan), false);
 });
@@ -4100,8 +4018,8 @@ test("isAncestor terminates when a parent names nobody in the list", () => {
 // on.
 test("isAncestor finds a two-level ancestor", () => {
   const grand = { id: "grand", name: "grand", parent: "", pane: "%1", self: true, canMessage: true, window: "@1", stalled: false, sinceReport: 0 };
-  const mid = { id: "mid", name: "mid", parent: "grand", pane: "%2", self: false, canMessage: true, window: "@2", stalled: false, sinceReport: 0 };
-  const child = { id: "child", name: "child", parent: "mid", pane: "%3", self: false, canMessage: true, window: "@3", stalled: false, sinceReport: 0 };
+  const mid = { id: "mid", name: "mid", parent: "grand", pane: "%2", self: false, canMessage: true, canReply: true, window: "@2", stalled: false, sinceReport: 0 };
+  const child = { id: "child", name: "child", parent: "mid", pane: "%3", self: false, canMessage: true, canReply: true, window: "@3", stalled: false, sinceReport: 0 };
   assert.equal(isAncestor([grand, mid, child], grand, child), true);
 });
 
@@ -4316,9 +4234,9 @@ test("a control envelope from a human at the CLI is honoured; one merely missing
 // ask_agent's ancestor guard in both directions: which of self/target is
 // the caller decides which one gets marked self:true per case.
 const askTree = [
-  { id: "grand", name: "grand", parent: "", self: false, canMessage: true },
-  { id: "mid", name: "mid", parent: "grand", self: false, canMessage: true },
-  { id: "child", name: "child", parent: "mid", self: false, canMessage: true },
+  { id: "grand", name: "grand", parent: "", self: false, canMessage: true, canReply: true },
+  { id: "mid", name: "mid", parent: "grand", self: false, canMessage: true, canReply: true },
+  { id: "child", name: "child", parent: "mid", self: false, canMessage: true, canReply: true },
 ];
 
 // isAncestor(agents, self, target) means "self is an ancestor of target"
@@ -4474,7 +4392,7 @@ test("ask_agent refuses a stalled target immediately, without sending anything",
   try {
     fx.setAgents([
       { id: "self", name: "self", parent: "", self: true, canMessage: true },
-      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, stalled: true, sinceReport: 245 },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, canReply: true, stalled: true, sinceReport: 245 },
     ]);
     const s = await startSession(fx);
     const ask = s.tools.get("ask_agent");
@@ -4498,7 +4416,7 @@ test("ask_agent refuses a target that is not alive, promptly and without sending
   try {
     fx.setAgents([
       { id: "self", name: "self", parent: "", self: true, canMessage: true },
-      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, canReply: true },
     ]);
     fx.setParentAlive("gone");
     const s = await startSession(fx);
@@ -4557,14 +4475,7 @@ test("ask_agent still sends to a target with canReply true", async () => {
 // liveness on. It is read once at module scope, so every case using it
 // goes through freshExtensions() to pick it up (see withParentEnv).
 async function withAskPollEnv<T>(pollMs: number, fn: () => Promise<T>): Promise<T> {
-  const saved = process.env.KIDO_ASK_POLL_MS;
-  process.env.KIDO_ASK_POLL_MS = String(pollMs);
-  try {
-    return await fn();
-  } finally {
-    if (saved === undefined) delete process.env.KIDO_ASK_POLL_MS;
-    else process.env.KIDO_ASK_POLL_MS = saved;
-  }
+  return withEnv({ KIDO_ASK_POLL_MS: String(pollMs) }, fn);
 }
 
 // The three cases below are about one thing: an ask that will never be
@@ -4577,11 +4488,11 @@ test("ask_agent releases its waiter when the target dies mid-wait, long before t
   try {
     fx.setAgents([
       { id: "self", name: "self", parent: "", self: true, canMessage: true },
-      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, canReply: true },
     ]);
     await withAskPollEnv(50, async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
+      const s = await startSession(fx, { factory });
       const ask = s.tools.get("ask_agent");
 
       const p = ask.execute("c1", { to: "peer-a", question: "q", timeoutMs: 600000 });
@@ -4637,12 +4548,12 @@ test("an ask aborted while its send is in flight leaves no liveness watch runnin
   try {
     fx.setAgents([
       { id: "self", name: "self", parent: "", self: true, canMessage: true },
-      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, canReply: true },
     ]);
     process.env.KIDO_FAKE_MESSAGE_DELAY_MS = "400";
     await withAskPollEnv(50, async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
+      const s = await startSession(fx, { factory });
       const ask = s.tools.get("ask_agent");
 
       const ac = new AbortController();
@@ -4676,11 +4587,11 @@ test("a live target that takes its time is still waited for, and its reply is wh
   try {
     fx.setAgents([
       { id: "self", name: "self", parent: "", self: true, canMessage: true },
-      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true },
+      { id: "peer-a", name: "peer-a", parent: "", self: false, canMessage: true, canReply: true },
     ]);
     await withAskPollEnv(50, async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx);
+      const s = await startSession(fx, { factory });
       const ask = s.tools.get("ask_agent");
 
       const ac = new AbortController();
@@ -4709,21 +4620,7 @@ test("a live target that takes its time is still waited for, and its reply is wh
 // read once at module scope, so every case below goes through
 // freshExtensions() to pick them up (see withParentEnv).
 async function withIdleExitEnv<T>(seconds: number, keepAlive: boolean, fn: () => Promise<T>): Promise<T> {
-  const saved = {
-    KIDO_IDLE_EXIT_SECONDS: process.env.KIDO_IDLE_EXIT_SECONDS,
-    KIDO_AGENT_KEEP_ALIVE: process.env.KIDO_AGENT_KEEP_ALIVE,
-  };
-  process.env.KIDO_IDLE_EXIT_SECONDS = String(seconds);
-  if (keepAlive) process.env.KIDO_AGENT_KEEP_ALIVE = "1";
-  else delete process.env.KIDO_AGENT_KEEP_ALIVE;
-  try {
-    return await fn();
-  } finally {
-    for (const [k, v] of Object.entries(saved)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
-  }
+  return withEnv({ KIDO_IDLE_EXIT_SECONDS: String(seconds), KIDO_AGENT_KEEP_ALIVE: keepAlive ? "1" : undefined }, fn);
 }
 
 test("idle self-exit: a settled turn with no further work shuts the session down after the configured idle interval, measured", async () => {
@@ -4733,7 +4630,7 @@ test("idle self-exit: a settled turn with no further work shuts the session down
     await withParentEnv(process.pid, "boss-session", 5000, async () => {
       await withIdleExitEnv(0.1, false, async () => {
         const factory = await freshExtensions();
-        const s = await startWithShutdownSpy(factory);
+        const s = await startWithShutdownSpy(fx, factory);
         const t0 = Date.now();
         await s.emit("agent_settled", {}, { isIdle: () => true });
         await pollUntil(() => s.shutdowns() > 0, 2000, "ctx.shutdown() after the idle interval");
@@ -4754,7 +4651,7 @@ test("idle self-exit: new work resets the timer instead of letting it fire mid-t
     await withParentEnv(process.pid, "boss-session", 5000, async () => {
       await withIdleExitEnv(0.15, false, async () => {
         const factory = await freshExtensions();
-        const s = await startWithShutdownSpy(factory);
+        const s = await startWithShutdownSpy(fx, factory);
         await s.emit("agent_settled", {}, { isIdle: () => true }); // arms the 150ms timer
         await new Promise((r) => setTimeout(r, 80)); // well under it
         await s.emit("turn_start"); // new work: must cancel the pending shutdown
@@ -4778,7 +4675,7 @@ test("idle self-exit: a root session (no parent) never arms the timer", async ()
     try {
       await withIdleExitEnv(0.05, false, async () => {
         const factory = await freshExtensions();
-        const s = await startWithShutdownSpy(factory);
+        const s = await startWithShutdownSpy(fx, factory);
         await s.emit("agent_settled", {}, { isIdle: () => true });
         await new Promise((r) => setTimeout(r, 300)); // several times the configured interval
         assert.equal(s.shutdowns(), 0, "a root session must never self-reap");
@@ -4799,7 +4696,7 @@ test("idle self-exit: keepAlive opts a child out entirely", async () => {
     await withParentEnv(process.pid, "boss-session", 5000, async () => {
       await withIdleExitEnv(0.05, true, async () => {
         const factory = await freshExtensions();
-        const s = await startWithShutdownSpy(factory);
+        const s = await startWithShutdownSpy(fx, factory);
         await s.emit("agent_settled", {}, { isIdle: () => true });
         await new Promise((r) => setTimeout(r, 300));
         assert.equal(s.shutdowns(), 0, "keepAlive must prevent the idle timer from ever arming");
@@ -4818,7 +4715,7 @@ test("idle self-exit: a focused window re-arms instead of shutting down, then ex
     await withParentEnv(process.pid, "boss-session", 5000, async () => {
       await withIdleExitEnv(0.05, false, async () => {
         const factory = await freshExtensions();
-        const s = await startWithShutdownSpy(factory);
+        const s = await startWithShutdownSpy(fx, factory);
         await s.emit("agent_settled", {}, { isIdle: () => true });
         // Each re-arm check costs a fake-kido subprocess start (tens of ms),
         // so the wait has to be generous relative to the 50ms interval to
@@ -4854,7 +4751,7 @@ test("idle self-exit: a live child run re-arms the clock, and the session exits 
     await withParentEnv(process.pid, "boss-session", 5000, async () => {
       await withIdleExitEnv(0.05, false, async () => {
         const factory = await freshExtensions();
-        const s = await startWithShutdownSpy(factory);
+        const s = await startWithShutdownSpy(fx, factory);
         await s.emit("agent_settled", {}, { isIdle: () => true });
         // Generous relative to the 50ms interval, since each re-arm costs
         // a fake-kido subprocess start: the point is to observe several.
@@ -4894,7 +4791,7 @@ test("idle self-exit: a shutdown pi declined is asked for again", async () => {
         // from ctx.shutdown() - pi just does not end the session. Mirror
         // the real sequence around the first firing without it changing
         // anything: kido-agents.ts does not listen for either event.
-        const s = await startWithShutdownSpy(factory);
+        const s = await startWithShutdownSpy(fx, factory);
         await s.emit("agent_settled", {}, { isIdle: () => true });
         await pollUntil(() => s.shutdowns() > 0, 2000, "the first ctx.shutdown() attempt");
         await s.emit("session_before_compact");
@@ -4921,7 +4818,7 @@ test("a child that never called notify_parent flags its silence as it ends, and 
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
     await asSubagent("run-silent", async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx, "run-silent");
+      const s = await startSession(fx, { factory, sessionId: "run-silent" });
       await s.emit("session_shutdown");
       assert.deepEqual(fx.lastRunOutcomeArgs(), [
         "run-outcome", "--result", "completed", "--unreported", "--", "run-silent",
@@ -4939,7 +4836,7 @@ test("a child that never called notify_parent flags its silence as it ends, and 
     fx2.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true }]);
     await asSubagent("run-spoke", async () => {
       const factory = await freshExtensions();
-      const s = await startSessionUsing(factory, fx2, "run-spoke");
+      const s = await startSession(fx2, { factory, sessionId: "run-spoke" });
       const res = await s.tools.get("notify_parent").execute("c1", { summary: "done: the tty fix landed" });
       assert.match(res.content[0].text, /delivered/, "the report itself has to have gone out");
       await s.emit("session_shutdown");
