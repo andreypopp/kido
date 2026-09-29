@@ -91,9 +91,9 @@ func TestSwitchSessionBinding(t *testing.T) {
 	h.waitSession("a")
 
 	h.in("bind-key", "-n", "S-Down", "run-shell",
-		fmt.Sprintf("%s switch-session next -client '#{client_name}'", kidoBin))
+		fmt.Sprintf("%s switch-session next --client '#{client_name}'", kidoBin))
 	h.in("bind-key", "-n", "S-Up", "run-shell",
-		fmt.Sprintf("%s switch-session prev -client '#{client_name}'", kidoBin))
+		fmt.Sprintf("%s switch-session prev --client '#{client_name}'", kidoBin))
 
 	h.sendKeys("S-Down") // a -> c (kido order; tmux name order would say b)
 	h.waitSession("c")

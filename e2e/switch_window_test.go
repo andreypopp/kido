@@ -66,7 +66,7 @@ func (h *harness) selectWindow(session, window string) {
 func (h *harness) runSwitchWindow(dir string) {
 	h.t.Helper()
 	tmuxEnv := h.in("display-message", "-p", "#{socket_path},#{pid},0")
-	cmd := exec.Command(kidoBin, "switch-window", dir, "-client", h.client)
+	cmd := exec.Command(kidoBin, "switch-window", dir, "--client", h.client)
 	cmd.Env = cleanEnv("TMUX=" + tmuxEnv)
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
@@ -155,17 +155,17 @@ func TestSwitchWindowOrderPrev(t *testing.T) {
 }
 
 // The actual key binding in tmux/kido-tmux.conf and the README:
-// bind-key -n ... run-shell "kido switch-window next -client
+// bind-key -n ... run-shell "kido switch-window next --client
 // '#{client_name}'", proving #{client_name} expands when run-shell fires
-// from a key binding, not just when the test drives kido with -client.
+// from a key binding, not just when the test drives kido with --client.
 func TestSwitchWindowBinding(t *testing.T) {
 	t.Parallel()
 	h := setupSwitchWindowSessions(t)
 
 	h.in("bind-key", "-n", "S-Down", "run-shell",
-		fmt.Sprintf("%s switch-window next -client '#{client_name}'", kidoBin))
+		fmt.Sprintf("%s switch-window next --client '#{client_name}'", kidoBin))
 	h.in("bind-key", "-n", "S-Up", "run-shell",
-		fmt.Sprintf("%s switch-window prev -client '#{client_name}'", kidoBin))
+		fmt.Sprintf("%s switch-window prev --client '#{client_name}'", kidoBin))
 
 	h.sendKeys("S-Down") // a0 -> a1
 	h.waitWindow("a", "a1")

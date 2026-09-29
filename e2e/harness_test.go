@@ -303,7 +303,7 @@ var sanitize = regexp.MustCompile(`[^A-Za-z0-9]+`)
 
 // start brings up both servers with one inner session and waits until the
 // sidebar has rendered it. Extra arguments are passed to kido: a long
-// -interval makes a test prove that an update came from tmux's control-mode
+// --interval makes a test prove that an update came from tmux's control-mode
 // notifications rather than from the next poll.
 func start(t *testing.T, session string, kidoArgs ...string) *harness {
 	t.Helper()

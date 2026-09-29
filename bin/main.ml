@@ -230,17 +230,67 @@ let ssh =
   @@ let+ args = rest in
      Cli.run "ssh" (fun () -> Ssh.run args)
 
-let default =
-  let+ () = Term.const () in
+let duration =
+  Arg.conv
+    ( (fun s -> Result.map_err (fun e -> `Msg e) (Ui.parse_duration s)),
+      fun ppf d -> Format.fprintf ppf "%gs" d )
+
+let release_ops = { Reap.kill_window = Tmux.Exec.kill_window; kill_pane = Tmux.Exec.kill_pane }
+
+(* State.read_all, not a per-pane view: the orphan rule needs every record. *)
+let reap =
+  Cmd.v (Cmd.info "reap" ~doc:"Close the finished subagent windows a sweep names.")
+  @@ let+ args = rest in
+     Cli.run "reap" (fun () ->
+         if not (List.is_empty args) then failwith "usage: kido reap";
+         let dir = State.dir () in
+         Reap.collect ~dir ~capture:Reap.capture_pane ~grace:(Reap.grace ())
+           (Tmux.Exec.list_panes ()) (State.read_all ~dir) ~now:(Unix.gettimeofday ()) release_ops;
+         0)
+
+(* Strict about the argument: kill-window resolves any target syntax, so any other spelling would
+   pass the focus check (matching no pane) and kill a window the user may be reading. *)
+let close_run =
+  Cmd.v (Cmd.info "close-run" ~doc:"Collect a finished run's pane, or its whole window.")
+  @@ let+ args = rest in
+     Cli.run "close-run" (fun () ->
+         let window_id =
+           match args with
+           | [ w ] when not (String.is_empty w) -> w
+           | _ -> failwith "usage: kido close-run WINDOW_ID"
+         in
+         if not (Control.is_window_id window_id) then
+           failwith (Printf.sprintf "close-run: %S is not a window id (@N)" window_id);
+         (match Reap.decide (Tmux.Exec.list_panes ()) window_id with
+         | Ok c -> Reap.release release_ops c
+         | Error refusal -> Cli.error "close-run" refusal);
+         0)
+
+(* The fork sets TMUX_SIDE_CLIENT only for the side-status-command job, so its absence is exactly
+   "not started as a side column". *)
+let sidebar =
+  let+ interval =
+    Arg.(
+      value & opt duration 0.1
+      & info [ "interval" ] ~docv:"DURATION"
+          ~doc:"Refresh interval; tmux changes also refresh immediately.")
+  and+ client =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "client" ] ~docv:"NAME"
+          ~doc:
+            "tmux client to act on; defaults to $(b,TMUX_SIDE_CLIENT), and is required without it.")
+  in
   match (Sys.argv, Sys.getenv_opt "TMUX_SIDE_CLIENT") with
   | [| _ |], (None | Some "") ->
       Cli.run "" (fun () -> Launch.run ~tmux:(Option.get_or ~default:"" (Sys.getenv_opt "TMUX")))
-  | _ -> failwith "sidebar: not merged yet"
+  | _ -> Ui.run ~interval ~client
 
 let () =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   let cmd =
-    Cmd.group ~default (Cmd.info "kido")
+    Cmd.group ~default:sidebar (Cmd.info "kido")
       [
         hook;
         agent_status;
@@ -262,6 +312,8 @@ let () =
         ssh;
         spawn_subagent;
         async_bash;
+        reap;
+        close_run;
       ]
   in
   (* ssh's arguments are ssh's own, options included. *)
