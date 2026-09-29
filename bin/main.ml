@@ -103,6 +103,73 @@ let switch_session =
 let switch_window =
   switch "switch-window" "Switch the client to the next or previous window." Tmux.Exec.switch_window
 
+let created name f =
+  Cli.run name (fun () ->
+      print_endline (f ());
+      0)
+
+let spawn_subagent =
+  Cmd.v (Cmd.info "spawn_subagent" ~doc:"Spawn a subagent in its own tmux window, or resume one.")
+  @@ let+ parent_pid = num "parent-pid" "PID" "Pid of the agent spawning this one."
+     and+ parent_session = str "parent-session" "ID" "Session id of the agent spawning this one."
+     and+ name = str "name" "NAME" "Window name, and (by convention) the child's own --name."
+     and+ task_file =
+       str "task-file" "FILE"
+         "File holding the task text to deliver as the child's first message, or - for stdin."
+     and+ model =
+       str "model" "M" "Model the child will run, recorded in the run's meta for kido runs."
+     and+ tools =
+       str "tools" "T,..."
+         "Comma-separated tool allowlist the child will run, recorded in the run's meta for kido \
+          runs."
+     and+ resume =
+       str "resume" "RUN_ID" "Resume an existing run's own session instead of starting a new one."
+     and+ fork =
+       str "fork" "SESSION_ID"
+         "Seed the child's session with this pi session's transcript, so it starts holding the \
+          caller's context."
+     and+ keep_alive =
+       flag "keep-alive" "The child does not self-reap after going idle (KIDO_AGENT_KEEP_ALIVE)."
+     and+ no_parent =
+       flag "no-parent"
+         "Spawn with no parent edge at all: the child reports to nobody, arms no idle timer, and \
+          is never reaped as an orphan."
+     and+ command = rest in
+     created "spawn_subagent" (fun () ->
+         Spawn_subagent.spawn ~dir:(State.dir ()) ~self:(env "TMUX_PANE") ~panes
+           ~tmux:Spawn_subagent.tmux
+           ~pi:
+             {
+               list_models = Spawn_subagent.list_models ~path:(env "PATH");
+               session_dir = env "PI_CODING_AGENT_SESSION_DIR";
+               agent_dir = env "PI_CODING_AGENT_DIR";
+               home = env "HOME";
+             }
+           (Spawn_subagent.parse
+              {
+                parent_pid;
+                parent_session;
+                name;
+                task_file;
+                model;
+                tools;
+                resume;
+                fork;
+                keep_alive;
+                no_parent;
+                command;
+              }))
+
+let async_bash =
+  Cmd.v (Cmd.info "async_bash" ~doc:"Run a command in the background, in its own tmux window.")
+  @@ let+ name = str "name" "NAME" "Window name; derived from the command when omitted."
+     and+ stream = flag "stream" "Send the command's output to this caller in batches as it runs."
+     and+ args = rest in
+     created "async_bash" (fun () ->
+         Async_bash.async_bash ~dir:(State.dir ()) ~self:(env "TMUX_PANE")
+           ~exe:(Tmux.Exec.invoked_path ~path:(env "PATH") Sys.argv.(0))
+           ~panes ~tmux:Spawn_subagent.tmux ~name ~stream args)
+
 let hook =
   Cmd.v (Cmd.info "hook" ~doc:"Record a Claude Code hook event read from stdin.")
   @@ let+ args = rest in
@@ -193,6 +260,8 @@ let () =
         switch_window;
         shell;
         ssh;
+        spawn_subagent;
+        async_bash;
       ]
   in
   (* ssh's arguments are ssh's own, options included. *)

@@ -10,8 +10,7 @@ let kido args =
   (code, List.hd (String.lines (Option.get_or ~default:"" (Kido.Fs.read err) ^ "\n")))
 
 (* Tools whose subcommand has not been ported yet; a name leaves this list with its port. *)
-let pending =
-  [ "spawn_subagent"; "steer_subagent"; "interrupt_subagent"; "stop_subagent"; "async_bash" ]
+let pending = [ "steer_subagent"; "interrupt_subagent"; "stop_subagent" ]
 
 (* pi's own suite pins that tools.json names exactly the tools it registers; this pins that each
    invokes a subcommand of its own name. *)
