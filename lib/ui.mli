@@ -45,7 +45,7 @@ val lingering_subagents :
 val same : snapshot -> snapshot -> bool
 
 type span = Mosaic.span = { text : string; style : Style.t }
-type row = { spans : span list; pane_id : string option }
+type row = { lead : span list; title : span list; tail : span list; pane_id : string option }
 type phase = { running : bool; since : float; drawn : bool; held : Tmux.Pane.exit option }
 
 type model = {
@@ -89,7 +89,7 @@ val indicator : indicator -> span option
 val field : span option -> span list
 val shell_indicator : model -> phase -> indicator option
 val agent_title_of : model -> Tmux.Pane.t -> string option
-val pane_label : model -> Tmux.Pane.t -> span list
+val pane_label : model -> Tmux.Pane.t -> row
 
 type placement = { panes : Tmux.Pane.t list; anchor : string option }
 
@@ -99,6 +99,8 @@ val order_windows_by_tree :
   lingering String_map.t ->
   placement list
 
+val switch_window : dir:string -> client:string -> next:bool -> unit
+val spans : row -> span list
 val row_text : row -> string
 val truncate : int -> span list -> span list
 val rebuild : model -> model

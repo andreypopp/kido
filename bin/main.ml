@@ -145,7 +145,8 @@ let switch_session =
     Tmux.Exec.switch_session
 
 let switch_window =
-  switch "switch-window" "Switch the client to the next or previous window." Tmux.Exec.switch_window
+  switch "switch-window" "Switch the client to the next or previous window." (fun ~client ~next ->
+      Ui.switch_window ~dir:(State.dir ()) ~client ~next)
 
 let created name f =
   Cli.run name (fun () ->

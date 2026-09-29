@@ -316,3 +316,30 @@ func TestSwitchSessionIntoADottedSessionName(t *testing.T) {
 	h.runSwitchSession("prev")
 	h.waitSession("plain")
 }
+
+// A subagent's window opened after its parent's sibling sits later in
+// tmux's order than in the sidebar, which hoists it under its parent:
+// a0, s, a1, a2 on screen, a0, a1, s, a2 in tmux. Picked from the
+// sidebar, s is left the way the sidebar reads - down to a1, up to a0 -
+// not from its tmux index, which skipped a1 for a2.
+func TestSwitchWindowFromHoistedSubagent(t *testing.T) {
+	t.Parallel()
+	h := start(t, "a")
+	h.renameWindow("a", 0, "a0")
+	h.liveParent("a", "parent-a0")
+	h.addWindow("a", "a1")
+	h.subagentWindow("a", "s", "child-s", "parent-a0")
+	h.addWindow("a", "a2")
+	h.in("bind-key", "-n", "S-Down", "run-shell",
+		fmt.Sprintf("%s switch-window next --client '#{client_name}'", kidoBin))
+	h.in("bind-key", "-n", "S-Up", "run-shell",
+		fmt.Sprintf("%s switch-window prev --client '#{client_name}'", kidoBin))
+
+	h.selectWindow("a", "s")
+	h.sendKeys("S-Down")
+	h.waitWindow("a", "a1")
+
+	h.selectWindow("a", "s")
+	h.sendKeys("S-Up")
+	h.waitWindow("a", "a0")
+}

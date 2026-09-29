@@ -24,7 +24,7 @@ val client_state : string -> client_state option
 val real_clients : string list -> string list
 val resolve_client : pane:string -> tmux_env:string -> string option
 val switch_session : client:string -> next:bool -> unit
-val switch_window : client:string -> next:bool -> unit
+val switch_window : client:string -> next:bool -> Pane.t list list -> unit
 val jump : client:string -> string -> unit
 val release_side_focus : string -> unit
 val send_prompt : string -> string -> unit

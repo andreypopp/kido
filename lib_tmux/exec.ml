@@ -184,12 +184,9 @@ let switch_session ~client ~next =
         ignore (run [ "switch-client"; "-c"; client; "-t"; target.id ])
     | None -> ()
 
-let switch_window ~client ~next =
-  let panes = list_panes () in
-  let windows =
-    Array.of_list
-      (List.concat_map (fun (s : Pane.session) -> s.windows) (Pane.order_sessions panes))
-  in
+let switch_window ~client ~next windows =
+  let panes = List.concat windows in
+  let windows = Array.of_list windows in
   let first (w : Pane.t list) = List.hd w in
   let n = Array.length windows in
   let active =

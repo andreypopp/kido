@@ -195,7 +195,7 @@ let same a b =
   && String_map.equal (fun x y -> Stdlib.( = ) x y) a.lingering b.lingering
 
 type span = Mosaic.span = { text : string; style : Style.t }
-type row = { spans : span list; pane_id : string option }
+type row = { lead : span list; title : span list; tail : span list; pane_id : string option }
 type phase = { running : bool; since : float; drawn : bool; held : P.exit option }
 
 type model = {
@@ -349,7 +349,6 @@ let st_plain = Style.make ~fg:Color.default ()
 let st_current = Style.make ~fg:Color.default ~bold:true ()
 let st_proc = Style.make ~fg:Color.white ()
 let st_dim = Style.make ~fg:Color.bright_black ()
-let st_cursor = Style.make ~fg:Color.default ~inverse:true ()
 let st_err = Style.make ~fg:Color.red ()
 let st_running = Style.make ~fg:Color.green ()
 let st_waiting = Style.make ~fg:Color.yellow ~bold:true ()
@@ -397,17 +396,18 @@ let agent_title_of m (p : P.t) =
     | _ -> ( match State.agent_title p.title with "" -> Some "-" | t -> Some t)
 
 let lingering_label m (p : P.t) =
+  let row lead title tail = Some { lead; title; tail; pane_id = Some p.pane_id } in
   match Option.flat_map (fun run -> String_map.find_opt run m.snap.lingering) p.run with
   | None -> None
   | Some l when Option.is_none p.dead_at ->
-      Some (field (indicator (Status Running)) @ [ plain l.name ])
+      row (field (indicator (Status Running))) [ plain l.name ] []
   | Some l ->
-      Some
-        (field (indicator (Gone l.outcome))
-        @ [ span st_dim l.name ]
-        @ Option.map_or ~default:[]
-            (fun o -> [ plain "  "; span st_dim (Subrun.string_of_result o) ])
-            l.outcome)
+      row
+        (field (indicator (Gone l.outcome)))
+        [ span st_dim l.name ]
+        (Option.map_or ~default:[]
+           (fun o -> [ plain "  "; span st_dim (Subrun.string_of_result o) ])
+           l.outcome)
 
 let running_command m (p : P.t) =
   match P.shell p with Running when not (interactive_pane m p) -> p.command_line | _ -> ""
@@ -436,7 +436,12 @@ let pane_label m (p : P.t) =
                 if interactive_pane m p then None
                 else Option.flat_map (shell_indicator m) (String_map.find_opt p.pane_id m.phases)
           in
-          field (Option.flat_map indicator ind) @ text)
+          {
+            lead = field (Option.flat_map indicator ind);
+            title = text;
+            tail = [];
+            pane_id = Some p.pane_id;
+          })
   | Some title ->
       let ind, activity =
         match String_map.find_opt p.pane_id m.snap.states with
@@ -448,9 +453,12 @@ let pane_label m (p : P.t) =
               s.activity )
       in
       let ind = if done_ m p.pane_id then Done else ind in
-      field (indicator ind)
-      @ [ plain title ]
-      @ if String.is_empty activity then [] else [ plain "  "; span st_dim activity ]
+      {
+        lead = field (indicator ind);
+        title = [ plain title ];
+        tail = (if String.is_empty activity then [] else [ plain "  "; span st_dim activity ]);
+        pane_id = Some p.pane_id;
+      }
 
 type placement = { panes : P.t list; anchor : string option }
 
@@ -503,6 +511,16 @@ let order_windows_by_tree windows states lingering =
     ([], []) ordered
   |> snd
 
+let switch_window ~dir ~client ~next =
+  let panes = Tmux.Exec.list_panes () in
+  let states = State.by_pane (State.load_live ~dir) in
+  let lingering = lingering_subagents ~dir panes states String_map.empty in
+  Tmux.Exec.switch_window ~client ~next
+    (List.concat_map
+       (fun (s : P.session) ->
+         List.map (fun p -> p.panes) (order_windows_by_tree s.windows states lingering))
+       (P.order_sessions panes))
+
 let glyph i n =
   span st_dim (if n = 1 then "╶" else if i = 0 then "┌" else if i = n - 1 then "└" else "├")
 
@@ -528,7 +546,8 @@ let append_windows m placements =
                 ( [ (if j > 0 then group_stem else lead); glyph j n ],
                   prefix @ [ group_stem; continuation j n; plain " " ] )
           in
-          rows := { spans = prefix @ g @ pane_label m p; pane_id = Some p.pane_id } :: !rows;
+          let label = pane_label m p in
+          rows := { label with lead = prefix @ g @ label.lead } :: !rows;
           let kids =
             List.filter
               (fun k -> Option.equal String.equal placements.(k).anchor (Some p.pane_id))
@@ -544,7 +563,8 @@ let append_windows m placements =
   Array.iteri (fun i _ -> emit i [] None (plain "")) placements;
   List.rev !rows
 
-let row_text r = String.concat "" (List.map (fun s -> s.text) r.spans)
+let spans r = r.lead @ r.title @ r.tail
+let row_text r = String.concat "" (List.map (fun s -> s.text) (spans r))
 
 let fuzzy pattern s =
   let n = String.length pattern and s = String.lowercase_ascii s in
@@ -589,7 +609,12 @@ let focus m pane =
 let rebuild m =
   let prev = Option.flat_map (fun r -> r.pane_id) (CCArray.get_safe m.rows m.cursor) in
   match m.snap.err with
-  | Some e -> { m with rows = [| { spans = [ span st_err e ]; pane_id = None } |]; cursor = -1 }
+  | Some e ->
+      {
+        m with
+        rows = [| { lead = []; title = [ span st_err e ]; tail = []; pane_id = None } |];
+        cursor = -1;
+      }
   | None ->
       let order = P.order_sessions m.snap.panes in
       let order =
@@ -620,11 +645,13 @@ let rebuild m =
         List.concat_map
           (fun (s : P.session) ->
             {
-              spans =
+              lead = [];
+              title =
                 [
                   (if String.equal s.name m.snap.current then span st_current s.name
                    else plain s.name);
                 ];
+              tail = [];
               pane_id = None;
             }
             :: append_windows m (order_windows_by_tree s.windows m.snap.states m.snap.lingering))
@@ -722,9 +749,9 @@ let key m (k : Mosaic.Event.key) =
   else
     match e.key with
     | Down when e.modifier.shift ->
-        none (tmux m (fun () -> Tmux.Exec.switch_window ~client:m.opts.client ~next:true))
+        none (tmux m (fun () -> switch_window ~dir:m.opts.dir ~client:m.opts.client ~next:true))
     | Up when e.modifier.shift ->
-        none (tmux m (fun () -> Tmux.Exec.switch_window ~client:m.opts.client ~next:false))
+        none (tmux m (fun () -> switch_window ~dir:m.opts.dir ~client:m.opts.client ~next:false))
     | Down | Line_feed -> none (move m 1)
     | Up -> none (move m (-1))
     | _ when ctrl 'j' || ctrl 'n' || is 'j' -> none (move m 1)
@@ -830,11 +857,16 @@ let view m =
       (List.map (fun s -> Mosaic.text ~style:s.style ~selectable:false s.text) spans)
   in
   let row i =
-    if i = m.cursor then
-      Mosaic.text ~style:st_cursor ~selectable:false
-        ~size:(Mosaic.size_wh (Mosaic.pct 100) (Mosaic.px 1))
-        (row_text { (m.rows.(i)) with spans = truncate m.width m.rows.(i).spans })
-    else line (truncate m.width m.rows.(i).spans)
+    let r = m.rows.(i) in
+    let r =
+      if i = m.cursor then
+        {
+          r with
+          title = List.map (fun s -> { s with style = Style.with_inverse true s.style }) r.title;
+        }
+      else r
+    in
+    line (truncate m.width (spans r))
   in
   let footer =
     if not (String.is_empty m.status) then line (truncate m.width [ span st_err m.status ])
