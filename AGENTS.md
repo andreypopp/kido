@@ -75,7 +75,7 @@ These are fixed:
   `test/`.
 - **Every stanza compiles with `-open Containers`.** Every `.ml` has an
   `.mli` unless it holds only types. JSON is yojson with
-  ppx_deriving_yojson. The TUI is Mosaic, pinned in `kido.opam.template`.
+  ppx_deriving_yojson. The TUI is Mosaic, pinned in `dune-project`.
   Concurrency is `unix` and `threads.posix`; no Eio, no Lwt.
 - **The command line is a contract** with `pi/`, `shims/`, `tmux/`,
   `shell/` and `e2e/`: subcommands, flags, exit codes, every parsed or
@@ -98,8 +98,9 @@ Conventions:
   test sets an env var or swaps a global.
 - **Time** is `Timestamp.t`, unix seconds as a float, on disk as RFC 3339
   UTC.
-- `dune build`, `dune test`, `dune fmt` under `opam exec --`, in the
-  checkout's local switch (README.md).
+- `dune build`, `dune test`, `dune fmt`, with no opam: dune's package
+  management builds the compiler and every dependency of `dune.lock`
+  into `_build` (README.md, "Building" below).
 
 ## Layout
 
@@ -322,6 +323,26 @@ as its last resort:
 - On Linux `Sys.executable_name` reads `/proc/self/exe` and always
   resolves, defeating the ordering.
 
+## Building
+
+kido is built by dune **3.24.2**, the binary distribution, with package
+management on (`dune-workspace`); the README's install line fetches it.
+Dependencies are declared in `dune-project`, Mosaic as `(pin ...)`
+stanzas on a git commit, and resolved into the committed `dune.lock`;
+`dune pkg lock` regenerates the lock and always resolves against the
+newest opam-repository, so a re-lock is a reviewed change. There is no
+`kido.opam`: `dune-project` is the one dependency list. The first build
+of a checkout compiles OCaml and 48 packages (a few minutes); the
+workspace's `(cache enabled)` puts them in dune's shared cache, which
+the default cache mode would skip, so a later clean `_build` restores
+them in seconds. ocamlformat is a dev tool, not a dependency:
+`dune tools install ocamlformat` once, then `dune fmt`. `dune show
+depexts` prints nothing; there are none.
+
+Dune 3.24.2 with package management dies on an absolute
+`DUNE_BUILD_DIR`; `scripts/ci-like/Dockerfile` therefore sets a relative
+one.
+
 ## Tests
 
     make test    dune test (the ppx_expect suite in test/) and
@@ -356,8 +377,8 @@ failure: other agents are working in parallel.
 **The e2e harness** (`e2e/harness_test.go`) nests two tmux servers — an
 outer one hosting a pty, the inner one under test with kido as its
 `side-status-command` — and reads the sidebar with `capture-pane`. It
-builds kido with `dune build` (so it runs under `opam exec --`), and
-fake `claude` and `node` binaries that reproduce real screens.
+builds kido with `dune build` (so it needs that dune on PATH), and fake
+`claude` and `node` binaries that reproduce real screens.
 
 - The inner server's PATH starts with the built kido and the fork
   (`serverPathPrefix`), because `kido-tmux.conf` bindings name bare
@@ -445,14 +466,13 @@ repeat them.
   your own shell.
 - **Verify what you touched; CI runs the whole.** For a bug fix, write
   the test first, watch it fail, and quote that failure. A feature's
-  tests need only pass. Then run `opam exec -- dune build` and
-  `opam exec -- dune test` (an e2e test you wrote with
-  `KIDO_E2E_REQUIRED=1 KIDO_TMUX=$(command -v kido-tmux) opam exec --
-  go test ./e2e/ -run Name`, or the fork under `build/tmux-fork/` once
-  `make e2e` built it; `scripts/test-ts.sh` if you touched `pi/`), each
-  once, with the environment scrubbed:
+  tests need only pass. Then run `dune build` and `dune test` (an e2e
+  test you wrote with `KIDO_E2E_REQUIRED=1 KIDO_TMUX=$(command -v
+  kido-tmux) go test ./e2e/ -run Name`, or the fork under
+  `build/tmux-fork/` once `make e2e` built it; `scripts/test-ts.sh` if
+  you touched `pi/`), each once, with the environment scrubbed:
 
-      env -u KIDO_AGENT_PARENT_SESSION -u KIDO_AGENT_DEPTH -u KIDO_AGENT_TASK_FILE -u KIDO_AGENT_PARENT_PID -u KIDO_AGENT_RUN_ID -u TMUX_PANE opam exec -- dune test
+      env -u KIDO_AGENT_PARENT_SESSION -u KIDO_AGENT_DEPTH -u KIDO_AGENT_TASK_FILE -u KIDO_AGENT_PARENT_PID -u KIDO_AGENT_RUN_ID -u TMUX_PANE dune test
 
   Do not run `make test` or `make e2e`: the top-level session pushes and
   CI runs both. No loops, no second tmux build. Report PASS/FAIL/SKIP as

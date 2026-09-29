@@ -1,5 +1,5 @@
 .git
-_opam
 _build
+_build-ci-like
 build
 pi/node_modules
