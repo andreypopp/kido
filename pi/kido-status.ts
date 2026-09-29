@@ -9,7 +9,7 @@
  *                     [--title <text>] [--activity <text>] [--model <name>]
  *                     [--parent-pid <pid>] [--parent-session <id>]
  *                     [--depth <n>] [--ended] [--remove]
- *                     [--inbox <path>] [--protocol <n>]
+ *                     [--inbox <path>]
  *
  * kido reads $TMUX_PANE from the environment, so the command must be spawned
  * from inside the pi process (which lives in the tmux pane).
@@ -25,10 +25,10 @@
  * Inbox:
  *   On session start the extension asks kido where to bind (`kido inbox-path
  *   <pid>`), binds a unix STREAM socket there and reports the path once, with
- *   `--inbox <path> --protocol <n>` on the first status report. Plain v0 text
- *   is delivered as a user message here; a v1 envelope is handed to the agent
- *   half, kido-agents.ts. The protocol, the v0/v1 rule and the seam the two
- *   halves meet at are in docs/design.md.
+ *   `--inbox <path>` on the first status report. Plain v0 text is delivered
+ *   as a user message here; a v1 envelope is handed to the agent half,
+ *   kido-agents.ts. The v0/v1 rule and the seam the two halves meet at are
+ *   in docs/design.md.
  *
  * Install:
  *   mkdir -p ~/.pi/agent/extensions
@@ -96,10 +96,6 @@ export const EXIT_SESSION_HELD = 6;
 
 // Anything larger than this is dropped rather than buffered.
 const MAX_PROMPT_BYTES = 1024 * 1024;
-
-// The inbox envelope version this extension speaks (see internal/msg),
-// reported with --protocol alongside --inbox.
-const PROTOCOL_VERSION = 1;
 
 export type EnvelopeKind = "message" | "ask" | "reply" | "notice" | "stream" | "steer" | "interrupt" | "stop";
 
@@ -542,7 +538,7 @@ export default function (pi: ExtensionAPI) {
     if (DEPTH !== undefined) args.push("--depth", String(DEPTH));
     if (opts.ended) args.push("--ended");
     if (opts.remove) args.push("--remove");
-    if (opts.inbox) args.push("--inbox", opts.inbox, "--protocol", String(PROTOCOL_VERSION));
+    if (opts.inbox) args.push("--inbox", opts.inbox);
     return args;
   };
 

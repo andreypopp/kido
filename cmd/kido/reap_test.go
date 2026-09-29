@@ -17,7 +17,7 @@ func TestReapClosesWhatTheSweepNames(t *testing.T) {
 	panes := []tmux.Pane{
 		{PaneID: "%1", SessionID: "$0", WindowID: "@1"},
 		{PaneID: "%2", SessionID: "$0", WindowID: "@2",
-			Subagent: "parent=root-inst depth=1", Dead: true, DeadTime: 1},
+			Subagent: "run=run-x parent=root-inst depth=1", SubagentPane: "run-x", Dead: true, DeadTime: 1},
 	}
 	killed := withCloseRunDeps(t, panes)
 

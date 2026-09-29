@@ -249,7 +249,7 @@ func liveBashRun(to string) (subrun.Meta, bool, error) {
 		// one being addressed costs one file open rather than two: every run
 		// ever recorded is listed here, and most of them are long finished.
 		meta, err := subrun.ReadMeta(id)
-		if err != nil || meta.EffectiveKind() != subrun.KindBash {
+		if err != nil || meta.Kind != subrun.KindBash {
 			continue
 		}
 		if !strings.EqualFold(meta.Name, to) && meta.ID != to {
@@ -462,15 +462,11 @@ func callerReaches(states map[string]state.Session, panes []tmux.Pane, self stri
 }
 
 // sendControl delivers a control-kind envelope (interrupt or stop) to
-// target's inbox, gated on the same v1 advertisement message_agent
-// requires for any non-message kind. There is deliberately no version
-// gate beyond that (docs/design.md, "v0 and v1").
+// target's inbox. There is deliberately no version gate
+// (docs/design.md, "v0 and v1").
 func sendControl(target state.Session, states map[string]state.Session, kind msg.Kind) error {
 	if target.Inbox == "" {
 		return fmt.Errorf("%w: %s has no inbox", errInboxUnavailable, targetLabel(target))
-	}
-	if target.Protocol < msg.V1 {
-		return fmt.Errorf("%s has not advertised kido's v1 inbox protocol", targetLabel(target))
 	}
 	env := msg.Envelope{V: msg.V1, Kind: kind, ID: msg.NewID(), From: senderOf(states)}
 	raw, err := json.Marshal(env)

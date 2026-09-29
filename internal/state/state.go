@@ -71,10 +71,6 @@ type Session struct {
 	// messages differently (Claude Code's per-session socket, for one)
 	// cannot be named here. Empty for any agent without a kido inbox.
 	Inbox string `json:"inbox,omitempty"`
-	// Protocol is the highest inbox envelope version (see internal/msg) the
-	// agent's inbox understands. Zero means either no inbox or one that has
-	// not advertised a version; a sender treats both as v0.
-	Protocol int `json:"protocol,omitempty"`
 	// When the last turn ended (Stop or equivalent); zero if the session
 	// is idle for another reason, such as having just started.
 	Ended time.Time `json:"ended,omitempty"`
@@ -300,19 +296,9 @@ func readFiles() ([]Session, error) {
 			continue
 		}
 		s.ID = strings.TrimSuffix(e.Name(), ".json")
-		s.Agent = agentOf(s.Agent)
 		out = append(out, s)
 	}
 	return out, nil
-}
-
-// agentOf normalises a record's agent: an empty one (a file written before
-// kido knew about other agents) is Claude Code.
-func agentOf(agent string) string {
-	if agent == "" {
-		return AgentClaude
-	}
-	return agent
 }
 
 // outer reports whether agent is the outer agent of a pane it shares with
@@ -324,7 +310,7 @@ func agentOf(agent string) string {
 // nested in one pane would both report "outer" and fall through to beats'
 // timestamp comparison, flip-flopping the pane between them.
 func outer(agent string) bool {
-	return agentOf(agent) != AgentClaude
+	return agent != AgentClaude
 }
 
 // beats reports whether s should replace prev as the record for their
@@ -355,7 +341,6 @@ func Get(id string) (Session, bool, error) {
 		return Session{}, false, err
 	}
 	s.ID = id
-	s.Agent = agentOf(s.Agent)
 	return s, true, nil
 }
 

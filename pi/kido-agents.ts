@@ -1897,8 +1897,6 @@ export default function (pi: ExtensionAPI) {
           String(process.pid),
           "--parent-session",
           own,
-          "--depth",
-          String(depth),
           "--name",
           name,
           "--task-file",

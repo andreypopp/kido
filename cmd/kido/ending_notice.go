@@ -30,11 +30,9 @@ type endingNotice struct {
 	runID         string
 	name          string
 	parentSession string
-	// kind is the run's kind, the zero value read as an agent run exactly
-	// as subrun.Meta.EffectiveKind reads an absent one.
-	kind   subrun.Kind
-	result subrun.Result
-	text   string
+	kind          subrun.Kind
+	result        subrun.Result
+	text          string
 	// unstreamed is how many of the run's output lines never reached the
 	// parent while it ran (--stream only; zero for every other sender and
 	// every other observer of an ending). Reported because a model that
@@ -55,7 +53,7 @@ func noticeFor(n reap.Notice) endingNotice {
 		runID:         n.Meta.ID,
 		name:          n.Meta.Name,
 		parentSession: n.Meta.ParentSession,
-		kind:          n.Meta.EffectiveKind(),
+		kind:          n.Meta.Kind,
 		result:        n.Outcome.Result,
 		text:          n.Outcome.Text,
 	}

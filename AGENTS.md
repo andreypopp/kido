@@ -134,11 +134,6 @@ gets the one-shot picker. Keyboard focus is the client flag
 | `C` | sets `PANE_CMDRUNNING`, `cmd_start_time`, **`cmd_status = -1`**, stores the `cmdline=` parameter as `#{pane_command_line}`, fires `pane-command-started` |
 | `D[;status]` | clears `PANE_CMDRUNNING`, sets `cmd_end_time`/`cmd_status`, fires `pane-command-finished` |
 
-`#{pane_command_line}` is not in every build of the fork; a tmux without
-it expands it to the empty string, the same as a shell reporting no
-command line. So no row may require the value to draw, and an e2e test
-asserting on it gates on that probe (`TestSSHRowShowsRemoteCommandLine`).
-
 tmux stores the value through `clean_name()`: control bytes are dropped
 and `#(` becomes `_(`. The shell integrations therefore send the command
 line **verbatim** apart from blanking control characters (zsh also caps

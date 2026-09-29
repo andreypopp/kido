@@ -2,7 +2,6 @@ package e2e
 
 import (
 	"testing"
-	"time"
 )
 
 // TestSSHRowShowsRemoteCommandLine drives one ssh pane whose far side
@@ -18,11 +17,6 @@ import (
 // shells would produce between them - the local 133;C for the ssh itself,
 // the far side's first prompt a second later, which is what unlatches the
 // remote reading, and then a remote command with its command line.
-//
-// It skips on a tmux without the pane_command_line patch rather than
-// failing: an unknown format name expands to empty there, which is also
-// what a pane that has never reported one looks like, so the probe is the
-// field itself and not a version string.
 func TestSSHRowShowsRemoteCommandLine(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -30,32 +24,7 @@ func TestSSHRowShowsRemoteCommandLine(t *testing.T) {
 		" sleep 2; printf '\\033]133;A\\007';" +
 		" sleep 1; printf '\\033]133;C;cmdline=sleep 45\\007'; } >/dev/tty &\n" +
 		"exec ssh -F /dev/null -o ProxyCommand=" + h.sshProxy() + " deploy@example.test\n"
-	pane := h.newWindow("alpha", "", "sh", "-c", script)
+	h.newWindow("alpha", "", "sh", "-c", script)
 	h.waitRow("ssh deploy@example.test")
-
-	reported := h.poll(func() bool {
-		return h.in("display-message", "-p", "-t", pane, "#{pane_command_line}") != ""
-	}, settle)
-	if !reported {
-		t.Skip("tmux does not report #{pane_command_line}")
-	}
-
 	h.waitRow("ssh deploy@example.test: sleep 45")
-}
-
-// waitFor fails the test on timeout, which is not what the probe above
-// wants: it must report a plain tmux rather than a broken kido. poll runs
-// cond until it holds or the timeout passes and reports which happened.
-func (h *harness) poll(cond func() bool, timeout time.Duration) bool {
-	h.t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		if cond() {
-			return true
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
 }

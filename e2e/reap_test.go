@@ -29,10 +29,11 @@ func (h *harness) windowID(paneID string) string {
 }
 
 // subagentWindow opens a window in session that looks to kido exactly
-// like one `kido spawn_subagent` created: marked with @kido_subagent, keeping its
-// pane after the command exits (remain-on-exit, which tmux.NewWindow sets
-// for the same reason), and running a command that reports itself as a
-// subagent through `kido agent-status` before becoming a long sleep.
+// like one `kido spawn_subagent` created: marked with @kido_subagent and
+// @kido_subagent_pane, keeping its pane after the command exits
+// (remain-on-exit, which tmux.NewWindow sets for the same reason), and
+// running a command that reports itself as a subagent through `kido
+// agent-status` before becoming a long sleep.
 //
 // The report runs inside the pane rather than out of band, so the pid it
 // records is that sleep's own - which is what makes killing the pane
@@ -48,6 +49,7 @@ func (h *harness) subagentWindow(session, name, sessionID, parentSession string)
 	windowID = h.windowID(paneID)
 	h.in("set-window-option", "-t", windowID, "remain-on-exit", "on")
 	h.in("set-option", "-w", "-t", windowID, "@kido_subagent", "parent="+parentSession+" depth=1")
+	h.in("set-option", "-p", "-t", paneID, "@kido_subagent_pane", sessionID)
 	return paneID, windowID
 }
 
@@ -210,6 +212,7 @@ func TestReapNeverClosesASessionsLastWindow(t *testing.T) {
 	windowID := h.windowID(paneID)
 	h.in("set-window-option", "-t", windowID, "remain-on-exit", "on")
 	h.in("set-option", "-w", "-t", windowID, "@kido_subagent", "parent=root-e2e depth=1")
+	h.in("set-option", "-p", "-t", paneID, "@kido_subagent_pane", "solo-e2e")
 	h.killPane(paneID)
 
 	h.runKido("alpha", "last.out", "reap")

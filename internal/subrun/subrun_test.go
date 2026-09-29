@@ -55,21 +55,15 @@ func TestCreateWritesMetaAndTask(t *testing.T) {
 	}
 }
 
-// TestKindRoundTripsAndDefaultsToAgent pins both halves of Meta.Kind: a
-// bash run's kind survives the meta file, and a run recorded before the
-// field existed - every agent run written so far - still reads back as
-// an agent rather than as the empty string, which is what `kido runs`
-// and the sweep would otherwise have to guess about.
-func TestKindRoundTripsAndDefaultsToAgent(t *testing.T) {
+// TestKindRoundTrips pins Meta.Kind surviving the meta file.
+func TestKindRoundTrips(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	for _, c := range []struct {
 		id      string
 		written Kind
-		want    Kind
 	}{
-		{"run-bash", KindBash, KindBash},
-		{"run-agent", KindAgent, KindAgent},
-		{"run-old", "", KindAgent},
+		{"run-bash", KindBash},
+		{"run-agent", KindAgent},
 	} {
 		if err := Create(c.id, "x"); err != nil {
 			t.Fatal(err)
@@ -83,9 +77,6 @@ func TestKindRoundTripsAndDefaultsToAgent(t *testing.T) {
 		}
 		if got.Kind != c.written {
 			t.Errorf("ReadMeta(%q).Kind = %q, want the written %q", c.id, got.Kind, c.written)
-		}
-		if got.EffectiveKind() != c.want {
-			t.Errorf("ReadMeta(%q).EffectiveKind() = %q, want %q", c.id, got.EffectiveKind(), c.want)
 		}
 	}
 }

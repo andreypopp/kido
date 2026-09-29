@@ -88,12 +88,8 @@ type lingering struct {
 	outcome   subrun.Result
 	outcomeOK bool // whether an outcome has been recorded at all
 	// pane is the id of the one pane that carries tmux.SubagentPaneOption
-	// for this run, or "" when no pane in the window does - a window
-	// marked before that option existed. lingeringLabel draws the run's
-	// label only on this pane when it is set; "" keeps today's behaviour
-	// of drawing it on every unreported pane of the window, since nothing
-	// on such a window can tell the run's own pane apart from one the
-	// user split off later.
+	// for this run. lingeringLabel draws the run's label only on this
+	// pane.
 	pane string
 }
 
@@ -1387,11 +1383,9 @@ func (m *model) lingeringLabel(p tmux.Pane) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	if l.pane != "" && l.pane != p.PaneID {
+	if l.pane != p.PaneID {
 		// A pane in the run's window that is not the run's own - a split
-		// the user made later - draws as the ordinary pane it is. Only a
-		// window marked before SubagentPane existed leaves l.pane empty,
-		// which keeps every unreported pane of it on the label as before.
+		// the user made later - draws as the ordinary pane it is.
 		return "", false
 	}
 	if !p.Dead {

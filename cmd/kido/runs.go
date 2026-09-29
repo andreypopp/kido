@@ -166,7 +166,7 @@ func loadRunInfo(id string) (RunInfo, error) {
 		return RunInfo{}, err
 	}
 	info := RunInfo{
-		ID: id, Name: meta.Name, Kind: string(meta.EffectiveKind()),
+		ID: id, Name: meta.Name, Kind: string(meta.Kind),
 		ParentSession: meta.ParentSession, Depth: meta.Depth,
 		Cwd: meta.Cwd, Model: meta.Model, Tools: meta.Tools, KeepAlive: meta.KeepAlive,
 		StartedAt: meta.StartedAt, Outcome: "running",

@@ -48,7 +48,7 @@ func streamParent(t *testing.T, session, reply string) *testutil.Inbox {
 	in := testutil.StartInbox(t, reply)
 	if err := state.Record(session, state.Session{
 		Agent: state.AgentPi, Pane: "%2", PID: 1, Status: state.Idle, Title: "orchestrator",
-		Inbox: in.Path, Protocol: msg.V1,
+		Inbox: in.Path,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestStreamNeverPastes(t *testing.T) {
 
 	if err := state.Record("target", state.Session{
 		Agent: state.AgentPi, Pane: "%2", PID: os.Getpid(), Status: state.Idle,
-		Title: "victim", Inbox: testutil.StaleSocket(t), Protocol: msg.V1,
+		Title: "victim", Inbox: testutil.StaleSocket(t),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestWrapperDoesNotBlockOnADeadParent(t *testing.T) {
 		withPanes(t, samePane)
 		if err := state.Record("root-sess", state.Session{
 			Agent: state.AgentPi, Pane: "%2", PID: 1, Status: state.Idle, Title: "orchestrator",
-			Inbox: testutil.StaleSocket(t), Protocol: msg.V1,
+			Inbox: testutil.StaleSocket(t),
 		}); err != nil {
 			t.Fatal(err)
 		}

@@ -34,8 +34,8 @@ its pane up there. A state record names a pane and nothing above it.
 `$XDG_STATE_HOME/kido`, else `~/.local/state/kido`, one JSON file per
 agent session named by session id, written temp-then-rename. A record
 carries the agent's status, its pane, its pid, its title, its inbox
-socket and protocol version, its free-text activity, its model, and its
-place in the spawn tree. There is no locking beyond the claim that keeps
+socket, its free-text activity, its model, and its place in the spawn
+tree. There is no locking beyond the claim that keeps
 one session id to one live process ("Identity"). The
 one policy that stands in for it is that `Load` removes any record whose
 pid is dead, rather than skipping it: pi's headless Claude Code bridge
@@ -226,7 +226,7 @@ field, and by the flag's presence rather than its value:
 
 - Title: an empty value keeps the old one, since an extension's
   coalescing may not re-send it.
-- Inbox, protocol, activity, model: omitted keeps the old value, an
+- Inbox, activity, model: omitted keeps the old value, an
   explicit empty value clears it. `--inbox ""` is how an agent says its
   socket is gone, and a stale path would otherwise keep kido dialling a
   socket nobody listens on; `--activity ""` clears the activity rather
@@ -243,7 +243,7 @@ the one command behind the `set_status` tool, which finds the calling
 session by its pane and writes that field and nothing else. It is not a
 rename of `agent-status`, which reports everything about a session on
 every turn and is how `--activity` normally arrives; naming a
-fourteen-flag report after one narrow tool would be the wrong way round.
+thirteen-flag report after one narrow tool would be the wrong way round.
 Writing the previous record back with one field replaced, rather than
 building a fresh one, is what keeps the status, the turn's end time, the
 background flag and `TS` - which staleness is measured from - out of a
@@ -469,29 +469,27 @@ happens to be a JSON object: it must not be swallowed as a control
 message. The rule is implemented twice, in Go and in the extension, and
 both are driven from the same fixture table so they cannot drift.
 
-The reverse direction is the one that bites. A new `kido message_agent`
-talking
-to an unupgraded extension would deliver an envelope's literal JSON as
-the user's prompt. So the receiver advertises what it speaks, with
-`--protocol 1` alongside `--inbox`, and a sender that sees no advertised
-version sends v0 text for a plain message and refuses any other kind
-outright, since a paste or a v0 payload has nowhere to carry a kind or an
-id and silently downgrading an ask to a plain prompt would strip the
-thing that made it one. `kido prompt` stays v0 forever: it is the
-agent-agnostic path and has to keep working against Claude Code panes.
-It targets a top-level agent only: a pane whose window carries the
-`@kido_subagent` mark is never a candidate, the same reader the sweep
-and `switch-window` use, which covers a child between its spawn and its
-first report. The search widens from the caller's window to the session
-when the window holds no candidate, and without the exclusion one agent
-and one live child anywhere in the session would be two candidates and
-exit 5, where a human plausibly meant the agent.
+A target's `Inbox` field is the only thing a sender reads to decide: any
+pi session that has bound one always speaks v1, so `Inbox != ""` means
+v1 and nothing else has to be advertised. A plain message to a target
+with no inbox goes as v0 text; any other kind is refused outright, since
+a paste or a v0 payload has nowhere to carry a kind or an id and
+silently downgrading an ask to a plain prompt would strip the thing that
+made it one. `kido prompt` stays v0 forever: it is the agent-agnostic
+path and has to keep working against Claude Code panes. It targets a
+top-level agent only: a pane whose window carries the `@kido_subagent`
+mark is never a candidate, the same reader the sweep and `switch-window`
+use, which covers a child between its spawn and its first report. The
+search widens from the caller's window to the session when the window
+holds no candidate, and without the exclusion one agent and one live
+child anywhere in the session would be two candidates and exit 5, where
+a human plausibly meant the agent.
 
-There is no protocol 2 for interrupt and stop. kido runs on one machine
-with the binary and the extension upgraded together, so a version gate
-would be ceremony; the v1 advertisement already refuses a receiver that
-has never spoken an envelope, and for stop the escalation kills the pane
-regardless of whether the request was understood.
+There are no version gates for interrupt and stop, or anywhere else in
+the protocol. kido runs on one machine with the binary and the extension
+upgraded together, so a version gate would be ceremony; for stop the
+escalation kills the pane regardless of whether the request was
+understood.
 
 The sender field is advisory. Trust is uid-scoped and enforced by the
 inbox directory's mode; state records are `0644` files in a `0755`
@@ -519,8 +517,8 @@ not a delivery failure either: the question was read and deliberately
 declined, and pasting it again would hand the target the same cycle it just
 refused.
 
-Non-message kinds never paste. A dead target that advertised v1 while it
-was alive still passes the protocol check, because that check reads a
+Non-message kinds never paste. A dead target that had an inbox while it
+was alive still passes the inbox check, because that check reads a
 record written when it was alive; only the dial finds the socket gone,
 and the fallback's answer to that would be to type model-authored text
 at whatever shell the pane fell back to and press Enter. For a
@@ -612,8 +610,8 @@ The test is the one `send` already applies to the *recipient* of any
 non-message envelope, turned on the sender, because a reply is exactly
 such an envelope: the caller's pane must have a live state record (so
 `kido message_agent -- <asker>` can resolve it at all) whose `Inbox` is
-bound and whose `Protocol` is v1 (so a `reply`, which never falls back to
-a paste, has somewhere to land). Nothing weaker would do: a record with no
+bound (so a `reply`, which never falls back to a paste, has somewhere to
+land). Nothing weaker would do: a record with no
 inbox is a Claude Code session, reachable only by paste, and a paste is
 not a reply. The extension's own `ask_agent` is unaffected - it binds an
 inbox before it can register a waiter at all.
@@ -770,19 +768,18 @@ drops.
 
 ### The depth ceiling is derived
 
-Nesting is capped at two levels below the root. The caller's `--depth`
-is accepted, because the extension sends it for a cheap early refusal
-that skips a subprocess, but it is a claim the caller makes about itself
-and is never consulted for the child's depth: a caller already at the
-ceiling could pass a smaller number and spawn without limit, and the
-ceiling would only ever be as real as the caller chose to make it. kido
-reads the caller's own last-reported record, found by `$TMUX_PANE`, and
-sets the child's depth to one more than that. A caller with no record
-at all, a human at the CLI or an agent that has not reported yet, is
-treated as depth 0. That is the same trust decision `Load` makes for
-every other same-uid record, and it can only make a spawn's ceiling
-stricter than a real record would, never looser. An explicit negative
-`--depth` is a wrong value, not an omission, and is refused.
+Nesting is capped at two levels below the root. `kido spawn_subagent`
+takes no `--depth` flag at all: kido reads the caller's own
+last-reported record, found by `$TMUX_PANE`, and sets the child's depth
+to one more than that. A caller with no record at all, a human at the
+CLI or an agent that has not reported yet, is treated as depth 0. That
+is the same trust decision `Load` makes for every other same-uid
+record, and it can only make a spawn's ceiling stricter than a real
+record would, never looser. The extension makes its own early refusal
+from `KIDO_AGENT_DEPTH` in its environment, which skips a subprocess for
+the common case, but the ceiling kido itself enforces is the one that
+counts, since a claim the caller made about its own depth could always
+understate it.
 
 ### The run id is the child's session id
 
@@ -911,12 +908,10 @@ pane is killed, and the window is unmarked when something of the user's
 is left in it.
 
 Which pane is the run's is `@kido_subagent_pane` (`set-option -p`),
-which no pane the user splits off later carries. A window marked by a
-kido from before that option existed has no run pane to single out, and
-falls back to the older rule in both closers: every pane of it is dead,
-and the window is the unit. A pane the user splits off carries no
-`remain-on-exit` of its own, so it closes on exit like any pane, and
-the window then goes like any window.
+which no pane the user splits off later carries. A window with no run
+pane to single out is left alone by both closers. A pane the user splits
+off carries no `remain-on-exit` of its own, so it closes on exit like any
+pane, and the window then goes like any window.
 
 The second rule fires on one reading, and what makes that safe is which
 reading it is. "Gone" means no live process holds the parent session - a

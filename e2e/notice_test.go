@@ -35,7 +35,7 @@ func TestSpawnedChildNoticeReachesParentInboxQuickly(t *testing.T) {
 	in := testutil.StartInbox(t, "ok\n")
 	parentPane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 	h.agentStatus("parent-notice-e2e", parentPane, "pi", "idle",
-		"--inbox", in.Path, "--protocol", "1")
+		"--inbox", in.Path)
 
 	taskFile := filepath.Join(h.dir, "task.txt")
 	if err := os.WriteFile(taskFile, []byte("say hi"), 0o644); err != nil {

@@ -208,7 +208,7 @@ func TestCloseRunRefusesFocused(t *testing.T) {
 func TestCloseRunKillsUnfocused(t *testing.T) {
 	panes := []tmux.Pane{
 		{PaneID: "%1", SessionID: "$0", WindowID: "@1", Active: true, SessionAttached: true},
-		{PaneID: "%2", SessionID: "$0", WindowID: "@2", Active: false, SessionAttached: true, Dead: true},
+		dead(runPane(tmux.Pane{PaneID: "%2", SessionID: "$0", WindowID: "@2", SessionAttached: true}, "run-x")),
 	}
 	killed := withCloseRunDeps(t, panes)
 
@@ -220,44 +220,21 @@ func TestCloseRunKillsUnfocused(t *testing.T) {
 	}
 }
 
-// TestCloseRunRefusesALivePaneOnAnOldMark is the fallback for a window
-// marked by a kido from before @kido_subagent_pane existed: nothing there
-// tells the run's own pane from one the user split off later, so the
-// window stays the unit and is left alone until every pane of it is
-// dead. It began as the fix for the bug where the helper closed such a
-// window anyway, taking the user's live split with it.
-func TestCloseRunRefusesALivePaneOnAnOldMark(t *testing.T) {
+// TestCloseRunRefusesAWindowWithNoRunPane is a window closeRunCmd was
+// not given a run's pane for: nothing kido spawn_subagent created stays
+// unclosed on that ground alone.
+func TestCloseRunRefusesAWindowWithNoRunPane(t *testing.T) {
 	panes := []tmux.Pane{
 		{PaneID: "%1", SessionID: "$0", WindowID: "@1", Active: true, SessionAttached: true, Dead: true},
 		{PaneID: "%2", SessionID: "$0", WindowID: "@2", Active: false, SessionAttached: true, Dead: true},
-		{PaneID: "%3", SessionID: "$0", WindowID: "@2", Active: false, SessionAttached: true, Dead: false},
 	}
 	killed := withCloseRunDeps(t, panes)
 
 	if err := closeRunCmd([]string{"@2"}); err != nil {
-		t.Fatalf("closeRunCmd on a window with a live pane = %v, want no error (a skip, not a failure)", err)
+		t.Fatalf("closeRunCmd on a window with no run pane = %v, want no error (a skip, not a failure)", err)
 	}
 	if len(*killed) != 0 {
-		t.Errorf("killWindow called for %v, want a window with a live pane left untouched", *killed)
-	}
-}
-
-// TestCloseRunKillsWhenAllDead is the positive control for
-// TestCloseRunRefusesALivePaneOnAnOldMark: once the split pane has also
-// exited, the window is closed as before.
-func TestCloseRunKillsWhenAllDead(t *testing.T) {
-	panes := []tmux.Pane{
-		{PaneID: "%1", SessionID: "$0", WindowID: "@1", Active: true, SessionAttached: true, Dead: true},
-		{PaneID: "%2", SessionID: "$0", WindowID: "@2", Active: false, SessionAttached: true, Dead: true},
-		{PaneID: "%3", SessionID: "$0", WindowID: "@2", Active: false, SessionAttached: true, Dead: true},
-	}
-	killed := withCloseRunDeps(t, panes)
-
-	if err := closeRunCmd([]string{"@2"}); err != nil {
-		t.Fatalf("closeRunCmd = %v, want it to succeed", err)
-	}
-	if len(*killed) != 1 || (*killed)[0] != "@2" {
-		t.Errorf("killed = %v, want [@2]", *killed)
+		t.Errorf("killWindow called for %v, want a window with no run pane left untouched", *killed)
 	}
 }
 

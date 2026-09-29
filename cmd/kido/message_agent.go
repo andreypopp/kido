@@ -211,8 +211,8 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 	}
 
 	// v0 text has nowhere to carry a kind or an id.
-	if spec.kind != msg.KindMessage && target.Protocol < msg.V1 {
-		return fail(fmt.Sprintf("%s has not advertised kido's v1 inbox protocol, only a plain message can be sent as v0 text", targetLabel(target)))
+	if spec.kind != msg.KindMessage && target.Inbox == "" {
+		return fail(fmt.Sprintf("%s has no inbox to send a %s to; only a plain message can be sent as v0 text", targetLabel(target), spec.kind))
 	}
 
 	envID := spec.id
@@ -224,7 +224,7 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 		from = msg.From{Name: spec.fromName}
 	}
 	payload := text
-	if target.Protocol >= msg.V1 {
+	if target.Inbox != "" {
 		env := msg.Envelope{
 			V:       msg.V1,
 			Kind:    spec.kind,
@@ -240,7 +240,7 @@ func send(cmd string, spec sendSpec, stdin io.Reader) int {
 		payload = string(raw)
 	}
 
-	// A non-message kind never pastes: the protocol check above reads a
+	// A non-message kind never pastes: the inbox check above reads a
 	// record written while the target was alive, and a dead target's pane
 	// is a shell that would run the pasted text as a command line.
 	var paste bool
@@ -287,8 +287,8 @@ func liveParent(live []state.Session, session string) (state.Session, bool) {
 // to the recipient of any non-message envelope, turned on the sender,
 // because that is literally what a reply is: a live state record for the
 // pane (so `kido message_agent -- <asker>` can resolve it at all) whose
-// Inbox is bound and whose Protocol is v1 (so a "reply" envelope, which
-// never falls back to a paste, has somewhere to land).
+// Inbox is bound (so a "reply" envelope, which never falls back to a
+// paste, has somewhere to land).
 //
 // Measured from a bare shell, an ask without this really did arrive: the
 // target spent a turn's attention on a question, then found the asker
@@ -303,8 +303,8 @@ func senderCanBeRepliedTo(states map[string]state.Session, pane string) error {
 	if !ok {
 		return fmt.Errorf("no live agent session on this pane (%s), so an answer could not be addressed back here; nothing sent - %s", pane, alternative)
 	}
-	if self.Inbox == "" || self.Protocol < msg.V1 {
-		return fmt.Errorf("%s has no v1 inbox for an answer to arrive on, and only a long-lived process has one; nothing sent - %s", targetLabel(self), alternative)
+	if self.Inbox == "" {
+		return fmt.Errorf("%s has no inbox for an answer to arrive on, and only a long-lived process has one; nothing sent - %s", targetLabel(self), alternative)
 	}
 	return nil
 }

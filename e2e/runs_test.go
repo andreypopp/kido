@@ -156,7 +156,7 @@ func TestStopRecordsStoppedOutcome(t *testing.T) {
 	// must equal the run id for stopCmd's outcome write to land anywhere).
 	paneID := h.in("list-panes", "-t", windowID, "-F", "#{pane_id}")
 	in := testutil.StartInbox(h.t, "ok\n")
-	h.agentStatus(runID, paneID, "pi", "idle", "--inbox", in.Path, "--protocol", "1")
+	h.agentStatus(runID, paneID, "pi", "idle", "--inbox", in.Path)
 
 	out := h.runKido("alpha", "stop.out", "stop_subagent", runID)
 	if !strings.Contains(out, "killed") {

@@ -36,7 +36,7 @@ that is nobody's tool keeps whatever name fits it - `hook`, `shell`,
 `ssh`, `agent-alive`, `prompt`, `snapshot`, `reap`, `runs`
 and the rest. `kido agent-status` is the sharpest case and keeps its own
 name too: it reports a session's whole state on every turn, of which
-`set_status`'s activity is one flag of fourteen, so the narrow tool got a
+`set_status`'s activity is one flag of thirteen, so the narrow tool got a
 narrow command of its own (design.md, "Reporting, and what is carried
 forward") rather than the report being renamed after it.
 
@@ -539,8 +539,8 @@ detached window of its own and tells the caller once it has ended. It is
 structurally a spawn whose child is a command rather than a pi session:
 the same `createRunWindow`, the same `runEnv`, the same `@kido_subagent`
 mark, the same run record and the same sweep. `meta.json` carries a
-`kind` - `agent` or `bash`, absent meaning `agent` - and that is the
-whole of what distinguishes the two records.
+`kind` - `agent` or `bash`, always written - and that is the whole of
+what distinguishes the two records.
 
 One word after `--` is a shell command line and is run under `bash -c`,
 which is the shape a model writes ("make -j8 && ./run"); several words

@@ -331,7 +331,7 @@ func (s *streamSender) send(text string) error {
 // its own target with (liveParent, message_agent.go).
 //
 // The gate on what it finds is send()'s, unchanged: a non-message kind
-// needs an inbox bound and the v1 protocol advertised, since it can
+// needs an inbox bound, since it can
 // never fall back to a paste. What differs is only what is said about a
 // parent that fails it - send names the target and the rule, and this
 // has nobody to say anything to, so every way of having no parent is one
@@ -345,7 +345,7 @@ func resolveParentInbox(session string) (string, error) {
 		return "", err
 	}
 	parent, ok := liveParent(live, session)
-	if !ok || parent.Inbox == "" || parent.Protocol < msg.V1 {
+	if !ok || parent.Inbox == "" {
 		return "", errNoStreamParent
 	}
 	return parent.Inbox, nil

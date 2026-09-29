@@ -37,14 +37,10 @@ type window struct {
 	marked  bool     // carries tmux.SubagentOption: a window kido spawn_subagent created
 	runID   string   // the run id embedded in that mark, see tmux.SubagentRunID
 	// runPane is the pane the run itself is in, from
-	// tmux.SubagentPaneOption, and "" for a window marked by a kido from
-	// before that option existed. Its own death is what rule 1 reads;
-	// allDead/deadTime are the fallback for a window with no such pane.
+	// tmux.SubagentPaneOption. Its own death is what rule 1 reads.
 	runPane     string
 	runPaneDead bool
 	runDeadTime int64
-	allDead     bool  // every pane of it is a remain-on-exit corpse
-	deadTime    int64 // unix time the last of them died
 	focused     bool
 }
 
@@ -242,14 +238,8 @@ func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) ([]Close,
 		if !w.marked { // rule 1
 			continue
 		}
-		if w.runPane != "" {
-			if w.runPaneDead && w.runDeadTime > 0 && now.Sub(time.Unix(w.runDeadTime, 0)) >= Grace {
-				mark(w.id, w.runPane)
-			}
-			continue
-		}
-		if w.allDead && w.deadTime > 0 && now.Sub(time.Unix(w.deadTime, 0)) >= Grace {
-			mark(w.id, "")
+		if w.runPane != "" && w.runPaneDead && w.runDeadTime > 0 && now.Sub(time.Unix(w.runDeadTime, 0)) >= Grace {
+			mark(w.id, w.runPane)
 		}
 	}
 
@@ -315,11 +305,11 @@ func recordEnding(runID string, now time.Time) (Notice, bool) {
 	meta, err := subrun.ReadMeta(runID)
 	if err != nil {
 		// No meta is an agent-shaped run as far as every reader of it is
-		// concerned (subrun.EffectiveKind), and one with nobody to tell.
+		// concerned, and one with nobody to tell.
 		meta = subrun.Meta{ID: runID}
 	}
 	o := subrun.Outcome{Result: subrun.Died, At: now}
-	if meta.EffectiveKind() == subrun.KindBash {
+	if meta.Kind == subrun.KindBash {
 		o = subrun.Outcome{Result: subrun.Failed, Text: sweptText, At: now}
 	}
 	return RecordEnding(meta, o)
@@ -346,7 +336,7 @@ func foldWindows(panes []tmux.Pane) ([]*window, map[string]*window, map[string]s
 		byPane[p.PaneID] = p.WindowID
 		w, ok := byID[p.WindowID]
 		if !ok {
-			w = &window{id: p.WindowID, allDead: true}
+			w = &window{id: p.WindowID}
 			byID[p.WindowID] = w
 			windows = append(windows, w)
 		}
@@ -357,17 +347,6 @@ func foldWindows(panes []tmux.Pane) ([]*window, map[string]*window, map[string]s
 		}
 		if p.SubagentPane != "" {
 			w.runPane, w.runPaneDead, w.runDeadTime = p.PaneID, p.Dead, p.DeadTime
-		}
-		// The fallback for a window with no run pane to single out: it is
-		// finished only once all of it is, since nothing tells the run's own
-		// pane from one the user split off later. One of three halves of that
-		// old-mark fallback - the others are runPaneOf (cmd/kido/closerun.go)
-		// and tmux.WindowAllDead - which go together or not at all.
-		if !p.Dead {
-			w.allDead = false
-		}
-		if p.DeadTime > w.deadTime {
-			w.deadTime = p.DeadTime
 		}
 		if p.Watched() {
 			w.focused = true // tmux.WindowFocused, for a window already folded

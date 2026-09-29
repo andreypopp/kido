@@ -25,7 +25,7 @@ func withParentInbox(t *testing.T) *testutil.Inbox {
 	in := testutil.StartInbox(t, "ok\n")
 	if err := state.Record("parent-sess", state.Session{
 		Pane: "%9", PID: os.Getpid(), Status: state.Idle,
-		Inbox: in.Path, Protocol: msg.V1,
+		Inbox: in.Path,
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -152,13 +152,13 @@ func recordControlTree(t *testing.T, in *testutil.Inbox) {
 	}
 	if err := state.Record("child", state.Session{
 		Agent: state.AgentPi, Pane: "%2", PID: os.Getpid(), Status: state.Idle,
-		ParentSession: "caller", Inbox: in.Path, Protocol: msg.V1,
+		ParentSession: "caller", Inbox: in.Path,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := state.Record("peer", state.Session{
 		Agent: state.AgentPi, Pane: "%3", PID: os.Getpid(), Status: state.Idle,
-		Inbox: in.Path, Protocol: msg.V1,
+		Inbox: in.Path,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestInterruptHumanCallerUnrestricted(t *testing.T) {
 	in := testutil.StartInbox(t, "ok\n")
 	if err := state.Record("peer", state.Session{
 		Agent: state.AgentPi, Pane: "%3", PID: os.Getpid(), Status: state.Idle,
-		Inbox: in.Path, Protocol: msg.V1,
+		Inbox: in.Path,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,7 @@ func TestInterruptSendsEnvelope(t *testing.T) {
 
 	in := testutil.StartInbox(t, "ok\n")
 	if err := state.Record("target", state.Session{
-		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path, Protocol: msg.V1,
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestStopEscalatesToKillingWindow(t *testing.T) {
 
 	in := testutil.StartInbox(t, "ok\n")
 	if err := state.Record("target", state.Session{
-		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path, Protocol: msg.V1,
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +295,7 @@ func TestStopNoEscalationWhenTargetGoes(t *testing.T) {
 
 	in := testutil.StartInbox(t, "ok\n")
 	if err := state.Record("target", state.Session{
-		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path, Protocol: msg.V1,
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func TestStopEscalatesWhenTheTargetDoesNotAgree(t *testing.T) {
 
 			in := testutil.StartInbox(t, reply.answer)
 			if err := state.Record("target", state.Session{
-				Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path, Protocol: msg.V1,
+				Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path,
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -374,7 +374,7 @@ func TestStopStaleInboxStillNeedsForce(t *testing.T) {
 		kills := withKillPane(t)
 		if err := state.Record("target", state.Session{
 			Pane: "%2", PID: os.Getpid(), Status: state.Idle,
-			Inbox: testutil.StaleSocket(t), Protocol: msg.V1,
+			Inbox: testutil.StaleSocket(t),
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -507,7 +507,7 @@ func TestStopRefusedLeavesNoOutcome(t *testing.T) {
 	t.Run("stale inbox, no --force", func(t *testing.T) {
 		setup(t, "run-stale", twoWindows, state.Session{
 			Pane: "%2", PID: os.Getpid(), Status: state.Idle,
-			Inbox: testutil.StaleSocket(t), Protocol: msg.V1,
+			Inbox: testutil.StaleSocket(t),
 		})
 		if err := stopSubagentCmd([]string{"run-stale"}); err == nil {
 			t.Fatal("stopSubagentCmd succeeded, want the stale-inbox refusal")
@@ -519,7 +519,7 @@ func TestStopRefusedLeavesNoOutcome(t *testing.T) {
 		in := testutil.StartInbox(t, "ok\n")
 		setup(t, "run-peer", controlTreePanes, state.Session{
 			Agent: state.AgentPi, Pane: "%3", PID: os.Getpid(), Status: state.Idle,
-			Inbox: in.Path, Protocol: msg.V1,
+			Inbox: in.Path,
 		})
 		// The caller needs a record of its own for the descendant scope rule
 		// to apply at all (controlTarget).
@@ -594,7 +594,7 @@ func recordSteerTree(t *testing.T, in *testutil.Inbox) {
 	for _, r := range rows {
 		s := state.Session{
 			Agent: state.AgentPi, Pane: r.pane, PID: os.Getpid(), Status: state.Idle,
-			ParentSession: r.parent, Inbox: in.Path, Protocol: msg.V1,
+			ParentSession: r.parent, Inbox: in.Path,
 		}
 		if err := state.Record(r.id, s); err != nil {
 			t.Fatal(err)

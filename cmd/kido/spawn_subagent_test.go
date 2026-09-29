@@ -228,9 +228,8 @@ func TestSpawnRefusedAtMaxDepth(t *testing.T) {
 }
 
 // TestSpawnCannotEscapeCeilingWithSmallerDepth: a caller already at the
-// ceiling passes a smaller --depth. It must not matter what --depth says;
-// only the caller's own state record does, or the ceiling is only as real
-// as the caller chooses to make it.
+// ceiling still cannot spawn. Only the caller's own state record decides
+// the depth, so the ceiling holds regardless of what the caller asks for.
 func TestSpawnCannotEscapeCeilingWithSmallerDepth(t *testing.T) {
 	withPanes(t, samePane)
 	t.Setenv("TMUX_PANE", "%1")
@@ -239,10 +238,10 @@ func TestSpawnCannotEscapeCeilingWithSmallerDepth(t *testing.T) {
 	taskFile := writeTaskFile(t, "do the thing")
 	err := spawnSubagentCmd([]string{
 		"--parent-pid", "123", "--parent-session", testParentSession,
-		"--depth", "1", "--name", "kid", "--task-file", taskFile,
+		"--name", "kid", "--task-file", taskFile,
 	})
 	if err == nil {
-		t.Fatal("spawnSubagentCmd with a forged smaller --depth = nil error, want a refusal")
+		t.Fatal("spawnSubagentCmd at the ceiling = nil error, want a refusal")
 	}
 	if !strings.Contains(err.Error(), "maximum nesting") {
 		t.Errorf("error = %q, want it to name the depth ceiling", err)
@@ -406,25 +405,6 @@ func TestSpawnAllowsTaskFileAtCap(t *testing.T) {
 	}
 	if len(*calls) != 1 {
 		t.Fatalf("newWindow called %d times, want 1", len(*calls))
-	}
-}
-
-// TestSpawnRejectsNegativeDepth: an explicit wrong --depth is not the
-// same as an omitted one, and must not be reported as "required".
-func TestSpawnRejectsNegativeDepth(t *testing.T) {
-	calls := withNewWindow(t, "@1", "%1", nil)
-	err := spawnSubagentCmd([]string{
-		"--parent-pid", "1", "--parent-session", testParentSession,
-		"--depth", "-1", "--name", "kid", "--task-file", "/tmp/task",
-	})
-	if err == nil {
-		t.Fatal("spawnSubagentCmd with --depth -1 = nil error, want a refusal")
-	}
-	if strings.Contains(err.Error(), "is required") {
-		t.Errorf("error = %q, an explicit negative --depth is a wrong value, not an omission", err)
-	}
-	if len(*calls) != 0 {
-		t.Errorf("newWindow was called %d times for a negative depth, want 0", len(*calls))
 	}
 }
 

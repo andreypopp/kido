@@ -117,15 +117,14 @@ func TestLoadAgentPrecedence(t *testing.T) {
 }
 
 // TestLoadSameAgentMostRecentWins checks that within one agent the latest
-// record still wins, and that a file with no agent field (written before
-// kido knew about other agents) reads as Claude Code.
+// record still wins.
 func TestLoadSameAgentMostRecentWins(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("KIDO_STATE_DIR", dir)
 
 	now := time.Now().UTC()
-	write(t, "a", Session{Pane: "%1", Status: Idle, TS: now.Add(-time.Minute)})
-	write(t, "b", Session{Pane: "%1", Status: Running, TS: now})
+	write(t, "a", Session{Agent: AgentClaude, Pane: "%1", Status: Idle, TS: now.Add(-time.Minute)})
+	write(t, "b", Session{Agent: AgentClaude, Pane: "%1", Status: Running, TS: now})
 
 	states, err := Load()
 	if err != nil {
@@ -136,7 +135,7 @@ func TestLoadSameAgentMostRecentWins(t *testing.T) {
 		t.Errorf("status = %q, want the most recent record", got.Status)
 	}
 	if got.Agent != AgentClaude {
-		t.Errorf("agent = %q, want %q for a file without one", got.Agent, AgentClaude)
+		t.Errorf("agent = %q, want %q", got.Agent, AgentClaude)
 	}
 }
 

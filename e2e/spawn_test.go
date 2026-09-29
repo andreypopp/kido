@@ -83,7 +83,6 @@ func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 	h.runSpawn(outFile, envFile,
 		"--parent-pid", "424242",
 		"--parent-session", "parent-xyz",
-		"--depth", "1",
 		"--name", "kid-e2e",
 		"--task-file", taskFile,
 	)
@@ -161,10 +160,7 @@ func (h *harness) activeWindowID(session string) string {
 // inside a real tmux server rather than the fake-newWindow unit test
 // (TestSpawnRefusedAtMaxDepth). The caller's depth is recorded first with
 // a real `kido agent-status` call, exactly as pi's own status reporting
-// would - kido spawn_subagent derives the child's depth from that record, not from
-// --depth, so this also stands in for "a
-// caller at the ceiling cannot escape by passing a smaller --depth": the
-// spawn below claims --depth 1, which would be allowed if trusted.
+// would - kido spawn_subagent derives the child's depth from that record.
 func TestSpawnRefusesDepthBeyondCeiling(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -178,7 +174,7 @@ func TestSpawnRefusesDepthBeyondCeiling(t *testing.T) {
 	}
 	cmd := fmt.Sprintf(
 		"%s agent-status --agent pi --session caller-e2e --status idle --depth %d && "+
-			"%s spawn_subagent --parent-pid 1 --parent-session p --depth 1 --name kid --task-file %s > %s 2>&1; echo rc=$? >> %s",
+			"%s spawn_subagent --parent-pid 1 --parent-session p --name kid --task-file %s > %s 2>&1; echo rc=$? >> %s",
 		kidoBin, maxDepthForTest, kidoBin, taskFile, outFile, outFile)
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")

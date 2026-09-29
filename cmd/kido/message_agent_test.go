@@ -48,7 +48,7 @@ func withAskingCaller(t *testing.T) {
 	in := testutil.StartInbox(t, "ok\n")
 	if err := state.Record("caller", state.Session{
 		Agent: state.AgentPi, Pane: "%1", PID: os.Getpid(), Status: state.Idle,
-		Title: "asker", Inbox: in.Path, Protocol: msg.V1,
+		Title: "asker", Inbox: in.Path,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -60,31 +60,6 @@ var samePane = []tmux.Pane{
 	{PaneID: "%1", SessionID: "$1"},
 	{PaneID: "%2", SessionID: "$1"},
 	{PaneID: "%3", SessionID: "$1"},
-}
-
-// TestMessageV0RawText checks that a target with no advertised protocol
-// (state.Session.Protocol zero) gets plain v0 text, byte for byte - the
-// same contract kido prompt relies on, so an unupgraded receiver still
-// sees exactly its prompt and not a JSON envelope.
-func TestMessageV0RawText(t *testing.T) {
-	t.Setenv("KIDO_STATE_DIR", t.TempDir())
-	t.Setenv("TMUX_PANE", "%1")
-	withPanes(t, samePane)
-
-	in := testutil.StartInbox(t, "ok\n")
-	if err := state.Record("target", state.Session{
-		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	if code := messageAgentCmd([]string{"target"}, strings.NewReader("hello there")); code != 0 {
-		t.Fatalf("message_agent = %d, want 0", code)
-	}
-	msgs := in.Received()
-	if len(msgs) != 1 || msgs[0] != "hello there" {
-		t.Fatalf("server got %q, want v0 raw text [%q]", msgs, "hello there")
-	}
 }
 
 // TestMessageV1Envelope checks that a target advertising protocol 1 gets
@@ -100,7 +75,7 @@ func TestMessageV1Envelope(t *testing.T) {
 
 	in := testutil.StartInbox(t, "ok\n")
 	if err := state.Record("target", state.Session{
-		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path, Protocol: msg.V1,
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +108,7 @@ func TestMessageV1PlainKind(t *testing.T) {
 
 	in := testutil.StartInbox(t, "ok\n")
 	if err := state.Record("target", state.Session{
-		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path, Protocol: msg.V1,
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +150,7 @@ func TestNotifyParentSendsToTheSessionInTheEnvironment(t *testing.T) {
 	in := testutil.StartInbox(t, "ok\n")
 	if err := state.Record("parent-sess", state.Session{
 		Pane: "%9", PID: os.Getpid(), Status: state.Idle,
-		Inbox: in.Path, Protocol: msg.V1,
+		Inbox: in.Path,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +186,7 @@ func TestNotifyParentWithoutAParentRefuses(t *testing.T) {
 	in := testutil.StartInbox(t, "ok\n")
 	if err := state.Record("peer-sess", state.Session{
 		Pane: "%2", PID: os.Getpid(), Status: state.Idle,
-		Inbox: in.Path, Protocol: msg.V1, Title: "peer",
+		Inbox: in.Path, Title: "peer",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -532,7 +507,7 @@ func TestAskAgent(t *testing.T) {
 
 	in := testutil.StartInbox(t, "ok\n")
 	if err := state.Record("target", state.Session{
-		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path, Protocol: msg.V1,
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -592,22 +567,20 @@ func TestMessageKindCannotBeMisstated(t *testing.T) {
 	}
 }
 
-// TestMessageKindNonMessageRequiresV1 checks that an ask/reply/notice sent
-// to a target that has not advertised protocol 1 is refused outright,
-// rather than silently downgraded to v0 raw text that would strip the
-// kind and id entirely.
-func TestMessageKindNonMessageRequiresV1(t *testing.T) {
+// TestMessageKindNonMessageRequiresInbox checks that an ask/reply/notice
+// sent to a target with no inbox at all is refused outright, rather than
+// falling back to a paste that would strip the kind and id entirely.
+func TestMessageKindNonMessageRequiresInbox(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	t.Setenv("TMUX_PANE", "%1")
 	withPanes(t, samePane)
 	// The caller can be replied to, so the refusal under test is the
-	// target's missing v1 and not the asker's own.
+	// target's missing inbox and not the asker's own.
 	withAskingCaller(t)
 	pastes := withSendPrompt(t, errors.New("sendPrompt must not be called"))
 
-	in := testutil.StartInbox(t, "ok\n")
 	if err := state.Record("target", state.Session{
-		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path,
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -616,9 +589,6 @@ func TestMessageKindNonMessageRequiresV1(t *testing.T) {
 	}
 	if calls := pastes(); len(calls) != 0 {
 		t.Fatalf("sendPrompt calls = %v, want none", calls)
-	}
-	if msgs := in.Received(); len(msgs) != 0 {
-		t.Fatalf("inbox got %v, want nothing delivered", msgs)
 	}
 }
 
@@ -637,7 +607,7 @@ func TestMessageAskRefusalDoesNotPaste(t *testing.T) {
 
 	in := testutil.StartInbox(t, "refused\n")
 	if err := state.Record("target", state.Session{
-		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path, Protocol: msg.V1,
+		Pane: "%2", PID: os.Getpid(), Status: state.Idle, Inbox: in.Path,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -652,11 +622,10 @@ func TestMessageAskRefusalDoesNotPaste(t *testing.T) {
 }
 
 // TestMessageNoticeToADeadV1AgentDoesNotPaste is the case the
-// advertised-protocol check above cannot see: a target that reported
-// --inbox and --protocol 1 while it was alive and has since gone, leaving
-// a stale socket path in its record. It passes the Protocol >= V1 gate,
-// and deliverInboxOrPaste's answer to a socket nobody is listening on is
-// to paste into the pane - which, for an agent that is no longer running,
+// inbox check above cannot see: a target that reported --inbox while it
+// was alive and has since gone, leaving a stale socket path in its
+// record. It passes the inbox check, and deliverInboxOrPaste's answer to
+// a socket nobody is listening on is to paste into the pane - which, for an agent that is no longer running,
 // means typing the text at the shell the pane fell back to and pressing
 // Enter. For a notice that text is model-authored (a subagent's completion
 // notice is built from its own title and activity, pi/kido-agents.ts), so
@@ -675,7 +644,7 @@ func TestMessageNoticeToADeadV1AgentDoesNotPaste(t *testing.T) {
 	// parent notify_parent resolves out of the environment.
 	if err := state.Record("target", state.Session{
 		Pane: "%2", PID: os.Getpid(), Status: state.Idle,
-		Inbox: filepath.Join(t.TempDir(), "gone.sock"), Protocol: msg.V1,
+		Inbox: filepath.Join(t.TempDir(), "gone.sock"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -709,7 +678,7 @@ func TestMessageNoInboxStillPastes(t *testing.T) {
 
 	if err := state.Record("target", state.Session{
 		Pane: "%2", PID: os.Getpid(), Status: state.Idle,
-		Inbox: filepath.Join(t.TempDir(), "gone.sock"), Protocol: msg.V1,
+		Inbox: filepath.Join(t.TempDir(), "gone.sock"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -784,7 +753,7 @@ func TestAskAgentRefusesACallerWithNoReplyPath(t *testing.T) {
 			in := testutil.StartInbox(t, "ok\n")
 			if err := state.Record("target", state.Session{
 				Agent: state.AgentPi, Pane: "%2", PID: os.Getpid(), Status: state.Idle,
-				Title: "victim", Inbox: in.Path, Protocol: msg.V1,
+				Title: "victim", Inbox: in.Path,
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -823,7 +792,7 @@ func TestAskAgentFromAnAgentWithAnInboxStillSends(t *testing.T) {
 	in := testutil.StartInbox(t, "ok\n")
 	if err := state.Record("target", state.Session{
 		Agent: state.AgentPi, Pane: "%2", PID: os.Getpid(), Status: state.Idle,
-		Title: "peer", Inbox: in.Path, Protocol: msg.V1,
+		Title: "peer", Inbox: in.Path,
 	}); err != nil {
 		t.Fatal(err)
 	}

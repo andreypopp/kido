@@ -1050,7 +1050,7 @@ func (h *harness) agentWithInbox(session, sessionID string) (*testutil.Inbox, st
 	h.waitPaneCommand(paneID, "sleep")
 	in := testutil.StartInbox(h.t, "ok\n")
 	h.agentStatus(sessionID, paneID, "pi", "idle",
-		"--inbox", in.Path, "--protocol", "1")
+		"--inbox", in.Path)
 	return in, paneID
 }
 

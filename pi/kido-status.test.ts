@@ -2320,7 +2320,7 @@ test("spawn_subagent's task parameter tells the model how to write the prompt a 
   }
 });
 
-test("spawn_subagent passes its task as text on stdin and calls kido spawn_subagent with its own identity and depth+1, without waiting for the child", async () => {
+test("spawn_subagent passes its task as text on stdin and calls kido spawn_subagent with its own identity, without waiting for the child", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
@@ -2341,7 +2341,6 @@ test("spawn_subagent passes its task as text on stdin and calls kido spawn_subag
     assert.ok(spawnArgs, "kido spawn_subagent was invoked");
     assert.equal(argAfter(spawnArgs, "--parent-pid"), String(process.pid), "passes its own pid as --parent-pid");
     assert.equal(argAfter(spawnArgs, "--parent-session"), own, "passes its own session id as --parent-session");
-    assert.equal(argAfter(spawnArgs, "--depth"), "1", "a root agent (no KIDO_AGENT_DEPTH) spawns at depth+1 = 1");
     assert.equal(argAfter(spawnArgs, "--name"), "kid-1");
     assert.equal(argAfter(spawnArgs, "--task-file"), "-", "the task is passed as text on stdin, not as a file this tool manages");
     assert.equal(fx.lastSpawnTask(), "go do the thing", "the task's own text goes on stdin, not on the command line");

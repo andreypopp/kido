@@ -99,9 +99,7 @@ type Meta struct {
 	StartedAt time.Time `json:"startedAt"`
 }
 
-// Kind is what a run's window holds. It is omitted from an agent run's
-// meta file, so every run recorded before bash runs existed reads back
-// as KindAgent (see EffectiveKind).
+// Kind is what a run's window holds.
 type Kind string
 
 const (
@@ -111,14 +109,6 @@ const (
 	// which reports the run's ending itself.
 	KindBash Kind = "bash"
 )
-
-// EffectiveKind is m's kind with the empty value read as KindAgent.
-func (m Meta) EffectiveKind() Kind {
-	if m.Kind == "" {
-		return KindAgent
-	}
-	return m.Kind
-}
 
 // Result is how a run ended.
 type Result string

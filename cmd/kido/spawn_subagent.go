@@ -40,7 +40,7 @@ var (
 )
 
 func spawnUsage() string {
-	return "usage: kido spawn_subagent --parent-pid PID --parent-session ID --name NAME --task-file FILE|- [--depth N] [--fork SESSION_ID] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
+	return "usage: kido spawn_subagent --parent-pid PID --parent-session ID --name NAME --task-file FILE|- [--fork SESSION_ID] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
 		"   or: kido spawn_subagent --no-parent --name NAME --task-file FILE|- [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n" +
 		"   or: kido spawn_subagent --resume RUN_ID [--parent-pid PID --parent-session ID | --no-parent] [--keep-alive] [-- COMMAND...]"
 }
@@ -57,10 +57,6 @@ func spawnSubagentCmd(args []string) error {
 	fs.SetOutput(io.Discard)
 	parentPID := fs.Int("parent-pid", 0, "pid of the agent spawning this one")
 	parentSession := fs.String("parent-session", "", "Session id of the agent spawning this one")
-	// --depth is accepted (pi/kido-agents.ts sends it for its own early
-	// refusal) but never consulted for the child's depth: see callerDepth
-	// below. It is parsed only so a negative value can be rejected.
-	claimedDepth := fs.Int("depth", -1, "the caller's own claimed depth; accepted but not trusted, see callerDepth")
 	name := fs.String("name", "", "window name, and (by convention) the child's own --name")
 	taskFile := fs.String("task-file", "", `file holding the task text to deliver as the child's first message, or "-" for stdin`)
 	model := fs.String("model", "", "model the child will run, recorded in the run's meta for kido runs")
@@ -80,12 +76,6 @@ func spawnSubagentCmd(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w\n%s", err, spawnUsage())
 	}
-	depthGiven := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "depth" {
-			depthGiven = true
-		}
-	})
 	resuming := *resumeID != ""
 	parentGiven := *parentPID > 0 || *parentSession != ""
 
@@ -96,8 +86,6 @@ func spawnSubagentCmd(args []string) error {
 		return fmt.Errorf("--parent-pid is required (or --no-parent for a child owned by nobody)\n%s", spawnUsage())
 	case !resuming && !*noParent && *parentSession == "":
 		return fmt.Errorf("--parent-session is required (or --no-parent for a child owned by nobody)\n%s", spawnUsage())
-	case depthGiven && *claimedDepth < 0:
-		return fmt.Errorf("--depth must not be negative\n%s", spawnUsage())
 	case !resuming && *name == "":
 		return fmt.Errorf("--name is required\n%s", spawnUsage())
 	case !resuming && *taskFile == "":
@@ -149,8 +137,7 @@ func spawnSubagentCmd(args []string) error {
 		return err
 	}
 
-	// The child's depth is derived from the caller's own state record, not
-	// from --depth, which a caller at the ceiling could understate. A
+	// The child's depth is derived from the caller's own state record. A
 	// caller with no record is depth 0, which can only make the ceiling
 	// stricter (docs/design.md, "The depth ceiling is derived").
 	//
@@ -300,7 +287,7 @@ func createRunWindow(meta subrun.Meta, sessionID string, env, command []string) 
 		// it: a window tmux has lost carries no marked pane, so neither
 		// sweep rule can find it, and a pi that vanished this fast never
 		// reached its task. It keeps the recorded failure it always got.
-		if meta.EffectiveKind() == subrun.KindBash && !windowExists(windowID) {
+		if meta.Kind == subrun.KindBash && !windowExists(windowID) {
 			printCreated(meta, windowID, paneID)
 			return nil
 		}
@@ -323,7 +310,7 @@ func createRunWindow(meta subrun.Meta, sessionID string, env, command []string) 
 // output is kido's own to say, and a tool deriving it would be a second
 // copy of state.Dir's KIDO_STATE_DIR/XDG precedence.
 func printCreated(meta subrun.Meta, windowID, paneID string) {
-	if meta.EffectiveKind() == subrun.KindBash {
+	if meta.Kind == subrun.KindBash {
 		fmt.Printf("%s %s %s %s\n", windowID, paneID, meta.ID, subrun.OutputPath(meta.ID))
 		return
 	}

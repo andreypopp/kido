@@ -671,7 +671,7 @@ func TestRenderNestsADeadSubagentForTheWholeLinger(t *testing.T) {
 func lingeringSubagentPane(w, pane, runID, parentSession string) tmux.Pane {
 	return tmux.Pane{
 		SessionName: "sess", WindowID: w, PaneID: pane,
-		Dead: true, Subagent: tmux.SubagentMark(runID, parentSession, 1),
+		Dead: true, Subagent: tmux.SubagentMark(runID, parentSession, 1), SubagentPane: runID,
 	}
 }
 
@@ -682,7 +682,7 @@ func lingeringSubagentPane(w, pane, runID, parentSession string) tmux.Pane {
 func liveSubagentPane(w, pane, runID, parentSession string) tmux.Pane {
 	return tmux.Pane{
 		SessionName: "sess", WindowID: w, PaneID: pane,
-		Dead: false, Subagent: tmux.SubagentMark(runID, parentSession, 1),
+		Dead: false, Subagent: tmux.SubagentMark(runID, parentSession, 1), SubagentPane: runID,
 	}
 }
 
@@ -788,23 +788,6 @@ func TestRenderSplitPaneOfALiveRunIsAnOrdinaryPane(t *testing.T) {
 		"sess",
 		"┌◼ make build",
 		"└  zsh",
-	})
-}
-
-// TestRenderMarkedWindowWithNoPaneOptionKeepsTodaysBehaviour is the
-// negative control: a window marked before SubagentPane existed, where
-// no pane carries it, must not un-nest or drop the run label - every
-// unreported pane of it keeps drawing as the run in progress, exactly as
-// it always has, rather than being refused the label just because none
-// of its panes can prove ownership.
-func TestRenderMarkedWindowWithNoPaneOptionKeepsTodaysBehaviour(t *testing.T) {
-	id := newRun(t, "make build", "")
-	runPane := liveSubagentPane("@20", "%30", id, "")
-	split := liveSubagentPane("@20", "%31", id, "")
-	wantRows(t, renderRows([]tmux.Pane{runPane, split}, nil), []string{
-		"sess",
-		"┌◼ make build",
-		"└◼ make build",
 	})
 }
 
@@ -1032,6 +1015,7 @@ func TestLingeringSubagentsRecoversPaneSeenLate(t *testing.T) {
 	runPane := liveSubagentPane("@20", "%1", id, "")
 	// The first tick observes the window mark but not yet the pane mark,
 	// as a tick landing between the two separate set-option calls would.
+	runPane.SubagentPane = ""
 	first := lingeringSubagents([]tmux.Pane{runPane}, nil, nil)
 	if first[id].pane != "" {
 		t.Fatalf("first read pane = %q, want \"\" (the pane mark not observed yet)", first[id].pane)

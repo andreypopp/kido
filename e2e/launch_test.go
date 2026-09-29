@@ -364,12 +364,6 @@ func TestFirstPaneShellIsPrimed(t *testing.T) {
 	}, "the pane's shell to report its first prompt")
 	assertNoKidoInHome(t, r.home)
 
-	// #{pane_command_line} is newer than the rest of the OSC 133 support
-	// and not in every build of the fork. A tmux without it expands the
-	// name to the empty string, which is also what a shell reporting no
-	// command line looks like - so, as in TestSSHRowShowsRemoteCommandLine,
-	// the probe is the field itself and the test skips rather than
-	// reporting a plain tmux as a broken kido.
 	r.mustKido("send-keys", "-t", pane, "sleep 2", "Enter")
 	deadline := time.Now().Add(settle)
 	for time.Now().Before(deadline) {
@@ -381,7 +375,7 @@ func TestFirstPaneShellIsPrimed(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Skip("tmux does not report #{pane_command_line}")
+	t.Fatal("#{pane_command_line} never reported the running command")
 }
 
 // assertNoKidoInHome checks the test's home has no shell integration in

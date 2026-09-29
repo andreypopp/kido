@@ -25,7 +25,7 @@ func noticeParent(t *testing.T, session string) *testutil.Inbox {
 	in := testutil.StartInbox(t, "ok\n")
 	if err := state.Record(session, state.Session{
 		Agent: state.AgentPi, Pane: "%2", PID: 1, Status: state.Idle, Title: "orchestrator",
-		Inbox: in.Path, Protocol: msg.V1,
+		Inbox: in.Path,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -84,8 +84,8 @@ func deadRunWindow(runID string) []tmux.Pane {
 	return []tmux.Pane{
 		{PaneID: "%2", SessionID: "$1", WindowID: "@2"},
 		{PaneID: "%9", SessionID: "$1", WindowID: "@9",
-			Subagent: tmux.SubagentMark(runID, "root-sess", 1),
-			Dead:     true, DeadTime: time.Now().Add(-time.Hour).Unix()},
+			Subagent: tmux.SubagentMark(runID, "root-sess", 1), SubagentPane: runID,
+			Dead: true, DeadTime: time.Now().Add(-time.Hour).Unix()},
 	}
 }
 

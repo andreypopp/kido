@@ -385,7 +385,6 @@ func runHook(r io.Reader, debug bool) error {
 type agentReport struct {
 	Title         string
 	Inbox         string
-	Protocol      int
 	Activity      string
 	ParentPID     int
 	ParentSession string
@@ -406,7 +405,6 @@ func recordSession(agent, sessionID string, pid int, e hook.Effect, r agentRepor
 		TS:            now,
 		Title:         r.Title,
 		Inbox:         r.Inbox,
-		Protocol:      r.Protocol,
 		Background:    e.Background,
 		ToolPending:   e.ToolPending,
 		Activity:      r.Activity,
@@ -447,7 +445,7 @@ func statusList() string {
 // agentStatusUsage is what `kido agent-status` accepts.
 func agentStatusUsage() string {
 	return "usage: kido agent-status --agent NAME --session ID " +
-		"--status " + statusList() + " [--title TITLE] [--inbox PATH] [--protocol N] " +
+		"--status " + statusList() + " [--title TITLE] [--inbox PATH] " +
 		"[--activity TEXT] [--parent-pid PID] [--parent-session ID] " +
 		"[--depth N] [--model NAME] [--ended] [--remove]"
 }
@@ -472,8 +470,6 @@ func agentStatus(args []string) error {
 	title := fs.String("title", "", "the session's name, shown as the pane's label")
 	inbox := fs.String("inbox", "",
 		"path of the unix socket the agent takes prompts on, speaking kido's own protocol (see `kido inbox-path`); empty clears it")
-	protocol := fs.Int("protocol", 0,
-		"highest inbox envelope version the agent understands (see internal/msg); omitted keeps the last reported value")
 	activity := fs.String("activity", "", "free text describing what the agent is doing, one line of at most 256 bytes; omitted keeps the last reported value, empty clears it")
 	parentPID := fs.Int("parent-pid", 0, "pid of the agent that spawned this one, 0 for a root agent")
 	parentSession := fs.String("parent-session", "", "session id of the agent that spawned this one, empty for a root agent")
@@ -501,7 +497,6 @@ func agentStatus(args []string) error {
 	r := agentReport{
 		Title:         *title,
 		Inbox:         *inbox,
-		Protocol:      *protocol,
 		Activity:      oneLine(*activity, maxActivity),
 		ParentPID:     *parentPID,
 		ParentSession: *parentSession,
@@ -509,18 +504,15 @@ func agentStatus(args []string) error {
 		Model:         *model,
 	}
 	// The previous record is read unconditionally: the extension reports
-	// --inbox/--protocol once and carries nothing else forward itself, so
-	// a report with nothing to carry over essentially never arrives and a
-	// guard restating each condition below would only duplicate them.
+	// --inbox once and carries nothing else forward itself, so a report
+	// with nothing to carry over essentially never arrives and a guard
+	// restating each condition below would only duplicate them.
 	if prev, ok, _ := state.Get(*session); ok {
 		if r.Title == "" {
 			r.Title = prev.Title
 		}
 		if !given["inbox"] {
 			r.Inbox = prev.Inbox
-		}
-		if !given["protocol"] {
-			r.Protocol = prev.Protocol
 		}
 		if !given["activity"] {
 			r.Activity = prev.Activity

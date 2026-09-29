@@ -73,12 +73,8 @@ func closeRunCmd(args []string) error {
 		// pane and the window becomes theirs (reap.Ops.Release).
 		return releaseOps().Release(panes, reap.Close{WindowID: windowID, PaneID: runPane.PaneID})
 	}
-	// Either the run's pane is all the window has, or the window was
-	// marked before kido recorded which pane the run was in - and then a
-	// window is finished only once all of it is, since nothing tells the
-	// run's own pane from a pane the user split off later.
-	if !ok && !tmux.WindowAllDead(panes, windowID) {
-		fmt.Fprintf(os.Stderr, "kido close-run: %s still has a live pane; leaving it for the sweep\n", windowID)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "kido close-run: %s has no run pane; leaving it\n", windowID)
 		return nil
 	}
 	// Verified against a real server: kill-window on a session's last
@@ -91,11 +87,7 @@ func closeRunCmd(args []string) error {
 }
 
 // runPaneOf is the pane of windowID the run itself is in
-// (tmux.SubagentPaneOption), and false for a window with none: one kido
-// never created, or one marked before that option existed. That second
-// case is one of three halves of the old-mark fallback - the others are
-// foldWindows (internal/reap) and tmux.WindowAllDead - which are retired
-// together or not at all.
+// (tmux.SubagentPaneOption), and false for a window kido never created.
 func runPaneOf(panes []tmux.Pane, windowID string) (tmux.Pane, bool) {
 	for _, p := range panes {
 		if p.WindowID == windowID && p.SubagentPane != "" {
