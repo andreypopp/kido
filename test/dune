@@ -7,6 +7,12 @@
   (deps
    ../internal/msg/testdata/discriminator.json
    ../pi/testdata/tools.json
-   ../bin/main.exe))
+   ../bin/main.exe
+   %{project_root}/scripts/install-share.sh
+   (source_tree %{project_root}/shims)
+   (source_tree %{project_root}/shell)
+   %{project_root}/pi/kido-status.ts
+   %{project_root}/pi/kido-agents.ts
+   %{project_root}/claude/settings.json))
  (preprocess
   (pps ppx_expect)))

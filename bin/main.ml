@@ -153,10 +153,27 @@ let inbox_path =
          prerr_endline "usage: kido inbox-path NAME";
          1
 
+let shell =
+  Cmd.v (Cmd.info "shell" ~doc:"Exec the pane's login shell, primed with kido's shell integration.")
+  @@ let+ () = Term.const () in
+     Cli.run "shell" Shell.run
+
+let ssh =
+  Cmd.v (Cmd.info "ssh" ~doc:"Run ssh, priming the remote login shell when it can.")
+  @@ let+ args = rest in
+     Cli.run "ssh" (fun () -> Ssh.run args)
+
+let default =
+  let+ () = Term.const () in
+  match (Sys.argv, Sys.getenv_opt "TMUX_SIDE_CLIENT") with
+  | [| _ |], (None | Some "") ->
+      Cli.run "" (fun () -> Launch.run ~tmux:(Option.get_or ~default:"" (Sys.getenv_opt "TMUX")))
+  | _ -> failwith "sidebar: not merged yet"
+
 let () =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   let cmd =
-    Cmd.group (Cmd.info "kido")
+    Cmd.group ~default (Cmd.info "kido")
       [
         hook;
         agent_status;
@@ -174,10 +191,18 @@ let () =
         window_focused;
         switch_session;
         switch_window;
+        shell;
+        ssh;
       ]
   in
+  (* ssh's arguments are ssh's own, options included. *)
+  let argv =
+    match Array.to_list Sys.argv with
+    | k :: "ssh" :: rest -> Array.of_list (k :: "ssh" :: "--" :: rest)
+    | _ -> Sys.argv
+  in
   exit
-    (match Cmd.eval_value ~catch:false cmd with
+    (match Cmd.eval_value ~catch:false ~argv cmd with
     | Ok (`Ok code) -> code
     | Ok (`Help | `Version) -> 0
     (* Claude Code runs kido hook, which must never fail it. *)
