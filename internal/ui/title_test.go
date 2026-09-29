@@ -1,11 +1,13 @@
 package ui
 
-import "testing"
+import (
+	"testing"
 
-// TestAgentTitle checks the two markers agents put before their titles,
-// and that everything else keeps the behaviour Claude Code titles have
-// always had.
-func TestAgentTitle(t *testing.T) {
+	"kido/internal/tmux"
+)
+
+func TestAgentTitleOf(t *testing.T) {
+	m := &model{}
 	for _, c := range []struct{ title, want string }{
 		{"✳ Tmux config", "Tmux config"},   // Claude Code
 		{"✳ 2 panes", "2 panes"},           // a digit survives the trim
@@ -18,8 +20,9 @@ func TestAgentTitle(t *testing.T) {
 		{"✳ ", "-"},                        // marker only
 		{"~/src/kido", "src/kido"},         // the old trim, unchanged
 	} {
-		if got := agentTitle(c.title); got != c.want {
-			t.Errorf("agentTitle(%q) = %q, want %q", c.title, got, c.want)
+		p := tmux.Pane{PaneID: "%1", CurrentCommand: "claude", Title: c.title}
+		if got, ok := m.agentTitleOf(p); got != c.want || !ok {
+			t.Errorf("agentTitleOf(%q) = (%q, %v), want (%q, true)", c.title, got, ok, c.want)
 		}
 	}
 }

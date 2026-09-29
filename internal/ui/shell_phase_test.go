@@ -152,14 +152,9 @@ func TestShellIndicator(t *testing.T) {
 					// Whole seconds, as tmux reports them: every step of
 					// this test lands in the same one.
 					CommandStartTime: base.Unix(),
-					CommandStatusOK:  s.stat >= 0,
-					CommandEndTime:   clock.Unix(),
 				}
-				if s.stat > 0 {
-					p.CommandStatus = s.stat
-				}
-				if s.stat < 0 {
-					p.CommandEndTime = 0
+				if s.stat >= 0 {
+					p.LastExit = &tmux.Exit{Code: s.stat, At: clock.Unix()}
 				}
 				m.at = m.now()
 				m.snap = snapshot{panes: []tmux.Pane{p}}
@@ -174,7 +169,7 @@ func TestShellIndicator(t *testing.T) {
 				case "done":
 					want = indicatorDone()
 				case "failed":
-					want = indicatorFailed()
+					want = stErr.Render("◼")
 				}
 				if got := m.shellIndicator(m.phases[p.PaneID]); got != want {
 					t.Errorf("step %d (+%dms): indicator = %q, want %q (%s)",
@@ -244,7 +239,7 @@ func TestShellDebounceRedraws(t *testing.T) {
 			CommandRunning: running, CommandStartTime: base.Unix(),
 		}
 		if !running {
-			p.CommandStatusOK, p.CommandEndTime = true, base.Unix()
+			p.LastExit = &tmux.Exit{Code: 0, At: base.Unix()}
 		}
 		return snapshot{current: "alpha", active: pane, panes: []tmux.Pane{p}}
 	}

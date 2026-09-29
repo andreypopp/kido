@@ -33,46 +33,38 @@ func TestShellOutcome(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name       string
-		pane       tmux.Pane
-		seen       map[string]time.Time
-		wantStatus int
-		wantOK     bool
+		name string
+		pane tmux.Pane
+		seen map[string]time.Time
+		want *tmux.Exit
 	}{{
 		// No OSC 133 at all: kido knows nothing about this pane.
 		name: "no integration",
-		pane: tmux.Pane{PaneID: "%1", CommandStatus: 1, CommandStatusOK: true,
-			CommandEndTime: endedAt},
+		pane: tmux.Pane{PaneID: "%1", LastExit: &tmux.Exit{Code: 1, At: endedAt}},
 	}, {
 		// A command is running now: no outcome, and the status on record
 		// belongs to the previous command.
 		name: "running",
 		pane: integrated(tmux.Pane{CommandRunning: true, CommandStartTime: endedAt + 1,
-			CommandStatus: 1, CommandStatusOK: true, CommandEndTime: endedAt}),
+			LastExit: &tmux.Exit{Code: 1, At: endedAt}}),
 	}, {
 		name: "clean exit, not yet visited",
-		pane: integrated(tmux.Pane{CommandStatus: 0, CommandStatusOK: true,
-			CommandEndTime: endedAt}),
-		wantStatus: 0,
-		wantOK:     true,
+		pane: integrated(tmux.Pane{LastExit: &tmux.Exit{Code: 0, At: endedAt}}),
+		want: &tmux.Exit{Code: 0, At: endedAt},
 	}, {
 		name: "nonzero exit, not yet visited",
-		pane: integrated(tmux.Pane{CommandStatus: 1, CommandStatusOK: true,
-			CommandEndTime: endedAt}),
-		wantStatus: 1,
-		wantOK:     true,
+		pane: integrated(tmux.Pane{LastExit: &tmux.Exit{Code: 1, At: endedAt}}),
+		want: &tmux.Exit{Code: 1, At: endedAt},
 	}, {
 		name: "nonzero exit, pane visited since",
-		pane: integrated(tmux.Pane{CommandStatus: 1, CommandStatusOK: true,
-			CommandEndTime: endedAt}),
+		pane: integrated(tmux.Pane{LastExit: &tmux.Exit{Code: 1, At: endedAt}}),
 		seen: map[string]time.Time{"%1": visited},
 	}, {
 		// tmux prints pane_command_status empty when it has none, which
-		// parses to a zero CommandStatus: the flag is what keeps that from
-		// reading as a clean exit, and neither is an outcome.
+		// leaves LastExit nil: that is what keeps a pane with nothing on
+		// record from reading as a clean exit.
 		name: "no status on record",
-		pane: integrated(tmux.Pane{CommandStatus: 0, CommandStatusOK: false,
-			CommandEndTime: endedAt}),
+		pane: integrated(tmux.Pane{}),
 	}, {
 		// The first prompt of a fresh shell emits 133;D with the rc's exit
 		// status and no 133;C before it, so there is a status and an end
@@ -80,12 +72,12 @@ func TestShellOutcome(t *testing.T) {
 		// blank rather than wearing a checkmark it did not earn.
 		name: "no command has run",
 		pane: tmux.Pane{PaneID: "%1", LastPromptTime: endedAt,
-			CommandStatus: 0, CommandStatusOK: true, CommandEndTime: endedAt},
+			LastExit: &tmux.Exit{Code: 0, At: endedAt}},
 	}, {
 		// A status on record with no end time is not datable against the
 		// last visit, so it cannot mark the row.
 		name: "no end time",
-		pane: integrated(tmux.Pane{CommandStatus: 1, CommandStatusOK: true}),
+		pane: integrated(tmux.Pane{LastExit: &tmux.Exit{Code: 1}}),
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			seen := tc.seen
@@ -93,9 +85,9 @@ func TestShellOutcome(t *testing.T) {
 				seen = map[string]time.Time{}
 			}
 			m := &model{started: started, seen: seen}
-			status, ok := m.shellOutcome(tc.pane)
-			if ok != tc.wantOK || (ok && status != tc.wantStatus) {
-				t.Errorf("shellOutcome() = (%v, %v), want (%v, %v)", status, ok, tc.wantStatus, tc.wantOK)
+			got := m.shellOutcome(tc.pane)
+			if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
+				t.Errorf("shellOutcome() = %+v, want %+v", got, tc.want)
 			}
 		})
 	}

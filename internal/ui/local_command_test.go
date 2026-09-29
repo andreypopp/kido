@@ -51,8 +51,8 @@ func TestLocalRowShowsCommandLine(t *testing.T) {
 	done := tmux.Pane{
 		PaneID: "%1", CurrentCommand: "zsh",
 		LastPromptTime: base.Unix() + 2, CommandStartTime: base.Unix(),
-		CommandRunning: false, CommandStatusOK: true, CommandEndTime: base.Unix() + 1,
-		CommandStatus: 0, CommandLine: "make -j8 test",
+		CommandRunning: false, LastExit: &tmux.Exit{Code: 0, At: base.Unix() + 1},
+		CommandLine: "make -j8 test",
 	}
 	m.localTick(done)
 	if got, want := m.paneLabel(done), field(indicatorDone())+stProc.Render("zsh"); got != want {
@@ -111,8 +111,8 @@ func TestLocalRowIdleHasNoCommandLine(t *testing.T) {
 	p := tmux.Pane{
 		PaneID: "%1", CurrentCommand: "zsh",
 		LastPromptTime: base.Unix(), CommandStartTime: base.Unix() - 1,
-		CommandRunning: false, CommandStatusOK: true, CommandEndTime: base.Unix() - 1,
-		CommandStatus: 0, CommandLine: "make -j8 test",
+		CommandRunning: false, LastExit: &tmux.Exit{Code: 0, At: base.Unix() - 1},
+		CommandLine: "make -j8 test",
 	}
 	m.localTick(p)
 	if got := m.paneLabel(p); got != field(indicatorDone())+stProc.Render("zsh") {

@@ -38,7 +38,7 @@ type window struct {
 	paneIDs []string // every pane in the window, in list-panes order
 	// run is the pane carrying tmux.RunOption - the pane kido
 	// spawn_subagent actually runs the run in - or the zero Pane if this
-	// window has none. Its Dead/DeadTime is what rule 1 reads.
+	// window has none. Its DeadAt is what rule 1 reads.
 	run     tmux.Pane
 	focused bool
 }
@@ -89,7 +89,7 @@ func Decide(panes []tmux.Pane, windowID string) (Close, string) {
 		return Close{}, fmt.Sprintf("%s is a client's current window; leaving it for the user to read", windowID)
 	}
 	runPane, ok := tmux.RunPane(panes, windowID)
-	if ok && !runPane.Dead {
+	if ok && runPane.DeadAt == 0 {
 		return Close{}, fmt.Sprintf("%s's run is still going; leaving it", windowID)
 	}
 	if ok && !tmux.LastPane(panes, windowID) {
@@ -382,7 +382,7 @@ func Sweep(panes []tmux.Pane, sessions []state.Session, now time.Time) ([]Close,
 		if w.run.PaneID == "" { // rule 1 needs a run pane to check
 			continue
 		}
-		if w.run.Dead && w.run.DeadTime > 0 && now.Sub(time.Unix(w.run.DeadTime, 0)) >= Grace {
+		if w.run.DeadAt > 0 && now.Sub(time.Unix(w.run.DeadAt, 0)) >= Grace {
 			mark(w.id, w.run.PaneID)
 		}
 	}

@@ -16,7 +16,7 @@ func TestReapClosesWhatTheSweepNames(t *testing.T) {
 	// the session survives losing it.
 	panes := []tmux.Pane{
 		{PaneID: "%1", SessionID: "$0", WindowID: "@1"},
-		{PaneID: "%2", SessionID: "$0", WindowID: "@2", Run: "run-x", Dead: true, DeadTime: 1},
+		{PaneID: "%2", SessionID: "$0", WindowID: "@2", Run: "run-x", DeadAt: 1},
 	}
 	killed := withCloseRunDeps(t, panes)
 
@@ -37,7 +37,7 @@ func TestReapKillsTheRunsPaneWhenTheWindowIsShared(t *testing.T) {
 	t.Setenv("KIDO_STATE_DIR", t.TempDir())
 	panes := []tmux.Pane{
 		{PaneID: "%1", SessionID: "$0", WindowID: "@1"},
-		{PaneID: "%2", SessionID: "$0", WindowID: "@2", Run: "run-shared", Dead: true, DeadTime: 1},
+		{PaneID: "%2", SessionID: "$0", WindowID: "@2", Run: "run-shared", DeadAt: 1},
 		{PaneID: "%3", SessionID: "$0", WindowID: "@2"},
 	}
 	got := withCollectDeps(t, panes)

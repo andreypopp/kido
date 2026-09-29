@@ -147,17 +147,17 @@ Consequences:
 - **These are hooks only.** No control-mode notification exists for
   them; kido reads the `#{pane_command_*}` formats on its poll. Do not go
   looking for `%pane-command-started`.
-- **Timestamps are whole seconds.** `Pane.ShellStatus()` compares
+- **Timestamps are whole seconds.** `Pane.Shell()` compares
   `LastPromptTime > CommandStartTime`, and a tie resolves to *running* —
   a false idle the instant a command starts is the worse error.
 - **`cmd_status` is cleared on `C`,** so the last exit code is gone when
-  the next command starts. `shellPhase.held`/`heldOK` (`internal/ui`)
-  carry it across the following run.
+  the next command starts. `shellPhase.held` (`internal/ui`, a
+  `*tmux.Exit`) carries it across the following run.
 
-`ShellStatus` also heals a stuck flag: a `C` with no `D` leaves
+`Shell` also heals a stuck flag: a `C` with no `D` leaves
 `PANE_CMDRUNNING` set, and the next prompt's `A` clears it. Two fork
 changes would each delete a workaround: clearing `PANE_CMDRUNNING` on `A`
-(the heal rule), and not clearing `cmd_status` on `C` (`held`/`heldOK`).
+(the heal rule), and not clearing `cmd_status` on `C` (`shellPhase.held`).
 Not done.
 
 **Why not `pane_current_command`.** It reports the process-group leader,
@@ -178,8 +178,9 @@ program has taken the terminal.
   `TestPaneFormatFieldCountMatchesConstant` pins the two together;
   `TestPaneFormatFixtureFromFormat` exists because `TestParsePanes`'s
   hand-typed fixture stays green when a new field is left out of it.
-- `pane_command_status` prints **empty**, not `0`, when unset — hence the
-  separate `CommandStatusOK` bool (`TestParsePanesEmptyCommandStatus`).
+- `pane_command_status` prints **empty**, not `0`, when unset — hence
+  `Pane.LastExit` is a `*Exit`, nil rather than a zero status
+  (`TestParsePanesEmptyCommandStatus`).
 
 ## What Claude Code actually reports
 

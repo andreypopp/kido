@@ -18,34 +18,31 @@ var (
 	binaryPath = "tmux"
 )
 
-// binary returns the tmux executable to run, in order: $KIDO_TMUX when
+// Binary returns the tmux executable to run, in order: $KIDO_TMUX when
 // set; else "kido-tmux" beside the kido binary itself, the way an install
 // ships it; else whatever "tmux" resolves to on PATH, for a developer
-// running from a checkout with neither.
-func binary() string {
+// running from a checkout with neither. It is also what a caller that has
+// to run tmux itself rather than through this package uses - the
+// launcher, which starts a server rather than talking to one.
+func Binary() string {
 	binaryOnce.Do(func() {
 		binaryPath = resolveBinary(os.Getenv("KIDO_TMUX"), os.Args[0])
 	})
 	return binaryPath
 }
 
-// Binary is the tmux executable kido runs, for a caller that has to run
-// it itself rather than through this package - the launcher, which starts
-// a server rather than talking to one.
-func Binary() string { return binary() }
-
 // GlobalOption reads a global tmux option, empty when it is unset or when
 // there is no server to ask (-q, so an unknown user option is empty
 // rather than an error).
 func GlobalOption(name string) string {
-	out, err := run("show-options", "-gqv", name)
+	out, err := runStdin("", "show-options", "-gqv", name)
 	if err != nil {
 		return ""
 	}
 	return out
 }
 
-// resolveBinary is binary()'s logic taking its inputs as arguments, so the
+// resolveBinary is Binary()'s logic taking its inputs as arguments, so the
 // order can be tested without a real KIDO_TMUX or a real kido binary on
 // disk.
 func resolveBinary(kidoTmuxEnv, arg0 string) string {
@@ -106,18 +103,10 @@ func siblingTmux(exe string) string {
 	return ""
 }
 
-func run(args ...string) (string, error) {
-	out, err := exec.Command(binary(), args...).Output()
-	if err != nil {
-		return "", fmt.Errorf("tmux %s: %w", strings.Join(args, " "), err)
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-// runStdin is run for a tmux command that reads standard input, such as
-// load-buffer -.
+// runStdin runs a tmux command, its standard input either empty or (for a
+// command that reads it, such as load-buffer -) the text to load.
 func runStdin(stdin string, args ...string) (string, error) {
-	cmd := exec.Command(binary(), args...)
+	cmd := exec.Command(Binary(), args...)
 	cmd.Stdin = strings.NewReader(stdin)
 	out, err := cmd.Output()
 	if err != nil {
@@ -143,7 +132,7 @@ type Pane struct {
 	// OSC 133 shell integration, reported by tmux only for shells that
 	// emit the markers (kido ships a zsh integration in shell/zsh, which
 	// every primed pane sources). A shell that
-	// never emits them leaves LastPromptTime zero; see ShellStatus.
+	// never emits them leaves LastPromptTime zero; see Shell.
 	// AlternateOn is tmux's own answer to "a program owns this terminal":
 	// vim, a pager, top and friends all take the screen by switching to
 	// the alternate buffer. It is the innermost program that does so, so
@@ -153,13 +142,11 @@ type Pane struct {
 	CommandRunning   bool
 	CommandStartTime int64 // unix time of the last 133;C
 	LastPromptTime   int64 // unix time of the last 133;A
-	// The last finished command's exit status, from the last 133;D.
-	// tmux prints pane_command_status empty when it has none (it keeps
-	// -1 internally), so the flag is what tells "no status yet" from a
-	// clean exit; CommandEndTime is the unix time of that 133;D.
-	CommandStatus   int
-	CommandStatusOK bool
-	CommandEndTime  int64
+	// LastExit is the last finished command's exit status, from the last
+	// 133;D, or nil when tmux has none on record. tmux prints
+	// pane_command_status empty when it has none (it keeps -1 internally),
+	// which is what nil distinguishes from a clean exit.
+	LastExit *Exit
 	// CommandLine is the command line the shell reported with its 133;C,
 	// empty for a shell that reports none. tmux keeps it until the next
 	// 133;C, so it still names the last command while the pane is idle.
@@ -167,11 +154,14 @@ type Pane struct {
 	// so it can carry neither the format separator nor a format
 	// substitution.
 	CommandLine string
-	// Dead is tmux's own #{pane_dead}: the command has exited and
-	// remain-on-exit kept the pane on screen. DeadTime is when it exited,
-	// in unix seconds; unlike pane_command_duration neither field ticks.
-	Dead     bool
-	DeadTime int64
+	// DeadAt is tmux's own #{pane_dead_time}: unix seconds since the
+	// command exited and remain-on-exit kept the pane on screen, or 0 for
+	// a live pane; unlike pane_command_duration it does not tick. tmux
+	// sets #{pane_dead} before #{pane_dead_time} (format.c vs
+	// server-fn.c), so a pane dead for less than one poll interval can
+	// read as alive here; every reader of DeadAt already treats that as
+	// harmless.
+	DeadAt int64
 	// Run is @kido_run (RunOption), the pane-scoped option createRunWindow
 	// sets on the one pane a run actually runs in. It is a pane-scoped
 	// option ("set-option -p"), not a window one, so it does not fall
@@ -185,13 +175,28 @@ type Pane struct {
 	Title           string
 }
 
-// ShellStatus reports whether pane p is running a command right now, and
-// whether its shell reports that at all.
+// Exit is a finished command's exit status, from tmux's #{pane_command_status}
+// and #{pane_command_end_time}.
+type Exit struct {
+	Code int
+	At   int64 // unix seconds of the 133;D
+}
+
+// Shell is a pane's OSC 133 shell-integration state.
+type Shell uint8
+
+const (
+	ShellNone    Shell = iota // no prompt has ever been marked; the shell has no integration
+	ShellIdle                 // at a prompt, nothing running
+	ShellRunning              // a command is running
+)
+
+// Shell reports pane p's shell-integration state.
 //
-// ok is false when the shell has no OSC 133 integration - no prompt has
-// ever been marked - and then running means nothing: the caller must draw
-// the pane exactly as it did before. Every pane started before the user
-// loaded the integration is in that state.
+// ShellNone means no OSC 133 prompt has ever been marked, and the caller
+// must draw the pane exactly as it did before knowing anything about it.
+// Every pane started before the user loaded the integration is in that
+// state.
 //
 // The running rule is deliberately not just CommandRunning. A program that
 // emits 133;C and exits without the matching 133;D (pi does this, as does
@@ -199,11 +204,14 @@ type Pane struct {
 // command is still running forever. The shell's own precmd emits 133;A at
 // the next prompt, which puts LastPromptTime after CommandStartTime, and
 // that is what heals such a pane back to idle.
-func (p Pane) ShellStatus() (running, ok bool) {
+func (p Pane) Shell() Shell {
 	if p.LastPromptTime == 0 {
-		return false, false
+		return ShellNone
 	}
-	return p.CommandRunning && !(p.LastPromptTime > p.CommandStartTime), true
+	if p.CommandRunning && !(p.LastPromptTime > p.CommandStartTime) {
+		return ShellRunning
+	}
+	return ShellIdle
 }
 
 const sep = "\x1f"
@@ -263,7 +271,7 @@ func parsePanes(lines []string) []Pane {
 		p := Pane{SessionName: f[0], SessionID: f[1], WindowID: f[4], WindowName: f[5], WindowLayout: f[6],
 			PaneID: f[7], Active: f[8] == "1", CurrentCommand: f[10],
 			CurrentPath: f[11], AlternateOn: f[12] == "1",
-			CommandRunning: f[13] == "1", CommandLine: f[18], Dead: f[19] == "1",
+			CommandRunning: f[13] == "1", CommandLine: f[18],
 			SessionAttached: f[21] != "" && f[21] != "0",
 			Run:             f[22], Title: f[23]}
 		p.SessionCreated, _ = strconv.ParseInt(f[2], 10, 64)
@@ -274,10 +282,12 @@ func parsePanes(lines []string) []Pane {
 		// An empty status field means tmux has no exit status for this
 		// pane, which is not the same as a status of 0.
 		if n, err := strconv.Atoi(f[16]); err == nil {
-			p.CommandStatus, p.CommandStatusOK = n, true
+			at, _ := strconv.ParseInt(f[17], 10, 64)
+			p.LastExit = &Exit{Code: n, At: at}
 		}
-		p.CommandEndTime, _ = strconv.ParseInt(f[17], 10, 64)
-		p.DeadTime, _ = strconv.ParseInt(f[20], 10, 64)
+		if f[19] == "1" {
+			p.DeadAt, _ = strconv.ParseInt(f[20], 10, 64)
+		}
 		panes = append(panes, p)
 	}
 	return panes
@@ -364,7 +374,7 @@ func OrderSessions(panes []Pane) []Session {
 
 // ListPanes returns every pane on the server, in tmux's own order.
 func ListPanes() ([]Pane, error) {
-	out, err := run("list-panes", "-a", "-F", paneFormat)
+	out, err := runStdin("", "list-panes", "-a", "-F", paneFormat)
 	if err != nil {
 		return nil, err
 	}
@@ -375,32 +385,28 @@ func ListPanes() ([]Pane, error) {
 // line per screen row. Wrapped lines are deliberately not joined (-J):
 // what the caller reads is the shape of the last few rows.
 func CapturePane(pane string) ([]string, error) {
-	out, err := run("capture-pane", "-p", "-t", pane)
+	out, err := runStdin("", "capture-pane", "-p", "-t", pane)
 	if err != nil {
 		return nil, err
 	}
 	return strings.Split(out, "\n"), nil
 }
 
-// captureScreenLines bounds how far back CaptureScreen asks tmux for, so
-// a pane with a large history-limit does not turn one capture-pane call
-// into megabytes before internal/reap's own byte cap even gets a chance
-// to trim it.
-const captureScreenLines = 1000
-
-// CaptureScreen returns pane's visible screen plus up to captureScreenLines
-// of scrollback, joined as a single block of text. It exists for
-// internal/reap, which saves a subagent window's last screen before
-// closing it; unlike CapturePane it does not split into lines, since the
-// caller only writes the block to a file.
+// CaptureScreen returns pane's visible screen plus up to 1000 lines of
+// scrollback, joined as a single block of text. The bound keeps a pane
+// with a large history-limit from turning one capture-pane call into
+// megabytes before internal/reap's own byte cap even gets a chance to
+// trim it. It exists for internal/reap, which saves a subagent window's
+// last screen before closing it; unlike CapturePane it does not split
+// into lines, since the caller only writes the block to a file.
 func CaptureScreen(pane string) (string, error) {
-	return run("capture-pane", "-p", "-t", pane, "-S", "-"+strconv.Itoa(captureScreenLines))
+	return runStdin("", "capture-pane", "-p", "-t", pane, "-S", "-1000")
 }
 
 // CurrentClient asks tmux which client this process belongs to. Used when
 // kido is started by hand in a pane rather than by the side status line.
 func CurrentClient() string {
-	out, _ := run("display-message", "-p", "#{client_name}")
+	out, _ := runStdin("", "display-message", "-p", "#{client_name}")
 	return out
 }
 
@@ -436,7 +442,7 @@ func SwitchSession(client string, next bool) error {
 	}
 	target := sessions[(i+delta+len(sessions))%len(sessions)]
 
-	_, err = run("switch-client", "-c", client, "-t", target.ID)
+	_, err = runStdin("", "switch-client", "-c", client, "-t", target.ID)
 	return err
 }
 
@@ -513,7 +519,7 @@ func SwitchWindow(client string, next bool) error {
 	}
 	target := windows[found][0]
 
-	_, err = run("switch-client", "-c", client, "-t", target.SessionID, ";",
+	_, err = runStdin("", "switch-client", "-c", client, "-t", target.SessionID, ";",
 		"select-window", "-t", target.WindowID)
 	return err
 }
@@ -549,7 +555,7 @@ func parseClientState(lines []string, client string) (session string, focused bo
 // ClientState returns the client's session and whether the side status
 // line has its keyboard focus.
 func ClientState(client string) (session string, focused bool) {
-	out, err := run("list-clients", "-F", clientFormat)
+	out, err := runStdin("", "list-clients", "-F", clientFormat)
 	if err != nil {
 		return "", false
 	}
@@ -588,7 +594,7 @@ func realClients(lines []string) []string {
 // cannot outlast a session rename or move.
 func paneSessionTarget(pane, tmuxEnv string) string {
 	if pane != "" {
-		if out, err := run("display-message", "-p", "-t", pane, "#{session_id}"); err == nil && out != "" {
+		if out, err := runStdin("", "display-message", "-p", "-t", pane, "#{session_id}"); err == nil && out != "" {
 			return out
 		}
 	}
@@ -611,7 +617,7 @@ func ResolveClient(pane, tmuxEnv string) string {
 	if target == "" {
 		return ""
 	}
-	out, err := run("list-clients", "-t", target, "-F", clientFormat)
+	out, err := runStdin("", "list-clients", "-t", target, "-F", clientFormat)
 	if err != nil {
 		return ""
 	}
@@ -643,7 +649,7 @@ func ActivePane(panes []Pane, session string) string {
 // from a popup should hand it the keyboard just as one made from the
 // sidebar does.
 func Jump(client, paneID string) error {
-	_, err := run("switch-client", "-c", client, "-t", paneID, ";",
+	_, err := runStdin("", "switch-client", "-c", client, "-t", paneID, ";",
 		"select-window", "-t", paneID, ";",
 		"select-pane", "-t", paneID, ";",
 		"refresh-client", "-t", client, "-f", "!"+sideFocusFlag)
@@ -653,7 +659,7 @@ func Jump(client, paneID string) error {
 // ReleaseSideFocus hands keyboard focus from the side status line back to
 // the client's active pane.
 func ReleaseSideFocus(client string) error {
-	_, err := run("refresh-client", "-t", client, "-f", "!"+sideFocusFlag)
+	_, err := runStdin("", "refresh-client", "-t", client, "-f", "!"+sideFocusFlag)
 	return err
 }
 
@@ -662,17 +668,6 @@ func ReleaseSideFocus(client string) error {
 // included) can see the Enter as part of the pasted text rather than a
 // submission.
 const promptKeyDelay = 100 * time.Millisecond
-
-// promptBufferPrefix names the tmux buffer SendPrompt loads a prompt
-// into. tmux's own buffers are named buffer0, buffer1 and so on, and a
-// name a user picks by hand is theirs to choose, so nothing of theirs can
-// carry this prefix; the pid keeps two kido processes on one server off
-// each other's buffer. Pasting with -d deletes it again, leaving the
-// user's buffer stack and its ordering exactly as it was.
-const promptBufferPrefix = "kido-prompt"
-
-// promptBuffer is the buffer name for this process.
-func promptBuffer() string { return fmt.Sprintf("%s-%d", promptBufferPrefix, os.Getpid()) }
 
 // SendPrompt delivers text to pane as a paste, then presses Enter after
 // promptKeyDelay.
@@ -689,17 +684,22 @@ func promptBuffer() string { return fmt.Sprintf("%s-%d", promptBufferPrefix, os.
 // Enter stays a separate key after promptKeyDelay: sent before the text
 // has landed, the submit cuts the paste mid-line.
 func SendPrompt(pane, text string) error {
-	buf := promptBuffer()
+	// tmux's own buffers are named buffer0, buffer1 and so on, and a name
+	// a user picks by hand is theirs to choose, so nothing of theirs can
+	// carry this prefix; the pid keeps two kido processes on one server
+	// off each other's buffer. Pasting with -d deletes it again, leaving
+	// the user's buffer stack and its ordering exactly as it was.
+	buf := fmt.Sprintf("kido-prompt-%d", os.Getpid())
 	if _, err := runStdin(text, "load-buffer", "-b", buf, "-"); err != nil {
 		return err
 	}
-	if _, err := run("paste-buffer", "-b", buf, "-d", "-t", pane, "-p"); err != nil {
+	if _, err := runStdin("", "paste-buffer", "-b", buf, "-d", "-t", pane, "-p"); err != nil {
 		// -d never ran, so the buffer would otherwise outlive the failure.
-		run("delete-buffer", "-b", buf)
+		runStdin("", "delete-buffer", "-b", buf)
 		return err
 	}
 	time.Sleep(promptKeyDelay)
-	_, err := run("send-keys", "-t", pane, "Enter")
+	_, err := runStdin("", "send-keys", "-t", pane, "Enter")
 	return err
 }
 
@@ -741,7 +741,7 @@ func newWindowArgs(session, name, cwd string, env, command []string) []string {
 // respawn-pane'ing into it costs two more round-trips and a second query
 // for the pid.
 func NewWindow(session, name, cwd string, env, command []string) (windowID, paneID string, panePID int, err error) {
-	out, err := run(newWindowArgs(session, name, cwd, env, command)...)
+	out, err := runStdin("", newWindowArgs(session, name, cwd, env, command)...)
 	if err != nil {
 		return "", "", 0, err
 	}
@@ -754,7 +754,7 @@ func NewWindow(session, name, cwd string, env, command []string) (windowID, pane
 	if err != nil {
 		return "", "", 0, fmt.Errorf("new-window: unexpected pane_pid %q", parts[2])
 	}
-	if _, err := run("set-option", "-p", "-t", paneID, "remain-on-exit", "on"); err != nil {
+	if _, err := runStdin("", "set-option", "-p", "-t", paneID, "remain-on-exit", "on"); err != nil {
 		// Losing the race above is not a failure to create the window: the
 		// command ran, and what it cost is the corpse on screen. A window
 		// tmux can no longer find is exactly that case, and reporting it as
@@ -779,7 +779,7 @@ func NewWindow(session, name, cwd string, env, command []string) (windowID, pane
 // has closed exits 0 and prints an empty line, where `set-window-option
 // -t @1` on the same window fails with "no such window: @1".
 func WindowExists(windowID string) bool {
-	out, err := run("display-message", "-p", "-t", windowID, "#{window_id}")
+	out, err := runStdin("", "display-message", "-p", "-t", windowID, "#{window_id}")
 	return err == nil && out == windowID
 }
 
@@ -840,20 +840,20 @@ func LastPane(panes []Pane, windowID string) bool {
 // error from tmux and nothing more; every caller is one of several
 // processes racing to close the same window.
 func KillWindow(windowID string) error {
-	_, err := run("kill-window", "-t", windowID)
+	_, err := runStdin("", "kill-window", "-t", windowID)
 	return err
 }
 
 // KillPane destroys paneID, leaving any other pane in its window alone.
 func KillPane(paneID string) error {
-	_, err := run("kill-pane", "-t", paneID)
+	_, err := runStdin("", "kill-pane", "-t", paneID)
 	return err
 }
 
 // MarkRun sets RunOption on paneID to runID: killing the pane later
 // clears the option with it, so nothing ever has to unset it by hand.
 func MarkRun(paneID, runID string) error {
-	_, err := run("set-option", "-p", "-t", paneID, RunOption, runID)
+	_, err := runStdin("", "set-option", "-p", "-t", paneID, RunOption, runID)
 	return err
 }
 

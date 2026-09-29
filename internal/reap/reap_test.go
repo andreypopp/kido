@@ -47,7 +47,7 @@ func runPane(p tmux.Pane, runID string) tmux.Pane {
 // dead is p as remain-on-exit leaves it: the command exited secs seconds
 // before now.
 func dead(p tmux.Pane, secs int) tmux.Pane {
-	p.Dead, p.DeadTime = true, now.Add(-time.Duration(secs)*time.Second).Unix()
+	p.DeadAt = now.Add(-time.Duration(secs) * time.Second).Unix()
 	return p
 }
 

@@ -266,7 +266,7 @@ func TestValidStatus(t *testing.T) {
 			t.Errorf("%q should be reportable", s)
 		}
 	}
-	for _, s := range []Status{Unknown, "", "busy"} {
+	for _, s := range []Status{"unknown", "", "busy"} {
 		if Valid(s) {
 			t.Errorf("%q should not be reportable", s)
 		}

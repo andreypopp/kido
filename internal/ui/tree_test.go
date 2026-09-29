@@ -99,7 +99,7 @@ func agentState(id, parent, title string) state.Session {
 func deadSubagentPane(w, pane, runID string) tmux.Pane {
 	return tmux.Pane{
 		SessionName: "sess", WindowID: w, PaneID: pane,
-		Dead: true, Run: runID,
+		DeadAt: 1, Run: runID,
 	}
 }
 
@@ -648,15 +648,15 @@ func TestOrderWindowsByTreeMarkFallbackDropsNothing(t *testing.T) {
 // run id in its @kido_run option, so lingeringSubagents has something to
 // look up on disk.
 func lingeringSubagentPane(w, pane, runID string) tmux.Pane {
-	return tmux.Pane{SessionName: "sess", WindowID: w, PaneID: pane, Dead: true, Run: runID}
+	return tmux.Pane{SessionName: "sess", WindowID: w, PaneID: pane, DeadAt: 1, Run: runID}
 }
 
 // liveSubagentPane is lingeringSubagentPane's alive twin: a run pane with
-// no state record for it yet, and Dead false - a plain `bash` run for its
+// no state record for it yet, and DeadAt 0 - a plain `bash` run for its
 // whole life, or an agent run in the window between new-window and its
 // first status report.
 func liveSubagentPane(w, pane, runID string) tmux.Pane {
-	return tmux.Pane{SessionName: "sess", WindowID: w, PaneID: pane, Dead: false, Run: runID}
+	return tmux.Pane{SessionName: "sess", WindowID: w, PaneID: pane, DeadAt: 0, Run: runID}
 }
 
 // newRun writes a run's meta (and, if result != "", its outcome) under a
@@ -697,7 +697,7 @@ func TestRenderLingeringSubagentShowsItsOwnName(t *testing.T) {
 // TestRenderLingeringSubagentLooksDead checks the row is visibly distinct
 // from every live status glyph, not just from a bare pane command: the ×
 // this task adds must not collide with anything indicator() or
-// indicatorDone()/indicatorFailed() already draws for a live pane.
+// indicatorDone() already draws for a live pane.
 func TestRenderLingeringSubagentLooksDead(t *testing.T) {
 	id := newRun(t, "subagent", "", "")
 	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id)}
@@ -946,7 +946,7 @@ func TestLingeringSubagentsCarryForward(t *testing.T) {
 	panes := []tmux.Pane{lingeringSubagentPane("@20", "%30", id)}
 
 	first := lingeringSubagents(panes, nil, nil)
-	if first[id].name != "subagent" || first[id].outcomeOK {
+	if first[id].name != "subagent" || first[id].outcome != "" {
 		t.Fatalf("first read = %+v, want the run's name and no outcome yet", first[id])
 	}
 
@@ -961,7 +961,7 @@ func TestLingeringSubagentsCarryForward(t *testing.T) {
 	if next[id].name != "subagent" {
 		t.Errorf("name = %q, want it carried forward from the previous tick rather than re-read", next[id].name)
 	}
-	if !next[id].outcomeOK || next[id].outcome != subrun.Completed {
+	if next[id].outcome != subrun.Completed {
 		t.Errorf("outcome = %+v, want the outcome recorded since the previous tick to be picked up", next[id])
 	}
 }

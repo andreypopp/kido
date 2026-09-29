@@ -84,7 +84,7 @@ func deadRunWindow(runID string) []tmux.Pane {
 	return []tmux.Pane{
 		{PaneID: "%2", SessionID: "$1", WindowID: "@2"},
 		{PaneID: "%9", SessionID: "$1", WindowID: "@9", Run: runID,
-			Dead: true, DeadTime: time.Now().Add(-time.Hour).Unix()},
+			DeadAt: time.Now().Add(-time.Hour).Unix()},
 	}
 }
 

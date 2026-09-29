@@ -163,7 +163,7 @@ func TestCloseRunKillsARunsPaneInASessionsLastWindow(t *testing.T) {
 
 // dead is a pane as remain-on-exit leaves it.
 func dead(p tmux.Pane) tmux.Pane {
-	p.Dead, p.DeadTime = true, 1700000000
+	p.DeadAt = 1700000000
 	return p
 }
 
@@ -207,8 +207,8 @@ func TestCloseRunKillsUnfocused(t *testing.T) {
 // unclosed on that ground alone.
 func TestCloseRunRefusesAWindowWithNoRunPane(t *testing.T) {
 	panes := []tmux.Pane{
-		{PaneID: "%1", SessionID: "$0", WindowID: "@1", Active: true, SessionAttached: true, Dead: true},
-		{PaneID: "%2", SessionID: "$0", WindowID: "@2", Active: false, SessionAttached: true, Dead: true},
+		{PaneID: "%1", SessionID: "$0", WindowID: "@1", Active: true, SessionAttached: true, DeadAt: 1},
+		{PaneID: "%2", SessionID: "$0", WindowID: "@2", Active: false, SessionAttached: true, DeadAt: 1},
 	}
 	killed := withCloseRunDeps(t, panes)
 

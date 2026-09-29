@@ -25,11 +25,10 @@ const (
 	Waiting    Status = "waiting"    // blocked on a permission prompt
 	Compacting Status = "compacting" // context is being compacted
 	Idle       Status = "idle"       // turn finished, waiting for user input
-	Unknown    Status = "unknown"    // agent process seen but no reported data
 )
 
 // Statuses lists the statuses an agent may report, in the order a usage
-// message lists them. Unknown is kido's own and not reportable.
+// message lists them.
 func Statuses() []Status { return []Status{Running, Waiting, Compacting, Idle} }
 
 // Valid reports whether s is a status an agent may report.

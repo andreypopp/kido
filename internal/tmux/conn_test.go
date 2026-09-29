@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -103,9 +104,9 @@ func TestParsePanes(t *testing.T) {
 		WindowID: "@7", WindowName: "win", WindowLayout: "layout", PaneID: "%3", Active: true,
 		PanePID: 4242, CurrentCommand: "claude", CurrentPath: "/tmp",
 		CommandRunning: true, CommandStartTime: 1700000100, LastPromptTime: 1700000050,
-		CommandStatus: 2, CommandStatusOK: true, CommandEndTime: 1700000090,
+		LastExit:    &Exit{Code: 2, At: 1700000090},
 		CommandLine: "make test", SessionAttached: true, Title: "✳ Title"}
-	if p[0] != want {
+	if !reflect.DeepEqual(p[0], want) {
 		t.Errorf("got %+v, want %+v", p[0], want)
 	}
 }
@@ -124,9 +125,8 @@ func TestParsePanesEmptyCommandStatus(t *testing.T) {
 	if !p[0].AlternateOn {
 		t.Error("alternate_on was not parsed")
 	}
-	if p[0].CommandStatusOK || p[0].CommandStatus != 0 || p[0].CommandEndTime != 0 {
-		t.Errorf("got status (%d, %v) end %d, want no status and no end time",
-			p[0].CommandStatus, p[0].CommandStatusOK, p[0].CommandEndTime)
+	if p[0].LastExit != nil {
+		t.Errorf("got status %+v, want no status and no end time", p[0].LastExit)
 	}
 }
 
@@ -142,8 +142,8 @@ func TestParsePanesDeadRun(t *testing.T) {
 	if len(p) != 1 {
 		t.Fatalf("got %d panes, want 1", len(p))
 	}
-	if !p[0].Dead || p[0].DeadTime != 1700000200 {
-		t.Errorf("got dead=%v at %d, want a pane dead since 1700000200", p[0].Dead, p[0].DeadTime)
+	if p[0].DeadAt != 1700000200 {
+		t.Errorf("got dead at %d, want a pane dead since 1700000200", p[0].DeadAt)
 	}
 	if p[0].Run != "run-abc" {
 		t.Errorf("got %s = %q, want the run id kido spawn_subagent set", RunOption, p[0].Run)

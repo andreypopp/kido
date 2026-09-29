@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -88,12 +89,12 @@ func TestPaneFormatFixtureFromFormat(t *testing.T) {
 		PaneID: values[7], Active: true, PanePID: 1000009,
 		CurrentCommand: values[10], CurrentPath: values[11], AlternateOn: true,
 		CommandRunning: true, CommandStartTime: 1000014, LastPromptTime: 1000015,
-		CommandStatus: 16, CommandStatusOK: true, CommandEndTime: 1000017,
+		LastExit:    &Exit{Code: 16, At: 1000017},
 		CommandLine: values[18],
-		Dead:        true, DeadTime: 1000020, SessionAttached: true,
+		DeadAt:      1000020, SessionAttached: true,
 		Run: values[22], Title: values[23],
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 }

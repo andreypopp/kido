@@ -19,8 +19,10 @@ import (
 //
 // The connection is supervised: if the client dies (the attached session
 // was killed, the server restarted) it is re-dialled with backoff, and
-// every query made while it is down fails with ErrNotConnected so the
-// caller can fall back to running tmux directly.
+// every query made while it is down falls back to running tmux directly.
+// A nil *Conn behaves the same as one that is down: every method below
+// falls back without dereferencing it, so a caller with no connection can
+// pass nil rather than special-casing one.
 type Conn struct {
 	client string        // side client, re-queried for the session to attach to
 	notify chan struct{} // coalesced "something changed" signals, cap 1
@@ -36,9 +38,8 @@ type Conn struct {
 	}
 }
 
-// ErrNotConnected is returned by Conn methods while the control client is
-// down; the caller should fall back to a plain tmux exec.
-var ErrNotConnected = errors.New("tmux: control connection is down")
+// errNotConnected is Run's error while the control client is down.
+var errNotConnected = errors.New("tmux: control connection is down")
 
 const (
 	// debounce is how long notifications are coalesced: a width drag or a
@@ -54,7 +55,7 @@ const (
 
 // Connect starts a supervised control client for the side client's session.
 // It returns immediately: the first dial happens in the background and
-// queries fail with ErrNotConnected until it lands.
+// queries fall back to a plain tmux exec until it lands.
 func Connect(client string) *Conn {
 	c := &Conn{
 		client: client,
@@ -92,7 +93,7 @@ func (c *Conn) Run(cmd string) ([]string, error) {
 
 	ch := c.child()
 	if ch == nil {
-		return nil, ErrNotConnected
+		return nil, errNotConnected
 	}
 	// Drop anything left over from an abandoned command.
 	for {
@@ -105,7 +106,7 @@ func (c *Conn) Run(cmd string) ([]string, error) {
 	}
 	if _, err := io.WriteString(ch.stdin, cmd+"\n"); err != nil {
 		ch.kill()
-		return nil, ErrNotConnected
+		return nil, errNotConnected
 	}
 	timer := time.NewTimer(runTimeout)
 	defer timer.Stop()
@@ -113,40 +114,47 @@ func (c *Conn) Run(cmd string) ([]string, error) {
 	case b := <-ch.replies:
 		return b.lines, b.err
 	case <-ch.dead:
-		return nil, ErrNotConnected
+		return nil, errNotConnected
 	case <-c.done:
-		return nil, ErrNotConnected
+		return nil, errNotConnected
 	case <-timer.C:
 		ch.kill() // the stream is out of step; start over
 		return nil, fmt.Errorf("tmux -C %s: timed out", cmd)
 	}
 }
 
-// ListPanes is ListPanes over the connection.
+// ListPanes is ListPanes over the connection, falling back to running
+// tmux directly while the connection is down or nil (a reconnect gap
+// must not blank the sidebar).
 func (c *Conn) ListPanes() ([]Pane, error) {
-	lines, err := c.Run("list-panes -a -F " + Quote(paneFormat))
-	if err != nil {
-		return nil, err
+	if c != nil {
+		if lines, err := c.Run("list-panes -a -F " + Quote(paneFormat)); err == nil {
+			return parsePanes(lines), nil
+		}
 	}
-	return parsePanes(lines), nil
+	return ListPanes()
 }
 
-// CapturePane is CapturePane over the connection.
+// CapturePane is CapturePane over the connection, with the same fallback
+// as ListPanes.
 func (c *Conn) CapturePane(pane string) ([]string, error) {
-	return c.Run("capture-pane -p -t " + Quote(pane))
+	if c != nil {
+		if lines, err := c.Run("capture-pane -p -t " + Quote(pane)); err == nil {
+			return lines, nil
+		}
+	}
+	return CapturePane(pane)
 }
 
-// ClientState is ClientState over the connection.
-func (c *Conn) ClientState(client string) (session string, focused bool, err error) {
-	lines, err := c.Run("list-clients -F " + Quote(clientFormat))
-	if err != nil {
-		return "", false, err
+// ClientState is ClientState over the connection, with the same fallback
+// as ListPanes.
+func (c *Conn) ClientState(client string) (session string, focused bool) {
+	if c != nil {
+		if lines, err := c.Run("list-clients -F " + Quote(clientFormat)); err == nil && len(lines) > 0 {
+			return parseClientState(lines, client)
+		}
 	}
-	if len(lines) == 0 {
-		return "", false, errors.New("tmux: no clients")
-	}
-	session, focused = parseClientState(lines, client)
-	return session, focused, nil
+	return ClientState(client)
 }
 
 // Follow makes the control client switch to session, so that the
@@ -160,7 +168,7 @@ func (c *Conn) ClientState(client string) (session string, focused bool, err err
 func (c *Conn) Follow(session string) error {
 	ch := c.child()
 	if ch == nil {
-		return ErrNotConnected
+		return errNotConnected
 	}
 	if ch.attached() == session {
 		return nil
@@ -275,7 +283,7 @@ func (c *Conn) dial() (*child, error) {
 	if session != "" {
 		args = append(args, "-t", session)
 	}
-	cmd := exec.Command(binary(), args...)
+	cmd := exec.Command(Binary(), args...)
 	cmd.WaitDelay = time.Second
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

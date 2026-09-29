@@ -84,10 +84,9 @@ type snapshot struct {
 
 // lingering is one lingering subagent window's label, keyed by run id.
 type lingering struct {
-	name      string
-	parent    string
-	outcome   subrun.Result
-	outcomeOK bool // whether an outcome has been recorded at all
+	name    string
+	parent  string
+	outcome subrun.Result // "" until one is recorded
 }
 
 // lingeringSubagents reads the name and outcome of every subagent window
@@ -125,9 +124,9 @@ func lingeringSubagents(panes []tmux.Pane, states map[string]state.Session, prev
 			continue
 		}
 		if l, ok := prev[runID]; ok {
-			if !l.outcomeOK {
+			if l.outcome == "" {
 				if o, ok, err := subrun.ReadOutcome(runID); err == nil && ok {
-					l.outcome, l.outcomeOK = o.Result, true
+					l.outcome = o.Result
 				}
 			}
 			keep(runID, l)
@@ -142,7 +141,7 @@ func lingeringSubagents(panes []tmux.Pane, states map[string]state.Session, prev
 		}
 		l := lingering{name: meta.Name, parent: meta.ParentSession}
 		if o, ok, err := subrun.ReadOutcome(runID); err == nil && ok {
-			l.outcome, l.outcomeOK = o.Result, true
+			l.outcome = o.Result
 		}
 		keep(runID, l)
 	}
@@ -260,9 +259,8 @@ type shellPhase struct {
 	// moment a command starts and cannot be recovered: without this the
 	// row would blank for shellRunDelay at the start of every command on
 	// a pane the user is not watching, which is the blink the delay was
-	// added to remove.
-	held   int
-	heldOK bool
+	// added to remove. nil: no outcome recorded yet.
+	held *tmux.Exit
 }
 
 // Run starts the sidebar and blocks until it exits.
@@ -297,11 +295,11 @@ func Run(opts Options) error {
 // and the last read is old enough.
 func take(conn *tmux.Conn, client string, prev snapshot) snapshot {
 	var s snapshot
-	s.current, s.focused = clientState(conn, client)
+	s.current, s.focused = conn.ClientState(client)
 	if conn != nil && s.current != "" {
 		conn.Follow(s.current)
 	}
-	if s.panes, s.err = listPanes(conn); s.err != nil {
+	if s.panes, s.err = conn.ListPanes(); s.err != nil {
 		return s
 	}
 	s.active = tmux.ActivePane(s.panes, s.current)
@@ -411,40 +409,10 @@ func dismissals(conn *tmux.Conn, prev map[string]probe, states map[string]state.
 		// A screen kido cannot read leaves the pane waiting, and the
 		// attempt is recorded all the same so a failing capture does not
 		// retry at tick rate.
-		lines, err := capturePane(conn, pane)
+		lines, err := conn.CapturePane(pane)
 		keep(pane, probe{reported: s.TS, read: now, dismissed: err == nil && atInputPrompt(lines)})
 	}
 	return out
-}
-
-// clientState and listPanes ask the control connection, falling back to
-// running tmux while it is down (a reconnect gap must not blank the
-// sidebar).
-func clientState(conn *tmux.Conn, client string) (string, bool) {
-	if conn != nil {
-		if session, focused, err := conn.ClientState(client); err == nil {
-			return session, focused
-		}
-	}
-	return tmux.ClientState(client)
-}
-
-func listPanes(conn *tmux.Conn) ([]tmux.Pane, error) {
-	if conn != nil {
-		if panes, err := conn.ListPanes(); err == nil {
-			return panes, nil
-		}
-	}
-	return tmux.ListPanes()
-}
-
-func capturePane(conn *tmux.Conn, pane string) ([]string, error) {
-	if conn != nil {
-		if lines, err := conn.CapturePane(pane); err == nil {
-			return lines, nil
-		}
-	}
-	return tmux.CapturePane(pane)
 }
 
 // tick takes the next snapshot in the background: after the interval, or
@@ -467,75 +435,46 @@ func (m model) tick() tea.Cmd {
 }
 
 // same reports whether two snapshots would render identically.
-func (a snapshot) same(b snapshot) bool {
-	return a.current == b.current && a.active == b.active && a.focused == b.focused &&
-		a.err == nil && b.err == nil && a.wake.Equal(b.wake) &&
-		samePanes(a.panes, b.panes) && sameStates(a.states, b.states) &&
-		maps.Equal(a.ssh, b.ssh) && maps.Equal(a.pi, b.pi) && maps.Equal(a.lingering, b.lingering)
-}
-
-// sameStates is maps.Equal for state.Session with TS excluded through
-// drawnSession, the Session analogue of samePanes/drawnPart: the
-// heartbeat changes TS every ~30s with nothing else moving, and would
-// otherwise force a rebuild per running agent on that timer.
-func sameStates(a, b map[string]state.Session) bool {
-	return maps.EqualFunc(a, b, func(x, y state.Session) bool {
-		return drawnSession(x) == drawnSession(y)
-	})
-}
-
-// drawnSession is s without TS. TS still reaches one row, the stalled
-// indicator, and stallPending reads it directly for that.
-func drawnSession(s state.Session) state.Session {
-	s.TS = time.Time{}
-	return s
-}
-
-// samePanes compares two pane lists by what the sidebar actually draws and
-// orders by, not by the whole tmux.Pane: a tmux.Pane also carries fields
-// only `kido snapshot` reads, and comparing those made a cd in any pane, or
-// a drag-resize rewriting a layout string, force a full rebuild that
-// produced an identical screen.
 //
-// It compares by exclusion, not by listing the fields that matter: a field
-// left out of such a list does not fail anything, it just freezes the row
-// on screen. Zeroing the few fields that reach no row inverts that, so a
-// new tmux.Pane field is compared by default.
-func samePanes(a, b []tmux.Pane) bool {
-	if len(a) != len(b) {
+// Panes are compared by exclusion, not by a list of the fields that
+// matter: a field left off such a list would fail toward a frozen row,
+// where zeroing the few that reach no row - WindowIndex, WindowName,
+// WindowLayout, CurrentPath, and Active (snapshot.active is compared
+// separately above) - fails toward an extra redraw instead, the safe
+// direction. LastExit is a pointer and so needs its own comparison:
+// == would compare addresses, not the exit it points to. Everything
+// else, DeadAt and Run included, is compared as it stands: DeadAt and
+// SessionAttached reach no row either, but change rarely enough that
+// comparing them costs only an occasional redundant redraw, and Run
+// must be compared because orderWindowsByTree reads it to place a window
+// once its agent record is gone.
+//
+// States are compared with TS excluded: TS reaches only the stalled
+// indicator, which stallPending reads directly, and the heartbeat moves
+// it every ~30s with nothing else changing, which would otherwise force
+// a rebuild per running agent on that timer.
+func (a snapshot) same(b snapshot) bool {
+	if a.current != b.current || a.active != b.active || a.focused != b.focused ||
+		a.err != nil || b.err != nil || !a.wake.Equal(b.wake) || len(a.panes) != len(b.panes) {
 		return false
 	}
-	for i := range a {
-		if drawnPart(a[i]) != drawnPart(b[i]) {
+	for i, x := range a.panes {
+		y := b.panes[i]
+		x.WindowIndex, y.WindowIndex = 0, 0
+		x.WindowName, y.WindowName = "", ""
+		x.WindowLayout, y.WindowLayout = "", ""
+		x.CurrentPath, y.CurrentPath = "", ""
+		x.Active, y.Active = false, false
+		xExit, yExit := x.LastExit, y.LastExit
+		x.LastExit, y.LastExit = nil, nil
+		if x != y || (xExit == nil) != (yExit == nil) || (xExit != nil && *xExit != *yExit) {
 			return false
 		}
 	}
-	return true
-}
-
-// drawnPart is p without the fields the sidebar neither draws nor orders
-// by, so two panes that would render identically compare equal.
-//
-// WindowIndex, WindowName, WindowLayout and CurrentPath reach no row - a
-// renumbering reorders the pane list itself, which samePanes' positional
-// comparison catches anyway. Active's only drawn consequence is
-// snapshot.active, which same() compares separately: a pane switch inside a
-// session the client is not attached to changes nothing on screen.
-//
-// Dead, DeadTime and SessionAttached are left in, though no row draws
-// them: each changes at most a handful of times in a pane's life, so
-// keeping them costs an occasional redundant redraw, and dropping them
-// would risk a stale pane list reaching the reaper. Subagent is left in
-// for a stronger reason now: orderWindowsByTree reads it to place a
-// window once its agent record is gone, so a change to it must redraw
-// too. In practice it never changes after kido spawn_subagent sets it once at
-// window creation, and a window's first appearance already forces a
-// rebuild on its own, but excluding it here would be the same silent
-// staleness this comment warns about for the others.
-func drawnPart(p tmux.Pane) tmux.Pane {
-	p.WindowIndex, p.WindowName, p.WindowLayout, p.CurrentPath = 0, "", "", ""
-	p.Active = false
-	return p
+	return maps.EqualFunc(a.states, b.states, func(x, y state.Session) bool {
+		x.TS, y.TS = time.Time{}, time.Time{}
+		return x == y
+	}) && maps.Equal(a.ssh, b.ssh) && maps.Equal(a.pi, b.pi) && maps.Equal(a.lingering, b.lingering)
 }
 
 func (m model) Init() tea.Cmd { return m.tick() }
@@ -579,7 +518,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		switch {
 		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft:
-			if i := m.rowAt(msg.Y); i >= 0 {
+			if i := m.top + msg.Y; i >= 0 && i < len(m.rows) && m.rows[i].paneID != "" {
 				m.cursor = i
 				// Two steps: m is a value receiver, so the copy returned
 				// must be made after jump has mutated it.
@@ -627,9 +566,9 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 	pend := m.gPend
 	m.gPend = false
 	switch msg.String() {
-	case "ctrl+j", "ctrl+n", "down":
+	case "ctrl+j", "ctrl+n", "down", "j":
 		m.move(1)
-	case "ctrl+k", "ctrl+p", "up":
+	case "ctrl+k", "ctrl+p", "up", "k":
 		m.move(-1)
 	case "shift+down":
 		m.switchWindow(true)
@@ -645,11 +584,7 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 		// handled here rather than by a second tmux binding, which would
 		// never see the keystroke.
 		if !m.opts.Standalone {
-			if err := tmux.ReleaseSideFocus(m.opts.Client); err != nil {
-				m.status = err.Error()
-			} else {
-				m.focus(m.snap.active)
-			}
+			m.releaseFocus()
 		}
 	case "esc", "ctrl+c":
 		// Leave the search, or hand the keyboard back to the pane - or,
@@ -662,11 +597,7 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 		case m.opts.Standalone:
 			return tea.Quit
 		default:
-			if err := tmux.ReleaseSideFocus(m.opts.Client); err != nil {
-				m.status = err.Error()
-			} else {
-				m.focus(m.snap.active)
-			}
+			m.releaseFocus()
 		}
 	case "q":
 		// Standalone only: in the side column there is nothing to quit to,
@@ -683,29 +614,34 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 	case "/":
 		m.searching = true
 		m.setFilter("")
-	case "j":
-		m.move(1)
-	case "k":
-		m.move(-1)
 	case "n":
 		m.nextAttention(1)
 	case "N":
 		m.nextAttention(-1)
-	case "g": // "gg" goes to the top
-		if pend {
-			m.cursor = -1
-			m.move(1)
-		} else {
+	case "g": // "gg" goes to the top, like "home"
+		if !pend {
 			m.gPend = true
+			break
 		}
-	case "G", "end":
-		m.cursor = len(m.rows)
-		m.move(-1)
+		fallthrough
 	case "home":
 		m.cursor = -1
 		m.move(1)
+	case "G", "end":
+		m.cursor = len(m.rows)
+		m.move(-1)
 	}
 	return nil
+}
+
+// releaseFocus hands the keyboard back to the pane: kido's side of C-s and
+// Esc alike.
+func (m *model) releaseFocus() {
+	if err := tmux.ReleaseSideFocus(m.opts.Client); err != nil {
+		m.status = err.Error()
+	} else {
+		m.focus(m.snap.active)
+	}
 }
 
 // jump switches the client to the pane under the cursor, hands it the
@@ -771,21 +707,21 @@ func (m *model) track() {
 	for _, p := range m.snap.panes {
 		live[p.PaneID] = true
 		m.observeRemote(p)
-		if running, ok := p.ShellStatus(); ok {
+		if s := p.Shell(); s != tmux.ShellNone {
 			// A program holding the terminal is not a run, so it never
 			// becomes one the debounce has drawn - otherwise quitting an
 			// editor left the hold painting the row green for half a
 			// second on the way back to the prompt.
-			running = running && !m.interactivePane(p)
+			running := s == tmux.ShellRunning && !m.interactivePane(p)
 			prev := m.phases[p.PaneID]
 			ph := m.observe(prev, running)
 			// The outcome is readable only while the pane is idle, so
 			// take it then and carry it through the run that follows
 			// (see shellPhase.held).
 			if running {
-				ph.held, ph.heldOK = prev.held, prev.heldOK
+				ph.held = prev.held
 			} else {
-				ph.held, ph.heldOK = m.shellOutcome(p)
+				ph.held = m.shellOutcome(p)
 			}
 			m.phases[p.PaneID] = ph
 		}
@@ -932,10 +868,10 @@ func (m *model) done(pane string) bool {
 	return s.Ended.After(m.seenAt(pane))
 }
 
-// shellOutcome reports the exit status of the last command that finished in
-// pane p since the user last looked at it, and whether there was one. It is
-// the shell counterpart of done: the row stays marked until the pane is
-// visited, not until the next prompt.
+// shellOutcome reports the exit status of the last command that finished
+// in pane p since the user last looked at it, or nil when there was
+// none. It is the shell counterpart of done: the row stays marked until
+// the pane is visited, not until the next prompt.
 //
 // m.seen is refreshed every tick while a pane is active, so a command run
 // and watched never leaves a mark; only one that finished while the user
@@ -946,13 +882,12 @@ func (m *model) done(pane string) bool {
 // belongs to a command this one has superseded, and the one that matters is
 // the one the pane is left sitting on. Whether anything is drawn in its
 // place while it runs is shellIndicator's call, not this function's.
-func (m *model) shellOutcome(p tmux.Pane) (status int, ok bool) {
-	running, integrated := p.ShellStatus()
-	if !integrated || running {
-		return 0, false // no OSC 133 integration, or busy right now
+func (m *model) shellOutcome(p tmux.Pane) *tmux.Exit {
+	if p.Shell() != tmux.ShellIdle {
+		return nil // no OSC 133 integration, or busy right now
 	}
-	if !p.CommandStatusOK || p.CommandEndTime == 0 {
-		return 0, false
+	if p.LastExit == nil || p.LastExit.At == 0 {
+		return nil
 	}
 	// A status on record is not proof a command ran: an integration whose
 	// precmd emits 133;D unconditionally reports one at the shell's very
@@ -963,17 +898,17 @@ func (m *model) shellOutcome(p tmux.Pane) (status int, ok bool) {
 	// another terminal's might, and only 133;C sets
 	// pane_command_start_time, so a zero there means nothing has run.
 	if p.CommandStartTime == 0 {
-		return 0, false
+		return nil
 	}
 	// tmux reports whole unix seconds, seenAt a wall-clock instant. The
 	// comparison is strict so that a command failing in a pane the user is
 	// looking at (seen is refreshed every tick, so it is at or past the
 	// truncated end time) never lights up; the price is that a failure in
 	// the very second the user left the pane is missed.
-	if !time.Unix(p.CommandEndTime, 0).After(m.seenAt(p.PaneID)) {
-		return 0, false
+	if !time.Unix(p.LastExit.At, 0).After(m.seenAt(p.PaneID)) {
+		return nil
 	}
-	return p.CommandStatus, true
+	return p.LastExit
 }
 
 // shellIndicator is the indicator for an integrated shell pane, debounced
@@ -1001,28 +936,27 @@ func (m *model) shellIndicator(ph shellPhase) string {
 	switch {
 	case ph.running && ph.drawn:
 		return indicator(state.Running)
-	case ph.heldOK:
-		return outcomeIndicator(ph.held)
+	case ph.held != nil:
+		if ph.held.Code == 0 {
+			return indicatorDone()
+		}
+		return stErr.Render("◼")
 	case ph.drawn && m.at.Sub(ph.since) < shellRunHold:
 		return indicator(state.Running)
 	}
 	return ""
 }
 
-// wants reports whether pane's agent session needs the user: it is
-// waiting on a prompt, or done and not yet looked at.
-func (m *model) wants(pane string) bool {
-	return m.snap.states[pane].Status == state.Waiting || m.done(pane)
-}
-
-// nextAttention moves the cursor to the next row that wants the user, in
-// the given direction, wrapping around.
+// nextAttention moves the cursor to the next row that wants the user - one
+// waiting on a prompt, or done and not yet looked at - in the given
+// direction, wrapping around.
 func (m *model) nextAttention(delta int) {
 	n := len(m.rows)
 	i := m.cursor
 	for range n {
 		i = (i + delta + n) % n
-		if m.wants(m.rows[i].paneID) {
+		pane := m.rows[i].paneID
+		if m.snap.states[pane].Status == state.Waiting || m.done(pane) {
 			m.cursor = i
 			m.ensureVisible()
 			return
@@ -1099,15 +1033,6 @@ func (m *model) ensureVisible() {
 	m.clampTop()
 }
 
-// rowAt maps a screen line to a selectable row index, or -1.
-func (m *model) rowAt(y int) int {
-	i := m.top + y
-	if i < 0 || i >= len(m.rows) || m.rows[i].paneID == "" {
-		return -1
-	}
-	return i
-}
-
 var (
 	stCurrent = lipgloss.NewStyle().Bold(true)
 	stProc    = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
@@ -1172,6 +1097,11 @@ func groupGlyph(i, n int) string {
 	return stDim.Render("├")
 }
 
+// statusUnknown is an agent pane kido has seen (one running claude, or
+// one running pi) but has no report for yet - kido's own display value,
+// never one an agent reports itself.
+const statusUnknown state.Status = "unknown"
+
 // indicators marks an agent pane by its status: the glyph alone says it is
 // an agent session, the same for every agent. Idle is deliberately empty -
 // a pane with nothing to say shows nothing - and field() keeps the column
@@ -1190,7 +1120,7 @@ var indicators = map[state.Status]struct {
 	state.Waiting:    {stWaiting, "◆"},
 	state.Compacting: {stCompact, "◌"},
 	state.Idle:       {},
-	state.Unknown:    {stUnknown, "?"},
+	statusUnknown:    {stUnknown, "?"},
 }
 
 // indicator is the glyph for an agent status, styled; "" for idle and for
@@ -1203,11 +1133,9 @@ func indicator(s state.Status) string {
 	return i.style.Render(i.glyph)
 }
 
-// indicatorDone is an agent idle since finishing a turn, not yet looked at;
-// indicatorFailed a shell whose last command exited nonzero, likewise not
-// yet looked at. Both are rendered on demand, for the reason above.
-func indicatorDone() string   { return stDone.Render("✓") }
-func indicatorFailed() string { return stErr.Render("◼") }
+// indicatorDone is an agent idle since finishing a turn, not yet looked
+// at, rendered on demand for the reason above.
+func indicatorDone() string { return stDone.Render("✓") }
 
 // indicatorGone marks a lingering subagent window: its process is dead and
 // its record is already gone, so field("") - the "kido knows nothing about
@@ -1217,22 +1145,18 @@ func indicatorFailed() string { return stErr.Render("◼") }
 // indicatorDone uses for a live agent's finished turn, dimmed instead of
 // green-bold: the two are the same claim, "this went well", at different
 // strengths, which is the axis every other pair in this table already uses
-// to tell live from gone (compare indicatorFailed's ◼ to a shell's own dim
-// stems). Anything that did not finish cleanly - failed, died, or a run
+// to tell live from gone (compare a shell's own failed-command ◼ to its
+// dim stems). Anything that did not finish cleanly - failed, died, or a run
 // somebody stopped before it was done, none of which is a claim of success
 // - keeps ×, and so does a window whose outcome has not landed yet: it is
 // not this function's business to guess one. Rendered on demand for the
 // same package-init reason as the rest of this table.
 func indicatorGone(l lingering) string {
-	if l.outcomeOK && l.outcome == subrun.Completed {
+	if l.outcome == subrun.Completed {
 		return stDim.Render("✓")
 	}
 	return stDim.Render("×")
 }
-
-// indicatorStalled marks a session state.Stalled reports as wedged,
-// rendered on demand for the same reason as indicatorDone.
-func indicatorStalled() string { return stStalled.Render("!") }
 
 // field is the indicator column: one glyph and one space, or two spaces
 // when there is no indicator, so every label starts at the same column
@@ -1251,16 +1175,6 @@ func field(ind string) string {
 	return ind + " "
 }
 
-// agentTitle is state.AgentTitle with the sidebar's own fallback for an
-// empty result: a row always shows something, where a name resolved for
-// addressing (list_agents, message_agent) is better left empty.
-func agentTitle(title string) string {
-	if t := state.AgentTitle(title); t != "" {
-		return t
-	}
-	return "-"
-}
-
 // agentTitleOf returns pane p's agent title and true when it is an agent
 // pane (one that reported, one running claude, or one running pi without
 // having reported); otherwise "", false.
@@ -1270,9 +1184,12 @@ func agentTitle(title string) string {
 // guess at by stripping a marker off whatever the agent painted in the
 // terminal title, and splitting on a fixed marker cannot be fooled by a
 // session name that happens to contain one. Claude Code never records a
-// Title, so its rows keep going through agentTitle(p.Title) unchanged. An
-// agent that reports no title (or hasn't reported at all yet) falls back
-// to the pane title the same way.
+// Title, so its rows keep going through state.AgentTitle(p.Title)
+// unchanged. An agent that reports no title (or hasn't reported at all
+// yet) falls back to the pane title the same way, with the sidebar's own
+// fallback for an empty result: a row always shows something, where a
+// name resolved for addressing (list_agents, message_agent) is better
+// left empty.
 func (m *model) agentTitleOf(p tmux.Pane) (string, bool) {
 	if !state.IsAgentPane(m.snap.states, m.snap.pi, p) {
 		return "", false
@@ -1280,7 +1197,10 @@ func (m *model) agentTitleOf(p tmux.Pane) (string, bool) {
 	if s, ok := m.snap.states[p.PaneID]; ok && s.Title != "" {
 		return s.Title, true
 	}
-	return agentTitle(p.Title), true
+	if t := state.AgentTitle(p.Title); t != "" {
+		return t, true
+	}
+	return "-", true
 }
 
 // interactivePane reports whether a program has taken pane p's terminal,
@@ -1321,47 +1241,31 @@ func (m *model) lingeringLabel(p tmux.Pane) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	if !p.Dead {
+	if p.DeadAt == 0 {
 		return field(indicator(state.Running)) + l.name, true
 	}
 	label := field(indicatorGone(l)) + stDim.Render(l.name)
-	if l.outcomeOK {
+	if l.outcome != "" {
 		label += "  " + stDim.Render(string(l.outcome))
 	}
 	return label, true
 }
 
-// remoteCommand is the command line the far side of an interactive ssh
-// pane is running right now, or "" when there is none to show.
-//
-// The gate is the same latch interactivePane reads: before the far side
-// has been seen marking a prompt the pane's #{pane_command_line} is the
-// local shell's own - the ssh invocation itself - which would draw the
-// destination twice and say nothing. tmux keeps the value after the
-// command ends, so an idle pane is excluded by the shell status rather
-// than by the field being empty.
-func (m *model) remoteCommand(p tmux.Pane) string {
-	if !m.sshInteractive(p) || m.interactivePane(p) {
-		return ""
-	}
-	if running, ok := p.ShellStatus(); !ok || !running {
-		return ""
-	}
-	return p.CommandLine
-}
-
-// localCommand is the command line a local (non-ssh) integrated shell is
-// running right now, or "" when there is none to show - no integration,
-// idle, or the program has taken the terminal (interactivePane). It
-// replaces #{pane_current_command} rather than qualifying it: the shell
-// reported it is authoritative where pane_current_command only infers
-// the process-group leader, and there is no host to disambiguate as
-// there is for ssh.
-func (m *model) localCommand(p tmux.Pane) string {
-	if p.CommandLine == "" || m.interactivePane(p) {
-		return ""
-	}
-	if running, ok := p.ShellStatus(); !ok || !running {
+// runningCommand is the command line pane p's integrated shell is
+// running right now, local or remote, or "" when there is none to show -
+// no integration, idle, or the program has taken the terminal
+// (interactivePane). For ssh it replaces the destination only once the
+// far side is known to be reporting (m.sshInteractive, the caller's
+// gate): before that, the pane's #{pane_command_line} is still the local
+// shell's own - the ssh invocation itself - which would draw the
+// destination twice and say nothing. For a local shell it replaces
+// #{pane_current_command} rather than qualifying it: the shell reported
+// it is authoritative where pane_current_command only infers the
+// process-group leader. tmux keeps the value after the command ends, so
+// an idle pane is excluded by the shell status rather than by the field
+// being empty.
+func (m *model) runningCommand(p tmux.Pane) string {
+	if m.interactivePane(p) || p.Shell() != tmux.ShellRunning {
 		return ""
 	}
 	return p.CommandLine
@@ -1379,10 +1283,12 @@ func (m *model) paneLabel(p tmux.Pane) string {
 		text := stProc.Render(p.CurrentCommand)
 		if sess, ok := m.snap.ssh[p.PanePID]; ok {
 			text = stProc.Render("ssh ") + sess.Host
-			if cmd := m.remoteCommand(p); cmd != "" {
-				text += stProc.Render(": ") + cmd
+			if m.sshInteractive(p) {
+				if cmd := m.runningCommand(p); cmd != "" {
+					text += stProc.Render(": ") + cmd
+				}
 			}
-		} else if cmd := m.localCommand(p); cmd != "" {
+		} else if cmd := m.runningCommand(p); cmd != "" {
 			text = stProc.Render(cmd)
 		}
 		// A shell with kido's OSC 133 integration (shell/zsh, sourced by
@@ -1391,18 +1297,18 @@ func (m *model) paneLabel(p tmux.Pane) string {
 		// without it, and a program that has taken the terminal either
 		// way, draw no glyph but keep the field, so every row in the
 		// column lines up.
-		if _, ok := p.ShellStatus(); !ok || m.interactivePane(p) {
+		if p.Shell() == tmux.ShellNone || m.interactivePane(p) {
 			return field("") + text
 		}
 		return field(m.shellIndicator(m.phases[p.PaneID])) + text
 	}
-	ind := indicator(state.Unknown) // an agent pane that has not reported
+	ind := indicator(statusUnknown) // an agent pane that has not reported
 	var activity string
 	if s, reported := m.snap.states[p.PaneID]; reported {
 		ind = indicator(s.Status)
 		activity = s.Activity
 		if state.StalledSince(s, m.snap.wake, m.at) {
-			ind = indicatorStalled()
+			ind = stStalled.Render("!")
 		}
 	}
 	if m.done(p.PaneID) {
@@ -1711,12 +1617,4 @@ func (m model) View() string {
 		b.WriteString(stDim.Render("/") + m.filter)
 	}
 	return b.String()
-}
-
-// outcomeIndicator is the glyph for a finished command's exit status.
-func outcomeIndicator(status int) string {
-	if status == 0 {
-		return indicatorDone()
-	}
-	return indicatorFailed()
 }

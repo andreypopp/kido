@@ -36,8 +36,7 @@ func sshPane(prompt, start int64, running bool, status int) tmux.Pane {
 		LastPromptTime: prompt, CommandStartTime: start, CommandRunning: running,
 	}
 	if !running && status >= 0 {
-		p.CommandStatusOK, p.CommandEndTime = true, start+1
-		p.CommandStatus = status
+		p.LastExit = &tmux.Exit{Code: status, At: start + 1}
 	}
 	return p
 }

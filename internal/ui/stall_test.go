@@ -60,7 +60,7 @@ func TestStallRedrawsOnAQuietTick(t *testing.T) {
 	stalled := func() bool {
 		for _, r := range m.rows {
 			if r.paneID == pane {
-				return strings.Contains(r.text, indicatorStalled())
+				return strings.Contains(r.text, stStalled.Render("!"))
 			}
 		}
 		t.Fatalf("no row for %s: %v", pane, m.rows)
