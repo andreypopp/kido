@@ -48,7 +48,12 @@ type from = {
   name : string; [@default ""]
   pane : string; [@default ""]
 }
-[@@deriving yojson { strict = false }]
+[@@deriving of_yojson { strict = false }]
+
+let optional key v = if String.is_empty v then [] else [ (key, `String v) ]
+
+let from_to_yojson f =
+  `Assoc ((("session", `String f.session) :: optional "name" f.name) @ optional "pane" f.pane)
 
 let no_from = { session = ""; name = ""; pane = "" }
 
@@ -62,7 +67,19 @@ type envelope = {
   run : string; [@default ""]
   output : string; [@default ""]
 }
-[@@deriving yojson { strict = false }]
+[@@deriving of_yojson { strict = false }]
+
+let envelope_to_yojson e =
+  `Assoc
+    ([
+       ("v", `Int e.v);
+       ("kind", kind_to_yojson e.kind);
+       ("id", `String e.id);
+       ("from", from_to_yojson e.from);
+     ]
+    @ optional "replyTo" e.reply_to
+    @ [ ("text", `String e.text) ]
+    @ optional "run" e.run @ optional "output" e.output)
 
 let parse raw =
   match Yojson.Safe.from_string raw with
@@ -84,9 +101,9 @@ let new_id () =
 
 type error = Unavailable of string | Refused of string | Failed of string
 
-let inbox_timeout = ref 2.0
-
 exception Timeout
+
+let describe = function Unix.Unix_error (e, _, _) -> Unix.error_message e | _ -> "timed out"
 
 let wait fd ~write deadline =
   let timeout = deadline -. Unix.gettimeofday () in
@@ -136,7 +153,7 @@ let read_all fd deadline =
   loop ();
   Buffer.contents buf
 
-let deliver ~path text =
+let deliver ?(timeout = 2.) ~path text =
   if String.is_empty path then Error (Unavailable "no socket path")
   else if String.length path > sun_path_max then
     Error
@@ -144,9 +161,10 @@ let deliver ~path text =
          (Printf.sprintf "socket path is %d bytes, over the %d-byte limit" (String.length path)
             sun_path_max))
   else
-    let deadline = Unix.gettimeofday () +. !inbox_timeout in
+    let deadline = Unix.gettimeofday () +. timeout in
     match connect path deadline with
-    | exception e -> Error (Unavailable (Printf.sprintf "%s: %s" path (Printexc.to_string e)))
+    | exception ((Timeout | Unix.Unix_error _) as e) ->
+        Error (Unavailable (Printf.sprintf "%s: %s" path (describe e)))
     | fd ->
         Fun.protect
           ~finally:(fun () -> try Unix.close fd with Unix.Unix_error _ -> ())
@@ -168,8 +186,8 @@ let deliver ~path text =
                             path))
                 | got ->
                     Error (Failed (Printf.sprintf "inbox %s: answered %S, want \"ok\"" path got)))
-            | exception e ->
-                Error (Failed (Printf.sprintf "inbox %s: %s" path (Printexc.to_string e))))
+            | exception ((Timeout | Unix.Unix_error _) as e) ->
+                Error (Failed (Printf.sprintf "inbox %s: %s" path (describe e))))
 
 let send ~id (session : State.session) env =
   if String.is_empty session.inbox then

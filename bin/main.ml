@@ -6,6 +6,102 @@ let rest = Arg.(value & pos_all string [] & info [] ~docv:"ARG")
 let str name docv doc = Arg.(value & opt string "" & info [ name ] ~docv ~doc)
 let num name docv doc = Arg.(value & opt int 0 & info [ name ] ~docv ~doc)
 let flag name doc = Arg.(value & flag & info [ name ] ~doc)
+let arg docv = Arg.(required & pos 0 (some string) None & info [] ~docv)
+let env name = Option.get_or ~default:"" (Sys.getenv_opt name)
+let stdin () = In_channel.input_all stdin
+let panes = lazy (Tmux.Exec.list_panes ())
+let cmd name doc term = Cmd.v (Cmd.info name ~doc) Term.(const (fun f -> Cli.run name f) $ term)
+
+let send name doc spec =
+  cmd name doc
+  @@ let+ spec = spec in
+     fun () ->
+       Message_agent.send ~dir:(State.dir ()) ~self:(env "TMUX_PANE") ~panes
+         ~paste:Tmux.Exec.send_prompt spec (stdin ())
+
+let message_agent =
+  send "message_agent" "Send a message to another agent, read from stdin."
+  @@ let+ reply_to = str "reply-to" "ID" "Id of an earlier ask this message answers."
+     and+ to_ = arg "TO" in
+     Message_agent.
+       {
+         kind = (if String.is_empty reply_to then Message else Reply);
+         recipient = Named to_;
+         reply_to;
+         id = "";
+       }
+
+let ask_agent =
+  send "ask_agent" "Ask another agent a question, read from stdin; its answer comes as a reply."
+  @@ let+ id = str "id" "ID" "Id to assign this envelope; a fresh one is generated if omitted."
+     and+ to_ = arg "TO" in
+     Message_agent.{ kind = Ask; recipient = Named to_; reply_to = ""; id }
+
+let notify_parent =
+  cmd "notify_parent" "Send this subagent's report, read from stdin, to its parent."
+  @@ let+ () = Term.const () in
+     fun () ->
+       Message_agent.notify_parent ~dir:(State.dir ()) ~self:(env "TMUX_PANE") ~panes
+         ~paste:Tmux.Exec.send_prompt ~parent:(env "KIDO_AGENT_PARENT_SESSION")
+         ~run:(env "KIDO_AGENT_RUN_ID") (stdin ())
+
+let list_agents =
+  cmd "list_agents" "List the agents in a tmux session."
+  @@ let+ session =
+       str "session" "ID" "tmux session id to list; defaults to the caller's own session."
+     and+ json = flag "json" "Print JSON instead of a table." in
+     fun () ->
+       List_agents.list_agents ~dir:(State.dir ()) ~threshold:(State.stall_threshold ())
+         ~self:(env "TMUX_PANE") ~panes ~session ~json
+
+let set_status =
+  cmd "set_status" "Set this agent's activity; an empty one clears it."
+  @@ let+ activity = arg "ACTIVITY" in
+     fun () -> Set_status.set_status ~dir:(State.dir ()) ~self:(env "TMUX_PANE") activity
+
+let agent_alive =
+  cmd "agent-alive" "Print whether a live process holds an agent session."
+  @@ let+ session = arg "SESSION" in
+     fun () -> Agent_alive.agent_alive ~dir:(State.dir ()) session
+
+let children_alive =
+  cmd "children-alive" "Print whether any subagent spawned by a session is still running."
+  @@ let+ session = arg "SESSION" in
+     fun () -> Agent_alive.children_alive ~dir:(State.dir ()) session
+
+let snapshot =
+  cmd "snapshot" "Print a shell script that recreates the current tmux sessions."
+  @@ let+ () = Term.const () in
+     fun () -> Snapshot.snapshot ~dir:(State.dir ())
+
+let prompt =
+  cmd "prompt" "Send a prompt, read from stdin, to the agent in the caller's window or session."
+  @@ let+ window =
+       flag "window" "Search only the caller's window, never widening to the session."
+     in
+     fun () -> Prompt.prompt ~dir:(State.dir ()) ~self:(env "TMUX_PANE") ~window (stdin ())
+
+let window_focused =
+  cmd "window-focused" "Print whether a client is looking at a window."
+  @@ let+ window = arg "WINDOW_ID" in
+     fun () -> Control.window_focused ~panes window
+
+let switch name doc f =
+  cmd name doc
+  @@ let+ next =
+       Arg.(
+         required
+         & pos 0 (some (enum [ ("next", true); ("prev", false) ])) None
+         & info [] ~docv:"next|prev")
+     and+ client = str "client" "NAME" "tmux client to switch; defaults to $TMUX_SIDE_CLIENT." in
+     fun () -> Control.switch f ~client ~side_client:(env "TMUX_SIDE_CLIENT") ~next
+
+let switch_session =
+  switch "switch-session" "Switch the client to the next or previous session."
+    Tmux.Exec.switch_session
+
+let switch_window =
+  switch "switch-window" "Switch the client to the next or previous window." Tmux.Exec.switch_window
 
 let hook =
   Cmd.v (Cmd.info "hook" ~doc:"Record a Claude Code hook event read from stdin.")
@@ -59,7 +155,27 @@ let inbox_path =
 
 let () =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
-  let cmd = Cmd.group (Cmd.info "kido") [ hook; agent_status; debug_log; inbox_path ] in
+  let cmd =
+    Cmd.group (Cmd.info "kido")
+      [
+        hook;
+        agent_status;
+        debug_log;
+        inbox_path;
+        message_agent;
+        ask_agent;
+        notify_parent;
+        list_agents;
+        set_status;
+        agent_alive;
+        children_alive;
+        snapshot;
+        prompt;
+        window_focused;
+        switch_session;
+        switch_window;
+      ]
+  in
   exit
     (match Cmd.eval_value ~catch:false cmd with
     | Ok (`Ok code) -> code

@@ -1,4 +1,5 @@
 open Kido
+open Fixture
 
 let temp () = Filename.temp_dir "kido-runs" ""
 let id s = Result.get_exn (Subrun.parse_id s)
@@ -96,6 +97,12 @@ let%expect_test "RecordOutcome writes once; a later write is refused and the fir
     (match got.result with Completed -> "completed" | _ -> "wrong");
   [%expect {| true false completed |}]
 
+let%expect_test "RecordOutcome into a run directory that is gone lost the write, not an error" =
+  let i = id "run-missing" in
+  Printf.printf "%b\n"
+    (Subrun.record_outcome ~dir:(temp ()) i { result = Died; text = ""; at = None });
+  [%expect {| false |}]
+
 let%expect_test "WriteScreen: last writer wins, unlike RecordOutcome" =
   let dir = temp () in
   let i = id "run-screen" in
@@ -156,11 +163,6 @@ let%expect_test "EffectiveOutcome: still running when alive and unrecorded" =
   Subrun.create ~dir i "x";
   Printf.printf "%b\n" (Option.is_none (Subrun.effective_outcome ~dir i ~pid:(Unix.getpid ())));
   [%expect {| true |}]
-
-let dead_pid () =
-  let pid = Unix.create_process "true" [| "true" |] Unix.stdin Unix.stdout Unix.stderr in
-  ignore (Unix.waitpid [] pid);
-  pid
 
 let%expect_test "EffectiveOutcome: Died when dead and unrecorded, never Completed" =
   let dir = temp () in

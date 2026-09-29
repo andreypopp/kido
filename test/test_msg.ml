@@ -1,21 +1,11 @@
 open Kido
 
 let discriminator_cases =
-  [
-    ("plain text", "hello there", false);
-    ("json array", {|["v","kind"]|}, false);
-    ("json scalar", "42", false);
-    ("null", "null", false);
-    ("true", "true", false);
-    ("empty string", "", false);
-    ("object missing kind", {|{"v":1,"text":"hi"}|}, false);
-    ("object missing v", {|{"kind":"message","text":"hi"}|}, false);
-    ("object with neither", {|{"text":"hi","title":"a plan"}|}, false);
-    ( "full envelope",
-      {|{"v":1,"kind":"message","id":"x","from":{"session":"s1"},"text":"hi"}|},
-      true );
-    ("v and kind only", {|{"v":1,"kind":"message"}|}, true);
-  ]
+  Yojson.Safe.from_file "../internal/msg/testdata/discriminator.json"
+  |> Yojson.Safe.Util.to_list
+  |> List.map (fun c ->
+      Yojson.Safe.Util.
+        (member "name" c |> to_string, member "raw" c |> to_string, member "ok" c |> to_bool))
 
 let%expect_test "Parse agrees with the shared v0/v1 discriminator table" =
   List.iter
@@ -50,6 +40,38 @@ let%expect_test "Parse fills every field of a full envelope" =
         env.from.pane env.text);
   [%expect {| v=1 kind=reply id=abc replyTo=xyz from=(s1,worker-2,%18) text=42 |}]
 
+let%expect_test "an envelope serializes with Go's field set: from.session always, empties omitted" =
+  let env : Msg.envelope =
+    {
+      v = Msg.v1;
+      kind = Message;
+      id = "x";
+      from = { session = ""; name = ""; pane = "%3" };
+      reply_to = "";
+      text = "";
+      run = "";
+      output = "";
+    }
+  in
+  print_endline (Yojson.Safe.to_string (Msg.envelope_to_yojson env));
+  print_endline
+    (Yojson.Safe.to_string
+       (Msg.envelope_to_yojson
+          {
+            env with
+            kind = Stream;
+            from = { session = "s"; name = "n"; pane = "" };
+            reply_to = "a";
+            text = "t";
+            run = "r";
+            output = "o";
+          }));
+  [%expect
+    {|
+    {"v":1,"kind":"message","id":"x","from":{"session":"","pane":"%3"},"text":""}
+    {"v":1,"kind":"stream","id":"x","from":{"session":"s","name":"n"},"replyTo":"a","text":"t","run":"r","output":"o"}
+    |}]
+
 let%expect_test "an unknown kind round-trips as itself" =
   print_endline (Msg.string_of_kind (Msg.kind_of_string "wat"));
   [%expect {| wat |}]
@@ -59,61 +81,8 @@ let%expect_test "NewID is non-empty and unique" =
   Printf.printf "%b %b\n" (String.length a > 0) (not (String.equal a b));
   [%expect {| true true |}]
 
-(* A fake agent inbox: accepts one connection at a time, reads it to EOF,
-   answers with [reply] (empty meaning "never answer"), and records what
-   arrived. Stands in for the socket pi's extension listens on. *)
-let start_inbox ~reply =
-  let dir = Filename.temp_dir "kido-inbox" "" in
-  let path = Filename.concat dir "inbox.sock" in
-  let listener = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
-  Unix.bind listener (Unix.ADDR_UNIX path);
-  Unix.listen listener 4;
-  let received = ref [] in
-  let mu = Mutex.create () in
-  let serve conn =
-    let buf = Buffer.create 256 in
-    let chunk = Bytes.create 4096 in
-    let rec read_loop () =
-      match Unix.read conn chunk 0 4096 with
-      | 0 -> ()
-      | n ->
-          Buffer.add_subbytes buf chunk 0 n;
-          read_loop ()
-      | exception _ -> ()
-    in
-    read_loop ();
-    Mutex.lock mu;
-    received := Buffer.contents buf :: !received;
-    Mutex.unlock mu;
-    if String.is_empty reply then
-      ignore
-        (Thread.create
-           (fun () ->
-             Thread.delay 10.;
-             try Unix.close conn with _ -> ())
-           ())
-    else begin
-      (try ignore (Unix.write_substring conn reply 0 (String.length reply)) with _ -> ());
-      try Unix.close conn with _ -> ()
-    end
-  in
-  let rec accept_loop () =
-    match Unix.accept listener with
-    | conn, _ ->
-        serve conn;
-        accept_loop ()
-    | exception _ -> ()
-  in
-  ignore (Thread.create accept_loop ());
-  ( path,
-    fun () ->
-      Mutex.lock mu;
-      let r = List.rev !received in
-      Mutex.unlock mu;
-      r )
-
 let%expect_test "Deliver round-trips a message byte for byte over a real unix socket" =
-  let path, received = start_inbox ~reply:"ok\n" in
+  let path, received = Fixture.start_inbox ~reply:"ok\n" in
   List.iter
     (fun text ->
       match Msg.deliver ~path text with
@@ -131,7 +100,7 @@ let%expect_test "Deliver round-trips a message byte for byte over a real unix so
     |}]
 
 let%expect_test "a refused reply is Refused, never Unavailable" =
-  let path, _ = start_inbox ~reply:"refused\n" in
+  let path, _ = Fixture.start_inbox ~reply:"refused\n" in
   (match Msg.deliver ~path "hi" with
   | Error (Refused _) -> print_endline "refused, as expected"
   | Error (Unavailable _) -> print_endline "WRONG: unavailable"
@@ -140,7 +109,7 @@ let%expect_test "a refused reply is Refused, never Unavailable" =
   [%expect {| refused, as expected |}]
 
 let%expect_test "an unrecognised reply is Failed, never Unavailable" =
-  let path, _ = start_inbox ~reply:"nope\n" in
+  let path, _ = Fixture.start_inbox ~reply:"nope\n" in
   (match Msg.deliver ~path "hi" with
   | Error (Failed _) -> print_endline "failed, as expected"
   | Error (Unavailable _) -> print_endline "WRONG: unavailable"
@@ -151,20 +120,20 @@ let%expect_test "an unrecognised reply is Failed, never Unavailable" =
 let%expect_test
     "a peer that never answers times out as Failed, not Unavailable, and the message was already \
      sent" =
-  let saved = !Msg.inbox_timeout in
-  Msg.inbox_timeout := 0.2;
-  let path, received = start_inbox ~reply:"" in
+  let path, received = Fixture.start_inbox ~reply:"" in
   let start = Unix.gettimeofday () in
-  (match Msg.deliver ~path "hi" with
-  | Error (Failed _) -> print_endline "failed, as expected"
+  (match Msg.deliver ~timeout:0.2 ~path "hi" with
+  | Error (Failed m) ->
+      print_endline "failed, as expected";
+      print_endline (if String.mem ~sub:": timed out" m then "timed out" else m)
   | Error (Unavailable _) -> print_endline "WRONG: unavailable"
   | Error (Refused _) -> print_endline "WRONG: refused"
   | Ok () -> print_endline "WRONG: ok");
   Printf.printf "under budget: %b\n" Float.(Unix.gettimeofday () -. start < 1.0);
-  Msg.inbox_timeout := saved;
   print_endline (String.concat ";" (received ()));
   [%expect {|
     failed, as expected
+    timed out
     under budget: true
     hi
     |}]

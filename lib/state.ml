@@ -16,12 +16,8 @@ let status_of_yojson = function
   | _ -> Error "status"
 
 let agent_of_string = function "claude" -> Claude | "pi" -> Pi | s -> Other s
-
-let agent_to_yojson = function
-  | Claude -> `String "claude"
-  | Pi -> `String "pi"
-  | Other s -> `String s
-
+let string_of_agent = function Claude -> "claude" | Pi -> "pi" | Other s -> s
+let agent_to_yojson a = `String (string_of_agent a)
 let agent_of_yojson = function `String s -> Ok (agent_of_string s) | _ -> Error "agent"
 
 type parent = { session : string; pid : int [@default 0] } [@@deriving yojson]

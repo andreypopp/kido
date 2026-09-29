@@ -38,7 +38,7 @@ func (h *harness) newSessionSpaced(name string) {
 func (h *harness) runSwitchSession(dir string) {
 	h.t.Helper()
 	tmuxEnv := h.in("display-message", "-p", "#{socket_path},#{pid},0")
-	cmd := exec.Command(kidoBin, "switch-session", dir, "-client", h.client)
+	cmd := exec.Command(kidoBin, "switch-session", dir, "--client", h.client)
 	cmd.Env = cleanEnv("TMUX=" + tmuxEnv)
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
@@ -79,10 +79,10 @@ func TestSwitchSessionOrder(t *testing.T) {
 }
 
 // The actual key binding documented in tmux/kido-tmux.conf and the
-// README: bind-key -n ... run-shell "kido switch-session next -client
+// README: bind-key -n ... run-shell "kido switch-session next --client
 // '#{client_name}'". Proves #{client_name} expands to the real client
 // name when run-shell fires from a key binding, not just when the test
-// drives kido directly with -client.
+// drives kido directly with --client.
 func TestSwitchSessionBinding(t *testing.T) {
 	t.Parallel()
 	h := start(t, "a")

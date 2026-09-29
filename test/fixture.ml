@@ -1,0 +1,104 @@
+open Kido
+
+let dead_pid () =
+  let pid = Unix.create_process "true" [| "true" |] Unix.stdin Unix.stdout Unix.stderr in
+  ignore (Unix.waitpid [] pid);
+  pid
+
+let session ?(agent = State.Pi) ?(pane = "%1") ?(pid = Unix.getpid ()) ?(ts = 1_700_000_000.)
+    ?(background = false) ?(tool_pending = false) ?(title = "") ?(inbox = "") ?parent ?(depth = 0)
+    status : State.session =
+  {
+    agent;
+    pane;
+    pid;
+    status;
+    ts;
+    title;
+    inbox;
+    ended = None;
+    background;
+    tool_pending;
+    activity = "";
+    parent = Option.map (fun session : State.parent -> { session; pid = 0 }) parent;
+    depth;
+    model = "";
+  }
+
+let pane ?(session = "a") ?(created = 100.) ?(session_id = "$0") ?(index = 0) ?(window = "@1")
+    ?(active = false) ?(attached = false) ?(running = false) ?start ?prompt ?run ?(pid = 0)
+    ?(cmd = "") ?(cwd = "") ?(title = "") id : Tmux.Pane.t =
+  {
+    session_name = session;
+    session_id;
+    session_created = created;
+    window_index = index;
+    window_id = window;
+    window_name = "";
+    window_layout = "";
+    pane_id = id;
+    active;
+    pane_pid = pid;
+    current_command = cmd;
+    current_path = cwd;
+    alternate_on = false;
+    command_running = running;
+    command_start = start;
+    last_prompt = prompt;
+    last_exit = None;
+    command_line = "";
+    dead_at = None;
+    run;
+    session_attached = attached;
+    title;
+  }
+
+let start_inbox ~reply =
+  let dir = Filename.temp_dir "kido-inbox" "" in
+  let path = Filename.concat dir "inbox.sock" in
+  let listener = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+  Unix.bind listener (Unix.ADDR_UNIX path);
+  Unix.listen listener 4;
+  let received = ref [] in
+  let mu = Mutex.create () in
+  let serve conn =
+    let buf = Buffer.create 256 in
+    let chunk = Bytes.create 4096 in
+    let rec read_loop () =
+      match Unix.read conn chunk 0 4096 with
+      | 0 -> ()
+      | n ->
+          Buffer.add_subbytes buf chunk 0 n;
+          read_loop ()
+      | exception _ -> ()
+    in
+    read_loop ();
+    Mutex.lock mu;
+    received := Buffer.contents buf :: !received;
+    Mutex.unlock mu;
+    if String.is_empty reply then
+      ignore
+        (Thread.create
+           (fun () ->
+             Thread.delay 10.;
+             try Unix.close conn with _ -> ())
+           ())
+    else begin
+      (try ignore (Unix.write_substring conn reply 0 (String.length reply)) with _ -> ());
+      try Unix.close conn with _ -> ()
+    end
+  in
+  let rec accept_loop () =
+    match Unix.accept listener with
+    | conn, _ ->
+        serve conn;
+        accept_loop ()
+    | exception _ -> ()
+  in
+  ignore (Thread.create accept_loop ());
+  ( path,
+    fun () ->
+      Mutex.lock mu;
+      let r = List.rev !received in
+      Mutex.unlock mu;
+      r )

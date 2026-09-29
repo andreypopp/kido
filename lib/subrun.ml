@@ -135,7 +135,7 @@ let record_outcome ~dir id o =
         ~finally:(fun () -> Unix.close fd)
         (fun () -> ignore (Unix.write_substring fd data 0 (String.length data)));
       true
-  | exception Unix.Unix_error (Unix.EEXIST, _, _) -> false
+  | exception Unix.Unix_error _ -> false
 
 let write_screen ~dir id data = write_atomic (screen_path ~dir id) data
 let read_screen ~dir id = Fs.read (screen_path ~dir id)

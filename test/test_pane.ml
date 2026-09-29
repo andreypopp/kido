@@ -1,3 +1,4 @@
+open Fixture
 open Tmux
 
 let opt f = Option.map_or ~default:"-" f
@@ -132,33 +133,6 @@ let%expect_test
     work $1 created=1700000000 win=2 @7 win layout %3 active=false pid=4242 cmd=zsh cwd=/tmp alt=true running=false start=- prompt=1700000050 exit=- line="" dead=- run=- attached=false title="zsh"
     work $1 created=1700000000 win=2 @7 kid layout %3 active=false pid=4242 cmd= cwd=/tmp alt=false running=false start=- prompt=- exit=- line="" dead=1700000200 run=run-abc attached=true title="kid\031more"
     |}]
-
-let pane ?(session = "a") ?(created = 100.) ?(session_id = "$0") ?(window = "@1") ?(active = false)
-    ?(attached = false) ?(running = false) ?start ?prompt ?run id : Pane.t =
-  {
-    session_name = session;
-    session_id;
-    session_created = created;
-    window_index = 0;
-    window_id = window;
-    window_name = "";
-    window_layout = "";
-    pane_id = id;
-    active;
-    pane_pid = 0;
-    current_command = "";
-    current_path = "";
-    alternate_on = false;
-    command_running = running;
-    command_start = start;
-    last_prompt = prompt;
-    last_exit = None;
-    command_line = "";
-    dead_at = None;
-    run;
-    session_attached = attached;
-    title = "";
-  }
 
 let%expect_test "shell: integration, idle, running, the stuck flag healed, a tie read as running" =
   List.iter

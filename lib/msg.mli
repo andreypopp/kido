@@ -21,19 +21,10 @@ type envelope = {
 [@@deriving yojson]
 
 val parse : string -> envelope option
-(** [parse raw] is [Some env] when [raw] is a JSON object carrying both "v" and "kind"; anything
-    else, including a JSON object missing either key, is v0 raw prompt text. *)
-
 val new_id : unit -> string
 
-(** An outcome a caller branches on: [Unavailable] is the only case a send-keys paste may fall back
-    on, because nothing has been sent yet. [Refused] and [Failed] mean the message may already have
-    arrived. *)
 type error = Unavailable of string | Refused of string | Failed of string
 
-val inbox_timeout : float ref
-(** Bounds the whole exchange, connect included. A ref so a test can shorten it. *)
-
-val deliver : path:string -> string -> (unit, error) result
+val deliver : ?timeout:float -> path:string -> string -> (unit, error) result
 val send : id:string -> State.session -> envelope -> (unit, error) result
 val notify : dir:string -> parent_session:string -> from:from -> string -> (unit, error) result

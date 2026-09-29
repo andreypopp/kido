@@ -1,28 +1,5 @@
 open Kido
-
-let dead_pid () =
-  let pid = Unix.create_process "true" [| "true" |] Unix.stdin Unix.stdout Unix.stderr in
-  ignore (Unix.waitpid [] pid);
-  pid
-
-let session ?(agent = State.Pi) ?(pane = "%1") ?(pid = Unix.getpid ()) ?(ts = 1_700_000_000.)
-    ?(background = false) ?(tool_pending = false) status : State.session =
-  {
-    agent;
-    pane;
-    pid;
-    status;
-    ts;
-    title = "";
-    inbox = "";
-    ended = None;
-    background;
-    tool_pending;
-    activity = "";
-    parent = None;
-    depth = 0;
-    model = "";
-  }
+open Fixture
 
 let write ~dir id s =
   Fs.write (Filename.concat dir (id ^ ".json")) (Yojson.Safe.to_string (State.session_to_yojson s))

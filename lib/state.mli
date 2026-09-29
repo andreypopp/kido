@@ -1,5 +1,5 @@
-type status = Running | Waiting | Compacting | Idle
-type agent = Claude | Pi | Other of string
+type status = Running | Waiting | Compacting | Idle [@@deriving yojson]
+type agent = Claude | Pi | Other of string [@@deriving yojson]
 type parent = { session : string; pid : int }
 
 type session = {
@@ -24,6 +24,7 @@ module Panes : Map.S with type key = string
 
 val statuses : (string * status) list
 val string_of_status : status -> string
+val string_of_agent : agent -> string
 val agent_of_string : string -> agent
 val dir : unit -> string
 val alive : int -> bool
