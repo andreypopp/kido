@@ -105,6 +105,11 @@ let by_pane sessions =
         m)
     Panes.empty sessions
 
+let is_agent_pane states ~pi (p : Tmux.Pane.t) =
+  Panes.mem p.pane_id states
+  || String.equal p.current_command "claude"
+  || Procs.Int_set.mem p.pane_pid pi
+
 let held ~dir id pid =
   match get ~dir id with
   | Some prev when prev.pid <> pid && alive prev.pid -> Error prev

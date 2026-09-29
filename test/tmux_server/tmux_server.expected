@@ -1,0 +1,19 @@
+ok [hello]
+ok [it's work]
+error parse error: unknown command: bogus
+pane work @0 %0
+a fresh connection notifies: true
+a quiet wait runs to its deadline: true
+a new window notifies: true
+a split in an unfollowed session notifies: false
+control clients after follow: [1 other]
+a split in the followed session notifies: true
+ok []
+error tmux -C display-message -p stuck: timed out
+error tmux: control connection is down
+panes through the fallback: 5
+ok [back]
+control clients after the redial: [1 other]
+error tmux: control connection is down
+fallback without a server: failed
+error tmux: control connection is down

@@ -1,0 +1,238 @@
+open Tmux
+
+let opt f = Option.map_or ~default:"-" f
+let time = opt (Printf.sprintf "%.0f")
+
+let show (p : Pane.t) =
+  Printf.printf
+    "%s %s created=%.0f win=%d %s %s %s %s active=%b pid=%d cmd=%s cwd=%s alt=%b running=%b \
+     start=%s prompt=%s exit=%s line=%S dead=%s run=%s attached=%b title=%S\n"
+    p.session_name p.session_id p.session_created p.window_index p.window_id p.window_name
+    p.window_layout p.pane_id p.active p.pane_pid p.current_command p.current_path p.alternate_on
+    p.command_running (time p.command_start) (time p.last_prompt)
+    (opt (fun (e : Pane.exit) -> Printf.sprintf "%d@%.0f" e.code e.at) p.last_exit)
+    p.command_line (time p.dead_at) (opt Fun.id p.run) p.session_attached p.title
+
+let line = String.concat Pane.sep
+
+let%expect_test "the format: title last, no ticking duration, field count pinned" =
+  let tokens = String.split ~by:Pane.sep Pane.format in
+  Printf.printf "last=%s duration=%b fields=%d const=%d\n"
+    (List.hd (List.rev tokens))
+    (String.mem ~sub:"pane_command_duration" Pane.format)
+    (List.length tokens) Pane.fields;
+  [%expect {| last=#{pane_title} duration=false fields=24 const=24 |}]
+
+let%expect_test "a fixture generated from the format parses into every field" =
+  let values =
+    List.mapi
+      (fun i _ ->
+        match i with
+        | 8 | 12 | 13 | 19 | 21 -> "1"
+        | 16 -> "16"
+        | 2 | 3 | 9 | 14 | 15 | 17 | 20 -> string_of_int (1_000_000 + i)
+        | _ -> Printf.sprintf "str%d" i)
+      (String.split ~by:Pane.sep Pane.format)
+  in
+  List.iter show (Pane.parse [ line values ]);
+  [%expect
+    {| str0 str1 created=1000002 win=1000003 str4 str5 str6 str7 active=true pid=1000009 cmd=str10 cwd=str11 alt=true running=true start=1000014 prompt=1000015 exit=16@1000017 line="str18" dead=1000020 run=str22 attached=true title="str23" |}]
+
+let%expect_test
+    "parse: a live pane, a junk line, an empty status, a dead run, a title holding the separator" =
+  List.iter show
+    (Pane.parse
+       [
+         line
+           [
+             "work";
+             "$1";
+             "1700000000";
+             "2";
+             "@7";
+             "win";
+             "layout";
+             "%3";
+             "1";
+             "4242";
+             "claude";
+             "/tmp";
+             "0";
+             "1";
+             "1700000100";
+             "1700000050";
+             "2";
+             "1700000090";
+             "make test";
+             "0";
+             "";
+             "1";
+             "";
+             "✳ Title";
+           ];
+         "junk";
+         line
+           [
+             "work";
+             "$1";
+             "1700000000";
+             "2";
+             "@7";
+             "win";
+             "layout";
+             "%3";
+             "0";
+             "4242";
+             "zsh";
+             "/tmp";
+             "1";
+             "0";
+             "";
+             "1700000050";
+             "";
+             "";
+             "";
+             "0";
+             "";
+             "0";
+             "";
+             "zsh";
+           ];
+         line
+           [
+             "work";
+             "$1";
+             "1700000000";
+             "2";
+             "@7";
+             "kid";
+             "layout";
+             "%3";
+             "0";
+             "4242";
+             "";
+             "/tmp";
+             "0";
+             "0";
+             "";
+             "";
+             "";
+             "";
+             "";
+             "1";
+             "1700000200";
+             "1";
+             "run-abc";
+             "kid\x1fmore";
+           ];
+       ]);
+  [%expect
+    {|
+    work $1 created=1700000000 win=2 @7 win layout %3 active=true pid=4242 cmd=claude cwd=/tmp alt=false running=true start=1700000100 prompt=1700000050 exit=2@1700000090 line="make test" dead=- run=- attached=true title="\226\156\179 Title"
+    work $1 created=1700000000 win=2 @7 win layout %3 active=false pid=4242 cmd=zsh cwd=/tmp alt=true running=false start=- prompt=1700000050 exit=- line="" dead=- run=- attached=false title="zsh"
+    work $1 created=1700000000 win=2 @7 kid layout %3 active=false pid=4242 cmd= cwd=/tmp alt=false running=false start=- prompt=- exit=- line="" dead=1700000200 run=run-abc attached=true title="kid\031more"
+    |}]
+
+let pane ?(session = "a") ?(created = 100.) ?(session_id = "$0") ?(window = "@1") ?(active = false)
+    ?(attached = false) ?(running = false) ?start ?prompt ?run id : Pane.t =
+  {
+    session_name = session;
+    session_id;
+    session_created = created;
+    window_index = 0;
+    window_id = window;
+    window_name = "";
+    window_layout = "";
+    pane_id = id;
+    active;
+    pane_pid = 0;
+    current_command = "";
+    current_path = "";
+    alternate_on = false;
+    command_running = running;
+    command_start = start;
+    last_prompt = prompt;
+    last_exit = None;
+    command_line = "";
+    dead_at = None;
+    run;
+    session_attached = attached;
+    title = "";
+  }
+
+let%expect_test "shell: integration, idle, running, the stuck flag healed, a tie read as running" =
+  List.iter
+    (fun (name, p) ->
+      Printf.printf "%s: %s\n" name
+        (match Pane.shell p with Unintegrated -> "none" | Idle -> "idle" | Running -> "running"))
+    [
+      ("no integration", pane "%1");
+      ("no integration, stale running flag", pane ~running:true ~start:100. "%1");
+      ("idle at the prompt", pane ~prompt:200. ~start:100. "%1");
+      ("command running", pane ~running:true ~start:300. ~prompt:200. "%1");
+      ( "stuck C without D, healed by the next prompt",
+        pane ~running:true ~start:300. ~prompt:400. "%1" );
+      ("command started in the prompt's second", pane ~running:true ~start:300. ~prompt:300. "%1");
+    ];
+  [%expect
+    {|
+    no integration: none
+    no integration, stale running flag: none
+    idle at the prompt: idle
+    command running: running
+    stuck C without D, healed by the next prompt: idle
+    command started in the prompt's second: running
+    |}]
+
+let show_sessions panes =
+  List.iter
+    (fun (s : Pane.session) ->
+      Printf.printf "%s %s:" s.name s.id;
+      List.iter
+        (fun w ->
+          Printf.printf " %s[%s]" (List.hd w).Pane.window_id
+            (String.concat " " (List.map (fun (p : Pane.t) -> p.pane_id) w)))
+        s.windows;
+      print_newline ())
+    (Pane.order_sessions panes)
+
+let%expect_test "order_sessions: oldest session first, windows in list order, panes oldest first" =
+  show_sessions
+    [
+      pane ~session:"b" ~session_id:"$2" ~created:200. ~window:"@3" "%1";
+      pane ~session:"b" ~session_id:"$2" ~created:200. ~window:"@4" "%2";
+      pane ~session:"a" ~window:"@1" "%3";
+      pane ~session:"a" ~window:"@1" "%4";
+      pane ~session:"a" ~window:"@2" "%5";
+      pane ~session:"c" ~session_id:"$3" ~created:100. ~window:"@5" "%10";
+      pane ~session:"c" ~session_id:"$3" ~created:100. ~window:"@5" "%9";
+    ];
+  [%expect {|
+    a $0: @1[%3 %4] @2[%5]
+    c $3: @5[%9 %10]
+    b $2: @3[%1] @4[%2]
+    |}]
+
+let focus_panes =
+  [
+    pane ~session_id:"$0" ~window:"@1" ~active:true ~attached:true "%1";
+    pane ~session_id:"$0" ~window:"@2" ~attached:true "%2";
+    pane ~session_id:"$1" ~window:"@3" ~active:true "%3";
+    pane ~session_id:"$1" ~window:"@3" ~run:"run-1" "%4";
+  ]
+
+let%expect_test "focus, last window, last pane, run pane" =
+  List.iter
+    (fun w ->
+      Printf.printf "%s: focused=%b last_window=%b last_pane=%b run_pane=%s\n" w
+        (Pane.window_focused focus_panes w)
+        (Pane.last_window focus_panes w) (Pane.last_pane focus_panes w)
+        (Option.map_or ~default:"-" (fun (p : Pane.t) -> p.pane_id) (Pane.run_pane focus_panes w)))
+    [ "@1"; "@2"; "@3"; "@nonexistent" ];
+  [%expect
+    {|
+    @1: focused=true last_window=false last_pane=true run_pane=-
+    @2: focused=false last_window=false last_pane=true run_pane=-
+    @3: focused=false last_window=true last_pane=false run_pane=%4
+    @nonexistent: focused=false last_window=false last_pane=true run_pane=-
+    |}]

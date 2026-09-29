@@ -2,6 +2,6 @@
  (name kido)
  (flags
   (:standard -open Containers))
- (libraries containers unix yojson mtime mtime.clock)
+ (libraries containers unix yojson mtime mtime.clock tmux)
  (preprocess
   (pps ppx_deriving_yojson)))

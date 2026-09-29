@@ -2,7 +2,7 @@
  (name kido_test)
  (flags
   (:standard -open Containers))
- (libraries kido containers unix yojson mtime)
+ (libraries kido tmux containers unix yojson mtime)
  (inline_tests)
  (preprocess
   (pps ppx_expect)))

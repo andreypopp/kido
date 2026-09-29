@@ -31,6 +31,7 @@ val get : dir:string -> string -> session option
 val read_all : dir:string -> (string * session) list
 val load_live : dir:string -> (string * session) list
 val by_pane : (string * session) list -> (string * session) Panes.t
+val is_agent_pane : (string * session) Panes.t -> pi:Procs.Int_set.t -> Tmux.Pane.t -> bool
 val record : dir:string -> string -> session -> (unit, session) result
 val remove : dir:string -> string -> pid:int -> (unit, session) result
 val held_message : string -> session -> string

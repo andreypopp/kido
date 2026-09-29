@@ -220,3 +220,48 @@ let%expect_test "agent_title" =
     [Ёлка]
     []
     |}]
+
+let%expect_test "is_agent_pane: reported, running claude, a pi in the tree, a plain shell" =
+  let states = State.by_pane [ ("pi-1", session ~pane:"%2" Running) ] in
+  let pane id pid cmd : Tmux.Pane.t =
+    {
+      session_name = "";
+      session_id = "";
+      session_created = 0.;
+      window_index = 0;
+      window_id = "";
+      window_name = "";
+      window_layout = "";
+      pane_id = id;
+      active = false;
+      pane_pid = pid;
+      current_command = cmd;
+      current_path = "";
+      alternate_on = false;
+      command_running = false;
+      command_start = None;
+      last_prompt = None;
+      last_exit = None;
+      command_line = "";
+      dead_at = None;
+      run = None;
+      session_attached = false;
+      title = "";
+    }
+  in
+  let pi = Procs.Int_set.of_list [ 12 ] in
+  List.iter
+    (fun (name, pi, p) -> Printf.printf "%s: %b\n" name (State.is_agent_pane states ~pi p))
+    [
+      ("reported", Procs.Int_set.empty, pane "%2" 10 "node");
+      ("claude command", Procs.Int_set.empty, pane "%9" 11 "claude");
+      ("pi in the tree", pi, pane "%9" 12 "node");
+      ("plain shell", pi, pane "%9" 13 "bash");
+    ];
+  [%expect
+    {|
+    reported: true
+    claude command: true
+    pi in the tree: true
+    plain shell: false
+    |}]
