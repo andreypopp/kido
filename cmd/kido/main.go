@@ -428,7 +428,7 @@ func agentStatusUsage() string {
 // agent dies. Every report is a whole fresh state.Session: nothing is
 // carried forward from the previous record, so a caller that wants a
 // field to persist sends it again on every call (docs/design.md,
-// "Reporting, and what is carried forward").
+// "Every report is whole").
 func agentStatus(args []string) error {
 	fs := flag.NewFlagSet("agent-status", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)

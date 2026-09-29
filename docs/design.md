@@ -220,7 +220,7 @@ spawn another process on top of those already waiting. Overlapping
 readings cannot corrupt a verdict - each is independently trustworthy -
 they are a pile-up on the machine least able to afford one.
 
-## Reporting, and what is carried forward
+## Every report is whole
 
 Every report is whole; nothing is carried forward. `kido agent-status`
 builds a fresh `state.Session` straight from its arguments on every call,

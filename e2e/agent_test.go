@@ -64,10 +64,7 @@ func TestPiPaneLooksLikeAClaudePane(t *testing.T) {
 // what the row shows, not the session name and cwd basename kido would
 // otherwise recover by stripping pi's "π - " marker off the pane title:
 // splitting on "-" would be wrong (a session name can itself contain " -
-// "), and the extension already sends the exact name. It also checks that
-// a report with no --title (an agent reporting a status change without
-// repeating an unchanged title, or coalescing it away) keeps the title
-// already recorded rather than blanking the row.
+// "), and the extension already sends the exact name.
 func TestPiReportedTitleWinsOverPaneTitle(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -79,13 +76,6 @@ func TestPiReportedTitleWinsOverPaneTitle(t *testing.T) {
 	h.waitGlyph("deploy", "")
 	if got := h.rowFor("deploy"); got != "╶  deploy" {
 		t.Fatalf("row = %q, want the reported title alone, not the pane title", got)
-	}
-
-	// A later report with no --title keeps the title already recorded.
-	h.agentStatus("pi-3", pane, "pi", "running")
-	h.waitGlyph("deploy", "◼")
-	if got := h.rowFor("deploy"); got != "╶◼ deploy" {
-		t.Fatalf("row = %q, want the earlier reported title kept", got)
 	}
 }
 
