@@ -1,0 +1,8 @@
+(lang dune 3.21)
+
+(pkg enabled)
+
+; the default, enabled-except-user-rules, leaves every dune.lock package
+; out of the shared cache: a clean _build rebuilds the compiler and all
+; 48 packages (~140s here) instead of restoring them (~10s)
+(cache enabled)

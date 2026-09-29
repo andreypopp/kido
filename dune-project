@@ -2,10 +2,32 @@
 
 (name kido)
 
-(generate_opam_files true)
-
 (source
  (github andreypopp/kido))
+
+(pin
+ (url
+  "git+https://github.com/invariant-hq/mosaic#0ef02a5690365f8f7518c54755287f905814529f")
+ (package
+  (name mosaic)))
+
+(pin
+ (url
+  "git+https://github.com/invariant-hq/mosaic#0ef02a5690365f8f7518c54755287f905814529f")
+ (package
+  (name matrix)))
+
+(pin
+ (url
+  "git+https://github.com/invariant-hq/mosaic#0ef02a5690365f8f7518c54755287f905814529f")
+ (package
+  (name toffee)))
+
+(pin
+ (url
+  "git+https://github.com/invariant-hq/mosaic#0ef02a5690365f8f7518c54755287f905814529f")
+ (package
+  (name tree-sitter)))
 
 (package
  (name kido)

@@ -37,26 +37,40 @@ ENV LC_ALL=C.UTF-8
 RUN sed -i 's|^  PATH="|  PATH="${PATH:+$PATH:}|' /etc/profile \
 	&& grep -q 'PATH:+' /etc/profile
 
-# The switch is built as root and only read at run time: ci-like.sh runs
-# as the repo's owner, a uid not known at build time. kido.opam brings the
-# Mosaic pin-depends; ci-like.sh tags the image with its digest too.
-ENV OPAMROOT=/opt/opam OPAMYES=1 OPAMCONFIRMLEVEL=unsafe-yes
-RUN curl -fsSL https://opam.ocaml.org/install.sh | sh -s -- --download-only \
-	&& install -m 0755 opam-* /usr/local/bin/opam && rm opam-* \
-	&& opam init --bare --disable-sandboxing --no-setup \
-	&& opam switch create default 5.5.1
-COPY kido.opam /tmp/kido-deps/kido.opam
-RUN opam install --deps-only --with-test /tmp/kido-deps \
-	&& opam clean -a -c -s --logs && rm -rf /tmp/kido-deps && chmod -R a+rX /opt/opam
-ENV OPAM_SWITCH_PREFIX=/opt/opam/default
-ENV CAML_LD_LIBRARY_PATH=/opt/opam/default/lib/stublibs:/opt/opam/default/lib/ocaml/stublibs:/opt/opam/default/lib/ocaml
-ENV PATH=/opt/opam/default/bin:$PATH
+# dune is built from its release tarball with Debian's OCaml rather than
+# taken from the binary distribution, which ships no aarch64 Linux build
+# and podman on Apple silicon runs an arm64 VM; dune's own bootstrap needs
+# only an OCaml >= 4.08. Debian's dune is too old for package management.
+ARG DUNE_VERSION=3.24.2
+RUN apt-get update && apt-get install -y --no-install-recommends ocaml \
+	&& curl -fsSL "https://github.com/ocaml/dune/releases/download/$DUNE_VERSION/dune-$DUNE_VERSION.tbz" | tar xj -C /tmp \
+	&& make -C "/tmp/dune-$DUNE_VERSION" release \
+	&& make -C "/tmp/dune-$DUNE_VERSION" PREFIX=/usr/local install \
+	&& rm -rf "/tmp/dune-$DUNE_VERSION" && apt-get purge -y ocaml && apt-get autoremove -y \
+	&& rm -rf /var/lib/apt/lists/* && dune --version
 
-# dune's build directory lives outside the bind-mounted checkout, so a
-# Linux build never overwrites the host's _build.
-ENV DUNE_BUILD_DIR=/dune-build
+# The dependencies are built as root at image build time and only read at
+# run time: ci-like.sh runs as the repo's owner, a uid not known here. A
+# project root with just dune-project, dune-workspace and dune.lock is
+# enough for the @pkg-install alias; what it builds survives in dune's
+# shared cache (dune-workspace enables it for lock packages too), from
+# which the run-time build restores every package in seconds. Copies, not
+# hardlinks: the cache is root's, the build dir the repo owner's.
+ENV DUNE_CACHE_ROOT=/dune-cache
+ENV DUNE_CACHE_STORAGE_MODE=copy
+ENV XDG_CACHE_HOME=/dune-cache/xdg
+COPY dune-project dune-workspace /tmp/kido-deps/
+COPY dune.lock /tmp/kido-deps/dune.lock
+RUN cd /tmp/kido-deps && dune build @pkg-install \
+	&& rm -rf /tmp/kido-deps && chmod -R a+rwX /dune-cache
+
+# dune's build directory is a sibling of the host's _build inside the
+# bind-mounted checkout, so a Linux build never overwrites it. Relative on
+# purpose: dune 3.24.2's package management dies with "Unexpected external
+# path" on an absolute DUNE_BUILD_DIR.
+ENV DUNE_BUILD_DIR=_build-ci-like
 ENV GOCACHE=/gocache
 ENV GOMODCACHE=/go/pkg/mod
-RUN mkdir -p /dune-build /gocache /go/pkg/mod /home/ci && chmod 0777 /dune-build /gocache /go/pkg/mod /home/ci
+RUN mkdir -p /gocache /go/pkg/mod /home/ci && chmod 0777 /gocache /go/pkg/mod /home/ci
 
 WORKDIR /repo

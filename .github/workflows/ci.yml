@@ -22,17 +22,17 @@ jobs:
         with:
           submodules: true
 
-      # setup-ocaml caches the opam switch itself, keyed on the compiler
-      # and the opam files; `opam install .` reads kido.opam's pin-depends,
-      # which is where Mosaic comes from.
-      - name: Set up OCaml
-        uses: ocaml/setup-ocaml@v3
+      # The dune binary distribution, pinned to the release the README
+      # installs; there is no opam. `build-deps` builds dune.lock into
+      # _build (the compiler included) and the action caches dune's shared
+      # cache and _build across runs, so a lock that did not change costs a
+      # restore, not a compiler build. Mosaic comes from the pins in
+      # dune-project.
+      - name: Set up dune
+        uses: ocaml-dune/setup-dune@v2
         with:
-          ocaml-compiler: 5.5.1
-          dune-cache: true
-
-      - name: Install OCaml dependencies
-        run: opam install . --deps-only --with-test --yes
+          version: 3.24.2
+          steps: install-dune build-deps
 
       # Go only drives the e2e suite, which stays in Go.
       - name: Set up Go
@@ -92,13 +92,13 @@ jobs:
           node-version: '24'
 
       - name: Build
-        run: opam exec -- dune build
+        run: dune build
 
       - name: Unit tests
-        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux opam exec -- dune test
+        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux dune test
 
       - name: E2E tests
-        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux KIDO_E2E_REQUIRED=1 opam exec -- make e2e
+        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux KIDO_E2E_REQUIRED=1 make e2e
 
       - name: TypeScript tests
         run: KIDO_TS_TEST_REQUIRED=1 ./scripts/test-ts.sh

@@ -92,16 +92,22 @@ in `~/.config/kido/kido.conf` now.
 
 ## Development
 
-kido is OCaml, built with dune in a local opam switch; the e2e suite is Go.
+kido is OCaml, built with dune's own package management: dune fetches
+and builds the compiler and every dependency from `dune.lock` into
+`_build`, so no opam is involved. The e2e suite is Go.
 
 ```sh
+curl -fsSL https://github.com/ocaml-dune/dune-bin-install/releases/download/v3/install.sh | sh -s -- 3.24.2
 git clone --recurse-submodules https://github.com/andreypopp/kido.git && cd kido
-opam switch create . 5.5.1 --no-install
-opam install . --deps-only --with-test --with-dev-setup
-opam exec -- make install   # binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
-opam exec -- make test      # the unit tests and the pi extensions' suite (needs node 24)
-opam exec -- make e2e       # drives kido inside a real tmux server
+make install   # binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
+make test      # the unit tests and the pi extensions' suite (needs node 24)
+make e2e       # drives kido inside a real tmux server
+dune tools install ocamlformat && dune fmt   # ocamlformat is a dune dev tool, not a dependency
 ```
+
+The first build compiles OCaml and the dependencies (a few minutes);
+`dune pkg lock` regenerates `dune.lock` after a dependency changes in
+`dune-project`, and the result is committed.
 
 CI runs both suites on every push to `main` and every pull request, on Linux
 and macOS.
