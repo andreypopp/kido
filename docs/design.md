@@ -219,24 +219,17 @@ they are a pile-up on the machine least able to afford one.
 
 ## Reporting, and what is carried forward
 
-`kido agent-status` builds a whole fresh record from its arguments on
-every call, so a field the caller omits would blank unless kido carries
-the previous value forward. Which fields carry forward is decided per
-field, and by the flag's presence rather than its value:
-
-- Title: an empty value keeps the old one, since an extension's
-  coalescing may not re-send it.
-- Inbox, activity, model: omitted keeps the old value, an
-  explicit empty value clears it. `--inbox ""` is how an agent says its
-  socket is gone, and a stale path would otherwise keep kido dialling a
-  socket nobody listens on; `--activity ""` clears the activity rather
-  than being read as an omission, which is what carries an activity a
-  `kido set_status` set through every later report.
-- Parent pid, parent session, depth: never carried forward.
-  The agent knows them from its own environment and reports them fresh
-  on every call, which is cheaper than carry-forward and more robust
-  than walking the parent chain, which fails as soon as one intermediate
-  record is gone.
+Every report is whole; nothing is carried forward. `kido agent-status`
+builds a fresh `state.Session` straight from its arguments on every call,
+and an omitted flag is the flag's zero value in the record, not the
+previous report's. A caller that wants a field to persist - title, inbox,
+activity, model, parent pid, parent session, depth - sends it again on
+every call. The agent knows all of them from its own state and
+environment, and reporting them fresh is more robust than walking the
+parent chain, which fails as soon as one intermediate record is gone. `--inbox ""` is how an agent
+says its socket is gone; `pi/kido-status.ts` sends `--title`, `--model`
+and `--inbox` on every report, empty when there is nothing to say, for
+exactly this reason.
 
 `kido set_status -- <activity>` is the same field by a narrower door:
 the one command behind the `set_status` tool, which finds the calling
@@ -255,17 +248,18 @@ become spaces and the result is cut at 256 bytes on a rune boundary. The
 sidebar budgets one terminal line per row and `kido list_agents` prints a
 tab-separated table, and defending each of those against a newline is more
 work than refusing one at the single place a record is built from arguments.
-The extension caps the same text too, but a model is free to ignore a schema
-and any same-uid process can run either command, so the cap that counts is
-kido's.
+A model is free to ignore a schema and any same-uid process can run either
+command, so kido's cap is the only one that counts; the extension sends the
+text through untouched.
 
 The extension coalesces reports: one whose key (status, title, activity,
-model, ended, remove) matches the last one sent is dropped. Activity and
-model are in the key because a `set_status` or a model switch that does
-not change the status would otherwise be silently lost. The one report
-that carries `--inbox` bypasses coalescing entirely, because another
-handler can send an equivalent idle report while `session_start` is
-still awaiting the socket bind, and kido would never learn the path.
+model, inbox path, ended, remove) matches the last one sent is dropped.
+Activity and model are in the key because a `set_status` or a model switch
+that does not change the status would otherwise be silently lost. The
+inbox path is in the key because another handler can send an equivalent
+idle report while `session_start` is still awaiting the socket bind; a
+bound path changes the key, so the first report to carry it is never
+mistaken for a duplicate of one sent before the bind.
 
 ## The inbox
 
@@ -1258,10 +1252,10 @@ not repeat it as a `maxLength` either, because
 rejects the whole call outright rather than truncating - measured live, a
 subagent with a genuinely long report got "summary must not have more
 than 4000 characters" back and had to redo the call. `set_status`'s
-`activity` is left out of its schema for the same reason (against
-`MAX_ACTIVITY_BYTES`), and `setActivity` truncates via `capBytes`
-regardless, so a bound there would only reject calls the code already
-handles. Refused, before anything is
+`activity` is left out of its schema for the same reason: it is sent to
+kido untouched, and `cmd/kido/main.go`'s `oneLine` is the one place that
+truncates it, so a bound in the schema would only reject calls the code
+already handles. Refused, before anything is
 sent, for a session that is not itself a spawned child ("The run id is
 the child's session id") - it was not spawned, so there is nobody of its
 own to tell, and the refusal says so rather than reading as a silent

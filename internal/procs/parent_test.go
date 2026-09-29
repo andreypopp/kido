@@ -1,7 +1,6 @@
 package procs
 
 import (
-	"os"
 	"testing"
 )
 
@@ -44,15 +43,5 @@ func TestIsShell(t *testing.T) {
 		if got := isShell(c.comm); got != c.want {
 			t.Errorf("isShell(%q) = %v, want %v", c.comm, got, c.want)
 		}
-	}
-}
-
-// TestReporterPIDNoShellSkipsWalk checks that ReporterPID(false) is just
-// os.Getppid() - no ps call, and so no dependence on what is actually
-// running above this test process.
-func TestReporterPIDNoShellSkipsWalk(t *testing.T) {
-	want := os.Getppid()
-	if got := ReporterPID(false); got != want {
-		t.Errorf("ReporterPID(false) = %d, want os.Getppid() = %d", got, want)
 	}
 }

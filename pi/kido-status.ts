@@ -20,15 +20,17 @@
  *   - Every invocation is fire-and-forget (detached, stdio ignored). Failures
  *     never propagate into pi and never print to the TUI.
  *   - Status changes are coalesced: kido is only invoked when the reported
- *     status/title/activity/model actually differs from what was last sent.
+ *     status/title/activity/model/inbox actually differs from what was last
+ *     sent. Every report is whole: nothing kido records is carried forward
+ *     between calls.
  *
  * Inbox:
  *   On session start the extension asks kido where to bind (`kido inbox-path
- *   <pid>`), binds a unix STREAM socket there and reports the path once, with
- *   `--inbox <path>` on the first status report. Plain v0 text is delivered
- *   as a user message here; a v1 envelope is handed to the agent half,
- *   kido-agents.ts. The v0/v1 rule and the seam the two halves meet at are
- *   in docs/design.md.
+ *   <pid>`), binds a unix STREAM socket there and reports the path on every
+ *   status report from then on, empty once it goes away. Plain v0 text is
+ *   delivered as a user message here; a v1 envelope is handed to the agent
+ *   half, kido-agents.ts. The v0/v1 rule and the seam the two halves meet at
+ *   are in docs/design.md.
  *
  * Install:
  *   mkdir -p ~/.pi/agent/extensions
@@ -52,7 +54,7 @@ const PARENT_SESSION = process.env.KIDO_AGENT_PARENT_SESSION || undefined;
 const DEPTH = process.env.KIDO_AGENT_DEPTH ? Number(process.env.KIDO_AGENT_DEPTH) : undefined;
 
 // HEARTBEAT_MS is how often a session re-sends its status while it is
-// "running", bypassing send()'s coalescing so kido's staleness check has
+// "running", bypassing report()'s coalescing so kido's staleness check has
 // a real last-seen time (docs/design.md, "Heartbeat and staleness").
 // Read once at module scope; a test re-imports the module to change it.
 const HEARTBEAT_MS = Number(process.env.KIDO_HEARTBEAT_MS) || 30000;
@@ -61,26 +63,6 @@ const HEARTBEAT_MS = Number(process.env.KIDO_HEARTBEAT_MS) || 30000;
 // the session goes on reporting, and the claim in kido's own write path
 // (internal/state.Record) is what actually decides who holds the id.
 const CLAIM_TIMEOUT_MS = 5000;
-
-// Cap for the free-text activity, applied on the way in; the tool schema
-// says 256 too, but a model is free to ignore it.
-const MAX_ACTIVITY_BYTES = 256;
-
-// Cut on a code-point boundary, never mid-sequence: decoding a buffer that
-// splits one leaves a U+FFFD behind, which is three bytes, so a naive
-// byte slice can come back longer than the cap it was enforcing.
-function capBytes(text: string, max: number): string {
-  if (Buffer.byteLength(text, "utf8") <= max) return text;
-  let out = "";
-  let used = 0;
-  for (const ch of text) {
-    const n = Buffer.byteLength(ch, "utf8");
-    if (used + n > max) break;
-    out += ch;
-    used += n;
-  }
-  return out;
-}
 
 export type Status = "running" | "waiting" | "compacting" | "idle";
 
@@ -355,9 +337,6 @@ export default function (pi: ExtensionAPI) {
   let current: Status = "idle";
   let beforeCompact: Status = "idle";
 
-  let inbox: Server | null = null;
-  let inboxReported = false;
-
   // false once kido has answered that another live process holds this
   // session id: this pi is not tracked, and must neither report nor bind
   // an inbox for the rest of the session (docs/design.md, "One holder per
@@ -431,13 +410,11 @@ export default function (pi: ExtensionAPI) {
 
   // keepListening is the /reload case: this module stops serving the
   // inbox, but the socket stays bound and the server is handed to the
-  // reloaded module through the slot. Either way `inbox` goes null
-  // synchronously, which is what ask_agent's inboxOpen() check reads as
+  // reloaded module through the slot. Either way this module's own
+  // handler goes null synchronously, which is what inboxOpen() reads as
   // "this session is shutting down".
   const stopInbox = (opts: { keepListening?: boolean } = {}): void => {
     const hold = heldInbox();
-    inbox = null;
-    inboxReported = false;
     if (!hold) return;
     hold.handler = null;
     if (opts.keepListening) return;
@@ -462,11 +439,15 @@ export default function (pi: ExtensionAPI) {
     const hold = heldInbox();
     if (!hold || hold.handler) return false;
     hold.handler = onConnection;
-    inbox = hold.server;
-    inboxReported = false;
     for (const sock of hold.waiting.splice(0)) onConnection(sock);
     return true;
   };
+
+  // Whether this session is serving the inbox right now: kido dials the
+  // path only a live handler answers, and a reload's gap or a torn-down
+  // session must read as closed even though the socket file may still
+  // exist.
+  const inboxOpen = (): boolean => heldInbox()?.handler === onConnection;
 
   const startInbox = async (): Promise<void> => {
     // Where to bind is kido's decision; a refusal means no inbox. The name
@@ -490,15 +471,13 @@ export default function (pi: ExtensionAPI) {
     if (!bound) return; // never publish a path we are not listening on
     server.unref(); // never hold pi's event loop open
     setHeldInbox({ server, path, handler: onConnection, waiting: [] });
-    inbox = server;
-    inboxReported = false;
   };
 
-  // Both idempotent, so every send() calls one of them without tracking
+  // Both idempotent, so every report() calls one of them without tracking
   // the transition.
   const startHeartbeat = (): void => {
     if (heartbeatTimer) return;
-    heartbeatTimer = setInterval(() => send(current, { heartbeat: true }), HEARTBEAT_MS);
+    heartbeatTimer = setInterval(() => report({ kind: "heartbeat" }), HEARTBEAT_MS);
     heartbeatTimer.unref(); // a hung kido must never hold pi's event loop open
   };
   const stopHeartbeat = (): void => {
@@ -508,16 +487,13 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // Fire-and-forget. Coalesced: identical consecutive reports are dropped,
-  // except a heartbeat re-send.
-  // statusArgs is one report's whole command line, shared by send() and
+  // statusArgs is one report's whole command line, shared by report() and
   // by the claim session_start makes with it: the claim is the first
   // report, awaited rather than fired and forgotten, because its answer
-  // is the one thing this extension needs back from kido.
-  const statusArgs = (
-    status: Status,
-    opts: { ended?: boolean; remove?: boolean; inbox?: string | null } = {},
-  ): string[] => {
+  // is the one thing this extension needs back from kido. Every report is
+  // whole: title, model and inbox ride on every call, empty when there is
+  // none, since kido no longer carries any field forward between reports.
+  const statusArgs = (status: Status, opts: { ended?: boolean; remove?: boolean; inbox: string } = { inbox: "" }): string[] => {
     const args = [
       "agent-status",
       "--agent",
@@ -526,47 +502,48 @@ export default function (pi: ExtensionAPI) {
       sessionId as string,
       "--status",
       status,
-      // Always sent: an omitted --activity is carried forward by kido, an
-      // empty one clears it.
       "--activity",
       activity,
+      "--title",
+      title ?? "",
+      "--model",
+      model ?? "",
+      "--inbox",
+      opts.inbox,
     ];
-    if (title) args.push("--title", title);
-    if (model) args.push("--model", model);
     if (PARENT_PID !== undefined) args.push("--parent-pid", String(PARENT_PID));
     if (PARENT_SESSION) args.push("--parent-session", PARENT_SESSION);
     if (DEPTH !== undefined) args.push("--depth", String(DEPTH));
     if (opts.ended) args.push("--ended");
     if (opts.remove) args.push("--remove");
-    if (opts.inbox) args.push("--inbox", opts.inbox);
     return args;
   };
 
-  const send = (
-    status: Status,
-    opts: { ended?: boolean; remove?: boolean; heartbeat?: boolean } = {},
-  ): void => {
-    if (!kido || !sessionId || !tracked) return;
+  // Report is one report's shape, replacing an options bag of independent
+  // booleans: "settled" and "removed" are always idle, so their status is
+  // not a separate thing that could disagree with them.
+  type Report = { kind: "status"; status: Status } | { kind: "heartbeat" } | { kind: "settled" } | { kind: "removed" };
 
-    // activity and model join the key, or a set_status or model switch
-    // that leaves the status unchanged would be dropped.
-    const key = [status, title ?? "", activity, model ?? "", opts.ended ? 1 : 0, opts.remove ? 1 : 0].join("|");
-    // The report that carries --inbox must never be coalesced away:
-    // session_start awaits the socket bind, and another handler can send
-    // an equivalent "idle" report inside that window.
-    const inboxPath = inbox ? (heldInbox()?.path ?? null) : null;
-    const pendingInbox = inboxPath !== null && !inboxReported;
-    if (!pendingInbox && !opts.heartbeat && key === lastKey) return;
-    if (!opts.heartbeat) lastKey = key;
+  // Fire-and-forget. Coalesced: identical consecutive reports are dropped,
+  // except a heartbeat re-send. The inbox path joins the coalescing key, so
+  // the report that first carries a freshly bound one - sent while
+  // session_start is still awaiting the bind - is never dropped as a
+  // duplicate of an idle report already sent without it.
+  const report = (r: Report): void => {
+    if (!kido || !sessionId || !tracked) return;
+    const status = r.kind === "heartbeat" ? current : r.kind === "status" ? r.status : "idle";
+    const ended = r.kind === "settled";
+    const remove = r.kind === "removed";
+    const inboxPath = inboxOpen() ? (heldInbox()?.path ?? "") : "";
+
+    const key = [status, title ?? "", activity, model ?? "", inboxPath, ended ? 1 : 0, remove ? 1 : 0].join("|");
+    if (r.kind !== "heartbeat" && key === lastKey) return;
+    if (r.kind !== "heartbeat") lastKey = key;
     current = status;
     if (status === "running") startHeartbeat();
     else stopHeartbeat();
 
-    // The inbox is reported once; kido carries it forward.
-    const args = statusArgs(status, { ...opts, inbox: pendingInbox ? inboxPath : null });
-    if (pendingInbox && inboxPath) inboxReported = true;
-
-    spawnDetached(kido, args);
+    spawnDetached(kido, statusArgs(status, { ended, remove, inbox: inboxPath }));
   };
 
   // runKido is how every call into kido is made: via spawn, awaited but
@@ -617,7 +594,7 @@ export default function (pi: ExtensionAPI) {
     kidoPath: () => kido,
     sessionId: () => sessionId,
     status: () => current,
-    inboxOpen: () => inbox !== null,
+    inboxOpen,
     setActivity: (text: string) => {
       // Two writes of one fact, and both are needed. `kido set_status` is
       // the narrow command behind the narrow tool, and it updates the
@@ -625,8 +602,9 @@ export default function (pi: ExtensionAPI) {
       // is what every later `kido agent-status` report carries, and
       // leaving it stale would have the next report clear the activity
       // this one just set. Fire-and-forget, as this has always been: the
-      // model is told "ok" before any subprocess could answer.
-      activity = capBytes(text, MAX_ACTIVITY_BYTES);
+      // model is told "ok" before any subprocess could answer. kido's own
+      // cap is authoritative; this text rides the next report untouched.
+      activity = text;
       if (kido) spawnDetached(kido, ["set_status", "--", activity]);
     },
     deliver,
@@ -682,27 +660,27 @@ export default function (pi: ExtensionAPI) {
     // A bind that failed has nowhere for an answer to arrive; an adopted
     // or rebound inbox is the same pid-named path, so a waiting ask is
     // left alone.
-    if (!inbox) seam().agents?.inboxLost();
+    if (!inboxOpen()) seam().agents?.inboxLost();
 
     // After the inbox, before the first report (which carries --inbox).
     await seam().agents?.sessionStarted(ctx);
 
-    send("idle");
+    report({ kind: "status", status: "idle" });
   });
 
   pi.on("session_info_changed", (event) => {
     title = event.name || undefined;
-    send(current);
+    report({ kind: "status", status: current });
   });
 
   pi.on("model_select", (event) => {
     model = event.model.id;
-    send(current);
+    report({ kind: "status", status: current });
   });
 
   const running = () => {
     seam().agents?.workStarted();
-    send("running");
+    report({ kind: "status", status: "running" });
   };
   pi.on("agent_start", running);
   pi.on("turn_start", running);
@@ -710,21 +688,21 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_call", running);
 
   // Blocking extension UI prompts: pi is waiting for the user, not working.
-  pi.on("ui_prompt_start", () => send("waiting"));
+  pi.on("ui_prompt_start", () => report({ kind: "status", status: "waiting" }));
   // A prompt can also be raised while pi is idle (an extension command calling
   // ctx.ui.select(), say); reporting "running" then would stick forever.
   pi.on("ui_prompt_end", (_event, ctx) => {
-    send(ctx.isIdle() ? "idle" : "running");
+    report({ kind: "status", status: ctx.isIdle() ? "idle" : "running" });
   });
 
   pi.on("session_before_compact", () => {
     beforeCompact = current;
-    send("compacting");
+    report({ kind: "status", status: "compacting" });
   });
   // Restore whatever we reported before compaction started: a manual /compact
   // can happen while idle, and agent_settled would not fire afterwards to
   // correct a blind "running".
-  const restoreBeforeCompact = () => send(beforeCompact);
+  const restoreBeforeCompact = () => report({ kind: "status", status: beforeCompact });
   pi.on("session_compact", restoreBeforeCompact);
   pi.on("session_compact_failed", restoreBeforeCompact);
 
@@ -736,7 +714,7 @@ export default function (pi: ExtensionAPI) {
   // of no further use here and is not read at all.
   pi.on("agent_settled", (_event, ctx) => {
     if (!ctx.isIdle()) return;
-    send("idle", { ended: true });
+    report({ kind: "settled" });
     seam().agents?.turnEnded();
   });
 
@@ -766,7 +744,7 @@ export default function (pi: ExtensionAPI) {
     if (event?.reason === "reload") return;
     // A session this process never claimed has no record of its own to
     // remove, and the record under that id belongs to somebody still
-    // running: send() drops the report for exactly that reason.
-    send("idle", { remove: true });
+    // running: report() drops it for exactly that reason.
+    report({ kind: "removed" });
   });
 }

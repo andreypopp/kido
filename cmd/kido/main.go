@@ -92,14 +92,6 @@ const hookDebugEnv = "KIDO_HOOK_DEBUG"
 // "One holder per session id").
 const exitSessionHeld = 6
 
-func exitCodeFor(err error) int {
-	var held *state.HeldError
-	if errors.As(err, &held) {
-		return exitSessionHeld
-	}
-	return 1
-}
-
 // dispatch runs fn for a subcommand named name, printing "kido <name>:
 // <err>" to stderr and exiting 1 on failure. hook (which must never fail
 // the caller) and prompt and the message-sending commands (which return
@@ -126,7 +118,12 @@ func main() {
 		case "agent-status":
 			if err := agentStatus(os.Args[2:]); err != nil {
 				fmt.Fprintln(os.Stderr, "kido agent-status:", err)
-				os.Exit(exitCodeFor(err))
+				code := 1
+				var held *state.HeldError
+				if errors.As(err, &held) {
+					code = exitSessionHeld
+				}
+				os.Exit(code)
 			}
 			return
 		case "set_status":
@@ -362,74 +359,48 @@ func runHook(r io.Reader, debug bool) error {
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return err
 	}
+	var parked bool
 	if in.SessionID != "" {
 		prev, _, _ := state.Get(in.SessionID)
-		in.Background = prev.Background
+		parked = prev.Background
 	}
-	e := hook.Apply(in)
+	e := hook.Apply(in, parked)
 	if debug {
 		logHookEvent(raw, in, e)
 	}
-	switch {
-	case e.Ignore:
+	switch e := e.(type) {
+	case hook.Ignore:
 		return nil
-	case e.Remove:
-		return state.Remove(in.SessionID, procs.ReporterPID(true))
+	case hook.Remove:
+		return state.Remove(in.SessionID, procs.ReporterPID())
+	case hook.Report:
+		return record(in.SessionID, state.Session{
+			Agent:       state.AgentClaude,
+			Pane:        os.Getenv("TMUX_PANE"),
+			PID:         procs.ReporterPID(),
+			Status:      e.Status,
+			TS:          time.Now().UTC(),
+			Background:  e.Background,
+			ToolPending: e.ToolPending,
+		}, e.Ended)
 	}
-	return recordSession(state.AgentClaude, in.SessionID, procs.ReporterPID(true), e, agentReport{})
+	return nil
 }
 
-// agentReport is what an agent may say about itself beyond its status:
-// the fields only `kido agent-status` can set. runHook passes the zero
-// value, Claude Code's hooks reporting none of them.
-type agentReport struct {
-	Title         string
-	Inbox         string
-	Activity      string
-	ParentPID     int
-	ParentSession string
-	Depth         int
-	Model         string
-}
-
-// recordSession builds and writes a whole fresh state.Session for one
-// agent report; anything not in e or r is blank unless the caller carried
-// it forward.
-func recordSession(agent, sessionID string, pid int, e hook.Effect, r agentReport) error {
-	now := time.Now().UTC()
-	s := state.Session{
-		Agent:         agent,
-		Pane:          os.Getenv("TMUX_PANE"),
-		PID:           pid,
-		Status:        e.Status,
-		TS:            now,
-		Title:         r.Title,
-		Inbox:         r.Inbox,
-		Background:    e.Background,
-		ToolPending:   e.ToolPending,
-		Activity:      r.Activity,
-		ParentPID:     r.ParentPID,
-		ParentSession: r.ParentSession,
-		Depth:         r.Depth,
-		Model:         r.Model,
+// record writes a whole fresh session for one status report, applying the
+// Ended rule: an idle report's end time describes when the turn ended, not
+// when kido noticed it. If an earlier report already recorded this session
+// as idle with an end time, it is a more authoritative observation of the
+// same turn ending than this one; keep it rather than stamping s.TS and
+// making an old end look freshly done.
+func record(id string, s state.Session, ended bool) error {
+	if ended {
+		s.Ended = s.TS
+		if prev, ok, _ := state.Get(id); ok && prev.Status == state.Idle && !prev.Ended.IsZero() {
+			s.Ended = prev.Ended
+		}
 	}
-	if e.Ended {
-		s.Ended = endedAt(sessionID, now)
-	}
-	return state.Record(sessionID, s)
-}
-
-// endedAt is the time to record as the end of session id's turn, now being
-// when kido noticed it. An end time describes when the turn ended, not when
-// kido noticed. If an earlier report already recorded this session as idle
-// with an Ended time, it is a more authoritative observation of the same
-// turn ending than this one; keep it rather than stamping now and making an
-// old end look freshly done.
-func endedAt(id string, now time.Time) time.Time {
-	if prev, ok, _ := state.Get(id); ok && prev.Status == state.Idle && !prev.Ended.IsZero() {
-		return prev.Ended
-	}
-	return now
+	return state.Record(id, s)
 }
 
 // statusList joins state.Statuses() with "|", the form usage text shows,
@@ -454,13 +425,10 @@ func agentStatusUsage() string {
 // Claude Code reports itself: the same record `kido hook` writes, from
 // plain arguments. It runs from inside the agent's own pane ($TMUX_PANE)
 // and records the calling agent's pid so the record goes stale when the
-// agent dies.
-//
-// Which fields are carried forward from the previous record when omitted
-// is decided per field, by the flag's presence (fs.Visit) rather than its
-// value, so an explicit empty value clears: docs/design.md, "Reporting,
-// and what is carried forward". --title is the exception: an empty title
-// keeps the old one.
+// agent dies. Every report is a whole fresh state.Session: nothing is
+// carried forward from the previous record, so a caller that wants a
+// field to persist sends it again on every call (docs/design.md,
+// "Reporting, and what is carried forward").
 func agentStatus(args []string) error {
 	fs := flag.NewFlagSet("agent-status", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -469,19 +437,17 @@ func agentStatus(args []string) error {
 	status := fs.String("status", "", statusList())
 	title := fs.String("title", "", "the session's name, shown as the pane's label")
 	inbox := fs.String("inbox", "",
-		"path of the unix socket the agent takes prompts on, speaking kido's own protocol (see `kido inbox-path`); empty clears it")
-	activity := fs.String("activity", "", "free text describing what the agent is doing, one line of at most 256 bytes; omitted keeps the last reported value, empty clears it")
+		"path of the unix socket the agent takes prompts on, speaking kido's own protocol (see `kido inbox-path`); empty means none")
+	activity := fs.String("activity", "", "free text describing what the agent is doing, one line of at most 256 bytes")
 	parentPID := fs.Int("parent-pid", 0, "pid of the agent that spawned this one, 0 for a root agent")
 	parentSession := fs.String("parent-session", "", "session id of the agent that spawned this one, empty for a root agent")
 	depth := fs.Int("depth", 0, "depth in the spawn tree, 0 for a root agent")
-	model := fs.String("model", "", "name of the model the agent is currently running; omitted keeps the last reported value, empty clears it")
+	model := fs.String("model", "", "name of the model the agent is currently running")
 	ended := fs.Bool("ended", false, "a turn just finished")
 	remove := fs.Bool("remove", false, "delete the session's record")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w\n%s", err, agentStatusUsage())
 	}
-	given := map[string]bool{}
-	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unknown argument %q\n%s", fs.Arg(0), agentStatusUsage())
 	}
@@ -489,12 +455,17 @@ func agentStatus(args []string) error {
 		return fmt.Errorf("--agent and --session are required\n%s", agentStatusUsage())
 	}
 	if *remove {
-		return state.Remove(*session, procs.ReporterPID(false))
+		return state.Remove(*session, os.Getppid())
 	}
 	if !state.Valid(state.Status(*status)) {
 		return fmt.Errorf("unknown status %q\n%s", *status, agentStatusUsage())
 	}
-	r := agentReport{
+	return record(*session, state.Session{
+		Agent:         *agent,
+		Pane:          os.Getenv("TMUX_PANE"),
+		PID:           os.Getppid(),
+		Status:        state.Status(*status),
+		TS:            time.Now().UTC(),
 		Title:         *title,
 		Inbox:         *inbox,
 		Activity:      oneLine(*activity, maxActivity),
@@ -502,33 +473,13 @@ func agentStatus(args []string) error {
 		ParentSession: *parentSession,
 		Depth:         *depth,
 		Model:         *model,
-	}
-	// The previous record is read unconditionally: the extension reports
-	// --inbox once and carries nothing else forward itself, so a report
-	// with nothing to carry over essentially never arrives and a guard
-	// restating each condition below would only duplicate them.
-	if prev, ok, _ := state.Get(*session); ok {
-		if r.Title == "" {
-			r.Title = prev.Title
-		}
-		if !given["inbox"] {
-			r.Inbox = prev.Inbox
-		}
-		if !given["activity"] {
-			r.Activity = prev.Activity
-		}
-		if !given["model"] {
-			r.Model = prev.Model
-		}
-	}
-	e := hook.Effect{Status: state.Status(*status), Ended: *ended}
-	return recordSession(*agent, *session, procs.ReporterPID(false), e, r)
+	}, *ended)
 }
 
 // maxActivity caps the activity both `kido agent-status --activity` and
-// `kido set_status` record. The extension caps it too, but a model is
-// free to ignore the schema and any same-uid process can run either
-// command, so the cap that matters is this one.
+// `kido set_status` record. Any same-uid process can run either command,
+// so this is the cap that matters regardless of what a caller enforces
+// on its own side.
 const maxActivity = 256
 
 // oneLine makes model-authored free text safe to put in a state record:

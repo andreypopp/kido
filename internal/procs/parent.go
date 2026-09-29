@@ -7,19 +7,13 @@ import (
 )
 
 // ReporterPID returns the pid to record as an agent's process for one
-// status report: the immediate caller of kido, or - when viaShell is true
-// - the first ancestor of it past any wrapping shell. Claude Code runs its
-// hook through `sh -c`, so runHook's immediate parent is a short-lived sh
-// (dash, on Linux, does not exec the last command of `sh -c "kido hook"`),
-// not claude, and must be walked past. kido agent-status is spawned
-// directly by an agent's extension with no shell wrapper, so agentStatus
-// passes false and skips the ps walk entirely, on a process that is
-// already startup-dominated and spawned once per status change.
-func ReporterPID(viaShell bool) int {
+// status report: the first ancestor of the immediate caller past any
+// wrapping shell. Claude Code runs its hook through `sh -c`, so the
+// immediate parent is a short-lived sh (dash, on Linux, does not exec the
+// last command of `sh -c "kido hook"`), not claude, and must be walked
+// past.
+func ReporterPID() int {
 	pid := os.Getppid()
-	if !viaShell {
-		return pid
-	}
 	for i := 0; i < 3; i++ {
 		ppid, comm, ok := parentOf(pid)
 		if !ok || !isShell(comm) {

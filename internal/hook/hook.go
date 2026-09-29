@@ -26,12 +26,6 @@ type Input struct {
 	BackgroundTasks []struct {
 		Status string `json:"status"`
 	} `json:"background_tasks"`
-	// Background is not part of the payload: the caller sets it from the
-	// session's last recorded state (state.Session.Background), which says
-	// the main loop has already stopped and only background work is
-	// holding the session at running. SubagentStop needs it to tell the
-	// end of that background work from a subagent finishing mid-turn.
-	Background bool `json:"-"`
 }
 
 // hasRunningBackgroundTask reports whether any background task is still
@@ -52,16 +46,16 @@ func (in Input) hasRunningBackgroundTask() bool {
 // main loop waking up would clear the flag immediately and leave the
 // session stuck at running once the subagent finished. Only a call from
 // the main loop (no agent id) means the turn is going again.
-func working(in Input) Effect {
-	return Effect{Status: state.Running, Background: in.Background && in.AgentID != ""}
+func working(in Input, parked bool) Effect {
+	return Report{Status: state.Running, Background: parked && in.AgentID != ""}
 }
 
 // startingTool is working for the PreToolUse that opens a tool call: the
 // same running effect, plus the note that nothing more will be heard
 // until the tool returns. PostToolUse goes through working and so leaves
 // ToolPending false, closing the pair.
-func startingTool(in Input) Effect {
-	e := working(in)
+func startingTool(in Input, parked bool) Effect {
+	e := working(in, parked).(Report)
 	e.ToolPending = true
 	return e
 }
@@ -70,20 +64,28 @@ func startingTool(in Input) Effect {
 // waiting. A pending background wait survives it, since a session whose
 // main loop has stopped can only be blocked on behalf of the background
 // work kido is waiting on, and that work is not over.
-func blocked(in Input) Effect {
-	return Effect{Status: state.Waiting, Background: in.Background}
+func blocked(parked bool) Effect {
+	return Report{Status: state.Waiting, Background: parked}
 }
 
-// Effect is what an event means for the session.
-type Effect struct {
+// Effect is what an event means for the session: ignore it, remove the
+// record, or write a whole fresh report.
+type Effect interface{ effect() }
+
+// Ignore means nothing to record.
+type Ignore struct{}
+
+// Remove means the session is gone.
+type Remove struct{}
+
+// Report is a whole fresh status report.
+type Report struct {
 	Status state.Status
-	Ended  bool // a turn ended: the session is idle because work finished
-	Remove bool // the session is gone
-	Ignore bool // nothing to record
+	Ended  bool // a turn ended: the session is idle because work finished; only with Idle
 	// Background records that the main loop has stopped and the session is
 	// running only because background work is still in flight. It is
 	// written to the session (state.Session.Background) and comes back as
-	// Input.Background on the next event.
+	// the caller's parked argument on the next event.
 	Background bool
 	// ToolPending records that a tool call has started and not yet
 	// returned, so the quiet that follows is the tool running rather than
@@ -93,15 +95,19 @@ type Effect struct {
 	ToolPending bool
 }
 
+func (Ignore) effect() {}
+func (Remove) effect() {}
+func (Report) effect() {}
+
 var (
-	running    = Effect{Status: state.Running}
-	waiting    = Effect{Status: state.Waiting}
-	idle       = Effect{Status: state.Idle}
-	ended      = Effect{Status: state.Idle, Ended: true}
-	compacting = Effect{Status: state.Compacting}
-	ignore     = Effect{Ignore: true}
+	running    = Report{Status: state.Running}
+	waiting    = Report{Status: state.Waiting}
+	idle       = Report{Status: state.Idle}
+	ended      = Report{Status: state.Idle, Ended: true}
+	compacting = Report{Status: state.Compacting}
+	ignore     = Ignore{}
 	// backgrounded is a turn that ended with background work still going.
-	backgrounded = Effect{Status: state.Running, Background: true}
+	backgrounded = Report{Status: state.Running, Background: true}
 )
 
 // events maps each registered event to its effect. Some depend on payload
@@ -112,12 +118,12 @@ var (
 // session stays waiting here until the idle_prompt notification a minute
 // later. kido catches that from the pane's screen instead; see
 // internal/ui/screen.go.
-var events = map[string]func(Input) Effect{
-	"SessionStart":     func(Input) Effect { return idle },
-	"SessionEnd":       func(Input) Effect { return Effect{Remove: true} },
-	"UserPromptSubmit": func(Input) Effect { return running },
-	"PostToolUse":      func(in Input) Effect { return working(in) },
-	"Stop": func(in Input) Effect {
+var events = map[string]func(Input, bool) Effect{
+	"SessionStart":     func(Input, bool) Effect { return idle },
+	"SessionEnd":       func(Input, bool) Effect { return Remove{} },
+	"UserPromptSubmit": func(Input, bool) Effect { return running },
+	"PostToolUse":      func(in Input, parked bool) Effect { return working(in, parked) },
+	"Stop": func(in Input, parked bool) Effect {
 		if in.hasRunningBackgroundTask() {
 			return backgrounded
 		}
@@ -128,40 +134,41 @@ var events = map[string]func(Input) Effect{
 	// further Stop fires. SubagentStop is the only event that keeps
 	// arriving, and its background_tasks - not the fact that it fired, as
 	// it fires on every subagent turn - says when the wait is over.
-	"SubagentStop": func(in Input) Effect {
-		if in.Background && !in.hasRunningBackgroundTask() {
+	"SubagentStop": func(in Input, parked bool) Effect {
+		if parked && !in.hasRunningBackgroundTask() {
 			return ended
 		}
 		return ignore
 	},
 	// Asking the user a question blocks like a permission prompt.
-	"PreToolUse": func(in Input) Effect {
+	"PreToolUse": func(in Input, parked bool) Effect {
 		if in.ToolName == "AskUserQuestion" {
-			return blocked(in)
+			return blocked(parked)
 		}
-		return startingTool(in)
+		return startingTool(in, parked)
 	},
-	"PermissionRequest": func(in Input) Effect { return blocked(in) },
-	"Notification": func(in Input) Effect {
+	"PermissionRequest": func(in Input, parked bool) Effect { return blocked(parked) },
+	"Notification": func(in Input, parked bool) Effect {
 		switch in.NotificationType {
 		case "permission_prompt", "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input":
-			return blocked(in)
+			return blocked(parked)
 		case "idle_prompt":
 			// Fires when a turn ended without a Stop, e.g. after Esc - but
 			// also a minute after every Stop, background work or not, and
 			// it carries no background_tasks of its own. A session already
 			// parked by Stop with work outstanding knows better.
-			if in.Background {
+			if parked {
 				return ignore
 			}
 			return ended
+		default:
+			return ignore
 		}
-		return ignore
 	},
-	"PreCompact": func(Input) Effect { return compacting },
+	"PreCompact": func(Input, bool) Effect { return compacting },
 	// An automatic compaction happens mid-turn and work resumes; a manual
 	// /compact leaves the session waiting for input.
-	"PostCompact": func(in Input) Effect {
+	"PostCompact": func(in Input, parked bool) Effect {
 		if in.Trigger == "manual" {
 			return ended
 		}
@@ -179,32 +186,7 @@ func Events() []string {
 	return names
 }
 
-// allEvents is the full list of Claude Code hook events, per the Claude
-// Code hooks reference. Most are not in the events table above (Apply
-// treats them as unmapped); the shipped settings file registers only
-// the events in the table, and one of these is registered by hand in a
-// user's own settings.json to see its payload in the debug log.
-var allEvents = []string{
-	"SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "StopFailure",
-	"PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch",
-	"PermissionRequest", "PermissionDenied", "SubagentStart", "SubagentStop",
-	"TaskCreated", "TaskCompleted", "Notification", "MessageDisplay",
-	"FileChanged", "CwdChanged", "ConfigChange", "DirectoryAdded",
-	"WorktreeCreate", "WorktreeRemove", "PreCompact", "PostCompact",
-	"PreModelSwitch", "PostModelSwitch", "Elicitation", "ElicitationResult",
-	"InstructionsLoaded", "TeammateIdle", "Setup", "UserPromptExpansion",
-}
-
-// AllEvents lists every Claude Code hook event, sorted, including ones
-// kido does not otherwise map to an effect.
-func AllEvents() []string {
-	names := append([]string(nil), allEvents...)
-	sort.Strings(names)
-	return names
-}
-
-// mapped reports whether event is in kido's effect table (Events()), as
-// opposed to one of the other Claude Code events listed by AllEvents().
+// mapped reports whether event is in kido's effect table (Events()).
 func mapped(event string) bool {
 	_, ok := events[event]
 	return ok
@@ -218,25 +200,31 @@ func Describe(event string, e Effect) string {
 	if !mapped(event) {
 		return "unmapped"
 	}
-	switch {
-	case e.Remove:
+	switch e := e.(type) {
+	case Remove:
 		return "remove"
-	case e.Ended:
-		return "ended"
-	case e.Ignore:
+	case Ignore:
 		return "ignore"
-	case e.Background:
-		return "status=" + string(e.Status) + " background"
-	default:
-		return "status=" + string(e.Status)
+	case Report:
+		switch {
+		case e.Ended:
+			return "ended"
+		case e.Background:
+			return "status=" + string(e.Status) + " background"
+		default:
+			return "status=" + string(e.Status)
+		}
 	}
+	panic("unreachable")
 }
 
-// Apply returns the effect of a hook payload.
-func Apply(in Input) Effect {
+// Apply returns the effect of a hook payload. parked is the session's
+// prior state.Session.Background: whether the main loop has already
+// stopped and only background work is holding the session at running.
+func Apply(in Input, parked bool) Effect {
 	f, ok := events[in.Event]
 	if !ok || in.SessionID == "" {
 		return ignore
 	}
-	return f(in)
+	return f(in, parked)
 }

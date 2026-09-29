@@ -3085,17 +3085,19 @@ test("notify_parent's schema accepts a summary over the byte cap, and execute() 
 
 // set_status's schema had the identical defect (maxLength counting
 // characters against a byte-denominated cap the tool's own description
-// promises, and rejecting instead of truncating) - kido-status.ts's own
-// setActivity has always truncated via capBytes; only the schema was
+// promises, and rejecting instead of truncating) - the cap that matters
+// is kido's own (cmd/kido/main.go's oneLine), since any same-uid process
+// can call `kido set_status` or `kido agent-status` directly regardless
+// of what a model's tool call is checked against; only the schema was
 // wrong.
 //
-// The activity now leaves via `kido set_status`, the narrow command
-// behind the narrow tool, rather than by re-sending the session's whole
-// `kido agent-status` report; this reads that call. The report is still
+// The activity leaves via `kido set_status`, the narrow command behind
+// the narrow tool, rather than by re-sending the session's whole `kido
+// agent-status` report; this reads that call. The report is still
 // checked, because the local copy setActivity keeps is what every later
 // report carries, and a version that only shelled out would have the
 // next report clear the activity it had just set.
-test("set_status's schema accepts an activity over the byte cap, setActivity truncates it and sends it as kido set_status", async () => {
+test("set_status's schema accepts an activity over the byte cap, and setActivity sends it whole as kido set_status", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
@@ -3115,7 +3117,7 @@ test("set_status's schema accepts an activity over the byte cap, setActivity tru
     await pollUntil(() => (call = last(fx.setStatusCalls())) !== undefined, 2000, "a kido set_status call");
     assert.equal(call![0], "set_status");
     assert.equal(call![1], "--", "the activity is positional, behind --, so one beginning with a dash is still an activity");
-    assert.equal(Buffer.byteLength(call![2], "utf8"), 256, "the activity sent is truncated to the byte cap, not rejected");
+    assert.equal(call![2], longActivity, "the extension no longer truncates; kido's own cap is what enforces the bound");
 
     // And the same text rides the session's next ordinary report, which
     // is how it survives one: an implementation that only shelled out
@@ -3131,7 +3133,7 @@ test("set_status's schema accepts an activity over the byte cap, setActivity tru
       return report !== undefined;
     }, 2000, "a status report reflecting the activity");
     const i = report!.indexOf("--activity");
-    assert.equal(Buffer.byteLength(report![i + 1], "utf8"), 256, "the report carries the same truncated activity");
+    assert.equal(report![i + 1], longActivity, "the report carries the same untruncated activity");
   } finally {
     fx.restore();
   }
