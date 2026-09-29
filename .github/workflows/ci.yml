@@ -44,7 +44,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libevent-dev libncurses-dev libutf8proc-dev \
+          sudo apt-get install -y zsh libevent-dev libncurses-dev libutf8proc-dev \
             bison autoconf automake pkg-config
 
       - name: Install tmux dependencies (macOS)
