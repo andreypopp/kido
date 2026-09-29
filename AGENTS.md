@@ -13,30 +13,56 @@ subagent side in [docs/design-subagents.md](docs/design-subagents.md).
 Read them before changing any of that; neither the code's comments nor
 this file repeat it.
 
-## Code commenting guidelines
+## Code rules
 
-A comment earns its place by saying something the code cannot. Delete,
-rather than reword, narration of the line below, banners, and
-commented-out code. Keep: a verified external constraint (platform,
-vendor protocol, dependency quirk); a link to the issue behind a
-constraint the code cannot express; legal notices and public-contract
-doc comments; and a workaround's explanation for as long as the
-workaround lives - they go together.
+These are hard rules, for Go and TypeScript alike.
 
-Build, compiler and formatter directives are not comments. Read a
-diagnostic suppression's rule before judging it: a false positive or
-style-only rule stays; one hiding a correctness or safety failure means
-fixing the cause.
+**No backward compatibility, ever.** The binary, the extensions, the
+shims and the tmux config ship together from one checkout, and the tmux
+server is restarted when they must agree. Do not write fallbacks for
+state an older kido left behind (old tmux marks, old record fields, old
+flags or env vars), version gates, deprecated aliases or migration
+paths. Change both sides and delete the old one. A leftover from an
+older kido that a restart or a user action clears is not a bug.
 
-A loud comment (`IMPORTANT`, `do not remove`, a long justification) is a
-claim to check, not obey or discard. Where evidence that a claimed
-constraint still holds is missing, keep the comment and say so. Do not
-invent a defect or call deliberate behaviour a bug. Removing comments
-never licenses changing behaviour; keep the two in separate changes.
+**Write Go like good OCaml.** Plain functions over data; abstraction
+only when it pays. Data structures carry the design: make illegal
+states unrepresentable. A set of cases is a sum type (a tagged struct
+or small sealed interface in Go, a discriminated union in TS), not a
+bag of optional fields or a combination of bools; a value with its own
+rules gets its own type, parsed once at the edge, not a string checked
+in several places; parallel fields or maps describing one thing are
+one record.
 
-A stale *why* is worse than none because it is trusted: when a mechanism
-changes, grep for the prose that described it. Design rationale belongs
-in `docs/`, not beside the code.
+**Minimal line count.** Do not abstract what has one use: a function,
+type, interface, constant, option struct or test helper with a single
+caller is inlined. No wrappers that only forward, no interfaces or
+swappable vars without a second implementation, no dead code or unused
+parameters. Duplicated logic is merged into one place.
+
+**Module boundaries.** Each subcomponent lives in its own module (Go
+package, TS module) and is used through its exported surface.
+`cmd/kido` wires subcommands to `internal/` packages; domain logic
+belongs in the package that owns the domain.
+
+**State.** One source of truth per fact: never hold the same fact in two
+stores (a state record and a tmux option, a Go struct and a TS copy, a
+file and an in-memory mirror). Do not store what can be derived; compute
+it when needed. Each piece of state is read and written through the one
+module that owns it.
+
+**No comments unless absolutely necessary.** Code should explain
+itself: no narration, no doc comment restating the name, no history
+("previously", "no longer", "since this fix"), no design rationale -
+that belongs in `docs/`. What remains is a verified external constraint
+the code cannot express (a tmux, pi, Claude Code or OS quirk), the
+reason for a workaround for as long as the workaround lives, and a link
+to the issue behind either.
+
+Build, compiler and formatter directives are not comments. A diagnostic
+suppression hiding a correctness failure means fixing the cause. A stale
+comment is worse than none because it is trusted: when a mechanism
+changes, grep for the prose that described it.
 
 ## Layout
 
