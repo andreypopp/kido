@@ -48,7 +48,7 @@ let install root =
   let prefix = root // "my prefix" in
   let share = prefix // "share/kido" in
   Fs.mkdir_p (prefix // "share");
-  ignore (Sh.output ~env:[] "/usr/bin/tar" [ "tar"; "-xf"; "share.tar"; "-C"; prefix // "share" ]);
+  ignore (Sh.output ~env:[] "tar" [ "tar"; "-xf"; "share.tar"; "-C"; prefix // "share" ]);
   List.iter (fun name -> ignore (recorder (prefix // "bin") name)) [ "kido"; "kido-tmux" ];
   (prefix // "bin", share, share // "bin")
 
