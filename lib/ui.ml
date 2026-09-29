@@ -395,19 +395,25 @@ let agent_title_of m (p : P.t) =
     | Some (_, { title; _ }) when not (String.is_empty title) -> Some title
     | _ -> ( match State.agent_title p.title with "" -> Some "-" | t -> Some t)
 
-let lingering_label m (p : P.t) =
-  let row lead title tail = Some { lead; title; tail; pane_id = Some p.pane_id } in
-  match Option.flat_map (fun run -> String_map.find_opt run m.snap.lingering) p.run with
-  | None -> None
-  | Some l when Option.is_none p.dead_at ->
-      row (field (indicator (Status Running))) [ plain l.name ] []
-  | Some l ->
-      row
-        (field (indicator (Gone l.outcome)))
-        [ span st_dim l.name ]
-        (Option.map_or ~default:[]
-           (fun o -> [ plain "  "; span st_dim (Subrun.string_of_result o) ])
-           l.outcome)
+let lingering_label (p : P.t) l =
+  match p.dead_at with
+  | None ->
+      {
+        lead = field (indicator (Status Running));
+        title = [ plain l.name ];
+        tail = [];
+        pane_id = Some p.pane_id;
+      }
+  | Some _ ->
+      {
+        lead = field (indicator (Gone l.outcome));
+        title = [ span st_dim l.name ];
+        tail =
+          Option.map_or ~default:[]
+            (fun o -> [ plain "  "; span st_dim (Subrun.string_of_result o) ])
+            l.outcome;
+        pane_id = Some p.pane_id;
+      }
 
 let running_command m (p : P.t) =
   match P.shell p with Running when not (interactive_pane m p) -> p.command_line | _ -> ""
@@ -415,7 +421,10 @@ let running_command m (p : P.t) =
 let pane_label m (p : P.t) =
   match agent_title_of m p with
   | None -> (
-      match lingering_label m p with
+      match
+        Option.map (lingering_label p)
+          (Option.flat_map (fun run -> String_map.find_opt run m.snap.lingering) p.run)
+      with
       | Some label -> label
       | None ->
           let cmd = running_command m p in
@@ -511,15 +520,17 @@ let order_windows_by_tree windows states lingering =
     ([], []) ordered
   |> snd
 
+let windows_in_order panes states lingering =
+  List.concat_map
+    (fun (s : P.session) ->
+      List.map (fun p -> p.panes) (order_windows_by_tree s.windows states lingering))
+    (P.order_sessions panes)
+
 let switch_window ~dir ~client ~next =
   let panes = Tmux.Exec.list_panes () in
   let states = State.by_pane (State.load_live ~dir) in
-  let lingering = lingering_subagents ~dir panes states String_map.empty in
   Tmux.Exec.switch_window ~client ~next
-    (List.concat_map
-       (fun (s : P.session) ->
-         List.map (fun p -> p.panes) (order_windows_by_tree s.windows states lingering))
-       (P.order_sessions panes))
+    (windows_in_order panes states (lingering_subagents ~dir panes states String_map.empty))
 
 let glyph i n =
   span st_dim (if n = 1 then "╶" else if i = 0 then "┌" else if i = n - 1 then "└" else "├")
@@ -745,13 +756,16 @@ let key m (k : Mosaic.Event.key) =
     else if m.opts.standalone then (m, Mosaic.Cmd.quit)
     else none (release_focus m)
   in
+  let cycle next =
+    tmux m (fun () ->
+        Tmux.Exec.switch_window ~client:m.opts.client ~next
+          (windows_in_order m.snap.panes m.snap.states m.snap.lingering))
+  in
   if m.searching && not (String.is_empty text) then none (set_filter m (m.filter ^ text))
   else
     match e.key with
-    | Down when e.modifier.shift ->
-        none (tmux m (fun () -> switch_window ~dir:m.opts.dir ~client:m.opts.client ~next:true))
-    | Up when e.modifier.shift ->
-        none (tmux m (fun () -> switch_window ~dir:m.opts.dir ~client:m.opts.client ~next:false))
+    | Down when e.modifier.shift -> none (cycle true)
+    | Up when e.modifier.shift -> none (cycle false)
     | Down | Line_feed -> none (move m 1)
     | Up -> none (move m (-1))
     | _ when ctrl 'j' || ctrl 'n' || is 'j' -> none (move m 1)
