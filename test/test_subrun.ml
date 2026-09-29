@@ -1,0 +1,234 @@
+open Kido
+
+let temp () = Filename.temp_dir "kido-runs" ""
+let id s = Result.get_exn (Subrun.parse_id s)
+
+let%expect_test "Create writes meta and task, round-tripping what was written" =
+  let dir = temp () in
+  let i = id "run-1" in
+  Subrun.create ~dir i "do the thing";
+  Subrun.write_meta ~dir
+    {
+      id = i;
+      name = "kid";
+      kind = None;
+      parent_session = "";
+      depth = 1;
+      pane = "%1";
+      pid = 0;
+      cwd = "/tmp";
+      model = "";
+      tools = [];
+      keep_alive = false;
+      started_at = Timestamp.now ();
+    };
+  let got = Option.get_exn_or "ReadMeta" (Subrun.read_meta ~dir i) in
+  Printf.printf "%s %d %s\n" got.name got.depth got.pane;
+  print_endline (Option.get_exn_or "ReadTask" (Subrun.read_task ~dir i));
+  Printf.printf "run dir exists: %b\n" (Sys.file_exists (Filename.concat dir "run-1"));
+  [%expect {|
+    kid 1 %1
+    do the thing
+    run dir exists: true
+    |}]
+
+let%expect_test "Kind round-trips" =
+  let dir = temp () in
+  let show name k =
+    let i = id name in
+    Subrun.create ~dir i "x";
+    Subrun.write_meta ~dir
+      {
+        id = i;
+        name;
+        kind = Some k;
+        parent_session = "";
+        depth = 0;
+        pane = "";
+        pid = 0;
+        cwd = "";
+        model = "";
+        tools = [];
+        keep_alive = false;
+        started_at = 0.;
+      };
+    let got = Option.get_exn_or "ReadMeta" (Subrun.read_meta ~dir i) in
+    Printf.printf "%s %s\n" name
+      (match got.kind with Some Subrun.Bash -> "bash" | Some Agent -> "agent" | None -> "none")
+  in
+  show "run-bash" Subrun.Bash;
+  show "run-agent" Subrun.Agent;
+  [%expect {|
+    run-bash bash
+    run-agent agent
+    |}]
+
+let%expect_test "Command round-trips exactly, and an empty command is refused" =
+  let dir = temp () in
+  let i = id "run-cmd" in
+  Subrun.create ~dir i "x";
+  Printf.printf "no command written: %b\n" (Option.is_none (Subrun.read_command ~dir i));
+  let argv = [ "bash"; "-c"; "echo 'it\"s' $HOME `date`\nexit 3" ] in
+  Subrun.write_command ~dir i argv;
+  let got = Option.get_exn_or "ReadCommand" (Subrun.read_command ~dir i) in
+  Printf.printf "round-trips: %b\n" (List.equal String.equal got argv);
+  Subrun.write_command ~dir i [];
+  Printf.printf "empty command refused: %b\n" (Option.is_none (Subrun.read_command ~dir i));
+  [%expect
+    {|
+    no command written: true
+    round-trips: true
+    empty command refused: true
+    |}]
+
+let%expect_test "RecordOutcome writes once; a later write is refused and the first stands" =
+  let dir = temp () in
+  let i = id "run-3" in
+  Subrun.create ~dir i "x";
+  let wrote_first =
+    Subrun.record_outcome ~dir i { result = Completed; text = ""; at = Some (Timestamp.now ()) }
+  in
+  let wrote_second =
+    Subrun.record_outcome ~dir i { result = Died; text = ""; at = Some (Timestamp.now ()) }
+  in
+  let got = Option.get_exn_or "ReadOutcome" (Subrun.read_outcome ~dir i) in
+  Printf.printf "%b %b %s\n" wrote_first wrote_second
+    (match got.result with Completed -> "completed" | _ -> "wrong");
+  [%expect {| true false completed |}]
+
+let%expect_test "WriteScreen: last writer wins, unlike RecordOutcome" =
+  let dir = temp () in
+  let i = id "run-screen" in
+  Subrun.create ~dir i "x";
+  Printf.printf "before any write: %b\n" (Option.is_none (Subrun.read_screen ~dir i));
+  Subrun.write_screen ~dir i "first capture";
+  Subrun.write_screen ~dir i "second capture";
+  print_endline (Option.get_exn_or "ReadScreen" (Subrun.read_screen ~dir i));
+  [%expect {|
+    before any write: true
+    second capture
+    |}]
+
+let%expect_test "WriteScreen: concurrent writers never leave a mixed payload" =
+  let dir = temp () in
+  let i = id "run-screen-race" in
+  Subrun.create ~dir i "x";
+  let writers = 8 in
+  let payloads = List.init writers (fun n -> String.repeat (string_of_int n) 4096) in
+  let threads =
+    List.map (fun p -> Thread.create (fun () -> Subrun.write_screen ~dir i p) ()) payloads
+  in
+  List.iter Thread.join threads;
+  let got = Option.get_exn_or "ReadScreen" (Subrun.read_screen ~dir i) in
+  Printf.printf "matches one whole payload: %b\n" (List.exists (String.equal got) payloads);
+  [%expect {| matches one whole payload: true |}]
+
+let%expect_test "ResetForResume clears outcome, screen, and (when asked) the delivered marker" =
+  let dir = temp () in
+  let i = id "run-screen-clear" in
+  Subrun.create ~dir i "x";
+  Subrun.reset_for_resume ~dir i ~delivered:true;
+  Subrun.write_screen ~dir i "captured";
+  ignore (Subrun.record_outcome ~dir i { result = Died; text = ""; at = None });
+  Fs.write (Subrun.delivered_path ~dir i) "";
+  Subrun.reset_for_resume ~dir i ~delivered:true;
+  Printf.printf "screen gone: %b\n" (Option.is_none (Subrun.read_screen ~dir i));
+  Printf.printf "outcome gone: %b\n" (Option.is_none (Subrun.read_outcome ~dir i));
+  Printf.printf "delivered gone: %b\n" (not (Sys.file_exists (Subrun.delivered_path ~dir i)));
+  [%expect {|
+    screen gone: true
+    outcome gone: true
+    delivered gone: true
+    |}]
+
+let%expect_test "ResetForResume keeps the delivered marker unless asked" =
+  let dir = temp () in
+  let i = id "run-screen-clear-2" in
+  Subrun.create ~dir i "x";
+  Fs.write (Subrun.delivered_path ~dir i) "";
+  Subrun.reset_for_resume ~dir i ~delivered:false;
+  Printf.printf "delivered kept: %b\n" (Sys.file_exists (Subrun.delivered_path ~dir i));
+  [%expect {| delivered kept: true |}]
+
+let%expect_test "EffectiveOutcome: still running when alive and unrecorded" =
+  let dir = temp () in
+  let i = id "run-4" in
+  Subrun.create ~dir i "x";
+  Printf.printf "%b\n" (Option.is_none (Subrun.effective_outcome ~dir i ~pid:(Unix.getpid ())));
+  [%expect {| true |}]
+
+let dead_pid () =
+  let pid = Unix.create_process "true" [| "true" |] Unix.stdin Unix.stdout Unix.stderr in
+  ignore (Unix.waitpid [] pid);
+  pid
+
+let%expect_test "EffectiveOutcome: Died when dead and unrecorded, never Completed" =
+  let dir = temp () in
+  let i = id "run-5" in
+  Subrun.create ~dir i "x";
+  let got =
+    Option.get_exn_or "EffectiveOutcome" (Subrun.effective_outcome ~dir i ~pid:(dead_pid ()))
+  in
+  Printf.printf "%s\n" (match got.result with Died -> "died" | _ -> "wrong");
+  [%expect {| died |}]
+
+let%expect_test "EffectiveOutcome prefers a recorded outcome over a guess" =
+  let dir = temp () in
+  let i = id "run-6" in
+  Subrun.create ~dir i "x";
+  ignore
+    (Subrun.record_outcome ~dir i { result = Stopped; text = ""; at = Some (Timestamp.now ()) });
+  let got =
+    Option.get_exn_or "EffectiveOutcome" (Subrun.effective_outcome ~dir i ~pid:(dead_pid ()))
+  in
+  Printf.printf "%s\n" (match got.result with Stopped -> "stopped" | _ -> "wrong");
+  [%expect {| stopped |}]
+
+let%expect_test "List returns the run directories under dir" =
+  let dir = temp () in
+  Subrun.create ~dir (id "a") "x";
+  Subrun.create ~dir (id "b") "x";
+  Printf.printf "%d\n" (List.length (Subrun.list ~dir));
+  [%expect {| 2 |}]
+
+let%expect_test "ReadMeta: missing, truncated, or malformed JSON each read as None, not a crash" =
+  let dir = temp () in
+  let i = id "run-bad" in
+  Subrun.create ~dir i "x";
+  Printf.printf "no meta written: %b\n" (Option.is_none (Subrun.read_meta ~dir i));
+  Fs.write (Filename.concat dir "run-bad/meta.json") {|{"id":"run-bad","name":|};
+  Printf.printf "truncated: %b\n" (Option.is_none (Subrun.read_meta ~dir i));
+  Fs.write (Filename.concat dir "run-bad/meta.json") {|["not", "an", "object"]|};
+  Printf.printf "array: %b\n" (Option.is_none (Subrun.read_meta ~dir i));
+  [%expect {|
+    no meta written: true
+    truncated: true
+    array: true
+    |}]
+
+let%expect_test "ParseID refuses path traversal" =
+  List.iter
+    (fun s -> Printf.printf "%-10S %b\n" s (Result.is_error (Subrun.parse_id s)))
+    [ ""; "."; ".."; "../evil"; "a/b"; "..\\evil"; ".hidden" ];
+  [%expect
+    {|
+    ""         true
+    "."        true
+    ".."       true
+    "../evil"  true
+    "a/b"      true
+    "..\\evil" true
+    ".hidden"  true
+    |}]
+
+let%expect_test "screen truncation keeps the tail" =
+  let short = String.repeat "x" 100 in
+  Printf.printf "short unchanged: %b\n" (String.equal short (Subrun.truncate_screen short));
+  let long = String.repeat "y" (Subrun.max_screen_bytes + 10) in
+  let truncated = Subrun.truncate_screen long in
+  Printf.printf "%d %b\n" (String.length truncated)
+    (String.equal (String.repeat "y" Subrun.max_screen_bytes) truncated);
+  [%expect {|
+    short unchanged: true
+    65536 true
+    |}]
