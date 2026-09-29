@@ -10,34 +10,25 @@ import (
 	"kido/internal/msg"
 )
 
-// TestAsyncBashStreamCoalescesAndEndsWithTheNotice is streaming end to
-// end, and what it asserts is the shape of the traffic rather than any
-// one envelope: twenty lines reach the parent as far fewer than twenty
-// envelopes (coalescing, which is the whole reason a line is not an
-// envelope - one queued message is one LLM turn under pi's default
-// drain), every one of them before the single completion notice (the
-// ordering the wire cannot give, since it has one connection per message
-// and no sequencing), and that notice names the run and its exit status.
+// Asserts the shape of the traffic, not any one envelope: twenty lines
+// must reach the parent as far fewer than twenty envelopes (coalescing -
+// one queued message is one LLM turn under pi's default drain), all of
+// them before the single completion notice (an ordering the wire cannot
+// give on its own, one connection per message with no sequencing), and
+// that notice must name the run and its exit status.
 //
-// The command's own idle duration (lines*writeEvery, about a second) is
-// what the notice wait is scaled off, not the debounce-driven `settle`
-// every other wait in this suite uses: a command already running close
-// to that bound has no debounce to wait out, only a slow machine to
-// finish on, and 5s was found to be too tight for that alone.
+// The notice wait is scaled off the command's own idle duration
+// (lines*writeEvery), not the debounce-driven `settle` every other wait
+// uses: a command already running close to that bound has only a slow
+// machine to finish on.
 //
 // The batch window is set far wider than writeEvery, and the envelope
 // budget is judged against the number of windows the run actually
 // spanned (elapsed/batch + 2, cmd/kido/async_stream_test.go's
 // TestStreamCoalescesAndStripsAnsi): on a loaded runner a 50ms gap
-// between lines can stretch well past a 100ms window, and a fixed
-// count of envelopes then measures how far it stretched rather than
-// whether the wrapper batches at all. It is set on this test's own
-// inner server (like ZDOTDIR elsewhere in this suite), not in the
-// shared harness config, because no other e2e test drives --stream.
-//
-// Watched over a span rather than sampled once, for the reason
-// stableCount gives: one notice and the first of two are identical at any
-// instant.
+// between lines can stretch well past a 100ms window, and a fixed count
+// of envelopes would then measure how far it stretched, not whether the
+// wrapper batches at all.
 func TestAsyncBashStreamCoalescesAndEndsWithTheNotice(t *testing.T) {
 	t.Parallel()
 	const lines = 20
@@ -56,10 +47,7 @@ func TestAsyncBashStreamCoalescesAndEndsWithTheNotice(t *testing.T) {
 	h.waitFor(func() bool { return lastNotice(h, in) != "" }, noticeWait,
 		msgf("the parent's inbox to receive the run's completion notice"))
 	elapsed := time.Since(runStart)
-	// The notice is the wrapper's last act, but the chunks before it were
-	// sent by the same process in the same order, so nothing can still be
-	// in flight behind it.
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond) // the notice is last, but let anything ahead of it land too
 
 	var chunks, notices int
 	var notice msg.Envelope
@@ -83,9 +71,7 @@ func TestAsyncBashStreamCoalescesAndEndsWithTheNotice(t *testing.T) {
 	if chunks == 0 {
 		t.Fatalf("no output was streamed at all; the inbox holds %d envelopes", len(in.Received()))
 	}
-	// A batching wrapper can send at most one chunk per window the run
-	// spanned, plus the one its close flushes. A wrapper sending one
-	// envelope per line sends all of them however long the run took.
+	// At most one chunk per window the run spanned, plus the close flush.
 	want := int(elapsed/batch) + 2
 	if chunks > want {
 		t.Errorf("%d lines arrived as %d envelopes over %v, want at most %d: a chunk is a %v window's worth of output, not a line", lines, chunks, elapsed, want, batch)
@@ -99,8 +85,6 @@ func TestAsyncBashStreamCoalescesAndEndsWithTheNotice(t *testing.T) {
 	}
 }
 
-// lastNotice is the text of the completion notice in in, or "" while
-// there is none.
 func lastNotice(h *harness, in interface{ Received() []string }) string {
 	h.t.Helper()
 	for _, raw := range in.Received() {

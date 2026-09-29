@@ -9,11 +9,9 @@ import (
 	"testing"
 )
 
-// TestWindowFocusedCmd checks `kido window-focused` against a real
-// server: the window the client is actually looking at reads "true", and
-// any other window "false" - the same tmux.WindowFocused test the linger
-// helper and the sweep already share, now callable by pi/kido-agents.ts's
-// idle self-exit timer before it decides to shut a session down.
+// The window the client is actually looking at reads "true", any other
+// "false" - callable by pi/kido-agents.ts's idle self-exit timer before
+// it shuts a session down.
 func TestWindowFocusedCmd(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -30,15 +28,13 @@ func TestWindowFocusedCmd(t *testing.T) {
 	}
 }
 
-// firstLine strips runKido's own trailing "rc=N" line, added by its
-// script after the command's real output.
+// firstLine strips runKido's own trailing "rc=N" line.
 func firstLine(s string) string {
 	return strings.SplitN(strings.TrimSpace(s), "\n", 2)[0]
 }
 
-// TestSpawnKeepAliveSetsEnv checks that `kido spawn_subagent --keep-alive` reaches
-// the child's environment as KIDO_AGENT_KEEP_ALIVE=1, the one thing
-// pi/kido-agents.ts reads to opt a subagent out of idle self-exit.
+// --keep-alive reaches the child's environment as KIDO_AGENT_KEEP_ALIVE=1,
+// the one thing pi/kido-agents.ts reads to opt out of idle self-exit.
 func TestSpawnKeepAliveSetsEnv(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -63,18 +59,13 @@ func TestSpawnKeepAliveSetsEnv(t *testing.T) {
 	}
 }
 
-// TestSpawnResumeRecreatesWindowBoundToSameRun drives `kido spawn_subagent
-// --resume` against a real server: a run whose window has already died
-// and been swept (outcome "died") gets a brand new window, marked for the
-// same run id, with the stale outcome cleared so the run reads as running
-// again - the whole point being that this is the same run continuing, not
-// a second one.
+// A run whose window died and was swept (outcome "died") gets a brand
+// new window marked for the same run id, with the stale outcome cleared:
+// the same run continuing, not a second one.
 //
-// pi is not available in CI, so the launched command is a fake one (as
-// every other spawn e2e test uses); PI_CODING_AGENT_SESSION_DIR is set to
-// a directory this test controls, holding a file at the exact path
-// piSessionFileExists (spawn_subagent.go) computes, standing in for pi's own project
-// session directory.
+// pi is not available in CI, so the launched command is a fake one; the
+// session dir holds a file at the exact path piSessionFileExists
+// (spawn_subagent.go) computes, standing in for pi's project session dir.
 func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -84,11 +75,8 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 	h.killPane(paneID)
 	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
 		msgf("the sweep to close window %s", windowID))
-	// runOutcome (runs_test.go) always reads back through the same
-	// runID+"-show.out" file; called a second time below, after resuming,
-	// it would otherwise risk reading this first call's leftover output
-	// before the second `kido runs` invocation has overwritten it. A
-	// distinct outFile per call, via runOutcomeNamed, avoids that race.
+	// runOutcomeNamed, not runOutcome, so the second call below does not risk
+	// reading this call's leftover output file before it is overwritten.
 	if got := h.runOutcomeNamed("before", runID); got != "died" {
 		t.Fatalf("run %s outcome = %q, want %q before resuming", runID, got, "died")
 	}
@@ -138,9 +126,8 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 	}
 }
 
-// runOutcomeNamed is runOutcome (runs_test.go) with an explicit tag on the
-// output file, for a test that checks the same run id's outcome more than
-// once and cannot let two calls share one file.
+// runOutcomeNamed is runOutcome (runs_test.go) with a tag on the output
+// file, for a test checking one run id's outcome more than once.
 func (h *harness) runOutcomeNamed(tag, runID string) string {
 	h.t.Helper()
 	out := h.runKido("alpha", runID+"-"+tag+"-show.out", "runs", "--json", runID)
@@ -152,9 +139,8 @@ func (h *harness) runOutcomeNamed(tag, runID string) string {
 	return info.Outcome
 }
 
-// TestSpawnResumeRefusesLiveRun checks the refusal from inside a real
-// server: a run whose window is still up (never swept, no outcome) must
-// not be resumed out from under itself.
+// A run whose window is still up (never swept, no outcome) must not be
+// resumed out from under itself.
 func TestSpawnResumeRefusesLiveRun(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -170,14 +156,8 @@ func TestSpawnResumeRefusesLiveRun(t *testing.T) {
 
 // spawnRecordedRun is the fixture the two carry tests below share: a run
 // spawned with a tool allowlist and keepAlive, then ended so it can be
-// resumed at all. It returns the run's id and the directory holding the
-// pi session file `--resume` insists on (spawn_subagent.go's
-// piSessionFileExists), which the caller passes back in through
-// PI_CODING_AGENT_SESSION_DIR.
-//
-// What the first attempt actually ran does not matter here - only what
-// the run recorded - so it is the same fake command every other spawn
-// test uses.
+// resumed. Returns the run id and the session dir `--resume` insists on
+// (spawn_subagent.go's piSessionFileExists).
 func (h *harness) spawnRecordedRun(name string) (runID, sessDir string) {
 	h.t.Helper()
 	h.liveParent("alpha", "root-e2e")
@@ -193,8 +173,7 @@ func (h *harness) spawnRecordedRun(name string) (runID, sessDir string) {
 	}
 	windowID, runID := fields[0], fields[2]
 
-	// Resuming a live run is refused, so the first attempt has to be over:
-	// kill it and let the sweep close its window and record the outcome.
+	// Resuming a live run is refused, so the first attempt must be over first.
 	h.killPane(h.in("list-panes", "-t", windowID, "-F", "#{pane_id}"))
 	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
 		msgf("the sweep to close window %s", windowID))
@@ -209,12 +188,9 @@ func (h *harness) spawnRecordedRun(name string) (runID, sessDir string) {
 	return runID, sessDir
 }
 
-// TestSpawnResumeCarriesKeepAlive: a deliberately long-lived helper that
-// came back arming the thirty-second idle timer it was spawned to opt out
-// of was not the helper that was spawned. The unit test reads the
-// environment kido asked tmux for; here the resumed child reports what it
-// actually got, and nothing on the resume command line says keepAlive -
-// it can only have come from the run's own record.
+// Nothing on the resume command line says keepAlive; it can only have
+// come from the run's own record, and the resumed child reports what it
+// actually got, not what kido asked tmux for.
 func TestSpawnResumeCarriesKeepAlive(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -236,21 +212,13 @@ func TestSpawnResumeCarriesKeepAlive(t *testing.T) {
 	}
 }
 
-// TestSpawnResumeCarriesToolsOntoThePiCommandLine is the other half, and
-// the more important one: a narrow toolset is the blast-radius bound the
-// depth ceiling is not, and a resume that quietly handed the full set back
-// widened it without anyone asking.
+// A narrow toolset is a blast-radius bound the depth ceiling is not; a
+// resume that quietly handed the full set back would widen it unasked.
 //
 // The allowlist is spelled onto the command line only when the command is
-// literally `pi`, so this resume names none - which leaves the pane's
-// fate to whether that bare name resolves on the machine running the
-// suite. Where it does not, the pane exits before kido's second tmux call
-// sets remain-on-exit and the window is gone with it (the race noted in
-// internal/tmux/tmux.go), so the resume fails outright. Hence the fake pi
-// below, on this server's PATH alone: a live pane, whatever is installed.
-//
-// Read back via startCommand, which is the better witness either way -
-// see its doc comment.
+// literally `pi`; whether that name resolves decides whether the pane
+// lives long enough to set remain-on-exit (internal/tmux/tmux.go's
+// race), so this test's own fake pi goes on this server's PATH alone.
 func TestSpawnResumeCarriesToolsOntoThePiCommandLine(t *testing.T) {
 	t.Parallel()
 	h := startPathPrefix(t, "alpha", piBinDir)

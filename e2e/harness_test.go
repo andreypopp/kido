@@ -150,19 +150,12 @@ func setup(m *testing.M) (int, error) {
 	return m.Run(), nil
 }
 
-// buildFakeAgent compiles a binary with the given name that sleeps: tmux
-// reports it as pane_current_command, which is what kido keys off for
-// panes without hook state and for `kido snapshot`. (Copying /bin/sleep
-// does not work on macOS: the copy fails its code signature.) It also
-// echoes every line it reads from stdin before going back to waiting, so
-// a test can drive a claudePane with send-keys and read back what arrived
-// (see TestPrompt*).
-//
-// Two of those lines are commands rather than text: they redraw the pane
-// as the real Claude Code draws it, because kido reads a waiting pane's
-// screen to notice a dismissed prompt (internal/ui/screen.go). The fake
-// starts showing a question dialog, "busy" switches to the input box with
-// work still in flight, and "esc" to the input box with nothing running.
+// buildFakeAgent compiles a binary named name that sleeps (copying
+// /bin/sleep fails code signing on macOS) and echoes every stdin line it
+// reads, so a test can drive a claudePane with send-keys and read back
+// what arrived. Two lines are commands instead: "busy" and "esc" redraw
+// the pane as real Claude Code would, since kido reads a waiting pane's
+// screen to notice a dismissed prompt (internal/ui/screen.go).
 func buildFakeAgent(srcRoot, outDir, name string) (string, error) {
 	src := filepath.Join(srcRoot, "fakeagent-"+name)
 	if err := os.MkdirAll(src, 0o755); err != nil {
@@ -179,14 +172,11 @@ import (
 
 const rule = "────────────────────────────────────────"
 
-// box is Claude Code's input box: two rules around the prompt line, then
-// a footer that offers to interrupt only while something is running.
 func box(footer string) {
 	fmt.Printf("\n%s\n❯ \n%s\n  %s\n", rule, rule, footer)
 }
 
 func main() {
-	// A question dialog: the box is gone, so the pane reads as blocked.
 	fmt.Print("\nDo you prefer tea or coffee?\n\n❯ 1. Tea\n  2. Coffee\n\n" +
 		"Enter to select · Esc to cancel\n")
 	sc := bufio.NewScanner(os.Stdin)
@@ -206,9 +196,7 @@ func main() {
 	if err := os.WriteFile(filepath.Join(src, "main.go"), []byte(main), 0o644); err != nil {
 		return "", err
 	}
-	// Building a named file needs no go.mod: the source imports only the
-	// standard library.
-	out := filepath.Join(outDir, name)
+	out := filepath.Join(outDir, name) // no go.mod needed: stdlib only
 	cmd := exec.Command("go", "build", "-o", out, "main.go")
 	cmd.Dir = src
 	if b, err := cmd.CombinedOutput(); err != nil {
@@ -217,19 +205,14 @@ func main() {
 	return out, nil
 }
 
-// cleanEnv is this process's environment with KIDO_TMUX and every
-// KIDO_AGENT_* removed, plus extra. Everything the harness spawns gets
-// it: KIDO_TMUX would otherwise reach kido through the tmux servers it
-// starts, and kido must resolve the tmux binary on its own.
+// cleanEnv strips KIDO_TMUX, so kido must resolve the tmux binary on its
+// own rather than through the harness's, and every KIDO_AGENT_*, so a
+// test run from inside a tracked agent's pane does not leak that parent
+// edge into everything the harness spawns (including the inner server,
+// whose own environment is what new-window hands a spawned child).
 func cleanEnv(extra ...string) []string {
 	env := make([]string, 0, len(os.Environ())+len(extra))
 	for _, kv := range os.Environ() {
-		// KIDO_AGENT_* goes too, and not only for tidiness: the suite is
-		// routinely run from inside a tracked agent's pane, which carries a
-		// whole parent edge, and everything this harness starts inherits it -
-		// including the inner tmux server, whose own environment is what
-		// new-window gives a spawned child. A test asserting a child has no
-		// parent edge would then be answered by the developer's own.
 		if !strings.HasPrefix(kv, "KIDO_TMUX=") && !strings.HasPrefix(kv, "KIDO_AGENT_") {
 			env = append(env, kv)
 		}
@@ -237,7 +220,6 @@ func cleanEnv(extra ...string) []string {
 	return append(env, extra...)
 }
 
-// findTmux locates a tmux that has the side status column.
 func findTmux() (bin, why string) {
 	bin = os.Getenv("KIDO_TMUX")
 	if bin == "" {
@@ -344,41 +326,20 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 		args = " " + strings.Join(kidoArgs, " ")
 	}
 	conf := filepath.Join(h.dir, "inner.conf")
-	// KIDO_STATE_DIR goes into the inner server's global environment, from
-	// its config file, so it is set before any session exists: every pane
-	// of every inner session inherits it, as does the side-status-command
-	// job the server runs itself, and a test that types a `kido ...`
-	// command into a pane cannot silently read and write the developer's
-	// real ~/.local/state/kido. This is the only place the inner server
-	// learns it; the only copies left are h.hook and h.agentStatus, which
-	// run out of band from the test binary rather than in the server.
-	// KIDO_LINGER_SECONDS shortens the window-lifecycle grace the same way
-	// for everything the inner server runs: the sidebar's own reaper
-	// (internal/reap) and any `kido reap` or linger helper a test drives.
-	// A real 30s read window would put every lifecycle test past the
-	// 5s settle, and shortening it in one process only would leave the
-	// two halves disagreeing about when a window is finished with.
-	// KIDO_STALL_THRESHOLD_MS shortens state.StallThreshold the same way,
-	// for state.Stalled and the sidebar's stalled indicator: a real 3
-	// minutes would put a stall test well past any reasonable timeout. 3s
-	// rather than something closer to it: several other tests in this
-	// suite (TestClaudeBackgroundWork, TestPiBeatsClaudeOnTheSamePane,
-	// TestClaudeSubagentMidTurn) report a status once and then sleep up to
-	// a full second before checking it is still shown running, and this
-	// setting is global to every inner server this harness starts - a
-	// shorter threshold marked their panes stalled too.
-	// KIDO_STREAM_* shorten the streaming wrapper's batch interval and the
-	// backoff it takes after a failed send, in the same one place and for
-	// the same reason: the wrapper is a `kido async-run` the inner server
-	// started, and a real 250ms batch would have a test of coalescing
-	// waiting out the settle for a handful of chunks.
-	// The shipped defaults first, byte for byte (tmux/kido-tmux.conf via
-	// tmuxconf.Defaults), the same as a real launch writes them
-	// (cmd/kido/launch.go writeServerConf) - so K, k, S-Up/S-Down and C-s
-	// are the bindings this suite actually exercises. The harness's own
-	// settings come after, so they win where they repeat a default (the
-	// side-status-width and side-status-command lines below are exactly
-	// such overrides).
+	// KIDO_STATE_DIR is set in the inner server's global environment before
+	// any session exists, so every pane and the side-status-command job
+	// itself inherit it rather than touching the developer's real state
+	// dir; h.hook and h.agentStatus set their own copies out of band.
+	// KIDO_LINGER_SECONDS/KIDO_STALL_THRESHOLD_MS/KIDO_STREAM_* shorten the
+	// window-lifecycle grace, state.StallThreshold and the streaming
+	// wrapper's batch/backoff the same way for everything the inner server
+	// runs, so real production values (30s, 3min, 250ms) don't put every
+	// timing test past the 5s settle; global per server, so 3s (not
+	// shorter) leaves room for tests that sleep up to a second before
+	// checking a status is still shown running.
+	// The shipped defaults are written first, byte for byte
+	// (tmux/kido-tmux.conf via tmuxconf.Defaults, as a real launch does),
+	// then the harness's own overrides.
 	prefix := serverPathPrefix
 	if pathDir != "" {
 		prefix = pathDir + string(os.PathListSeparator) + prefix
@@ -406,18 +367,12 @@ set -g side-status-command "%s%s"
 	}
 
 	t.Cleanup(func() {
-		// kido's control client must die with kido: a leak here means an
-		// orphaned "tmux -C" holding a socket open. Ask the inner server
-		// itself which pids are its own control clients, rather than
-		// scanning the whole machine's process table: a control client
-		// belonging to some other tmux server started during this test
-		// (another agent's session, say) is not this test's problem, and
-		// a machine-wide scan cannot tell the two apart.
+		// Asked of the inner server itself, not a machine-wide process scan,
+		// which could not distinguish this server's control client from one
+		// belonging to some other tmux server started during the test.
 		pids := controlClientPIDs(h.inner)
-		// A second concurrent control-mode client on this server is a real
-		// bug: Conn's supervise loop kills the old child before dialling a
-		// new one (internal/tmux/conn.go), so anything beyond one means a
-		// redial forgot to reap what came before it.
+		// More than one is a real bug: Conn's supervise loop kills the old
+		// child before dialling a new one (internal/tmux/conn.go).
 		if len(pids) > 1 {
 			t.Errorf("more than one control client attached to %s: %v", h.inner, pids)
 		}
@@ -432,11 +387,9 @@ set -g side-status-command "%s%s"
 
 	h.must(h.tmux(h.outer, "-f", "/dev/null", "new-session", "-d", "-s", "host",
 		"-x", strconv.Itoa(outerCols), "-y", strconv.Itoa(outerRows)))
-	// CI no longer installs ncurses-term, so screen-256color (always
-	// present) is the only terminfo the inner tmux can open on Ubuntu.
+	// screen-256color: the only terminfo CI's Ubuntu (no ncurses-term) has.
 	h.must(h.tmux(h.outer, "set-option", "-g", "default-terminal", "screen-256color"))
-	// remain-on-exit keeps a dead client's error on screen, not vanishing.
-	h.must(h.tmux(h.outer, "set-option", "-g", "remain-on-exit", "on"))
+	h.must(h.tmux(h.outer, "set-option", "-g", "remain-on-exit", "on")) // keep a dead client's error on screen
 	inner := fmt.Sprintf("PATH=%q:$PATH; export PATH; unset TMUX; exec %q -L %s -f %q new-session -s %s -c %q",
 		prefix, tmuxBin, h.inner, conf, session, h.dir)
 	h.must(h.tmux(h.outer, "new-window", "-d", "-t", "host", "-n", "side", inner))
@@ -522,7 +475,6 @@ func (h *harness) must(out string, err error) string {
 	return out
 }
 
-// in runs a command on the inner server (the one under test).
 func (h *harness) in(args ...string) string {
 	h.t.Helper()
 	return h.must(h.tmux(h.inner, args...))
@@ -537,14 +489,13 @@ func (h *harness) startCommand(windowID string) string {
 	return h.in("display-message", "-p", "-t", windowID, "#{pane_start_command}")
 }
 
-// out runs a command on the outer server (the one holding the pty).
 func (h *harness) out(args ...string) string {
 	h.t.Helper()
 	return h.must(h.tmux(h.outer, args...))
 }
 
-// sendKeys sends keys to the inner client's pty, one send-keys call per
-// key: tmux drops keys batched with the prefix.
+// sendKeys sends one send-keys call per key: tmux drops keys batched
+// with the prefix.
 func (h *harness) sendKeys(keys ...string) {
 	h.t.Helper()
 	for _, k := range keys {
@@ -553,14 +504,12 @@ func (h *harness) sendKeys(keys ...string) {
 	}
 }
 
-// sendLiteral types text as-is.
 func (h *harness) sendLiteral(s string) {
 	h.t.Helper()
 	h.out("send-keys", "-t", "host:side", "-l", s)
 	time.Sleep(60 * time.Millisecond)
 }
 
-// prefix sends the tmux prefix (C-b) followed by key.
 func (h *harness) prefix(key string) {
 	h.t.Helper()
 	h.sendKeys("C-b")
@@ -588,8 +537,6 @@ func (h *harness) click(x, y int) {
 func (h *harness) wheelUp(x, y int)   { h.t.Helper(); h.mouseSeq(64, x, y, true) }
 func (h *harness) wheelDown(x, y int) { h.t.Helper(); h.mouseSeq(65, x, y, true) }
 
-// drag presses at fromX, moves through the intermediate columns and
-// releases at toX, all on row y.
 func (h *harness) drag(fromX, toX, y int) {
 	h.t.Helper()
 	h.mouseSeq(0, fromX, y, true)
@@ -629,7 +576,6 @@ func indField(glyph string) string {
 	return glyph + " "
 }
 
-// hasSGR reports whether line switches on the SGR attribute param.
 func hasSGR(line, param string) bool {
 	re, ok := sgrOn[param]
 	if !ok {
@@ -638,7 +584,6 @@ func hasSGR(line, param string) bool {
 	return re.MatchString(line)
 }
 
-// capture returns the outer pane's screen with escape sequences kept.
 func (h *harness) capture() []string {
 	h.t.Helper()
 	out, err := h.tmux(h.outer, "capture-pane", "-p", "-e", "-t", "host:side")
@@ -648,10 +593,9 @@ func (h *harness) capture() []string {
 	return strings.Split(out, "\n")
 }
 
-// sideOf cuts the side column (everything left of the separator) out of a
-// captured line, escape sequences and all. The separator rune cannot occur
-// inside an escape, so cutting before stripping is safe and keeps the
-// window area's attributes out of the SGR checks.
+// sideOf cuts the side column out of a captured line, escape sequences
+// and all; the separator rune cannot occur inside an escape, so cutting
+// before stripping keeps the window area's attributes out of SGR checks.
 func sideOf(line string) string {
 	if i := strings.IndexRune(line, '│'); i >= 0 {
 		return line[:i]
@@ -659,10 +603,8 @@ func sideOf(line string) string {
 	return line
 }
 
-// sideText is one captured line as the side column's plain text.
 func sideText(line string) string { return strings.TrimSpace(ansi.Strip(sideOf(line))) }
 
-// sidebarOf is sideText over a captured screen.
 func sidebarOf(lines []string) []string {
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -671,10 +613,8 @@ func sidebarOf(lines []string) []string {
 	return out
 }
 
-// sidebar returns the side column's text lines.
 func (h *harness) sidebar() []string { return sidebarOf(h.capture()) }
 
-// separatorAt reports whether the column separator sits at column w.
 func (h *harness) separatorAt(w int) bool {
 	h.t.Helper()
 	for _, line := range h.capture() {
@@ -686,11 +626,8 @@ func (h *harness) separatorAt(w int) bool {
 	return false
 }
 
-// sidebarVisible reports whether the column's separator line is on screen:
-// with the column hidden the window area starts at the first column.
 func (h *harness) sidebarVisible() bool { return h.separatorAt(sideWidth) }
 
-// rowsOf keeps the non-empty side column lines of a captured screen.
 func rowsOf(lines []string) []string {
 	var out []string
 	for _, l := range sidebarOf(lines) {
@@ -701,10 +638,8 @@ func rowsOf(lines []string) []string {
 	return out
 }
 
-// rows returns the non-empty side column lines.
 func (h *harness) rows() []string { return rowsOf(h.capture()) }
 
-// selectedRowOf returns the text of the row kido draws in reverse video.
 func selectedRowOf(lines []string) string {
 	for _, line := range lines {
 		if hasSGR(sideOf(line), "7") {
@@ -714,8 +649,6 @@ func selectedRowOf(lines []string) string {
 	return ""
 }
 
-// selectedIndexOf is the screen line (1-based, as the mouse counts) of the
-// reverse-video row, or 0.
 func selectedIndexOf(lines []string) int {
 	for i, line := range lines {
 		if hasSGR(sideOf(line), "7") {
@@ -728,7 +661,6 @@ func selectedIndexOf(lines []string) int {
 func (h *harness) selectedRow() string { h.t.Helper(); return selectedRowOf(h.capture()) }
 func (h *harness) selectedIndex() int  { h.t.Helper(); return selectedIndexOf(h.capture()) }
 
-// waitSelectedLine waits until the reverse-video row is screen line n.
 func (h *harness) waitSelectedLine(n int) {
 	h.t.Helper()
 	h.waitFor(func() bool { return h.selectedIndex() == n }, settle, func() string {
@@ -738,7 +670,6 @@ func (h *harness) waitSelectedLine(n int) {
 	})
 }
 
-// isBold reports whether the sidebar line containing sub is rendered bold.
 func (h *harness) isBold(sub string) bool {
 	h.t.Helper()
 	for _, line := range h.capture() {
@@ -758,8 +689,6 @@ func hasLine(lines []string, sub string) bool {
 	return false
 }
 
-// rowIndexOf is the screen row (1-based, as the mouse counts) of the first
-// side column line containing sub, or 0.
 func rowIndexOf(lines []string, sub string) int {
 	for i, l := range sidebarOf(lines) {
 		if strings.Contains(l, sub) {
@@ -793,10 +722,7 @@ func (h *harness) waitFor(cond func() bool, timeout time.Duration, describe func
 	}
 }
 
-// diagnose renders a compact snapshot of both servers for a failed
-// waitFor: what the outer pane shows (with the escapes tmux emitted made
-// visible), whether that pane died and why, and the inner server's
-// sessions.
+// diagnose renders a compact snapshot of both servers for a failed waitFor.
 func (h *harness) diagnose() string {
 	h.t.Helper()
 	var b strings.Builder
@@ -808,8 +734,7 @@ func (h *harness) diagnose() string {
 		}
 		fmt.Fprintln(&b, "  "+strings.ReplaceAll(l, "\x1b", "^["))
 	}
-	// h.in and friends would fail the test from inside diagnose(); go
-	// straight through h.tmux, which only returns an error.
+	// h.in would fail the test from inside diagnose(); use h.tmux directly.
 	report := func(label string, args ...string) {
 		out, err := h.tmux(h.inner, args...)
 		if err != nil {
@@ -828,14 +753,12 @@ func (h *harness) diagnose() string {
 	return b.String()
 }
 
-// waitRow waits until a sidebar line contains sub.
 func (h *harness) waitRow(sub string) {
 	h.t.Helper()
 	h.waitFor(func() bool { return hasLine(h.sidebar(), sub) }, settle,
 		msgf("row %q", sub))
 }
 
-// waitRows waits until the column holds exactly n non-empty rows.
 func (h *harness) waitRows(n int) {
 	h.t.Helper()
 	h.waitFor(func() bool { return len(h.rows()) == n }, settle, func() string {
@@ -843,7 +766,6 @@ func (h *harness) waitRows(n int) {
 	})
 }
 
-// waitSelected waits until the reverse-video row contains sub.
 func (h *harness) waitSelected(sub string) {
 	h.t.Helper()
 	h.waitFor(func() bool { return strings.Contains(h.selectedRow(), sub) }, settle,
@@ -911,7 +833,6 @@ func (h *harness) panes() []paneInfo {
 	return ps
 }
 
-// newSession creates an inner session and waits for it in the sidebar.
 func (h *harness) newSession(name string) {
 	h.t.Helper()
 	h.in("new-session", "-d", "-s", name, "-c", h.dir)
@@ -938,7 +859,6 @@ func (h *harness) newWindow(session, name string, argv ...string) string {
 	return h.in(append(args, argv...)...)
 }
 
-// waitPaneCommand waits until pane id runs cmd as its foreground process.
 func (h *harness) waitPaneCommand(id, cmd string) {
 	h.t.Helper()
 	h.waitFor(func() bool {
@@ -951,8 +871,6 @@ func (h *harness) waitPaneCommand(id, cmd string) {
 	}, settle, msgf("pane %s running %s", id, cmd))
 }
 
-// waitPanePrompt waits until pane id has reported an OSC 133 prompt, the
-// one reading that says an integrated shell is up and listening.
 func (h *harness) waitPanePrompt(id string) {
 	h.t.Helper()
 	h.waitFor(func() bool {
@@ -983,12 +901,9 @@ func (h *harness) sshProxy() string {
 	return h.proxy
 }
 
-// hook runs `kido hook` with the payload built from event and the extra
-// key/value pairs, reporting for pane. The hook records its parent pid,
-// which is this test binary: alive for the whole run, so the state file
-// stays valid. It runs out of band, straight from the test binary rather
-// than inside the inner server, so it carries KIDO_STATE_DIR itself
-// instead of inheriting it the way a pane does.
+// hook runs `kido hook` out of band from the test binary (whose pid it
+// records, so the state file stays valid for the whole run), and so
+// carries KIDO_STATE_DIR itself instead of inheriting it as a pane does.
 func (h *harness) hook(sessionID, pane, event string, kv ...string) {
 	h.t.Helper()
 	payload := map[string]any{}
@@ -998,9 +913,8 @@ func (h *harness) hook(sessionID, pane, event string, kv ...string) {
 	h.hookPayload(sessionID, pane, event, payload)
 }
 
-// hookPayload is hook for a payload whose fields are not all strings:
-// background_tasks is a list of objects, so it cannot go through hook's
-// key/value pairs.
+// hookPayload is hook for a payload with non-string fields (e.g.
+// background_tasks, a list of objects).
 func (h *harness) hookPayload(sessionID, pane, event string, payload map[string]any) {
 	h.t.Helper()
 	payload["hook_event_name"] = event
@@ -1017,10 +931,8 @@ func (h *harness) hookPayload(sessionID, pane, event string, payload map[string]
 	}
 }
 
-// agentStatus runs `kido agent-status` for pane, the way an agent that is
-// not Claude Code reports itself. extra carries any further flags
-// (--ended, --remove, --title). Like the hook, it runs out of band from
-// the test binary.
+// agentStatus runs `kido agent-status`, the way a non-Claude-Code agent
+// reports itself, out of band like hook.
 func (h *harness) agentStatus(sessionID, pane, agent, status string, extra ...string) {
 	h.t.Helper()
 	args := []string{"agent-status", "--agent", agent, "--session", sessionID}
@@ -1034,16 +946,11 @@ func (h *harness) agentStatus(sessionID, pane, agent, status string, extra ...st
 	}
 }
 
-// agentWithInbox sets up a window in session that looks to kido exactly
-// like a live pi session with an inbox: a real long-running pane, and a
-// state record (via agentStatus, run out of band so its pid is this test
-// binary's own and stays alive for the whole test - liveParent, above, is
-// the same trick) naming a real unix socket that answers "ok\n" to
-// anything written to it and otherwise does nothing.
-//
-// The inbox is returned because it is the only place a delivery can be
-// observed from outside the target: what it received, and what it did
-// not. A test about a message never being sent has nowhere else to look.
+// agentWithInbox sets up a window that looks to kido exactly like a live
+// pi session with an inbox: a real long-running pane, plus a state
+// record (via agentStatus, so its pid is this test binary's own and
+// stays alive) naming a real unix socket that answers "ok\n" to anything
+// and otherwise does nothing.
 func (h *harness) agentWithInbox(session, sessionID string) (*testutil.Inbox, string) {
 	h.t.Helper()
 	paneID := h.newWindow(session, "", "sh", "-c", "exec sleep 300")
@@ -1056,9 +963,8 @@ func (h *harness) agentWithInbox(session, sessionID string) (*testutil.Inbox, st
 
 // waitFileContains waits until path holds sub, then returns its whole
 // contents. Every "run kido and read its output" helper here ends its
-// script with an "rc=<code>" line, and waiting for that is what tells a
-// finished command from a half-written file: waitFileNonEmpty can return
-// between the command's own output and its exit code.
+// script with an "rc=<code>" line: waiting for that (not waitFileNonEmpty)
+// tells a finished command from one caught mid-write.
 func (h *harness) waitFileContains(path, sub string) string {
 	h.t.Helper()
 	var content []byte

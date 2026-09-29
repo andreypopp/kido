@@ -8,18 +8,12 @@ import (
 	"testing"
 )
 
-// runSpawn types a shell command line into the client's active pane (the
-// session's plain shell, exactly as runPrompt does for kido prompt) that
-// runs `kido spawn_subagent` with the given extra args and a fake command, so
-// KIDO_AGENT_* and the new window's cwd can be checked by reading a file
-// the fake command writes on start rather than by talking to a
-// TypeScript pi extension the e2e suite cannot host. Its own stdout
-// (the new window and pane ids) goes to outFile.
-//
-// The fake command is /bin/sh -c "env > envFile; pwd >> envFile; sleep
-// 300": env dumps every KIDO_AGENT_* variable new-window's -e flags set,
-// and pwd after it proves -c put the child in the caller's own directory,
-// not the session default.
+// runSpawn runs `kido spawn_subagent` with a fake command, so KIDO_AGENT_*
+// and the new window's cwd can be checked by reading a file the fake
+// command writes on start rather than talking to a TypeScript pi
+// extension the e2e suite cannot host. Its own stdout (window and pane
+// ids) goes to outFile; the fake's env dumps every KIDO_AGENT_* variable
+// and pwd proves -c put the child in the caller's own directory.
 func (h *harness) runSpawn(outFile, envFile string, args ...string) {
 	h.t.Helper()
 	fake := shellQuote(fmt.Sprintf("env > %s; pwd >> %s; sleep 300", envFile, envFile))
@@ -29,8 +23,6 @@ func (h *harness) runSpawn(outFile, envFile string, args ...string) {
 	h.sendKeys("Enter")
 }
 
-// waitFileNonEmpty waits until path exists and has at least one byte,
-// then returns its contents.
 func (h *harness) waitFileNonEmpty(path string) string {
 	h.t.Helper()
 	var content []byte
@@ -45,8 +37,6 @@ func (h *harness) waitFileNonEmpty(path string) string {
 	return string(content)
 }
 
-// envLine returns the value of KEY=... in envOutput (the output of the
-// `env` command), or "" if absent.
 func envLine(envOutput, key string) string {
 	prefix := key + "="
 	for _, line := range strings.Split(envOutput, "\n") {
@@ -57,15 +47,11 @@ func envLine(envOutput, key string) string {
 	return ""
 }
 
-// TestSpawnCreatesWindowInCallerSession drives `kido spawn_subagent` the way
-// spawn_subagent (pi/kido-agents.ts) does, with a fake command standing in
-// for pi, and checks everything that only exists because `kido spawn_subagent` is
-// a testable command in its own right (docs/design.md, "Spawning"): the
-// new window lands in the
-// caller's own session, keeps the caller's own turn (-d), starts in the
-// caller's own directory (-c), is named as asked, and the spawned process
-// actually sees the KIDO_AGENT_* variables in its environment (-e) - not
-// merely that kido spawn_subagent believes it passed them.
+// The new window lands in the caller's own session, keeps the caller's
+// own turn (-d), starts in the caller's own directory (-c), is named as
+// asked, and the spawned process actually sees KIDO_AGENT_* in its
+// environment (-e) - not merely that kido spawn_subagent believes it
+// passed them.
 func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -109,8 +95,8 @@ func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 	env := h.waitFileNonEmpty(envFile)
 	lines := strings.Split(strings.TrimRight(env, "\n"), "\n")
 	cwd := lines[len(lines)-1]
-	// EvalSymlinks: on macOS t.TempDir() lives under /var, a symlink to
-	// /private/var that a real shell's pwd resolves away.
+	// On macOS t.TempDir() lives under /var, a symlink to /private/var
+	// that a real shell's pwd resolves away.
 	wantCwd, err := filepath.EvalSymlinks(h.dir)
 	if err != nil {
 		t.Fatal(err)
@@ -129,8 +115,7 @@ func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 	}
 
 	// The task lives in the run's own directory: KIDO_AGENT_TASK_FILE does
-	// not name the caller's --task-file, and its content is the task, not
-	// the caller's file's path.
+	// not name the caller's --task-file.
 	relocated := envLine(env, "KIDO_AGENT_TASK_FILE")
 	if relocated == "" || relocated == taskFile {
 		t.Errorf("KIDO_AGENT_TASK_FILE = %q, want it relocated into run %s's own directory", relocated, runID)
@@ -141,8 +126,6 @@ func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 	}
 }
 
-// activeWindowID returns the window id of session's currently active
-// window.
 func (h *harness) activeWindowID(session string) string {
 	h.t.Helper()
 	for _, line := range strings.Split(h.in("list-windows", "-t", session, "-F", "#{window_active} #{window_id}"), "\n") {
@@ -155,12 +138,10 @@ func (h *harness) activeWindowID(session string) string {
 	return ""
 }
 
-// TestSpawnRefusesDepthBeyondCeiling checks that a caller already at
-// decision 5's ceiling (root 0, subagent 1, subagent 2) is refused, from
-// inside a real tmux server rather than the fake-newWindow unit test
-// (TestSpawnRefusedAtMaxDepth). The caller's depth is recorded first with
-// a real `kido agent-status` call, exactly as pi's own status reporting
-// would - kido spawn_subagent derives the child's depth from that record.
+// A caller already at the depth ceiling (root 0, subagent 1, subagent 2)
+// is refused, from inside a real server rather than the fake-newWindow
+// unit test. The caller's depth is recorded first with a real
+// `kido agent-status` call, as pi's own status reporting would.
 func TestSpawnRefusesDepthBeyondCeiling(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -194,23 +175,14 @@ func TestSpawnRefusesDepthBeyondCeiling(t *testing.T) {
 }
 
 // maxDepthForTest mirrors cmd/kido/spawn.go's maxDepth; kept independent
-// so the e2e binary (built fresh by `go build`, not linked against the
-// cmd/kido package) does not need an import for one constant.
+// since the e2e binary is not linked against the cmd/kido package.
 const maxDepthForTest = 2
 
-// TestSpawnNoParentIsNotReaped is the parentless spawn end to end, which
-// is the only way to see the claim the flag actually makes: the unit test
-// hands reap.Sweep a fixture, while here a real sidebar sweeps every
-// 100ms with the harness's one-second linger, and `kido reap` is run on
-// top of it for the one-shot path. A human at a shell has no agent
-// identity to hand over, and before --no-parent there was no way through
-// this command at all - naming a real agent makes the child that agent's,
-// and inventing one leaves an orphan the sweep closes within seconds.
-//
-// The child reports itself the way the absence of
-// KIDO_AGENT_PARENT_SESSION leaves it: a live subagent record naming no
-// parent. That is the record rule 2 reads, and its first clause is what
-// exempts it.
+// A human at a shell has no agent identity to hand over: naming a real
+// agent makes the child that agent's, and inventing one leaves an orphan
+// the sweep closes within seconds. --no-parent's child must survive both
+// the real sidebar's 100ms sweep and an explicit `kido reap` - the
+// record rule 2 reads has no parent, and its first clause exempts it.
 func TestSpawnNoParentIsNotReaped(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -246,16 +218,13 @@ func TestSpawnNoParentIsNotReaped(t *testing.T) {
 		"a child spawned with --no-parent was closed as an orphan; an empty parent edge is exempt from rule 2")
 }
 
-// TestSpawnFabricatedParentIsRefusedUpFront is the other half of the pair
-// above, and what makes rule 2's exemption a decision rather than an
-// accident: the same record-less shell, the same command, one flag
-// different. `--no-parent` makes a window the sweep declines to touch; an
-// invented `--parent-session` makes no window at all, because the child
-// it would create is one the sweep collects within seconds - and the read
-// that would explain that runs in another process, after this command has
-// already exited successfully, so there was never going to be an error
-// for anyone to see. Refusing before the window exists is what turns that
-// silent, delayed close into something the caller is told about.
+// The other half of the pair above, what makes rule 2's exemption a
+// decision, not an accident: same record-less shell, same command, one
+// flag different. An invented --parent-session makes no window at all,
+// since the child it would create is one the sweep collects within
+// seconds, in another process, after this command has already exited
+// successfully - refusing up front turns a silent, delayed close into
+// something the caller is told about.
 func TestSpawnFabricatedParentIsRefusedUpFront(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

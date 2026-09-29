@@ -35,7 +35,6 @@ func TestPrefixKShowHide(t *testing.T) {
 	h.waitFocused(true)
 }
 
-// TestPrefixKToggleFocus checks prefix k both ways.
 func TestPrefixKToggleFocus(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -48,7 +47,6 @@ func TestPrefixKToggleFocus(t *testing.T) {
 	h.waitFocused(false)
 }
 
-// TestMotionKeys walks the list with every movement key.
 func TestMotionKeys(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -79,7 +77,6 @@ func TestMotionKeys(t *testing.T) {
 	}
 }
 
-// TestFirstLastKeys checks gg and G.
 func TestFirstLastKeys(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -97,8 +94,6 @@ func TestFirstLastKeys(t *testing.T) {
 	h.waitSelectedLine(2)
 }
 
-// TestEnterJumps moves the client to the selected pane and hands the
-// keyboard back.
 func TestEnterJumps(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -114,7 +109,6 @@ func TestEnterJumps(t *testing.T) {
 	h.waitFocused(false)
 }
 
-// TestEscReleasesFocus checks Esc hands the keyboard back to the pane.
 func TestEscReleasesFocus(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -127,11 +121,9 @@ func TestEscReleasesFocus(t *testing.T) {
 	h.waitFocused(false)
 }
 
-// TestShiftUpDownSwitchesWindow checks that shift+up/down inside the sidebar
-// call the same window-switching path as `kido switch-window`, without
-// handing the keyboard back to the pane: the sidebar's own S-Up/S-Down keys
-// would otherwise do nothing, since focused keys are routed to the side job
-// and never reach the client-level bindings in tmux/kido-tmux.conf.
+// Focused keys route to the side job and never reach the client-level
+// bindings in tmux/kido-tmux.conf, so S-Up/S-Down inside the sidebar must
+// call the same window-switching path as `kido switch-window` itself.
 func TestShiftUpDownSwitchesWindow(t *testing.T) {
 	t.Parallel()
 	h := setupSwitchWindowSessions(t) // sessions a, c, b (created order), each with two windows
@@ -164,9 +156,8 @@ func TestShiftUpDownSwitchesWindow(t *testing.T) {
 	}
 }
 
-// TestShiftUpDownUnfocusedSwitchesWindow checks that S-Up/S-Down reach the
-// client-level binding in tmux/kido-tmux.conf even with the sidebar
-// unfocused, when the keys go to the pane rather than to the side job.
+// With the sidebar unfocused the keys go to the pane, not the side job;
+// they must still reach the client-level binding in tmux/kido-tmux.conf.
 func TestShiftUpDownUnfocusedSwitchesWindow(t *testing.T) {
 	t.Parallel()
 	h := setupSwitchWindowSessions(t)
@@ -194,9 +185,7 @@ func TestShiftUpDownUnfocusedSwitchesWindow(t *testing.T) {
 	}
 }
 
-// TestCtrlSTogglesFocusWithSidebarShown checks that C-s toggles keyboard
-// focus exactly as prefix k does, with no prefix needed, while the sidebar
-// is shown.
+// C-s toggles keyboard focus exactly as prefix k does, with no prefix.
 func TestCtrlSTogglesFocusWithSidebarShown(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -231,9 +220,8 @@ func TestCtrlSOpensPickerWithSidebarHidden(t *testing.T) {
 		msgf("the popup picker closed"))
 }
 
-// outerScreenLines is the outer pane's whole screen as plain text, escape
-// sequences stripped - unlike h.sidebar(), which cuts everything left of
-// the separator: a popup draws over the window area too.
+// outerScreenLines, unlike h.sidebar(), keeps the window area: a popup
+// draws over it too.
 func outerScreenLines(h *harness) []string {
 	h.t.Helper()
 	out := make([]string, 0, len(h.capture()))
@@ -243,8 +231,6 @@ func outerScreenLines(h *harness) []string {
 	return out
 }
 
-// TestPrefixPassthrough checks that the prefix still reaches tmux while
-// the sidebar holds the keyboard.
 func TestPrefixPassthrough(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

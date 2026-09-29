@@ -11,12 +11,9 @@ import (
 	"kido/internal/testutil"
 )
 
-// asyncParent puts a real inbox on the session's own pane and records an
-// agent there, so `kido async_bash` typed into that pane has a parent to
-// resolve and the notice has somewhere to land. The inbox is the only
-// place a delivery - or the absence of one - can be observed from
-// outside, exactly as it is for a spawned child's notice
-// (TestSpawnedChildNoticeReachesParentInboxQuickly).
+// asyncParent gives the session's own pane a real inbox and a recorded
+// agent, so `kido async_bash` typed there has a parent to resolve and a
+// delivery - or its absence - is observable from outside.
 func (h *harness) asyncParent(session, id string) *testutil.Inbox {
 	h.t.Helper()
 	in := testutil.StartInbox(h.t, "ok\n")
@@ -26,24 +23,17 @@ func (h *harness) asyncParent(session, id string) *testutil.Inbox {
 	return in
 }
 
-// asyncBash types `kido async_bash` into the session's own pane - which
-// is where a caller with a state record is, and so the only place the
-// command can find a parent - and returns the run id it printed.
 func (h *harness) asyncBash(name string, command ...string) string {
 	h.t.Helper()
 	return h.asyncBashWith(nil, name, command...)
 }
 
-// asyncBashWith is asyncBash with extra flags before the --, which is
-// how a test asks for --stream.
 func (h *harness) asyncBashWith(flags []string, name string, command ...string) string {
 	h.t.Helper()
 	_, _, runID := h.asyncBashIDs(flags, name, command...)
 	return runID
 }
 
-// asyncBashIDs is asyncBashWith for a caller that also needs the window
-// and pane `kido async_bash` created, e.g. to split that window.
 func (h *harness) asyncBashIDs(flags []string, name string, command ...string) (windowID, paneID, runID string) {
 	h.t.Helper()
 	outFile := filepath.Join(h.dir, "async-"+name+".out")
@@ -62,10 +52,8 @@ func (h *harness) asyncBashIDs(flags []string, name string, command ...string) (
 	return fields[0], fields[1], fields[2]
 }
 
-// stableCount asserts that in holds exactly want envelopes and goes on
-// holding exactly that many for a span. "Nothing yet" and "nothing ever"
-// are identical at any instant, and so are "one notice" and "the first of
-// two": only watching over a span tells them apart.
+// stableCount watches over a span, not an instant: "nothing yet" and
+// "nothing ever" look the same otherwise.
 func (h *harness) stableCount(in *testutil.Inbox, want int, why string) {
 	h.t.Helper()
 	deadline := time.Now().Add(1500 * time.Millisecond)
@@ -77,8 +65,6 @@ func (h *harness) stableCount(in *testutil.Inbox, want int, why string) {
 	}
 }
 
-// waitOutcome waits until runID has any recorded outcome and returns the
-// whole record `kido runs --json` prints.
 func (h *harness) waitOutcome(runID string) runInfo {
 	h.t.Helper()
 	var info runInfo
@@ -89,28 +75,21 @@ func (h *harness) waitOutcome(runID string) runInfo {
 	return info
 }
 
-// runInfo shells `kido runs --json <run-id>` in a one-shot window and
-// parses the row back.
 func (h *harness) runInfo(runID string) runInfo {
 	h.t.Helper()
 	out := h.runKido("alpha", runID+"-show.out", "runs", "--json", runID)
 	var info runInfo
-	// runKido's script appends "rc=0" on its own line, which is not part
-	// of the JSON kido runs printed.
+	// runKido's script appends its own "rc=0" line after the JSON.
 	if err := json.Unmarshal([]byte(strings.SplitN(out, "\n", 2)[0]), &info); err != nil {
 		h.t.Fatalf("kido runs --json %s: %v (%q)", runID, err, out)
 	}
 	return info
 }
 
-// TestAsyncBashNotifiesItsParentOnce is the whole of phase one end to
-// end: a command run in a window of its own, its output kept, its ending
-// recorded, and its parent told once - by the wrapper itself, with
-// nothing polling anything.
-//
-// The notice must name the run. A bash run writes no state record, so the
-// receiving side has nothing to label the sender with and falls through
-// to the pane id; "build" is in the text or it is nowhere.
+// End to end: a command run in its own window, its output kept, its
+// ending recorded, and its parent told once by the wrapper itself with
+// nothing polling. A bash run writes no state record, so the notice must
+// name the run by "build" in the text, not by any recorded identity.
 func TestAsyncBashNotifiesItsParentOnce(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -123,10 +102,8 @@ func TestAsyncBashNotifiesItsParentOnce(t *testing.T) {
 		msgf("the parent's inbox to receive the run's completion notice"))
 	elapsed := time.Since(t0)
 	t.Logf("measured async_bash completion -> parent-inbox latency: %s", elapsed)
-	// Loose relative to settle, for the reason
-	// TestSpawnedChildNoticeReachesParentInboxQuickly gives: what this
-	// bounds is a delivery tied to something interval-shaped, not the cost
-	// of typing a command line and starting two processes.
+	// Loose relative to settle: bounding a push-based delivery, not the
+	// cost of typing a command line and starting two processes.
 	if elapsed > 2*time.Second {
 		t.Errorf("notice arrived %s after the command was typed, want it pushed on the run's own ending", elapsed)
 	}
@@ -147,24 +124,16 @@ func TestAsyncBashNotifiesItsParentOnce(t *testing.T) {
 		t.Errorf("kido runs reports outcome %q/%q, want failed/\"exit status 3\"", info.Outcome, info.OutcomeText)
 	}
 
-	// The notice carries a tail; the file is the source of truth, and has
-	// both streams in it.
 	body := h.waitFileContains(filepath.Join(h.stateDir, "runs", runID, "output"), "err")
 	if !strings.Contains(body, "out") {
 		t.Errorf("output file = %q, want stdout and stderr both teed into it", body)
 	}
 }
 
-// TestAsyncBashThatExitsInstantlyStillNotifiesOnce is the
-// remain-on-exit race, which tmux loses every time for a command like
-// this one: the option is set by a second call after new-window, and
-// `true` is gone before it lands (internal/tmux.NewWindow's own note).
-// Under a completion mechanism that reads the dead pane - OSC 133, or
-// #{pane_dead_status} - losing the window loses the ending outright.
-// Because the wrapper reports before it exits, the race costs the corpse
-// on screen and nothing else: the notice and the outcome are both
-// already written. The window is deliberately not asserted on; whether it
-// survives is tmux's race to win or lose.
+// remain-on-exit is set by a second call after new-window, so tmux loses
+// the race for a command as fast as `true`: the window may vanish. The
+// wrapper reports before it exits, so the notice and outcome survive
+// regardless; the window itself is deliberately not asserted on.
 func TestAsyncBashThatExitsInstantlyStillNotifiesOnce(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -184,16 +153,12 @@ func TestAsyncBashThatExitsInstantlyStillNotifiesOnce(t *testing.T) {
 	if info.Outcome != "completed" {
 		t.Errorf("kido runs reports outcome %q, want completed", info.Outcome)
 	}
-	// Reported, not asserted: this is the measurement the phase exists to
-	// take, and the answer may differ by machine.
+	// Reported, not asserted: the answer may differ by machine.
 	t.Logf("windows just after an instantly-exiting run was created: %q", strings.Fields(windows))
 }
 
-// TestAsyncBashStillRunningSaysNothing is the negative control the two
-// tests above are unsafe without: a wrapper that notified on start, or
-// twice, would satisfy every assertion about a notice arriving. Watched
-// over a span, because at any instant a notice that never comes and one
-// that has not come yet look the same.
+// Negative control for the two tests above: a wrapper that notified on
+// start, or twice, would pass both without this.
 func TestAsyncBashStillRunningSaysNothing(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -206,13 +171,11 @@ func TestAsyncBashStillRunningSaysNothing(t *testing.T) {
 	}
 }
 
-// TestAsyncBashWithNoParentStillRecordsItsOutcome pins that the child
-// never depends on the parent: run from a pane with no state record -
-// a human's shell, and the case a run outlives its parent ends in - there
-// is nobody to notify, and the run must still finish on time and record
-// what happened. The live inbox in the same session is what makes the
-// "nobody" half checkable: a wrapper that resolved some other agent as
-// its parent would show up there.
+// Run from a pane with no state record - a human's shell, or a run that
+// outlives its parent - so there is nobody to notify; the run must still
+// finish and record its outcome. The live inbox in the same session
+// makes "nobody" checkable: a wrapper resolving some other parent would
+// show up there.
 func TestAsyncBashWithNoParentStillRecordsItsOutcome(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

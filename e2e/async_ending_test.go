@@ -10,10 +10,9 @@ import (
 	"time"
 )
 
-// wrapperPID finds the `kido async-run` process of runID by the run id
-// on its own command line, which is how anything outside kido would have
-// to find it. Reading the run's meta file would ask kido what it
-// believes instead of what is running.
+// wrapperPID finds the wrapper by run id on its own command line, not
+// by reading the run's meta file, which would ask kido what it believes
+// rather than what is running.
 func (h *harness) wrapperPID(runID string) int {
 	h.t.Helper()
 	listing := h.in("list-panes", "-a", "-F", "#{pane_pid} #{pane_start_command}")
@@ -31,10 +30,8 @@ func (h *harness) wrapperPID(runID string) int {
 	return 0
 }
 
-// killWrapper SIGKILLs a run's wrapper and waits for it to go: the one
-// ending the wrapper cannot report, since a SIGKILL is not a signal it
-// can handle. Everything it would have said - the outcome, the notice -
-// is simply never written.
+// killWrapper SIGKILLs a run's wrapper: an ending it cannot report, so
+// its outcome and notice are simply never written.
 func (h *harness) killWrapper(runID string) {
 	h.t.Helper()
 	pid := h.wrapperPID(runID)
@@ -45,29 +42,18 @@ func (h *harness) killWrapper(runID string) {
 		msgf("the wrapper of run %s (pid %d) to exit", runID, pid))
 }
 
-// hideSidebar takes the side column away and waits for it to go, so a
-// test about one sweeper is not decided by another. The sweep behind the
-// sidebar and the one `kido reap` runs are the same code reading the same
-// state directory.
+// hideSidebar removes the sidebar sweeper so a test about `kido reap` is
+// not decided by the other one racing it.
 func (h *harness) hideSidebar() {
 	h.t.Helper()
 	h.in("set", "-g", "side-status", "off")
 	h.waitFor(func() bool { return !h.sidebarVisible() }, settle, msgf("the sidebar to go away"))
 }
 
-// TestKilledWrapperIsReportedByWhoeverFindsIt is the invariant §6 of the
-// async_bash design is built on, end to end and in its hardest form: the
-// wrapper reports before it exits, so it covers every ending it lives to
-// see, and a SIGKILL is precisely an ending it does not. Without a
-// backstop the parent waits forever on a build that has already stopped
-// existing - and with a careless one it is told twice and acts twice.
-//
-// Nothing is hidden here: the session's own sidebar is sweeping
-// throughout and `kido reap` is typed over the top of it, so two real
-// observers race for one ending and the outcome write is what settles
-// which of them speaks. Exactly one notice is the whole assertion, and
-// it is watched over a span, because one notice and the first of two are
-// identical at any instant.
+// A SIGKILLed wrapper cannot report its own ending, so a backstop must
+// (design.md §6). The sidebar sweeper is left running alongside the
+// explicit `kido reap` here, so two real observers race for one ending;
+// exactly one notice is the assertion.
 func TestKilledWrapperIsReportedByWhoeverFindsIt(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -104,16 +90,10 @@ func TestKilledWrapperIsReportedByWhoeverFindsIt(t *testing.T) {
 	}
 }
 
-// TestStopBashRunNotifiesOnce is the deliberate ending, which is an
-// ending like any other: whoever gets to it first speaks, and only one
-// of them does. The wrapper is alive and forwards the signal, so it
-// normally reports for itself with its own exit status; the stop's own
-// report is the backstop for when it does not, and which one ran is
-// visible in the outcome text rather than being left to guess at.
-//
-// The sidebar is hidden so the two paths under test are the only
-// observers, and --force is required exactly as it is for any target
-// with no inbox to ask nicely over.
+// The live wrapper forwards the signal and normally reports its own exit
+// status; stop_subagent's own report is the backstop for when it does
+// not, and the outcome text says which one ran. Sidebar hidden so the
+// two paths under test are the only observers.
 func TestStopBashRunNotifiesOnce(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -135,8 +115,7 @@ func TestStopBashRunNotifiesOnce(t *testing.T) {
 	}
 	h.stableCount(in, 1, "a stop is one ending, whichever observer reports it")
 
-	// Either observer may have got there first; both are correct, and the
-	// text says which, which is the property being pinned.
+	// Either observer may have got there first; the text must say which.
 	info := h.waitOutcome(runID)
 	switch {
 	case info.Outcome == "failed" && strings.Contains(info.OutcomeText, "terminated"):
@@ -149,21 +128,15 @@ func TestStopBashRunNotifiesOnce(t *testing.T) {
 	}
 }
 
-// TestStopSpeaksForAWrapperThatCannot is the deterministic half of the
-// test above: with the wrapper already gone there is nobody who could
-// report, so the stop's own story is the only one that can arrive - and
-// it must, rather than the run being left recorded as running forever.
-// The grace is skipped outright here, since waiting it out would only
-// delay a notice nobody else was ever going to send.
+// Deterministic half of the test above: wrapper already gone, so the
+// stop's own report is the only one that can arrive.
 func TestStopSpeaksForAWrapperThatCannot(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	in := h.asyncParent("alpha", "parent-stopdead-e2e")
 
 	runID := h.asyncBash("zombie", "sleep", "60")
-	// Before the wrapper is killed, so nothing sweeps the corpse and wins
-	// the outcome the stop under test is meant to write.
-	h.hideSidebar()
+	h.hideSidebar() // before the kill, so nothing else sweeps the corpse first
 	h.killWrapper(runID)
 
 	out := h.runKido("alpha", "stopdead.out", "stop_subagent", "--force", "--", "zombie")
@@ -184,20 +157,11 @@ func TestStopSpeaksForAWrapperThatCannot(t *testing.T) {
 	}
 }
 
-// TestReapedAgentRunTellsItsParentNobodyReported is the agent twin of
-// TestKilledWrapperIsReportedByWhoeverFindsIt, and the end-to-end half
-// of the incident this rule comes from: a child was closed mid-work and
-// the parent that had dispatched it learnt nothing, because the sweep
-// recorded `died` and deliberately said nothing. A child's report is
-// still its own to make - this notice claims nothing about the work,
-// only that the run ended with nothing said about it.
-//
-// The child here is a plain sleep with no kido in it at all, which is
-// exactly a child that never reached notify_parent. As in the bash twin
-// nothing is hidden: the session's own sidebar sweeps throughout and
-// `kido reap` is typed over the top, so two real observers race for one
-// ending and the outcome write settles which of them speaks. One notice
-// is the assertion, watched over a span.
+// Agent twin of TestKilledWrapperIsReportedByWhoeverFindsIt: the incident
+// this rule comes from was a child closed mid-work whose parent learnt
+// nothing, because the sweep recorded `died` silently. The child here is
+// a plain sleep, never reaching notify_parent; sidebar and explicit reap
+// again race for the one notice.
 func TestReapedAgentRunTellsItsParentNobodyReported(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

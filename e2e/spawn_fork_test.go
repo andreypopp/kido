@@ -7,19 +7,16 @@ import (
 	"testing"
 )
 
-// TestSpawnForkCarriesTheForkOntoThePiCommandLine: a forked child is
-// `pi --fork <the caller's session> --session-id <run id>`, and both
-// halves have to be there - the fork is the context the child was spawned
-// for, and the run id is what its own extension proves its identity with
-// (pi/kido-agents.ts's ownRunID). The unit test pins the argv kido builds;
-// this one reads it back via startCommand, exactly as
-// TestSpawnResumeCarriesToolsOntoThePiCommandLine does.
+// A forked child is `pi --fork <caller's session> --session-id <run id>`:
+// the fork is the context it was spawned for, the run id is what its own
+// extension proves its identity with (pi/kido-agents.ts's ownRunID). The
+// unit test pins the argv kido builds; this reads it back via
+// startCommand.
 //
-// The flags are only spelled onto the line when the command is literally
-// `pi`, so this spawn names none - which leaves the pane's fate to whether
-// that bare name resolves on the machine running the suite. Hence the fake
-// pi on this server's PATH alone (the race in internal/tmux/tmux.go: a
-// pane that exits first loses its window before remain-on-exit is set).
+// The flags are spelled onto the line only when the command is literally
+// `pi`, so this spawn names none; hence the fake pi on this server's
+// PATH alone (the race in internal/tmux/tmux.go: a pane that exits first
+// loses its window before remain-on-exit is set).
 func TestSpawnForkCarriesTheForkOntoThePiCommandLine(t *testing.T) {
 	t.Parallel()
 	h := startPathPrefix(t, "alpha", piBinDir)

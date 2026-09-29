@@ -19,9 +19,9 @@ var sshOpts = []string{
 }
 
 // requireLocalSSH skips unless an unattended ssh to localhost works.
-// Unlike the patched tmux this is never required: a machine with no sshd,
-// or none the user can log into without a password, is an ordinary place
-// to run the suite and KIDO_E2E_REQUIRED says nothing about it.
+// Unlike the patched tmux this is never required: a machine with no sshd
+// is an ordinary place to run the suite, and KIDO_E2E_REQUIRED says
+// nothing about it.
 func requireLocalSSH(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("ssh"); err != nil {
@@ -34,13 +34,10 @@ func requireLocalSSH(t *testing.T) {
 	}
 }
 
-// TestSSHRemoteShellStatus drives a real ssh to localhost whose remote
-// shell carries kido's OSC 133 integration, and expects the row to report
-// the remote shell's commands: tmux parses the markers off the local
-// pane's output stream however far away they were written.
-//
-// The destination is still the label - the remote status is added to it,
-// not in place of it.
+// A real ssh to localhost whose remote shell carries kido's OSC 133
+// integration: the row must report the remote shell's commands (tmux
+// parses the markers off the local pane's output stream however far away
+// they were written), with the destination still the label.
 func TestSSHRemoteShellStatus(t *testing.T) {
 	t.Parallel()
 	zsh, err := exec.LookPath("zsh")
@@ -54,10 +51,9 @@ func TestSSHRemoteShellStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// One ZDOTDIR for both ends: localhost is the same filesystem and the
-	// same user, and the local shell needs the integration as much as the
-	// remote one does - the gate is a remote prompt marked after the
-	// local shell marked ssh as started.
+	// One ZDOTDIR for both ends (same filesystem, same user): the local
+	// shell needs the integration too, since the gate is a remote prompt
+	// marked after the local shell marked ssh as started.
 	zdot := filepath.Join(h.dir, "zdotdir")
 	if err := os.MkdirAll(zdot, 0o755); err != nil {
 		t.Fatal(err)
@@ -73,18 +69,15 @@ func TestSSHRemoteShellStatus(t *testing.T) {
 	h.waitPaneCommand(pane, "zsh")
 	h.waitShellRow("╶  zsh", "")
 
-	// ssh is a child of the pane's shell, and forces a pty for a remote
-	// command that is itself an interactive shell - which is what makes
-	// this the pane kido used to suppress wholesale. ZDOTDIR is spelled
-	// out in the remote command because ssh forwards no environment.
+	// -tt forces a pty for a remote interactive shell - the pane kido used
+	// to suppress wholesale. ZDOTDIR is spelled out since ssh forwards no
+	// environment.
 	h.in("send-keys", "-t", pane, fmt.Sprintf("ssh -tt %s localhost %q",
 		strings.Join(sshOpts, " "), "ZDOTDIR="+zdot+" exec "+zsh+" -i"), "Enter")
 	h.waitPaneCommand(pane, "ssh")
-	// Whether a running row also names the command the far side is
-	// running depends on the tmux under test: one without the
-	// pane_command_line patch expands the name to empty. The local shell
-	// has just marked this ssh as started with kido's own integration, so
-	// its command line is there to read on a tmux that keeps one.
+	// Whether a running row names the far side's command depends on the
+	// tmux under test: one without the pane_command_line patch expands the
+	// name to empty.
 	withCmd := h.in("display-message", "-p", "-t", pane, "#{pane_command_line}") != ""
 	running := func(row, cmd string) string {
 		if withCmd {
@@ -92,31 +85,22 @@ func TestSSHRemoteShellStatus(t *testing.T) {
 		}
 		return row
 	}
-	// The far side has reached a prompt: the row is an idle integrated
-	// shell's, in the field, and still names the destination.
 	h.waitShellRow("╶  ssh localhost", "")
 
-	// A first remote command, whose exit status crossing the connection is
-	// the first thing here that a suppressed ssh pane could not show.
-	//
-	// It is also what the gate needs: over a loopback connection the
-	// prompt above lands in the same whole second as the ssh itself, which
-	// is as good as no prompt at all to timestamps of that resolution (see
-	// observeRemote), so it is the prompt after this command that says the
-	// far side is reporting - and it must be a command long enough to put
-	// that prompt in a later second than its own start, which is why this
-	// is a sleep and not a `true`.
+	// Over a loopback connection the prompt above lands in the same whole
+	// second as the ssh itself, as good as no prompt at all to timestamps
+	// of that resolution (observeRemote); this sleep, not `true`, puts the
+	// next prompt in a later second so it is the one that says the far
+	// side is reporting. Its exit status crossing the connection is also
+	// the first thing a suppressed ssh pane could not show.
 	h.in("send-keys", "-t", pane, "sleep 1", "Enter")
 	h.waitShellRow("╶✓ ssh localhost", "32")
 
-	// A command on the far side. Nothing local runs, and the local pane's
-	// foreground process is still ssh; the only thing that moves is the
-	// OSC 133 state the remote shell writes down the connection.
+	// The local pane's foreground process is still ssh; only the remote
+	// shell's OSC 133 state moves down the connection.
 	h.in("send-keys", "-t", pane, "sleep 3", "Enter")
 	h.waitShellRow(running("╶◼ ssh localhost", "sleep 3"), "")
 
-	// It exits zero on the far side, with the client in another window,
-	// so the remote exit status reaches the row too.
 	h.waitFor(func() bool { return h.shellRow("╶✓ ssh localhost", "32") },
 		10*time.Second, msgf("a checkmark after the remote sleep"))
 }

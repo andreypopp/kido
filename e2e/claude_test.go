@@ -18,12 +18,8 @@ func (h *harness) rowFor(name string) string {
 }
 
 // waitGlyph waits until the agent pane titled title shows glyph in its
-// indicator field. An empty glyph is the idle pane's empty field: the
-// field is two columns wide whatever it holds, so every label starts at
-// the same place. The field sits directly against the tree glyph, with
-// no separating space of its own - that space lives inside the field,
-// as the byte after the indicator (or the first of its two filler
-// spaces).
+// indicator field. The field is two columns wide whatever it holds, so
+// every label starts at the same place; an empty glyph is idle.
 func (h *harness) waitGlyph(title, glyph string) {
 	h.t.Helper()
 	want := "╶" + indField(glyph) + title
@@ -36,7 +32,6 @@ func (h *harness) waitGlyph(title, glyph string) {
 func TestClaudeStatuses(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	// A pane running claude, titled the way Claude Code titles it.
 	pane := h.claudePane("alpha", "✳ Tmux config")
 
 	for _, c := range []struct {
@@ -57,14 +52,11 @@ func TestClaudeStatuses(t *testing.T) {
 		h.waitGlyph("Tmux config", c.glyph)
 	}
 
-	// The title comes from the pane title with the leading marker gone.
-	if got := h.rowFor("Tmux config"); got != "╶◼ Tmux config" {
+	if got := h.rowFor("Tmux config"); got != "╶◼ Tmux config" { // marker stripped from the pane title
 		t.Errorf("row = %q", got)
 	}
 
-	// SessionEnd drops the state: the pane still runs claude, so it falls
-	// back to the "no hook data" glyph.
-	h.hook("sess-1", pane, "SessionEnd")
+	h.hook("sess-1", pane, "SessionEnd") // drops the state; pane still runs claude, falls back to "?"
 	h.waitGlyph("Tmux config", "?")
 }
 
@@ -88,11 +80,10 @@ func TestClaudeDone(t *testing.T) {
 	h.hook("sess-away", pane, "PreToolUse", "tool_name", "Bash")
 	h.waitGlyph("Away job", "◼")
 
-	// The client is on alpha, so beta's pane is not being looked at.
-	h.hook("sess-away", pane, "Stop")
+	h.hook("sess-away", pane, "Stop") // client on alpha, beta unwatched
 	h.waitGlyph("Away job", "✓")
 
-	// Visiting it marks it seen: plain idle again.
+	// Visiting it marks it seen.
 	h.in("switch-client", "-c", h.client, "-t", pane)
 	h.in("select-window", "-t", pane)
 	h.in("select-pane", "-t", pane)
@@ -107,24 +98,18 @@ func TestClaudeBackgroundWork(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	h.newSession("beta")
-	// The client is on alpha, so beta's pane is not being looked at and a
-	// finished turn shows the done glyph.
 	pane := h.claudePane("beta", "✳ Background job")
 
 	running := []any{map[string]any{"status": "running"}}
 	h.hook("sess-bg", pane, "PreToolUse", "tool_name", "Bash")
 	h.waitGlyph("Background job", "◼")
 
-	// The turn ends, but a background subagent is still going.
 	h.hookPayload("sess-bg", pane, "Stop", map[string]any{"background_tasks": running})
 	h.waitGlyph("Background job", "◼")
 
-	// Its own tool calls and turns keep arriving under this session id and
-	// leave the pane where it is.
 	h.hookPayload("sess-bg", pane, "PreToolUse", map[string]any{"agent_id": "a", "tool_name": "Bash"})
 	h.hookPayload("sess-bg", pane, "SubagentStop", map[string]any{"agent_id": "a", "background_tasks": running})
-	// So does the idle_prompt notification a minute after the Stop, which
-	// knows nothing of the background job.
+	// idle_prompt fires a minute after every Stop and knows nothing of the background job.
 	h.hook("sess-bg", pane, "Notification", "notification_type", "idle_prompt")
 	time.Sleep(time.Second)
 	if got := h.rowFor("Background job"); got != "╶◼ Background job" {
@@ -163,28 +148,22 @@ func TestClaudeDismissedPrompt(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	h.newSession("beta")
-	// The fake starts on a question dialog, matching the hook below.
-	pane := h.claudePane("beta", "✳ Dismissed")
+	pane := h.claudePane("beta", "✳ Dismissed") // fake starts on a question dialog
 
 	h.hook("sess-dismiss", pane, "PreToolUse", "tool_name", "AskUserQuestion")
 	h.waitGlyph("Dismissed", "◆")
 
-	// Answering the question puts the input box back while the tool runs,
-	// and no hook says so either: the footer is what keeps the pane from
-	// being read as idle.
+	// No hook fires either; the footer is what keeps the pane from reading idle.
 	h.fakeClaude(pane, "busy")
 	time.Sleep(time.Second)
 	if got := h.rowFor("Dismissed"); got != "╶◆ Dismissed" {
 		t.Fatalf("row = %q, want the waiting glyph while work is in flight", got)
 	}
 
-	// Dismissing it leaves the box with nothing running. The client is on
-	// alpha, so the pane is not being looked at: it reads as done.
-	h.fakeClaude(pane, "esc")
+	h.fakeClaude(pane, "esc") // nothing running, unwatched pane reads as done
 	h.waitGlyph("Dismissed", "✓")
 
-	// A hook still has the last word.
-	h.hook("sess-dismiss", pane, "UserPromptSubmit")
+	h.hook("sess-dismiss", pane, "UserPromptSubmit") // a hook still has the last word
 	h.waitGlyph("Dismissed", "◼")
 }
 

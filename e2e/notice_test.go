@@ -11,27 +11,18 @@ import (
 	"kido/internal/testutil"
 )
 
-// TestSpawnedChildNoticeReachesParentInboxQuickly is the delivery leg of
-// the turn-completion notice (pi/kido-status.ts's turnSettled,
-// pi/kido-agents.ts's sendTurnNotice): the settle-to-notice latency itself
-// is TS's to prove, against a real extension, since this harness cannot
-// host one. What e2e can and must prove is the other half of the path -
-// a notice a child actually sends reaching its parent's inbox promptly -
-// with a fake spawned command that calls `kido notify_parent` itself,
-// standing in for pi's own extension the way every other e2e subagent
-// test stands a fake command in for pi.
-//
-// It is also where the whole of notify_parent's addressing is exercised:
-// the child names nobody, so the parent it reaches can only have come
-// from the KIDO_AGENT_PARENT_SESSION `kido spawn_subagent` put in the
-// window's environment two processes earlier.
+// The delivery leg of the turn-completion notice: the settle-to-notice
+// latency is pi/kido-status.ts's own to prove against a real extension,
+// since this harness cannot host one. What e2e proves is the other half
+// - a notice a child actually sends reaching its parent's inbox promptly
+// - with a fake command calling `kido notify_parent` naming no target,
+// so the parent it reaches can only have come from
+// KIDO_AGENT_PARENT_SESSION set two processes earlier.
 func TestSpawnedChildNoticeReachesParentInboxQuickly(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	// The parent: a real inbox, and a state record advertising it under
-	// the session id the child's environment will name, so the notice
-	// goes over the socket rather than falling back to a paste.
+	// A real inbox so the notice goes over the socket, not a paste fallback.
 	in := testutil.StartInbox(t, "ok\n")
 	parentPane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 	h.agentStatus("parent-notice-e2e", parentPane, "pi", "idle",
@@ -43,11 +34,8 @@ func TestSpawnedChildNoticeReachesParentInboxQuickly(t *testing.T) {
 	}
 	outFile := filepath.Join(h.dir, "spawn.out")
 
-	// The fake child: reports itself as a subagent of the parent above
-	// (as kido-status.ts's session_start would), then reports home exactly
-	// as pi's notify_parent tool does - naming no target at all - before
-	// settling into a long sleep so the window stays open for the
-	// assertions below.
+	// Reports itself as a subagent (as kido-status.ts's session_start
+	// would), then reports home exactly as pi's notify_parent tool does.
 	child := fmt.Sprintf(
 		"%s agent-status --agent pi --session child-notice-e2e --status idle "+
 			"--parent-session parent-notice-e2e; "+
@@ -61,15 +49,12 @@ func TestSpawnedChildNoticeReachesParentInboxQuickly(t *testing.T) {
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")
 
-	// settle/100ms polling: this harness's own convention (harness_test.go).
 	h.waitFor(func() bool { return len(in.Received()) > 0 }, settle,
 		msgf("the parent's inbox to receive the child's notice"))
 	elapsed := time.Since(t0)
 	t.Logf("measured child-notice -> parent-inbox latency: %s", elapsed)
-	// Loose relative to settle (5s, chosen for tmux's own latencies, not
-	// this path's): what this bounds is a regression that ties delivery
-	// to something interval-shaped, not the ordinary cost of typing a
-	// command line into a pane and spawning two subprocesses in reply.
+	// Loose relative to settle: bounds a regression tying delivery to
+	// something interval-shaped, not the ordinary cost of spawning.
 	if elapsed > 2*time.Second {
 		t.Errorf("notice delivery took %s, want well under the 30s heartbeat interval", elapsed)
 	}

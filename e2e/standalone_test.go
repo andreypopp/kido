@@ -21,16 +21,14 @@ import (
 // picker's pane on the inner server and its screen is read back from
 // there, so nothing here disturbs the sidebar the harness also runs.
 
-// picker is one standalone kido, running in its own inner window.
 type picker struct {
 	h    *harness
 	pane string
 }
 
-// startPicker runs kido standalone in a new window of session and waits
-// until it has painted. The window keeps remain-on-exit on, so the pane
-// survives kido's exit and its status can be read: a test must be able to
-// tell tea.Quit from a crash or a signal.
+// startPicker's window keeps remain-on-exit on, so the pane survives
+// kido's exit and its status can be read: a test must be able to tell
+// tea.Quit from a crash or a signal.
 func startPicker(h *harness, session string) *picker {
 	h.t.Helper()
 	h.keepDeadPanes()
@@ -41,8 +39,6 @@ func startPicker(h *harness, session string) *picker {
 	return p
 }
 
-// keys sends keys to the picker's pane, one send-keys per key like the
-// harness does for the sidebar.
 func (p *picker) keys(keys ...string) {
 	p.h.t.Helper()
 	for _, k := range keys {
@@ -51,14 +47,12 @@ func (p *picker) keys(keys ...string) {
 	}
 }
 
-// typeText sends text as literal runes, the way a user types a filter.
 func (p *picker) typeText(s string) {
 	p.h.t.Helper()
 	p.h.in("send-keys", "-t", p.pane, "-l", s)
 	time.Sleep(60 * time.Millisecond)
 }
 
-// capture is the picker pane's screen, escape sequences kept.
 func (p *picker) capture() []string {
 	out, err := p.h.tmux(p.h.inner, "capture-pane", "-p", "-e", "-t", p.pane)
 	if err != nil {
@@ -67,7 +61,6 @@ func (p *picker) capture() []string {
 	return strings.Split(out, "\n")
 }
 
-// rows is the picker's non-empty lines as plain text.
 func (p *picker) rows() []string {
 	var out []string
 	for _, l := range p.capture() {
@@ -78,7 +71,6 @@ func (p *picker) rows() []string {
 	return out
 }
 
-// selected is the text of the row the picker draws in reverse video.
 func (p *picker) selected() string { return selectedRowOf(p.capture()) }
 
 func (p *picker) waitRow(sub string) {
@@ -93,8 +85,6 @@ func (p *picker) waitSelected(sub string) {
 		func() string { return fmt.Sprintf("picker selection on %q (is %q)", sub, p.selected()) })
 }
 
-// dead reports the pane's exit state: whether kido has exited, and with
-// what status.
 func (p *picker) dead() (bool, string) {
 	out, err := p.h.tmux(p.h.inner, "display-message", "-p", "-t", p.pane,
 		"#{pane_dead}\t#{pane_dead_status}")
@@ -105,8 +95,6 @@ func (p *picker) dead() (bool, string) {
 	return state == "1", status
 }
 
-// waitExit waits for kido to exit and insists it exited cleanly: a
-// tea.Quit, not a crash or a signal.
 func (p *picker) waitExit() {
 	p.h.t.Helper()
 	p.h.waitFor(func() bool { dead, _ := p.dead(); return dead }, settle,
@@ -123,8 +111,6 @@ func (p *picker) mustBeAlive() {
 	}
 }
 
-// TestStandaloneQuitsOnQ checks that q ends the program - what closes the
-// popup kido is running in.
 func TestStandaloneQuitsOnQ(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -133,7 +119,6 @@ func TestStandaloneQuitsOnQ(t *testing.T) {
 	p.waitExit()
 }
 
-// TestStandaloneQuitsOnCtrlC checks C-c, the other way out.
 func TestStandaloneQuitsOnCtrlC(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -142,10 +127,8 @@ func TestStandaloneQuitsOnCtrlC(t *testing.T) {
 	p.waitExit()
 }
 
-// TestStandaloneEscClearsFilterFirst checks that Esc keeps its meaning:
-// it leaves the search when one is on, and only quits when there is
-// nothing left to leave - the same order the sidebar uses before it hands
-// the keyboard back.
+// Esc leaves the search when one is on, and only quits when there is
+// nothing left to leave - the same order the sidebar uses.
 func TestStandaloneEscClearsFilterFirst(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -171,9 +154,8 @@ func TestStandaloneEscClearsFilterFirst(t *testing.T) {
 	p.waitExit()
 }
 
-// TestStandaloneEnterJumpsAndQuits checks the one-shot pick: Enter moves
-// the client to the selected pane and then ends the program, so the popup
-// closes as soon as something is picked.
+// Enter moves the client to the selected pane and then ends the program,
+// so the popup closes as soon as something is picked.
 func TestStandaloneEnterJumpsAndQuits(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -189,15 +171,14 @@ func TestStandaloneEnterJumpsAndQuits(t *testing.T) {
 	p.waitExit()
 }
 
-// TestSidebarIgnoresQ guards the other half of the split: in the side
-// column q is still nothing, so the sidebar cannot be quit out from under
-// the client that is showing it.
+// In the side column q is still nothing, so the sidebar cannot be quit
+// out from under the client showing it.
 //
 // A still-rendering column proves nothing on its own: the fork restarts a
-// side job that exits (status.c), so a sidebar quit by q would be replaced
-// by a fresh one within the second this waits. What a restart cannot fake
-// is the state the old one held - the selection is moved off the active
-// pane first, and a new kido would put it back.
+// side job that exits (status.c), so a quit-by-q sidebar would be
+// replaced within the second this waits. What a restart cannot fake is
+// the state the old one held - the selection moved off the active pane
+// first, and a new kido would put it back.
 func TestSidebarIgnoresQ(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

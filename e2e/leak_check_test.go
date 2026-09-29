@@ -7,11 +7,10 @@ import (
 	"time"
 )
 
-// TestLeakCheckIgnoresUnrelatedServer is the regression test for the
-// incident this fix addresses: a control-mode client attached to some
-// other tmux server, started while this test runs, must not be counted
-// as belonging to this test's own inner server. The old check scanned
-// the whole machine's process table and could not tell the two apart.
+// Regression: a control-mode client attached to some other tmux server
+// must not be counted as belonging to this test's own inner server. The
+// old check scanned the whole machine's process table and could not
+// tell the two apart.
 func TestLeakCheckIgnoresUnrelatedServer(t *testing.T) {
 	requireTmux(t)
 	h := start(t, "leak-a")
@@ -43,10 +42,7 @@ func TestLeakCheckIgnoresUnrelatedServer(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	// This is the check the harness cleanup runs against h.inner. It must
-	// see only kido's own client, never the scratch server's, even though
-	// the scratch client appeared during this very test.
-	pids := controlClientPIDs(h.inner)
+	pids := controlClientPIDs(h.inner) // the check the harness cleanup runs
 	if len(pids) != 1 {
 		t.Fatalf("expected exactly one control client on h.inner, got %v", pids)
 	}
@@ -55,11 +51,9 @@ func TestLeakCheckIgnoresUnrelatedServer(t *testing.T) {
 	}
 }
 
-// TestLeakCheckCatchesAccumulation proves the check has not been weakened
-// into one that can never fail: a second control-mode client attached to
-// this test's own server - what a redial that forgot to reap the old
-// client would look like - is still visible to controlClientPIDs, which
-// is exactly the condition the harness cleanup treats as a leak.
+// Negative control for the test above: a second control-mode client
+// attached to this test's own server - what a redial that forgot to
+// reap the old one would look like - must still be visible.
 func TestLeakCheckCatchesAccumulation(t *testing.T) {
 	requireTmux(t)
 	h := start(t, "leak-b")
@@ -91,12 +85,9 @@ func TestLeakCheckCatchesAccumulation(t *testing.T) {
 	}
 }
 
-// TestProcessGoneDetectsLingering is the direct test of the trap in the
-// task: a process that is still running must read as not gone, and one
-// that has actually exited must read as gone - so a control client that
-// somehow outlived its server (the case being hunted) would still be
-// caught even though it has already dropped off the server's own client
-// list by then.
+// processGone must distinguish a running process from an exited one, so
+// a control client that outlived its server is still caught even after
+// it drops off the server's own client list.
 func TestProcessGoneDetectsLingering(t *testing.T) {
 	cmd := exec.Command("sleep", "5")
 	if err := cmd.Start(); err != nil {

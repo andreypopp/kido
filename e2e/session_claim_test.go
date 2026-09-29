@@ -28,23 +28,17 @@ func (h *harness) readRecord(t *testing.T, sessionID string) (map[string]any, bo
 	return rec, true
 }
 
-// TestSecondHolderOfASessionIdIsRefused is the incident end to end: two
-// pi processes opened one session id (a test pi resuming a copy of
-// another session's file), and the newcomer's report overwrote the
-// record of the session that was actually running - wrong pane, wrong
-// inbox - then deleted it on the way out.
-//
-// Both halves go through the real binary, from two panes, so the two
-// reports come from two live pids; the record itself is read off disk.
-// The takeover at the end is the control the refusal is unsafe without:
-// a session id whose holder has died is free, which is what makes a
-// restart possible at all.
+// The incident: two pi processes opened one session id, and the
+// newcomer's report overwrote the record of the session actually
+// running - wrong pane, wrong inbox - then deleted it on the way out.
+// Both halves go through the real binary from two panes, so the reports
+// come from two live pids. The takeover at the end is the control the
+// refusal is unsafe without: a session id whose holder has died is free.
 func TestSecondHolderOfASessionIdIsRefused(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	// The holder: it reports and then stays alive, so the pid on its
-	// record is a running process for as long as the pane is.
+	// The pid on the holder's record is a running process for as long as the pane is.
 	script := fmt.Sprintf("%s agent-status --agent pi --session dup-e2e --status idle --title holder; exec sleep 300", kidoBin)
 	holderPane := h.newWindow("alpha", "holder-e2e", "sh", "-c", script)
 	h.waitPaneCommand(holderPane, "sleep")
@@ -64,8 +58,6 @@ func TestSecondHolderOfASessionIdIsRefused(t *testing.T) {
 		t.Fatalf("record = %+v, want the holder's untouched", rec)
 	}
 
-	// The other half of the incident: the intruder exiting took the live
-	// session's record with it.
 	out = h.runKido("alpha", "remove.out",
 		"agent-status", "--agent", "pi", "--session", "dup-e2e", "--remove")
 	if !strings.Contains(out, "rc=6") {
@@ -75,10 +67,7 @@ func TestSecondHolderOfASessionIdIsRefused(t *testing.T) {
 		t.Errorf("record = %+v (present %v), want the holder's still there", rec, ok)
 	}
 
-	// The takeover: with the holder gone, its session id is free. The
-	// restarted process reports from a pane of its own and stays there,
-	// as the holder did - a reporter that exits leaves a dead-pid record,
-	// which the sidebar's own poll deletes within a tick.
+	// With the holder gone, its session id is free.
 	h.killPane(holderPane)
 	restart := fmt.Sprintf("%s agent-status --agent pi --session dup-e2e --status idle --title restarted; exec sleep 300", kidoBin)
 	restartPane := h.newWindow("alpha", "restarted-e2e", "sh", "-c", restart)

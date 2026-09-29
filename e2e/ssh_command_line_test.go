@@ -4,11 +4,9 @@ import (
 	"testing"
 )
 
-// TestSSHRowShowsRemoteCommandLine drives one ssh pane whose far side
-// reports OSC 133 - the markers cross the connection and land on the
-// local pane, which is the whole basis of kido's remote shell status -
-// and expects the row to name the command the far side is running as well
-// as the destination.
+// OSC 133 markers cross the connection and land on the local pane - the
+// whole basis of kido's remote shell status - so the row must name the
+// far side's running command as well as the destination.
 //
 // The markers are written to the pane's tty by a background subshell,
 // and ssh is exec'd into the foreground: kido only asks the process table

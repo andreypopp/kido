@@ -92,7 +92,6 @@ func fallbackSocketPath(name string) string {
 	return socketPath("/tmp", name)
 }
 
-// startWatchdog is called once, from setup(), after tmuxBin is known.
 func startWatchdog() error {
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -126,7 +125,6 @@ func watchSocketIn(tmpdir, name string) {
 	watchSocketPath(socketPath(tmpdir, name))
 }
 
-// watchSocketPath registers a socket the caller has already resolved.
 func watchSocketPath(path string) {
 	watchdogMu.Lock()
 	defer watchdogMu.Unlock()
@@ -142,20 +140,16 @@ func watchSocketPath(path string) {
 // run of the suite skips it.
 const childSocketsEnv = "KIDO_E2E_WATCHDOG_CHILD_SOCKETS"
 
-// TestServersDieWithTheTestProcess is the regression test for a test
-// binary that ended without running its cleanups and left both of a
-// harness's tmux servers behind. Measured on 2026-09-26: an agent's bash
-// tool killed a `go test ./e2e/` process group at its 120s timeout, and
-// the two servers of TestSecondHolderOfASessionIdIsRefused were still up
-// thirteen hours later - the inner one restarting its side-status-command
-// once a second against a kido binary in a deleted temp directory, some
-// fifty thousand ptys in, until an openpty spun in the kernel.
+// Regression test for a test binary that ended without running its
+// cleanups and left both of a harness's tmux servers behind. Measured on
+// 2026-09-26: an agent's bash tool killed a `go test ./e2e/` process
+// group at its 120s timeout, and the two servers were still up thirteen
+// hours later, the inner one restarting its side-status-command once a
+// second against a kido binary in a deleted temp directory.
 //
-// It kills a process group, because that is what happened and because it
-// is the hardest case: a watchdog left in the test's own group dies with
-// it. The child is a real `go test` running the harness, not a hand-rolled
-// pair of servers, so what the test exercises is the harness every other
-// test in this package starts.
+// Kills a process group, the hardest case: a watchdog left in the test's
+// own group must die with it. The child is a real `go test` running the
+// harness, not a hand-rolled pair of servers.
 func TestServersDieWithTheTestProcess(t *testing.T) {
 	requireTmux(t)
 	if os.Getenv(childSocketsEnv) != "" {
@@ -169,9 +163,8 @@ func TestServersDieWithTheTestProcess(t *testing.T) {
 		childSocketsEnv+"="+sockFile,
 		"KIDO_E2E_REQUIRED=1",
 		"KIDO_TMUX="+tmuxBin)
-	// Its own process group, so the SIGKILL below reaches the whole child
-	// run - `go test`, the test binary it spawns, and anything still in
-	// their group - the way the bash tool's timeout did.
+	// Its own process group, so the SIGKILL below reaches `go test`, the
+	// test binary it spawns, and anything still in their group.
 	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var out bytes.Buffer
 	child.Stdout, child.Stderr = &out, &out
@@ -235,10 +228,6 @@ func TestServersDieWithTheTestProcess(t *testing.T) {
 	}
 }
 
-// TestWatchdogChildHangsWithAHarnessUp is the child half: it brings up a
-// harness, says where its servers are and then never finishes, so nothing
-// it registered with t.Cleanup ever runs. It skips unless its parent
-// pointed childSocketsEnv at a file.
 func TestWatchdogChildHangsWithAHarnessUp(t *testing.T) {
 	path := os.Getenv(childSocketsEnv)
 	if path == "" {
@@ -258,13 +247,11 @@ func TestWatchdogChildHangsWithAHarnessUp(t *testing.T) {
 	time.Sleep(110 * time.Second) // the parent's SIGKILL lands long before this
 }
 
-// serverUp reports whether a tmux server is running on this socket.
-// display-message is a command that never starts one.
+// serverUp: display-message is a command that never starts a server.
 func serverUp(socket string) bool {
 	return exec.Command(tmuxBin, "-L", socket, "display-message", "-p", "up").Run() == nil
 }
 
-// serverUpAt is serverUp for a socket named by its full path.
 func serverUpAt(path string) bool {
 	return exec.Command(tmuxBin, "-S", path, "display-message", "-p", "up").Run() == nil
 }
@@ -297,8 +284,7 @@ func TestWatchdogWithAVanishedTmpdirKillsNothingElse(t *testing.T) {
 		t.Skip("this is the child process")
 	}
 
-	// Unique, and so never the "kido" of a real server: the only socket
-	// this test can reach in the shared fallback directory is its own.
+	// Unique, never the "kido" of a real server sharing the fallback directory.
 	name := fmt.Sprintf("kido-witness-%d-%d", os.Getpid(), rand.Int32N(1<<20))
 	witness := fallbackSocketPath(name)
 	watchSocketPath(witness)
@@ -379,9 +365,6 @@ func TestWatchdogWithAVanishedTmpdirKillsNothingElse(t *testing.T) {
 	}
 }
 
-// TestWatchdogChildRegistersAVanishingTmpdir is the child half: it
-// registers a server in a directory that is about to be deleted, and
-// hangs, so nothing it registered with t.Cleanup ever runs.
 func TestWatchdogChildRegistersAVanishingTmpdir(t *testing.T) {
 	spec := os.Getenv(childVictimEnv)
 	if spec == "" {

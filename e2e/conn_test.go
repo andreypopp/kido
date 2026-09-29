@@ -12,8 +12,6 @@ import (
 // fast.
 const slowPoll = "-interval=5s"
 
-// controlClients returns the names of the inner server's control-mode
-// clients: kido's connection, and nothing else.
 func (h *harness) controlClients() []string {
 	h.t.Helper()
 	var names []string
@@ -26,8 +24,6 @@ func (h *harness) controlClients() []string {
 	return names
 }
 
-// waitControlClients waits until the inner server has n control clients and
-// returns their names.
 func (h *harness) waitControlClients(n int) []string {
 	h.t.Helper()
 	h.waitFor(func() bool { return len(h.controlClients()) == n }, settle,
@@ -52,7 +48,6 @@ func (h *harness) waitQuickly(cond func() bool, within time.Duration, describe f
 	}
 }
 
-// rowCount is the number of non-empty sidebar rows.
 func (h *harness) rowCount() int { h.t.Helper(); return len(h.rows()) }
 
 // A new window shows up at once, long before the next poll: kido keeps one

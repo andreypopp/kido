@@ -13,8 +13,6 @@ import (
 	"kido/internal/testutil"
 )
 
-// waitInbox waits until the fake inbox has received exactly the prompts in
-// want.
 func (h *harness) waitInbox(in *testutil.Inbox, want ...string) {
 	h.t.Helper()
 	h.waitFor(func() bool {
@@ -33,11 +31,8 @@ func (h *harness) waitInbox(in *testutil.Inbox, want ...string) {
 	})
 }
 
-// claudePaneHere splits target's window (e.g. "alpha:") with the fake
-// claude binary and titles it the way Claude Code does, without switching
-// the client to it. Unlike claudePane, which opens a whole new window,
-// this keeps the pane in target's own window, for testing kido prompt's
-// window scope.
+// claudePaneHere, unlike claudePane (new window), splits target's own
+// window, for testing kido prompt's window scope.
 func (h *harness) claudePaneHere(target, title string) string {
 	h.t.Helper()
 	id := h.in("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", target, claudeBin, "--")
@@ -46,11 +41,6 @@ func (h *harness) claudePaneHere(target, title string) string {
 	return id
 }
 
-// runPrompt types a shell command line into the client's active pane (the
-// harness starts focused on the session's plain shell) that pipes text
-// into `kido prompt`, reporting its exit code. KIDO_STATE_DIR needs no
-// spelling out: the inner server sets it in its global environment (see
-// inner.conf in start), so every pane of every inner session inherits it.
 func (h *harness) runPrompt(text string, args ...string) {
 	h.t.Helper()
 	cmd := fmt.Sprintf("printf %s | %s prompt %s; echo rc=$?",
@@ -59,15 +49,11 @@ func (h *harness) runPrompt(text string, args ...string) {
 	h.sendKeys("Enter")
 }
 
-// shellQuote wraps s in single quotes for a POSIX shell command line; the
-// prompts used in these tests contain no single quotes.
 func shellQuote(s string) string { return "'" + s + "'" }
 
-// waitMain waits until sub appears anywhere on the captured screen,
-// window area included (waitRow and friends only look at the sidebar
-// column). Only useful for the currently active window's pane: a pane in
-// another window is not on screen at all, however long this waits (see
-// waitPaneText for that case).
+// waitMain, unlike waitRow, looks at the whole screen including the
+// window area. Only useful for the active window's pane; see
+// waitPaneText for one in another window.
 func (h *harness) waitMain(sub string) {
 	h.t.Helper()
 	h.waitFor(func() bool {
@@ -80,8 +66,6 @@ func (h *harness) waitMain(sub string) {
 	}, settle, msgf("screen shows %q", sub))
 }
 
-// paneText captures pane id's own screen on the inner server, regardless
-// of whether that pane's window is the one currently on screen.
 func (h *harness) paneText(id string) string {
 	h.t.Helper()
 	out, err := h.tmux(h.inner, "capture-pane", "-p", "-t", id)
@@ -91,16 +75,14 @@ func (h *harness) paneText(id string) string {
 	return out
 }
 
-// waitPaneText waits until pane id's own screen contains sub.
 func (h *harness) waitPaneText(id, sub string) {
 	h.t.Helper()
 	h.waitFor(func() bool { return strings.Contains(h.paneText(id), sub) }, settle,
 		func() string { return fmt.Sprintf("pane %s shows %q (is %q)", id, sub, h.paneText(id)) })
 }
 
-// paneLines is pane id's own screen as trimmed lines. capture-pane already
-// drops each row's trailing blanks; trimming the front too makes a line
-// comparable to what was typed or printed on it.
+// paneLines trims the front too (capture-pane already drops trailing
+// blanks), so a line is comparable to what was typed or printed on it.
 func (h *harness) paneLines(id string) []string {
 	h.t.Helper()
 	var out []string
@@ -110,9 +92,8 @@ func (h *harness) paneLines(id string) []string {
 	return out
 }
 
-// waitPaneLine waits until one of pane id's rows is exactly want, which
-// distinguishes a command's output ("AAA") from the command line that
-// produced it ("echo AAA").
+// waitPaneLine distinguishes a command's output ("AAA") from the command
+// line that produced it ("echo AAA") by requiring an exact row match.
 func (h *harness) waitPaneLine(id, want string) {
 	h.t.Helper()
 	h.waitFor(func() bool {
@@ -127,7 +108,6 @@ func (h *harness) waitPaneLine(id, want string) {
 	})
 }
 
-// lineIndex is the first row of lines satisfying match, or -1.
 func lineIndex(lines []string, match func(string) bool) int {
 	for i, l := range lines {
 		if match(l) {
@@ -137,17 +117,13 @@ func lineIndex(lines []string, match func(string) bool) int {
 	return -1
 }
 
-// TestPromptMultiLine checks that a two-line prompt reaches the agent as
-// one input rather than one input per line.
-//
-// The pane is a bare zsh, which is the cheapest stand-in for Claude Code
-// here: zle enables bracketed paste exactly as Claude Code does, so it is
-// the one thing in the harness that can tell a paste from typed keys. Sent
-// as literal keys, the newline in the middle is an Enter: zsh runs "echo
-// AAA" on its own and prints AAA before "echo BBB" is ever typed. Sent as
-// a bracketed paste, both lines land in one command line and only the
-// Enter that follows runs them, so both echoes are on screen before either
-// output is. That order is the assertion.
+// A two-line prompt must reach the agent as one input, not one per line.
+// zsh is the stand-in for Claude Code: zle enables bracketed paste the
+// same way, so it can tell a paste from typed keys. As typed keys the
+// middle newline is an Enter, running "echo AAA" before "echo BBB" is
+// even typed; as a paste both lines land in one command line and only
+// the trailing Enter runs them - so both echoes appear before either
+// output does. That order is the assertion.
 func TestPromptMultiLine(t *testing.T) {
 	t.Parallel()
 	zsh, err := exec.LookPath("zsh")
@@ -156,14 +132,12 @@ func TestPromptMultiLine(t *testing.T) {
 	}
 	h := start(t, "alpha")
 
-	// -f: no rc files, so the pane holds nothing but zle's own defaults
-	// (bracketed paste among them) and the developer's own zsh setup
-	// cannot change what this test sees.
+	// -f: no rc files, so the developer's own zsh setup cannot change what
+	// this test sees.
 	pane := h.newWindow("alpha", "", zsh, "-f")
 	h.waitPaneCommand(pane, "zsh")
-	// zle must have turned bracketed paste on before the paste lands, or
-	// tmux writes the bytes raw and the test proves nothing. zsh -f's
-	// default prompt is "%m%# ", so a row ending in "%" means zle is up.
+	// zle must be up (bracketed paste on) before the paste lands, or tmux
+	// writes the bytes raw; zsh -f's default prompt ends in "%".
 	h.waitFor(func() bool {
 		for _, l := range h.paneLines(pane) {
 			if strings.HasSuffix(l, "%") {
@@ -175,13 +149,11 @@ func TestPromptMultiLine(t *testing.T) {
 		return fmt.Sprintf("pane %s to reach a zsh prompt (is %q)", pane, h.paneText(pane))
 	})
 
-	// A state record with no inbox socket is what makes kido treat this
-	// pane as an agent and deliver through tmux.SendPrompt; pi's own
-	// socket path (TestPromptInboxNative) never reaches it.
+	// No inbox socket: kido delivers through tmux.SendPrompt, not the
+	// socket path (TestPromptInboxNative).
 	h.agentStatus("pi-1", pane, "pi", "idle")
 
-	// printf expands the \n, so the newline is made inside the pane
-	// rather than typed into the caller's shell.
+	// printf expands \n inside the pane, not the caller's shell.
 	h.runPrompt(`echo AAA\necho BBB`)
 	h.waitMain("rc=0")
 	h.waitPaneLine(pane, "BBB") // both lines have run by now
@@ -196,11 +168,10 @@ func TestPromptMultiLine(t *testing.T) {
 	}
 }
 
-// TestPromptDefaultWindowOne checks the default scope: a Claude Code pane
-// split into the caller's own window is found and sent to, without the
-// session being searched at all — a second Claude Code pane sits in
-// another window of the same session, so a naive "always search the
-// session" implementation would see two candidates and exit 5 here.
+// A Claude Code pane split into the caller's own window is found without
+// searching the session - a second pane in another window means a naive
+// "always search the session" implementation would see two candidates
+// and exit 5 here.
 func TestPromptDefaultWindowOne(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -212,9 +183,8 @@ func TestPromptDefaultWindowOne(t *testing.T) {
 	h.waitPaneText(inWindow, "got: hello there")
 }
 
-// TestPromptDefaultWindowSeveral checks that several Claude Code panes in
-// the window is exit 5 with no widening to the session (the window is not
-// empty, so the search never widens).
+// Several Claude Code panes in the window is exit 5; the window is not
+// empty, so the search never widens to the session.
 func TestPromptDefaultWindowSeveral(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -226,9 +196,7 @@ func TestPromptDefaultWindowSeveral(t *testing.T) {
 	h.waitMain("rc=5")
 }
 
-// TestPromptDefaultSessionOne checks that the default scope widens to the
-// session when the window has no Claude Code pane at all, finding the one
-// in another window.
+// The default scope widens to the session when the window has none.
 func TestPromptDefaultSessionOne(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -239,12 +207,10 @@ func TestPromptDefaultSessionOne(t *testing.T) {
 	h.waitPaneText(pane, "got: session scope")
 }
 
-// TestPromptExcludesSubagentWindow checks that a spawned subagent's
-// window is never a candidate: with the window empty, one top-level
-// Claude Code pane and one spawned subagent (also claude-looking)
-// elsewhere in the session, the widened search still delivers to the
-// top-level agent (exit 0), rather than seeing two candidates and
-// exiting 5.
+// A spawned subagent's window is never a candidate: with the window
+// empty and a claude-looking subagent elsewhere, the widened search
+// still delivers to the top-level agent rather than seeing two
+// candidates and exiting 5.
 func TestPromptExcludesSubagentWindow(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -272,8 +238,6 @@ func TestPromptExcludesSubagentWindow(t *testing.T) {
 	h.waitPaneText(topLevel, "got: hi")
 }
 
-// TestPromptDefaultSessionSeveral checks that, with the window empty,
-// several Claude Code panes elsewhere in the session is exit 5.
 func TestPromptDefaultSessionSeveral(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -285,8 +249,6 @@ func TestPromptDefaultSessionSeveral(t *testing.T) {
 	h.waitMain("rc=5")
 }
 
-// TestPromptDefaultNone checks that no Claude Code pane anywhere, window
-// or session, is exit code 4.
 func TestPromptDefaultNone(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -296,9 +258,7 @@ func TestPromptDefaultNone(t *testing.T) {
 	h.waitMain("rc=4")
 }
 
-// TestPromptWindowFlagNoneElsewhereInSession checks that --window never
-// widens to the session: with none in the window but one elsewhere in the
-// session, it still exits 4.
+// --window never widens to the session.
 func TestPromptWindowFlagNoneElsewhereInSession(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -309,11 +269,9 @@ func TestPromptWindowFlagNoneElsewhereInSession(t *testing.T) {
 	h.waitMain("rc=4")
 }
 
-// TestPromptInboxNative checks the native delivery path: a pane whose
-// agent reported an inbox socket (`kido agent-status --inbox`) gets the
-// prompt as a message over that socket, byte for byte, and no keystrokes
-// at all - the pane's own screen must stay as the agent drew it, with none
-// of the "got: ..." the fake agent echoes for send-keys input.
+// A pane whose agent reported an inbox socket gets the prompt as a
+// message over that socket, no keystrokes at all - the pane's own screen
+// must stay as the agent drew it.
 func TestPromptInboxNative(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -324,16 +282,13 @@ func TestPromptInboxNative(t *testing.T) {
 	h.runPrompt("over the socket")
 	h.waitMain("rc=0")
 	h.waitInbox(in, "over the socket")
-	// SendPrompt pastes the text and presses Enter before kido exits, so
-	// a wrong send would already be on the pane's screen by now.
-	if got := h.paneText(pane); strings.Contains(got, "got:") {
+	if got := h.paneText(pane); strings.Contains(got, "got:") { // a wrong send would already be on screen
 		t.Errorf("pane %s was typed into as well: %q", pane, got)
 	}
 }
 
-// TestPromptInboxStaleFallsBack checks that a recorded socket nobody is
-// listening on (an agent that died without clearing it) is not an error:
-// nothing was delivered, so kido falls back to send-keys and still exits 0.
+// A recorded socket nobody is listening on is not an error: kido falls
+// back to send-keys and still exits 0.
 func TestPromptInboxStaleFallsBack(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -345,8 +300,6 @@ func TestPromptInboxStaleFallsBack(t *testing.T) {
 	h.waitPaneText(pane, "got: fall back to keys")
 }
 
-// TestPromptWindowFlagOne checks that --window sends to the window's own
-// Claude Code pane.
 func TestPromptWindowFlagOne(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

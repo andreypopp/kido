@@ -39,11 +39,9 @@ func (r *runInfo) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// spawnRun drives `kido spawn_subagent` with a fake command, exactly as runSpawn
-// does, but returns the run id kido spawn_subagent's third output field now
-// carries and lets the caller supply the fake command's script directly -
-// runSpawn's own fixed "env; pwd; sleep" script does not exit on its own,
-// which every test here needs control over.
+// spawnRun is runSpawn but lets the caller supply the command's script
+// directly: runSpawn's own fixed "env; pwd; sleep" script never exits on
+// its own, which every test here needs control over.
 func (h *harness) spawnRun(name, script string) (runID, windowID string) {
 	h.t.Helper()
 	h.liveParent("alpha", "root-e2e")
@@ -69,28 +67,20 @@ func (h *harness) writeTaskFile(name string) string {
 	return path
 }
 
-// runOutcome shells `kido runs --json <run-id>` and returns the parsed
-// outcome.
 func (h *harness) runOutcome(runID string) string {
 	h.t.Helper()
 	out := h.runKido("alpha", runID+"-show.out", "runs", "--json", runID)
 	var info runInfo
-	// runKido's own output also carries "rc=0" on its own line, which is
-	// not part of the JSON kido runs printed.
-	line := strings.SplitN(out, "\n", 2)[0]
+	line := strings.SplitN(out, "\n", 2)[0] // drop runKido's own trailing "rc=0" line
 	if err := json.Unmarshal([]byte(line), &info); err != nil {
 		h.t.Fatalf("kido runs --json %s: %v (%q)", runID, err, out)
 	}
 	return info.Outcome
 }
 
-// TestRunRecordSurvivesReapAsDied spawns a child that never reports an
-// outcome for itself and is killed outright - the SIGKILL / OOM case
-// subrun calls Died - and checks that
-// the run record is still readable, with that outcome, once the sidebar's
-// own sweep has collected its window. This is the point of the whole
-// design: the outcome must survive the window closing, not just the pane
-// dying.
+// A child killed outright (subrun's Died case) must leave a readable run
+// record once the sidebar's sweep has collected its window: the outcome
+// must survive the window closing, not just the pane dying.
 func TestRunRecordSurvivesReapAsDied(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -107,22 +97,17 @@ func TestRunRecordSurvivesReapAsDied(t *testing.T) {
 	}
 }
 
-// TestRunRecordSurvivesReapAsCompleted is the same shape, but the child
-// reports itself before exiting - standing in for pi's own
-// sendCompletionNotice calling `kido run-outcome`, which the e2e suite
-// cannot exercise directly since it cannot host the TypeScript extension.
-// The recorded outcome must win over the sweep's own Died guess, which
-// would otherwise fire for exactly the same dead, marked window.
+// Same shape, but the child reports itself before exiting, standing in
+// for pi's sendCompletionNotice (the e2e suite cannot host the
+// extension). The recorded outcome must win over the sweep's own Died
+// guess for the same dead, marked window.
 func TestRunRecordSurvivesReapAsCompleted(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	// The short sleep before reporting is not decoration: tmux.NewWindow
-	// sets remain-on-exit in a second tmux invocation, and a command that
-	// exits before it lands loses its window outright - measured at 20 out
-	// of 20 for /bin/true (see NewWindow's own doc, which is where that gap
-	// and the reasons for leaving it are recorded). Without the sleep this
-	// test would be asserting against a window that had already vanished.
+	// The sleep is not decoration: tmux.NewWindow sets remain-on-exit in a
+	// second call, and a command exiting before it lands loses its window
+	// outright (measured 20/20 for /bin/true; see NewWindow's own doc).
 	script := fmt.Sprintf(`sleep 0.3; %s run-outcome --result completed -- "$KIDO_AGENT_RUN_ID"`, kidoBin)
 	runID, windowID := h.spawnRun("done-e2e", script)
 
@@ -134,20 +119,14 @@ func TestRunRecordSurvivesReapAsCompleted(t *testing.T) {
 	}
 }
 
-// TestRunScreenCapturedOnReap spawns a child that writes recognisable
-// output to its own pane and exits, lets the sweep collect its window,
-// and checks that the text survives in the run's captured screen - both
-// on disk and through `kido runs <id>`, which is the only way a human
-// would actually see it (docs/design.md, "Window lifecycle").
+// A child's screen output must survive the sweep collecting its window,
+// through `kido runs <id>`, the only way a human would actually see it.
 func TestRunScreenCapturedOnReap(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
 	const marker = "KIDO-E2E-SCREEN-MARKER-4f2a"
-	// The sleep after echo is not decoration, see spawnRun's own comment on
-	// TestRunRecordSurvivesReapAsCompleted: a command that exits before
-	// tmux.NewWindow's second call lands (setting remain-on-exit) loses its
-	// window outright, before there is anything for a sweep to collect.
+	// The sleep is not decoration; see TestRunRecordSurvivesReapAsCompleted.
 	script := fmt.Sprintf("echo %s; sleep 0.3", marker)
 	runID, windowID := h.spawnRun("screen-e2e", script)
 
@@ -160,18 +139,16 @@ func TestRunScreenCapturedOnReap(t *testing.T) {
 	}
 }
 
-// TestStopRecordsStoppedOutcome checks that `kido stop_subagent`, ending a wedged
-// child by escalating to a window kill, records the run's outcome as
-// Stopped rather than leaving the sweep to call it Died a moment later -
-// the two would otherwise be indistinguishable once the window is gone.
+// stop_subagent's escalation kill must record the run's outcome as
+// Stopped, not leave the sweep to call it Died a moment later -
+// indistinguishable once the window is gone.
 func TestStopRecordsStoppedOutcome(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
 	runID, windowID := h.spawnRun("wedged-run-e2e", "exec sleep 300")
-	// A real inbox that never actually shuts the session down, standing in
-	// for a wedged pi extension - the same trick control_test.go's
-	// wedgedChild uses, but reporting under the run's own id (target.ID
+	// A real inbox that never shuts the session down, standing in for a
+	// wedged pi extension, reporting under the run's own id (target.ID
 	// must equal the run id for stopCmd's outcome write to land anywhere).
 	paneID := h.in("list-panes", "-t", windowID, "-F", "#{pane_id}")
 	in := testutil.StartInbox(h.t, "ok\n")

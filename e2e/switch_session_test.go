@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// sessionCreated returns #{session_created} for name, or -1 if it is not on
-// the inner server.
 func (h *harness) sessionCreated(name string) int64 {
 	h.t.Helper()
 	out := h.in("list-sessions", "-F", "#{session_name}\t#{session_created}")
@@ -25,21 +23,18 @@ func (h *harness) sessionCreated(name string) int64 {
 	return -1
 }
 
-// newSessionSpaced creates an inner session the way newSession does, but
-// first waits out any remaining part of the current wall-clock second:
-// #{session_created} only has one-second resolution, so sessions created
-// within the same second would tie and fall back to name order, hiding the
-// very distinction these tests exist to catch.
+// newSessionSpaced waits out the remaining wall-clock second first:
+// #{session_created} has one-second resolution, so sessions created
+// within the same second would tie and fall back to name order, hiding
+// the distinction these tests exist to catch.
 func (h *harness) newSessionSpaced(name string) {
 	h.t.Helper()
 	time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second)) + 50*time.Millisecond)
 	h.newSession(name)
 }
 
-// runSwitchSession runs `kido switch-session <dir> -client <h.client>`
-// against the inner server, the way a key binding's run-shell would (see
-// tmux/kido-tmux.conf): TMUX names the inner server's socket, pid and a
-// session, and -client carries the side status column's own client name.
+// runSwitchSession runs against the inner server the way a key binding's
+// run-shell would (tmux/kido-tmux.conf).
 func (h *harness) runSwitchSession(dir string) {
 	h.t.Helper()
 	tmuxEnv := h.in("display-message", "-p", "#{socket_path},#{pid},0")
@@ -52,14 +47,11 @@ func (h *harness) runSwitchSession(dir string) {
 	}
 }
 
-// TestSwitchSessionOrder checks that `kido switch-session next|prev` walks
-// kido's session order (oldest first, ties by name), not tmux's own
-// next/prev order (which walks by name). Sessions are created "a", "c",
-// "b" (one full second apart, so #{session_created} cannot tie), giving
-// kido's order a, c, b by creation time, which is not a rotation of tmux's
-// name order a, b, c: only kido's order sends the first "next" from "a" to
-// "c" rather than "b", so that step is what proves the sidebar's order and
-// switch-session's order cannot drift apart.
+// `kido switch-session next|prev` must walk kido's session order (oldest
+// first), not tmux's own name order. Sessions created "a", "c", "b" one
+// full second apart give kido's order a, c, b by creation time, not a
+// rotation of name order a, b, c: only kido's order sends the first
+// "next" from "a" to "c" rather than "b".
 func TestSwitchSessionOrder(t *testing.T) {
 	t.Parallel()
 	h := start(t, "a")
@@ -71,7 +63,6 @@ func TestSwitchSessionOrder(t *testing.T) {
 		t.Fatalf("session_created not strictly increasing: a=%d c=%d b=%d", ca, cc, cb)
 	}
 
-	// The client starts on "a" (the session start() created).
 	h.waitSession("a")
 
 	h.runSwitchSession("next") // a -> c (kido order; tmux name order would say b)
@@ -87,11 +78,11 @@ func TestSwitchSessionOrder(t *testing.T) {
 	h.waitSession("b")
 }
 
-// TestSwitchSessionBinding checks the actual key binding documented in
-// tmux/kido-tmux.conf and the README: bind-key -n ... run-shell "kido
-// switch-session next -client '#{client_name}'". It proves #{client_name}
-// expands to the real client name when run-shell fires from a key binding,
-// not just when the test drives kido directly with -client.
+// The actual key binding documented in tmux/kido-tmux.conf and the
+// README: bind-key -n ... run-shell "kido switch-session next -client
+// '#{client_name}'". Proves #{client_name} expands to the real client
+// name when run-shell fires from a key binding, not just when the test
+// drives kido directly with -client.
 func TestSwitchSessionBinding(t *testing.T) {
 	t.Parallel()
 	h := start(t, "a")
@@ -111,8 +102,6 @@ func TestSwitchSessionBinding(t *testing.T) {
 	h.waitSession("a")
 }
 
-// TestSwitchSessionSingleSession checks that switch-session is a no-op with
-// only one session on the server.
 func TestSwitchSessionSingleSession(t *testing.T) {
 	t.Parallel()
 	h := start(t, "solo")

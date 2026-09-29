@@ -9,20 +9,14 @@ import (
 	"kido/internal/testutil"
 )
 
-// The human-as-caller path, end to end. What a bare shell is, to kido, is
-// a pane with no state record - no inbox, no session id, no parent, depth 0
-// (docs/design-subagents.md, "A human at a shell") - and that is the one
-// condition this suite gets for real rather than constructed: a window
-// the harness opens and never registers an agent in *is* a record-less
-// caller, and the command runs as the real binary through its own
-// dispatch. A unit test has to fake the absence of the record; here the
-// interesting pane is simply the one that never gets agentWithInbox.
+// The human-as-caller path, end to end. A bare shell is, to kido, a pane
+// with no state record (docs/design-subagents.md, "A human at a shell"):
+// a window the harness opens and never registers an agent in *is* a
+// record-less caller, real rather than constructed as a unit test must.
 
-// pipeKido runs kido from a plain shell pane in session with input on its
-// stdin, and returns its output with an "rc=<code>" line appended:
-// runKido (reap_test.go) for the commands that read their text from
-// stdin, which is every send. The pane it runs in is a fresh window with
-// no agent record, which is the point.
+// pipeKido is runKido (reap_test.go) for the commands reading their text
+// from stdin, which is every send. The pane has no agent record, which
+// is the point.
 func (h *harness) pipeKido(session, outName, input string, args ...string) string {
 	h.t.Helper()
 	outFile := filepath.Join(h.dir, outName)
@@ -32,17 +26,14 @@ func (h *harness) pipeKido(session, outName, input string, args ...string) strin
 	return h.waitFileContains(outFile, "rc=")
 }
 
-// TestAskFromAShellRefusesAndLeavesTheTargetUndisturbed is the whole
-// point of the refusal, and the half no unit test states as plainly: the
-// bug was never "the reply is lost", it was that a turn of somebody's
-// attention was spent on a question that could never be answered. So the
-// assertions that matter are about the target - its inbox received
-// nothing, and its pane was not typed into either - rather than about
-// what the caller was told.
+// The bug was never "the reply is lost", it was that a turn of
+// somebody's attention was spent on a question that could never be
+// answered - so the assertions that matter are about the target, not
+// about what the caller was told.
 //
-// Measured before the fix, from a real shell: `echo hi | kido ask_agent
-// --id t1 -- <agent>` printed "delivered to <agent> by inbox", and the
-// target, on trying to answer, got "no agent session matches %47".
+// Measured before the fix: `echo hi | kido ask_agent --id t1 -- <agent>`
+// printed "delivered to <agent> by inbox", and the target, on trying to
+// answer, got "no agent session matches %47".
 func TestAskFromAShellRefusesAndLeavesTheTargetUndisturbed(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -60,8 +51,7 @@ func TestAskFromAShellRefusesAndLeavesTheTargetUndisturbed(t *testing.T) {
 		t.Errorf("kido ask_agent output = %q, want it to point at kido message_agent", out)
 	}
 	// stays, not a single reading: "nothing has been delivered yet" and
-	// "nothing will be" look identical at any one instant, and the send
-	// path being refused early is exactly what this has to outlive.
+	// "nothing will be" look identical at any one instant.
 	h.stays(func() bool { return len(in.Received()) == 0 },
 		"the target's inbox received something: an unanswerable question must not interrupt anyone")
 	if got := h.paneText(paneID); strings.Contains(got, question) {
@@ -69,12 +59,8 @@ func TestAskFromAShellRefusesAndLeavesTheTargetUndisturbed(t *testing.T) {
 	}
 }
 
-// TestMessageFromAShellReachesTheAgent is the positive control the
-// refusal above needs: without it, both of these tests would pass on a
-// kido where everything from a shell was broken, which is the one failure
-// a negative-only test cannot tell you about. The same record-less pane,
-// the same target, one command over: list_agents sees the fleet and
-// message_agent actually arrives.
+// Positive control the refusal above needs: without it, both tests would
+// pass on a kido where everything from a shell was broken.
 func TestMessageFromAShellReachesTheAgent(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -93,17 +79,15 @@ func TestMessageFromAShellReachesTheAgent(t *testing.T) {
 	if !strings.Contains(out, "delivered") {
 		t.Errorf("kido message_agent output = %q, want it to report the delivery", out)
 	}
-	// A v1 envelope rather than raw text, since the target advertised the
-	// protocol - and its From names only a pane, no session and no name: a
-	// record-less sender has nothing else to give, which is the same
-	// absence the ask above is refused for.
+	// A v1 envelope, not raw text, since the target advertised the
+	// protocol; From names only a pane, no session - nothing else a
+	// record-less sender has to give.
 	h.waitEnvelope(in, `"kind":"message"`, "the build is green", `"session":""`)
 }
 
 // waitEnvelope waits until one payload on in contains every one of subs.
-// The targets here advertise protocol 1, so what lands is a JSON
-// envelope: waitInbox's exact-string compare (prompt_test.go) is for the
-// v0 raw-text path, where the payload really is the message.
+// Unlike waitInbox's exact-string compare (prompt_test.go, for the v0
+// raw-text path), targets here advertise protocol 1 and get a JSON envelope.
 func (h *harness) waitEnvelope(in *testutil.Inbox, subs ...string) {
 	h.t.Helper()
 	h.waitFor(func() bool {
@@ -125,21 +109,18 @@ func matchesAll(s string, subs []string) bool {
 	return true
 }
 
-// TestSteerFromAShellIsNotHeldToTheDescendantRule names a decision that
-// was previously true only by implication. `_subagent` tools reach the
-// caller's own descendants, checked by descendantTarget (cmd/kido/
-// control.go), which begins by looking the caller up: a caller with no
-// record is not an agent, so it is not held to a rule about which agents
-// it may act on, and may steer, interrupt or stop anything in the
-// session. That is deliberate - the guard is a boundary between agents,
-// and a human is not one - and a test is what keeps it from being
-// "re-fixed" as a hole.
+// `_subagent` tools reach the caller's own descendants, checked by
+// descendantTarget (cmd/kido/control.go), which begins by looking the
+// caller up: a caller with no record is not an agent, so it is not held
+// to a rule about which agents it may act on. Deliberate - the guard is
+// a boundary between agents, and a human is not one - and a test is what
+// keeps it from being "re-fixed" as a hole.
 func TestSteerFromAShellIsNotHeldToTheDescendantRule(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	// Somebody else's child entirely: it names a parent this caller could
-	// not possibly be, so the descendant rule would refuse it outright.
+	// Names a parent this caller could not possibly be, so the descendant
+	// rule would refuse it outright if it applied.
 	in, paneID := h.agentWithInbox("alpha", "stranger-e2e")
 	h.agentStatus("stranger-e2e", paneID, "pi", "idle",
 		"--parent-session", "somebody-else-e2e",

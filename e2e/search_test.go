@@ -9,8 +9,6 @@ import (
 // searchRows is the number of rows setupSearch's unfiltered list has.
 const searchRows = 6
 
-// searchLineOf returns the search prompt kido draws on the column's last
-// line, or "".
 func searchLineOf(lines []string) string {
 	for _, l := range sidebarOf(lines) {
 		if strings.HasPrefix(l, "/") {
@@ -28,8 +26,6 @@ func (h *harness) waitSearch(want string) {
 		func() string { return fmt.Sprintf("search prompt %q (is %q)", want, h.searchLine()) })
 }
 
-// waitSearchClosed waits until the prompt is gone and the full list (n
-// rows) is back, reading both off one capture.
 func (h *harness) waitSearchClosed(n int) {
 	h.t.Helper()
 	h.waitFor(func() bool {
@@ -49,7 +45,6 @@ func setupSearch(t *testing.T) *harness {
 	return h
 }
 
-// TestSearchFilters checks that "/" plus text fuzzy-filters the sessions.
 func TestSearchFilters(t *testing.T) {
 	t.Parallel()
 	h := setupSearch(t)
@@ -71,8 +66,6 @@ func TestSearchFilters(t *testing.T) {
 	}
 }
 
-// TestSearchBackspaceCloses checks Backspace erasing the last character
-// and then closing the search.
 func TestSearchBackspaceCloses(t *testing.T) {
 	t.Parallel()
 	h := setupSearch(t)
@@ -91,8 +84,6 @@ func TestSearchBackspaceCloses(t *testing.T) {
 	}
 }
 
-// TestSearchEnterJumps checks that Enter in a filtered list jumps to the
-// match and clears everything.
 func TestSearchEnterJumps(t *testing.T) {
 	t.Parallel()
 	h := setupSearch(t)
@@ -107,9 +98,8 @@ func TestSearchEnterJumps(t *testing.T) {
 	h.waitSearchClosed(searchRows)
 }
 
-// TestSearchMatchesClaudeTitle checks that "/" also matches a session whose
-// name does not contain the query but a Claude pane's title does: the
-// session stays fully visible, and a session that matches neither drops out.
+// "/" also matches a session whose name does not contain the query but a
+// Claude pane's title does: the session stays fully visible.
 func TestSearchMatchesClaudeTitle(t *testing.T) {
 	t.Parallel()
 	h := start(t, "work")
@@ -133,11 +123,10 @@ func TestSearchMatchesClaudeTitle(t *testing.T) {
 	h.waitSearchClosed(5)
 }
 
-// TestSearchMatchesSSHDestinationNotCommand checks that a query matching an
-// ssh pane's destination surfaces that session (searching either the user
-// or the host part of "deploy@example.test"), while a query matching only a
-// plain foreground command does not: only the session name, agent titles,
-// and ssh destinations are searched.
+// Only the session name, agent titles, and ssh destinations are
+// searched: a query matching an ssh pane's destination (user or host
+// part) surfaces its session, one matching only a plain foreground
+// command does not.
 func TestSearchMatchesSSHDestinationNotCommand(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

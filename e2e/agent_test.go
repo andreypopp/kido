@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// countRows is how many sidebar rows read exactly want.
 func (h *harness) countRows(want string) int {
 	h.t.Helper()
 	n := 0
@@ -60,11 +59,9 @@ func TestPiPaneLooksLikeAClaudePane(t *testing.T) {
 	})
 }
 
-// TestPiReportedTitleWinsOverPaneTitle checks that a recorded --title is
-// what the row shows, not the session name and cwd basename kido would
-// otherwise recover by stripping pi's "π - " marker off the pane title:
-// splitting on "-" would be wrong (a session name can itself contain " -
-// "), and the extension already sends the exact name.
+// A recorded --title must win over the session/cwd kido could otherwise
+// derive by stripping pi's marker off the pane title, since splitting on
+// "-" breaks for a session name that itself contains " - ".
 func TestPiReportedTitleWinsOverPaneTitle(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

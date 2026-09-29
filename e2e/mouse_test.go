@@ -7,8 +7,6 @@ import (
 	"testing"
 )
 
-// TestMouseClickJumps checks that clicking a row switches the client to
-// that pane and gives the keyboard back to it.
 func TestMouseClickJumps(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -22,8 +20,6 @@ func TestMouseClickJumps(t *testing.T) {
 	h.waitFocused(false)
 }
 
-// TestMouseClickInPaneReleasesFocus checks that a click in the window area
-// takes the keyboard away from the sidebar.
 func TestMouseClickInPaneReleasesFocus(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -32,8 +28,6 @@ func TestMouseClickInPaneReleasesFocus(t *testing.T) {
 	h.waitFocused(false)
 }
 
-// TestMouseWheelScrolls checks the wheel moves a list longer than the
-// column.
 func TestMouseWheelScrolls(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -67,8 +61,6 @@ func TestMouseWheelScrolls(t *testing.T) {
 		msgf("the list scrolled back up from %q", scrolled))
 }
 
-// TestMouseDragResizes checks that dragging the separator changes the
-// global side-status-width.
 func TestMouseDragResizes(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

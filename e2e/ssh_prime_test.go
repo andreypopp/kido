@@ -15,11 +15,10 @@ import (
 // shell's rc files, which on a loaded machine outlast kido's own 5s.
 const sshSettle = 20 * time.Second
 
-// integratedShellPane starts a pane whose shell carries kido's own
-// integration. An ssh pane needs one: kido only believes a far side is
-// reporting once it marks a prompt later than the local shell marked the
-// ssh as started (internal/ui, observeRemote), and only an integrated
-// local shell marks that start.
+// integratedShellPane's shell carries kido's own integration. An ssh
+// pane needs one: kido only believes a far side is reporting once it
+// marks a prompt later than the local shell marked the ssh as started
+// (internal/ui, observeRemote).
 func integratedShellPane(t *testing.T, h *harness) string {
 	t.Helper()
 	zsh, err := exec.LookPath("zsh")
@@ -47,20 +46,16 @@ func integratedShellPane(t *testing.T, h *harness) string {
 	return pane
 }
 
-// TestKidoSSHPrimesARemoteShell is `kido ssh` end to end: a real ssh, a
-// real remote login shell, and the sidebar reading what that shell
-// reports. The two halves are one command apart on the same destination
-// from the same pane - plain `ssh` first, `kido ssh` second - because the
-// row only means something if the same connection says nothing without
-// it.
+// `kido ssh` end to end: a real ssh, a real remote login shell, the
+// sidebar reading what it reports. Plain `ssh` first, `kido ssh` second
+// on the same destination from the same pane, since the row only means
+// something if the connection says nothing without priming.
 //
-// The control is also the gate. A remote whose own dotfiles already
-// source kido's integration reports either way, and on such a host this
-// test can prove nothing about priming: it says so and skips, rather than
-// passing on the far side's own rc files. That is the developer's own
-// localhost, most often, which is why the pristine-remote evidence lives
-// where a pristine remote can be built - cmd/kido's
-// TestSSHPrimesAPristineZsh, which owns the far side's $HOME.
+// A remote whose own dotfiles already source kido's integration reports
+// either way - most often the developer's own localhost - and this test
+// can prove nothing about priming there: it skips rather than passing on
+// the far side's own rc files. The pristine-remote evidence lives where
+// a pristine remote can be built - cmd/kido's TestSSHPrimesAPristineZsh.
 func TestKidoSSHPrimesARemoteShell(t *testing.T) {
 	t.Parallel()
 	requireLocalSSH(t)
@@ -69,9 +64,8 @@ func TestKidoSSHPrimesARemoteShell(t *testing.T) {
 	opts := strings.Join(sshOpts, " ")
 
 	// A remote command long enough for its prompt to land in a later
-	// second than its own start: the latch reads tmux's timestamps, which
-	// are whole seconds, so a `true` would be indistinguishable from
-	// silence.
+	// second than its own start: tmux's timestamps are whole seconds, so a
+	// `true` would be indistinguishable from silence.
 	remote := func(cmd string) { h.in("send-keys", "-t", pane, cmd, "Enter") }
 	reports := func(d time.Duration) bool {
 		deadline := time.Now().Add(d)
@@ -91,8 +85,7 @@ func TestKidoSSHPrimesARemoteShell(t *testing.T) {
 		remote("exit")
 		t.Skip("localhost's own dotfiles already report to kido, so priming cannot be shown to be the cause here")
 	}
-	// The negative control, and the claim the rest of the test rests on:
-	// this far side says nothing on its own.
+	// Negative control: this far side says nothing on its own.
 	if h.shellRow("╶✓ ssh localhost", "32") || h.shellRow("╶◼ ssh localhost", "") {
 		t.Fatalf("the unprimed remote reported after all; rows are %q", h.rows())
 	}
@@ -108,17 +101,16 @@ func TestKidoSSHPrimesARemoteShell(t *testing.T) {
 	}
 }
 
-// TestKidoSSHOpensAnOrdinarySession is the plumbing `kido ssh` has to get
-// right whoever the far side is: the arguments reach ssh in order, kido
-// exec's into it rather than sitting in front of it, and the connection
-// that comes back is an interactive login shell that runs what is typed
-// at it - which it would not be without the -t kido adds, ssh allocating
-// no tty for the bootstrap it now carries.
+// The plumbing `kido ssh` has to get right whoever the far side is: the
+// arguments reach ssh in order, kido exec's into it, and the connection
+// is an interactive login shell running what is typed at it - which it
+// would not be without the -t kido adds, ssh allocating no tty for the
+// bootstrap it now carries.
 //
-// It asserts nothing about priming; a remote reporting through its own
-// dotfiles would give the same row. What it would catch is a bootstrap
-// that wedges, a quoting mistake that reaches the remote shell as
-// commands, or a fallback that never execs anything.
+// Asserts nothing about priming; a remote reporting through its own
+// dotfiles gives the same row. Catches a bootstrap that wedges, a
+// quoting mistake reaching the remote shell as commands, or a fallback
+// that never execs anything.
 func TestKidoSSHOpensAnOrdinarySession(t *testing.T) {
 	t.Parallel()
 	requireLocalSSH(t)

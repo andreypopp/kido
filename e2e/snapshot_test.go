@@ -19,7 +19,6 @@ var layoutNoise = regexp.MustCompile(`[0-9]+`)
 
 func normalizeLayout(s string) string { return layoutNoise.ReplaceAllString(s, "") }
 
-// windowShape is one window as the comparison sees it.
 type windowShape struct {
 	session string
 	name    string
@@ -27,7 +26,6 @@ type windowShape struct {
 	layout  string
 }
 
-// shapes lists the windows of a tmux server in order.
 func shapes(t *testing.T, socket string) []windowShape {
 	t.Helper()
 	cmd := exec.Command(tmuxBin, "-L", socket, "list-panes", "-a", "-F",
@@ -56,14 +54,10 @@ func shapes(t *testing.T, socket string) []windowShape {
 	return list
 }
 
-// TestSnapshotReplays captures the inner server with `kido snapshot` and
-// replays the script onto a third, empty server, then compares the two.
 func TestSnapshotReplays(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	// A layout worth recreating: a split, a second window, and two Claude
-	// panes, one of which has hook state (so it resumes by session id).
 	h.in("split-window", "-d", "-t", "alpha:")
 	h.in("new-window", "-d", "-t", "alpha:", "-n", "editor")
 	h.newSession("beta")
@@ -72,17 +66,14 @@ func TestSnapshotReplays(t *testing.T) {
 	h.hook("sess-resume", resume, "SessionStart")
 	h.waitGlyph("Resumable", "")
 
-	// A pi pane that has reported through agent-status resumes by its own
-	// session id too, the same way a hooked Claude pane does.
+	// Resumes by its own session id too, like a hooked Claude pane.
 	piPane := h.piPane("beta", "π - resumable - kido")
 	h.agentStatus("pi-resume", piPane, "pi", "idle")
 	h.waitGlyph("resumable - kido", "")
 
-	// A window is named after the client that created it until tmux
-	// renames it to its pane's command a moment later; a snapshot taken in
-	// between records "tmux" as a window name. Wait for the server to stop
-	// changing shape. (The claude windows keep the name for good: their
-	// pane writes nothing, so tmux never renames them.)
+	// A window is named after the client that created it until tmux renames
+	// it to its pane's command a moment later; wait for that to settle, or
+	// a snapshot taken in between records "tmux" as the window name.
 	var prev []windowShape
 	h.waitFor(func() bool {
 		now := shapes(t, h.inner)
@@ -95,9 +86,8 @@ func TestSnapshotReplays(t *testing.T) {
 	// kido snapshot talks to the server named by $TMUX.
 	tmuxEnv := h.in("display-message", "-p", "#{socket_path},#{pid},0")
 	cmd := exec.Command(kidoBin, "snapshot")
-	// No KIDO_TMUX: kido resolves the tmux binary through the kido-tmux
-	// sibling setup() symlinks next to kidoBin, the same resolution an
-	// install ships (internal/tmux.resolveBinary).
+	// No KIDO_TMUX: resolved through the kido-tmux sibling setup() symlinks
+	// next to kidoBin, the resolution a real install ships.
 	cmd.Env = cleanEnv("TMUX="+tmuxEnv, "KIDO_STATE_DIR="+h.stateDir)
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
@@ -117,13 +107,11 @@ func TestSnapshotReplays(t *testing.T) {
 		t.Errorf("snapshot does not resume the reported pi pane:\n%s", script)
 	}
 
-	// There is no claude, and real pi is not available in CI (nor is its
-	// session pi-resume, which was only ever reported through agent-status,
-	// a session pi could actually resume): run "true" for both instead,
-	// keeping everything else. The assertions above already checked the
-	// commands the script would have run. Anchored on the trailing " Enter"
-	// send-keys always writes, so this only touches a send-keys command
-	// line and not a bare "claude" window name a -n flag may carry.
+	// Neither claude nor real pi is available in CI, and the assertions
+	// above already checked the commands the script would have run: run
+	// "true" for both instead. Anchored on the trailing " Enter" send-keys
+	// always writes, so this only touches a send-keys command line, not a
+	// bare "claude" window name a -n flag may carry.
 	replay := regexp.MustCompile(`'(claude|pi)(?: [^']*)?' Enter`).ReplaceAllString(script, "'true' Enter")
 	path := filepath.Join(h.dir, "replay.sh")
 	if err := os.WriteFile(path, []byte(replay), 0o755); err != nil {
@@ -140,9 +128,7 @@ func TestSnapshotReplays(t *testing.T) {
 	}
 
 	want, got := shapes(t, h.inner), shapes(t, third)
-	// alpha: the split window and "editor"; beta: its shell, two claude
-	// windows and a pi window.
-	if len(want) != 6 {
+	if len(want) != 6 { // alpha: split window and "editor"; beta: shell, two claude windows, pi window
 		t.Fatalf("the source server has %d windows, want 6: %+v", len(want), want)
 	}
 	if want[0].panes != 2 {

@@ -8,13 +8,10 @@ import (
 	"testing"
 )
 
-// writeFakeListModelsPi writes a shell script named "pi" in dir that
-// answers `pi --list-models` with a fixed two-row table (a header, then
-// one row per configured model, matching the shape validateModel parses)
-// and exits nonzero for anything else - this fixture exists only to test
-// kido spawn_subagent's model gate refusing before any window is ever
-// created, so a real pi child is never actually launched in the case it
-// covers.
+// writeFakeListModelsPi answers `pi --list-models` with a fixed two-row
+// table matching the shape validateModel parses, and exits nonzero for
+// anything else - only to test the model gate refusing before any
+// window is created.
 func writeFakeListModelsPi(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -33,11 +30,9 @@ func writeFakeListModelsPi(t *testing.T, dir string) {
 	}
 }
 
-// TestSpawnRefusesModelRejectedByPi is the model gate end to end: a bare
-// alias like "sonnet" - what a bare `pi --model sonnet` silently matches
-// no provider for, runs no turn, and exits 0 (the bug report this fixes)
-// - is refused before any window is created, the same shape as
-// TestSpawnFabricatedParentIsRefusedUpFront.
+// A bare alias like "sonnet" - what a bare `pi --model sonnet` silently
+// matches no provider for, runs no turn, and exits 0 (the bug report
+// this fixes) - must be refused before any window is created.
 func TestSpawnRefusesModelRejectedByPi(t *testing.T) {
 	t.Parallel()
 	piDir := filepath.Join(t.TempDir(), "model-pi-bin")
@@ -45,11 +40,10 @@ func TestSpawnRefusesModelRejectedByPi(t *testing.T) {
 	h := startPathPrefix(t, "alpha", piDir)
 
 	h.liveParent("alpha", "model-e2e-parent")
-	// PATH is set on the command itself: a pane's own PATH is whatever
-	// its login shell left, which on macOS is path_helper's order with the
-	// machine's real pi ahead of the fake (the trap AGENTS.md describes
-	// for the shims), and on CI has no pi at all. The gate runs `pi` from
-	// kido's own environment, so that is the one that must name the fake.
+	// PATH is set on the command itself, not relied on from the pane's own
+	// login shell (macOS path_helper puts the machine's real pi first, the
+	// trap AGENTS.md describes for the shims): the gate runs `pi` from
+	// kido's own environment.
 	outFile := filepath.Join(h.dir, "model-refused.out")
 	h.sendLiteral(fmt.Sprintf("PATH=%s:$PATH %s spawn_subagent --parent-pid 1 --parent-session model-e2e-parent --name model-e2e --task-file %s -- pi --name model-e2e --model sonnet > %s 2>&1; echo rc=$? >> %s",
 		shellQuote(piDir), kidoBin, h.writeTaskFile("model-e2e"), outFile, outFile))
@@ -77,29 +71,24 @@ func TestSpawnRefusesModelRejectedByPi(t *testing.T) {
 	}
 }
 
-// TestRunOutcomeCapturesScreenBeforeWindowCloses is item 1 of the bug
-// report end to end: a child ending itself with no turn ever run
-// (`kido run-outcome --unreported`, which is exactly what
-// pi/kido-agents.ts's idle self-exit calls) must save its own pane's
-// screen before it exits, not leave that to a sweep that may never run
-// before the window closes - `kido close-run` never captures a screen at
-// all. The window is kept alive (`sleep 300` after the call) so the
-// screen file's existence right after run-outcome returns is proof the
-// capture happened at self-report time, not at some later sweep.
+// A child ending itself with no turn ever run (`kido run-outcome
+// --unreported`, what pi/kido-agents.ts's idle self-exit calls) must
+// save its own pane's screen before it exits, not leave that to a sweep
+// that may never run before the window closes - `kido close-run` never
+// captures a screen at all. The window is kept alive (`sleep 300`) so
+// the screen file existing right after run-outcome returns is proof the
+// capture happened at self-report time.
 func TestRunOutcomeCapturesScreenBeforeWindowCloses(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
 	const marker = "KIDO-E2E-NO-TURN-MARKER-9f3c"
 	const noTurnText = "no turn ever ran: the task was delivered and the session never started work on it"
-	// spawnRun wraps the whole script in single quotes of its own
-	// (shellQuote), so the detail text below needs only its own double
-	// quotes to survive that, not a second layer.
-	// The short sleep before run-outcome is not decoration: kido spawn_subagent
-	// writes meta.json only after tmux.NewWindow has returned, so a script
-	// that called run-outcome immediately could win the race against its own
-	// meta file existing (see TestRunRecordSurvivesReapAsCompleted's own
-	// sleep, for the analogous remain-on-exit race).
+	// spawnRun wraps the script in single quotes (shellQuote), so the
+	// detail text needs only its own double quotes, not a second layer.
+	// The sleep before run-outcome is not decoration: kido spawn_subagent
+	// writes meta.json only after tmux.NewWindow returns, so calling
+	// run-outcome immediately could win the race against that file existing.
 	script := fmt.Sprintf(`echo %s; sleep 0.3; %s run-outcome --result failed --unreported --text "%s" -- "$KIDO_AGENT_RUN_ID"; sleep 300`,
 		marker, kidoBin, noTurnText)
 	runID, windowID := h.spawnRun("no-turn-e2e", script)

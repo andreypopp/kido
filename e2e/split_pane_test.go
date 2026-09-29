@@ -7,9 +7,8 @@ import (
 	"testing"
 )
 
-// asyncBashFields is asyncBash but keeps all three fields kido async_bash
-// printed, not just the run id: this test needs the pane id to split off
-// of.
+// asyncBashFields is asyncBash but keeps all three fields, since this
+// test needs the pane id to split off of.
 func (h *harness) asyncBashFields(name string, command ...string) (windowID, paneID, runID string) {
 	h.t.Helper()
 	outFile := filepath.Join(h.dir, "async-"+name+".out")
@@ -28,7 +27,6 @@ func (h *harness) asyncBashFields(name string, command ...string) (windowID, pan
 	return fields[0], fields[1], fields[2]
 }
 
-// countRows is how many of the sidebar's non-empty lines contain sub.
 func countRows(lines []string, sub string) int {
 	n := 0
 	for _, l := range lines {
@@ -39,12 +37,10 @@ func countRows(lines []string, sub string) int {
 	return n
 }
 
-// TestSidebarShowsASplitBashRunPaneAsAnOrdinaryShell is the live bug this
-// change fixes, end to end: a user splits a running async_bash run's
-// window, and the split pane must draw as the plain shell it is - not as
-// a second copy of the run: @kido_run is pane-scoped and carries no
-// window-scoped fallback, so the split - which createRunWindow never
-// marked - just isn't the run's pane.
+// A user splitting a running async_bash run's window must see the split
+// pane draw as the plain shell it is, not a second copy of the run:
+// @kido_run is pane-scoped with no window-scoped fallback, and
+// createRunWindow never marked the split.
 func TestSidebarShowsASplitBashRunPaneAsAnOrdinaryShell(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -58,9 +54,8 @@ func TestSidebarShowsASplitBashRunPaneAsAnOrdinaryShell(t *testing.T) {
 
 	h.in("split-window", "-d", "-t", paneID, "sleep", "250")
 
-	// The split takes a moment to appear as its own row; wait for its own
-	// command to show up rather than a bare row count, which was already
-	// satisfied before the split (alpha's own pane plus the run's row).
+	// Wait for the split's own command, not a bare row count, which was
+	// already satisfied before the split.
 	h.waitFor(func() bool { return hasLine(h.rows(), "sleep") }, settle,
 		msgf("the split pane's own row (rows: %q)", h.rows()))
 

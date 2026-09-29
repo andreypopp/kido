@@ -14,14 +14,12 @@ import (
 	"time"
 )
 
-// Inside a kido pane, tmux, ssh, pi and claude are kido's own: the shims
-// in <share>/bin, put first on PATH by the launcher for what the server
-// runs and by the primed shell's integration after the user's login
-// files. These tests type into a pane of a launched kido, which is the
-// only place the second of those happens.
+// Inside a kido pane, tmux, ssh, pi and claude resolve to the shims in
+// <share>/bin: put first on PATH by the launcher for the server, and by
+// the primed shell's integration after the user's login files. These
+// tests type into a launched kido pane, the only place the second
+// happens.
 
-// shellIn runs command in pane through the pane's own shell, with its
-// output in a file, and returns that output once the command is done.
 func (r *kidoRun) shellIn(pane, command string) string {
 	r.t.Helper()
 	out := filepath.Join(r.dir, fmt.Sprintf("out-%d", time.Now().UnixNano()))
@@ -36,8 +34,7 @@ func (r *kidoRun) shellIn(pane, command string) string {
 	return strings.TrimRight(body, "\n")
 }
 
-// primedPane launches kido and returns its first pane once the shell in
-// it has reached a prompt, which is after the integration has run.
+// primedPane's shell has reached a prompt, i.e. run the integration.
 func (r *kidoRun) primedPane() string {
 	r.t.Helper()
 	r.launch("first")
@@ -55,18 +52,16 @@ func sameFile(a, b string) bool {
 	return errA == nil && errB == nil && os.SameFile(fa, fb)
 }
 
-// TestKidoPaneRunsTheShims: `tmux` and `ssh` resolve to the shims in a
-// kido pane, and the tmux reached through the shim is one the kido server
-// answers - a stock tmux reaching that socket fails on the protocol. The
-// server's own run-shell resolves the shim too, because what tmux runs
-// without a shell in between has only the server's PATH.
+// `tmux` and `ssh` resolve to the shims in a kido pane, and the shimmed
+// tmux reaches the kido server's own socket. run-shell resolves the shim
+// too: what tmux runs with no shell in between has only the server's
+// PATH.
 //
 // On macOS the pane's login zsh runs path_helper from /etc/zprofile,
-// which puts the system directories back in front of an inherited PATH.
-// The nested `zsh -l -c` is the control that shows it doing so here:
-// same inherited PATH, no integration after it, and the system ssh wins.
-// Without that half, a shim first in the pane could as well be the
-// launcher's PATH surviving a login that rewrote nothing.
+// putting system directories back in front of an inherited PATH. The
+// nested `zsh -l -c` control shows that: same inherited PATH, no
+// integration after it, system ssh wins - otherwise a shim found first
+// could just be the launcher's PATH surviving an untouched login.
 func TestKidoPaneRunsTheShims(t *testing.T) {
 	t.Parallel()
 	r := newKidoRun(t)
@@ -93,11 +88,10 @@ func TestKidoPaneRunsTheShims(t *testing.T) {
 	}
 }
 
-// fakeRealPrograms puts recording ssh, pi and claude on the PATH of this
-// run's shells only, from the user's own rc file - after the login files,
-// which is where a user's PATH edits live and the one place macOS
-// path_helper does not reorder. Every call writes its arguments,
-// NUL-separated, into a file of its own under calls.
+// fakeRealPrograms puts recording ssh, pi and claude on PATH from the
+// user's own rc file, after the login files - where a user's PATH edits
+// live and macOS path_helper does not reorder. Each call writes its
+// arguments, NUL-separated, into its own file under calls.
 func (r *kidoRun) fakeRealPrograms() (calls string) {
 	r.t.Helper()
 	fakes := filepath.Join(r.dir, "fakes")
@@ -126,8 +120,6 @@ func (r *kidoRun) fakeRealPrograms() (calls string) {
 	return calls
 }
 
-// nextCall waits for the one call the command just typed makes, and
-// returns its arguments.
 func (r *kidoRun) nextCall(calls string, seen map[string]bool) (string, []string) {
 	r.t.Helper()
 	var name string
@@ -152,14 +144,9 @@ func (r *kidoRun) nextCall(calls string, seen map[string]bool) (string, []string
 	return name, args
 }
 
-// TestShimsReachTheRealPrograms: each shim ends in the real program with
-// the user's arguments intact and kido's in front of them. The ssh
-// cases cover each of kido ssh's two shapes: passed through as typed (-V,
-// and a remote command whose spacing must survive), and primed (an
-// interactive login, which gains -t and the bootstrap). A shim that ran
-// itself would never reach the recorder, and one that dropped its quotes
-// would lose the double space. pi is run with no ~/.pi in this home at
-// all, so both extensions arrive through the command line or not at all.
+// Each shim ends in the real program with the user's arguments intact
+// and kido's in front of them. ssh covers both shapes: passed through as
+// typed (spacing must survive) and primed (gains -t and the bootstrap).
 func TestShimsReachTheRealPrograms(t *testing.T) {
 	t.Parallel()
 	r := newKidoRun(t)
@@ -202,14 +189,12 @@ func TestShimsReachTheRealPrograms(t *testing.T) {
 	}
 }
 
-// TestPiShimLoadsKidosToolsOnce runs the real pi through the shim, since
-// whether two copies of an extension collide is pi's behaviour and not
-// something a fake can report. Once with no extensions of its own, and
-// once with links in pi's own extensions directory pointing at
-// this checkout - a different real path from the shipped copies, which pi
-// does not dedupe, so the extensions' own one-copy rule is what keeps the
-// tools single and the conflict errors away. Skips where pi is not
-// installed, which includes CI.
+// Runs the real pi, since whether two copies of an extension collide is
+// pi's behaviour, not something a fake can report. Once with no
+// extensions of its own, once with symlinks to this checkout pointing at
+// a different real path than the shipped copies - which pi does not
+// dedupe, so it's the extensions' own one-copy rule keeping tools single.
+// Skips where pi is not installed, which includes CI.
 func TestPiShimLoadsKidosToolsOnce(t *testing.T) {
 	t.Parallel()
 	if _, err := exec.LookPath("pi"); err != nil {

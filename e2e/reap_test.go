@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// windowExists reports whether windowID is still a window of the inner
-// server, anywhere.
 func (h *harness) windowExists(windowID string) bool {
 	h.t.Helper()
 	for _, line := range strings.Split(h.in("list-windows", "-a", "-F", "#{window_id}"), "\n") {
@@ -28,17 +26,10 @@ func (h *harness) windowID(paneID string) string {
 	return h.in("display-message", "-p", "-t", paneID, "#{window_id}")
 }
 
-// subagentWindow opens a window in session that looks to kido exactly
-// like one `kido spawn_subagent` created: marked with @kido_run on the
-// run's own pane, keeping its pane after the command exits
-// (remain-on-exit, which tmux.NewWindow sets for the same reason), and
-// running a command that reports itself as a subagent through `kido
-// agent-status` before becoming a long sleep.
-//
-// The report runs inside the pane rather than out of band, so the pid it
-// records is that sleep's own - which is what makes killing the pane
-// leave behind precisely the dead-pid record every live sidebar deletes
-// on its next 100ms poll.
+// subagentWindow opens a window that looks to kido exactly like one
+// `kido spawn_subagent` created: @kido_run marked, remain-on-exit kept,
+// reporting itself through `kido agent-status` from inside the pane (so
+// the recorded pid is the sleep's own) before becoming a long sleep.
 func (h *harness) subagentWindow(session, name, sessionID, parentSession string) (paneID, windowID string) {
 	h.t.Helper()
 	script := fmt.Sprintf("%s agent-status --agent pi --session %s --status idle "+
@@ -52,29 +43,21 @@ func (h *harness) subagentWindow(session, name, sessionID, parentSession string)
 	return paneID, windowID
 }
 
-// liveParent records an agent holding the given session id on session's own
-// pane, out of band so the pid it records is the test binary's and stays
-// alive for the whole test.
-//
-// A test about a finished subagent needs one: without a live parent the
-// subagent is also an orphan, its window satisfies the dead-parent rule
-// as well as the finished rule, and the test passes on whichever fires
-// first - which is how the first draft of these tests passed.
-//
-// Every test that spawns through `kido spawn_subagent` with an invented
-// parent needs one too, and for a related reason made into a refusal:
-// kido now checks the parent session names somebody alive before it
-// creates the window (cmd/kido/spawn_subagent.go's liveSession), rather
-// than leaving the child to be closed by rule 2 seconds later.
+// liveParent records an agent on session's own pane, out of band so the
+// pid is the test binary's and stays alive. Needed by any finished-
+// subagent test: without it the subagent is also an orphan, and the test
+// could pass on the dead-parent rule firing first instead of the one
+// under test - how the first draft of these tests passed. Also needed by
+// spawn_subagent callers with an invented parent: kido refuses to create
+// the window unless the parent session names somebody alive.
 func (h *harness) liveParent(session, sessionID string) {
 	h.t.Helper()
 	pane := h.in("display-message", "-p", "-t", session+":", "#{pane_id}")
 	h.agentStatus(sessionID, pane, "pi", "idle")
 }
 
-// killPane SIGKILLs the process in paneID and waits for it to go: the
-// case no linger helper and no in-process poll can cover, since neither
-// runs when a subagent is killed outright.
+// killPane covers the case no linger helper or in-process poll can:
+// neither runs when a subagent is killed outright.
 func (h *harness) killPane(paneID string) {
 	h.t.Helper()
 	pid, err := strconv.Atoi(h.in("display-message", "-p", "-t", paneID, "#{pane_pid}"))
@@ -88,16 +71,11 @@ func (h *harness) killPane(paneID string) {
 		msgf("pid %d to exit", pid))
 }
 
-// runKido runs a kido command in a one-shot window of session and returns
-// its output once the command has exited. A fresh window rather than the
-// client's own pane: several of these tests have the client looking at
-// the very window under test, and typing there would land in it.
-//
-// It waits for the trailing "rc=<code>" line rather than mere
-// non-emptiness: a command that writes output before it is done - a
-// notice line well ahead of its final "stopped ...", say - can otherwise
-// be read mid-write, its exit code line not there yet even though the
-// file already holds something.
+// runKido runs in a fresh window, not the client's own pane, since some
+// tests have the client looking at the window under test already. It
+// waits for the trailing "rc=<code>" line, not mere non-emptiness: a
+// command that writes output before finishing can otherwise be read
+// mid-write.
 func (h *harness) runKido(session, outName string, args ...string) string {
 	h.t.Helper()
 	outFile := filepath.Join(h.dir, outName)
@@ -119,10 +97,8 @@ func (h *harness) runKido(session, outName string, args ...string) string {
 	return content
 }
 
-// stays asserts that cond keeps holding for a while: the shape every
-// "this window must be left alone" assertion needs, since a window that
-// is never closed and one that has not been closed yet look identical at
-// any single instant.
+// stays asserts cond keeps holding for a while: a window never closed
+// and one not closed yet look identical at any single instant.
 func (h *harness) stays(cond func() bool, why string) {
 	h.t.Helper()
 	deadline := time.Now().Add(2 * time.Second) // the harness's linger is 1s
@@ -134,18 +110,13 @@ func (h *harness) stays(cond func() bool, why string) {
 	}
 }
 
-// TestSidebarReapsFinishedSubagentWindow is the lifecycle's backstop as
-// it actually runs: a live sidebar, polling the same state directory as
-// everything else, and no `kido reap` typed by anybody.
-//
-// It is written against the race that broke the first design. The sidebar
-// calls state.Load every 100ms, and Load deletes a dead-pid record as a
-// side effect of reading it, so a sweep that needed that record lost it
-// within a tick of the subagent dying - which is why this test waits for
-// the record to be gone *first* and only then for the window to close.
-// Reaping from the @kido_run mark and #{pane_dead} instead needs no
-// record at all, and the assertions below pass in that order or not at
-// all.
+// The lifecycle's backstop as it actually runs: a live sidebar polling,
+// no `kido reap` typed. Written against the race that broke the first
+// design - state.Load deletes a dead-pid record as a side effect of
+// reading it, so a sweep needing that record lost it within a tick of
+// the subagent dying. This test waits for the record gone *first* and
+// only then for the window to close: reaping from @kido_run and
+// #{pane_dead} needs no record at all, and passes in that order or not.
 func TestSidebarReapsFinishedSubagentWindow(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -156,9 +127,6 @@ func TestSidebarReapsFinishedSubagentWindow(t *testing.T) {
 	stateFile := filepath.Join(h.stateDir, childSession+".json")
 	h.waitFor(func() bool { _, err := os.Stat(stateFile); return err == nil }, settle,
 		msgf("the subagent's state record %s to be written", stateFile))
-	// Running, with its parent alive: nothing about it is finished, and a
-	// sweep that closed it here would be closing every subagent window in
-	// the session the moment it opened.
 	h.stays(func() bool { return h.windowExists(windowID) },
 		"a running subagent's window was closed")
 
@@ -170,13 +138,11 @@ func TestSidebarReapsFinishedSubagentWindow(t *testing.T) {
 		msgf("the sidebar's poll to close window %s, whose record it has already deleted", windowID))
 }
 
-// TestReapLeavesUnmarkedWindowAlone pins the other half of why a sweep
-// reads tmux rather than kido's state: pane ids restart at %0 on every
-// new tmux server while state files are global and outlive it, so a
-// record left by a previous run names a pane some unrelated shell holds
-// now. Here that record is live and claims a parent that does not exist -
-// the strongest case rule 2 can be given - against a window nobody
-// marked. Neither the sidebar's sweep nor `kido reap` may touch it.
+// Why a sweep reads tmux, not kido's state: pane ids restart at %0 on
+// every new server while state files outlive it, so a stale record can
+// name a pane some unrelated shell holds now. Here that record is live
+// and claims a dead parent - the strongest case rule 2 can be given -
+// against a window nobody marked, which neither sweep may touch.
 func TestReapLeavesUnmarkedWindowAlone(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -184,9 +150,7 @@ func TestReapLeavesUnmarkedWindowAlone(t *testing.T) {
 	paneID := h.newWindow("alpha", "bystander", "sh", "-c", "exec sleep 600")
 	h.waitPaneCommand(paneID, "sleep")
 	windowID := h.windowID(paneID)
-	// Recorded out of band, so the pid is this test binary's: a live
-	// subagent record, naming an orphan's parent, pointing at a window
-	// kido never created.
+	// Live record naming an orphan's parent, pointing at an unmarked window.
 	h.agentStatus("stale-e2e", paneID, "pi", "idle",
 		"--parent-session", "vanished-e2e")
 
@@ -197,10 +161,10 @@ func TestReapLeavesUnmarkedWindowAlone(t *testing.T) {
 		"an unmarked window was closed: only a window kido spawn_subagent marked may be reaped")
 }
 
-// TestReapNeverClosesASessionsLastWindow: closing it destroys the session
-// itself (verified against a real server), taking every client attached
-// to it. A finished subagent that is all a session has left is a leaked
-// window; it is not worth a session.
+// Closing a session's last window destroys the session itself (verified
+// against a real server), taking every client attached to it; a
+// finished subagent that is all a session has left is a leaked window,
+// not worth a session.
 func TestReapNeverClosesASessionsLastWindow(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -221,11 +185,10 @@ func TestReapNeverClosesASessionsLastWindow(t *testing.T) {
 	}
 }
 
-// TestFocusedWindowIsReapedOnceTheUserLeaves: the linger helper checks
-// focus once and gives up, so a user reading the window when it fires
-// would leak it for good without the sweep. The sweep runs on every
-// sidebar poll with the same focus rule, so the window is collected the
-// moment they switch away - and not one moment before.
+// The linger helper checks focus once and gives up, so a user reading
+// the window when it fires would leak it for good without the sweep,
+// which runs the same focus rule on every poll and collects the window
+// the moment they switch away.
 func TestFocusedWindowIsReapedOnceTheUserLeaves(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -235,13 +198,11 @@ func TestFocusedWindowIsReapedOnceTheUserLeaves(t *testing.T) {
 	paneID, windowID := h.subagentWindow("alpha", "linger-e2e", childSession, "root-e2e")
 	home := h.activeWindowID("alpha")
 
-	// The user switches over to read the subagent's last screen.
-	h.in("switch-client", "-c", h.client, "-t", windowID)
+	h.in("switch-client", "-c", h.client, "-t", windowID) // read the subagent's last screen
 	h.waitFor(func() bool { return h.activeWindowID("alpha") == windowID }, settle,
 		msgf("client to switch to window %s", windowID))
 	h.killPane(paneID)
 
-	// The linger helper fires while they are still there, and gives up.
 	if out := h.runKido("alpha", "linger.out", "close-run", windowID); !strings.Contains(out, "current window") {
 		t.Errorf("kido close-run output = %q, want it to say it left a focused window alone", out)
 	}
@@ -253,13 +214,11 @@ func TestFocusedWindowIsReapedOnceTheUserLeaves(t *testing.T) {
 		msgf("window %s to be collected on a later sweep, now that the user has left it", windowID))
 }
 
-// paneDead reports whether tmux considers paneID a remain-on-exit corpse.
 func (h *harness) paneDead(paneID string) bool {
 	h.t.Helper()
 	return h.in("display-message", "-p", "-t", paneID, "#{pane_dead}") == "1"
 }
 
-// paneExists reports whether paneID is still a pane of the inner server.
 func (h *harness) paneExists(paneID string) bool {
 	h.t.Helper()
 	for _, line := range strings.Split(h.in("list-panes", "-a", "-F", "#{pane_id}"), "\n") {
@@ -270,36 +229,27 @@ func (h *harness) paneExists(paneID string) bool {
 	return false
 }
 
-// TestSplitPaneSurvivesAFinishedRunAndTheWindowGoesPlain is the incident
-// the unit of collection changed for, in the order the user hit it: they
-// split a shell into a subagent's window and the run in it finished. The
-// window was the unit then, so with a live pane in it nothing could be
-// collected at all and the run's dead pane sat beside their shell until
-// they left the window. The unit is the run's pane now, and what is left
-// behind is an ordinary window: unmarked, drawn by the sidebar as the
-// user's own, and closing when its last pane exits like any window.
-//
-// It is also still the test for the older bug underneath: remain-on-exit
-// is the run pane's alone (tmux.NewWindow sets it with set-option -p), so
-// the split closes on exit instead of becoming a second corpse.
+// The incident the unit of collection changed for: a shell split into a
+// subagent's window whose run then finished. When the window was the
+// unit, a live pane in it blocked collection entirely and the run's dead
+// pane sat there until the user left. The unit is the run's pane now,
+// leaving an ordinary, unmarked window behind. Also still tests the
+// older bug: remain-on-exit is the run pane's alone (tmux.NewWindow's
+// set-option -p), so the split closes on exit instead of a second corpse.
 func TestSplitPaneSurvivesAFinishedRunAndTheWindowGoesPlain(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	// The run ends when this test says so, and the split outlives the
-	// collection below by waiting on a second file: neither waits on a
-	// duration, since a pane dead for exactly one linger is a window a
-	// loaded runner's polls can miss whole (measured: macOS CI saw the
-	// pane already collected before it saw it dead).
+	// Both ends wait on a file rather than a duration: a pane dead for
+	// exactly one linger is a window a loaded runner's polls can miss
+	// whole (measured: macOS CI saw the pane collected before it saw it dead).
 	finish := filepath.Join(h.dir, "splitrun-finish")
 	stop := filepath.Join(h.dir, "splitrun-stop")
 	runWindowID, runPaneID, runID := h.asyncBashIDs(nil, "splitrun",
 		"sh", "-c", fmt.Sprintf("while [ ! -f %s ]; do sleep 0.1; done", finish))
 	splitPaneID := h.in("split-window", "-P", "-F", "#{pane_id}", "-t", runWindowID,
 		"-c", h.dir, "sh", "-c", fmt.Sprintf("while [ ! -f %s ]; do sleep 0.1; done", stop))
-	// The sidebar draws the run before anything collects it, which is what
-	// makes its absence below mean something.
-	h.waitRow("splitrun")
+	h.waitRow("splitrun") // drawn before collection, so its later absence means something
 
 	if err := os.WriteFile(finish, nil, 0o644); err != nil {
 		t.Fatal(err)
@@ -312,8 +262,6 @@ func TestSplitPaneSurvivesAFinishedRunAndTheWindowGoesPlain(t *testing.T) {
 		t.Fatalf("split pane %s is dead already; it should still be waiting on %s", splitPaneID, stop)
 	}
 
-	// The linger, and the sweep behind it, collect the run's dead pane and
-	// nothing else.
 	h.waitFor(func() bool { return !h.paneExists(runPaneID) }, settle,
 		msgf("the run's dead pane %s to be collected once the linger has passed", runPaneID))
 	if !h.windowExists(runWindowID) {
@@ -323,14 +271,9 @@ func TestSplitPaneSurvivesAFinishedRunAndTheWindowGoesPlain(t *testing.T) {
 		t.Fatalf("the user's split %s went with the run's pane", splitPaneID)
 	}
 
-	// @kido_run lived on the run's own pane alone, so with that pane
-	// already gone (waited for above) the window carries no run pane at
-	// all: the tree stops nesting it, switch-window stops skipping it and
-	// no later sweep considers it.
-	// And the sidebar draws it as the plain window it now is: the session,
-	// the client's own shell and the user's split, with no row left for the
-	// run - neither its name nor the outcome its label carried, and no
-	// nested block for a window that is nobody's subagent now.
+	// @kido_run lived on the run's pane alone, so with that pane gone the
+	// window carries no run pane at all and the sidebar draws it plain:
+	// session, client's shell, user's split, with no row for the run.
 	plain := func() bool {
 		// rowIndex answers 0 for a row that is not there; it is 1-based.
 		return len(h.rows()) == 3 && h.rowIndex("splitrun") == 0 && h.rowIndex("completed") == 0
@@ -341,8 +284,6 @@ func TestSplitPaneSurvivesAFinishedRunAndTheWindowGoesPlain(t *testing.T) {
 	})
 	h.stays(plain, fmt.Sprintf("the sidebar went back to drawing window %s as a run: %q", runWindowID, h.rows()))
 
-	// The split exits on its own, and the window goes like any window:
-	// nothing kido did left remain-on-exit on that pane.
 	if err := os.WriteFile(stop, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -350,18 +291,14 @@ func TestSplitPaneSurvivesAFinishedRunAndTheWindowGoesPlain(t *testing.T) {
 		msgf("window %s to close when its last pane exits", runWindowID))
 }
 
-// TestSidebarCancelsSubagentOfDeadParent is the second rule, which is the
-// one that still needs a state record: nothing in tmux knows who spawned
-// whom. The subagent here is perfectly healthy - its process is running,
-// its pane is not dead - and is closed because the agent that spawned it
-// is gone, which is the cancellation the sweep's second rule provides
-// when the in-process poll never gets to run.
+// The second rule, the one that still needs a state record: nothing in
+// tmux knows who spawned whom. The subagent here is perfectly healthy -
+// running, not dead - and is closed only because its parent is gone.
 func TestSidebarCancelsSubagentOfDeadParent(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	// A parent whose pid can actually die: reported from inside its own
-	// pane, unlike liveParent's.
+	// Reported from inside its own pane, so its pid can actually die (unlike liveParent's).
 	parentScript := fmt.Sprintf("%s agent-status --agent pi --session parent-e2e --status idle"+
 		"; exec sleep 300", kidoBin)
 	parentPane := h.newWindow("alpha", "parent-e2e", "sh", "-c", parentScript)
@@ -376,18 +313,11 @@ func TestSidebarCancelsSubagentOfDeadParent(t *testing.T) {
 		msgf("the sidebar's poll to cancel subagent window %s, whose parent is gone", windowID))
 }
 
-// TestSidebarSurvivesAParentPaneCollision is the regression e2e test for
-// the actual incident: a same-pane collision - a newer record sharing
-// the parent's own pane, exactly the shape a `pi --print` that inherited
-// TMUX_PANE from its caller's pane produces (state.beats) - must never
-// close a healthy child's window, however long the collision lasts.
-//
-// It is a test of what the sidebar hands its sweep, and of nothing else.
-// The collision decides only which record owns a pane; the sweep asks
-// whether a session is running anywhere, and both records are on disk
-// and alive throughout. The child names no parent pid: waiting a
-// collision out, or checking a second pid, are gone, so a window kept
-// open by either would prove nothing about what keeps it open now.
+// A same-pane collision - a newer record sharing the parent's own pane,
+// the shape a `pi --print` inheriting TMUX_PANE produces (state.beats) -
+// must never close a healthy child's window. The collision decides only
+// which record owns a pane; the sweep asks whether a session is running
+// anywhere, and both records stay on disk and alive throughout.
 func TestSidebarSurvivesAParentPaneCollision(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -405,27 +335,20 @@ func TestSidebarSurvivesAParentPaneCollision(t *testing.T) {
 	h.in("set-window-option", "-t", windowID, "remain-on-exit", "on")
 	h.in("set-option", "-p", "-t", childPane, "@kido_run", "child-collision-e2e")
 
-	// The collision: an intruder claims the parent's own pane with a
-	// newer timestamp, the same way a `pi --print` inheriting TMUX_PANE
-	// does. Left in place for the whole test - state.Load hands the
-	// intruder that pane for as long as it reports, so a sidebar sweeping
-	// a per-pane view would see no record for parent-collision-e2e at all.
+	// An intruder claims the parent's own pane with a newer timestamp, the
+	// same way a `pi --print` inheriting TMUX_PANE does, left in place for
+	// the whole test.
 	h.agentStatus("intruder-collision-e2e", parentPane, "pi", "idle")
 
 	h.stays(func() bool { return h.windowExists(windowID) },
 		"a subagent's window was closed by a pane collision on its parent's own record, though the parent's own record was on disk and its process alive")
 }
 
-// TestReapCancelsSubagentOfDeadParent is the orphan rule from a one-shot
-// `kido reap`, which it could not apply while the rule needed to see the
-// same parent missing on two sweeps: a fresh process only ever sweeps
-// once. One reading of every live record decides it now, so the command
-// an operator types does the same thing the sidebar's poll does.
-//
-// The sidebar in this session would eventually collect the window too,
-// so the assertion is that `kido reap` returns having already closed it:
-// the command's own output is what is waited on, and the window is
-// checked the moment it comes back.
+// The orphan rule from a one-shot `kido reap`: it could not apply while
+// the rule needed the same parent missing on two sweeps, since a fresh
+// process only ever sweeps once. One reading of every live record
+// decides it now, so the operator's command does what the sidebar's
+// poll does.
 func TestReapCancelsSubagentOfDeadParent(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -437,10 +360,8 @@ func TestReapCancelsSubagentOfDeadParent(t *testing.T) {
 
 	_, windowID := h.subagentWindow("alpha", "kid-oneshot-e2e", "oneshot-child-e2e",
 		"parent-oneshot-e2e")
-	// Hide the column first and wait for it to go, so nothing else is
-	// sweeping: rule 2 fires on one reading now, so a sidebar still
-	// running would race the command under test and could close the
-	// window itself.
+	// Hide the column: rule 2 fires on one reading now, so a sidebar still
+	// running would race `kido reap` for the window.
 	h.in("set", "-g", "side-status", "off")
 	h.waitFor(func() bool { return !h.sidebarVisible() }, settle, msgf("the sidebar to go away"))
 	h.killPane(parentPane)
@@ -453,10 +374,8 @@ func TestReapCancelsSubagentOfDeadParent(t *testing.T) {
 	}
 }
 
-// TestCloseRunLeavesFocusedWindowAlone checks `kido close-run` against a
-// real tmux server: a window the client has actually switched to must be
-// left open, since the user may have gone there to read a finishing
-// subagent's last screen.
+// A window the client has actually switched to must be left open, since
+// the user may have gone there to read a finishing subagent's last screen.
 func TestCloseRunLeavesFocusedWindowAlone(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

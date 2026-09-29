@@ -8,11 +8,9 @@ import (
 	"testing"
 )
 
-// clientWindow returns the client's current session and the name of the
-// window it displays, both read in one query against the client itself.
-// Asking for the session's active window by name instead would reproduce
-// the very bug some of these tests cover: tmux splits a target on "." and
-// ":", so a session named "team.build" is not found by name.
+// clientWindow asks the client itself, not the session's active window
+// by name: tmux splits a target on "." and ":", so a session named
+// "team.build" is not found by name - the bug some of these tests cover.
 func (h *harness) clientWindow() (session, window string) {
 	h.t.Helper()
 	out := h.in("display-message", "-p", "-t", h.client, "#{client_session}\t#{window_name}")
@@ -23,7 +21,6 @@ func (h *harness) clientWindow() (session, window string) {
 	return session, window
 }
 
-// waitWindow waits until the client sits on session's window named window.
 func (h *harness) waitWindow(session, window string) {
 	h.t.Helper()
 	h.waitFor(func() bool {
@@ -35,14 +32,11 @@ func (h *harness) waitWindow(session, window string) {
 	})
 }
 
-// renameWindow renames session's window at index to name.
 func (h *harness) renameWindow(session string, index int, name string) {
 	h.t.Helper()
 	h.in("rename-window", "-t", fmt.Sprintf("%s:%d", session, index), name)
 }
 
-// addWindow opens a second, named window in session (a bare shell pane) and
-// waits for it to exist.
 func (h *harness) addWindow(session, name string) {
 	h.t.Helper()
 	h.newWindow(session, name)
@@ -52,20 +46,16 @@ func (h *harness) addWindow(session, name string) {
 	}, settle, msgf("session %s has window %s", session, name))
 }
 
-// markSubagent marks session's window (by name) with @kido_run, on its
-// active pane - the pane-scoped option `kido spawn_subagent` sets and
-// the only thing internal/tmux.SwitchWindow (and internal/reap.Sweep,
-// for the same reason) trusts to know a window is a subagent's. No
-// status record is involved: a live plain shell pane with the mark looks
-// to switch-window exactly like a live subagent's pane does.
+// markSubagent sets @kido_run on session's window's active pane - the
+// pane-scoped mark internal/tmux.SwitchWindow and internal/reap.Sweep
+// trust to know a window is a subagent's, with no status record needed.
 func (h *harness) markSubagent(session, window string) {
 	h.t.Helper()
 	h.in("set-option", "-p", "-t", session+":"+window, "@kido_run", "run-"+session+"-"+window)
 }
 
-// selectWindow puts the client directly on session's window (by name),
-// bypassing kido: the way a user manually navigating into a subagent's
-// window (with the sidebar's own Enter, say) would land there.
+// selectWindow puts the client directly on session's window, bypassing
+// kido - the way a user's own Enter into a subagent's window would land.
 func (h *harness) selectWindow(session, window string) {
 	h.t.Helper()
 	h.in("switch-client", "-c", h.client, "-t", session, ";",
@@ -73,9 +63,6 @@ func (h *harness) selectWindow(session, window string) {
 	h.waitWindow(session, window)
 }
 
-// runSwitchWindow runs `kido switch-window <dir> -client <h.client>` against
-// the inner server, the way a key binding's run-shell would (see
-// tmux/kido-tmux.conf).
 func (h *harness) runSwitchWindow(dir string) {
 	h.t.Helper()
 	tmuxEnv := h.in("display-message", "-p", "#{socket_path},#{pid},0")
@@ -88,11 +75,9 @@ func (h *harness) runSwitchWindow(dir string) {
 	}
 }
 
-// setupSwitchWindowSessions builds three sessions "a", "c", "b" (a full
-// second apart, so kido's order by session_created is a, c, b - not a
-// rotation of tmux's own name order a, b, c), each with two windows named
-// "<session>0" and "<session>1". It returns the harness with the client
-// sitting on a's first window.
+// setupSwitchWindowSessions builds sessions "a", "c", "b" a full second
+// apart, so kido's order by session_created is a, c, b - not a rotation
+// of tmux's own name order a, b, c - each with windows "<session>0/1".
 func setupSwitchWindowSessions(t *testing.T) *harness {
 	t.Helper()
 	h := start(t, "a")
@@ -117,14 +102,10 @@ func setupSwitchWindowSessions(t *testing.T) *harness {
 	return h
 }
 
-// TestSwitchWindowOrder checks that `kido switch-window next|prev` walks a
-// single flat list across the whole server: kido's session order (oldest
-// first, a, c, b here) with each session's windows in tmux's own order. The
-// step from "a1" to "c0" is the case that distinguishes this from tmux's own
-// next-window, which wraps inside one session (a1 -> a0); kido instead
-// crosses into the next session's first window. The walk also proves the
-// whole-server wrap: from the very last window ("b1") next goes to the very
-// first ("a0").
+// `kido switch-window next|prev` walks a single flat list across the
+// whole server: kido's session order with each session's windows in
+// tmux's own order. "a1" -> "c0" distinguishes this from tmux's own
+// next-window, which wraps inside one session (a1 -> a0).
 func TestSwitchWindowOrder(t *testing.T) {
 	t.Parallel()
 	h := setupSwitchWindowSessions(t)
@@ -148,9 +129,8 @@ func TestSwitchWindowOrder(t *testing.T) {
 	h.waitWindow("a", "a0")
 }
 
-// TestSwitchWindowOrderPrev checks that prev is the exact inverse of next,
-// walking the same flat list backwards and wrapping from the very first
-// window to the very last.
+// prev is the exact inverse of next, walking the same flat list
+// backwards and wrapping from the very first window to the very last.
 func TestSwitchWindowOrderPrev(t *testing.T) {
 	t.Parallel()
 	h := setupSwitchWindowSessions(t)
@@ -174,11 +154,10 @@ func TestSwitchWindowOrderPrev(t *testing.T) {
 	h.waitWindow("a", "a0")
 }
 
-// TestSwitchWindowBinding checks the actual key binding documented in
-// tmux/kido-tmux.conf and the README: bind-key -n ... run-shell "kido
-// switch-window next -client '#{client_name}'". It proves #{client_name}
-// expands to the real client name when run-shell fires from a key binding,
-// not just when the test drives kido directly with -client.
+// The actual key binding in tmux/kido-tmux.conf and the README:
+// bind-key -n ... run-shell "kido switch-window next -client
+// '#{client_name}'", proving #{client_name} expands when run-shell fires
+// from a key binding, not just when the test drives kido with -client.
 func TestSwitchWindowBinding(t *testing.T) {
 	t.Parallel()
 	h := setupSwitchWindowSessions(t)
@@ -198,8 +177,6 @@ func TestSwitchWindowBinding(t *testing.T) {
 	h.waitWindow("a", "a1")
 }
 
-// TestSwitchWindowSingleWindow checks that switch-window is a no-op with
-// only one window on the server.
 func TestSwitchWindowSingleWindow(t *testing.T) {
 	t.Parallel()
 	h := start(t, "solo")
@@ -210,10 +187,9 @@ func TestSwitchWindowSingleWindow(t *testing.T) {
 	h.waitSession("solo")
 }
 
-// TestSwitchWindowSkipsSubagentWindows checks that a1 and c1, each marked
-// @kido_run, are stepped over entirely: the flat list next/prev walk
-// becomes a0, c0, b0, b1 - not the six-window list TestSwitchWindowOrder
-// walks - in both directions.
+// a1 and c1, each marked @kido_run, must be stepped over entirely: the
+// walk becomes a0, c0, b0, b1, not the six-window list
+// TestSwitchWindowOrder walks.
 func TestSwitchWindowSkipsSubagentWindows(t *testing.T) {
 	t.Parallel()
 	h := setupSwitchWindowSessions(t)
@@ -239,15 +215,12 @@ func TestSwitchWindowSkipsSubagentWindows(t *testing.T) {
 	h.waitWindow("a", "a0")
 }
 
-// TestSwitchWindowFromInsideSubagent checks that starting from a subagent
-// window - one the user reached some other way, such as the sidebar's own
-// Enter, not by cycling into it with S-Up/S-Down - still skips over
-// further subagent windows to reach a top-level one. a1, c0 and c1 are
-// all marked, so from a1 next must cross two consecutive subagent windows
-// to reach b0: landing on c0 (the very next window in server order,
-// unskipped) is exactly the bug an unfixed walk that starts outside its
-// own reachable set would show. Starting from c1 going prev exercises the
-// same thing in the other direction, crossing c0 and a1 to reach a0.
+// Starting from a subagent window reached some other way (not by
+// cycling with S-Up/S-Down) must still skip over further subagent
+// windows: a1, c0 and c1 are marked, so from a1 next must cross two
+// consecutive subagent windows to reach b0 - landing on c0 unskipped is
+// exactly the bug an unfixed walk starting outside its own reachable set
+// would show.
 func TestSwitchWindowFromInsideSubagent(t *testing.T) {
 	t.Parallel()
 	h := setupSwitchWindowSessions(t)
@@ -264,14 +237,11 @@ func TestSwitchWindowFromInsideSubagent(t *testing.T) {
 	h.waitWindow("a", "a0")
 }
 
-// TestSwitchWindowSoleTopLevelWindow checks the degenerate case where only
-// one window on the whole server is not a subagent's: switch-window is a
-// no-op when that window is already current (there is nowhere else to
-// go), but still reaches it from inside any subagent window (that is a
-// real transition, not a no-op) - decided with the advisor rather than
-// counting top-level windows and treating count<2 as a blanket no-op,
-// which would wrongly strand a user inside a subagent window with one
-// top-level window elsewhere.
+// The degenerate case where only one window on the whole server is not
+// a subagent's: switch-window is a no-op when that window is already
+// current, but still reaches it from inside any subagent window - not a
+// blanket no-op on count<2, which would strand a user inside a subagent
+// window with one top-level window elsewhere.
 func TestSwitchWindowSoleTopLevelWindow(t *testing.T) {
 	t.Parallel()
 	h := setupSwitchWindowSessions(t)
@@ -298,11 +268,9 @@ func TestSwitchWindowSoleTopLevelWindow(t *testing.T) {
 	h.waitWindow("a", "a0")
 }
 
-// TestSwitchWindowAllSubagentWindows checks the other degenerate case:
-// every window on the server carries the mark, so there is no top-level
-// window to land on at all. switch-window must not spin (the walk is
-// bounded to one pass over the window list) and must not move the
-// client anywhere.
+// The other degenerate case: every window carries the mark, so there is
+// no top-level window to land on. switch-window must not spin (the walk
+// is bounded to one pass) and must not move the client anywhere.
 func TestSwitchWindowAllSubagentWindows(t *testing.T) {
 	t.Parallel()
 	h := setupSwitchWindowSessions(t)
@@ -319,12 +287,9 @@ func TestSwitchWindowAllSubagentWindows(t *testing.T) {
 }
 
 // A session name containing a dot is the case tmux's target parser gets
-// wrong: `switch-client -t team.build` splits the name and looks for pane
-// "build" of window "team", so the switch fails with "can't find pane"
-// and the key does nothing. Both switch commands therefore target a
-// session by its id. The dotted session is created second so it is not
-// the one the client starts on, and both directions are walked: next into
-// it, prev back out.
+// wrong: `switch-client -t team.build` splits the name and looks for
+// pane "build" of window "team", failing with "can't find pane". Both
+// switch commands therefore target a session by its id.
 func TestSwitchWindowIntoADottedSessionName(t *testing.T) {
 	h := start(t, "plain")
 	h.renameWindow("plain", 0, "p0")

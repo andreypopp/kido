@@ -12,8 +12,8 @@ import (
 	"kido/internal/testutil"
 )
 
-// TestRenderGrouping checks the shape of the list: sessions oldest first,
-// the client's session bold, window grouping glyphs, and process names.
+// Checks the list's shape: sessions oldest first, client's session bold,
+// window grouping glyphs, process names.
 func TestRenderGrouping(t *testing.T) {
 	t.Parallel()
 	h := start(t, "zeta")
@@ -25,10 +25,8 @@ func TestRenderGrouping(t *testing.T) {
 	h.in("split-window", "-d", "-t", "alpha:")
 	h.in("split-window", "-d", "-t", "alpha:")
 
-	// A pane split-window just created briefly reports its current command
-	// as the forked server binary before the shell exec's, so wait for the
-	// rows to settle on the wanted text rather than asserting once as soon
-	// as the count is reached.
+	// A just-split pane briefly reports the forked server binary as its
+	// command before the shell exec's, so wait for rows to settle.
 	want := []string{"zeta", "╶  " + shell, "alpha",
 		"┌  " + shell, "├  " + shell, "└  " + shell}
 	var rows []string
@@ -47,9 +45,7 @@ func TestRenderGrouping(t *testing.T) {
 		return fmt.Sprintf("rows = %q, want %q", rows, want)
 	})
 
-	// The client is attached to zeta, which is created first: it is bold
-	// and alpha is not.
-	if !h.isBold("zeta") {
+	if !h.isBold("zeta") { // created first, client attached to it
 		t.Error("current session zeta is not bold")
 	}
 	if h.isBold("alpha") {
@@ -57,8 +53,6 @@ func TestRenderGrouping(t *testing.T) {
 	}
 }
 
-// TestFollowActivePane moves the client to another session and expects the
-// selection to follow the new active pane.
 func TestFollowActivePane(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -79,23 +73,21 @@ func TestFollowActivePane(t *testing.T) {
 	}, settle, msgf("selection on the cat row"))
 }
 
-// TestSSHRow shows a pane running ssh by its destination.
 func TestSSHRow(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	// ssh blocks on the proxy command, so no network is needed.
 	pane := h.newWindow("alpha", "")
-	// ssh must be a child of the pane's shell: kido keys the destination
-	// by the ssh process's ppid.
+	// ssh is a child of the pane's shell; kido keys the destination by ssh's ppid.
 	h.in("send-keys", "-t", pane,
 		"ssh -F /dev/null -o ProxyCommand="+h.sshProxy()+" deploy@example.test", "Enter")
 	h.waitPaneCommand(pane, "ssh")
 	h.waitRow("ssh deploy@example.test")
 }
 
-// TestSSHRowDirect shows a pane whose command is ssh itself (e.g. `tmux
-// new-window 'ssh host'`), not a shell that then ran ssh: the pane's root
-// process is ssh, so kido must key the destination by ssh's own pid too.
+// A pane whose root process is ssh itself (e.g. `tmux new-window 'ssh
+// host'`), not a shell that then ran ssh: kido must key the destination
+// by ssh's own pid too.
 func TestSSHRowDirect(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -107,13 +99,10 @@ func TestSSHRowDirect(t *testing.T) {
 	h.waitRow("ssh deploy@example.test")
 }
 
-// TestShellStatusRow drives a plain zsh pane through kido's OSC 133
-// integration (shell/zsh/integration.zsh, sourced from a .zshrc the way a
-// primed pane sources it) and expects the row to carry the same
-// indicators an agent pane has: an empty two-column field at the prompt,
-// a green ◼ while a command runs, a green ✓ once a command has exited
-// zero, and a red ◼ once a command has exited nonzero, either until the
-// pane is visited.
+// A plain zsh pane through kido's OSC 133 integration must carry the
+// same indicators an agent pane has: empty at the prompt, green ◼ while
+// running, green ✓ on exit zero, red ◼ on exit nonzero, either until
+// the pane is visited.
 func TestShellStatusRow(t *testing.T) {
 	t.Parallel()
 	zsh, err := exec.LookPath("zsh")
@@ -122,9 +111,8 @@ func TestShellStatusRow(t *testing.T) {
 	}
 	h := start(t, "alpha")
 
-	// The pane the client starts on, to come back to: a visited pane is
-	// the selected row, which kido draws with its colours stripped, so the
-	// colour checks below only mean something from somewhere else.
+	// The pane to come back to: a visited (selected) row has its colours
+	// stripped, so the colour checks below only mean something elsewhere.
 	home := ""
 	for _, p := range h.panes() {
 		if p.Session == "alpha" && p.Active {
@@ -139,9 +127,7 @@ func TestShellStatusRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A ZDOTDIR of our own rather than the developer's home, so the test
-	// never reads their rc files.
-	zdot := filepath.Join(h.dir, "zdotdir")
+	zdot := filepath.Join(h.dir, "zdotdir") // own ZDOTDIR, never the developer's rc files
 	if err := os.MkdirAll(zdot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -150,45 +136,29 @@ func TestShellStatusRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.in("set-environment", "-g", "ZDOTDIR", zdot)
-	// tmux starts its own default shell (the harness's config sets bash),
-	// with no default-command in sight.
 	h.in("set-option", "-g", "default-shell", zsh)
 
-	// No argv, so the pane runs the default shell, which reads the .zshrc
-	// above.
-	pane := h.newWindow("alpha", "")
+	pane := h.newWindow("alpha", "") // no argv, so the pane runs the default shell
 	h.waitPaneCommand(pane, "zsh")
-	// An idle integrated shell shows nothing, in a field that keeps the
-	// label at the column every other row starts at. The shell's very
-	// first prompt fires an OSC 133 "D" carrying whatever exit status the
-	// rc left behind, with no "C" before it: shellOutcome's start-time
-	// guard is what keeps that from marking a pane nothing has run in, so
-	// this row is blank without the test ever visiting the pane.
+	// The first prompt fires an OSC 133 "D" carrying the rc's exit status
+	// with no "C" before it; shellOutcome's start-time guard is what keeps
+	// that from marking the pane as having run something.
 	h.waitShellRow("╶  zsh", "")
 
 	h.in("send-keys", "-t", pane, "sleep 5", "Enter")
 	h.waitPaneCommand(pane, "sleep")
-	// The fork reports the command line the shell marked with its 133;C,
-	// and the row shows that in place of #{pane_current_command} -
-	// "sleep 5", not "sleep" - the same replacement ssh_remote_test.go
-	// pins for a remote command.
-	// Read once rather than poll: zsh's preexec fires the 133;C before the
-	// command itself runs, so waitPaneCommand above has already ordered this
-	// after it.
+	// The row shows the 133;C command line in place of #{pane_current_command}
+	// ("sleep 5", not "sleep"; ssh_remote_test.go pins the remote case).
+	// Read once, not polled: zsh's preexec fires 133;C before the command
+	// runs, so waitPaneCommand above already ordered this after it.
 	h.waitShellRow("╶◼ sleep 5", "")
 
-	// The sleep exits zero, and the client never left home, so it settles
-	// on the checkmark, not blank - this is just a sync point before the
-	// next command.
 	h.waitFor(func() bool { return h.shellRow("╶✓ zsh", "32") },
 		10*time.Second, msgf("the row a checkmark after the sleep"))
 
-	// A command that fails leaves the row red until the pane is visited,
-	// overriding the checkmark straight away.
-	h.in("send-keys", "-t", pane, "false", "Enter")
+	h.in("send-keys", "-t", pane, "false", "Enter") // fails, row goes red until visited
 	h.waitShellRow("╶◼ zsh", "31")
 
-	// Visiting the pane clears it: the failure is older than the visit.
 	h.in("select-window", "-t", pane)
 	h.in("select-pane", "-t", pane)
 	h.waitSelected("zsh")
@@ -196,15 +166,12 @@ func TestShellStatusRow(t *testing.T) {
 	h.in("select-pane", "-t", home)
 	h.waitShellRow("╶  zsh", "")
 
-	// CommandEndTime has one-second resolution and the seen comparison is
-	// strict (see shellOutcome), so let the visit above age past its
-	// second before the next command, or the two can land in the same
-	// tick and the outcome goes uncounted.
+	// CommandEndTime has one-second resolution and shellOutcome's seen
+	// comparison is strict, so age past the visit's second or the two land
+	// in the same tick and the outcome goes uncounted.
 	time.Sleep(1200 * time.Millisecond)
 
-	// A command that succeeds while the client is looking at a different
-	// pane leaves the row a green checkmark, same as a done agent pane.
-	h.in("send-keys", "-t", pane, "true", "Enter")
+	h.in("send-keys", "-t", pane, "true", "Enter") // succeeds while client is elsewhere
 	h.waitShellRow("╶✓ zsh", "32")
 
 	// Visiting the pane clears it: the success is older than the visit.
@@ -216,12 +183,10 @@ func TestShellStatusRow(t *testing.T) {
 	h.waitShellRow("╶  zsh", "")
 }
 
-// shellRow reports whether the sidebar holds exactly the row want, with (or
-// without) the given colour on it. want "" asks only that the row is not
-// red - the running indicator is green too, so callers checking the running
-// or idle row pass "" and callers checking a settled outcome pass "31" or
-// "32". Text and colour are read from one capture, so a row cannot be
-// matched in one frame and coloured in another.
+// shellRow's color "" asks only that the row is not red (the running
+// indicator is green too, so running/idle callers pass ""; a settled
+// outcome passes "31" or "32"). Text and colour come from one capture,
+// so a row cannot be matched in one frame and coloured in another.
 func (h *harness) shellRow(want string, color string) bool {
 	h.t.Helper()
 	for _, line := range h.capture() {
@@ -243,10 +208,9 @@ func (h *harness) waitShellRow(want string, color string) {
 	})
 }
 
-// TestBashShellStatusRow is TestShellStatusRow's twin for bash: a plain
-// bash pane with shell/bash/integration.bash sourced the way a primed
-// pane sources it carries the same indicators, off the
-// same OSC 133 markers, through the same states.
+// TestShellStatusRow's twin for bash: a plain bash pane with
+// integration.bash sourced carries the same indicators, off the same
+// OSC 133 markers, through the same states.
 func TestBashShellStatusRow(t *testing.T) {
 	t.Parallel()
 	bash := testutil.ModernBash(t)
@@ -270,44 +234,28 @@ func TestBashShellStatusRow(t *testing.T) {
 	if err := os.WriteFile(rc, []byte(fmt.Sprintf("source %q\n", script)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// --rcfile rather than a home of its own: bash has no ZDOTDIR, and
-	// the test must never read the developer's rc files. -i because the
-	// pane is a tty but the shell is exec'd with argv, which is what
-	// makes the window's first process bash itself.
+	// --rcfile: bash has no ZDOTDIR. -i: the shell is exec'd with argv, so
+	// the window's first process is bash itself, and needs -i for a tty.
 	pane := h.newWindow("alpha", "", bash, "--rcfile", rc, "-i")
 	h.waitPaneCommand(pane, "bash")
-	// The shell has to have reached its first prompt before anything is
-	// typed at it, or the line is read by a terminal nobody is listening
-	// at yet; that prompt is also the marker the row below is drawn from.
-	h.waitPanePrompt(pane)
-	// An idle integrated shell shows nothing, in a field that keeps the
-	// label at the column every other row starts at. bash's first prompt
-	// fires no "D" at all - nothing has run - so this row is blank
-	// without the test ever visiting the pane.
+	h.waitPanePrompt(pane) // typing before the first prompt is read by nobody listening yet
+	// bash's first prompt fires no "D" at all - nothing has run.
 	h.waitShellRow("╶  bash", "")
 
 	h.in("send-keys", "-t", pane, "sleep 5", "Enter")
 	h.waitPaneCommand(pane, "sleep")
-	// The fork reports the command line the shell marked with its 133;C,
-	// and the row shows that in place of #{pane_current_command}.
 	// Read once rather than poll, for the reason TestShellStatusRow gives.
 	h.waitShellRow("╶◼ sleep 5", "")
 
-	// The sleep exits zero, and the client never left home, so it settles
-	// on the checkmark.
 	h.waitFor(func() bool { return h.shellRow("╶✓ bash", "32") },
 		10*time.Second, msgf("the row a checkmark after the sleep"))
 
-	// A command that fails leaves the row red until the pane is visited.
-	h.in("send-keys", "-t", pane, "false", "Enter")
+	h.in("send-keys", "-t", pane, "false", "Enter") // fails, row goes red until visited
 	h.waitShellRow("╶◼ bash", "31")
 
-	// Visiting the pane clears it: the failure is older than the visit.
-	// Both rows are labelled bash, the harness's own pane being a bash
-	// too, so the wait is on the row losing its red rather than on
-	// h.waitSelected - which the other pane's row satisfies at once, and
-	// the test would switch away again before kido had seen the visit at
-	// all.
+	// Both rows are labelled bash (the harness's own pane too), so wait on
+	// the row losing its red rather than on h.waitSelected, which the
+	// other pane's row satisfies at once.
 	h.in("select-window", "-t", pane)
 	h.in("select-pane", "-t", pane)
 	h.waitFor(func() bool { return h.selectedRow() == "╶  bash" }, settle,

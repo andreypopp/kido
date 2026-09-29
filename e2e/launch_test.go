@@ -41,8 +41,8 @@ type kidoRun struct {
 	kidoSock string
 }
 
-// newKidoRun builds that world but starts no kido: a test that writes a
-// kido.conf or a .tmux.conf has to do it before the server reads one.
+// newKidoRun builds that world but starts no kido: a test writing a
+// kido.conf or .tmux.conf must do it before the server reads one.
 func newKidoRun(t *testing.T) *kidoRun {
 	t.Helper()
 	requireTmux(t)
@@ -120,8 +120,6 @@ func primableShell(t *testing.T, home string) string {
 	return bash
 }
 
-// env is what a launcher test's kido runs with: its own home,
-// configuration, state and socket directory, and a shell it can prime.
 func (r *kidoRun) env() []string {
 	return []string{
 		"HOME=" + r.home,
@@ -132,8 +130,6 @@ func (r *kidoRun) env() []string {
 	}
 }
 
-// envAssign is env() as one shell prefix, for a command typed into a pane
-// or handed to the outer server's new-window.
 func (r *kidoRun) envAssign() string {
 	var parts []string
 	for _, kv := range r.env() {
@@ -210,14 +206,12 @@ func (r *kidoRun) waitFor(cond func() bool, what string) {
 	}
 }
 
-// capture is one outer window's screen as plain text lines.
 func (r *kidoRun) capture(window string) []string {
 	r.t.Helper()
 	out := r.mustOuter("capture-pane", "-p", "-t", "host:"+window)
 	return strings.Split(ansi.Strip(out), "\n")
 }
 
-// captureAll is every outer window's screen, for a failure message.
 func (r *kidoRun) captureAll() []string {
 	r.t.Helper()
 	var out []string
@@ -262,16 +256,14 @@ func (r *kidoRun) realClients() int {
 	return n
 }
 
-// firstPane is the pane of the session the launcher created.
 func (r *kidoRun) firstPane() string {
 	r.t.Helper()
 	return strings.Split(r.mustKido("list-panes", "-a", "-F", "#{pane_id}"), "\n")[0]
 }
 
-// TestKidoStartsAServerWithASidebar is the launcher's first claim: a bare
-// `kido` at a plain terminal leaves a server on the kido socket, with the
-// side column drawn and running this kido rather than whatever else is
-// called kido on the machine.
+// A bare `kido` at a plain terminal leaves a server on the kido socket,
+// with the side column drawn and running this kido, not whatever else on
+// the machine is called kido.
 func TestKidoStartsAServerWithASidebar(t *testing.T) {
 	t.Parallel()
 	r := newKidoRun(t)
@@ -287,10 +279,10 @@ func TestKidoStartsAServerWithASidebar(t *testing.T) {
 	}
 }
 
-// TestASecondKidoAttaches pins the other half of the launcher: the second
-// one starts nothing. What says so is the session count - one server, one
-// session, two clients - rather than the second client merely existing,
-// which a second server on a second socket would also give.
+// A second `kido` attaches rather than starting anything: pinned by the
+// session count (one server, one session, two clients), not merely by a
+// second client existing, which a second server on a second socket would
+// also give.
 func TestASecondKidoAttaches(t *testing.T) {
 	t.Parallel()
 	r := newKidoRun(t)
@@ -305,11 +297,9 @@ func TestASecondKidoAttaches(t *testing.T) {
 	}
 }
 
-// TestKidoInsideAKidoPaneRefuses is the refusal, and the assertion with
-// teeth is the last one: the server it was typed into gained no client.
-// A refusal that printed its message and attached anyway satisfies
-// everything else here, and the second client is the bug itself - a
-// second prefix and a second status line over the one already there.
+// The assertion with teeth is the last one: the server it was typed into
+// gained no client. A refusal that printed its message and attached
+// anyway would satisfy everything before it.
 func TestKidoInsideAKidoPaneRefuses(t *testing.T) {
 	t.Parallel()
 	r := newKidoRun(t)
@@ -335,8 +325,8 @@ func TestKidoInsideAKidoPaneRefuses(t *testing.T) {
 		t.Errorf("kido exited 0 after refusing: %q", body)
 	}
 
-	// Over a span, not at an instant: "no client yet" and "no client
-	// ever" look the same at any one reading.
+	// Over a span: "no client yet" and "no client ever" look the same at
+	// any one reading.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if n := r.realClients(); n != 1 {
@@ -346,12 +336,9 @@ func TestKidoInsideAKidoPaneRefuses(t *testing.T) {
 	}
 }
 
-// TestFirstPaneShellIsPrimed is what `kido shell` is for: the pane the
-// launcher opened reports a prompt, and the command line of what runs in
-// it, with no kido line in any file under the user's home. The rc file
-// the shell does have is the one that shell needs to be started at all
-// (primableShell), and it is checked for kido's name so that the claim
-// cannot be quietly satisfied by a stray integration block.
+// What `kido shell` is for: the launched pane reports a prompt and its
+// running command line with no kido line in any dotfile - checked for
+// kido's name so the claim cannot be satisfied by a stray block.
 func TestFirstPaneShellIsPrimed(t *testing.T) {
 	t.Parallel()
 	r := newKidoRun(t)
@@ -378,9 +365,7 @@ func TestFirstPaneShellIsPrimed(t *testing.T) {
 	t.Fatal("#{pane_command_line} never reported the running command")
 }
 
-// assertNoKidoInHome checks the test's home has no shell integration in
-// it: the priming must leave the user's dotfiles alone, and a pane that
-// reports because something wrote a block into one proves nothing.
+// assertNoKidoInHome: priming must leave the user's dotfiles alone.
 func assertNoKidoInHome(t *testing.T, home string) {
 	t.Helper()
 	entries, err := os.ReadDir(home)
@@ -402,8 +387,8 @@ func assertNoKidoInHome(t *testing.T, home string) {
 	}
 }
 
-// TestKidoConfIsHonoured pins the middle layer: the user's own file is
-// read, and an option it sets is the one the server ends up with.
+// The user's own kido.conf is read, and an option it sets is what the
+// server ends up with.
 func TestKidoConfIsHonoured(t *testing.T) {
 	t.Parallel()
 	r := newKidoRun(t)
@@ -421,22 +406,15 @@ func TestKidoConfIsHonoured(t *testing.T) {
 	if got := r.mustKido("show-options", "-gv", "@kido-e2e"); got != "from-kido-conf" {
 		t.Errorf("@kido-e2e = %q, want the value kido.conf set", got)
 	}
-	// An option kido's own defaults already set, to show which layer wins
-	// where they disagree.
-	if got := r.mustKido("show-options", "-gv", "side-status-width"); got != "33" {
+	if got := r.mustKido("show-options", "-gv", "side-status-width"); got != "33" { // kido's own default, shows which layer wins
 		t.Errorf("side-status-width = %q, want kido.conf's 33 over kido's default", got)
 	}
 }
 
-// TestKidoConfDefaultCommandIsCaptured pins the one thing the launcher
-// takes away and gives back: kido owns default-command, so a user who set
-// their own in kido.conf would lose it, and it is captured into
-// @kido-user-command before the override for `kido shell` to run in place
-// of a bare shell.
-//
-// The assertion with teeth is the last one - the pane is really running
-// their command - because the option alone only says the capture
-// happened, not that anything reads it.
+// kido owns default-command, so a user's own value in kido.conf is
+// captured into @kido-user-command before the override, for `kido shell`
+// to run in place of a bare shell. The last assertion is the one with
+// teeth: the option alone says the capture happened, not that it is used.
 func TestKidoConfDefaultCommandIsCaptured(t *testing.T) {
 	t.Parallel()
 	r := newKidoRun(t)
@@ -460,19 +438,11 @@ func TestKidoConfDefaultCommandIsCaptured(t *testing.T) {
 	}, "the pane to be running the user's own default-command")
 }
 
-// TestKidoConfDefaultCommandNamingAShellIsPrimed is the bug fixed
-// alongside TestKidoConfDefaultCommandIsCaptured: a user who wrote
-// `set-option -g default-command "zsh"` - to skip the login shell, or
-// for a wrapper like reattach-to-user-namespace - was handed an
-// unprimed, non-login zsh with none of kido's integration, silently, in
-// every pane. Pre-fix this failed with:
-//
-//	the pane's shell to report its first prompt: condition never became true
-//
-// because the parked command ran as `zsh -l -c zsh`: the outer login
-// zsh is primed but the inner one is bare, non-interactive, and OSC 133
-// never fires. TestKidoConfDefaultCommandIsCaptured pins the case this
-// must not change: a real command still runs as the command.
+// A user's `default-command "zsh"` used to be handed an unprimed,
+// non-login zsh with no integration: the parked command ran as `zsh -l -c
+// zsh`, whose inner zsh is bare, non-interactive, and never fires OSC
+// 133. TestKidoConfDefaultCommandIsCaptured pins the case this must not
+// change: a real command still runs as the command.
 func TestKidoConfDefaultCommandNamingAShellIsPrimed(t *testing.T) {
 	t.Parallel()
 	if _, err := exec.LookPath("zsh"); err != nil {
@@ -504,11 +474,9 @@ func TestKidoConfDefaultCommandNamingAShellIsPrimed(t *testing.T) {
 	}
 }
 
-// TestTmuxConfIsIgnored is the decision that a kido server reads no
-// ~/.tmux.conf: a configuration written for stock tmux fights the side
-// column, and a user who wants theirs writes one source-file line in
-// kido.conf. Its positive control is the test above - the same option
-// name, set from the file kido does read.
+// A kido server reads no ~/.tmux.conf: a config written for stock tmux
+// fights the side column. Positive control is the test above, the same
+// option name set from the file kido does read.
 func TestTmuxConfIsIgnored(t *testing.T) {
 	t.Parallel()
 	r := newKidoRun(t)
