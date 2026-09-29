@@ -35,8 +35,6 @@ let wait_for within cond =
   in
   go ()
 
-(* The pane and not the window, even when it is the window's only one: a stop kills what it was
-   pointed at, and the guard is what keeps the session. *)
 let kill_run_pane ~list_panes ~ops ?(before = ignore) pane_id =
   let panes = list_panes () in
   match List_agents.find_pane panes pane_id with
@@ -61,8 +59,7 @@ let record_stopped ~dir id =
 
 let request ~states ~panes ~self kind target =
   Message_agent.deliver ~states ~panes ~self ~paste:Exec.send_prompt
-    { kind; recipient = Named ""; reply_to = ""; id = "" }
-    target ""
+    { kind; reply_to = ""; id = "" } target ""
 
 let interrupt ~dir ~self ~panes to_ =
   let live = State.load_live ~dir in
@@ -72,7 +69,7 @@ let interrupt ~dir ~self ~panes to_ =
   | Ok _ ->
       Printf.printf "interrupted %s\n" (List_agents.display_name panes target);
       0
-  | Error (`Unavailable m | `Failed m) -> failwith m
+  | Error (Message_agent.Unavailable m | Failed m) -> failwith m
 
 let run_label (meta : Subrun.meta) =
   Printf.sprintf "async run %S"
@@ -80,8 +77,6 @@ let run_label (meta : Subrun.meta) =
 
 let stopped_text = "stopped by kido stop_subagent; its wrapper did not report"
 
-(* Before the agent lookup: a bash run has no state record, so resolving it as an agent would
-   answer "no agent session matches" for a build that is plainly running. *)
 let live_bash_run ~dir ~self ~list_panes to_ =
   let runs = runs dir in
   let matches =
@@ -107,8 +102,6 @@ let live_bash_run ~dir ~self ~list_panes to_ =
            (List.sort String.compare
               (List.map (fun (m : Subrun.meta) -> Subrun.string_of_id m.id) many)))
 
-(* Signal the wrapper, which forwards it to the command and reports the ending itself, and speak
-   for the run only if it did not. *)
 let stop_bash_run ~dir ~list_panes ~ops ~escalation (meta : Subrun.meta) =
   let label = run_label meta in
   let runs = runs dir in
@@ -146,7 +139,6 @@ let stop ~dir ~self ~list_panes ~ops ~escalation ~force to_ =
       let panes = list_panes () in
       let id, target = Message_agent.resolve ~live ~panes ~self (Descendant to_) in
       let name = List_agents.display_name panes target in
-      (* Stopped is recorded only past every refusal: an outcome is written once and for all. *)
       let degrade () =
         match
           kill_run_pane ~list_panes ~ops ~before:(fun () -> record_stopped ~dir id) target.pane
@@ -155,8 +147,6 @@ let stop ~dir ~self ~list_panes ~ops ~escalation ~force to_ =
         | Ok `Gone -> Printf.printf "%s's pane was already gone\n" name
         | Error m -> fail "%s %s" name m
       in
-      (* A send that fails otherwise than by nobody listening is a reason to escalate: a wedged
-         agent answers late, wrongly, or not at all. *)
       let escalate refusal =
         record_stopped ~dir id;
         let gone () =
@@ -182,9 +172,9 @@ let stop ~dir ~self ~list_panes ~ops ~escalation ~force to_ =
       end
       else
         match request ~states:(State.by_pane live) ~panes ~self Stop target with
-        | Error (`Unavailable m) ->
+        | Error (Message_agent.Unavailable m) ->
             refuse_unforced (Printf.sprintf "%s could not be asked to stop (%s)" name m);
             degrade ()
         | Ok _ -> escalate None
-        | Error (`Failed m) -> escalate (Some m)));
+        | Error (Message_agent.Failed m) -> escalate (Some m)));
   0

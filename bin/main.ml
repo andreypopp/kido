@@ -14,33 +14,29 @@ let cmd name doc term = Cmd.v (Cmd.info name ~doc) Term.(const (fun f -> Cli.run
 
 let send name doc spec =
   cmd name doc
-  @@ let+ spec = spec in
+  @@ let+ recipient, spec = spec in
      fun () ->
        Message_agent.send ~dir:(State.dir ()) ~self:(env "TMUX_PANE") ~panes
-         ~paste:Tmux.Exec.send_prompt spec (stdin ())
+         ~paste:Tmux.Exec.send_prompt recipient spec (stdin ())
 
 let message_agent =
   send "message_agent" "Send a message to another agent, read from stdin."
   @@ let+ reply_to = str "reply-to" "ID" "Id of an earlier ask this message answers."
      and+ to_ = arg "TO" in
-     Message_agent.
-       {
-         kind = (if String.is_empty reply_to then Message else Reply);
-         recipient = Named to_;
-         reply_to;
-         id = "";
-       }
+     ( Message_agent.Named to_,
+       Message_agent.
+         { kind = (if String.is_empty reply_to then Message else Reply); reply_to; id = "" } )
 
 let ask_agent =
   send "ask_agent" "Ask another agent a question, read from stdin; its answer comes as a reply."
   @@ let+ id = str "id" "ID" "Id to assign this envelope; a fresh one is generated if omitted."
      and+ to_ = arg "TO" in
-     Message_agent.{ kind = Ask; recipient = Named to_; reply_to = ""; id }
+     (Message_agent.Named to_, Message_agent.{ kind = Ask; reply_to = ""; id })
 
 let steer_subagent =
   send "steer_subagent" "Steer a descendant agent mid-turn with a message read from stdin."
   @@ let+ to_ = arg "AGENT" in
-     Message_agent.{ kind = Steer; recipient = Descendant to_; reply_to = ""; id = "" }
+     (Message_agent.Descendant to_, Message_agent.{ kind = Steer; reply_to = ""; id = "" })
 
 let interrupt_subagent =
   cmd "interrupt_subagent" "Abort a descendant agent's current turn."

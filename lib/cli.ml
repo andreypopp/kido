@@ -20,3 +20,23 @@ let ms_env getenv name default =
   match Option.flat_map Int.of_string (getenv name) with
   | Some ms when ms > 0 -> Float.of_int ms /. 1000.
   | _ -> default
+
+let width s = String.fold (fun n c -> if Char.code c land 0xC0 = 0x80 then n else n + 1) 0 s
+
+let table rows =
+  let widths =
+    List.fold_left
+      (fun ws row -> List.map2 (fun w c -> max w (width c + 2)) ws row)
+      (List.map (Fun.const 0) (List.hd rows))
+      rows
+  in
+  List.iter
+    (fun row ->
+      let cells = List.combine widths row in
+      List.iteri
+        (fun i (w, c) ->
+          print_string c;
+          if i < List.length cells - 1 then print_string (String.make (w - width c) ' '))
+        cells;
+      print_newline ())
+    rows

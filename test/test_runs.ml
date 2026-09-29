@@ -25,22 +25,39 @@ let%expect_test "runs: the table newest first, one run shown, and --json" =
        ~started_at:1_700_000_000. "run-a");
   outcome ~dir "run-a" Completed;
   ignore (run ~dir ~name:"later" ~kind:Bash ~pid:(dead_pid ()) ~started_at:1_700_003_600. "run-b");
+  let local out =
+    List.fold_left
+      (fun out (t, name) -> String.replace ~sub:(Timestamp.to_local_string t) ~by:name out)
+      out
+      [
+        (1_700_000_000., "<started a>");
+        (1_700_000_090., "<ended a>");
+        (1_700_003_600., "<started b>");
+      ]
+  in
+  (* Local time, whatever this machine's zone, and so whatever the table's column widths. *)
   ignore (Runs.runs ~dir ~json:false []);
+  String.lines (local [%expect.output])
+  |> List.iter (fun row ->
+      String.split ~by:"  " row |> List.map String.trim
+      |> List.filter (Fun.negate String.is_empty)
+      |> String.concat " | " |> print_endline);
   ignore (Runs.runs ~dir ~json:false [ "run-a" ]);
+  print_string (local [%expect.output]);
   [%expect
     {|
-    ID     NAME   PARENT  STARTED               DURATION  OUTCOME    CWD
-    run-b  later          2023-11-14T23:13:20Z  -         died
-    run-a  kid    root    2023-11-14T22:13:20Z  1m30s     completed  /tmp/some project
+    ID | NAME | PARENT | STARTED | DURATION | OUTCOME | CWD
+    run-b | later | <started b> | - | died
+    run-a | kid | root | <started a> | 1m30s | completed | /tmp/some project
     id:       run-a
     name:     kid
     kind:     agent
     parent:   root
     depth:    1
     cwd:      /tmp/some project
-    started:  2023-11-14T22:13:20Z
+    started:  <started a>
     outcome:  completed
-    ended:    2023-11-14T22:14:50Z
+    ended:    <ended a>
     resume:   cd '/tmp/some project' && kido spawn_subagent --resume run-a
     fork:     cd '/tmp/some project' && pi --fork run-a
     task:

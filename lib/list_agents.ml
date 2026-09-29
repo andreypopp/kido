@@ -88,26 +88,6 @@ let build ~runs ~threshold ~wake ~now states panes ~session ~self =
         stalled = State.stalled_since ~threshold ~wake ~now s;
       })
 
-let width s = String.fold (fun n c -> if Char.code c land 0xC0 = 0x80 then n else n + 1) 0 s
-
-let table rows =
-  let widths =
-    List.fold_left
-      (fun ws row -> List.map2 (fun w c -> max w (width c + 2)) ws row)
-      (List.map (Fun.const 0) (List.hd rows))
-      rows
-  in
-  List.iter
-    (fun row ->
-      let cells = List.combine widths row in
-      List.iteri
-        (fun i (w, c) ->
-          print_string c;
-          if i < List.length cells - 1 then print_string (String.make (w - width c) ' '))
-        cells;
-      print_newline ())
-    rows
-
 let list_agents ~dir ~threshold ~self ~panes ~session ~json =
   let panes = Lazy.force panes in
   let states = per_pane (State.load_live ~dir) in
@@ -129,7 +109,7 @@ let list_agents ~dir ~threshold ~self ~panes ~session ~json =
   in
   if json then print_endline (Yojson.Safe.to_string (`List (List.map agent_info_to_yojson agents)))
   else
-    table
+    Cli.table
       (String.split_on_char ' '
          "ID NAME AGENT MODEL PANE WINDOW STATUS STALLED ACTIVITY SINCE PARENT DEPTH SELF CWD"
       :: List.map

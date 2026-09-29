@@ -1,5 +1,6 @@
 type recipient = Named of string | Descendant of string | Parent of string
-type spec = { kind : Msg.kind; recipient : recipient; reply_to : string; id : string }
+type spec = { kind : Msg.kind; reply_to : string; id : string }
+type failure = Unavailable of string | Failed of string
 
 val resolve_target :
   (string * State.session) list ->
@@ -27,15 +28,16 @@ val deliver :
   spec ->
   State.session ->
   string ->
-  ([ `Inbox | `Pasted ], [ `Unavailable of string | `Failed of string ]) result
-(** A plain message falls back to a paste; any other kind needs the inbox, and its error is the
-    whole sentence to print. [`Unavailable] is nothing listening there. *)
+  ([ `Inbox | `Pasted ], failure) result
+(** A plain message falls back to a paste; any other kind needs the inbox, and its failure is the
+    whole sentence to print. [Unavailable] is nothing listening there. *)
 
 val send :
   dir:string ->
   self:string ->
   panes:Tmux.Pane.t list Lazy.t ->
   paste:(string -> string -> unit) ->
+  recipient ->
   spec ->
   string ->
   int

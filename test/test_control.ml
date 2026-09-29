@@ -388,7 +388,8 @@ let%expect_test "steer reaches descendants only" =
           Message_agent.send ~dir:w.dir ~self:"%1"
             ~panes:(lazy w.panes)
             ~paste:(fun pane _ -> Printf.printf "pasted into %s\n" pane)
-            { kind = Steer; recipient = Descendant to_; reply_to = ""; id = "" }
+            (Descendant to_)
+            { kind = Steer; reply_to = ""; id = "" }
             "stop and do X instead"))
     [ "child"; "grandchild"; "peer"; "root"; "caller" ];
   List.iter

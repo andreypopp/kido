@@ -1,5 +1,6 @@
 type recipient = Named of string | Descendant of string | Parent of string
-type spec = { kind : Msg.kind; recipient : recipient; reply_to : string; id : string }
+type spec = { kind : Msg.kind; reply_to : string; id : string }
+type failure = Unavailable of string | Failed of string
 
 let fail fmt = Printf.ksprintf failwith fmt
 
@@ -99,16 +100,16 @@ let deliver ~states ~panes ~self ~paste spec (target : State.session) text =
   else
     match Msg.deliver ~path:target.inbox payload with
     | Ok () -> Ok `Inbox
-    | Error (Refused _) -> Error (`Failed (Printf.sprintf "%s refused the %s" name kind))
-    | Error (Unavailable _ as e) ->
+    | Error (Msg.Refused _) -> Error (Failed (Printf.sprintf "%s refused the %s" name kind))
+    | Error (Msg.Unavailable _ as e) ->
         Error
-          (`Unavailable
+          (Unavailable
              (Printf.sprintf
                 "%s is not listening on its inbox; a %s cannot fall back to a paste: %s" name kind
                 (Msg.string_of_error e)))
-    | Error (Failed m) -> Error (`Failed m)
+    | Error (Msg.Failed m) -> Error (Failed m)
 
-let send ~dir ~self ~panes ~paste spec text =
+let send ~dir ~self ~panes ~paste recipient spec text =
   let text = String.chop_suffix ~suf:"\n" text |> Option.get_or ~default:text in
   if String.is_empty text then begin
     prerr_endline "no message given";
@@ -136,13 +137,13 @@ let send ~dir ~self ~panes ~paste spec text =
               alternative
         | Some _ -> ())
     | _ -> ());
-    let _, target = resolve ~live ~panes ~self spec.recipient in
+    let _, target = resolve ~live ~panes ~self recipient in
     let name = List_agents.display_name panes target in
     if String.equal target.pane self then fail "%s is this agent" name;
     (match deliver ~states ~panes ~self ~paste spec target text with
     | Ok `Pasted -> Printf.printf "pasted into %s's pane\n" name
     | Ok `Inbox -> Printf.printf "delivered to %s by inbox\n" name
-    | Error (`Unavailable m | `Failed m) -> failwith m);
+    | Error (Unavailable m | Failed m) -> failwith m);
     0
   end
 
@@ -194,6 +195,6 @@ let notify_parent ~dir ~self ~panes ~paste ~parent ~run text =
     failwith "this session has no parent ($KIDO_AGENT_PARENT_SESSION is not set); nothing sent";
   let run = Result.to_opt (Subrun.parse_id run) in
   let report = String.chop_suffix ~suf:"\n" text |> Option.get_or ~default:text in
-  send ~dir ~self ~panes ~paste
-    { kind = Notice; recipient = Parent parent; reply_to = ""; id = "" }
+  send ~dir ~self ~panes ~paste (Parent parent)
+    { kind = Notice; reply_to = ""; id = "" }
     (report_notice ~runs:(Filename.concat dir "runs") run report)

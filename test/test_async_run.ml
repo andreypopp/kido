@@ -117,22 +117,29 @@ let%expect_test "--stream sends the output as it runs, then the ending" =
   Result.get_exn (State.record ~dir "root-sess" (session ~pane:"%2" ~inbox Idle));
   let _ = bash ~dir ~parent:"root-sess" "chatty" [ "printf"; "one\\ntwo\\nthree" ] in
   async_run ~stream:true ~dir "chatty";
-  List.iter
-    (fun raw ->
-      match Msg.parse raw with
-      | Some ({ kind = Stream; _ } as e) -> Printf.printf "stream: %S\n" e.text
-      | Some e ->
-          Printf.printf "%s: %s\n" (Msg.string_of_kind e.kind) (List.hd (String.lines e.text))
-      | None -> Printf.printf "not an envelope: %S\n" raw)
-    (received ());
+  (* However the lines were batched, every one is streamed before the notice. *)
+  List.filter_map Msg.parse (received ())
+  |> List.fold_left
+       (fun (streamed, lines) (e : Msg.envelope) ->
+         match e.kind with
+         | Stream -> (streamed @ String.lines e.text, lines)
+         | _ ->
+             ( streamed,
+               lines
+               @ [
+                   Printf.sprintf "%s after [%s]: %s" (Msg.string_of_kind e.kind)
+                     (String.concat " " streamed)
+                     (List.hd (String.lines e.text));
+                 ] ))
+       ([], [])
+  |> snd |> List.iter print_endline;
   [%expect
     {|
     one
     two
     three
     -> 0
-    stream: "one\ntwo\nthree"
-    notice: async run "chatty" completed: exit status 0
+    notice after [one two three]: async run "chatty" completed: exit status 0
     |}]
 
 (* Being killed is exactly the ending nobody else is watching for. Run as its own process, since

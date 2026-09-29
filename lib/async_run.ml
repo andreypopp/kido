@@ -1,8 +1,5 @@
 let usage = "usage: kido async-run [--run-id ID] [--stream]"
 let fail fmt = Printf.ksprintf failwith fmt
-
-(* How long the command gets to die after a passed-on signal before the wrapper reports anyway:
-   being killed is exactly the ending nobody else will speak for. *)
 let signal_grace = 2.
 
 (* Go's names, which the outcome text has always carried. *)
@@ -31,9 +28,6 @@ let rec write_all fd b off n =
 
 type child = { pid : int; out : Unix.file_descr; mutable eof : bool }
 
-(* Tees the child's output until it has exited and closed its end, a signal is caught (when
-   [watch]), or [deadline] passes. The pane and the output file, which is the source of truth, have
-   every byte before the stream batches it. *)
 let rec pump ~file ~stream ~wake ~caught ~watch ~deadline child buf =
   let now = Unix.gettimeofday () in
   if watch && Option.is_some (Atomic.get caught) then `Signalled
@@ -69,8 +63,6 @@ let status_of = function
   | WEXITED n -> (Failed, Printf.sprintf "exit status %d" n, n)
   | WSIGNALED s | WSTOPPED s -> (Failed, "signal: " ^ signal_name s, 1)
 
-(* Returns the command's own exit code, so the dead pane's #{pane_dead_status} says what happened
-   too. *)
 let async_run ~dir ~knobs ~run_id ~stream args =
   (match args with
   | [] -> ()
@@ -110,8 +102,6 @@ let async_run ~dir ~knobs ~run_id ~stream args =
     Unix.openfile (Subrun.output_path ~dir:runs id) [ O_WRONLY; O_CREAT; O_TRUNC; O_CLOEXEC ] 0o644
   in
   let stream = if stream then Some (Async_stream.start ~dir knobs meta) else None in
-  (* Closing the stream flushes its last batch and waits out any send in flight, so the notice is
-     strictly after the final chunk and counts what never made it. *)
   let report result text =
     let unstreamed = Option.map_or ~default:0 Async_stream.close stream in
     let outcome : Subrun.outcome = { result; text; at = Some (Timestamp.now ()) } in

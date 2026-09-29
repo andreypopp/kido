@@ -25,8 +25,8 @@ let outcome f =
 
 let run ?(panes = same_session) ~dir kind recipient ?(reply_to = "") ?(id = "") text =
   outcome (fun () ->
-      Message_agent.send ~dir ~self:"%1" ~panes:(Lazy.from_val panes) ~paste
-        { kind; recipient; reply_to; id } text)
+      Message_agent.send ~dir ~self:"%1" ~panes:(Lazy.from_val panes) ~paste recipient
+        { kind; reply_to; id } text)
 
 let notify ?(panes = same_session) ~dir ~parent ?(run = "") text =
   outcome (fun () ->

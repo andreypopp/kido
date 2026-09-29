@@ -50,3 +50,22 @@ let duration d =
     if s >= 3600 then Printf.sprintf "%dh%dm%ss" (s / 3600) (s / 60 mod 60) secs
     else if s >= 60 then Printf.sprintf "%dm%ss" (s / 60) secs
     else secs ^ "s"
+
+let to_local_string t =
+  let whole = Float.to_int (Float.round t) in
+  let tm = Unix.localtime (Float.of_int whole) in
+  let local =
+    ((((days_from_civil (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday * 24) + tm.tm_hour) * 60)
+    + tm.tm_min)
+    * 60
+    + tm.tm_sec
+  in
+  let offset = (local - whole) / 60 in
+  Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02d%s" (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday
+    tm.tm_hour tm.tm_min tm.tm_sec
+    (if offset = 0 then "Z"
+     else
+       Printf.sprintf "%c%02d:%02d"
+         (if offset < 0 then '-' else '+')
+         (abs offset / 60)
+         (abs offset mod 60))
