@@ -1,20 +1,12 @@
 #!/bin/sh
-# Run pi/kido-status.test.ts under node's native TypeScript support. One
-# suite covers both extensions: it drives kido-status.ts and kido-agents.ts
-# as the pair a pi host loads, through one fake pi and one real inbox
-# socket, and almost every case needs both halves at once.
+# Run pi/kido-status.test.ts under node's native TypeScript support.
 #
 # Skips cleanly when node is missing or too old; KIDO_TS_TEST_REQUIRED=1
-# fails instead, the same convention e2e uses for KIDO_E2E_REQUIRED. `make
-# test` calls this so the Go unit tests never gain a node dependency of
-# their own.
+# fails instead, the same convention e2e uses for KIDO_E2E_REQUIRED.
 #
-# The floor is 24, not the 22.18 where unflagged TypeScript became stable.
-# Parsing was never the binding constraint: 22.18 reads these files and
-# then its test runner abandons the suite, cancelling 77 of 79 cases in
-# half a second with "Promise resolution is still pending but the event
-# loop has already resolved". CI pinned 22.18 on that reasoning and found
-# it, which is the only reason the number here is one anything has checked.
+# The floor is node 24: 22.18 reads these files but its test runner then
+# abandons the suite, cancelling most cases with "Promise resolution is
+# still pending but the event loop has already resolved".
 
 set -eu
 

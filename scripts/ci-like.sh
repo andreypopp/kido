@@ -8,10 +8,6 @@
 #                            [--cpu-shares N] [--contend N] [--budget N]
 #                            -- <command...>
 #
-# Any KIDO_AGENT_* variable in the caller's own environment names its
-# parent edge as a tracked agent, not the command under test; it is
-# never forwarded, so the container runs as a CI runner would.
-#
 #   --cpus N        CPU quota handed to the container (default 0.5)
 #   --memory SIZE   memory limit, podman syntax e.g. 1g (default 1g)
 #   --timeout SEC   kill the container if it runs longer than this (default 300)
@@ -22,46 +18,6 @@
 #                   spinning 16 threads) before running, removed on exit
 #   --budget N      total host cores this run may use, test container and
 #                   siblings together (default 2)
-#
-# A run never takes more of the host than --budget: the test container gets
-# --cpus, and whatever is left of the budget is split as a CPU quota across
-# the --contend siblings, however many threads each of them spins. The cap
-# matters because the siblings exist to be busy - uncapped, N of them at 16
-# spinning threads saturate every core the podman machine has, which are
-# the host's cores, and the machine that is being kept honest for one
-# reproduction stalls every other thing running on the box. Contention is
-# for chasing one named failure; a whole-suite run wants no siblings at all.
-#
-# A CPU quota alone throttles the whole test container in lockstep - the
-# command being tested and its own child processes pause and resume
-# together, so their relative timing survives even a severe cap. What a
-# contended CI runner actually does is different: independent processes
-# (or, here, independent cgroups) compete for the same cores, so how much
-# of any given instant a thread gets depends on what else is runnable at
-# that instant - which desynchronizes a wrapper's batching timer from the
-# command it is timing. Hence --contend: several separate busy containers
-# reproduce that competition; one large one does not, measured against
-# the timing regression below.
-#
-# Any KIDO_* variable already set in the caller's environment is passed
-# through into the container. KIDO_TMUX and KIDO_STATE_DIR are always the
-# container's own (the fork built into the image, and a directory under
-# /tmp inside the container) regardless of what the host has set, so this
-# never touches the host's tmux, kido or state dir.
-#
-# The command runs as a non-root uid, the one owning the bind-mounted repo
-# - a GitHub runner is the `runner` user, and a test asserting a file
-# chmodded to 000 is unreadable holds for nobody else. Under rootless
-# podman that is --userns=keep-id, which maps the caller's uid to itself
-# inside the container and leaves the bind mount writable with no chown;
-# under a rootful podman the mapping is already the identity, so the uid
-# is passed with --user instead. The locale is the image's (C.UTF-8, see
-# its Dockerfile), so no caller has to pass one.
-#
-# The image is built once per tmux fork revision and cached by a tag that
-# includes it and a digest of the Dockerfile (kido-ci-like:<sha>-<digest>),
-# so a tap bump or an edit to the image rebuilds automatically; podman's
-# own layer cache keeps the rebuild off the tmux compile.
 
 set -euo pipefail
 

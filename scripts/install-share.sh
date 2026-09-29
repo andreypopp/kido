@@ -1,9 +1,6 @@
 #!/bin/sh
-# Install the files kido reads beside its binary into <dest>, which is
-# <prefix>/share/kido: the layout findShared looks for and the bin
-# directory's shims work back from. `make install` runs it, and so does
-# the e2e harness for the kido it builds, so the suite runs the layout an
-# install has.
+# Install the files kido reads beside its binary into <dest>, the layout
+# findShared looks for.
 #
 #   scripts/install-share.sh <dest>
 

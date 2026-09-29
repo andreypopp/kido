@@ -1,8 +1,7 @@
 #!/bin/sh
-# kido's tmux: kido-tmux, found the way kido itself finds it. Inside a
-# kido pane $TMUX names the kido server, which a stock tmux cannot talk
-# to, so every `tmux` a plugin, an editor or a run-shell line runs has to
-# land here.
+# Inside a kido pane $TMUX names the kido server, which a stock tmux cannot
+# talk to, so every `tmux` a plugin, an editor or a run-shell line runs has
+# to land here.
 . "${0%/*}/../shim.sh"
 case ${KIDO_TMUX-} in
 '') ;;

@@ -1,13 +1,4 @@
-# Sourced by every program in kido's bin directory, which sits at
-# <prefix>/share/kido/bin; not run on its own. Nothing here names an
-# absolute path: every location is worked out from where the shim was run
-# from, so there is nothing to quote and nothing to go stale when the
-# package moves.
-#
-# kido_bin_dir is the shim's own directory, kido_share the share/kido
-# above it, and kido_prefix_bin the bin/ that holds kido and kido-tmux -
-# the inverse of findShared, which finds share/kido from the binary. The
-# `..` are resolved by the kernel, physically, so a share/kido that is a
+# The `..` are resolved by the kernel, physically, so a share/kido that is a
 # Homebrew symlink into the Cellar lands in that version's own bin/.
 
 set -f
@@ -15,12 +6,7 @@ kido_bin_dir=${0%/*}
 kido_share=$kido_bin_dir/..
 kido_prefix_bin=$kido_bin_dir/../../../bin
 
-# kido_real NAME sets kido_found to the NAME the shim stands in for: the
-# first executable NAME on PATH after the shim's own directory. Never the
-# shim itself, and never an entry before it - a second kido install's bin
-# directory ahead of this one is exactly such an entry, and taking it
-# would bounce between the two forever. A shim run by path, with its
-# directory nowhere on PATH, takes the first NAME that is not itself.
+# Never an entry before our dir, or two installs' shims bounce between each other.
 kido_real() {
 	kido_seen=
 	kido_after=

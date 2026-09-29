@@ -3,8 +3,7 @@
 # package ships them, so nothing is written into ~/.pi/agent/extensions.
 . "${0%/*}/../shim.sh"
 case ${1-} in
-# pi reads these subcommands from its first argument, so nothing may go
-# in front of them; none of them starts a session anyway.
+# pi reads these from its first argument, so nothing may go in front of them.
 install | remove | uninstall | update | list | config | auth) ;;
 *)
 	set -- --extension "$kido_share/pi/kido-status.ts" \
