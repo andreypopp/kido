@@ -58,6 +58,20 @@ final class SessionView: NSView {
         for pane in panes where pane.font != points {
             _ = ghostty_surface_binding_action(pane.surface, action, UInt(action.utf8.count))
         }
-        windows.values.forEach { $0.cellChanged() }
+        cellChanged()
+    }
+
+    // Every surface reports its own font and cell changes; one pass lays
+    // them all out.
+    private var relayoutQueued = false
+
+    func cellChanged() {
+        guard !relayoutQueued else { return }
+        relayoutQueued = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            relayoutQueued = false
+            windows.values.forEach { $0.cellChanged() }
+        }
     }
 }
