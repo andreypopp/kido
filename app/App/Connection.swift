@@ -1,13 +1,6 @@
 import AppKit
 import TmuxControl
 
-// Every Client callback runs on client.queue. `panes` is touched only
-// there, so a PaneView leaves `panes` between two feeds; `retiring` holds it
-// on main until the queue has let go of it, so it is freed on main (detach).
-// A layout reaches main synchronously, so its grid is set before the reader
-// feeds the output that follows it. Main never waits on client.queue. Once
-// the client has closed, `panes` is nil and a pane handed to the queue goes
-// back to main.
 final class Connection: @unchecked Sendable {
     private let client: Client
     private var panes: [PaneID: PaneView]? = [:]
@@ -53,19 +46,22 @@ final class Connection: @unchecked Sendable {
         }
     }
 
-    func send(_ commands: [Command]) {
-        client.send(commands) { _ in }
+    func send(_ commands: [Command], then done: (@MainActor @Sendable ([Reply]?) -> Void)? = nil) {
+        client.send(commands) { replies in
+            if let done { DispatchQueue.main.async { done(replies) } }
+        }
     }
 
-    // side-status-command names the kido that owns the server (lib/launch.ml);
-    // the feed must run that one, not whatever `kido` resolves to on PATH.
-    func locateFeed(_ done: @escaping @Sendable (Result<Feed.Location, Server.Failure>) -> Void) {
+    func locateFeed(_ done: @escaping @Sendable (Result<Feed.Location, Failure>) -> Void) {
         client.send([Command("show-options", "-gv", "side-status-command"), Command("display-message", "-p", "#{client_name}")]) {
             replies in
             guard let replies, replies.count == 2, case .success(let command) = replies[0], let raw = command.first,
                 case .success(let name) = replies[1], let client = name.first
-            else { return done(.failure(Server.Failure(message: "could not read side-status-command or the client name"))) }
-            done(.success((kido: unquoteSideStatusCommand(raw), client: client)))
+            else { return done(.failure(Failure(message: "could not read side-status-command or the client name"))) }
+            // `Launch.conf_command` double-quotes a path that contains a space
+            // or a tab, and show-options prints the quotes back (lib/launch.ml).
+            let quoted = raw.count >= 2 && raw.hasPrefix("\"") && raw.hasSuffix("\"")
+            done(.success((kido: quoted ? String(raw.dropFirst().dropLast()) : raw, client: client)))
         }
     }
 
@@ -93,11 +89,12 @@ final class Connection: @unchecked Sendable {
             DispatchQueue.main.async { self.view?.windows[window]?.focus(pane) }
         case .sessionWindowChanged(let s, let window):
             DispatchQueue.main.async {
-                guard s == self.model.session else { return }
-                self.model.window = window
-                self.view?.show(window)
+                if s == self.model.session { self.model.window = window }
             }
-        case .sessionChanged, .sessionsChanged, .sessionRenamed, .windowAdd(_, .linked), .windowClose(_, .linked),
+        case .sessionChanged:
+            reasons = []
+            refresh()
+        case .sessionsChanged, .sessionRenamed, .windowAdd(_, .linked), .windowClose(_, .linked),
             .windowRenamed(_, .linked, _):
             refresh()
         case .exit(.detached(let reason)):
@@ -124,10 +121,10 @@ final class Connection: @unchecked Sendable {
             let listing = windows.compactMap(WindowListing.init)
             DispatchQueue.main.sync {
                 guard let self else { return }
+                self.view?.update(listing)
                 self.model = SessionModel(
                     sessions: sessions.compactMap(SessionListing.init), session: session,
                     windows: listing.map { .init(id: $0.id, name: $0.name) }, window: listing.first(where: \.active)?.id)
-                self.view?.update(listing, shown: self.model.window)
             }
         }
     }
