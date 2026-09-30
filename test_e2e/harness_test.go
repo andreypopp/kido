@@ -397,11 +397,21 @@ set -g side-status-command "%s%s"
 		if len(pids) > 1 {
 			t.Errorf("more than one control client attached to %s: %v", h.inner, pids)
 		}
+		started := descendants(h.inner)
 		killServer(h.inner)
 		killServer(h.outer)
 		for _, pid := range pids {
 			if !processGone(pid, time.Second) {
 				t.Errorf("leaked control client pid %s for socket %s", pid, h.inner)
+			}
+		}
+		// An async-run wrapper answers the server's hangup by writing its
+		// outcome into the state dir, after kill-server has returned; TempDir's
+		// removal runs next and must not race it.
+		deadline := time.Now().Add(settle)
+		for _, p := range started {
+			if !processGone(p.pid, time.Until(deadline)) {
+				t.Errorf("pid %s (%s), started under %s, outlived its server by %v", p.pid, p.command, h.inner, settle)
 			}
 		}
 	})
@@ -440,6 +450,34 @@ func controlClientPIDs(socket string) []string {
 		}
 	}
 	return pids
+}
+
+type process struct{ pid, command string }
+
+// descendants lists every process below a tmux server: its panes' and its
+// jobs' and theirs, including a killed pane's that has not exited yet.
+// Asked before the server is killed, after which they are init's.
+func descendants(socket string) []process {
+	root, err := exec.Command(tmuxBin, "-L", socket, "display-message", "-p", "#{pid}").Output()
+	if err != nil {
+		return nil
+	}
+	table, err := exec.Command("ps", "-A", "-o", "pid=,ppid=,command=").Output()
+	if err != nil {
+		return nil
+	}
+	children := map[string][]process{}
+	for _, line := range strings.Split(string(table), "\n") {
+		if f := strings.Fields(line); len(f) >= 3 {
+			children[f[1]] = append(children[f[1]], process{f[0], strings.Join(f[2:], " ")})
+		}
+	}
+	var all []process
+	for queue := children[strings.TrimSpace(string(root))]; len(queue) > 0; queue = queue[1:] {
+		all = append(all, queue[0])
+		queue = append(queue, children[queue[0].pid]...)
+	}
+	return all
 }
 
 // processGone polls for pid to exit within budget. kido holds the only
