@@ -517,3 +517,35 @@ func TestListAgentsSessionFlagAndCanReply(t *testing.T) {
 		"kido list_agents: no tmux session for pane \"\"; pass --session\nusage: kido list_agents [--session ID] [--json]",
 		"list_agents", "--json")
 }
+
+// A plain message to a running agent waits for its turn to end, so the
+// line says so rather than "delivered"; the steer_subagent hint goes only
+// to a caller that could steer the target. A reply goes to an asker that
+// reports running while its ask blocks, and is read at once.
+func TestMessageAgentSaysAMessageToARunningAgentWaits(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	in := startInbox(t, "ok\n")
+	caller := h.firstPane("alpha")
+	h.agentStatus("caller", caller, "pi", "idle", "--title", "caller", "--inbox", in.Path)
+	h.idleAgent("alpha", "idle-child", "--title", "idle-child", "--inbox", in.Path, "--parent-session", "caller")
+	busy := func(id, status string, extra ...string) {
+		p := h.newWindow("alpha", "", "sh", "-c", "exec sleep 300")
+		h.in("select-pane", "-t", p, "-T", "")
+		h.agentStatus(id, p, "pi", status, append([]string{"--title", id, "--inbox", in.Path}, extra...)...)
+	}
+	busy("busy-peer", "running")
+	busy("busy-child", "running", "--parent-session", "caller")
+	busy("compacting-grandchild", "compacting", "--parent-session", "busy-child")
+
+	for _, c := range []struct{ to, want string }{
+		{"idle-child", "delivered to idle-child by inbox"},
+		{"busy-peer", "queued for busy-peer: it is running and reads this when its current turn ends"},
+		{"busy-child", "queued for busy-child: it is running and reads this when its current turn ends; to reach it now, use steer_subagent"},
+		{"compacting-grandchild", "queued for compacting-grandchild: it is running and reads this when its current turn ends; to reach it now, use steer_subagent"},
+	} {
+		h.expectKido(caller, "new evidence", nil, c.want, "message_agent", "--", c.to)
+	}
+	h.expectKido(caller, "the answer", nil, "delivered to busy-peer by inbox", "message_agent", "--reply-to", "ask-1", "--", "busy-peer")
+	h.expectKido(caller, "a question", nil, "delivered to busy-peer by inbox", "ask_agent", "--", "busy-peer")
+}

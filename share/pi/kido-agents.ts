@@ -754,7 +754,7 @@ export default function (pi: ExtensionAPI) {
     name: "message_agent",
     label: "Message Agent",
     description:
-      "Send a message to another agent in this tmux session, addressed by name, session id, or a unique id prefix. It waits for the receiver to finish its current turn; use steer_subagent for a correction that is useless once the work is done.",
+      "Send a message to another agent in this tmux session, addressed by name, session id, or a unique id prefix. It waits for the receiver to finish its current turn, and a running descendant's turn is usually its whole task: to give one new information, evidence, scope or a correction, use steer_subagent. message_agent is for what can wait until the receiver finishes.",
     promptSnippet: "message_agent(to, message, replyTo?) - send a message to another agent in this tmux session",
     parameters: Type.Object(
       {
@@ -1012,7 +1012,7 @@ export default function (pi: ExtensionAPI) {
       name: "steer_subagent",
       label: "Steer Subagent",
       description:
-        "Redirect a descendant that is already working, without aborting its turn: the message joins the run it is in rather than waiting for it to finish. For a correction that is useless once the work is done. Refused for anything but a descendant. Use message_agent when the message can wait for the current turn to end.",
+        "Redirect a descendant that is already working, without aborting its turn: the message joins the run it is in rather than waiting for it to finish. For anything a running descendant needs before it finishes: new evidence, a change of scope, a correction or a warning. Refused for anything but a descendant. Use message_agent when the message can wait for the current turn to end.",
       promptSnippet: "steer_subagent(to, message) - redirect a descendant mid-task, without aborting its turn",
       parameters: Type.Object(
         {

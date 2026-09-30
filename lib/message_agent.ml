@@ -146,12 +146,20 @@ let send ~dir ~self recipient spec text =
                   alternative))
       | _ -> Ok ()
     in
-    let* _, target = not_sent (resolve ~live ~panes ~self recipient) in
+    let* id, target = not_sent (resolve ~live ~panes ~self recipient) in
     let name = List_agents.display_name panes target in
-    match deliver ~states ~panes ~self spec target text with
-    | Ok `Pasted -> Ok (Printf.sprintf "pasted into %s's pane" name)
-    | Ok `Inbox -> Ok (Printf.sprintf "delivered to %s by inbox" name)
-    | Error (Unavailable m | Failed m) -> Error (Not_sent m)
+    match (deliver ~states ~panes ~self spec target text, spec.kind, target.status) with
+    | Ok `Pasted, _, _ -> Ok (Printf.sprintf "pasted into %s's pane" name)
+    | Ok `Inbox, Message, (State.Running | Compacting) ->
+        let steerable =
+          Result.get_or ~default:false (reaches (List_agents.per_pane live) panes ~self id)
+        in
+        Ok
+          (Printf.sprintf "queued for %s: it is running and reads this when its current turn ends%s"
+             name
+             (if steerable then "; to reach it now, use steer_subagent" else ""))
+    | Ok `Inbox, _, _ -> Ok (Printf.sprintf "delivered to %s by inbox" name)
+    | Error (Unavailable m | Failed m), _, _ -> Error (Not_sent m)
 
 let head_within s max = Msg.valid_utf_8 (Msg.utf_8_prefix s max)
 
