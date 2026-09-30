@@ -1704,12 +1704,13 @@ window agrees on row 0.
 The price is that a window hoisted under a parent's pane is not in tmux's
 own window order: a subagent's window can sit above a lower-numbered one,
 and a parent's later panes sit below a whole foreign window. That is the
-trade, not a bug - the spawn tree is what the sidebar is for. Nor is
-tmux's order one ⇧↓ away: `kido switch-window` (S-Up/S-Down) skips a
-subagent's window on purpose - the user asked to cycle top-level windows,
-keyed off the same run pane (`@kido_run`) `Reap.sweep` uses and for the same
-reason - so a hoisted window is reachable through the sidebar and not by
-cycling. The walk also draws as a root
+trade, not a bug - the spawn tree is what the sidebar is for. `kido
+switch-window` (S-Up/S-Down) walks the sidebar's order, not tmux's, so
+cycling from a hoisted window moves to the row below it on screen. It
+skips a subagent's window on purpose - the user asked to cycle top-level
+windows, keyed off the same run pane (`@kido_run`) `Reap.sweep` uses and
+for the same reason - so a hoisted window is reachable through the
+sidebar and not by cycling. The walk also draws as a root
 anything whose anchor row never appeared, for the same reason the
 ordering emits what it missed: a dropped row is an agent nobody can see.
 
@@ -2030,16 +2031,17 @@ installed into `~/.pi/agent/extensions` by an older kido has no guard,
 loads after the shipped copy and conflicts; the fix is to delete
 `~/.pi/agent/extensions/kido-*.ts`.
 
-**Install layout.** `scripts/install-share.sh <prefix>/share/kido` is
+**Install layout.** The `install` stanza in the root `dune` file is
 the one description of share/kido: the two shell integrations,
-`shim.sh`, `bin/*`, `pi/*.ts` and `claude/settings.json`. `kido-tmux.conf`
-is not among them - the launcher writes the embedded copy into the
-configuration it starts the server with, and nothing reads it from disk.
-`make install` runs it, with `PREFIX` (`~/.local` by default) naming the
-tree that holds `bin/kido`, `bin/kido-tmux` and `share/kido` together; so
-does the e2e harness, which builds kido as `<tmp>/bin/kido` with
-`<tmp>/share/kido` beside it. The Homebrew formula installs the same set
-into its own prefix.
+`shim.sh`, `bin/*`, `pi/*.ts` and `claude/settings.json`, beside
+`bin/kido`. `kido-tmux.conf` is not among them - the launcher writes the
+embedded copy into the configuration it starts the server with, and
+nothing reads it from disk. `dune build @install` lays the tree out in
+`_build/install/default`; `dune install` refuses under package
+management, so `make install` copies its `bin` and `share` into `PREFIX`
+(`~/.local` by default), the tree that holds `bin/kido`, `bin/kido-tmux`
+and `share/kido` together. The e2e harness copies the same tree into
+`<tmp>`. The Homebrew formula installs the same set into its own prefix.
 
 ## Knobs
 

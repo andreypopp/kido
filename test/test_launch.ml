@@ -8,7 +8,9 @@ let line_of ~last conf sub =
 (* Positions, not presence: a file that sources the user's config last has every line and
    leaves the server with no sidebar. *)
 let%expect_test "server.conf layers kido's defaults, kido.conf, the capture, then kido's options" =
-  let conf = Launch.server_conf ~exe:"/p/bin/kido" ~user_conf:"/c/kido/kido.conf" in
+  let conf =
+    Result.get_exn (Launch.server_conf ~exe:"/p/bin/kido" ~user_conf:"/c/kido/kido.conf")
+  in
   let at = line_of ~last:false conf and last = line_of ~last:true conf in
   let order =
     [
@@ -37,10 +39,10 @@ let%expect_test "server.conf layers kido's defaults, kido.conf, the capture, the
     |}]
 
 let%expect_test "kido.conf is under XDG_CONFIG_HOME, else ~/.config" =
-  print_endline (Launch.user_conf ~xdg_config_home:"/x" ~home:"/h");
-  print_endline (Launch.user_conf ~xdg_config_home:"" ~home:"/h");
-  (try print_endline (Launch.user_conf ~xdg_config_home:"" ~home:"")
-   with Failure msg -> print_endline msg);
+  List.iter
+    (fun (xdg_config_home, home) ->
+      print_endline (Result.get_lazy Fun.id (Launch.user_conf ~xdg_config_home ~home)))
+    [ ("/x", "/h"); ("", "/h"); ("", "") ];
   [%expect {|
     /x/kido/kido.conf
     /h/.config/kido/kido.conf
@@ -50,16 +52,17 @@ let%expect_test "kido.conf is under XDG_CONFIG_HOME, else ~/.config" =
 (* The result is also what tmux's default_window_name() (third_party/tmux/names.c) parses, undoing
    at most one layer of quoting: see TestFirstWindowNameIsNotQuoteDebris (e2e). *)
 let%expect_test "conf_command double-quotes a path only when sh would split it" =
-  print_endline (Launch.conf_command "/opt/homebrew/bin/kido" [ "shell" ]);
-  print_endline (Launch.conf_command "/Application Support/kido" [ "shell" ]);
+  print_endline (Result.get_exn (Launch.conf_command "/opt/homebrew/bin/kido" [ "shell" ]));
+  print_endline (Result.get_exn (Launch.conf_command "/Application Support/kido" [ "shell" ]));
   [%expect {|
     '/opt/homebrew/bin/kido shell'
     '"/Application Support/kido" shell'
     |}]
 
 let%expect_test "a path no nesting of tmux and sh quoting can carry is refused up front" =
-  (try print_endline (Launch.server_conf ~exe:"/t/we're here/kido" ~user_conf:"/c/kido.conf")
-   with Failure msg -> print_endline msg);
+  print_endline
+    (Result.get_lazy Fun.id
+       (Launch.server_conf ~exe:"/t/we're here/kido" ~user_conf:"/c/kido.conf"));
   [%expect
     {| cannot start a kido server: refusing path "/t/we're here/kido": it contains "'", which cannot survive tmux's own command-line parsing |}]
 
@@ -87,5 +90,7 @@ let%expect_test "probe_server reads tmux's failures" =
     |}]
 
 let%expect_test "launching inside tmux refuses, naming the tmux in charge" =
-  (try ignore (Launch.run ~tmux:"/tmp/tmux-501/kido,1234,0") with Failure msg -> print_endline msg);
+  (match Launch.run ~tmux:"/tmp/tmux-501/kido,1234,0" with
+  | Ok () -> ()
+  | Error msg -> print_endline msg);
   [%expect {| already inside tmux (/tmp/tmux-501/kido); run kido from a plain terminal |}]

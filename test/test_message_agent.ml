@@ -6,7 +6,7 @@ let same_session =
 
 let record ~dir id s = Result.get_exn (State.record ~dir id s)
 let pastes = ref []
-let paste pane text = pastes := (pane ^ ": " ^ text) :: !pastes
+let paste pane text = Ok (pastes := (pane ^ ": " ^ text) :: !pastes)
 
 (* Temp paths differ per run. *)
 let scrub m =
@@ -19,19 +19,20 @@ let scrub m =
 let outcome f =
   pastes := [];
   (match f () with
-  | code -> Printf.printf "exit %d\n" code
-  | exception Failure m -> Printf.printf "error: %s\n" (scrub m));
+  | Ok line -> print_endline line
+  | Error Message_agent.No_text -> print_endline "no text"
+  | Error (Not_sent m) -> Printf.printf "error: %s\n" (scrub m));
   List.iter (Printf.printf "pasted %s\n") (List.rev !pastes)
 
 let run ?(panes = same_session) ~dir kind recipient ?(reply_to = "") ?(id = "") text =
   outcome (fun () ->
-      Message_agent.send ~dir ~self:"%1" ~panes:(Lazy.from_val panes) ~paste recipient
+      Message_agent.send ~dir ~self:"%1" ~panes:(Lazy.from_val (Ok panes)) ~paste recipient
         { kind; reply_to; id } text)
 
 let notify ?(panes = same_session) ~dir ~parent ?(run = "") text =
   outcome (fun () ->
-      Message_agent.notify_parent ~dir ~self:"%1" ~panes:(Lazy.from_val panes) ~paste ~parent ~run
-        text)
+      Message_agent.notify_parent ~dir ~self:"%1" ~panes:(Lazy.from_val (Ok panes)) ~paste
+        ~warn:(Printf.printf "warning: %s\n") ~parent ~run text)
 
 let show received =
   List.iter
@@ -61,9 +62,7 @@ let%expect_test "a target gets a v1 envelope; --reply-to alone makes it a reply"
   [%expect
     {|
     delivered to  by inbox
-    exit 0
     delivered to  by inbox
-    exit 0
     reply id=<fresh> replyTo="ask-1" text="hi there" from=("","","%1")
     message id=<fresh> replyTo="" text="hi there" from=("","","%1")
     |}]
@@ -80,7 +79,6 @@ let%expect_test "notify_parent sends a notice to the session its environment nam
   [%expect
     {|
     delivered to  by inbox
-    exit 0
     notice id=<fresh> replyTo="" text="the answer is 42" from=("","","%1")
     |}]
 
@@ -118,13 +116,9 @@ let%expect_test "resolution: by name case-insensitively, by the pane title, by i
   [%expect
     {|
     delivered to Worker-2 by inbox
-    exit 0
     delivered to worker-6 by inbox
-    exit 0
     delivered to Worker-2 by inbox
-    exit 0
     delivered to  by inbox
-    exit 0
     error: "ab" matches several agents by id: abc123 (Worker-2), abd456 ()
     error: no agent session matches "nope"
     error: "scout" matches several agents by name: worker-x (scout), worker-y (scout)
@@ -153,8 +147,8 @@ let%expect_test "an ambiguity elsewhere names every candidate" =
     ]
   in
   (match Message_agent.resolve_target states panes ~self:"%1" "Twin" with
-  | id, _ -> Printf.printf "WRONG: resolved %s\n" id
-  | exception Failure m -> print_endline m);
+  | Ok (id, _) -> Printf.printf "WRONG: resolved %s\n" id
+  | Error m -> print_endline m);
   [%expect
     {| "Twin" matches several agents by name: twin-a (Twin), twin-b (Twin), none in this tmux session |}]
 
@@ -171,10 +165,8 @@ let%expect_test "no inbox, or a dead one, pastes a plain message; a hard inbox e
   [%expect
     {|
     pasted into 's pane
-    exit 0
     pasted %2: hi claude
     pasted into 's pane
-    exit 0
     pasted %2: hello
     error: inbox <path>: answered "nope", want "ok"
     |}]
@@ -189,10 +181,8 @@ let%expect_test "refused before anything is sent: empty, invalid UTF-8, this age
   run ~dir Message (Named "Self") "talking to myself";
   [%expect
     {|
-    no message given
-    no message given
-    exit 1
-    exit 1
+    no text
+    no text
     error: message is not valid UTF-8
     error: Self is this agent
     |}]
@@ -207,7 +197,6 @@ let%expect_test "ask_agent sends an ask with the caller's --id and no replyTo" =
   [%expect
     {|
     delivered to peer by inbox
-    exit 0
     ask id=ask-7 replyTo="" text="are you done?" from=("caller","asker","%1")
     |}]
 
@@ -261,8 +250,8 @@ let%expect_test "a descendant must be reached through the caller's parent edges"
   List.iter
     (fun to_ ->
       match Message_agent.resolve ~live ~panes:same_session ~self:"%1" (Descendant to_) with
-      | id, _ -> Printf.printf "%s: %s\n" to_ id
-      | exception Failure m -> Printf.printf "%s: %s\n" to_ m)
+      | Ok (id, _) -> Printf.printf "%s: %s\n" to_ id
+      | Error m -> Printf.printf "%s: %s\n" to_ m)
     [ "kid"; "Peer"; "me" ];
   [%expect
     {|
@@ -295,7 +284,6 @@ let%expect_test "a report under the cap arrives byte for byte, with no file left
     (Subrun.has_report ~dir:(Filename.concat dir "runs") (Result.get_exn (Subrun.parse_id run)));
   [%expect {|
     delivered to  by inbox
-    exit 0
     same: true, file: false
     |}]
 
@@ -315,7 +303,6 @@ let%expect_test "a report over the cap is kept whole, named, and the notice stay
   [%expect
     {|
     delivered to  by inbox
-    exit 0
     kept whole: true
     within cap: true
     names the file: true
@@ -330,7 +317,6 @@ let%expect_test "the head of a multi-byte report is cut on a rune boundary" =
     (String.mem ~sub:"\u{FFFD}" n);
   [%expect {|
     delivered to  by inbox
-    exit 0
     valid: true, replacement: false
     |}]
 
@@ -341,7 +327,6 @@ let%expect_test "a sender with no run directory has its report truncated, naming
   Printf.printf "%d bytes, names a file: %b\n" (String.length n) (String.mem ~sub:"full report:" n);
   [%expect {|
     delivered to  by inbox
-    exit 0
     4000 bytes, names a file: false
     |}]
 

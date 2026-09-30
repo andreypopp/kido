@@ -42,8 +42,16 @@ parameters. Duplicated logic is merged into one place.
 
 **Module boundaries.** Each subcomponent lives in its own module (an
 OCaml module and its `.mli`, a TS module) and is used through its
-exported surface. `bin/main.ml` wires subcommands to `lib/` modules;
-domain logic belongs in the module that owns the domain.
+exported surface. `bin/main.ml` wires subcommands to `lib/` modules
+and holds the commands too small to be library code; domain logic
+belongs in the module that owns the domain.
+
+**Library code returns, the CLI reports.** A `lib/` function returns
+its result (a value, an `option`, a `result`); it does not print,
+`failwith` or `exit`. A command body that only calls the library, prints
+and returns an exit code lives in `bin/main.ml`. A `lib/` module whose
+sole export is such a command body, used only by `bin/main.ml`, is
+inlined there.
 
 **State.** One source of truth per fact: never hold the same fact in two
 stores (a state record and a tmux option, an OCaml record and a TS copy, a
@@ -68,9 +76,10 @@ changes, grep for the prose that described it.
 
 These are fixed:
 
-- **Layout.** `bin/main.ml` is the cmdliner command table and nothing
-  else of substance. `lib/` is the library `kido`, one module per domain
-  or subcommand. `lib_tmux/` is the library `tmux` (call sites read
+- **Layout.** `bin/main.ml` is the cmdliner command table, plus the
+  bodies of commands that only read, print and exit (`set_status`,
+  `agent-alive`, `snapshot`, `ssh`, ...). `lib/` is the library `kido`,
+  one module per domain or subcommand with logic of its own. `lib_tmux/` is the library `tmux` (call sites read
   `Tmux.Conn`, `Tmux.Pane`, `Tmux.Exec`). Tests are ppx_expect in
   `test/`.
 - **Every stanza compiles with `-open Containers`.** Every `.ml` has an
@@ -84,15 +93,15 @@ These are fixed:
 
 Conventions:
 
-- **Errors.** An outcome a caller branches on is a `result` or a variant
-  (`State.record` returns `Error holder`). A failure that is only
-  reported raises: `failwith` with the message to print, or the
-  `Unix_error` and `Sys_error` the I/O raised. Nothing catches to
-  rethrow.
-- **Subcommands.** A subcommand is a `lib/` function returning its exit
-  code, run under `Cli.run name`, which prints a raised failure as
-  `kido <name>: <message>` and returns 1. A special code is returned
-  after `Cli.error`. cmdliner's own parse errors exit 1.
+- **Errors.** A `lib/` failure is a `result`: a string error holding the
+  message to print, or a variant where the caller or the message differs
+  by case (`State.record` returns `Error holder`). The `Unix_error` and
+  `Sys_error` the I/O raised propagate. Nothing catches to rethrow.
+- **Subcommands.** A subcommand body in `bin/main.ml` returns its exit
+  code, run under `Cli.run name` (`bin/cli.ml`), which prints a raised
+  failure as `kido <name>: <message>` and returns 1; a string error
+  reaches it through `Result.get_or_failwith`. A special code is
+  returned after `Cli.error`. cmdliner's own parse errors exit 1.
 - **Environment.** Read it at the edge and pass the value: functions
   take `~dir`, `~threshold`, `~now`. Tests pass a temp dir; nothing in a
   test sets an env var or swaps a global.
@@ -104,7 +113,10 @@ Conventions:
 
 ## Layout
 
-    bin/main.ml        the cmdliner command table
+    bin/main.ml        the cmdliner command table and the small commands:
+                       set_status, agent-alive, children-alive, snapshot,
+                       ssh, window-focused, switch-session/window
+    bin/cli.ml         failure printing and tables
     lib/               the library kido:
       launch.ml        the launcher: the kido server, its server.conf
       shell.ml, prime.ml  kido shell: the login shell and its priming files
@@ -122,12 +134,11 @@ Conventions:
                        an ending's text and its send to the parent's inbox
       subrun.ml        the durable record of one `kido spawn_subagent`
       prompt.ml, message_agent.ml (also ask_agent and notify_parent),
-      set_status.ml, list_agents.ml, spawn_subagent.ml, async_bash.ml,
-      async_run.ml (its wrapper), async_stream.ml, runs.ml, snapshot.ml,
-      ssh.ml (the remote bootstrap), agent_alive.ml,
-      control.ml (stop/interrupt_subagent, window switching)
+      list_agents.ml, spawn_subagent.ml, async_bash.ml,
+      async_run.ml (its wrapper), async_stream.ml, runs.ml,
+      control.ml (stop/interrupt_subagent)
                        one subcommand or family each
-      cli.ml, fs.ml, timestamp.ml  failure printing and tables, files, time
+      fs.ml, timestamp.ml  files, time
     lib_tmux/          the library tmux: pane.ml (the pane format and its
                        parse), exec.ml (one-shot tmux commands, the binary
                        lookup), conn.ml (the control-mode client)
@@ -138,8 +149,8 @@ Conventions:
     tmux/              kido-tmux.conf, the defaults the launcher writes into server.conf
     shims/             the bin directory's sh shims (tmux, ssh, pi, claude) and shim.sh
     claude/            settings.json, the hooks file the claude shim hands to Claude Code
-    scripts/           install-share.sh, the one description of share/kido; the fork build;
-                       ci-watch.sh, which waits for a commit's CI run (async_bash it);
+    dune               the install stanza, the one description of share/kido
+    scripts/           the fork build; ci-watch.sh, which waits for a commit's CI run (async_bash it);
                        ci-like.sh; test-ts.sh; dump-prompts.ts, every prompt text pi registers
     third_party/tmux   the tmux fork, a git submodule built as kido-tmux
     pi/                the two pi extensions, which the pi shim loads with --extension
@@ -355,6 +366,12 @@ runs both on Ubuntu and macOS on every push and PR (`scripts/ci-watch.sh`
 waits for it), building the fork at the pinned revision, cached by SHA.
 While working, `dune test` is the loop; `dune promote` accepts an expect
 diff once it has been read.
+
+**Prefer e2e tests.** A behaviour a user or an agent can observe (a
+subcommand's output, exit code, side effects on tmux or state) is
+tested in `e2e/`, through the binary. Unit tests in `test/` are for pure
+library logic that e2e cannot reach or cannot pin precisely (parsers,
+formats, ordering); do not write a unit test that execs the binary.
 
 `make e2e` builds the fork into `build/tmux-fork/<revision>/` (rebuilt
 only on a submodule bump) and runs with `KIDO_E2E_REQUIRED=1`. A

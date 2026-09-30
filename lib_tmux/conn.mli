@@ -13,6 +13,6 @@ val wait : t -> float -> unit
 val close : t -> unit
 val quote : string -> string
 val follow : t -> string -> unit
-val list_panes : t -> Pane.t list
-val capture_pane : t -> string -> string list
+val list_panes : t -> (Pane.t list, string) result
+val capture_pane : t -> string -> (string list, string) result
 val client_state : t -> string -> Exec.client_state option

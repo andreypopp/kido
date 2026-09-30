@@ -1,12 +1,6 @@
 let error name msg =
   Printf.eprintf "%s: %s\n%!" (if String.is_empty name then "kido" else "kido " ^ name) msg
 
-let failf fmt = Printf.ksprintf failwith fmt
-
-let unix_message e fn arg =
-  String.concat " " (List.filter (fun s -> not (String.is_empty s)) [ fn; arg ])
-  ^ ": " ^ Unix.error_message e
-
 let run ?(failure = 1) name body =
   let fail msg =
     error name msg;
@@ -17,12 +11,7 @@ let run ?(failure = 1) name body =
   | exception Failure msg -> fail msg
   | exception Sys_error msg -> fail msg
   | exception Yojson.Json_error msg -> fail msg
-  | exception Unix.Unix_error (e, fn, arg) -> fail (unix_message e fn arg)
-
-let ms_env getenv name default =
-  match Option.flat_map Int.of_string (getenv name) with
-  | Some ms when ms > 0 -> Float.of_int ms /. 1000.
-  | _ -> default
+  | exception Unix.Unix_error (e, fn, arg) -> fail (Kido.Fs.unix_message e fn arg)
 
 let width s = String.fold (fun n c -> if Char.code c land 0xC0 = 0x80 then n else n + 1) 0 s
 

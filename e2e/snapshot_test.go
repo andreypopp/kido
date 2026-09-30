@@ -71,6 +71,11 @@ func TestSnapshotReplays(t *testing.T) {
 	h.agentStatus("pi-resume", piPane, "pi", "idle")
 	h.waitGlyph("resumable - kido", "")
 
+	// pi that never reported is found by its process alone, and restarted
+	// fresh; a record of any other agent restarts nothing.
+	h.waitPaneCommand(h.newWindow("beta", "", filepath.Join(piBinDir, "pi"), "--"), "pi")
+	h.agentStatus("other-1", h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}"), "other", "idle")
+
 	// A window is named after the client that created it until tmux renames
 	// it to its pane's command a moment later; wait for that to settle, or
 	// a snapshot taken in between records "tmux" as the window name.
@@ -106,6 +111,12 @@ func TestSnapshotReplays(t *testing.T) {
 	if !strings.Contains(script, "pi --session pi-resume") {
 		t.Errorf("snapshot does not resume the reported pi pane:\n%s", script)
 	}
+	if !strings.Contains(script, "'pi' Enter") {
+		t.Errorf("snapshot does not restart the unreported pi pane:\n%s", script)
+	}
+	if n := strings.Count(script, " send-keys "); n != 4 {
+		t.Errorf("snapshot sends %d commands, want 4: shells and the other agent's pane get none:\n%s", n, script)
+	}
 
 	// Neither claude nor real pi is available in CI, and the assertions
 	// above already checked the commands the script would have run: run
@@ -128,8 +139,8 @@ func TestSnapshotReplays(t *testing.T) {
 	}
 
 	want, got := shapes(t, h.inner), shapes(t, third)
-	if len(want) != 6 { // alpha: split window and "editor"; beta: shell, two claude windows, pi window
-		t.Fatalf("the source server has %d windows, want 6: %+v", len(want), want)
+	if len(want) != 7 { // alpha: split window and "editor"; beta: shell, two claude windows, two pi windows
+		t.Fatalf("the source server has %d windows, want 7: %+v", len(want), want)
 	}
 	if want[0].panes != 2 {
 		t.Fatalf("alpha's first window has %d panes, want 2", want[0].panes)

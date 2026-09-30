@@ -742,7 +742,7 @@ let%expect_test "shell_indicator debounce on a controlled clock" =
       +200ms: running
     |}]
 
-let label m p = String.concat "" (List.map (fun (s : Ui.span) -> s.text) (Ui.pane_label m p))
+let label m p = Ui.row_text (Ui.pane_label m p)
 
 let%expect_test "phases and latches are forgotten with their panes" =
   let m = model ~started:test_at () in
@@ -776,7 +776,7 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
     Array.exists
       (fun r ->
         Option.equal String.equal r.Ui.pane_id (Some "%1")
-        && List.exists (fun (s : Ui.span) -> String.equal s.text "◼") r.spans)
+        && List.exists (fun (s : Ui.span) -> String.equal s.text "◼") (Ui.spans r))
       !m.rows
   in
   let snap running =
@@ -810,7 +810,7 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
   in
   let stalled () =
     Array.exists
-      (fun r -> List.exists (fun (s : Ui.span) -> String.equal s.text "!") r.Ui.spans)
+      (fun r -> List.exists (fun (s : Ui.span) -> String.equal s.text "!") (Ui.spans r))
       !m.rows
   in
   let tick d =

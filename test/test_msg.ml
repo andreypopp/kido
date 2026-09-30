@@ -174,7 +174,7 @@ let%expect_test "a stale socket is Unavailable" =
 
 let%expect_test "InboxPath: absolute, mode 0700, and dialable" =
   let dir = Filename.temp_dir "kido-inbox" "" in
-  let got = Msg.inbox_path ~dir "pi-123" in
+  let got = Result.get_exn (Msg.inbox_path ~dir "pi-123") in
   Printf.printf "%s\n" (if Filename.check_suffix got "/inbox/pi-123.sock" then "suffix ok" else got);
   Printf.printf "absolute: %b\n" (Filename.is_relative got |> not);
   let st = Unix.stat (Filename.concat dir "inbox") in
@@ -193,8 +193,8 @@ let%expect_test "InboxPath rejects a name that would escape or overflow sun_path
   List.iter
     (fun name ->
       match Msg.inbox_path ~dir name with
-      | (_ : string) -> Printf.printf "%S: WRONG, want an error\n" name
-      | exception Failure _ -> Printf.printf "%S: rejected\n" name)
+      | Ok _ -> Printf.printf "%S: WRONG, want an error\n" name
+      | Error _ -> Printf.printf "%S: rejected\n" name)
     [ ""; ".."; "../escape"; "sub/agent"; "a..b" ];
   [%expect
     {|

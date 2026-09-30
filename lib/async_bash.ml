@@ -14,11 +14,13 @@ let derived_name args =
   else String.sub name 0 (min (String.length name) Spawn_subagent.max_window_name_len)
 
 let async_bash ~dir ~self ~exe ~panes ~tmux ~name ~stream args =
+  let open Result.Infix in
   let argv = command_argv args in
-  if List.is_empty argv then failwith ("no command given\n" ^ usage);
+  let* () = if List.is_empty argv then Error ("no command given\n" ^ usage) else Ok () in
   let name = if String.is_empty name then derived_name args else name in
-  Spawn_subagent.check_window_name name;
-  let pane = List_agents.caller_pane (Lazy.force panes) self in
+  let* () = Spawn_subagent.check_window_name name in
+  let* panes = Lazy.force panes in
+  let* pane = List_agents.caller_pane panes self in
   let own = State.String_map.find_opt pane.pane_id (State.by_pane (State.load_live ~dir)) in
   let runs = Filename.concat dir "runs" in
   let id = Subrun.new_id () in

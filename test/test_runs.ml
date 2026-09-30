@@ -1,11 +1,7 @@
 open Kido
 open Fixture
 
-let attempt f =
-  match f () with
-  | code -> Printf.printf "-> %d\n" code
-  | exception Failure m -> Printf.printf "refused: %s\n" m
-
+let attempt = function Ok () -> () | Error m -> Printf.printf "refused: %s\n" m
 let runs dir = Filename.concat dir "runs"
 let id s = Result.get_exn (Subrun.parse_id s)
 
@@ -35,15 +31,11 @@ let%expect_test "runs: the table newest first, one run shown, and --json" =
         (1_700_003_600., "<started b>");
       ]
   in
-  (* Local time, whatever this machine's zone, and so whatever the table's column widths. *)
-  ignore (Runs.runs ~dir ~json:false []);
-  String.lines (local [%expect.output])
+  (* Local time, whatever this machine's zone. *)
+  Runs.table ~now:(Timestamp.now ()) (Runs.list ~dir)
   |> List.iter (fun row ->
-      String.split ~by:"  " row |> List.map String.trim
-      |> List.filter (Fun.negate String.is_empty)
-      |> String.concat " | " |> print_endline);
-  ignore (Runs.runs ~dir ~json:false [ "run-a" ]);
-  print_string (local [%expect.output]);
+      List.filter (Fun.negate String.is_empty) row |> String.concat " | " |> local |> print_endline);
+  print_string (local (Result.get_exn (Runs.show ~dir ~json:false "run-a")));
   [%expect
     {|
     ID | NAME | PARENT | STARTED | DURATION | OUTCOME | CWD
@@ -63,10 +55,8 @@ let%expect_test "runs: the table newest first, one run shown, and --json" =
     task:
     do the thing
     |}];
-  ignore (Runs.runs ~dir ~json:true [ "run-a" ]);
-  let shown = Yojson.Safe.from_string [%expect.output] in
-  ignore (Runs.runs ~dir ~json:true []);
-  let listed = Yojson.Safe.from_string [%expect.output] in
+  let shown = Yojson.Safe.from_string (Result.get_exn (Runs.show ~dir ~json:true "run-a")) in
+  let listed = `List (List.map Runs.info_to_yojson (Runs.list ~dir)) in
   Yojson.Safe.Util.(
     print_endline (String.concat " " (keys shown));
     List.iter
@@ -75,16 +65,11 @@ let%expect_test "runs: the table newest first, one run shown, and --json" =
           (to_string (member "id" r))
           (match member "outcome" r with `Null -> "running" | o -> to_string (member "result" o)))
       (to_list listed));
-  attempt (fun () -> Runs.runs ~dir ~json:false [ "run-a"; "extra" ]);
-  attempt (fun () -> Runs.runs ~dir ~json:false [ "no-such-run" ]);
   [%expect
     {|
     id name kind parentSession depth pane pid cwd startedAt outcome task resume fork
     run-b died
     run-a completed
-    refused: unknown argument "extra"
-    usage: kido runs [--json] [<run-id>]
-    refused: run "no-such-run": no such run
     |}]
 
 let%expect_test "runs: running while the run's process lives, died once it is gone" =
@@ -93,8 +78,8 @@ let%expect_test "runs: running while the run's process lives, died once it is go
   ignore (run ~dir ~pid:(dead_pid ()) "run-dead");
   List.concat_map
     (fun r ->
-      ignore (Runs.runs ~dir ~json:false [ r ]);
-      String.lines [%expect.output] |> List.filter (String.prefix ~pre:"outcome:"))
+      String.lines (Result.get_exn (Runs.show ~dir ~json:false r))
+      |> List.filter (String.prefix ~pre:"outcome:"))
     [ "run-live"; "run-dead" ]
   |> List.iter print_endline;
   [%expect {|
@@ -107,7 +92,9 @@ let no_capture pane =
   None
 
 let run_outcome ~dir ?(capture = no_capture) ?(text = "") ?(unreported = false) result r =
-  attempt (fun () -> Runs.run_outcome ~dir ~capture ~result ~text ~unreported r)
+  attempt
+    (Runs.run_outcome ~dir ~capture ~warn:(Printf.printf "warning: %s\n") ~result ~text ~unreported
+       r)
 
 (* A run's own process must not claim an outcome only kido assigns from the outside. *)
 let%expect_test "run-outcome records completed or failed, and nothing else" =
@@ -130,7 +117,6 @@ let%expect_test "run-outcome records completed or failed, and nothing else" =
     refused: --result must be "completed" or "failed"
     usage: kido run-outcome --result completed|failed [--text TEXT] [--unreported] <run-id>
     no outcome
-    -> 0
     outcome completed ""
     refused: run run-x already has an outcome, or is gone
     refused: invalid run id "../escape"
@@ -166,18 +152,14 @@ let%expect_test "run-outcome: a failure keeps the child's own screen, refined by
   [%expect
     {|
     captured %9
-    -> 0
     outcome failed "no turn ever ran: the task was delivered and the session never started work on it"
     screen: "pi's last screen before it exited\n"
     captured %9
-    -> 0
     outcome failed "no turn ever ran: the task was delivered and the session never started work on it (the pane showed: \"Use /login to log into a provider via OAuth or API key\")"
     screen: "Use /login to log into a provider via OAuth or API key\n"
     captured %9
-    -> 0
     outcome failed "exit 1"
     screen: "Use /login to log into a provider via OAuth or API key\n"
-    -> 0
     screen for completed: false
     |}]
 
@@ -204,9 +186,6 @@ let%expect_test "run-outcome --unreported tells the parent once, and only if it 
     (received ());
   [%expect
     {|
-    -> 0
-    -> 0
-    -> 0
     outcome completed ""
     outcome completed ""
     outcome stopped ""

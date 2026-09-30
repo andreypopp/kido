@@ -47,14 +47,14 @@ let fake ?window_error ?mark_error ?(exists = true) () =
       new_window =
         (fun ~session ~name ~cwd ~env command ->
           calls := !calls @ [ (session, name, cwd, env, command) ];
-          Option.iter failwith window_error;
-          { window_id = "@9"; pane_id = "%9"; pane_pid = 42424242 });
+          match window_error with
+          | Some e -> Error e
+          | None -> Ok { window_id = "@9"; pane_id = "%9"; pane_pid = 42424242 });
       mark_run =
         (fun pane run ->
-          Option.iter failwith mark_error;
-          marks := (pane, run) :: !marks);
+          match mark_error with Some e -> Error e | None -> Ok (marks := (pane, run) :: !marks));
       window_exists = (fun _ -> exists);
-      kill_window = (fun w -> killed := w :: !killed);
+      kill_window = (fun w -> Ok (killed := w :: !killed));
     }
   in
   { tmux; calls; marks; killed }
@@ -65,7 +65,7 @@ let pi ?(list_models = fun () -> failwith "pi --list-models must not run") ?(ses
     Spawn_subagent.pi =
   { list_models; session_dir; agent_dir = ""; home = "" }
 
-let panes = lazy [ pane ~session_id:"$1" ~cwd:"/work" "%1" ]
+let panes = lazy (Ok [ pane ~session_id:"$1" ~cwd:"/work" "%1" ])
 
 (* Fresh run ids, temp paths and this process's pid differ per run. *)
 let scrub ~dir ids s =
@@ -85,11 +85,12 @@ let run_ids dir = List.map Subrun.string_of_id (Subrun.list ~dir:(runs dir))
 
 let spawn ?(fake = fake ()) ?(pi = pi ()) ~dir flags =
   (match
-     Spawn_subagent.spawn ~dir ~self:"%1" ~panes ~tmux:fake.tmux ~pi (Spawn_subagent.parse flags)
+     Result.flat_map
+       (Spawn_subagent.spawn ~dir ~self:"%1" ~panes ~tmux:fake.tmux ~pi)
+       (Spawn_subagent.parse flags)
    with
-  | line -> print_endline (scrub ~dir (run_ids dir) line)
-  | exception Failure m ->
-      print_endline ("error: " ^ scrub ~dir (run_ids dir) (List.hd (String.lines m))));
+  | Ok line -> print_endline (scrub ~dir (run_ids dir) line)
+  | Error m -> print_endline ("error: " ^ scrub ~dir (run_ids dir) (List.hd (String.lines m))));
   List.iter
     (fun (session, name, cwd, env, command) ->
       Printf.printf "new-window %s %S %s\n  env %s\n  cmd %s\n" session name cwd
@@ -274,8 +275,9 @@ let%expect_test "a bash run whose window is gone before its mark is not a failur
   in
   print_endline
     (scrub ~dir (run_ids dir)
-       (Spawn_subagent.create_run_window ~runs:(runs dir) f.tmux m ~session:"$0" ~env:[]
-          [ "kido"; "async-run" ]));
+       (Result.get_exn
+          (Spawn_subagent.create_run_window ~runs:(runs dir) f.tmux m ~session:"$0" ~env:[]
+             [ "kido"; "async-run" ])));
   Printf.printf "%s, killed [%s]\n"
     (outcome dir (Subrun.string_of_id id))
     (String.concat " " !(f.killed));
@@ -350,9 +352,7 @@ let%expect_test "a model must be a configured provider's own, by exact provider/
   List.iter
     (fun command ->
       Printf.printf "%s: %s\n" (String.concat " " command)
-        (match Spawn_subagent.validate_model list command with
-        | () -> "ok"
-        | exception Failure m -> m))
+        (match Spawn_subagent.validate_model list command with Ok () -> "ok" | Error m -> m))
     [
       [ "pi"; "--model"; "acme/claude-sonnet-5" ];
       [ "pi"; "--model"; "sonnet" ];
@@ -361,15 +361,15 @@ let%expect_test "a model must be a configured provider's own, by exact provider/
     ];
   (* No model, or a command that is not pi: pi --list-models is never run. *)
   let never () = failwith "never" in
-  Spawn_subagent.validate_model never [ "pi" ];
-  Spawn_subagent.validate_model never [ "sh"; "--model"; "sonnet" ];
+  Result.get_exn (Spawn_subagent.validate_model never [ "pi" ]);
+  Result.get_exn (Spawn_subagent.validate_model never [ "sh"; "--model"; "sonnet" ]);
   (match
      Spawn_subagent.validate_model
        (fun () -> Error {|exec: "pi": executable file not found in $PATH|})
        [ "pi"; "--model"; "acme/claude-sonnet-5" ]
    with
-  | () -> print_endline "ok"
-  | exception Failure m -> print_endline m);
+  | Ok () -> print_endline "ok"
+  | Error m -> print_endline m);
   let dir = caller () in
   spawn ~dir
     ~pi:(pi ~list_models:(models [ "acme\tclaude-sonnet-5" ]) ())

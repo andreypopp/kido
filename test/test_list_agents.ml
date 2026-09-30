@@ -164,11 +164,12 @@ let%expect_test "is_ancestor refuses a self-edge" =
 
 let list_agents ~dir ~self panes ~session =
   match
-    List_agents.list_agents ~dir ~threshold:60. ~self ~panes:(Lazy.from_val panes) ~session
-      ~json:true
+    List_agents.list_agents ~dir ~threshold:60. ~self ~panes:(Lazy.from_val (Ok panes)) ~session
   with
-  | _ -> ()
-  | exception Failure m -> print_endline m
+  | Ok agents ->
+      print_endline
+        (Yojson.Safe.to_string (`List (List.map List_agents.agent_info_to_yojson agents)))
+  | Error m -> print_endline m
 
 let%expect_test "list_agents defaults to the caller's session; --session answers without a pane" =
   let dir = Filename.temp_dir "kido-state" "" in

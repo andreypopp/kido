@@ -393,3 +393,13 @@ func TestCloseRunLeavesFocusedWindowAlone(t *testing.T) {
 		t.Errorf("window %s was closed although the client had it focused", windowID)
 	}
 }
+
+// A bad window id names the command once: Cli.run already prefixes it.
+func TestCloseRunRefusesABadWindowID(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	want := `kido close-run: "@1x" is not a window id (@N)` + "\nrc=1"
+	if got := strings.TrimSpace(h.runKido("alpha", "bad.out", "close-run", "@1x")); got != want {
+		t.Errorf("close-run @1x = %q, want %q", got, want)
+	}
+}

@@ -18,7 +18,7 @@ type agent_info = {
 }
 [@@deriving to_yojson]
 
-val caller_pane : Tmux.Pane.t list -> string -> Tmux.Pane.t
+val caller_pane : Tmux.Pane.t list -> string -> (Tmux.Pane.t, string) result
 val display_name : Tmux.Pane.t list -> State.session -> string
 val per_pane : (string * State.session) list -> (string * State.session) list
 
@@ -43,7 +43,9 @@ val list_agents :
   dir:string ->
   threshold:float ->
   self:string ->
-  panes:Tmux.Pane.t list Lazy.t ->
+  panes:(Tmux.Pane.t list, string) result Lazy.t ->
   session:string ->
-  json:bool ->
-  int
+  (agent_info list, string) result
+
+val table : agent_info list -> string list list
+(** The header row, then one row per agent. *)

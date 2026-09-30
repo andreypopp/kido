@@ -6,10 +6,10 @@ val async_bash :
   dir:string ->
   self:string ->
   exe:string ->
-  panes:Tmux.Pane.t list Lazy.t ->
+  panes:(Tmux.Pane.t list, string) result Lazy.t ->
   tmux:Spawn_subagent.tmux ->
   name:string ->
   stream:bool ->
   string list ->
-  string
+  (string, string) result
 (** Starts the run and returns its created line. *)

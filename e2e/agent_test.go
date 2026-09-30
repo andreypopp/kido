@@ -1,7 +1,13 @@
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -110,4 +116,88 @@ func TestPiBeatsClaudeOnTheSamePane(t *testing.T) {
 	// With pi gone, the inner record is all that is left and it shows.
 	h.agentStatus("pi-2", pane, "pi", "", "--remove")
 	h.waitGlyph("bridge - kido", "◼")
+}
+
+// A second live agent on the parent's pane wins it in the per-pane view;
+// agent-alive reads every live record, so the parent still answers true.
+func TestAgentAliveCmd(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	h.liveParent("alpha", "parent")
+	h.liveParent("alpha", "intruder")
+	dead := exec.Command("true")
+	if err := dead.Run(); err != nil {
+		t.Fatal(err)
+	}
+	rec := h.stateRecord("parent")
+	rec["pid"] = dead.Process.Pid
+	b, _ := json.Marshal(rec)
+	if err := os.WriteFile(filepath.Join(h.stateDir, "dead-sess.json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for i, c := range []struct{ session, want string }{
+		{"parent", "true\nrc=0"},
+		{"intruder", "true\nrc=0"},
+		{"dead-sess", "false\nrc=0"},
+		{"never-existed", "false\nrc=0"},
+		{"''", "kido agent-alive: usage: kido agent-alive SESSION\nrc=1"},
+	} {
+		if got := strings.TrimSpace(h.runKido("alpha", fmt.Sprintf("alive-%d.out", i), "agent-alive", c.session)); got != c.want {
+			t.Errorf("agent-alive %s = %q, want %q", c.session, got, c.want)
+		}
+	}
+}
+
+func (h *harness) stateRecord(sessionID string) map[string]any {
+	h.t.Helper()
+	b, err := os.ReadFile(filepath.Join(h.stateDir, sessionID+".json"))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	var rec map[string]any
+	if err := json.Unmarshal(b, &rec); err != nil {
+		h.t.Fatal(err)
+	}
+	return rec
+}
+
+// The record is full of fields a rebuilt one would lose; only the
+// activity may change.
+func TestSetStatusCmd(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
+	h.agentStatus("worker", pane, "pi", "running", "--title", "worker", "--inbox", "/tmp/nope.sock",
+		"--parent-session", "p", "--depth", "1", "--model", "claude-sonnet-5", "--activity", "the old one")
+	before := h.stateRecord("worker")
+	setStatus := func(pane, activity string) (string, error) {
+		cmd := exec.Command(kidoBin, "set_status", activity)
+		cmd.Env = cleanEnv("TMUX_PANE="+pane, "KIDO_STATE_DIR="+h.stateDir)
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+
+	for _, c := range []struct{ activity, want string }{
+		{"refactoring internal/ui", "refactoring internal/ui"},
+		{"two\nlines\tand more", "two lines and more"},
+		{"", ""},
+	} {
+		if out, err := setStatus(pane, c.activity); err != nil {
+			t.Fatalf("set_status %q: %v\n%s", c.activity, err, out)
+		}
+		after := h.stateRecord("worker")
+		if got, _ := after["activity"].(string); got != c.want {
+			t.Errorf("set_status %q recorded %q, want %q", c.activity, got, c.want)
+		}
+		after["activity"] = before["activity"]
+		if !reflect.DeepEqual(after, before) {
+			t.Errorf("set_status %q changed more than the activity:\n got %v\nwant %v", c.activity, after, before)
+		}
+	}
+
+	want := `kido set_status: no agent session has reported pane "%999"; there is nothing to set an activity on`
+	if out, err := setStatus("%999", "busy"); err == nil || out != want {
+		t.Errorf("set_status from an unreported pane = %q (%v), want %q and a failure", out, err, want)
+	}
 }

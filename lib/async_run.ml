@@ -62,28 +62,31 @@ let status_of = function
   | WEXITED n -> (Failed, Printf.sprintf "exit status %d" n, n)
   | WSIGNALED s | WSTOPPED s -> (Failed, "signal: " ^ signal_name s, 1)
 
-let async_run ~dir ~knobs ~run_id ~stream args =
-  (match args with
-  | [] -> ()
-  | a :: _ ->
-      Cli.failf
-        "unknown argument %S; the command comes from the run's own record, not the command line\n%s"
-        a usage);
-  let id =
-    match Subrun.parse_id run_id with
-    | Ok id -> id
-    | Error _ -> failwith ("--run-id is required (or $KIDO_AGENT_RUN_ID)\n" ^ usage)
+let async_run ~dir ~knobs ~warn ~run_id ~stream args =
+  let open Result.Infix in
+  let* () =
+    match args with
+    | [] -> Ok ()
+    | a :: _ ->
+        Error
+          (Printf.sprintf
+             "unknown argument %S; the command comes from the run's own record, not the command line\n\
+              %s"
+             a usage)
+  in
+  let* id =
+    Result.map_err
+      (fun _ -> "--run-id is required (or $KIDO_AGENT_RUN_ID)\n" ^ usage)
+      (Subrun.parse_id run_id)
   in
   let runs = Filename.concat dir "runs" in
-  let meta =
-    match Subrun.read_meta ~dir:runs id with
-    | Some m -> m
-    | None -> Cli.failf "run %s has no meta" run_id
+  let* meta =
+    Option.to_result (Printf.sprintf "run %s has no meta" run_id) (Subrun.read_meta ~dir:runs id)
   in
-  let argv =
+  let* argv =
     match Subrun.read_command ~dir:runs id with
-    | Some (_ :: _ as argv) -> argv
-    | _ -> Cli.failf "run %s has no command" run_id
+    | Some (_ :: _ as argv) -> Ok argv
+    | _ -> Error (Printf.sprintf "run %s has no command" run_id)
   in
   (* Armed before the output file exists, and so before the spawn: a signal arriving from then on is
      still ours to report. *)
@@ -106,7 +109,7 @@ let async_run ~dir ~knobs ~run_id ~stream args =
     let outcome : Subrun.outcome = { result; text; at = Some (Timestamp.now ()) } in
     if Subrun.record_outcome ~dir:runs id outcome then
       Result.iter_err
-        (fun e -> Cli.error "async-run" (Msg.string_of_error e))
+        (fun e -> warn (Msg.string_of_error e))
         (Reap.send ~dir { meta; outcome; detail = Bash { unstreamed } })
   in
   Fun.protect
@@ -120,7 +123,7 @@ let async_run ~dir ~knobs ~run_id ~stream args =
           List.iter Unix.close [ out; out_w ];
           let why = Printf.sprintf "exec: %S: %s" (List.hd argv) (Unix.error_message e) in
           report Failed why;
-          failwith why
+          Error why
       | pid -> (
           Unix.close out_w;
           let child = { pid; out; eof = false } in
@@ -130,11 +133,11 @@ let async_run ~dir ~knobs ~run_id ~stream args =
           | `Exited status ->
               let result, text, code = status_of status in
               report result text;
-              code
+              Ok code
           | `Signalled | `Timeout ->
               let s = Option.get_exn_or "caught" (Atomic.get caught) in
               (try Unix.kill pid s with Unix.Unix_error _ -> ());
               ignore (pump ~watch:false ~deadline:(Unix.gettimeofday () +. signal_grace));
               if not child.eof then Unix.close out;
               report Failed ("killed by " ^ signal_name s);
-              1))
+              Ok 1))

@@ -1,5 +1,3 @@
-let usage = "usage: kido runs [--json] [<run-id>]"
-
 let run_outcome_usage =
   "usage: kido run-outcome --result completed|failed [--text TEXT] [--unreported] <run-id>"
 
@@ -22,40 +20,38 @@ let load ~runs id =
 
 let seconds t = Timestamp.to_local_string (Float.of_int (Float.to_int t))
 
-let list ~runs ~json ~now =
-  let infos =
-    List.filter_map (load ~runs) (Subrun.list ~dir:runs)
-    |> List.sort (fun a b -> Float.compare b.meta.started_at a.meta.started_at)
-  in
-  if json then print_endline (Yojson.Safe.to_string (`List (List.map info_to_yojson infos)))
-  else
-    Cli.table
-      ([ "ID"; "NAME"; "PARENT"; "STARTED"; "DURATION"; "OUTCOME"; "CWD" ]
-      :: List.map
-           (fun { meta = m; outcome } ->
-             let outcome, duration =
-               match outcome with
-               | None -> ("running", Some now)
-               | Some o -> (Subrun.string_of_result o.result, o.at)
-             in
-             [
-               Subrun.string_of_id m.id;
-               m.name;
-               m.parent_session;
-               seconds m.started_at;
-               Option.map_or ~default:"-"
-                 (fun t -> Timestamp.duration (Float.round (t -. m.started_at)))
-                 duration;
-               outcome;
-               m.cwd;
-             ])
-           infos)
+let list ~dir =
+  let runs = Filename.concat dir "runs" in
+  List.filter_map (load ~runs) (Subrun.list ~dir:runs)
+  |> List.sort (fun a b -> Float.compare b.meta.started_at a.meta.started_at)
 
-let show ~runs ~json id_str =
-  let id = Result.get_or_failwith (Subrun.parse_id id_str) in
-  let info =
-    match load ~runs id with Some i -> i | None -> Cli.failf "run %S: no such run" id_str
-  in
+let table ~now infos =
+  [ "ID"; "NAME"; "PARENT"; "STARTED"; "DURATION"; "OUTCOME"; "CWD" ]
+  :: List.map
+       (fun { meta = m; outcome } ->
+         let outcome, duration =
+           match outcome with
+           | None -> ("running", Some now)
+           | Some o -> (Subrun.string_of_result o.result, o.at)
+         in
+         [
+           Subrun.string_of_id m.id;
+           m.name;
+           m.parent_session;
+           seconds m.started_at;
+           Option.map_or ~default:"-"
+             (fun t -> Timestamp.duration (Float.round (t -. m.started_at)))
+             duration;
+           outcome;
+           m.cwd;
+         ])
+       infos
+
+let show ~dir ~json id_str =
+  let open Result.Infix in
+  let runs = Filename.concat dir "runs" in
+  let* id = Subrun.parse_id id_str in
+  let+ info = Option.to_result (Printf.sprintf "run %S: no such run" id_str) (load ~runs id) in
   let m = info.meta in
   let task = Option.get_or ~default:"" (Subrun.read_task ~dir:runs id) in
   let screen = Subrun.read_screen ~dir:runs id in
@@ -63,14 +59,15 @@ let show ~runs ~json id_str =
   let resume = cd ^ "kido spawn_subagent --resume " ^ id_str in
   let fork = cd ^ "pi --fork " ^ id_str in
   if json then
-    print_endline
-      (Yojson.Safe.to_string
-         (info_to_yojson info
-            ~extra:
-              ([ ("task", `String task); ("resume", `String resume); ("fork", `String fork) ]
-              @ Option.map_or ~default:[] (fun s -> [ ("screen", `String s) ]) screen)))
+    Yojson.Safe.to_string
+      (info_to_yojson info
+         ~extra:
+           ([ ("task", `String task); ("resume", `String resume); ("fork", `String fork) ]
+           @ Option.map_or ~default:[] (fun s -> [ ("screen", `String s) ]) screen))
+    ^ "\n"
   else begin
-    let line k v = Printf.printf "%-10s%s\n" (k ^ ":") v in
+    let b = Buffer.create 1024 in
+    let line k v = Printf.bprintf b "%-10s%s\n" (k ^ ":") v in
     line "id" id_str;
     line "name" m.name;
     line "kind" (Option.map_or ~default:"" Subrun.string_of_kind m.kind);
@@ -79,7 +76,7 @@ let show ~runs ~json id_str =
     line "cwd" m.cwd;
     if not (String.is_empty m.model) then line "model" m.model;
     if not (List.is_empty m.tools) then line "tools" ("[" ^ String.concat " " m.tools ^ "]");
-    if m.keep_alive then print_endline "keepAlive: true";
+    if m.keep_alive then Buffer.add_string b "keepAlive: true\n";
     line "started" (seconds m.started_at);
     (match info.outcome with
     | None -> line "outcome" "running"
@@ -90,17 +87,10 @@ let show ~runs ~json id_str =
     if Subrun.has_report ~dir:runs id then line "report" (Subrun.report_path ~dir:runs id);
     line "resume" resume;
     line "fork" fork;
-    Printf.printf "task:\n%s\n" task;
-    Option.iter (Printf.printf "screen:\n%s\n") screen
+    Printf.bprintf b "task:\n%s\n" task;
+    Option.iter (Printf.bprintf b "screen:\n%s\n") screen;
+    Buffer.contents b
   end
-
-let runs ~dir ~json args =
-  let runs = Filename.concat dir "runs" in
-  (match args with
-  | [] -> list ~runs ~json ~now:(Timestamp.now ())
-  | [ id ] -> show ~runs ~json id
-  | _ :: extra :: _ -> Cli.failf "unknown argument %S\n%s" extra usage);
-  0
 
 (* pi prints this and exits 0 when it cannot resolve a provider for the model it was given: the one
    line that names why no turn ever ran. Matched by substring, since it is pi's wording. *)
@@ -111,14 +101,16 @@ let refine_no_turn_detail text screen =
     Printf.sprintf "%s (the pane showed: \"%s\")" text login_line
   else text
 
-let run_outcome ~dir ~capture ~result ~text ~unreported id_str =
-  let result : Subrun.result =
+let run_outcome ~dir ~capture ~warn ~result ~text ~unreported id_str =
+  let open Result.Infix in
+  let* result =
     match result with
-    | "completed" -> Completed
-    | "failed" -> Failed
-    | _ -> Cli.failf "--result must be \"completed\" or \"failed\"\n%s" run_outcome_usage
+    | "completed" -> Ok Subrun.Completed
+    | "failed" -> Ok Subrun.Failed
+    | _ ->
+        Error (Printf.sprintf "--result must be \"completed\" or \"failed\"\n%s" run_outcome_usage)
   in
-  let id = Result.get_or_failwith (Subrun.parse_id id_str) in
+  let* id = Subrun.parse_id id_str in
   let runs = Filename.concat dir "runs" in
   let meta = Subrun.read_meta ~dir:runs id in
   let text =
@@ -129,15 +121,15 @@ let run_outcome ~dir ~capture ~result ~text ~unreported id_str =
     | _ -> text
   in
   let outcome : Subrun.outcome = { result; text; at = Some (Timestamp.now ()) } in
-  (match meta with
+  match meta with
   | Some meta when unreported ->
       Option.iter
         (fun (e : Reap.ending) ->
           Result.iter_err
-            (fun err -> Cli.error "run-outcome" (Msg.string_of_error err))
+            (fun err -> warn (Msg.string_of_error err))
             (Reap.send ~dir { e with detail = Agent { unreported = true } }))
-        (Reap.record_ending ~dir meta outcome)
+        (Reap.record_ending ~dir meta outcome);
+      Ok ()
   | _ ->
-      if not (Subrun.record_outcome ~dir:runs id outcome) then
-        Cli.failf "run %s already has an outcome, or is gone" id_str);
-  0
+      if Subrun.record_outcome ~dir:runs id outcome then Ok ()
+      else Error (Printf.sprintf "run %s already has an outcome, or is gone" id_str)

@@ -39,15 +39,18 @@ let%expect_test "a run's meta and command are written, then a window running kid
       new_window =
         (fun ~session ~name ~cwd ~env command ->
           calls := (session, name, cwd, env, command) :: !calls;
-          { window_id = "@9"; pane_id = "%9"; pane_pid = 4242 });
-      mark_run = (fun _ _ -> ());
+          Ok { window_id = "@9"; pane_id = "%9"; pane_pid = 4242 });
+      mark_run = (fun _ _ -> Ok ());
       window_exists = (fun _ -> true);
-      kill_window = (fun _ -> ());
+      kill_window = (fun _ -> Ok ());
     }
   in
-  let panes = lazy [ pane ~session_id:"$1" ~cwd:"/work" "%1"; pane ~session_id:"$1" "%2" ] in
+  let panes = lazy (Ok [ pane ~session_id:"$1" ~cwd:"/work" "%1"; pane ~session_id:"$1" "%2" ]) in
   let start ~self ~name ~stream args =
-    let line = Async_bash.async_bash ~dir ~self ~exe:"/bin/kido" ~panes ~tmux ~name ~stream args in
+    let line =
+      Result.get_exn
+        (Async_bash.async_bash ~dir ~self ~exe:"/bin/kido" ~panes ~tmux ~name ~stream args)
+    in
     let runs = Filename.concat dir "runs" in
     let id = List.hd (String.split_on_char ' ' line |> List.drop 2) in
     let scrub s =
@@ -77,8 +80,8 @@ let%expect_test "a run's meta and command are written, then a window running kid
   (match
      Async_bash.async_bash ~dir ~self:"%1" ~exe:"/bin/kido" ~panes ~tmux ~name:"" ~stream:false []
    with
-  | _ -> ()
-  | exception Failure m -> print_endline m);
+  | Ok _ -> ()
+  | Error m -> print_endline m);
   [%expect
     {|
     @9 %9 <run> <dir>/runs/<run>/output

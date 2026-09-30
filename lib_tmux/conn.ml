@@ -212,12 +212,12 @@ let follow t session =
 
 let list_panes t =
   match run t ("list-panes -a -F " ^ quote Pane.format) with
-  | Ok lines -> Pane.parse lines
+  | Ok lines -> Ok (Pane.parse lines)
   | Error _ -> Exec.list_panes ()
 
 let capture_pane t pane =
   match run t ("capture-pane -p -t " ^ quote pane) with
-  | Ok lines -> lines
+  | Ok lines -> Ok lines
   | Error _ -> Exec.capture_pane pane
 
 let client_state t client =

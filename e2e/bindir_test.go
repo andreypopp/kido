@@ -169,6 +169,28 @@ func TestShimsReachTheRealPrograms(t *testing.T) {
 		!slices.Equal(args[:2], []string{"-t", "host"}) || !strings.Contains(args[2], "kido_zsh_b64=") {
 		t.Errorf("an interactive ssh host reached %s %q, want -t host and the bootstrap", name, args)
 	}
+	// Anything but an interactive session with a terminal on stdin passes
+	// through as typed, primed ones keep the user's options ahead of -t, and
+	// an option's value is not read as more option letters.
+	for _, passed := range []string{"host uptime", "-N -L 8080:localhost:80 host", "-T host",
+		"-W other:22 host", "-f host", "-s host sftp", "-O check host"} {
+		if name, args := run("ssh " + passed); name != "ssh" || !slices.Equal(args, strings.Fields(passed)) {
+			t.Errorf("ssh %s reached %s %q, want it unprimed", passed, name, args)
+		}
+	}
+	if name, args := run("true | ssh host"); name != "ssh" || !slices.Equal(args, []string{"host"}) {
+		t.Errorf("ssh host with a pipe on stdin reached %s %q, want it unprimed", name, args)
+	}
+	for _, c := range []struct{ typed, want string }{
+		{"-o BatchMode=yes -A deploy@host", "-o BatchMode=yes -A -t deploy@host"},
+		{"-o ProxyCommand=none -p 22 host", "-o ProxyCommand=none -p 22 -t host"},
+	} {
+		name, args := run("ssh " + c.typed)
+		if n := len(args); name != "ssh" || n == 0 || !slices.Equal(args[:n-1], strings.Fields(c.want)) ||
+			!strings.Contains(args[n-1], "kido_zsh_b64=") {
+			t.Errorf("ssh %s reached %s %q, want %s and the bootstrap", c.typed, name, args, c.want)
+		}
+	}
 
 	name, args := run("pi 'hello  there'")
 	if name != "pi" || len(args) != 5 || args[0] != "--extension" || args[2] != "--extension" || args[4] != "hello  there" {

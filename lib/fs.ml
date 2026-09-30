@@ -12,3 +12,7 @@ let write ?(perm = 0o644) path s =
     (fun oc -> Out_channel.output_string oc s)
 
 let remove path = try Unix.unlink path with Unix.Unix_error (ENOENT, _, _) -> ()
+
+let unix_message e fn arg =
+  String.concat " " (List.filter (fun s -> not (String.is_empty s)) [ fn; arg ])
+  ^ ": " ^ Unix.error_message e

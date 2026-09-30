@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Checks the list's shape: sessions oldest first, client's session bold,
@@ -261,4 +263,36 @@ func TestBashShellStatusRow(t *testing.T) {
 	h.in("select-window", "-t", home)
 	h.in("select-pane", "-t", home)
 	h.waitShellRow("╶  bash", "")
+}
+
+// The selected row inverts the label's title alone: not the tree glyph,
+// the indicator field, the activity after the title, or the padding out
+// to the column's width.
+func TestSelectedRowInvertsTitleOnly(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
+	h.agentStatus("sel-1", pane, "pi", "running", "--title", "deploy", "--activity", "testing")
+	h.waitSelected("deploy  testing")
+
+	var line string
+	for _, l := range h.capture() {
+		if hasSGR(sideOf(l), "7") {
+			line = sideOf(l)
+		}
+	}
+	on := reverseRE.FindStringIndex(line)
+	if on == nil {
+		t.Fatalf("no selected row in %q", line)
+	}
+	inverted, rest, _ := strings.Cut(line[on[1]:], "\x1b[")
+	if inverted != "deploy" {
+		t.Errorf("inverted %q, want the title alone; row %q", inverted, line)
+	}
+	if before := ansi.Strip(line[:on[0]]); !strings.HasPrefix(before, "╶") {
+		t.Errorf("before the title %q, want the tree glyph and indicator uninverted", before)
+	}
+	if hasSGR(rest, "7") {
+		t.Errorf("more than the title inverted: %q", line)
+	}
 }

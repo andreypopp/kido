@@ -9,11 +9,10 @@ type process = { pid : int; stdin : Unix.file_descr; stdout : Unix.file_descr }
 
 val spawn : string list -> (process, string) result
 val exec : ?stdin:string -> string list -> (string, string) result
-val run : ?stdin:string -> string list -> string
 val global_option : string -> string
-val list_panes : unit -> Pane.t list
-val capture_pane : string -> string list
-val capture_screen : string -> string
+val list_panes : unit -> (Pane.t list, string) result
+val capture_pane : string -> (string list, string) result
+val capture_screen : string -> (string, string) result
 
 type client_state = { session : string; focused : bool }
 
@@ -23,11 +22,11 @@ val parse_client_state : string list -> string -> client_state option
 val client_state : string -> client_state option
 val real_clients : string list -> string list
 val resolve_client : pane:string -> tmux_env:string -> string option
-val switch_session : client:string -> next:bool -> unit
-val switch_window : client:string -> next:bool -> unit
-val jump : client:string -> string -> unit
-val release_side_focus : string -> unit
-val send_prompt : string -> string -> unit
+val switch_session : client:string -> next:bool -> (unit, string) result
+val switch_window : client:string -> next:bool -> Pane.t list list -> (unit, string) result
+val jump : client:string -> string -> (unit, string) result
+val release_side_focus : string -> (unit, string) result
+val send_prompt : string -> string -> (unit, string) result
 val window_exists : string -> bool
 
 type window = { window_id : string; pane_id : string; pane_pid : int }
@@ -36,8 +35,13 @@ val new_window_args :
   session:string -> name:string -> cwd:string -> env:string list -> string list -> string list
 
 val new_window :
-  session:string -> name:string -> cwd:string -> env:string list -> string list -> window
+  session:string ->
+  name:string ->
+  cwd:string ->
+  env:string list ->
+  string list ->
+  (window, string) result
 
-val kill_window : string -> unit
-val kill_pane : string -> unit
-val mark_run : string -> string -> unit
+val kill_window : string -> (unit, string) result
+val kill_pane : string -> (unit, string) result
+val mark_run : string -> string -> (unit, string) result

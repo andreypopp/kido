@@ -104,12 +104,15 @@ let exec ?(stdin = "") args =
       | WEXITED n -> failed (Printf.sprintf "exit status %d" n)
       | WSIGNALED n | WSTOPPED n -> failed (Printf.sprintf "signal %d" n))
 
-let run ?stdin args = Result.get_or_failwith (exec ?stdin args)
+let run args = Result.map ignore (exec args)
 let lines out = String.split_on_char '\n' out
 let global_option name = Result.get_or ~default:"" (exec [ "show-options"; "-gqv"; name ])
-let list_panes () = Pane.parse (lines (run [ "list-panes"; "-a"; "-F"; Pane.format ]))
-let capture_pane pane = lines (run [ "capture-pane"; "-p"; "-t"; pane ])
-let capture_screen pane = run [ "capture-pane"; "-p"; "-t"; pane; "-S"; "-1000" ]
+
+let list_panes () =
+  Result.map (fun out -> Pane.parse (lines out)) (exec [ "list-panes"; "-a"; "-F"; Pane.format ])
+
+let capture_pane pane = Result.map lines (exec [ "capture-pane"; "-p"; "-t"; pane ])
+let capture_screen pane = exec [ "capture-pane"; "-p"; "-t"; pane; "-S"; "-1000" ]
 
 let current_client () =
   Result.get_or ~default:"" (exec [ "display-message"; "-p"; "#{client_name}" ])
@@ -171,25 +174,27 @@ let resolve_client ~pane ~tmux_env =
 let step ~next i n = (i + (if next then 1 else -1) + n) mod n
 
 let switch_session ~client ~next =
-  let sessions = Array.of_list (Pane.order_sessions (list_panes ())) in
-  if Array.length sessions >= 2 then
-    let current = client_state client in
-    match
-      Array.find_idx
-        (fun (s : Pane.session) -> Option.exists (fun c -> String.equal c.session s.name) current)
-        sessions
-    with
-    | Some (i, _) ->
-        let target = sessions.(step ~next i (Array.length sessions)) in
-        ignore (run [ "switch-client"; "-c"; client; "-t"; target.id ])
-    | None -> ()
+  Result.flat_map
+    (fun panes ->
+      let sessions = Array.of_list (Pane.order_sessions panes) in
+      if Array.length sessions < 2 then Ok ()
+      else
+        let current = client_state client in
+        match
+          Array.find_idx
+            (fun (s : Pane.session) ->
+              Option.exists (fun c -> String.equal c.session s.name) current)
+            sessions
+        with
+        | Some (i, _) ->
+            let target = sessions.(step ~next i (Array.length sessions)) in
+            run [ "switch-client"; "-c"; client; "-t"; target.id ]
+        | None -> Ok ())
+    (list_panes ())
 
-let switch_window ~client ~next =
-  let panes = list_panes () in
-  let windows =
-    Array.of_list
-      (List.concat_map (fun (s : Pane.session) -> s.windows) (Pane.order_sessions panes))
-  in
+let switch_window ~client ~next windows =
+  let panes = List.concat windows in
+  let windows = Array.of_list windows in
   let first (w : Pane.t list) = List.hd w in
   let n = Array.length windows in
   let active =
@@ -208,66 +213,66 @@ let switch_window ~client ~next =
         Array.find_idx (fun w -> String.equal (first w).window_id a.window_id) windows)
       active
   with
-  | None -> ()
+  | None -> Ok ()
   | Some (i, _) -> (
       match find (step ~next i n) n with
       | Some j when j <> i ->
           let target = first windows.(j) in
-          ignore
-            (run
-               [
-                 "switch-client";
-                 "-c";
-                 client;
-                 "-t";
-                 target.session_id;
-                 ";";
-                 "select-window";
-                 "-t";
-                 target.window_id;
-               ])
-      | _ -> ())
+          run
+            [
+              "switch-client";
+              "-c";
+              client;
+              "-t";
+              target.session_id;
+              ";";
+              "select-window";
+              "-t";
+              target.window_id;
+            ]
+      | _ -> Ok ())
 
 let jump ~client pane =
-  ignore
-    (run
-       [
-         "switch-client";
-         "-c";
-         client;
-         "-t";
-         pane;
-         ";";
-         "select-window";
-         "-t";
-         pane;
-         ";";
-         "select-pane";
-         "-t";
-         pane;
-         ";";
-         "refresh-client";
-         "-t";
-         client;
-         "-f";
-         "!" ^ side_focus_flag;
-       ])
+  run
+    [
+      "switch-client";
+      "-c";
+      client;
+      "-t";
+      pane;
+      ";";
+      "select-window";
+      "-t";
+      pane;
+      ";";
+      "select-pane";
+      "-t";
+      pane;
+      ";";
+      "refresh-client";
+      "-t";
+      client;
+      "-f";
+      "!" ^ side_focus_flag;
+    ]
 
-let release_side_focus client =
-  ignore (run [ "refresh-client"; "-t"; client; "-f"; "!" ^ side_focus_flag ])
+let release_side_focus client = run [ "refresh-client"; "-t"; client; "-f"; "!" ^ side_focus_flag ]
 
 let send_prompt pane text =
   let buf = Printf.sprintf "kido-prompt-%d" (Unix.getpid ()) in
-  ignore (run ~stdin:text [ "load-buffer"; "-b"; buf; "-" ]);
-  (match exec [ "paste-buffer"; "-b"; buf; "-d"; "-t"; pane; "-p" ] with
-  | Ok _ -> ()
-  | Error e ->
-      ignore (exec [ "delete-buffer"; "-b"; buf ]);
-      failwith e);
+  let open Result.Infix in
+  let* _ = exec ~stdin:text [ "load-buffer"; "-b"; buf; "-" ] in
+  let* () =
+    Result.map_err
+      (fun e ->
+        ignore (exec [ "delete-buffer"; "-b"; buf ]);
+        e)
+      (run [ "paste-buffer"; "-b"; buf; "-d"; "-t"; pane; "-p" ])
+  in
   (* A paste-sensitive reader, Claude Code included, takes an Enter sent with
      the paste as part of the pasted text. *)
   Unix.sleepf 0.1;
-  ignore (run [ "send-keys"; "-t"; pane; "Enter" ])
+  run [ "send-keys"; "-t"; pane; "Enter" ]
 
 (* On a closed window the fork's display-message exits 0 and prints an empty
    line, so only the echoed id answers. *)
@@ -296,23 +301,22 @@ let new_window_args ~session ~name ~cwd ~env command =
   @ command
 
 let new_window ~session ~name ~cwd ~env command =
-  let out = run (new_window_args ~session ~name ~cwd ~env command) in
-  let w =
+  let open Result.Infix in
+  let* out = exec (new_window_args ~session ~name ~cwd ~env command) in
+  let* w =
     match String.split ~by:":" out with
     | [ window_id; pane_id; pid ] -> (
         match int_of_string_opt pid with
-        | Some pane_pid -> { window_id; pane_id; pane_pid }
-        | None -> failwith (Printf.sprintf "new-window: unexpected pane_pid %S" pid))
-    | _ -> failwith (Printf.sprintf "new-window: unexpected output %S" out)
+        | Some pane_pid -> Ok { window_id; pane_id; pane_pid }
+        | None -> Error (Printf.sprintf "new-window: unexpected pane_pid %S" pid))
+    | _ -> Error (Printf.sprintf "new-window: unexpected output %S" out)
   in
   (* A command that exits fast enough always beats remain-on-exit; losing that
      race is not a failure to create the window. *)
   match exec [ "set-option"; "-p"; "-t"; w.pane_id; "remain-on-exit"; "on" ] with
-  | Error e when window_exists w.window_id -> failwith e
-  | Ok _ | Error _ -> w
+  | Error e when window_exists w.window_id -> Error e
+  | Ok _ | Error _ -> Ok w
 
-let kill_window window_id = ignore (run [ "kill-window"; "-t"; window_id ])
-let kill_pane pane_id = ignore (run [ "kill-pane"; "-t"; pane_id ])
-
-let mark_run pane_id run_id =
-  ignore (run [ "set-option"; "-p"; "-t"; pane_id; Pane.run_option; run_id ])
+let kill_window window_id = run [ "kill-window"; "-t"; window_id ]
+let kill_pane pane_id = run [ "kill-pane"; "-t"; pane_id ]
+let mark_run pane_id run_id = run [ "set-option"; "-p"; "-t"; pane_id; Pane.run_option; run_id ]
