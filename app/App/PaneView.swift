@@ -35,8 +35,16 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private var keyTextAccumulator: [String]?
     private var lastPerformKeyEvent: TimeInterval?
 
-    nonisolated static func from(_ userdata: UnsafeMutableRawPointer?) -> PaneView {
-        Unmanaged<PaneView>.fromOpaque(userdata!).takeUnretainedValue()
+    // Ghostty calls back on its renderer and IO threads too, where a strong
+    // reference to the view could be its last.
+    nonisolated static func surface(_ userdata: UnsafeMutableRawPointer?) -> ghostty_surface_t? {
+        Unmanaged<PaneView>.fromOpaque(userdata!)._withUnsafeGuaranteedRef(\.surface)
+    }
+
+    nonisolated static func onMain(_ userdata: UnsafeMutableRawPointer?, _ body: @escaping @MainActor (PaneView) -> Void) {
+        Unmanaged<PaneView>.fromOpaque(userdata!)._withUnsafeGuaranteedRef { view in
+            DispatchQueue.main.async { [weak view] in view.map(body) }
+        }
     }
 
     init?(runtime: GhosttyRuntime, pane: PaneID, font: Float) {
@@ -63,8 +71,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         self.surface = surface
         // The callback must not reenter the surface (ghostty.h).
         _ = ghostty_surface_set_font_size_action_callback(surface, { userdata, _, _, points, _, _ in
-            let pane = PaneView.from(userdata)
-            DispatchQueue.main.async { pane.onFontChange(points) }
+            PaneView.onMain(userdata) { $0.onFontChange(points) }
         }, this)
         updateTrackingAreas()
     }
