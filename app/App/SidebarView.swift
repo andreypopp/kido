@@ -2,28 +2,46 @@ import AppKit
 import SidebarFeed
 import TmuxControl
 
-final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate, NSSearchFieldDelegate {
     var send: ([Command], @escaping @MainActor @Sendable ([Reply]?) -> Void) -> Void = { $1(nil) }
     var filter: (String) -> Void = { _ in }
     var leave: () -> Void = {}
 
-    fileprivate enum Item {
-        case session(SessionRows)
-        case row(SessionID, Row)
-
-        var target: Snapshot.Position? {
-            guard case .row(let session, let row) = self, let target = row.target else { return nil }
-            return Snapshot.Position(session: session, window: target.window, pane: target.pane)
+    fileprivate final class Entry {
+        enum Content {
+            case section(SessionNodes)
+            case spacer(String, CGFloat)
+            case pane(SidebarFeed.Item)
         }
+        let session: SessionID
+        let content: Content
+        var guides: [(top: CGFloat, bottom: CGFloat)] = []
+        var node: SidebarFeed.Node? { if case .pane(let item) = content { return .item(item) }; return nil }
+        var section: SessionNodes? { if case .section(let s) = content { return s }; return nil }
+        var key: String {
+            let id: String = switch content { case .section: "section"; case .spacer(let id, _): "space:\(id)"; case .pane(let item): item.id.description }
+            return "\(session):\(id)"
+        }
+        var height: CGFloat {
+            switch content { case .section: 28; case .spacer(_, let height): height; case .pane: guides.count > 1 ? 20 : 24 }
+        }
+        var target: Snapshot.Position? {
+            guard case .pane(let item) = content else { return nil }
+            return Snapshot.Position(session: session, window: item.window, pane: item.pane)
+        }
+        init(_ session: SessionID, _ content: Content) { self.session = session; self.content = content }
     }
+    private var items: [Entry] = []
+    private func entry(_ row: Int) -> Entry? { table.item(atRow: row) as? Entry }
 
+    var newSession: () -> Void = {}
+    var newWindow: (SessionID) -> Void = { _ in }
     private let search = NSSearchField()
     private let table = Table()
     private let scroll = NSScrollView()
-    private let footer = NSTextField(wrappingLabelWithString: "")
+    private let statusLine = NSTextField(labelWithString: "")
     private let noMatches = NSTextField(labelWithString: "No matches")
     private var snapshot: Snapshot?
-    private var items: [Item] = []
     private var feedNote: (String, NSColor)?
     private var failure: String?
     private var activating: String?
@@ -46,7 +64,16 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         search.action = #selector(searched)
         table.addTableColumn(NSTableColumn(identifier: .init("row")))
         table.headerView = nil
-        table.style = .plain
+        table.style = .sourceList
+        table.floatsGroupRows = false
+        table.rowSizeStyle = .small
+        table.rowHeight = 22
+        table.indentationPerLevel = 0
+        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        table.tableColumns[0].resizingMask = .autoresizingMask
+        table.tableColumns[0].minWidth = 0
+        table.autoresizingMask = [.width]
+        table.outlineTableColumn = table.tableColumns[0]
         table.intercellSpacing = .zero
         table.backgroundColor = .clear
         table.dataSource = self
@@ -58,18 +85,27 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
-        footer.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        footer.isSelectable = true
+        scroll.automaticallyAdjustsContentInsets = false
+        statusLine.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        statusLine.isSelectable = true
+        statusLine.lineBreakMode = .byTruncatingTail
+        statusLine.maximumNumberOfLines = 1
         noMatches.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         noMatches.textColor = .secondaryLabelColor
-        for view in [search, scroll, footer, noMatches] { addSubview(view) }
+        search.isHidden = true
+        for view in [search, scroll, statusLine, noMatches] { addSubview(view) }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.windowBackgroundColor.setFill()
-        dirtyRect.fill()
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        wantsLayer = true
+        layer?.cornerRadius = 18
+        layer?.borderWidth = 1 / (window?.backingScaleFactor ?? 2)
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.12).cgColor
+        }
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -80,12 +116,12 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     override func layout() {
         super.layout()
         let inner = bounds.width - 16
-        search.frame = CGRect(x: 8, y: 8, width: inner, height: search.fittingSize.height)
-        let note = footer.isHidden ? 0 : footer.cell!.cellSize(forBounds: CGRect(x: 0, y: 0, width: inner, height: 200)).height
-        footer.frame = CGRect(x: 8, y: bounds.height - note - 6, width: inner, height: note)
-        let top = search.frame.maxY + 6
-        scroll.frame = CGRect(x: 0, y: top, width: bounds.width, height: footer.frame.minY - top - (footer.isHidden ? 0 : 6))
-        table.tableColumns[0].width = scroll.contentSize.width
+        search.frame = CGRect(x: 8, y: max(44, safeAreaInsets.top) + 2, width: inner, height: search.isHidden ? 0 : search.fittingSize.height)
+        let note: CGFloat = statusLine.isHidden ? 0 : 16
+        statusLine.frame = CGRect(x: 8, y: search.frame.maxY, width: inner, height: note)
+        let top = search.frame.maxY + note
+        scroll.frame = CGRect(x: 8, y: top, width: inner, height: max(0, bounds.height - top - 10))
+        table.setFrameSize(NSSize(width: scroll.contentSize.width, height: table.frame.height))
         noMatches.frame = CGRect(x: 10, y: top + 4, width: inner, height: noMatches.fittingSize.height)
     }
 
@@ -112,6 +148,10 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     }
 
     var query: String { search.stringValue }
+    var containsFocus: Bool {
+        guard let focused = window?.firstResponder else { return false }
+        return focused === search.currentEditor() || (focused as? NSView)?.isDescendant(of: self) == true
+    }
 
     func failed(_ message: String?) {
         failure = message
@@ -120,37 +160,64 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
 
     private func noteChanged() {
         let note = failure.map { ($0, NSColor.systemRed) } ?? feedNote ?? snapshot?.error.map { ($0, NSColor.systemRed) }
-        footer.stringValue = note?.0 ?? ""
-        footer.textColor = note?.1
-        footer.isHidden = note == nil
+        statusLine.stringValue = note?.0.replacingOccurrences(of: "\n", with: " ") ?? ""
+        statusLine.toolTip = note?.0
+        statusLine.textColor = note?.1
+        statusLine.isHidden = note == nil
         needsLayout = true
     }
 
     private func show(_ next: Snapshot?) {
-        let selected = items.indices.contains(table.selectedRow) ? items[table.selectedRow].target : nil
+        let selected = entry(table.selectedRow)?.key
+        let origin = scroll.contentView.bounds.origin
         let cleared = next?.filter.isEmpty == true && snapshot?.filter.isEmpty == false
         let recenter = cleared || next.map { $0.client != snapshot?.client } ?? false
         snapshot = next
         noMatches.isHidden = next.map { $0.filter.isEmpty || !$0.sessions.isEmpty } ?? true
-        items = next?.sessions.flatMap { s in [.session(s)] + s.rows.map { .row(s.id, $0) } } ?? []
+        items = (next?.sessions ?? []).flatMap { session -> [Entry] in
+            func panes(_ nodes: [SidebarFeed.Node], depth: Int) -> [Entry] {
+                nodes.flatMap { node -> [Entry] in
+                    switch node {
+                    case .window(let group): return panes(group.children.map(SidebarFeed.Node.item), depth: depth)
+                    case .item(let item):
+                        let row = Entry(session.id, .pane(item))
+                        row.guides = Array(repeating: (0, 0), count: depth + 1)
+                        let children = panes(item.children, depth: depth + 1)
+                        children.last?.guides[depth + 1].bottom = 6
+                        return [row] + children
+                    }
+                }
+            }
+            return [Entry(session.id, .section(session))] + session.nodes.enumerated().flatMap { index, node -> [Entry] in
+                let rows = panes([node], depth: 0)
+                rows.first?.guides[0].top = 5
+                rows.last?.guides[0].bottom = 5
+                return [Entry(session.id, .spacer(node.id, index == 0 ? 2 : 10))] + rows
+            }
+        }
         table.reloadData()
-        let follow = recenter ? next?.client : selected
-        if let follow, let row = items.firstIndex(where: { $0.target == follow }) {
+        let follow = recenter ? items.first { $0.target == next?.client } : items.first { $0.key == selected }
+        if let follow {
+            let row = table.row(forItem: follow)
             table.selectRowIndexes([row], byExtendingSelection: false)
             if recenter { table.scrollRowToVisible(row) }
-        } else {
-            table.deselectAll(nil)
-        }
+        } else { table.deselectAll(nil) }
+        if !recenter { scroll.contentView.scroll(to: origin); scroll.reflectScrolledClipView(scroll.contentView) }
         if let query = activating, next?.filter == query { activate() }
         updateTick()
     }
 
     private var startedRows: IndexSet {
-        IndexSet(items.indices.filter { if case .row(_, let row) = items[$0] { return row.started != nil } else { return false } })
+        let visible = table.rows(in: table.visibleRect)
+        guard visible.location != NSNotFound else { return [] }
+        return IndexSet((visible.location..<min(table.numberOfRows, NSMaxRange(visible))).filter {
+            if case .item(let item) = entry($0)?.node { return item.started != nil }
+            return false
+        })
     }
 
     private func updateTick() {
-        guard !isHidden, !startedRows.isEmpty else {
+        guard !isHidden, items.contains(where: { if case .item(let i) = $0.node { return i.started != nil }; return false }) else {
             tick?.invalidate()
             tick = nil
             return
@@ -164,49 +231,52 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     }
 
     @objc private func ticked() {
+        guard !isHiddenOrHasHiddenAncestor else { return }
         let rows = startedRows
         guard !rows.isEmpty else { return updateTick() }
         table.reloadData(forRowIndexes: rows, columnIndexes: IndexSet(integer: 0))
     }
 
     private func activate() {
-        jump(table.selectedRow >= 0 ? table.selectedRow : items.firstIndex { $0.target != nil } ?? -1)
+        jump(table.selectedRow >= 0 ? table.selectedRow : (0..<table.numberOfRows).first { entry($0)?.target != nil } ?? -1)
     }
 
     func focus() {
         if table.selectedRow < 0, let current = snapshot?.client,
-            let row = items.firstIndex(where: { $0.target == current })
+            let item = items.first(where: { $0.target == current })
         {
-            table.selectRowIndexes([row], byExtendingSelection: false)
+            table.selectRowIndexes([table.row(forItem: item)], byExtendingSelection: false)
         }
         window?.makeFirstResponder(table)
         table.scrollRowToVisible(table.selectedRow)
     }
 
     func nextAttention(_ delta: Int) {
-        let n = items.count
-        var i = table.selectedRow >= 0 ? table.selectedRow : delta > 0 ? -1 : n
-        for _ in 0..<n {
-            i = (i + delta + n) % n
-            if case .row(_, let row) = items[i], row.attention, items[i].target != nil {
-                table.selectRowIndexes([i], byExtendingSelection: false)
-                table.scrollRowToVisible(i)
-                return jump(i)
+        let all = items
+        guard !all.isEmpty else { return }
+        var i = all.firstIndex { $0 === entry(table.selectedRow) } ?? (delta > 0 ? -1 : all.count)
+        for _ in all.indices {
+            i = (i + delta + all.count) % all.count
+            if case .item(let item) = all[i].node, item.attention {
+                let row = table.row(forItem: all[i])
+                table.selectRowIndexes([row], byExtendingSelection: false)
+                table.scrollRowToVisible(row)
+                return jump(row)
             }
         }
     }
 
     private func move(_ delta: Int) {
         var i = table.selectedRow
-        repeat { i += delta } while items.indices.contains(i) && items[i].target == nil
-        guard items.indices.contains(i) else { return }
+        repeat { i += delta } while i >= 0 && i < table.numberOfRows && entry(i)?.target == nil
+        guard i >= 0, i < table.numberOfRows else { return }
         table.selectRowIndexes([i], byExtendingSelection: false)
         table.scrollRowToVisible(i)
     }
 
     private func jump(_ index: Int) {
         activating = nil
-        guard items.indices.contains(index), let target = items[index].target else { return }
+        guard let target = entry(index)?.target else { return }
         failed(nil)
         send([Command("switch-client", "-t", "\(target.session):\(target.window).\(target.pane)")]) { [weak self] replies in
             guard let self else { return }
@@ -217,6 +287,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
             }
             if !search.stringValue.isEmpty {
                 search.stringValue = ""
+                search.isHidden = true
+                needsLayout = true
                 filter("")
             }
             leave()
@@ -241,7 +313,11 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         case (53, _, []): leave()
         case (_, "n", []): nextAttention(1)
         case (_, "N", []): nextAttention(-1)
-        case (_, "/", []): window?.makeFirstResponder(search)
+        case (_, "/", []):
+            search.isHidden = false
+            needsLayout = true
+            layoutSubtreeIfNeeded()
+            window?.makeFirstResponder(search)
         default: return false
         }
         return true
@@ -257,6 +333,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
             activating = search.stringValue
             if snapshot?.filter == search.stringValue { activate() }
         case #selector(cancelOperation(_:)) where search.stringValue.isEmpty:
+            search.isHidden = true
+            needsLayout = true
             leave()
         default:
             return false
@@ -264,205 +342,168 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         return true
     }
 
-    func numberOfRows(in tableView: NSTableView) -> Int { items.count }
-
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        guard case .session = items[row] else { return 20 }
-        return row == 0 ? 20 : 28
+    func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+        item == nil ? items.count : 0
     }
-
-    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { items[row].target != nil }
-
-    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        let view = RowBackground()
-        view.current = items[row].target != nil && items[row].target == snapshot?.client
-        return view
+    func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+        items[index]
     }
-
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let cell = tableView.makeView(withIdentifier: Cell.id, owner: nil) as? Cell ?? Cell(fonts)
-        cell.item = items[row]
+    func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat { (item as! Entry).height }
+    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { false }
+    func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool { (item as! Entry).target != nil }
+    func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? { SelectionRow() }
+    func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+        let entry = item as! Entry
+        let cell = outlineView.makeView(withIdentifier: Cell.id, owner: nil) as? Cell ?? Cell(fonts)
+        cell.configure(entry)
+        cell.addWindow.invoke = { [weak self] in self?.newWindow(entry.session) }
         return cell
     }
 }
 
-private final class Table: NSTableView {
+private final class Table: NSOutlineView {
+    override func frameOfOutlineCell(atRow row: Int) -> NSRect { .zero }
+    override func frameOfCell(atColumn column: Int, row: Int) -> NSRect { rect(ofRow: row) }
     override func keyDown(with event: NSEvent) {
         if (delegate as? SidebarView)?.key(event) != true { super.keyDown(with: event) }
     }
 }
 
-private final class RowBackground: NSTableRowView {
-    var current = false
-
-    override func drawBackground(in dirtyRect: NSRect) {
-        guard current else { return }
-        NSColor.quaternaryLabelColor.setFill()
-        NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 1), xRadius: 4, yRadius: 4).fill()
-        NSColor.controlAccentColor.setFill()
-        NSBezierPath(roundedRect: CGRect(x: 4, y: 3, width: 2, height: bounds.height - 6), xRadius: 1, yRadius: 1).fill()
-    }
-
-    override func drawSelection(in dirtyRect: NSRect) {
-        NSColor.controlAccentColor.withAlphaComponent(isEmphasized ? 0.35 : 0.18).setFill()
-        NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 1), xRadius: 4, yRadius: 4).fill()
-    }
-}
-
-// AppKit's system-font constructors intermittently return nil, their
-// signature notwithstanding, while libghostty creates surfaces: the sidebar's
-// fonts are made once, before libghostty starts, and held.
 private struct Fonts {
     let regular = NSFont.systemFont(ofSize: 12)
-    let bold = NSFont.boldSystemFont(ofSize: 12)
-    let mono = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+    let small = NSFont.systemFont(ofSize: 11)
+    let section = NSFont.systemFont(ofSize: 11, weight: .semibold)
 }
 
-private final class Cell: NSView {
+private final class SelectionRow: NSTableRowView {
+    override func drawSelection(in dirtyRect: NSRect) {
+        NSColor.labelColor.withAlphaComponent(isEmphasized && window?.isKeyWindow == true ? 0.10 : 0.06).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
+    }
+    override var isSelected: Bool { didSet { subviews.forEach { $0.needsDisplay = true } } }
+}
+
+private final class Label: NSTextField {
+    override var allowsVibrancy: Bool { false }
+}
+
+private final class Cell: NSTableCellView {
     static let id = NSUserInterfaceItemIdentifier("cell")
-    private static let column: CGFloat = 10
-    private static let field: CGFloat = 16
     private let fonts: Fonts
-
-    var item: SidebarView.Item? { didSet { needsDisplay = true } }
-
+    private let title = Label(labelWithString: "")
+    private let tail = Label(labelWithString: "")
+    private let glyph = NSImageView()
+    private let spinner = NSProgressIndicator()
+    let addWindow = IconButton("plus", "New window", size: 12)
+    private var entry: SidebarView.Entry?
     override var isFlipped: Bool { true }
 
     init(_ fonts: Fonts) {
         self.fonts = fonts
         super.init(frame: .zero)
         identifier = Self.id
+        for field in [title, tail] {
+            field.lineBreakMode = .byTruncatingTail
+            field.maximumNumberOfLines = 1
+            field.cell?.wraps = false
+            field.cell?.usesSingleLineMode = true
+        }
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = false
+        for view in [title, tail, glyph, spinner, addWindow] { addSubview(view) }
     }
-
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
+    override func layout() {
+        super.layout()
+        guard let entry else { return }
+        if entry.section != nil {
+            title.frame = CGRect(x: 6, y: bounds.height - 18, width: max(0, bounds.width - 34), height: 14)
+            addWindow.frame = CGRect(x: bounds.width - 26, y: bounds.height - 24, width: 20, height: 20)
+            return
+        }
+        let size: CGFloat = entry.guides.count > 1 ? 11 : 14
+        glyph.frame = CGRect(x: bounds.width - 6 - size, y: (bounds.height - size) / 2, width: size, height: size)
+        spinner.frame = glyph.frame
+        let leading = 6 + CGFloat(entry.guides.count) * 12 + 5
+        let end = glyph.frame.minX - 5
+        let desired = tail.attributedStringValue.size().width + (tail.stringValue.isEmpty ? 0 : 4)
+        let width = min(bounds.width * 0.5, desired, max(0, end - leading - title.attributedStringValue.size().width - 9))
+        tail.isHidden = width < min(18, desired)
+        tail.frame = CGRect(x: end - width, y: (bounds.height - 14) / 2, width: width, height: 14)
+        title.frame = CGRect(x: leading, y: (bounds.height - 16) / 2,
+                             width: max(0, end - leading - (width > 0 ? width + 5 : 0)), height: 16)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
-        switch item {
-        case .session(let session):
-            let text = NSAttributedString(
-                string: session.name,
-                attributes: [
-                    .font: session.current ? fonts.bold : fonts.regular,
-                    .foregroundColor: session.current ? NSColor.labelColor : NSColor.secondaryLabelColor,
-                    .paragraphStyle: Self.truncating,
-                ])
-            text.draw(
-                with: CGRect(x: 10, y: bounds.height - 18, width: bounds.width - 20, height: 16),
-                options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
-        case .row(_, let row):
-            drawTree(row.tree)
-            let x = 10 + CGFloat(row.tree.count) * Self.column
-            if let symbol = row.indicator.flatMap(Self.symbol) {
-                let size = symbol.size
-                symbol.draw(
-                    in: CGRect(
-                        x: x + (Self.field - size.width) / 2, y: (bounds.height - size.height) / 2, width: size.width,
-                        height: size.height))
-            }
-            let text = NSMutableAttributedString()
-            let tail: [(String, Span.Role)] =
-                if let started = row.started {
-                    [(Self.elapsed(Date().timeIntervalSince(started)), .dim)]
-                } else {
-                    row.tail.map { ($0.text, $0.role) }
-                }
-            let gap: [(String, Span.Role)] = tail.isEmpty ? [] : [("  ", .plain)]
-            for (string, role) in row.title.map({ ($0.text, $0.role) }) + gap + tail {
-                text.append(NSAttributedString(string: string, attributes: style(role)))
-            }
-            let right = bounds.width - (row.attention ? 22 : 8)
-            let height = text.size().height
-            text.draw(
-                with: CGRect(x: x + Self.field + 2, y: (bounds.height - height) / 2, width: right - x - Self.field - 2, height: height),
-                options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
-            if row.attention {
-                NSColor.controlAccentColor.setFill()
-                NSBezierPath(ovalIn: CGRect(x: bounds.width - 16, y: bounds.midY - 3, width: 6, height: 6)).fill()
-            }
-        case nil:
-            break
+        super.draw(dirtyRect)
+        let selected = (superview as? NSTableRowView)?.isSelected == true
+        NSColor.labelColor.withAlphaComponent(selected ? 0.30 : 0.16).setFill()
+        let pixel = 1 / (window?.backingScaleFactor ?? 2)
+        for (index, guide) in (entry?.guides ?? []).enumerated() {
+            CGRect(x: 12 + CGFloat(index) * 12, y: guide.top, width: pixel,
+                   height: max(0, bounds.height - guide.top - guide.bottom)).fill()
         }
     }
 
-    private func drawTree(_ tree: String) {
-        let path = NSBezierPath()
-        let mid = bounds.midY.rounded(.down) + 0.5
-        for (k, glyph) in tree.enumerated() {
-            let left = 10 + CGFloat(k) * Self.column
-            let x = (left + Self.column / 2).rounded(.down) + 0.5
-            let (top, bottom, across): (CGFloat?, CGFloat?, Bool) =
-                switch glyph {
-                case "│": (0, bounds.height, false)
-                case "├": (0, bounds.height, true)
-                case "┌": (mid, bounds.height, true)
-                case "└": (0, mid, true)
-                case "╶": (nil, nil, true)
-                default: (nil, nil, false)
+    func configure(_ entry: SidebarView.Entry) {
+        self.entry = entry
+        title.stringValue = ""
+        tail.stringValue = ""
+        title.textColor = .labelColor.withAlphaComponent(0.92)
+        tail.textColor = .labelColor.withAlphaComponent(0.50)
+        title.font = entry.guides.count > 1 ? fonts.small : fonts.regular
+        tail.font = fonts.small
+        glyph.image = nil
+        spinner.stopAnimation(nil)
+        addWindow.isHidden = entry.section == nil
+        var status = ""
+        switch entry.content {
+        case .section(let section):
+            title.stringValue = section.name
+            title.font = fonts.section
+            title.textColor = .labelColor.withAlphaComponent(0.50)
+            addWindow.toolTip = "New window in " + section.name
+            addWindow.setAccessibilityLabel(addWindow.toolTip)
+        case .spacer: break
+        case .pane(let row):
+            title.stringValue = row.title.map(\.text).joined()
+            if let started = row.started {
+                let s = max(0, Int(Date().timeIntervalSince(started)))
+                tail.stringValue = s < 60 ? "\(s)s" : s < 3600 ? String(format: "%dm%02ds", s / 60, s % 60) : String(format: "%dh%02dm", s / 3600, (s / 60) % 60)
+            } else { tail.stringValue = row.tail.map(\.text).joined() }
+            let symbol: String?
+            let failed: Bool = switch row.indicator { case .failed, .gone(.failed), .gone(.died): true; default: false }
+            if failed {
+                symbol = "xmark.circle.fill"
+                status = "Error"
+                glyph.contentTintColor = .systemRed
+                tail.textColor = NSColor(srgbRed: 1, green: 0.48, blue: 0.45, alpha: 1)
+            } else if row.attention || row.indicator == .waiting || row.indicator == .stalled {
+                symbol = "exclamationmark.circle.fill"
+                status = "Needs attention"
+                glyph.contentTintColor = .systemOrange
+                tail.textColor = NSColor(srgbRed: 1, green: 0.70, blue: 0.25, alpha: 1)
+            } else {
+                symbol = nil
+                if row.indicator == .running || row.indicator == .compacting {
+                    status = "Running"
+                    spinner.startAnimation(nil)
                 }
-            if let top, let bottom {
-                path.move(to: CGPoint(x: x, y: top))
-                path.line(to: CGPoint(x: x, y: bottom))
             }
-            if across {
-                path.move(to: CGPoint(x: x, y: mid))
-                path.line(to: CGPoint(x: left + Self.column + 2, y: mid))
-            }
+            if let symbol { glyph.image = NSImage(systemSymbolName: symbol, accessibilityDescription: status) }
         }
-        NSColor.tertiaryLabelColor.setStroke()
-        path.lineWidth = 1
-        path.stroke()
-    }
-
-    // Matches kido's lib/ui.ml `elapsed`.
-    private static func elapsed(_ secs: TimeInterval) -> String {
-        let s = max(0, Int(secs))
-        if s < 60 { return "\(s)s" }
-        if s < 3600 { return String(format: "%dm%02ds", s / 60, s % 60) }
-        return String(format: "%dh%02dm", s / 3600, (s / 60) % 60)
-    }
-
-    private static let truncating: NSParagraphStyle = {
-        let style = NSMutableParagraphStyle()
-        style.lineBreakMode = .byTruncatingTail
-        return style
-    }()
-
-    private func style(_ role: Span.Role) -> [NSAttributedString.Key: Any] {
-        let (color, font): (NSColor, NSFont) =
-            switch role {
-            case .plain: (.labelColor, fonts.regular)
-            case .current: (.labelColor, fonts.bold)
-            case .proc: (.labelColor, fonts.mono)
-            case .dim: (.secondaryLabelColor, fonts.regular)
-            case .err: (.systemRed, fonts.regular)
-            case .running: (.systemGreen, fonts.regular)
-            case .waiting: (.systemOrange, fonts.bold)
-            case .compacting: (.systemPurple, fonts.regular)
-            case .done: (.systemGreen, fonts.bold)
-            case .stalled: (.systemRed, fonts.bold)
-            }
-        return [.foregroundColor: color, .font: font, .paragraphStyle: Self.truncating]
-    }
-
-    // The TUI's glyphs (lib/ui.ml `indicator`): idle draws nothing, a gone
-    // subagent a dim ✓ when it completed and a dim × otherwise.
-    private static func symbol(_ indicator: Indicator) -> NSImage? {
-        let glyph: (name: String, color: NSColor, weight: NSFont.Weight)? =
-            switch indicator {
-            case .idle: nil
-            case .running: ("square.fill", .systemGreen, .regular)
-            case .waiting: ("diamond.fill", .systemOrange, .regular)
-            case .compacting: ("circle.dotted", .systemPurple, .bold)
-            case .done: ("checkmark", .systemGreen, .heavy)
-            case .failed: ("square.fill", .systemRed, .regular)
-            case .unknown: ("questionmark", .secondaryLabelColor, .bold)
-            case .stalled: ("exclamationmark", .systemRed, .heavy)
-            case .gone(.completed): ("checkmark", .tertiaryLabelColor, .bold)
-            case .gone: ("xmark", .tertiaryLabelColor, .bold)
-            }
-        guard let glyph else { return nil }
-        return NSImage(systemSymbolName: glyph.name, accessibilityDescription: nil)?
-            .withSymbolConfiguration(
-                NSImage.SymbolConfiguration(pointSize: 9, weight: glyph.weight).applying(.init(paletteColors: [glyph.color])))
+        for field in [title, tail] {
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineBreakMode = .byTruncatingTail
+            field.attributedStringValue = NSAttributedString(string: field.stringValue, attributes: [
+                .font: field.font!, .foregroundColor: field.textColor!, .paragraphStyle: paragraph,
+            ])
+        }
+        toolTip = [title.stringValue, tail.stringValue, status].filter { !$0.isEmpty }.joined(separator: ", ")
+        setAccessibilityLabel(toolTip)
+        needsLayout = true
+        needsDisplay = true
     }
 }
