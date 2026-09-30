@@ -441,6 +441,13 @@ let debug_log =
      print_endline (Reporting.debug_log ~dir:(State.dir ()));
      0
 
+let server =
+  cmd "server" "Start the kido server detached unless it is running, and print its tmux and socket."
+  @@ let+ () = Term.const () in
+     fun () ->
+       print_endline (Yojson.Safe.to_string (Launch.endpoint_to_yojson (ok (Launch.ensure ()))));
+       0
+
 let inbox_path =
   Cmd.v (Cmd.info "inbox-path" ~doc:"Print, and create the directory of, an agent's inbox socket.")
   @@ let+ args = rest in
@@ -597,6 +604,7 @@ let () =
         hook;
         agent_status;
         debug_log;
+        server;
         inbox_path;
         message_agent;
         ask_agent;

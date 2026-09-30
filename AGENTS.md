@@ -114,10 +114,11 @@ Conventions:
 
     bin/main.ml        the cmdliner command table and the small commands:
                        set_status, agent-alive, children-alive, snapshot,
-                       ssh, window-focused, switch-session/window
+                       ssh, window-focused, switch-session/window, server
     bin/cli.ml         failure printing and tables
     lib/               the library kido:
-      launch.ml        the launcher: the kido server, its server.conf
+      launch.ml        the launcher and `kido server`: the kido server, its
+                       server.conf
       shell.ml, prime.ml  kido shell: the login shell and its priming files
       bin_dir.ml       the shipped-file and bin-directory lookup
       ui.ml            the Mosaic sidebar: model, rendering, shell-status debounce

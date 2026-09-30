@@ -1920,6 +1920,18 @@ the backslash. The first session is named `main` rather than tmux's `0`;
 it is created only when starting a fresh server, so nothing can already
 hold the name.
 
+`kido server` is the launcher without the terminal, for a client such as
+Kido.app that attaches on its own: it runs the same probe and, when the
+server is down, the same start (`Launch.new_session`: server.conf, the
+environment and PATH, session `main`), detached. It never attaches, so it
+runs inside tmux too. It prints one JSON line, `{"tmux":...,"socket":...}`:
+the resolved kido-tmux made absolute, and the socket path the server
+reports as `#{socket_path}` in its answer to the probe. A start that fails
+is followed by a second probe, and a server that answers it is success:
+two clients starting at once race for `main`, and the loser's
+`new-session` fails against the winner's server. A mismatch is the
+launcher's refusal, under `kido server:`.
+
 A captured command that is a single word naming zsh or bash, or the same
 executable as the login shell under another name, is primed as that shell
 instead of run as a command inside one (`Shell.command`).

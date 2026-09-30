@@ -1,4 +1,5 @@
-type server = Down | Up | Mismatch
+type server = Down | Up of string | Mismatch
+type endpoint = { tmux : string; socket : string } [@@deriving to_yojson]
 
 let socket = "kido"
 
@@ -67,14 +68,42 @@ let server_conf ~exe ~user_conf =
    restarts. *)
 let probe_server bin =
   let ((out, _, err) as p) =
-    Unix.open_process_args_full bin [| bin; "-L"; socket; "list-sessions" |] (Unix.environment ())
+    Unix.open_process_args_full bin
+      [| bin; "-L"; socket; "list-sessions"; "-F"; "#{socket_path}" |]
+      (Unix.environment ())
   in
-  ignore (In_channel.input_all out);
+  let stdout = In_channel.input_all out in
   let stderr = In_channel.input_all err in
   match Unix.close_process_full p with
-  | WEXITED 0 -> Up
+  | WEXITED 0 -> Up (List.hd (String.split_on_char '\n' stdout))
   | _ when String.mem ~sub:"protocol version mismatch" stderr -> Mismatch
   | _ -> Down
+
+let mismatch bin =
+  Printf.sprintf
+    "the kido server on socket %S is running an older kido-tmux than this one, so it refuses this \
+     client; restart it once its windows are free (detach, then %s -L %s kill-server)"
+    socket bin socket
+
+let argv bin args = Array.of_list (bin :: "-L" :: socket :: args)
+
+let new_session ~detach =
+  let open Result.Infix in
+  let* user_conf =
+    user_conf ~xdg_config_home:(Tmux.Exec.getenv "XDG_CONFIG_HOME") ~home:(Tmux.Exec.getenv "HOME")
+  in
+  let conf = Filename.concat (State.dir ()) "server.conf" in
+  Fs.mkdir_p (State.dir ());
+  let* conf_text = server_conf ~exe:(Lazy.force Tmux.Exec.self) ~user_conf in
+  Fs.write conf conf_text;
+  let env =
+    match Bin_dir.own () with
+    | Some dir ->
+        Shell.with_env (Unix.environment ())
+          [ ("PATH", Bin_dir.path_with_first dir (Tmux.Exec.getenv "PATH")) ]
+    | None -> Unix.environment ()
+  in
+  Ok (env, [ "-f"; conf; "new-session" ] @ (if detach then [ "-d" ] else []) @ [ "-s"; "main" ])
 
 let run ~tmux =
   let open Result.Infix in
@@ -84,31 +113,36 @@ let run ~tmux =
          (List.hd (String.split_on_char ',' tmux)))
   else
     let bin = Lazy.force Tmux.Exec.binary in
-    let exec env args = Unix.execvpe bin (Array.of_list (bin :: "-L" :: socket :: args)) env in
     match probe_server bin with
-    | Mismatch ->
-        Error
-          (Printf.sprintf
-             "the kido server on socket %S is running an older kido-tmux than this one, so it \
-              refuses this client; restart it once its windows are free (detach, then %s -L %s \
-              kill-server)"
-             socket bin socket)
-    | Up -> exec (Unix.environment ()) [ "attach-session" ]
+    | Mismatch -> Error (mismatch bin)
+    | Up _ -> Unix.execvpe bin (argv bin [ "attach-session" ]) (Unix.environment ())
     | Down ->
-        let* user_conf =
-          user_conf
-            ~xdg_config_home:(Tmux.Exec.getenv "XDG_CONFIG_HOME")
-            ~home:(Tmux.Exec.getenv "HOME")
-        in
-        let conf = Filename.concat (State.dir ()) "server.conf" in
-        Fs.mkdir_p (State.dir ());
-        let* conf_text = server_conf ~exe:(Lazy.force Tmux.Exec.self) ~user_conf in
-        Fs.write conf conf_text;
-        let env =
-          match Bin_dir.own () with
-          | Some dir ->
-              Shell.with_env (Unix.environment ())
-                [ ("PATH", Bin_dir.path_with_first dir (Tmux.Exec.getenv "PATH")) ]
-          | None -> Unix.environment ()
-        in
-        exec env [ "-f"; conf; "new-session"; "-s"; "main" ]
+        let* env, args = new_session ~detach:false in
+        Unix.execvpe bin (argv bin args) env
+
+let ensure () =
+  let open Result.Infix in
+  let bin = Lazy.force Tmux.Exec.binary in
+  let* failed =
+    match probe_server bin with
+    | Down ->
+        let* env, args = new_session ~detach:true in
+        let ((out, _, err) as p) = Unix.open_process_args_full bin (argv bin args) env in
+        ignore (In_channel.input_all out);
+        let stderr = String.trim (In_channel.input_all err) in
+        ignore (Unix.close_process_full p);
+        Ok stderr
+    | Up _ | Mismatch -> Ok ""
+  in
+  match probe_server bin with
+  | Mismatch -> Error (mismatch bin)
+  | Down ->
+      Error ("cannot start a kido server" ^ if String.is_empty failed then "" else ": " ^ failed)
+  | Up socket -> (
+      let tmux =
+        if String.contains bin '/' then Some (Tmux.Exec.abs bin)
+        else Tmux.Exec.look_path ~path:(Tmux.Exec.getenv "PATH") bin
+      in
+      match tmux with
+      | Some tmux -> Ok { tmux; socket }
+      | None -> Error (Printf.sprintf "no %s on PATH" bin))
