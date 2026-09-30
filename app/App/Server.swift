@@ -43,16 +43,18 @@ struct Server: Decodable {
         process.arguments = args
         process.standardOutput = out
         process.standardError = err
+        // Client.start: waitUntilExit can miss the exit off the main thread.
+        let ended = DispatchGroup()
+        ended.enter()
+        process.terminationHandler = { _ in ended.leave() }
         do { try process.run() } catch { throw Failure(message: "could not run \(path): \(error.localizedDescription)") }
         nonisolated(unsafe) var stdout = Data(), stderr = Data()
-        let drained = DispatchGroup()
-        DispatchQueue.global().async(group: drained) { stdout = out.fileHandleForReading.readDataToEndOfFile() }
-        DispatchQueue.global().async(group: drained) { stderr = err.fileHandleForReading.readDataToEndOfFile() }
-        guard drained.wait(timeout: .now() + 10) == .success else {
+        DispatchQueue.global().async(group: ended) { stdout = out.fileHandleForReading.readDataToEndOfFile() }
+        DispatchQueue.global().async(group: ended) { stderr = err.fileHandleForReading.readDataToEndOfFile() }
+        guard ended.wait(timeout: .now() + 10) == .success else {
             process.terminate()
             throw Failure(message: "\(path) \(args.joined(separator: " ")) did not finish in 10 seconds")
         }
-        process.waitUntilExit()
         let text = { (d: Data) in String(decoding: d, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
         return (process.terminationStatus, text(stdout), text(stderr))
     }
