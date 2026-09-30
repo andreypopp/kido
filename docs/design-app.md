@@ -8,18 +8,22 @@ live in tmux; the app holds none of them.
 ## One control client
 
 The app attaches one control client per server (`kido-tmux -S <socket>
--N -C attach-session -f pause-after=N,new-layouts`) and behaves like a
-normal client: showing a window or session is `select-window` or
-`switch-client`, and the app then follows tmux's notifications. So the
-client's current session, window and pane are always the ones shown,
-which kido's `watched`, done-until-visited and reaping rules depend on.
-A client per session would mark every session attached.
+-N -C attach-session -f pause-after=N,new-layouts,no-detach-on-destroy`)
+and behaves like a normal client: showing a window or session is
+`select-window` or `switch-client`, and the app then follows tmux's
+notifications. So the client's current session, window and pane are
+always the ones shown, which kido's `watched`, done-until-visited and
+reaping rules depend on. A client per session would mark every session
+attached. When its session is destroyed, `no-detach-on-destroy` moves
+the client to another session where `detach-on-destroy` would detach
+it, and the app follows as it follows any switch.
 
 `-N` keeps a redial from starting a server behind the user's back: a
 server is started only by `kido server`, from the banner's button. A
 `%exit detached ...` is a deliberate detach and is not redialed; any
 other ending is. A reconnect is a full reset, since ids mean something
-only to the server that issued them.
+only to the server that issued them. Every connection close, redial
+and quit is one line on stderr, with its reason or trigger.
 
 ## Panes
 
@@ -33,6 +37,11 @@ A pane is synced by one command line: its captures, pending parser
 bytes and mode state. tmux queues `%output` ahead of the reply, so
 output before the reply is wiped by the restore and output after it is
 fed live. The same resync follows a `%pause`.
+
+An unsafe paste is asked about in a sheet showing its text, and the
+request is completed exactly once: pasted, or refused with an empty
+completion on Cancel or when its surface is freed. Other confirmations
+are refused.
 
 Surfaces are kept per window, for the most recently shown windows of
 any session while their panes total at most 32; the rest have none. A
