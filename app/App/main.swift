@@ -7,6 +7,8 @@ import AppKit
     private var session: SessionView?
     private var link = Link.down
     private let menus = SessionMenus()
+    private let sidebar = Sidebar()
+    private var feed: Feed?
 
     private enum Link {
         case down
@@ -25,9 +27,12 @@ import AppKit
             backing: .buffered,
             defer: false)
         window.title = "Kido"
+        sidebar.frame = window.contentView!.bounds
+        sidebar.autoresizingMask = [.width, .height]
+        window.contentView!.addSubview(sidebar)
         banner = Banner(target: self, action: #selector(start))
-        banner.frame = window.contentView!.bounds
-        window.contentView!.addSubview(banner)
+        banner.frame = sidebar.content.bounds
+        sidebar.content.addSubview(banner)
         window.center()
         if !background {
             window.makeKeyAndOrderFront(nil)
@@ -61,13 +66,41 @@ import AppKit
     private func dial(_ server: Server, backoff: TimeInterval) {
         let view = SessionView(runtime: runtime)
         do {
-            link = .connected(try Connection(
+            let connection = try Connection(
                 server: server, view: view,
                 onChange: { [weak self] in self?.changed(view, $0) },
-                onClose: { [weak self] in self?.closed(server, view, $0, backoff: backoff) }))
+                onClose: { [weak self] in self?.closed(server, view, $0, backoff: backoff) })
+            link = .connected(connection)
+            startFeed(connection, socket: server.socket)
         } catch {
             link = .down
             banner.show("Kido could not run \(server.tmux)", error.localizedDescription, button: action)
+        }
+    }
+
+    private func startFeed(_ connection: Connection, socket: String) {
+        connection.locateFeed { [weak self] result in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.gotFeedLocation(result, socket: socket)
+            }
+        }
+    }
+
+    private func gotFeedLocation(_ result: Result<(kido: String, client: String), Server.Failure>, socket: String) {
+        switch result {
+        case .failure(let failure):
+            feed?.stop()
+            feed = nil
+            sidebar.view.update(.failed(failure.message))
+        case .success(let located):
+            if let feed {
+                feed.reconnect(client: located.client)
+            } else {
+                feed = Feed(
+                    kido: located.kido, socket: socket, client: located.client,
+                    onChange: { [weak self] in self?.sidebar.view.update($0) })
+            }
         }
     }
 
@@ -77,9 +110,9 @@ import AppKit
         guard view.superview == nil else { return }
         session?.removeFromSuperview()
         session = view
-        view.frame = window.contentView!.bounds
+        view.frame = sidebar.content.bounds
         view.autoresizingMask = [.width, .height]
-        window.contentView!.addSubview(view, positioned: .below, relativeTo: banner)
+        sidebar.content.addSubview(view, positioned: .below, relativeTo: banner)
         banner.isHidden = true
         if case .connected(let connection) = link { menus.connection = connection }
     }
@@ -87,6 +120,9 @@ import AppKit
     private func closed(_ server: Server, _ view: SessionView, _ reason: String?, backoff: TimeInterval) {
         menus.connection = nil
         menus.update(SessionModel())
+        feed?.stop()
+        feed = nil
+        sidebar.view.update(.starting)
         window.title = "Kido"
         let dropped = view === session
         let detail = reason ?? (dropped ? nil : "No kido server at \(server.socket).")
@@ -106,12 +142,18 @@ import AppKit
             .separator(),
             NSMenuItem(title: "Quit Kido", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),
         ]
+        let view = NSMenu(title: "View")
+        view.items = [NSMenuItem(title: "Toggle Sidebar", action: #selector(toggleSidebar), keyEquivalent: "\\")]
         let bar = NSMenu()
-        for menu in [app, menus.window, menus.session] {
+        for menu in [app, view, menus.window, menus.session] {
             bar.addItem(withTitle: menu.title, action: nil, keyEquivalent: "").submenu = menu
         }
-        bar.insertItem(PaneCommand.menu, at: 1)
+        bar.insertItem(PaneCommand.menu, at: 2)
         return bar
+    }
+
+    @objc private func toggleSidebar() {
+        sidebar.toggle()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
