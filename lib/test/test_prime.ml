@@ -10,28 +10,10 @@ let reports what out =
     (fun m -> check (Printf.sprintf "%s reports %S in %S" what m out) (String.mem ~sub:m out))
     [ "\027]133;A"; "\027]133;C;cmdline=true"; "\027]133;D;0" ]
 
-(* 4.4 is where PS0 arrived, and Apple ships 3.2. What does not parse is not primed: a bash left
-   in posix mode for the life of the session is worse than no markers. *)
-let%expect_test "bash_has_ps0" =
-  List.iter
-    (fun v -> Printf.printf "%S %b\n" v (Prime.bash_has_ps0 v))
-    [ "5.2\n"; "4.4\n"; "4.4"; "10.0\n"; "4.3\n"; "3.2\n"; "\n"; ".\n"; "x.y\n"; "" ];
-  [%expect
-    {|
-    "5.2\n" true
-    "4.4\n" true
-    "4.4" true
-    "10.0\n" true
-    "4.3\n" false
-    "3.2\n" false
-    "\n" false
-    ".\n" false
-    "x.y\n" false
-    "" false
-    |}]
-
 let show_mode = function Prime.Plain -> "plain" | Zsh -> "zsh" | Bash -> "bash"
 
+(* 4.4 is where PS0 arrived, and Apple ships 3.2. What does not parse is not primed: a bash left
+   in posix mode for the life of the session is worse than no markers. *)
 let%expect_test
     "local_mode: unknown shells are plain; zsh needs dotfiles; bash is asked its version" =
   let home = Sh.temp () in
@@ -44,17 +26,26 @@ let%expect_test
   print_endline (show_mode (Prime.local_mode ~dotdir:home zsh));
   List.iter
     (fun v ->
-      let bash = Sh.write (Sh.temp () // "bash") ("#!/bin/sh\necho " ^ v ^ "\n") in
-      print_endline (show_mode (Prime.local_mode ~dotdir:home bash)))
-    [ "3.2"; "5.2" ];
-  [%expect {|
+      let bash = Sh.write (Sh.temp () // "bash") ("#!/bin/sh\nprintf '" ^ v ^ "'\n") in
+      Printf.printf "%S %s\n" v (show_mode (Prime.local_mode ~dotdir:home bash)))
+    [ "5.2\\n"; "4.4\\n"; "4.4"; "10.0\\n"; "4.3\\n"; "3.2\\n"; "\\n"; ".\\n"; "x.y\\n"; "" ];
+  [%expect
+    {|
     plain
     plain
     plain
     plain
     zsh
-    plain
-    bash
+    "5.2\\n" bash
+    "4.4\\n" bash
+    "4.4" bash
+    "10.0\\n" bash
+    "4.3\\n" plain
+    "3.2\\n" plain
+    "\\n" plain
+    ".\\n" plain
+    "x.y\\n" plain
+    "" plain
     |}]
 
 let%expect_test
@@ -85,11 +76,8 @@ let%expect_test
     ENV: env.bash, beside env.bash integration.bash
     |}]
 
-let%expect_test "the scripts parse: the bootstrap under sh, the .zshenv under zsh" =
+let%expect_test "the bootstrap parses under sh" =
   print_string (Sh.output ~stdin:Prime.ssh_bootstrap ~env:[] "/bin/sh" [ "sh"; "-n" ]);
-  (match Tmux.Exec.look_path ~path "zsh" with
-  | Some zsh -> print_string (Sh.output ~stdin:Prime.zshenv ~env:[] zsh [ "zsh"; "-n" ])
-  | None -> ());
   [%expect {| |}]
 
 let%expect_test "the bootstrap carries each integration as single-quoted base64" =

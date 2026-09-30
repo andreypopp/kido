@@ -8,14 +8,12 @@ val candidates : string -> string list
 val self : string Lazy.t
 (** This executable as invoked ({!invoked_path} of [argv.(0)] on [$PATH]), unresolved. *)
 
-val resolve_binary : kido_tmux:string option -> string -> string
 val binary : string Lazy.t
 val write_all : Unix.file_descr -> string -> unit
 
 type process = { pid : int; stdin : Unix.file_descr; stdout : Unix.file_descr }
 
 val spawn : string list -> (process, string) result
-val exec : ?stdin:string -> string list -> (string, string) result
 val global_option : string -> string
 val list_panes : unit -> (Pane.t list, string) result
 val capture_pane : string -> (string list, string) result
@@ -27,7 +25,6 @@ val current_client : unit -> string
 val client_format : string
 val parse_client_state : string list -> string -> client_state option
 val client_state : string -> client_state option
-val real_clients : string list -> string list
 val resolve_client : pane:string -> tmux_env:string -> string option
 val switch_session : client:string -> next:bool -> (unit, string) result
 val switch_window : client:string -> next:bool -> Pane.t list list -> (unit, string) result
@@ -37,9 +34,6 @@ val send_prompt : string -> string -> (unit, string) result
 val window_exists : string -> bool
 
 type window = { window_id : string; pane_id : string; pane_pid : int }
-
-val new_window_args :
-  session:string -> name:string -> cwd:string -> env:string list -> string list -> string list
 
 val new_window :
   session:string ->

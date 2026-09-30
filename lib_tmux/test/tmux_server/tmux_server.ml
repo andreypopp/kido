@@ -11,9 +11,16 @@ let show = function
   | Ok lines -> Printf.printf "ok [%s]\n%!" (String.concat " | " lines)
   | Error e -> Printf.printf "error %s\n%!" e
 
+let tmux args =
+  let bin = Sys.getenv "KIDO_TMUX" in
+  let ic = Unix.open_process_args_in bin (Array.of_list (bin :: args)) in
+  let out = In_channel.input_all ic in
+  ignore (Unix.close_process_in ic);
+  out
+
 let control_clients () =
-  Result.get_exn (Exec.exec [ "list-clients"; "-F"; "#{client_control_mode} #{client_session}" ])
-  |> String.split_on_char '\n'
+  tmux [ "list-clients"; "-F"; "#{client_control_mode} #{client_session}" ]
+  |> String.lines
   |> List.filter (String.prefix ~pre:"1 ")
 
 let probe () =
@@ -29,17 +36,17 @@ let probe () =
     Float.(elapsed (fun () -> Conn.wait conn 5.) < 1.);
   let quiet = elapsed (fun () -> Conn.wait conn 0.3) in
   Printf.printf "a quiet wait runs to its deadline: %b\n" Float.(quiet >= 0.3 && quiet < 1.);
-  ignore (Exec.exec [ "new-window"; "-d"; "-t"; "work:"; "sleep 600" ]);
+  ignore (tmux [ "new-window"; "-d"; "-t"; "work:"; "sleep 600" ]);
   Printf.printf "a new window notifies: %b\n" Float.(elapsed (fun () -> Conn.wait conn 5.) < 1.);
-  ignore (Exec.exec [ "new-session"; "-d"; "-s"; "other"; "sleep 600" ]);
+  ignore (tmux [ "new-session"; "-d"; "-s"; "other"; "sleep 600" ]);
   Conn.wait conn 0.5;
-  ignore (Exec.exec [ "split-window"; "-d"; "-t"; "other:"; "sleep 600" ]);
+  ignore (tmux [ "split-window"; "-d"; "-t"; "other:"; "sleep 600" ]);
   Printf.printf "a split in an unfollowed session notifies: %b\n"
     Float.(elapsed (fun () -> Conn.wait conn 1.) < 0.9);
   Conn.follow conn "other";
   Printf.printf "control clients after follow: [%s]\n" (String.concat "; " (control_clients ()));
   Conn.wait conn 0.5;
-  ignore (Exec.exec [ "split-window"; "-d"; "-t"; "other:"; "sleep 600" ]);
+  ignore (tmux [ "split-window"; "-d"; "-t"; "other:"; "sleep 600" ]);
   Printf.printf "a split in the followed session notifies: %b\n"
     Float.(elapsed (fun () -> Conn.wait conn 1.) < 0.9);
   show (Conn.run conn "run-shell 'sleep 3'");
@@ -50,7 +57,7 @@ let probe () =
   Unix.sleepf 0.25;
   show (Conn.run conn "display-message -p back");
   Printf.printf "control clients after the redial: [%s]\n" (String.concat "; " (control_clients ()));
-  ignore (Exec.exec [ "kill-server" ]);
+  ignore (tmux [ "kill-server" ]);
   show (Conn.run conn "display-message -p gone");
   (match Conn.list_panes conn with
   | Ok _ -> print_endline "fallback without a server: panes"

@@ -259,14 +259,19 @@ let%expect_test "only a local prime moves PATH" =
   let marker = Bin_dir.path_prepend_script "/k/bin" in
   List.iter
     (fun mode ->
-      let moves bin_dir =
-        List.exists (fun (_, body) -> String.mem ~sub:"_kido_bin" body) (Prime.files ~bin_dir mode)
+      let bodies bin_dir =
+        List.concat_map
+          (fun (_, v) ->
+            let dir = if Sys.is_directory v then v else Filename.dirname v in
+            List.map
+              (fun f -> Option.get_or ~default:"" (Fs.read (dir // f)))
+              (Array.to_list (Sys.readdir dir)))
+          (Prime.local ~zdotdir:None ~bin_dir mode)
       in
+      let moves bin_dir = List.exists (String.mem ~sub:"_kido_bin") (bodies bin_dir) in
       Printf.printf "given a bin dir %b, carries the script %b, without one %b\n"
         (moves (Some "/k/bin"))
-        (List.exists
-           (fun (_, b) -> String.mem ~sub:marker b)
-           (Prime.files ~bin_dir:(Some "/k/bin") mode))
+        (List.exists (String.mem ~sub:marker) (bodies (Some "/k/bin")))
         (moves None))
     [ Prime.Zsh; Bash ];
   Printf.printf "ssh: %b\n"

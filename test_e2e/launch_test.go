@@ -127,6 +127,9 @@ func (r *kidoRun) env() []string {
 		"TMUX_TMPDIR=" + r.tmpdir,
 		"KIDO_STATE_DIR=" + r.state,
 		"SHELL=" + r.shell,
+		// Empty is unset: every launch here must still find the kido-tmux
+		// beside kido.
+		"KIDO_TMUX=",
 	}
 }
 
@@ -397,7 +400,8 @@ func TestKidoConfIsHonoured(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(conf, "kido.conf"),
-		[]byte("set -g @kido-e2e from-kido-conf\nset -g side-status-width 33\n"), 0o644); err != nil {
+		[]byte("set -g @kido-e2e from-kido-conf\nset -g side-status-width 33\n"+
+			"set -g side-status-command false\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -408,6 +412,10 @@ func TestKidoConfIsHonoured(t *testing.T) {
 	}
 	if got := r.mustKido("show-options", "-gv", "side-status-width"); got != "33" { // kido's own default, shows which layer wins
 		t.Errorf("side-status-width = %q, want kido.conf's 33 over kido's default", got)
+	}
+	// What kido owns is set after kido.conf is sourced.
+	if got := r.mustKido("show-options", "-gv", "side-status-command"); !strings.Contains(got, kidoBin) {
+		t.Errorf("side-status-command = %q, want the kido under test over kido.conf's", got)
 	}
 }
 
@@ -491,4 +499,194 @@ func TestTmuxConfIsIgnored(t *testing.T) {
 	if got := r.mustKido("show-options", "-gqv", "@kido-e2e"); got != "" {
 		t.Errorf("@kido-e2e = %q: the user's ~/.tmux.conf was read", got)
 	}
+}
+
+// With no XDG_CONFIG_HOME, kido.conf is read from ~/.config.
+func TestKidoConfUnderDotConfig(t *testing.T) {
+	t.Parallel()
+	r := newKidoRun(t)
+	r.config = ""
+	conf := filepath.Join(r.home, ".config", "kido")
+	if err := os.MkdirAll(conf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(conf, "kido.conf"),
+		[]byte("set -g @kido-e2e from-dot-config\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r.launch("first")
+	r.waitUp()
+	if got := r.mustKido("show-options", "-gv", "@kido-e2e"); got != "from-dot-config" {
+		t.Errorf("@kido-e2e = %q, want the value ~/.config/kido/kido.conf set", got)
+	}
+}
+
+// A kido under a path with a space: sh parses side-status-command and
+// default-command, and must see the path as one word. Started through a
+// symlink, with no tmux on PATH to fall back on, it runs the kido-tmux
+// beside the file the link names.
+func TestKidoAtAPathWithASpace(t *testing.T) {
+	t.Parallel()
+	r := newKidoRun(t)
+	dir := filepath.Join(r.dir, "my kido")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "kido")
+	if err := os.Symlink(kidoBin, bin); err != nil {
+		t.Fatal(err)
+	}
+
+	r.mustOuter("new-window", "-d", "-t", "host", "-n", "first",
+		fmt.Sprintf("unset TMUX; exec env %s PATH=/usr/bin:/bin %q", r.envAssign(), bin))
+	r.waitUp()
+	r.waitFor(func() bool { return r.sidebarUp("first") }, "the side column to be drawn")
+	if got, want := r.mustKido("show-options", "-gv", "default-command"), `"`+bin+`" shell`; got != want {
+		t.Errorf("default-command = %q, want %q", got, want)
+	}
+	pane := r.firstPane()
+	r.waitFor(func() bool {
+		return reportedPrompt(r.mustKido("display-message", "-p", "-t", pane, "#{pane_last_prompt_time}"))
+	}, "the pane's shell, started by `kido shell`, to report its first prompt")
+}
+
+func launcherEnv(t *testing.T, extra ...string) []string {
+	t.Helper()
+	sock, err := os.MkdirTemp("", "kido-sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sock) })
+	return cleanEnv(append([]string{"TMUX=", "TMUX_SIDE_CLIENT=", "TMUX_TMPDIR=" + sock,
+		"KIDO_STATE_DIR=" + t.TempDir(), "HOME=" + t.TempDir(), "XDG_CONFIG_HOME="}, extra...)...)
+}
+
+func writeScript(t *testing.T, path, body string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// The launcher's refusals, each before a server exists: its cause on
+// stderr and exit 1.
+func TestLauncherRefusals(t *testing.T) {
+	t.Parallel()
+	requireTmux(t)
+	dir := t.TempDir()
+	quoted := filepath.Join(dir, "we're here", "kido")
+	if err := os.MkdirAll(filepath.Dir(quoted), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(kidoBin, quoted); err != nil {
+		t.Fatal(err)
+	}
+	mismatch := writeScript(t, filepath.Join(dir, "old-tmux"),
+		"#!/bin/sh\necho 'protocol version mismatch (client 8, server 7)' >&2\nexit 1\n")
+	for _, c := range []struct {
+		bin    string
+		env    []string
+		stderr string
+	}{
+		{kidoBin, []string{"HOME="}, "kido: $HOME is not defined"},
+		{quoted, nil, fmt.Sprintf(`kido: cannot start a kido server: refusing path %q: it contains "'"`, quoted)},
+		{kidoBin, []string{"KIDO_TMUX=" + mismatch},
+			`kido: the kido server on socket "kido" is running an older kido-tmux than this one`},
+	} {
+		env := launcherEnv(t, c.env...)
+		cmd := exec.Command(c.bin)
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		if code := cmd.ProcessState.ExitCode(); code != 1 || !strings.HasPrefix(string(out), c.stderr) {
+			t.Errorf("%s: exit %d (%v), output %q; want exit 1 and %q", c.bin, code, err, out, c.stderr)
+		}
+		for _, kv := range env {
+			if sock, ok := strings.CutPrefix(kv, "TMUX_TMPDIR="); ok {
+				if _, err := os.Stat(socketPath(sock, "kido")); err == nil {
+					t.Errorf("%s: a server started on %s", c.bin, sock)
+				}
+			}
+		}
+	}
+}
+
+// Which tmux the launcher runs, and what it does with the probe's answer:
+// a stand-in answers list-sessions as told and records what the launcher
+// then execs. The one beside a symlinked kido wins over the one beside the
+// file it names: only the link's directory survives a Homebrew upgrade.
+func TestLauncherFindsItsTmuxAndReadsTheProbe(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	const fake = `#!/bin/sh
+if [ "$3" = list-sessions ]; then
+  [ -z "$PROBE_ERR" ] || echo "$PROBE_ERR" >&2
+  exit "$PROBE_RC"
+fi
+echo "$0 $*" >"$OUT"
+`
+	named := writeScript(t, filepath.Join(dir, "named", "fork"), fake)
+	beside := filepath.Join(dir, "beside")
+	writeScript(t, filepath.Join(beside, "kido-tmux"), fake)
+	if err := os.Symlink(kidoBin, filepath.Join(beside, "kido")); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(kidoBin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alone := writeScript(t, filepath.Join(dir, "alone", "kido"), string(body))
+	onPath := writeScript(t, filepath.Join(dir, "path", "tmux"), fake)
+
+	attach, start := "-L kido attach-session", "-L kido -f STATE/server.conf new-session -s main"
+	for i, c := range []struct {
+		bin, env, rc, stderr, tmux, args string
+	}{
+		{kidoBin, "KIDO_TMUX=" + named, "0", "", named, attach},
+		{kidoBin, "KIDO_TMUX=" + named, "1", "no server running on /tmp/tmux-1/kido", named, start},
+		{kidoBin, "KIDO_TMUX=" + named, "1", "error connecting to /tmp/tmux-1/kido (No such file or directory)", named, start},
+		{filepath.Join(beside, "kido"), "KIDO_TMUX=", "0", "", filepath.Join(beside, "kido-tmux"), attach},
+		{alone, "PATH=" + filepath.Dir(onPath) + ":/usr/bin:/bin", "0", "", onPath, attach},
+	} {
+		out := filepath.Join(dir, fmt.Sprintf("exec-%d", i))
+		state := t.TempDir()
+		cmd := exec.Command(c.bin)
+		cmd.Env = launcherEnv(t, c.env, "PROBE_RC="+c.rc, "PROBE_ERR="+c.stderr, "OUT="+out,
+			"KIDO_STATE_DIR="+state)
+		if b, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("%s with %s, probe %s: %v\n%s", c.bin, c.env, c.rc, err, b)
+			continue
+		}
+		got, _ := os.ReadFile(out)
+		if want := c.tmux + " " + strings.ReplaceAll(c.args, "STATE", state); strings.TrimSpace(string(got)) != want {
+			t.Errorf("%s with %s, probe %s %q: ran %q, want %q", c.bin, c.env, c.rc, c.stderr, got, want)
+		}
+	}
+}
+
+// `kido shell` runs tmux's default-shell, which tmux also hands its panes
+// as $SHELL: here one it can prime, not the launcher's plain /bin/sh.
+func TestKidoConfDefaultShellIsTheLoginShell(t *testing.T) {
+	t.Parallel()
+	r := newKidoRun(t)
+	conf := filepath.Join(r.config, "kido")
+	if err := os.MkdirAll(conf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(conf, "kido.conf"),
+		[]byte("set -g default-shell "+r.shell+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.shell = "/bin/sh"
+
+	r.launch("first")
+	r.waitUp()
+	pane := r.firstPane()
+	r.waitFor(func() bool {
+		return reportedPrompt(r.mustKido("display-message", "-p", "-t", pane, "#{pane_last_prompt_time}"))
+	}, "the default-shell, primed, to report its first prompt")
 }

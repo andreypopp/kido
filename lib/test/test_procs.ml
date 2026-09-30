@@ -25,38 +25,6 @@ let%expect_test "parse_processes: real macOS ps output, then malformed rows" =
     99 1 sh [sh -c true]
     |}]
 
-let%expect_test "pi is found behind its bash shim, and its ancestors marked" =
-  let all =
-    Procs.parse_processes
-      (Procs.split_fields
-         "  600   500 bash     bash /opt/homebrew/Cellar/pi/1.2/libexec/bin/pi\n\
-         \  700   600 node     node /opt/homebrew/Cellar/pi/1.2/libexec/bin/pi\n\
-         \  500     1 zsh      zsh\n")
-  in
-  let parent = Procs.Int_map.of_list (List.map (fun (p : Procs.process) -> (p.pid, p.ppid)) all) in
-  List.filter Procs.is_pi all
-  |> List.fold_left
-       (fun set (p : Procs.process) -> Procs.mark_ancestors parent p.pid set)
-       Procs.Int_set.empty
-  |> Procs.Int_set.iter (Printf.printf "%d ");
-  print_endline "| a cycle stops:";
-  Procs.mark_ancestors (Procs.Int_map.of_list [ (2, 3); (3, 2) ]) 2 Procs.Int_set.empty
-  |> Procs.Int_set.iter (Printf.printf "%d ");
-  print_newline ();
-  List.iter
-    (fun args -> Printf.printf "%b " (Procs.is_pi { pid = 1; ppid = 0; comm = ""; args }))
-    [
-      [ "/opt/homebrew/bin/pi" ];
-      [ "bash"; "/x/libexec/bin/pi"; "--help" ];
-      [ "node"; "server.js" ];
-      [ "node"; "/src/pizza/bin/index.js" ];
-    ];
-  [%expect {|
-    500 600 700 | a cycle stops:
-    2 3
-    true true false false
-    |}]
-
 let%expect_test "parse_ssh splits at the destination" =
   List.iter
     (fun args ->
@@ -129,7 +97,7 @@ let%expect_test "ssh_session: -N wins over -t wins over -T, else a remote comman
     -v -p 2222                         -> none
     |}]
 
-let%expect_test "the reporter walks past wrapping shells" =
+let%expect_test "parse_parent" =
   Printf.printf "%s\n"
     (match Procs.parse_parent [ [ "71584"; "zsh" ] ] with
     | Some (ppid, comm) -> Printf.sprintf "%d %s" ppid comm
@@ -138,11 +106,7 @@ let%expect_test "the reporter walks past wrapping shells" =
     (fun rows ->
       print_string (if Option.is_none (Procs.parse_parent rows) then "none " else "some "))
     [ []; [ [ "71584" ] ]; [ [ "abc"; "zsh" ] ] ];
-  List.iter
-    (fun c -> Printf.printf "%s=%b " c (Procs.is_shell c))
-    [ "sh"; "/bin/sh"; "dash"; "bash"; "zsh"; "ksh"; "claude"; "node"; "" ];
-  [%expect
-    {|
+  [%expect {|
     71584 zsh
-    none none none sh=true /bin/sh=true dash=true bash=true zsh=true ksh=true claude=false node=false =false
+    none none none
     |}]

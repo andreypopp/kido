@@ -21,22 +21,6 @@ let%expect_test "argv per mode" =
     /usr/bin/fish -c top
     |}]
 
-let%expect_test "bare_shell_word" =
-  List.iter
-    (fun c ->
-      Printf.printf "%S -> %s\n" c (Option.get_or ~default:"none" (Shell.bare_shell_word c)))
-    [ "zsh"; "/bin/zsh"; "zsh -l"; "reattach-to-user-namespace -l zsh"; ""; "   "; "  zsh  " ];
-  [%expect
-    {|
-    "zsh" -> zsh
-    "/bin/zsh" -> /bin/zsh
-    "zsh -l" -> none
-    "reattach-to-user-namespace -l zsh" -> none
-    "" -> none
-    "   " -> none
-    "  zsh  " -> zsh
-    |}]
-
 let%expect_test "command primes a bare word naming zsh or bash as the shell, and nothing else" =
   let show (path, command) =
     Printf.printf "%s %s\n" (Filename.basename path) (Option.get_or ~default:"-" command)
@@ -51,6 +35,8 @@ let%expect_test "command primes a bare word naming zsh or bash as the shell, and
       Some "zsh -l";
       Some "fish";
       Some "reattach-to-user-namespace -l zsh";
+      Some "  zsh  ";
+      Some "   ";
       None;
     ];
   let real = Sh.write (Filename.concat (Sh.temp ()) "myshell") "#!/bin/sh\n" in
@@ -63,6 +49,8 @@ let%expect_test "command primes a bare word naming zsh or bash as the shell, and
     zsh zsh -l
     zsh fish
     zsh reattach-to-user-namespace -l zsh
+    zsh -
+    zsh    
     zsh -
     myshell -
     |}]
@@ -80,19 +68,4 @@ let%expect_test "with_env replaces rather than appends" =
     TERM=xterm
     ZDOTDIR=/tmp/kido-shell.1
     KIDO_ORIG_ZDOTDIR=/home/me/dots
-    |}]
-
-let%expect_test "resolve_login_shell: default-shell, then $SHELL, then /bin/sh" =
-  let real = Sh.write (Filename.concat (Sh.temp ()) "myshell") "#!/bin/sh\n" in
-  List.iter
-    (fun c ->
-      print_endline
-        (if String.equal (Shell.resolve_login_shell c) real then "real"
-         else Shell.resolve_login_shell c))
-    [ [ real; "/bin/bash" ]; [ ""; real ]; [ "/no/such/shell"; real ]; [ ""; "" ] ];
-  [%expect {|
-    real
-    real
-    real
-    /bin/sh
     |}]

@@ -277,26 +277,26 @@ let window_exists window_id =
 
 type window = { window_id : string; pane_id : string; pane_pid : int }
 
-let new_window_args ~session ~name ~cwd ~env command =
-  [
-    "new-window";
-    "-d";
-    "-P";
-    "-F";
-    "#{window_id}:#{pane_id}:#{pane_pid}";
-    "-t";
-    session ^ ":";
-    "-n";
-    name;
-    "-c";
-    cwd;
-  ]
-  @ List.concat_map (fun kv -> [ "-e"; kv ]) env
-  @ command
-
 let new_window ~session ~name ~cwd ~env command =
   let open Result.Infix in
-  let* out = exec (new_window_args ~session ~name ~cwd ~env command) in
+  let* out =
+    exec
+      ([
+         "new-window";
+         "-d";
+         "-P";
+         "-F";
+         "#{window_id}:#{pane_id}:#{pane_pid}";
+         "-t";
+         session ^ ":";
+         "-n";
+         name;
+         "-c";
+         cwd;
+       ]
+      @ List.concat_map (fun kv -> [ "-e"; kv ]) env
+      @ command)
+  in
   let* w =
     match String.split ~by:":" out with
     | [ window_id; pane_id; pid ] -> (
