@@ -2,7 +2,3 @@
 	path = third_party/tmux
 	url = https://github.com/andreypopp/tmux.git
 	branch = fork
-[submodule "app/third_party/ghostty"]
-	path = app/third_party/ghostty
-	url = https://github.com/manaflow-ai/ghostty.git
-	branch = main
