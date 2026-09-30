@@ -174,7 +174,7 @@ if [ "$timeout_s" -gt 0 ]; then
 fi
 
 status=0
-"$podman" run --rm \
+"$podman" run --rm --init \
 	--name "$container_name" \
 	--cpus "$cpus" \
 	--memory "$memory" \

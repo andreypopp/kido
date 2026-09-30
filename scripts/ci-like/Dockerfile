@@ -1,8 +1,9 @@
 # Built and run by scripts/ci-like.sh, which supplies TMUX_REVISION only to
 # tag the image (a submodule bump then gets a new tag, not a stale reused
 # one); the build itself reads the fork's source from the submodule below.
-# Go is only the e2e suite's.
-FROM golang:1.27-bookworm
+# Go is only the e2e suite's. Trixie for its OCaml: dune 3.24.2 needs
+# >= 4.14 to bootstrap.
+FROM golang:1.27-trixie
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
 		bash zsh git curl ca-certificates gnupg \
@@ -62,7 +63,8 @@ ENV XDG_CACHE_HOME=/dune-cache/xdg
 COPY dune-project dune-workspace /tmp/kido-deps/
 COPY dune.lock /tmp/kido-deps/dune.lock
 RUN cd /tmp/kido-deps && dune build @pkg-install \
-	&& rm -rf /tmp/kido-deps && chmod -R a+rwX /dune-cache
+	&& git config --system --add safe.directory /dune-cache/git-repo \
+	&& cd / && rm -rf /tmp/kido-deps && chmod -R a+rwX /dune-cache
 
 # dune's build directory is a sibling of the host's _build inside the
 # bind-mounted checkout, so a Linux build never overwrites it. Relative on
