@@ -135,7 +135,7 @@ func TestSearchMatchesSSHDestinationNotCommand(t *testing.T) {
 	h.waitPaneCommand(pane, "ssh")
 	h.newSession("beta")
 	h.newWindow("beta", "", "cat", "-")
-	h.waitRow("╶  cat")
+	h.waitRow("╶ cat")
 	focusSidebar(h)
 
 	h.sendKeys("/")

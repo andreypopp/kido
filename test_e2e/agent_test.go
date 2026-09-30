@@ -49,7 +49,7 @@ func TestPiPaneLooksLikeAClaudePane(t *testing.T) {
 	h.hook("sess-c", claude, "UserPromptSubmit")
 	h.agentStatus("pi-1", pane, "pi", "running")
 	h.waitGlyph("deploy - kido", "◼")
-	h.waitFor(func() bool { return h.countRows("╶◼ deploy - kido") == 2 }, settle,
+	h.waitFor(func() bool { return h.countRows("╶◼deploy - kido") == 2 }, settle,
 		func() string {
 			return fmt.Sprintf("two identical rows for the pi and claude panes (rows are %q)", h.rows())
 		})
@@ -59,7 +59,7 @@ func TestPiPaneLooksLikeAClaudePane(t *testing.T) {
 	// claude pane is the one that keeps the title row.
 	h.agentStatus("pi-1", pane, "pi", "", "--remove")
 	h.waitFor(func() bool {
-		return h.countRows("╶◼ deploy - kido") == 1 && h.countRows("╶  node") == 1
+		return h.countRows("╶◼deploy - kido") == 1 && h.countRows("╶ node") == 1
 	}, settle, func() string {
 		return fmt.Sprintf("the pi pane back to a plain node row (rows are %q)", h.rows())
 	})
@@ -77,7 +77,7 @@ func TestPiReportedTitleWinsOverPaneTitle(t *testing.T) {
 
 	h.agentStatus("pi-3", pane, "pi", "idle", "--title", "deploy")
 	h.waitGlyph("deploy", "")
-	if got := h.rowFor("deploy"); got != "╶  deploy" {
+	if got := h.rowFor("deploy"); got != "╶ deploy" {
 		t.Fatalf("row = %q, want the reported title alone, not the pane title", got)
 	}
 }
@@ -99,7 +99,7 @@ func TestPiBeatsClaudeOnTheSamePane(t *testing.T) {
 	// Long enough for ten ticks: the pi record must keep the pane, not
 	// just win the race to be read first.
 	time.Sleep(time.Second)
-	if got := h.rowFor("bridge - kido"); got != "╶◼ bridge - kido" {
+	if got := h.rowFor("bridge - kido"); got != "╶◼bridge - kido" {
 		t.Fatalf("row = %q, want pi's running record to hold the pane", got)
 	}
 
@@ -109,7 +109,7 @@ func TestPiBeatsClaudeOnTheSamePane(t *testing.T) {
 	h.waitGlyph("bridge - kido", "◆")
 	h.hook("inner-claude", pane, "UserPromptSubmit") // running
 	time.Sleep(time.Second)
-	if got := h.rowFor("bridge - kido"); got != "╶◆ bridge - kido" {
+	if got := h.rowFor("bridge - kido"); got != "╶◆bridge - kido" {
 		t.Fatalf("row = %q, want pi's waiting record to hold the pane", got)
 	}
 

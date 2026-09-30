@@ -27,8 +27,8 @@ func TestRenderGrouping(t *testing.T) {
 
 	// A just-split pane briefly reports the forked server binary as its
 	// command before the shell exec's, so wait for rows to settle.
-	want := []string{"zeta", "╶  " + shell, "alpha",
-		"┌  " + shell, "├  " + shell, "└  " + shell}
+	want := []string{"zeta", "╶ " + shell, "alpha",
+		"┌ " + shell, "├ " + shell, "└ " + shell}
 	var rows []string
 	h.waitFor(func() bool {
 		rows = h.rows()
@@ -60,7 +60,7 @@ func TestFollowActivePane(t *testing.T) {
 	// "cat" waits on stdin, so this window's row reads differently from
 	// every shell row and the selection is unambiguous.
 	h.newWindow("beta", "editor", "cat", "-")
-	h.waitRow("╶  cat")
+	h.waitRow("╶ cat")
 
 	h.waitSelected(shell)
 	h.in("switch-client", "-c", h.client, "-t", "beta:1")
@@ -69,7 +69,7 @@ func TestFollowActivePane(t *testing.T) {
 	h.waitSelected("cat")
 	h.waitFor(func() bool {
 		lines := h.capture()
-		return selectedIndexOf(lines) == rowIndexOf(lines, "╶  cat")
+		return selectedIndexOf(lines) == rowIndexOf(lines, "╶ cat")
 	}, settle, msgf("selection on the cat row"))
 }
 
@@ -143,7 +143,7 @@ func TestShellStatusRow(t *testing.T) {
 	// The first prompt fires an OSC 133 "D" carrying the rc's exit status
 	// with no "C" before it; Ui.shell_outcome's start-time guard is what keeps
 	// that from marking the pane as having run something.
-	h.waitShellRow("╶  zsh", "")
+	h.waitShellRow("╶ zsh", "")
 
 	h.in("send-keys", "-t", pane, "sleep 5", "Enter")
 	h.waitPaneCommand(pane, "sleep")
@@ -151,20 +151,20 @@ func TestShellStatusRow(t *testing.T) {
 	// ("sleep 5", not "sleep"; ssh_remote_test.go pins the remote case).
 	// Read once, not polled: zsh's preexec fires 133;C before the command
 	// runs, so waitPaneCommand above already ordered this after it.
-	h.waitShellRow("╶◼ sleep 5", "")
+	h.waitShellRow("╶◼sleep 5", "")
 
-	h.waitFor(func() bool { return h.shellRow("╶✓ zsh", "32") },
+	h.waitFor(func() bool { return h.shellRow("╶✓zsh", "32") },
 		10*time.Second, msgf("the row a checkmark after the sleep"))
 
 	h.in("send-keys", "-t", pane, "false", "Enter") // fails, row goes red until visited
-	h.waitShellRow("╶◼ zsh", "31")
+	h.waitShellRow("╶◼zsh", "31")
 
 	h.in("select-window", "-t", pane)
 	h.in("select-pane", "-t", pane)
 	h.waitSelected("zsh")
 	h.in("select-window", "-t", home)
 	h.in("select-pane", "-t", home)
-	h.waitShellRow("╶  zsh", "")
+	h.waitShellRow("╶ zsh", "")
 
 	// pane_command_end_time has one-second resolution and Ui.shell_outcome's seen
 	// comparison is strict, so age past the visit's second or the two land
@@ -172,7 +172,7 @@ func TestShellStatusRow(t *testing.T) {
 	time.Sleep(1200 * time.Millisecond)
 
 	h.in("send-keys", "-t", pane, "true", "Enter") // succeeds while client is elsewhere
-	h.waitShellRow("╶✓ zsh", "32")
+	h.waitShellRow("╶✓zsh", "32")
 
 	// Visiting the pane clears it: the success is older than the visit.
 	h.in("select-window", "-t", pane)
@@ -180,7 +180,7 @@ func TestShellStatusRow(t *testing.T) {
 	h.waitSelected("zsh")
 	h.in("select-window", "-t", home)
 	h.in("select-pane", "-t", home)
-	h.waitShellRow("╶  zsh", "")
+	h.waitShellRow("╶ zsh", "")
 }
 
 // shellRow's color "" asks only that the row is not red (the running
@@ -240,29 +240,29 @@ func TestBashShellStatusRow(t *testing.T) {
 	h.waitPaneCommand(pane, "bash")
 	h.waitPanePrompt(pane) // typing before the first prompt is read by nobody listening yet
 	// bash's first prompt fires no "D" at all - nothing has run.
-	h.waitShellRow("╶  bash", "")
+	h.waitShellRow("╶ bash", "")
 
 	h.in("send-keys", "-t", pane, "sleep 5", "Enter")
 	h.waitPaneCommand(pane, "sleep")
 	// Read once rather than poll, for the reason TestShellStatusRow gives.
-	h.waitShellRow("╶◼ sleep 5", "")
+	h.waitShellRow("╶◼sleep 5", "")
 
-	h.waitFor(func() bool { return h.shellRow("╶✓ bash", "32") },
+	h.waitFor(func() bool { return h.shellRow("╶✓bash", "32") },
 		10*time.Second, msgf("the row a checkmark after the sleep"))
 
 	h.in("send-keys", "-t", pane, "false", "Enter") // fails, row goes red until visited
-	h.waitShellRow("╶◼ bash", "31")
+	h.waitShellRow("╶◼bash", "31")
 
 	// Both rows are labelled bash (the harness's own pane too), so wait on
 	// the row losing its red rather than on h.waitSelected, which the
 	// other pane's row satisfies at once.
 	h.in("select-window", "-t", pane)
 	h.in("select-pane", "-t", pane)
-	h.waitFor(func() bool { return h.selectedRow() == "╶  bash" }, settle,
+	h.waitFor(func() bool { return h.selectedRow() == "╶ bash" }, settle,
 		msgf("the visited bash row clear of its red"))
 	h.in("select-window", "-t", home)
 	h.in("select-pane", "-t", home)
-	h.waitShellRow("╶  bash", "")
+	h.waitShellRow("╶ bash", "")
 }
 
 // The selected row inverts the label's title alone: not the tree glyph,
@@ -273,7 +273,7 @@ func TestSelectedRowInvertsTitleOnly(t *testing.T) {
 	h := start(t, "alpha")
 	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 	h.agentStatus("sel-1", pane, "pi", "running", "--title", "deploy", "--activity", "testing")
-	h.waitSelected("deploy testing")
+	h.waitSelected("deploytesting")
 
 	var line string
 	for _, l := range h.capture() {
@@ -285,7 +285,11 @@ func TestSelectedRowInvertsTitleOnly(t *testing.T) {
 	if on == nil {
 		t.Fatalf("no selected row in %q", line)
 	}
-	inverted, rest, _ := strings.Cut(line[on[1]:], "\x1b[")
+	// Turning reverse on alongside the title's own foreground (the glyph
+	// left it non-default) can emit the two as separate SGR codes; skip
+	// past any that immediately follow before reading the title itself.
+	afterOn := leadingEscRE.ReplaceAllString(line[on[1]:], "")
+	inverted, rest, _ := strings.Cut(afterOn, "\x1b[")
 	if inverted != "deploy" {
 		t.Errorf("inverted %q, want the title alone; row %q", inverted, line)
 	}

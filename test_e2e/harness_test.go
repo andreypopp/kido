@@ -615,6 +615,11 @@ func (h *harness) drag(fromX, toX, y int) {
 // escape ("\x1b[1;7m") rather than requiring a literal "\x1b[7m".
 var reverseRE = regexp.MustCompile(`\x1b\[(?:\d+;)*7(?:;\d+)*m`)
 
+// leadingEscRE matches a run of SGR escapes at the very start of a
+// string, for stripping the ones a style change emits alongside a
+// reverse-video toggle before the real text.
+var leadingEscRE = regexp.MustCompile(`^(?:\x1b\[[0-9;]*m)+`)
+
 // sgrOn holds, per SGR parameter the tests read, a matcher for an escape
 // that turns that attribute on. Built once so it is safe to share between
 // parallel tests.
@@ -625,14 +630,14 @@ var sgrOn = map[string]*regexp.Regexp{
 	"32": regexp.MustCompile(`\x1b\[(?:\d+;)*32(?:;\d+)*m`), // green: a done indicator
 }
 
-// indField is the sidebar's two-column indicator field as the tests spell
-// it: the glyph and a space, or two spaces when there is none. It mirrors
-// Ui.field (lib/ui.ml).
+// indField is the sidebar's indicator field as the tests spell it: the
+// glyph alone, or a single space when there is none. It mirrors
+// Ui.parts (lib/ui.ml).
 func indField(glyph string) string {
 	if glyph == "" {
-		return "  "
+		return " "
 	}
-	return glyph + " "
+	return glyph
 }
 
 func hasSGR(line, param string) bool {

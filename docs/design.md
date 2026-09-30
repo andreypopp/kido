@@ -1668,8 +1668,8 @@ three-pane window with a subagent hanging off its middle pane reads as
 one bracket with an indented block inside it:
 
     ┌ zsh
-    ├◼ orchestrator
-    │ ┌◼ subagent
+    ├◼orchestrator
+    │ ┌◼subagent
     │ └ zsh
     └ zsh
 
@@ -1688,10 +1688,10 @@ its own ┌…└ bracket in a column of its own, right after the group
 glyph, and the group's continuation (│, or a blank under a └) runs down
 beside it on every row:
 
-    └  working-on-kido
-      ├┌◼ helper
-      │└  zsh
-      └  other-child
+    └ working-on-kido
+      ├┌◼helper
+      │└ zsh
+      └ other-child
 
 so a pane the user splits off a running child's window still reads as
 that window's second pane, and not as a row the group glyph swallowed.

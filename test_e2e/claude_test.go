@@ -52,7 +52,7 @@ func TestClaudeStatuses(t *testing.T) {
 		h.waitGlyph("Tmux config", c.glyph)
 	}
 
-	if got := h.rowFor("Tmux config"); got != "╶◼ Tmux config" { // marker stripped from the pane title
+	if got := h.rowFor("Tmux config"); got != "╶◼Tmux config" { // marker stripped from the pane title
 		t.Errorf("row = %q", got)
 	}
 
@@ -112,7 +112,7 @@ func TestClaudeBackgroundWork(t *testing.T) {
 	// idle_prompt fires a minute after every Stop and knows nothing of the background job.
 	h.hook("sess-bg", pane, "Notification", "notification_type", "idle_prompt")
 	time.Sleep(time.Second)
-	if got := h.rowFor("Background job"); got != "╶◼ Background job" {
+	if got := h.rowFor("Background job"); got != "╶◼Background job" {
 		t.Fatalf("row = %q, want still running while the background job is", got)
 	}
 
@@ -135,7 +135,7 @@ func TestClaudeSubagentMidTurn(t *testing.T) {
 
 	h.hookPayload("sess-mid", pane, "SubagentStop", map[string]any{"agent_id": "a", "background_tasks": []any{}})
 	time.Sleep(time.Second)
-	if got := h.rowFor("Midturn job"); got != "╶◼ Midturn job" {
+	if got := h.rowFor("Midturn job"); got != "╶◼Midturn job" {
 		t.Fatalf("row = %q, want still running: the main loop never stopped", got)
 	}
 }
@@ -156,7 +156,7 @@ func TestClaudeDismissedPrompt(t *testing.T) {
 	// No hook fires either; the footer is what keeps the pane from reading idle.
 	h.fakeClaude(pane, "busy")
 	time.Sleep(time.Second)
-	if got := h.rowFor("Dismissed"); got != "╶◆ Dismissed" {
+	if got := h.rowFor("Dismissed"); got != "╶◆Dismissed" {
 		t.Fatalf("row = %q, want the waiting glyph while work is in flight", got)
 	}
 

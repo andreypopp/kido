@@ -104,9 +104,9 @@ let%expect_test "a subagent's window nests under the pane that spawned it" =
     ];
   [%expect {|
     sess
-    ┌◼ orchestrator
-    │ └◼ subagent
-    └  zsh
+    ┌◼orchestrator
+    │ └◼subagent
+    └ zsh
     |}]
 
 let%expect_test "field() keeps the three cases aligned" =
@@ -118,9 +118,9 @@ let%expect_test "field() keeps the three cases aligned" =
     ];
   [%expect {|
     sess
-    ┌◼ orchestrator
-    ├  idle-agent
-    └  zsh
+    ┌◼orchestrator
+    ├ idle-agent
+    └ zsh
     |}]
 
 let%expect_test "sibling subagents form one group" =
@@ -141,11 +141,11 @@ let%expect_test "sibling subagents form one group" =
   [%expect
     {|
     sess
-    ┌◼ orchestrator
-    │ ├◼ subagent-a
-    │ ├◼ subagent-b
-    │ └◼ subagent-c
-    └  zsh
+    ┌◼orchestrator
+    │ ├◼subagent-a
+    │ ├◼subagent-b
+    │ └◼subagent-c
+    └ zsh
     |}]
 
 let%expect_test "a two-pane sibling keeps its own bracket beside the group glyph" =
@@ -164,10 +164,10 @@ let%expect_test "a two-pane sibling keeps its own bracket beside the group glyph
   [%expect
     {|
     sess
-    ╶◼ orchestrator
-      ├┌◼ subagent-a
-      │└  zsh
-      └◼ subagent-b
+    ╶◼orchestrator
+      ├┌◼subagent-a
+      │└ zsh
+      └◼subagent-b
     |}]
 
 let%expect_test "groups at depth two" =
@@ -191,12 +191,12 @@ let%expect_test "groups at depth two" =
   [%expect
     {|
     sess
-    ╶◼ root
-      ├◼ subagent-a
-      │ └◼ grandkid-a1
-      └◼ subagent-b
-        ├◼ grandkid-b1
-        └◼ grandkid-b2
+    ╶◼root
+      ├◼subagent-a
+      │ └◼grandkid-a1
+      └◼subagent-b
+        ├◼grandkid-b1
+        └◼grandkid-b2
     |}]
 
 let%expect_test "two root agents in one window are the window's own bracket" =
@@ -205,8 +205,8 @@ let%expect_test "two root agents in one window are the window's own bracket" =
     [ ("%1", agent_state "first-sess" "" "first"); ("%2", agent_state "second-sess" "" "second") ];
   [%expect {|
     sess
-    ┌◼ first
-    └◼ second
+    ┌◼first
+    └◼second
     |}]
 
 let%expect_test "the parent's column is carried across a nested child, and stops at the last pane" =
@@ -235,15 +235,15 @@ let%expect_test "the parent's column is carried across a nested child, and stops
   [%expect
     {|
     sess
-    ┌  zsh
-    ├◼ orchestrator
-    │ └┌◼ subagent
-    │  └  zsh
-    └  zsh
+    ┌ zsh
+    ├◼orchestrator
+    │ └┌◼subagent
+    │  └ zsh
+    └ zsh
     sess
-    ┌  zsh
-    └◼ orchestrator
-      └◼ subagent
+    ┌ zsh
+    └◼orchestrator
+      └◼subagent
     |}]
 
 let%expect_test
@@ -267,15 +267,15 @@ let%expect_test
   [%expect
     {|
     sess
-    ╶◼ root
-      └◼ kid
-        └◼ grandkid
+    ╶◼root
+      └◼kid
+        └◼grandkid
     sess
-    ╶◼ unrelated
-    ╶◼ orphan
+    ╶◼unrelated
+    ╶◼orphan
     sess
-    ╶◼ a
-      └◼ b
+    ╶◼a
+      └◼b
     |}]
 
 let%expect_test "the same state renders the same rows every time" =
@@ -310,11 +310,11 @@ let%expect_test "the same state renders the same rows every time" =
     {|
     stable: true
     sess
-    ┌◼ root
-    │ ├◼ kid-a
-    │ └◼ kid-b
-    │   └◼ grandkid
-    └  zsh
+    ┌◼root
+    │ ├◼kid-a
+    │ └◼kid-b
+    │   └◼grandkid
+    └ zsh
     |}]
 
 let placements windows st lingering =
@@ -449,20 +449,20 @@ let%expect_test
   [%expect
     {|
     sess
-    ╶× fix the flaky test
+    ╶×fix the flaky test
     sess
-    ╶◼ fix the flaky test
+    ╶◼fix the flaky test
     sess
-    ┌◼ fix the flaky test
-    └  zsh
+    ┌◼fix the flaky test
+    └ zsh
     sess
-    ╶✓ subagent completed
+    ╶✓subagentcompleted
     sess
-    ╶× subagent failed
+    ╶×subagentfailed
     sess
-    ╶× subagent died
+    ╶×subagentdied
     sess
-    ╶× subagent stopped
+    ╶×subagentstopped
     sess
     ╶
     |}]
@@ -498,16 +498,16 @@ let%expect_test
   [%expect
     {|
     sess
-    ╶◼ orchestrator
-      └× subagent
+    ╶◼orchestrator
+      └×subagent
     sess
-    ╶◼ working-on-kido
-      └┌  helper
-       └  zsh
+    ╶◼working-on-kido
+      └┌ helper
+       └ zsh
     sess
-    ┌◼ top-level
-    └◼ second
-      └◼ subagent-b
+    ┌◼top-level
+    └◼second
+      └◼subagent-b
     |}]
 
 let%expect_test "lingering entries carry forward; only a missing outcome is re-read" =
@@ -903,11 +903,11 @@ let%expect_test
        ~exit:(0, test_at -. 1.)
        ~command_line:"make -j8 test" "%1");
   [%expect {|
-      make -j8 test
-    ✓ zsh
-    ✓ make
-      nvim
-    ✓ zsh
+     make -j8 test
+    ✓zsh
+    ✓make
+     nvim
+    ✓zsh
     |}]
 
 let ssh_host = "deploy@build-box"
@@ -967,11 +967,11 @@ let%expect_test
   Printf.printf "quiet for ten ticks: %b\n" quiet;
   [%expect
     {|
-    interactive=true none:   ssh deploy@build-box
-    interactive=false none:   ssh deploy@build-box
-    interactive=false none:   ssh deploy@build-box: sleep 45
-    interactive=false running: ◼ ssh deploy@build-box: sleep 45
-    interactive=false done: ✓ ssh deploy@build-box
+    interactive=true none:  ssh deploy@build-box
+    interactive=false none:  ssh deploy@build-box
+    interactive=false none:  ssh deploy@build-box: sleep 45
+    interactive=false running: ◼ssh deploy@build-box: sleep 45
+    interactive=false done: ✓ssh deploy@build-box
     -- no integration on the far side
     quiet for ten ticks: true
     |}]
@@ -1062,19 +1062,19 @@ let%expect_test
   List.iter (fun d -> step d false false) [ 0.1; 0.2; 0.4 ];
   [%expect
     {|
-      nvim
-      git
-    ◼ cargo
-      ssh build-box
-    ◼ ssh build-box
-      ssh build-box
+     nvim
+     git
+    ◼cargo
+     ssh build-box
+    ◼ssh build-box
+     ssh build-box
     -- an editor open, then quit
-      nvim
-      nvim
-      nvim
-      nvim
-      nvim
-      nvim
+     nvim
+     nvim
+     nvim
+     nvim
+     nvim
+     nvim
     |}]
 
 let%expect_test
@@ -1109,10 +1109,10 @@ let%expect_test
   show "a";
   [%expect
     {|
-    "": alpha | ╶  zsh | beta | ╶◼ kido | gamma | ╶  zsh
+    "": alpha | ╶ zsh | beta | ╶◼kido | gamma | ╶ zsh
     "zz":
-    "kido": beta | ╶◼ kido
-    "a": alpha | ╶  zsh | gamma | ╶  zsh | beta | ╶◼ kido
+    "kido": beta | ╶◼kido
+    "a": alpha | ╶ zsh | gamma | ╶ zsh | beta | ╶◼kido
     |}]
 
 let%expect_test "a row wider than the sidebar is cut to its width, ellipsis included" =

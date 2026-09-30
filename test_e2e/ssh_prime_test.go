@@ -42,7 +42,7 @@ func integratedShellPane(t *testing.T, h *harness) string {
 
 	pane := h.newWindow("alpha", "")
 	h.waitPaneCommand(pane, "zsh")
-	h.waitShellRow("╶  zsh", "")
+	h.waitShellRow("╶ zsh", "")
 	return pane
 }
 
@@ -71,7 +71,7 @@ func TestKidoSSHPrimesARemoteShell(t *testing.T) {
 	reports := func(d time.Duration) bool {
 		deadline := time.Now().Add(d)
 		for time.Now().Before(deadline) {
-			if h.shellRow("╶✓ ssh localhost", "32") {
+			if h.shellRow("╶✓ssh localhost", "32") {
 				return true
 			}
 			time.Sleep(100 * time.Millisecond)
@@ -87,7 +87,7 @@ func TestKidoSSHPrimesARemoteShell(t *testing.T) {
 		t.Skip("localhost's own dotfiles already report to kido, so priming cannot be shown to be the cause here")
 	}
 	// Negative control: this far side says nothing on its own.
-	if h.shellRow("╶✓ ssh localhost", "32") || h.shellRow("╶◼ ssh localhost", "") {
+	if h.shellRow("╶✓ssh localhost", "32") || h.shellRow("╶◼ssh localhost", "") {
 		t.Fatalf("the unprimed remote reported after all; rows are %q", h.rows())
 	}
 	remote("exit")
