@@ -186,6 +186,16 @@ import TmuxControl
 }
 
 let background = ProcessInfo.processInfo.environment["KIDO_APP_BACKGROUND"] == "1"
+let debugging = ProcessInfo.processInfo.environment["KIDO_APP_DEBUG"] == "1"
+
+func debug(_ line: @autoclosure () -> String) {
+    if debugging { FileHandle.standardError.write(Data("kido-app \(line())\n".utf8)) }
+}
+
+func milliseconds(since start: DispatchTime) -> String {
+    String(format: "%.1fms", Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1e6)
+}
+
 let delegate = AppDelegate()
 NSApplication.shared.delegate = delegate
 NSApplication.shared.setActivationPolicy(background ? .accessory : .regular)
