@@ -421,7 +421,7 @@ let close_run =
            | _ -> failwith "usage: kido close-run WINDOW_ID"
          in
          if not (Tmux.Pane.is_window_id window_id) then
-           Cli.failf "close-run: %S is not a window id (@N)" window_id;
+           Cli.failf "%S is not a window id (@N)" window_id;
          (match Reap.decide (Tmux.Exec.list_panes ()) window_id with
          | Ok c -> Reap.release release_ops c
          | Error refusal -> Cli.error "close-run" refusal);
