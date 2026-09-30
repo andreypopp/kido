@@ -31,20 +31,17 @@ final class GhosttyRuntime {
             },
             action_cb: { _, target, action in GhosttyRuntime.action(target, action) },
             read_clipboard_cb: { userdata, location, state in
-                GhosttyRuntime.readClipboard(PaneView.from(userdata), location, state)
+                GhosttyRuntime.readClipboard(PaneView.surface(userdata), location, state)
             },
             confirm_read_clipboard_cb: { userdata, string, state, request in
                 guard request == GHOSTTY_CLIPBOARD_REQUEST_PASTE, let string,
-                      let surface = PaneView.from(userdata).surface else { return }
+                      let surface = PaneView.surface(userdata) else { return }
                 ghostty_surface_complete_clipboard_request(surface, string, state, true)
             },
             write_clipboard_cb: { _, location, content, count, confirm in
                 GhosttyRuntime.writeClipboard(location, content, count, confirm)
             },
-            close_surface_cb: { userdata, _ in
-                let pane = PaneView.from(userdata)
-                DispatchQueue.main.async { pane.onCommand(.close) }
-            },
+            close_surface_cb: { userdata, _ in PaneView.onMain(userdata) { $0.onCommand(.close) } },
             tmux_control_cb: nil)
         guard let new = ghostty_app_new(&runtime, config) else { return nil }
         nonisolated(unsafe) let app = new
@@ -86,13 +83,13 @@ final class GhosttyRuntime {
             return true
         }
         guard target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface else { return false }
-        let pane = PaneView.from(ghostty_surface_userdata(surface))
+        let userdata = ghostty_surface_userdata(surface)
         if action.tag == GHOSTTY_ACTION_CELL_SIZE {
-            DispatchQueue.main.async { pane.onCellChange() }
+            PaneView.onMain(userdata) { $0.onCellChange() }
             return true
         }
         guard let command = command(action) else { return false }
-        DispatchQueue.main.async { pane.onCommand(command) }
+        PaneView.onMain(userdata) { $0.onCommand(command) }
         return true
     }
 
@@ -143,9 +140,9 @@ final class GhosttyRuntime {
     }
 
     private static func readClipboard(
-        _ pane: PaneView, _ location: ghostty_clipboard_e, _ state: UnsafeMutableRawPointer?
+        _ surface: ghostty_surface_t?, _ location: ghostty_clipboard_e, _ state: UnsafeMutableRawPointer?
     ) -> Bool {
-        guard let surface = pane.surface,
+        guard let surface,
               let text = pasteboard(location)?.string(forType: .string) else { return false }
         ghostty_surface_complete_clipboard_request(surface, text, state, false)
         return true
