@@ -990,7 +990,7 @@ let%expect_test
   m2 := ssh_tick clock !m2 next;
   Printf.printf "a second ssh is judged afresh: %b\n" (Ui.interactive_pane !m2 next);
   m2 := Ui.track { !m2 with snap = Ui.empty };
-  Printf.printf "forgotten with the pane: %b\n" (List.is_empty !m2.ssh_remote);
+  Printf.printf "forgotten with the pane: %b\n" (State.String_map.is_empty !m2.ssh_remote);
   [%expect
     {|
     prompt in the ssh's own second stays suppressed: true
@@ -1081,7 +1081,7 @@ let%expect_test
   let show filter =
     Printf.printf "%S: %s\n" filter
       (String.concat " | "
-         (Array.to_list (Array.map Ui.row_text (Ui.rebuild { m with filter }).rows)))
+         (Array.to_list (Array.map Ui.row_text (Ui.rebuild { m with search = Some filter }).rows)))
   in
   show "";
   show "zz";
@@ -1116,4 +1116,28 @@ let%expect_test "a row wider than the sidebar is cut to its width, ellipsis incl
     4 "abcde" -> "abc\226\128\166"
     4 "abcdef" -> "abc\226\128\166"
     4 "abcdef" -> "abc\226\128\166"
+    |}]
+
+let%expect_test "a pause is the wall clock outrunning the monotonic one" =
+  let reading wall mono_s : Ui.reading =
+    { wall; mono = Mtime.of_uint64_ns (Int64.of_float (mono_s *. 1e9)) }
+  in
+  List.iter
+    (fun (name, wall, mono) ->
+      Printf.printf "%-26s %b\n" name
+        (Ui.detect_pause (reading 1000. 1000.) (reading (1000. +. wall) (1000. +. mono))))
+    [
+      ("awake, tick on schedule", 0.1, 0.1);
+      ("awake, tick genuinely slow", 300., 300.);
+      ("just under the slack", 4.999, 0.);
+      ("just over the slack", 5.001, 0.);
+      ("asleep for minutes", 300., 0.05);
+    ];
+  [%expect
+    {|
+    awake, tick on schedule    false
+    awake, tick genuinely slow false
+    just under the slack       false
+    just over the slack        true
+    asleep for minutes         true
     |}]

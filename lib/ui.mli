@@ -1,5 +1,3 @@
-(** Every [Tmux.Conn] call happens inside the one tick [Cmd.perform]. *)
-
 module String_map = State.String_map
 module Style = Mosaic.Ansi.Style
 
@@ -44,6 +42,10 @@ val lingering_subagents :
 
 val same : snapshot -> snapshot -> bool
 
+type reading = { wall : Timestamp.t; mono : Mtime.t }
+
+val detect_pause : reading -> reading -> bool
+
 type span = Mosaic.span = { text : string; style : Style.t }
 type row = { lead : span list; title : span list; tail : span list; pane_id : string option }
 type phase = { running : bool; since : float; drawn : bool; held : Tmux.Pane.exit option }
@@ -58,16 +60,15 @@ type model = {
   width : int;
   height : int;
   status : string;
-  filter : string;
-  searching : bool;
+  search : string option;
   g_pend : bool;
   started : float;
   seen : float String_map.t;
   phases : phase String_map.t;
-  ssh_remote : string list;
+  ssh_remote : unit String_map.t;
   now : unit -> float;
   at : float;
-  clock : State.reading;
+  clock : reading;
 }
 
 val make : ?conn:Tmux.Conn.t -> now:(unit -> float) -> options -> model
@@ -85,8 +86,6 @@ type indicator =
   | Stalled
   | Gone of Subrun.result option
 
-val indicator : indicator -> span option
-val field : span option -> span list
 val shell_indicator : model -> phase -> indicator option
 val agent_title_of : model -> Tmux.Pane.t -> string option
 val pane_label : model -> Tmux.Pane.t -> row
@@ -112,5 +111,4 @@ type msg =
   | Resize of int * int
 
 val update : msg -> model -> model * msg Mosaic.Cmd.t
-val parse_duration : string -> (float, string) result
-val run : interval:float -> client:string option -> (unit, string) result
+val run : options -> unit

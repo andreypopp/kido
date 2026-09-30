@@ -157,14 +157,6 @@ let record_pause ~dir at =
     Fs.write_atomic (wake_file ~dir) (Yojson.Safe.to_string (marker_to_yojson { at }))
   end
 
-type reading = { wall : Timestamp.t; mono : Mtime.t }
-
-let read_clock () = { wall = Timestamp.now (); mono = Mtime_clock.now () }
-
-let detect_pause prev now =
-  let mono = Mtime.Span.to_float_ns (Mtime.span prev.mono now.mono) /. 1e9 in
-  Float.(now.wall - prev.wall - mono > 5.)
-
 let symbol u =
   let c = Uchar.to_int u in
   (c < 0x80 && not (Char.Ascii.is_alphanum (Char.chr c)))

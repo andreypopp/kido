@@ -156,30 +156,6 @@ let%expect_test "the wake marker keeps the latest wake" =
     2023-11-14T22:30:00Z
     |}]
 
-let%expect_test "a pause is the wall clock outrunning the monotonic one" =
-  let reading wall mono_s : State.reading =
-    { wall; mono = Mtime.of_uint64_ns (Int64.of_float (mono_s *. 1e9)) }
-  in
-  List.iter
-    (fun (name, wall, mono) ->
-      Printf.printf "%-26s %b\n" name
-        (State.detect_pause (reading 1000. 1000.) (reading (1000. +. wall) (1000. +. mono))))
-    [
-      ("awake, tick on schedule", 0.1, 0.1);
-      ("awake, tick genuinely slow", 300., 300.);
-      ("just under the slack", 4.999, 0.);
-      ("just over the slack", 5.001, 0.);
-      ("asleep for minutes", 300., 0.05);
-    ];
-  [%expect
-    {|
-    awake, tick on schedule    false
-    awake, tick genuinely slow false
-    just under the slack       false
-    just over the slack        true
-    asleep for minutes         true
-    |}]
-
 let%expect_test "agent_title" =
   List.iter
     (fun t -> Printf.printf "[%s]\n" (State.agent_title t))

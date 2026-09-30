@@ -463,9 +463,31 @@ let ssh =
          in
          Unix.execve ssh (Array.of_list argv) (Unix.environment ()))
 
+(* Go's time.Duration syntax, which every caller of --interval already speaks: "100ms", "5s",
+   "1m30s". *)
+let parse_duration s =
+  let units =
+    [ ("ns", 1e-9); ("us", 1e-6); ("µs", 1e-6); ("ms", 1e-3); ("s", 1.); ("m", 60.); ("h", 3600.) ]
+  in
+  let rec go i acc =
+    if i >= String.length s then if i = 0 then Error "empty duration" else Ok acc
+    else
+      let j = ref i in
+      while !j < String.length s && (Char.Ascii.is_digit s.[!j] || Char.equal s.[!j] '.') do
+        incr j
+      done;
+      match Float.of_string_opt (String.sub s i (!j - i)) with
+      | None -> Error (Printf.sprintf "invalid duration %S" s)
+      | Some n -> (
+          match List.find_opt (fun (u, _) -> String.prefix ~pre:u (String.drop !j s)) units with
+          | None -> Error (Printf.sprintf "missing unit in duration %S" s)
+          | Some (u, f) -> go (!j + String.length u) (acc +. (n *. f)))
+  in
+  go 0 0.
+
 let duration =
   Arg.conv
-    ( (fun s -> Result.map_err (fun e -> `Msg e) (Ui.parse_duration s)),
+    ( (fun s -> Result.map_err (fun e -> `Msg e) (parse_duration s)),
       fun ppf d -> Format.fprintf ppf "%gs" d )
 
 (* State.read_all, not a per-pane view: the orphan rule needs every record. *)
@@ -514,16 +536,36 @@ let sidebar =
           ~doc:
             "tmux client to act on; defaults to $(b,TMUX_SIDE_CLIENT), and is required without it.")
   in
-  match (Sys.argv, Sys.getenv_opt "TMUX_SIDE_CLIENT") with
-  | [| _ |], (None | Some "") ->
+  let side = Tmux.Exec.getenv "TMUX_SIDE_CLIENT" in
+  match (Sys.argv, side, Sys.getenv_opt "TMUX") with
+  | [| _ |], "", _ ->
       Cli.run "" (fun () ->
           match Launch.run ~tmux:(Tmux.Exec.getenv "TMUX") with Ok _ -> 0 | Error m -> failwith m)
-  | _ -> (
-      match Ui.run ~interval ~client with
-      | Ok () -> 0
-      | Error m ->
-          Cli.error "" m;
-          1)
+  | _, _, None ->
+      Cli.error "" "must run inside tmux";
+      1
+  | _, _, Some tmux_env -> (
+      let client =
+        match client with
+        | Some c when not (String.is_empty c) -> Some c
+        | _ when not (String.is_empty side) -> Some side
+        | _ -> Tmux.Exec.resolve_client ~pane:(Tmux.Exec.getenv "TMUX_PANE") ~tmux_env
+      in
+      match client with
+      | None ->
+          Cli.error "" "no tmux client; pass --client '#{client_name}'";
+          1
+      | Some client ->
+          Ui.run
+            {
+              interval;
+              client;
+              standalone = String.is_empty side;
+              dir = State.dir ();
+              threshold = State.stall_threshold ();
+              grace = Reap.grace ();
+            };
+          0)
 
 let () =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;

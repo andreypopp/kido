@@ -40,9 +40,4 @@ val stall_threshold : unit -> float
 val stalled_since : threshold:float -> wake:Timestamp.t option -> now:Timestamp.t -> session -> bool
 val wake : dir:string -> Timestamp.t option
 val record_pause : dir:string -> Timestamp.t -> unit
-
-type reading = { wall : Timestamp.t; mono : Mtime.t }
-
-val read_clock : unit -> reading
-val detect_pause : reading -> reading -> bool
 val agent_title : string -> string
