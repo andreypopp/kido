@@ -19,8 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "Kido"
         window.contentView = view
         window.center()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        if !background {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
         Task {
             do {
                 let server = try await Task.detached { try Server.locate() }.value
@@ -57,7 +59,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 
+// A test launch must never take the user's focus: it neither activates nor
+// shows its window.
+let background = ProcessInfo.processInfo.environment["KIDO_APP_BACKGROUND"] == "1"
 let delegate = AppDelegate()
 NSApplication.shared.delegate = delegate
-NSApplication.shared.setActivationPolicy(.regular)
+NSApplication.shared.setActivationPolicy(background ? .accessory : .regular)
 NSApplication.shared.run()
