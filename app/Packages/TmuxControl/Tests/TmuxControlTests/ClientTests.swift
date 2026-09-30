@@ -10,9 +10,10 @@ final class Recorder<Item>: @unchecked Sendable {
     private let lock = NSLock()
     private var events: [Item] = []
     private var status: Int32?
+    private(set) var stderr = ""
 
     func add(_ e: Item) { lock.withLock { events.append(e) } }
-    func close(_ s: Int32) { lock.withLock { status = s } }
+    func close(_ s: Int32, _ err: String) { lock.withLock { (status, stderr) = (s, err) } }
 
     func wait<T>(_ what: String, _ probe: ([Item], Int32?) -> T?) async throws -> T {
         let deadline = Date().addingTimeInterval(10)
@@ -189,4 +190,14 @@ func liveLayout() async throws {
     #expect(zoomed.0.root.panes.count == 4)
     #expect(zoomed.1 == Layout(root: .pane(Pane(
         id: p1, index: 1, geometry: Geometry(x: 0, y: 0, width: 80, height: 24), focus: .active, layer: .tiled))))
+}
+
+@Test(.enabled(if: tmux != nil), .timeLimit(.minutes(1)))
+func missingServer() async throws {
+    let socket = "/tmp/tm-\(getpid()).sock"
+    let seen = Recorder<Event>()
+    let client = Client(tmux: try #require(tmux), socket: socket, session: nil, pauseAfter: 5)
+    try client.start(onEvent: seen.add, onClose: seen.close)
+    #expect(try await seen.wait("close") { _, s in s } == 1)
+    #expect(seen.stderr == "error connecting to \(socket) (No such file or directory)")
 }
