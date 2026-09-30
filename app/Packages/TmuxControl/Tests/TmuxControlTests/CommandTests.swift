@@ -6,6 +6,8 @@ import Testing
     #expect(Command("display-message", "-p", "#{pane_id}").line == ##"display-message -p "#{pane_id}""##)
     #expect(Command("x", "", ";", "~/$HOME", #"a"\b"#, "l1\nl2\u{7f}", "é'✓").line
         == #"x "" ";" "\~/\$HOME" "a\"\\b" "l1\012l2\177" "é'✓""#)
+    #expect(Command("refresh-client", "-A", "%0:continue", "-t", PaneID(number: 12)).line
+        == #"refresh-client -A "%0:continue" -t %12"#)
 }
 
 @Test func sendKeysChunks() {
