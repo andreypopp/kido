@@ -1,4 +1,4 @@
-val inbox_path : dir:string -> string -> string
+val inbox_path : dir:string -> string -> (string, string) result
 val v1 : int
 
 type kind = Message | Ask | Reply | Notice | Stream | Steer | Interrupt | Stop | Other of string

@@ -1,4 +1,9 @@
-val hook : string list -> int
+val hook : string -> (unit, string) result
+(** Records the hook event JSON [text]. *)
+
+type status_error =
+  | Invalid of string
+  | Held of string  (** [Held] is another live process holding the session. *)
 
 val agent_status :
   agent:string ->
@@ -14,6 +19,6 @@ val agent_status :
   ended:bool ->
   remove:bool ->
   string list ->
-  int
+  (unit, status_error) result
 
 val one_line : string -> max:int -> string

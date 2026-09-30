@@ -21,7 +21,7 @@ type agent_info = {
 [@@deriving to_yojson]
 
 let caller_pane panes self =
-  match Pane.find panes self with Some p -> p | None -> Cli.failf "pane %S not found" self
+  Option.to_result (Printf.sprintf "pane %S not found" self) (Pane.find panes self)
 
 let display_name panes (s : State.session) =
   if not (String.is_empty s.title) then s.title
@@ -89,46 +89,44 @@ let build ~runs ~threshold ~wake ~now states panes ~session ~self =
         stalled = State.stalled_since ~threshold ~wake ~now s;
       })
 
-let list_agents ~dir ~threshold ~self ~panes ~session ~json =
-  let panes = Lazy.force panes in
+let list_agents ~dir ~threshold ~self ~panes ~session =
+  let open Result.Infix in
+  let* panes = Lazy.force panes in
   let states = per_pane (State.load_live ~dir) in
-  let session =
-    if not (String.is_empty session) then session
+  let+ session =
+    if not (String.is_empty session) then Ok session
     else
       match Pane.find panes self with
-      | Some p -> p.session_id
+      | Some p -> Ok p.session_id
       | None ->
-          Cli.failf
-            "no tmux session for pane %S; pass --session\n\
-             usage: kido list_agents [--session ID] [--json]"
-            self
+          Error
+            (Printf.sprintf
+               "no tmux session for pane %S; pass --session\n\
+                usage: kido list_agents [--session ID] [--json]"
+               self)
   in
-  let agents =
-    build ~runs:(Filename.concat dir "runs") ~threshold ~wake:(State.wake ~dir)
-      ~now:(Timestamp.now ()) states panes ~session ~self
-  in
-  if json then print_endline (Yojson.Safe.to_string (`List (List.map agent_info_to_yojson agents)))
-  else
-    Cli.table
-      (String.split_on_char ' '
-         "ID NAME AGENT MODEL PANE WINDOW STATUS STALLED ACTIVITY SINCE PARENT DEPTH SELF CWD"
-      :: List.map
-           (fun a ->
-             [
-               a.id;
-               a.name;
-               State.string_of_agent a.agent;
-               a.model;
-               a.pane;
-               a.window;
-               State.string_of_status a.status;
-               (if a.stalled then "stalled" else "");
-               a.activity;
-               string_of_int a.since_report;
-               a.parent;
-               string_of_int a.depth;
-               (if a.self then "*" else "");
-               a.cwd;
-             ])
-           agents);
-  0
+  build ~runs:(Filename.concat dir "runs") ~threshold ~wake:(State.wake ~dir)
+    ~now:(Timestamp.now ()) states panes ~session ~self
+
+let table agents =
+  String.split_on_char ' '
+    "ID NAME AGENT MODEL PANE WINDOW STATUS STALLED ACTIVITY SINCE PARENT DEPTH SELF CWD"
+  :: List.map
+       (fun a ->
+         [
+           a.id;
+           a.name;
+           State.string_of_agent a.agent;
+           a.model;
+           a.pane;
+           a.window;
+           State.string_of_status a.status;
+           (if a.stalled then "stalled" else "");
+           a.activity;
+           string_of_int a.since_report;
+           a.parent;
+           string_of_int a.depth;
+           (if a.self then "*" else "");
+           a.cwd;
+         ])
+       agents

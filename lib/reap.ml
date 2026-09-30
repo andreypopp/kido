@@ -8,7 +8,11 @@ let grace () =
   | _ -> 30.
 
 type close = { window_id : string; pane_id : string option }
-type ops = { kill_window : string -> unit; kill_pane : string -> unit }
+
+type ops = {
+  kill_window : string -> (unit, string) result;
+  kill_pane : string -> (unit, string) result;
+}
 
 let release ops c =
   match c.pane_id with None -> ops.kill_window c.window_id | Some p -> ops.kill_pane p
@@ -250,5 +254,5 @@ let sweep ~dir ~capture ~grace panes sessions ~now =
 
 let collect ~dir ~capture ~grace panes sessions ~now ops =
   let closing, endings = sweep ~dir ~capture ~grace panes sessions ~now in
-  List.iter (fun c -> try release ops c with Failure _ -> ()) closing;
+  List.iter (fun c -> ignore (release ops c)) closing;
   List.iter (fun e -> ignore (send ~dir e)) endings

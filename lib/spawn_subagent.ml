@@ -19,10 +19,10 @@ type tmux = {
     cwd:string ->
     env:string list ->
     string list ->
-    Tmux.Exec.window;
-  mark_run : string -> string -> unit;
+    (Tmux.Exec.window, string) result;
+  mark_run : string -> string -> (unit, string) result;
   window_exists : string -> bool;
-  kill_window : string -> unit;
+  kill_window : string -> (unit, string) result;
 }
 
 let tmux =
@@ -88,10 +88,13 @@ type request = {
 }
 
 let check_window_name name =
-  Result.iter_err failwith (Launch.tmux_safe "window name" name);
+  let open Result.Infix in
+  let* () = Launch.tmux_safe "window name" name in
   if String.length name > max_window_name_len then
-    Cli.failf "refusing window name %S: %d bytes is over the %d byte limit" name
-      (String.length name) max_window_name_len
+    Error
+      (Printf.sprintf "refusing window name %S: %d bytes is over the %d byte limit" name
+         (String.length name) max_window_name_len)
+  else Ok ()
 
 let read_task path =
   if String.equal path "-" then begin
@@ -105,64 +108,67 @@ let read_task path =
             Buffer.add_subbytes buf chunk 0 n;
             fill ()
     in
-    (try fill () with Sys_error e -> Cli.failf "reading task from stdin: %s" e);
-    if Buffer.length buf > max_task_bytes then
-      Cli.failf "task on stdin is over the %d byte task limit" max_task_bytes;
-    Buffer.contents buf
+    match fill () with
+    | exception Sys_error e -> Error ("reading task from stdin: " ^ e)
+    | () when Buffer.length buf > max_task_bytes ->
+        Error (Printf.sprintf "task on stdin is over the %d byte task limit" max_task_bytes)
+    | () -> Ok (Buffer.contents buf)
   end
   else
-    let fail e = Cli.failf "--task-file %S: %s" path (Unix.error_message e) in
     match Unix.stat path with
-    | exception Unix.Unix_error (e, _, _) -> fail e
-    | { st_kind = S_DIR; _ } -> Cli.failf "--task-file %S is a directory, not a task file" path
+    | exception Unix.Unix_error (e, _, _) ->
+        Error (Printf.sprintf "--task-file %S: %s" path (Unix.error_message e))
+    | { st_kind = S_DIR; _ } ->
+        Error (Printf.sprintf "--task-file %S is a directory, not a task file" path)
     | { st_size; _ } when st_size > max_task_bytes ->
-        Cli.failf "--task-file %S is %d bytes, over the %d byte task limit" path st_size
-          max_task_bytes
+        Error
+          (Printf.sprintf "--task-file %S is %d bytes, over the %d byte task limit" path st_size
+             max_task_bytes)
     | _ -> (
         match In_channel.with_open_bin path In_channel.input_all with
-        | task -> task
-        | exception Sys_error e -> Cli.failf "--task-file %S: %s" path e)
+        | task -> Ok task
+        | exception Sys_error e -> Error (Printf.sprintf "--task-file %S: %s" path e))
 
 let parse (f : flags) =
-  let refuse why = failwith (why ^ "\n" ^ usage) in
+  let open Result.Infix in
+  let refuse why = Error (why ^ "\n" ^ usage) in
   let command = if List.is_empty f.command then [ "pi" ] else f.command in
   let given = f.parent_pid > 0 || not (String.is_empty f.parent_session) in
-  let parent : State.parent option =
+  let* parent =
     if f.no_parent && given then
       refuse "--no-parent contradicts --parent-pid/--parent-session; pass one or the other"
     else if f.parent_pid > 0 && not (String.is_empty f.parent_session) then
-      Some { pid = f.parent_pid; session = f.parent_session }
+      Ok (Some State.{ pid = f.parent_pid; session = f.parent_session })
     else if given then
       refuse "--parent-pid and --parent-session name one parent and are given together"
-    else None
+    else Ok None
   in
-  let mode =
-    if not (String.is_empty f.resume) then begin
+  let+ mode =
+    if not (String.is_empty f.resume) then
       if not (String.is_empty f.task_file) then
-        refuse "--resume keeps the run's original task; --task-file is refused alongside it";
-      if not (String.is_empty f.name) then
-        refuse "--resume keeps the run's original window name; --name is refused alongside it";
-      if not (String.is_empty f.fork) then
+        refuse "--resume keeps the run's original task; --task-file is refused alongside it"
+      else if not (String.is_empty f.name) then
+        refuse "--resume keeps the run's original window name; --name is refused alongside it"
+      else if not (String.is_empty f.fork) then
         refuse
           "--resume continues a run's own session; --fork starts a new one from somebody else's, \
-           and the two cannot both be asked for";
-      match Subrun.parse_id f.resume with
-      | Error e -> refuse e
-      | Ok run -> Resume { run; adopt = Option.is_none parent && not f.no_parent }
-    end
-    else begin
-      if Option.is_none parent && not f.no_parent then
-        refuse
-          "--parent-pid and --parent-session are required (or --no-parent for a child owned by \
-           nobody)";
-      if String.is_empty f.name then refuse "--name is required";
-      if String.is_empty f.task_file then refuse "--task-file is required";
-      check_window_name f.name;
-      Result.iter_err failwith (Launch.tmux_safe "--fork" f.fork);
-      let task = read_task f.task_file in
+           and the two cannot both be asked for"
+      else
+        match Subrun.parse_id f.resume with
+        | Error e -> refuse e
+        | Ok run -> Ok (Resume { run; adopt = Option.is_none parent && not f.no_parent })
+    else if Option.is_none parent && not f.no_parent then
+      refuse
+        "--parent-pid and --parent-session are required (or --no-parent for a child owned by \
+         nobody)"
+    else if String.is_empty f.name then refuse "--name is required"
+    else if String.is_empty f.task_file then refuse "--task-file is required"
+    else
+      let* () = check_window_name f.name in
+      let* () = Launch.tmux_safe "--fork" f.fork in
+      let+ task = read_task f.task_file in
       let tools = if String.is_empty f.tools then [] else String.split_on_char ',' f.tools in
       Fresh { name = f.name; task; fork = f.fork; model = f.model; tools }
-    end
   in
   { mode; parent; keep_alive = f.keep_alive; command }
 
@@ -176,9 +182,10 @@ let validate_model list_models command =
         after command
     | _ -> ""
   in
-  if not (String.is_empty model) then
+  if String.is_empty model then Ok ()
+  else
     match list_models () with
-    | Error e -> Cli.failf "could not validate model %S: pi --list-models: %s" model e
+    | Error e -> Error (Printf.sprintf "could not validate model %S: pi --list-models: %s" model e)
     | Ok out ->
         let rows =
           List.filter_map
@@ -186,7 +193,8 @@ let validate_model list_models command =
               match Procs.split_fields line with [ p :: m :: _ ] -> Some (p, m) | _ -> None)
             (List.drop 1 (String.lines out))
         in
-        if not (List.exists (fun (p, m) -> String.equal (p ^ "/" ^ m) model) rows) then
+        if List.exists (fun (p, m) -> String.equal (p ^ "/" ^ m) model) rows then Ok ()
+        else
           let providers =
             List.rev
               (List.fold_left
@@ -199,8 +207,9 @@ let validate_model list_models command =
                 (List.filter_map (fun (q, m) -> if String.equal p q then Some m else None) rows)
             ^ "}"
           in
-          Cli.failf "model %S is not a model of a configured provider; configured: %s" model
-            (String.concat ", " (List.map group providers))
+          Error
+            (Printf.sprintf "model %S is not a model of a configured provider; configured: %s" model
+               (String.concat ", " (List.map group providers)))
 
 (* pi 0.85.1's getDefaultSessionDirPath (session-manager.js): PI_CODING_AGENT_SESSION_DIR, else
    <PI_CODING_AGENT_DIR or ~/.pi/agent>/sessions/--<cwd, / \ : as ->--, files named
@@ -248,25 +257,29 @@ let failed ~runs (meta : Subrun.meta) text =
        { result = Failed; text; at = Some (Timestamp.now ()) })
 
 let create_run_window ~runs tmux (meta : Subrun.meta) ~session ~env command =
-  let w =
+  let open Result.Infix in
+  let fail e =
+    failed ~runs meta e;
+    Error e
+  in
+  let* w =
     match tmux.new_window ~session ~name:meta.name ~cwd:meta.cwd ~env command with
-    | w -> w
-    | exception Failure e ->
-        failed ~runs meta e;
-        failwith e
+    | Ok w -> Ok w
+    | Error e -> fail e
   in
   let meta = { meta with pane = w.pane_id; pid = w.pane_pid } in
   Subrun.write_meta ~dir:runs meta;
   let id = Subrun.string_of_id meta.id in
-  (match tmux.mark_run w.pane_id id with
-  | () -> ()
-  | exception Failure e -> (
-      match meta.kind with
-      | Some Bash when not (tmux.window_exists w.window_id) -> ()
-      | Some Bash | Some Agent | None ->
-          (try tmux.kill_window w.window_id with Failure _ -> ());
-          failed ~runs meta e;
-          failwith e));
+  let+ () =
+    match tmux.mark_run w.pane_id id with
+    | Ok () -> Ok ()
+    | Error e -> (
+        match meta.kind with
+        | Some Bash when not (tmux.window_exists w.window_id) -> Ok ()
+        | Some Bash | Some Agent | None ->
+            ignore (tmux.kill_window w.window_id);
+            fail e)
+  in
   match meta.kind with
   | Some Bash ->
       String.concat " " [ w.window_id; w.pane_id; id; Subrun.output_path ~dir:runs meta.id ]
@@ -275,8 +288,10 @@ let create_run_window ~runs tmux (meta : Subrun.meta) ~session ~env command =
 let insert_after_head extra = function head :: rest -> (head :: extra) @ rest | [] -> extra
 
 let spawn ~dir ~self ~panes ~tmux ~pi req =
+  let open Result.Infix in
   let runs = Filename.concat dir "runs" in
-  let pane = List_agents.caller_pane (Lazy.force panes) self in
+  let* panes = Lazy.force panes in
+  let* pane = List_agents.caller_pane panes self in
   let live = State.load_live ~dir in
   let own = State.String_map.find_opt pane.pane_id (State.by_pane live) in
   let parent =
@@ -285,21 +300,25 @@ let spawn ~dir ~self ~panes ~tmux ~pi req =
     | _ -> req.parent
   in
   let depth = 1 + Option.map_or ~default:0 (fun (_, (s : State.session)) -> s.depth) own in
-  if depth > max_depth then
-    Cli.failf
-      "refusing to spawn at depth %d: maximum nesting is %d (root 0, subagent 1, subagent 2)" depth
-      max_depth;
-  Option.iter
-    (fun ({ session; _ } : State.parent) ->
-      if not (List.mem_assoc ~eq:String.equal session live) then
-        Cli.failf
-          "--parent-session %S names no currently live agent; the child would be closed within \
-           moments as an orphan (internal/reap's rule 2) - pass --no-parent for a child owned by \
-           nobody, or name an agent that is actually running"
-          session)
-    parent;
+  let* () =
+    if depth > max_depth then
+      Error
+        (Printf.sprintf
+           "refusing to spawn at depth %d: maximum nesting is %d (root 0, subagent 1, subagent 2)"
+           depth max_depth)
+    else
+      match parent with
+      | Some { session; _ } when not (List.mem_assoc ~eq:String.equal session live) ->
+          Error
+            (Printf.sprintf
+               "--parent-session %S names no currently live agent; the child would be closed \
+                within moments as an orphan (internal/reap's rule 2) - pass --no-parent for a \
+                child owned by nobody, or name an agent that is actually running"
+               session)
+      | _ -> Ok ()
+  in
   let is_pi = match req.command with "pi" :: _ -> true | _ -> false in
-  let meta, command, mint =
+  let* meta, command, mint =
     match req.mode with
     | Fresh f ->
         let id = Subrun.new_id () in
@@ -325,18 +344,22 @@ let spawn ~dir ~self ~panes ~tmux ~pi req =
           (if String.is_empty f.fork then [] else [ "--fork"; f.fork ])
           @ [ "--session-id"; Subrun.string_of_id id ]
         in
-        (meta, (if is_pi then insert_after_head flags req.command else req.command), false)
+        Ok (meta, (if is_pi then insert_after_head flags req.command else req.command), false)
     | Resume { run; _ } ->
-        let meta =
-          match Subrun.read_meta ~dir:runs run with
-          | Some m -> m
-          | None ->
-              Cli.failf "run %S: no readable %s" (Subrun.string_of_id run)
-                (Filename.concat (Filename.concat runs (Subrun.string_of_id run)) "meta.json")
+        let* meta =
+          Option.to_result
+            (Printf.sprintf "run %S: no readable %s" (Subrun.string_of_id run)
+               (Filename.concat (Filename.concat runs (Subrun.string_of_id run)) "meta.json"))
+            (Subrun.read_meta ~dir:runs run)
         in
-        if Option.is_none (Subrun.effective_outcome ~dir:runs meta.id ~pid:meta.pid) then
-          Cli.failf "run %S is still running (pid %d); resuming a live agent makes no sense"
-            (Subrun.string_of_id meta.id) meta.pid;
+        let* () =
+          if Option.is_none (Subrun.effective_outcome ~dir:runs meta.id ~pid:meta.pid) then
+            Error
+              (Printf.sprintf
+                 "run %S is still running (pid %d); resuming a live agent makes no sense"
+                 (Subrun.string_of_id meta.id) meta.pid)
+          else Ok ()
+        in
         (* With no pi session file the id is free rather than stale, so --session-id mints one
            under it and the stored task is delivered again. *)
         let mint = not (pi_session_file_exists pi meta.cwd meta.id) in
@@ -357,9 +380,9 @@ let spawn ~dir ~self ~panes ~tmux ~pi req =
               [ "--tools"; String.concat "," meta.tools ]
             else []
         in
-        (meta, command, mint)
+        Ok (meta, command, mint)
   in
-  validate_model pi.list_models command;
+  let* () = validate_model pi.list_models command in
   (* A resume keeps the run's own cwd: pi sessions are project-scoped, and `pi --session` from
      another directory asks to fork instead of resuming. *)
   let meta =

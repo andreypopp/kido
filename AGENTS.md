@@ -93,15 +93,15 @@ These are fixed:
 
 Conventions:
 
-- **Errors.** An outcome a caller branches on is a `result` or a variant
-  (`State.record` returns `Error holder`). A failure that is only
-  reported raises: `failwith` with the message to print, or the
-  `Unix_error` and `Sys_error` the I/O raised. Nothing catches to
-  rethrow.
-- **Subcommands.** A subcommand is a `lib/` function returning its exit
-  code, run under `Cli.run name`, which prints a raised failure as
-  `kido <name>: <message>` and returns 1. A special code is returned
-  after `Cli.error`. cmdliner's own parse errors exit 1.
+- **Errors.** A `lib/` failure is a `result`: a string error holding the
+  message to print, or a variant where the caller or the message differs
+  by case (`State.record` returns `Error holder`). The `Unix_error` and
+  `Sys_error` the I/O raised propagate. Nothing catches to rethrow.
+- **Subcommands.** A subcommand body in `bin/main.ml` returns its exit
+  code, run under `Cli.run name` (`bin/cli.ml`), which prints a raised
+  failure as `kido <name>: <message>` and returns 1; a string error
+  reaches it through `Result.get_or_failwith`. A special code is
+  returned after `Cli.error`. cmdliner's own parse errors exit 1.
 - **Environment.** Read it at the edge and pass the value: functions
   take `~dir`, `~threshold`, `~now`. Tests pass a temp dir; nothing in a
   test sets an env var or swaps a global.
@@ -116,6 +116,7 @@ Conventions:
     bin/main.ml        the cmdliner command table and the small commands:
                        set_status, agent-alive, children-alive, snapshot,
                        ssh, window-focused, switch-session/window
+    bin/cli.ml         failure printing and tables
     lib/               the library kido:
       launch.ml        the launcher: the kido server, its server.conf
       shell.ml, prime.ml  kido shell: the login shell and its priming files
@@ -137,7 +138,7 @@ Conventions:
       async_run.ml (its wrapper), async_stream.ml, runs.ml,
       control.ml (stop/interrupt_subagent)
                        one subcommand or family each
-      cli.ml, fs.ml, timestamp.ml  failure printing and tables, files, time
+      fs.ml, timestamp.ml  files, time
     lib_tmux/          the library tmux: pane.ml (the pane format and its
                        parse), exec.ml (one-shot tmux commands, the binary
                        lookup), conn.ml (the control-mode client)

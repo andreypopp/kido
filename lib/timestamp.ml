@@ -81,3 +81,8 @@ let to_local_string t =
          (if offset < 0 then '-' else '+')
          (abs offset / 60)
          (abs offset mod 60))
+
+let ms_env getenv name default =
+  match Option.flat_map Int.of_string (getenv name) with
+  | Some ms when ms > 0 -> Float.of_int ms /. 1000.
+  | _ -> default

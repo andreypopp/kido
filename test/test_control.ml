@@ -2,11 +2,7 @@ open Kido
 open Fixture
 
 let record ~dir id s = Result.get_exn (State.record ~dir id s)
-
-let attempt f =
-  match f () with
-  | code -> Printf.printf "-> %d\n" code
-  | exception Failure m -> Printf.printf "refused: %s\n" m
+let attempt = function Ok line -> print_endline line | Error m -> Printf.printf "refused: %s\n" m
 
 type world = { dir : string; panes : Tmux.Pane.t list; kills : string list ref }
 
@@ -14,18 +10,18 @@ let world panes = { dir = Filename.temp_dir "kido-state" ""; panes; kills = ref 
 
 let ops w =
   {
-    Reap.kill_window = (fun id -> w.kills := ("window " ^ id) :: !(w.kills));
-    kill_pane = (fun id -> w.kills := id :: !(w.kills));
+    Reap.kill_window = (fun id -> Ok (w.kills := ("window " ^ id) :: !(w.kills)));
+    kill_pane = (fun id -> Ok (w.kills := id :: !(w.kills)));
   }
 
 let stop ?(escalation = 0.3) ?(force = false) w to_ =
-  attempt (fun () ->
-      Control.stop ~dir:w.dir ~self:"%1"
-        ~list_panes:(fun () -> w.panes)
-        ~ops:(ops w) ~escalation ~force to_)
+  attempt
+    (Control.stop ~dir:w.dir ~self:"%1"
+       ~list_panes:(fun () -> Ok w.panes)
+       ~ops:(ops w) ~escalation ~warn:(Printf.printf "warning: %s\n") ~force to_)
 
 let interrupt w to_ =
-  attempt (fun () -> Control.interrupt ~dir:w.dir ~self:"%1" ~panes:(lazy w.panes) to_)
+  attempt (Control.interrupt ~dir:w.dir ~self:"%1" ~panes:(lazy (Ok w.panes)) to_)
 
 let kills w =
   Printf.printf "killed: [%s]\n" (String.concat " " (List.rev !(w.kills)));
@@ -111,7 +107,6 @@ let%expect_test "stop without an inbox to ask over needs --force, and then kills
     no outcome
     # no inbox, --force
     killed target's pane
-    -> 0
     killed: [%2]
     outcome stopped ""
     # stale inbox, no --force
@@ -120,12 +115,10 @@ let%expect_test "stop without an inbox to ask over needs --force, and then kills
     no outcome
     # stale inbox, --force
     killed target's pane
-    -> 0
     killed: [%2]
     outcome stopped ""
     # the target shares its window with a bystander
     killed target's pane
-    -> 0
     killed: [%2]
     outcome stopped ""
     # the target is another tmux session's only window
@@ -141,7 +134,7 @@ let kinds received =
     (received ())
   |> String.concat " " |> Printf.printf "received: [%s]\n"
 
-(* The messages carry no "kido <verb>:" prefix: Cli.run adds it. *)
+(* The messages carry no "kido <verb>:" prefix: bin/main.ml adds it. *)
 let%expect_test "interrupt and stop reach only descendants; a human caller reaches anyone" =
   let w = world tree in
   let inbox, received = start_inbox ~reply:"ok\n" in
@@ -165,12 +158,10 @@ let%expect_test "interrupt and stop reach only descendants; a human caller reach
     refused: peer is not this agent's descendant
     refused: caller is this agent
     interrupted child
-    -> 0
     refused: peer is not this agent's descendant
     refused: caller is this agent
     received: [interrupt]
     interrupted peer
-    -> 0
     received: [interrupt]
     refused: Self is this agent
     refused: target is not this agent's descendant
@@ -212,27 +203,22 @@ let%expect_test "stop escalates to killing the pane, and only when the target st
     {|
     # agrees and goes
     stopped target
-    -> 0
     killed: []
     outcome stopped ""
     # agrees and stays
     target did not stop within 300ms; killed its pane
-    -> 0
     killed: [%2]
     outcome stopped ""
     # refuses
     target did not accept the stop request (target refused the stop) and was still there after 300ms; killed its pane
-    -> 0
     killed: [%2]
     outcome stopped ""
     # answers something else
     target did not accept the stop request (inbox <tmp>/inbox.sock: answered "what?", want "ok") and was still there after 300ms; killed its pane
-    -> 0
     killed: [%2]
     outcome stopped ""
     # never answers
     target did not accept the stop request (inbox <tmp>/inbox.sock: timed out) and was still there after 300ms; killed its pane
-    -> 0
     killed: [%2]
     outcome stopped ""
     |}]
@@ -309,13 +295,11 @@ let%expect_test "stopping a bash run" =
     no outcome
     # a wrapper that cannot report
     stopped async run "doomed"; killed its pane
-    -> 0
     killed: [%2]
     outcome stopped "stopped by kido stop_subagent; its wrapper did not report"
     notice from doomed: async run "doomed" stopped: stopped by kido stop_subagent; its wrapper did not report
     # a wrapper that reports
     stopped async run "polite"; its wrapper reported the ending
-    -> 0
     killed: []
     outcome failed "killed by terminated"
     # the run's pane is its session's only one
@@ -352,12 +336,10 @@ let%expect_test "a bash run is reached through the parent in its meta; a finishe
     refused: async run "stranger" is not this agent's descendant
     no outcome
     stopped async run "mine"; killed its pane
-    -> 0
     outcome stopped "stopped by kido stop_subagent; its wrapper did not report"
     killed: [%2]
     received: [notice]
     child did not stop within 100ms; killed its pane
-    -> 0
     received: [notice stop]
     refused: "twin" matches several running async runs: twin, twin-2
     killed: [%2]
@@ -384,13 +366,14 @@ let%expect_test "steer reaches descendants only" =
     ];
   List.iter
     (fun to_ ->
-      attempt (fun () ->
-          Message_agent.send ~dir:w.dir ~self:"%1"
-            ~panes:(lazy w.panes)
-            ~paste:(fun pane _ -> Printf.printf "pasted into %s\n" pane)
-            (Descendant to_)
-            { kind = Steer; reply_to = ""; id = "" }
-            "stop and do X instead"))
+      Message_agent.send ~dir:w.dir ~self:"%1"
+        ~panes:(lazy (Ok w.panes))
+        ~paste:(fun pane _ -> Ok (Printf.printf "pasted into %s\n" pane))
+        (Descendant to_)
+        { kind = Steer; reply_to = ""; id = "" }
+        "stop and do X instead"
+      |> Result.map_err (function Message_agent.No_text -> "no text" | Not_sent m -> m)
+      |> attempt)
     [ "child"; "grandchild"; "peer"; "root"; "caller" ];
   List.iter
     (fun raw ->
@@ -401,9 +384,7 @@ let%expect_test "steer reaches descendants only" =
   [%expect
     {|
     delivered to child by inbox
-    -> 0
     delivered to grandchild by inbox
-    -> 0
     refused: peer is not this agent's descendant
     refused: root is not this agent's descendant
     refused: caller is this agent

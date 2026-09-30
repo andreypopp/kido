@@ -3,25 +3,12 @@ open Fixture
 
 let knobs : Async_stream.knobs = { batch = 0.02; backoff_floor = 0.02; backoff_cap = 0.1 }
 let runs dir = Filename.concat dir "runs"
-
-(* What [f] wrote to stderr. *)
-let stderr_of f =
-  let file = Filename.temp_file "kido" "stderr" in
-  let fd = Unix.openfile file [ O_WRONLY; O_TRUNC ] 0o600 in
-  let saved = Unix.dup Unix.stderr in
-  Unix.dup2 fd Unix.stderr;
-  Unix.close fd;
-  let r =
-    Fun.protect f ~finally:(fun () ->
-        Unix.dup2 saved Unix.stderr;
-        Unix.close saved)
-  in
-  (r, Option.get_or ~default:"" (Fs.read file))
+let warn = Printf.printf "\nwarning: %s"
 
 let async_run ?(stream = false) ~dir run_id =
-  match Async_run.async_run ~dir ~knobs ~run_id ~stream [] with
-  | code -> Printf.printf "\n-> %d\n" code
-  | exception Failure m -> Printf.printf "\nrefused: %s\n" m
+  match Async_run.async_run ~dir ~knobs ~warn ~run_id ~stream [] with
+  | Ok code -> Printf.printf "\n-> %d\n" code
+  | Error m -> Printf.printf "\nrefused: %s\n" m
 
 let outcome ~dir (meta : Subrun.meta) =
   match Subrun.read_outcome ~dir:(runs dir) meta.id with
@@ -70,9 +57,9 @@ let%expect_test "the wrapper tees both streams, and records the ending before it
 
 let%expect_test "the run comes from its record, never the command line" =
   let dir = Filename.temp_dir "kido-state" "" in
-  (match Async_run.async_run ~dir ~knobs ~run_id:"x" ~stream:false [ "make" ] with
-  | _ -> ()
-  | exception Failure m -> print_endline m);
+  (match Async_run.async_run ~dir ~knobs ~warn ~run_id:"x" ~stream:false [ "make" ] with
+  | Ok _ -> ()
+  | Error m -> print_endline m);
   async_run ~dir "";
   async_run ~dir "no-such-run";
   [%expect
@@ -94,20 +81,17 @@ let%expect_test "a wrapper that loses the outcome race says nothing" =
   let parent = "nobody-alive-reports-this" in
   let lost = bash ~dir ~parent "raced" [ "true" ] in
   ignore (Subrun.record_outcome ~dir:(runs dir) lost.id { result = Stopped; text = ""; at = None });
-  let (), quiet = stderr_of (fun () -> async_run ~dir "raced") in
+  async_run ~dir "raced";
   outcome ~dir lost;
-  Printf.printf "stderr: %S\n" quiet;
   let _ = bash ~dir ~parent "won" [ "true" ] in
-  let (), loud = stderr_of (fun () -> async_run ~dir "won") in
-  Printf.printf "stderr: %S\n" loud;
+  async_run ~dir "won";
   [%expect
     {|
     -> 0
     outcome stopped ""
-    stderr: ""
 
+    warning: no live process holds session "nobody-alive-reports-this"; the parent is gone, nothing sent
     -> 0
-    stderr: "kido async-run: no live process holds session \"nobody-alive-reports-this\"; the parent is gone, nothing sent\n"
     |}]
 
 (* The stream closes before the notice goes, so the notice follows the final chunk. *)

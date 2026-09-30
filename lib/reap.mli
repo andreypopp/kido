@@ -5,9 +5,12 @@ val grace : unit -> float
 type close = { window_id : string; pane_id : string option }
 (** [pane_id] is [None] when the whole window is to be closed. *)
 
-type ops = { kill_window : string -> unit; kill_pane : string -> unit }
+type ops = {
+  kill_window : string -> (unit, string) result;
+  kill_pane : string -> (unit, string) result;
+}
 
-val release : ops -> close -> unit
+val release : ops -> close -> (unit, string) result
 
 val decide : Tmux.Pane.t list -> string -> (close, string) result
 (** [kido close-run]'s decision for a window: the close to release, or the refusal to print. *)

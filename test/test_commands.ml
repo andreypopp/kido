@@ -27,11 +27,12 @@ let%expect_test "prompt never targets a subagent's window" =
 let%expect_test "prompt refuses an empty prompt before asking tmux" =
   List.iter
     (fun text ->
-      Printf.printf "%d\n" (Prompt.prompt ~dir:"/nonexistent" ~self:"%1" ~window:false text))
+      print_endline
+        (match Prompt.prompt ~dir:"/nonexistent" ~self:"%1" ~window:false text with
+        | Error No_prompt -> "no prompt"
+        | Ok () | Error (Not_found | Several | Failed _) -> "WRONG"))
     [ ""; "\n" ];
   [%expect {|
-    no prompt given
-    no prompt given
-    1
-    1
+    no prompt
+    no prompt
     |}]

@@ -93,9 +93,8 @@ let dismissals conn prev states =
           | _ when Float.(now - s.ts < prompt_grace) -> out
           | _ ->
               let dismissed =
-                match Tmux.Conn.capture_pane conn pane with
-                | lines -> Screen.at_input_prompt lines
-                | exception Failure _ -> false
+                Result.map_or ~default:false Screen.at_input_prompt
+                  (Tmux.Conn.capture_pane conn pane)
               in
               String_map.add pane { reported = s.ts; read = now; dismissed } out)
       | _ -> out)
@@ -109,8 +108,8 @@ let take ~opts conn prev =
   in
   if not (String.is_empty current) then Tmux.Conn.follow conn current;
   match Tmux.Conn.list_panes conn with
-  | exception Failure e -> { empty with current; focused; err = Some e }
-  | panes ->
+  | Error e -> { empty with current; focused; err = Some e }
+  | Ok panes ->
       let live = State.load_live ~dir:opts.dir in
       let states = State.by_pane live in
       let scan = ref { Procs.ssh = prev.ssh; pi = prev.pi }
@@ -522,10 +521,12 @@ let windows_in_order panes states lingering =
     (P.order_sessions panes)
 
 let switch_window ~dir ~client ~next =
-  let panes = Tmux.Exec.list_panes () in
-  let states = State.by_pane (State.load_live ~dir) in
-  Tmux.Exec.switch_window ~client ~next
-    (windows_in_order panes states (lingering_subagents ~dir panes states String_map.empty))
+  Result.flat_map
+    (fun panes ->
+      let states = State.by_pane (State.load_live ~dir) in
+      Tmux.Exec.switch_window ~client ~next
+        (windows_in_order panes states (lingering_subagents ~dir panes states String_map.empty)))
+    (Tmux.Exec.list_panes ())
 
 let glyph i n =
   span st_dim (if n = 1 then "╶" else if i = 0 then "┌" else if i = n - 1 then "└" else "├")
@@ -691,12 +692,11 @@ let next_attention m delta =
   if n = 0 then m else go 0 m.cursor
 
 let set_filter m filter = rebuild { m with filter }
-let tmux m f = match f () with () -> m | exception Failure e -> { m with status = e }
 
 let release_focus m =
   match Tmux.Exec.release_side_focus m.opts.client with
-  | () -> focus m m.snap.active
-  | exception Failure e -> { m with status = e }
+  | Ok () -> focus m m.snap.active
+  | Error e -> { m with status = e }
 
 type msg =
   | Snapshot of snapshot
@@ -709,8 +709,8 @@ let jump m =
   | None -> (m, Mosaic.Cmd.none)
   | Some pane -> (
       match Tmux.Exec.jump ~client:m.opts.client pane with
-      | exception Failure e -> ({ m with status = e }, Mosaic.Cmd.none)
-      | () ->
+      | Error e -> ({ m with status = e }, Mosaic.Cmd.none)
+      | Ok () ->
           let m =
             if m.searching then focus (set_filter { m with searching = false } "") pane else m
           in
@@ -752,9 +752,12 @@ let key m (k : Mosaic.Event.key) =
     else none (release_focus m)
   in
   let cycle next =
-    tmux m (fun () ->
-        Tmux.Exec.switch_window ~client:m.opts.client ~next
-          (windows_in_order m.snap.panes m.snap.states m.snap.lingering))
+    match
+      Tmux.Exec.switch_window ~client:m.opts.client ~next
+        (windows_in_order m.snap.panes m.snap.states m.snap.lingering)
+    with
+    | Ok () -> m
+    | Error e -> { m with status = e }
   in
   if m.searching && not (String.is_empty text) then none (set_filter m (m.filter ^ text))
   else
@@ -900,11 +903,7 @@ let subscriptions _ =
 
 let run ~interval ~client =
   let side = Sys.getenv_opt "TMUX_SIDE_CLIENT" in
-  let fail msg =
-    prerr_endline ("kido: " ^ msg);
-    1
-  in
-  if Option.is_none (Sys.getenv_opt "TMUX") then fail "must run inside tmux"
+  if Option.is_none (Sys.getenv_opt "TMUX") then Error "must run inside tmux"
   else
     let client =
       match (client, side) with
@@ -916,7 +915,7 @@ let run ~interval ~client =
             ~tmux_env:(Option.value ~default:"" (Sys.getenv_opt "TMUX"))
     in
     match client with
-    | None -> fail "no tmux client; pass --client '#{client_name}'"
+    | None -> Error "no tmux client; pass --client '#{client_name}'"
     | Some client ->
         let opts =
           {
@@ -940,7 +939,7 @@ let run ~interval ~client =
         Fun.protect
           ~finally:(fun () -> Tmux.Conn.close conn)
           (fun () -> Mosaic.run ~matrix { init; update; view; subscriptions });
-        0
+        Ok ()
 
 (* Go's time.Duration syntax, which every caller of --interval already speaks: "100ms", "5s",
    "1m30s". *)

@@ -10,10 +10,10 @@ type tmux = {
     cwd:string ->
     env:string list ->
     string list ->
-    Tmux.Exec.window;
-  mark_run : string -> string -> unit;
+    (Tmux.Exec.window, string) result;
+  mark_run : string -> string -> (unit, string) result;
   window_exists : string -> bool;
-  kill_window : string -> unit;
+  kill_window : string -> (unit, string) result;
 }
 
 val tmux : tmux
@@ -43,22 +43,28 @@ type flags = {
 
 type request
 
-val parse : flags -> request
-val check_window_name : string -> unit
-val validate_model : (unit -> (string, string) result) -> string list -> unit
+val parse : flags -> (request, string) result
+val check_window_name : string -> (unit, string) result
+val validate_model : (unit -> (string, string) result) -> string list -> (unit, string) result
 
 val run_env :
   runs:string -> Subrun.id -> State.parent option -> int -> keep_alive:bool -> string list
 
 val create_run_window :
-  runs:string -> tmux -> Subrun.meta -> session:string -> env:string list -> string list -> string
+  runs:string ->
+  tmux ->
+  Subrun.meta ->
+  session:string ->
+  env:string list ->
+  string list ->
+  (string, string) result
 (** The created line: window, pane and run ids, and a bash run's output file. *)
 
 val spawn :
   dir:string ->
   self:string ->
-  panes:Tmux.Pane.t list Lazy.t ->
+  panes:(Tmux.Pane.t list, string) result Lazy.t ->
   tmux:tmux ->
   pi:pi ->
   request ->
-  string
+  (string, string) result

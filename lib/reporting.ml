@@ -36,33 +36,31 @@ let log_hook ~dir json (input : Hook.input) action =
           (Yojson.Safe.to_string json) (Hook.describe input action))
   with Sys_error _ | Unix.Unix_error _ -> ()
 
-let hook = function
-  | _ :: _ ->
-      prerr_endline "usage: kido hook";
-      0
-  | [] ->
-      let debug =
-        not (String.is_empty (Option.value (Sys.getenv_opt "KIDO_HOOK_DEBUG") ~default:""))
-      in
-      let json = Yojson.Safe.from_string (In_channel.input_all stdin) in
-      let input = Result.get_or_failwith (Hook.input_of_yojson json) in
-      let dir = State.dir () in
-      let id = input.session_id in
-      let parked =
-        (not (String.is_empty id))
-        && Option.exists (fun (s : State.session) -> s.background) (State.get ~dir id)
-      in
-      let action = Hook.apply input ~parked in
-      if debug then log_hook ~dir json input action;
-      let claude status = session ~agent:Claude ~pid:(Procs.reporter_pid ()) status in
-      (match action with
-        | Ignore -> Ok ()
-        | Remove -> State.remove ~dir id ~pid:(Procs.reporter_pid ())
-        | Ended -> record ~dir id (claude Idle) ~ended:true
-        | Report { status; background; tool_pending } ->
-            record ~dir id { (claude status) with background; tool_pending } ~ended:false)
-      |> Result.iter_err (fun holder -> Cli.error "hook" (State.held_message id holder));
-      0
+let hook text =
+  let open Result.Infix in
+  let debug = not (String.is_empty (Option.value (Sys.getenv_opt "KIDO_HOOK_DEBUG") ~default:"")) in
+  let* json =
+    match Yojson.Safe.from_string text with
+    | json -> Ok json
+    | exception Yojson.Json_error m -> Error m
+  in
+  let* input = Hook.input_of_yojson json in
+  let dir = State.dir () in
+  let id = input.session_id in
+  let parked =
+    (not (String.is_empty id))
+    && Option.exists (fun (s : State.session) -> s.background) (State.get ~dir id)
+  in
+  let action = Hook.apply input ~parked in
+  if debug then log_hook ~dir json input action;
+  let claude status = session ~agent:Claude ~pid:(Procs.reporter_pid ()) status in
+  (match action with
+    | Ignore -> Ok ()
+    | Remove -> State.remove ~dir id ~pid:(Procs.reporter_pid ())
+    | Ended -> record ~dir id (claude Idle) ~ended:true
+    | Report { status; background; tool_pending } ->
+        record ~dir id { (claude status) with background; tool_pending } ~ended:false)
+  |> Result.map_err (State.held_message id)
 
 let one_line s ~max =
   let b = Buffer.create (String.length s) in
@@ -82,6 +80,8 @@ let one_line s ~max =
   let s = if String.length s <= max then s else String.sub s 0 (boundary max) in
   String.rdrop_while (Char.equal ' ') s
 
+type status_error = Invalid of string | Held of string
+
 let agent_status ~agent ~session:id ~status ~title ~inbox ~activity ~parent_pid ~parent_session
     ~depth ~model ~ended ~remove args =
   let usage =
@@ -90,32 +90,29 @@ let agent_status ~agent ~session:id ~status ~title ~inbox ~activity ~parent_pid 
     ^ " [--title TITLE] [--inbox PATH] [--activity TEXT] [--parent-pid PID] [--parent-session ID] \
        [--depth N] [--model NAME] [--ended] [--remove]"
   in
-  (match args with arg :: _ -> Cli.failf "unknown argument %S\n%s" arg usage | [] -> ());
-  if String.is_empty agent || String.is_empty id then
-    failwith ("--agent and --session are required\n" ^ usage);
-  let dir = State.dir () in
-  let outcome =
-    if remove then State.remove ~dir id ~pid:(Unix.getppid ())
-    else
-      match List.assoc_opt ~eq:String.equal status State.statuses with
-      | None -> Cli.failf "unknown status %S\n%s" status usage
-      | Some status ->
-          record ~dir id
-            {
-              (session ~agent:(State.agent_of_string agent) ~pid:(Unix.getppid ()) status) with
-              title;
-              inbox;
-              activity = one_line activity ~max:256;
-              parent =
-                (if String.is_empty parent_session then None
-                 else Some { session = parent_session; pid = parent_pid });
-              depth;
-              model;
-            }
-            ~ended
-  in
-  match outcome with
-  | Ok () -> 0
-  | Error holder ->
-      Cli.error "agent-status" (State.held_message id holder);
-      6
+  let held r = Result.map_err (fun holder -> Held (State.held_message id holder)) r in
+  match args with
+  | arg :: _ -> Error (Invalid (Printf.sprintf "unknown argument %S\n%s" arg usage))
+  | [] when String.is_empty agent || String.is_empty id ->
+      Error (Invalid ("--agent and --session are required\n" ^ usage))
+  | [] -> (
+      let dir = State.dir () in
+      if remove then held (State.remove ~dir id ~pid:(Unix.getppid ()))
+      else
+        match List.assoc_opt ~eq:String.equal status State.statuses with
+        | None -> Error (Invalid (Printf.sprintf "unknown status %S\n%s" status usage))
+        | Some status ->
+            held
+            @@ record ~dir id
+                 {
+                   (session ~agent:(State.agent_of_string agent) ~pid:(Unix.getppid ()) status) with
+                   title;
+                   inbox;
+                   activity = one_line activity ~max:256;
+                   parent =
+                     (if String.is_empty parent_session then None
+                      else Some { session = parent_session; pid = parent_pid });
+                   depth;
+                   model;
+                 }
+                 ~ended)

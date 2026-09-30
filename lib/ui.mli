@@ -99,7 +99,7 @@ val order_windows_by_tree :
   lingering String_map.t ->
   placement list
 
-val switch_window : dir:string -> client:string -> next:bool -> unit
+val switch_window : dir:string -> client:string -> next:bool -> (unit, string) result
 val spans : row -> span list
 val row_text : row -> string
 val truncate : int -> span list -> span list
@@ -113,4 +113,4 @@ type msg =
 
 val update : msg -> model -> model * msg Mosaic.Cmd.t
 val parse_duration : string -> (float, string) result
-val run : interval:float -> client:string option -> int
+val run : interval:float -> client:string option -> (unit, string) result
