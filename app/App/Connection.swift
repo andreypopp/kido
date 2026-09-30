@@ -27,7 +27,7 @@ final class Connection: @unchecked Sendable {
         view.connection = self
         try client.start(
             onEvent: { [weak self] in self?.handle($0) },
-            onClose: { [weak self] _, stderr in self?.closed(stderr) })
+            onClose: { [weak self] status, stderr in self?.closed(status, stderr) })
     }
 
     @MainActor func attach(_ pane: PaneView, synced: (@Sendable () -> Void)? = nil) {
@@ -159,9 +159,14 @@ final class Connection: @unchecked Sendable {
         }
     }
 
-    private func closed(_ stderr: String) {
+    private func closed(_ status: Int32, _ stderr: String) {
         let gone = panes, reason = (reasons + [stderr]).filter { !$0.isEmpty }.joined(separator: "\n")
         let exit = detached.map(Exit.detached) ?? .ended(reason.isEmpty ? nil : reason)
+        let why = switch exit {
+        case .detached(let reason): "detached: \(reason)"
+        case .ended(let reason): "ended: \(reason ?? "no reason given")"
+        }
+        note("connection closed, tmux exited \(status), \(why.replacingOccurrences(of: "\n", with: "; "))")
         panes = nil
         DispatchQueue.main.async { withExtendedLifetime(gone) { self.onClose(exit) } }
     }
