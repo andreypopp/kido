@@ -8,6 +8,9 @@ let num name docv doc = Arg.(value & opt int 0 & info [ name ] ~docv ~doc)
 let flag name doc = Arg.(value & flag & info [ name ] ~doc)
 let arg docv = Arg.(required & pos 0 (some string) None & info [] ~docv)
 
+let address docv =
+  Term.(const (fun s -> Option.get_or ~default:s (String.chop_prefix ~pre:"@" s)) $ arg docv)
+
 let stdin () =
   let s = In_channel.input_all stdin in
   Option.get_or ~default:s (String.chop_suffix ~suf:"\n" s)
@@ -40,7 +43,7 @@ let send name doc spec =
 let message_agent =
   send "message_agent" "Send a message to another agent, read from stdin."
   @@ let+ reply_to = str "reply-to" "ID" "Id of an earlier ask this message answers."
-     and+ to_ = arg "TO" in
+     and+ to_ = address "TO" in
      ( Message_agent.Named to_,
        Message_agent.
          { kind = (if String.is_empty reply_to then Message else Reply); reply_to; id = "" } )
@@ -48,17 +51,17 @@ let message_agent =
 let ask_agent =
   send "ask_agent" "Ask another agent a question, read from stdin; its answer comes as a reply."
   @@ let+ id = str "id" "ID" "Id to assign this envelope; a fresh one is generated if omitted."
-     and+ to_ = arg "TO" in
+     and+ to_ = address "TO" in
      (Message_agent.Named to_, Message_agent.{ kind = Ask; reply_to = ""; id })
 
 let steer_subagent =
   send "steer_subagent" "Steer a descendant agent mid-turn with a message read from stdin."
-  @@ let+ to_ = arg "AGENT" in
+  @@ let+ to_ = address "AGENT" in
      (Message_agent.Descendant to_, Message_agent.{ kind = Steer; reply_to = ""; id = "" })
 
 let interrupt_subagent =
   cmd "interrupt_subagent" "Abort a descendant agent's current turn."
-  @@ let+ to_ = arg "AGENT" in
+  @@ let+ to_ = address "AGENT" in
      fun () ->
        print (Control.interrupt ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE") to_)
 
@@ -66,7 +69,7 @@ let stop_subagent =
   cmd "stop_subagent" "Stop a descendant agent, or an async run."
   @@ let+ force =
        flag "force" "Kill the target's window directly when it has no inbox to ask nicely over."
-     and+ to_ = arg "AGENT" in
+     and+ to_ = address "AGENT" in
      fun () ->
        print
          (Control.stop ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")

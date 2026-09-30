@@ -245,6 +245,7 @@ function agentCompletionItems(agents: AgentInfo[], token: string): CompletionIte
 
 // Mirrors kido message_agent's Message_agent.resolve_target (lib/message_agent.ml): exact name, then exact id, then unique id prefix.
 function resolveAgent(agents: AgentInfo[], to: string): { agent?: AgentInfo; error?: string } {
+  to = to.replace(/^@/, "");
   const byName = agents.filter((a) => a.name && a.name.toLowerCase() === to.toLowerCase());
   if (byName.length === 1) return { agent: byName[0] };
   if (byName.length > 1) return { error: `"${to}" matches several agents by name` };

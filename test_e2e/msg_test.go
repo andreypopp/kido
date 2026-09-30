@@ -109,6 +109,7 @@ func TestMessageAgentResolvesByNameTitleIdAndPrefix(t *testing.T) {
 
 	for _, c := range []struct{ to, want string }{
 		{"worker-2", "delivered to Worker-2 by inbox"},
+		{"@worker-2", "delivered to Worker-2 by inbox"},
 		{"worker-6", "delivered to worker-6 by inbox"},
 		{"abc123", "delivered to Worker-2 by inbox"},
 		{"abd", "delivered to  by inbox"},
@@ -125,8 +126,8 @@ func TestMessageAgentResolvesByNameTitleIdAndPrefix(t *testing.T) {
 	}
 	h.expectKido(caller, "bad:\xff\xfe:end", nil, "kido message_agent: message is not valid UTF-8",
 		"message_agent", "--", "Worker-2")
-	if got := len(in.Received()); got != 4 {
-		t.Errorf("inbox received %d payloads, want the 4 deliveries: %q", got, in.Received())
+	if got := len(in.Received()); got != 5 {
+		t.Errorf("inbox received %d payloads, want the 5 deliveries: %q", got, in.Received())
 	}
 }
 
