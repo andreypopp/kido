@@ -11,7 +11,13 @@ type options = {
 
 val default_interval : float
 
-type lingering = { name : string; parent : string; outcome : Subrun.result option }
+type lingering = {
+  name : string;
+  parent : string;
+  outcome : Subrun.result option;
+  started : Timestamp.t option;
+}
+
 type probe = { reported : float; read : float; dismissed : bool }
 
 type snapshot = {
@@ -67,6 +73,7 @@ type row = {
   indicator : indicator option;
   title : span list;
   tail : span list;
+  started : float option;
 }
 
 type section = { id : string; name : string; current : bool; rows : row list }
@@ -116,7 +123,7 @@ val switch_window :
   socket:string option -> dir:string -> client:string -> next:bool -> (unit, string) result
 
 val rebuild : model -> model
-val poll : ?wait:bool -> opts:options -> Tmux.Conn.t -> snapshot -> snapshot
+val poll : ?wait:float -> opts:options -> Tmux.Conn.t -> snapshot -> snapshot
 val step : model -> snapshot -> model * bool
 
 type command = Filter of string option | Ignored

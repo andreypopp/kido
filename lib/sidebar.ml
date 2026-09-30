@@ -12,7 +12,13 @@ type options = {
 
 let default_interval = 0.1
 
-type lingering = { name : string; parent : string; outcome : Subrun.result option }
+type lingering = {
+  name : string;
+  parent : string;
+  outcome : Subrun.result option;
+  started : Timestamp.t option;
+}
+
 type probe = { reported : float; read : float; dismissed : bool }
 
 type snapshot = {
@@ -65,7 +71,13 @@ let lingering_subagents ~dir panes states prev =
               | None -> out
               | Some meta ->
                   String_map.add key
-                    { name = meta.name; parent = meta.parent_session; outcome = outcome () }
+                    {
+                      name = meta.name;
+                      parent = meta.parent_session;
+                      outcome = outcome ();
+                      started =
+                        (match meta.kind with Bash -> Some meta.started_at | Agent -> None);
+                    }
                     out))
       | _ -> out)
     String_map.empty panes
@@ -205,6 +217,7 @@ type row = {
   indicator : indicator option;
   title : span list;
   tail : span list;
+  started : float option;
 }
 
 type section = { id : string; name : string; current : bool; rows : row list }
@@ -376,6 +389,7 @@ let lingering_label (p : P.t) (l : lingering) =
       indicator = Some (Status Running);
       title = [ plain l.name ];
       tail = [];
+      started = l.started;
     }
   in
   match p.dead_at with
@@ -385,13 +399,14 @@ let lingering_label (p : P.t) (l : lingering) =
         base with
         indicator = Some (Gone l.outcome);
         title = [ span `Dim l.name ];
+        started = None;
         tail =
           Option.map_or ~default:[] (fun o -> [ span `Dim (Subrun.string_of_result o) ]) l.outcome;
       }
 
 let pane_label m (p : P.t) =
   let row indicator title tail =
-    { pane = p.pane_id; window = p.window_id; tree = ""; indicator; title; tail }
+    { pane = p.pane_id; window = p.window_id; tree = ""; indicator; title; tail; started = None }
   in
   match agent_title_of m p with
   | None -> (
@@ -605,8 +620,8 @@ let rebuild m =
   in
   { m with sessions }
 
-let poll ?(wait = true) ~opts conn prev =
-  if wait then Tmux.Conn.wait conn opts.interval;
+let poll ?wait ~(opts : options) conn prev =
+  Option.iter (Tmux.Conn.wait conn) wait;
   let client = Tmux.Conn.client_state conn opts.client in
   let failed e = { empty with client; err = Some e } in
   match take ~opts conn prev client with
@@ -695,6 +710,7 @@ let to_json m =
         ("indicator", indicator_json r.indicator);
         ("title", spans r.title);
         ("tail", spans r.tail);
+        ("started", Option.map_or ~default:`Null (fun s -> `Float s) r.started);
         ("attention", `Bool (attention m r.pane));
       ]
   in

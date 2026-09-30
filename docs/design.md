@@ -1731,12 +1731,24 @@ The sidebar is one model drawn by two views. `Sidebar` is the model: the
 tick (`poll` waits for the control connection's "look now" or the 100ms
 interval, then takes a snapshot), the per-pane tracking, and the rows as
 data - a tree string, an indicator, title and tail spans tagged with a
-role (`plain`, `dim`, `proc`, ...), and the pane's and window's ids. Its
-`step` holds the one change test: a snapshot that differs from the last
-by `same`, or a shell debounce or stall coming due, rebuilds the rows.
-The model has no width and no colour. `Ui` is the Mosaic view: it maps a
-role to a style and an indicator to a glyph, cuts each row to the
-column's width, and owns the cursor, the scroll and the keys. The
+role (`plain`, `dim`, `proc`, ...), the pane's and window's ids, and, for
+a running `async_bash` run, its start time, read once from the run's
+meta when its lingering entry is made. Its `step` holds the one change
+test: a snapshot that differs from the last by `same`, or a shell
+debounce or stall coming due, rebuilds the rows. The model has no width,
+no colour and no layout. `Ui` is the Mosaic view: it maps a role to a
+style and an indicator to a glyph, puts the glyph against the title and
+one space before a non-empty tail, cuts each row to the column's width,
+and owns the cursor, the scroll and the keys.
+
+A running bash run's tail is its elapsed time (`12s`, `1m05s`, `1h02m`),
+formatted by the view from the model's clock reading of the tick, so the
+rows and `same` never change by the second. Mosaic renders the view after
+every message and diffs the screen, so each tick's new reading reaches
+the screen without a rebuild; what the view adds is the wake: while a
+row on screen shows elapsed time, the next tick's wait is cut to that
+row's next second boundary, and otherwise it stays the interval. An
+ended run shows its outcome. The
 attention predicate `n`/`N` walk is the model's, so the feed's
 `attention` and the TUI's jump cannot disagree.
 
@@ -1747,7 +1759,8 @@ versioned by its `v` field and kept in the app's notes
 client and writes a whole snapshot as one JSON line at start, then
 whenever `step` rebuilt the rows and the line differs from the last one
 sent: a rebuild the debounce forces with nothing visible changed sends
-nothing. The texts go out uncut; the app truncates. Besides drawing, it
+nothing. A running bash run's row carries `started`, its start time; the
+app counts the seconds, so a running run sends no line per second. The texts go out uncut; the app truncates. Besides drawing, it
 does what the TUI's tick does, the reap sweep and the Claude screen
 probe, and both are idempotent with a TUI sidebar running beside it. The
 client's ids come from its session's active pane, and the last known ones

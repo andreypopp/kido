@@ -30,6 +30,7 @@ type feedRow struct {
 	} `json:"indicator"`
 	Title     []feedSpan `json:"title"`
 	Tail      []feedSpan `json:"tail"`
+	Started   *float64   `json:"started"`
 	Attention bool       `json:"attention"`
 }
 
@@ -81,6 +82,20 @@ func feedGlyph(r feedRow) string {
 	return "<" + r.Indicator.Kind + ">"
 }
 
+// elapsedText is the TUI's elapsed format (Ui.elapsed).
+func elapsedText(started float64) string {
+	s := max(0, int(float64(time.Now().UnixNano())/1e9-started))
+	switch {
+	case s < 60:
+		return fmt.Sprintf("%ds", s)
+	case s < 3600:
+		return fmt.Sprintf("%dm%02ds", s/60, s%60)
+	}
+	return fmt.Sprintf("%dh%02dm", s/3600, s/60%60)
+}
+
+// drawn spells each row as the TUI does, a running bash run's elapsed
+// time read from the clock now.
 func (s feedSnapshot) drawn() []string {
 	var out []string
 	text := func(spans []feedSpan) string {
@@ -93,7 +108,12 @@ func (s feedSnapshot) drawn() []string {
 	for _, sess := range s.Sessions {
 		out = append(out, sess.Name)
 		for _, r := range sess.Rows {
-			label := text(r.Title) + text(r.Tail)
+			label := text(r.Title)
+			if r.Started != nil {
+				label += " " + elapsedText(*r.Started)
+			} else if len(r.Tail) > 0 {
+				label += " " + text(r.Tail)
+			}
 			out = append(out, strings.TrimSpace(r.Tree+feedGlyph(r)+label))
 		}
 	}
@@ -272,8 +292,13 @@ func TestSidebarFeedMatchesTheTUI(t *testing.T) {
 		}
 		byTitle[r.Title[0].Text] = r
 	}
-	if r := byTitle["slow-e2e"]; r.Indicator == nil || r.Indicator.Kind != "running" {
+	if r := byTitle["slow-e2e"]; r.Indicator == nil || r.Indicator.Kind != "running" || r.Started == nil || len(r.Tail) != 0 {
 		t.Errorf("the lingering run's row: %+v in %s", r, s.raw)
+	}
+	for title, r := range byTitle {
+		if title != "slow-e2e" && r.Started != nil {
+			t.Errorf("row %q sends a start time: %s", title, s.raw)
+		}
 	}
 	nested := false
 	for _, r := range s.Sessions[0].Rows {
@@ -348,6 +373,17 @@ func TestSidebarFeedStream(t *testing.T) {
 		}
 	}
 	quiet("settled")
+
+	// Its elapsed time ticks in the TUI; the feed sends only the start.
+	h.asyncBash("tick-e2e", "sleep", "300")
+	f.waitLast(func(s feedSnapshot) bool { return strings.Contains(s.raw, `"tick-e2e"`) }, "the bash run's row")
+	// The typing shell settles a debounce after the run starts.
+	h.waitFor(func() bool {
+		n := f.count()
+		time.Sleep(700 * time.Millisecond)
+		return f.count() == n
+	}, settle, msgf("the feed to settle after the bash run started"))
+	quiet("a running bash run")
 
 	n := f.count()
 	h.newWindow("beta", "fresh")

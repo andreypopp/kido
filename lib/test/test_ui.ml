@@ -77,8 +77,8 @@ let model ?(dir = temp ()) ?(clock = ref test_at) ?(started = test_at -. 3600.) 
 let client session = Some { Tmux.Exec.session; session_id = "$0"; focused = false }
 let lines m = Array.to_list (Ui.lines (Sidebar.rebuild m))
 
-let render ?dir ?(current = "sess") panes st =
-  let m = model ?dir () in
+let render ?dir ?(current = "sess") ?(at = test_at) panes st =
+  let m = model ?dir ~clock:(ref at) () in
   let states = states st in
   let snap =
     {
@@ -89,7 +89,7 @@ let render ?dir ?(current = "sess") panes st =
       lingering = Sidebar.lingering_subagents ~dir:m.opts.dir panes states State.String_map.empty;
     }
   in
-  List.iter (fun r -> print_endline (Ui.row_text r)) (lines { m with snap })
+  List.iter (fun r -> print_endline (Ui.row_text ~now:m.at r)) (lines { m with snap })
 
 let%expect_test "a subagent's window nests under the pane that spawned it" =
   render
@@ -300,7 +300,7 @@ let%expect_test "the same state renders the same rows every time" =
     let m = model () in
     let states = states st in
     lines { m with snap = { Sidebar.empty with client = client "sess"; panes; states } }
-    |> List.map Ui.row_text
+    |> List.map (Ui.row_text ~now:m.at)
   in
   let want = rows () in
   Printf.printf "stable: %b\n"
@@ -371,7 +371,7 @@ let%expect_test "order_windows_by_tree: child after parent, anchored to the pare
 
 let%expect_test "order_windows_by_tree: the lingering fallback, and a record beating a stale mark" =
   let lingering parent =
-    State.String_map.singleton "run-1" { Sidebar.name = ""; parent; outcome = None }
+    State.String_map.singleton "run-1" { Sidebar.name = ""; parent; outcome = None; started = None }
   in
   placements
     [ w "root"; w ~run:"run-1" "kid" ]
@@ -411,14 +411,14 @@ let%expect_test "order_windows_by_tree: the lingering fallback, and a record bea
     @kid2 anchor=%101
     |}]
 
-let new_run ~dir ?(parent = "") ?result name =
+let new_run ~dir ?(parent = "") ?(kind = Subrun.Agent) ?result name =
   let id = Subrun.new_id () in
   Subrun.create ~dir id "task";
   Subrun.write_meta ~dir
     {
       id;
       name;
-      kind = Agent;
+      kind;
       parent_session = parent;
       depth = 0;
       pane = "";
@@ -456,15 +456,86 @@ let%expect_test
     ┌◼fix the flaky test
     └ zsh
     sess
-    ╶✓subagentcompleted
+    ╶✓subagent completed
     sess
-    ╶×subagentfailed
+    ╶×subagent failed
     sess
-    ╶×subagentdied
+    ╶×subagent died
     sess
-    ╶×subagentstopped
+    ╶×subagent stopped
     sess
     ╶
+    |}]
+
+let%expect_test "a running bash run shows its elapsed time, and its outcome once it ended" =
+  let dir = temp () in
+  let run = new_run ~dir ~kind:Bash "build" in
+  List.iter
+    (fun d -> render ~dir ~at:(test_at +. d) [ pane ~window:"@20" ~run "%30" ] [])
+    [ 0.; 65. ];
+  render ~dir ~at:(test_at +. 65.)
+    [
+      pane ~window:"@20" ~dead_at:1. ~run:(new_run ~dir ~kind:Bash ~result:Completed "build") "%30";
+    ]
+    [];
+  [%expect
+    {|
+    sess
+    ╶◼build 0s
+    sess
+    ╶◼build 1m05s
+    sess
+    ╶✓build completed
+    |}]
+
+let%expect_test "elapsed time is compact: seconds, then minutes and seconds, then hours and minutes"
+    =
+  List.iter
+    (fun s -> Printf.printf "%g %s\n" s (Ui.elapsed s))
+    [ -3.; 0.; 0.99; 1.; 59.9; 60.; 65.; 3599.; 3600.; 3720.; 90000. ];
+  [%expect
+    {|
+    -3 0s
+    0 0s
+    0.99 0s
+    1 1s
+    59.9 59s
+    60 1m00s
+    65 1m05s
+    3599 59m59s
+    3600 1h00m
+    3720 1h02m
+    90000 25h00m
+    |}]
+
+(* With the interval alone, a displayed second changes up to a whole tick late. *)
+let%expect_test "a running bash run wakes the tick at its next second boundary" =
+  let dir = temp () in
+  let clock = ref test_at in
+  let wait panes =
+    let side, _ =
+      Sidebar.step (model ~dir ~clock ())
+        {
+          Sidebar.empty with
+          client = client "sess";
+          panes;
+          lingering =
+            Sidebar.lingering_subagents ~dir panes State.String_map.empty State.String_map.empty;
+        }
+    in
+    Printf.printf "%.3f\n" (Ui.next_wait (Ui.make ~standalone:false side))
+  in
+  let bash = [ pane ~window:"@20" ~run:(new_run ~dir ~kind:Bash "build") "%30" ] in
+  let agent = [ pane ~window:"@20" ~run:(new_run ~dir "helper") "%30" ] in
+  List.iter
+    (fun (at, panes) ->
+      clock := test_at +. at;
+      wait panes)
+    [ (2.3, bash); (2.95, bash); (2.95, agent) ];
+  [%expect {|
+    0.100
+    0.050
+    0.100
     |}]
 
 let%expect_test
@@ -752,7 +823,7 @@ let%expect_test "shell_indicator debounce on a controlled clock" =
       +200ms: running
     |}]
 
-let label m p = Ui.row_text (Row (Sidebar.pane_label m p))
+let label m p = Ui.row_text ~now:m.Sidebar.at (Row (Sidebar.pane_label m p))
 
 let%expect_test "phases and latches are forgotten with their panes" =
   let m = model ~started:test_at () in
@@ -787,7 +858,7 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
       (fun (l : Ui.line) ->
         match l with
         | Row { pane = "%1"; _ } ->
-            List.exists (fun (s : Ui.span) -> String.equal s.text "◼") (Ui.spans l)
+            List.exists (fun (s : Ui.span) -> String.equal s.text "◼") (Ui.spans ~now:!clock l)
         | _ -> false)
       !m.lines
   in
@@ -826,7 +897,7 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
   in
   let stalled () =
     Array.exists
-      (fun r -> List.exists (fun (s : Ui.span) -> String.equal s.text "!") (Ui.spans r))
+      (fun r -> List.exists (fun (s : Ui.span) -> String.equal s.text "!") (Ui.spans ~now:!clock r))
       !m.lines
   in
   let tick d =
@@ -1101,7 +1172,8 @@ let%expect_test
   in
   let show filter =
     Printf.printf "%S: %s\n" filter
-      (String.concat " | " (List.map Ui.row_text (lines { m with search = Some filter })))
+      (String.concat " | "
+         (List.map (Ui.row_text ~now:m.at) (lines { m with search = Some filter })))
   in
   show "";
   show "zz";
@@ -1163,7 +1235,7 @@ let%expect_test "a pause is the wall clock outrunning the monotonic one" =
     |}]
 
 (* The feed's wire format: key order, the indicator encoding (null for an empty field, idle for an
-   integrated idle shell, gone with its outcome), untruncated spans with their roles, attention from
+   integrated idle shell, gone with its outcome), a running bash run's start, untruncated spans with their roles, attention from
    the predicate n/N walk, and rows grouped under their own session. *)
 let%expect_test "a snapshot as the feed sends it" =
   let dir = temp () in
@@ -1178,6 +1250,7 @@ let%expect_test "a snapshot as the feed sends it" =
       pane ~session:"alpha" ~window:"@1" ~command:"bash" ~prompt:test_at "%2";
       pane ~session:"alpha" ~window:"@1" ~command:"vim" ~alternate:true "%3";
       pane ~session:"alpha" ~window:"@4" ~dead_at:1. ~run:id "%4";
+      pane ~session:"alpha" ~window:"@6" ~run:(new_run ~dir ~kind:Bash "build") "%6";
     ]
     @ [ { (pane ~session:"beta" ~window:"@5" ~title:"asker" "%5") with session_id = "$1" } ]
   in
@@ -1226,6 +1299,7 @@ let%expect_test "a snapshot as the feed sends it" =
               "indicator": { "kind": "running" },
               "title": [ { "text": "orchestrator", "role": "plain" } ],
               "tail": [ { "text": "reading the contract", "role": "dim" } ],
+              "started": null,
               "attention": false
             },
             {
@@ -1235,6 +1309,7 @@ let%expect_test "a snapshot as the feed sends it" =
               "indicator": { "kind": "idle" },
               "title": [ { "text": "bash", "role": "proc" } ],
               "tail": [],
+              "started": null,
               "attention": false
             },
             {
@@ -1244,6 +1319,7 @@ let%expect_test "a snapshot as the feed sends it" =
               "indicator": null,
               "title": [ { "text": "vim", "role": "proc" } ],
               "tail": [],
+              "started": null,
               "attention": false
             },
             {
@@ -1253,6 +1329,17 @@ let%expect_test "a snapshot as the feed sends it" =
               "indicator": { "kind": "gone", "outcome": "failed" },
               "title": [ { "text": "helper", "role": "dim" } ],
               "tail": [ { "text": "failed", "role": "dim" } ],
+              "started": null,
+              "attention": false
+            },
+            {
+              "pane": "%6",
+              "window": "@6",
+              "tree": "╶",
+              "indicator": { "kind": "running" },
+              "title": [ { "text": "build", "role": "plain" } ],
+              "tail": [],
+              "started": 1700000000.0,
               "attention": false
             }
           ]
@@ -1269,6 +1356,7 @@ let%expect_test "a snapshot as the feed sends it" =
               "indicator": { "kind": "waiting" },
               "title": [ { "text": "asker", "role": "plain" } ],
               "tail": [],
+              "started": null,
               "attention": true
             }
           ]

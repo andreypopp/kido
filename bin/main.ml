@@ -675,11 +675,11 @@ let sidebar_feed =
          with
          | Some None -> 0
          | Some (Some e) -> failwith e
-         | None -> loop m last
+         | None -> loop ~wait:opts.interval m last
        in
        Fun.protect
          ~finally:(fun () -> Tmux.Conn.close conn)
-         (fun () -> loop ~wait:false (Sidebar.make ~now:Unix.gettimeofday opts) "")
+         (fun () -> loop (Sidebar.make ~now:Unix.gettimeofday opts) "")
 
 let () =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;

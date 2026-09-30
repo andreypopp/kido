@@ -3,7 +3,10 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -240,4 +243,38 @@ func TestAsyncBashRecordsItsRunAndItsCommand(t *testing.T) {
 	if info := h.waitOutcome(argvRun); info.Outcome != "failed" || info.OutcomeText != "exit status 3" {
 		t.Errorf("argv run = %q/%q, want failed/\"exit status 3\" from the words run as an argv", info.Outcome, info.OutcomeText)
 	}
+}
+
+// A running bash run's row counts its seconds up in place of a tail, and
+// once the run has ended shows its outcome instead. The run's window is
+// made the client's current one so the reap leaves its dead pane to read.
+func TestAsyncBashRowShowsElapsedThenOutcome(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	finish := filepath.Join(h.dir, "tick-finish")
+	windowID, _, _ := h.asyncBashIDs(nil, "tick-e2e",
+		"sh", "-c", fmt.Sprintf("while [ ! -f %s ]; do sleep 0.1; done", finish))
+	h.in("select-window", "-t", windowID)
+
+	elapsed := regexp.MustCompile(`◼tick-e2e (\d+)s$`)
+	seconds := func() int {
+		if m := elapsed.FindStringSubmatch(h.rowFor("tick-e2e")); m != nil {
+			n, _ := strconv.Atoi(m[1])
+			return n
+		}
+		return -1
+	}
+	first := -1
+	h.waitFor(func() bool { first = seconds(); return first >= 1 }, settle,
+		func() string { return fmt.Sprintf("an elapsed time of 1s or more, row is %q", h.rowFor("tick-e2e")) })
+	h.waitFor(func() bool { return seconds() > first }, settle,
+		func() string {
+			return fmt.Sprintf("the elapsed time to pass %ds, row is %q", first, h.rowFor("tick-e2e"))
+		})
+
+	if err := os.WriteFile(finish, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.waitFor(func() bool { return h.rowFor("tick-e2e") == "╶✓tick-e2e completed" }, settle,
+		func() string { return fmt.Sprintf("the ended run's outcome, row is %q", h.rowFor("tick-e2e")) })
 }

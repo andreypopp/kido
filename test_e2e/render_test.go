@@ -273,7 +273,7 @@ func TestSelectedRowInvertsTitleOnly(t *testing.T) {
 	h := start(t, "alpha")
 	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 	h.agentStatus("sel-1", pane, "pi", "running", "--title", "deploy", "--activity", "testing")
-	h.waitSelected("deploytesting")
+	h.waitSelected("deploy testing")
 
 	var line string
 	for _, l := range h.capture() {

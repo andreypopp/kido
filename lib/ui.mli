@@ -20,8 +20,9 @@ type model = {
 
 val make : ?conn:Tmux.Conn.t -> standalone:bool -> Sidebar.model -> model
 val style : Sidebar.role -> Style.t
-val spans : line -> span list
-val row_text : line -> string
+val elapsed : float -> string
+val spans : now:float -> line -> span list
+val row_text : now:float -> line -> string
 val truncate : int -> span list -> span list
 
 type msg =
@@ -30,5 +31,6 @@ type msg =
   | Mouse of Mosaic.Event.mouse
   | Resize of int * int
 
+val next_wait : model -> float
 val update : msg -> model -> model * msg Mosaic.Cmd.t
 val run : standalone:bool -> Sidebar.options -> unit

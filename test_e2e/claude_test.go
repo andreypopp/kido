@@ -18,7 +18,7 @@ func (h *harness) rowFor(name string) string {
 }
 
 // waitGlyph waits until the agent pane titled title shows glyph in its
-// indicator field. The field is two columns wide whatever it holds, so
+// indicator field. The field is one column wide whatever it holds, so
 // every label starts at the same place; an empty glyph is idle.
 func (h *harness) waitGlyph(title, glyph string) {
 	h.t.Helper()

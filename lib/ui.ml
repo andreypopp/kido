@@ -72,10 +72,16 @@ let glyph : S.indicator -> span option = function
   | Gone (Some Completed) -> Some (span `Dim "✓")
   | Gone _ -> Some (span `Dim "×")
 
-let parts : line -> span list * span list * span list = function
+let elapsed secs =
+  let s = max 0 (Float.to_int secs) in
+  if s < 60 then Printf.sprintf "%ds" s
+  else if s < 3600 then Printf.sprintf "%dm%02ds" (s / 60) (s mod 60)
+  else Printf.sprintf "%dh%02dm" (s / 3600) (s / 60 mod 60)
+
+let parts ~now : line -> span list * span list * span list = function
   | Header h -> ([], [ span (if h.current then `Current else `Plain) h.name ], [])
   | Message e -> ([], [ span `Err e ], [])
-  | Row r ->
+  | Row r -> (
       let tree =
         List.concat
           (List.mapi
@@ -87,13 +93,15 @@ let parts : line -> span list * span list * span list = function
       ( (tree
         @ match Option.flat_map glyph r.indicator with None -> [ plain " " ] | Some i -> [ i ]),
         List.map styled r.title,
-        List.map styled r.tail )
+        match r.started with
+        | Some s -> [ plain " "; span `Dim (elapsed (now -. s)) ]
+        | None -> ( match r.tail with [] -> [] | tail -> plain " " :: List.map styled tail) ))
 
-let spans line =
-  let lead, title, tail = parts line in
+let spans ~now line =
+  let lead, title, tail = parts ~now line in
   lead @ title @ tail
 
-let row_text line = String.concat "" (List.map (fun s -> s.text) (spans line))
+let row_text ~now line = String.concat "" (List.map (fun s -> s.text) (spans ~now line))
 let pane_of : line -> string option = function Row r -> Some r.pane | Header _ | Message _ -> None
 
 let index_of m pane =
@@ -102,6 +110,7 @@ let index_of m pane =
 
 let selected m = Option.flat_map pane_of (CCArray.get_safe m.lines m.cursor)
 let view_rows m = if m.height > 1 then m.height - 1 else Array.length m.lines
+let shown m = List.init (max 0 (min (view_rows m) (Array.length m.lines - m.top))) (( + ) m.top)
 let clamp_top m = { m with top = max 0 (min m.top (Array.length m.lines - view_rows m)) }
 
 let ensure_visible m =
@@ -249,6 +258,15 @@ let key m (k : Mosaic.Event.key) =
       | _ when is 'G' -> none (bottom m)
       | _ -> none m)
 
+let next_wait m =
+  let now = m.side.now () in
+  List.fold_left
+    (fun wait i ->
+      match m.lines.(i) with
+      | Row { started = Some s; _ } -> Float.min wait (1. -. Float.rem (now -. s) 1.)
+      | Row _ | Header _ | Message _ -> wait)
+    m.side.opts.interval (shown m)
+
 let tick ?wait m =
   match m.conn with
   | None -> Mosaic.Cmd.none
@@ -274,7 +292,7 @@ let update msg m =
         then focus m snap.active
         else m
       in
-      (m, tick m)
+      (m, tick ~wait:(next_wait m) m)
   | Mouse ev -> (
       match Mosaic.Event.Mouse.kind ev with
       | Down { button = Left } -> (
@@ -310,14 +328,13 @@ let truncate width spans =
   else go (width - 1) spans
 
 let view m =
-  let h = view_rows m in
   let line spans =
     Mosaic.box ~flex_direction:Row
       ~size:(Mosaic.size_wh (Mosaic.pct 100) (Mosaic.px 1))
       (List.map (fun s -> Mosaic.text ~style:s.style ~selectable:false s.text) spans)
   in
   let row i =
-    let lead, title, tail = parts m.lines.(i) in
+    let lead, title, tail = parts ~now:m.side.at m.lines.(i) in
     let title =
       if i = m.cursor then
         List.map (fun s -> { s with style = Style.with_inverse true s.style }) title
@@ -335,8 +352,7 @@ let view m =
   Mosaic.box ~flex_direction:Column
     ~size:(Mosaic.size_wh (Mosaic.pct 100) (Mosaic.pct 100))
     [
-      Mosaic.box ~flex_direction:Column ~flex_grow:1. ~flex_shrink:1.
-        (List.init (max 0 (min h (Array.length m.lines - m.top))) (fun k -> row (m.top + k)));
+      Mosaic.box ~flex_direction:Column ~flex_grow:1. ~flex_shrink:1. (List.map row (shown m));
       footer;
     ]
 
@@ -352,7 +368,7 @@ let run ~standalone (opts : S.options) =
   let conn = Tmux.Conn.connect ?socket:opts.socket opts.client in
   let init () =
     let m = make ~conn ~standalone (S.make ~now:Unix.gettimeofday opts) in
-    (m, tick ~wait:false m)
+    (m, tick m)
   in
   let matrix =
     Matrix.create ~mode:`Alt ~exit_on_ctrl_c:false ~cursor_visible:false ~bracketed_paste:false
