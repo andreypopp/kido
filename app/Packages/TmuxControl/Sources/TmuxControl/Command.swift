@@ -26,7 +26,8 @@ private func quote(_ word: String) -> String {
         default: "-_.,:/=+@%".utf8.contains($0)
         }
     }
-    if safe { return word }
+    let directive = word.hasPrefix("%") && !word.utf8.allSatisfy { $0 == UInt8(ascii: "%") || (0x30...0x39).contains($0) }
+    if safe && !directive { return word }
     var out = "\""
     for c in word.unicodeScalars {
         switch c {
