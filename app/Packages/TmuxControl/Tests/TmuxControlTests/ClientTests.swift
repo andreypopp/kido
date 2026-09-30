@@ -111,3 +111,54 @@ func liveClient() async throws {
     _ = try await seen.wait("exit") { e, _ in e.last == .exit(reason: nil) ? () : nil }
     await #expect(throws: Client.Closed.self) { try await client.run(Command("list-sessions")) }
 }
+
+@Test(.enabled(if: tmux != nil), .timeLimit(.minutes(1)))
+func liveLayout() async throws {
+    let tmux = try #require(tmux)
+    let socket = "/tmp/tl-\(getpid()).sock"
+    #expect(try server(tmux, socket, "new-session", "-d", "-s", "t", "-x", "80", "-y", "24", "/bin/sh") == 0)
+    defer {
+        _ = try? server(tmux, socket, "kill-server")
+        try? FileManager.default.removeItem(atPath: socket)
+    }
+    #expect(try server(tmux, socket, "split-window", "-h", "/bin/sh") == 0)
+    #expect(try server(tmux, socket, "split-window", "-v", "/bin/sh") == 0)
+    #expect(try server(tmux, socket, "new-pane", "-x", "30", "-y", "10", "-X", "5", "-Y", "3", "/bin/sh") == 0)
+    let seen = Recorder<Event>()
+    let client = Client(tmux: tmux, socket: socket, session: "t", pauseAfter: 5)
+    try client.start(
+        onEvent: { [queue = client.queue] in
+            dispatchPrecondition(condition: .onQueue(queue))
+            seen.add($0)
+        },
+        onClose: seen.close)
+    _ = try await seen.wait("attach") { e, _ in e.contains(.sessionChanged(SessionID(number: 0), "t")) ? () : nil }
+
+    let replies = Recorder<[Reply]?>()
+    client.send([Command("display-message", "-p", "#{window_layout} #{window_visible_layout}")]) { [queue = client.queue] in
+        dispatchPrecondition(condition: .onQueue(queue))
+        replies.add($0)
+    }
+    let reply = try await replies.wait("layouts") { r, _ in r.first }
+    guard case .success(let lines)? = reply?.first, let words = lines.first?.split(separator: " "), words.count == 2 else {
+        Issue.record("layouts: \(String(describing: reply))")
+        return
+    }
+    let layout = try Layout(json: words[0])
+    #expect(try Layout(json: words[1]) == layout)
+    let p3 = PaneID(number: 3)
+    #expect(layout.root.panes.map(\.id) == [p0, p1, PaneID(number: 2), p3])
+    #expect(layout.root.panes.last == Pane(
+        id: p3, index: 3, geometry: Geometry(x: 6, y: 4, width: 28, height: 8), focus: .active, layer: .floating(z: 0)))
+    #expect(layout.root.dividers == [
+        Geometry(x: 40, y: 0, width: 1, height: 24), Geometry(x: 41, y: 12, width: 39, height: 1),
+    ])
+
+    #expect(try await client.run(Command("resize-pane", "-Z", "-t", p1)) == .success([]))
+    let zoomed = try await seen.wait("zoom") { e, _ in
+        e.lazy.compactMap { if case .layoutChange(_, let l, let v, "*Z") = $0 { (l, v) } else { nil } }.first
+    }
+    #expect(zoomed.0.root.panes.count == 4)
+    #expect(zoomed.1 == Layout(root: .pane(Pane(
+        id: p1, index: 1, geometry: Geometry(x: 0, y: 0, width: 80, height: 24), focus: .active, layer: .tiled))))
+}
