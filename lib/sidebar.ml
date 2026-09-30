@@ -16,7 +16,8 @@ type lingering = {
   name : string;
   parent : string;
   outcome : Subrun.result option;
-  started : Timestamp.t option;
+  kind : Subrun.kind;
+  started_at : Timestamp.t;
 }
 
 type probe = { reported : float; read : float; dismissed : bool }
@@ -75,8 +76,8 @@ let lingering_subagents ~dir panes states prev =
                       name = meta.name;
                       parent = meta.parent_session;
                       outcome = outcome ();
-                      started =
-                        (match meta.kind with Bash -> Some meta.started_at | Agent -> None);
+                      kind = meta.kind;
+                      started_at = meta.started_at;
                     }
                     out))
       | _ -> out)
@@ -211,17 +212,21 @@ type indicator =
   | Gone of Subrun.result option
 
 type caption = Text of span list | Elapsed of float
+type row_kind = Agent | Run | Ssh | Shell
 
 type row = {
   pane : string;
   window : string;
-  tree : string;
+  kind : row_kind;
   indicator : indicator option;
   title : span list;
   caption : caption;
 }
 
-type section = { id : string; name : string; current : bool; rows : row list }
+type node = Group of { window : string; panes : item list } | Item of item
+and item = { row : row; children : node list }
+
+type section = { id : string; name : string; current : bool; nodes : node list }
 type phase = { running : bool; since : float; drawn : bool; held : P.exit option }
 
 type model = {
@@ -386,10 +391,10 @@ let lingering_label (p : P.t) (l : lingering) =
     {
       pane = p.pane_id;
       window = p.window_id;
-      tree = "";
+      kind = (match l.kind with Agent -> Agent | Bash -> Run);
       indicator = Some (Status Running);
       title = [ plain l.name ];
-      caption = (match l.started with Some s -> Elapsed s | None -> Text []);
+      caption = (match l.kind with Bash -> Elapsed l.started_at | Agent -> Text []);
     }
   in
   match p.dead_at with
@@ -407,8 +412,8 @@ let lingering_label (p : P.t) (l : lingering) =
       }
 
 let pane_label m (p : P.t) =
-  let row indicator title tail =
-    { pane = p.pane_id; window = p.window_id; tree = ""; indicator; title; caption = Text tail }
+  let row kind indicator title tail =
+    { pane = p.pane_id; window = p.window_id; kind; indicator; title; caption = Text tail }
   in
   match agent_title_of m p with
   | None -> (
@@ -440,7 +445,7 @@ let pane_label m (p : P.t) =
                 (fun ph -> Option.get_or ~default:(Status Idle) (shell_indicator m ph))
                 (String_map.find_opt p.pane_id m.phases)
           in
-          row ind text [])
+          row (if Procs.Int_map.mem p.pane_pid m.snap.ssh then Ssh else Shell) ind text [])
   | Some title ->
       let ind, activity =
         match String_map.find_opt p.pane_id m.snap.states with
@@ -451,7 +456,7 @@ let pane_label m (p : P.t) =
                else Status s.status),
               s.activity )
       in
-      row
+      row Agent
         (Some (if done_ m p.pane_id then Done else ind))
         [ plain title ]
         (if String.is_empty activity then [] else [ span `Dim activity ])
@@ -523,10 +528,6 @@ let switch_window ~socket ~dir ~client ~next =
         (windows_in_order panes states (lingering_subagents ~dir panes states String_map.empty)))
     (Tmux.Exec.list_panes ?socket ())
 
-let glyph i n = if n = 1 then "╶" else if i = 0 then "┌" else if i = n - 1 then "└" else "├"
-let continuation i n = if i < n - 1 then "│" else " "
-let group_glyph i n = if i = n - 1 then "└" else "├"
-
 let append_windows m placements =
   let placements = Array.of_list placements in
   let drawn = Array.make (Array.length placements) false in
@@ -538,35 +539,26 @@ let append_windows m placements =
         | Some a -> String_map.update a (fun l -> Some (k :: Option.get_or ~default:[] l)) acc)
       String_map.empty placements
   in
-  let rows = ref [] in
-  let rec emit i prefix lead group_stem =
-    if not drawn.(i) then begin
+  let rec emit i =
+    if drawn.(i) then None
+    else begin
       drawn.(i) <- true;
-      let panes = placements.(i).panes in
-      let n = List.length panes in
-      List.iteri
-        (fun j (p : P.t) ->
-          let g, nested =
-            match lead with
-            | None -> (glyph j n, prefix ^ continuation j n ^ " ")
-            | Some lead when n = 1 -> (lead, prefix ^ group_stem ^ " ")
-            | Some lead ->
-                ( (if j > 0 then group_stem else lead) ^ glyph j n,
-                  prefix ^ group_stem ^ continuation j n ^ " " )
-          in
-          rows := { (pane_label m p) with tree = prefix ^ g } :: !rows;
-          let kids =
-            List.rev (Option.get_or ~default:[] (String_map.find_opt p.pane_id anchored))
-          in
-          let nk = List.length kids in
-          List.iteri
-            (fun gi k -> emit k nested (Some (group_glyph gi nk)) (continuation gi nk))
-            kids)
-        panes
+      let panes =
+        List.map
+          (fun (p : P.t) ->
+            let kids =
+              List.rev (Option.get_or ~default:[] (String_map.find_opt p.pane_id anchored))
+            in
+            { row = pane_label m p; children = List.filter_map emit kids })
+          placements.(i).panes
+      in
+      Some
+        (match panes with
+        | [ item ] -> Item item
+        | _ -> Group { window = (List.hd placements.(i).panes).window_id; panes })
     end
   in
-  Array.iteri (fun i _ -> emit i "" None "") placements;
-  List.rev !rows
+  List.filter_map emit (List.init (Array.length placements) Fun.id)
 
 let fuzzy pattern s =
   let n = String.length pattern and s = String.lowercase_ascii s in
@@ -616,7 +608,7 @@ let rebuild m =
             Option.exists
               (fun (c : Tmux.Exec.client_state) -> String.equal s.name c.session)
               m.snap.client;
-          rows = append_windows m (order_windows_by_tree s.windows m.snap.states m.snap.lingering);
+          nodes = append_windows m (order_windows_by_tree s.windows m.snap.states m.snap.lingering);
         })
       order
   in
@@ -703,24 +695,39 @@ let to_json m =
          (fun s -> `Assoc [ ("text", `String s.text); ("role", `String (role_name s.role)) ])
          l)
   in
-  let row r =
+  let rec node = function
+    | Group g ->
+        `Assoc
+          [
+            ("kind", `String "window");
+            ("id", `String g.window);
+            ("window", `String g.window);
+            ("children", `List (List.map item g.panes));
+          ]
+    | Item i -> item i
+  and item i =
+    let r = i.row in
     `Assoc
       [
+        ( "kind",
+          `String
+            (match r.kind with Agent -> "agent" | Run -> "run" | Ssh -> "ssh" | Shell -> "shell") );
+        ("id", `String r.pane);
         ("pane", `String r.pane);
         ("window", `String r.window);
-        ("tree", `String r.tree);
         ("indicator", indicator_json r.indicator);
         ("title", spans r.title);
         ("tail", spans (match r.caption with Text tail -> tail | Elapsed _ -> []));
         ("started", match r.caption with Elapsed s -> `Float s | Text _ -> `Null);
         ("attention", `Bool (attention m r.pane));
+        ("children", `List (List.map node i.children));
       ]
   in
   Option.map
     (fun (c : client) ->
       `Assoc
         [
-          ("v", `Int 1);
+          ("v", `Int 2);
           ( "client",
             `Assoc
               [
@@ -739,7 +746,7 @@ let to_json m =
                        ("id", `String s.id);
                        ("name", `String s.name);
                        ("current", `Bool s.current);
-                       ("rows", `List (List.map row s.rows));
+                       ("nodes", `List (List.map node s.nodes));
                      ])
                  m.sessions) );
         ])

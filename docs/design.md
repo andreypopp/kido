@@ -1729,16 +1729,20 @@ that saw the same state.
 
 The sidebar is one model drawn by two views. `Sidebar` is the model: the
 tick (`poll` waits for the control connection's "look now" or the 100ms
-interval, then takes a snapshot), the per-pane tracking, and the rows as
-data - a tree string, an indicator, title and tail spans tagged with a
-role (`plain`, `dim`, `proc`, ...), the pane's and window's ids, and, for
-a running `async_bash` run, its start time, read once from the run's
+interval, then takes a snapshot), the per-pane tracking, and a tree of
+typed nodes. A multi-pane window is a group containing pane items; a
+one-pane window is an item directly. Each item holds its hoisted child
+windows and a row of kind agent, run, ssh or shell, an indicator, title
+and tail spans tagged with a role (`plain`, `dim`, `proc`, ...), the
+pane's and window's ids, and, for a running `async_bash` run, its start
+time, read once from the run's
 meta when its lingering entry is made. Its `step` holds the one change
 test: a snapshot that differs from the last by `same`, or a shell
 debounce or stall coming due, rebuilds the rows. The model has no width,
 no colour and no layout. `Ui` is the Mosaic view: it maps a role to a
-style and an indicator to a glyph, puts the glyph against the title and
-one space before a non-empty tail, cuts each row to the column's width,
+style and an indicator to a glyph, derives the bracket and continuation
+columns from the tree in depth-first order, puts the glyph against the
+title and one space before a non-empty tail, cuts each row to the column's width,
 and owns the cursor, the scroll and the keys.
 
 A running bash run's tail is its elapsed time (`12s`, `1m05s`, `1h02m`),
@@ -1755,8 +1759,11 @@ attention predicate `n`/`N` walk is the model's, so the feed's
 `kido sidebar-feed --socket <path> --client <name>` is the second view,
 for Kido.app's native sidebar. Its wire format is a frozen contract,
 versioned by its `v` field and kept in the app's notes
-(`sidebar-feed-contract-v1.md`). It runs the model's tick for the named
-client and writes a whole snapshot as one JSON line at start, then
+(`sidebar-feed-contract-v2.md`). Each session carries `nodes`: window
+groups have their window id and item children; items have their pane id,
+row fields and hoisted child nodes. The feed carries no glyph strings.
+Both the TUI cursor and attention navigation walk the tree depth-first.
+It runs the model's tick for the named client and writes a whole snapshot as one JSON line at start, then
 whenever `step` rebuilt the rows and the line differs from the last one
 sent: a rebuild the debounce forces with nothing visible changed sends
 nothing. A running bash run's row carries `started`, its start time; the

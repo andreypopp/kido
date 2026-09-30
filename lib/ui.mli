@@ -1,7 +1,11 @@
 module Style = Mosaic.Ansi.Style
 
 type span = Mosaic.span = { text : string; style : Style.t }
-type line = Header of { name : string; current : bool } | Row of Sidebar.row | Message of string
+
+type line =
+  | Header of { name : string; current : bool }
+  | Row of string * Sidebar.row
+  | Message of string
 
 val lines : Sidebar.model -> line array
 

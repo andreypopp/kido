@@ -3,16 +3,51 @@ module Style = Mosaic.Ansi.Style
 module Color = Mosaic.Ansi.Color
 
 type span = Mosaic.span = { text : string; style : Style.t }
-type line = Header of { name : string; current : bool } | Row of S.row | Message of string
+
+type line =
+  | Header of { name : string; current : bool }
+  | Row of string * S.row
+  | Message of string
 
 let lines (side : S.model) =
+  let glyph i n = if n = 1 then "╶" else if i = 0 then "┌" else if i = n - 1 then "└" else "├" in
+  let continuation i n = if i < n - 1 then "│" else " " in
+  let rec node prefix lead stem = function
+    | S.Item item ->
+        let g = Option.get_or ~default:"╶" lead in
+        let nested = prefix ^ (if Option.is_none lead then " " else stem) ^ " " in
+        draw item (prefix ^ g) nested
+    | S.Group group ->
+        let n = List.length group.panes in
+        List.mapi
+          (fun j item ->
+            let g, nested =
+              match lead with
+              | None -> (glyph j n, prefix ^ continuation j n ^ " ")
+              | Some lead ->
+                  ( (if j > 0 then stem else lead) ^ glyph j n,
+                    prefix ^ stem ^ continuation j n ^ " " )
+            in
+            draw item (prefix ^ g) nested)
+          group.panes
+        |> List.concat
+  and draw (item : S.item) tree nested =
+    Row (tree, item.row)
+    :: (List.mapi
+          (fun i child ->
+            let n = List.length item.children in
+            node nested (Some (if i = n - 1 then "└" else "├")) (continuation i n) child)
+          item.children
+       |> List.concat)
+  in
   match side.snap.err with
   | Some e -> [| Message e |]
   | None ->
       Array.of_list
         (List.concat_map
            (fun (s : S.section) ->
-             Header { name = s.name; current = s.current } :: List.map (fun r -> Row r) s.rows)
+             Header { name = s.name; current = s.current }
+             :: List.concat_map (node "" None "") s.nodes)
            side.sessions)
 
 type model = {
@@ -81,8 +116,8 @@ let elapsed secs =
 let parts ~now : line -> span list * span list * span list = function
   | Header h -> ([], [ span (if h.current then `Current else `Plain) h.name ], [])
   | Message e -> ([], [ span `Err e ], [])
-  | Row r -> (
-      let tree = if String.is_empty r.tree then [] else [ span `Dim r.tree ] in
+  | Row (prefix, r) -> (
+      let tree = if String.is_empty prefix then [] else [ span `Dim prefix ] in
       ( (tree
         @ match Option.flat_map glyph r.indicator with None -> [ plain " " ] | Some i -> [ i ]),
         List.map styled r.title,
@@ -96,7 +131,10 @@ let spans ~now line =
   lead @ title @ tail
 
 let row_text ~now line = String.concat "" (List.map (fun s -> s.text) (spans ~now line))
-let pane_of : line -> string option = function Row r -> Some r.pane | Header _ | Message _ -> None
+
+let pane_of : line -> string option = function
+  | Row (_, r) -> Some r.pane
+  | Header _ | Message _ -> None
 
 let index_of m pane =
   Option.map fst
@@ -257,7 +295,7 @@ let next_wait m =
   List.fold_left
     (fun wait i ->
       match m.lines.(i) with
-      | Row { caption = Elapsed s; _ } -> Float.min wait (1. -. Float.rem (now -. s) 1.)
+      | Row (_, { caption = Elapsed s; _ }) -> Float.min wait (1. -. Float.rem (now -. s) 1.)
       | Row _ | Header _ | Message _ -> wait)
     m.side.opts.interval (shown m)
 

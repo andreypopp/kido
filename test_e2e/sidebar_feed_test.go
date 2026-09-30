@@ -21,9 +21,11 @@ type feedSpan struct {
 }
 
 type feedRow struct {
-	Pane      *string `json:"pane"`
-	Window    *string `json:"window"`
-	Tree      string  `json:"tree"`
+	Pane      *string   `json:"pane"`
+	Window    *string   `json:"window"`
+	Kind      string    `json:"kind"`
+	ID        string    `json:"id"`
+	Children  []feedRow `json:"children"`
 	Indicator *struct {
 		Kind    string  `json:"kind"`
 		Outcome *string `json:"outcome"`
@@ -47,7 +49,7 @@ type feedSnapshot struct {
 		ID      string    `json:"id"`
 		Name    string    `json:"name"`
 		Current bool      `json:"current"`
-		Rows    []feedRow `json:"rows"`
+		Nodes   []feedRow `json:"nodes"`
 	} `json:"sessions"`
 	raw string
 }
@@ -105,17 +107,67 @@ func (s feedSnapshot) drawn() []string {
 		}
 		return b.String()
 	}
+	var draw func(feedRow, string, string, string)
+	var item func(feedRow, string, string)
+	item = func(r feedRow, tree, nested string) {
+		label := text(r.Title)
+		if r.Started != nil {
+			label += " " + elapsedText(*r.Started)
+		} else if len(r.Tail) > 0 {
+			label += " " + text(r.Tail)
+		}
+		out = append(out, strings.TrimSpace(tree+feedGlyph(r)+label))
+		for i, child := range r.Children {
+			lead, stem := "├", "│"
+			if i == len(r.Children)-1 {
+				lead, stem = "└", " "
+			}
+			draw(child, nested, lead, stem)
+		}
+	}
+	draw = func(r feedRow, prefix, lead, stem string) {
+		if r.Kind != "window" {
+			if lead == "" {
+				lead, stem = "╶", " "
+			}
+			item(r, prefix+lead, prefix+stem+" ")
+			return
+		}
+		for i, child := range r.Children {
+			bracket, cont := "├", "│"
+			if i == 0 {
+				bracket = "┌"
+			}
+			if i == len(r.Children)-1 {
+				bracket, cont = "└", " "
+			}
+			g, nested := bracket, prefix+cont+" "
+			if lead != "" {
+				g = stem + bracket
+				if i == 0 {
+					g = lead + bracket
+				}
+				nested = prefix + stem + cont + " "
+			}
+			item(child, prefix+g, nested)
+		}
+	}
 	for _, sess := range s.Sessions {
 		out = append(out, sess.Name)
-		for _, r := range sess.Rows {
-			label := text(r.Title)
-			if r.Started != nil {
-				label += " " + elapsedText(*r.Started)
-			} else if len(r.Tail) > 0 {
-				label += " " + text(r.Tail)
-			}
-			out = append(out, strings.TrimSpace(r.Tree+feedGlyph(r)+label))
+		for _, r := range sess.Nodes {
+			draw(r, "", "", "")
 		}
+	}
+	return out
+}
+
+func feedItems(nodes []feedRow) []feedRow {
+	var out []feedRow
+	for _, node := range nodes {
+		if node.Kind != "window" {
+			out = append(out, node)
+		}
+		out = append(out, feedItems(node.Children)...)
 	}
 	return out
 }
@@ -124,11 +176,11 @@ func (s feedSnapshot) drawn() []string {
 // of the inner server: its own `tmux -C` attached to session, the way
 // Kido.app attaches one.
 type feed struct {
-	h      *harness
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stderr *bytes.Buffer
-	client string
+	h       *harness
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	stderr  *bytes.Buffer
+	client  string
 	mu      sync.Mutex
 	lines   []feedSnapshot
 	done    chan struct{}
@@ -277,8 +329,8 @@ func TestSidebarFeedMatchesTheTUI(t *testing.T) {
 		return true
 	}, settle, func() string { return fmt.Sprintf("feed draws %q, TUI %q", s.drawn(), h.rows()) })
 
-	if s.V != 1 || s.Filter != "" || s.Error != nil {
-		t.Errorf("v/filter/error = %d %q %v, want 1 \"\" null: %s", s.V, s.Filter, s.Error, s.raw)
+	if s.V != 2 || s.Filter != "" || s.Error != nil {
+		t.Errorf("v/filter/error = %d %q %v, want 2 \"\" null: %s", s.V, s.Filter, s.Error, s.raw)
 	}
 	pane := h.in("display-message", "-p", "-c", f.client, "#{session_id} #{window_id} #{pane_id}")
 	if got := s.Client.Session + " " + s.Client.Window + " " + s.Client.Pane; got != pane {
@@ -288,13 +340,13 @@ func TestSidebarFeedMatchesTheTUI(t *testing.T) {
 		t.Fatalf("sessions: %s", s.raw)
 	}
 	byTitle := map[string]feedRow{}
-	for _, r := range s.Sessions[0].Rows {
+	for _, r := range feedItems(s.Sessions[0].Nodes) {
 		if r.Pane == nil || r.Window == nil || !strings.HasPrefix(*r.Pane, "%") || !strings.HasPrefix(*r.Window, "@") {
 			t.Errorf("row without pane/window ids: %+v", r)
 		}
 		byTitle[r.Title[0].Text] = r
 	}
-	if r := byTitle["slow-e2e"]; r.Indicator == nil || r.Indicator.Kind != "running" || r.Started == nil || len(r.Tail) != 0 {
+	if r := byTitle["slow-e2e"]; r.Indicator == nil || r.Kind != "run" || r.Indicator.Kind != "running" || r.Started == nil || len(r.Tail) != 0 {
 		t.Errorf("the lingering run's row: %+v in %s", r, s.raw)
 	}
 	for title, r := range byTitle {
@@ -303,18 +355,20 @@ func TestSidebarFeedMatchesTheTUI(t *testing.T) {
 		}
 	}
 	nested := false
-	for _, r := range s.Sessions[0].Rows {
-		if *r.Window == childWindow {
-			nested = strings.HasPrefix(r.Tree, "│ ") || strings.HasPrefix(r.Tree, "  ")
-			if r.Indicator == nil || r.Indicator.Kind != "idle" {
-				t.Errorf("the idle subagent's indicator: %s", s.raw)
+	for _, root := range feedItems(s.Sessions[0].Nodes) {
+		for _, r := range feedItems(root.Children) {
+			if *r.Window == childWindow {
+				nested = r.Kind == "agent"
+				if r.Indicator == nil || r.Indicator.Kind != "idle" {
+					t.Errorf("the idle subagent's indicator: %s", s.raw)
+				}
 			}
 		}
 	}
 	if !nested {
 		t.Errorf("the subagent window is not nested under its parent: %s", s.raw)
 	}
-	if rows := s.Sessions[1].Rows; len(rows) != 1 || rows[0].Tree != "╶" || rows[0].Title[0].Role != "proc" {
+	if rows := s.Sessions[1].Nodes; len(rows) != 1 || rows[0].Kind != "shell" || rows[0].Title[0].Role != "proc" {
 		t.Errorf("beta's shell row: %s", s.raw)
 	}
 }
@@ -393,10 +447,10 @@ func TestSidebarFeedStream(t *testing.T) {
 	// appears (its title passes through the program starting it), so the
 	// quiet check waits for it to read like beta's first shell.
 	f.waitLast(func(s feedSnapshot) bool {
-		if len(s.Sessions) != 2 || len(s.Sessions[1].Rows) != 2 {
+		if len(s.Sessions) != 2 || len(s.Sessions[1].Nodes) != 2 {
 			return false
 		}
-		rows := s.Sessions[1].Rows
+		rows := s.Sessions[1].Nodes
 		return fmt.Sprint(rows[1].Title) == fmt.Sprint(rows[0].Title)
 	}, "beta's new window, settled")
 	if f.count() <= n {

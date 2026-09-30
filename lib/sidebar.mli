@@ -15,7 +15,8 @@ type lingering = {
   name : string;
   parent : string;
   outcome : Subrun.result option;
-  started : Timestamp.t option;
+  kind : Subrun.kind;
+  started_at : Timestamp.t;
 }
 
 type probe = { reported : float; read : float; dismissed : bool }
@@ -67,17 +68,21 @@ type indicator =
   | Gone of Subrun.result option
 
 type caption = Text of span list | Elapsed of float
+type row_kind = Agent | Run | Ssh | Shell
 
 type row = {
   pane : string;
   window : string;
-  tree : string;
+  kind : row_kind;
   indicator : indicator option;
   title : span list;
   caption : caption;
 }
 
-type section = { id : string; name : string; current : bool; rows : row list }
+type node = Group of { window : string; panes : item list } | Item of item
+and item = { row : row; children : node list }
+
+type section = { id : string; name : string; current : bool; nodes : node list }
 type phase = { running : bool; since : float; drawn : bool; held : Tmux.Pane.exit option }
 
 type model = {

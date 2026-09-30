@@ -371,7 +371,8 @@ let%expect_test "order_windows_by_tree: child after parent, anchored to the pare
 
 let%expect_test "order_windows_by_tree: the lingering fallback, and a record beating a stale mark" =
   let lingering parent =
-    State.String_map.singleton "run-1" { Sidebar.name = ""; parent; outcome = None; started = None }
+    State.String_map.singleton "run-1"
+      { Sidebar.name = ""; parent; outcome = None; kind = Agent; started_at = test_at }
   in
   placements
     [ w "root"; w ~run:"run-1" "kid" ]
@@ -823,7 +824,7 @@ let%expect_test "shell_indicator debounce on a controlled clock" =
       +200ms: running
     |}]
 
-let label m p = Ui.row_text ~now:m.Sidebar.at (Row (Sidebar.pane_label m p))
+let label m p = Ui.row_text ~now:m.Sidebar.at (Row ("", Sidebar.pane_label m p))
 
 let%expect_test "phases and latches are forgotten with their panes" =
   let m = model ~started:test_at () in
@@ -857,7 +858,7 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
     Array.exists
       (fun (l : Ui.line) ->
         match l with
-        | Row { pane = "%1"; _ } ->
+        | Row (_, { pane = "%1"; _ }) ->
             List.exists (fun (s : Ui.span) -> String.equal s.text "◼") (Ui.spans ~now:!clock l)
         | _ -> false)
       !m.lines
@@ -1282,7 +1283,7 @@ let%expect_test "a snapshot as the feed sends it" =
   [%expect
     {|
     {
-      "v": 1,
+      "v": 2,
       "client": { "session": "$0", "window": "@1", "pane": "%1" },
       "filter": "",
       "error": null,
@@ -1291,56 +1292,73 @@ let%expect_test "a snapshot as the feed sends it" =
           "id": "$0",
           "name": "alpha",
           "current": true,
-          "rows": [
+          "nodes": [
             {
-              "pane": "%1",
+              "kind": "window",
+              "id": "@1",
               "window": "@1",
-              "tree": "┌",
-              "indicator": { "kind": "running" },
-              "title": [ { "text": "orchestrator", "role": "plain" } ],
-              "tail": [ { "text": "reading the contract", "role": "dim" } ],
-              "started": null,
-              "attention": false
+              "children": [
+                {
+                  "kind": "agent",
+                  "id": "%1",
+                  "pane": "%1",
+                  "window": "@1",
+                  "indicator": { "kind": "running" },
+                  "title": [ { "text": "orchestrator", "role": "plain" } ],
+                  "tail": [ { "text": "reading the contract", "role": "dim" } ],
+                  "started": null,
+                  "attention": false,
+                  "children": []
+                },
+                {
+                  "kind": "shell",
+                  "id": "%2",
+                  "pane": "%2",
+                  "window": "@1",
+                  "indicator": { "kind": "idle" },
+                  "title": [ { "text": "bash", "role": "proc" } ],
+                  "tail": [],
+                  "started": null,
+                  "attention": false,
+                  "children": []
+                },
+                {
+                  "kind": "shell",
+                  "id": "%3",
+                  "pane": "%3",
+                  "window": "@1",
+                  "indicator": null,
+                  "title": [ { "text": "vim", "role": "proc" } ],
+                  "tail": [],
+                  "started": null,
+                  "attention": false,
+                  "children": []
+                }
+              ]
             },
             {
-              "pane": "%2",
-              "window": "@1",
-              "tree": "├",
-              "indicator": { "kind": "idle" },
-              "title": [ { "text": "bash", "role": "proc" } ],
-              "tail": [],
-              "started": null,
-              "attention": false
-            },
-            {
-              "pane": "%3",
-              "window": "@1",
-              "tree": "└",
-              "indicator": null,
-              "title": [ { "text": "vim", "role": "proc" } ],
-              "tail": [],
-              "started": null,
-              "attention": false
-            },
-            {
+              "kind": "agent",
+              "id": "%4",
               "pane": "%4",
               "window": "@4",
-              "tree": "╶",
               "indicator": { "kind": "gone", "outcome": "failed" },
               "title": [ { "text": "helper", "role": "dim" } ],
               "tail": [ { "text": "failed", "role": "dim" } ],
               "started": null,
-              "attention": false
+              "attention": false,
+              "children": []
             },
             {
+              "kind": "run",
+              "id": "%6",
               "pane": "%6",
               "window": "@6",
-              "tree": "╶",
               "indicator": { "kind": "running" },
               "title": [ { "text": "build", "role": "plain" } ],
               "tail": [],
               "started": 1700000000.0,
-              "attention": false
+              "attention": false,
+              "children": []
             }
           ]
         },
@@ -1348,22 +1366,129 @@ let%expect_test "a snapshot as the feed sends it" =
           "id": "$1",
           "name": "beta",
           "current": false,
-          "rows": [
+          "nodes": [
             {
+              "kind": "agent",
+              "id": "%5",
               "pane": "%5",
               "window": "@5",
-              "tree": "╶",
               "indicator": { "kind": "waiting" },
               "title": [ { "text": "asker", "role": "plain" } ],
               "tail": [],
               "started": null,
-              "attention": true
+              "attention": true,
+              "children": []
             }
           ]
         }
       ]
     }
-    {"v":1,"client":{"session":"$0","window":"@1","pane":"%1"},"filter":"","error":"tmux: gone","sessions":[]}
+    {"v":2,"client":{"session":"$0","window":"@1","pane":"%1"},"filter":"","error":"tmux: gone","sessions":[]}
+    |}]
+
+let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" =
+  let dir = temp () in
+  let run = new_run ~dir ~parent:"root" ~kind:Bash "build" in
+  let panes =
+    [
+      pane ~session:"alpha" ~window:"@1" ~active:true "%1";
+      pane ~session:"alpha" ~window:"@2" "%2";
+      pane ~session:"alpha" ~window:"@2" ~command:"bash" "%3";
+      pane ~session:"alpha" ~window:"@3" ~run "%4";
+    ]
+  in
+  let states =
+    states
+      [
+        ("%1", ("root", session ~title:"root" ""));
+        ("%2", ("kid", session ~parent:"root" ~title:"kid" ""));
+      ]
+  in
+  let m, _ =
+    Sidebar.step (model ~dir ())
+      {
+        Sidebar.empty with
+        client = client "alpha";
+        active = "%1";
+        panes;
+        states;
+        lingering = Sidebar.lingering_subagents ~dir panes states State.String_map.empty;
+      }
+  in
+  print_endline (Yojson.Safe.pretty_to_string (Option.get_exn_or "client" (Sidebar.to_json m)));
+  [%expect
+    {|
+    {
+      "v": 2,
+      "client": { "session": "$0", "window": "@1", "pane": "%1" },
+      "filter": "",
+      "error": null,
+      "sessions": [
+        {
+          "id": "$0",
+          "name": "alpha",
+          "current": true,
+          "nodes": [
+            {
+              "kind": "agent",
+              "id": "%1",
+              "pane": "%1",
+              "window": "@1",
+              "indicator": { "kind": "running" },
+              "title": [ { "text": "root", "role": "plain" } ],
+              "tail": [],
+              "started": null,
+              "attention": false,
+              "children": [
+                {
+                  "kind": "window",
+                  "id": "@2",
+                  "window": "@2",
+                  "children": [
+                    {
+                      "kind": "agent",
+                      "id": "%2",
+                      "pane": "%2",
+                      "window": "@2",
+                      "indicator": { "kind": "running" },
+                      "title": [ { "text": "kid", "role": "plain" } ],
+                      "tail": [],
+                      "started": null,
+                      "attention": false,
+                      "children": []
+                    },
+                    {
+                      "kind": "shell",
+                      "id": "%3",
+                      "pane": "%3",
+                      "window": "@2",
+                      "indicator": null,
+                      "title": [ { "text": "bash", "role": "proc" } ],
+                      "tail": [],
+                      "started": null,
+                      "attention": false,
+                      "children": []
+                    }
+                  ]
+                },
+                {
+                  "kind": "run",
+                  "id": "%4",
+                  "pane": "%4",
+                  "window": "@3",
+                  "indicator": { "kind": "running" },
+                  "title": [ { "text": "build", "role": "plain" } ],
+                  "tail": [],
+                  "started": 1700000000.0,
+                  "attention": false,
+                  "children": []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
     |}]
 
 let%expect_test "every role names its foreground" =
