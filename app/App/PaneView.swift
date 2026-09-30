@@ -7,6 +7,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onInput: (Data) -> Void = { _ in }
     var onSelect: () -> Void = {}
     var onCellChange: () -> Void = {}
+    var onCommand: (PaneCommand) -> Void = { _ in }
 
     // Freed in deinit, so the last reference must be dropped on the main
     // thread, and never while the reader may feed it (Connection).
@@ -47,7 +48,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     deinit {
-        ghostty_surface_free(surface)
+        if let surface { ghostty_surface_free(surface) }
     }
 
     nonisolated func feed(_ bytes: Data) {
@@ -108,6 +109,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             options: [.mouseEnteredAndExited, .mouseMoved, .inVisibleRect, .activeAlways],
             owner: self))
         super.updateTrackingAreas()
+    }
+
+    @objc func runCommand(_ sender: NSMenuItem) {
+        if let command = sender.representedObject as? PaneCommand { onCommand(command) }
     }
 
     // MARK: - Mouse
@@ -342,7 +347,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     // AppKit offers command and control chords here before keyDown and may
     // turn them into doCommand selectors; an unbound chord is re-sent through
-    // the event system and recognised in doCommand by its timestamp.
+    // the event system and recognised in doCommand by its timestamp. A plain
+    // consumed Ghostty binding goes to a menu item with that shortcut first,
+    // as in Ghostty's own app.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard event.type == .keyDown, window?.firstResponder === self else { return false }
 
@@ -350,12 +357,19 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         key.action = GHOSTTY_ACTION_PRESS
         key.keycode = UInt32(event.keyCode)
         key.mods = Self.mods(event.modifierFlags)
+        key.unshifted_codepoint = event.characters(byApplyingModifiers: [])?.unicodeScalars.first?.value ?? 0
         var flags = ghostty_binding_flags_e(0)
         let isBinding = (event.characters ?? "").withCString { ptr in
             key.text = ptr
             return ghostty_surface_key_is_binding(surface, key, &flags)
         }
         if isBinding {
+            let flags = flags.rawValue
+            if flags & GHOSTTY_BINDING_FLAGS_CONSUMED.rawValue != 0,
+               flags & (GHOSTTY_BINDING_FLAGS_ALL.rawValue | GHOSTTY_BINDING_FLAGS_PERFORMABLE.rawValue) == 0,
+               NSApp.mainMenu?.performKeyEquivalent(with: event) == true {
+                return true
+            }
             keyDown(with: event)
             return true
         }
