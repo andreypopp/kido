@@ -21,14 +21,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        do {
-            session = try PaneSession(server: try Server.locate(), view: pane)
-        } catch {
-            let alert = NSAlert()
-            alert.messageText = "Kido could not reach the kido server"
-            alert.informativeText = (error as? Server.Failure)?.message ?? "\(error)"
-            alert.runModal()
-            NSApp.terminate(nil)
+        Task {
+            do {
+                let server = try await Task.detached { try Server.locate() }.value
+                session = try PaneSession(server: server, view: pane)
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "Kido could not reach the kido server"
+                alert.informativeText = (error as? Server.Failure)?.message ?? "\(error)"
+                alert.runModal()
+                NSApp.terminate(nil)
+            }
         }
     }
 
