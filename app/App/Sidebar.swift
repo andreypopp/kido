@@ -8,11 +8,13 @@ import AppKit
 final class Sidebar: NSView {
     let view = SidebarView()
     let content = NSView()
-    private let divider = NSView()
+    private let divider = Divider()
 
     private static let widthKey = "sidebarWidth"
     private static let collapsedKey = "sidebarCollapsed"
     private static let minWidth: CGFloat = 140
+    private static let minContent: CGFloat = 200
+    static let minSize = NSSize(width: minWidth + 1 + minContent, height: 200)
 
     private var width: CGFloat {
         didSet { UserDefaults.standard.set(width, forKey: Self.widthKey) }
@@ -29,17 +31,21 @@ final class Sidebar: NSView {
         isCollapsed = UserDefaults.standard.bool(forKey: Self.collapsedKey)
         super.init(frame: .zero)
         autoresizingMask = [.width, .height]
-        divider.wantsLayer = true
-        divider.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        divider.dragged = { [weak self] x in
+            guard let self else { return }
+            width = clamp(x)
+            arrange()
+        }
         addSubview(view)
-        addSubview(divider)
         addSubview(content)
+        addSubview(divider)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     func toggle() {
         isCollapsed.toggle()
+        if isCollapsed, let focused = window?.firstResponder as? NSView, focused.isDescendant(of: view) { view.leave() }
         arrange()
     }
 
@@ -48,33 +54,36 @@ final class Sidebar: NSView {
         arrange()
     }
 
-    private func arrange() {
-        let w = isCollapsed ? 0 : width
-        let d: CGFloat = isCollapsed ? 0 : 1
-        view.isHidden = isCollapsed
-        view.frame = CGRect(x: 0, y: 0, width: w, height: bounds.height)
-        divider.frame = CGRect(x: w, y: 0, width: d, height: bounds.height)
-        content.frame = CGRect(x: w + d, y: 0, width: bounds.width - w - d, height: bounds.height)
+    private func clamp(_ x: CGFloat) -> CGFloat {
+        max(Self.minWidth, min(x, bounds.width - 1 - Self.minContent))
     }
 
-    private var dragging = false
+    private func arrange() {
+        let w = isCollapsed ? 0 : clamp(width)
+        let d: CGFloat = isCollapsed ? 0 : 1
+        view.isHidden = isCollapsed
+        divider.isHidden = isCollapsed
+        view.frame = CGRect(x: 0, y: 0, width: w, height: bounds.height)
+        divider.frame = CGRect(x: w - 2, y: 0, width: 5, height: bounds.height)
+        content.frame = CGRect(x: w + d, y: 0, width: max(0, bounds.width - w - d), height: bounds.height)
+        window?.invalidateCursorRects(for: divider)
+    }
+}
 
-    override func mouseDown(with event: NSEvent) {
-        dragging = !isCollapsed && divider.frame.insetBy(dx: -3, dy: 0).contains(convert(event.locationInWindow, from: nil))
+private final class Divider: NSView {
+    var dragged: (CGFloat) -> Void = { _ in }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.separatorColor.setFill()
+        CGRect(x: 2, y: 0, width: 1, height: bounds.height).fill()
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard dragging else { return }
-        width = min(max(convert(event.locationInWindow, from: nil).x, Self.minWidth), bounds.width - 200)
-        arrange()
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        dragging = false
+        guard let superview else { return }
+        dragged(superview.convert(event.locationInWindow, from: nil).x)
     }
 
     override func resetCursorRects() {
-        guard !isCollapsed else { return }
-        addCursorRect(divider.frame.insetBy(dx: -3, dy: 0), cursor: .resizeLeftRight)
+        addCursorRect(bounds, cursor: .resizeLeftRight)
     }
 }
