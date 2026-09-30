@@ -43,7 +43,7 @@ final class GhosttyRuntime {
             },
             close_surface_cb: { userdata, _ in
                 let pane = PaneView.from(userdata)
-                DispatchQueue.main.async { pane.window?.close() }
+                DispatchQueue.main.async { pane.onCommand(.close) }
             },
             tmux_control_cb: nil)
         guard let new = ghostty_app_new(&runtime, config) else { return nil }
@@ -81,17 +81,59 @@ final class GhosttyRuntime {
     }
 
     private static func action(_ target: ghostty_target_s, _ action: ghostty_action_s) -> Bool {
-        switch action.tag {
-        case GHOSTTY_ACTION_QUIT:
+        if action.tag == GHOSTTY_ACTION_QUIT {
             DispatchQueue.main.async { NSApp.terminate(nil) }
             return true
-        case GHOSTTY_ACTION_CELL_SIZE:
-            guard target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface else { return false }
-            let pane = PaneView.from(ghostty_surface_userdata(surface))
+        }
+        guard target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface else { return false }
+        let pane = PaneView.from(ghostty_surface_userdata(surface))
+        if action.tag == GHOSTTY_ACTION_CELL_SIZE {
             DispatchQueue.main.async { pane.onCellChange() }
             return true
-        default:
-            return false
+        }
+        guard let command = command(action) else { return false }
+        DispatchQueue.main.async { pane.onCommand(command) }
+        return true
+    }
+
+    private static func command(_ action: ghostty_action_s) -> PaneCommand? {
+        let a = action.action
+        switch action.tag {
+        case GHOSTTY_ACTION_NEW_SPLIT:
+            return switch a.new_split {
+            case GHOSTTY_SPLIT_DIRECTION_LEFT: .split(.left)
+            case GHOSTTY_SPLIT_DIRECTION_UP: .split(.up)
+            case GHOSTTY_SPLIT_DIRECTION_DOWN: .split(.down)
+            default: .split(.right)
+            }
+        case GHOSTTY_ACTION_GOTO_SPLIT:
+            return switch a.goto_split {
+            case GHOSTTY_GOTO_SPLIT_PREVIOUS: .previous
+            case GHOSTTY_GOTO_SPLIT_NEXT: .next
+            case GHOSTTY_GOTO_SPLIT_LEFT: .select(.left)
+            case GHOSTTY_GOTO_SPLIT_UP: .select(.up)
+            case GHOSTTY_GOTO_SPLIT_DOWN: .select(.down)
+            default: .select(.right)
+            }
+        case GHOSTTY_ACTION_RESIZE_SPLIT:
+            let side: Side = switch a.resize_split.direction {
+            case GHOSTTY_RESIZE_SPLIT_LEFT: .left
+            case GHOSTTY_RESIZE_SPLIT_UP: .up
+            case GHOSTTY_RESIZE_SPLIT_DOWN: .down
+            default: .right
+            }
+            return .resize(side, Int(a.resize_split.amount))
+        case GHOSTTY_ACTION_GOTO_TAB:
+            return switch a.goto_tab {
+            case GHOSTTY_GOTO_TAB_PREVIOUS: .previousWindow
+            case GHOSTTY_GOTO_TAB_NEXT: .nextWindow
+            case GHOSTTY_GOTO_TAB_LAST: .lastWindow
+            default: nil
+            }
+        case GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM: return .zoom
+        case GHOSTTY_ACTION_EQUALIZE_SPLITS: return .equalize
+        case GHOSTTY_ACTION_NEW_TAB, GHOSTTY_ACTION_NEW_WINDOW: return .newWindow
+        default: return nil
         }
     }
 
