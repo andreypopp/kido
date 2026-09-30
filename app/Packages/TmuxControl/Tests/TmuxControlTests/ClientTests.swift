@@ -26,6 +26,22 @@ final class Recorder<Item>: @unchecked Sendable {
 
 struct TimedOut: Error { let what: String }
 
+struct Closed: Error {}
+
+extension Client {
+    func run(_ commands: [Command]) async throws -> [Reply] {
+        try await withCheckedThrowingContinuation { k in
+            send(commands) { replies in
+                if let replies { k.resume(returning: replies) } else { k.resume(throwing: Closed()) }
+            }
+        }
+    }
+
+    func run(_ command: Command) async throws -> Reply {
+        try await run([command])[0]
+    }
+}
+
 @discardableResult
 func server(_ tmux: URL, _ socket: String, _ args: String...) throws -> Int32 {
     let p = try Process.run(tmux, arguments: ["-S", socket, "-f", "/dev/null"] + args)
@@ -109,7 +125,7 @@ func liveClient() async throws {
     let status = try await seen.wait("close") { _, s in s }
     #expect(status == 0)
     _ = try await seen.wait("exit") { e, _ in e.last == .exit(reason: nil) ? () : nil }
-    await #expect(throws: Client.Closed.self) { try await client.run(Command("list-sessions")) }
+    await #expect(throws: Closed.self) { try await client.run(Command("list-sessions")) }
 }
 
 @Test(.enabled(if: tmux != nil), .timeLimit(.minutes(1)))
