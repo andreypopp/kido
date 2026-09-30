@@ -101,22 +101,105 @@ let list_agents =
 let set_status =
   cmd "set_status" "Set this agent's activity; an empty one clears it."
   @@ let+ activity = arg "ACTIVITY" in
-     fun () -> Set_status.set_status ~dir:(State.dir ()) ~self:(env "TMUX_PANE") activity
+     fun () ->
+       let dir = State.dir () and self = env "TMUX_PANE" in
+       match State.String_map.find_opt self (State.by_pane (State.load_live ~dir)) with
+       | None ->
+           Cli.failf "no agent session has reported pane %S; there is nothing to set an activity on"
+             self
+       | Some (id, s) -> (
+           match
+             State.record ~dir id { s with activity = Reporting.one_line activity ~max:256 }
+           with
+           | Ok () -> 0
+           | Error holder -> failwith (State.held_message id holder))
+
+let answer name doc f =
+  cmd name doc
+  @@ let+ session = arg "SESSION" in
+     fun () ->
+       if String.is_empty session then Cli.failf "usage: kido %s SESSION" name;
+       print_endline (Bool.to_string (f ~dir:(State.dir ()) session));
+       0
 
 let agent_alive =
-  cmd "agent-alive" "Print whether a live process holds an agent session."
-  @@ let+ session = arg "SESSION" in
-     fun () -> Agent_alive.agent_alive ~dir:(State.dir ()) session
+  answer "agent-alive" "Print whether a live process holds an agent session." (fun ~dir session ->
+      List.mem_assoc ~eq:String.equal session (State.load_live ~dir))
 
 let children_alive =
-  cmd "children-alive" "Print whether any subagent spawned by a session is still running."
-  @@ let+ session = arg "SESSION" in
-     fun () -> Agent_alive.children_alive ~dir:(State.dir ()) session
+  answer "children-alive" "Print whether any subagent spawned by a session is still running."
+    (fun ~dir session ->
+      let runs = Filename.concat dir "runs" in
+      List.exists
+        (fun id ->
+          match Subrun.read_meta ~dir:runs id with
+          | Some m ->
+              String.equal m.parent_session session
+              && Option.is_none (Subrun.effective_outcome ~dir:runs id ~pid:m.pid)
+          | None -> false)
+        (Subrun.list ~dir:runs))
+
+type window = { session : string; index : int; layout : string; n : int }
 
 let snapshot =
   cmd "snapshot" "Print a shell script that recreates the current tmux sessions."
   @@ let+ () = Term.const () in
-     fun () -> Snapshot.snapshot ~dir:(State.dir ())
+     fun () ->
+       let states = State.by_pane (State.load_live ~dir:(State.dir ())) in
+       let pi = (Procs.sweep ()).pi in
+       let q = Tmux.Conn.quote in
+       let tm = Unix.localtime (Unix.time ()) in
+       Printf.printf
+         "#!/bin/sh\n# tmux sessions captured by kido snapshot on %04d-%02d-%02d %02d:%02d.\n"
+         (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday tm.tm_hour tm.tm_min;
+       print_endline
+         "# Run outside tmux, then attach. Claude Code and pi panes resume their session.";
+       print_endline "set -e\nT=${TMUX_BIN:-tmux}";
+       let close = function
+         | Some w when not (String.is_empty w.layout) ->
+             Printf.printf "$T select-layout -t \"$p0\" %s\n" (q w.layout)
+         | _ -> ()
+       in
+       let step prev (p : Tmux.Pane.t) =
+         let w =
+           match prev with
+           | Some w when String.equal w.session p.session_name && w.index = p.window_index ->
+               let n = w.n + 1 in
+               Printf.printf "p%d=$($T split-window -d -P -F '#{pane_id}' -t \"$p%d\" -c %s)\n" n
+                 w.n (q p.current_path);
+               { w with n }
+           | _ ->
+               close prev;
+               let name = if String.is_empty p.window_name then "" else " -n " ^ q p.window_name in
+               (match prev with
+               | Some w when String.equal w.session p.session_name ->
+                   Printf.printf "p0=$($T new-window -d -P -F '#{pane_id}' -t %s%s -c %s)\n"
+                     (q p.session_name) name (q p.current_path)
+               | _ ->
+                   Printf.printf "\n# --- %s\n" p.session_name;
+                   Printf.printf "p0=$($T new-session -d -P -F '#{pane_id}' -s %s%s -c %s)\n"
+                     (q p.session_name) name (q p.current_path));
+               { session = p.session_name; index = p.window_index; layout = p.window_layout; n = 0 }
+         in
+         let cmd =
+           match State.String_map.find_opt p.pane_id states with
+           | Some (id, ({ agent = Pi; _ } : State.session)) ->
+               if String.is_empty id then "pi" else "pi --session " ^ id
+           | Some (id, { agent = Claude; _ }) ->
+               if String.is_empty id then "claude --continue" else "claude --resume " ^ id
+           | _ when String.equal p.current_command "claude" -> "claude --continue"
+           | _ when Procs.Int_set.mem p.pane_pid pi -> "pi"
+           | _ -> ""
+         in
+         if not (String.is_empty cmd) then
+           Printf.printf "$T send-keys -t \"$p%d\" %s Enter\n" w.n (q cmd);
+         if p.active then
+           Printf.printf "$T select-window -t \"$p%d\"; $T select-pane -t \"$p%d\"\n" w.n w.n;
+         Some w
+       in
+       close (List.fold_left step None (Tmux.Exec.list_panes ()));
+       print_endline {|echo "recreated: $($T list-sessions -F '#{session_name}' | tr '\n' ' ')"|};
+       0
 
 let prompt =
   cmd "prompt" "Send a prompt, read from stdin, to the agent in the caller's window or session."
@@ -128,7 +211,11 @@ let prompt =
 let window_focused =
   cmd "window-focused" "Print whether a client is looking at a window."
   @@ let+ window = arg "WINDOW_ID" in
-     fun () -> Control.window_focused ~panes window
+     fun () ->
+       if String.is_empty window then failwith "usage: kido window-focused WINDOW_ID";
+       if not (Tmux.Pane.is_window_id window) then Cli.failf "%S is not a window id (@N)" window;
+       print_endline (Bool.to_string (Tmux.Pane.window_focused (Lazy.force panes) window));
+       0
 
 let switch name doc f =
   cmd name doc
@@ -138,7 +225,13 @@ let switch name doc f =
          & pos 0 (some (enum [ ("next", true); ("prev", false) ])) None
          & info [] ~docv:"next|prev")
      and+ client = str "client" "NAME" "tmux client to switch; defaults to $TMUX_SIDE_CLIENT." in
-     fun () -> Control.switch f ~client ~side_client:(env "TMUX_SIDE_CLIENT") ~next
+     fun () ->
+       f
+         ~client:
+           (List.find_opt (fun c -> not (String.is_empty c)) [ client; env "TMUX_SIDE_CLIENT" ]
+           |> Option.get_lazy Tmux.Exec.current_client)
+         ~next;
+       0
 
 let switch_session =
   switch "switch-session" "Switch the client to the next or previous session."
@@ -273,7 +366,32 @@ let shell =
 let ssh =
   Cmd.v (Cmd.info "ssh" ~doc:"Run ssh, priming the remote login shell when it can.")
   @@ let+ args = rest in
-     Cli.run "ssh" (fun () -> Ssh.run args)
+     Cli.run "ssh" (fun () ->
+         let path = env "PATH" in
+         let ssh =
+           match Bin_dir.own () with
+           | Some dir ->
+               Bin_dir.look_path_past ~path ~dir "ssh"
+               |> Option.get_lazy (fun () -> failwith ("no ssh on PATH past " ^ dir))
+           | None ->
+               Tmux.Exec.look_path ~path "ssh"
+               |> Option.get_lazy (fun () ->
+                   failwith {|exec: "ssh": executable file not found in $PATH|})
+         in
+         let tty =
+           match Unix.fstat Unix.stdin with
+           | st -> Stdlib.(st.st_kind = S_CHR)
+           | exception Unix.Unix_error _ -> false
+         in
+         let argv =
+           match Procs.parse_ssh args with
+           | Some a
+             when tty && List.is_empty a.command
+                  && not (String.exists (String.contains "NTWfsnOQVG") a.letters) ->
+               ("ssh" :: a.opts) @ [ "-t"; a.dest; Prime.ssh_bootstrap ]
+           | _ -> "ssh" :: args
+         in
+         Unix.execve ssh (Array.of_list argv) (Unix.environment ()))
 
 let duration =
   Arg.conv

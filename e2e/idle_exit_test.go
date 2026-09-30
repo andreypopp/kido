@@ -26,6 +26,16 @@ func TestWindowFocusedCmd(t *testing.T) {
 	if got := firstLine(h.runKido("alpha", "unfocused.out", "window-focused", unfocused)); got != "false" {
 		t.Errorf("window-focused on a window nobody is looking at = %q, want %q", got, "false")
 	}
+	for i, c := range []struct{ arg, want string }{
+		{"''", "kido window-focused: usage: kido window-focused WINDOW_ID\nrc=1"},
+		{"@", `kido window-focused: "@" is not a window id (@N)` + "\nrc=1"},
+		{"7", `kido window-focused: "7" is not a window id (@N)` + "\nrc=1"},
+		{"@1x", `kido window-focused: "@1x" is not a window id (@N)` + "\nrc=1"},
+	} {
+		if got := strings.TrimSpace(h.runKido("alpha", fmt.Sprintf("invalid-%d.out", i), "window-focused", c.arg)); got != c.want {
+			t.Errorf("window-focused %s = %q, want %q", c.arg, got, c.want)
+		}
+	}
 }
 
 // firstLine strips runKido's own trailing "rc=N" line.
