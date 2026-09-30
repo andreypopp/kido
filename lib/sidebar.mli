@@ -66,14 +66,15 @@ type indicator =
   | Stalled
   | Gone of Subrun.result option
 
+type caption = Text of span list | Elapsed of float
+
 type row = {
   pane : string;
   window : string;
   tree : string;
   indicator : indicator option;
   title : span list;
-  tail : span list;
-  started : float option;
+  caption : caption;
 }
 
 type section = { id : string; name : string; current : bool; rows : row list }

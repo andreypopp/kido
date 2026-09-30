@@ -65,17 +65,6 @@ func (r *kidoRun) mustServer(tmux string) endpoint {
 	return e
 }
 
-func (r *kidoRun) writeKidoConf(body string) {
-	r.t.Helper()
-	dir := filepath.Join(r.config, "kido")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		r.t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "kido.conf"), []byte(body), 0o644); err != nil {
-		r.t.Fatal(err)
-	}
-}
-
 // With no server, `kido server` starts one as the launcher would -
 // server.conf applied, session main - but attaches nothing: no client at
 // all, not even the sidebar's control connection, which only a real
@@ -84,7 +73,13 @@ func (r *kidoRun) writeKidoConf(body string) {
 func TestKidoServerStartsTheServerDetached(t *testing.T) {
 	t.Parallel()
 	r := newKidoRun(t)
-	r.writeKidoConf("set -g @kido-e2e from-kido-conf\n")
+	confDir := filepath.Join(r.config, "kido")
+	if err := os.MkdirAll(confDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(confDir, "kido.conf"), []byte("set -g @kido-e2e from-kido-conf\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	first := r.mustServer("")
 	if got := r.mustKido("list-sessions", "-F", "#{session_name} #{session_attached}"); got != "main 0" {

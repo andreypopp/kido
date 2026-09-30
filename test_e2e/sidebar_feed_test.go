@@ -129,9 +129,10 @@ type feed struct {
 	stdin  io.WriteCloser
 	stderr *bytes.Buffer
 	client string
-	mu     sync.Mutex
-	lines  []feedSnapshot
-	done   chan error
+	mu      sync.Mutex
+	lines   []feedSnapshot
+	done    chan struct{}
+	waitErr error
 }
 
 func (h *harness) appClient(session string) string {
@@ -174,7 +175,7 @@ func feedCmd(h *harness, args ...string) *exec.Cmd {
 // env overrides feedCmd's environment.
 func (h *harness) startFeed(session string, env ...string) *feed {
 	h.t.Helper()
-	f := &feed{h: h, client: h.appClient(session), stderr: &bytes.Buffer{}, done: make(chan error, 1)}
+	f := &feed{h: h, client: h.appClient(session), stderr: &bytes.Buffer{}, done: make(chan struct{})}
 	f.cmd = feedCmd(h, "--socket", socketPath("", h.inner), "--client", f.client)
 	f.cmd.Env = append(f.cmd.Env, env...)
 	f.cmd.Stderr = f.stderr
@@ -202,7 +203,8 @@ func (h *harness) startFeed(session string, env ...string) *feed {
 			f.lines = append(f.lines, s)
 			f.mu.Unlock()
 		}
-		f.done <- f.cmd.Wait()
+		f.waitErr = f.cmd.Wait()
+		close(f.done)
 	}()
 	h.t.Cleanup(func() {
 		f.stdin.Close()
@@ -417,9 +419,9 @@ func TestSidebarFeedStream(t *testing.T) {
 
 	f.stdin.Close()
 	select {
-	case err := <-f.done:
-		if err != nil {
-			t.Errorf("exit on EOF: %v, stderr %q", err, f.stderr)
+	case <-f.done:
+		if f.waitErr != nil {
+			t.Errorf("exit on EOF: %v, stderr %q", f.waitErr, f.stderr)
 		}
 	case <-time.After(settle):
 		t.Fatal("still running after stdin closed")

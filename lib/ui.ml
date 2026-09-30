@@ -82,20 +82,14 @@ let parts ~now : line -> span list * span list * span list = function
   | Header h -> ([], [ span (if h.current then `Current else `Plain) h.name ], [])
   | Message e -> ([], [ span `Err e ], [])
   | Row r -> (
-      let tree =
-        List.concat
-          (List.mapi
-             (fun i s ->
-               (if i > 0 then [ plain " " ] else [])
-               @ if String.is_empty s then [] else [ span `Dim s ])
-             (String.split_on_char ' ' r.tree))
-      in
+      let tree = if String.is_empty r.tree then [] else [ span `Dim r.tree ] in
       ( (tree
         @ match Option.flat_map glyph r.indicator with None -> [ plain " " ] | Some i -> [ i ]),
         List.map styled r.title,
-        match r.started with
-        | Some s -> [ plain " "; span `Dim (elapsed (now -. s)) ]
-        | None -> ( match r.tail with [] -> [] | tail -> plain " " :: List.map styled tail) ))
+        match r.caption with
+        | Elapsed s -> [ plain " "; span `Dim (elapsed (now -. s)) ]
+        | Text [] -> []
+        | Text tail -> plain " " :: List.map styled tail ))
 
 let spans ~now line =
   let lead, title, tail = parts ~now line in
@@ -263,7 +257,7 @@ let next_wait m =
   List.fold_left
     (fun wait i ->
       match m.lines.(i) with
-      | Row { started = Some s; _ } -> Float.min wait (1. -. Float.rem (now -. s) 1.)
+      | Row { caption = Elapsed s; _ } -> Float.min wait (1. -. Float.rem (now -. s) 1.)
       | Row _ | Header _ | Message _ -> wait)
     m.side.opts.interval (shown m)
 

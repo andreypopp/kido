@@ -138,7 +138,7 @@ let send t text =
     else
       match List.assoc_opt ~eq:String.equal t.meta.parent_session (State.load_live ~dir:t.dir) with
       | Some p -> p.inbox
-      | None | (exception Sys_error _) -> ""
+      | None -> ""
   in
   (not (String.is_empty resolved))
   &&

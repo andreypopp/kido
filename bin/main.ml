@@ -659,14 +659,16 @@ let sidebar_feed =
            else (Sidebar.rebuild { m with search }, true)
          in
          let last =
-           match Sidebar.to_json m with
-           | Some json when changed ->
-               let line = Yojson.Safe.to_string json in
-               if not (String.equal line last) then (
-                 print_endline line;
-                 flush stdout);
-               line
-           | Some _ | None -> last
+           if not changed then last
+           else
+             match Sidebar.to_json m with
+             | Some json ->
+                 let line = Yojson.Safe.to_string json in
+                 if not (String.equal line last) then (
+                   print_endline line;
+                   flush stdout);
+                 line
+             | None -> last
          in
          match
            List.find_map

@@ -210,14 +210,15 @@ type indicator =
   | Stalled
   | Gone of Subrun.result option
 
+type caption = Text of span list | Elapsed of float
+
 type row = {
   pane : string;
   window : string;
   tree : string;
   indicator : indicator option;
   title : span list;
-  tail : span list;
-  started : float option;
+  caption : caption;
 }
 
 type section = { id : string; name : string; current : bool; rows : row list }
@@ -388,8 +389,7 @@ let lingering_label (p : P.t) (l : lingering) =
       tree = "";
       indicator = Some (Status Running);
       title = [ plain l.name ];
-      tail = [];
-      started = l.started;
+      caption = (match l.started with Some s -> Elapsed s | None -> Text []);
     }
   in
   match p.dead_at with
@@ -399,14 +399,16 @@ let lingering_label (p : P.t) (l : lingering) =
         base with
         indicator = Some (Gone l.outcome);
         title = [ span `Dim l.name ];
-        started = None;
-        tail =
-          Option.map_or ~default:[] (fun o -> [ span `Dim (Subrun.string_of_result o) ]) l.outcome;
+        caption =
+          Text
+            (Option.map_or ~default:[]
+               (fun o -> [ span `Dim (Subrun.string_of_result o) ])
+               l.outcome);
       }
 
 let pane_label m (p : P.t) =
   let row indicator title tail =
-    { pane = p.pane_id; window = p.window_id; tree = ""; indicator; title; tail; started = None }
+    { pane = p.pane_id; window = p.window_id; tree = ""; indicator; title; caption = Text tail }
   in
   match agent_title_of m p with
   | None -> (
@@ -709,8 +711,8 @@ let to_json m =
         ("tree", `String r.tree);
         ("indicator", indicator_json r.indicator);
         ("title", spans r.title);
-        ("tail", spans r.tail);
-        ("started", Option.map_or ~default:`Null (fun s -> `Float s) r.started);
+        ("tail", spans (match r.caption with Text tail -> tail | Elapsed _ -> []));
+        ("started", match r.caption with Elapsed s -> `Float s | Text _ -> `Null);
         ("attention", `Bool (attention m r.pane));
       ]
   in

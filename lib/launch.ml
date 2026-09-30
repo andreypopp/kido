@@ -123,26 +123,27 @@ let run ~tmux =
 let ensure () =
   let open Result.Infix in
   let bin = Lazy.force Tmux.Exec.binary in
-  let* failed =
-    match probe_server bin with
-    | Down ->
-        let* env, args = new_session ~detach:true in
-        let ((out, _, err) as p) = Unix.open_process_args_full bin (argv bin args) env in
-        ignore (In_channel.input_all out);
-        let stderr = String.trim (In_channel.input_all err) in
-        ignore (Unix.close_process_full p);
-        Ok stderr
-    | Up _ | Mismatch -> Ok ""
+  let resolve socket =
+    let tmux =
+      if String.contains bin '/' then Some (Tmux.Exec.abs bin)
+      else Tmux.Exec.look_path ~path:(Tmux.Exec.getenv "PATH") bin
+    in
+    match tmux with
+    | Some tmux -> Ok { tmux; socket }
+    | None -> Error (Printf.sprintf "no %s on PATH" bin)
   in
   match probe_server bin with
+  | Up socket -> resolve socket
   | Mismatch -> Error (mismatch bin)
-  | Down ->
-      Error ("cannot start a kido server" ^ if String.is_empty failed then "" else ": " ^ failed)
-  | Up socket -> (
-      let tmux =
-        if String.contains bin '/' then Some (Tmux.Exec.abs bin)
-        else Tmux.Exec.look_path ~path:(Tmux.Exec.getenv "PATH") bin
-      in
-      match tmux with
-      | Some tmux -> Ok { tmux; socket }
-      | None -> Error (Printf.sprintf "no %s on PATH" bin))
+  | Down -> (
+      let* env, args = new_session ~detach:true in
+      let ((out, _, err) as p) = Unix.open_process_args_full bin (argv bin args) env in
+      ignore (In_channel.input_all out);
+      let stderr = String.trim (In_channel.input_all err) in
+      ignore (Unix.close_process_full p);
+      match probe_server bin with
+      | Up socket -> resolve socket
+      | Mismatch -> Error (mismatch bin)
+      | Down ->
+          Error ("cannot start a kido server" ^ if String.is_empty stderr then "" else ": " ^ stderr)
+      )
