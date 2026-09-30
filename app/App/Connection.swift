@@ -56,6 +56,18 @@ final class Connection: @unchecked Sendable {
         client.send(commands) { _ in }
     }
 
+    // side-status-command names the kido that owns the server (lib/launch.ml);
+    // the feed must run that one, not whatever `kido` resolves to on PATH.
+    func locateFeed(_ done: @escaping @Sendable (Result<(kido: String, client: String), Server.Failure>) -> Void) {
+        client.send([Command("show-options", "-gv", "side-status-command"), Command("display-message", "-p", "#{client_name}")]) {
+            replies in
+            guard let replies, replies.count == 2, case .success(let command) = replies[0], let raw = command.first,
+                case .success(let name) = replies[1], let client = name.first
+            else { return done(.failure(Server.Failure(message: "could not read side-status-command or the client name"))) }
+            done(.success((kido: unquoteSideStatusCommand(raw), client: client)))
+        }
+    }
+
     func sendKeys(_ pane: PaneID, _ bytes: Data) {
         for keys in Command.sendKeys(pane, bytes) { send([keys]) }
     }
