@@ -36,8 +36,14 @@ struct Server: Decodable {
         process.standardOutput = out
         process.standardError = err
         try process.run()
-        let stdout = out.fileHandleForReading.readDataToEndOfFile()
-        let stderr = err.fileHandleForReading.readDataToEndOfFile()
+        nonisolated(unsafe) var stdout = Data(), stderr = Data()
+        let drained = DispatchGroup()
+        DispatchQueue.global().async(group: drained) { stdout = out.fileHandleForReading.readDataToEndOfFile() }
+        DispatchQueue.global().async(group: drained) { stderr = err.fileHandleForReading.readDataToEndOfFile() }
+        guard drained.wait(timeout: .now() + 10) == .success else {
+            process.terminate()
+            throw Failure(message: "\(path) \(args.joined(separator: " ")) did not finish in 10 seconds")
+        }
         process.waitUntilExit()
         let text = { (d: Data) in String(decoding: d, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
         return (process.terminationStatus, text(stdout), text(stderr))
