@@ -10,6 +10,8 @@ import TmuxControl
     private let menus = SessionMenus()
     private let sidebar = Sidebar()
     private var feed: Feed?
+    private var trigger: String?
+    private var signals: [DispatchSourceSignal] = []
 
     private enum Link {
         case down
@@ -19,6 +21,17 @@ import TmuxControl
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        for signal in [SIGTERM, SIGINT, SIGHUP] {
+            Darwin.signal(signal, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: signal, queue: .main)
+            source.setEventHandler {
+                note("quitting: \(String(cString: strsignal(signal)))")
+                Darwin.signal(signal, SIG_DFL)
+                raise(signal)
+            }
+            source.resume()
+            signals.append(source)
+        }
         guard let runtime = GhosttyRuntime() else { fatalError("libghostty failed to initialise") }
         self.runtime = runtime
         NSApp.mainMenu = mainMenu()
@@ -69,6 +82,7 @@ import TmuxControl
             do throws(Failure) {
                 dial(try await Server.locate(), backoff: 0.1)
             } catch {
+                note("could not locate the kido server: \(error.message)")
                 link = .down
                 down("Kido could not reach the kido server", error.message, button: action)
             }
@@ -78,6 +92,7 @@ import TmuxControl
     private var action: String { Server.fixed == nil ? "Start kido server" : "Reconnect" }
 
     private func dial(_ server: Server, backoff: TimeInterval) {
+        note("dialing \(server.socket)")
         let view = SessionView(runtime: runtime)
         view.frame = sidebar.content.bounds
         view.autoresizingMask = [.width, .height]
@@ -91,6 +106,7 @@ import TmuxControl
                 socket: server.socket, locate: connection.locateFeed, query: { [weak self] in self?.sidebar.view.query ?? "" },
                 onChange: { [weak self] in self?.sidebar.view.update($0) })
         } catch {
+            note("could not run \(server.tmux): \(error.localizedDescription)")
             link = .down
             down("Kido could not run \(server.tmux)", error.localizedDescription, button: action)
         }
@@ -117,6 +133,7 @@ import TmuxControl
         let reason: String?
         switch exit {
         case .detached(let detached):
+            note("staying detached")
             link = .down
             return down("Detached from the kido server", detached, button: "Reconnect")
         case .ended(let ended):
@@ -128,6 +145,7 @@ import TmuxControl
             session == nil ? "Kido could not reach the kido server" : "Disconnected from the kido server",
             (detail.map { "\($0)\n" } ?? "") + "Reconnecting…", button: action)
         let next = dropped ? 0.1 : min(backoff * 2, 2)
+        note("redialing in \(next)s")
         let item = DispatchWorkItem { [weak self] in self?.dial(server, backoff: next) }
         link = .redialing(item)
         DispatchQueue.main.asyncAfter(deadline: .now() + next, execute: item)
@@ -138,7 +156,7 @@ import TmuxControl
         app.items = [
             NSMenuItem(title: "Hide Kido", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
             .separator(),
-            NSMenuItem(title: "Quit Kido", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),
+            NSMenuItem(title: "Quit Kido", action: #selector(quitItem), keyEquivalent: "q"),
         ]
         let view = NSMenu(title: "View")
         func item(_ title: String, _ action: Selector, _ key: String, _ mods: NSEvent.ModifierFlags) -> NSMenuItem {
@@ -182,14 +200,35 @@ import TmuxControl
         feed?.switchWindow(next: next) { [weak self] in self?.sidebar.view.failed($0) }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    @objc private func quitItem() { quit("the Quit menu item") }
+
+    func quit(_ trigger: String) {
+        self.trigger = trigger
+        NSApp.terminate(nil)
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        trigger = "the last window closed"
+        return true
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        let pid = event?.attributeDescriptor(forKeyword: keySenderPIDAttr)?.int32Value
+        note("quitting: \(trigger ?? pid.map { "a quit Apple Event from pid \($0)" } ?? "NSApp.terminate")")
+        return .terminateNow
+    }
 }
 
 let background = ProcessInfo.processInfo.environment["KIDO_APP_BACKGROUND"] == "1"
 let debugging = ProcessInfo.processInfo.environment["KIDO_APP_DEBUG"] == "1"
 
+func note(_ line: String) {
+    FileHandle.standardError.write(Data("kido-app \(line)\n".utf8))
+}
+
 func debug(_ line: @autoclosure () -> String) {
-    if debugging { FileHandle.standardError.write(Data("kido-app \(line())\n".utf8)) }
+    if debugging { note(line()) }
 }
 
 func milliseconds(since start: DispatchTime) -> String {
