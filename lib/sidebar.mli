@@ -78,7 +78,7 @@ type row = {
   caption : caption;
 }
 
-type node = Group of { first : item; rest : item list } | Item of item
+type node = Group of { name : string; first : item; rest : item list } | Item of item
 and item = { row : row; children : node list }
 
 type section = { id : string; name : string; current : bool; nodes : node list }

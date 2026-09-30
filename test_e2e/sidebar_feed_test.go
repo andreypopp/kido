@@ -25,6 +25,7 @@ type feedRow struct {
 	Window    *string   `json:"window"`
 	Kind      string    `json:"kind"`
 	ID        string    `json:"id"`
+	Name      string    `json:"name"`
 	Children  []feedRow `json:"children"`
 	Indicator *struct {
 		Kind    string  `json:"kind"`
@@ -305,6 +306,7 @@ func TestSidebarFeedMatchesTheTUI(t *testing.T) {
 	_, childWindow := h.recordedRun("kid-e2e")
 	h.asyncBash("slow-e2e", "sleep", "300")
 	h.newSession("beta")
+	h.in("split-window", "-d", "-t", "beta:")
 	h.waitRow("slow-e2e")
 
 	f := h.startFeed("alpha")
@@ -368,8 +370,10 @@ func TestSidebarFeedMatchesTheTUI(t *testing.T) {
 	if !nested {
 		t.Errorf("the subagent window is not nested under its parent: %s", s.raw)
 	}
-	if rows := s.Sessions[1].Nodes; len(rows) != 1 || rows[0].Kind != "shell" || rows[0].Title[0].Role != "proc" {
-		t.Errorf("beta's shell row: %s", s.raw)
+	name := h.in("display-message", "-p", "-t", "beta:", "#{window_name}")
+	if g := s.Sessions[1].Nodes; len(g) != 1 || g[0].Kind != "window" || g[0].Name != name || len(g[0].Children) != 2 ||
+		g[0].Children[0].Kind != "shell" || g[0].Children[0].Title[0].Role != "proc" {
+		t.Errorf("beta's two-pane window, named %q: %s", name, s.raw)
 	}
 }
 

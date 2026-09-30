@@ -221,7 +221,7 @@ type row = {
   caption : caption;
 }
 
-type node = Group of { first : item; rest : item list } | Item of item
+type node = Group of { name : string; first : item; rest : item list } | Item of item
 and item = { row : row; children : node list }
 
 type section = { id : string; name : string; current : bool; nodes : node list }
@@ -546,19 +546,16 @@ let append_windows m placements =
     if drawn.(i) then None
     else begin
       drawn.(i) <- true;
-      let panes =
-        List.map
-          (fun (p : P.t) ->
-            let kids =
-              List.rev (Option.get_or ~default:[] (String_map.find_opt p.pane_id anchored))
-            in
-            { row = pane_label m p; children = List.filter_map emit kids })
-          placements.(i).panes
+      let item (p : P.t) =
+        let kids = List.rev (Option.get_or ~default:[] (String_map.find_opt p.pane_id anchored)) in
+        { row = pane_label m p; children = List.filter_map emit kids }
       in
-      match panes with
+      match placements.(i).panes with
       | [] -> None
-      | [ item ] -> Some (Item item)
-      | first :: rest -> Some (Group { first; rest })
+      | [ p ] -> Some (Item (item p))
+      | p :: rest ->
+          let first = item p in
+          Some (Group { name = p.window_name; first; rest = List.map item rest })
     end
   in
   Array.foldi
@@ -708,6 +705,7 @@ let to_json m =
             ("kind", `String "window");
             ("id", `String g.first.row.window);
             ("window", `String g.first.row.window);
+            ("name", `String g.name);
             ("children", `List (List.map item (g.first :: g.rest)));
           ]
     | Item i -> item i

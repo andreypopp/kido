@@ -1296,6 +1296,7 @@ let%expect_test "a snapshot as the feed sends it" =
               "kind": "window",
               "id": "@1",
               "window": "@1",
+              "name": "",
               "children": [
                 {
                   "kind": "agent",
@@ -1443,6 +1444,7 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
                   "kind": "window",
                   "id": "@2",
                   "window": "@2",
+                  "name": "",
                   "children": [
                     {
                       "kind": "agent",
