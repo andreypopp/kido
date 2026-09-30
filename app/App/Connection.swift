@@ -7,6 +7,7 @@ final class Connection: @unchecked Sendable {
     private var reasons: [String] = []
     private var detached: String?
     @MainActor private var retiring: [ObjectIdentifier: PaneView] = [:]
+    @MainActor private var freeing: [PaneView] = []
     @MainActor private weak var view: SessionView?
     @MainActor private var sizing: DispatchWorkItem?
     @MainActor private(set) var model = SessionModel() {
@@ -29,12 +30,12 @@ final class Connection: @unchecked Sendable {
             onClose: { [weak self] _, stderr in self?.closed(stderr) })
     }
 
-    @MainActor func attach(_ pane: PaneView) {
+    @MainActor func attach(_ pane: PaneView, synced: (@Sendable () -> Void)? = nil) {
         client.queue.async {
             guard self.panes != nil else { return DispatchQueue.main.async { _ = pane } }
             self.panes?[pane.pane] = pane
         }
-        sync(pane.pane)
+        sync(pane.pane, synced: synced)
     }
 
     @MainActor func detach(_ pane: PaneView) {
@@ -42,7 +43,23 @@ final class Connection: @unchecked Sendable {
         retiring[key] = pane
         client.queue.async {
             if self.panes?[id].map(ObjectIdentifier.init) == key { self.panes?[id] = nil }
-            DispatchQueue.main.async { self.retiring[key] = nil }
+            DispatchQueue.main.async {
+                guard let pane = self.retiring.removeValue(forKey: key) else { return }
+                self.freeing.append(pane)
+                if self.freeing.count == 1 { self.free() }
+            }
+        }
+    }
+
+    // Freeing a surface takes milliseconds on main, and hundreds of them when
+    // it was created moments earlier, so surfaces are freed one per turn, each
+    // at least a second old.
+    @MainActor private func free() {
+        guard let next = freeing.first else { return }
+        DispatchQueue.main.asyncAfter(deadline: max(.now() + 0.005, next.born + 1)) {
+            let start = DispatchTime.now(), pane = self.freeing.removeFirst().pane
+            debug("freed \(pane) in \(milliseconds(since: start)), \(self.freeing.count) to free")
+            self.free()
         }
     }
 
@@ -94,7 +111,7 @@ final class Connection: @unchecked Sendable {
         case .sessionChanged:
             reasons = []
             refresh()
-        case .sessionsChanged, .sessionRenamed, .windowAdd(_, .linked), .windowClose(_, .linked),
+        case .sessionsChanged, .sessionRenamed, .windowAdd(_, .linked), .windowClose,
             .windowRenamed(_, .linked, _):
             refresh()
         case .exit(.detached(let reason)):
@@ -111,17 +128,18 @@ final class Connection: @unchecked Sendable {
     private func refresh() {
         let commands = [
             Command("list-sessions", "-F", SessionListing.format), Command("display-message", "-p", "#{session_id}"),
-            Command("list-windows", "-F", WindowListing.format),
+            Command("list-windows", "-F", WindowListing.format), Command("list-windows", "-a", "-F", "#{window_id}"),
         ]
         client.send(commands) { [weak self] replies in
             guard let replies else { return }
-            guard replies.count == 3, case .success(let sessions) = replies[0], case .success(let current) = replies[1],
-                let session = current.first.flatMap(SessionID.init), case .success(let windows) = replies[2]
+            guard replies.count == 4, case .success(let sessions) = replies[0], case .success(let current) = replies[1],
+                let session = current.first.flatMap(SessionID.init), case .success(let windows) = replies[2],
+                case .success(let all) = replies[3]
             else { return self?.report("could not list the session's windows: \(replies)") ?? () }
             let listing = windows.compactMap(WindowListing.init)
             DispatchQueue.main.sync {
                 guard let self else { return }
-                self.view?.update(listing)
+                self.view?.update(listing, alive: Set(all.compactMap(WindowID.init)))
                 self.model = SessionModel(
                     sessions: sessions.compactMap(SessionListing.init), session: session,
                     windows: listing.map { .init(id: $0.id, name: $0.name) }, window: listing.first(where: \.active)?.id)
@@ -132,11 +150,12 @@ final class Connection: @unchecked Sendable {
     // %output queued before a reply is written ahead of its %begin
     // (control.c), and the reply is completed on the reader queue, so output
     // fed before the restore is wiped by it and output after it is not in it.
-    func sync(_ pane: PaneID, first: [Command] = []) {
+    func sync(_ pane: PaneID, first: [Command] = [], synced: (@Sendable () -> Void)? = nil) {
         client.send(first + PaneSync.commands(pane)) { [weak self] replies in
             guard let self, let replies else { return }
             panes?[pane]?.feed(
                 PaneSync.restore(replies.dropFirst(first.count)) ?? Self.notice("could not capture \(pane): \(replies)"))
+            synced?()
         }
     }
 
