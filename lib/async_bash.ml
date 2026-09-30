@@ -1,4 +1,4 @@
-let usage = "usage: kido async_bash [--name NAME] [--stream] -- COMMAND [ARG...]"
+let usage = "usage: kido tool async_bash [--name NAME] [--stream] -- COMMAND [ARG...]"
 
 let derived_name args =
   let first =

@@ -22,8 +22,8 @@ func TestCommandLineRefusals(t *testing.T) {
 		code   int
 	}{
 		{[]string{"prompt"}, "\n", "no prompt given", 1},
-		{[]string{"message_agent", "anyone"}, "", "no message given", 1},
-		{[]string{"message_agent", "anyone"}, "\n", "no message given", 1},
+		{[]string{"tool", "message_agent", "anyone"}, "", "no message given", 1},
+		{[]string{"tool", "message_agent", "anyone"}, "\n", "no message given", 1},
 		{[]string{"runs", "run-a", "extra"}, "", "kido runs: unknown argument \"extra\"\nusage: kido runs [--json] [<run-id>]", 1},
 		{[]string{"runs", "no-such-run"}, "", `kido runs: run "no-such-run": no such run`, 1},
 		{[]string{"hook", "extra"}, "", "usage: kido hook", 0},

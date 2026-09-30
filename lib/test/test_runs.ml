@@ -48,7 +48,7 @@ let%expect_test "runs: the table newest first, one run shown, and --json" =
     started:  <started a>
     outcome:  completed
     ended:    <ended a>
-    resume:   cd '/tmp/some project' && kido spawn_subagent --resume run-a
+    resume:   cd '/tmp/some project' && kido tool spawn_subagent --resume run-a
     fork:     cd '/tmp/some project' && pi --fork run-a
     task:
     do the thing

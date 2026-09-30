@@ -16,13 +16,13 @@ func (h *harness) asyncBashFields(name string, command ...string) (windowID, pan
 	for i, c := range command {
 		quoted[i] = shellQuote(c)
 	}
-	h.sendLiteral(fmt.Sprintf("%s async_bash --name %s -- %s > %s 2>&1; echo rc=$? >> %s",
+	h.sendLiteral(fmt.Sprintf("%s tool async_bash --name %s -- %s > %s 2>&1; echo rc=$? >> %s",
 		kidoBin, name, strings.Join(quoted, " "), outFile, outFile))
 	h.sendKeys("Enter")
 	out := h.waitFileContains(outFile, "rc=")
 	fields := strings.Fields(out)
 	if len(fields) < 3 || !strings.Contains(out, "rc=0") {
-		h.t.Fatalf("kido async_bash printed %q, want \"<window id> <pane id> <run id>\" and rc=0", out)
+		h.t.Fatalf("kido tool async_bash printed %q, want \"<window id> <pane id> <run id>\" and rc=0", out)
 	}
 	return fields[0], fields[1], fields[2]
 }

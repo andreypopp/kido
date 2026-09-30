@@ -13,7 +13,7 @@ import (
 // latency is share/pi/kido-status.ts's own to prove against a real extension,
 // since this harness cannot host one. What e2e proves is the other half
 // - a notice a child actually sends reaching its parent's inbox promptly
-// - with a fake command calling `kido notify_parent` naming no target,
+// - with a fake command calling `kido tool notify_parent` naming no target,
 // so the parent it reaches can only have come from
 // KIDO_AGENT_PARENT_SESSION set two processes earlier.
 func TestSpawnedChildNoticeReachesParentInboxQuickly(t *testing.T) {
@@ -37,10 +37,10 @@ func TestSpawnedChildNoticeReachesParentInboxQuickly(t *testing.T) {
 	child := fmt.Sprintf(
 		"%s agent-status --agent pi --session child-notice-e2e --status idle "+
 			"--parent-session parent-notice-e2e; "+
-			"printf \"the answer is 42\" | %s notify_parent; "+
+			"printf \"the answer is 42\" | %s tool notify_parent; "+
 			"exec sleep 300",
 		kidoBin, kidoBin)
-	cmd := fmt.Sprintf("%s spawn_subagent --parent-pid 1 --parent-session parent-notice-e2e --name kid-notice-e2e --task-file %s -- /bin/sh -c %s > %s 2>&1",
+	cmd := fmt.Sprintf("%s tool spawn_subagent --parent-pid 1 --parent-session parent-notice-e2e --name kid-notice-e2e --task-file %s -- /bin/sh -c %s > %s 2>&1",
 		kidoBin, taskFile, shellQuote(child), outFile)
 
 	t0 := time.Now()

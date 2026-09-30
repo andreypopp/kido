@@ -50,7 +50,7 @@ let show ~dir ~json id_str =
   let task = Option.get_or ~default:"" (Subrun.read_task ~dir id) in
   let screen = Subrun.read_screen ~dir id in
   let cd = "cd " ^ Filename.quote m.cwd ^ " && " in
-  let resume = cd ^ "kido spawn_subagent --resume " ^ id_str in
+  let resume = cd ^ "kido tool spawn_subagent --resume " ^ id_str in
   let fork = cd ^ "pi --fork " ^ id_str in
   if json then
     Yojson.Safe.to_string

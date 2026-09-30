@@ -47,7 +47,7 @@ from one session file), and the extension then reports nothing more,
 binds no inbox and tells the user once, naming the holder. `--parent-pid`, `--parent-session` and
 `--depth` are read
 once from `KIDO_AGENT_PARENT_PID`, `KIDO_AGENT_PARENT_SESSION` and
-`KIDO_AGENT_DEPTH`, which `kido spawn_subagent` sets in a subagent's
+`KIDO_AGENT_DEPTH`, which `kido tool spawn_subagent` sets in a subagent's
 environment (see docs/design-subagents.md, "What a child is given");
 absent for a root session.
 
@@ -151,9 +151,9 @@ reporting carries on unaffected.
 These register unconditionally when `kido-agents.ts` loads, and simply do
 nothing useful until a session has started and kido has been found:
 
-- `list_agents()` runs `kido list_agents --json` and returns every agent visible
+- `list_agents()` runs `kido tool list_agents --json` and returns every agent visible
   in the current tmux session, including this one.
-- `set_status(activity)` runs `kido set_status -- <text>`, free text
+- `set_status(activity)` runs `kido tool set_status -- <text>`, free text
   capped at 256 bytes and shown next to this session in kido's sidebar,
   separate from the running/waiting/idle status above. An empty string
   clears it. The extension keeps its own copy of the activity as well,
@@ -161,7 +161,7 @@ nothing useful until a session has started and kido has been found:
   narrow command is what writes the record without touching anything
   else on it.
 - `message_agent(to, message, replyTo?)` runs
-  `kido message_agent [--reply-to <id>] -- <to>`, piping `message` on
+  `kido tool message_agent [--reply-to <id>] -- <to>`, piping `message` on
   stdin. `to` is resolved by
   an exact, case-insensitive name, then an exact session id, then a
   unique id prefix, scoped to this tmux session; ambiguity is an error
@@ -177,9 +177,9 @@ nothing useful until a session has started and kido has been found:
   Descriptions are read by a model every time it chooses a tool, so a
   cost that decides between two tools belongs in one.
 - `ask_agent(to, question, timeoutMs?)` runs
-  `kido ask_agent --id <id> -- <to>`, then blocks the tool call until a
+  `kido tool ask_agent --id <id> -- <to>`, then blocks the tool call until a
   matching `reply` envelope arrives at this session's own inbox - which is
-  also why `kido ask_agent` itself only sends, and why it refuses a
+  also why `kido tool ask_agent` itself only sends, and why it refuses a
   caller that has no inbox rather than delivering a question nobody
   could answer: a short-lived subprocess has no inbox of its own to
   receive the answer on (docs/design.md, "Ask and reply"). This tool is
@@ -246,7 +246,7 @@ text rather than being dropped.
 ### Notices to a parent
 
 A subagent no longer notifies its parent automatically. `notify_parent(summary)`
-runs `kido notify_parent`, sent only when the model itself decides
+runs `kido tool notify_parent`, sent only when the model itself decides
 its work is done - a settled turn can be triggered by anything, a peer's
 `ask_agent` included, and only the subagent's own model knows whether a
 given turn was actually its delegated work finishing. A subagent that
@@ -267,25 +267,25 @@ instead of `ok` - a distinct answer kido's `deliverInbox` reports as its
 own error, never triggering the send-keys paste fallback, since nothing
 was mis-delivered. A refused ask is not delivered to the model at all.
 
-- `steer_subagent(to, message)` runs `kido steer_subagent -- <to>`,
+- `steer_subagent(to, message)` runs `kido tool steer_subagent -- <to>`,
   piping `message` on stdin. It delivers a `steer` envelope: the text
   joins the turn the target is already running rather than waiting for it
   to end, which is what makes it the tool for a correction that is
   worthless once the work is done. Use `message_agent` when the message
   can wait. Descendants only, like the two below - see docs/design.md,
   "Steer, interrupt and stop".
-- `interrupt_subagent(to)` runs `kido interrupt_subagent -- <to>`, which
+- `interrupt_subagent(to)` runs `kido tool interrupt_subagent -- <to>`, which
   delivers an `interrupt` envelope; this session answers one addressed to
   it with `ctx.abort()`, aborting the current turn without ending the
   session.
-- `stop_subagent(to, force?)` runs `kido stop_subagent [--force] -- <to>`,
+- `stop_subagent(to, force?)` runs `kido tool stop_subagent [--force] -- <to>`,
   which delivers a `stop` envelope; this session answers one addressed to it
   with `ctx.shutdown()`, the same teardown a normal exit runs
   (`session_shutdown`: inbox closed, record removed, own window's linger
-  scheduled). `kido stop_subagent` escalates to killing the target's pane
+  scheduled). `kido tool stop_subagent` escalates to killing the target's pane
   if it does not go within a few seconds - see docs/design.md, "Interrupt and
   stop".
-- `notify_parent(summary)` runs `kido notify_parent`, piping `summary` on
+- `notify_parent(summary)` runs `kido tool notify_parent`, piping `summary` on
   stdin and naming no target: the command reads the parent out of
   `KIDO_AGENT_PARENT_SESSION` in its own environment. Refused, before
   anything is sent, for a session with no parent - a root session was not
@@ -298,7 +298,7 @@ All three are refused - on the wire, as `refused` - unless the sender can
 be verified as an ancestor of this session (the same ancestor walk
 `ask_agent`'s own refusal uses, in the opposite direction): a caller may
 only steer, interrupt or stop its own descendants, which is what the
-`_subagent` suffix in those names means. `kido steer_subagent`,
-`kido interrupt_subagent` and `kido stop_subagent` already enforce this
+`_subagent` suffix in those names means. `kido tool steer_subagent`,
+`kido tool interrupt_subagent` and `kido tool stop_subagent` already enforce this
 before ever sending the envelope; this session
 checks it again on receipt, since `from` is advisory.

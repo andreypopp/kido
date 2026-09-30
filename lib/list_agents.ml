@@ -93,7 +93,7 @@ let list_agents ~dir ~threshold ~self ~session =
           Error
             (Printf.sprintf
                "no tmux session for pane %S; pass --session\n\
-                usage: kido list_agents [--session ID] [--json]"
+                usage: kido tool list_agents [--session ID] [--json]"
                self)
   in
   let wake = State.wake ~dir and now = Timestamp.now () in

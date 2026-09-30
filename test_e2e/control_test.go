@@ -29,12 +29,12 @@ func TestStopKillsAWedgedChildAfterEscalation(t *testing.T) {
 
 	_, windowID, _ := h.wedgedChild("alpha", "wedged-e2e")
 
-	out := h.runKido("alpha", "stop.out", "stop_subagent", "wedged-e2e")
+	out := h.runKido("alpha", "stop.out", "tool", "stop_subagent", "wedged-e2e")
 	if !strings.Contains(out, "killed") {
-		t.Errorf("kido stop_subagent output = %q, want it to say the window was killed", out)
+		t.Errorf("kido tool stop_subagent output = %q, want it to say the window was killed", out)
 	}
 	if !strings.Contains(out, "rc=0") {
-		t.Errorf("kido stop_subagent output = %q, want a successful exit: the escalation itself is not a failure", out)
+		t.Errorf("kido tool stop_subagent output = %q, want a successful exit: the escalation itself is not a failure", out)
 	}
 	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
 		msgf("window %s to be killed after the escalation timeout", windowID))
@@ -60,12 +60,12 @@ func TestStopDoesNotKillAHealthyChild(t *testing.T) {
 		h.agentStatus("healthy-e2e", paneID, "pi", "idle", "--remove")
 	}()
 
-	out := h.runKido("alpha", "stop.out", "stop_subagent", "healthy-e2e")
+	out := h.runKido("alpha", "stop.out", "tool", "stop_subagent", "healthy-e2e")
 	if !strings.Contains(out, "rc=0") {
-		t.Fatalf("kido stop_subagent output = %q, want a successful exit", out)
+		t.Fatalf("kido tool stop_subagent output = %q, want a successful exit", out)
 	}
 	if strings.Contains(out, "killed") {
-		t.Errorf("kido stop_subagent output = %q, want no escalation: the target stopped in time", out)
+		t.Errorf("kido tool stop_subagent output = %q, want no escalation: the target stopped in time", out)
 	}
 	h.stays(func() bool { return h.windowExists(windowID) },
 		"a healthy child's window must never be killed")
@@ -117,7 +117,7 @@ func TestStopWithNoWayToAskNeedsForce(t *testing.T) {
 		paneID := h.in("list-panes", "-t", windowID, "-F", "#{pane_id}")
 		bystander := h.in("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", windowID, "sh", "-c", "exec sleep 300")
 
-		out := h.runKido("alpha", c.name+"-unforced.out", "stop_subagent", runID)
+		out := h.runKido("alpha", c.name+"-unforced.out", "tool", "stop_subagent", runID)
 		if !strings.Contains(out, c.refusal) || !strings.Contains(out, "pass --force") || !strings.Contains(out, "rc=1") {
 			t.Errorf("%s: stop without --force = %q, want rc=1 and %q", c.name, out, c.refusal)
 		}
@@ -125,7 +125,7 @@ func TestStopWithNoWayToAskNeedsForce(t *testing.T) {
 			t.Errorf("%s: after a refused stop outcome = %q, pane there = %v; want running and untouched", c.name, got, h.paneExists(paneID))
 		}
 
-		out = h.runKido("alpha", c.name+"-forced.out", "stop_subagent", "--force", runID)
+		out = h.runKido("alpha", c.name+"-forced.out", "tool", "stop_subagent", "--force", runID)
 		if !strings.Contains(out, "'s pane") || !strings.Contains(out, "rc=0") {
 			t.Errorf("%s: stop --force = %q, want its pane killed and rc=0", c.name, out)
 		}
@@ -164,7 +164,7 @@ func TestInterruptAndStopReachOnlyDescendants(t *testing.T) {
 		{"stop_subagent", "caller-e2e", "is this agent\nrc=1"},
 		{"interrupt_subagent", "child-e2e", "\nrc=0"},
 	} {
-		out := h.typeScript(caller, fmt.Sprintf("reach-%d.out", i), kidoBin+" "+c.verb+" "+c.target)
+		out := h.typeScript(caller, fmt.Sprintf("reach-%d.out", i), kidoBin+" tool "+c.verb+" "+c.target)
 		if !strings.Contains(out, c.want) {
 			t.Errorf("%s %s from caller-e2e = %q, want %q", c.verb, c.target, out, c.want)
 		}
@@ -174,7 +174,7 @@ func TestInterruptAndStopReachOnlyDescendants(t *testing.T) {
 	}
 	h.stableCount(peer, 0, "nothing may reach a peer that is not the caller's descendant")
 
-	if out := h.runKido("alpha", "human.out", "interrupt_subagent", "peer-e2e"); !strings.Contains(out, "rc=0") {
+	if out := h.runKido("alpha", "human.out", "tool", "interrupt_subagent", "peer-e2e"); !strings.Contains(out, "rc=0") {
 		t.Errorf("interrupt_subagent peer-e2e from a human's shell = %q, want rc=0", out)
 	}
 	if got := peer.Received(); len(got) != 1 || !strings.Contains(got[0], `"kind":"interrupt"`) {
@@ -183,7 +183,7 @@ func TestInterruptAndStopReachOnlyDescendants(t *testing.T) {
 
 	h.newSession("beta")
 	agent("beta", "elsewhere-e2e")
-	if out := h.runKido("alpha", "elsewhere.out", "interrupt_subagent", "elsewhere-e2e"); !strings.Contains(out, "is in another tmux session, not this one") || !strings.Contains(out, "rc=1") {
+	if out := h.runKido("alpha", "elsewhere.out", "tool", "interrupt_subagent", "elsewhere-e2e"); !strings.Contains(out, "is in another tmux session, not this one") || !strings.Contains(out, "rc=1") {
 		t.Errorf("interrupt_subagent into another tmux session = %q, want a refusal naming it", out)
 	}
 }
@@ -203,7 +203,7 @@ func TestStopSaysWhyItKilledAnUnwillingTarget(t *testing.T) {
 		pane := h.newWindow("alpha", "", "sh", "-c", "exec sleep 300")
 		windowID := h.windowID(pane)
 		h.agentStatus(c.id, pane, "pi", "idle", "--inbox", in.Path)
-		out := h.runKido("alpha", c.id+".out", "stop_subagent", c.id)
+		out := h.runKido("alpha", c.id+".out", "tool", "stop_subagent", c.id)
 		for _, want := range []string{"did not accept the stop request (", c.why, "and was still there after 300ms; killed its pane", "rc=0"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("stop_subagent %s = %q, want %q", c.id, out, want)
@@ -232,7 +232,7 @@ func TestStopBashRunFindsItsRunAndSpeaksForIt(t *testing.T) {
 	runIn := func(pane, name string, command ...string) string {
 		// Numbered, not named: "twin" and "Twin" are one file on macOS.
 		started++
-		out := h.typeScript(pane, fmt.Sprintf("start-%d.out", started), fmt.Sprintf("%s async_bash --name %s -- %s", kidoBin, name, strings.Join(command, " ")))
+		out := h.typeScript(pane, fmt.Sprintf("start-%d.out", started), fmt.Sprintf("%s tool async_bash --name %s -- %s", kidoBin, name, strings.Join(command, " ")))
 		if f := strings.Fields(out); len(f) == 5 {
 			return f[2]
 		}
@@ -240,7 +240,7 @@ func TestStopBashRunFindsItsRunAndSpeaksForIt(t *testing.T) {
 		return ""
 	}
 	stop := func(tag string, args ...string) string {
-		return h.typeScript(caller, tag+".out", kidoBin+" stop_subagent "+strings.Join(args, " "))
+		return h.typeScript(caller, tag+".out", kidoBin+" tool stop_subagent "+strings.Join(args, " "))
 	}
 
 	doomed := runIn(caller, "doomed", "sleep", "300")
@@ -292,7 +292,7 @@ func TestStopBashRunFindsItsRunAndSpeaksForIt(t *testing.T) {
 	if !strings.Contains(out, `async run "alone" was recorded stopped, but its pane could not be killed: it is its session's only pane; killing it would destroy the session`) || !strings.Contains(out, "rc=1") {
 		t.Errorf("stop of a session's only pane = %q, want it recorded but refused", out)
 	}
-	if info := h.runInfo(alone); info.Outcome != "stopped" || info.OutcomeText != "stopped by kido stop_subagent; its wrapper did not report" {
+	if info := h.runInfo(alone); info.Outcome != "stopped" || info.OutcomeText != "stopped by kido tool stop_subagent; its wrapper did not report" {
 		t.Errorf("run alone = %q/%q, want the stop recorded", info.Outcome, info.OutcomeText)
 	}
 	h.waitFor(func() bool { return len(in.Received()) > before }, settle, msgf("the parent to be told run alone was stopped"))

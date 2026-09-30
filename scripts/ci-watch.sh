@@ -2,7 +2,7 @@
 # ci-watch.sh [sha]: wait for the GitHub Actions run of a commit (default
 # HEAD) and exit with its status. Prints each job's conclusion; on failure
 # also the failing test lines, with the suite's known noise filtered out.
-# Meant to run in the background: kido async_bash -- scripts/ci-watch.sh
+# Meant to run in the background: kido tool async_bash -- scripts/ci-watch.sh
 set -eu
 
 sha=$(git rev-parse "${1:-HEAD}")

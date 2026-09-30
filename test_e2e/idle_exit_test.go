@@ -111,7 +111,7 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 	outFile := filepath.Join(h.dir, "resume.out")
 	envFile := filepath.Join(h.dir, "resume.env")
 	fake := shellQuote(fmt.Sprintf("env > %s; pwd >> %s; sleep 300", envFile, envFile))
-	cmd := fmt.Sprintf("cd / && PI_CODING_AGENT_SESSION_DIR=%s %s spawn_subagent --resume %s --parent-pid 777 --parent-session new-parent-e2e --keep-alive -- /bin/sh -c %s > %s 2>&1",
+	cmd := fmt.Sprintf("cd / && PI_CODING_AGENT_SESSION_DIR=%s %s tool spawn_subagent --resume %s --parent-pid 777 --parent-session new-parent-e2e --keep-alive -- /bin/sh -c %s > %s 2>&1",
 		shellQuote(sessDir), kidoBin, runID, fake, outFile)
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")
@@ -119,11 +119,11 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 	out := strings.TrimSpace(h.waitFileNonEmpty(outFile))
 	fields := strings.Fields(out)
 	if len(fields) != 3 {
-		t.Fatalf("kido spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", out)
+		t.Fatalf("kido tool spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", out)
 	}
 	newWindowID, newPaneID, gotRunID := fields[0], fields[1], fields[2]
 	if gotRunID != runID {
-		t.Errorf("kido spawn_subagent --resume printed run id %q, want the original %q", gotRunID, runID)
+		t.Errorf("kido tool spawn_subagent --resume printed run id %q, want the original %q", gotRunID, runID)
 	}
 	if newWindowID == windowID {
 		t.Errorf("resumed window id %s must be a new window, not the swept original", newWindowID)
@@ -182,13 +182,13 @@ until [ -f %s ]; do
   [ "$SECONDS" -lt 10 ] || exit 1
   read -r -t 1 ignored
 done
-printf 'finished first life' | %s notify_parent
+printf 'finished first life' | %s tool notify_parent
 %s run-outcome --result completed -- "$KIDO_AGENT_RUN_ID"
 `, kidoBin, shellQuote(gate), kidoBin, kidoBin)
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	out := h.runKido("alpha", "first-life.out", "spawn_subagent", "--parent-pid", "1",
+	out := h.runKido("alpha", "first-life.out", "tool", "spawn_subagent", "--parent-pid", "1",
 		"--parent-session", "resume-parent-e2e", "--name", "resumable",
 		"--task-file", h.writeTaskFile("resumable"), "--", fake)
 	fields := strings.Fields(firstLine(out))
@@ -207,7 +207,7 @@ printf 'finished first life' | %s notify_parent
 	if len(in.Received()) != 1 || !strings.Contains(in.Received()[0], "finished first life") {
 		t.Fatalf("first life notices = %q", in.Received())
 	}
-	out = h.runKido("alpha", "second-life.out", "spawn_subagent", "--resume", runID,
+	out = h.runKido("alpha", "second-life.out", "tool", "spawn_subagent", "--resume", runID,
 		"--parent-pid", "1", "--parent-session", "resume-parent-e2e", "--", "/bin/sh", "-c", shellQuote("exec sleep 300"))
 	fields = strings.Fields(firstLine(out))
 	if len(fields) != 3 {
@@ -254,14 +254,14 @@ func TestSpawnResumeRefusesLiveRun(t *testing.T) {
 	runID, windowID := h.spawnRun("live-src", "exec sleep 300")
 	t.Cleanup(func() { h.in("kill-window", "-t", windowID) })
 
-	out := h.runKido("alpha", "resume-live.out", "spawn_subagent", "--resume", runID)
+	out := h.runKido("alpha", "resume-live.out", "tool", "spawn_subagent", "--resume", runID)
 	if !strings.Contains(out, "still running") {
-		t.Errorf("kido spawn_subagent --resume on a live run = %q, want a refusal naming it still running", out)
+		t.Errorf("kido tool spawn_subagent --resume on a live run = %q, want a refusal naming it still running", out)
 	}
-	want := fmt.Sprintf("kido spawn_subagent: run \"no-such-run\": no readable %s\nrc=1\n",
+	want := fmt.Sprintf("kido tool spawn_subagent: run \"no-such-run\": no readable %s\nrc=1\n",
 		filepath.Join(h.stateDir, "runs", "no-such-run", "meta.json"))
-	if got := h.runKido("alpha", "resume-unknown.out", "spawn_subagent", "--resume", "no-such-run"); got != want {
-		t.Errorf("kido spawn_subagent --resume no-such-run = %q, want %q", got, want)
+	if got := h.runKido("alpha", "resume-unknown.out", "tool", "spawn_subagent", "--resume", "no-such-run"); got != want {
+		t.Errorf("kido tool spawn_subagent --resume no-such-run = %q, want %q", got, want)
 	}
 }
 
@@ -276,12 +276,12 @@ func (h *harness) resumeRun(tag, runID, windowID, sessDir string, flags ...strin
 	outFile := filepath.Join(h.dir, tag+".out")
 	envFile := filepath.Join(h.dir, tag+".env")
 	fake := shellQuote(fmt.Sprintf("env > %s; sleep 300", envFile))
-	h.sendLiteral(fmt.Sprintf("PI_CODING_AGENT_SESSION_DIR=%s %s spawn_subagent --resume %s %s -- /bin/sh -c %s > %s 2>&1",
+	h.sendLiteral(fmt.Sprintf("PI_CODING_AGENT_SESSION_DIR=%s %s tool spawn_subagent --resume %s %s -- /bin/sh -c %s > %s 2>&1",
 		shellQuote(sessDir), kidoBin, runID, strings.Join(flags, " "), fake, outFile))
 	h.sendKeys("Enter")
 	fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
 	if len(fields) != 3 {
-		h.t.Fatalf("kido spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", fields)
+		h.t.Fatalf("kido tool spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", fields)
 	}
 	return h.waitFileNonEmpty(envFile), fields[0]
 }
@@ -339,12 +339,12 @@ func TestSpawnResumeWithNoPiSessionMintsOne(t *testing.T) {
 	}
 
 	outFile := filepath.Join(h.dir, "resume.out")
-	h.sendLiteral(fmt.Sprintf("PI_CODING_AGENT_SESSION_DIR=%s %s spawn_subagent --resume %s > %s 2>&1",
+	h.sendLiteral(fmt.Sprintf("PI_CODING_AGENT_SESSION_DIR=%s %s tool spawn_subagent --resume %s > %s 2>&1",
 		shellQuote(t.TempDir()), kidoBin, runID, outFile))
 	h.sendKeys("Enter")
 	fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
 	if len(fields) != 3 {
-		t.Fatalf("kido spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", fields)
+		t.Fatalf("kido tool spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", fields)
 	}
 	if started := h.startCommand(fields[0]); !strings.Contains(started, "pi --session-id "+runID) {
 		t.Errorf("resumed pane's command = %q, want a session minted under the run's own id", started)
@@ -363,13 +363,13 @@ func (h *harness) spawnRecordedRun(name string) (runID, sessDir string) {
 	h.liveParent("alpha", "root-e2e")
 	outFile := filepath.Join(h.dir, name+"-spawn.out")
 	h.sendLiteral(fmt.Sprintf(
-		"%s spawn_subagent --parent-pid 1 --parent-session root-e2e --name %s "+
+		"%s tool spawn_subagent --parent-pid 1 --parent-session root-e2e --name %s "+
 			"--task-file %s --model acme/claude-sonnet-5 --tools read,bash --keep-alive -- /bin/sh -c %s > %s 2>&1",
 		kidoBin, name, h.writeTaskFile(name), shellQuote("exec sleep 300"), outFile))
 	h.sendKeys("Enter")
 	fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
 	if len(fields) != 3 {
-		h.t.Fatalf("kido spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", fields)
+		h.t.Fatalf("kido tool spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", fields)
 	}
 	windowID, runID := fields[0], fields[2]
 
@@ -400,11 +400,11 @@ func TestSpawnResumeCarriesKeepAlive(t *testing.T) {
 	outFile := filepath.Join(h.dir, "resume.out")
 	envFile := filepath.Join(h.dir, "resume.env")
 	fake := shellQuote(fmt.Sprintf("env > %s; sleep 300", envFile))
-	h.sendLiteral(fmt.Sprintf("PI_CODING_AGENT_SESSION_DIR=%s %s spawn_subagent --resume %s -- /bin/sh -c %s > %s 2>&1",
+	h.sendLiteral(fmt.Sprintf("PI_CODING_AGENT_SESSION_DIR=%s %s tool spawn_subagent --resume %s -- /bin/sh -c %s > %s 2>&1",
 		shellQuote(sessDir), kidoBin, runID, fake, outFile))
 	h.sendKeys("Enter")
 	if out := strings.TrimSpace(h.waitFileNonEmpty(outFile)); len(strings.Fields(out)) != 3 {
-		t.Fatalf("kido spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", out)
+		t.Fatalf("kido tool spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", out)
 	}
 
 	if got := envLine(h.waitFileNonEmpty(envFile), "KIDO_AGENT_KEEP_ALIVE"); got != "1" {
@@ -435,12 +435,12 @@ func TestSpawnResumeCarriesToolsOntoThePiCommandLine(t *testing.T) {
 
 	resume := func(tag string, command ...string) string {
 		outFile := filepath.Join(h.dir, tag+".out")
-		h.sendLiteral(fmt.Sprintf("PATH=%s:$PATH PI_CODING_AGENT_SESSION_DIR=%s %s spawn_subagent --resume %s -- %s > %s 2>&1",
+		h.sendLiteral(fmt.Sprintf("PATH=%s:$PATH PI_CODING_AGENT_SESSION_DIR=%s %s tool spawn_subagent --resume %s -- %s > %s 2>&1",
 			shellQuote(piDir), shellQuote(sessDir), kidoBin, runID, strings.Join(command, " "), outFile))
 		h.sendKeys("Enter")
 		fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
 		if len(fields) != 3 {
-			t.Fatalf("kido spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", fields)
+			t.Fatalf("kido tool spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", fields)
 		}
 		return fields[0]
 	}

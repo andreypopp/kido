@@ -5,7 +5,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { delimiter, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Set by `kido spawn_subagent` in a subagent's environment; absent for a root session.
+// Set by `kido tool spawn_subagent` in a subagent's environment; absent for a root session.
 const PARENT_PID = process.env.KIDO_AGENT_PARENT_PID ? Number(process.env.KIDO_AGENT_PARENT_PID) : undefined;
 const PARENT_SESSION = process.env.KIDO_AGENT_PARENT_SESSION || undefined;
 const DEPTH = process.env.KIDO_AGENT_DEPTH ? Number(process.env.KIDO_AGENT_DEPTH) : undefined;
@@ -463,7 +463,7 @@ export default function (pi: ExtensionAPI) {
       const timer = setTimeout(() => {
         child.kill();
         // Unknown, not failed: kido may already have done its work.
-        finish({ ok: false, error: `kido ${args[0]} timed out after ${opts.timeoutMs}ms` });
+        finish({ ok: false, error: `kido ${args.slice(0, args[0] === "tool" ? 2 : 1).join(" ")} timed out after ${opts.timeoutMs}ms` });
       }, opts.timeoutMs);
       timer.unref(); // a hung kido must never hold pi's event loop open
 
@@ -477,7 +477,7 @@ export default function (pi: ExtensionAPI) {
           finish({ ok: true, out: Buffer.concat(stdout).toString("utf8").trim() });
         } else {
           const errText = Buffer.concat(stderr).toString("utf8").trim();
-          finish({ ok: false, error: errText || `kido ${args[0]} exited with code ${code}`, code: code ?? undefined });
+          finish({ ok: false, error: errText || `kido ${args.slice(0, args[0] === "tool" ? 2 : 1).join(" ")} exited with code ${code}`, code: code ?? undefined });
         }
       });
       // A child exiting before reading all of stdin turns the write into an EPIPE,
@@ -493,12 +493,12 @@ export default function (pi: ExtensionAPI) {
     status: () => current,
     inboxOpen,
     setActivity: (text: string) => {
-      // Two writes of one fact: `kido set_status` updates the record without
+      // Two writes of one fact: `kido tool set_status` updates the record without
       // disturbing anything else on it, and the local variable is what every later
       // `kido agent-status` report carries - leaving it stale would have the next
       // report clear the activity this one just set.
       activity = text;
-      if (kido) spawnDetached(kido, ["set_status", "--", activity]);
+      if (kido) spawnDetached(kido, ["tool", "set_status", "--", activity]);
     },
     deliver,
     runKido,

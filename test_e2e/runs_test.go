@@ -44,14 +44,14 @@ func (h *harness) spawnRun(name, script string) (runID, windowID string) {
 	h.t.Helper()
 	h.liveParent("alpha", "root-e2e")
 	outFile := filepath.Join(h.dir, name+".out")
-	cmd := fmt.Sprintf("%s spawn_subagent --parent-pid 1 --parent-session root-e2e --name %s --task-file %s -- /bin/sh -c %s > %s 2>&1",
+	cmd := fmt.Sprintf("%s tool spawn_subagent --parent-pid 1 --parent-session root-e2e --name %s --task-file %s -- /bin/sh -c %s > %s 2>&1",
 		kidoBin, name, h.writeTaskFile(name), shellQuote(script), outFile)
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")
 	out := strings.TrimSpace(h.waitFileNonEmpty(outFile))
 	fields := strings.Fields(out)
 	if len(fields) != 3 {
-		h.t.Fatalf("kido spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", out)
+		h.t.Fatalf("kido tool spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", out)
 	}
 	return fields[2], fields[0]
 }
@@ -168,9 +168,9 @@ func TestStopRecordsStoppedOutcome(t *testing.T) {
 	in := startInbox(h.t, "ok\n")
 	h.agentStatus(runID, paneID, "pi", "idle", "--inbox", in.Path)
 
-	out := h.runKido("alpha", "stop.out", "stop_subagent", runID)
+	out := h.runKido("alpha", "stop.out", "tool", "stop_subagent", runID)
 	if !strings.Contains(out, "killed") {
-		t.Fatalf("kido stop_subagent output = %q, want the escalation to kill the wedged child's window", out)
+		t.Fatalf("kido tool stop_subagent output = %q, want the escalation to kill the wedged child's window", out)
 	}
 	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
 		msgf("window %s to be killed by the stop escalation", windowID))

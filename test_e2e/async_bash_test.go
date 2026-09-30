@@ -13,7 +13,7 @@ import (
 )
 
 // asyncParent gives the session's own pane a real inbox and a recorded
-// agent, so `kido async_bash` typed there has a parent to resolve and a
+// agent, so `kido tool async_bash` typed there has a parent to resolve and a
 // delivery - or its absence - is observable from outside.
 func (h *harness) asyncParent(session, id string) *inbox {
 	h.t.Helper()
@@ -42,13 +42,13 @@ func (h *harness) asyncBashIDs(flags []string, name string, command ...string) (
 	for i, c := range command {
 		quoted[i] = shellQuote(c)
 	}
-	h.sendLiteral(fmt.Sprintf("%s async_bash --name %s %s -- %s > %s 2>&1; echo rc=$? >> %s",
+	h.sendLiteral(fmt.Sprintf("%s tool async_bash --name %s %s -- %s > %s 2>&1; echo rc=$? >> %s",
 		kidoBin, name, strings.Join(flags, " "), strings.Join(quoted, " "), outFile, outFile))
 	h.sendKeys("Enter")
 	out := h.waitFileContains(outFile, "rc=")
 	fields := strings.Fields(out)
 	if len(fields) < 3 || !strings.Contains(out, "rc=0") {
-		h.t.Fatalf("kido async_bash printed %q, want \"<window id> <pane id> <run id>\" and rc=0", out)
+		h.t.Fatalf("kido tool async_bash printed %q, want \"<window id> <pane id> <run id>\" and rc=0", out)
 	}
 	return fields[0], fields[1], fields[2]
 }
@@ -182,10 +182,10 @@ func TestAsyncBashWithNoParentStillRecordsItsOutcome(t *testing.T) {
 	h := start(t, "alpha")
 	in := h.asyncParent("alpha", "parent-unrelated-e2e")
 
-	out := h.runKido("alpha", "noparent.out", "async_bash", "--name", "orphanish", "--", shellQuote("exit 7"))
+	out := h.runKido("alpha", "noparent.out", "tool", "async_bash", "--name", "orphanish", "--", shellQuote("exit 7"))
 	fields := strings.Fields(out)
 	if len(fields) < 3 {
-		t.Fatalf("kido async_bash printed %q, want \"<window id> <pane id> <run id>\"", out)
+		t.Fatalf("kido tool async_bash printed %q, want \"<window id> <pane id> <run id>\"", out)
 	}
 	runID := fields[2]
 
@@ -209,13 +209,13 @@ func TestAsyncBashRecordsItsRunAndItsCommand(t *testing.T) {
 	h.agentStatus("abash-caller-e2e", pane, "pi", "idle", "--depth", "1")
 
 	outFile := filepath.Join(h.dir, "derived.out")
-	h.sendLiteral(fmt.Sprintf("%s async_bash -- %s > %s 2>&1; echo rc=$? >> %s",
+	h.sendLiteral(fmt.Sprintf("%s tool async_bash -- %s > %s 2>&1; echo rc=$? >> %s",
 		kidoBin, shellQuote("/usr/bin/env sleep 300 && ./run"), outFile, outFile))
 	h.sendKeys("Enter")
 	out := h.waitFileContains(outFile, "rc=")
 	fields := strings.Fields(out)
 	if len(fields) != 5 || fields[4] != "rc=0" {
-		t.Fatalf("kido async_bash printed %q, want \"<window> <pane> <run> <output>\" and rc=0", out)
+		t.Fatalf("kido tool async_bash printed %q, want \"<window> <pane> <run> <output>\" and rc=0", out)
 	}
 	windowID, runID := fields[0], fields[2]
 	if want := filepath.Join(h.stateDir, "runs", runID, "output"); fields[3] != want {

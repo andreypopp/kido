@@ -172,7 +172,7 @@ func TestSetStatusCmd(t *testing.T) {
 		"--parent-session", "p", "--depth", "1", "--model", "claude-sonnet-5", "--activity", "the old one")
 	before := h.stateRecord("worker")
 	setStatus := func(pane, activity string) (string, error) {
-		cmd := exec.Command(kidoBin, "set_status", activity)
+		cmd := exec.Command(kidoBin, "tool", "set_status", activity)
 		cmd.Env = cleanEnv("TMUX_PANE="+pane, "KIDO_STATE_DIR="+h.stateDir)
 		out, err := cmd.CombinedOutput()
 		return strings.TrimSpace(string(out)), err
@@ -196,7 +196,7 @@ func TestSetStatusCmd(t *testing.T) {
 		}
 	}
 
-	want := `kido set_status: no agent session has reported pane "%999"; there is nothing to set an activity on`
+	want := `kido tool set_status: no agent session has reported pane "%999"; there is nothing to set an activity on`
 	if out, err := setStatus("%999", "busy"); err == nil || out != want {
 		t.Errorf("set_status from an unreported pane = %q (%v), want %q and a failure", out, err, want)
 	}

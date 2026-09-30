@@ -27,7 +27,7 @@ func (h *harness) windowID(paneID string) string {
 }
 
 // subagentWindow opens a window that looks to kido exactly like one
-// `kido spawn_subagent` created: @kido_run marked, remain-on-exit kept,
+// `kido tool spawn_subagent` created: @kido_run marked, remain-on-exit kept,
 // reporting itself through `kido agent-status` from inside the pane (so
 // the recorded pid is the sleep's own) before becoming a long sleep.
 func (h *harness) subagentWindow(session, name, sessionID, parentSession string) (paneID, windowID string) {
@@ -173,7 +173,7 @@ func TestReapLeavesUnmarkedWindowAlone(t *testing.T) {
 		t.Errorf("kido reap output = %q, want a clean exit", out)
 	}
 	h.stays(func() bool { return h.windowExists(windowID) },
-		"an unmarked window was closed: only a window kido spawn_subagent marked may be reaped")
+		"an unmarked window was closed: only a window kido tool spawn_subagent marked may be reaped")
 }
 
 // Closing a session's last window destroys the session itself (verified

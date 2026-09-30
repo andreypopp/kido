@@ -219,14 +219,14 @@ func TestPromptExcludesSubagentWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	outFile := filepath.Join(h.dir, "spawn.out")
-	cmd := fmt.Sprintf("%s spawn_subagent --no-parent --name sub-e2e --task-file %s -- %s -- > %s 2>&1",
+	cmd := fmt.Sprintf("%s tool spawn_subagent --no-parent --name sub-e2e --task-file %s -- %s -- > %s 2>&1",
 		kidoBin, taskFile, claudeBin, outFile)
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")
 	out := strings.TrimSpace(h.waitFileNonEmpty(outFile))
 	fields := strings.Fields(out)
 	if len(fields) != 3 {
-		t.Fatalf("kido spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", out)
+		t.Fatalf("kido tool spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", out)
 	}
 	subPane := fields[1]
 	h.waitPaneCommand(subPane, "claude")

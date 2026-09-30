@@ -135,7 +135,7 @@ Conventions:
       tree.ml          the parent-first walk behind list_agents and the sidebar
       reap.ml          which subagent windows are finished with, and when;
                        an ending's text and its send to the parent's inbox
-      subrun.ml        the durable record of one `kido spawn_subagent`
+      subrun.ml        the durable record of one `kido tool spawn_subagent`
       prompt.ml, message_agent.ml (also ask_agent and notify_parent),
       list_agents.ml, spawn_subagent.ml, async_bash.ml,
       async_run.ml (its wrapper), async_stream.ml, runs.ml,
@@ -166,12 +166,12 @@ Conventions:
 `dune build`; the binary is `bin/main.exe`, installed as `kido`. `lib/`
 embeds the shell integrations and `share/tmux/kido-tmux.conf` at build time.
 
-**Tool name == subcommand name.** Every subagent tool in `share/pi/` invokes
-the subcommand of its own name (table in docs/design-subagents.md). A new
+**Tool name == `kido tool` subcommand name.** Every subagent tool in `share/pi/` invokes
+the `kido tool` subcommand of its own name (table in docs/design-subagents.md). A new
 tool brings a subcommand spelled the same way; there are no aliases, and
 a divergence is a silent runtime failure, not a build one;
 `lib/test/test_tool_parity.ml` runs each tool in `share/pi/testdata/tools.json` as
-a subcommand. A subcommand
+a `kido tool` subcommand. A subcommand
 no tool calls is named however it reads best (`async-run`); `async_bash`
 took the underscore before its tool existed, because renaming a command
 once something calls it is the harder half.

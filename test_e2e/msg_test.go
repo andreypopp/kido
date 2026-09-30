@@ -113,19 +113,19 @@ func TestMessageAgentResolvesByNameTitleIdAndPrefix(t *testing.T) {
 		{"worker-6", "delivered to worker-6 by inbox"},
 		{"abc123", "delivered to Worker-2 by inbox"},
 		{"abd", "delivered to  by inbox"},
-		{"ab", `kido message_agent: "ab" matches several agents by id: abc123 (Worker-2), abd456 ()`},
-		{"nope", `kido message_agent: no agent session matches "nope"`},
-		{"scout", `kido message_agent: "scout" matches several agents by name: worker-x (scout), worker-y (scout)`},
-		{"Self", "kido message_agent: Self is this agent"},
+		{"ab", `kido tool message_agent: "ab" matches several agents by id: abc123 (Worker-2), abd456 ()`},
+		{"nope", `kido tool message_agent: no agent session matches "nope"`},
+		{"scout", `kido tool message_agent: "scout" matches several agents by name: worker-x (scout), worker-y (scout)`},
+		{"Self", "kido tool message_agent: Self is this agent"},
 		// Resolution tries the caller's own tmux session first, then says
 		// why a match elsewhere is out of reach.
-		{"elsewhere", "kido message_agent: elsewhere (elsewhere) is in another tmux session, not this one"},
-		{"Twin", `kido message_agent: "Twin" matches several agents by name: twin-a (Twin), twin-b (Twin), none in this tmux session`},
+		{"elsewhere", "kido tool message_agent: elsewhere (elsewhere) is in another tmux session, not this one"},
+		{"Twin", `kido tool message_agent: "Twin" matches several agents by name: twin-a (Twin), twin-b (Twin), none in this tmux session`},
 	} {
-		h.expectKido(caller, "x", nil, c.want, "message_agent", "--", c.to)
+		h.expectKido(caller, "x", nil, c.want, "tool", "message_agent", "--", c.to)
 	}
-	h.expectKido(caller, "bad:\xff\xfe:end", nil, "kido message_agent: message is not valid UTF-8",
-		"message_agent", "--", "Worker-2")
+	h.expectKido(caller, "bad:\xff\xfe:end", nil, "kido tool message_agent: message is not valid UTF-8",
+		"tool", "message_agent", "--", "Worker-2")
 	if got := len(in.Received()); got != 5 {
 		t.Errorf("inbox received %d payloads, want the 5 deliveries: %q", got, in.Received())
 	}
@@ -141,16 +141,16 @@ func TestMessageAgentSendsEnvelopesFromTheCaller(t *testing.T) {
 	in := startInbox(t, "ok\n")
 	h.idleAgent("alpha", "target", "--title", "peer", "--inbox", in.Path)
 
-	h.expectKido(caller, "hi there", nil, "delivered to peer by inbox", "message_agent", "--reply-to", "ask-1", "--", "peer")
-	h.expectKido(caller, "hi there", nil, "delivered to peer by inbox", "message_agent", "--", "peer")
-	h.expectKido(caller, "are you done?", nil, "delivered to peer by inbox", "ask_agent", "--id", "ask-7", "--", "peer")
+	h.expectKido(caller, "hi there", nil, "delivered to peer by inbox", "tool", "message_agent", "--reply-to", "ask-1", "--", "peer")
+	h.expectKido(caller, "hi there", nil, "delivered to peer by inbox", "tool", "message_agent", "--", "peer")
+	h.expectKido(caller, "are you done?", nil, "delivered to peer by inbox", "tool", "ask_agent", "--id", "ask-7", "--", "peer")
 
 	// An answer arrives on the asker's own inbox or not at all; the
 	// target getting nothing is the point.
 	mute := h.idleAgent("alpha", "mute", "--title", "mute")
 	h.expectKido(mute, "are you done?", nil,
-		"kido ask_agent: mute has no inbox for an answer to arrive on, and only a long-lived process has one; nothing sent - use kido message_agent instead, which is one-way and needs no reply",
-		"ask_agent", "--id", "t1", "--", "peer")
+		"kido tool ask_agent: mute has no inbox for an answer to arrive on, and only a long-lived process has one; nothing sent - use kido tool message_agent instead, which is one-way and needs no reply",
+		"tool", "ask_agent", "--id", "t1", "--", "peer")
 
 	got := envelopes(in)
 	if len(got) != 3 {
@@ -182,18 +182,18 @@ func TestPlainMessageFallsBackToAPasteOnlyWhenNobodyListens(t *testing.T) {
 	pane := h.piPane("alpha", "π - pastee")
 
 	h.agentStatus("target", pane, "pi", "idle")
-	h.expectKido(caller, "hi claude", nil, "pasted into pastee's pane", "message_agent", "--", "target")
+	h.expectKido(caller, "hi claude", nil, "pasted into pastee's pane", "tool", "message_agent", "--", "target")
 	h.waitPaneText(pane, "got: hi claude")
 
 	h.agentStatus("target", pane, "pi", "idle", "--inbox", staleSocket(t))
-	h.expectKido(caller, "hello", nil, "pasted into pastee's pane", "message_agent", "--", "target")
+	h.expectKido(caller, "hello", nil, "pasted into pastee's pane", "tool", "message_agent", "--", "target")
 	h.waitPaneText(pane, "got: hello")
 
 	nope := startInbox(t, "nope\n")
 	h.agentStatus("target", pane, "pi", "idle", "--inbox", nope.Path)
 	h.expectKido(caller, "never pasted", nil,
-		fmt.Sprintf(`kido message_agent: inbox %s: answered "nope", want "ok"`, nope.Path),
-		"message_agent", "--", "target")
+		fmt.Sprintf(`kido tool message_agent: inbox %s: answered "nope", want "ok"`, nope.Path),
+		"tool", "message_agent", "--", "target")
 	h.stays(func() bool { return !strings.Contains(h.paneText(pane), "never pasted") },
 		"a message the inbox may have taken was pasted as well")
 }
@@ -210,8 +210,8 @@ func TestAskReplyAndNoticeNeverPaste(t *testing.T) {
 
 	h.agentStatus("target", pane, "pi", "idle")
 	h.expectKido(caller, "x", nil,
-		"kido ask_agent: victim has no inbox to send a ask to; only a plain message can be sent as v0 text",
-		"ask_agent", "--", "target")
+		"kido tool ask_agent: victim has no inbox to send a ask to; only a plain message can be sent as v0 text",
+		"tool", "ask_agent", "--", "target")
 
 	h.agentStatus("target", pane, "pi", "idle", "--inbox", staleSocket(t))
 	for _, c := range []struct {
@@ -219,19 +219,19 @@ func TestAskReplyAndNoticeNeverPaste(t *testing.T) {
 		env  []string
 		args []string
 	}{
-		{"ask", nil, []string{"ask_agent", "--", "target"}},
-		{"reply", nil, []string{"message_agent", "--reply-to", "ask-1", "--", "target"}},
-		{"notice", []string{"KIDO_AGENT_PARENT_SESSION=target"}, []string{"notify_parent"}},
+		{"ask", nil, []string{"tool", "ask_agent", "--", "target"}},
+		{"reply", nil, []string{"tool", "message_agent", "--reply-to", "ask-1", "--", "target"}},
+		{"notice", []string{"KIDO_AGENT_PARENT_SESSION=target"}, []string{"tool", "notify_parent"}},
 	} {
 		want := fmt.Sprintf("kido %s: victim is not listening on its inbox; a %s cannot fall back to a paste: no agent listening on the inbox: ",
-			c.args[0], c.kind)
+			strings.Join(c.args[:2], " "), c.kind)
 		if got, rc := h.kidoAs(caller, "touch /tmp/pwned", c.env, c.args...); !strings.HasPrefix(got, want) || rc != 1 {
 			t.Errorf("kido %v: got (rc=%d) %q, want rc=1 and a line starting %q", c.args, rc, got, want)
 		}
 	}
 
 	h.agentStatus("target", pane, "pi", "idle", "--inbox", startInbox(t, "refused\n").Path)
-	h.expectKido(caller, "touch /tmp/pwned", nil, "kido ask_agent: victim refused the ask", "ask_agent", "--", "target")
+	h.expectKido(caller, "touch /tmp/pwned", nil, "kido tool ask_agent: victim refused the ask", "tool", "ask_agent", "--", "target")
 
 	h.stays(func() bool { return !strings.Contains(h.paneText(pane), "got:") },
 		"an ask, reply or notice was pasted into the target's pane")
@@ -253,11 +253,11 @@ func TestSteerReachesDescendantsOnly(t *testing.T) {
 	for _, c := range []struct{ to, want string }{
 		{"child", "delivered to child by inbox"},
 		{"grandchild", "delivered to grandchild by inbox"},
-		{"peer", "kido steer_subagent: peer is not this agent's descendant"},
-		{"root", "kido steer_subagent: root is not this agent's descendant"},
-		{"caller", "kido steer_subagent: caller is this agent"},
+		{"peer", "kido tool steer_subagent: peer is not this agent's descendant"},
+		{"root", "kido tool steer_subagent: root is not this agent's descendant"},
+		{"caller", "kido tool steer_subagent: caller is this agent"},
 	} {
-		h.expectKido(caller, "stop and do X instead", nil, c.want, "steer_subagent", "--", c.to)
+		h.expectKido(caller, "stop and do X instead", nil, c.want, "tool", "steer_subagent", "--", c.to)
 	}
 	got := envelopes(in)
 	if len(got) != 2 {
@@ -281,13 +281,13 @@ func TestNotifyParentReachesTheSessionItsEnvironmentNames(t *testing.T) {
 	h.idleAgent("beta", "parent-sess", "--title", "boss", "--inbox", in.Path)
 
 	h.expectKido(caller, "the answer is 42", []string{"KIDO_AGENT_PARENT_SESSION=parent-sess"},
-		"delivered to boss by inbox", "notify_parent")
+		"delivered to boss by inbox", "tool", "notify_parent")
 	h.expectKido(caller, "nobody to tell", nil,
-		"kido notify_parent: this session has no parent ($KIDO_AGENT_PARENT_SESSION is not set); nothing sent",
-		"notify_parent")
+		"kido tool notify_parent: this session has no parent ($KIDO_AGENT_PARENT_SESSION is not set); nothing sent",
+		"tool", "notify_parent")
 	h.expectKido(caller, "anybody there?", []string{"KIDO_AGENT_PARENT_SESSION=long-gone"},
-		`kido notify_parent: no live process holds session "long-gone"; the parent is gone, nothing sent`,
-		"notify_parent")
+		`kido tool notify_parent: no live process holds session "long-gone"; the parent is gone, nothing sent`,
+		"tool", "notify_parent")
 
 	got := envelopes(in)
 	if len(got) != 1 || field(got[0], "kind") != "notice" || field(got[0], "text") != "the answer is 42" {
@@ -312,7 +312,7 @@ func TestNotifyParentKeepsAReportOverTheCap(t *testing.T) {
 		t.Helper()
 		env := []string{"KIDO_AGENT_PARENT_SESSION=parent-sess", "KIDO_AGENT_RUN_ID=" + run}
 		before := len(in.Received())
-		h.expectKido(caller, text, env, "delivered to  by inbox", "notify_parent")
+		h.expectKido(caller, text, env, "delivered to  by inbox", "tool", "notify_parent")
 		got := envelopes(in)
 		if len(got) != before+1 {
 			t.Fatalf("parent inbox received %q, want one more notice", in.Received())
@@ -377,18 +377,18 @@ func parseAgents(t *testing.T, out string) []listedAgent {
 	t.Helper()
 	var agents []listedAgent
 	if err := json.Unmarshal([]byte(out), &agents); err != nil {
-		t.Fatalf("kido list_agents --json: %v\n%s", err, out)
+		t.Fatalf("kido tool list_agents --json: %v\n%s", err, out)
 	}
 	return agents
 }
 
-// jsonKeys is the keys, in order, of the first agent in `kido list_agents
+// jsonKeys is the keys, in order, of the first agent in `kido tool list_agents
 // --json`, which share/pi/kido-agents.ts reads.
 func jsonKeys(t *testing.T, out string) []string {
 	t.Helper()
 	var agents []json.RawMessage
 	if err := json.Unmarshal([]byte(out), &agents); err != nil || len(agents) == 0 {
-		t.Fatalf("kido list_agents --json: %v\n%s", err, out)
+		t.Fatalf("kido tool list_agents --json: %v\n%s", err, out)
 	}
 	dec := json.NewDecoder(bytes.NewReader(agents[0]))
 	var keys []string
@@ -440,9 +440,9 @@ func TestListAgentsScopesOrdersAndDecorates(t *testing.T) {
 	h.writeRecord("orphan", pane("alpha"), at(6), map[string]any{"parent": map[string]any{"session": "someone-else", "pid": os.Getpid()}})
 	h.writeRecord("far", pane("beta"), at(0), nil)
 
-	out, rc := h.kidoAs(caller, "", nil, "list_agents", "--json")
+	out, rc := h.kidoAs(caller, "", nil, "tool", "list_agents", "--json")
 	if rc != 0 {
-		t.Fatalf("kido list_agents --json: rc=%d %s", rc, out)
+		t.Fatalf("kido tool list_agents --json: rc=%d %s", rc, out)
 	}
 	if got, want := strings.Join(jsonKeys(t, out), " "),
 		"id name agent pane window status activity parent depth self cwd canMessage canReply model sinceReport stalled"; got != want {
@@ -502,9 +502,9 @@ func TestListAgentsSessionFlagAndCanReply(t *testing.T) {
 	}
 	h.writeRecord("here", h.firstPane("alpha"), t0, nil)
 
-	out, rc := h.kidoAs("", "", nil, "list_agents", "--json", "--session", beta)
+	out, rc := h.kidoAs("", "", nil, "tool", "list_agents", "--json", "--session", beta)
 	if rc != 0 {
-		t.Fatalf("kido list_agents --session %s from no pane: rc=%d %s", beta, rc, out)
+		t.Fatalf("kido tool list_agents --session %s from no pane: rc=%d %s", beta, rc, out)
 	}
 	var got []string
 	for _, a := range parseAgents(t, out) {
@@ -515,8 +515,8 @@ func TestListAgentsSessionFlagAndCanReply(t *testing.T) {
 	}
 
 	h.expectKido("", "", nil,
-		"kido list_agents: no tmux session for pane \"\"; pass --session\nusage: kido list_agents [--session ID] [--json]",
-		"list_agents", "--json")
+		"kido tool list_agents: no tmux session for pane \"\"; pass --session\nusage: kido tool list_agents [--session ID] [--json]",
+		"tool", "list_agents", "--json")
 }
 
 // A plain message to a running agent waits for its turn to end, so the
@@ -545,8 +545,8 @@ func TestMessageAgentSaysAMessageToARunningAgentWaits(t *testing.T) {
 		{"busy-child", "queued for busy-child: it is running and reads this when its current turn ends; to reach it now, use steer_subagent"},
 		{"compacting-grandchild", "queued for compacting-grandchild: it is running and reads this when its current turn ends; to reach it now, use steer_subagent"},
 	} {
-		h.expectKido(caller, "new evidence", nil, c.want, "message_agent", "--", c.to)
+		h.expectKido(caller, "new evidence", nil, c.want, "tool", "message_agent", "--", c.to)
 	}
-	h.expectKido(caller, "the answer", nil, "delivered to busy-peer by inbox", "message_agent", "--reply-to", "ask-1", "--", "busy-peer")
-	h.expectKido(caller, "a question", nil, "delivered to busy-peer by inbox", "ask_agent", "--", "busy-peer")
+	h.expectKido(caller, "the answer", nil, "delivered to busy-peer by inbox", "tool", "message_agent", "--reply-to", "ask-1", "--", "busy-peer")
+	h.expectKido(caller, "a question", nil, "delivered to busy-peer by inbox", "tool", "ask_agent", "--", "busy-peer")
 }

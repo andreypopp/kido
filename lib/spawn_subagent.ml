@@ -5,12 +5,12 @@ let max_task_bytes = 1024 * 1024
 let max_window_name_len = 64
 
 let usage =
-  "usage: kido spawn_subagent --parent-pid PID --parent-session ID --name NAME --task-file FILE|- \
-   [--fork SESSION_ID] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n\
-  \   or: kido spawn_subagent --no-parent --name NAME --task-file FILE|- [--model M] [--tools \
+  "usage: kido tool spawn_subagent --parent-pid PID --parent-session ID --name NAME --task-file \
+   FILE|- [--fork SESSION_ID] [--model M] [--tools T,...] [--keep-alive] [-- COMMAND...]\n\
+  \   or: kido tool spawn_subagent --no-parent --name NAME --task-file FILE|- [--model M] [--tools \
    T,...] [--keep-alive] [-- COMMAND...]\n\
-  \   or: kido spawn_subagent --resume RUN_ID [--parent-pid PID --parent-session ID | --no-parent] \
-   [--keep-alive] [-- COMMAND...]"
+  \   or: kido tool spawn_subagent --resume RUN_ID [--parent-pid PID --parent-session ID | \
+   --no-parent] [--keep-alive] [-- COMMAND...]"
 
 type pi = { path : string; session_dir : string; agent_dir : string; home : string }
 

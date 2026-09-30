@@ -46,7 +46,7 @@ func TestSpawnRefusesModelRejectedByPi(t *testing.T) {
 	// trap AGENTS.md describes for the shims): the gate runs `pi` from
 	// kido's own environment.
 	outFile := filepath.Join(h.dir, "model-refused.out")
-	h.sendLiteral(fmt.Sprintf("PATH=%s:$PATH %s spawn_subagent --parent-pid 1 --parent-session model-e2e-parent --name model-e2e --task-file %s -- pi --name model-e2e --model sonnet > %s 2>&1; echo rc=$? >> %s",
+	h.sendLiteral(fmt.Sprintf("PATH=%s:$PATH %s tool spawn_subagent --parent-pid 1 --parent-session model-e2e-parent --name model-e2e --task-file %s -- pi --name model-e2e --model sonnet > %s 2>&1; echo rc=$? >> %s",
 		shellQuote(piDir), kidoBin, h.writeTaskFile("model-e2e"), outFile, outFile))
 	h.sendKeys("Enter")
 	var out string
@@ -62,7 +62,7 @@ func TestSpawnRefusesModelRejectedByPi(t *testing.T) {
 		t.Fatalf("output = %q, want the fake pi's table to have answered, not the machine's own", out)
 	}
 	if !strings.Contains(out, "rc=1") {
-		t.Errorf("kido spawn_subagent with an unconfigured model = %q, want rc=1", out)
+		t.Errorf("kido tool spawn_subagent with an unconfigured model = %q, want rc=1", out)
 	}
 	if !strings.Contains(out, "sonnet") || !strings.Contains(out, "claude-sonnet-5") {
 		t.Errorf("output = %q, want it to name the model and what pi --list-models configured", out)
@@ -98,7 +98,7 @@ func TestSpawnModelMustBeAConfiguredProvidersOwn(t *testing.T) {
 
 	spawn := func(tag, path string, command ...string) string {
 		out := filepath.Join(h.dir, tag+".out")
-		h.sendLiteral(fmt.Sprintf("PATH=%s %s spawn_subagent --parent-pid 1 --parent-session model-e2e-parent --name %s --task-file %s --fork caller-e2e -- %s > %s 2>&1; echo rc=$? >> %s",
+		h.sendLiteral(fmt.Sprintf("PATH=%s %s tool spawn_subagent --parent-pid 1 --parent-session model-e2e-parent --name %s --task-file %s --fork caller-e2e -- %s > %s 2>&1; echo rc=$? >> %s",
 			path, kidoBin, tag, h.writeTaskFile(tag), strings.Join(command, " "), out, out))
 		h.sendKeys("Enter")
 		return h.waitFileContains(out, "rc=")
@@ -106,12 +106,12 @@ func TestSpawnModelMustBeAConfiguredProvidersOwn(t *testing.T) {
 	withPi := shellQuote(piDir) + ":$PATH"
 	const configured = "acme/{claude-sonnet-5,claude-opus-5}, other/{gemini-pro}"
 	for _, m := range []string{"sonnet", "claude-sonnet-5", "nope/claude-sonnet-5"} {
-		want := fmt.Sprintf("kido spawn_subagent: model %q is not a model of a configured provider; configured: %s\nrc=1\n", m, configured)
+		want := fmt.Sprintf("kido tool spawn_subagent: model %q is not a model of a configured provider; configured: %s\nrc=1\n", m, configured)
 		if got := spawn("refused", withPi, "pi", "--model", m); got != want {
 			t.Errorf("--model %s: got %q, want %q", m, got, want)
 		}
 	}
-	want := `kido spawn_subagent: could not validate model "acme/claude-opus-5": pi --list-models: exec: "pi": executable file not found in $PATH` + "\nrc=1\n"
+	want := `kido tool spawn_subagent: could not validate model "acme/claude-opus-5": pi --list-models: exec: "pi": executable file not found in $PATH` + "\nrc=1\n"
 	if got := spawn("nopi", noPi, "pi", "--model", "acme/claude-opus-5"); got != want {
 		t.Errorf("no pi on PATH: got %q, want %q", got, want)
 	}
@@ -152,7 +152,7 @@ func TestRunOutcomeCapturesScreenBeforeWindowCloses(t *testing.T) {
 	const noTurnText = "no turn ever ran: the task was delivered and the session never started work on it"
 	// spawnRun wraps the script in single quotes (shellQuote), so the
 	// detail text needs only its own double quotes, not a second layer.
-	// The sleep before run-outcome is not decoration: kido spawn_subagent
+	// The sleep before run-outcome is not decoration: kido tool spawn_subagent
 	// writes meta.json only after Tmux.Exec.new_window returns, so calling
 	// run-outcome immediately could win the race against that file existing.
 	script := fmt.Sprintf(`echo %s; sleep 0.3; %s run-outcome --result failed --unreported --text "%s" -- "$KIDO_AGENT_RUN_ID"; sleep 300`,

@@ -14,7 +14,7 @@ import (
 	"testing"
 )
 
-// runSpawn runs `kido spawn_subagent` with a fake command, so KIDO_AGENT_*
+// runSpawn runs `kido tool spawn_subagent` with a fake command, so KIDO_AGENT_*
 // and the new window's cwd can be checked by reading a file the fake
 // command writes on start rather than talking to a TypeScript pi
 // extension the e2e suite cannot host. Its own stdout (window and pane
@@ -23,7 +23,7 @@ import (
 func (h *harness) runSpawn(outFile, envFile string, args ...string) {
 	h.t.Helper()
 	fake := shellQuote(fmt.Sprintf("env > %s; pwd >> %s; sleep 300", envFile, envFile))
-	cmd := fmt.Sprintf("%s spawn_subagent %s -- /bin/sh -c %s > %s 2>&1",
+	cmd := fmt.Sprintf("%s tool spawn_subagent %s -- /bin/sh -c %s > %s 2>&1",
 		kidoBin, strings.Join(args, " "), fake, outFile)
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")
@@ -56,7 +56,7 @@ func envLine(envOutput, key string) string {
 // The new window lands in the caller's own session, keeps the caller's
 // own turn (-d), starts in the caller's own directory (-c), is named as
 // asked, and the spawned process actually sees KIDO_AGENT_* in its
-// environment (-e) - not merely that kido spawn_subagent believes it
+// environment (-e) - not merely that kido tool spawn_subagent believes it
 // passed them.
 func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 	t.Parallel()
@@ -82,7 +82,7 @@ func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 	out := strings.TrimSpace(h.waitFileNonEmpty(outFile))
 	fields := strings.Fields(out)
 	if len(fields) != 3 {
-		t.Fatalf("kido spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", out)
+		t.Fatalf("kido tool spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", out)
 	}
 	windowID, paneID, runID := fields[0], fields[1], fields[2]
 
@@ -95,7 +95,7 @@ func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 
 	// -d: the caller's own client is not yanked to the new window.
 	if got := h.activeWindowID("alpha"); got != activeBefore {
-		t.Errorf("active window changed from %s to %s; kido spawn_subagent must pass -d", activeBefore, got)
+		t.Errorf("active window changed from %s to %s; kido tool spawn_subagent must pass -d", activeBefore, got)
 	}
 
 	env := h.waitFileNonEmpty(envFile)
@@ -116,7 +116,7 @@ func TestSpawnCreatesWindowInCallerSession(t *testing.T) {
 		"KIDO_AGENT_DEPTH":          "1",
 	} {
 		if got := envLine(env, k); got != want {
-			t.Errorf("spawned process's %s = %q, want %q (kido spawn_subagent's -e must reach it, not just the caller's own environment)", k, got, want)
+			t.Errorf("spawned process's %s = %q, want %q (kido tool spawn_subagent's -e must reach it, not just the caller's own environment)", k, got, want)
 		}
 	}
 
@@ -176,17 +176,17 @@ func TestSpawnRefusesDepthBeyondCeiling(t *testing.T) {
 	}
 	cmd := fmt.Sprintf(
 		"%s agent-status --agent pi --session caller-e2e --status idle --depth %d && "+
-			"%s spawn_subagent --parent-pid 1 --parent-session p --name kid --task-file %s > %s 2>&1; echo rc=$? >> %s",
+			"%s tool spawn_subagent --parent-pid 1 --parent-session p --name kid --task-file %s > %s 2>&1; echo rc=$? >> %s",
 		kidoBin, maxDepthForTest, kidoBin, taskFile, outFile, outFile)
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")
 
 	out := h.waitFileNonEmpty(outFile)
 	if !strings.Contains(out, "maximum nesting") {
-		t.Errorf("kido spawn_subagent output = %q, want a refusal naming the depth ceiling", out)
+		t.Errorf("kido tool spawn_subagent output = %q, want a refusal naming the depth ceiling", out)
 	}
 	if !strings.Contains(out, "rc=1") {
-		t.Errorf("kido spawn_subagent output = %q, want a non-zero exit", out)
+		t.Errorf("kido tool spawn_subagent output = %q, want a non-zero exit", out)
 	}
 
 	after := len(strings.Split(h.in("list-windows", "-t", "alpha", "-F", "#{window_id}"), "\n"))
@@ -214,7 +214,7 @@ func TestSpawnNestsOneBelowItsCallersOwnRecord(t *testing.T) {
 		"--name", "deep-e2e", "--task-file", h.writeTaskFile("deep-e2e"))
 
 	if out := strings.TrimSpace(h.waitFileNonEmpty(outFile)); len(strings.Fields(out)) != 3 {
-		t.Fatalf("kido spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", out)
+		t.Fatalf("kido tool spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", out)
 	}
 	if got := envLine(h.waitFileNonEmpty(envFile), "KIDO_AGENT_DEPTH"); got != strconv.Itoa(maxDepthForTest) {
 		t.Errorf("KIDO_AGENT_DEPTH = %q, want %d: one below the caller's own recorded depth", got, maxDepthForTest)
@@ -262,13 +262,13 @@ func TestSpawnRefusesBeforeAskingTmux(t *testing.T) {
 	}
 	parent := []string{"--parent-pid", "1", "--parent-session", "p"}
 	fresh := func(extra ...string) []string {
-		return append(append([]string{"spawn_subagent", "--name", "kid", "--task-file", task}, parent...), extra...)
+		return append(append([]string{"tool", "spawn_subagent", "--name", "kid", "--task-file", task}, parent...), extra...)
 	}
 	named := func(name string) []string {
-		return append([]string{"spawn_subagent", "--name", name, "--task-file", task}, parent...)
+		return append([]string{"tool", "spawn_subagent", "--name", name, "--task-file", task}, parent...)
 	}
 	tasked := func(file string) []string {
-		return append([]string{"spawn_subagent", "--name", "kid", "--task-file", file}, parent...)
+		return append([]string{"tool", "spawn_subagent", "--name", "kid", "--task-file", file}, parent...)
 	}
 	const tmuxWords = ", which cannot survive tmux's own command-line parsing"
 	for _, c := range []struct {
@@ -289,20 +289,20 @@ func TestSpawnRefusesBeforeAskingTmux(t *testing.T) {
 		{tasked(big), fmt.Sprintf("--task-file %q is %d bytes, over the %d byte task limit", big, limit+1, limit)},
 		{fresh("--fork", "sess$(id)"), `refusing --fork "sess$(id)": it contains "$"` + tmuxWords},
 		{fresh("--no-parent"), "--no-parent contradicts --parent-pid/--parent-session; pass one or the other"},
-		{[]string{"spawn_subagent", "--parent-pid", "1", "--name", "kid", "--task-file", task},
+		{[]string{"tool", "spawn_subagent", "--parent-pid", "1", "--name", "kid", "--task-file", task},
 			"--parent-pid and --parent-session name one parent and are given together"},
-		{[]string{"spawn_subagent", "--name", "kid", "--task-file", task},
+		{[]string{"tool", "spawn_subagent", "--name", "kid", "--task-file", task},
 			"--parent-pid and --parent-session are required (or --no-parent for a child owned by nobody)"},
-		{[]string{"spawn_subagent", "--resume", "run-1", "--fork", "sess-1"},
+		{[]string{"tool", "spawn_subagent", "--resume", "run-1", "--fork", "sess-1"},
 			"--resume continues a run's own session; --fork starts a new one from somebody else's, and the two cannot both be asked for"},
-		{[]string{"spawn_subagent", "--resume", "run-1", "--name", "kid"},
+		{[]string{"tool", "spawn_subagent", "--resume", "run-1", "--name", "kid"},
 			"--resume keeps the run's original window name; --name is refused alongside it"},
-		{[]string{"spawn_subagent", "--resume", "run-1", "--task-file", task},
+		{[]string{"tool", "spawn_subagent", "--resume", "run-1", "--task-file", task},
 			"--resume keeps the run's original task; --task-file is refused alongside it"},
-		{[]string{"spawn_subagent", "--resume", "run-1", "--parent-pid", "1"},
+		{[]string{"tool", "spawn_subagent", "--resume", "run-1", "--parent-pid", "1"},
 			"--parent-pid and --parent-session name one parent and are given together"},
-		{[]string{"async_bash", "--"}, "no command given"},
-		{[]string{"async_bash", "--name", "kid$x", "--", "true"}, `refusing window name "kid$x": it contains "$"` + tmuxWords},
+		{[]string{"tool", "async_bash", "--"}, "no command given"},
+		{[]string{"tool", "async_bash", "--name", "kid$x", "--", "true"}, `refusing window name "kid$x": it contains "$"` + tmuxWords},
 	} {
 		cmd := exec.Command(kidoBin, c.args...)
 		cmd.Env = cleanEnv("KIDO_STATE_DIR="+filepath.Join(dir, "state"), "TMUX_PANE=%1", "TMUX=")
@@ -315,7 +315,7 @@ func TestSpawnRefusesBeforeAskingTmux(t *testing.T) {
 		} else if err != nil {
 			t.Fatalf("kido %q: %v", c.args, err)
 		}
-		want := "kido " + c.args[0] + ": " + c.line
+		want := "kido " + strings.Join(c.args[:2], " ") + ": " + c.line
 		if got := strings.SplitN(stderr.String(), "\n", 2)[0]; got != want || code != 1 || len(out) != 0 {
 			t.Errorf("kido %q: exit %d, stderr %q, stdout %q; want exit 1, stderr starting %q", c.args, code, stderr.String(), out, want)
 		}
@@ -341,7 +341,7 @@ func TestSpawnTakesATaskAtTheCap(t *testing.T) {
 		"--name", shellQuote("kid one"), "--task-file", task)
 	fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
 	if len(fields) != 3 {
-		t.Fatalf("kido spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", fields)
+		t.Fatalf("kido tool spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", fields)
 	}
 	if got := h.in("display-message", "-p", "-t", fields[0], "#{window_name}"); got != "kid one" {
 		t.Errorf("window name = %q, want %q", got, "kid one")
@@ -360,18 +360,18 @@ func TestSpawnWhoseWindowIsGoneBeforeItsMark(t *testing.T) {
 
 	h.in("set-hook", "-t", "alpha", "after-new-window", "kill-window")
 	agentOut := filepath.Join(h.dir, "agent.out")
-	h.sendLiteral(fmt.Sprintf("%s spawn_subagent --parent-pid 1 --parent-session p --name gone-e2e --task-file %s -- /bin/sh -c 'exec sleep 300' > %s 2>&1; echo rc=$? >> %s",
+	h.sendLiteral(fmt.Sprintf("%s tool spawn_subagent --parent-pid 1 --parent-session p --name gone-e2e --task-file %s -- /bin/sh -c 'exec sleep 300' > %s 2>&1; echo rc=$? >> %s",
 		kidoBin, h.writeTaskFile("gone-e2e"), agentOut, agentOut))
 	h.sendKeys("Enter")
 	agent := h.waitFileContains(agentOut, "rc=")
 	bashOut := filepath.Join(h.dir, "bash.out")
-	h.sendLiteral(fmt.Sprintf("%s async_bash --name gone-bash-e2e -- 'sleep 300' > %s 2>&1; echo rc=$? >> %s",
+	h.sendLiteral(fmt.Sprintf("%s tool async_bash --name gone-bash-e2e -- 'sleep 300' > %s 2>&1; echo rc=$? >> %s",
 		kidoBin, bashOut, bashOut))
 	h.sendKeys("Enter")
 	bash := h.waitFileContains(bashOut, "rc=")
 	h.in("set-hook", "-u", "-t", "alpha", "after-new-window")
 
-	if !strings.HasPrefix(agent, "kido spawn_subagent: ") || !strings.Contains(agent, "rc=1") {
+	if !strings.HasPrefix(agent, "kido tool spawn_subagent: ") || !strings.Contains(agent, "rc=1") {
 		t.Errorf("agent spawn = %q, want the failed mark reported and rc=1", agent)
 	}
 	if fields := strings.Fields(bash); len(fields) != 5 || !strings.Contains(bash, "rc=0") {
@@ -430,7 +430,7 @@ func TestSpawnNoParentIsNotReaped(t *testing.T) {
 	out := strings.TrimSpace(h.waitFileNonEmpty(outFile))
 	fields := strings.Fields(out)
 	if len(fields) != 3 {
-		t.Fatalf("kido spawn_subagent --no-parent printed %q, want \"<window id> <pane id> <run id>\"", out)
+		t.Fatalf("kido tool spawn_subagent --no-parent printed %q, want \"<window id> <pane id> <run id>\"", out)
 	}
 	windowID, paneID := fields[0], fields[1]
 
@@ -464,13 +464,13 @@ func TestSpawnFabricatedParentIsRefusedUpFront(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	out := h.runKido("alpha", "fabricated.out", "spawn_subagent",
+	out := h.runKido("alpha", "fabricated.out", "tool", "spawn_subagent",
 		"--parent-pid", "1", // init, so the pid itself is alive and cannot be what refuses
 		"--parent-session", "nobody-is-this",
 		"--name", "orphan-e2e", "--task-file", h.writeTaskFile("orphan-e2e"))
 
 	if !strings.Contains(out, "rc=1") {
-		t.Errorf("kido spawn_subagent with a fabricated parent = %q, want rc=1", out)
+		t.Errorf("kido tool spawn_subagent with a fabricated parent = %q, want rc=1", out)
 	}
 	if !strings.Contains(out, "nobody-is-this") || !strings.Contains(out, "--no-parent") {
 		t.Errorf("output = %q, want it to name the session and point at --no-parent", out)

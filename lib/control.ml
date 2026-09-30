@@ -87,7 +87,7 @@ let stop_bash_run ~dir ~escalation ~warn (meta : Subrun.meta) =
     Reap.record_ending ~dir meta
       {
         result = Stopped;
-        text = "stopped by kido stop_subagent; its wrapper did not report";
+        text = "stopped by kido tool stop_subagent; its wrapper did not report";
         at = Some (Timestamp.now ());
       }
     |> Option.iter (fun e ->

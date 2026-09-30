@@ -81,7 +81,7 @@ const KEEP_ALIVE = process.env.KIDO_AGENT_KEEP_ALIVE === "1";
 
 const SPAWN_TIMEOUT_MS = Number(process.env.KIDO_SPAWN_TIMEOUT_MS) || 5000;
 
-// Must comfortably exceed Control.stop_escalation (lib/control.ml, default 5s), which `kido stop_subagent` can itself block for.
+// Must comfortably exceed Control.stop_escalation (lib/control.ml, default 5s), which `kido tool stop_subagent` can itself block for.
 const STOP_TIMEOUT_MS = Number(process.env.KIDO_STOP_TIMEOUT_MS) || 8000;
 
 const DEFAULT_ASK_TIMEOUT_MS = 5 * 60 * 1000;
@@ -240,7 +240,7 @@ function agentCompletionItems(agents: AgentInfo[], token: string): CompletionIte
     });
 }
 
-// Mirrors kido message_agent's Message_agent.resolve_target (lib/message_agent.ml): exact name, then exact id, then unique id prefix.
+// Mirrors kido tool message_agent's Message_agent.resolve_target (lib/message_agent.ml): exact name, then exact id, then unique id prefix.
 function resolveAgent(agents: AgentInfo[], to: string): { agent?: AgentInfo; error?: string } {
   to = to.replace(/^@/, "");
   const byName = agents.filter((a) => a.name && a.name.toLowerCase() === to.toLowerCase());
@@ -598,7 +598,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const fetchAgents = async (): Promise<{ ok: true; agents: AgentInfo[] } | { ok: false; error: string }> => {
-    const res = await runKido(["list_agents", "--json"], { timeoutMs: 2000 });
+    const res = await runKido(["tool", "list_agents", "--json"], { timeoutMs: 2000 });
     if (!res.ok) return res;
     try {
       return { ok: true, agents: res.out ? JSON.parse(res.out) : [] };
@@ -607,14 +607,14 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // A keystroke must never wait on `kido list_agents --json`: the editor gets whatever the
+  // A keystroke must never wait on `kido tool list_agents --json`: the editor gets whatever the
   // last call returned, stale or empty, while a refresh runs behind it. Null until the
   // provider is registered (sessionStarting).
   let completion: { agents: AgentInfo[]; at: number; refreshing: Promise<void> | null } | null = null;
 
   // Only a definite "false" from `kido agent-alive` is evidence; anything else - an error, an
   // unreachable kido - is inconclusive and never shuts the session down on a guess. Not
-  // `kido list_agents --json`: it scopes to the caller's tmux session and collapses to one
+  // `kido tool list_agents --json`: it scopes to the caller's tmux session and collapses to one
   // record per pane, so a `pi --print` started in the parent's pane and inheriting
   // TMUX_PANE would win that pane and make a healthy parent look gone.
   // kill(pid, 0) success or EPERM is not proof of life - a pid can be recycled.
@@ -768,7 +768,7 @@ export default function (pi: ExtensionAPI) {
       { additionalProperties: false },
     ),
     async execute(_toolCallId, params) {
-      const args = ["message_agent"];
+      const args = ["tool", "message_agent"];
       if (params.replyTo) args.push("--reply-to", params.replyTo);
       // Only set for a reply to an ask this session actually has pending: a reply to a
       // notice, or a stale id, has nothing to stop after.
@@ -874,8 +874,8 @@ export default function (pi: ExtensionAPI) {
       if (signal?.aborted) onAbort();
       else signal?.addEventListener("abort", onAbort, { once: true });
 
-      // target.id, not params.to: removes a second resolution inside kido ask_agent that could disagree with this one.
-      const sent = await runKido(["ask_agent", "--id", id, "--", target.id], {
+      // target.id, not params.to: removes a second resolution inside kido tool ask_agent that could disagree with this one.
+      const sent = await runKido(["tool", "ask_agent", "--id", id, "--", target.id], {
         input: params.question,
         timeoutMs: 5000,
       });
@@ -982,7 +982,7 @@ export default function (pi: ExtensionAPI) {
         ...(params.model ? ["--model", params.model] : []),
         ...(params.tools && params.tools.length > 0 ? ["--tools", params.tools.join(",")] : []),
       ];
-      const args = ["spawn_subagent", "--parent-pid", String(process.pid), "--parent-session", own];
+      const args = ["tool", "spawn_subagent", "--parent-pid", String(process.pid), "--parent-session", own];
       if (params.resume) args.push("--resume", params.resume);
       if (name) args.push("--name", name);
       if (params.task) args.push("--task-file", "-");
@@ -1073,7 +1073,7 @@ export default function (pi: ExtensionAPI) {
     pi.registerTool({
       ...tool,
       async execute(_toolCallId: string, params: { to: string; message?: string; force?: boolean }) {
-        const args = [tool.name];
+        const args = ["tool", tool.name];
         if (params.force) args.push("--force");
         args.push("--", params.to);
         const res = await runKido(args, { input: params.message, timeoutMs });
@@ -1115,7 +1115,7 @@ export default function (pi: ExtensionAPI) {
       { additionalProperties: false },
     ),
     async execute(_toolCallId, params) {
-      const args = ["async_bash"];
+      const args = ["tool", "async_bash"];
       if (params.name) args.push("--name", params.name);
       if (params.stream) args.push("--stream");
       args.push("--", params.command);
@@ -1157,7 +1157,7 @@ export default function (pi: ExtensionAPI) {
       if (!isSubagent()) {
         return reply("this session has no parent (it was not spawned as a subagent); notify_parent has nobody to tell");
       }
-      const res = await runKido(["notify_parent"], { input: params.summary, timeoutMs: 5000 });
+      const res = await runKido(["tool", "notify_parent"], { input: params.summary, timeoutMs: 5000 });
       if (!res.ok) return reply(`could not notify parent: ${res.error}`);
       reportedToParent = true;
       return reply(res.out || "notified parent");
@@ -1283,7 +1283,7 @@ export default function (pi: ExtensionAPI) {
       `subagent stopped on an error: ${trimErrorMessage(phase.lastError.text)}\n` +
       `run: ${runID}\n` +
       `message it to retry, or spawn_subagent(resume: "${runID}") once it has exited`;
-    await runKido(["notify_parent"], { input: text, timeoutMs: 5000 });
+    await runKido(["tool", "notify_parent"], { input: text, timeoutMs: 5000 });
   });
 
   // The task file is never unlinked (it is the run's record); the sibling "delivered"

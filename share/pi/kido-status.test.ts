@@ -7,7 +7,7 @@
 //
 // A fake `kido` executable stands in for the real binary on PATH; a "reply" is
 // never actually delivered anywhere, but injected directly onto the extension's
-// own inbox socket, exactly as a real peer's `kido message_agent` would arrive.
+// own inbox socket, exactly as a real peer's `kido tool message_agent` would arrive.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -31,7 +31,12 @@ function readStdin() {
   try { return fs.readFileSync(0, "utf8"); } catch { return ""; }
 }
 
-const args = process.argv.slice(2);
+const argv = process.argv.slice(2);
+const args = argv[0] === "tool" ? argv.slice(1) : argv;
+if ([
+  "list_agents", "message_agent", "ask_agent", "notify_parent", "steer_subagent",
+  "interrupt_subagent", "stop_subagent", "set_status", "spawn_subagent", "async_bash",
+].includes(args[0]) && argv[0] !== "tool") process.exit(1);
 switch (args[0]) {
   case "inbox-path": {
     if (process.env.KIDO_FAKE_INBOX_FAIL === "1") process.exit(1);
@@ -54,7 +59,7 @@ switch (args[0]) {
   }
   case "agent-alive": {
     const logFile = process.env.KIDO_FAKE_PARENT_ALIVE_LOG;
-    if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
     // Named sessions answer "false" whatever the global mode says, so a test can
     // kill one mid-run while an asker is already waiting on it.
     const deadFile = process.env.KIDO_FAKE_DEAD_FILE;
@@ -80,13 +85,13 @@ switch (args[0]) {
   }
   case "children-alive": {
     const logFile = process.env.KIDO_FAKE_CHILDREN_ALIVE_LOG;
-    if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
     process.stdout.write((process.env.KIDO_FAKE_CHILDREN_ALIVE === "1" ? "true" : "false") + "\\n");
     process.exit(0);
   }
   case "agent-status": {
     const logFile = process.env.KIDO_FAKE_STATUS_LOG;
-    if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
     // Logged first, so a test can tell "the claim was attempted and refused" from
     // "nothing was ever sent".
     if (process.env.KIDO_FAKE_SESSION_HELD) {
@@ -98,7 +103,7 @@ switch (args[0]) {
   }
   case "set_status": {
     const logFile = process.env.KIDO_FAKE_SET_STATUS_LOG;
-    if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
     process.exit(0);
   }
   // Share one log, keyed by the kind each implies, since what every test here asks
@@ -129,7 +134,7 @@ switch (args[0]) {
       const logFile = process.env.KIDO_FAKE_LOG;
       if (logFile) fs.appendFileSync(logFile, JSON.stringify({ kind, replyTo, id, to, text, failed }) + "\\n");
       if (failed) {
-        process.stderr.write("kido " + args[0] + ": no agent listening on the inbox\\n");
+        process.stderr.write("kido tool " + args[0] + ": no agent listening on the inbox\\n");
         process.exit(1);
       }
       process.stdout.write("delivered to " + to + " by inbox\\n");
@@ -142,7 +147,7 @@ switch (args[0]) {
   case "spawn_subagent": {
     const logFile = process.env.KIDO_FAKE_SPAWN_LOG;
     const task = readStdin();
-    if (logFile) fs.appendFileSync(logFile, JSON.stringify({ args, task }) + "\\n");
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify({ args: argv, task }) + "\\n");
     const respond = () => {
       process.stdout.write("@9 %9 fake-run-id\\n");
       process.exit(0);
@@ -153,30 +158,30 @@ switch (args[0]) {
   }
   case "run-outcome": {
     const logFile = process.env.KIDO_FAKE_RUN_OUTCOME_LOG;
-    if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
     process.exit(0);
   }
   case "close-run": {
     const logFile = process.env.KIDO_FAKE_CLOSE_RUN_LOG;
-    if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
     process.exit(0);
   }
   case "window-focused": {
     const logFile = process.env.KIDO_FAKE_WINDOW_FOCUSED_LOG;
-    if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
     process.stdout.write((process.env.KIDO_FAKE_WINDOW_FOCUSED === "1" ? "true" : "false") + "\\n");
     process.exit(0);
   }
   case "interrupt_subagent":
   case "stop_subagent": {
     const logFile = process.env.KIDO_FAKE_CONTROL_LOG;
-    if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
     process.stdout.write((args[0] === "interrupt_subagent" ? "interrupted " : "stopped ") + args[args.length - 1] + "\\n");
     process.exit(0);
   }
   case "async_bash": {
     const logFile = process.env.KIDO_FAKE_ASYNC_BASH_LOG;
-    if (logFile) fs.appendFileSync(logFile, JSON.stringify(args) + "\\n");
+    if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
     // Four fields, the last the run's output file, exactly as
     // Spawn_subagent.create_run_window writes them for a bash run.
     const runID = "fake-async-run-id";
@@ -1494,7 +1499,7 @@ const completionAgents = [
   { id: "p1", name: "helm", parent: "", self: false, canMessage: true, canReply: true, status: "idle" },
   { id: "c1", name: "helper-one", parent: "p1", self: false, canMessage: true, canReply: true, status: "running", activity: "refactoring internal/ui" },
   { id: "c2", name: "builder", parent: "p1", self: false, canMessage: true, canReply: true, status: "waiting" },
-  // A session the user never named: `kido list_agents` falls back to the
+  // A session the user never named: `kido tool list_agents` falls back to the
   // pane title, which is a phrase with spaces in it (a Claude Code title
   // here) rather than a handle. Its id shares eight characters with the
   // next agent's, so the prefix that identifies it has to be longer than
@@ -1892,7 +1897,7 @@ test("a subagent's before_agent_start hook adds the notify_parent instruction to
   }
 });
 
-test("interrupt_subagent runs kido interrupt_subagent with the target, and stop_subagent runs kido stop_subagent, passing --force through", async () => {
+test("interrupt_subagent runs kido tool interrupt_subagent with the target, and stop_subagent runs kido tool stop_subagent, passing --force through", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents(twoPeers);
@@ -1900,14 +1905,14 @@ test("interrupt_subagent runs kido interrupt_subagent with the target, and stop_
 
     const interruptRes = await s.tools.get("interrupt_subagent").execute("c1", { to: "peer-a" });
     assert.match(interruptRes.content[0].text, /interrupted peer-a/);
-    assert.deepEqual(fx.lastControlArgs(), ["interrupt_subagent", "--", "peer-a"]);
+    assert.deepEqual(fx.lastControlArgs(), ["tool", "interrupt_subagent", "--", "peer-a"]);
 
     const stopRes = await s.tools.get("stop_subagent").execute("c2", { to: "peer-b" });
     assert.match(stopRes.content[0].text, /stopped peer-b/);
-    assert.deepEqual(fx.lastControlArgs(), ["stop_subagent", "--", "peer-b"]);
+    assert.deepEqual(fx.lastControlArgs(), ["tool", "stop_subagent", "--", "peer-b"]);
 
     await s.tools.get("stop_subagent").execute("c3", { to: "peer-b", force: true });
-    assert.deepEqual(fx.lastControlArgs(), ["stop_subagent", "--force", "--", "peer-b"]);
+    assert.deepEqual(fx.lastControlArgs(), ["tool", "stop_subagent", "--force", "--", "peer-b"]);
   } finally {
     fx.restore();
   }
@@ -2038,7 +2043,7 @@ test("spawn_subagent's task parameter tells the model how to write the prompt a 
   }
 });
 
-test("spawn_subagent passes its task as text on stdin and calls kido spawn_subagent with its own identity, without waiting for the child", async () => {
+test("spawn_subagent passes its task as text on stdin and calls kido tool spawn_subagent with its own identity, without waiting for the child", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
@@ -2051,10 +2056,10 @@ test("spawn_subagent passes its task as text on stdin and calls kido spawn_subag
     const spawn = s.tools.get("spawn_subagent");
     const result = await spawn.execute("c1", { task: "go do the thing", name: "kid-1" });
     assert.match(result.content[0].text, /kid-1/);
-    assert.equal(result.details.run, "fake-run-id", "the run id kido spawn_subagent printed is returned so the model can refer to it later");
+    assert.equal(result.details.run, "fake-run-id", "the run id kido tool spawn_subagent printed is returned so the model can refer to it later");
 
     const spawnArgs = fx.lastSpawnArgs();
-    assert.ok(spawnArgs, "kido spawn_subagent was invoked");
+    assert.ok(spawnArgs, "kido tool spawn_subagent was invoked");
     assert.equal(argAfter(spawnArgs, "--parent-pid"), String(process.pid), "passes its own pid as --parent-pid");
     assert.equal(argAfter(spawnArgs, "--parent-session"), own, "passes its own session id as --parent-session");
     assert.equal(argAfter(spawnArgs, "--name"), "kid-1");
@@ -2092,7 +2097,7 @@ test("spawn_subagent passes --model and --tools through to the child's pi invoca
   }
 });
 
-test("spawn_subagent(resume) calls kido spawn_subagent --resume with its own identity, and no task file", async () => {
+test("spawn_subagent(resume) calls kido tool spawn_subagent --resume with its own identity, and no task file", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
@@ -2105,7 +2110,7 @@ test("spawn_subagent(resume) calls kido spawn_subagent --resume with its own ide
     assert.match(result.content[0].text, /run-abc|fake-run-id/, "the run id is named in the result");
 
     const spawnArgs = fx.lastSpawnArgs();
-    assert.ok(spawnArgs, "kido spawn_subagent was invoked");
+    assert.ok(spawnArgs, "kido tool spawn_subagent was invoked");
     assert.equal(argAfter(spawnArgs, "--resume"), "run-abc");
     assert.equal(argAfter(spawnArgs, "--parent-pid"), String(process.pid), "carries its own identity through exactly as a fresh spawn does");
     assert.equal(argAfter(spawnArgs, "--parent-session"), own);
@@ -2180,7 +2185,7 @@ test("spawn_subagent(fork) passes --fork with this session's own id, and nothing
   }
 });
 
-// kido spawn_subagent (lib/spawn_subagent.ml) refuses these combinations;
+// kido tool spawn_subagent (lib/spawn_subagent.ml) refuses these combinations;
 // the tool forwards what it was given rather than deciding a second time.
 test("spawn_subagent forwards resume alongside task, name or fork, and a call with neither, for kido to refuse", async () => {
   const fx = makeFixture();
@@ -2210,7 +2215,7 @@ test("spawn_subagent forwards resume alongside task, name or fork, and a call wi
   }
 });
 
-test("spawn_subagent reports a kido spawn_subagent timeout as a timeout, not a generic failure", async () => {
+test("spawn_subagent reports a kido tool spawn_subagent timeout as a timeout, not a generic failure", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
@@ -2223,7 +2228,7 @@ test("spawn_subagent reports a kido spawn_subagent timeout as a timeout, not a g
       const spawn = s.tools.get("spawn_subagent");
       const result = await spawn.execute("c1", { task: "go do the thing", name: "kid-1" });
       assert.match(result.content[0].text, /timed out/);
-      assert.ok(fx.lastSpawnArgs(), "kido spawn_subagent was invoked before the timeout fired");
+      assert.ok(fx.lastSpawnArgs(), "kido tool spawn_subagent was invoked before the timeout fired");
     } finally {
       delete process.env.KIDO_FAKE_SPAWN_DELAY_MS;
       if (savedTimeout === undefined) delete process.env.KIDO_SPAWN_TIMEOUT_MS;
@@ -2447,13 +2452,13 @@ test("async_bash passes -- and the command unchanged, with --name only when give
 
     await asyncBash.execute("c1", { command: "true" });
     let args = fx.lastAsyncBashArgs();
-    assert.deepEqual(args, ["async_bash", "--", "true"], "a one-word command is passed through unchanged, with no --name");
+    assert.deepEqual(args, ["tool", "async_bash", "--", "true"], "a one-word command is passed through unchanged, with no --name");
 
     await asyncBash.execute("c2", { command: "make -j8 && ./run", name: "build" });
     args = fx.lastAsyncBashArgs();
     assert.deepEqual(
       args,
-      ["async_bash", "--name", "build", "--", "make -j8 && ./run"],
+      ["tool", "async_bash", "--name", "build", "--", "make -j8 && ./run"],
       "a multi-word command line still travels as one argument after --, unchanged; kido's own commandArgv decides bash -c vs argv",
     );
   } finally {
@@ -2469,10 +2474,10 @@ test("async_bash asks for --stream only when the model did", async () => {
     const asyncBash = s.tools.get("async_bash");
 
     await asyncBash.execute("c1", { command: "make", name: "build" });
-    assert.deepEqual(fx.lastAsyncBashArgs(), ["async_bash", "--name", "build", "--", "make"], "streaming is off by default");
+    assert.deepEqual(fx.lastAsyncBashArgs(), ["tool", "async_bash", "--name", "build", "--", "make"], "streaming is off by default");
 
     await asyncBash.execute("c2", { command: "make", name: "build", stream: true });
-    assert.deepEqual(fx.lastAsyncBashArgs(), ["async_bash", "--name", "build", "--stream", "--", "make"]);
+    assert.deepEqual(fx.lastAsyncBashArgs(), ["tool", "async_bash", "--name", "build", "--stream", "--", "make"]);
   } finally {
     fx.restore();
   }
@@ -2486,7 +2491,7 @@ test("async_bash's result carries the run id and the output path kido printed, a
     const asyncBash = s.tools.get("async_bash");
 
     const result = await asyncBash.execute("c1", { command: "npm test", name: "tests" });
-    assert.equal(result.details.run, "fake-async-run-id", "the run id kido async_bash printed is returned");
+    assert.equal(result.details.run, "fake-async-run-id", "the run id kido tool async_bash printed is returned");
     const wantOutput = join(fx.runsDir, "fake-async-run-id", "output");
     assert.equal(result.details.output, wantOutput, "the output path is the fourth field of the line kido printed, not one rebuilt here");
     assert.match(result.content[0].text, /fake-async-run-id/, "the result text names the run");
@@ -2625,7 +2630,7 @@ test("a completion notice flushes whatever output was still held, and arrives af
 // no reason to race this process's own exit.
 //
 // The agent list says this session's parent is "parent-x"; the environment says
-// "boss-session", which is what `kido notify_parent` reads and what the notice
+// "boss-session", which is what `kido tool notify_parent` reads and what the notice
 // must be addressed to - asserting the latter, and that nothing was listed, pins that.
 test("notify_parent sends a notice to the parent in its environment, carrying the given summary, without listing agents", async () => {
   const fx = makeFixture();
@@ -2648,7 +2653,7 @@ test("notify_parent sends a notice to the parent in its environment, carrying th
   }
 });
 
-// The cap is `kido notify_parent`'s alone: the schema must not reject a long call,
+// The cap is `kido tool notify_parent`'s alone: the schema must not reject a long call,
 // and the tool must pass the summary on whole, byte for byte, rather than cutting it.
 test("notify_parent's schema accepts a summary over the byte cap, and execute() hands the whole of it to kido rather than cutting it", async () => {
   const fx = makeFixture();
@@ -2662,7 +2667,7 @@ test("notify_parent's schema accepts a summary over the byte cap, and execute() 
 
       assert.ok(
         Value.Check(tool.parameters, { summary: longSummary }),
-        "the schema itself no longer rejects a call over 4000 characters - the bound is kido notify_parent's, and it splits rather than rejects",
+        "the schema itself no longer rejects a call over 4000 characters - the bound is kido tool notify_parent's, and it splits rather than rejects",
       );
 
       const result = await tool.execute("call-1", { summary: longSummary });
@@ -2678,7 +2683,7 @@ test("notify_parent's schema accepts a summary over the byte cap, and execute() 
 // The cap that matters is kido's own (Reporting.one_line, lib/reporting.ml); only the
 // schema wrongly rejected past 256 characters. The report is still checked since
 // the local copy setActivity keeps is what every later report carries.
-test("set_status's schema accepts an activity over the byte cap, and setActivity sends it whole as kido set_status", async () => {
+test("set_status's schema accepts an activity over the byte cap, and setActivity sends it whole as kido tool set_status", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
@@ -2693,10 +2698,11 @@ test("set_status's schema accepts an activity over the byte cap, and setActivity
 
     await tool.execute("call-1", { activity: longActivity });
     let call: string[] | undefined;
-    await pollUntil(() => (call = last(fx.setStatusCalls())) !== undefined, 2000, "a kido set_status call");
-    assert.equal(call![0], "set_status");
-    assert.equal(call![1], "--", "the activity is positional, behind --, so one beginning with a dash is still an activity");
-    assert.equal(call![2], longActivity, "the extension no longer truncates; kido's own cap is what enforces the bound");
+    await pollUntil(() => (call = last(fx.setStatusCalls())) !== undefined, 2000, "a kido tool set_status call");
+    assert.equal(call![0], "tool");
+    assert.equal(call![1], "set_status");
+    assert.equal(call![2], "--", "the activity is positional, behind --, so one beginning with a dash is still an activity");
+    assert.equal(call![3], longActivity, "the extension no longer truncates; kido's own cap is what enforces the bound");
 
     await s.emit("agent_settled", {}, { isIdle: () => true });
     let report: string[] | undefined;
@@ -3229,7 +3235,7 @@ test("parent-liveness poll: shuts the session down when the parent's process is 
 });
 
 // Also pins what the poll asks: `kido agent-alive` naming its own parent
-// session, never `kido list_agents`, whose per-pane view is the wrong source for a liveness fact.
+// session, never `kido tool list_agents`, whose per-pane view is the wrong source for a liveness fact.
 test("parent-liveness poll: does not shut down while the parent is alive, and asks agent-alive about its own parent session", async () => {
   const fx = makeFixture();
   try {
@@ -3249,7 +3255,7 @@ test("parent-liveness poll: does not shut down while the parent is alive, and as
       assert.equal(
         fx.agentsCallCount(),
         agentsBefore,
-        "and never through kido list_agents, whose per-pane view can lose the parent's record",
+        "and never through kido tool list_agents, whose per-pane view can lose the parent's record",
       );
       await s.emit("session_shutdown");
     });
@@ -3603,7 +3609,7 @@ async function startWithDelayedAbort(fx: Fixture, delayMs: number) {
 
 // The bug this pins: an unawaited ctxAbort?.() let the interrupt's inbox reply -
 // and any envelope handled after it - race pi's own abort still settling. A
-// message sent right after an interrupt (kido interrupt_subagent then
+// message sent right after an interrupt (kido tool interrupt_subagent then
 // message_agent) would land while pi still thought it was streaming, routing it
 // into pi's low-level followUp queue instead of the run-starting path, which
 // nothing ever drained. Pre-fix, this failed on the second assertion: the reply
@@ -3658,7 +3664,7 @@ test("an interrupt to an idle session still answers promptly", async () => {
   }
 });
 
-// A human running `kido interrupt_subagent` by hand has no session id for `from`;
+// A human running `kido tool interrupt_subagent` by hand has no session id for `from`;
 // recognised by the empty session *and* a pane no agent occupies, so an agent
 // that simply omits its session id is still held to the descendant rule.
 test("a control envelope from a human at the CLI is honoured; one merely missing a session id is not", async () => {
@@ -3689,7 +3695,7 @@ const askTree = [
 
 // Worth pinning: a model-authored `to` beginning with a dash would otherwise be
 // read as a kido flag.
-test("steer_subagent runs kido steer_subagent with the target behind -- and the message on stdin", async () => {
+test("steer_subagent runs kido tool steer_subagent with the target behind -- and the message on stdin", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents(twoPeers);

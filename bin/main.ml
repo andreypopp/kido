@@ -16,7 +16,10 @@ let stdin () =
   Option.get_or ~default:s (String.chop_suffix ~suf:"\n" s)
 
 let panes = lazy (Tmux.Exec.list_panes ())
-let cmd name doc term = Cmd.v (Cmd.info name ~doc) Term.(const (fun f -> Cli.run name f) $ term)
+
+let cmd ?(group = "") name doc term =
+  Cmd.v (Cmd.info name ~doc) Term.(const (fun f -> Cli.run (group ^ name) f) $ term)
+
 let ok = Result.get_or_failwith
 
 let print r =
@@ -33,7 +36,7 @@ let sent = function
   | Error (Not_sent m) -> failwith m
 
 let send name doc spec =
-  cmd name doc
+  cmd ~group:"tool " name doc
   @@ let+ recipient, spec = spec in
      fun () ->
        sent
@@ -60,20 +63,21 @@ let steer_subagent =
      (Message_agent.Descendant to_, Message_agent.{ kind = Steer; reply_to = ""; id = "" })
 
 let interrupt_subagent =
-  cmd "interrupt_subagent" "Abort a descendant agent's current turn."
+  cmd ~group:"tool " "interrupt_subagent" "Abort a descendant agent's current turn."
   @@ let+ to_ = address "AGENT" in
      fun () ->
        print (Control.interrupt ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE") to_)
 
 let stop_subagent =
-  cmd "stop_subagent" "Stop a descendant agent, or an async run."
+  cmd ~group:"tool " "stop_subagent" "Stop a descendant agent, or an async run."
   @@ let+ force =
        flag "force" "Kill the target's window directly when it has no inbox to ask nicely over."
      and+ to_ = address "AGENT" in
      fun () ->
        print
          (Control.stop ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
-            ~escalation:(Control.stop_escalation ()) ~warn:(Cli.error "stop_subagent") ~force to_)
+            ~escalation:(Control.stop_escalation ()) ~warn:(Cli.error "tool stop_subagent") ~force
+            to_)
 
 let runs =
   cmd "runs" "List subagent and async runs, or show one."
@@ -125,18 +129,18 @@ let async_run =
             ~stream)
 
 let notify_parent =
-  cmd "notify_parent" "Send this subagent's report, read from stdin, to its parent."
+  cmd ~group:"tool " "notify_parent" "Send this subagent's report, read from stdin, to its parent."
   @@ let+ () = Term.const () in
      fun () ->
        sent
          (Message_agent.notify_parent ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
-            ~warn:(Cli.error "notify_parent")
+            ~warn:(Cli.error "tool notify_parent")
             ~parent:(Tmux.Exec.getenv "KIDO_AGENT_PARENT_SESSION")
             ~run:(Tmux.Exec.getenv "KIDO_AGENT_RUN_ID")
             (stdin ()))
 
 let list_agents =
-  cmd "list_agents" "List the agents in a tmux session."
+  cmd ~group:"tool " "list_agents" "List the agents in a tmux session."
   @@ let+ session =
        str "session" "ID" "tmux session id to list; defaults to the caller's own session."
      and+ json = flag "json" "Print JSON instead of a table." in
@@ -153,7 +157,7 @@ let list_agents =
        0
 
 let set_status =
-  cmd "set_status" "Set this agent's activity; an empty one clears it."
+  cmd ~group:"tool " "set_status" "Set this agent's activity; an empty one clears it."
   @@ let+ activity = arg "ACTIVITY" in
      fun () ->
        let dir = State.dir () and self = Tmux.Exec.getenv "TMUX_PANE" in
@@ -346,7 +350,7 @@ let spawn_subagent =
          "Spawn with no parent edge at all: the child reports to nobody, arms no idle timer, and \
           is never reaped as an orphan."
      and+ command = rest in
-     created "spawn_subagent" (fun () ->
+     created "tool spawn_subagent" (fun () ->
          Result.flat_map
            (Spawn_subagent.spawn ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
               ~pi:
@@ -376,7 +380,7 @@ let async_bash =
   @@ let+ name = str "name" "NAME" "Window name; derived from the command when omitted."
      and+ stream = flag "stream" "Send the command's output to this caller in batches as it runs."
      and+ args = rest in
-     created "async_bash" (fun () ->
+     created "tool async_bash" (fun () ->
          Async_bash.async_bash ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
            ~exe:(Lazy.force Tmux.Exec.self) ~name ~stream args)
 
@@ -686,6 +690,22 @@ let sidebar_feed =
          ~finally:(fun () -> Tmux.Conn.close conn)
          (fun () -> loop (Sidebar.make ~now:Unix.gettimeofday opts) "")
 
+let tool =
+  Cmd.group
+    (Cmd.info "tool" ~doc:"Agent tools.")
+    [
+      message_agent;
+      ask_agent;
+      notify_parent;
+      steer_subagent;
+      interrupt_subagent;
+      stop_subagent;
+      list_agents;
+      set_status;
+      spawn_subagent;
+      async_bash;
+    ]
+
 let () =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   let cmd =
@@ -696,17 +716,10 @@ let () =
         debug_log;
         server;
         inbox_path;
-        message_agent;
-        ask_agent;
-        notify_parent;
-        steer_subagent;
-        interrupt_subagent;
-        stop_subagent;
+        tool;
         runs;
         run_outcome;
         async_run;
-        list_agents;
-        set_status;
         agent_alive;
         children_alive;
         snapshot;
@@ -716,8 +729,6 @@ let () =
         switch_window;
         shell;
         ssh;
-        spawn_subagent;
-        async_bash;
         reap;
         close_run;
         sidebar_feed;

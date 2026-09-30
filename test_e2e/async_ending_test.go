@@ -102,9 +102,9 @@ func TestStopBashRunNotifiesOnce(t *testing.T) {
 	runID := h.asyncBash("stopme", "sleep", "60")
 	h.hideSidebar()
 
-	out := h.runKido("alpha", "stop.out", "stop_subagent", "--force", "--", "stopme")
+	out := h.runKido("alpha", "stop.out", "tool", "stop_subagent", "--force", "--", "stopme")
 	if !strings.Contains(out, "rc=0") {
-		t.Fatalf("kido stop_subagent output = %q, want a clean exit", out)
+		t.Fatalf("kido tool stop_subagent output = %q, want a clean exit", out)
 	}
 
 	h.waitFor(func() bool { return len(in.Received()) > 0 }, 2*time.Second,
@@ -139,9 +139,9 @@ func TestStopSpeaksForAWrapperThatCannot(t *testing.T) {
 	h.hideSidebar() // before the kill, so nothing else sweeps the corpse first
 	h.killWrapper(runID)
 
-	out := h.runKido("alpha", "stopdead.out", "stop_subagent", "--force", "--", "zombie")
+	out := h.runKido("alpha", "stopdead.out", "tool", "stop_subagent", "--force", "--", "zombie")
 	if !strings.Contains(out, "rc=0") {
-		t.Fatalf("kido stop_subagent output = %q, want a clean exit", out)
+		t.Fatalf("kido tool stop_subagent output = %q, want a clean exit", out)
 	}
 
 	h.waitFor(func() bool { return len(in.Received()) > 0 }, 2*time.Second,
@@ -180,7 +180,7 @@ func TestReapedAgentRunTellsItsParentNobodyReported(t *testing.T) {
 	)
 	fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
 	if len(fields) != 3 {
-		t.Fatalf("kido spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", fields)
+		t.Fatalf("kido tool spawn_subagent printed %q, want \"<window id> <pane id> <run id>\"", fields)
 	}
 	paneID, runID := fields[1], fields[2]
 

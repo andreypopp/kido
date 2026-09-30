@@ -29,7 +29,7 @@ func (h *harness) pipeKido(session, outName, input string, args ...string) strin
 // answered - so the assertions that matter are about the target, not
 // about what the caller was told.
 //
-// Measured before the fix: `echo hi | kido ask_agent --id t1 -- <agent>`
+// Measured before the fix: `echo hi | kido tool ask_agent --id t1 -- <agent>`
 // printed "delivered to <agent> by inbox", and the target, on trying to
 // answer, got "no agent session matches %47".
 func TestAskFromAShellRefusesAndLeavesTheTargetUndisturbed(t *testing.T) {
@@ -40,13 +40,13 @@ func TestAskFromAShellRefusesAndLeavesTheTargetUndisturbed(t *testing.T) {
 
 	const question = "did you finish the migration?"
 	out := h.pipeKido("alpha", "ask.out", question,
-		"ask_agent", "--id", "t1", "--", "ask-target-e2e")
+		"tool", "ask_agent", "--id", "t1", "--", "ask-target-e2e")
 
 	if !strings.Contains(out, "rc=1") {
-		t.Errorf("kido ask_agent output = %q, want rc=1: a caller with no inbox cannot be answered", out)
+		t.Errorf("kido tool ask_agent output = %q, want rc=1: a caller with no inbox cannot be answered", out)
 	}
 	if !strings.Contains(out, "message_agent") {
-		t.Errorf("kido ask_agent output = %q, want it to point at kido message_agent", out)
+		t.Errorf("kido tool ask_agent output = %q, want it to point at kido tool message_agent", out)
 	}
 	// stays, not a single reading: "nothing has been delivered yet" and
 	// "nothing will be" look identical at any one instant.
@@ -65,17 +65,17 @@ func TestMessageFromAShellReachesTheAgent(t *testing.T) {
 
 	in, _ := h.agentWithInbox("alpha", "msg-target-e2e")
 
-	if out := h.runKido("alpha", "list.out", "list_agents", "--json"); !strings.Contains(out, "msg-target-e2e") {
-		t.Errorf("kido list_agents from a shell = %q, want it to name the registered agent", out)
+	if out := h.runKido("alpha", "list.out", "tool", "list_agents", "--json"); !strings.Contains(out, "msg-target-e2e") {
+		t.Errorf("kido tool list_agents from a shell = %q, want it to name the registered agent", out)
 	}
 
 	out := h.pipeKido("alpha", "msg.out", "the build is green",
-		"message_agent", "--", "msg-target-e2e")
+		"tool", "message_agent", "--", "msg-target-e2e")
 	if !strings.Contains(out, "rc=0") {
-		t.Fatalf("kido message_agent from a shell = %q, want rc=0", out)
+		t.Fatalf("kido tool message_agent from a shell = %q, want rc=0", out)
 	}
 	if !strings.Contains(out, "delivered") {
-		t.Errorf("kido message_agent output = %q, want it to report the delivery", out)
+		t.Errorf("kido tool message_agent output = %q, want it to report the delivery", out)
 	}
 	// A v1 envelope, not raw text, since the target advertised the
 	// protocol; From names only a pane, no session - nothing else a
@@ -125,12 +125,12 @@ func TestSteerFromAShellIsNotHeldToTheDescendantRule(t *testing.T) {
 		"--inbox", in.Path)
 
 	out := h.pipeKido("alpha", "steer.out", "stop what you are doing",
-		"steer_subagent", "--", "stranger-e2e")
+		"tool", "steer_subagent", "--", "stranger-e2e")
 	if !strings.Contains(out, "rc=0") {
-		t.Fatalf("kido steer_subagent from a shell = %q, want rc=0: a caller with no record is nobody's ancestor and is allowed to act on anything", out)
+		t.Fatalf("kido tool steer_subagent from a shell = %q, want rc=0: a caller with no record is nobody's ancestor and is allowed to act on anything", out)
 	}
 	if strings.Contains(out, "descendant") {
-		t.Errorf("kido steer_subagent output = %q, want no descendant refusal for a record-less caller", out)
+		t.Errorf("kido tool steer_subagent output = %q, want no descendant refusal for a record-less caller", out)
 	}
 	h.waitEnvelope(in, `"kind":"steer"`, "stop what you are doing")
 }

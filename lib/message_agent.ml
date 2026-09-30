@@ -126,7 +126,7 @@ let send ~dir ~self recipient spec text =
     let live = State.load_live ~dir in
     let states = State.by_pane live in
     let* panes = not_sent (Tmux.Exec.list_panes ()) in
-    let alternative = "use kido message_agent instead, which is one-way and needs no reply" in
+    let alternative = "use kido tool message_agent instead, which is one-way and needs no reply" in
     let* () =
       match (spec.kind, State.String_map.find_opt self states) with
       | Ask, None ->

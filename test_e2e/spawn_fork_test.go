@@ -24,13 +24,13 @@ func TestSpawnForkCarriesTheForkOntoThePiCommandLine(t *testing.T) {
 
 	outFile := filepath.Join(h.dir, "fork.out")
 	h.sendLiteral(fmt.Sprintf(
-		"%s spawn_subagent --parent-pid 1 --parent-session root-e2e --name forked-e2e "+
+		"%s tool spawn_subagent --parent-pid 1 --parent-session root-e2e --name forked-e2e "+
 			"--task-file %s --fork caller-session-e2e > %s 2>&1",
 		kidoBin, h.writeTaskFile("forked-e2e"), outFile))
 	h.sendKeys("Enter")
 	fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
 	if len(fields) != 3 {
-		t.Fatalf("kido spawn_subagent --fork printed %q, want \"<window id> <pane id> <run id>\"", fields)
+		t.Fatalf("kido tool spawn_subagent --fork printed %q, want \"<window id> <pane id> <run id>\"", fields)
 	}
 	windowID, runID := fields[0], fields[2]
 	t.Cleanup(func() { h.in("kill-window", "-t", windowID) })
