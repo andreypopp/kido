@@ -2,11 +2,14 @@ import AppKit
 import TmuxControl
 
 // Every Client callback runs on client.queue. `panes` is touched only
-// there, so a PaneView leaves `panes` between two feeds and is released on
-// the main thread after that (detach).
+// there, so a PaneView leaves `panes` between two feeds; `retiring` holds it
+// on main until the queue has let go of it, so it is freed on main (detach).
+// A layout reaches main synchronously, so its grid is set before the reader
+// feeds the output that follows it. Main never waits on client.queue.
 final class Connection: @unchecked Sendable {
     private let client: Client
     private var panes: [PaneID: PaneView] = [:]
+    @MainActor private var retiring: [ObjectIdentifier: PaneView] = [:]
     @MainActor private weak var view: SessionView?
     @MainActor private var sizing: DispatchWorkItem?
     @MainActor private(set) var model = SessionModel() {
@@ -30,10 +33,11 @@ final class Connection: @unchecked Sendable {
     }
 
     @MainActor func detach(_ pane: PaneView) {
-        let id = pane.pane
+        let id = pane.pane, key = ObjectIdentifier(pane)
+        retiring[key] = pane
         client.queue.async {
-            if self.panes[id] === pane { self.panes[id] = nil }
-            DispatchQueue.main.async { _ = pane }
+            if self.panes[id].map(ObjectIdentifier.init) == key { self.panes[id] = nil }
+            DispatchQueue.main.async { self.retiring[key] = nil }
         }
     }
 
@@ -60,9 +64,9 @@ final class Connection: @unchecked Sendable {
             let resume = Command("refresh-client", "-A", "\(p):continue")
             if panes[p] == nil { send([resume]) } else { sync(p, first: [resume]) }
         case .layoutChange(let window, let layout, let visible, _):
-            DispatchQueue.main.async { self.view?.layoutChanged(window, layout, visible) }
+            DispatchQueue.main.sync { self.view?.windows[window]?.update(layout, visible) }
         case .windowPaneChanged(let window, let pane):
-            DispatchQueue.main.async { self.view?.focus(window, pane) }
+            DispatchQueue.main.async { self.view?.windows[window]?.focus(pane) }
         case .sessionWindowChanged(let s, let window):
             DispatchQueue.main.async {
                 guard s == self.model.session else { return }
@@ -90,7 +94,7 @@ final class Connection: @unchecked Sendable {
                 let session = current.first.flatMap(SessionID.init), case .success(let windows) = replies[2]
             else { return self?.report("could not list the session's windows: \(replies)") ?? () }
             let listing = windows.compactMap(WindowListing.init)
-            DispatchQueue.main.async {
+            DispatchQueue.main.sync {
                 guard let self else { return }
                 self.model = SessionModel(
                     sessions: sessions.compactMap(SessionListing.init), session: session,
