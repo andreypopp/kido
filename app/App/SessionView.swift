@@ -1,10 +1,11 @@
 import AppKit
+import GhosttyKit
 import TmuxControl
 
 final class SessionView: NSView {
     weak var connection: Connection?
     private let runtime: GhosttyRuntime
-    private var windows: [WindowID: WindowView] = [:]
+    private(set) var windows: [WindowID: WindowView] = [:]
     private weak var shown: WindowView?
 
     init(runtime: GhosttyRuntime) {
@@ -42,11 +43,21 @@ final class SessionView: NSView {
         shown = view
     }
 
-    func layoutChanged(_ window: WindowID, _ layout: Layout, _ visible: Layout) {
-        windows[window]?.update(layout, visible)
+    // tmux has one grid for all panes, so every surface has one font size,
+    // and the lowest-numbered pane is the one the cell metric is read from.
+    private var panes: [PaneView] { windows.values.flatMap(\.panes).sorted { $0.pane.number < $1.pane.number } }
+
+    var cell: CGSize? {
+        panes.lazy.map(\.cell).first { $0.width > 0 && $0.height > 0 }
     }
 
-    func focus(_ window: WindowID, _ pane: PaneID) {
-        windows[window]?.focus(pane)
+    var font: Float { panes.first?.font ?? 0 }
+
+    func fontChanged(_ points: Float) {
+        let action = "set_font_size:\(points)"
+        for pane in panes where pane.font != points {
+            _ = ghostty_surface_binding_action(pane.surface, action, UInt(action.utf8.count))
+        }
+        windows.values.forEach { $0.cellChanged() }
     }
 }
