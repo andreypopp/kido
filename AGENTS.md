@@ -499,7 +499,9 @@ repeat them.
   your own shell.
 - **Verify what you touched; CI runs the whole.** For a bug fix, write
   the test first, watch it fail, and quote that failure. A feature's
-  tests need only pass. Negative controls (breaking the code to prove
+  tests need only pass. Test in proportion to the change: a trivial
+  one (a character of spacing, a word of text) updates the expected
+  strings it breaks and adds no new tests. Negative controls (breaking the code to prove
   a test can fail) only where a test could plausibly pass vacuously -
   timing, races, deduplication, polling; never for a trivial change
   such as text, spacing or a renamed field. Then run `dune build` and `dune test` (an e2e
