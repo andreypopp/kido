@@ -73,9 +73,7 @@ public indirect enum Node: Decodable, Equatable, Sendable {
             throw DecodingError.dataCorruptedError(
                 forKey: .type, in: c, debugDescription: "unknown cell type \(type)")
         }
-        guard let id = PaneID(try c.decode(String.self, forKey: .id)) else {
-            throw DecodingError.dataCorruptedError(forKey: .id, in: c, debugDescription: "bad pane id")
-        }
+        let id = try c.decode(PaneID.self, forKey: .id)
         let focus: Focus =
             if try c.decodeIfPresent(Bool.self, forKey: .active) == true { .active }
             else if let last = try c.decodeIfPresent(Int.self, forKey: .last) { .visited(last) }
@@ -97,7 +95,7 @@ extension Node {
     public var dividers: [Divider] {
         guard case .split(let direction, let g, let children) = self else { return [] }
         let tiled = children.filter { if case .pane(let p) = $0, case .floating = p.layer { false } else { true } }
-        let between = zip(tiled, tiled.dropFirst()).map { a, _ in
+        let between = tiled.dropLast().map { a in
             let anchor = a.anchor(direction)
             let a = switch a {
             case .pane(let pane): pane.geometry
