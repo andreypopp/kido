@@ -31,7 +31,6 @@ import TmuxControl
         }
         """
     let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(line.utf8))
-    #expect(snapshot.v == 1)
     #expect(snapshot.client == Snapshot.Position(session: SessionID(number: 1), window: WindowID(number: 2), pane: PaneID(number: 3)))
     #expect(snapshot.filter == "")
     #expect(snapshot.error == nil)
@@ -42,10 +41,9 @@ import TmuxControl
     #expect(session.current)
     #expect(session.rows.count == 1)
     let row = session.rows[0]
-    #expect(row.pane == PaneID(number: 3))
-    #expect(row.window == WindowID(number: 2))
+    #expect(row.target == Row.Target(window: WindowID(number: 2), pane: PaneID(number: 3)))
     #expect(row.tree == "\u{251C}")
-    #expect(row.indicator == Indicator(kind: .running, outcome: nil))
+    #expect(row.indicator == .running)
     #expect(row.title == [Span(text: "kido", role: .current)])
     #expect(row.tail == [Span(text: " fixing tests", role: .dim)])
     #expect(!row.attention)
@@ -82,9 +80,8 @@ import TmuxControl
     #expect(snapshot.filter == "fix")
     #expect(snapshot.error == "no match")
     let row = snapshot.sessions[0].rows[0]
-    #expect(row.pane == nil)
-    #expect(row.window == nil)
-    #expect(row.indicator == Indicator(kind: .gone, outcome: .failed))
+    #expect(row.target == nil)
+    #expect(row.indicator == .gone(.failed))
     #expect(row.title.isEmpty)
     #expect(row.attention)
 }
@@ -98,4 +95,21 @@ import TmuxControl
         """
     let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(line.utf8))
     #expect(snapshot.sessions[0].rows[0].indicator == nil)
+}
+
+@Test func rejectsAnotherVersion() {
+    let line = """
+        {"v":2,"client":{"session":"$1","window":"@1","pane":"%1"},"filter":"","error":null,"sessions":[]}
+        """
+    #expect(throws: DecodingError.self) { try JSONDecoder().decode(Snapshot.self, from: Data(line.utf8)) }
+}
+
+@Test func rejectsARowWithOnlyAPane() {
+    let line = """
+        {"v":1,"client":{"session":"$1","window":"@1","pane":"%1"},"filter":"","error":null,
+         "sessions":[{"id":"$1","name":"main","current":true,"rows":[
+           {"pane":"%1","window":null,"tree":"","indicator":null,"title":[],"tail":[],"attention":false}
+         ]}]}
+        """
+    #expect(throws: DecodingError.self) { try JSONDecoder().decode(Snapshot.self, from: Data(line.utf8)) }
 }
