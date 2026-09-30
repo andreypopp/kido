@@ -85,14 +85,9 @@ let%expect_test "runs: running while the run's process lives, died once it is go
     outcome:  died
     |}]
 
-let no_capture pane =
-  Printf.printf "captured %s, want no capture at all\n" pane;
-  None
-
-let run_outcome ~dir ?(capture = no_capture) ?(text = "") ?(unreported = false) result r =
+let run_outcome ~dir ?(unreported = false) result r =
   attempt
-    (Runs.run_outcome ~dir ~capture ~warn:(Printf.printf "warning: %s\n") ~result ~text ~unreported
-       r)
+    (Runs.run_outcome ~dir ~warn:(Printf.printf "warning: %s\n") ~result ~text:"" ~unreported r)
 
 let%expect_test "run-outcome records one outcome, and only for a valid run id" =
   let dir = Filename.temp_dir "kido-state" "" in
@@ -100,7 +95,7 @@ let%expect_test "run-outcome records one outcome, and only for a valid run id" =
   show_outcome ~dir "run-x";
   run_outcome ~dir Completed "run-x";
   show_outcome ~dir "run-x";
-  run_outcome ~dir ~capture:(fun _ -> None) Failed "run-x";
+  run_outcome ~dir Completed "run-x";
   run_outcome ~dir Completed "../escape";
   [%expect
     {|
@@ -108,46 +103,6 @@ let%expect_test "run-outcome records one outcome, and only for a valid run id" =
     outcome completed ""
     refused: run run-x already has an outcome, or is gone
     refused: invalid run id "../escape"
-    |}]
-
-(* run-outcome runs inside the child, whose pane is alive only until it exits: a failure saves it
-   before returning. A completed ending never captures (no_capture would say so). *)
-let%expect_test "run-outcome: a failure keeps the child's own screen, refined by pi's login line" =
-  let dir = Filename.temp_dir "kido-state" "" in
-  let no_turn =
-    "no turn ever ran: the task was delivered and the session never started work on it"
-  in
-  List.iter
-    (fun (r, screen, text) ->
-      ignore (run ~dir ~pane:"%9" r);
-      let capture pane =
-        Printf.printf "captured %s\n" pane;
-        Some screen
-      in
-      run_outcome ~dir ~capture ~text Failed r;
-      show_outcome ~dir r;
-      Printf.printf "screen: %S\n" (Option.get_or ~default:"none" (Subrun.read_screen ~dir (id r))))
-    [
-      ("run-screen", "pi's last screen before it exited\n", no_turn);
-      ("run-login", "Use /login to log into a provider via OAuth or API key\n", no_turn);
-      ("run-other", "Use /login to log into a provider via OAuth or API key\n", "exit 1");
-    ];
-  ignore (run ~dir ~pane:"%9" "run-ok");
-  run_outcome ~dir Completed "run-ok";
-  Printf.printf "screen for completed: %b\n"
-    (Option.is_some (Subrun.read_screen ~dir (id "run-ok")));
-  [%expect
-    {|
-    captured %9
-    outcome failed "no turn ever ran: the task was delivered and the session never started work on it"
-    screen: "pi's last screen before it exited\n"
-    captured %9
-    outcome failed "no turn ever ran: the task was delivered and the session never started work on it (the pane showed: \"Use /login to log into a provider via OAuth or API key\")"
-    screen: "Use /login to log into a provider via OAuth or API key\n"
-    captured %9
-    outcome failed "exit 1"
-    screen: "Use /login to log into a provider via OAuth or API key\n"
-    screen for completed: false
     |}]
 
 (* The outcome write decides who speaks: without --unreported the child reported for itself, and a

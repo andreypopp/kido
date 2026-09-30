@@ -14,16 +14,16 @@ let wait_for within cond =
   in
   go ()
 
-let kill_run_pane ~list_panes ~ops ?(before = ignore) pane_id =
+let kill_run_pane ?(before = ignore) pane_id =
   let open Result.Infix in
-  let* panes = list_panes () in
+  let* panes = Exec.list_panes () in
   match Pane.find panes pane_id with
   | None -> Ok `Gone
   | Some p when Pane.last_window panes p.window_id && Pane.last_pane panes p.window_id ->
       Error "it is its session's only pane; killing it would destroy the session"
   | Some p ->
       before ();
-      let+ () = Reap.release ops (Pane { window = p.window_id; pane = p.pane_id }) in
+      let+ () = Reap.release (Pane { window = p.window_id; pane = p.pane_id }) in
       `Killed
 
 let record_stopped ~dir id =
@@ -38,10 +38,10 @@ let request ~states ~panes ~self kind target =
   Message_agent.deliver ~states ~panes ~self ~paste:Exec.send_prompt
     { kind; reply_to = ""; id = "" } target ""
 
-let interrupt ~dir ~self ~panes to_ =
+let interrupt ~dir ~self to_ =
   let open Result.Infix in
   let live = State.load_live ~dir in
-  let* panes = Lazy.force panes in
+  let* panes = Exec.list_panes () in
   let* _, target = Message_agent.resolve ~live ~panes ~self (Descendant to_) in
   match request ~states:(State.by_pane live) ~panes ~self Interrupt target with
   | Ok _ -> Ok ("interrupted " ^ List_agents.display_name panes target)
@@ -49,7 +49,7 @@ let interrupt ~dir ~self ~panes to_ =
 
 let run_label meta = "async run " ^ Reap.quote (Subrun.label meta)
 
-let live_bash_run ~dir ~self ~list_panes to_ =
+let live_bash_run ~dir ~self to_ =
   let open Result.Infix in
   let matches =
     List.filter_map
@@ -66,7 +66,7 @@ let live_bash_run ~dir ~self ~list_panes to_ =
   | [] -> Ok None
   | [ meta ] ->
       let live = List_agents.per_pane (State.load_live ~dir) in
-      let* panes = list_panes () in
+      let* panes = Exec.list_panes () in
       let* reached = Message_agent.reaches live panes ~self meta.parent_session in
       if reached then Ok (Some meta) else Error (run_label meta ^ " is not this agent's descendant")
   | many ->
@@ -76,7 +76,7 @@ let live_bash_run ~dir ~self ~list_panes to_ =
               (List.sort String.compare
                  (List.map (fun (m : Subrun.meta) -> Subrun.string_of_id m.id) many))))
 
-let stop_bash_run ~dir ~list_panes ~ops ~escalation ~warn (meta : Subrun.meta) =
+let stop_bash_run ~dir ~escalation ~warn (meta : Subrun.meta) =
   let label = run_label meta in
   let signalled =
     meta.pid > 0
@@ -93,7 +93,7 @@ let stop_bash_run ~dir ~list_panes ~ops ~escalation ~warn (meta : Subrun.meta) =
       }
     |> Option.iter (fun e ->
         Result.iter_err (fun e -> warn (Msg.string_of_error e)) (Reap.send ~dir e));
-    match kill_run_pane ~list_panes ~ops meta.pane with
+    match kill_run_pane meta.pane with
     | Ok `Killed -> Ok (Printf.sprintf "stopped %s; killed its pane" label)
     | Ok `Gone -> Ok (Printf.sprintf "stopped %s; its pane was already gone" label)
     | Error m ->
@@ -101,25 +101,23 @@ let stop_bash_run ~dir ~list_panes ~ops ~escalation ~warn (meta : Subrun.meta) =
           (Printf.sprintf "%s was recorded stopped, but its pane could not be killed: %s" label m)
   end
 
-let stop ~dir ~self ~list_panes ~ops ~escalation ~warn ~force to_ =
+let stop ~dir ~self ~escalation ~warn ~force to_ =
   let open Result.Infix in
   let unforced what =
     if force then Ok () else Error (what ^ "; pass --force to kill its window instead")
   in
-  let* bash = live_bash_run ~dir ~self ~list_panes to_ in
+  let* bash = live_bash_run ~dir ~self to_ in
   match bash with
   | Some meta ->
       let* () = unforced (run_label meta ^ " has no inbox to ask nicely over") in
-      stop_bash_run ~dir ~list_panes ~ops ~escalation ~warn meta
+      stop_bash_run ~dir ~escalation ~warn meta
   | None -> (
       let live = State.load_live ~dir in
-      let* panes = list_panes () in
+      let* panes = Exec.list_panes () in
       let* id, target = Message_agent.resolve ~live ~panes ~self (Descendant to_) in
       let name = List_agents.display_name panes target in
       let degrade () =
-        match
-          kill_run_pane ~list_panes ~ops ~before:(fun () -> record_stopped ~dir id) target.pane
-        with
+        match kill_run_pane ~before:(fun () -> record_stopped ~dir id) target.pane with
         | Ok `Killed -> Ok (Printf.sprintf "killed %s's pane" name)
         | Ok `Gone -> Ok (Printf.sprintf "%s's pane was already gone" name)
         | Error m -> Error (Printf.sprintf "%s %s" name m)
@@ -139,7 +137,7 @@ let stop ~dir ~self ~list_panes ~ops ~escalation ~warn ~force to_ =
                 Printf.sprintf "did not accept the stop request (%s) and was still there after %s" m
                   after
           in
-          match kill_run_pane ~list_panes ~ops target.pane with
+          match kill_run_pane target.pane with
           | Ok _ -> Ok (Printf.sprintf "%s %s; killed its pane" name why)
           | Error m ->
               Error (Printf.sprintf "%s %s, and its pane could not be killed: %s" name why m)

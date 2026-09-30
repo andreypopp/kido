@@ -6,7 +6,6 @@ val string_of_id : id -> string
 val task_path : dir:string -> id -> string
 val output_path : dir:string -> id -> string
 val report_path : dir:string -> id -> string
-val delivered_path : dir:string -> id -> string
 val meta_path : dir:string -> id -> string
 
 type kind = Agent | Bash
@@ -48,7 +47,6 @@ val record_outcome : dir:string -> id -> outcome -> bool
 (** [true] once written; [false] when the write lost: an outcome already exists, or the run's
     directory is gone. *)
 
-val write_screen : dir:string -> id -> string -> unit
 val read_screen : dir:string -> id -> string option
 val reset_for_resume : dir:string -> id -> delivered:bool -> unit
 val read_outcome : dir:string -> id -> outcome option
@@ -57,12 +55,8 @@ val effective_outcome : dir:string -> id -> pid:int -> outcome option
 (** [None] only while the run is still alive. *)
 
 val list : dir:string -> id list
-val max_screen_bytes : int
 val truncate_screen : string -> string
 
-val capture_pane : string -> string option
-(** A pane's screen with 1000 lines of history, or [None] when tmux could not capture it. *)
-
-val save_screen : dir:string -> capture:(string -> string option) -> id -> string -> string option
-(** Saves a pane's screen, bounded to its tail, into the run's directory and returns it; [None] for
-    an empty pane id or a failed capture. *)
+val save_screen : dir:string -> id -> string -> string option
+(** Saves a pane's screen with 1000 lines of history, bounded to its tail, into the run's directory
+    and returns it; [None] for an empty pane id or a failed capture. *)

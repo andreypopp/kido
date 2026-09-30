@@ -95,15 +95,14 @@ let refine_no_turn_detail text screen =
     Printf.sprintf "%s (the pane showed: \"%s\")" text login_line
   else text
 
-let run_outcome ~dir ~capture ~warn ~result ~text ~unreported id_str =
+let run_outcome ~dir ~warn ~result ~text ~unreported id_str =
   let open Result.Infix in
   let* id = Subrun.parse_id id_str in
   let meta = Subrun.read_meta ~dir id in
   let text =
     match (meta, result) with
     | Some m, Subrun.Failed ->
-        Option.map_or ~default:text (refine_no_turn_detail text)
-          (Subrun.save_screen ~dir ~capture id m.pane)
+        Option.map_or ~default:text (refine_no_turn_detail text) (Subrun.save_screen ~dir id m.pane)
     | _ -> text
   in
   let outcome : Subrun.outcome = { result; text; at = Some (Timestamp.now ()) } in

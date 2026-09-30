@@ -56,6 +56,18 @@ func (h *harness) spawnRun(name, script string) (runID, windowID string) {
 	return fields[2], fields[0]
 }
 
+// runMeta is `kido runs --json <run>` whole, for the fields runInfo
+// leaves out.
+func (h *harness) runMeta(tag, runID string) map[string]any {
+	h.t.Helper()
+	out := h.runKido("alpha", runID+"-"+tag+"-meta.out", "runs", "--json", runID)
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(strings.SplitN(out, "\n", 2)[0]), &meta); err != nil {
+		h.t.Fatalf("kido runs --json %s: %v (%q)", runID, err, out)
+	}
+	return meta
+}
+
 func (h *harness) writeTaskFile(name string) string {
 	h.t.Helper()
 	path := filepath.Join(h.dir, name+"-task.txt")
@@ -108,6 +120,9 @@ func TestRunRecordSurvivesReapAsCompleted(t *testing.T) {
 	// outright (measured 20/20 for /bin/true; see new_window's own comment).
 	script := fmt.Sprintf(`sleep 0.3; %s run-outcome --result completed -- "$KIDO_AGENT_RUN_ID"`, kidoBin)
 	runID, windowID := h.spawnRun("done-e2e", script)
+	// The parent gets an inbox only now, spawnRun having recorded it without
+	// one; the sweep waits out the 1s linger before it looks.
+	in := h.asyncParent("alpha", "root-e2e")
 
 	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
 		msgf("the sidebar's sweep to close window %s once the child has exited", windowID))
@@ -115,6 +130,7 @@ func TestRunRecordSurvivesReapAsCompleted(t *testing.T) {
 	if got := h.runOutcome(runID); got != "completed" {
 		t.Errorf("run %s outcome = %q, want %q (the sweep's own Died guess must not win the race)", runID, got, "completed")
 	}
+	h.stableCount(in, 0, "a child that recorded its own ending is left to its own report")
 }
 
 // A child's screen output must survive the sweep collecting its window,

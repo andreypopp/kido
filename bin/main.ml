@@ -60,9 +60,7 @@ let interrupt_subagent =
   cmd "interrupt_subagent" "Abort a descendant agent's current turn."
   @@ let+ to_ = arg "AGENT" in
      fun () ->
-       print (Control.interrupt ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE") ~panes to_)
-
-let release_ops = { Reap.kill_window = Tmux.Exec.kill_window; kill_pane = Tmux.Exec.kill_pane }
+       print (Control.interrupt ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE") to_)
 
 let stop_subagent =
   cmd "stop_subagent" "Stop a descendant agent, or an async run."
@@ -72,7 +70,6 @@ let stop_subagent =
      fun () ->
        print
          (Control.stop ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
-            ~list_panes:Tmux.Exec.list_panes ~ops:release_ops
             ~escalation:(Control.stop_escalation ()) ~warn:(Cli.error "stop_subagent") ~force to_)
 
 let runs =
@@ -106,8 +103,8 @@ let run_outcome =
      and+ id = arg "RUN_ID" in
      fun () ->
        ok
-         (Runs.run_outcome ~dir:(State.dir ()) ~capture:Subrun.capture_pane
-            ~warn:(Cli.error "run-outcome") ~result ~text ~unreported id);
+         (Runs.run_outcome ~dir:(State.dir ()) ~warn:(Cli.error "run-outcome") ~result ~text
+            ~unreported id);
        0
 
 let async_run =
@@ -341,11 +338,10 @@ let spawn_subagent =
      and+ command = rest in
      created "spawn_subagent" (fun () ->
          Result.flat_map
-           (Spawn_subagent.spawn ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE") ~panes
-              ~tmux:Spawn_subagent.tmux
+           (Spawn_subagent.spawn ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
               ~pi:
                 {
-                  list_models = Spawn_subagent.list_models ~path:(Tmux.Exec.getenv "PATH");
+                  path = Tmux.Exec.getenv "PATH";
                   session_dir = Tmux.Exec.getenv "PI_CODING_AGENT_SESSION_DIR";
                   agent_dir = Tmux.Exec.getenv "PI_CODING_AGENT_DIR";
                   home = Tmux.Exec.getenv "HOME";
@@ -372,7 +368,7 @@ let async_bash =
      and+ args = rest in
      created "async_bash" (fun () ->
          Async_bash.async_bash ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
-           ~exe:(Lazy.force Tmux.Exec.self) ~panes ~tmux:Spawn_subagent.tmux ~name ~stream args)
+           ~exe:(Lazy.force Tmux.Exec.self) ~name ~stream args)
 
 let hook =
   Cmd.v (Cmd.info "hook" ~doc:"Record a Claude Code hook event read from stdin.")
@@ -523,9 +519,9 @@ let reap =
      Cli.run "reap" (fun () ->
          if not (List.is_empty args) then failwith "usage: kido reap";
          let dir = State.dir () in
-         Reap.collect ~dir ~capture:Subrun.capture_pane ~grace:(Reap.grace ())
+         Reap.collect ~dir ~grace:(Reap.grace ())
            (ok (Tmux.Exec.list_panes ()))
-           (State.load_live ~dir) ~now:(Unix.gettimeofday ()) release_ops;
+           (State.load_live ~dir) ~now:(Unix.gettimeofday ());
          0)
 
 (* Strict about the argument: kill-window resolves any target syntax, so any other spelling would
@@ -542,7 +538,7 @@ let close_run =
          if not (Tmux.Pane.is_window_id window_id) then
            Printf.ksprintf failwith "%S is not a window id (@N)" window_id;
          (match Reap.decide (ok (Tmux.Exec.list_panes ())) window_id with
-         | Ok c -> ok (Reap.release release_ops c)
+         | Ok c -> ok (Reap.release c)
          | Error refusal -> Cli.error "close-run" refusal);
          0)
 

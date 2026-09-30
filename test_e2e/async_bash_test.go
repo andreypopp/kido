@@ -192,3 +192,52 @@ func TestAsyncBashWithNoParentStillRecordsItsOutcome(t *testing.T) {
 	}
 	h.stableCount(in, 0, "a run with no parent has nobody to tell")
 }
+
+// What a run is made of before its wrapper starts: a meta naming the
+// caller's own record as parent one level down, a window name derived
+// from a command line, the command kept as given, and a window running
+// `kido async-run` for it. Several words are an argv, not a command line
+// joined back together: `sh -c 'exit 3' ignored` joined would run
+// `sh -c exit` and succeed.
+func TestAsyncBashRecordsItsRunAndItsCommand(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
+	h.agentStatus("abash-caller-e2e", pane, "pi", "idle", "--depth", "1")
+
+	outFile := filepath.Join(h.dir, "derived.out")
+	h.sendLiteral(fmt.Sprintf("%s async_bash -- %s > %s 2>&1; echo rc=$? >> %s",
+		kidoBin, shellQuote("/usr/bin/env sleep 300 && ./run"), outFile, outFile))
+	h.sendKeys("Enter")
+	out := h.waitFileContains(outFile, "rc=")
+	fields := strings.Fields(out)
+	if len(fields) != 5 || fields[4] != "rc=0" {
+		t.Fatalf("kido async_bash printed %q, want \"<window> <pane> <run> <output>\" and rc=0", out)
+	}
+	windowID, runID := fields[0], fields[2]
+	if want := filepath.Join(h.stateDir, "runs", runID, "output"); fields[3] != want {
+		t.Errorf("output path = %q, want %q", fields[3], want)
+	}
+	meta := h.runMeta("derived", runID)
+	for k, want := range map[string]any{
+		"name": "env", "kind": "bash", "parentSession": "abash-caller-e2e", "depth": 2.0,
+		"task": "/usr/bin/env sleep 300 && ./run",
+	} {
+		if meta[k] != want {
+			t.Errorf("run meta %s = %v, want %v", k, meta[k], want)
+		}
+	}
+	if started := h.startCommand(windowID); !strings.HasSuffix(started, "async-run --run-id "+runID) {
+		t.Errorf("run window's command = %q, want `kido async-run --run-id %s` and no --stream", started, runID)
+	}
+
+	streamWindow, _, _ := h.asyncBashIDs([]string{"--stream"}, "streamed", "sleep", "300")
+	if started := h.startCommand(streamWindow); !strings.HasSuffix(started, " --stream") {
+		t.Errorf("--stream run window's command = %q, want the wrapper told to stream", started)
+	}
+
+	argvRun := h.asyncBashWith(nil, "argv", "sh", "-c", "exit 3", "ignored")
+	if info := h.waitOutcome(argvRun); info.Outcome != "failed" || info.OutcomeText != "exit status 3" {
+		t.Errorf("argv run = %q/%q, want failed/\"exit status 3\" from the words run as an argv", info.Outcome, info.OutcomeText)
+	}
+}

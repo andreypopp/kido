@@ -80,7 +80,7 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	runID, windowID := h.spawnRun("resume-src", "exec sleep 300")
+	runID, windowID := h.spawnRun("resume-src", "echo resume-screen-e2e; exec sleep 300")
 	paneID := h.in("list-panes", "-t", windowID, "-F", "#{pane_id}")
 	h.killPane(paneID)
 	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
@@ -90,6 +90,12 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 	if got := h.runOutcomeNamed("before", runID); got != "died" {
 		t.Fatalf("run %s outcome = %q, want %q before resuming", runID, got, "died")
 	}
+	before := h.runMeta("before", runID)
+	if screen, _ := before["screen"].(string); !strings.Contains(screen, "resume-screen-e2e") {
+		t.Fatalf("run %s screen = %q, want the sweep's capture of the first attempt", runID, screen)
+	}
+	newParentPane := h.newWindow("alpha", "", "sh", "-c", "exec sleep 300")
+	h.agentStatus("new-parent-e2e", newParentPane, "pi", "idle")
 
 	sessDir := filepath.Join(h.dir, "pi-sessions")
 	if err := os.MkdirAll(sessDir, 0o755); err != nil {
@@ -100,10 +106,12 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Typed from another directory, under another parent: a resume keeps
+	// the run's own cwd, since pi sessions are project-scoped.
 	outFile := filepath.Join(h.dir, "resume.out")
 	envFile := filepath.Join(h.dir, "resume.env")
-	fake := shellQuote(fmt.Sprintf("env > %s; sleep 300", envFile))
-	cmd := fmt.Sprintf("PI_CODING_AGENT_SESSION_DIR=%s %s spawn_subagent --resume %s -- /bin/sh -c %s > %s 2>&1",
+	fake := shellQuote(fmt.Sprintf("env > %s; pwd >> %s; sleep 300", envFile, envFile))
+	cmd := fmt.Sprintf("cd / && PI_CODING_AGENT_SESSION_DIR=%s %s spawn_subagent --resume %s --parent-pid 777 --parent-session new-parent-e2e --keep-alive -- /bin/sh -c %s > %s 2>&1",
 		shellQuote(sessDir), kidoBin, runID, fake, outFile)
 	h.sendLiteral(cmd)
 	h.sendKeys("Enter")
@@ -122,8 +130,31 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 	}
 
 	env := h.waitFileNonEmpty(envFile)
-	if got := envLine(env, "KIDO_AGENT_RUN_ID"); got != runID {
-		t.Errorf("KIDO_AGENT_RUN_ID = %q, want the original run id %q", got, runID)
+	for k, want := range map[string]string{
+		"KIDO_AGENT_RUN_ID":         runID,
+		"KIDO_AGENT_PARENT_SESSION": "new-parent-e2e",
+		"KIDO_AGENT_PARENT_PID":     "777",
+		"KIDO_AGENT_KEEP_ALIVE":     "1",
+	} {
+		if got := envLine(env, k); got != want {
+			t.Errorf("resumed child's %s = %q, want %q", k, got, want)
+		}
+	}
+	lines := strings.Split(strings.TrimRight(env, "\n"), "\n")
+	wantCwd, err := filepath.EvalSymlinks(h.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cwd := lines[len(lines)-1]; cwd != wantCwd {
+		t.Errorf("resumed child's cwd = %q, want the run's own %q", cwd, wantCwd)
+	}
+	after := h.runMeta("after", runID)
+	if _, ok := after["screen"]; ok {
+		t.Errorf("run %s still shows the first attempt's screen after resuming", runID)
+	}
+	if after["startedAt"] != before["startedAt"] || after["parentSession"] != "new-parent-e2e" {
+		t.Errorf("resumed meta startedAt=%v parentSession=%v, want startedAt %v kept and the new parent",
+			after["startedAt"], after["parentSession"], before["startedAt"])
 	}
 
 	mark := h.in("show-options", "-p", "-v", "-t", newPaneID, "@kido_run")
@@ -162,6 +193,100 @@ func TestSpawnResumeRefusesLiveRun(t *testing.T) {
 	if !strings.Contains(out, "still running") {
 		t.Errorf("kido spawn_subagent --resume on a live run = %q, want a refusal naming it still running", out)
 	}
+	want := fmt.Sprintf("kido spawn_subagent: run \"no-such-run\": no readable %s\nrc=1\n",
+		filepath.Join(h.stateDir, "runs", "no-such-run", "meta.json"))
+	if got := h.runKido("alpha", "resume-unknown.out", "spawn_subagent", "--resume", "no-such-run"); got != want {
+		t.Errorf("kido spawn_subagent --resume no-such-run = %q, want %q", got, want)
+	}
+}
+
+// resumeRun ends a run's current attempt and resumes it with a fake
+// command that dumps its environment, returning that environment and the
+// new attempt's window.
+func (h *harness) resumeRun(tag, runID, windowID, sessDir string, flags ...string) (env, newWindowID string) {
+	h.t.Helper()
+	h.killPane(h.in("list-panes", "-t", windowID, "-F", "#{pane_id}"))
+	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
+		msgf("the sweep to close window %s", windowID))
+	outFile := filepath.Join(h.dir, tag+".out")
+	envFile := filepath.Join(h.dir, tag+".env")
+	fake := shellQuote(fmt.Sprintf("env > %s; sleep 300", envFile))
+	h.sendLiteral(fmt.Sprintf("PI_CODING_AGENT_SESSION_DIR=%s %s spawn_subagent --resume %s %s -- /bin/sh -c %s > %s 2>&1",
+		shellQuote(sessDir), kidoBin, runID, strings.Join(flags, " "), fake, outFile))
+	h.sendKeys("Enter")
+	fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
+	if len(fields) != 3 {
+		h.t.Fatalf("kido spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", fields)
+	}
+	return h.waitFileNonEmpty(envFile), fields[0]
+}
+
+// With no parent flags a resume's child is the caller's own, by the
+// caller's record, and --no-parent drops even that; neither invents a
+// keep-alive the run never had.
+func TestSpawnResumeParentIsTheCallersOrNobody(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+
+	runID, windowID := h.spawnRun("edge-src", "exec sleep 300")
+	sessDir := filepath.Join(h.dir, "pi-sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessDir, "2026-01-01T00-00-00-000Z_"+runID+".jsonl"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	env, windowID := h.resumeRun("defaulted", runID, windowID, sessDir)
+	for k, want := range map[string]string{"KIDO_AGENT_PARENT_SESSION": "root-e2e", "KIDO_AGENT_KEEP_ALIVE": ""} {
+		if got := envLine(env, k); got != want {
+			t.Errorf("resumed child's %s = %q, want %q", k, got, want)
+		}
+	}
+
+	env, _ = h.resumeRun("handed-over", runID, windowID, sessDir, "--no-parent")
+	for _, k := range []string{"KIDO_AGENT_PARENT_SESSION", "KIDO_AGENT_PARENT_PID"} {
+		if got := envLine(env, k); got != "" {
+			t.Errorf("child resumed with --no-parent has %s = %q, want it unset", k, got)
+		}
+	}
+	if got, _ := h.runMeta("handed-over", runID)["parentSession"].(string); got != "" {
+		t.Errorf("run meta parentSession = %q after --no-parent, want none", got)
+	}
+}
+
+// With no pi session file under the run's id there is nothing to resume:
+// the id is free, not stale, so the child mints a session under it with
+// --session-id, and the delivered marker goes so the stored task is
+// delivered again. TestSpawnResumeCarriesToolsOntoThePiCommandLine is the
+// other half: a file there, `--session`, and the marker kept.
+func TestSpawnResumeWithNoPiSessionMintsOne(t *testing.T) {
+	t.Parallel()
+	h := startPathPrefix(t, "alpha", piBinDir)
+
+	runID, windowID := h.spawnRun("mint-src", "exec sleep 300")
+	h.killPane(h.in("list-panes", "-t", windowID, "-F", "#{pane_id}"))
+	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
+		msgf("the sweep to close window %s", windowID))
+	delivered := filepath.Join(h.stateDir, "runs", runID, "delivered")
+	if err := os.WriteFile(delivered, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	outFile := filepath.Join(h.dir, "resume.out")
+	h.sendLiteral(fmt.Sprintf("PI_CODING_AGENT_SESSION_DIR=%s %s spawn_subagent --resume %s > %s 2>&1",
+		shellQuote(t.TempDir()), kidoBin, runID, outFile))
+	h.sendKeys("Enter")
+	fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
+	if len(fields) != 3 {
+		t.Fatalf("kido spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", fields)
+	}
+	if started := h.startCommand(fields[0]); !strings.Contains(started, "pi --session-id "+runID) {
+		t.Errorf("resumed pane's command = %q, want a session minted under the run's own id", started)
+	}
+	if _, err := os.Stat(delivered); !os.IsNotExist(err) {
+		t.Errorf("delivered marker %s still there (%v); the task must be delivered again", delivered, err)
+	}
 }
 
 // spawnRecordedRun is the fixture the two carry tests below share: a run
@@ -174,7 +299,7 @@ func (h *harness) spawnRecordedRun(name string) (runID, sessDir string) {
 	outFile := filepath.Join(h.dir, name+"-spawn.out")
 	h.sendLiteral(fmt.Sprintf(
 		"%s spawn_subagent --parent-pid 1 --parent-session root-e2e --name %s "+
-			"--task-file %s --tools read,bash --keep-alive -- /bin/sh -c %s > %s 2>&1",
+			"--task-file %s --model acme/claude-sonnet-5 --tools read,bash --keep-alive -- /bin/sh -c %s > %s 2>&1",
 		kidoBin, name, h.writeTaskFile(name), shellQuote("exec sleep 300"), outFile))
 	h.sendKeys("Enter")
 	fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
@@ -224,32 +349,53 @@ func TestSpawnResumeCarriesKeepAlive(t *testing.T) {
 
 // A narrow toolset is a blast-radius bound the depth ceiling is not; a
 // resume that quietly handed the full set back would widen it unasked.
+// The model comes back the same way, unless the resume names its own.
 //
-// The allowlist is spelled onto the command line only when the command is
+// Both are spelled onto the command line only when the command is
 // literally `pi`; whether that name resolves decides whether the pane
 // lives long enough to set remain-on-exit (Tmux.Exec.new_window's
 // race), so this test's own fake pi goes on this server's PATH alone.
+// It answers --list-models too, which the carried model is checked by.
 func TestSpawnResumeCarriesToolsOntoThePiCommandLine(t *testing.T) {
 	t.Parallel()
-	h := startPathPrefix(t, "alpha", piBinDir)
+	piDir := filepath.Join(t.TempDir(), "model-pi-bin")
+	writeFakeListModelsPi(t, piDir)
+	h := startPathPrefix(t, "alpha", piDir)
 
 	runID, sessDir := h.spawnRecordedRun("tools-carry-e2e")
-
-	outFile := filepath.Join(h.dir, "resume.out")
-	h.sendLiteral(fmt.Sprintf("PI_CODING_AGENT_SESSION_DIR=%s %s spawn_subagent --resume %s > %s 2>&1",
-		shellQuote(sessDir), kidoBin, runID, outFile))
-	h.sendKeys("Enter")
-	fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
-	if len(fields) != 3 {
-		t.Fatalf("kido spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", fields)
+	delivered := filepath.Join(h.stateDir, "runs", runID, "delivered")
+	if err := os.WriteFile(delivered, nil, 0o644); err != nil {
+		t.Fatal(err)
 	}
-	newWindowID := fields[0]
+
+	resume := func(tag string, command ...string) string {
+		outFile := filepath.Join(h.dir, tag+".out")
+		h.sendLiteral(fmt.Sprintf("PATH=%s:$PATH PI_CODING_AGENT_SESSION_DIR=%s %s spawn_subagent --resume %s -- %s > %s 2>&1",
+			shellQuote(piDir), shellQuote(sessDir), kidoBin, runID, strings.Join(command, " "), outFile))
+		h.sendKeys("Enter")
+		fields := strings.Fields(strings.TrimSpace(h.waitFileNonEmpty(outFile)))
+		if len(fields) != 3 {
+			t.Fatalf("kido spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", fields)
+		}
+		return fields[0]
+	}
+	newWindowID := resume("resume", "pi")
 
 	started := h.startCommand(newWindowID)
-	if !strings.Contains(started, "--tools read,bash") {
-		t.Errorf("resumed pane's command = %q, want the run's own recorded tool allowlist back", started)
+	for _, want := range []string{"--tools read,bash", "--model acme/claude-sonnet-5", "--session " + runID} {
+		if !strings.Contains(started, want) {
+			t.Errorf("resumed pane's command = %q, want %q: the run's own session, tools and model back", started, want)
+		}
 	}
-	if !strings.Contains(started, "--session "+runID) {
-		t.Errorf("resumed pane's command = %q, want it to resume the run's own session", started)
+	if _, err := os.Stat(delivered); err != nil {
+		t.Errorf("delivered marker: %v; resuming a session pi still has must not deliver the task again", err)
+	}
+
+	h.killPane(h.in("list-panes", "-t", newWindowID, "-F", "#{pane_id}"))
+	h.waitFor(func() bool { return !h.windowExists(newWindowID) }, settle,
+		msgf("the sweep to close window %s", newWindowID))
+	started = h.startCommand(resume("override", "pi", "--model", "acme/claude-opus-5"))
+	if !strings.Contains(started, "--model acme/claude-opus-5") || strings.Contains(started, "claude-sonnet-5") {
+		t.Errorf("resumed pane's command = %q, want the model the resume named and not the recorded one", started)
 	}
 }

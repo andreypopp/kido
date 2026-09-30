@@ -129,9 +129,7 @@ let take ~opts conn prev =
           panes
       in
       if not (List.is_empty panes) then
-        Reap.collect ~dir:opts.dir ~capture:Subrun.capture_pane ~grace:opts.grace panes live
-          ~now:(Unix.gettimeofday ())
-          { kill_window = Tmux.Exec.kill_window; kill_pane = Tmux.Exec.kill_pane };
+        Reap.collect ~dir:opts.dir ~grace:opts.grace panes live ~now:(Unix.gettimeofday ());
       let probes = dismissals conn prev.probes states in
       let states =
         String_map.fold

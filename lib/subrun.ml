@@ -106,7 +106,6 @@ let record_outcome ~dir id o =
   | () -> true
   | exception Unix.Unix_error _ -> false
 
-let write_screen ~dir id data = Fs.write_atomic (screen_path ~dir id) data
 let read_screen ~dir id = Fs.read (screen_path ~dir id)
 
 let reset_for_resume ~dir id ~delivered =
@@ -135,15 +134,14 @@ let truncate_screen data =
   let n = String.length data in
   if n > max_screen_bytes then String.sub data (n - max_screen_bytes) max_screen_bytes else data
 
-let capture_pane pane = Result.to_opt (Tmux.Exec.capture_screen pane)
-
-let save_screen ~dir ~capture id pane =
+let save_screen ~dir id pane =
   if String.is_empty pane then None
   else
     Option.map
       (fun text ->
         let data = truncate_screen text in
         (if not (String.is_empty data) then
-           try write_screen ~dir id data with Unix.Unix_error _ | Sys_error _ -> ());
+           try Fs.write_atomic (screen_path ~dir id) data
+           with Unix.Unix_error _ | Sys_error _ -> ());
         data)
-      (capture pane)
+      (Result.to_opt (Tmux.Exec.capture_screen pane))

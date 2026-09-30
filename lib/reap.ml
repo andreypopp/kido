@@ -7,12 +7,9 @@ let grace () =
 
 type close = Window of string | Pane of { window : string; pane : string }
 
-type ops = {
-  kill_window : string -> (unit, string) result;
-  kill_pane : string -> (unit, string) result;
-}
-
-let release ops = function Window w -> ops.kill_window w | Pane { pane; _ } -> ops.kill_pane pane
+let release = function
+  | Window w -> Tmux.Exec.kill_window w
+  | Pane { pane; _ } -> Tmux.Exec.kill_pane pane
 
 let close_of panes window pane =
   if not (P.last_pane panes window) then Some (Pane { window; pane })
@@ -54,20 +51,6 @@ let quote s =
   Buffer.add_char b '"';
   Buffer.contents b
 
-let tail_of_file path max =
-  let ic = open_in_bin path in
-  Fun.protect
-    ~finally:(fun () -> close_in ic)
-    (fun () ->
-      let size = in_channel_length ic in
-      let omitted = if size > max then size - max else 0 in
-      seek_in ic omitted;
-      let b = really_input_string ic (size - omitted) in
-      let skip =
-        if omitted > 0 then String.drop_while (fun c -> Char.code c land 0xC0 = 0x80) b else b
-      in
-      (Msg.valid_utf_8 skip, omitted + String.length b - String.length skip))
-
 let body ~dir e =
   let b = Buffer.create 256 in
   let result = Subrun.string_of_result e.outcome.result in
@@ -79,7 +62,21 @@ let body ~dir e =
       Printf.bprintf b "output: %s\n" output;
       if unstreamed > 0 then
         Printf.bprintf b "%d lines not streamed (the output file above has every one)\n" unstreamed;
-      match tail_of_file output Msg.max_notice_bytes with
+      let cap = Msg.max_notice_bytes in
+      match
+        let ic = open_in_bin output in
+        Fun.protect
+          ~finally:(fun () -> close_in ic)
+          (fun () ->
+            let size = in_channel_length ic in
+            let omitted = if size > cap then size - cap else 0 in
+            seek_in ic omitted;
+            let b = really_input_string ic (size - omitted) in
+            let skip =
+              if omitted > 0 then String.drop_while (fun c -> Char.code c land 0xC0 = 0x80) b else b
+            in
+            (Msg.valid_utf_8 skip, omitted + String.length b - String.length skip))
+      with
       | exception Sys_error err -> Printf.bprintf b "--- output unreadable: %s ---" err
       | "", _ -> Buffer.add_string b "--- no output ---"
       | tail, omitted when omitted > 0 ->
@@ -129,7 +126,7 @@ let guess_ending ~dir run_id ~now =
         | Agent -> { result = Died; text = ""; at = Some now }))
     (Subrun.read_meta ~dir run_id)
 
-let sweep ~dir ~capture ~grace panes sessions ~now =
+let sweep ~dir ~grace panes sessions ~now =
   let mark ((closing, endings) as acc) (p : P.t) =
     let window = p.window_id in
     let closes = function Window w | Pane { window = w; _ } -> String.equal w window in
@@ -138,7 +135,7 @@ let sweep ~dir ~capture ~grace panes sessions ~now =
       when not (P.window_focused panes window || List.exists closes closing) -> (
         match (close_of panes window p.pane_id, Subrun.parse_id run) with
         | Some close, Ok run_id ->
-            ignore (Subrun.save_screen ~dir ~capture run_id p.pane_id);
+            ignore (Subrun.save_screen ~dir run_id p.pane_id);
             (closing @ [ close ], endings @ Option.to_list (guess_ending ~dir run_id ~now))
         | _ -> acc)
     | _ -> acc
@@ -164,7 +161,7 @@ let sweep ~dir ~capture ~grace panes sessions ~now =
       | _ -> acc)
     acc sessions
 
-let collect ~dir ~capture ~grace panes sessions ~now ops =
-  let closing, endings = sweep ~dir ~capture ~grace panes sessions ~now in
-  List.iter (fun c -> ignore (release ops c)) closing;
+let collect ~dir ~grace panes sessions ~now =
+  let closing, endings = sweep ~dir ~grace panes sessions ~now in
+  List.iter (fun c -> ignore (release c)) closing;
   List.iter (fun e -> ignore (send ~dir e)) endings

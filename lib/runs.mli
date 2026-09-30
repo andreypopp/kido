@@ -13,7 +13,6 @@ val show : dir:string -> json:bool -> string -> (string, string) result
 
 val run_outcome :
   dir:string ->
-  capture:(string -> string option) ->
   warn:(string -> unit) ->
   result:Subrun.result ->
   text:string ->

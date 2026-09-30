@@ -12,54 +12,7 @@ let usage =
   \   or: kido spawn_subagent --resume RUN_ID [--parent-pid PID --parent-session ID | --no-parent] \
    [--keep-alive] [-- COMMAND...]"
 
-type tmux = {
-  new_window :
-    session:string ->
-    name:string ->
-    cwd:string ->
-    env:string list ->
-    string list ->
-    (Tmux.Exec.window, string) result;
-  mark_run : string -> string -> (unit, string) result;
-  window_exists : string -> bool;
-  kill_window : string -> (unit, string) result;
-}
-
-let tmux =
-  {
-    new_window = Tmux.Exec.new_window;
-    mark_run = Tmux.Exec.mark_run;
-    window_exists = Tmux.Exec.window_exists;
-    kill_window = Tmux.Exec.kill_window;
-  }
-
-type pi = {
-  list_models : unit -> (string, string) result;
-  session_dir : string;
-  agent_dir : string;
-  home : string;
-}
-
-let list_models ~path () =
-  match Tmux.Exec.look_path ~path "pi" with
-  | None -> Error {|exec: "pi": executable file not found in $PATH|}
-  | Some pi -> (
-      let r, w = Unix.pipe ~cloexec:true () in
-      let null = Unix.openfile "/dev/null" [ Unix.O_WRONLY; Unix.O_CLOEXEC ] 0 in
-      let pid =
-        Fun.protect
-          ~finally:(fun () -> List.iter Unix.close [ w; null ])
-          (fun () -> Unix.create_process pi [| "pi"; "--list-models" |] Unix.stdin w null)
-      in
-      let out =
-        Fun.protect
-          ~finally:(fun () -> Unix.close r)
-          (fun () -> In_channel.input_all (Unix.in_channel_of_descr r))
-      in
-      match snd (Unix.waitpid [] pid) with
-      | WEXITED 0 -> Ok out
-      | WEXITED n -> Error (Printf.sprintf "exit status %d" n)
-      | WSIGNALED n | WSTOPPED n -> Error (Printf.sprintf "signal %d" n))
+type pi = { path : string; session_dir : string; agent_dir : string; home : string }
 
 type flags = {
   parent_pid : int;
@@ -170,7 +123,7 @@ let parse (f : flags) =
 
 (* A model no configured provider can run makes pi print "Use /login ..." and exit 0 having run
    no turn. pi --list-models prints a header, then one row per model: provider, model id. *)
-let validate_model list_models command =
+let validate_model ~path command =
   let model =
     match command with
     | "pi" :: _ ->
@@ -180,7 +133,28 @@ let validate_model list_models command =
   in
   if String.is_empty model then Ok ()
   else
-    match list_models () with
+    let listed =
+      match Tmux.Exec.look_path ~path "pi" with
+      | None -> Error {|exec: "pi": executable file not found in $PATH|}
+      | Some pi -> (
+          let r, w = Unix.pipe ~cloexec:true () in
+          let null = Unix.openfile "/dev/null" [ Unix.O_WRONLY; Unix.O_CLOEXEC ] 0 in
+          let pid =
+            Fun.protect
+              ~finally:(fun () -> List.iter Unix.close [ w; null ])
+              (fun () -> Unix.create_process pi [| "pi"; "--list-models" |] Unix.stdin w null)
+          in
+          let out =
+            Fun.protect
+              ~finally:(fun () -> Unix.close r)
+              (fun () -> In_channel.input_all (Unix.in_channel_of_descr r))
+          in
+          match snd (Unix.waitpid [] pid) with
+          | WEXITED 0 -> Ok out
+          | WEXITED n -> Error (Printf.sprintf "exit status %d" n)
+          | WSIGNALED n | WSTOPPED n -> Error (Printf.sprintf "signal %d" n))
+    in
+    match listed with
     | Error e -> Error (Printf.sprintf "could not validate model %S: pi --list-models: %s" model e)
     | Ok out ->
         let rows =
@@ -247,7 +221,7 @@ let run_env ~dir id parent depth ~keep_alive =
     | None -> [])
   @ if keep_alive then [ "KIDO_AGENT_KEEP_ALIVE=1" ] else []
 
-let create_run_window ~dir tmux (meta : Subrun.meta) ~session ~env command =
+let create_run_window ~dir (meta : Subrun.meta) ~session ~env command =
   let open Result.Infix in
   let fail e =
     ignore
@@ -256,7 +230,7 @@ let create_run_window ~dir tmux (meta : Subrun.meta) ~session ~env command =
     Error e
   in
   let* w =
-    match tmux.new_window ~session ~name:meta.name ~cwd:meta.cwd ~env command with
+    match Tmux.Exec.new_window ~session ~name:meta.name ~cwd:meta.cwd ~env command with
     | Ok w -> Ok w
     | Error e -> fail e
   in
@@ -264,13 +238,13 @@ let create_run_window ~dir tmux (meta : Subrun.meta) ~session ~env command =
   Subrun.write_meta ~dir meta;
   let id = Subrun.string_of_id meta.id in
   let+ () =
-    match tmux.mark_run w.pane_id id with
+    match Tmux.Exec.mark_run w.pane_id id with
     | Ok () -> Ok ()
     | Error e -> (
         match meta.kind with
-        | Bash when not (tmux.window_exists w.window_id) -> Ok ()
+        | Bash when not (Tmux.Exec.window_exists w.window_id) -> Ok ()
         | Bash | Agent ->
-            ignore (tmux.kill_window w.window_id);
+            ignore (Tmux.Exec.kill_window w.window_id);
             fail e)
   in
   match meta.kind with
@@ -279,9 +253,9 @@ let create_run_window ~dir tmux (meta : Subrun.meta) ~session ~env command =
 
 let insert_after_head extra = function head :: rest -> (head :: extra) @ rest | [] -> extra
 
-let caller ~dir ~self ~panes owner =
+let caller ~dir ~self owner =
   let open Result.Infix in
-  let* panes = Lazy.force panes in
+  let* panes = Tmux.Exec.list_panes () in
   let+ pane = List_agents.caller_pane panes self in
   let own = State.String_map.find_opt pane.pane_id (State.by_pane (State.load_live ~dir)) in
   let parent =
@@ -292,9 +266,9 @@ let caller ~dir ~self ~panes owner =
   in
   (pane, parent, 1 + Option.map_or ~default:0 (fun (_, (s : State.session)) -> s.depth) own)
 
-let spawn ~dir ~self ~panes ~tmux ~pi req =
+let spawn ~dir ~self ~pi req =
   let open Result.Infix in
-  let* pane, parent, depth = caller ~dir ~self ~panes req.owner in
+  let* pane, parent, depth = caller ~dir ~self req.owner in
   let* () =
     if depth > max_depth then
       Error
@@ -381,7 +355,7 @@ let spawn ~dir ~self ~panes ~tmux ~pi req =
         in
         Ok (meta, command, mint)
   in
-  let* () = validate_model pi.list_models command in
+  let* () = validate_model ~path:pi.path command in
   (* A resume keeps the run's own cwd: pi sessions are project-scoped, and `pi --session` from
      another directory asks to fork instead of resuming. *)
   let meta =
@@ -397,6 +371,6 @@ let spawn ~dir ~self ~panes ~tmux ~pi req =
       Subrun.create ~dir meta.id task;
       Subrun.write_meta ~dir meta
   | Resume _ -> Subrun.reset_for_resume ~dir meta.id ~delivered:mint);
-  create_run_window ~dir tmux meta ~session:pane.session_id
+  create_run_window ~dir meta ~session:pane.session_id
     ~env:(run_env ~dir meta.id parent depth ~keep_alive:meta.keep_alive)
     command

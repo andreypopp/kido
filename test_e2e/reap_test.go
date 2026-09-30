@@ -78,10 +78,15 @@ func (h *harness) killPane(paneID string) {
 // mid-write.
 func (h *harness) runKido(session, outName string, args ...string) string {
 	h.t.Helper()
+	return h.runScript(session, outName, kidoBin+" "+strings.Join(args, " "))
+}
+
+// runScript is runKido for any sh command line: an environment
+// assignment ahead of kido, or a command that is not kido at all.
+func (h *harness) runScript(session, outName, script string) string {
+	h.t.Helper()
 	outFile := filepath.Join(h.dir, outName)
-	script := fmt.Sprintf("%s %s > %s 2>&1; echo rc=$? >> %s",
-		kidoBin, strings.Join(args, " "), outFile, outFile)
-	h.newWindow(session, "", "sh", "-c", script)
+	h.newWindow(session, "", "sh", "-c", fmt.Sprintf("%s > %s 2>&1; echo rc=$? >> %s", script, outFile, outFile))
 	var content string
 	h.waitFor(func() bool {
 		b, err := os.ReadFile(outFile)
@@ -95,6 +100,16 @@ func (h *harness) runKido(session, outName string, args ...string) string {
 		return fmt.Sprintf("%s to contain an \"rc=\" line, got %q", outFile, string(b))
 	})
 	return content
+}
+
+// typeScript is runScript typed into an existing shell pane, for a
+// command whose caller must be that pane: the agent recorded on it.
+func (h *harness) typeScript(pane, outName, script string) string {
+	h.t.Helper()
+	outFile := filepath.Join(h.dir, outName)
+	h.in("send-keys", "-t", pane, "-l", fmt.Sprintf("%s > %s 2>&1; echo rc=$? >> %s", script, outFile, outFile))
+	h.in("send-keys", "-t", pane, "Enter")
+	return h.waitFileContains(outFile, "rc=")
 }
 
 // stays asserts cond keeps holding for a while: a window never closed
@@ -401,5 +416,57 @@ func TestCloseRunRefusesABadWindowID(t *testing.T) {
 	want := `kido close-run: "@1x" is not a window id (@N)` + "\nrc=1"
 	if got := strings.TrimSpace(h.runKido("alpha", "bad.out", "close-run", "@1x")); got != want {
 		t.Errorf("close-run @1x = %q, want %q", got, want)
+	}
+}
+
+// Rule 1 waits out the linger before touching a finished run, and saves
+// the run's screen only for a window it actually closes. The same
+// `kido reap`, run with a linger the dead pane has not yet outlived and
+// then with the harness's own 1s, is the pair.
+func TestReapLeavesARunAloneWithinItsLinger(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	h.hideSidebar()
+
+	runID, windowID := h.spawnRun("young-e2e", "echo young-screen-e2e; exec sleep 300")
+	h.killPane(h.in("list-panes", "-t", windowID, "-F", "#{pane_id}"))
+
+	h.runScript("alpha", "reap-young.out", "KIDO_LINGER_SECONDS=600 "+kidoBin+" reap")
+	h.stays(func() bool { return h.windowExists(windowID) },
+		"a run's window was closed within its linger")
+	if _, ok := h.runMeta("young", runID)["screen"]; ok {
+		t.Errorf("run %s has a screen saved for a window the sweep left alone", runID)
+	}
+
+	h.runKido("alpha", "reap-old.out", "reap")
+	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
+		msgf("`kido reap` to close window %s once its linger has passed", windowID))
+	if screen, _ := h.runMeta("old", runID)["screen"].(string); !strings.Contains(screen, "young-screen-e2e") {
+		t.Errorf("run %s screen = %q, want the closed window's last screen", runID, screen)
+	}
+}
+
+// A session's only window is never closed (the test above), but a run's
+// pane in it is still collected when the user split it: the pane goes,
+// the split and the session stay.
+func TestReapTakesARunPaneFromASessionsOnlyWindow(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+
+	h.in("new-session", "-d", "-s", "solo", "-c", h.dir, "sh", "-c", "exec sleep 300")
+	h.waitRow("solo")
+	paneID := h.in("list-panes", "-t", "solo", "-F", "#{pane_id}")
+	windowID := h.windowID(paneID)
+	h.in("set-window-option", "-t", windowID, "remain-on-exit", "on")
+	h.in("set-option", "-p", "-t", paneID, "@kido_run", "solo-split-e2e")
+	split := h.in("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", windowID, "sh", "-c", "exec sleep 300")
+	h.killPane(paneID)
+
+	time.Sleep(1200 * time.Millisecond) // the harness's linger is 1s
+	h.runKido("alpha", "solo-split.out", "reap")
+	h.waitFor(func() bool { return !h.paneExists(paneID) }, settle,
+		msgf("the run's dead pane %s to be collected from session solo's only window", paneID))
+	if !h.paneExists(split) || !strings.Contains(h.in("list-sessions", "-F", "#{session_name}"), "solo") {
+		t.Errorf("the split %s or session solo went with the run's pane", split)
 	}
 }

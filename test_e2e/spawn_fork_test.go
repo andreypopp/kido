@@ -9,9 +9,9 @@ import (
 
 // A forked child is `pi --fork <caller's session> --session-id <run id>`:
 // the fork is the context it was spawned for, the run id is what its own
-// extension proves its identity with (share/pi/kido-agents.ts's ownRunID). The
-// unit test pins the argv kido builds; this reads it back via
-// startCommand.
+// extension proves its identity with (share/pi/kido-agents.ts's ownRunID),
+// read back via startCommand. TestSpawnModelMustBeAConfiguredProvidersOwn
+// pins where both go among the child's own flags.
 //
 // The flags are spelled onto the line only when the command is literally
 // `pi`, so this spawn names none; hence the fake pi on this server's

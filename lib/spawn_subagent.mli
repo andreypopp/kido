@@ -1,30 +1,6 @@
-val max_depth : int
-val max_task_bytes : int
 val max_window_name_len : int
 
-type tmux = {
-  new_window :
-    session:string ->
-    name:string ->
-    cwd:string ->
-    env:string list ->
-    string list ->
-    (Tmux.Exec.window, string) result;
-  mark_run : string -> string -> (unit, string) result;
-  window_exists : string -> bool;
-  kill_window : string -> (unit, string) result;
-}
-
-val tmux : tmux
-
-type pi = {
-  list_models : unit -> (string, string) result;
-  session_dir : string;
-  agent_dir : string;
-  home : string;
-}
-
-val list_models : path:string -> unit -> (string, string) result
+type pi = { path : string; session_dir : string; agent_dir : string; home : string }
 
 type flags = {
   parent_pid : int;
@@ -45,14 +21,9 @@ type owner = Given of State.parent | Nobody | Adopt
 
 val parse : flags -> (request, string) result
 val check_window_name : string -> (unit, string) result
-val validate_model : (unit -> (string, string) result) -> string list -> (unit, string) result
 
 val caller :
-  dir:string ->
-  self:string ->
-  panes:(Tmux.Pane.t list, string) result Lazy.t ->
-  owner ->
-  (Tmux.Pane.t * State.parent option * int, string) result
+  dir:string -> self:string -> owner -> (Tmux.Pane.t * State.parent option * int, string) result
 (** The caller's pane, the parent a run it starts gets, and the run's depth. *)
 
 val run_env :
@@ -60,7 +31,6 @@ val run_env :
 
 val create_run_window :
   dir:string ->
-  tmux ->
   Subrun.meta ->
   session:string ->
   env:string list ->
@@ -68,11 +38,4 @@ val create_run_window :
   (string, string) result
 (** The created line: window, pane and run ids, and a bash run's output file. *)
 
-val spawn :
-  dir:string ->
-  self:string ->
-  panes:(Tmux.Pane.t list, string) result Lazy.t ->
-  tmux:tmux ->
-  pi:pi ->
-  request ->
-  (string, string) result
+val spawn : dir:string -> self:string -> pi:pi -> request -> (string, string) result

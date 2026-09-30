@@ -3,6 +3,7 @@ open Fixture
 
 let temp () = Filename.temp_dir "kido-state" ""
 let id s = Result.get_exn (Subrun.parse_id s)
+let in_run ~dir i name = Filename.concat (Filename.dirname (Subrun.task_path ~dir i)) name
 
 let%expect_test "Create writes meta and task, round-tripping what was written" =
   let dir = temp () in
@@ -108,45 +109,18 @@ let%expect_test "RecordOutcome into a run directory that is gone lost the write,
     (Subrun.record_outcome ~dir:(temp ()) i { result = Died; text = ""; at = None });
   [%expect {| false |}]
 
-let%expect_test "WriteScreen: last writer wins, unlike RecordOutcome" =
-  let dir = temp () in
-  let i = id "run-screen" in
-  Subrun.create ~dir i "x";
-  Printf.printf "before any write: %b\n" (Option.is_none (Subrun.read_screen ~dir i));
-  Subrun.write_screen ~dir i "first capture";
-  Subrun.write_screen ~dir i "second capture";
-  print_endline (Option.get_exn_or "ReadScreen" (Subrun.read_screen ~dir i));
-  [%expect {|
-    before any write: true
-    second capture
-    |}]
-
-let%expect_test "WriteScreen: concurrent writers never leave a mixed payload" =
-  let dir = temp () in
-  let i = id "run-screen-race" in
-  Subrun.create ~dir i "x";
-  let writers = 8 in
-  let payloads = List.init writers (fun n -> String.repeat (string_of_int n) 4096) in
-  let threads =
-    List.map (fun p -> Thread.create (fun () -> Subrun.write_screen ~dir i p) ()) payloads
-  in
-  List.iter Thread.join threads;
-  let got = Option.get_exn_or "ReadScreen" (Subrun.read_screen ~dir i) in
-  Printf.printf "matches one whole payload: %b\n" (List.exists (String.equal got) payloads);
-  [%expect {| matches one whole payload: true |}]
-
 let%expect_test "ResetForResume clears outcome, screen, and (when asked) the delivered marker" =
   let dir = temp () in
   let i = id "run-screen-clear" in
   Subrun.create ~dir i "x";
   Subrun.reset_for_resume ~dir i ~delivered:true;
-  Subrun.write_screen ~dir i "captured";
+  Fs.write (in_run ~dir i "screen") "captured";
   ignore (Subrun.record_outcome ~dir i { result = Died; text = ""; at = None });
-  Fs.write (Subrun.delivered_path ~dir i) "";
+  Fs.write (in_run ~dir i "delivered") "";
   Subrun.reset_for_resume ~dir i ~delivered:true;
   Printf.printf "screen gone: %b\n" (Option.is_none (Subrun.read_screen ~dir i));
   Printf.printf "outcome gone: %b\n" (Option.is_none (Subrun.read_outcome ~dir i));
-  Printf.printf "delivered gone: %b\n" (not (Sys.file_exists (Subrun.delivered_path ~dir i)));
+  Printf.printf "delivered gone: %b\n" (not (Sys.file_exists (in_run ~dir i "delivered")));
   [%expect {|
     screen gone: true
     outcome gone: true
@@ -157,9 +131,9 @@ let%expect_test "ResetForResume keeps the delivered marker unless asked" =
   let dir = temp () in
   let i = id "run-screen-clear-2" in
   Subrun.create ~dir i "x";
-  Fs.write (Subrun.delivered_path ~dir i) "";
+  Fs.write (in_run ~dir i "delivered") "";
   Subrun.reset_for_resume ~dir i ~delivered:false;
-  Printf.printf "delivered kept: %b\n" (Sys.file_exists (Subrun.delivered_path ~dir i));
+  Printf.printf "delivered kept: %b\n" (Sys.file_exists (in_run ~dir i "delivered"));
   [%expect {| delivered kept: true |}]
 
 let%expect_test "EffectiveOutcome: still running when alive and unrecorded" =
@@ -231,10 +205,10 @@ let%expect_test "ParseID refuses path traversal" =
 let%expect_test "screen truncation keeps the tail" =
   let short = String.repeat "x" 100 in
   Printf.printf "short unchanged: %b\n" (String.equal short (Subrun.truncate_screen short));
-  let long = String.repeat "y" (Subrun.max_screen_bytes + 10) in
+  let long = String.repeat "x" 10 ^ String.repeat "y" (64 * 1024) in
   let truncated = Subrun.truncate_screen long in
   Printf.printf "%d %b\n" (String.length truncated)
-    (String.equal (String.repeat "y" Subrun.max_screen_bytes) truncated);
+    (String.equal (String.repeat "y" (64 * 1024)) truncated);
   [%expect {|
     short unchanged: true
     65536 true
