@@ -1,46 +1,386 @@
 import AppKit
 import SidebarFeed
+import TmuxControl
 
-final class SidebarView: NSView {
-    private let label = NSTextField(wrappingLabelWithString: "")
+final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+    var send: ([Command]) -> Void = { _ in }
+    var filter: (String) -> Void = { _ in }
+    var leave: () -> Void = {}
+
+    fileprivate enum Item {
+        case session(SessionRows)
+        case row(SessionID, Row)
+
+        var target: (session: SessionID, window: WindowID, pane: PaneID)? {
+            guard case .row(let session, let row) = self, let window = row.window, let pane = row.pane else { return nil }
+            return (session, window, pane)
+        }
+    }
+
+    private let search = NSSearchField()
+    private let table = Table()
+    private let scroll = NSScrollView()
+    private let footer = NSTextField(wrappingLabelWithString: "")
+    private var snapshot: Snapshot?
+    private var items: [Item] = []
+    private var feedNote: (String, NSColor)?
+    private var failure: String?
 
     override var isFlipped: Bool { true }
 
     init() {
         super.init(frame: .zero)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        label.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        label.textColor = .labelColor
-        label.maximumNumberOfLines = 0
-        label.isSelectable = false
-        label.stringValue = "Starting…"
-        addSubview(label)
+        search.placeholderString = "Filter"
+        search.controlSize = .small
+        search.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        search.delegate = self
+        search.target = self
+        search.action = #selector(searched)
+        table.addTableColumn(NSTableColumn(identifier: .init("row")))
+        table.headerView = nil
+        table.style = .plain
+        table.intercellSpacing = .zero
+        table.backgroundColor = .clear
+        table.dataSource = self
+        table.delegate = self
+        table.target = self
+        table.action = #selector(clicked)
+        table.focusRingType = .none
+        scroll.documentView = table
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        footer.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        footer.isSelectable = true
+        for view in [search, scroll, footer] { addSubview(view) }
+        update(.starting)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.windowBackgroundColor.setFill()
+        dirtyRect.fill()
+    }
+
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        label.frame = bounds.insetBy(dx: 8, dy: 8)
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        let inner = bounds.width - 16
+        search.frame = CGRect(x: 8, y: 8, width: inner, height: search.fittingSize.height)
+        let note = footer.isHidden ? 0 : footer.cell!.cellSize(forBounds: CGRect(x: 0, y: 0, width: inner, height: 200)).height
+        footer.frame = CGRect(x: 8, y: bounds.height - note - 6, width: inner, height: note)
+        let top = search.frame.maxY + 6
+        scroll.frame = CGRect(x: 0, y: top, width: bounds.width, height: footer.frame.minY - top - (footer.isHidden ? 0 : 6))
+        table.tableColumns[0].width = scroll.contentSize.width
     }
 
     func update(_ status: Feed.Status) {
         switch status {
         case .starting:
-            label.stringValue = "Starting…"
+            show(nil)
+            feedNote = ("Starting…", .secondaryLabelColor)
         case .failed(let message):
-            label.stringValue = "Feed stopped, restarting…\n\(message)"
-        case .running(let snapshots, let last):
-            var lines = ["\(snapshots) snapshot\(snapshots == 1 ? "" : "s")"]
-            for session in last?.sessions ?? [] {
-                lines.append((session.current ? "▸ " : "  ") + session.name)
-                for row in session.rows {
-                    let text = (row.title + row.tail).map(\.text).joined()
-                    lines.append("    " + row.tree + (text.isEmpty ? "(untitled)" : text))
-                }
-            }
-            label.stringValue = lines.joined(separator: "\n")
+            feedNote = ("The sidebar feed stopped, restarting…\n\(message)", .secondaryLabelColor)
+        case .running(nil):
+            feedNote = ("The sidebar feed sent a snapshot this app cannot read.", .systemRed)
+        case .running(let snapshot?):
+            feedNote = nil
+            if snapshot != self.snapshot { show(snapshot) }
         }
+        noteChanged()
+    }
+
+    func failed(_ message: String?) {
+        failure = message
+        noteChanged()
+    }
+
+    private func noteChanged() {
+        let note = failure.map { ($0, NSColor.systemRed) } ?? feedNote ?? snapshot?.error.map { ($0, NSColor.systemRed) }
+        footer.stringValue = note?.0 ?? ""
+        footer.textColor = note?.1
+        footer.isHidden = note == nil
+        needsLayout = true
+    }
+
+    private func show(_ next: Snapshot?) {
+        let selected = items.indices.contains(table.selectedRow) ? items[table.selectedRow].target?.pane : nil
+        let moved = next.map { $0.client.pane != snapshot?.client.pane } ?? false
+        if let next, snapshot == nil { search.stringValue = next.filter }
+        snapshot = next
+        items = next?.sessions.flatMap { s in [.session(s)] + s.rows.map { .row(s.id, $0) } } ?? []
+        table.reloadData()
+        let follow = moved ? next?.client.pane : selected
+        guard let row = items.firstIndex(where: { $0.target?.pane == follow && follow != nil }) else {
+            return table.deselectAll(nil)
+        }
+        table.selectRowIndexes([row], byExtendingSelection: false)
+        if moved { table.scrollRowToVisible(row) }
+    }
+
+    func focus() {
+        if table.selectedRow < 0, let current = snapshot?.client.pane,
+            let row = items.firstIndex(where: { $0.target?.pane == current })
+        {
+            table.selectRowIndexes([row], byExtendingSelection: false)
+        }
+        window?.makeFirstResponder(table)
+        table.scrollRowToVisible(table.selectedRow)
+    }
+
+    func nextAttention(_ delta: Int) {
+        let n = items.count
+        var i = table.selectedRow >= 0 ? table.selectedRow : delta > 0 ? -1 : n
+        for _ in 0..<n {
+            i = (i + delta + n) % n
+            if case .row(_, let row) = items[i], row.attention, items[i].target != nil {
+                table.selectRowIndexes([i], byExtendingSelection: false)
+                table.scrollRowToVisible(i)
+                return jump(i)
+            }
+        }
+    }
+
+    private func move(_ delta: Int) {
+        var i = table.selectedRow
+        repeat { i += delta } while items.indices.contains(i) && items[i].target == nil
+        guard items.indices.contains(i) else { return }
+        table.selectRowIndexes([i], byExtendingSelection: false)
+        table.scrollRowToVisible(i)
+    }
+
+    private func jump(_ index: Int) {
+        guard items.indices.contains(index), let target = items[index].target, let snapshot else { return }
+        failed(nil)
+        send(
+            (target.session == snapshot.client.session ? [] : [Command("switch-client", "-t", target.session)]) + [
+                Command("select-window", "-t", target.window), Command("select-pane", "-t", target.pane),
+            ])
+        if !search.stringValue.isEmpty {
+            search.stringValue = ""
+            filter("")
+        }
+        leave()
+    }
+
+    @objc private func clicked() {
+        jump(table.clickedRow)
+    }
+
+    @objc private func searched() {
+        filter(search.stringValue)
+    }
+
+    fileprivate func key(_ event: NSEvent) -> Bool {
+        let mods = event.modifierFlags.intersection([.command, .control, .option])
+        switch (Int(event.keyCode), event.charactersIgnoringModifiers ?? "", mods) {
+        case (125, _, []), (_, "j", []), (_, "n", .control): move(1)
+        case (126, _, []), (_, "k", []), (_, "p", .control): move(-1)
+        case (36, _, []), (76, _, []): jump(table.selectedRow)
+        case (53, _, []): leave()
+        case (_, "n", []): nextAttention(1)
+        case (_, "N", []): nextAttention(-1)
+        case (_, "/", []): window?.makeFirstResponder(search)
+        default: return false
+        }
+        return true
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        switch selector {
+        case #selector(moveDown(_:)):
+            focus()
+            move(table.selectedRow < 0 ? 1 : 0)
+        case #selector(insertNewline(_:)):
+            searched()
+            jump(table.selectedRow >= 0 ? table.selectedRow : items.firstIndex { $0.target != nil } ?? -1)
+        case #selector(cancelOperation(_:)) where search.stringValue.isEmpty:
+            leave()
+        default:
+            return false
+        }
+        return true
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { items.count }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        guard case .session = items[row] else { return 20 }
+        return row == 0 ? 20 : 28
+    }
+
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { items[row].target != nil }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        let view = RowBackground()
+        view.current = items[row].target.map { $0.pane == snapshot?.client.pane } ?? false
+        return view
+    }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let cell = tableView.makeView(withIdentifier: Cell.id, owner: nil) as? Cell ?? Cell()
+        cell.item = items[row]
+        return cell
+    }
+}
+
+private final class Table: NSTableView {
+    override func keyDown(with event: NSEvent) {
+        if (delegate as? SidebarView)?.key(event) != true { super.keyDown(with: event) }
+    }
+}
+
+private final class RowBackground: NSTableRowView {
+    var current = false
+
+    override func drawBackground(in dirtyRect: NSRect) {
+        guard current else { return }
+        NSColor.quaternaryLabelColor.setFill()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 1), xRadius: 4, yRadius: 4).fill()
+        NSColor.controlAccentColor.setFill()
+        NSBezierPath(roundedRect: CGRect(x: 4, y: 3, width: 2, height: bounds.height - 6), xRadius: 1, yRadius: 1).fill()
+    }
+
+    override func drawSelection(in dirtyRect: NSRect) {
+        NSColor.controlAccentColor.withAlphaComponent(isEmphasized ? 0.35 : 0.18).setFill()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 1), xRadius: 4, yRadius: 4).fill()
+    }
+}
+
+// The tree is drawn as lines rather than as its box-drawing characters, so
+// the columns join across rows at any row height.
+private final class Cell: NSView {
+    static let id = NSUserInterfaceItemIdentifier("cell")
+    private static let column: CGFloat = 10
+    private static let field: CGFloat = 16
+    private static let font = NSFont.systemFont(ofSize: 12)
+
+    var item: SidebarView.Item? { didSet { needsDisplay = true } }
+
+    override var isFlipped: Bool { true }
+
+    init() {
+        super.init(frame: .zero)
+        identifier = Self.id
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        switch item {
+        case .session(let session):
+            let text = NSAttributedString(
+                string: session.name,
+                attributes: [
+                    .font: session.current ? NSFont.boldSystemFont(ofSize: 12) : Self.font,
+                    .foregroundColor: session.current ? NSColor.labelColor : NSColor.secondaryLabelColor,
+                    .paragraphStyle: Self.truncating,
+                ])
+            text.draw(
+                with: CGRect(x: 10, y: bounds.height - 18, width: bounds.width - 20, height: 16),
+                options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        case .row(_, let row):
+            drawTree(row.tree)
+            let x = 10 + CGFloat(row.tree.count) * Self.column
+            if let symbol = row.indicator.flatMap(Self.symbol) {
+                let size = symbol.size
+                symbol.draw(
+                    in: CGRect(
+                        x: x + (Self.field - size.width) / 2, y: (bounds.height - size.height) / 2, width: size.width,
+                        height: size.height))
+            }
+            let text = NSMutableAttributedString()
+            for span in row.title + row.tail { text.append(NSAttributedString(string: span.text, attributes: Self.style(span.role))) }
+            let right = bounds.width - (row.attention ? 22 : 8)
+            let height = text.size().height
+            text.draw(
+                with: CGRect(x: x + Self.field + 2, y: (bounds.height - height) / 2, width: right - x - Self.field - 2, height: height),
+                options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+            if row.attention {
+                NSColor.controlAccentColor.setFill()
+                NSBezierPath(ovalIn: CGRect(x: bounds.width - 16, y: bounds.midY - 3, width: 6, height: 6)).fill()
+            }
+        case nil:
+            break
+        }
+    }
+
+    private func drawTree(_ tree: String) {
+        let path = NSBezierPath()
+        let mid = bounds.midY.rounded(.down) + 0.5
+        for (k, glyph) in tree.enumerated() {
+            let left = 10 + CGFloat(k) * Self.column
+            let x = (left + Self.column / 2).rounded(.down) + 0.5
+            let (top, bottom, across): (CGFloat?, CGFloat?, Bool) =
+                switch glyph {
+                case "│": (0, bounds.height, false)
+                case "├": (0, bounds.height, true)
+                case "┌": (mid, bounds.height, true)
+                case "└": (0, mid, true)
+                case "╶": (nil, nil, true)
+                default: (nil, nil, false)
+                }
+            if let top, let bottom {
+                path.move(to: CGPoint(x: x, y: top))
+                path.line(to: CGPoint(x: x, y: bottom))
+            }
+            if across {
+                path.move(to: CGPoint(x: x, y: mid))
+                path.line(to: CGPoint(x: left + Self.column + 2, y: mid))
+            }
+        }
+        NSColor.tertiaryLabelColor.setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+
+    private static let truncating: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byTruncatingTail
+        return style
+    }()
+
+    private static func style(_ role: Span.Role) -> [NSAttributedString.Key: Any] {
+        let (color, font): (NSColor, NSFont) =
+            switch role {
+            case .plain: (.labelColor, Self.font)
+            case .current: (.labelColor, .boldSystemFont(ofSize: 12))
+            case .proc: (.labelColor, .monospacedSystemFont(ofSize: 11, weight: .regular))
+            case .dim: (.secondaryLabelColor, Self.font)
+            case .err: (.systemRed, Self.font)
+            case .running: (.systemGreen, Self.font)
+            case .waiting: (.systemOrange, .boldSystemFont(ofSize: 12))
+            case .compacting: (.systemPurple, Self.font)
+            case .done: (.systemGreen, .boldSystemFont(ofSize: 12))
+            case .stalled: (.systemRed, .boldSystemFont(ofSize: 12))
+            }
+        return [.foregroundColor: color, .font: font, .paragraphStyle: truncating]
+    }
+
+    // The TUI's glyphs (lib/ui.ml `indicator`): idle draws nothing, a gone
+    // subagent a dim ✓ when it completed and a dim × otherwise.
+    private static func symbol(_ indicator: Indicator) -> NSImage? {
+        let glyph: (name: String, color: NSColor, weight: NSFont.Weight)? =
+            switch (indicator.kind, indicator.outcome) {
+            case (.idle, _): nil
+            case (.running, _): ("square.fill", .systemGreen, .regular)
+            case (.waiting, _): ("diamond.fill", .systemOrange, .regular)
+            case (.compacting, _): ("circle.dotted", .systemPurple, .bold)
+            case (.done, _): ("checkmark", .systemGreen, .heavy)
+            case (.failed, _): ("square.fill", .systemRed, .regular)
+            case (.unknown, _): ("questionmark", .secondaryLabelColor, .bold)
+            case (.stalled, _): ("exclamationmark", .systemRed, .heavy)
+            case (.gone, .completed): ("checkmark", .tertiaryLabelColor, .bold)
+            case (.gone, _): ("xmark", .tertiaryLabelColor, .bold)
+            }
+        guard let glyph else { return nil }
+        return NSImage(systemSymbolName: glyph.name, accessibilityDescription: indicator.kind.rawValue)?
+            .withSymbolConfiguration(
+                NSImage.SymbolConfiguration(pointSize: 9, weight: glyph.weight).applying(.init(paletteColors: [glyph.color])))
     }
 }
