@@ -12,7 +12,7 @@ val decide : Tmux.Pane.t list -> string -> (close, string) result
 val quote : string -> string
 (** A Go [%q]-style double-quoted string: control bytes escaped, non-ASCII kept. *)
 
-type detail = Bash of { unstreamed : int } | Agent of { unreported : bool }
+type detail = Bash | Streamed of { unstreamed : int } | Agent of { unreported : bool }
 type ending = { meta : Subrun.meta; outcome : Subrun.outcome; detail : detail }
 
 val body : dir:string -> ending -> string

@@ -93,12 +93,16 @@ let async_run ~dir ~knobs ~warn ~run_id ~stream =
   in
   let stream = if stream then Some (Async_stream.start ~dir knobs meta) else None in
   let report result text =
-    let unstreamed = Option.map_or ~default:0 Async_stream.close stream in
+    let detail =
+      match stream with
+      | Some s -> Reap.Streamed { unstreamed = Async_stream.close s }
+      | None -> Reap.Bash
+    in
     let outcome : Subrun.outcome = { result; text; at = Some (Timestamp.now ()) } in
     if Subrun.record_outcome ~dir id outcome then
       Result.iter_err
         (fun e -> warn (Msg.string_of_error e))
-        (Reap.send ~dir { meta; outcome; detail = Bash { unstreamed } })
+        (Reap.send ~dir { meta; outcome; detail })
   in
   Fun.protect
     ~finally:(fun () ->

@@ -81,6 +81,9 @@ func TestAsyncBashStreamCoalescesAndEndsWithTheNotice(t *testing.T) {
 	if notice.From.Name != "chatty" || !strings.Contains(notice.Text, "exit status 2") {
 		t.Errorf("notice = %+v, want it to name chatty and exit status 2", notice)
 	}
+	if strings.Contains(notice.Text, "line 1\n") {
+		t.Errorf("notice = %+v, repeats output already streamed to the parent", notice)
+	}
 }
 
 func lastNotice(h *harness, in interface{ Received() []string }) string {

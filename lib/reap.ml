@@ -31,7 +31,7 @@ let decide panes window_id =
              window_id)
           (close_of panes window_id run.pane_id)
 
-type detail = Bash of { unstreamed : int } | Agent of { unreported : bool }
+type detail = Bash | Streamed of { unstreamed : int } | Agent of { unreported : bool }
 type ending = { meta : Subrun.meta; outcome : Subrun.outcome; detail : detail }
 
 let quote s =
@@ -55,34 +55,39 @@ let body ~dir e =
   let b = Buffer.create 256 in
   let result = Subrun.string_of_result e.outcome.result in
   (match e.detail with
-  | Bash { unstreamed } -> (
+  | (Bash | Streamed _) as detail -> (
       let output = Subrun.output_path ~dir e.meta.id in
       Printf.bprintf b "async run %s %s: %s\n" (quote (Subrun.label e.meta)) result e.outcome.text;
       Printf.bprintf b "run: %s\n" (Subrun.string_of_id e.meta.id);
       Printf.bprintf b "output: %s\n" output;
-      if unstreamed > 0 then
-        Printf.bprintf b "%d lines not streamed (the output file above has every one)\n" unstreamed;
-      let cap = Msg.max_notice_bytes in
-      match
-        let ic = open_in_bin output in
-        Fun.protect
-          ~finally:(fun () -> close_in ic)
-          (fun () ->
-            let size = in_channel_length ic in
-            let omitted = if size > cap then size - cap else 0 in
-            seek_in ic omitted;
-            let b = really_input_string ic (size - omitted) in
-            let skip =
-              if omitted > 0 then String.drop_while (fun c -> Char.code c land 0xC0 = 0x80) b else b
-            in
-            (Msg.valid_utf_8 skip, omitted + String.length b - String.length skip))
-      with
-      | exception Sys_error err -> Printf.bprintf b "--- output unreadable: %s ---" err
-      | "", _ -> Buffer.add_string b "--- no output ---"
-      | tail, omitted when omitted > 0 ->
-          Printf.bprintf b "--- last %d bytes of output (%d omitted) ---\n%s" (String.length tail)
-            omitted tail
-      | tail, _ -> Printf.bprintf b "--- output ---\n%s" tail)
+      match detail with
+      | Streamed { unstreamed } ->
+          if unstreamed > 0 then
+            Printf.bprintf b "%d lines not streamed (the output file above has every one)\n"
+              unstreamed
+      | _ -> (
+          let cap = Msg.max_notice_bytes in
+          match
+            let ic = open_in_bin output in
+            Fun.protect
+              ~finally:(fun () -> close_in ic)
+              (fun () ->
+                let size = in_channel_length ic in
+                let omitted = if size > cap then size - cap else 0 in
+                seek_in ic omitted;
+                let b = really_input_string ic (size - omitted) in
+                let skip =
+                  if omitted > 0 then String.drop_while (fun c -> Char.code c land 0xC0 = 0x80) b
+                  else b
+                in
+                (Msg.valid_utf_8 skip, omitted + String.length b - String.length skip))
+          with
+          | exception Sys_error err -> Printf.bprintf b "--- output unreadable: %s ---" err
+          | "", _ -> Buffer.add_string b "--- no output ---"
+          | tail, omitted when omitted > 0 ->
+              Printf.bprintf b "--- last %d bytes of output (%d omitted) ---\n%s"
+                (String.length tail) omitted tail
+          | tail, _ -> Printf.bprintf b "--- output ---\n%s" tail))
   | Agent { unreported } ->
       if unreported then
         Printf.bprintf b
@@ -113,7 +118,7 @@ let record_ending ~dir (meta : Subrun.meta) outcome =
   if not (Subrun.record_outcome ~dir meta.id outcome) then None
   else
     let detail =
-      match meta.kind with Bash -> Bash { unstreamed = 0 } | Agent -> Agent { unreported = false }
+      match meta.kind with Subrun.Bash -> Bash | Agent -> Agent { unreported = false }
     in
     Some { meta; outcome; detail }
 

@@ -87,26 +87,28 @@ let%expect_test "a bash ending's notice carries the run's name, status, id and o
   Fs.write (Subrun.output_path ~dir i) "boom\n";
   let meta = Option.get_exn_or "meta" (Subrun.read_meta ~dir i) in
   let body e = print_string (String.replace ~sub:dir ~by:"DIR" (Reap.body ~dir e)) in
-  body
-    {
-      meta;
-      outcome = { result = Failed; text = "exit status 3"; at = None };
-      detail = Bash { unstreamed = 2 };
-    };
+  body { meta; outcome = { result = Failed; text = "exit status 3"; at = None }; detail = Bash };
   body
     {
       meta = { meta with name = "" };
       outcome = { result = Completed; text = "exit status 0"; at = None };
-      detail = Bash { unstreamed = 0 };
+      detail = Bash;
+    };
+  body
+    {
+      meta;
+      outcome = { result = Completed; text = "exit status 0"; at = None };
+      detail = Streamed { unstreamed = 2 };
+    };
+  body
+    {
+      meta;
+      outcome = { result = Completed; text = "exit status 0"; at = None };
+      detail = Streamed { unstreamed = 0 };
     };
   Fs.remove (Subrun.output_path ~dir i);
   print_string
-    (Reap.body ~dir
-       {
-         meta;
-         outcome = { result = Failed; text = "x"; at = None };
-         detail = Bash { unstreamed = 0 };
-       }
+    (Reap.body ~dir { meta; outcome = { result = Failed; text = "x"; at = None }; detail = Bash }
     |> String.split_on_char '\n' |> List.last_opt |> Option.get_exn_or "line"
     |> String.replace ~sub:dir ~by:"DIR");
   [%expect
@@ -114,7 +116,6 @@ let%expect_test "a bash ending's notice carries the run's name, status, id and o
     async run "build" failed: exit status 3
     run: run-named
     output: DIR/runs/run-named/output
-    2 lines not streamed (the output file above has every one)
     --- output ---
     boom
     async run "run-named" completed: exit status 0
@@ -122,6 +123,13 @@ let%expect_test "a bash ending's notice carries the run's name, status, id and o
     output: DIR/runs/run-named/output
     --- output ---
     boom
+    async run "build" completed: exit status 0
+    run: run-named
+    output: DIR/runs/run-named/output
+    2 lines not streamed (the output file above has every one)
+    async run "build" completed: exit status 0
+    run: run-named
+    output: DIR/runs/run-named/output
     --- output unreadable: DIR/runs/run-named/output: No such file or directory ---
     |}]
 
@@ -163,11 +171,7 @@ let%expect_test "a bash notice keeps the output's tail, whole characters only" =
     Fs.write (Subrun.output_path ~dir i) output;
     match
       Reap.body ~dir
-        {
-          meta;
-          outcome = { result = Completed; text = "exit status 0"; at = None };
-          detail = Bash { unstreamed = 0 };
-        }
+        { meta; outcome = { result = Completed; text = "exit status 0"; at = None }; detail = Bash }
       |> String.lines |> List.drop 3
     with
     | header :: first :: rest ->

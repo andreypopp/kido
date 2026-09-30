@@ -625,10 +625,13 @@ that typed `kido stop_subagent`. The run's name is the only honest
 answer, and it is what the parent's widget row shows.
 
 The output file is the source of truth
-and is never truncated; the notice carries its last 4000 bytes, the tail
-rather than the head because what a failure has to say, it says last, cut
-back to a whole rune so a log ending mid-character cannot cost the run
-its only notice.
+and is never truncated. A run that did not stream has its last 4000
+bytes in the notice, the tail rather than the head because what a
+failure has to say, it says last, cut back to a whole rune so a log
+ending mid-character cannot cost the run its only notice. A streamed
+run's notice carries no tail - the parent already received its output as
+it ran - only the "N lines not streamed" count above, when it is
+nonzero.
 
 **Exactly one ending.** Every async run produces exactly one terminal
 notice, from whichever observer discovers the ending - including the
