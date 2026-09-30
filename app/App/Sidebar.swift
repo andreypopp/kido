@@ -1,7 +1,8 @@
 import AppKit
 
 // Lays out sidebar | divider | content, and remembers the sidebar's width
-// and collapsed state across launches. `content` is the tmux area's
+// and collapsed state across launches, except in a test launch, which must
+// leave the user's preferences alone. `content` is the tmux area's
 // container: SessionView keeps computing the client size from its own
 // bounds, unaffected by whether it sits in `content` or in a window's
 // contentView.
@@ -10,6 +11,7 @@ final class Sidebar: NSView {
     let content = NSView()
     private let divider = Divider()
 
+    private static let defaults: UserDefaults? = background ? nil : .standard
     private static let widthKey = "sidebarWidth"
     private static let collapsedKey = "sidebarCollapsed"
     private static let minWidth: CGFloat = 140
@@ -17,18 +19,18 @@ final class Sidebar: NSView {
     static let minSize = NSSize(width: minWidth + 1 + minContent, height: 200)
 
     private var width: CGFloat {
-        didSet { UserDefaults.standard.set(width, forKey: Self.widthKey) }
+        didSet { Self.defaults?.set(width, forKey: Self.widthKey) }
     }
     private(set) var isCollapsed: Bool {
-        didSet { UserDefaults.standard.set(isCollapsed, forKey: Self.collapsedKey) }
+        didSet { Self.defaults?.set(isCollapsed, forKey: Self.collapsedKey) }
     }
 
     override var isFlipped: Bool { true }
 
     init() {
-        let stored = UserDefaults.standard.double(forKey: Self.widthKey)
+        let stored = Self.defaults?.double(forKey: Self.widthKey) ?? 0
         width = max(Self.minWidth, stored == 0 ? 220 : stored)
-        isCollapsed = UserDefaults.standard.bool(forKey: Self.collapsedKey)
+        isCollapsed = Self.defaults?.bool(forKey: Self.collapsedKey) ?? false
         super.init(frame: .zero)
         autoresizingMask = [.width, .height]
         divider.dragged = { [weak self] x in
