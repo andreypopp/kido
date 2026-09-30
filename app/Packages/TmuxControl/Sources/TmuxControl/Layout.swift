@@ -101,16 +101,41 @@ extension Node {
         }
     }
 
-    public var dividers: [Geometry] {
+    public var dividers: [Divider] {
         guard case .split(let direction, let g, let children) = self else { return [] }
         let tiled = children.filter { if case .pane(let p) = $0, case .floating = p.layer { false } else { true } }
         let between = zip(tiled, tiled.dropFirst()).map { a, _ in
+            let anchor = a.anchor(direction)
             let a = a.geometry
             return switch direction {
-            case .leftRight: Geometry(x: a.x + a.width, y: g.y, width: 1, height: g.height)
-            case .topBottom: Geometry(x: g.x, y: a.y + a.height, width: g.width, height: 1)
+            case .leftRight:
+                Divider(geometry: Geometry(x: a.x + a.width, y: g.y, width: 1, height: g.height),
+                        direction: direction, start: a.x, anchor: anchor)
+            case .topBottom:
+                Divider(geometry: Geometry(x: g.x, y: a.y + a.height, width: g.width, height: 1),
+                        direction: direction, start: a.y, anchor: anchor)
             }
         }
         return between + children.flatMap(\.dividers)
+    }
+
+    // tmux resizes a pane along the nearest enclosing split of that direction.
+    private func anchor(_ direction: Direction) -> PaneID? {
+        switch self {
+        case .pane(let pane): if case .tiled = pane.layer { pane.id } else { nil }
+        case .split(let d, _, let children): d == direction ? nil : children.lazy.compactMap { $0.anchor(direction) }.first
+        }
+    }
+}
+
+public struct Divider: Equatable, Sendable {
+    public let geometry: Geometry
+    public let direction: Direction
+    let start: Int
+    let anchor: PaneID?
+
+    public func resize(to position: Int) -> Command? {
+        guard let anchor, position > start else { return nil }
+        return Command("resize-pane", "-t", anchor, direction == .leftRight ? "-x" : "-y", position - start)
     }
 }
