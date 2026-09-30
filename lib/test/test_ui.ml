@@ -456,13 +456,13 @@ let%expect_test
     ┌◼ fix the flaky test
     └  zsh
     sess
-    ╶✓ subagent  completed
+    ╶✓ subagent completed
     sess
-    ╶× subagent  failed
+    ╶× subagent failed
     sess
-    ╶× subagent  died
+    ╶× subagent died
     sess
-    ╶× subagent  stopped
+    ╶× subagent stopped
     sess
     ╶
     |}]
@@ -1225,10 +1225,7 @@ let%expect_test "a snapshot as the feed sends it" =
               "tree": "┌",
               "indicator": { "kind": "running" },
               "title": [ { "text": "orchestrator", "role": "plain" } ],
-              "tail": [
-                { "text": "  ", "role": "plain" },
-                { "text": "reading the contract", "role": "dim" }
-              ],
+              "tail": [ { "text": "reading the contract", "role": "dim" } ],
               "attention": false
             },
             {
@@ -1255,10 +1252,7 @@ let%expect_test "a snapshot as the feed sends it" =
               "tree": "╶",
               "indicator": { "kind": "gone", "outcome": "failed" },
               "title": [ { "text": "helper", "role": "dim" } ],
-              "tail": [
-                { "text": "  ", "role": "plain" },
-                { "text": "failed", "role": "dim" }
-              ],
+              "tail": [ { "text": "failed", "role": "dim" } ],
               "attention": false
             }
           ]

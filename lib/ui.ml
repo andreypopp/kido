@@ -75,7 +75,7 @@ let glyph : S.indicator -> span option = function
 let parts : line -> span list * span list * span list = function
   | Header h -> ([], [ span (if h.current then `Current else `Plain) h.name ], [])
   | Message e -> ([], [ span `Err e ], [])
-  | Row r ->
+  | Row r -> (
       let tree =
         List.concat
           (List.mapi
@@ -90,7 +90,7 @@ let parts : line -> span list * span list * span list = function
         | None -> [ plain "  " ]
         | Some i -> [ i; plain " " ]),
         List.map styled r.title,
-        List.map styled r.tail )
+        match r.tail with [] -> [] | tail -> plain " " :: List.map styled tail ))
 
 let spans line =
   let lead, title, tail = parts line in

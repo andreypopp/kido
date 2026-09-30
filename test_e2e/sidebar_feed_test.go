@@ -93,7 +93,11 @@ func (s feedSnapshot) drawn() []string {
 	for _, sess := range s.Sessions {
 		out = append(out, sess.Name)
 		for _, r := range sess.Rows {
-			out = append(out, strings.TrimSpace(r.Tree+feedGlyph(r)+" "+text(r.Title)+text(r.Tail)))
+			label := text(r.Title)
+			if len(r.Tail) > 0 {
+				label += " " + text(r.Tail)
+			}
+			out = append(out, strings.TrimSpace(r.Tree+feedGlyph(r)+" "+label))
 		}
 	}
 	return out

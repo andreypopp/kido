@@ -386,9 +386,7 @@ let lingering_label (p : P.t) (l : lingering) =
         indicator = Some (Gone l.outcome);
         title = [ span `Dim l.name ];
         tail =
-          Option.map_or ~default:[]
-            (fun o -> [ plain "  "; span `Dim (Subrun.string_of_result o) ])
-            l.outcome;
+          Option.map_or ~default:[] (fun o -> [ span `Dim (Subrun.string_of_result o) ]) l.outcome;
       }
 
 let pane_label m (p : P.t) =
@@ -439,7 +437,7 @@ let pane_label m (p : P.t) =
       row
         (Some (if done_ m p.pane_id then Done else ind))
         [ plain title ]
-        (if String.is_empty activity then [] else [ plain "  "; span `Dim activity ])
+        (if String.is_empty activity then [] else [ span `Dim activity ])
 
 type placement = { panes : P.t list; anchor : string option }
 
