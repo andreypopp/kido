@@ -27,6 +27,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     private var feedNote: (String, NSColor)?
     private var failure: String?
     private var activating: String?
+    private let fonts = Fonts()
 
     override var isFlipped: Bool { true }
 
@@ -249,7 +250,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let cell = tableView.makeView(withIdentifier: Cell.id, owner: nil) as? Cell ?? Cell()
+        let cell = tableView.makeView(withIdentifier: Cell.id, owner: nil) as? Cell ?? Cell(fonts)
         cell.item = items[row]
         return cell
     }
@@ -278,17 +279,27 @@ private final class RowBackground: NSTableRowView {
     }
 }
 
+// AppKit's system-font constructors intermittently return nil, their
+// signature notwithstanding, while libghostty creates surfaces: the sidebar's
+// fonts are made once, before libghostty starts, and held.
+private struct Fonts {
+    let regular = NSFont.systemFont(ofSize: 12)
+    let bold = NSFont.boldSystemFont(ofSize: 12)
+    let mono = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+}
+
 private final class Cell: NSView {
     static let id = NSUserInterfaceItemIdentifier("cell")
     private static let column: CGFloat = 10
     private static let field: CGFloat = 16
-    private static let font = NSFont.systemFont(ofSize: 12)
+    private let fonts: Fonts
 
     var item: SidebarView.Item? { didSet { needsDisplay = true } }
 
     override var isFlipped: Bool { true }
 
-    init() {
+    init(_ fonts: Fonts) {
+        self.fonts = fonts
         super.init(frame: .zero)
         identifier = Self.id
     }
@@ -301,7 +312,7 @@ private final class Cell: NSView {
             let text = NSAttributedString(
                 string: session.name,
                 attributes: [
-                    .font: session.current ? NSFont.boldSystemFont(ofSize: 12) : Self.font,
+                    .font: session.current ? fonts.bold : fonts.regular,
                     .foregroundColor: session.current ? NSColor.labelColor : NSColor.secondaryLabelColor,
                     .paragraphStyle: Self.truncating,
                 ])
@@ -319,7 +330,10 @@ private final class Cell: NSView {
                         height: size.height))
             }
             let text = NSMutableAttributedString()
-            for span in row.title + row.tail { text.append(NSAttributedString(string: span.text, attributes: Self.style(span.role))) }
+            let gap: [(String, Span.Role)] = row.tail.isEmpty ? [] : [("  ", .plain)]
+            for (string, role) in row.title.map({ ($0.text, $0.role) }) + gap + row.tail.map({ ($0.text, $0.role) }) {
+                text.append(NSAttributedString(string: string, attributes: style(role)))
+            }
             let right = bounds.width - (row.attention ? 22 : 8)
             let height = text.size().height
             text.draw(
@@ -369,21 +383,21 @@ private final class Cell: NSView {
         return style
     }()
 
-    private static func style(_ role: Span.Role) -> [NSAttributedString.Key: Any] {
+    private func style(_ role: Span.Role) -> [NSAttributedString.Key: Any] {
         let (color, font): (NSColor, NSFont) =
             switch role {
-            case .plain: (.labelColor, Self.font)
-            case .current: (.labelColor, .boldSystemFont(ofSize: 12))
-            case .proc: (.labelColor, .monospacedSystemFont(ofSize: 11, weight: .regular))
-            case .dim: (.secondaryLabelColor, Self.font)
-            case .err: (.systemRed, Self.font)
-            case .running: (.systemGreen, Self.font)
-            case .waiting: (.systemOrange, .boldSystemFont(ofSize: 12))
-            case .compacting: (.systemPurple, Self.font)
-            case .done: (.systemGreen, .boldSystemFont(ofSize: 12))
-            case .stalled: (.systemRed, .boldSystemFont(ofSize: 12))
+            case .plain: (.labelColor, fonts.regular)
+            case .current: (.labelColor, fonts.bold)
+            case .proc: (.labelColor, fonts.mono)
+            case .dim: (.secondaryLabelColor, fonts.regular)
+            case .err: (.systemRed, fonts.regular)
+            case .running: (.systemGreen, fonts.regular)
+            case .waiting: (.systemOrange, fonts.bold)
+            case .compacting: (.systemPurple, fonts.regular)
+            case .done: (.systemGreen, fonts.bold)
+            case .stalled: (.systemRed, fonts.bold)
             }
-        return [.foregroundColor: color, .font: font, .paragraphStyle: truncating]
+        return [.foregroundColor: color, .font: font, .paragraphStyle: Self.truncating]
     }
 
     // The TUI's glyphs (lib/ui.ml `indicator`): idle draws nothing, a gone
