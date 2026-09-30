@@ -1,19 +1,16 @@
 import AppKit
 import GhosttyKit
-
-struct Grid: Equatable {
-    var cols: Int
-    var rows: Int
-    var cell: CGSize
-}
+import TmuxControl
 
 final class PaneView: NSView, @preconcurrency NSTextInputClient {
+    let pane: PaneID
     var onInput: (Data) -> Void = { _ in }
-    var onGridChange: (Grid) -> Void = { _ in }
+    var onSelect: () -> Void = {}
+    var onCellChange: () -> Void = {}
 
-    // The tmux reader thread feeds it while deinit may free it; unsound once views close.
+    // Freed in deinit, so the last reference must be dropped on the main
+    // thread, and never while the reader may feed it (Connection).
     nonisolated(unsafe) private(set) var surface: ghostty_surface_t!
-    private(set) var grid = Grid(cols: 0, rows: 0, cell: .zero)
 
     private var markedText = NSMutableAttributedString()
     private var keyTextAccumulator: [String]?
@@ -23,7 +20,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         Unmanaged<PaneView>.fromOpaque(userdata!).takeUnretainedValue()
     }
 
-    init?(runtime: GhosttyRuntime) {
+    init?(runtime: GhosttyRuntime, pane: PaneID) {
+        self.pane = pane
         super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         var config = ghostty_surface_config_new()
         let this = Unmanaged.passUnretained(self).toOpaque()
@@ -59,21 +57,13 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    func updateGrid() {
+    var cell: CGSize {
         let size = ghostty_surface_size(surface)
-        let next = Grid(
-            cols: Int(size.columns),
-            rows: Int(size.rows),
-            cell: convertFromBacking(NSSize(width: Int(size.cell_width_px), height: Int(size.cell_height_px))))
-        guard next != grid else { return }
-        grid = next
-        onGridChange(next)
+        return convertFromBacking(NSSize(width: Int(size.cell_width_px), height: Int(size.cell_height_px)))
     }
 
-    private func resize() {
-        let px = convertToBacking(bounds.size)
-        ghostty_surface_set_size(surface, UInt32(px.width), UInt32(px.height))
-        updateGrid()
+    func resize(cols: Int, rows: Int) {
+        _ = ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil)
     }
 
     // MARK: - NSView
@@ -90,11 +80,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         let result = super.resignFirstResponder()
         if result { ghostty_surface_set_focus(surface, false) }
         return result
-    }
-
-    override func setFrameSize(_ newSize: NSSize) {
-        super.setFrameSize(newSize)
-        resize()
     }
 
     override func viewDidMoveToWindow() {
@@ -114,7 +99,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         }
         let scale = window.backingScaleFactor
         ghostty_surface_set_content_scale(surface, scale, scale)
-        resize()
     }
 
     override func updateTrackingAreas() {
@@ -145,6 +129,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        onSelect()
         _ = button(event, GHOSTTY_MOUSE_PRESS)
     }
 
@@ -464,7 +449,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
         var x = 0.0, y = 0.0, width = 0.0, height = 0.0
         ghostty_surface_ime_point(surface, &x, &y, &width, &height)
-        let rect = convert(NSRect(x: x, y: bounds.height - y, width: width, height: max(height, grid.cell.height)), to: nil)
+        let rect = convert(NSRect(x: x, y: bounds.height - y, width: width, height: max(height, cell.height)), to: nil)
         return window?.convertToScreen(rect) ?? rect
     }
 
