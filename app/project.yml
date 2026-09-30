@@ -12,6 +12,8 @@ settings:
 packages:
   TmuxControl:
     path: Packages/TmuxControl
+  SidebarFeed:
+    path: Packages/SidebarFeed
 targets:
   Kido:
     type: application
@@ -27,6 +29,7 @@ targets:
         OTHER_LDFLAGS: [-lc++]
     dependencies:
       - package: TmuxControl
+      - package: SidebarFeed
       - framework: build/GhosttyKit.xcframework
         embed: false
       - sdk: Metal.framework
