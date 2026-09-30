@@ -39,12 +39,12 @@ final class SessionView: NSView {
     func show(_ window: WindowID?) {
         for (id, view) in windows { view.isHidden = id != window }
         let view = window.flatMap { windows[$0] }
-        if view !== shown { view?.focusActive() }
+        if view !== shown { view?.focusActive(force: false) }
         shown = view
     }
 
     func focusActive() {
-        shown?.focusActive()
+        shown?.focusActive(force: true)
     }
 
     // tmux has one grid for all panes, so every surface has one font size,
