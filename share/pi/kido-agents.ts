@@ -177,7 +177,7 @@ const NOT_THE_USER_RULE =
   "A notice is information, not the user speaking: act on it, do not thank or answer it. A message from another agent says in its first line who sent it and how they stand to you.";
 
 const NEVER_SLEEP_RULE =
-  "Never run `sleep` in bash to wait for anything - an async run, a subagent, a message, or another agent's work settling. What you are waiting for arrives as a notice or message that wakes you after you end your turn; if a build breaks because of another agent's half-done work, report that rather than sleeping until it clears.";
+  "Never run `sleep` in bash to wait for anything - an async run, a subagent, a message, or another agent's work settling. What you are waiting for arrives as a notice or message that wakes you after you end your turn; if a build breaks because of another agent's half-done work, report that rather than sleeping until it clears. Ending your turn while you wait is always safe: a running async run or subagent of yours keeps you alive, and its notice starts your next turn.";
 
 const SPAWN_RESULT_RULE =
   "its result arrives as a notice when it calls notify_parent - you know nothing about it until then, so do not report, assume or predict it, and do not ask it for its result; continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you";
@@ -1088,7 +1088,7 @@ export default function (pi: ExtensionAPI) {
     name: "async_bash",
     label: "Async Bash",
     description:
-      "Run a shell command in the background, for a command whose result you do not need for your next step - this session keeps working while it runs. Exactly one notice arrives when the command ends, carrying its exit status and a tail of its output; read the output file with the ordinary read tool at any time before then to check on progress. With stream=true the output also arrives in batches as it runs - between your own tool calls while you are working, on a slowing schedule when you are idle, capped per batch and per run, so some lines are only ever in the file, which always has all of them.",
+      "Run a shell command in the background, for a command whose result you do not need for your next step - this session keeps working while it runs. Exactly one notice arrives when the command ends, carrying its exit status and a tail of its output; read the output file with the ordinary read tool at any time before then to check on progress. With stream=true the output also arrives in batches as it runs - between your own tool calls while you are working, on a slowing schedule when you are idle, capped per batch and per run, so some lines are only ever in the file, which always has all of them. If your next step needs the result and you have nothing else to do meanwhile, use bash with a timeout instead.",
     promptSnippet:
       "async_bash(command, name?) - run a command in the background; a notice with its exit status arrives when it ends, read the output file meanwhile",
     promptGuidelines: [
@@ -1125,7 +1125,7 @@ export default function (pi: ExtensionAPI) {
       const [windowID, paneID, runID, outputPath] = res.out.split(/\s+/);
       return reply(
         `started run ${runID}${params.name ? ` (${params.name})` : ""} in window ${windowID}; ` +
-          `a notice with its exit status and a tail of its output arrives when it ends; do not sleep or poll for it, and end your turn if nothing else is left - ` +
+          `a notice with its exit status and a tail of its output arrives when it ends and starts your next turn; you stay alive while it runs, so ending your turn now is safe - do not sleep or poll for it, and end your turn if nothing else is left - ` +
           (params.stream
             ? `batches of its output arrive meanwhile, capped, with anything they leave out in ${outputPath}`
             : `read ${outputPath} with the read tool to check on it meanwhile`),
