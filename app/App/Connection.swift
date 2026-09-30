@@ -6,11 +6,12 @@ import TmuxControl
 // on main until the queue has let go of it, so it is freed on main (detach).
 // A layout reaches main synchronously, so its grid is set before the reader
 // feeds the output that follows it. Main never waits on client.queue. Once
-// the client has closed, `panes` is emptied and released on main.
+// the client has closed, `panes` is nil and a pane handed to the queue goes
+// back to main.
 final class Connection: @unchecked Sendable {
     private let client: Client
-    private var panes: [PaneID: PaneView] = [:]
-    private var exitReason: String?
+    private var panes: [PaneID: PaneView]? = [:]
+    private var reasons: [String] = []
     @MainActor private var retiring: [ObjectIdentifier: PaneView] = [:]
     @MainActor private weak var view: SessionView?
     @MainActor private var sizing: DispatchWorkItem?
@@ -31,19 +32,22 @@ final class Connection: @unchecked Sendable {
         view.connection = self
         try client.start(
             onEvent: { [weak self] in self?.handle($0) },
-            onClose: { [weak self] _ in self?.closed() })
+            onClose: { [weak self] _, stderr in self?.closed(stderr) })
     }
 
     @MainActor func attach(_ pane: PaneView) {
-        client.queue.async { self.panes[pane.pane] = pane }
-        sync(pane.pane, first: [])
+        client.queue.async {
+            guard self.panes != nil else { return DispatchQueue.main.async { _ = pane } }
+            self.panes?[pane.pane] = pane
+        }
+        sync(pane.pane)
     }
 
     @MainActor func detach(_ pane: PaneView) {
         let id = pane.pane, key = ObjectIdentifier(pane)
         retiring[key] = pane
         client.queue.async {
-            if self.panes[id].map(ObjectIdentifier.init) == key { self.panes[id] = nil }
+            if self.panes?[id].map(ObjectIdentifier.init) == key { self.panes?[id] = nil }
             DispatchQueue.main.async { self.retiring[key] = nil }
         }
     }
@@ -66,10 +70,10 @@ final class Connection: @unchecked Sendable {
     private func handle(_ event: Event) {
         switch event {
         case .output(let p, let bytes), .extendedOutput(let p, _, let bytes):
-            panes[p]?.feed(Data(bytes))
+            panes?[p]?.feed(Data(bytes))
         case .pause(let p):
             let resume = Command("refresh-client", "-A", "\(p):continue")
-            if panes[p] == nil { send([resume]) } else { sync(p, first: [resume]) }
+            if panes?[p] == nil { send([resume]) } else { sync(p, first: [resume]) }
         case .layoutChange(let window, let layout, let visible, _):
             DispatchQueue.main.sync { self.view?.windows[window]?.update(layout, visible) }
         case .windowPaneChanged(let window, let pane):
@@ -83,8 +87,10 @@ final class Connection: @unchecked Sendable {
         case .sessionChanged, .sessionsChanged, .sessionRenamed, .windowAdd(_, .linked), .windowClose(_, .linked),
             .windowRenamed(_, .linked, _):
             refresh()
-        case .exit(let reason):
-            exitReason = reason
+        case .exit(let reason?):
+            reasons.append(reason)
+        case .block(.failure(let lines), .other):
+            reasons += lines
         default:
             break
         }
@@ -114,22 +120,22 @@ final class Connection: @unchecked Sendable {
     // %output queued before a reply is written ahead of its %begin
     // (control.c), and the reply is completed on the reader queue, so output
     // fed before the restore is wiped by it and output after it is not in it.
-    private func sync(_ pane: PaneID, first: [Command]) {
+    func sync(_ pane: PaneID, first: [Command] = []) {
         client.send(first + PaneSync.commands(pane)) { [weak self] replies in
             guard let self, let replies else { return }
-            panes[pane]?.feed(
+            panes?[pane]?.feed(
                 PaneSync.restore(replies.dropFirst(first.count)) ?? Self.notice("could not capture \(pane): \(replies)"))
         }
     }
 
-    private func closed() {
-        let gone = panes, reason = exitReason
-        panes = [:]
-        DispatchQueue.main.async { withExtendedLifetime(gone) { self.onClose(reason) } }
+    private func closed(_ stderr: String) {
+        let gone = panes, reason = (reasons + [stderr]).filter { !$0.isEmpty }.joined(separator: "\n")
+        panes = nil
+        DispatchQueue.main.async { withExtendedLifetime(gone) { self.onClose(reason.isEmpty ? nil : reason) } }
     }
 
     private func report(_ message: String) {
-        panes.values.forEach { $0.feed(Self.notice(message)) }
+        panes?.values.forEach { $0.feed(Self.notice(message)) }
     }
 
     private static func notice(_ message: String) -> Data {
