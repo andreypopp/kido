@@ -27,6 +27,7 @@ import AppKit
             backing: .buffered,
             defer: false)
         window.title = "Kido"
+        window.contentMinSize = Sidebar.minSize
         sidebar.frame = window.contentView!.bounds
         sidebar.autoresizingMask = [.width, .height]
         window.contentView!.addSubview(sidebar)
@@ -76,35 +77,25 @@ import AppKit
                 onChange: { [weak self] in self?.changed(view, $0) },
                 onClose: { [weak self] in self?.closed(server, view, $0, backoff: backoff) })
             link = .connected(connection)
-            startFeed(connection, socket: server.socket)
+            locateFeed(connection, socket: server.socket)
         } catch {
             link = .down
             banner.show("Kido could not run \(server.tmux)", error.localizedDescription, button: action)
         }
     }
 
-    private func startFeed(_ connection: Connection, socket: String) {
+    private func locateFeed(_ connection: Connection, socket: String) {
         connection.locateFeed { [weak self] result in
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.gotFeedLocation(result, socket: socket)
-            }
-        }
-    }
-
-    private func gotFeedLocation(_ result: Result<(kido: String, client: String), Server.Failure>, socket: String) {
-        switch result {
-        case .failure(let failure):
-            feed?.stop()
-            feed = nil
-            sidebar.view.update(.failed(failure.message))
-        case .success(let located):
-            if let feed {
-                feed.reconnect(client: located.client)
-            } else {
-                feed = Feed(
-                    kido: located.kido, socket: socket, client: located.client,
-                    onChange: { [weak self] in self?.sidebar.view.update($0) })
+                guard let self, case .connected(let current) = link, current === connection else { return }
+                switch result {
+                case .failure(let failure):
+                    sidebar.view.update(.failed(failure.message))
+                case .success(let located):
+                    feed = Feed(
+                        kido: located.kido, socket: socket, client: located.client,
+                        onChange: { [weak self] in self?.sidebar.view.update($0) })
+                }
             }
         }
     }
