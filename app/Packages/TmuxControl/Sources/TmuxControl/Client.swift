@@ -33,17 +33,23 @@ public final class Client: @unchecked Sendable {
     public func start(
         onEvent: @escaping @Sendable (Event) -> Void, onClose: @escaping @Sendable (Int32) -> Void
     ) throws {
+        // waitUntilExit spins the calling thread's run loop and can miss the
+        // exit when called from a dispatch queue, blocking forever.
+        let ended = DispatchGroup()
+        ended.enter()
+        ended.enter()
+        process.terminationHandler = { _ in ended.leave() }
         try process.run()
+        ended.notify(queue: queue) { [process] in onClose(process.terminationStatus) }
         let source = DispatchSource.makeReadSource(fileDescriptor: output.fileDescriptor, queue: queue)
         var buffer = [UInt8](repeating: 0, count: 1 << 16)
-        source.setEventHandler { [weak self, process, output] in
+        source.setEventHandler { [weak self, output] in
             let n = Foundation.read(output.fileDescriptor, &buffer, buffer.count)
             if n > 0 { return self?.read(buffer[..<n], onEvent) ?? () }
             if n < 0, errno == EAGAIN || errno == EINTR { return }
             source.cancel()
             self?.close()
-            process.waitUntilExit()
-            onClose(process.terminationStatus)
+            ended.leave()
         }
         source.resume()
     }
