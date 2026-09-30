@@ -1,4 +1,5 @@
 import AppKit
+import os
 import GhosttyKit
 
 final class GhosttyRuntime {
@@ -16,7 +17,16 @@ final class GhosttyRuntime {
         var runtime = ghostty_runtime_config_s(
             userdata: nil,
             supports_selection_clipboard: false,
-            wakeup_cb: { _ in DispatchQueue.main.async(execute: GhosttyRuntime.tick) },
+            wakeup_cb: { _ in
+                guard GhosttyRuntime.ticking.withLock({ ticking in
+                    defer { ticking = true }
+                    return !ticking
+                }) else { return }
+                DispatchQueue.main.async {
+                    GhosttyRuntime.ticking.withLock { $0 = false }
+                    GhosttyRuntime.tick()
+                }
+            },
             action_cb: { _, target, action in GhosttyRuntime.action(target, action) },
             read_clipboard_cb: { userdata, location, state in
                 GhosttyRuntime.readClipboard(PaneView.from(userdata), location, state)
@@ -31,14 +41,15 @@ final class GhosttyRuntime {
             },
             close_surface_cb: { userdata, _ in
                 let pane = PaneView.from(userdata)
-                DispatchQueue.main.async { pane.onClose() }
+                DispatchQueue.main.async { pane.window?.close() }
             },
             tmux_control_cb: nil)
-        guard let app = ghostty_app_new(&runtime, config) else { return nil }
+        guard let new = ghostty_app_new(&runtime, config) else { return nil }
+        nonisolated(unsafe) let app = new
         self.app = app
         GhosttyRuntime.shared = self
 
-        ghostty_app_set_focus(app, NSApp.isActive)
+        ghostty_app_set_focus(app, MainActor.assumeIsolated { NSApp.isActive })
         let center = NotificationCenter.default
         center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
             ghostty_app_set_focus(app, true)
@@ -53,7 +64,8 @@ final class GhosttyRuntime {
         }
     }
 
-    private static var shared: GhosttyRuntime?
+    nonisolated(unsafe) private static var shared: GhosttyRuntime?
+    private static let ticking = OSAllocatedUnfairLock(initialState: false)
 
     private static func tick() {
         if let app = shared?.app { ghostty_app_tick(app) }

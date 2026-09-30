@@ -7,11 +7,11 @@ struct Grid: Equatable {
     var cell: CGSize
 }
 
-final class PaneView: NSView, NSTextInputClient {
+final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onInput: (Data) -> Void = { _ in }
     var onGridChange: (Grid) -> Void = { _ in }
-    var onClose: () -> Void = {}
 
+    // The tmux reader thread feeds it while deinit may free it; unsound once views close.
     nonisolated(unsafe) private(set) var surface: ghostty_surface_t!
     private(set) var grid = Grid(cols: 0, rows: 0, cell: .zero)
 
@@ -19,7 +19,7 @@ final class PaneView: NSView, NSTextInputClient {
     private var keyTextAccumulator: [String]?
     private var lastPerformKeyEvent: TimeInterval?
 
-    static func from(_ userdata: UnsafeMutableRawPointer?) -> PaneView {
+    nonisolated static func from(_ userdata: UnsafeMutableRawPointer?) -> PaneView {
         Unmanaged<PaneView>.fromOpaque(userdata!).takeUnretainedValue()
     }
 
