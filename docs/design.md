@@ -952,7 +952,7 @@ window's dead pane before closing it destroys that screen for good, so it is
 also where a crash gets its one chance at a diagnosis: for every window the
 sweep is about to close, it saves each pane's visible screen plus a bounded
 amount of scrollback (`Tmux.Exec.capture_screen`) to that run's own directory,
-before the caller actually closes the window - `Subrun.write_screen`
+before the caller actually closes the window - `Subrun.save_screen`
 writes `<run-dir>/screen` temp-then-rename, the way `State.record` writes a
 state file, and last writer wins. This is deliberately not `record_outcome`'s
 O_EXCL discipline: an outcome has precedence to defend (`stopped` written

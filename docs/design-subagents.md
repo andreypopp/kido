@@ -332,7 +332,7 @@ Head and line together stay inside the cap, so the notice is no larger
 than the cap allows. A report within the cap is delivered byte for byte
 and leaves no file: nothing was lost, so there is nothing to point at. The
 head is cut back off a partial rune, because the send path refuses a
-message that is not valid UTF-8 outright - `Reap.tail_of_file`
+message that is not valid UTF-8 outright - `Reap.body`
 in the other direction. A sender with no run
 directory - a session kido never spawned, carrying somebody else's parent
 edge - has nowhere to keep it and is truncated instead; so is one whose
