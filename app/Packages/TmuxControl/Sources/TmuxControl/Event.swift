@@ -13,6 +13,12 @@ public enum Link: Equatable, Sendable {
     case unlinked
 }
 
+// %exit's reason is client_exit_message (client.c); a bare %exit has none.
+public enum Exit: Equatable, Sendable {
+    case detached(String)
+    case ended(String?)
+}
+
 public enum Event: Equatable, Sendable {
     case block(Reply, Origin)
     case output(PaneID, [UInt8])
@@ -30,7 +36,7 @@ public enum Event: Equatable, Sendable {
     case sessionWindowChanged(SessionID, WindowID)
     case clientSessionChanged(client: String, SessionID, String)
     case clientDetached(String)
-    case exit(reason: String?)
+    case exit(Exit)
     case unrecognized(String)
 }
 
@@ -132,7 +138,8 @@ public struct Parser: Sendable {
             case "%client-session-changed":
                 w.count > 2 ? session(2).map { .clientSessionChanged(client: String(w[1]), $0, rest(3)) } : nil
             case "%client-detached": w.count > 1 ? .clientDetached(rest(1)) : nil
-            case "%exit": .exit(reason: w.count > 1 ? rest(1) : nil)
+            case "%exit":
+                w.count == 1 ? .exit(.ended(nil)) : w[1] == "detached" ? .exit(.detached(rest(1))) : .exit(.ended(rest(1)))
             default: nil
             }
         return event ?? .unrecognized(text)
