@@ -150,8 +150,20 @@ func liveLayout() async throws {
     #expect(layout.root.panes.map(\.id) == [p0, p1, PaneID(number: 2), p3])
     #expect(layout.root.panes.last == Pane(
         id: p3, index: 3, geometry: Geometry(x: 6, y: 4, width: 28, height: 8), focus: .active, layer: .floating(z: 0)))
-    #expect(layout.root.dividers == [
+    let dividers = layout.root.dividers
+    #expect(dividers.map(\.geometry) == [
         Geometry(x: 40, y: 0, width: 1, height: 24), Geometry(x: 41, y: 12, width: 39, height: 1),
+    ])
+    #expect(dividers[0].resize(to: 0) == nil)
+    #expect(try await client.run(#require(dividers[0].resize(to: 30))) == .success([]))
+    #expect(try await client.run(#require(dividers[1].resize(to: 8))) == .success([]))
+    guard case .success(let resized) = try await client.run(Command("display-message", "-p", "#{window_layout}")),
+          let json = resized.first else {
+        Issue.record("no resized layout")
+        return
+    }
+    #expect(try Layout(json: json).root.dividers.map(\.geometry) == [
+        Geometry(x: 30, y: 0, width: 1, height: 24), Geometry(x: 31, y: 8, width: 49, height: 1),
     ])
 
     #expect(try await client.run(Command("resize-pane", "-Z", "-t", p1)) == .success([]))
