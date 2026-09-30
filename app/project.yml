@@ -1,0 +1,35 @@
+name: Kido
+options:
+  bundleIdPrefix: com.andreypopp
+  deploymentTarget:
+    macOS: "14.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    ARCHS: arm64
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+packages:
+  TmuxControl:
+    path: Packages/TmuxControl
+targets:
+  Kido:
+    type: application
+    platform: macOS
+    sources: [App]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.andreypopp.kido
+        PRODUCT_NAME: Kido
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        INFOPLIST_KEY_CFBundleDisplayName: Kido
+        OTHER_LDFLAGS: [-lc++]
+    dependencies:
+      - package: TmuxControl
+      - framework: build/GhosttyKit.xcframework
+        embed: false
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+      - sdk: IOSurface.framework
+      - sdk: Carbon.framework
