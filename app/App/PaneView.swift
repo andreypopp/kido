@@ -5,7 +5,7 @@ import TmuxControl
 final class PaneView: NSView, @preconcurrency NSTextInputClient {
     let pane: PaneID
     let born = DispatchTime.now()
-    nonisolated(unsafe) var onInput: (Data) -> Void = { _ in }
+    private let onInput: @MainActor @Sendable (Data) -> Void
     var onSelect: () -> Void = {}
     var onCellChange: () -> Void = {}
     var onFontChange: (Float) -> Void = { _ in }
@@ -18,10 +18,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     // Ghostty resizes the terminal on its IO thread at least 25ms after
     // set_grid_size (termio/Thread.zig), so output fed before that lands in
-    // the old grid. grid_metrics reads the surface's size without a lock,
-    // which only main writes, so main polls it to confirm a new grid, and feed
-    // waits for that. Output a grid never confirmed is dropped, and the pane
-    // is captured again once it is, or once the confirmation is given up.
+    // the old grid. grid_metrics reads the terminal's grid under the renderer
+    // lock, making the IO thread yield to it (renderer/State.zig lockDemand),
+    // so main polls it from 25ms on to confirm a new grid, and feed waits for
+    // that. Output a grid never confirmed is dropped, and the pane is captured
+    // again once it is, or once the confirmation is given up.
     private enum Grid {
         case confirmed
         case pending(until: Date)
@@ -33,6 +34,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private var resizes = 0
 
     private var presented = (visible: true, realized: true)
+    private var keyUpMonitor: Any?
+    private var paste: (alert: NSAlert, state: UnsafeMutableRawPointer?)?
 
     private var markedText = NSMutableAttributedString()
     private var keyTextAccumulator: [String]?
@@ -50,8 +53,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    init?(runtime: GhosttyRuntime, pane: PaneID, font: Float) {
+    init?(runtime: GhosttyRuntime, pane: PaneID, font: Float, onInput: @escaping @MainActor @Sendable (Data) -> Void) {
         self.pane = pane
+        self.onInput = onInput
         super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         var config = ghostty_surface_config_new()
         let this = Unmanaged.passUnretained(self).toOpaque()
@@ -66,7 +70,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         // taken there could be the view's last.
         config.io_write_cb = { userdata, bytes, count in
             guard let bytes, count > 0 else { return }
-            nonisolated(unsafe) let input = Unmanaged<PaneView>.fromOpaque(userdata!)._withUnsafeGuaranteedRef(\.onInput)
+            let input = Unmanaged<PaneView>.fromOpaque(userdata!)._withUnsafeGuaranteedRef(\.onInput)
             let data = Data(bytes: bytes, count: Int(count))
             DispatchQueue.main.async { input(data) }
         }
@@ -77,6 +81,15 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             PaneView.onMain(userdata) { $0.onFontChange(points) }
         }, this)
         updateTrackingAreas()
+        // AppKit sends no keyUp through the responder chain while Command is
+        // held (SurfaceView_AppKit.swift).
+        keyUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) { [weak self] event in
+            guard let self, event.modifierFlags.contains(.command), let window, event.window === window,
+                window.firstResponder === self
+            else { return event }
+            keyUp(with: event)
+            return nil
+        }
     }
 
     required init?(coder: NSCoder) {
@@ -84,8 +97,15 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     deinit {
-        assert(Thread.isMainThread, "a surface must be freed on the main thread")
-        if let surface { ghostty_surface_free(surface) }
+        MainActor.assumeIsolated {
+            if let keyUpMonitor { NSEvent.removeMonitor(keyUpMonitor) }
+            guard let surface else { return }
+            if let paste {
+                complete(paste.state, "")
+                paste.alert.window.sheetParent?.endSheet(paste.alert.window)
+            }
+            ghostty_surface_free(surface)
+        }
     }
 
     nonisolated func feed(_ bytes: Data) {
@@ -117,9 +137,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         guard (Int(size.columns), Int(size.rows)) != (cols, rows) else { return }
         resizes += 1
         guard ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil) else { return settle(resync: true) }
-        let now = Date.now
+        let now = Date.now, resize = resizes
         gridChanged.withLock { if case .confirmed = grid { grid = .pending(until: now + 1) } }
-        confirm(cols, rows, resizes, until: now + 10)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
+            self?.confirm(cols, rows, resize, until: now + 10)
+        }
     }
 
     private func confirm(_ cols: Int, _ rows: Int, _ resize: Int, until: Date) {
@@ -143,6 +165,40 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             return lost
         }
         if lost || resync { onResync() }
+    }
+
+    // MARK: - Clipboard
+
+    // A request is completed exactly once; an empty completion refuses it.
+    private func complete(_ state: UnsafeMutableRawPointer?, _ text: String) {
+        ghostty_surface_complete_clipboard_request(surface, text, state, true)
+    }
+
+    func deny(_ state: UnsafeMutableRawPointer?) {
+        complete(state, "")
+    }
+
+    func confirmPaste(_ text: String, _ state: UnsafeMutableRawPointer?) {
+        guard paste == nil, let window else { return deny(state) }
+        let alert = NSAlert()
+        alert.messageText = "Paste this text?"
+        alert.informativeText = "It may run commands when pasted into the terminal."
+        alert.addButton(withTitle: "Paste")
+        alert.addButton(withTitle: "Cancel")
+        let scroll = NSTextView.scrollableTextView()
+        scroll.frame = NSRect(x: 0, y: 0, width: 420, height: 160)
+        scroll.hasHorizontalScroller = true
+        let view = scroll.documentView as! NSTextView
+        view.string = text
+        view.isEditable = false
+        view.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        alert.accessoryView = scroll
+        paste = (alert, state)
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self, let paste, paste.alert === alert else { return }
+            self.paste = nil
+            complete(paste.state, response == .alertFirstButtonReturn ? text : "")
+        }
     }
 
     // MARK: - NSView
