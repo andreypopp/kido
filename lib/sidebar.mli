@@ -15,8 +15,7 @@ type lingering = {
   name : string;
   parent : string;
   outcome : Subrun.result option;
-  kind : Subrun.kind;
-  started_at : Timestamp.t;
+  run : [ `Agent | `Bash of Timestamp.t ];
 }
 
 type probe = { reported : float; read : float; dismissed : bool }
@@ -79,7 +78,7 @@ type row = {
   caption : caption;
 }
 
-type node = Group of { window : string; panes : item list } | Item of item
+type node = Group of { first : item; rest : item list } | Item of item
 and item = { row : row; children : node list }
 
 type section = { id : string; name : string; current : bool; nodes : node list }

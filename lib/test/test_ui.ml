@@ -371,8 +371,7 @@ let%expect_test "order_windows_by_tree: child after parent, anchored to the pare
 
 let%expect_test "order_windows_by_tree: the lingering fallback, and a record beating a stale mark" =
   let lingering parent =
-    State.String_map.singleton "run-1"
-      { Sidebar.name = ""; parent; outcome = None; kind = Agent; started_at = test_at }
+    State.String_map.singleton "run-1" { Sidebar.name = ""; parent; outcome = None; run = `Agent }
   in
   placements
     [ w "root"; w ~run:"run-1" "kid" ]

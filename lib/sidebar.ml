@@ -16,8 +16,7 @@ type lingering = {
   name : string;
   parent : string;
   outcome : Subrun.result option;
-  kind : Subrun.kind;
-  started_at : Timestamp.t;
+  run : [ `Agent | `Bash of Timestamp.t ];
 }
 
 type probe = { reported : float; read : float; dismissed : bool }
@@ -76,8 +75,7 @@ let lingering_subagents ~dir panes states prev =
                       name = meta.name;
                       parent = meta.parent_session;
                       outcome = outcome ();
-                      kind = meta.kind;
-                      started_at = meta.started_at;
+                      run = (match meta.kind with Agent -> `Agent | Bash -> `Bash meta.started_at);
                     }
                     out))
       | _ -> out)
@@ -223,7 +221,7 @@ type row = {
   caption : caption;
 }
 
-type node = Group of { window : string; panes : item list } | Item of item
+type node = Group of { first : item; rest : item list } | Item of item
 and item = { row : row; children : node list }
 
 type section = { id : string; name : string; current : bool; nodes : node list }
@@ -387,14 +385,17 @@ let span role text = { text; role }
 let plain = span `Plain
 
 let lingering_label (p : P.t) (l : lingering) =
+  let kind, caption =
+    match l.run with `Agent -> (Agent, Text []) | `Bash at -> (Run, Elapsed at)
+  in
   let base =
     {
       pane = p.pane_id;
       window = p.window_id;
-      kind = (match l.kind with Agent -> Agent | Bash -> Run);
+      kind;
       indicator = Some (Status Running);
       title = [ plain l.name ];
-      caption = (match l.kind with Bash -> Elapsed l.started_at | Agent -> Text []);
+      caption;
     }
   in
   match p.dead_at with
@@ -428,15 +429,17 @@ let pane_label m (p : P.t) =
             | Running when not (interactive_pane m p) -> p.command_line
             | _ -> ""
           in
-          let text =
+          let kind, text =
             match Procs.Int_map.find_opt p.pane_pid m.snap.ssh with
             | Some (sess : Procs.ssh_session) ->
-                [ span `Proc "ssh "; plain sess.host ]
-                @
-                if ssh_interactive m p && not (String.is_empty cmd) then
-                  [ span `Proc ": "; plain cmd ]
-                else []
-            | None -> [ span `Proc (if String.is_empty cmd then p.current_command else cmd) ]
+                ( Ssh,
+                  [ span `Proc "ssh "; plain sess.host ]
+                  @
+                  if ssh_interactive m p && not (String.is_empty cmd) then
+                    [ span `Proc ": "; plain cmd ]
+                  else [] )
+            | None ->
+                (Shell, [ span `Proc (if String.is_empty cmd then p.current_command else cmd) ])
           in
           let ind =
             if interactive_pane m p then None
@@ -445,7 +448,7 @@ let pane_label m (p : P.t) =
                 (fun ph -> Option.get_or ~default:(Status Idle) (shell_indicator m ph))
                 (String_map.find_opt p.pane_id m.phases)
           in
-          row (if Procs.Int_map.mem p.pane_pid m.snap.ssh then Ssh else Shell) ind text [])
+          row kind ind text [])
   | Some title ->
       let ind, activity =
         match String_map.find_opt p.pane_id m.snap.states with
@@ -552,13 +555,16 @@ let append_windows m placements =
             { row = pane_label m p; children = List.filter_map emit kids })
           placements.(i).panes
       in
-      Some
-        (match panes with
-        | [ item ] -> Item item
-        | _ -> Group { window = (List.hd placements.(i).panes).window_id; panes })
+      match panes with
+      | [] -> None
+      | [ item ] -> Some (Item item)
+      | first :: rest -> Some (Group { first; rest })
     end
   in
-  List.filter_map emit (List.init (Array.length placements) Fun.id)
+  Array.foldi
+    (fun acc i _ -> match emit i with None -> acc | Some node -> node :: acc)
+    [] placements
+  |> List.rev
 
 let fuzzy pattern s =
   let n = String.length pattern and s = String.lowercase_ascii s in
@@ -700,9 +706,9 @@ let to_json m =
         `Assoc
           [
             ("kind", `String "window");
-            ("id", `String g.window);
-            ("window", `String g.window);
-            ("children", `List (List.map item g.panes));
+            ("id", `String g.first.row.window);
+            ("window", `String g.first.row.window);
+            ("children", `List (List.map item (g.first :: g.rest)));
           ]
     | Item i -> item i
   and item i =

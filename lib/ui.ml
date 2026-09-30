@@ -12,14 +12,16 @@ type line =
 let lines (side : S.model) =
   let glyph i n = if n = 1 then "╶" else if i = 0 then "┌" else if i = n - 1 then "└" else "├" in
   let continuation i n = if i < n - 1 then "│" else " " in
+  let out = ref [] in
   let rec node prefix lead stem = function
     | S.Item item ->
         let g = Option.get_or ~default:"╶" lead in
         let nested = prefix ^ (if Option.is_none lead then " " else stem) ^ " " in
         draw item (prefix ^ g) nested
     | S.Group group ->
-        let n = List.length group.panes in
-        List.mapi
+        let panes = group.first :: group.rest in
+        let n = List.length panes in
+        List.iteri
           (fun j item ->
             let g, nested =
               match lead with
@@ -29,26 +31,23 @@ let lines (side : S.model) =
                     prefix ^ stem ^ continuation j n ^ " " )
             in
             draw item (prefix ^ g) nested)
-          group.panes
-        |> List.concat
+          panes
   and draw (item : S.item) tree nested =
-    Row (tree, item.row)
-    :: (List.mapi
-          (fun i child ->
-            let n = List.length item.children in
-            node nested (Some (if i = n - 1 then "└" else "├")) (continuation i n) child)
-          item.children
-       |> List.concat)
+    out := Row (tree, item.row) :: !out;
+    let n = List.length item.children in
+    List.iteri
+      (fun i child -> node nested (Some (if i = n - 1 then "└" else "├")) (continuation i n) child)
+      item.children
   in
   match side.snap.err with
   | Some e -> [| Message e |]
   | None ->
-      Array.of_list
-        (List.concat_map
-           (fun (s : S.section) ->
-             Header { name = s.name; current = s.current }
-             :: List.concat_map (node "" None "") s.nodes)
-           side.sessions)
+      List.iter
+        (fun (s : S.section) ->
+          out := Header { name = s.name; current = s.current } :: !out;
+          List.iter (node "" None "") s.nodes)
+        side.sessions;
+      Array.of_list (List.rev !out)
 
 type model = {
   side : S.model;
