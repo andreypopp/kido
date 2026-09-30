@@ -126,8 +126,10 @@ final class WindowView: NSView {
     }
 
     private func makePane(_ id: PaneID) -> PaneView? {
-        guard let view = PaneView(runtime: runtime, pane: id, font: session?.font ?? 0) else { return nil }
-        view.onInput = { [weak self] in self?.connection?.sendKeys(id, $0) }
+        guard let view = PaneView(
+            runtime: runtime, pane: id, font: session?.font ?? 0,
+            onInput: { [weak connection] in connection?.sendKeys(id, $0) })
+        else { return nil }
         view.onSelect = { [weak self] in self?.connection?.send([Command("select-pane", "-t", id)]) }
         view.onCommand = { [weak self] command in
             guard let connection = self?.connection,
