@@ -43,6 +43,10 @@ final class SessionView: NSView {
         shown = view
     }
 
+    func focusActive() {
+        shown?.focusActive()
+    }
+
     // tmux has one grid for all panes, so every surface has one font size,
     // and the lowest-numbered pane is the one the cell metric is read from.
     private var panes: [PaneView] { windows.values.flatMap(\.panes).sorted { $0.pane.number < $1.pane.number } }

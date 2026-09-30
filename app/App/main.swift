@@ -30,6 +30,11 @@ import AppKit
         sidebar.frame = window.contentView!.bounds
         sidebar.autoresizingMask = [.width, .height]
         window.contentView!.addSubview(sidebar)
+        sidebar.view.send = { [weak self] commands in
+            if case .connected(let connection) = self?.link { connection.send(commands) }
+        }
+        sidebar.view.filter = { [weak self] in self?.feed?.filter($0) }
+        sidebar.view.leave = { [weak self] in self?.session?.focusActive() }
         banner = Banner(target: self, action: #selector(start))
         banner.frame = sidebar.content.bounds
         sidebar.content.addSubview(banner)
@@ -143,7 +148,21 @@ import AppKit
             NSMenuItem(title: "Quit Kido", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),
         ]
         let view = NSMenu(title: "View")
-        view.items = [NSMenuItem(title: "Toggle Sidebar", action: #selector(toggleSidebar), keyEquivalent: "\\")]
+        func item(_ title: String, _ action: Selector, _ key: String, _ mods: NSEvent.ModifierFlags, tag: Int = 0) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.keyEquivalentModifierMask = mods
+            item.tag = tag
+            return item
+        }
+        view.items = [
+            item("Toggle Sidebar", #selector(toggleSidebar), "\\", .command),
+            item("Focus Sidebar", #selector(focusSidebar), "s", [.command, .control]),
+            .separator(),
+            item("Next Needing Attention", #selector(attention(_:)), "n", [.command, .control], tag: 1),
+            item("Previous Needing Attention", #selector(attention(_:)), "N", [.command, .control], tag: -1),
+            item("Next Window in Sidebar", #selector(switchWindow(_:)), "j", [.command, .control], tag: 1),
+            item("Previous Window in Sidebar", #selector(switchWindow(_:)), "k", [.command, .control], tag: 0),
+        ]
         let bar = NSMenu()
         for menu in [app, view, menus.window, menus.session] {
             bar.addItem(withTitle: menu.title, action: nil, keyEquivalent: "").submenu = menu
@@ -154,6 +173,20 @@ import AppKit
 
     @objc private func toggleSidebar() {
         sidebar.toggle()
+    }
+
+    @objc private func focusSidebar() {
+        if sidebar.isCollapsed { sidebar.toggle() }
+        sidebar.view.focus()
+    }
+
+    @objc private func attention(_ sender: NSMenuItem) {
+        sidebar.view.nextAttention(sender.tag)
+    }
+
+    @objc private func switchWindow(_ sender: NSMenuItem) {
+        sidebar.view.failed(nil)
+        feed?.switchWindow(next: sender.tag == 1) { [weak self] in self?.sidebar.view.failed($0) }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
