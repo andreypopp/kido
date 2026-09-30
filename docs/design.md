@@ -863,7 +863,7 @@ flag parsing and the printing around that one call.
 **The sweep.** `Reap.sweep` runs on the sidebar's own poll, every tick,
 and is what actually collects a subagent window in a live session; `kido
 reap` is the same function by hand, for a test or an operator. It runs
-from the sidebar's snapshot (`Ui.take`, through `Reap.collect`) and
+from the sidebar's snapshot (`Sidebar.take`, through `Reap.collect`) and
 deliberately not from `State.load_live`: `kido prompt` and the popup
 picker call `load_live` too, and a state-directory read has no business
 closing a window as a side effect. Several sidebars may
@@ -1725,11 +1725,47 @@ sorts by report time first, with the id as a tiebreak because two agents
 reporting inside one clock tick would otherwise reorder between two calls
 that saw the same state.
 
+## The sidebar's model, and the feed
+
+The sidebar is one model drawn by two views. `Sidebar` is the model: the
+tick (`poll` waits for the control connection's "look now" or the 100ms
+interval, then takes a snapshot), the per-pane tracking, and the rows as
+data - a tree string, an indicator, title and tail spans tagged with a
+role (`plain`, `dim`, `proc`, ...), and the pane's and window's ids. Its
+`step` holds the one change test: a snapshot that differs from the last
+by `same`, or a shell debounce or stall coming due, rebuilds the rows.
+The model has no width and no colour. `Ui` is the Mosaic view: it maps a
+role to a style and an indicator to a glyph, cuts each row to the
+column's width, and owns the cursor, the scroll and the keys. The
+attention predicate `n`/`N` walk is the model's, so the feed's
+`attention` and the TUI's jump cannot disagree.
+
+`kido sidebar-feed --socket <path> --client <name>` is the second view,
+for Kido.app's native sidebar. Its wire format is a frozen contract,
+versioned by its `v` field and kept in the app's notes
+(`sidebar-feed-contract-v1.md`). It runs the model's tick for the named
+client and writes a whole snapshot as one JSON line at start, then
+whenever `step` rebuilt the rows and the line differs from the last one
+sent: a rebuild the debounce forces with nothing visible changed sends
+nothing. The texts go out uncut; the app truncates. Besides drawing, it
+does what the TUI's tick does, the reap sweep and the Claude screen
+probe, and both are idempotent with a TUI sidebar running beside it. The
+client's ids come from its session's active pane. The feed exits 1 once
+the client is not found, which is also how a vanished server shows.
+
+The feed runs outside any tmux, so the socket reaches tmux as `-S` on
+every command kido runs (`Tmux.Exec.use_socket`, set once at the edge
+before any), not as a faked `TMUX`. Stdin is read by a thread that only
+queues lines behind a mutex; the tick drains the queue. The control
+connection stays on the one thread, since `Tmux.Conn` has no lock. A
+`filter` line therefore shows on the next tick, and EOF ends the feed
+there with exit 0.
+
 ## Priming a remote shell
 
 An `ssh` pane reports what the far side is doing only because the far
 side says so: tmux parses OSC 133 off the pane's output stream and never
-learns the markers crossed a network, and `Ui.observe_remote`
+learns the markers crossed a network, and `Sidebar.observe_remote`
 latches a pane once its far side marks a prompt later than the local
 shell marked the ssh as started. All of that needs the remote shell to
 source an integration of kido's - `share/zsh/integration.zsh`, or
@@ -1875,7 +1911,7 @@ that is a word is a subcommand, and one that is a flag is the interactive
 UI - `kido --client <name>`, the one-shot picker the `C-s` binding opens in
 a popup. The side column is the exception to the first rule: the fork
 starts it as a bare `kido`, and `TMUX_SIDE_CLIENT` in its environment is
-what tells the two apart (and what `Ui.options.standalone` reads). The
+what tells the two apart (and what `Ui.model.standalone` reads). The
 launcher never runs inside a multiplexer: with `TMUX` set it refuses,
 starts nothing and says to run kido from a plain terminal, because a
 multiplexer already owns that terminal and nesting one under it buys a

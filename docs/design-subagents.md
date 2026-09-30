@@ -858,7 +858,7 @@ turns that row from a name into a verdict, and claiming success a tick
 early is the one lie this column could tell. The dim `✓` does not
 collide with the green one a live agent gets for a finished turn: that
 one is bold green, and a lingering row has no live agent to earn it
-(`Ui.indicator`'s `Gone`).
+(`Sidebar.indicator`'s `Gone`).
 
 The cost is that hoisted windows leave tmux's own order. Shift-Up and
 Shift-Down skip any window with a run pane, dead or alive, so the keys

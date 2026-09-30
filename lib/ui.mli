@@ -1,114 +1,31 @@
-module String_map = State.String_map
 module Style = Mosaic.Ansi.Style
 
-type options = {
-  interval : float;
-  client : string;
-  standalone : bool;
-      (** One-shot picker: q, Esc and C-c quit, and picking a pane jumps and quits. *)
-  dir : string;
-  threshold : float;
-  grace : float;
-}
-
-type lingering = { name : string; parent : string; outcome : Subrun.result option }
-type probe = { reported : float; read : float; dismissed : bool }
-
-type snapshot = {
-  current : string;
-  active : string;
-  focused : bool;
-  panes : Tmux.Pane.t list;
-  states : (string * State.session) String_map.t;
-  ssh : Procs.ssh_session Procs.Int_map.t;
-  pi : Procs.Int_set.t;
-  probed : float;
-  wake : float option;
-  err : string option;
-  probes : probe String_map.t;
-  lingering : lingering String_map.t;
-}
-
-val empty : snapshot
-val shell_run_delay : float
-val shell_run_hold : float
-
-val lingering_subagents :
-  dir:string ->
-  Tmux.Pane.t list ->
-  (string * State.session) String_map.t ->
-  lingering String_map.t ->
-  lingering String_map.t
-
-val same : snapshot -> snapshot -> bool
-
-type reading = { wall : Timestamp.t; mono : Mtime.t }
-
-val detect_pause : reading -> reading -> bool
-
 type span = Mosaic.span = { text : string; style : Style.t }
-type row = { lead : span list; title : span list; tail : span list; pane_id : string option }
-type phase = { running : bool; since : float; drawn : bool; held : Tmux.Pane.exit option }
 
 type model = {
-  opts : options;
+  side : Sidebar.model;
   conn : Tmux.Conn.t option;
-  snap : snapshot;
-  rows : row array;
+  standalone : bool;
+      (** One-shot picker: q, Esc and C-c quit, and picking a pane jumps and quits. *)
   cursor : int;
   top : int;
   width : int;
   height : int;
   status : string;
-  search : string option;
   g_pend : bool;
-  started : float;
-  seen : float String_map.t;
-  phases : phase String_map.t;
-  ssh_remote : unit String_map.t;
-  now : unit -> float;
-  at : float;
-  clock : reading;
 }
 
-val make : ?conn:Tmux.Conn.t -> now:(unit -> float) -> options -> model
-val interactive_pane : model -> Tmux.Pane.t -> bool
-val ssh_remote : model -> Tmux.Pane.t -> bool
-val shell_outcome : model -> Tmux.Pane.t -> Tmux.Pane.exit option
-val track : model -> model
-val shell_pending : model -> bool
-
-type indicator =
-  | Status of State.status
-  | Unknown
-  | Done
-  | Failed
-  | Stalled
-  | Gone of Subrun.result option
-
-val shell_indicator : model -> phase -> indicator option
-val agent_title_of : model -> Tmux.Pane.t -> string option
-val pane_label : model -> Tmux.Pane.t -> row
-
-type placement = { panes : Tmux.Pane.t list; anchor : string option }
-
-val order_windows_by_tree :
-  Tmux.Pane.t list list ->
-  (string * State.session) String_map.t ->
-  lingering String_map.t ->
-  placement list
-
-val switch_window : dir:string -> client:string -> next:bool -> (unit, string) result
-val spans : row -> span list
-val row_text : row -> string
+val make : ?conn:Tmux.Conn.t -> standalone:bool -> Sidebar.model -> model
+val style : Sidebar.role -> Style.t
+val spans : Sidebar.line -> span list
+val row_text : Sidebar.line -> string
 val truncate : int -> span list -> span list
-val rebuild : model -> model
 
 type msg =
-  | Snapshot of snapshot
+  | Snapshot of Sidebar.snapshot
   | Key of Mosaic.Event.key
   | Mouse of Mosaic.Event.mouse
   | Resize of int * int
 
 val update : msg -> model -> model * msg Mosaic.Cmd.t
-val run : options -> unit
+val run : standalone:bool -> Sidebar.options -> unit

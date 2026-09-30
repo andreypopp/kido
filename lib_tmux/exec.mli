@@ -11,6 +11,7 @@ val self : string Lazy.t
 
 val binary : string Lazy.t
 val write_all : Unix.file_descr -> string -> unit
+val use_socket : string -> unit
 
 type process = { pid : int; stdin : Unix.file_descr; stdout : Unix.file_descr }
 

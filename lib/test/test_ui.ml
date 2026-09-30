@@ -3,8 +3,8 @@ open Kido
 let test_at = 1_700_000_000.
 let temp () = Filename.temp_dir "kido-ui" ""
 
-let opts ?(dir = temp ()) () : Ui.options =
-  { interval = 0.1; client = ""; standalone = false; dir; threshold = 180.; grace = 30. }
+let opts ?(dir = temp ()) () : Sidebar.options =
+  { interval = 0.1; client = ""; dir; threshold = 180.; grace = 30. }
 
 let pane ?(session = "sess") ?(window = "@1") ?(command = "") ?(title = "") ?(pid = 0) ?run ?dead_at
     ?(alternate = false) ?(running = false) ?start ?prompt ?exit ?(command_line = "")
@@ -64,7 +64,7 @@ let states l =
     State.String_map.empty l
 
 let model ?(dir = temp ()) ?(clock = ref test_at) ?(started = test_at -. 3600.) () =
-  let m = Ui.make ~now:(fun () -> !clock) (opts ~dir ()) in
+  let m = Sidebar.make ~now:(fun () -> !clock) (opts ~dir ()) in
   { m with started; at = !clock }
 
 let render ?dir ?(current = "sess") panes st =
@@ -72,14 +72,14 @@ let render ?dir ?(current = "sess") panes st =
   let states = states st in
   let snap =
     {
-      Ui.empty with
+      Sidebar.empty with
       current;
       panes;
       states;
-      lingering = Ui.lingering_subagents ~dir:m.opts.dir panes states State.String_map.empty;
+      lingering = Sidebar.lingering_subagents ~dir:m.opts.dir panes states State.String_map.empty;
     }
   in
-  Array.iter (fun r -> print_endline (Ui.row_text r)) (Ui.rebuild { m with snap }).rows
+  Array.iter (fun r -> print_endline (Ui.row_text r)) (Sidebar.rebuild { m with snap }).lines
 
 let%expect_test "a subagent's window nests under the pane that spawned it" =
   render
@@ -290,7 +290,8 @@ let%expect_test "the same state renders the same rows every time" =
     let m = model () in
     let states = states st in
     Array.to_list
-      (Ui.rebuild { m with snap = { Ui.empty with current = "sess"; panes; states } }).rows
+      (Sidebar.rebuild { m with snap = { Sidebar.empty with current = "sess"; panes; states } })
+        .lines
     |> List.map Ui.row_text
   in
   let want = rows () in
@@ -310,10 +311,10 @@ let%expect_test "the same state renders the same rows every time" =
 
 let placements windows st lingering =
   List.iter
-    (fun (pl : Ui.placement) ->
+    (fun (pl : Sidebar.placement) ->
       Printf.printf "%s anchor=%s\n" (List.hd pl.panes).window_id
         (Option.value ~default:"-" pl.anchor))
-    (Ui.order_windows_by_tree windows (states st) lingering)
+    (Sidebar.order_windows_by_tree windows (states st) lingering)
 
 let w ?run id = [ pane ~window:("@" ^ id) ?run ("%" ^ id) ]
 
@@ -362,7 +363,7 @@ let%expect_test "order_windows_by_tree: child after parent, anchored to the pare
 
 let%expect_test "order_windows_by_tree: the lingering fallback, and a record beating a stale mark" =
   let lingering parent =
-    State.String_map.singleton "run-1" { Ui.name = ""; parent; outcome = None }
+    State.String_map.singleton "run-1" { Sidebar.name = ""; parent; outcome = None }
   in
   placements
     [ w "root"; w ~run:"run-1" "kid" ]
@@ -505,9 +506,11 @@ let%expect_test "lingering entries carry forward; only a missing outcome is re-r
   let dir = temp () in
   let id = new_run ~dir "subagent" in
   let panes = [ pane ~window:"@20" ~dead_at:1. ~run:id "%30" ] in
-  let first = Ui.lingering_subagents ~dir panes State.String_map.empty State.String_map.empty in
+  let first =
+    Sidebar.lingering_subagents ~dir panes State.String_map.empty State.String_map.empty
+  in
   let show l =
-    let (l : Ui.lingering) = State.String_map.find id l in
+    let (l : Sidebar.lingering) = State.String_map.find id l in
     Printf.printf "%s %s\n" l.name (Option.map_or ~default:"-" Subrun.string_of_result l.outcome)
   in
   show first;
@@ -516,19 +519,19 @@ let%expect_test "lingering entries carry forward; only a missing outcome is re-r
     (Subrun.record_outcome ~dir
        (Result.get_exn (Subrun.parse_id id))
        { result = Completed; text = ""; at = None });
-  show (Ui.lingering_subagents ~dir panes State.String_map.empty first);
+  show (Sidebar.lingering_subagents ~dir panes State.String_map.empty first);
   [%expect {|
     subagent -
     subagent completed
     |}]
 
 let%expect_test "agent_title_of" =
-  let m = { (model ()) with snap = Ui.empty } in
+  let m = { (model ()) with snap = Sidebar.empty } in
   List.iter
     (fun title ->
       Printf.printf "%s -> %s\n" title
         (Option.value ~default:"(not an agent)"
-           (Ui.agent_title_of m (pane ~command:"claude" ~title "%1"))))
+           (Sidebar.agent_title_of m (pane ~command:"claude" ~title "%1"))))
     [
       "✳ Tmux config";
       "✳ 2 panes";
@@ -557,7 +560,7 @@ let%expect_test "agent_title_of" =
 
 let indicator_name = function
   | None -> "none"
-  | Some (Ui.Status Running) -> "running"
+  | Some (Sidebar.Status Running) -> "running"
   | Some Done -> "done"
   | Some Failed -> "failed"
   | Some _ -> "other"
@@ -575,7 +578,7 @@ let%expect_test "shell_outcome: the last command's exit since the pane was last 
     Printf.printf "%s: %s\n" name
       (Option.map_or ~default:"none"
          (fun (e : Tmux.Pane.exit) -> Printf.sprintf "exit %d at %.0f" e.code e.at)
-         (Ui.shell_outcome m p))
+         (Sidebar.shell_outcome m p))
   in
   show "no integration" (m State.String_map.empty) (pane ~exit:(1, ended) "%1");
   show "running" (m State.String_map.empty)
@@ -676,15 +679,15 @@ let%expect_test "shell_indicator debounce on a controlled clock" =
               "%1"
           in
           m :=
-            Ui.track
+            Sidebar.track
               {
                 !m with
                 at = !clock;
-                snap = { Ui.empty with panes = [ p ]; active = (if on_pane then "%1" else "") };
+                snap = { Sidebar.empty with panes = [ p ]; active = (if on_pane then "%1" else "") };
               };
           Printf.printf "  +%dms: %s%s\n" adv
-            (indicator_name (Ui.shell_indicator !m (State.String_map.find "%1" !m.phases)))
-            (if Ui.shell_pending !m then " pending" else ""))
+            (indicator_name (Sidebar.shell_indicator !m (State.String_map.find "%1" !m.phases)))
+            (if Sidebar.shell_pending !m then " pending" else ""))
         steps)
     cases;
   [%expect
@@ -741,24 +744,24 @@ let%expect_test "shell_indicator debounce on a controlled clock" =
       +200ms: running
     |}]
 
-let label m p = Ui.row_text (Ui.pane_label m p)
+let label m p = Ui.row_text (Row (Sidebar.pane_label m p))
 
 let%expect_test "phases and latches are forgotten with their panes" =
   let m = model ~started:test_at () in
   let m =
-    Ui.track
+    Sidebar.track
       {
         m with
         snap =
           {
-            Ui.empty with
+            Sidebar.empty with
             active = "%1";
             panes = [ pane ~prompt:test_at ~running:true ~start:test_at "%1" ];
           };
       }
   in
   Printf.printf "phase recorded: %b\n" (State.String_map.mem "%1" m.phases);
-  let m = Ui.track { m with snap = Ui.empty } in
+  let m = Sidebar.track { m with snap = Sidebar.empty } in
   Printf.printf "phases after the pane is gone: %d\n" (State.String_map.cardinal m.phases);
   [%expect {|
     phase recorded: true
@@ -770,13 +773,15 @@ let%expect_test "phases and latches are forgotten with their panes" =
    the row freezes because rebuild is never called. *)
 let%expect_test "the debounce and the stall both redraw on a quiet tick" =
   let clock = ref test_at in
-  let m = ref (model ~clock ()) in
+  let m = ref (Ui.make ~standalone:false (model ~clock ())) in
   let green () =
     Array.exists
-      (fun r ->
-        Option.equal String.equal r.Ui.pane_id (Some "%1")
-        && List.exists (fun (s : Ui.span) -> String.equal s.text "◼") (Ui.spans r))
-      !m.rows
+      (fun (l : Sidebar.line) ->
+        match l with
+        | Row { pane = "%1"; _ } ->
+            List.exists (fun (s : Ui.span) -> String.equal s.text "◼") (Ui.spans l)
+        | _ -> false)
+      !m.side.lines
   in
   let snap running =
     let p =
@@ -784,7 +789,7 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
         ?exit:(if running then None else Some (0, test_at))
         "%1"
     in
-    { Ui.empty with current = "alpha"; active = "%1"; panes = [ p ] }
+    { Sidebar.empty with current = "alpha"; active = "%1"; panes = [ p ] }
   in
   let tick d running =
     clock := !clock +. d;
@@ -792,15 +797,19 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
     Printf.printf "+%.2fs %s: green=%b\n" d (if running then "running" else "stopped") (green ())
   in
   tick 0. true;
-  tick Ui.shell_run_delay true;
+  tick Sidebar.shell_run_delay true;
   tick 1. false;
-  tick (Ui.shell_run_hold -. 0.05) false;
+  tick (Sidebar.shell_run_hold -. 0.05) false;
   tick 0.1 false;
   let dir = temp () in
-  let m = ref { (model ~dir ~clock ()) with opts = { (opts ~dir ()) with threshold = 60. } } in
+  let m =
+    ref
+      (Ui.make ~standalone:false
+         { (model ~dir ~clock ()) with opts = { (opts ~dir ()) with threshold = 60. } })
+  in
   let snap =
     {
-      Ui.empty with
+      Sidebar.empty with
       current = "alpha";
       active = "%1";
       panes = [ pane ~session:"alpha" ~title:"wedged" "%1" ];
@@ -810,7 +819,7 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
   let stalled () =
     Array.exists
       (fun r -> List.exists (fun (s : Ui.span) -> String.equal s.text "!") (Ui.spans r))
-      !m.rows
+      !m.side.lines
   in
   let tick d =
     clock := !clock +. d;
@@ -835,20 +844,23 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
 let%expect_test
     "same ignores a heartbeat's ts and catches any other change; panes compare by exclusion" =
   let snap ?(status = State.Running) ts =
-    { Ui.empty with states = states [ ("%1", ("i", session ~status ~ts "")) ] }
+    { Sidebar.empty with states = states [ ("%1", ("i", session ~status ~ts "")) ] }
   in
-  Printf.printf "ts only: %b\n" (Ui.same (snap test_at) (snap (test_at +. 60.)));
-  Printf.printf "status: %b\n" (Ui.same (snap test_at) (snap ~status:Idle test_at));
+  Printf.printf "ts only: %b\n" (Sidebar.same (snap test_at) (snap (test_at +. 60.)));
+  Printf.printf "status: %b\n" (Sidebar.same (snap test_at) (snap ~status:Idle test_at));
   let p = pane ~command:"zsh" "%1" in
   Printf.printf "window name: %b\n"
-    (Ui.same { Ui.empty with panes = [ p ] }
-       { Ui.empty with panes = [ { p with window_name = "x" } ] });
+    (Sidebar.same
+       { Sidebar.empty with panes = [ p ] }
+       { Sidebar.empty with panes = [ { p with window_name = "x" } ] });
   Printf.printf "exit: %b\n"
-    (Ui.same { Ui.empty with panes = [ p ] }
-       { Ui.empty with panes = [ { p with last_exit = Some { code = 1; at = 1. } } ] });
+    (Sidebar.same
+       { Sidebar.empty with panes = [ p ] }
+       { Sidebar.empty with panes = [ { p with last_exit = Some { code = 1; at = 1. } } ] });
   Printf.printf "command: %b\n"
-    (Ui.same { Ui.empty with panes = [ p ] }
-       { Ui.empty with panes = [ { p with current_command = "vim" } ] });
+    (Sidebar.same
+       { Sidebar.empty with panes = [ p ] }
+       { Sidebar.empty with panes = [ { p with current_command = "vim" } ] });
   [%expect
     {|
     ts only: true
@@ -863,7 +875,7 @@ let%expect_test
   let clock = ref test_at in
   let m = ref (model ~clock ()) in
   let tick p =
-    m := Ui.track { !m with at = !clock; snap = { Ui.empty with panes = [ p ] } };
+    m := Sidebar.track { !m with at = !clock; snap = { Sidebar.empty with panes = [ p ] } };
     print_endline (label !m p)
   in
   tick
@@ -898,13 +910,13 @@ let ssh_pane ?command_line prompt start running status =
     ?command_line "%1"
 
 let ssh_tick clock m p =
-  Ui.track
+  Sidebar.track
     {
       m with
       at = !clock;
       snap =
         {
-          Ui.empty with
+          Sidebar.empty with
           current = "alpha";
           panes = [ p ];
           ssh = Procs.Int_map.singleton 4242 { Procs.host = ssh_host; interactive = true };
@@ -919,15 +931,15 @@ let%expect_test
   let step d p =
     clock := !clock +. d;
     m := ssh_tick clock !m p;
-    Printf.printf "interactive=%b %s: %s\n" (Ui.interactive_pane !m p)
+    Printf.printf "interactive=%b %s: %s\n" (Sidebar.interactive_pane !m p)
       (indicator_name
-         (Option.flat_map (Ui.shell_indicator !m) (State.String_map.find_opt "%1" !m.phases)))
+         (Option.flat_map (Sidebar.shell_indicator !m) (State.String_map.find_opt "%1" !m.phases)))
       (label !m p)
   in
   step 0. (ssh_pane ~command_line:("ssh " ^ ssh_host) (test_at -. 1.) test_at true (-1));
   step 1. (ssh_pane (test_at +. 1.) test_at false (-1));
   step 1. (ssh_pane ~command_line:"sleep 45" (test_at +. 1.) (test_at +. 2.) true (-1));
-  step Ui.shell_run_delay
+  step Sidebar.shell_run_delay
     (ssh_pane ~command_line:"sleep 45" (test_at +. 1.) (test_at +. 2.) true (-1));
   step 1. (ssh_pane ~command_line:"sleep 45" (test_at +. 4.) (test_at +. 2.) false 0);
   print_endline "-- no integration on the far side";
@@ -938,9 +950,10 @@ let%expect_test
       (fun _ ->
         clock := !clock +. 1.;
         m := ssh_tick clock !m p;
-        Ui.interactive_pane !m p
+        Sidebar.interactive_pane !m p
         && Option.is_none
-             (Option.flat_map (Ui.shell_indicator !m) (State.String_map.find_opt "%1" !m.phases)))
+             (Option.flat_map (Sidebar.shell_indicator !m)
+                (State.String_map.find_opt "%1" !m.phases)))
       (List.range 1 10)
   in
   Printf.printf "quiet for ten ticks: %b\n" quiet;
@@ -962,7 +975,7 @@ let%expect_test
   let step d p =
     clock := !clock +. d;
     m := ssh_tick clock !m p;
-    Ui.interactive_pane !m p
+    Sidebar.interactive_pane !m p
   in
   let start = ssh_pane test_at test_at true (-1) in
   Printf.printf "prompt in the ssh's own second stays suppressed: %b\n"
@@ -972,24 +985,24 @@ let%expect_test
     (not (step 1. (ssh_pane (test_at +. 2.) (test_at +. 1.) false 0)));
   let m2 = ref (model ~clock ()) in
   m2 := ssh_tick clock !m2 (ssh_pane (test_at +. 1.) test_at false (-1));
-  Printf.printf "latched: %b\n" (Ui.ssh_remote !m2 (ssh_pane 0. 0. false (-1)));
+  Printf.printf "latched: %b\n" (Sidebar.ssh_remote !m2 (ssh_pane 0. 0. false (-1)));
   m2 :=
-    Ui.track
+    Sidebar.track
       {
         !m2 with
         snap =
           {
-            Ui.empty with
+            Sidebar.empty with
             current = "alpha";
             panes = [ pane ~session:"alpha" ~command:"zsh" ~pid:4242 ~prompt:(test_at +. 2.) "%1" ];
           };
       };
   Printf.printf "dropped once the pane is a local shell: %b\n"
-    (not (Ui.ssh_remote !m2 (ssh_pane 0. 0. false (-1))));
+    (not (Sidebar.ssh_remote !m2 (ssh_pane 0. 0. false (-1))));
   let next = ssh_pane (test_at +. 2.) (test_at +. 3.) true (-1) in
   m2 := ssh_tick clock !m2 next;
-  Printf.printf "a second ssh is judged afresh: %b\n" (Ui.interactive_pane !m2 next);
-  m2 := Ui.track { !m2 with snap = Ui.empty };
+  Printf.printf "a second ssh is judged afresh: %b\n" (Sidebar.interactive_pane !m2 next);
+  m2 := Sidebar.track { !m2 with snap = Sidebar.empty };
   Printf.printf "forgotten with the pane: %b\n" (State.String_map.is_empty !m2.ssh_remote);
   [%expect
     {|
@@ -1009,7 +1022,7 @@ let%expect_test
     clock := test_at;
     m := { (model ~clock ()) with phases = State.String_map.empty };
     let tick () =
-      m := Ui.track { !m with at = !clock; snap = { Ui.empty with panes = [ p ]; ssh } }
+      m := Sidebar.track { !m with at = !clock; snap = { Sidebar.empty with panes = [ p ]; ssh } }
     in
     tick ();
     clock := !clock +. 0.5;
@@ -1034,7 +1047,7 @@ let%expect_test
   let step d alternate running =
     clock := !clock +. d;
     let p = pane ~command:"nvim" ~alternate ~prompt:(test_at -. 1.) ~running ~start:test_at "%1" in
-    m := Ui.track { !m with at = !clock; snap = { Ui.empty with panes = [ p ] } };
+    m := Sidebar.track { !m with at = !clock; snap = { Sidebar.empty with panes = [ p ] } };
     print_endline (label !m p)
   in
   List.iter (fun d -> step d true true) [ 0.; 0.3; 1. ];
@@ -1071,7 +1084,7 @@ let%expect_test
       m with
       snap =
         {
-          Ui.empty with
+          Sidebar.empty with
           current = "alpha";
           panes;
           states = states [ ("%2", ("i", session ~title:"kido" "")) ];
@@ -1081,7 +1094,8 @@ let%expect_test
   let show filter =
     Printf.printf "%S: %s\n" filter
       (String.concat " | "
-         (Array.to_list (Array.map Ui.row_text (Ui.rebuild { m with search = Some filter }).rows)))
+         (Array.to_list
+            (Array.map Ui.row_text (Sidebar.rebuild { m with search = Some filter }).lines)))
   in
   show "";
   show "zz";
@@ -1119,13 +1133,13 @@ let%expect_test "a row wider than the sidebar is cut to its width, ellipsis incl
     |}]
 
 let%expect_test "a pause is the wall clock outrunning the monotonic one" =
-  let reading wall mono_s : Ui.reading =
+  let reading wall mono_s : Sidebar.reading =
     { wall; mono = Mtime.of_uint64_ns (Int64.of_float (mono_s *. 1e9)) }
   in
   List.iter
     (fun (name, wall, mono) ->
       Printf.printf "%-26s %b\n" name
-        (Ui.detect_pause (reading 1000. 1000.) (reading (1000. +. wall) (1000. +. mono))))
+        (Sidebar.detect_pause (reading 1000. 1000.) (reading (1000. +. wall) (1000. +. mono))))
     [
       ("awake, tick on schedule", 0.1, 0.1);
       ("awake, tick genuinely slow", 300., 300.);
@@ -1140,4 +1154,149 @@ let%expect_test "a pause is the wall clock outrunning the monotonic one" =
     just under the slack       false
     just over the slack        true
     asleep for minutes         true
+    |}]
+
+(* The feed's wire format: key order, the indicator encoding (null for an empty field, idle for an
+   integrated idle shell, gone with its outcome), untruncated spans with their roles, attention from
+   the predicate n/N walk, and rows grouped under their own session. *)
+let%expect_test "a snapshot as the feed sends it" =
+  let dir = temp () in
+  let id = new_run ~dir "helper" in
+  ignore
+    (Subrun.record_outcome ~dir
+       (Result.get_exn (Subrun.parse_id id))
+       { result = Failed; text = ""; at = None });
+  let panes =
+    [
+      pane ~session:"alpha" ~window:"@1" ~title:"orchestrator" ~active:true "%1";
+      pane ~session:"alpha" ~window:"@1" ~command:"bash" ~prompt:test_at "%2";
+      pane ~session:"alpha" ~window:"@1" ~command:"vim" ~alternate:true "%3";
+      pane ~session:"alpha" ~window:"@4" ~dead_at:1. ~run:id "%4";
+    ]
+    @ [ { (pane ~session:"beta" ~window:"@5" ~title:"asker" "%5") with session_id = "$1" } ]
+  in
+  let states =
+    states
+      [
+        ("%1", ("root", session ~activity:"reading the contract" ""));
+        ("%5", ("asker", session ~status:Waiting ""));
+      ]
+  in
+  let m = model ~dir () in
+  let m =
+    Sidebar.track
+      {
+        m with
+        snap =
+          {
+            Sidebar.empty with
+            current = "alpha";
+            active = "%1";
+            panes;
+            states;
+            lingering = Sidebar.lingering_subagents ~dir panes states State.String_map.empty;
+          };
+      }
+  in
+  let m = Sidebar.rebuild m in
+  let client = Option.get_exn_or "client" (Sidebar.client_json m) in
+  print_endline (Yojson.Safe.pretty_to_string (Sidebar.to_json ~client m));
+  print_endline
+    (Yojson.Safe.to_string
+       (Sidebar.to_json ~client
+          (Sidebar.rebuild { m with snap = { m.snap with err = Some "tmux: gone" } })));
+  [%expect
+    {|
+    {
+      "v": 1,
+      "client": { "session": "$0", "window": "@1", "pane": "%1" },
+      "filter": "",
+      "error": null,
+      "sessions": [
+        {
+          "id": "$0",
+          "name": "alpha",
+          "current": true,
+          "rows": [
+            {
+              "pane": "%1",
+              "window": "@1",
+              "tree": "┌",
+              "indicator": { "kind": "running" },
+              "title": [ { "text": "orchestrator", "role": "plain" } ],
+              "tail": [
+                { "text": "  ", "role": "plain" },
+                { "text": "reading the contract", "role": "dim" }
+              ],
+              "attention": false
+            },
+            {
+              "pane": "%2",
+              "window": "@1",
+              "tree": "├",
+              "indicator": { "kind": "idle" },
+              "title": [ { "text": "bash", "role": "proc" } ],
+              "tail": [],
+              "attention": false
+            },
+            {
+              "pane": "%3",
+              "window": "@1",
+              "tree": "└",
+              "indicator": null,
+              "title": [ { "text": "vim", "role": "proc" } ],
+              "tail": [],
+              "attention": false
+            },
+            {
+              "pane": "%4",
+              "window": "@4",
+              "tree": "╶",
+              "indicator": { "kind": "gone", "outcome": "failed" },
+              "title": [ { "text": "helper", "role": "dim" } ],
+              "tail": [
+                { "text": "  ", "role": "plain" },
+                { "text": "failed", "role": "dim" }
+              ],
+              "attention": false
+            }
+          ]
+        },
+        {
+          "id": "$1",
+          "name": "beta",
+          "current": false,
+          "rows": [
+            {
+              "pane": "%5",
+              "window": "@5",
+              "tree": "╶",
+              "indicator": { "kind": "waiting" },
+              "title": [ { "text": "asker", "role": "plain" } ],
+              "tail": [],
+              "attention": true
+            }
+          ]
+        }
+      ]
+    }
+    {"v":1,"client":{"session":"$0","window":"@1","pane":"%1"},"filter":"","error":"tmux: gone","sessions":[]}
+    |}]
+
+let%expect_test "every role names its foreground" =
+  List.iter
+    (fun r -> Format.printf "%a@." Mosaic.Ansi.Style.pp (Ui.style r))
+    [ `Plain; `Current; `Proc; `Dim; `Err; `Running; `Waiting; `Compacting; `Done; `Stalled ];
+  [%expect
+    {|
+    Style{fg=#000000}
+    Style{fg=#000000, attrs=[Bold]}
+    Style{fg=#c0c0c0}
+    Style{fg=#808080}
+    Style{fg=#800000}
+    Style{fg=#008000}
+    Style{fg=#808000, attrs=[Bold]}
+    Style{fg=#800080}
+    Style{fg=#008000, attrs=[Bold]}
+    Style{fg=#800000, attrs=[Bold]}
     |}]

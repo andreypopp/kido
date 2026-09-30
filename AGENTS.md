@@ -114,14 +114,17 @@ Conventions:
 
     bin/main.ml        the cmdliner command table and the small commands:
                        set_status, agent-alive, children-alive, snapshot,
-                       ssh, window-focused, switch-session/window, server
+                       ssh, window-focused, switch-session/window, server,
+                       sidebar-feed
     bin/cli.ml         failure printing and tables
     lib/               the library kido:
       launch.ml        the launcher and `kido server`: the kido server, its
                        server.conf
       shell.ml, prime.ml  kido shell: the login shell and its priming files
       bin_dir.ml       the shipped-file and bin-directory lookup
-      ui.ml            the Mosaic sidebar: model, rendering, shell-status debounce
+      sidebar.ml       the sidebar's model: the tick, tracking and the shell-status
+                       debounce, rows as data, the feed's JSON
+      ui.ml            the Mosaic sidebar: the model's rows drawn, keys, cursor
       screen.ml        reading a Claude Code screen for a dismissed prompt
       state.ml         one JSON file per agent session, keyed by pane
       hook.ml          Claude Code hook event -> status table
@@ -191,7 +194,7 @@ that sibling, so the suite runs the resolution users get.
 
 **The side column.** `side-status-command` runs a program in the side
 column with `$TMUX_SIDE_CLIENT` set. Its absence is exactly "not started
-as a side column", i.e. `Ui.options.standalone` - a popup or plain pane
+as a side column", i.e. `Ui.model.standalone` - a popup or plain pane
 gets the one-shot picker. Keyboard focus is the client flag
 `side-status-focus`.
 
@@ -218,19 +221,19 @@ Consequences:
   `last_prompt > command_start`, and a tie resolves to *running* —
   a false idle the instant a command starts is the worse error.
 - **`cmd_status` is cleared on `C`,** so the last exit code is gone when
-  the next command starts. `Ui.phase.held` (a `Tmux.Pane.exit option`)
+  the next command starts. `Sidebar.phase.held` (a `Tmux.Pane.exit option`)
   carries it across the following run.
 
 `Tmux.Pane.shell` also heals a stuck flag: a `C` with no `D` leaves
 `PANE_CMDRUNNING` set, and the next prompt's `A` clears it. Two fork
 changes would each delete a workaround: clearing `PANE_CMDRUNNING` on `A`
-(the heal rule), and not clearing `cmd_status` on `C` (`Ui.phase.held`).
+(the heal rule), and not clearing `cmd_status` on `C` (`Sidebar.phase.held`).
 Not done.
 
 **Why not `pane_current_command`.** It reports the process-group leader,
 which confuses an interactive shell with a batch `zsh -c`.
 `#{alternate_on}` reports the *innermost* program (`less` under `git`,
-`nvim` under `sudo`) and is what `Ui.interactive_pane` uses to decide a
+`nvim` under `sudo`) and is what `Sidebar.interactive_pane` uses to decide a
 program has taken the terminal.
 
 ## Format-string invariants (`lib_tmux/pane.ml`)
@@ -270,7 +273,7 @@ Claude Code reports nothing when a question is dismissed or a permission
 denied; kido reads the pane's screen instead (`lib/screen.ml`, fixtures
 from real screens in lib/test/test_screen.ml). That probe runs for a
 `State.Claude` session in `Waiting` only, enforced by a match in
-`Ui.dismissals`, not by a type.
+`Sidebar.dismissals`, not by a type.
 
 ## Agent state, and delivering a prompt
 
@@ -424,7 +427,7 @@ Negative controls are load-bearing: never delete one half of a pair.
 
 ### Other traps
 
-- **`Ui.same` compares panes by exclusion.** A new `Tmux.Pane.t` field
+- **`Sidebar.same` compares panes by exclusion.** A new `Tmux.Pane.t` field
   participates in equality unless blanked in its local `drawn`. It fails
   toward extra redraws, the safe direction.
 - **A window's panes are ordered oldest first**, by pane id number
@@ -434,9 +437,10 @@ Negative controls are load-bearing: never delete one half of a pair.
 - **`@kido_run` is pane-scoped (`set-option -p`).** It marks the one
   pane a run actually runs in; a user's split off that window reads "",
   with no window-scoped fallback to inherit.
-- **`Ui.field` is the column-alignment contract.** Every pane-label
-  branch routes through it. An unintegrated shell and a program that has
-  taken the terminal get an empty field — no glyph, column kept. Anything
+- **`Ui.parts` is the column-alignment contract.** Every pane row's
+  indicator is drawn there as a two-column field. An unintegrated shell and
+  a program that has taken the terminal (no indicator) and an idle one (no
+  glyph) get an empty field — column kept. Anything
   drawn left of a label must fit in space already accounted for; a child
   window's group glyph has its own column, its bracket the next.
 - **A standalone kido infers its client by counting, filtered.**
@@ -539,7 +543,7 @@ reference:
   held open by one alone never returns to idle.
 - An interactive `ssh` pane whose far side reaches its first prompt in
   the same whole second the ssh started reports nothing until the prompt
-  after its first remote command: `Ui.observe_remote` reads
+  after its first remote command: `Sidebar.observe_remote` reads
   `last_prompt > command_start` strictly. Accepting the tie is not
   the fix — a local prompt and an ssh launched from it share a second
   just as readily, and every non-integrated remote would then hold the

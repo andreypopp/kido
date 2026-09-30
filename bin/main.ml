@@ -287,7 +287,9 @@ let switch name doc f =
          required
          & pos 0 (some (enum [ ("next", true); ("prev", false) ])) None
          & info [] ~docv:"next|prev")
-     and+ client = str "client" "NAME" "tmux client to switch; defaults to $(b,TMUX_SIDE_CLIENT)." in
+     and+ client =
+       str "client" "NAME" "tmux client to switch; defaults to $(b,TMUX_SIDE_CLIENT)."
+     in
      fun () ->
        ok
          (f
@@ -305,7 +307,7 @@ let switch_session =
 
 let switch_window =
   switch "switch-window" "Switch the client to the next or previous window." (fun ~client ~next ->
-      Ui.switch_window ~dir:(State.dir ()) ~client ~next)
+      Sidebar.switch_window ~dir:(State.dir ()) ~client ~next)
 
 let created name f = Cli.run name (fun () -> print (f ()))
 
@@ -585,16 +587,87 @@ let sidebar =
           Cli.error "" "no tmux client; pass --client '#{client_name}'";
           1
       | Some client ->
-          Ui.run
+          Ui.run ~standalone:(String.is_empty side)
             {
               interval;
               client;
-              standalone = String.is_empty side;
               dir = State.dir ();
               threshold = State.stall_threshold ();
               grace = Reap.grace ();
             };
           0)
+
+let sidebar_feed =
+  cmd "sidebar-feed" "Stream the sidebar's rows to a native sidebar, as one JSON line per change."
+  @@ let+ socket = str "socket" "PATH" "The kido server's tmux socket."
+     and+ client = str "client" "NAME" "The tmux client the rows are drawn for." in
+     fun () ->
+       if String.is_empty socket || String.is_empty client then
+         failwith "usage: kido sidebar-feed --socket PATH --client NAME";
+       if not (Sys.file_exists socket) then Printf.ksprintf failwith "no tmux server at %s" socket;
+       Tmux.Exec.use_socket socket;
+       let opts =
+         {
+           Sidebar.interval = 0.1;
+           client;
+           dir = State.dir ();
+           threshold = State.stall_threshold ();
+           grace = Reap.grace ();
+         }
+       in
+       let lock = Mutex.create () and commands = Queue.create () in
+       let rec read () =
+         let line = In_channel.input_line Stdlib.stdin in
+         Mutex.protect lock (fun () -> Queue.push line commands);
+         if Option.is_some line then read ()
+       in
+       ignore (Thread.create read ());
+       let conn = Tmux.Conn.connect client in
+       let rec loop ?wait (m : Sidebar.model) client_ids last =
+         let snap = Sidebar.poll ?wait ~opts conn m.snap in
+         if String.is_empty snap.current then
+           failwith
+             (Option.get_or snap.err
+                ~default:(Printf.sprintf "no tmux client %S on %s" client socket));
+         let m, changed = Sidebar.step m snap in
+         let lines =
+           Mutex.protect lock (fun () ->
+               let l = List.of_seq (Queue.to_seq commands) in
+               Queue.clear commands;
+               l)
+         in
+         let search =
+           List.fold_left
+             (fun search -> function
+               | Some "filter" -> None
+               | Some line -> (
+                   match String.chop_prefix ~pre:"filter " line with
+                   | Some text -> Some text
+                   | None -> search)
+               | None -> search)
+             m.search lines
+         in
+         let m, changed =
+           if Option.equal String.equal search m.search then (m, changed)
+           else (Sidebar.rebuild { m with search }, true)
+         in
+         let client_ids = Option.or_ ~else_:client_ids (Sidebar.client_json m) in
+         let last =
+           match client_ids with
+           | Some c when changed ->
+               let line = Yojson.Safe.to_string (Sidebar.to_json ~client:c m) in
+               if not (String.equal line last) then (
+                 print_endline line;
+                 flush stdout);
+               line
+           | Some _ -> last
+           | None -> failwith (Option.get_or snap.err ~default:"the client has no active pane")
+         in
+         if List.mem ~eq:(Option.equal String.equal) None lines then 0 else loop m client_ids last
+       in
+       Fun.protect
+         ~finally:(fun () -> Tmux.Conn.close conn)
+         (fun () -> loop ~wait:false (Sidebar.make ~now:Unix.gettimeofday opts) None "")
 
 let () =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
@@ -630,6 +703,7 @@ let () =
         async_bash;
         reap;
         close_run;
+        sidebar_feed;
       ]
   in
   (* ssh's arguments are ssh's own, options included. *)

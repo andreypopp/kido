@@ -63,6 +63,9 @@ let write_all fd s =
   in
   go 0
 
+let socket = ref []
+let use_socket path = socket := [ "-S"; path ]
+
 type process = { pid : int; stdin : Unix.file_descr; stdout : Unix.file_descr }
 
 let spawn args =
@@ -74,7 +77,7 @@ let spawn args =
     try
       Ok
         {
-          pid = Unix.create_process bin (Array.of_list (bin :: args)) in_r out_w null;
+          pid = Unix.create_process bin (Array.of_list ((bin :: !socket) @ args)) in_r out_w null;
           stdin = in_w;
           stdout = out_r;
         }
