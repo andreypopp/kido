@@ -2,17 +2,17 @@ import AppKit
 import TmuxControl
 
 final class SessionMenus: NSObject {
-    weak var connection: Connection?
+    var send: ([Command]) -> Void = { _ in }
     let window = NSMenu(title: "Window")
     let session = NSMenu(title: "Session")
 
     func update(_ model: SessionModel) {
         window.items = [
-            item("Next Window", "}", Command("next-window")),
-            item("Previous Window", "{", Command("previous-window")),
+            item("Next Window", "}", model.select(.next)),
+            item("Previous Window", "{", model.select(.previous)),
             .separator(),
         ] + model.windows.enumerated().map { n, w in
-            let entry = item(w.name, n < 9 ? "\(n + 1)" : "", Command("select-window", "-t", w.id))
+            let entry = item(w.name, n < 9 ? "\(n + 1)" : "", model.select(.number(n + 1)))
             entry.state = w.id == model.window ? .on : .off
             return entry
         }
@@ -28,7 +28,7 @@ final class SessionMenus: NSObject {
     }
 
     private func item(
-        _ title: String, _ key: String, _ command: Command, _ modifiers: NSEvent.ModifierFlags = .command
+        _ title: String, _ key: String, _ command: Command?, _ modifiers: NSEvent.ModifierFlags = .command
     ) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: #selector(run(_:)), keyEquivalent: key)
         item.keyEquivalentModifierMask = modifiers
@@ -39,6 +39,6 @@ final class SessionMenus: NSObject {
 
     @objc private func run(_ sender: NSMenuItem) {
         guard let command = sender.representedObject as? Command else { return }
-        connection?.send([command])
+        send([command])
     }
 }
