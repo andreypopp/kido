@@ -82,6 +82,13 @@ each feed process is sent it on start and on every edit.
 `build/derived-{tsan,asan}`. ASan defaults to `use_sigaltstack=0` because Zig
 threads replace its alternate signal stack with thread-local storage.
 
+The Main Thread Checker needs no rebuild: launch a Debug build with
+`DYLD_INSERT_LIBRARIES=$DEVELOPER_DIR/usr/lib/libMainThreadChecker.dylib`
+and `MTC_RESET_INSERT_LIBRARIES=1`, which keeps it out of the feed and
+tmux. Leaks are checked with `MallocStackLogging=1` and `leaks`,
+`footprint` and `heap` on the pid, compared after attaching, after
+switching past the surface budget, and after closing all but one window.
+
 `KIDO_APP_SOCKET` and `KIDO_APP_TMUX` point the app at a private
 server; `KIDO_APP_FEED` names a stand-in feed. `KIDO_APP_BACKGROUND=1`
 keeps a test launch off screen: it never activates, never takes focus
