@@ -3,7 +3,7 @@ import TmuxControl
 
 enum PaneSync {
     private static let state = [
-        "history_size", "pane_height", "alternate_on", "cursor_x", "cursor_y", "scroll_region_upper",
+        "history_size", "alternate_on", "cursor_x", "cursor_y", "scroll_region_upper",
         "scroll_region_lower", "keypad_flag", "insert_flag", "alternate_saved_x", "alternate_saved_y",
         "cursor_blinking", "cursor_shape", "pane_key_mode", "pane_tabs", "pane_private_modes",
     ].map { "#{\($0)}" }.joined(separator: "\u{1F}")
@@ -28,11 +28,11 @@ enum PaneSync {
         history: [String], screen: [String], main: [String], pending: String, state: String
     ) -> Data? {
         let f = state.split(separator: "\u{1F}", omittingEmptySubsequences: false)
-        let n = f.prefix(12).compactMap { Int($0) }
-        guard f.count == 16, n.count == 12 else { return nil }
+        let n = f.prefix(11).compactMap { Int($0) }
+        guard f.count == 15, n.count == 11 else { return nil }
         let (hsize, alternate, x, y, upper, lower, keypad, insert, savedX, savedY, blinking) =
-            (n[0], n[2], n[3], n[4], n[5], n[6], n[7], n[8], n[9], n[10], n[11])
-        let (shape, keys, tabs, modes) = (f[12], f[13], f[14].split(separator: ","), f[15].split(separator: ","))
+            (n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7], n[8], n[9], n[10])
+        let (shape, keys, tabs, modes) = (f[11], f[12], f[13].split(separator: ","), f[14].split(separator: ","))
         let e = "\u{1B}"
         let scrollback = hsize == 0 ? [] : history
         var out = "\(e)c\(e)[3J" + (scrollback + (alternate == 1 ? main : screen)).joined(separator: "\r\n")
