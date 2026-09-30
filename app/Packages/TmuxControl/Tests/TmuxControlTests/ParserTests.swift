@@ -80,7 +80,7 @@ let s0 = SessionID(number: 0), s1 = SessionID(number: 1)
         .windowClose(w1, .unlinked),
         .windowRenamed(w2, .linked, "zsh"),
         .block(.success([]), .control),
-        .exit(reason: nil),
+        .exit(.ended(nil)),
     ])
     #expect(output(events, p0).contains("echo '✓\\'\r\n\u{1b}[?2004l\r✓\\\r\n"))
     #expect(parse(bytes, chunk: 1) == events)
@@ -126,7 +126,7 @@ let s0 = SessionID(number: 0), s1 = SessionID(number: 1)
         .continue(p0),
         .block(.success([]), .control),
         .block(.success([]), .control),
-        .exit(reason: nil),
+        .exit(.ended(nil)),
     ])
     let text = output(events, p0)
     #expect(text.hasPrefix("yes | head -c 200000\r\n\u{1b}[?2004l\ry\r\ny\r\n"))
@@ -134,12 +134,19 @@ let s0 = SessionID(number: 0), s1 = SessionID(number: 1)
 }
 
 @Test func lostServer() throws {
-    #expect(parse(try fixture("lost")).last == .exit(reason: "server exited unexpectedly"))
+    #expect(parse(try fixture("lost")).last == .exit(.ended("server exited unexpectedly")))
+}
+
+@Test func exitReasons() {
+    #expect(parse(Array("%exit\n%exit detached (from session a b)\n%exit detached and SIGHUP (from session 0)\n%exit too far behind\n".utf8)) == [
+        .exit(.ended(nil)), .exit(.detached("detached (from session a b)")),
+        .exit(.detached("detached and SIGHUP (from session 0)")), .exit(.ended("too far behind")),
+    ])
 }
 
 @Test func attachFailure() throws {
     #expect(parse(try fixture("attach-fail")) == [
-        .block(.failure(["can't find session: nope"]), .other), .exit(reason: nil),
+        .block(.failure(["can't find session: nope"]), .other), .exit(.ended(nil)),
     ])
 }
 
