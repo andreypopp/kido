@@ -6,7 +6,6 @@ final class SessionView: NSView {
     weak var connection: Connection?
     private let runtime: GhosttyRuntime
     private(set) var windows: [WindowID: WindowView] = [:]
-    private weak var shown: WindowView?
 
     init(runtime: GhosttyRuntime) {
         self.runtime = runtime
@@ -19,7 +18,7 @@ final class SessionView: NSView {
         fatalError("init(coder:) is not supported")
     }
 
-    func update(_ listing: [WindowListing], shown: WindowID?) {
+    func update(_ listing: [WindowListing]) {
         let old = windows
         windows = [:]
         for w in listing {
@@ -33,14 +32,14 @@ final class SessionView: NSView {
             view.update(w.layout, w.visible)
         }
         for (id, gone) in old where windows[id] == nil { gone.close() }
-        show(shown)
     }
 
+    private var shown: WindowView? { windows.values.first { !$0.isHidden } }
+
     func show(_ window: WindowID?) {
+        let before = shown
         for (id, view) in windows { view.isHidden = id != window }
-        let view = window.flatMap { windows[$0] }
-        if view !== shown { view?.focusActive(force: false) }
-        shown = view
+        if let view = window.flatMap({ windows[$0] }), view !== before { view.focusActive(force: false) }
     }
 
     func focusActive() {
