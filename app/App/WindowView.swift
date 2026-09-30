@@ -106,7 +106,7 @@ final class WindowView: NSView {
         view.onSelect = { [weak self] in self?.connection?.send([Command("select-pane", "-t", id)]) }
         view.onCommand = { [weak self] command in
             guard let connection = self?.connection,
-                let tmux = command.command(id, cell: self?.session?.cell ?? .zero, windows: connection.model.windows)
+                let tmux = command.command(id, cell: self?.session?.cell ?? .zero, model: connection.model)
             else { return }
             connection.send([tmux])
         }
