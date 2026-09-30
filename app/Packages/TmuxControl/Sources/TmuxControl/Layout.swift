@@ -85,3 +85,32 @@ public indirect enum Node: Decodable, Equatable, Sendable {
             layer: try c.decodeIfPresent(Int.self, forKey: .z).map { .floating(z: $0) } ?? .tiled))
     }
 }
+
+extension Node {
+    public var geometry: Geometry {
+        switch self {
+        case .pane(let pane): pane.geometry
+        case .split(_, let geometry, _): geometry
+        }
+    }
+
+    public var panes: [Pane] {
+        switch self {
+        case .pane(let pane): [pane]
+        case .split(_, _, let children): children.flatMap(\.panes)
+        }
+    }
+
+    public var dividers: [Geometry] {
+        guard case .split(let direction, let g, let children) = self else { return [] }
+        let tiled = children.filter { if case .pane(let p) = $0, case .floating = p.layer { false } else { true } }
+        let between = zip(tiled, tiled.dropFirst()).map { a, _ in
+            let a = a.geometry
+            return switch direction {
+            case .leftRight: Geometry(x: a.x + a.width, y: g.y, width: 1, height: g.height)
+            case .topBottom: Geometry(x: g.x, y: a.y + a.height, width: g.width, height: 1)
+            }
+        }
+        return between + children.flatMap(\.dividers)
+    }
+}
