@@ -32,7 +32,7 @@ let kind_of_yojson = function
 type meta = {
   id : id;
   name : string;
-  kind : kind option; [@default None]
+  kind : kind;
   parent_session : string; [@key "parentSession"] [@default ""]
   depth : int;
   pane : string;
@@ -43,7 +43,7 @@ type meta = {
   keep_alive : bool; [@key "keepAlive"] [@default false]
   started_at : Timestamp.t; [@key "startedAt"]
 }
-[@@deriving yojson { strict = false }]
+[@@deriving yojson]
 
 let label m = if String.is_empty m.name then string_of_id m.id else m.name
 
@@ -137,12 +137,13 @@ let truncate_screen data =
 
 let capture_pane pane = Result.to_opt (Tmux.Exec.capture_screen pane)
 
-let capture_own_screen ~dir ~capture id pane =
+let save_screen ~dir ~capture id pane =
   if String.is_empty pane then None
   else
     Option.map
       (fun text ->
         let data = truncate_screen text in
-        write_screen ~dir id data;
+        (if not (String.is_empty data) then
+           try write_screen ~dir id data with Unix.Unix_error _ | Sys_error _ -> ());
         data)
       (capture pane)

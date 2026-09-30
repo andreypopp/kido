@@ -40,7 +40,6 @@ type pi = {
   home : string;
 }
 
-(* Run with kido's own environment and pi's stderr dropped, as Go's Output() would. *)
 let list_models ~path () =
   match Tmux.Exec.look_path ~path "pi" with
   | None -> Error {|exec: "pi": executable file not found in $PATH|}
@@ -78,14 +77,10 @@ type flags = {
 
 type mode =
   | Fresh of { name : string; task : string; fork : string; model : string; tools : string list }
-  | Resume of { run : Subrun.id; adopt : bool }
+  | Resume of Subrun.id
 
-type request = {
-  mode : mode;
-  parent : State.parent option;
-  keep_alive : bool;
-  command : string list;
-}
+type owner = Given of State.parent | Nobody | Adopt
+type request = { mode : mode; owner : owner; keep_alive : bool; command : string list }
 
 let check_window_name name =
   let open Result.Infix in
@@ -134,14 +129,15 @@ let parse (f : flags) =
   let refuse why = Error (why ^ "\n" ^ usage) in
   let command = if List.is_empty f.command then [ "pi" ] else f.command in
   let given = f.parent_pid > 0 || not (String.is_empty f.parent_session) in
-  let* parent =
+  let* owner =
     if f.no_parent && given then
       refuse "--no-parent contradicts --parent-pid/--parent-session; pass one or the other"
     else if f.parent_pid > 0 && not (String.is_empty f.parent_session) then
-      Ok (Some State.{ pid = f.parent_pid; session = f.parent_session })
+      Ok (Given { pid = f.parent_pid; session = f.parent_session })
     else if given then
       refuse "--parent-pid and --parent-session name one parent and are given together"
-    else Ok None
+    else if f.no_parent then Ok Nobody
+    else Ok Adopt
   in
   let+ mode =
     if not (String.is_empty f.resume) then
@@ -153,24 +149,24 @@ let parse (f : flags) =
         refuse
           "--resume continues a run's own session; --fork starts a new one from somebody else's, \
            and the two cannot both be asked for"
-      else
-        match Subrun.parse_id f.resume with
-        | Error e -> refuse e
-        | Ok run -> Ok (Resume { run; adopt = Option.is_none parent && not f.no_parent })
-    else if Option.is_none parent && not f.no_parent then
-      refuse
-        "--parent-pid and --parent-session are required (or --no-parent for a child owned by \
-         nobody)"
-    else if String.is_empty f.name then refuse "--name is required"
-    else if String.is_empty f.task_file then refuse "--task-file is required"
+      else match Subrun.parse_id f.resume with Error e -> refuse e | Ok run -> Ok (Resume run)
     else
-      let* () = check_window_name f.name in
-      let* () = Launch.tmux_safe "--fork" f.fork in
-      let+ task = read_task f.task_file in
-      let tools = if String.is_empty f.tools then [] else String.split_on_char ',' f.tools in
-      Fresh { name = f.name; task; fork = f.fork; model = f.model; tools }
+      match owner with
+      | Adopt ->
+          refuse
+            "--parent-pid and --parent-session are required (or --no-parent for a child owned by \
+             nobody)"
+      | Given _ | Nobody ->
+          if String.is_empty f.name then refuse "--name is required"
+          else if String.is_empty f.task_file then refuse "--task-file is required"
+          else
+            let* () = check_window_name f.name in
+            let* () = Launch.tmux_safe "--fork" f.fork in
+            let+ task = read_task f.task_file in
+            let tools = if String.is_empty f.tools then [] else String.split_on_char ',' f.tools in
+            Fresh { name = f.name; task; fork = f.fork; model = f.model; tools }
   in
-  { mode; parent; keep_alive = f.keep_alive; command }
+  { mode; owner; keep_alive = f.keep_alive; command }
 
 (* A model no configured provider can run makes pi print "Use /login ..." and exit 0 having run
    no turn. pi --list-models prints a header, then one row per model: provider, model id. *)
@@ -251,14 +247,12 @@ let run_env ~dir id parent depth ~keep_alive =
     | None -> [])
   @ if keep_alive then [ "KIDO_AGENT_KEEP_ALIVE=1" ] else []
 
-let failed ~dir (meta : Subrun.meta) text =
-  ignore
-    (Subrun.record_outcome ~dir meta.id { result = Failed; text; at = Some (Timestamp.now ()) })
-
 let create_run_window ~dir tmux (meta : Subrun.meta) ~session ~env command =
   let open Result.Infix in
   let fail e =
-    failed ~dir meta e;
+    ignore
+      (Subrun.record_outcome ~dir meta.id
+         { result = Failed; text = e; at = Some (Timestamp.now ()) });
     Error e
   in
   let* w =
@@ -274,29 +268,33 @@ let create_run_window ~dir tmux (meta : Subrun.meta) ~session ~env command =
     | Ok () -> Ok ()
     | Error e -> (
         match meta.kind with
-        | Some Bash when not (tmux.window_exists w.window_id) -> Ok ()
-        | Some Bash | Some Agent | None ->
+        | Bash when not (tmux.window_exists w.window_id) -> Ok ()
+        | Bash | Agent ->
             ignore (tmux.kill_window w.window_id);
             fail e)
   in
   match meta.kind with
-  | Some Bash -> String.concat " " [ w.window_id; w.pane_id; id; Subrun.output_path ~dir meta.id ]
-  | Some Agent | None -> String.concat " " [ w.window_id; w.pane_id; id ]
+  | Bash -> String.concat " " [ w.window_id; w.pane_id; id; Subrun.output_path ~dir meta.id ]
+  | Agent -> String.concat " " [ w.window_id; w.pane_id; id ]
 
 let insert_after_head extra = function head :: rest -> (head :: extra) @ rest | [] -> extra
 
-let spawn ~dir ~self ~panes ~tmux ~pi req =
+let caller ~dir ~self ~panes owner =
   let open Result.Infix in
   let* panes = Lazy.force panes in
-  let* pane = List_agents.caller_pane panes self in
-  let live = State.load_live ~dir in
-  let own = State.String_map.find_opt pane.pane_id (State.by_pane live) in
+  let+ pane = List_agents.caller_pane panes self in
+  let own = State.String_map.find_opt pane.pane_id (State.by_pane (State.load_live ~dir)) in
   let parent =
-    match (req.mode, own) with
-    | Resume { adopt = true; _ }, Some (id, s) -> Some State.{ pid = s.pid; session = id }
-    | _ -> req.parent
+    match (owner, own) with
+    | Given p, _ -> Some p
+    | Adopt, Some (session, s) -> Some State.{ pid = s.pid; session }
+    | Adopt, None | Nobody, _ -> None
   in
-  let depth = 1 + Option.map_or ~default:0 (fun (_, (s : State.session)) -> s.depth) own in
+  (pane, parent, 1 + Option.map_or ~default:0 (fun (_, (s : State.session)) -> s.depth) own)
+
+let spawn ~dir ~self ~panes ~tmux ~pi req =
+  let open Result.Infix in
+  let* pane, parent, depth = caller ~dir ~self ~panes req.owner in
   let* () =
     if depth > max_depth then
       Error
@@ -305,12 +303,16 @@ let spawn ~dir ~self ~panes ~tmux ~pi req =
            depth max_depth)
     else
       match parent with
-      | Some { session; _ } when not (List.mem_assoc ~eq:String.equal session live) ->
+      | Some { session; _ }
+        when not
+               (Option.exists
+                  (fun (s : State.session) -> State.alive s.pid)
+                  (State.get ~dir session)) ->
           Error
             (Printf.sprintf
                "--parent-session %S names no currently live agent; the child would be closed \
-                within moments as an orphan (internal/reap's rule 2) - pass --no-parent for a \
-                child owned by nobody, or name an agent that is actually running"
+                within moments as an orphan by the reap sweep - pass --no-parent for a child owned \
+                by nobody, or name an agent that is actually running"
                session)
       | _ -> Ok ()
   in
@@ -323,7 +325,7 @@ let spawn ~dir ~self ~panes ~tmux ~pi req =
           {
             id;
             name = f.name;
-            kind = Some Agent;
+            kind = Agent;
             parent_session = "";
             depth = 0;
             pane = "";
@@ -342,7 +344,7 @@ let spawn ~dir ~self ~panes ~tmux ~pi req =
           @ [ "--session-id"; Subrun.string_of_id id ]
         in
         Ok (meta, (if is_pi then insert_after_head flags req.command else req.command), false)
-    | Resume { run; _ } ->
+    | Resume run ->
         let* meta =
           Option.to_result
             (Printf.sprintf "run %S: no readable %s" (Subrun.string_of_id run)

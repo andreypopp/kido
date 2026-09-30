@@ -94,26 +94,16 @@ let run_outcome ~dir ?(capture = no_capture) ?(text = "") ?(unreported = false) 
     (Runs.run_outcome ~dir ~capture ~warn:(Printf.printf "warning: %s\n") ~result ~text ~unreported
        r)
 
-(* A run's own process must not claim an outcome only kido assigns from the outside. *)
-let%expect_test "run-outcome records completed or failed, and nothing else" =
+let%expect_test "run-outcome records one outcome, and only for a valid run id" =
   let dir = Filename.temp_dir "kido-state" "" in
   ignore (run ~dir ~pane:"%9" "run-x");
-  List.iter (fun r -> run_outcome ~dir r "run-x") [ "died"; "stopped"; "bogus"; "" ];
   show_outcome ~dir "run-x";
-  run_outcome ~dir "completed" "run-x";
+  run_outcome ~dir Completed "run-x";
   show_outcome ~dir "run-x";
-  run_outcome ~dir ~capture:(fun _ -> None) "failed" "run-x";
-  run_outcome ~dir "completed" "../escape";
+  run_outcome ~dir ~capture:(fun _ -> None) Failed "run-x";
+  run_outcome ~dir Completed "../escape";
   [%expect
     {|
-    refused: --result must be "completed" or "failed"
-    usage: kido run-outcome --result completed|failed [--text TEXT] [--unreported] <run-id>
-    refused: --result must be "completed" or "failed"
-    usage: kido run-outcome --result completed|failed [--text TEXT] [--unreported] <run-id>
-    refused: --result must be "completed" or "failed"
-    usage: kido run-outcome --result completed|failed [--text TEXT] [--unreported] <run-id>
-    refused: --result must be "completed" or "failed"
-    usage: kido run-outcome --result completed|failed [--text TEXT] [--unreported] <run-id>
     no outcome
     outcome completed ""
     refused: run run-x already has an outcome, or is gone
@@ -134,7 +124,7 @@ let%expect_test "run-outcome: a failure keeps the child's own screen, refined by
         Printf.printf "captured %s\n" pane;
         Some screen
       in
-      run_outcome ~dir ~capture ~text "failed" r;
+      run_outcome ~dir ~capture ~text Failed r;
       show_outcome ~dir r;
       Printf.printf "screen: %S\n" (Option.get_or ~default:"none" (Subrun.read_screen ~dir (id r))))
     [
@@ -143,7 +133,7 @@ let%expect_test "run-outcome: a failure keeps the child's own screen, refined by
       ("run-other", "Use /login to log into a provider via OAuth or API key\n", "exit 1");
     ];
   ignore (run ~dir ~pane:"%9" "run-ok");
-  run_outcome ~dir "completed" "run-ok";
+  run_outcome ~dir Completed "run-ok";
   Printf.printf "screen for completed: %b\n"
     (Option.is_some (Subrun.read_screen ~dir (id "run-ok")));
   [%expect
@@ -168,12 +158,12 @@ let%expect_test "run-outcome --unreported tells the parent once, and only if it 
   ignore (State.record ~dir "root-sess" (session ~pane:"%2" ~title:"orchestrator" ~inbox Idle));
   let child r = ignore (run ~dir ~name:"ttyfix" ~kind:Agent ~parent:"root-sess" r) in
   child "run-told";
-  run_outcome ~dir ~unreported:true "completed" "run-told";
+  run_outcome ~dir ~unreported:true Completed "run-told";
   child "run-self";
-  run_outcome ~dir "completed" "run-self";
+  run_outcome ~dir Completed "run-self";
   child "run-stopped";
   outcome ~dir "run-stopped" Stopped;
-  run_outcome ~dir ~unreported:true "completed" "run-stopped";
+  run_outcome ~dir ~unreported:true Completed "run-stopped";
   List.iter (show_outcome ~dir) [ "run-told"; "run-self"; "run-stopped" ];
   List.iter
     (fun raw ->

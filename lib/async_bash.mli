@@ -1,4 +1,3 @@
-val usage : string
 val command_argv : string list -> string list
 val derived_name : string list -> string
 

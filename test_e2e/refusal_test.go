@@ -26,7 +26,6 @@ func TestCommandLineRefusals(t *testing.T) {
 		{[]string{"message_agent", "anyone"}, "\n", "no message given", 1},
 		{[]string{"runs", "run-a", "extra"}, "", "kido runs: unknown argument \"extra\"\nusage: kido runs [--json] [<run-id>]", 1},
 		{[]string{"runs", "no-such-run"}, "", `kido runs: run "no-such-run": no such run`, 1},
-		{[]string{"run-outcome", "--result", "died", "run-a"}, "", "kido run-outcome: --result must be \"completed\" or \"failed\"\nusage: kido run-outcome --result completed|failed [--text TEXT] [--unreported] <run-id>", 1},
 		{[]string{"hook", "extra"}, "", "usage: kido hook", 0},
 		{[]string{"agent-status", "--agent", "pi", "--session", "s"}, "", "kido agent-status: --status is required", 1},
 	} {
@@ -45,6 +44,36 @@ func TestCommandLineRefusals(t *testing.T) {
 		if got := strings.TrimSuffix(stderr.String(), "\n"); got != c.stderr || code != c.code || len(out) != 0 {
 			t.Errorf("kido %v: exit %d, stderr %q, stdout %q; want exit %d, stderr %q, no stdout",
 				c.args, code, got, out, c.code, c.stderr)
+		}
+	}
+}
+
+// Refusals cmdliner words: its layout wraps and styles with the terminal,
+// so only the line naming the fault is pinned, with the exit code.
+func TestCmdlinerRefusals(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	for _, c := range []struct {
+		args   []string
+		stderr string
+	}{
+		{[]string{"run-outcome", "--result", "died", "run-a"}, "kido: option '--result': invalid value 'died', expected either 'completed' or"},
+		{[]string{"async-run", "--run-id", "run-a", "make"}, "kido: too many arguments, don't know what to do with 'make'"},
+	} {
+		cmd := exec.Command(kidoBin, c.args...)
+		cmd.Env = cleanEnv("KIDO_STATE_DIR="+state, "TERM=dumb")
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		code := 0
+		if exit := (*exec.ExitError)(nil); errors.As(err, &exit) {
+			code = exit.ExitCode()
+		} else if err != nil {
+			t.Fatalf("kido %v: %v", c.args, err)
+		}
+		if !strings.Contains(stderr.String(), c.stderr) || code != 1 || len(out) != 0 {
+			t.Errorf("kido %v: exit %d, stderr %q, stdout %q; want exit 1, stderr holding %q, no stdout",
+				c.args, code, stderr.String(), out, c.stderr)
 		}
 	}
 }

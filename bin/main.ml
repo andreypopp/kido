@@ -96,7 +96,11 @@ let runs =
 
 let run_outcome =
   cmd "run-outcome" "Record a run's own outcome."
-  @@ let+ result = str "result" "RESULT" "completed or failed."
+  @@ let+ result =
+       Arg.(
+         required
+         & opt (some (enum [ ("completed", Subrun.Completed); ("failed", Failed) ])) None
+         & info [ "result" ] ~docv:"RESULT" ~doc:"completed or failed.")
      and+ text = str "text" "TEXT" "Optional detail."
      and+ unreported = flag "unreported" "The child never called notify_parent: tell its parent so."
      and+ id = arg "RUN_ID" in
@@ -110,8 +114,7 @@ let async_run =
   cmd "async-run" "Run an async run's command, recording and reporting how it ended."
   @@ let+ run_id =
        str "run-id" "ID" "The run this window is running; defaults to $KIDO_AGENT_RUN_ID."
-     and+ stream = flag "stream" "Send the command's output to the parent in batches as it runs."
-     and+ args = rest in
+     and+ stream = flag "stream" "Send the command's output to the parent in batches as it runs." in
      fun () ->
        ok
          (Async_run.async_run ~dir:(State.dir ())
@@ -119,7 +122,7 @@ let async_run =
             ~warn:(Cli.error "async-run")
             ~run_id:
               (if String.is_empty run_id then Tmux.Exec.getenv "KIDO_AGENT_RUN_ID" else run_id)
-            ~stream args)
+            ~stream)
 
 let notify_parent =
   cmd "notify_parent" "Send this subagent's report, read from stdin, to its parent."
@@ -513,7 +516,7 @@ let duration =
     ( (fun s -> Result.map_err (fun e -> `Msg e) (parse_duration s)),
       fun ppf d -> Format.fprintf ppf "%gs" d )
 
-(* State.read_all, not a per-pane view: the orphan rule needs every record. *)
+(* State.load_live, not a per-pane view: the orphan rule needs every record. *)
 let reap =
   Cmd.v (Cmd.info "reap" ~doc:"Close the finished subagent windows a sweep names.")
   @@ let+ args = rest in
@@ -522,7 +525,7 @@ let reap =
          let dir = State.dir () in
          Reap.collect ~dir ~capture:Subrun.capture_pane ~grace:(Reap.grace ())
            (ok (Tmux.Exec.list_panes ()))
-           (State.read_all ~dir) ~now:(Unix.gettimeofday ()) release_ops;
+           (State.load_live ~dir) ~now:(Unix.gettimeofday ()) release_ops;
          0)
 
 (* Strict about the argument: kill-window resolves any target syntax, so any other spelling would

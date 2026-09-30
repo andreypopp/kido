@@ -19,9 +19,7 @@ let async_bash ~dir ~self ~exe ~panes ~tmux ~name ~stream args =
   let* () = if List.is_empty argv then Error ("no command given\n" ^ usage) else Ok () in
   let name = if String.is_empty name then derived_name args else name in
   let* () = Spawn_subagent.check_window_name name in
-  let* panes = Lazy.force panes in
-  let* pane = List_agents.caller_pane panes self in
-  let own = State.String_map.find_opt pane.pane_id (State.by_pane (State.load_live ~dir)) in
+  let* pane, parent, depth = Spawn_subagent.caller ~dir ~self ~panes Adopt in
   let id = Subrun.new_id () in
   Subrun.create ~dir id (String.concat " " args);
   Subrun.write_command ~dir id argv;
@@ -29,9 +27,9 @@ let async_bash ~dir ~self ~exe ~panes ~tmux ~name ~stream args =
     {
       id;
       name;
-      kind = Some Bash;
-      parent_session = Option.map_or ~default:"" fst own;
-      depth = 1 + Option.map_or ~default:0 (fun (_, (s : State.session)) -> s.depth) own;
+      kind = Bash;
+      parent_session = Option.map_or ~default:"" (fun (p : State.parent) -> p.session) parent;
+      depth;
       pane = "";
       pid = 0;
       cwd = pane.current_path;
@@ -42,11 +40,8 @@ let async_bash ~dir ~self ~exe ~panes ~tmux ~name ~stream args =
     }
   in
   Subrun.write_meta ~dir meta;
-  let parent =
-    Option.map (fun (session, (s : State.session)) -> State.{ pid = s.pid; session }) own
-  in
   let env =
-    Spawn_subagent.run_env ~dir id parent meta.depth ~keep_alive:false @ [ "KIDO_STATE_DIR=" ^ dir ]
+    Spawn_subagent.run_env ~dir id parent depth ~keep_alive:false @ [ "KIDO_STATE_DIR=" ^ dir ]
   in
   Spawn_subagent.create_run_window ~dir tmux meta ~session:pane.session_id ~env
     ([ exe; "async-run"; "--run-id"; Subrun.string_of_id id ]

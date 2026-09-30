@@ -3,9 +3,6 @@ type knobs = { batch : float; backoff_floor : float; backoff_cap : float }
 val knobs : (string -> string option) -> knobs
 (** KIDO_STREAM_BATCH_MS, KIDO_STREAM_BACKOFF_MS and KIDO_STREAM_BACKOFF_CAP_MS, from [getenv]. *)
 
-val batch_bytes : int
-val pending_max : int
-val run_budget : int
 val sanitize : string -> string
 
 type t

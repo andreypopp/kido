@@ -4,11 +4,6 @@ let now = 1_700_000_000.
 let temp () = Filename.temp_dir "kido-reap" ""
 let runs dir = Filename.concat dir "runs"
 
-let dead_pid () =
-  let pid = Unix.create_process "true" [| "true" |] Unix.stdin Unix.stdout Unix.stderr in
-  ignore (Unix.waitpid [] pid);
-  pid
-
 let pane ?run ?dead ?(watched = false) pane_id window_id : Tmux.Pane.t =
   {
     session_name = "s";
@@ -70,9 +65,9 @@ let sweep ?(dir = temp ()) ?(capture = no_capture) ?(sessions = []) panes =
 
 let show (closes, endings) =
   List.iter
-    (fun (c : Reap.close) ->
-      Printf.printf "close %s%s\n" c.window_id
-        (Option.map_or ~default:"" (fun p -> " pane " ^ p) c.pane_id))
+    (function
+      | Reap.Window w -> Printf.printf "close %s\n" w
+      | Pane { window; pane } -> Printf.printf "close %s pane %s\n" window pane)
     closes;
   List.iter
     (fun (e : Reap.ending) ->
@@ -82,7 +77,7 @@ let show (closes, endings) =
     endings;
   if List.is_empty closes && List.is_empty endings then print_endline "nothing"
 
-let run ~dir ?(kind : Subrun.kind option) ?(parent = "") name id_s =
+let run ~dir ?(kind = Subrun.Agent) ?(parent = "") name id_s =
   let i = id id_s in
   Subrun.create ~dir i "task";
   Subrun.write_meta ~dir
@@ -135,7 +130,7 @@ let%expect_test "a focused window is collected once the user leaves" =
 let%expect_test "rule 2: a live subagent of a dead parent is cancelled; of a live one, left alone" =
   let child = ("child-sess", session ~parent:"root-sess" "%1") in
   let panes = [ other; pane ~run:"run-cancelled" "%1" "@1" ] in
-  show (sweep ~sessions:[ child; ("root-sess", session ~pid:(dead_pid ()) "%p") ] panes);
+  show (sweep ~sessions:[ child ] panes);
   show (sweep ~sessions:[ child; ("root-sess", session "%p") ] panes);
   [%expect {|
     close @1
@@ -143,10 +138,7 @@ let%expect_test "rule 2: a live subagent of a dead parent is cancelled; of a liv
     |}]
 
 let%expect_test "a root agent's record is nobody's to close, and both rules name a window once" =
-  show
-    (sweep
-       ~sessions:[ ("root-sess", session ~pid:(dead_pid ()) "%1") ]
-       [ other; pane ~run:"run-root" "%1" "@1" ]);
+  show (sweep ~sessions:[ ("root-sess", session "%1") ] [ other; pane ~run:"run-root" "%1" "@1" ]);
   show
     (sweep
        ~sessions:[ ("child-sess", session ~parent:"gone-sess" "%1") ]
@@ -181,7 +173,7 @@ let%expect_test "a pane collision on the parent: the complete record set keeps t
 
 let%expect_test "outcomes: Died is recorded for a closed window and a recorded one stands" =
   let dir = temp () in
-  Subrun.create ~dir (id "run-died") "x";
+  ignore (run ~dir "" "run-died");
   show (sweep ~dir [ other; pane ~run:"run-died" ~dead:60 "%1" "@1" ]);
   print_endline (outcome ~dir "run-died");
   Subrun.create ~dir (id "run-done") "x";
@@ -189,8 +181,10 @@ let%expect_test "outcomes: Died is recorded for a closed window and a recorded o
     (Subrun.record_outcome ~dir (id "run-done") { result = Completed; text = ""; at = Some now });
   show (sweep ~dir [ other; pane ~run:"run-done" ~dead:60 "%1" "@1" ]);
   print_endline (outcome ~dir "run-done");
-  [%expect {|
+  [%expect
+    {|
     close @1
+    ending "" parent "" died ""
     died
     close @1
     completed
@@ -299,8 +293,10 @@ let%expect_test "a parentless bash run tells nobody but is still recorded" =
   ignore (run ~dir ~kind:Bash "build" "run-loner");
   show (sweep ~dir [ other; pane ~run:"run-loner" ~dead:60 "%1" "@1" ]);
   print_endline (outcome ~dir "run-loner");
-  [%expect {|
+  [%expect
+    {|
     close @1
+    ending "build" parent "" failed "ended without its wrapper reporting"
     failed ended without its wrapper reporting
     |}]
 
@@ -363,10 +359,7 @@ let%expect_test "a pane close captures the run's pane alone and notifies once" =
 let%expect_test
     "an orphan with a split is cancelled by its own pane; a restarted parent keeps its child" =
   let child = ("child-sess", session ~parent:"root-sess" "%1") in
-  show
-    (sweep
-       ~sessions:[ child; ("root-sess", session ~pid:(dead_pid ()) "%p") ]
-       [ other; pane ~run:"run-orphan" "%1" "@1"; pane "%2" "@1" ]);
+  show (sweep ~sessions:[ child ] [ other; pane ~run:"run-orphan" "%1" "@1"; pane "%2" "@1" ]);
   show
     (sweep
        ~sessions:
@@ -380,9 +373,8 @@ let%expect_test
 let%expect_test "decide: close-run's refusals and closes" =
   let show w panes =
     match Reap.decide panes w with
-    | Ok c ->
-        Printf.printf "close %s%s\n" c.window_id
-          (Option.map_or ~default:"" (fun p -> " pane " ^ p) c.pane_id)
+    | Ok (Window w) -> Printf.printf "close %s\n" w
+    | Ok (Pane { window; pane }) -> Printf.printf "close %s pane %s\n" window pane
     | Error why -> print_endline why
   in
   let focused = pane ~watched:true "%1" "@1" in

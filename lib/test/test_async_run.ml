@@ -5,7 +5,7 @@ let knobs : Async_stream.knobs = { batch = 0.02; backoff_floor = 0.02; backoff_c
 let warn = Printf.printf "\nwarning: %s"
 
 let async_run ?(stream = false) ~dir run_id =
-  match Async_run.async_run ~dir ~knobs ~warn ~run_id ~stream [] with
+  match Async_run.async_run ~dir ~knobs ~warn ~run_id ~stream with
   | Ok code -> Printf.printf "\n-> %d\n" code
   | Error m -> Printf.printf "\nrefused: %s\n" m
 
@@ -54,18 +54,12 @@ let%expect_test "the wrapper tees both streams, and records the ending before it
     output file: ""
     |}]
 
-let%expect_test "the run comes from its record, never the command line" =
+let%expect_test "the run comes from its record: a missing id or meta is refused" =
   let dir = Filename.temp_dir "kido-state" "" in
-  (match Async_run.async_run ~dir ~knobs ~warn ~run_id:"x" ~stream:false [ "make" ] with
-  | Ok _ -> ()
-  | Error m -> print_endline m);
   async_run ~dir "";
   async_run ~dir "no-such-run";
   [%expect
     {|
-    unknown argument "make"; the command comes from the run's own record, not the command line
-    usage: kido async-run [--run-id ID] [--stream]
-
     refused: --run-id is required (or $KIDO_AGENT_RUN_ID)
     usage: kido async-run [--run-id ID] [--stream]
 

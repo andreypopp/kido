@@ -1,7 +1,6 @@
 val max_depth : int
 val max_task_bytes : int
 val max_window_name_len : int
-val usage : string
 
 type tmux = {
   new_window :
@@ -42,10 +41,19 @@ type flags = {
 }
 
 type request
+type owner = Given of State.parent | Nobody | Adopt
 
 val parse : flags -> (request, string) result
 val check_window_name : string -> (unit, string) result
 val validate_model : (unit -> (string, string) result) -> string list -> (unit, string) result
+
+val caller :
+  dir:string ->
+  self:string ->
+  panes:(Tmux.Pane.t list, string) result Lazy.t ->
+  owner ->
+  (Tmux.Pane.t * State.parent option * int, string) result
+(** The caller's pane, the parent a run it starts gets, and the run's depth. *)
 
 val run_env :
   dir:string -> Subrun.id -> State.parent option -> int -> keep_alive:bool -> string list

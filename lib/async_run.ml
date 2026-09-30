@@ -1,7 +1,6 @@
 let usage = "usage: kido async-run [--run-id ID] [--stream]"
 let signal_grace = 2.
 
-(* Go's names, which the outcome text has always carried. *)
 let signal_name s =
   List.assoc_opt ~eq:Int.equal s
     Sys.
@@ -62,18 +61,8 @@ let status_of = function
   | WEXITED n -> (Failed, Printf.sprintf "exit status %d" n, n)
   | WSIGNALED s | WSTOPPED s -> (Failed, "signal: " ^ signal_name s, 1)
 
-let async_run ~dir ~knobs ~warn ~run_id ~stream args =
+let async_run ~dir ~knobs ~warn ~run_id ~stream =
   let open Result.Infix in
-  let* () =
-    match args with
-    | [] -> Ok ()
-    | a :: _ ->
-        Error
-          (Printf.sprintf
-             "unknown argument %S; the command comes from the run's own record, not the command line\n\
-              %s"
-             a usage)
-  in
   let* id =
     Result.map_err
       (fun _ -> "--run-id is required (or $KIDO_AGENT_RUN_ID)\n" ^ usage)

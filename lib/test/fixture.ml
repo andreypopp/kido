@@ -91,7 +91,7 @@ let start_inbox ~reply =
       Mutex.unlock mu;
       r )
 
-let run ~dir ?(name = "") ?kind ?(parent = "") ?(pane = "") ?(pid = 0) ?(cwd = "")
+let run ~dir ?(name = "") ?(kind = Subrun.Agent) ?(parent = "") ?(pane = "") ?(pid = 0) ?(cwd = "")
     ?(started_at = 1_700_000_000.) ?command id =
   let id = Result.get_exn (Subrun.parse_id id) in
   Subrun.create ~dir id "do the thing";

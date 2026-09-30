@@ -1,6 +1,3 @@
-let run_outcome_usage =
-  "usage: kido run-outcome --result completed|failed [--text TEXT] [--unreported] <run-id>"
-
 type info = { meta : Subrun.meta; outcome : Subrun.outcome option }
 
 let info_to_yojson ?(extra = []) { meta; outcome } =
@@ -67,7 +64,7 @@ let show ~dir ~json id_str =
     let line k v = Printf.bprintf b "%-10s%s\n" (k ^ ":") v in
     line "id" id_str;
     line "name" m.name;
-    line "kind" (Option.map_or ~default:"" Subrun.string_of_kind m.kind);
+    line "kind" (Subrun.string_of_kind m.kind);
     line "parent" m.parent_session;
     line "depth" (string_of_int m.depth);
     line "cwd" m.cwd;
@@ -100,20 +97,13 @@ let refine_no_turn_detail text screen =
 
 let run_outcome ~dir ~capture ~warn ~result ~text ~unreported id_str =
   let open Result.Infix in
-  let* result =
-    match result with
-    | "completed" -> Ok Subrun.Completed
-    | "failed" -> Ok Subrun.Failed
-    | _ ->
-        Error (Printf.sprintf "--result must be \"completed\" or \"failed\"\n%s" run_outcome_usage)
-  in
   let* id = Subrun.parse_id id_str in
   let meta = Subrun.read_meta ~dir id in
   let text =
     match (meta, result) with
-    | Some m, Failed ->
+    | Some m, Subrun.Failed ->
         Option.map_or ~default:text (refine_no_turn_detail text)
-          (Subrun.capture_own_screen ~dir ~capture id m.pane)
+          (Subrun.save_screen ~dir ~capture id m.pane)
     | _ -> text
   in
   let outcome : Subrun.outcome = { result; text; at = Some (Timestamp.now ()) } in

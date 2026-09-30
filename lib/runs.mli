@@ -15,7 +15,7 @@ val run_outcome :
   dir:string ->
   capture:(string -> string option) ->
   warn:(string -> unit) ->
-  result:string ->
+  result:Subrun.result ->
   text:string ->
   unreported:bool ->
   string ->

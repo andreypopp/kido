@@ -261,7 +261,7 @@ let%expect_test "a bash run whose window is gone before its mark is not a failur
     {
       id;
       name = "build";
-      kind = Some Bash;
+      kind = Bash;
       parent_session = parent;
       depth = 1;
       pane = "";
@@ -311,7 +311,7 @@ let%expect_test "--no-parent leaves no edge; a parent nobody holds, or both, is 
       env KIDO_AGENT_TASK_FILE=<dir>/runs/<run>/task KIDO_AGENT_RUN_ID=<run> KIDO_AGENT_DEPTH=1
       cmd pi --session-id <run>
     parentSession=""
-    error: --parent-session "nobody-is-this" names no currently live agent; the child would be closed within moments as an orphan (internal/reap's rule 2) - pass --no-parent for a child owned by nobody, or name an agent that is actually running
+    error: --parent-session "nobody-is-this" names no currently live agent; the child would be closed within moments as an orphan by the reap sweep - pass --no-parent for a child owned by nobody, or name an agent that is actually running
     error: --no-parent contradicts --parent-pid/--parent-session; pass one or the other
     error: --parent-pid and --parent-session name one parent and are given together
     |}]
@@ -414,7 +414,7 @@ let dead_run ?(model = "") ?(pid = dead_pid ()) dir id =
     {
       id;
       name = "kid";
-      kind = None;
+      kind = Agent;
       parent_session = "old-parent";
       depth = 1;
       pane = "%1";
@@ -450,7 +450,7 @@ let%expect_test "a resume refuses an unknown run, a live one, and a name, task o
     error: --resume keeps the run's original task; --task-file is refused alongside it
     error: --parent-pid and --parent-session name one parent and are given together
     error: refusing to spawn at depth 3: maximum nesting is 2 (root 0, subagent 1, subagent 2)
-    error: --parent-session "nobody-is-this" names no currently live agent; the child would be closed within moments as an orphan (internal/reap's rule 2) - pass --no-parent for a child owned by nobody, or name an agent that is actually running
+    error: --parent-session "nobody-is-this" names no currently live agent; the child would be closed within moments as an orphan by the reap sweep - pass --no-parent for a child owned by nobody, or name an agent that is actually running
     |}]
 
 let%expect_test "a resume continues the run's own session, cwd, id and task under a new parent" =

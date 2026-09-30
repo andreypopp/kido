@@ -23,7 +23,7 @@ let kill_run_pane ~list_panes ~ops ?(before = ignore) pane_id =
       Error "it is its session's only pane; killing it would destroy the session"
   | Some p ->
       before ();
-      let+ () = Reap.release ops { window_id = p.window_id; pane_id = Some p.pane_id } in
+      let+ () = Reap.release ops (Pane { window = p.window_id; pane = p.pane_id }) in
       `Killed
 
 let record_stopped ~dir id =
@@ -48,7 +48,6 @@ let interrupt ~dir ~self ~panes to_ =
   | Error (Message_agent.Unavailable m | Failed m) -> Error m
 
 let run_label meta = "async run " ^ Reap.quote (Subrun.label meta)
-let stopped_text = "stopped by kido stop_subagent; its wrapper did not report"
 
 let live_bash_run ~dir ~self ~list_panes to_ =
   let open Result.Infix in
@@ -56,7 +55,7 @@ let live_bash_run ~dir ~self ~list_panes to_ =
     List.filter_map
       (fun id ->
         match Subrun.read_meta ~dir id with
-        | Some ({ kind = Some Bash; _ } as meta)
+        | Some ({ kind = Bash; _ } as meta)
           when (String.equal_caseless meta.name to_ || String.equal (Subrun.string_of_id id) to_)
                && Option.is_none (Subrun.read_outcome ~dir id) ->
             Some meta
@@ -87,7 +86,11 @@ let stop_bash_run ~dir ~list_panes ~ops ~escalation ~warn (meta : Subrun.meta) =
   then Ok (Printf.sprintf "stopped %s; its wrapper reported the ending" label)
   else begin
     Reap.record_ending ~dir meta
-      { result = Stopped; text = stopped_text; at = Some (Timestamp.now ()) }
+      {
+        result = Stopped;
+        text = "stopped by kido stop_subagent; its wrapper did not report";
+        at = Some (Timestamp.now ());
+      }
     |> Option.iter (fun e ->
         Result.iter_err (fun e -> warn (Msg.string_of_error e)) (Reap.send ~dir e));
     match kill_run_pane ~list_panes ~ops meta.pane with

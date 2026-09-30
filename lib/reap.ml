@@ -5,15 +5,19 @@ let grace () =
   | Some n when n > 0 -> Float.of_int n
   | _ -> 30.
 
-type close = { window_id : string; pane_id : string option }
+type close = Window of string | Pane of { window : string; pane : string }
 
 type ops = {
   kill_window : string -> (unit, string) result;
   kill_pane : string -> (unit, string) result;
 }
 
-let release ops c =
-  match c.pane_id with None -> ops.kill_window c.window_id | Some p -> ops.kill_pane p
+let release ops = function Window w -> ops.kill_window w | Pane { pane; _ } -> ops.kill_pane pane
+
+let close_of panes window pane =
+  if not (P.last_pane panes window) then Some (Pane { window; pane })
+  else if P.last_window panes window then None
+  else Some (Window window)
 
 let decide panes window_id =
   if P.window_focused panes window_id then
@@ -21,16 +25,14 @@ let decide panes window_id =
       (Printf.sprintf "%s is a client's current window; leaving it for the user to read" window_id)
   else
     match P.run_pane panes window_id with
+    | None -> Error (Printf.sprintf "%s has no run pane; leaving it" window_id)
     | Some { dead_at = None; _ } ->
         Error (Printf.sprintf "%s's run is still going; leaving it" window_id)
-    | Some run when not (P.last_pane panes window_id) ->
-        Ok { window_id; pane_id = Some run.pane_id }
-    | None -> Error (Printf.sprintf "%s has no run pane; leaving it" window_id)
-    | Some _ when P.last_window panes window_id ->
-        Error
+    | Some run ->
+        Option.to_result
           (Printf.sprintf "%s is its session's only window; closing it would destroy the session"
              window_id)
-    | Some _ -> Ok { window_id; pane_id = None }
+          (close_of panes window_id run.pane_id)
 
 type detail = Bash of { unstreamed : int } | Agent of { unreported : bool }
 type ending = { meta : Subrun.meta; outcome : Subrun.outcome; detail : detail }
@@ -111,124 +113,56 @@ let send ~dir e =
       (body ~dir e)
 
 let record_ending ~dir (meta : Subrun.meta) outcome =
-  if (not (Subrun.record_outcome ~dir meta.id outcome)) || String.is_empty meta.parent_session then
-    None
+  if not (Subrun.record_outcome ~dir meta.id outcome) then None
   else
     let detail =
-      match meta.kind with
-      | Some Bash -> Bash { unstreamed = 0 }
-      | Some Agent | None -> Agent { unreported = false }
+      match meta.kind with Bash -> Bash { unstreamed = 0 } | Agent -> Agent { unreported = false }
     in
     Some { meta; outcome; detail }
 
-let capture_screen ~dir ~capture run_id pane_ids =
-  let b = Buffer.create 1024 in
-  List.iter
-    (fun pane ->
-      match capture pane with
-      | None -> ()
-      | Some text ->
-          if List.length pane_ids > 1 then begin
-            if Buffer.length b > 0 then Buffer.add_char b '\n';
-            Buffer.add_string b ("=== " ^ pane ^ " ===\n")
-          end;
-          Buffer.add_string b text)
-    pane_ids;
-  let data = Subrun.truncate_screen (Buffer.contents b) in
-  if not (String.is_empty data) then
-    try Subrun.write_screen ~dir run_id data with Unix.Unix_error _ | Sys_error _ -> ()
-
 let guess_ending ~dir run_id ~now =
-  let meta =
-    match Subrun.read_meta ~dir run_id with
-    | Some m -> m
-    | None ->
-        {
-          Subrun.id = run_id;
-          name = "";
-          kind = None;
-          parent_session = "";
-          depth = 0;
-          pane = "";
-          pid = 0;
-          cwd = "";
-          model = "";
-          tools = [];
-          keep_alive = false;
-          started_at = now;
-        }
-  in
-  let outcome : Subrun.outcome =
-    match meta.kind with
-    | Some Bash -> { result = Failed; text = "ended without its wrapper reporting"; at = Some now }
-    | Some Agent | None -> { result = Died; text = ""; at = Some now }
-  in
-  record_ending ~dir meta outcome
-
-type window = { id : string; pane_ids : string list; run : (P.t * string) option; focused : bool }
-
-let fold_windows panes =
-  List.fold_left
-    (fun acc (p : P.t) ->
-      let w, rest =
-        match List.partition (fun w -> String.equal w.id p.window_id) acc with
-        | [ w ], rest -> (w, rest)
-        | _ -> ({ id = p.window_id; pane_ids = []; run = None; focused = false }, acc)
-      in
-      let w =
-        {
-          w with
-          pane_ids = w.pane_ids @ [ p.pane_id ];
-          run = Option.or_ ~else_:(Option.map (fun r -> (p, r)) p.run) w.run;
-          focused = w.focused || P.watched p;
-        }
-      in
-      rest @ [ w ])
-    [] panes
+  Option.flat_map
+    (fun (meta : Subrun.meta) ->
+      record_ending ~dir meta
+        (match meta.kind with
+        | Bash -> { result = Failed; text = "ended without its wrapper reporting"; at = Some now }
+        | Agent -> { result = Died; text = ""; at = Some now }))
+    (Subrun.read_meta ~dir run_id)
 
 let sweep ~dir ~capture ~grace panes sessions ~now =
-  if not (List.exists (fun (p : P.t) -> Option.is_some p.run) panes) then ([], [])
-  else
-    let windows = fold_windows panes in
-    let mark ((closing, endings) as acc) id pane_id =
-      match List.find_opt (fun w -> String.equal w.id id) windows with
-      | Some { run = Some (_, run); focused = false; pane_ids; _ }
-        when not (List.exists (fun c -> String.equal c.window_id id) closing) -> (
-          let pane_id = match pane_ids with [ _ ] -> None | _ -> Some pane_id in
-          match (pane_id, Subrun.parse_id run) with
-          | None, _ when P.last_window panes id -> acc
-          | _, Error _ -> acc
-          | _, Ok run_id ->
-              capture_screen ~dir ~capture run_id
-                (Option.map_or ~default:pane_ids (fun p -> [ p ]) pane_id);
-              ( closing @ [ { window_id = id; pane_id } ],
-                endings @ Option.to_list (guess_ending ~dir run_id ~now) ))
-      | _ -> acc
-    in
-    let acc =
-      List.fold_left
-        (fun acc w ->
-          match w.run with
-          | Some ({ dead_at = Some d; pane_id; _ }, _) when Float.(now - d >= grace) ->
-              mark acc w.id pane_id
-          | _ -> acc)
-        ([], []) windows
-    in
-    let live =
-      List.filter_map
-        (fun (id, (s : State.session)) -> if State.alive s.pid then Some id else None)
-        sessions
-    in
-    let live id = List.mem ~eq:String.equal id live in
-    List.fold_left
-      (fun acc (id, (s : State.session)) ->
-        match s.parent with
-        | Some parent when live id && not (live parent.session) ->
-            Option.map_or ~default:acc
-              (fun (p : P.t) -> mark acc p.window_id s.pane)
-              (List.find_opt (fun (p : P.t) -> String.equal p.pane_id s.pane) panes)
+  let mark ((closing, endings) as acc) (p : P.t) =
+    let window = p.window_id in
+    let closes = function Window w | Pane { window = w; _ } -> String.equal w window in
+    match P.run_pane panes window with
+    | Some { run = Some run; _ }
+      when not (P.window_focused panes window || List.exists closes closing) -> (
+        match (close_of panes window p.pane_id, Subrun.parse_id run) with
+        | Some close, Ok run_id ->
+            ignore (Subrun.save_screen ~dir ~capture run_id p.pane_id);
+            (closing @ [ close ], endings @ Option.to_list (guess_ending ~dir run_id ~now))
         | _ -> acc)
-      acc sessions
+    | _ -> acc
+  in
+  let acc =
+    List.fold_left
+      (fun acc (p : P.t) ->
+        match p with
+        | { run = Some _; dead_at = Some d; _ }
+          when Float.(now - d >= grace)
+               && Option.exists
+                    (fun (r : P.t) -> String.equal r.pane_id p.pane_id)
+                    (P.run_pane panes p.window_id) ->
+            mark acc p
+        | _ -> acc)
+      ([], []) panes
+  in
+  List.fold_left
+    (fun acc (_, (s : State.session)) ->
+      match s.parent with
+      | Some parent when not (List.mem_assoc ~eq:String.equal parent.session sessions) ->
+          Option.map_or ~default:acc (mark acc) (P.find panes s.pane)
+      | _ -> acc)
+    acc sessions
 
 let collect ~dir ~capture ~grace panes sessions ~now ops =
   let closing, endings = sweep ~dir ~capture ~grace panes sessions ~now in

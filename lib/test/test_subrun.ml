@@ -12,7 +12,7 @@ let%expect_test "Create writes meta and task, round-tripping what was written" =
     {
       id = i;
       name = "kid";
-      kind = None;
+      kind = Agent;
       parent_session = "";
       depth = 1;
       pane = "%1";
@@ -42,7 +42,7 @@ let%expect_test "Kind round-trips" =
       {
         id = i;
         name;
-        kind = Some k;
+        kind = k;
         parent_session = "";
         depth = 0;
         pane = "";
@@ -54,8 +54,7 @@ let%expect_test "Kind round-trips" =
         started_at = 0.;
       };
     let got = Option.get_exn_or "ReadMeta" (Subrun.read_meta ~dir i) in
-    Printf.printf "%s %s\n" name
-      (match got.kind with Some Subrun.Bash -> "bash" | Some Agent -> "agent" | None -> "none")
+    Printf.printf "%s %s\n" name (Subrun.string_of_kind got.kind)
   in
   show "run-bash" Subrun.Bash;
   show "run-agent" Subrun.Agent;

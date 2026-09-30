@@ -124,7 +124,7 @@ let%expect_test "canReply: a run record whose tools leave out message_agent cann
         {
           id;
           name = "";
-          kind = None;
+          kind = Agent;
           parent_session = "";
           depth = 0;
           pane = "";

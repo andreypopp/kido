@@ -11,7 +11,7 @@ let run ?(parent = "root-sess") inbox =
     {
       id = Subrun.new_id ();
       name = "chatty";
-      kind = Some Bash;
+      kind = Bash;
       parent_session = parent;
       depth = 1;
       pane = "";

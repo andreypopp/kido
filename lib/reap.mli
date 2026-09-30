@@ -2,8 +2,7 @@ val grace : unit -> float
 (** Seconds a finished subagent's window is left alone before a sweep may close it, from
     [KIDO_LINGER_SECONDS] (default 30), the same knob share/pi/kido-agents.ts reads. *)
 
-type close = { window_id : string; pane_id : string option }
-(** [pane_id] is [None] when the whole window is to be closed. *)
+type close = Window of string | Pane of { window : string; pane : string }
 
 type ops = {
   kill_window : string -> (unit, string) result;
@@ -29,8 +28,7 @@ val body : dir:string -> ending -> string
 val send : dir:string -> ending -> (unit, Msg.error) result
 
 val record_ending : dir:string -> Subrun.meta -> Subrun.outcome -> ending option
-(** Writes the outcome and reports the notice the parent is owed when this writer won the write and
-    the run has a parent. *)
+(** Writes the outcome and returns the ending when this writer won the write. *)
 
 val sweep :
   dir:string ->

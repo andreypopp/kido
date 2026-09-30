@@ -409,7 +409,7 @@ let new_run ~dir ?(parent = "") ?result name =
     {
       id;
       name;
-      kind = None;
+      kind = Agent;
       parent_session = parent;
       depth = 0;
       pane = "";

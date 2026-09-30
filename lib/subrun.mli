@@ -4,7 +4,6 @@ val parse_id : string -> (id, string) result
 val new_id : unit -> id
 val string_of_id : id -> string
 val task_path : dir:string -> id -> string
-val command_path : dir:string -> id -> string
 val output_path : dir:string -> id -> string
 val report_path : dir:string -> id -> string
 val delivered_path : dir:string -> id -> string
@@ -17,7 +16,7 @@ val string_of_kind : kind -> string
 type meta = {
   id : id;
   name : string;
-  kind : kind option;
+  kind : kind;
   parent_session : string;
   depth : int;
   pane : string;
@@ -64,7 +63,6 @@ val truncate_screen : string -> string
 val capture_pane : string -> string option
 (** A pane's screen with 1000 lines of history, or [None] when tmux could not capture it. *)
 
-val capture_own_screen :
-  dir:string -> capture:(string -> string option) -> id -> string -> string option
-(** Saves a run's own pane into its run directory and returns what was saved; [None] for an empty
-    pane id or a failed capture. *)
+val save_screen : dir:string -> capture:(string -> string option) -> id -> string -> string option
+(** Saves a pane's screen, bounded to its tail, into the run's directory and returns it; [None] for
+    an empty pane id or a failed capture. *)
