@@ -499,7 +499,10 @@ repeat them.
   your own shell.
 - **Verify what you touched; CI runs the whole.** For a bug fix, write
   the test first, watch it fail, and quote that failure. A feature's
-  tests need only pass. Then run `dune build` and `dune test` (an e2e
+  tests need only pass. Negative controls (breaking the code to prove
+  a test can fail) only where a test could plausibly pass vacuously -
+  timing, races, deduplication, polling; never for a trivial change
+  such as text, spacing or a renamed field. Then run `dune build` and `dune test` (an e2e
   test you wrote with `KIDO_E2E_REQUIRED=1 KIDO_TMUX=$(command -v
   kido-tmux) go test ./test_e2e/ -run Name`, or the fork under
   `build/tmux-fork/` once `make e2e` built it; `scripts/test-ts.sh` if
