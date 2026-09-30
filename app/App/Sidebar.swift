@@ -1,85 +1,106 @@
 import AppKit
 
-final class Sidebar: NSView {
-    let view = SidebarView()
+final class Sidebar: NSSplitViewController, NSToolbarDelegate {
+    let list = SidebarView()
     let content = NSView()
-    private let divider = Divider()
-
-    private static let defaults: UserDefaults? = background ? nil : .standard
-    private static let widthKey = "sidebarWidth"
-    private static let collapsedKey = "sidebarCollapsed"
-    private static let minWidth: CGFloat = 140
-    private static let minContent: CGFloat = 200
-    static let minSize = NSSize(width: minWidth + 1 + minContent, height: 200)
-
-    private var width: CGFloat {
-        didSet { Self.defaults?.set(width, forKey: Self.widthKey) }
+    private let terminalHost = NSView()
+    private let showButton = IconButton("sidebar.left", "Show sidebar")
+    private var sidebarItem: NSSplitViewItem!
+    private var collapseObservation: NSKeyValueObservation?
+    static let minSize = NSSize(width: 800, height: 500)
+    var isCollapsed: Bool {
+        get { sidebarItem.isCollapsed }
+        set { sidebarItem.isCollapsed = newValue }
     }
-    private(set) var isCollapsed: Bool {
-        didSet { Self.defaults?.set(isCollapsed, forKey: Self.collapsedKey) }
-    }
-
-    override var isFlipped: Bool { true }
+    var changed: () -> Void = {}
 
     init() {
-        let stored = Self.defaults?.double(forKey: Self.widthKey) ?? 0
-        width = max(Self.minWidth, stored == 0 ? 220 : stored)
-        isCollapsed = Self.defaults?.bool(forKey: Self.collapsedKey) ?? false
-        super.init(frame: .zero)
-        autoresizingMask = [.width, .height]
-        divider.dragged = { [weak self] x in
-            guard let self else { return }
-            width = clamp(x)
-            arrange()
+        super.init(nibName: nil, bundle: nil)
+        splitView.frame = NSRect(x: 0, y: 0, width: 900, height: 560)
+        let controller = NSViewController()
+        controller.view = list
+        sidebarItem = NSSplitViewItem(sidebarWithViewController: controller)
+        sidebarItem.minimumThickness = 200
+        sidebarItem.maximumThickness = 360
+        sidebarItem.canCollapse = true
+        sidebarItem.allowsFullHeightLayout = true
+        sidebarItem.canCollapseFromWindowResize = false
+        sidebarItem.collapseBehavior = .preferResizingSiblingsWithFixedSplitView
+        addSplitViewItem(sidebarItem)
+        let terminal = NSViewController()
+        terminalHost.addSubview(content)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: terminalHost.safeAreaLayoutGuide.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: terminalHost.trailingAnchor),
+            content.topAnchor.constraint(equalTo: terminalHost.topAnchor),
+            content.bottomAnchor.constraint(equalTo: terminalHost.bottomAnchor),
+        ])
+        showButton.invoke = { [weak self] in self?.toggleSidebar(nil) }
+        terminal.view = terminalHost
+        let terminalItem = NSSplitViewItem(viewController: terminal)
+        terminalItem.minimumThickness = 200
+        terminalItem.automaticallyAdjustsSafeAreaInsets = true
+        addSplitViewItem(terminalItem)
+        collapseObservation = sidebarItem.observe(\.isCollapsed, options: [.new]) { [weak self] _, _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if !background { UserDefaults.standard.set(self.isCollapsed, forKey: "sidebarCollapsed") }
+                if self.isCollapsed, self.list.containsFocus { self.list.leave() }
+                self.view.needsLayout = true
+                self.changed()
+            }
         }
-        addSubview(view)
-        addSubview(content)
-        addSubview(divider)
     }
-
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-
-    func toggle() {
-        isCollapsed.toggle()
-        if isCollapsed, let focused = window?.firstResponder as? NSView, focused.isDescendant(of: view) { view.leave() }
-        arrange()
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        view.needsLayout = true
     }
-
-    override func setFrameSize(_ newSize: NSSize) {
-        super.setFrameSize(newSize)
-        arrange()
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        let left = terminalHost.safeAreaInsets.left
+        if !background, view.window != nil, !isCollapsed, left >= 200 {
+            UserDefaults.standard.set(left, forKey: "nativeSidebarWidth")
+        }
+        for item in view.window?.toolbar?.items ?? [] where item.itemIdentifier != .sidebarTrackingSeparator {
+            item.isHidden = isCollapsed
+        }
+        showButton.isHidden = !isCollapsed
+        if isCollapsed, let green = view.window?.standardWindowButton(.zoomButton), let titlebar = green.superview, showButton.superview !== titlebar {
+            titlebar.addSubview(showButton)
+            showButton.translatesAutoresizingMaskIntoConstraints = false
+            let insets = showButton.alignmentRectInsets, greenInsets = green.alignmentRectInsets
+            NSLayoutConstraint.activate([
+                showButton.leadingAnchor.constraint(equalTo: green.trailingAnchor, constant: 10 + greenInsets.right + insets.left),
+                showButton.centerYAnchor.constraint(equalTo: green.centerYAnchor, constant: green.alignmentRect(forFrame: green.frame).midY - showButton.alignmentRect(forFrame: green.frame).midY),
+                showButton.widthAnchor.constraint(equalToConstant: 28 - insets.left - insets.right),
+                showButton.heightAnchor.constraint(equalToConstant: 28 - insets.top - insets.bottom),
+            ])
+        }
     }
-
-    private func clamp(_ x: CGFloat) -> CGFloat {
-        max(Self.minWidth, min(x, bounds.width - 1 - Self.minContent))
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace, .init("newSession"), .init("toggleSidebar"), .sidebarTrackingSeparator] }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        if id == .sidebarTrackingSeparator { return NSTrackingSeparatorToolbarItem(identifier: id, splitView: splitView, dividerIndex: 0) }
+        if id.rawValue == "newSession" || id.rawValue == "toggleSidebar" {
+            let item = NSToolbarItem(itemIdentifier: id)
+            let toggle = id.rawValue == "toggleSidebar"
+            let button = IconButton(toggle ? "sidebar.left" : "plus.square.on.square", toggle ? "Hide sidebar" : "New session")
+            button.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([button.widthAnchor.constraint(equalToConstant: 28), button.heightAnchor.constraint(equalToConstant: 28)])
+            button.invoke = { [weak self] in
+                if toggle { self?.toggleSidebar(nil) } else { self?.list.newSession() }
+            }
+            item.view = button
+            item.label = button.toolTip ?? ""
+            item.isBordered = false
+            return item
+        }
+        return nil
     }
-
-    private func arrange() {
-        let w = isCollapsed ? 0 : clamp(width)
-        let d: CGFloat = isCollapsed ? 0 : 1
-        view.isHidden = isCollapsed
-        divider.isHidden = isCollapsed
-        view.frame = CGRect(x: 0, y: 0, width: w, height: bounds.height)
-        divider.frame = CGRect(x: w - 2, y: 0, width: 5, height: bounds.height)
-        content.frame = CGRect(x: w + d, y: 0, width: max(0, bounds.width - w - d), height: bounds.height)
-        window?.invalidateCursorRects(for: divider)
-    }
-}
-
-private final class Divider: NSView {
-    var dragged: (CGFloat) -> Void = { _ in }
-
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.separatorColor.setFill()
-        CGRect(x: 2, y: 0, width: 1, height: bounds.height).fill()
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard let superview else { return }
-        dragged(superview.convert(event.locationInWindow, from: nil).x)
-    }
-
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .resizeLeftRight)
+    override func splitViewDidResizeSubviews(_ notification: Notification) {
+        super.splitViewDidResizeSubviews(notification)
+        view.needsLayout = true
     }
 }
