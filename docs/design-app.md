@@ -78,6 +78,10 @@ each feed process is sent it on start and on every edit.
 
 ## Testing
 
+`make tsan` and `make asan` build Debug with ReleaseSafe GhosttyKit into
+`build/derived-{tsan,asan}`. ASan defaults to `use_sigaltstack=0` because Zig
+threads replace its alternate signal stack with thread-local storage.
+
 `KIDO_APP_SOCKET` and `KIDO_APP_TMUX` point the app at a private
 server; `KIDO_APP_FEED` names a stand-in feed. `KIDO_APP_BACKGROUND=1`
 keeps a test launch off screen: it never activates, never takes focus
