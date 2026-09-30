@@ -23,9 +23,9 @@ only to the server that issued them.
 
 ## Panes
 
-Every pane of the current session has a Ghostty surface in manual-IO
-mode (`MANUAL_MIRROR`): `%output` is fed in, typed bytes come back out
-as `send-keys -H`, and the emulator's own query replies are suppressed
+A pane is drawn by a Ghostty surface in manual-IO mode
+(`MANUAL_MIRROR`): `%output` is fed in, typed bytes come back out as
+`send-keys -H`, and the emulator's own query replies are suppressed
 because tmux answers them. tmux prefix bindings therefore do not fire
 from the app; its menus and Ghostty's split and tab actions stand in.
 
@@ -33,6 +33,17 @@ A pane is synced by one command line: its captures, pending parser
 bytes and mode state. tmux queues `%output` ahead of the reply, so
 output before the reply is wiped by the restore and output after it is
 fed live. The same resync follows a `%pause`.
+
+Surfaces are kept per window, for the most recently shown windows of
+any session while their panes total at most 32; the rest have none. A
+window gains its surfaces when shown. Showing another window evicts the
+least recent past the budget, never the shown one, off the switch path;
+surfaces are freed one per main-queue turn and at least a second after
+they were created, since a young one takes hundreds of milliseconds to
+free. A hidden surface is occluded and its renderer released; the shown
+ones follow the app window's occlusion. tmux sends no `%output` for
+panes outside the client's session, so a window that left it is synced
+again when next shown. Surfaces of closed windows and sessions are freed.
 
 tmux's layout is authoritative: each surface is sized to exactly its
 pane's cells, and the client size is the content area's cells.
@@ -61,4 +72,5 @@ each feed process is sent it on start and on every edit.
 `KIDO_APP_SOCKET` and `KIDO_APP_TMUX` point the app at a private
 server; `KIDO_APP_FEED` names a stand-in feed. `KIDO_APP_BACKGROUND=1`
 keeps a test launch off screen: it never activates, never takes focus
-and keeps no preferences.
+and keeps no preferences. `KIDO_APP_DEBUG=1` logs each switch, eviction
+and free to stderr with its timing.
