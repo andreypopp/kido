@@ -110,6 +110,9 @@ let s0 = SessionID(number: 0), s1 = SessionID(number: 1)
     #expect(changes[2].1 == Layout(root: .pane(Pane(
         id: p0, index: 0, geometry: Geometry(x: 0, y: 0, width: 80, height: 24), focus: .active, layer: .tiled))))
     #expect(throws: DecodingError.self) { try Layout(json: #"{"V":1,"L":{}}"#) }
+    #expect(changes[1].0.root.panes.map(\.id) == [p0, PaneID(number: 2), p1])
+    #expect(changes[1].0.root.dividers == [Geometry(x: 0, y: 12, width: 80, height: 1)])
+    #expect(changes[2].1.root.dividers == [])
 }
 
 @Test func pauseAndContinue() throws {
