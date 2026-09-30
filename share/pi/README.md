@@ -13,7 +13,7 @@ Two extensions, installed together:
 They are separate because they are separate jobs — being visible in a
 sidebar and coordinating a fleet of agents — but they share one session's
 inbox and one status report, so they find each other at load time through
-a pair of slots on `globalThis`, keyed by `Symbol.for("kido.pi.extension.seam")`.
+a pair of slots on `globalThis.__kidoPiExtensionSeam`.
 `kido-agents.ts` imports nothing but *types* from `kido-status.ts`, on
 purpose: pi evaluates each extension in a module registry of its own, so
 an ordinary import of the neighbouring file loads a second copy of it

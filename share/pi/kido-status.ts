@@ -39,6 +39,10 @@ export type Envelope = { id: string; from: Sender; text: string } & (
   | { kind: "unrecognised"; claimed: string }
 );
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 // Mirrors Msg.parse (lib/msg.ml): a payload is a v1 envelope only if it parses as a
 // JSON object carrying both "v" and "kind"; anything else is v0 raw prompt text.
 export function parseEnvelope(text: string): Envelope | null {
@@ -48,14 +52,12 @@ export function parseEnvelope(text: string): Envelope | null {
   } catch {
     return null;
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return null;
-  }
-  const obj = parsed as Record<string, unknown>;
+  if (!isRecord(parsed) || Array.isArray(parsed)) return null;
+  const obj = parsed;
   if (!("v" in obj) || !("kind" in obj)) return null;
   // Coerced rather than required, to match Msg.parse, which reads a missing string field as "".
   const str = (v: unknown): string => (typeof v === "string" ? v : "");
-  const from = (typeof obj.from === "object" && obj.from !== null ? obj.from : {}) as Record<string, unknown>;
+  const from = isRecord(obj.from) ? obj.from : {};
   const [session, name, pane] = [str(from.session), str(from.name), str(from.pane)];
   const sender: Sender = session
     ? { kind: "agent", session, name: name || undefined, pane: pane || undefined }
@@ -107,7 +109,7 @@ function spawnDetached(cmd: string, args: string[]): void {
 }
 
 // The seam between the two extensions is a pair of slots on globalThis, reached
-// through a global-registry symbol rather than module scope or an import: pi
+// through a typed global property rather than module scope or an import: pi
 // (measured against 0.85.1) evaluates each extension in a module registry of its
 // own, so importing this file from kido-agents.ts would evaluate it a second time
 // with its own scope and state. kido-agents.ts therefore imports only types from here.
@@ -202,14 +204,18 @@ export interface Seam {
 type InboxHold = { server: Server; path: string } &
   ({ state: "owned"; handler: (sock: Socket) => void } | { state: "parked"; waiting: Socket[] });
 
-const INBOX_SLOT = Symbol.for("kido.pi.extension.inbox");
+declare global {
+  var __kidoPiExtensionInbox: InboxHold | undefined;
+  var __kidoPiExtensionSeam: Seam | undefined;
+  var __kidoPiExtensionStatusCopy: string | undefined;
+}
 
 function heldInbox(): InboxHold | null {
-  return (globalThis as unknown as Record<symbol, InboxHold | undefined>)[INBOX_SLOT] ?? null;
+  return globalThis.__kidoPiExtensionInbox ?? null;
 }
 
 function setHeldInbox(hold: InboxHold | null): void {
-  (globalThis as unknown as Record<symbol, InboxHold | undefined>)[INBOX_SLOT] = hold ?? undefined;
+  globalThis.__kidoPiExtensionInbox = hold ?? undefined;
 }
 
 // Outlives every module that owns the inbox: reads the slot per connection rather
@@ -233,11 +239,8 @@ function dispatchInbox(sock: Socket): void {
   hold.waiting.push(sock);
 }
 
-const SEAM = Symbol.for("kido.pi.extension.seam");
-
 function seam(): Seam {
-  const g = globalThis as unknown as Record<symbol, Seam | undefined>;
-  return (g[SEAM] ??= { host: null, agents: null });
+  return (globalThis.__kidoPiExtensionSeam ??= { host: null, agents: null });
 }
 
 // One copy of each extension per process: pi dedupes extensions by real path only
@@ -245,12 +248,9 @@ function seam(): Seam {
 // copy and one an earlier kido left in ~/.pi/agent/extensions are two extensions to
 // it, and the second copy's tools would fail to load as conflicts. The first copy
 // pi runs keeps the slot; a /reload runs the same file again and finds it already its own.
-const COPY_SLOT = Symbol.for("kido.pi.extension.status.copy");
-
 function isFirstCopy(): boolean {
   const path = fileURLToPath(import.meta.url);
-  const g = globalThis as unknown as Record<symbol, string | undefined>;
-  return (g[COPY_SLOT] ??= path) === path;
+  return (globalThis.__kidoPiExtensionStatusCopy ??= path) === path;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -452,9 +452,10 @@ export default function (pi: ExtensionAPI) {
   // inbox connection. On failure it yields the line kido printed on stderr, the
   // only part a model can act on.
   const runKido = (args: string[], opts: { input?: string; timeoutMs: number }): Promise<RunKidoResult> => {
-    if (!kido) return Promise.resolve({ ok: false, error: "kido is not on PATH" });
+    const command = kido;
+    if (!command) return Promise.resolve({ ok: false, error: "kido is not on PATH" });
     return new Promise((resolve) => {
-      const child = spawn(kido as string, args, { stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
       const finish = (result: RunKidoResult): void => {
         clearTimeout(timer);
         resolve(result);

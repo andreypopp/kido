@@ -283,7 +283,7 @@ binding.
 **A `/reload` does not take the inbox down.** A reload keeps the process,
 the pid and the session id, and the path is keyed by the pid, so the
 listening server outlives the module that bound it: it is held on
-`globalThis` behind a `Symbol.for` slot, the same mechanism the seam uses
+`globalThis.__kidoPiExtensionInbox`, the same mechanism the seam uses
 to survive jiti's re-evaluation. The server's own connection
 listener is an indirection through that slot rather than a closure over
 one module's handler; `session_shutdown` with reason `"reload"` clears the
@@ -1589,8 +1589,8 @@ session id and status, whether the inbox is open, and the shared
 its hooks - only what someone actually calls, and nothing kept published
 for a reader that might turn up.
 
-**The slots are on `globalThis`, keyed by a `Symbol.for` name, and that
-was measured rather than reasoned about.** The obvious argument, that ES
+**The slots are on `globalThis.__kidoPiExtensionSeam`, shared across
+extension evaluations.** The obvious argument, that ES
 modules are singletons per resolved path so an import of the neighbouring
 file is the module pi loaded, is false for pi: each extension is evaluated
 in a module registry of its own, so `kido-agents.ts` importing a runtime
@@ -1598,11 +1598,10 @@ value from `kido-status.ts` produces a second evaluation of that file,
 under the identical URL, with its own module scope. Module-scope slots
 leave each half holding a copy of the
 other that no session ever started: measured, `list_agents` in a real pi
-answered `[]` while every unit test passed. `globalThis` and the
-`Symbol.for` registry are shared across those evaluations, also measured.
-`kido-agents.ts` consequently imports nothing but types from
-`kido-status.ts`, which type-stripping erases, and declares the same
-symbol and slot shape itself.
+answered `[]` while every unit test passed. `globalThis` is shared across
+those evaluations, also measured. `kido-status.ts` declares the global
+property's type; `kido-agents.ts` imports nothing but types from it, which
+type-stripping erases, and accesses the same property.
 
 **There is no load-order assumption.** pi discovers extensions in a
 directory and the order is not kido's to choose, but every factory runs
@@ -2093,8 +2092,8 @@ pi 0.87.1), so the shipped copy passed with `--extension` and a copy or
 link in `~/.pi/agent/extensions` are two extensions to pi: both would
 bind an inbox and report, and the second copy's tools fail with
 "Tool X conflicts with ...". Each file therefore claims a `globalThis`
-slot keyed by its own file path the first time its factory runs
-(`kido.pi.extension.status.copy`, `kido.pi.extension.agents.copy`), and
+property holding its own file path the first time its factory runs
+(`__kidoPiExtensionStatusCopy`, `__kidoPiExtensionAgentsCopy`), and
 a copy at any other path registers nothing. pi loads CLI extensions
 first, so the shipped copy wins; a `/reload` runs the same file again
 and finds the slot its own; the key is `fileURLToPath(import.meta.url)`,

@@ -18,12 +18,8 @@ import type {
   Status,
 } from "./kido-status.ts";
 
-// Spelled out again rather than imported: importing kido-status.ts would evaluate a second copy of it.
-const SEAM = Symbol.for("kido.pi.extension.seam");
-
 function seam(): Seam {
-  const g = globalThis as unknown as Record<symbol, Seam | undefined>;
-  return (g[SEAM] ??= { host: null, agents: null });
+  return (globalThis.__kidoPiExtensionSeam ??= { host: null, agents: null });
 }
 
 // Read at call time, not factory time: pi may run this factory before session_start.
@@ -110,7 +106,8 @@ const noticeHeader = (from: string): string => `notice from ${from} (a subagent 
 
 const MESSAGE_CUSTOM_TYPE = "kido-message";
 
-type SenderRelation = "parent" | "child" | "peer";
+const RELATIONS = ["parent", "child", "peer"] as const;
+type SenderRelation = (typeof RELATIONS)[number];
 
 const MESSAGE_RELATION: Record<SenderRelation, string> = {
   parent: "your parent, who spawned you",
@@ -274,12 +271,13 @@ export function isAncestor(agents: Pick<AgentInfo, "id" | "parent">[], self: Pic
   return false;
 }
 
-const COPY_SLOT = Symbol.for("kido.pi.extension.agents.copy");
+declare global {
+  var __kidoPiExtensionAgentsCopy: string | undefined;
+}
 
 function isFirstCopy(): boolean {
   const path = fileURLToPath(import.meta.url);
-  const g = globalThis as unknown as Record<symbol, string | undefined>;
-  return (g[COPY_SLOT] ??= path) === path;
+  return (globalThis.__kidoPiExtensionAgentsCopy ??= path) === path;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -625,7 +623,7 @@ export default function (pi: ExtensionAPI) {
     try {
       process.kill(PARENT_PID, 0);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code === "ESRCH") return false;
+      if (err instanceof Error && "code" in err && err.code === "ESRCH") return false;
     }
     const res = await runKido(["agent-alive", PARENT_SESSION], { timeoutMs: 2000 });
     return !(res.ok && res.out === "false");
@@ -1169,9 +1167,10 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_start", (event) => {
     const m = event?.message;
     if (m?.role !== "custom" || m.customType !== NOTICE_CUSTOM_TYPE) return;
-    // pi's message_start exposes CustomMessage details as unknown, without the renderer's details generic.
-    const noticeId = (m.details as { noticeId?: string } | undefined)?.noticeId;
-    if (!noticeId || !pendingNotices.has(noticeId)) return;
+    const details = m.details;
+    if (typeof details !== "object" || details === null || !("noticeId" in details)) return;
+    const noticeId = details.noticeId;
+    if (typeof noticeId !== "string" || !noticeId || !pendingNotices.has(noticeId)) return;
     pendingNotices.delete(noticeId);
     renderNoticeWidget();
   });
@@ -1222,7 +1221,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerMessageRenderer<{ from: string }>(MESSAGE_CUSTOM_TYPE, (message, _options, theme) => {
     const from = message.details?.from || "another agent";
     const raw = typeof message.content === "string" ? message.content : "";
-    const header = (Object.keys(MESSAGE_RELATION) as SenderRelation[])
+    const header = RELATIONS
       .map((relation) => `${senderHeader("message", from, relation)}\n`)
       .find((line) => raw.startsWith(line));
     const content = header ? raw.slice(header.length) : raw;

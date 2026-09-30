@@ -29,7 +29,7 @@ const pi = {
 // its top level.
 process.env.KIDO_AGENT_PARENT_SESSION = "dump";
 process.env.KIDO_AGENT_RUN_ID = "dump-run";
-const seam = ((globalThis as any)[Symbol.for("kido.pi.extension.seam")] ??= {});
+const seam = ((globalThis as any).__kidoPiExtensionSeam ??= {});
 seam.host = { sessionId: () => "dump-run" };
 const { default: kidoAgents } = await import("../share/pi/kido-agents.ts");
 kidoAgents(pi as any);
