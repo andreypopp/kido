@@ -200,3 +200,16 @@ let%expect_test "is_agent_pane: reported, running claude, a pi in the tree, a pl
     pi in the tree: true
     plain shell: false
     |}]
+
+let%expect_test "a missing state dir holds no records; an unreadable one is an error" =
+  let dir = Filename.concat (Filename.temp_dir "kido-state" "") "absent" in
+  Printf.printf "missing: %d\n" (List.length (State.load_live ~dir));
+  Unix.mkdir dir 0o000;
+  (match State.load_live ~dir with
+  | l -> Printf.printf "unreadable: %d records\n" (List.length l)
+  | exception Sys_error _ -> print_endline "unreadable: error");
+  Unix.chmod dir 0o755;
+  [%expect {|
+    missing: 0
+    unreadable: error
+    |}]

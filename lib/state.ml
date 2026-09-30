@@ -66,8 +66,7 @@ let parse b =
 let get ~dir id = Option.flat_map parse (Fs.read (path ~dir id))
 
 let read_all ~dir =
-  match Sys.readdir dir with
-  | exception Sys_error _ -> []
+  match if Sys.file_exists dir then Sys.readdir dir else [||] with
   | names ->
       Array.to_list names
       |> List.filter_map (fun name ->
