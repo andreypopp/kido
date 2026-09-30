@@ -61,7 +61,12 @@ public final class Client: @unchecked Sendable {
     private func complete(_ reply: Reply) -> (() -> Void)? {
         lock.withLock {
             guard !pending.isEmpty else { return nil }
-            pending[0].replies.append(reply)
+            // tmux answers a line that fails to parse with one block, whatever its command count.
+            if case .failure(let lines) = reply, lines.first?.hasPrefix("parse error: ") == true {
+                pending[0].replies = Array(repeating: reply, count: pending[0].count)
+            } else {
+                pending[0].replies.append(reply)
+            }
             guard pending[0].replies.count == pending[0].count else { return {} }
             let p = pending.removeFirst()
             return { p.done(p.replies) }
