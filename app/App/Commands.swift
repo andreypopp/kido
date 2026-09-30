@@ -26,14 +26,21 @@ enum Side {
 enum PaneCommand {
     case split(Side)
     case select(Side)
-    case resize(Side, Int)
+    case resize(Side, points: Double)
+    case window(Int)
     case next, previous, zoom, equalize, close, newWindow, nextWindow, previousWindow, lastWindow
 
-    func command(_ pane: PaneID) -> Command {
+    // Ghostty's resize amount is in points, and its tab index is one-based,
+    // clamped to the last, as in Ghostty's own app.
+    func command(_ pane: PaneID, cell: CGSize, windows: [SessionModel.Window]) -> Command? {
         switch self {
         case .split(let side): Command("split-window", side.split, "-t", pane)
         case .select(let side): Command("select-pane", side.flag, "-t", pane)
-        case .resize(let side, let cells): Command("resize-pane", side.flag, "-t", pane, cells)
+        case .resize(let side, let points):
+            Command(
+                "resize-pane", side.flag, "-t", pane,
+                max(1, Int((points / max(side == .left || side == .right ? cell.width : cell.height, 1)).rounded())))
+        case .window(let n): windows.isEmpty ? nil : Command("select-window", "-t", windows[min(n, windows.count) - 1].id)
         case .next: Command("select-pane", "-t", ":.+")
         case .previous: Command("select-pane", "-t", ":.-")
         case .zoom: Command("resize-pane", "-Z", "-t", pane)
