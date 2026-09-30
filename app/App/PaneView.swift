@@ -12,7 +12,7 @@ final class PaneView: NSView, NSTextInputClient {
     var onGridChange: (Grid) -> Void = { _ in }
     var onClose: () -> Void = {}
 
-    private(set) var surface: ghostty_surface_t!
+    nonisolated(unsafe) private(set) var surface: ghostty_surface_t!
     private(set) var grid = Grid(cols: 0, rows: 0, cell: .zero)
 
     private var markedText = NSMutableAttributedString()
@@ -52,7 +52,7 @@ final class PaneView: NSView, NSTextInputClient {
         ghostty_surface_free(surface)
     }
 
-    func feed(_ bytes: Data) {
+    nonisolated func feed(_ bytes: Data) {
         bytes.withUnsafeBytes { buffer in
             guard let base = buffer.baseAddress else { return }
             ghostty_surface_process_output(surface, base.assumingMemoryBound(to: CChar.self), UInt(buffer.count))
