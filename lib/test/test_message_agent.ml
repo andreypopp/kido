@@ -37,14 +37,15 @@ let notify ?(panes = same_session) ~dir ~parent ?(run = "") text =
 let show received =
   List.iter
     (fun raw ->
-      match Msg.parse raw with
+      match Fixture.envelope raw with
       | None -> Printf.printf "v0 %S\n" raw
       | Some e ->
-          Printf.printf "%s id=%s replyTo=%S text=%S from=(%S,%S,%S)\n" (Msg.string_of_kind e.kind)
-            (if String.is_empty e.id then "<empty>"
-             else if String.length e.id = 32 then "<fresh>"
-             else e.id)
-            e.reply_to e.text e.from.session e.from.name e.from.pane)
+          let id = e "id" in
+          Printf.printf "%s id=%s replyTo=%S text=%S from=(%S,%S,%S)\n" (e "kind")
+            (if String.is_empty id then "<empty>"
+             else if String.length id = 32 then "<fresh>"
+             else id)
+            (e "replyTo") (e "text") (e "from.session") (e "from.name") (e "from.pane"))
     (received ())
 
 (* The caller on %1 with an inbox of its own, which an ask needs. *)
@@ -57,7 +58,7 @@ let%expect_test "a target gets a v1 envelope; --reply-to alone makes it a reply"
   let inbox, received = start_inbox ~reply:"ok\n" in
   record ~dir "target" (session ~pane:"%2" ~inbox Idle);
   run ~dir Reply (Named "target") ~reply_to:"ask-1" "hi there";
-  run ~dir Message (Named "target") "hi there\n";
+  run ~dir Message (Named "target") "hi there";
   show received;
   [%expect
     {|
@@ -176,12 +177,10 @@ let%expect_test "refused before anything is sent: empty, invalid UTF-8, this age
   record ~dir "me" (session ~pane:"%1" ~title:"Self" Idle);
   record ~dir "target" (session ~pane:"%2" ~title:"Alpha" Idle);
   run ~dir Message (Named "whoever") "";
-  run ~dir Message (Named "whoever") "\n";
   run ~dir Message (Named "Alpha") "bad:\xff\xfe:end";
   run ~dir Message (Named "Self") "talking to myself";
   [%expect
     {|
-    no text
     no text
     error: message is not valid UTF-8
     error: Self is this agent
@@ -272,7 +271,7 @@ let panes_with_parent = [ pane ~session_id:"$1" "%1"; pane ~session_id:"$1" "%9"
 
 let notice received =
   match received () with
-  | [ raw ] -> (Option.get_exn_or "envelope" (Msg.parse raw)).text
+  | [ raw ] -> (Option.get_exn_or "envelope" (Fixture.envelope raw)) "text"
   | got -> failwith (Printf.sprintf "%d payloads, want one" (List.length got))
 
 let%expect_test "a report under the cap arrives byte for byte, with no file left behind" =

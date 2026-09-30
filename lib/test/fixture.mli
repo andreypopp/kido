@@ -1,5 +1,8 @@
 include module type of Tmux_test.Fixture
 
+val envelope : string -> (string -> string) option
+(** A v1 envelope's string field at a dotted path, [""] when absent; [None] for v0 text. *)
+
 val dead_pid : unit -> int
 
 val session :

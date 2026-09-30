@@ -1,5 +1,5 @@
-type status = Running | Waiting | Compacting | Idle [@@deriving yojson]
-type agent = Claude | Pi | Other of string [@@deriving yojson]
+type status = Running | Waiting | Compacting | Idle [@@deriving to_yojson]
+type agent = Claude | Pi | Other of string [@@deriving to_yojson]
 type parent = { session : string; pid : int }
 
 type session = {
@@ -18,7 +18,7 @@ type session = {
   depth : int;
   model : string;
 }
-[@@deriving yojson]
+[@@deriving to_yojson]
 
 module String_map : Map.S with type key = string
 
@@ -40,4 +40,3 @@ val stall_threshold : unit -> float
 val stalled_since : threshold:float -> wake:Timestamp.t option -> now:Timestamp.t -> session -> bool
 val wake : dir:string -> Timestamp.t option
 val record_pause : dir:string -> Timestamp.t -> unit
-val agent_title : string -> string

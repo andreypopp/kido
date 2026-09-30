@@ -1,16 +1,17 @@
 let record ~dir id (s : State.session) ~ended =
   let ended =
-    match State.get ~dir id with
-    | _ when not ended -> None
-    | Some { status = Idle; ended = Some prev; _ } -> Some prev
-    | _ -> Some s.ts
+    if not ended then None
+    else
+      match State.get ~dir id with
+      | Some { status = Idle; ended = Some prev; _ } -> Some prev
+      | _ -> Some s.ts
   in
   State.record ~dir id { s with ended }
 
-let session ~agent ~pid status : State.session =
+let session ~agent ~pane ~pid status : State.session =
   {
     agent;
-    pane = Option.value (Sys.getenv_opt "TMUX_PANE") ~default:"";
+    pane;
     pid;
     status;
     ts = Timestamp.now ();
@@ -25,35 +26,34 @@ let session ~agent ~pid status : State.session =
     model = "";
   }
 
-let log_hook ~dir json (input : Hook.input) action =
+let debug_log ~dir = Filename.concat dir "debug.log"
+
+let log_hook ~dir ~pane json (input : Hook.input) action =
   try
     Fs.mkdir_p dir;
-    Out_channel.with_open_gen [ Open_append; Open_creat; Open_wronly ]
-      0o600 (Filename.concat dir "debug.log") (fun oc ->
+    Out_channel.with_open_gen [ Open_append; Open_creat; Open_wronly ] 0o600 (debug_log ~dir)
+      (fun oc ->
         Printf.fprintf oc "%s\t%s\t%s\t%s\n"
           (Timestamp.to_string (Timestamp.now ()))
-          (Option.value (Sys.getenv_opt "TMUX_PANE") ~default:"")
-          (Yojson.Safe.to_string json) (Hook.describe input action))
+          pane (Yojson.Safe.to_string json) (Hook.describe input action))
   with Sys_error _ | Unix.Unix_error _ -> ()
 
-let hook text =
+let hook ~dir ~pane ~debug text =
   let open Result.Infix in
-  let debug = not (String.is_empty (Option.value (Sys.getenv_opt "KIDO_HOOK_DEBUG") ~default:"")) in
   let* json =
     match Yojson.Safe.from_string text with
     | json -> Ok json
     | exception Yojson.Json_error m -> Error m
   in
   let* input = Hook.input_of_yojson json in
-  let dir = State.dir () in
   let id = input.session_id in
   let parked =
     (not (String.is_empty id))
     && Option.exists (fun (s : State.session) -> s.background) (State.get ~dir id)
   in
   let action = Hook.apply input ~parked in
-  if debug then log_hook ~dir json input action;
-  let claude status = session ~agent:Claude ~pid:(Procs.reporter_pid ()) status in
+  if debug then log_hook ~dir ~pane json input action;
+  let claude status = session ~agent:Claude ~pane ~pid:(Procs.reporter_pid ()) status in
   (match action with
     | Ignore -> Ok ()
     | Remove -> State.remove ~dir id ~pid:(Procs.reporter_pid ())
@@ -78,39 +78,18 @@ let one_line s ~max =
   let s = Buffer.contents b in
   String.rdrop_while (Char.equal ' ') (Msg.utf_8_prefix s max)
 
-type status_error = Invalid of string | Held of string
-
-let agent_status ~agent ~session:id ~status ~title ~inbox ~activity ~parent_pid ~parent_session
-    ~depth ~model ~ended ~remove args =
-  let usage =
-    "usage: kido agent-status --agent NAME --session ID --status "
-    ^ String.concat "|" (List.map fst State.statuses)
-    ^ " [--title TITLE] [--inbox PATH] [--activity TEXT] [--parent-pid PID] [--parent-session ID] \
-       [--depth N] [--model NAME] [--ended] [--remove]"
-  in
-  let held r = Result.map_err (fun holder -> Held (State.held_message id holder)) r in
-  match args with
-  | arg :: _ -> Error (Invalid (Printf.sprintf "unknown argument %S\n%s" arg usage))
-  | [] when String.is_empty agent || String.is_empty id ->
-      Error (Invalid ("--agent and --session are required\n" ^ usage))
-  | [] -> (
-      let dir = State.dir () in
-      if remove then held (State.remove ~dir id ~pid:(Unix.getppid ()))
-      else
-        match List.assoc_opt ~eq:String.equal status State.statuses with
-        | None -> Error (Invalid (Printf.sprintf "unknown status %S\n%s" status usage))
-        | Some status ->
-            held
-            @@ record ~dir id
-                 {
-                   (session ~agent:(State.agent_of_string agent) ~pid:(Unix.getppid ()) status) with
-                   title;
-                   inbox;
-                   activity = one_line activity ~max:256;
-                   parent =
-                     (if String.is_empty parent_session then None
-                      else Some { session = parent_session; pid = parent_pid });
-                   depth;
-                   model;
-                 }
-                 ~ended)
+let agent_status ~dir ~pane ~agent ~session:id ~title ~inbox ~activity ~parent_pid ~parent_session
+    ~depth ~model ~ended status =
+  record ~dir id
+    {
+      (session ~agent:(State.agent_of_string agent) ~pane ~pid:(Unix.getppid ()) status) with
+      title;
+      inbox;
+      activity = one_line activity ~max:256;
+      parent =
+        (if String.is_empty parent_session then None
+         else Some { session = parent_session; pid = parent_pid });
+      depth;
+      model;
+    }
+    ~ended

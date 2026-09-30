@@ -28,10 +28,10 @@ let run ?(parent = "root-sess") inbox =
 let chunks received =
   List.filter_map
     (fun raw ->
-      match Msg.parse raw with
-      | Some { kind = Stream; text; from; _ } ->
-          assert (String.equal from.name "chatty");
-          Some text
+      match Fixture.envelope raw with
+      | Some e when String.equal (e "kind") "stream" ->
+          assert (String.equal (e "from.name") "chatty");
+          Some (e "text")
       | _ -> None)
     (received ())
 

@@ -55,22 +55,21 @@ let reaches states panes ~self id =
 let descendant_target states panes ~self to_ =
   let open Result.Infix in
   let* ((id, target) as e) = resolve_target states panes ~self to_ in
-  let name = List_agents.display_name panes target in
-  if String.equal target.pane self then Error (name ^ " is this agent")
-  else
-    let* reached = reaches states panes ~self id in
-    if reached then Ok e else Error (name ^ " is not this agent's descendant")
+  let* reached = reaches states panes ~self id in
+  if reached then Ok e
+  else Error (List_agents.display_name panes target ^ " is not this agent's descendant")
 
-let resolve ~live ~panes ~self = function
-  | Named to_ -> resolve_target (List_agents.per_pane live) panes ~self to_
-  | Descendant to_ -> descendant_target (List_agents.per_pane live) panes ~self to_
-  | Parent session -> (
-      match List.assoc_opt ~eq:String.equal session live with
-      | Some s -> Ok (session, s)
-      | None ->
-          Error
-            (Printf.sprintf "no live process holds session %S; the parent is gone, nothing sent"
-               session))
+let resolve ~live ~panes ~self recipient =
+  let open Result.Infix in
+  let* ((_, target) as e) =
+    match recipient with
+    | Named to_ -> resolve_target (List_agents.per_pane live) panes ~self to_
+    | Descendant to_ -> descendant_target (List_agents.per_pane live) panes ~self to_
+    | Parent session -> Result.map (fun s -> (session, s)) (Msg.live_parent live session)
+  in
+  if String.equal target.pane self then
+    Error (List_agents.display_name panes target ^ " is this agent")
+  else Ok e
 
 let deliver ~states ~panes ~self ~paste spec (target : State.session) text =
   let name = List_agents.display_name panes target in
@@ -93,7 +92,6 @@ let deliver ~states ~panes ~self ~paste spec (target : State.session) text =
         Yojson.Safe.to_string
           (Msg.envelope_to_yojson
              {
-               v = Msg.v1;
                kind = spec.kind;
                id = (if String.is_empty spec.id then Msg.new_id () else spec.id);
                from;
@@ -121,7 +119,6 @@ let deliver ~states ~panes ~self ~paste spec (target : State.session) text =
 
 let send ~dir ~self ~panes ~paste recipient spec text =
   let open Result.Infix in
-  let text = String.chop_suffix ~suf:"\n" text |> Option.get_or ~default:text in
   let not_sent r = Result.map_err (fun m -> Not_sent m) r in
   if String.is_empty text then Error No_text
   else if not (String.is_valid_utf_8 text) then Error (Not_sent "message is not valid UTF-8")
@@ -151,12 +148,10 @@ let send ~dir ~self ~panes ~paste recipient spec text =
     in
     let* _, target = not_sent (resolve ~live ~panes ~self recipient) in
     let name = List_agents.display_name panes target in
-    if String.equal target.pane self then Error (Not_sent (name ^ " is this agent"))
-    else
-      match deliver ~states ~panes ~self ~paste spec target text with
-      | Ok `Pasted -> Ok (Printf.sprintf "pasted into %s's pane" name)
-      | Ok `Inbox -> Ok (Printf.sprintf "delivered to %s by inbox" name)
-      | Error (Unavailable m | Failed m) -> Error (Not_sent m)
+    match deliver ~states ~panes ~self ~paste spec target text with
+    | Ok `Pasted -> Ok (Printf.sprintf "pasted into %s's pane" name)
+    | Ok `Inbox -> Ok (Printf.sprintf "delivered to %s by inbox" name)
+    | Error (Unavailable m | Failed m) -> Error (Not_sent m)
 
 let head_within s max = Msg.valid_utf_8 (Msg.utf_8_prefix s max)
 
@@ -182,7 +177,6 @@ let notify_parent ~dir ~self ~panes ~paste ~warn ~parent ~run text =
       (Not_sent "this session has no parent ($KIDO_AGENT_PARENT_SESSION is not set); nothing sent")
   else
     let run = Result.to_opt (Subrun.parse_id run) in
-    let report = String.chop_suffix ~suf:"\n" text |> Option.get_or ~default:text in
     send ~dir ~self ~panes ~paste (Parent parent)
       { kind = Notice; reply_to = ""; id = "" }
-      (report_notice ~warn ~dir run report)
+      (report_notice ~warn ~dir run text)

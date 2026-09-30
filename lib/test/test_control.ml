@@ -127,8 +127,7 @@ let%expect_test "stop without an inbox to ask over needs --force, and then kills
 
 let kinds received =
   List.map
-    (fun raw ->
-      match Msg.parse raw with Some e -> Msg.string_of_kind e.kind | None -> "not an envelope")
+    (fun raw -> match Fixture.envelope raw with Some e -> e "kind" | None -> "not an envelope")
     (received ())
   |> String.concat " " |> Printf.printf "received: [%s]\n"
 
@@ -227,10 +226,10 @@ let bash_run ?(parent = "root-sess") ?(pid = dead_pid ()) w name =
 let notices received =
   List.iter
     (fun raw ->
-      match Msg.parse raw with
+      match Fixture.envelope raw with
       | Some e ->
-          Printf.printf "%s from %s: %s\n" (Msg.string_of_kind e.kind) e.from.name
-            (List.hd (String.lines e.text))
+          Printf.printf "%s from %s: %s\n" (e "kind") (e "from.name")
+            (List.hd (String.lines (e "text")))
       | None -> Printf.printf "not an envelope: %S\n" raw)
     (received ())
 
@@ -373,8 +372,8 @@ let%expect_test "steer reaches descendants only" =
     [ "child"; "grandchild"; "peer"; "root"; "caller" ];
   List.iter
     (fun raw ->
-      match Msg.parse raw with
-      | Some e -> Printf.printf "%s %S\n" (Msg.string_of_kind e.kind) e.text
+      match Fixture.envelope raw with
+      | Some e -> Printf.printf "%s %S\n" (e "kind") (e "text")
       | None -> Printf.printf "not an envelope: %S\n" raw)
     (received ());
   [%expect

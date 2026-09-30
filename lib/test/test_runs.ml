@@ -177,8 +177,8 @@ let%expect_test "run-outcome --unreported tells the parent once, and only if it 
   List.iter (show_outcome ~dir) [ "run-told"; "run-self"; "run-stopped" ];
   List.iter
     (fun raw ->
-      match Msg.parse raw with
-      | Some e -> Printf.printf "%s from %s:\n%s\n" (Msg.string_of_kind e.kind) e.from.name e.text
+      match Fixture.envelope raw with
+      | Some e -> Printf.printf "%s from %s:\n%s\n" (e "kind") (e "from.name") (e "text")
       | None -> Printf.printf "not an envelope: %S\n" raw)
     (received ());
   [%expect

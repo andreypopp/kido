@@ -33,7 +33,6 @@ type error = No_prompt | Not_found | Several | Failed of string
 
 let prompt ~dir ~self ~window text =
   let open Result.Infix in
-  let text = String.chop_suffix ~suf:"\n" text |> Option.get_or ~default:text in
   let failed r = Result.map_err (fun m -> Failed m) r in
   if String.is_empty text then Error No_prompt
   else

@@ -21,9 +21,7 @@ let inbox_path ~dir name =
     Ok path
   end
 
-let v1 = 1
-
-type kind = Message | Ask | Reply | Notice | Stream | Steer | Interrupt | Stop | Other of string
+type kind = Message | Ask | Reply | Notice | Stream | Steer | Interrupt | Stop
 
 let string_of_kind = function
   | Message -> "message"
@@ -34,54 +32,25 @@ let string_of_kind = function
   | Steer -> "steer"
   | Interrupt -> "interrupt"
   | Stop -> "stop"
-  | Other s -> s
 
-let kinds =
-  List.map
-    (fun k -> (string_of_kind k, k))
-    [ Message; Ask; Reply; Notice; Stream; Steer; Interrupt; Stop ]
-
-let kind_of_string s = Option.get_or ~default:(Other s) (List.assoc_opt ~eq:String.equal s kinds)
 let kind_to_yojson k = `String (string_of_kind k)
-let kind_of_yojson = function `String s -> Ok (kind_of_string s) | _ -> Error "kind"
 
-type from = {
-  session : string; [@default ""]
-  name : string; [@default ""]
-  pane : string; [@default ""]
-}
-[@@deriving of_yojson { strict = false }]
-
-let optional key v = if String.is_empty v then [] else [ (key, `String v) ]
-
-let from_to_yojson f =
-  `Assoc ((("session", `String f.session) :: optional "name" f.name) @ optional "pane" f.pane)
-
-let no_from = { session = ""; name = ""; pane = "" }
+type from = { session : string; name : string; [@default ""] pane : string [@default ""] }
+[@@deriving to_yojson]
 
 type envelope = {
-  v : int;
   kind : kind;
-  id : string; [@default ""]
-  from : from; [@default no_from]
+  id : string;
+  from : from;
   reply_to : string; [@key "replyTo"] [@default ""]
-  text : string; [@default ""]
+  text : string;
   run : string; [@default ""]
   output : string; [@default ""]
 }
-[@@deriving of_yojson { strict = false }]
+[@@deriving to_yojson]
 
 let envelope_to_yojson e =
-  `Assoc
-    ([
-       ("v", `Int e.v);
-       ("kind", kind_to_yojson e.kind);
-       ("id", `String e.id);
-       ("from", from_to_yojson e.from);
-     ]
-    @ optional "replyTo" e.reply_to
-    @ [ ("text", `String e.text) ]
-    @ optional "run" e.run @ optional "output" e.output)
+  Yojson.Safe.Util.combine (`Assoc [ ("v", `Int 1) ]) (envelope_to_yojson e)
 
 let max_notice_bytes = 4000
 
@@ -103,23 +72,8 @@ let valid_utf_8 s =
   go 0;
   Buffer.contents b
 
-let parse raw =
-  match Yojson.Safe.from_string raw with
-  | `Assoc fields as json ->
-      if List.mem_assoc ~eq:String.equal "v" fields && List.mem_assoc ~eq:String.equal "kind" fields
-      then Result.to_opt (envelope_of_yojson json)
-      else None
-  | _ | (exception _) -> None
-
 let new_id () =
-  let buf = Bytes.create 16 in
-  let fd = Unix.openfile "/dev/urandom" [ Unix.O_RDONLY ] 0 in
-  Fun.protect
-    ~finally:(fun () -> Unix.close fd)
-    (fun () ->
-      let rec fill pos = if pos < 16 then fill (pos + Unix.read fd buf pos (16 - pos)) in
-      fill 0);
-  String.concat "" (List.init 16 (fun i -> Printf.sprintf "%02x" (Char.code (Bytes.get buf i))))
+  Digest.to_hex (In_channel.with_open_bin "/dev/urandom" (fun ic -> really_input_string ic 16))
 
 type error = Unavailable of string | Refused of string | Failed of string
 
@@ -181,11 +135,6 @@ let read_all fd deadline =
 
 let deliver ?(timeout = 2.) ~path text =
   if String.is_empty path then Error (Unavailable "no socket path")
-  else if String.length path > sun_path_max then
-    Error
-      (Unavailable
-         (Printf.sprintf "socket path is %d bytes, over the %d-byte limit" (String.length path)
-            sun_path_max))
   else
     let deadline = Unix.gettimeofday () +. timeout in
     match connect path deadline with
@@ -215,19 +164,18 @@ let deliver ?(timeout = 2.) ~path text =
             | exception ((Timeout | Unix.Unix_error _) as e) ->
                 Error (Failed (Printf.sprintf "inbox %s: %s" path (describe e))))
 
-let send ~id (session : State.session) env =
-  if String.is_empty session.inbox then
-    Error (Unavailable (Printf.sprintf "session %s has no inbox" id))
-  else deliver ~path:session.inbox (Yojson.Safe.to_string (envelope_to_yojson env))
+let live_parent live session =
+  Option.to_result
+    (Printf.sprintf "no live process holds session %S; the parent is gone, nothing sent" session)
+    (List.assoc_opt ~eq:String.equal session live)
 
 let notify ~dir ~parent_session ~from text =
-  let live = State.load_live ~dir in
-  match List.assoc_opt ~eq:String.equal parent_session live with
-  | None ->
-      Error
-        (Failed
-           (Printf.sprintf "no live process holds session %S; the parent is gone, nothing sent"
-              parent_session))
-  | Some target ->
-      send ~id:parent_session target
-        { v = v1; kind = Notice; id = new_id (); from; reply_to = ""; text; run = ""; output = "" }
+  match live_parent (State.load_live ~dir) parent_session with
+  | Error m -> Error (Failed m)
+  | Ok (target : State.session) when String.is_empty target.inbox ->
+      Error (Unavailable (Printf.sprintf "session %s has no inbox" parent_session))
+  | Ok target ->
+      deliver ~path:target.inbox
+        (Yojson.Safe.to_string
+           (envelope_to_yojson
+              { kind = Notice; id = new_id (); from; reply_to = ""; text; run = ""; output = "" }))

@@ -190,3 +190,28 @@ let%expect_test "list_agents defaults to the caller's session; --session answers
     usage: kido list_agents [--session ID] [--json]
     [{"id":"here","name":"","agent":"pi","pane":"%1","window":"@1","status":"idle","activity":"","parent":"","depth":0,"self":false,"cwd":"","canMessage":false,"canReply":false,"model":"","sinceReport":0,"stalled":false}]
     |}]
+
+let%expect_test "agent_title" =
+  List.iter
+    (fun t -> Printf.printf "[%s]\n" (List_agents.agent_title t))
+    [
+      "✳ Tmux config";
+      "⠂ Fix it";
+      "π - kido - internal";
+      "π - cwd";
+      "·  2 tasks";
+      "Plain";
+      "✳️ Ёлка";
+      "";
+    ];
+  [%expect
+    {|
+    [Tmux config]
+    [Fix it]
+    [kido - internal]
+    [cwd]
+    [2 tasks]
+    [Plain]
+    [Ёлка]
+    []
+    |}]

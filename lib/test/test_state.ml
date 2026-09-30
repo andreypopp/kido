@@ -156,31 +156,6 @@ let%expect_test "the wake marker keeps the latest wake" =
     2023-11-14T22:30:00Z
     |}]
 
-let%expect_test "agent_title" =
-  List.iter
-    (fun t -> Printf.printf "[%s]\n" (State.agent_title t))
-    [
-      "✳ Tmux config";
-      "⠂ Fix it";
-      "π - kido - internal";
-      "π - cwd";
-      "·  2 tasks";
-      "Plain";
-      "✳️ Ёлка";
-      "";
-    ];
-  [%expect
-    {|
-    [Tmux config]
-    [Fix it]
-    [kido - internal]
-    [cwd]
-    [2 tasks]
-    [Plain]
-    [Ёлка]
-    []
-    |}]
-
 let%expect_test "is_agent_pane: reported, running claude, a pi in the tree, a plain shell" =
   let states = State.by_pane [ ("pi-1", session ~pane:"%2" Running) ] in
   let pane id pid cmd : Tmux.Pane.t =

@@ -23,10 +23,12 @@ func TestCommandLineRefusals(t *testing.T) {
 	}{
 		{[]string{"prompt"}, "\n", "no prompt given", 1},
 		{[]string{"message_agent", "anyone"}, "", "no message given", 1},
+		{[]string{"message_agent", "anyone"}, "\n", "no message given", 1},
 		{[]string{"runs", "run-a", "extra"}, "", "kido runs: unknown argument \"extra\"\nusage: kido runs [--json] [<run-id>]", 1},
 		{[]string{"runs", "no-such-run"}, "", `kido runs: run "no-such-run": no such run`, 1},
 		{[]string{"run-outcome", "--result", "died", "run-a"}, "", "kido run-outcome: --result must be \"completed\" or \"failed\"\nusage: kido run-outcome --result completed|failed [--text TEXT] [--unreported] <run-id>", 1},
 		{[]string{"hook", "extra"}, "", "usage: kido hook", 0},
+		{[]string{"agent-status", "--agent", "pi", "--session", "s"}, "", "kido agent-status: --status is required", 1},
 	} {
 		cmd := exec.Command(kidoBin, c.args...)
 		cmd.Env = cleanEnv("KIDO_STATE_DIR="+state, "TMUX_PANE=%1")

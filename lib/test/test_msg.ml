@@ -1,49 +1,8 @@
 open Kido
 
-let discriminator_cases =
-  Yojson.Safe.from_file "../../share/pi/testdata/discriminator.json"
-  |> Yojson.Safe.Util.to_list
-  |> List.map (fun c ->
-      Yojson.Safe.Util.
-        (member "name" c |> to_string, member "raw" c |> to_string, member "ok" c |> to_bool))
-
-let%expect_test "Parse agrees with the shared v0/v1 discriminator table" =
-  List.iter
-    (fun (name, raw, want) ->
-      let ok = Option.is_some (Msg.parse raw) in
-      Printf.printf "%-24s %b %s\n" name ok (if Bool.equal ok want then "ok" else "MISMATCH"))
-    discriminator_cases;
-  [%expect
-    {|
-    plain text               false ok
-    json array               false ok
-    json scalar              false ok
-    null                     false ok
-    true                     false ok
-    empty string             false ok
-    object missing kind      false ok
-    object missing v         false ok
-    object with neither      false ok
-    full envelope            true ok
-    v and kind only          true ok
-    |}]
-
-let%expect_test "Parse fills every field of a full envelope" =
-  let raw =
-    {|{"v":1,"kind":"reply","id":"abc","replyTo":"xyz","from":{"session":"s1","name":"worker-2","pane":"%18"},"text":"42"}|}
-  in
-  (match Msg.parse raw with
-  | None -> print_endline "not an envelope"
-  | Some (env : Msg.envelope) ->
-      Printf.printf "v=%d kind=%s id=%s replyTo=%s from=(%s,%s,%s) text=%s\n" env.v
-        (Msg.string_of_kind env.kind) env.id env.reply_to env.from.session env.from.name
-        env.from.pane env.text);
-  [%expect {| v=1 kind=reply id=abc replyTo=xyz from=(s1,worker-2,%18) text=42 |}]
-
 let%expect_test "an envelope serializes with Go's field set: from.session always, empties omitted" =
   let env : Msg.envelope =
     {
-      v = Msg.v1;
       kind = Message;
       id = "x";
       from = { session = ""; name = ""; pane = "%3" };
@@ -71,10 +30,6 @@ let%expect_test "an envelope serializes with Go's field set: from.session always
     {"v":1,"kind":"message","id":"x","from":{"session":"","pane":"%3"},"text":""}
     {"v":1,"kind":"stream","id":"x","from":{"session":"s","name":"n"},"replyTo":"a","text":"t","run":"r","output":"o"}
     |}]
-
-let%expect_test "an unknown kind round-trips as itself" =
-  print_endline (Msg.string_of_kind (Msg.kind_of_string "wat"));
-  [%expect {| wat |}]
 
 let%expect_test "NewID is non-empty and unique" =
   let a, b = (Msg.new_id (), Msg.new_id ()) in

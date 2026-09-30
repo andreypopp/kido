@@ -7,7 +7,11 @@ let str name docv doc = Arg.(value & opt string "" & info [ name ] ~docv ~doc)
 let num name docv doc = Arg.(value & opt int 0 & info [ name ] ~docv ~doc)
 let flag name doc = Arg.(value & flag & info [ name ] ~doc)
 let arg docv = Arg.(required & pos 0 (some string) None & info [] ~docv)
-let stdin () = In_channel.input_all stdin
+
+let stdin () =
+  let s = In_channel.input_all stdin in
+  Option.get_or ~default:s (String.chop_suffix ~suf:"\n" s)
+
 let panes = lazy (Tmux.Exec.list_panes ())
 let cmd name doc term = Cmd.v (Cmd.info name ~doc) Term.(const (fun f -> Cli.run name f) $ term)
 let ok = Result.get_or_failwith
@@ -376,14 +380,30 @@ let hook =
              prerr_endline "usage: kido hook";
              0
          | [] ->
-             ok (Reporting.hook (stdin ()));
+             ok
+               (Reporting.hook ~dir:(State.dir ()) ~pane:(Tmux.Exec.getenv "TMUX_PANE")
+                  ~debug:(not (String.is_empty (Tmux.Exec.getenv "KIDO_HOOK_DEBUG")))
+                  (stdin ()));
              0)
 
 let agent_status =
   Cmd.v (Cmd.info "agent-status" ~doc:"Report the status of an agent session.")
-  @@ let+ agent = str "agent" "NAME" "Name of the reporting agent, e.g. pi."
-     and+ session = str "session" "ID" "The agent's session id; one state file per session."
-     and+ status = str "status" "STATUS" "One of running, waiting, compacting or idle."
+  @@ let+ agent =
+       Arg.(
+         required
+         & opt (some string) None
+         & info [ "agent" ] ~docv:"NAME" ~doc:"Name of the reporting agent, e.g. pi.")
+     and+ session =
+       Arg.(
+         required
+         & opt (some string) None
+         & info [ "session" ] ~docv:"ID" ~doc:"The agent's session id; one state file per session.")
+     and+ status =
+       Arg.(
+         value
+         & opt (some (enum State.statuses)) None
+         & info [ "status" ] ~docv:"STATUS"
+             ~doc:"One of running, waiting, compacting or idle; required unless $(b,--remove).")
      and+ title = str "title" "TITLE" "The session's name, shown as the pane's label."
      and+ inbox =
        str "inbox" "PATH"
@@ -400,23 +420,26 @@ let agent_status =
      and+ depth = num "depth" "N" "Depth in the spawn tree, 0 for a root agent."
      and+ model = str "model" "NAME" "Name of the model the agent is currently running."
      and+ ended = flag "ended" "A turn just finished."
-     and+ remove = flag "remove" "Delete the session's record."
-     and+ args = rest in
+     and+ remove = flag "remove" "Delete the session's record." in
      Cli.run "agent-status" (fun () ->
+         let dir = State.dir () in
          match
-           Reporting.agent_status ~agent ~session ~status ~title ~inbox ~activity ~parent_pid
-             ~parent_session ~depth ~model ~ended ~remove args
+           match (remove, status) with
+           | true, _ -> State.remove ~dir session ~pid:(Unix.getppid ())
+           | false, None -> failwith "--status is required"
+           | false, Some status ->
+               Reporting.agent_status ~dir ~pane:(Tmux.Exec.getenv "TMUX_PANE") ~agent ~session
+                 ~title ~inbox ~activity ~parent_pid ~parent_session ~depth ~model ~ended status
          with
          | Ok () -> 0
-         | Error (Invalid m) -> failwith m
-         | Error (Held m) ->
-             Cli.error "agent-status" m;
+         | Error holder ->
+             Cli.error "agent-status" (State.held_message session holder);
              6)
 
 let debug_log =
   Cmd.v (Cmd.info "debug-log" ~doc:"Print the path of the hook debug log.")
   @@ let+ () = Term.const () in
-     print_endline (Filename.concat (State.dir ()) "debug.log");
+     print_endline (Reporting.debug_log ~dir:(State.dir ()));
      0
 
 let inbox_path =

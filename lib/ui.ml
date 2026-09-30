@@ -387,7 +387,7 @@ let agent_title_of m (p : P.t) =
   else
     match String_map.find_opt p.pane_id m.snap.states with
     | Some (_, { title; _ }) when not (String.is_empty title) -> Some title
-    | _ -> ( match State.agent_title p.title with "" -> Some "-" | t -> Some t)
+    | _ -> ( match List_agents.agent_title p.title with "" -> Some "-" | t -> Some t)
 
 let lingering_label (p : P.t) l =
   let base = { lead = []; title = []; tail = []; pane_id = Some p.pane_id } in

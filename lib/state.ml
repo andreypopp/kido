@@ -38,7 +38,7 @@ type session = {
   depth : int; [@default 0]
   model : string; [@default ""]
 }
-[@@deriving yojson { strict = false }]
+[@@deriving yojson]
 
 module String_map = Map.Make (String)
 
@@ -119,12 +119,12 @@ let record ~dir id s =
   Fun.protect ~finally:(fun () -> Fs.remove tmp) @@ fun () ->
   match Unix.link tmp path with
   | () -> Ok ()
-  | exception Unix.Unix_error (EEXIST, _, _) -> (
-      match get ~dir id with
-      | Some prev when prev.pid <> s.pid && alive prev.pid -> Error prev
-      | prev ->
+  | exception Unix.Unix_error (EEXIST, _, _) ->
+      Result.flat_map
+        (fun () ->
           Unix.rename tmp path;
-          if Option.exists (fun p -> p.pid <> s.pid) prev then held ~dir id s.pid else Ok ())
+          held ~dir id s.pid)
+        (held ~dir id s.pid)
 
 let remove ~dir id ~pid = Result.map (fun () -> Fs.remove (path ~dir id)) (held ~dir id pid)
 
@@ -140,44 +140,12 @@ let stalled_since ~threshold ~wake ~now s =
       Float.(now - max s.ts (Option.value wake ~default:neg_infinity) >= threshold)
   | Running | Waiting | Compacting | Idle -> false
 
-type marker = { at : Timestamp.t } [@@deriving yojson]
-
 let wake_file ~dir = Filename.concat dir "wake"
-
-let wake ~dir =
-  Fs.read (wake_file ~dir)
-  |> Option.flat_map (fun b ->
-      try Result.to_opt (marker_of_yojson (Yojson.Safe.from_string b))
-      with Yojson.Json_error _ -> None)
-  |> Option.map (fun m -> m.at)
+let wake ~dir = Option.flat_map Timestamp.of_string (Fs.read (wake_file ~dir))
 
 let record_pause ~dir at =
   if not (Option.exists (fun prev -> Float.(at <= prev)) (wake ~dir)) then begin
     Fs.mkdir_p dir;
-    Fs.write_atomic (wake_file ~dir) (Yojson.Safe.to_string (marker_to_yojson { at }))
+    Fs.write_atomic (wake_file ~dir) (Timestamp.to_string at)
   end
 
-let symbol u =
-  let c = Uchar.to_int u in
-  (c < 0x80 && not (Char.Ascii.is_alphanum (Char.chr c)))
-  || (c >= 0x80 && c <= 0xBF)
-  || c = 0xD7 || c = 0xF7
-  || (c >= 0x2000 && c <= 0x2BFF)
-  || (c >= 0x2E00 && c <= 0x2E7F)
-  || (c >= 0x3000 && c <= 0x303F)
-  || (c >= 0xFE00 && c <= 0xFE0F)
-  || c = 0xFFFD
-  || (c >= 0x1F000 && c <= 0x1FAFF)
-
-let agent_title title =
-  match String.chop_prefix ~pre:"π - " title with
-  | Some t -> t
-  | None ->
-      let rec skip i =
-        if i >= String.length title then i
-        else
-          let d = String.get_utf_8_uchar title i in
-          if symbol (Uchar.utf_decode_uchar d) then skip (i + Uchar.utf_decode_length d) else i
-      in
-      let i = skip 0 in
-      String.sub title i (String.length title - i)

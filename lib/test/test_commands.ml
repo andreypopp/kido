@@ -31,8 +31,5 @@ let%expect_test "prompt refuses an empty prompt before asking tmux" =
         (match Prompt.prompt ~dir:"/nonexistent" ~self:"%1" ~window:false text with
         | Error No_prompt -> "no prompt"
         | Ok () | Error (Not_found | Several | Failed _) -> "WRONG"))
-    [ ""; "\n" ];
-  [%expect {|
-    no prompt
-    no prompt
-    |}]
+    [ "" ];
+  [%expect {| no prompt |}]

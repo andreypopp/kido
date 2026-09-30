@@ -144,7 +144,6 @@ let send t text =
   &&
   let env : Msg.envelope =
     {
-      v = Msg.v1;
       kind = Stream;
       id = Msg.new_id ();
       from = { session = ""; name = t.meta.name; pane = "" };

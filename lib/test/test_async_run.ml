@@ -101,18 +101,17 @@ let%expect_test "--stream sends the output as it runs, then the ending" =
   let _ = bash ~dir ~parent:"root-sess" "chatty" [ "printf"; "one\\ntwo\\nthree" ] in
   async_run ~stream:true ~dir "chatty";
   (* However the lines were batched, every one is streamed before the notice. *)
-  List.filter_map Msg.parse (received ())
+  List.filter_map Fixture.envelope (received ())
   |> List.fold_left
-       (fun (streamed, lines) (e : Msg.envelope) ->
-         match e.kind with
-         | Stream -> (streamed @ String.lines e.text, lines)
-         | _ ->
+       (fun (streamed, lines) e ->
+         match e "kind" with
+         | "stream" -> (streamed @ String.lines (e "text"), lines)
+         | kind ->
              ( streamed,
                lines
                @ [
-                   Printf.sprintf "%s after [%s]: %s" (Msg.string_of_kind e.kind)
-                     (String.concat " " streamed)
-                     (List.hd (String.lines e.text));
+                   Printf.sprintf "%s after [%s]: %s" kind (String.concat " " streamed)
+                     (List.hd (String.lines (e "text")));
                  ] ))
        ([], [])
   |> snd |> List.iter print_endline;
