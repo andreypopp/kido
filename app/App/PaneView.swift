@@ -1,6 +1,5 @@
 import AppKit
 import GhosttyKit
-import os
 import TmuxControl
 
 final class PaneView: NSView, @preconcurrency NSTextInputClient {
@@ -10,6 +9,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onCellChange: () -> Void = {}
     var onFontChange: (Float) -> Void = { _ in }
     var onCommand: (PaneCommand) -> Void = { _ in }
+    var onResync: () -> Void = {}
 
     // Freed in deinit, so the last reference must be dropped on the main
     // thread, and never while the reader may feed it (Connection).
@@ -17,9 +17,19 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     // Ghostty resizes the terminal on its IO thread at least 25ms after
     // set_grid_size (termio/Thread.zig), so output fed before that lands in
-    // the old grid; resize counts, and feed waits out, each request.
-    private let resizes = OSAllocatedUnfairLock(initialState: 0)
-    nonisolated(unsafe) private var fedAt = 0
+    // the old grid. grid_metrics reads the surface's size without a lock,
+    // which only main writes, so main polls it to confirm a new grid, and feed
+    // waits for that. Output a grid never confirmed is dropped, and the pane
+    // is captured again once it is.
+    private enum Grid {
+        case confirmed
+        case pending(until: Date)
+        case lost
+    }
+
+    private let gridChanged = NSCondition()
+    nonisolated(unsafe) private var grid = Grid.confirmed
+    private var resizes = 0
 
     private var markedText = NSMutableAttributedString()
     private var keyTextAccumulator: [String]?
@@ -51,8 +61,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         }
         guard let surface = ghostty_surface_new(runtime.app, &config) else { return nil }
         self.surface = surface
+        // The callback must not reenter the surface (ghostty.h).
         _ = ghostty_surface_set_font_size_action_callback(surface, { userdata, _, _, points, _, _ in
-            MainActor.assumeIsolated { PaneView.from(userdata).onFontChange(points) }
+            let pane = PaneView.from(userdata)
+            DispatchQueue.main.async { pane.onFontChange(points) }
         }, this)
         updateTrackingAreas()
     }
@@ -67,15 +79,16 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     nonisolated func feed(_ bytes: Data) {
-        let requested = resizes.withLock { $0 }
-        if requested != fedAt {
-            // Ghostty applies a grid resize on its IO thread after a delay (termio/Thread.zig);
-            // output fed before that lands in the old grid.
-            var grid = ghostty_surface_grid_metrics_s()
-            let deadline = Date.now + 1
-            while !ghostty_surface_grid_metrics(surface, &grid), Date.now < deadline { usleep(1000) }
-            fedAt = requested
+        let confirmed = gridChanged.withLock {
+            while case .pending(let until) = grid, gridChanged.wait(until: until) {}
+            switch grid {
+            case .confirmed: return true
+            case .pending: grid = .lost
+            case .lost: break
+            }
+            return false
         }
+        guard confirmed else { return }
         bytes.withUnsafeBytes { buffer in
             guard let base = buffer.baseAddress else { return }
             ghostty_surface_process_output(surface, base.assumingMemoryBound(to: CChar.self), UInt(buffer.count))
@@ -90,8 +103,34 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     func resize(cols: Int, rows: Int) {
-        _ = ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil)
-        resizes.withLock { $0 += 1 }
+        let size = ghostty_surface_size(surface)
+        guard (Int(size.columns), Int(size.rows)) != (cols, rows) else { return }
+        resizes += 1
+        guard ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil) else {
+            return gridChanged.withLock { grid = .lost }
+        }
+        let now = Date.now
+        gridChanged.withLock { if case .confirmed = grid { grid = .pending(until: now + 1) } }
+        confirm(cols, rows, resizes, until: now + 10)
+    }
+
+    private func confirm(_ cols: Int, _ rows: Int, _ resize: Int, until: Date) {
+        guard resize == resizes else { return }
+        var metrics = ghostty_surface_grid_metrics_s()
+        guard ghostty_surface_grid_metrics(surface, &metrics), (Int(metrics.columns), Int(metrics.rows)) == (cols, rows)
+        else {
+            guard Date.now < until else { return }
+            return DispatchQueue.main.asyncAfter(deadline: .now() + 0.005) { [weak self] in
+                self?.confirm(cols, rows, resize, until: until)
+            }
+        }
+        let lost = gridChanged.withLock {
+            let lost = if case .lost = grid { true } else { false }
+            grid = .confirmed
+            gridChanged.broadcast()
+            return lost
+        }
+        if lost { onResync() }
     }
 
     // MARK: - NSView
