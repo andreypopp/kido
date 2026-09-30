@@ -1,4 +1,5 @@
 import AppKit
+import TmuxControl
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     private var runtime: GhosttyRuntime!
@@ -77,26 +78,12 @@ import AppKit
                 onChange: { [weak self] in self?.changed(view, $0) },
                 onClose: { [weak self] in self?.closed(server, view, $0, backoff: backoff) })
             link = .connected(connection)
-            locateFeed(connection, socket: server.socket)
+            feed = Feed(
+                socket: server.socket, locate: connection.locateFeed, query: { [weak self] in self?.sidebar.view.query ?? "" },
+                onChange: { [weak self] in self?.sidebar.view.update($0) })
         } catch {
             link = .down
             banner.show("Kido could not run \(server.tmux)", error.localizedDescription, button: action)
-        }
-    }
-
-    private func locateFeed(_ connection: Connection, socket: String) {
-        connection.locateFeed { [weak self] result in
-            Task { @MainActor [weak self] in
-                guard let self, case .connected(let current) = link, current === connection else { return }
-                switch result {
-                case .failure(let failure):
-                    sidebar.view.update(.failed(failure.message))
-                case .success(let located):
-                    feed = Feed(
-                        kido: located.kido, socket: socket, client: located.client,
-                        onChange: { [weak self] in self?.sidebar.view.update($0) })
-                }
-            }
         }
     }
 
@@ -113,13 +100,21 @@ import AppKit
         if case .connected(let connection) = link { menus.connection = connection }
     }
 
-    private func closed(_ server: Server, _ view: SessionView, _ reason: String?, backoff: TimeInterval) {
+    private func closed(_ server: Server, _ view: SessionView, _ exit: Exit, backoff: TimeInterval) {
         menus.connection = nil
         menus.update(SessionModel())
         feed?.stop()
         feed = nil
         sidebar.view.update(.starting)
         window.title = "Kido"
+        let reason: String?
+        switch exit {
+        case .detached(let detached):
+            link = .down
+            return banner.show("Detached from the kido server", detached, button: "Reconnect")
+        case .ended(let ended):
+            reason = ended
+        }
         let dropped = view === session
         let detail = reason ?? (dropped ? nil : "No kido server at \(server.socket).")
         banner.show(

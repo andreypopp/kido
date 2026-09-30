@@ -21,6 +21,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     private let table = Table()
     private let scroll = NSScrollView()
     private let footer = NSTextField(wrappingLabelWithString: "")
+    private let noMatches = NSTextField(labelWithString: "No matches")
     private var snapshot: Snapshot?
     private var items: [Item] = []
     private var feedNote: (String, NSColor)?
@@ -53,7 +54,9 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         scroll.drawsBackground = false
         footer.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         footer.isSelectable = true
-        for view in [search, scroll, footer] { addSubview(view) }
+        noMatches.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        noMatches.textColor = .secondaryLabelColor
+        for view in [search, scroll, footer, noMatches] { addSubview(view) }
         update(.starting)
     }
 
@@ -78,6 +81,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         let top = search.frame.maxY + 6
         scroll.frame = CGRect(x: 0, y: top, width: bounds.width, height: footer.frame.minY - top - (footer.isHidden ? 0 : 6))
         table.tableColumns[0].width = scroll.contentSize.width
+        noMatches.frame = CGRect(x: 10, y: top + 4, width: inner, height: noMatches.fittingSize.height)
     }
 
     func update(_ status: Feed.Status) {
@@ -86,9 +90,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
             show(nil)
             feedNote = ("Starting…", .secondaryLabelColor)
         case .restarting(let message):
-            feedNote = ("The sidebar feed stopped, restarting…\n\(message)", .secondaryLabelColor)
-        case .failed(let message):
-            feedNote = ("The sidebar feed could not start.\n\(message)", .systemRed)
+            feedNote = ("The sidebar feed is not running, retrying…\n\(message)", .secondaryLabelColor)
         case .running(nil):
             feedNote = ("The sidebar feed sent a snapshot this app cannot read.", .systemRed)
         case .running(let snapshot?):
@@ -97,6 +99,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         }
         noteChanged()
     }
+
+    var query: String { search.stringValue }
 
     func failed(_ message: String?) {
         failure = message
@@ -113,17 +117,18 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
 
     private func show(_ next: Snapshot?) {
         let selected = items.indices.contains(table.selectedRow) ? items[table.selectedRow].target?.pane : nil
-        let moved = next.map { $0.client.pane != snapshot?.client.pane } ?? false
-        if let next, snapshot == nil { search.stringValue = next.filter }
+        let cleared = next?.filter.isEmpty == true && snapshot?.filter.isEmpty == false
+        let recenter = cleared || next.map { $0.client.pane != snapshot?.client.pane } ?? false
         snapshot = next
+        noMatches.isHidden = next.map { $0.filter.isEmpty || !$0.sessions.isEmpty } ?? true
         items = next?.sessions.flatMap { s in [.session(s)] + s.rows.map { .row(s.id, $0) } } ?? []
         table.reloadData()
-        let follow = moved ? next?.client.pane : selected
+        let follow = recenter ? next?.client.pane : selected
         guard let row = items.firstIndex(where: { $0.target?.pane == follow && follow != nil }) else {
             return table.deselectAll(nil)
         }
         table.selectRowIndexes([row], byExtendingSelection: false)
-        if moved { table.scrollRowToVisible(row) }
+        if recenter { table.scrollRowToVisible(row) }
         if let query = activating, next?.filter == query { activate() }
     }
 
