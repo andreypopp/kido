@@ -1,0 +1,74 @@
+import AppKit
+import TmuxControl
+
+enum Side {
+    case left, up, right, down
+
+    fileprivate var flag: String {
+        switch self {
+        case .left: "-L"
+        case .up: "-U"
+        case .right: "-R"
+        case .down: "-D"
+        }
+    }
+
+    fileprivate var split: String {
+        switch self {
+        case .left: "-hb"
+        case .up: "-vb"
+        case .right: "-h"
+        case .down: "-v"
+        }
+    }
+}
+
+enum PaneCommand {
+    case split(Side)
+    case select(Side)
+    case resize(Side, Int)
+    case next, previous, zoom, equalize, close, newWindow, nextWindow, previousWindow, lastWindow
+
+    func command(_ pane: PaneID) -> Command {
+        switch self {
+        case .split(let side): Command("split-window", side.split, "-t", pane)
+        case .select(let side): Command("select-pane", side.flag, "-t", pane)
+        case .resize(let side, let cells): Command("resize-pane", side.flag, "-t", pane, cells)
+        case .next: Command("select-pane", "-t", ":.+")
+        case .previous: Command("select-pane", "-t", ":.-")
+        case .zoom: Command("resize-pane", "-Z", "-t", pane)
+        case .equalize: Command("select-layout", "-E", "-t", pane)
+        case .close: Command("kill-pane", "-t", pane)
+        case .newWindow: Command("new-window")
+        case .nextWindow: Command("select-window", "-t", ":+")
+        case .previousWindow: Command("select-window", "-t", ":-")
+        case .lastWindow: Command("select-window", "-t", ":$")
+        }
+    }
+
+    @MainActor static var menu: NSMenuItem {
+        let menu = NSMenu(title: "Shell")
+        func add(_ title: String, _ command: PaneCommand, _ key: String, _ mods: NSEvent.ModifierFlags = .command) {
+            let item = menu.addItem(withTitle: title, action: #selector(PaneView.runCommand(_:)), keyEquivalent: key)
+            item.keyEquivalentModifierMask = mods
+            item.representedObject = command
+        }
+        func arrow(_ key: Int) -> String { String(UnicodeScalar(key)!) }
+        add("Split Right", .split(.right), "d")
+        add("Split Down", .split(.down), "D")
+        add("New Window", .newWindow, "t")
+        add("Close Pane", .close, "w")
+        menu.addItem(.separator())
+        add("Zoom Pane", .zoom, "\r", [.command, .shift])
+        menu.addItem(.separator())
+        add("Select Pane Left", .select(.left), arrow(NSLeftArrowFunctionKey), [.command, .option])
+        add("Select Pane Above", .select(.up), arrow(NSUpArrowFunctionKey), [.command, .option])
+        add("Select Pane Right", .select(.right), arrow(NSRightArrowFunctionKey), [.command, .option])
+        add("Select Pane Below", .select(.down), arrow(NSDownArrowFunctionKey), [.command, .option])
+        add("Next Pane", .next, "]")
+        add("Previous Pane", .previous, "[")
+        let item = NSMenuItem(title: "Shell", action: nil, keyEquivalent: "")
+        item.submenu = menu
+        return item
+    }
+}
