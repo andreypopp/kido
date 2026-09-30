@@ -43,28 +43,28 @@ while :; do
   case $filter in *!*) error='"could not read the agent state"' ;; *) error=null ;; esac
   case $((n / 10 % 2)) in 0) tests='{"kind":"running"}' tests_att=false ;; *) tests='{"kind":"waiting"}' tests_att=true ;; esac
   main=$(
-    row '"%0"' '"@0"' '┌' '{"kind":"running"}' "$(span orchestrator plain)" "$(span '  ' plain),$(span "fixing the failing sidebar tests, step $n" dim)" false
+    row '"%0"' '"@0"' '┌' '{"kind":"running"}' "$(span orchestrator plain)" "$(span "fixing the failing sidebar tests, step $n" dim)" false
     printf ,
-    row '"%2"' '"@1"' '│ ├' "$tests" "$(span tests plain)" "$(span '  ' plain),$(span 'Allow running make test?' dim)" "$tests_att"
+    row '"%2"' '"@1"' '│ ├' "$tests" "$(span tests plain)" "$(span 'Allow running make test?' dim)" "$tests_att"
     printf ,
-    row '"%3"' '"@2"' '│ └' '{"kind":"done"}' "$(span docs plain)" "$(span '  ' plain),$(span 'wrote docs/design.md' dim)" true
+    row '"%3"' '"@2"' '│ └' '{"kind":"done"}' "$(span docs plain)" "$(span 'wrote docs/design.md' dim)" true
     printf ,
-    row null null '│   ├' '{"kind":"gone","outcome":"completed"}' "$(span lint dim)" "$(span '  ' plain),$(span completed dim)" false
+    row null null '│   ├' '{"kind":"gone","outcome":"completed"}' "$(span lint dim)" "$(span completed dim)" false
     printf ,
-    row '"%4"' '"@3"' '│   └' '{"kind":"gone","outcome":"died"}' "$(span flaky dim)" "$(span '  ' plain),$(span died dim)" false
+    row '"%4"' '"@3"' '│   └' '{"kind":"gone","outcome":"died"}' "$(span flaky dim)" "$(span died dim)" false
     printf ,
     row '"%1"' '"@0"' '└' null "$(span zsh proc)" '' false
     printf ,
     row '"%5"' '"@4"' '╶' '{"kind":"running"}' "$(span 'make test' proc)" '' false
   )
   work=$(
-    row '"%6"' '"@5"' '╶' '{"kind":"stalled"}' "$(span 'review the pull request' plain)" "$(span '  ' plain),$(span 'reading files' stalled)" false
+    row '"%6"' '"@5"' '╶' '{"kind":"stalled"}' "$(span 'review the pull request' plain)" "$(span 'reading files' stalled)" false
     printf ,
     row '"%7"' '"@6"' '┌' '{"kind":"failed"}' "$(span 'cargo build --release' proc)" '' false
     printf ,
     row '"%8"' '"@6"' '└' null "$(span 'ssh ' proc),$(span devbox plain),$(span ': ' proc),$(span 'tail -f /var/log/system.log' plain)" '' false
     printf ,
-    row '"%9"' '"@7"' '┌' '{"kind":"compacting"}' "$(span refactor plain)" "$(span '  ' plain),$(span compacting compacting)" false
+    row '"%9"' '"@7"' '┌' '{"kind":"compacting"}' "$(span refactor plain)" "$(span compacting compacting)" false
     printf ,
     row '"%10"' '"@7"' '└' '{"kind":"unknown"}' "$(span - plain)" '' false
   )
