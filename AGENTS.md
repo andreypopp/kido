@@ -182,7 +182,15 @@ kido only runs under [andreypopp/tmux](https://github.com/andreypopp/tmux),
 vendored as the submodule `third_party/tmux` (`tmux -V` prints
 `next-3.9`): [PR tmux/tmux#5468](https://github.com/tmux/tmux/pull/5468)
 (side status) plus a `side-status-command` patch and the OSC 133
-command-line capture. `scripts/install-tmux-fork.sh <prefix>` builds it
+command-line capture, the pause flush for control clients. The fork is
+kept rebased, never merged: `fork` is a linear branch of kido's commits on
+top of the PR's current head, which the PR keeps rebased on upstream
+master. An upstream fix therefore arrives by rebasing onto the PR (or
+onto master, should the PR land), not by cherry-picking it, and a commit
+upstream or the PR already carries is dropped. Force-pushing `fork`
+leaves older submodule pins unreachable, so the previous head is pushed
+first as a dated branch (`fork-YYYY-MM-DD`).
+`scripts/install-tmux-fork.sh <prefix>` builds it
 into `<prefix>/bin/kido-tmux`; `--print-revision` reads the pin with
 `git ls-files -s`, so it works with the submodule unchecked-out or the
 pin only staged.
