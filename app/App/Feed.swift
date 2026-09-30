@@ -108,9 +108,10 @@ final class Feed: @unchecked Sendable {
         let output = stdout.fileHandleForReading.fileDescriptor
         let source = DispatchSource.makeReadSource(fileDescriptor: output, queue: reader)
         nonisolated(unsafe) var buffer = Data()
+        nonisolated(unsafe) var chunk = [UInt8](repeating: 0, count: 1 << 16)
+        let decoder = JSONDecoder()
         child.ended.enter()
         source.setEventHandler { @Sendable [weak self] in
-            var chunk = [UInt8](repeating: 0, count: 1 << 16)
             let n = Foundation.read(output, &chunk, chunk.count)
             guard n > 0 else {
                 if n < 0, errno == EAGAIN || errno == EINTR { return }
@@ -119,7 +120,7 @@ final class Feed: @unchecked Sendable {
             }
             buffer.append(contentsOf: chunk[..<n])
             while let newline = buffer.firstIndex(of: 0x0A) {
-                let last = try? JSONDecoder().decode(Snapshot.self, from: buffer[..<newline])
+                let last = try? decoder.decode(Snapshot.self, from: buffer[..<newline])
                 buffer.removeSubrange(...newline)
                 DispatchQueue.main.async {
                     guard let self, self.generation == generation else { return }
