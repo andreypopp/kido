@@ -316,8 +316,16 @@ func TestSidebarFeedStream(t *testing.T) {
 
 	n := f.count()
 	h.newWindow("beta", "fresh")
-	f.waitLast(func(s feedSnapshot) bool { return len(s.Sessions) == 2 && len(s.Sessions[1].Rows) == 2 },
-		"beta's new window")
+	// The new pane's command settles a tick or more after the window
+	// appears (its title passes through the program starting it), so the
+	// quiet check waits for it to read like beta's first shell.
+	f.waitLast(func(s feedSnapshot) bool {
+		if len(s.Sessions) != 2 || len(s.Sessions[1].Rows) != 2 {
+			return false
+		}
+		rows := s.Sessions[1].Rows
+		return fmt.Sprint(rows[1].Title) == fmt.Sprint(rows[0].Title)
+	}, "beta's new window, settled")
 	if f.count() <= n {
 		t.Fatalf("no new line for a new window")
 	}
