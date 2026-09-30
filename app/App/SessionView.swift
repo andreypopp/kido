@@ -27,7 +27,7 @@ final class SessionView: NSView {
         let old = windows.merging(others) { $1 }
         windows = [:]
         for w in listing {
-            let view = old[w.id] ?? WindowView(runtime: runtime, connection: connection, id: w.id)
+            let view = old[w.id] ?? WindowView(runtime: runtime, connection: connection)
             if view.superview == nil {
                 view.frame = bounds
                 view.isHidden = true
@@ -83,19 +83,33 @@ final class SessionView: NSView {
 
     // tmux has one grid for all panes, so every surface has one font size,
     // and the lowest-numbered pane is the one the cell metric is read from.
-    private var panes: [PaneView] {
-        [windows, others].flatMap(\.values).flatMap(\.panes).sorted { $0.pane.number < $1.pane.number }
+    private func forEachPane(_ body: (PaneView) -> Void) {
+        for view in windows.values { view.panes.forEach(body) }
+        for view in others.values { view.panes.forEach(body) }
     }
 
     var cell: CGSize? {
-        panes.lazy.map(\.cell).first { $0.width > 0 && $0.height > 0 }
+        var best: (id: UInt32, cell: CGSize)?
+        forEachPane { pane in
+            let c = pane.cell
+            guard c.width > 0, c.height > 0 else { return }
+            if best == nil || pane.pane.number < best!.id { best = (pane.pane.number, c) }
+        }
+        return best?.cell
     }
 
-    var font: Float { panes.first?.font ?? 0 }
+    var font: Float {
+        var best: (id: UInt32, font: Float)?
+        forEachPane { pane in
+            if best == nil || pane.pane.number < best!.id { best = (pane.pane.number, pane.font) }
+        }
+        return best?.font ?? 0
+    }
 
     func fontChanged(_ points: Float) {
         let action = "set_font_size:\(points)"
-        for pane in panes where pane.font != points {
+        forEachPane { pane in
+            guard pane.font != points else { return }
             _ = ghostty_surface_binding_action(pane.surface, action, UInt(action.utf8.count))
         }
         cellChanged()
