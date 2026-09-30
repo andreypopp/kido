@@ -1,17 +1,25 @@
 import AppKit
 import GhosttyKit
+import os
 import TmuxControl
 
 final class PaneView: NSView, @preconcurrency NSTextInputClient {
     let pane: PaneID
-    var onInput: (Data) -> Void = { _ in }
+    nonisolated(unsafe) var onInput: (Data) -> Void = { _ in }
     var onSelect: () -> Void = {}
     var onCellChange: () -> Void = {}
+    var onFontChange: (Float) -> Void = { _ in }
     var onCommand: (PaneCommand) -> Void = { _ in }
 
     // Freed in deinit, so the last reference must be dropped on the main
     // thread, and never while the reader may feed it (Connection).
     nonisolated(unsafe) private(set) var surface: ghostty_surface_t!
+
+    // Ghostty resizes the terminal on its IO thread at least 25ms after
+    // set_grid_size (termio/Thread.zig), so output fed before that lands in
+    // the old grid; resize counts, and feed waits out, each request.
+    private let resizes = OSAllocatedUnfairLock(initialState: 0)
+    nonisolated(unsafe) private var fedAt = 0
 
     private var markedText = NSMutableAttributedString()
     private var keyTextAccumulator: [String]?
@@ -21,7 +29,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         Unmanaged<PaneView>.fromOpaque(userdata!).takeUnretainedValue()
     }
 
-    init?(runtime: GhosttyRuntime, pane: PaneID) {
+    init?(runtime: GhosttyRuntime, pane: PaneID, font: Float) {
         self.pane = pane
         super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         var config = ghostty_surface_config_new()
@@ -30,16 +38,22 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         config.platform_tag = GHOSTTY_PLATFORM_MACOS
         config.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(nsview: this))
         config.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 2)
+        config.font_size = font
         config.io_mode = GHOSTTY_SURFACE_IO_MANUAL_MIRROR
         config.io_write_userdata = this
+        // Called on the reader or Ghostty's IO thread; a strong reference
+        // taken there could be the view's last.
         config.io_write_cb = { userdata, bytes, count in
             guard let bytes, count > 0 else { return }
-            let pane = PaneView.from(userdata)
+            nonisolated(unsafe) let input = Unmanaged<PaneView>.fromOpaque(userdata!)._withUnsafeGuaranteedRef(\.onInput)
             let data = Data(bytes: bytes, count: Int(count))
-            DispatchQueue.main.async { pane.onInput(data) }
+            DispatchQueue.main.async { input(data) }
         }
         guard let surface = ghostty_surface_new(runtime.app, &config) else { return nil }
         self.surface = surface
+        _ = ghostty_surface_set_font_size_action_callback(surface, { userdata, _, _, points, _, _ in
+            MainActor.assumeIsolated { PaneView.from(userdata).onFontChange(points) }
+        }, this)
         updateTrackingAreas()
     }
 
@@ -48,15 +62,27 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     deinit {
+        assert(Thread.isMainThread, "a surface must be freed on the main thread")
         if let surface { ghostty_surface_free(surface) }
     }
 
     nonisolated func feed(_ bytes: Data) {
+        let requested = resizes.withLock { $0 }
+        if requested != fedAt {
+            // Ghostty applies a grid resize on its IO thread after a delay (termio/Thread.zig);
+            // output fed before that lands in the old grid.
+            var grid = ghostty_surface_grid_metrics_s()
+            let deadline = Date.now + 1
+            while !ghostty_surface_grid_metrics(surface, &grid), Date.now < deadline { usleep(1000) }
+            fedAt = requested
+        }
         bytes.withUnsafeBytes { buffer in
             guard let base = buffer.baseAddress else { return }
             ghostty_surface_process_output(surface, base.assumingMemoryBound(to: CChar.self), UInt(buffer.count))
         }
     }
+
+    var font: Float { ghostty_surface_font_size(surface) }
 
     var cell: CGSize {
         let size = ghostty_surface_size(surface)
@@ -65,6 +91,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     func resize(cols: Int, rows: Int) {
         _ = ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil)
+        resizes.withLock { $0 += 1 }
     }
 
     // MARK: - NSView

@@ -1,8 +1,6 @@
 import Foundation
 
 public final class Client: @unchecked Sendable {
-    public struct Closed: Error {}
-
     public let queue = DispatchQueue(label: "TmuxControl.reader")
 
     private typealias Pending = (count: Int, replies: [Reply], done: @Sendable ([Reply]?) -> Void)
@@ -95,17 +93,5 @@ public final class Client: @unchecked Sendable {
             return true
         }
         if !accepted { queue.async { done(nil) } }
-    }
-
-    public func run(_ commands: [Command]) async throws -> [Reply] {
-        try await withCheckedThrowingContinuation { k in
-            send(commands) { replies in
-                if let replies { k.resume(returning: replies) } else { k.resume(throwing: Closed()) }
-            }
-        }
-    }
-
-    public func run(_ command: Command) async throws -> Reply {
-        try await run([command])[0]
     }
 }
