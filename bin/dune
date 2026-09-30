@@ -1,0 +1,6 @@
+(executable
+ (name main)
+ (public_name kido)
+ (flags
+  (:standard -open Containers))
+ (libraries kido tmux containers cmdliner unix yojson))

@@ -42,8 +42,8 @@ forward") rather than the report being renamed after it.
 
 The parity is pinned rather than merely written down. `pi/testdata/
 tools.json` is one list read by both suites: pi's own asserts the
-registered tools are exactly those names, and `cmd/kido`'s
-`TestEveryToolHasASubcommandOfItsName` asserts each is in `subcommands`.
+registered tools are exactly those names, and test/test_tool_parity.ml
+runs each as a kido subcommand.
 A tool added without a command fails the first, then the second.
 
 A tool forwards what it was given and lets its command refuse.
@@ -62,8 +62,8 @@ something, and the second one is a rule:
 | `_subagent` | your own descendants | `spawn_subagent`, `steer_subagent`, `interrupt_subagent`, `stop_subagent` |
 
 Descendants, not children: nesting goes two deep, so a grandchild is
-reachable, and one predicate answers it for all four (`descendantTarget`,
-cmd/kido/control.go, with the receiving half's mirror in
+reachable, and one predicate answers it for all four (the `Descendant`
+recipient of `Message_agent.resolve`, with the receiving half's mirror in
 `senderIsAncestor`).
 
 Be clear about what the `_subagent` rule is not. Trust is uid-scoped and
@@ -207,7 +207,7 @@ run something in the background receives a notice.
 `spawn_subagent(fork: true)`, `kido spawn_subagent --fork SESSION_ID`,
 starts the child as `pi --fork <session> --session-id <run-id>` with the
 task as its first message - everything else is a fresh spawn's own path:
-the same `createRunWindow` and `runEnv`, its own run id, parent edge,
+the same `Spawn_subagent.create_run_window` and `run_env`, its own run id, parent edge,
 mark, depth ceiling, tool allowlist and model handling. What changes is
 where the child's context comes from. It starts holding the caller's
 whole transcript, so it can be given a judgement to make - a merge, a
@@ -239,7 +239,7 @@ conversation pays for it again with every tool call it makes. A worker
 wants a task and a clean context.
 
 The flag reaches tmux's command line, so it is held to the window name's
-rule (`tmuxConfUnsafe`) and refused rather than quoted. `--fork` and
+rule (`Launch.tmux_safe`) and refused rather than quoted. `--fork` and
 `--resume` together are refused: one continues a run's own session and
 the other starts a new one from somebody else's. Nothing checks that the
 source session exists, unlike `--resume` - the source is the caller's own
@@ -250,11 +250,11 @@ child's window if it somehow does not.
 
 Each spawn owns `<state>/runs/<run-id>/`, written before the window is
 created so the child can read its task the instant tmux starts it. The
-run id is `subrun.ID`, not a bare string: `subrun.ParseID` is the one
+run id is `Subrun.id`, abstract rather than a bare string: `Subrun.parse_id` is the one
 check that it names nothing outside that directory, applied at every edge
-the id crosses from outside the package (`kido run-outcome`, `spawn_subagent
---resume`, a `tmux.Pane.Run` reader, a `KIDO_AGENT_RUN_ID` reader); every
-function inside the package trusts an `ID` it is handed.
+the id crosses from outside the module (`kido run-outcome`, `spawn_subagent
+--resume`, a `Tmux.Pane.t`'s `run` reader, a `KIDO_AGENT_RUN_ID` reader); every
+function taking a `Subrun.id` trusts it.
 
 - `task`, the text as given, never deleted;
 - `delivered`, written by the child after it has read the task, so a
@@ -332,7 +332,7 @@ Head and line together stay inside the cap, so the notice is no larger
 than the cap allows. A report within the cap is delivered byte for byte
 and leaves no file: nothing was lost, so there is nothing to point at. The
 head is cut back off a partial rune, because the send path refuses a
-message that is not valid UTF-8 outright - `internal/reap`'s `tailOfFile`
+message that is not valid UTF-8 outright - `Reap.tail_of_file`
 in the other direction. A sender with no run
 directory - a session kido never spawned, carrying somebody else's parent
 edge - has nowhere to keep it and is truncated instead; so is one whose
@@ -486,7 +486,7 @@ stop").
 An orphan is the sweep's business. A live marked window whose child
 names a parent session no live record holds is closed, on one
 reading. The reading is trustworthy because of what it is taken from:
-every live record, not the per-pane view `state.Load` returns. In that
+every live record, not the per-pane view `State.by_pane` returns. In that
 view a `pi --print` started inside an agent's pane inherits that pane
 and wins it for as long as it reports, and the real parent is then not
 in what the sweep was handed at all - measured live, that killed two
@@ -548,7 +548,7 @@ that has one ("Forking the caller's context", above).
 `kido async_bash [--name NAME] [--stream] -- COMMAND...` runs a command in a
 detached window of its own and tells the caller once it has ended. It is
 structurally a spawn whose child is a command rather than a pi session:
-the same `createRunWindow`, the same `runEnv`, the same `@kido_run`
+the same `Spawn_subagent.create_run_window`, the same `run_env`, the same `@kido_run`
 mark, the same run record and the same sweep. `meta.json` carries a
 `kind` - `agent` or `bash`, always written - and that is the whole of
 what distinguishes the two records.
@@ -604,7 +604,7 @@ reach it, and a pi that vanished that fast never got to its task.
 
 What `kido async_bash` prints is the spawn line with a fourth field, the
 run's output file. Where kido keeps a run's output is kido's own to say,
-and a tool rebuilding the path would be a second copy of `state.Dir`'s
+and a tool rebuilding the path would be a second copy of `State.dir`'s
 `KIDO_STATE_DIR`/XDG precedence - so the one call the tool makes answers
 it.
 
@@ -637,7 +637,7 @@ forever on a build that has already stopped existing; never two, or it
 acts twice.
 
 The winner of the outcome write is the sender of the notice.
-`RecordOutcome` is already a once-only, crash-safe arbiter of exactly
+`Subrun.record_outcome` is already a once-only, crash-safe arbiter of exactly
 this question (O_EXCL), so nothing else is introduced to decide it: not
 a flag, not a "notified" marker, the same write read the same way. Three
 observers can win it:
@@ -645,7 +645,7 @@ observers can win it:
 | Observer | Discovers the ending | Records | Notifies |
 |---|---|---|---|
 | the wrapper | its own `wait(2)`, or a signal it can catch | `completed`/`failed` | yes, with the exit status |
-| a sweep's rule 1 (`internal/reap`) | a marked window dead for the linger | `failed`, "ended without its wrapper reporting" | yes, if it won |
+| a sweep's rule 1 (`Reap.sweep`) | a marked window dead for the linger | `failed`, "ended without its wrapper reporting" | yes, if it won |
 | `kido stop_subagent` | a deliberate stop | `stopped`, naming itself | yes, if it won |
 
 The wrapper covers every ending it lives to see, which is why `SIGTERM`,
@@ -664,17 +664,17 @@ for it ("Reporting", above) - the outcome recorded is still the `died`
 it always was. A run with no parent session is told to nobody either
 way, which is what `kido async_bash` typed at a human's shell produces.
 
-The three observers share one notice builder (`internal/reap`'s
-`Ending`), so a parent cannot tell how its build ended by which
+The three observers share one notice builder (`Reap.body`, over a
+`Reap.ending`), so a parent cannot tell how its build ended by which
 process happened to notice, and write-then-decide is one function
-(`reap.RecordEnding`) for the observers that find an ending from outside
+(`Reap.record_ending`) for the observers that find an ending from outside
 the run, so a third finds a call site rather than reimplementing the
 invariant. The wrapper writes for itself: it is inside the run's own
 process and is the one observer that can tell a
-write failing from a write lost. `reap.Sweep` itself sends nothing: it
+write failing from a write lost. `Reap.sweep` itself sends nothing: it
 returns the runs whose parents are now the caller's to tell, and
-`reap.Collect` - called from `kido reap` and from the sidebar's poll -
-is what sweeps, releases, and then sends each `Ending`. A window sweep
+`Reap.collect` - called from `kido reap` and from the sidebar's poll -
+is what sweeps, releases, and then sends each ending (`Reap.send`). A window sweep
 has no business knowing what an inbox is, and the one thing it can know
 is that a run ended with nothing said about it.
 
@@ -855,9 +855,10 @@ outcome - `failed`, `died`, and `stopped` too, since ending something on
 purpose did not fail but did not finish the work either. A window whose
 outcome has not landed yet keeps the `×`: the outcome arriving is what
 turns that row from a name into a verdict, and claiming success a tick
-early is the one lie this column could tell. Why the dim `✓` does not
-collide with the green one a live agent gets for a finished turn is on
-`indicatorGone` (internal/ui), which owns the argument.
+early is the one lie this column could tell. The dim `✓` does not
+collide with the green one a live agent gets for a finished turn: that
+one is bold green, and a lingering row has no live agent to earn it
+(`Ui.indicator`'s `Gone`).
 
 The cost is that hoisted windows leave tmux's own order. Shift-Up and
 Shift-Down skip any window with a run pane, dead or alive, so the keys
@@ -876,7 +877,7 @@ window aged out.
 - A child that is shutting down on its own notice when its parent dies
   can have its window closed mid-exit and be recorded as `died` rather
   than recording its own outcome. Whatever it managed to write first
-  wins (`RecordOutcome` is O_EXCL).
+  wins (`Subrun.record_outcome` is O_EXCL).
 - Nesting stops at depth 2 and no flag raises it.
 - A `--no-parent` child is nobody's to collect: no idle self-exit, no
   orphan rule, no report home. Its window is the user's to close. Its

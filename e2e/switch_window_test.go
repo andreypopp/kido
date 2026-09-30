@@ -47,7 +47,7 @@ func (h *harness) addWindow(session, name string) {
 }
 
 // markSubagent sets @kido_run on session's window's active pane - the
-// pane-scoped mark internal/tmux.SwitchWindow and internal/reap.Sweep
+// pane-scoped mark Tmux.Exec.switch_window and Reap.sweep
 // trust to know a window is a subagent's, with no status record needed.
 func (h *harness) markSubagent(session, window string) {
 	h.t.Helper()
@@ -66,7 +66,7 @@ func (h *harness) selectWindow(session, window string) {
 func (h *harness) runSwitchWindow(dir string) {
 	h.t.Helper()
 	tmuxEnv := h.in("display-message", "-p", "#{socket_path},#{pid},0")
-	cmd := exec.Command(kidoBin, "switch-window", dir, "-client", h.client)
+	cmd := exec.Command(kidoBin, "switch-window", dir, "--client", h.client)
 	cmd.Env = cleanEnv("TMUX=" + tmuxEnv)
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
@@ -155,17 +155,17 @@ func TestSwitchWindowOrderPrev(t *testing.T) {
 }
 
 // The actual key binding in tmux/kido-tmux.conf and the README:
-// bind-key -n ... run-shell "kido switch-window next -client
+// bind-key -n ... run-shell "kido switch-window next --client
 // '#{client_name}'", proving #{client_name} expands when run-shell fires
-// from a key binding, not just when the test drives kido with -client.
+// from a key binding, not just when the test drives kido with --client.
 func TestSwitchWindowBinding(t *testing.T) {
 	t.Parallel()
 	h := setupSwitchWindowSessions(t)
 
 	h.in("bind-key", "-n", "S-Down", "run-shell",
-		fmt.Sprintf("%s switch-window next -client '#{client_name}'", kidoBin))
+		fmt.Sprintf("%s switch-window next --client '#{client_name}'", kidoBin))
 	h.in("bind-key", "-n", "S-Up", "run-shell",
-		fmt.Sprintf("%s switch-window prev -client '#{client_name}'", kidoBin))
+		fmt.Sprintf("%s switch-window prev --client '#{client_name}'", kidoBin))
 
 	h.sendKeys("S-Down") // a0 -> a1
 	h.waitWindow("a", "a1")
@@ -315,4 +315,31 @@ func TestSwitchSessionIntoADottedSessionName(t *testing.T) {
 
 	h.runSwitchSession("prev")
 	h.waitSession("plain")
+}
+
+// A subagent's window opened after its parent's sibling sits later in
+// tmux's order than in the sidebar, which hoists it under its parent:
+// a0, s, a1, a2 on screen, a0, a1, s, a2 in tmux. Picked from the
+// sidebar, s is left the way the sidebar reads - down to a1, up to a0 -
+// not from its tmux index, which skipped a1 for a2.
+func TestSwitchWindowFromHoistedSubagent(t *testing.T) {
+	t.Parallel()
+	h := start(t, "a")
+	h.renameWindow("a", 0, "a0")
+	h.liveParent("a", "parent-a0")
+	h.addWindow("a", "a1")
+	h.subagentWindow("a", "s", "child-s", "parent-a0")
+	h.addWindow("a", "a2")
+	h.in("bind-key", "-n", "S-Down", "run-shell",
+		fmt.Sprintf("%s switch-window next --client '#{client_name}'", kidoBin))
+	h.in("bind-key", "-n", "S-Up", "run-shell",
+		fmt.Sprintf("%s switch-window prev --client '#{client_name}'", kidoBin))
+
+	h.selectWindow("a", "s")
+	h.sendKeys("S-Down")
+	h.waitWindow("a", "a1")
+
+	h.selectWindow("a", "s")
+	h.sendKeys("S-Up")
+	h.waitWindow("a", "a0")
 }

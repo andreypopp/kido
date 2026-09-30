@@ -112,7 +112,7 @@ func (h *harness) stays(cond func() bool, why string) {
 
 // The lifecycle's backstop as it actually runs: a live sidebar polling,
 // no `kido reap` typed. Written against the race that broke the first
-// design - state.Load deletes a dead-pid record as a side effect of
+// design - State.load_live deletes a dead-pid record as a side effect of
 // reading it, so a sweep needing that record lost it within a tick of
 // the subagent dying. This test waits for the record gone *first* and
 // only then for the window to close: reaping from @kido_run and
@@ -234,7 +234,7 @@ func (h *harness) paneExists(paneID string) bool {
 // unit, a live pane in it blocked collection entirely and the run's dead
 // pane sat there until the user left. The unit is the run's pane now,
 // leaving an ordinary, unmarked window behind. Also still tests the
-// older bug: remain-on-exit is the run pane's alone (tmux.NewWindow's
+// older bug: remain-on-exit is the run pane's alone (Tmux.Exec.new_window's
 // set-option -p), so the split closes on exit instead of a second corpse.
 func TestSplitPaneSurvivesAFinishedRunAndTheWindowGoesPlain(t *testing.T) {
 	t.Parallel()
@@ -391,5 +391,15 @@ func TestCloseRunLeavesFocusedWindowAlone(t *testing.T) {
 
 	if !h.windowExists(windowID) {
 		t.Errorf("window %s was closed although the client had it focused", windowID)
+	}
+}
+
+// A bad window id names the command once: Cli.run already prefixes it.
+func TestCloseRunRefusesABadWindowID(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	want := `kido close-run: "@1x" is not a window id (@N)` + "\nrc=1"
+	if got := strings.TrimSpace(h.runKido("alpha", "bad.out", "close-run", "@1x")); got != want {
+		t.Errorf("close-run @1x = %q, want %q", got, want)
 	}
 }

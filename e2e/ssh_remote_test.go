@@ -89,7 +89,7 @@ func TestSSHRemoteShellStatus(t *testing.T) {
 
 	// Over a loopback connection the prompt above lands in the same whole
 	// second as the ssh itself, as good as no prompt at all to timestamps
-	// of that resolution (observeRemote); this sleep, not `true`, puts the
+	// of that resolution (Ui.observe_remote); this sleep, not `true`, puts the
 	// next prompt in a later second so it is the one that says the far
 	// side is reporting. Its exit status crossing the connection is also
 	// the first thing a suppressed ssh pane could not show.

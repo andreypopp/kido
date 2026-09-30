@@ -9,9 +9,9 @@ import (
 )
 
 // A kido with no argument at all is the launcher now
-// (TestKidoInsideAKidoPaneRefuses), so -interval is passed to keep this a
+// (TestKidoInsideAKidoPaneRefuses), so --interval is passed to keep this a
 // standalone.
-var pickerArgs = []string{"-interval", "100ms"}
+var pickerArgs = []string{"--interval", "100ms"}
 
 func startPickerNoClient(h *harness, session string) *picker {
 	h.t.Helper()
@@ -53,7 +53,7 @@ func (p *picker) waitFailure() {
 
 // realClientCount excludes kido's own control connections
 // (side-status-command dials one per real client), same filter as
-// tmux.ResolveClient.
+// Tmux.Exec.resolve_client.
 func (h *harness) realClientCount() int {
 	h.t.Helper()
 	out := h.in("list-clients", "-F", "#{client_control_mode}")

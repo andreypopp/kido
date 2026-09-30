@@ -26,6 +26,16 @@ func TestWindowFocusedCmd(t *testing.T) {
 	if got := firstLine(h.runKido("alpha", "unfocused.out", "window-focused", unfocused)); got != "false" {
 		t.Errorf("window-focused on a window nobody is looking at = %q, want %q", got, "false")
 	}
+	for i, c := range []struct{ arg, want string }{
+		{"''", "kido window-focused: usage: kido window-focused WINDOW_ID\nrc=1"},
+		{"@", `kido window-focused: "@" is not a window id (@N)` + "\nrc=1"},
+		{"7", `kido window-focused: "7" is not a window id (@N)` + "\nrc=1"},
+		{"@1x", `kido window-focused: "@1x" is not a window id (@N)` + "\nrc=1"},
+	} {
+		if got := strings.TrimSpace(h.runKido("alpha", fmt.Sprintf("invalid-%d.out", i), "window-focused", c.arg)); got != c.want {
+			t.Errorf("window-focused %s = %q, want %q", c.arg, got, c.want)
+		}
+	}
 }
 
 // firstLine strips runKido's own trailing "rc=N" line.
@@ -64,8 +74,8 @@ func TestSpawnKeepAliveSetsEnv(t *testing.T) {
 // the same run continuing, not a second one.
 //
 // pi is not available in CI, so the launched command is a fake one; the
-// session dir holds a file at the exact path piSessionFileExists
-// (spawn_subagent.go) computes, standing in for pi's project session dir.
+// session dir holds a file at the exact path pi_session_file_exists
+// (lib/spawn_subagent.ml) computes, standing in for pi's project session dir.
 func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -157,7 +167,7 @@ func TestSpawnResumeRefusesLiveRun(t *testing.T) {
 // spawnRecordedRun is the fixture the two carry tests below share: a run
 // spawned with a tool allowlist and keepAlive, then ended so it can be
 // resumed. Returns the run id and the session dir `--resume` insists on
-// (spawn_subagent.go's piSessionFileExists).
+// (lib/spawn_subagent.ml's pi_session_file_exists).
 func (h *harness) spawnRecordedRun(name string) (runID, sessDir string) {
 	h.t.Helper()
 	h.liveParent("alpha", "root-e2e")
@@ -217,7 +227,7 @@ func TestSpawnResumeCarriesKeepAlive(t *testing.T) {
 //
 // The allowlist is spelled onto the command line only when the command is
 // literally `pi`; whether that name resolves decides whether the pane
-// lives long enough to set remain-on-exit (internal/tmux/tmux.go's
+// lives long enough to set remain-on-exit (Tmux.Exec.new_window's
 // race), so this test's own fake pi goes on this server's PATH alone.
 func TestSpawnResumeCarriesToolsOntoThePiCommandLine(t *testing.T) {
 	t.Parallel()

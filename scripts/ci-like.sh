@@ -2,7 +2,7 @@
 # Run a test command inside a Linux container with the repo bind-mounted
 # and CPU/memory capped, so a CI-runner-only failure (slow, contended
 # hardware) can be reproduced without saturating the host's cores the way
-# `go test -parallel N` on every core does.
+# a test run on every core does.
 #
 # Usage: scripts/ci-like.sh [--cpus N] [--memory SIZE] [--timeout SECONDS]
 #                            [--cpu-shares N] [--contend N] [--budget N]
@@ -102,7 +102,7 @@ fi
 
 kido_repo_root=$(cd "$script_dir/.." && pwd)
 tmux_revision=$("$script_dir/install-tmux-fork.sh" --print-revision)
-dockerfile_digest=$( (shasum -a 256 "$script_dir/ci-like/Dockerfile" 2>/dev/null || sha256sum "$script_dir/ci-like/Dockerfile") | cut -c1-12)
+dockerfile_digest=$(cat "$script_dir/ci-like/Dockerfile" "$kido_repo_root/dune-project" "$kido_repo_root/dune-workspace" "$kido_repo_root"/dune.lock/* | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-12)
 image="kido-ci-like:$tmux_revision-$dockerfile_digest"
 
 if ! "$podman" image exists "$image" 2>/dev/null; then
@@ -186,6 +186,7 @@ status=0
 	-v "$repo_root:/repo:Z" \
 	-v kido-ci-like-gomodcache:/go/pkg/mod \
 	-v kido-ci-like-gocache:/gocache \
+	-v kido-ci-like-dune-build:/dune-build \
 	-w /repo \
 	"$image" \
 	"$@" || status=$?

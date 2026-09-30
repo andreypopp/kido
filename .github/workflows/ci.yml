@@ -22,6 +22,19 @@ jobs:
         with:
           submodules: true
 
+      # The dune binary distribution, pinned to the release the README
+      # installs; there is no opam. `build-deps` builds dune.lock into
+      # _build (the compiler included) and the action caches dune's shared
+      # cache and _build across runs, so a lock that did not change costs a
+      # restore, not a compiler build. Mosaic comes from the pins in
+      # dune-project.
+      - name: Set up dune
+        uses: ocaml-dune/setup-dune@v2
+        with:
+          version: 3.24.2
+          steps: install-dune build-deps
+
+      # Go only drives the e2e suite, which stays in Go.
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -78,8 +91,17 @@ jobs:
         with:
           node-version: '24'
 
+      - name: Build
+        run: dune build
+
+      - name: Install
+        run: make install PREFIX=$HOME/tmux-side && $HOME/tmux-side/bin/kido debug-log && test -x $HOME/tmux-side/share/kido/bin/tmux
+
       - name: Unit tests
-        run: KIDO_TS_TEST_REQUIRED=1 make test
+        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux dune test --force
 
       - name: E2E tests
         run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux KIDO_E2E_REQUIRED=1 make e2e
+
+      - name: TypeScript tests
+        run: KIDO_TS_TEST_REQUIRED=1 ./scripts/test-ts.sh

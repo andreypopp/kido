@@ -7,16 +7,14 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"kido/internal/testutil"
 )
 
 // asyncParent gives the session's own pane a real inbox and a recorded
 // agent, so `kido async_bash` typed there has a parent to resolve and a
 // delivery - or its absence - is observable from outside.
-func (h *harness) asyncParent(session, id string) *testutil.Inbox {
+func (h *harness) asyncParent(session, id string) *inbox {
 	h.t.Helper()
-	in := testutil.StartInbox(h.t, "ok\n")
+	in := startInbox(h.t, "ok\n")
 	pane := h.in("display-message", "-p", "-t", session+":", "#{pane_id}")
 	h.agentStatus(id, pane, "pi", "idle",
 		"--inbox", in.Path)
@@ -54,7 +52,7 @@ func (h *harness) asyncBashIDs(flags []string, name string, command ...string) (
 
 // stableCount watches over a span, not an instant: "nothing yet" and
 // "nothing ever" look the same otherwise.
-func (h *harness) stableCount(in *testutil.Inbox, want int, why string) {
+func (h *harness) stableCount(in *inbox, want int, why string) {
 	h.t.Helper()
 	deadline := time.Now().Add(1500 * time.Millisecond)
 	for time.Now().Before(deadline) {

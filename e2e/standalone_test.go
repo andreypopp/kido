@@ -11,7 +11,7 @@ import (
 
 // Standalone mode is kido run as a one-shot picker rather than as a
 // client's side status line: what `tmux display-popup -E -w 40 -h 80%
-// "kido -client ..."` gets. It is chosen by $TMUX_SIDE_CLIENT being
+// "kido --client ..."` gets. It is chosen by $TMUX_SIDE_CLIENT being
 // empty, which the fork only ever sets for the side-status-command job,
 // so these tests run kido in an ordinary window of the inner server with
 // that variable explicitly unset and the client named on the command
@@ -28,12 +28,12 @@ type picker struct {
 
 // startPicker's window keeps remain-on-exit on, so the pane survives
 // kido's exit and its status can be read: a test must be able to tell
-// tea.Quit from a crash or a signal.
+// a clean quit from a crash or a signal.
 func startPicker(h *harness, session string) *picker {
 	h.t.Helper()
 	h.keepDeadPanes()
 	pane := h.newWindow(session, "picker", "env", "-u", "TMUX_SIDE_CLIENT",
-		kidoBin, "-client", h.client)
+		kidoBin, "--client", h.client)
 	p := &picker{h: h, pane: pane}
 	p.waitRow(session)
 	return p

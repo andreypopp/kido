@@ -37,7 +37,7 @@ carries the agent's status, its pane, its pid, its title, its inbox
 socket, its free-text activity, its model, and its place in the spawn
 tree. There is no locking beyond the claim that keeps
 one session id to one live process ("Identity"). The
-one policy that stands in for it is that `Load` removes any record whose
+one policy that stands in for it is that `State.load_live` removes any record whose
 pid is dead, rather than skipping it: pi's headless Claude Code bridge
 writes one such record per turn, and nothing else would ever clean them
 up. When two records name one pane the outer agent wins regardless of
@@ -45,7 +45,7 @@ timestamp, because pi runs Claude Code inside its own pane and the inner
 one's hooks would otherwise fight pi's reports.
 
 That deletion has a consequence that shaped the rest of the design: with
-a sidebar running, `Load` is called every 100ms, so the record of a dead
+a sidebar running, `State.load_live` is called every 100ms, so the record of a dead
 agent is gone within a tick of its death. Anything that has to reason
 about an agent after it has died cannot read its record, because there
 will not be one.
@@ -68,7 +68,7 @@ and rewritten by a resume (pane, pid, cwd, model, tools, parent,
 depth), and once the run has ended, an outcome. A run record is
 deliberately not a state record,
 since a state record is deleted the moment its pid dies and a run record
-exists precisely to survive that. `Load`'s scan only reads `*.json`
+exists precisely to survive that. `State.read_all`'s scan only reads `*.json`
 entries and skips directories, which is what keeps `runs/`, and the
 inbox socket directory, and the wake marker, invisible to it. Nothing
 may come to depend on that changing.
@@ -89,8 +89,8 @@ alive, so a pid reused by another user's process looks like a living
 parent. The parent pid is still recorded and still passed, but only as a
 cheap first check for the liveness poll: ESRCH is a definite "gone", and
 anything else defers to whether some live process still holds the parent
-session. `state.Session` stores that edge as it is used - one
-`Parent *state.Parent{Session, PID}`, nil for a root agent - rather than
+session. `State.session` stores that edge as it is used - one
+`parent : State.parent option`, `{ session; pid }`, `None` for a root agent - rather than
 two parallel fields a caller could set one of and not the other.
 
 What this buys is the restart. A user who quits pi and resumes the same
@@ -114,13 +114,13 @@ file, or `pi --session <file>` twice - would otherwise overwrite the
 running one's pane, pid and inbox, and delete its record on the way out.
 Both have happened, and the running session was left with a wrong inbox
 path, a "?" in the sidebar, and a child reaped for a parent that had
-vanished from `LoadLive`.
+vanished from `State.load_live`.
 
-The claim lives in the write path (`state.Record`), needs no lock, and
+The claim lives in the write path (`State.record`), needs no lock, and
 is three rules:
 
 - A session id with no record on disk is claimed by creating it, with
-  `os.Link` from the writer's own temp file. That is atomic and fails if
+  `Unix.link` from the writer's own temp file. That is atomic and fails if
   the name is taken, so of two processes starting at once exactly one is
   first and the other reads its record and stands down.
 - A record naming the writer's own pid is the writer's own: every report
@@ -131,8 +131,8 @@ is three rules:
   so a takeover re-reads what landed and whoever lost it is told; no
   other write needs a second reading.
 
-`state.Remove` is held to the same rule, so an intruder exiting cannot
-take the running session's record with it. A refusal is `state.HeldError`
+`State.remove` is held to the same rule, so an intruder exiting cannot
+take the running session's record with it. A refusal is `Error holder`
 and `kido agent-status` exits **6** for it, a code of its own because
 pi's extension acts on it: the second pi stops reporting for the rest of
 the session and tells its user once, naming the pane and pid of the
@@ -163,7 +163,7 @@ the run carries on. The record's removal answers a different question -
 does the *filename* (the session id) still refer to this session - and
 for those three reasons it does not: pi hands back a new session id in
 the same process (measured against pi 0.85.1), so the old record must
-still be removed or it is a live-pid file that `Load()` - which only ever
+still be removed or it is a live-pid file that `State.load_live` - which only ever
 deletes a record whose pid is dead - leaves behind forever, claiming the
 same pane alongside the fresh record under the new id.
 
@@ -178,11 +178,11 @@ report to a session nobody is reading.
 
 **What the child asks, and of what.** `parentIsAlive()` asks
 `kido agent-alive <session>`, a command of its own, which reads
-`state.LoadLive` - every live record, nothing collapsed - and prints
+`State.load_live` - every live record, nothing collapsed - and prints
 `true` or `false`. One reading decides, and there is no debounce.
 
 The question may not be put to a display. `kido list_agents` answers from
-`state.Load`'s per-pane view, which is right for a display and wrong
+a per-pane view (`State.by_pane`), which is right for a display and wrong
 here: a `pi --print` started inside the parent's pane wins that pane, and
 the parent's record is then not in the answer at all - nor is the child's
 own row, if something shells out to pi in the child's pane. Either way a
@@ -205,7 +205,7 @@ gap between a quit and a `pi --resume` reads a definite "false" and ends
 itself, restart or no restart. And the
 answer is not scoped to the caller's tmux session, since a session id
 is unique and nothing about the file it was read from says which
-tmux session its pane is in. That matches internal/reap's rule 2, the other
+tmux session its pane is in. That matches lib/reap.ml's rule 2, the other
 reader of this same fact, which is server-wide as well; scoping the poll
 would put the two out of step, and a child whose window was moved to
 another tmux session would poll a list its parent is not in and shut
@@ -225,7 +225,7 @@ they are a pile-up on the machine least able to afford one.
 ## Every report is whole
 
 Every report is whole; nothing is carried forward. `kido agent-status`
-builds a fresh `state.Session` straight from its arguments on every call,
+builds a fresh `State.session` straight from its arguments on every call,
 and an omitted flag is the flag's zero value in the record, not the
 previous report's. A caller that wants a field to persist - title, inbox,
 activity, model, parent pid, parent session, depth - sends it again on
@@ -465,11 +465,11 @@ A payload counts as v1 only if it parses as a JSON object and carries
 both `v` and `kind`. Anything else, including a JSON object missing one
 of the two, is v0 text. The case that matters is a user prompt that
 happens to be a JSON object: it must not be swallowed as a control
-message. The rule is implemented twice, in Go and in the extension, and
+message. The rule is implemented twice, in `Msg.parse` and in the extension, and
 both are driven from the same fixture table so they cannot drift.
 
-A target's `Inbox` field is the only thing a sender reads to decide: any
-pi session that has bound one always speaks v1, so `Inbox != ""` means
+A target's `inbox` field is the only thing a sender reads to decide: any
+pi session that has bound one always speaks v1, so a non-empty `inbox` means
 v1 and nothing else has to be advertised. A plain message to a target
 with no inbox goes as v0 text; any other kind is refused outright, since
 a paste or a v0 payload has nowhere to carry a kind or an id and
@@ -501,17 +501,17 @@ no record sends only its pane.
 ## Delivery, and when a paste is allowed
 
 Two errors come out of a delivery attempt, and they mean different
-things. `errInboxUnavailable` says nothing was sent: the path is empty or
+things. `Msg.Unavailable` says nothing was sent: the path is empty or
 unusable, the socket file is missing, or it is a stale socket a dead
 process left behind. Every failure from the moment the connection is up
-is reported as itself, because the message may already have arrived and
-a retry would deliver it twice.
+is reported as itself (`Msg.Failed`), because the message may already
+have arrived and a retry would deliver it twice.
 
 The paste fallback, which types the text into the pane with a bracketed
-paste and a separate Enter, fires only on `errInboxUnavailable`. That is
+paste and a separate Enter, fires only on `Msg.Unavailable`. That is
 what makes an agent with no inbox at all (Claude Code, or a pi whose bind
 failed) reachable by `kido prompt` and by a plain `kido message_agent`, and
-it is the only reason the v0 path survives. A refusal (`errAskRefused`) is
+it is the only reason the v0 path survives. A refusal (`Msg.Refused`) is
 not a delivery failure either: the question was read and deliberately
 declined, and pasting it again would hand the target the same cycle it just
 refused.
@@ -608,7 +608,7 @@ spawn and ask descriptions now say so.
 The test is the one `send` already applies to the *recipient* of any
 non-message envelope, turned on the sender, because a reply is exactly
 such an envelope: the caller's pane must have a live state record (so
-`kido message_agent -- <asker>` can resolve it at all) whose `Inbox` is
+`kido message_agent -- <asker>` can resolve it at all) whose `inbox` is
 bound (so a `reply`, which never falls back to a paste, has somewhere to
 land). Nothing weaker would do: a record with no
 inbox is a Claude Code session, reachable only by paste, and a paste is
@@ -693,7 +693,7 @@ never named - a notice is not an answer, and a child that finished after
 being asked something else would have its summary delivered as the reply
 to that question. Having a shutting-down child refuse its unanswered
 asks on the wire needs a `refused` envelope kind that does not exist
-(`internal/msg` has message, ask, reply, notice, stream, steer,
+(`Msg.kind` has message, ask, reply, notice, stream, steer,
 interrupt, stop), and buys nothing the poll does not already cover: a killed or
 crashed child can no more refuse on the wire than it can call
 `notify_parent`. One mechanism reads the one fact that is true in every
@@ -730,7 +730,7 @@ to `kido spawn_subagent` on stdin, and kido is what decides it becomes a
 file, so another backend could write it inside a sandbox instead. The window
 name is model-authored too and does go on the command line, so it is refused
 if it contains any character no nesting of tmux's parser, sh's and tmux's
-again survives (`tmuxConfUnsafe`), and refused over 64 bytes rather than
+again survives (`Launch.tmux_safe`), and refused over 64 bytes rather than
 quietly mangled.
 
 ### A parentless spawn, and a parent that must exist
@@ -742,8 +742,8 @@ nobody claims, is a mistake and is refused (below). `--no-parent` is what
 lets a human at a shell start a standalone agent: an agent in a window,
 owned by nobody, that nothing will collect and that reports to nobody.
 Nothing had to be built for it, because an unparented child is already
-contemplated everywhere else - an empty `ParentSession` is exempt from
-the sweep's rule 2 by the first clause of its own condition, a child with
+contemplated everywhere else - a record whose `parent` is `None` is exempt from
+the sweep's rule 2 by its own pattern, a child with
 no `KIDO_AGENT_PARENT_SESSION` fails the subagent test and so arms no
 idle timer and cannot call `notify_parent`, and `--resume` defaults to it
 for a caller with no record. The flag works on `--resume` too, where it
@@ -761,7 +761,7 @@ make the mistake.
 honest case, a `--parent-session` nobody holds is a mistake rather than
 a spelling of it, and is refused before the window exists - the same
 reading, from the same registry, that `--resume` checks (below). The check
-takes the whole live slice rather than the pane-keyed view, for the reason
+takes the whole live list rather than the pane-keyed view, for the reason
 the sweep does: a parent's own record is exactly the one a pane collision
 drops.
 
@@ -772,7 +772,7 @@ takes no `--depth` flag at all: kido reads the caller's own
 last-reported record, found by `$TMUX_PANE`, and sets the child's depth
 to one more than that. A caller with no record at all, a human at the
 CLI or an agent that has not reported yet, is treated as depth 0. That
-is the same trust decision `Load` makes for every other same-uid
+is the same trust decision `State.load_live` makes for every other same-uid
 record, and it can only make a spawn's ceiling stricter than a real
 record would, never looser. The extension makes its own early refusal
 from `KIDO_AGENT_DEPTH` in its environment, which skips a subprocess for
@@ -854,18 +854,19 @@ killed under them takes the screen away and resizes what is left. It
 also refuses a session's only window, because closing that destroys the
 session and detaches every client, and a run whose pane is still alive.
 It checks once and does not retry: what it leaves is what the sweep
-collects on a later pass. The decision itself is `reap.Decide`: the same
+collects on a later pass. The decision itself is `Reap.decide`: the same
 checks, in order - focus, whether the run is still going, which unit to
-release, the last-window refusal - answering with either a `reap.Close`
+release, the last-window refusal - answering with either a `Reap.close`
 for the caller to release or a refusal to print. `kido close-run` is the
 flag parsing and the printing around that one call.
 
-**The sweep.** `reap.Sweep` runs on the sidebar's own poll, every tick,
+**The sweep.** `Reap.sweep` runs on the sidebar's own poll, every tick,
 and is what actually collects a subagent window in a live session; `kido
 reap` is the same function by hand, for a test or an operator. It runs
-from the snapshot goroutine and deliberately not from `Load`: `kido
-prompt` and the popup picker call `Load` too, and a state-directory read
-has no business closing a window as a side effect. Several sidebars may
+from the sidebar's snapshot (`Ui.take`, through `Reap.collect`) and
+deliberately not from `State.load_live`: `kido prompt` and the popup
+picker call `load_live` too, and a state-directory read has no business
+closing a window as a side effect. Several sidebars may
 sweep at once, one per client, and each asks tmux to close windows
 another already closed; that costs an error nobody reads.
 
@@ -895,7 +896,7 @@ since the sweep runs again next tick.
 run's pane, not the window it was made in: a window finished only once
 every pane in it is dead leaves the run's corpse beside the user's own
 shell until they leave (measured live). So a sweep names either a pane
-or a window (`reap.Close`), and the caller does the killing: the run's
+or a window (`Reap.close`), and the caller does the killing: the run's
 pane goes with `kill-pane`, or, when that pane is all the window has,
 the window goes with `kill-window`. The two are not spellings of one
 act: killing a window's last pane closes the window anyway, but only
@@ -919,9 +920,9 @@ window then goes like any window.
 The second rule fires on one reading, and what makes that safe is which
 reading it is. "Gone" means no live process holds the parent session - a
 question about the whole registry, not about any pane - so the
-sweep is handed every live record (`state.LoadLive`, or `state.ReadAll`
-for `kido reap`). `state.Load`'s per-pane view cannot answer it, for a
-reason no amount of checking inside the sweep can recover: `Load` keeps
+sweep is handed every live record (`State.load_live`, or `State.read_all`
+for `kido reap`). The per-pane view (`State.by_pane`) cannot answer it, for a
+reason no amount of checking inside the sweep can recover: it keeps
 one record per pane, so a `pi --print` started inside an agent's pane
 inherits that pane, wins it for as long as it reports, and the real
 parent's record is simply not in what the sweep was handed. Measured live,
@@ -930,7 +931,7 @@ answer as a slow one. Given the whole registry the collision stops
 mattering: it decides who owns a pane, which is a question the reaper
 never asks. The sidebar still draws its rows from the per-pane view - a
 pane has one label - and takes both views from one read of the directory
-(`state.ByPane`), so the sweep costs no extra I/O on a 100ms tick.
+(`State.by_pane` over `load_live`'s list), so the sweep costs no extra I/O on a 100ms tick.
 
 Nothing else guards the rule: no grace period, no debounce, and no second
 opinion from the child's recorded parent pid, which would only bring back
@@ -940,7 +941,7 @@ rule, having only the one sweep to do it in.
 
 The cost of having no grace is that a child already shutting down on
 its own notice can have its window closed mid-exit and be stamped
-`died` rather than recording its own outcome. `RecordOutcome`'s O_EXCL
+`died` rather than recording its own outcome. `Subrun.record_outcome`'s O_EXCL
 keeps whatever the child managed to write first, so what is at risk is
 the outcome of a child that has not written one yet - and a parent that
 is genuinely gone is the case where that outcome is least worth waiting
@@ -950,10 +951,10 @@ fifteen seconds for.
 window's dead pane before closing it destroys that screen for good, so it is
 also where a crash gets its one chance at a diagnosis: for every window the
 sweep is about to close, it saves each pane's visible screen plus a bounded
-amount of scrollback (`tmux.CaptureScreen`) to that run's own directory,
-before the caller actually closes the window - `internal/subrun.WriteScreen`
-writes `<run-dir>/screen` temp-then-rename, the way `state.Record` writes a
-state file, and last writer wins. This is deliberately not `RecordOutcome`'s
+amount of scrollback (`Tmux.Exec.capture_screen`) to that run's own directory,
+before the caller actually closes the window - `Subrun.write_screen`
+writes `<run-dir>/screen` temp-then-rename, the way `State.record` writes a
+state file, and last writer wins. This is deliberately not `record_outcome`'s
 O_EXCL discipline: an outcome has precedence to defend (`stopped` written
 before `completed` must not lose to it), but two screen captures of one
 window do not - rule 1's panes are already dead and frozen, so both captures
@@ -963,7 +964,7 @@ O_EXCL here would also have permanently stranded
 `kido spawn_subagent --resume`: nothing besides a sweep ever writes this
 file, so a first attempt's screen would outlive every subsequent attempt
 with no way to write a fresh one. `kido spawn_subagent --resume` clears it
-instead (`subrun.ClearScreen`, alongside `ClearOutcome`), so a run
+instead (`Subrun.reset_for_resume` removes both the screen and the outcome), so a run
 mid-second-attempt shows no screen rather than the first attempt's stale
 one. `kido runs <id>` prints it when present, since a screen nobody can
 reach is not a diagnosis. Capture is not gated on how the run ended: rule 2
@@ -973,7 +974,7 @@ closes gets a capture attempt, and the outcome guess (Died, or whatever was
 already recorded) is a separate question from whether there is a screen to
 go with it. Losing a screen is always better than leaking a window, so a
 capture-pane error or a losing race never stops the window from being
-closed; the byte cap (`internal/reap.maxScreenBytes`, far smaller than a
+closed; the byte cap (`Subrun.max_screen_bytes`, far smaller than a
 task's 1MB and comfortably larger than an activity line's 256 bytes) exists
 because a wedged agent's scrollback has no size limit of its own, and
 truncation keeps the tail, on the theory that whatever a crash has to say,
@@ -1039,7 +1040,7 @@ closes the window of the very child it was waiting for
 
 **A window a client is looking at is not reaped out from under them.**
 Before shutting down, the timer asks `kido window-focused <id>` - the
-same `tmux.WindowFocused` test `kido close-run` and the sweep already
+same `Tmux.Pane.window_focused` test `kido close-run` and the sweep already
 share - and, if focused, simply re-arms rather than giving up, exactly as
 the linger helper re-checks on its own next pass; the window is collected
 once the user looks away.
@@ -1067,13 +1068,13 @@ and a bare `pi --session <id>` comes back an orphan: no parent edge, no
 `@kido_run` mark, not a descendant for stop/ask scoping, and - worse - a *second* run record, since `kido
 spawn_subagent` normally mints a fresh run id from the command line it is
 given and a bare `pi` is never given one at all. `--resume` instead runs
-through the identical window-creation path (`tmux.NewWindow`, the mark) a
+through the identical window-creation path (`Tmux.Exec.new_window`, the mark) a
 fresh spawn uses, but:
 
 - launches `pi --session <run-id>` (not `--session-id`, which would
   create one if missing - the point here is that it must already exist);
 - continues the existing run record rather than creating a second one:
-  its task, its history and its id stay, since `subrun.ReadMeta` is what
+  its task, its history and its id stay, since `Subrun.read_meta` is what
   supplies the window's name and cwd and nothing about the task file or
   its `delivered` marker is touched;
 - launches it with what the run was *spawned* with: its model, its tool
@@ -1088,11 +1089,11 @@ fresh spawn uses, but:
   recorded value is the default, not a ceiling. There is deliberately no way to turn
   `keepAlive` back *off* on a resume, the same asymmetry `--model` has;
 - writes the *new* pane, pid and parent edge into that same meta
-  file - `WriteMeta` is only documented as being called once by a fresh
+  file - `Subrun.write_meta` is only documented as being called once by a fresh
   spawn, not enforced to be, and a resumed run's living facts have
   changed;
 - clears any outcome already recorded. This is the one place outside
-  `RecordOutcome` allowed to touch an outcome at all, and it does not
+  `Subrun.record_outcome` allowed to touch an outcome at all, and it does not
   weaken the O_EXCL "first writer wins" rule: that rule exists so that
   several *exit paths racing to describe the same ending* cannot clobber
   each other, and a resume is not a race between exit paths, it is a
@@ -1100,13 +1101,16 @@ fresh spawn uses, but:
   again, running strictly *before* any of those paths have anything to
   say about this new attempt.
 
-It refuses an unknown run id (`ReadMeta` fails), a run that is still alive
-(`EffectiveOutcome`'s `ok` is false exactly when nothing has been recorded
-and the pid is live - resuming a live agent makes no sense), and a run whose
-pi session file is gone (`piSessionFileExists`, mirroring pi 0.85.1's own
+It refuses an unknown run id (`Subrun.read_meta` answers `None`) and a run
+that is still alive (`Subrun.effective_outcome` answers `None` exactly when
+nothing has been recorded and the pid is live - resuming a live agent makes
+no sense). A run whose pi session file is gone is resumed with
+`--session-id`, minting a fresh session under the run's own id
+(design-subagents.md, "Resuming a run"); the check is `pi_session_file_exists`
+(lib/spawn_subagent.ml), mirroring pi 0.85.1's own
 `getDefaultSessionDirPath`: `PI_CODING_AGENT_SESSION_DIR` if set, else
 `<agentDir>/sessions/--<cwd, its slashes and colons dashed>--`; it does not
-walk pi's own per-project `sessionDir` setting, a known gap). The depth
+walk pi's own per-project `sessionDir` setting, a known gap. The depth
 ceiling still applies, derived from the *resumer's* own caller record
 exactly as a fresh spawn's is - resuming does not bypass it.
 `--parent-pid`/`--parent-session` are optional for `--resume` alone (a
@@ -1124,15 +1128,15 @@ into a standalone session, with no parent edge or run record of its own, is
 a different, legitimate thing.
 
 A bare `pi` (no `-- pi --model ...` given) carries the run's own recorded
-`Model` through as `--model`, unless the caller's own command already
+`model` through as `--model`, unless the caller's own command already
 names one: measured live, a resumed run with no explicit model came up on
 pi's default provider, which may have no API key configured on the
 machine actually running it, and the run's meta already remembers what it
 ran under - there is no reason to make every resumer repeat it.
 
 **`--parent-session` is refused, before the window exists, unless it names
-somebody currently alive.** internal/reap's rule 2 closes any marked window
-whose child reports a `ParentSession` no live record holds - it keeps no
+somebody currently alive.** lib/reap.ml's rule 2 closes any marked window
+whose child reports a `parent` session no live record holds - it keeps no
 history, so "never heard of that session" and
 "that session's process has since died" read identically to it. The tool
 can never hit this: its caller is always the live pi process asking for
@@ -1227,7 +1231,7 @@ anything, so stopping one degrades straight to killing its pane, which is
 destructive and irreversible. That is the opposite of the paste fallback,
 where degrading silently is the point because there is always a gentler
 way. Here there is none, so it requires `--force`. A recorded socket
-nobody answers (`errInboxUnavailable`) is functionally no inbox at all
+nobody answers (`Msg.Unavailable`) is functionally no inbox at all
 and carries the same requirement.
 
 ## Notifying the parent
@@ -1262,7 +1266,7 @@ rejects the whole call outright rather than truncating - measured live, a
 subagent with a genuinely long report got "summary must not have more
 than 4000 characters" back and had to redo the call. `set_status`'s
 `activity` is left out of its schema for the same reason: it is sent to
-kido untouched, and `cmd/kido/main.go`'s `oneLine` is the one place that
+kido untouched, and `Reporting.one_line` is the one place that
 truncates it, so a bound in the schema would only reject calls the code
 already handles. Refused, before anything is
 sent, for a session that is not itself a spawned child ("The run id is
@@ -1274,7 +1278,7 @@ no-op.
 target at all: it reads `KIDO_AGENT_PARENT_SESSION` from its own
 environment - the parent edge `kido spawn_subagent` put there, inherited
 through the child's pi and on into everything the child runs - and
-resolves that session against `state.LoadLive`, the same registry and
+resolves that session against `State.load_live`, the same registry and
 the same question `kido agent-alive` asks. Resolving it the long way round
 - list every agent, find your own row, read `parent` off it, hand that
 back to kido to address - would be a display asked for a fact kido has
@@ -1299,14 +1303,14 @@ so no observer has to make one; and a parent waiting on a child that has
 stopped existing is a wait that never ends, which is worse than a thin
 notice.
 
-The sender for an ending's notice is `msg.Notify` (`internal/msg`), and
-the text it sends is `reap.Ending.Send` (`internal/reap`): an ending is
-never routed back through package main the way `notify_parent`'s own
-send is, since `internal/reap` already sits below `cmd/kido` and can
-talk to the inbox directly. `internal/ui`'s sweep calls `reap.Collect`
-and needs no seam of its own into `cmd/kido` for it, unlike a plain
-message or an ask, which still resolve their target and marshal their
-envelope in `cmd/kido/message_agent.go`.
+The sender for an ending's notice is `Msg.notify`, and the text it sends
+is `Reap.body`, sent by `Reap.send`: an ending is never routed through
+`Message_agent` the way `notify_parent`'s own send is, since `Reap`
+already sits below the subcommand modules and can talk to the inbox
+directly. `Ui`'s sweep calls `Reap.collect` and needs no seam of its own
+into a subcommand module for it, unlike a plain message or an ask, which
+still resolve their target and marshal their envelope in
+`Message_agent`.
 
 **Telling a child this is its job.** Nothing else does, so a standing
 instruction is appended to a subagent's system prompt on every turn
@@ -1401,7 +1405,7 @@ names what it found, a wrapper that ended without reporting
 (design-subagents.md, "Exactly one ending"). `stopped` is written by
 `kido stop_subagent`.
 
-**Written once.** `RecordOutcome` opens with `O_EXCL` and refuses to
+**Written once.** `Subrun.record_outcome` opens with `O_EXCL` and refuses to
 overwrite. Several exit paths race to describe the same run, and the
 first to observe it ending is definitionally the true story; a later,
 cruder guess must never clobber it. That single rule decides the
@@ -1463,7 +1467,7 @@ would mark itself stalled before a busy child had a chance to answer.
 So while the reported status is `running`, the extension re-sends it
 every thirty seconds, bypassing the coalescing key, on an unref'd timer
 that stops the moment the status leaves `running`. That makes the
-timestamp a real last-seen heartbeat, and `state.Stalled` derives
+timestamp a real last-seen heartbeat, and `State.stalled_since` derives
 "claims running but has not reported in three minutes" from it, the way
 a shell's state is derived from timestamps rather than read from a flag.
 It is never a new status value: the status vocabulary is what an agent
@@ -1477,7 +1481,7 @@ and refuses a stalled target immediately.
 
 A session parked on background work is exempt. Claude Code's `Stop`
 fires with `background_tasks` outstanding, kido records `running` with
-`Background` set, and then nothing is emitted at all while a background
+`background` set, and then nothing is emitted at all while a background
 shell runs: the main loop has stopped, and the next event may be the
 user's next prompt. There is no heartbeat to miss, so the threshold
 would not be measuring a dropped report but the absence of any reporter,
@@ -1492,7 +1496,7 @@ different shape. `PreToolUse` fires, and Claude Code says nothing more
 until the tool returns: a build, a test run, an ssh to a distant host.
 A tool call has no upper bound either, so the quiet is the work, and a
 slow one crossed the threshold while behaving exactly as intended. The
-effect of `PreToolUse` therefore carries `ToolPending`, and
+effect of `PreToolUse` therefore carries `tool_pending`, and
 `PostToolUse` takes it back by not setting it - no carrying forward is
 needed, because every report writes a whole fresh record, so a `Stop`
 or an interrupted turn's idle clears it just as well. What remains
@@ -1520,16 +1524,16 @@ healthy tree.
 The sidebar is the only thing in kido that ticks continuously, so it is
 the only thing positioned to notice a gap. It compares two readings
 taken across one tick: the wall clock's account of the interval against
-the monotonic clock's account of the same interval. Go's `time.Sub` uses
-the monotonic reading when both operands carry one, and on both macOS
-and Linux that reading does not advance across a suspend. A tick that
-was merely slow for an awake reason advances both readings together;
-only a suspend leaves the monotonic one behind. The wall account
-outrunning the monotonic one by more than five seconds is a sleep. The
-readings must be raw `time.Now()` values: anything round-tripped through
-`Round(0)`, `Unix()` or JSON has lost its monotonic reading, and the
-subtraction silently falls back to wall clock for both terms, so the gap
-reads as zero rather than being caught wrongly.
+the monotonic clock's account of the same interval. Each reading is a
+`State.reading`, a wall time and an `Mtime.t` taken together by
+`State.read_clock`; `Mtime_clock` reads `mach_absolute_time` on macOS
+and `CLOCK_MONOTONIC` on Linux, and neither advances across a suspend.
+A tick that was merely slow for an awake reason advances both readings
+together; only a suspend leaves the monotonic one behind. The wall
+account outrunning the monotonic one by more than five seconds is a
+sleep (`State.detect_pause`). A wall time alone - a `Timestamp.t`, or
+anything read back from disk - has no monotonic half and cannot take
+part.
 
 On detection the sidebar records the wake moment in the `wake` file in
 the state directory, only if newer than what is already there, since two
@@ -1542,14 +1546,14 @@ instead of the instant it did, and an agent that reports again after
 the wake is judged on its own fresh timestamp as if nothing had paused.
 
 Which reading of the marker a verdict uses is a parameter
-(`state.StalledSince`). A caller on a tick reads the marker once and
+(`State.stalled_since`'s `~wake`). A caller on a tick reads the marker once and
 judges every session against that one reading: the sidebar asks the
 same question at two instants to decide whether to redraw, and two
 separate reads would answer those two instants from different
 baselines, which is not a comparison of anything. It also kept a file
 open per session in the 100ms path for a value that changes once per
-suspend. `state.Stalled` is the one-shot wrapper that reads the marker
-itself, for `kido list_agents` and anything else that asks once and exits.
+suspend. `kido list_agents`, which asks once and exits, reads it once
+too (`State.wake`) and passes it the same way.
 
 The marker is on disk rather than in the sidebar's memory because
 `kido list_agents` is a fresh process per call, with no tick of its own,
@@ -1694,18 +1698,19 @@ that window's second pane, and not as a row the group glyph swallowed.
 A window's rows go oldest pane to newest, by the number in the pane id,
 which tmux allocates monotonically; list-panes order is layout
 position, and `split-window -b` puts a new pane above an older one.
-The sort happens once, in `tmux.OrderSessions`, so every reader of a
+The sort happens once, in `Tmux.Pane.order_sessions`, so every reader of a
 window agrees on row 0.
 
 The price is that a window hoisted under a parent's pane is not in tmux's
 own window order: a subagent's window can sit above a lower-numbered one,
 and a parent's later panes sit below a whole foreign window. That is the
-trade, not a bug - the spawn tree is what the sidebar is for. Nor is
-tmux's order one ⇧↓ away: `kido switch-window` (S-Up/S-Down) skips a
-subagent's window on purpose - the user asked to cycle top-level windows,
-keyed off the same run pane (`@kido_run`) reap.Sweep uses and for the same
-reason - so a hoisted window is reachable through the sidebar and not by
-cycling. The walk also draws as a root
+trade, not a bug - the spawn tree is what the sidebar is for. `kido
+switch-window` (S-Up/S-Down) walks the sidebar's order, not tmux's, so
+cycling from a hoisted window moves to the row below it on screen. It
+skips a subagent's window on purpose - the user asked to cycle top-level
+windows, keyed off the same run pane (`@kido_run`) `Reap.sweep` uses and
+for the same reason - so a hoisted window is reachable through the
+sidebar and not by cycling. The walk also draws as a root
 anything whose anchor row never appeared, for the same reason the
 ordering emits what it missed: a dropped row is an agent nobody can see.
 
@@ -1724,7 +1729,7 @@ that saw the same state.
 
 An `ssh` pane reports what the far side is doing only because the far
 side says so: tmux parses OSC 133 off the pane's output stream and never
-learns the markers crossed a network, and `observeRemote` (internal/ui)
+learns the markers crossed a network, and `Ui.observe_remote`
 latches a pane once its far side marks a prompt later than the local
 shell marked the ssh as started. All of that needs the remote shell to
 source an integration of kido's - `shell/zsh/integration.zsh`, or
@@ -1814,7 +1819,8 @@ nothing - indistinguishable from the intended outcome - while spending
 its whole life in posix mode, with the throwaway directory holding the
 file nothing read still on the remote when the session ends. Asking
 first means such a bash never reaches `--posix`, and the two halves of
-that are what `TestBootstrapFallsBackForOldBash` asserts.
+that are what test/test_prime.ml's "the bootstrap leaves a bash too old
+for PS0 alone" asserts.
 
 The bash branch has no dotfile guard, where the zsh one does. That is
 kitty's shape too: the guard in its `exec_zsh_with_integration` is there
@@ -1866,10 +1872,10 @@ those; a shell that only has to emit four escape sequences does not.
 
 `kido` with no arguments is the program the user runs; a first argument
 that is a word is a subcommand, and one that is a flag is the interactive
-UI - `kido -client <name>`, the one-shot picker the `C-s` binding opens in
+UI - `kido --client <name>`, the one-shot picker the `C-s` binding opens in
 a popup. The side column is the exception to the first rule: the fork
 starts it as a bare `kido`, and `TMUX_SIDE_CLIENT` in its environment is
-what tells the two apart (and what `ui.Options.Standalone` reads). The
+what tells the two apart (and what `Ui.options.standalone` reads). The
 launcher never runs inside a multiplexer: with `TMUX` set it refuses,
 starts nothing and says to run kido from a plain terminal, because a
 multiplexer already owns that terminal and nesting one under it buys a
@@ -1900,7 +1906,7 @@ last so the user cannot lose the side column by accident. A
 `~/.tmux.conf` is never read; a user who wants theirs writes one
 `source-file` line. Paths are quoted twice, once for tmux and once for
 the sh tmux runs a command through, and a path carrying a character no
-quoting survives (`tmuxConfUnsafe`) is refused before anything starts.
+quoting survives (`Launch.tmux_safe`) is refused before anything starts.
 
 The inner shell-level quotes go on only when the path has a space. tmux
 names a fresh window once, at spawn, from the first word of
@@ -1916,7 +1922,7 @@ hold the name.
 
 A captured command that is a single word naming zsh or bash, or the same
 executable as the login shell under another name, is primed as that shell
-instead of run as a command inside one (`shellCommand`).
+instead of run as a command inside one (`Shell.command`).
 `default-command "zsh"` is a common line, written to skip the login shell;
 run as a command it becomes `zsh -l -c zsh`, a primed outer shell around a
 bare non-interactive inner one that never reports a prompt, for every
@@ -1933,11 +1939,11 @@ checked executable, and runs it as a login shell primed the way `kido
 ssh` primes a remote one: zsh through a throwaway `ZDOTDIR` whose files
 source the user's real ones and then the integration, bash 4.4 and up
 through `ENV` with `--login --posix`, anything else plain. It is one
-implementation, in `cmd/kido/prime.go`: the mode decision, the
+implementation, in `lib/prime.ml`: the mode decision, the
 throwaway directory's contents, the argv tail and the bash floor. What
 is not shared is the transport, deliberately. The far side has only sh,
 so the ssh bootstrap is rendered from those parts as a POSIX program and
-the version comparison is spelled once in Go and once in sh; and a
+the version comparison is spelled once in OCaml and once in sh; and a
 plain-mode local shell gets tmux's dashed argv[0] where the remote gets
 `-l`, since sh cannot set another process's argv[0].
 
@@ -1949,13 +1955,13 @@ the shared helper `shims/shim.sh` installed as `share/kido/shim.sh`).
 Inside a kido pane they are what those names resolve to:
 
 - `tmux` runs `$KIDO_TMUX` when set, else the `kido-tmux` beside kido,
-  else the first `tmux` on PATH past the shim: `internal/tmux`'s order.
+  else the first `tmux` on PATH past the shim: `Tmux.Exec.resolve_binary`'s order.
   A bare-name `KIDO_TMUX` is looked up past the shim too, because
   `exec` would otherwise find the shim itself. This shim is required,
   not a convenience: `$TMUX` in a kido pane names the kido socket, and a
   stock client gets a protocol mismatch there.
 - `ssh` runs `kido ssh "$@"`, and `kido ssh` finds the real ssh past the
-  bin directory (`lookPathPast`), for the same reason.
+  bin directory (`Bin_dir.look_path_past`), for the same reason.
 - `pi` runs the real pi with `--extension` for `share/kido/pi/kido-status.ts`
   and `kido-agents.ts`, so nothing is written into `~/.pi/agent/extensions`.
   A first argument that is one of pi's own subcommands (`install`,
@@ -1964,14 +1970,14 @@ Inside a kido pane they are what those names resolve to:
   session.
 - `claude` runs the real Claude Code with `--settings` naming
   `share/kido/claude/settings.json`, which holds one `kido hook` entry per
-  event in kido's table (`hook.Events()`, pinned by
-  `TestShippedClaudeSettingsAreKidosHooks`). `--settings` merges with the
+  event `Hook.apply` maps (the list pinned by test/test_bin_dir.ml's
+  "the shipped claude settings are kido's hooks"). `--settings` merges with the
   user's own settings.json rather than replacing it, so nothing of theirs
   is touched and a debugging session can add events of its own there.
 
 A shim never embeds a path. Every location is worked out from `$0`:
 `kido_share` is `$0/../..`, and the directory holding kido and kido-tmux
-is `$0/../../../bin`, the inverse of `findShared`. The kernel resolves
+is `$0/../../../bin`, the inverse of `Bin_dir.of_exe`. The kernel resolves
 those `..` physically, so under Homebrew, where share/kido is a symlink,
 they land in the Cellar version's own bin. Nothing needs quoting, and
 nothing goes stale when the package moves.
@@ -1989,7 +1995,7 @@ the environment it started with, so this is the PATH of everything tmux
 runs with no user shell in between: `run-shell`, plugins, a `new-window`
 command, and the `pi` of every `spawn_subagent` window. And the
 integration of every locally primed shell puts it first again at its
-very end (`pathPrependScript`, appended by `primeFiles` when given a bin
+very end (`Bin_dir.path_prepend_script`, appended by `Prime.files` when given a bin
 directory), which is after the user's login files, which may have
 rewritten PATH: macOS `path_helper` from `/etc/zprofile`, Debian's
 `/etc/profile`. The prepend removes every existing occurrence first, so a
@@ -1997,11 +2003,11 @@ nested shell or a second launch never grows PATH.
 
 `kido ssh` sends the integrations exactly as they ship. The far side has
 no kido and no shims, so nothing there touches PATH. The seam is
-`primeFiles(mode, binDir)`: local-only, and `sshBootstrap` never calls
-it.
+`Prime.files ~bin_dir mode`: local-only, and `Prime.ssh_bootstrap` never
+calls it.
 
 A bin directory whose path contains `:` cannot be a PATH entry, so
-`binDir` reports it absent and kido runs with no shims. So does a kido
+`Bin_dir.of_exe` reports it absent and kido runs with no shims. So does a kido
 with no share/kido beside it, a checkout build.
 
 Limits: a plain-mode shell (fish, a zsh with no dotfiles, bash below
@@ -2025,16 +2031,17 @@ installed into `~/.pi/agent/extensions` by an older kido has no guard,
 loads after the shipped copy and conflicts; the fix is to delete
 `~/.pi/agent/extensions/kido-*.ts`.
 
-**Install layout.** `scripts/install-share.sh <prefix>/share/kido` is
+**Install layout.** The `install` stanza in the root `dune` file is
 the one description of share/kido: the two shell integrations,
-`shim.sh`, `bin/*`, `pi/*.ts` and `claude/settings.json`. `kido-tmux.conf`
-is not among them - the launcher writes the embedded copy into the
-configuration it starts the server with, and nothing reads it from disk.
-`make install` runs it, with `PREFIX` (`~/.local` by default) naming the
-tree that holds `bin/kido`, `bin/kido-tmux` and `share/kido` together; so
-does the e2e harness, which builds kido as `<tmp>/bin/kido` with
-`<tmp>/share/kido` beside it. The Homebrew formula installs the same set
-into its own prefix.
+`shim.sh`, `bin/*`, `pi/*.ts` and `claude/settings.json`, beside
+`bin/kido`. `kido-tmux.conf` is not among them - the launcher writes the
+embedded copy into the configuration it starts the server with, and
+nothing reads it from disk. `dune build @install` lays the tree out in
+`_build/install/default`; `dune install` refuses under package
+management, so `make install` copies its `bin` and `share` into `PREFIX`
+(`~/.local` by default), the tree that holds `bin/kido`, `bin/kido-tmux`
+and `share/kido` together. The e2e harness copies the same tree into
+`<tmp>`. The Homebrew formula installs the same set into its own prefix.
 
 ## Knobs
 

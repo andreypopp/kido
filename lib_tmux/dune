@@ -1,0 +1,5 @@
+(library
+ (name tmux)
+ (flags
+  (:standard -open Containers))
+ (libraries containers unix))

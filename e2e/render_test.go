@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"kido/internal/testutil"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Checks the list's shape: sessions oldest first, client's session bold,
@@ -141,7 +141,7 @@ func TestShellStatusRow(t *testing.T) {
 	pane := h.newWindow("alpha", "") // no argv, so the pane runs the default shell
 	h.waitPaneCommand(pane, "zsh")
 	// The first prompt fires an OSC 133 "D" carrying the rc's exit status
-	// with no "C" before it; shellOutcome's start-time guard is what keeps
+	// with no "C" before it; Ui.shell_outcome's start-time guard is what keeps
 	// that from marking the pane as having run something.
 	h.waitShellRow("╶  zsh", "")
 
@@ -166,7 +166,7 @@ func TestShellStatusRow(t *testing.T) {
 	h.in("select-pane", "-t", home)
 	h.waitShellRow("╶  zsh", "")
 
-	// CommandEndTime has one-second resolution and shellOutcome's seen
+	// pane_command_end_time has one-second resolution and Ui.shell_outcome's seen
 	// comparison is strict, so age past the visit's second or the two land
 	// in the same tick and the outcome goes uncounted.
 	time.Sleep(1200 * time.Millisecond)
@@ -213,7 +213,7 @@ func (h *harness) waitShellRow(want string, color string) {
 // OSC 133 markers, through the same states.
 func TestBashShellStatusRow(t *testing.T) {
 	t.Parallel()
-	bash := testutil.ModernBash(t)
+	bash := modernBash(t)
 	h := start(t, "alpha")
 
 	home := ""
@@ -263,4 +263,36 @@ func TestBashShellStatusRow(t *testing.T) {
 	h.in("select-window", "-t", home)
 	h.in("select-pane", "-t", home)
 	h.waitShellRow("╶  bash", "")
+}
+
+// The selected row inverts the label's title alone: not the tree glyph,
+// the indicator field, the activity after the title, or the padding out
+// to the column's width.
+func TestSelectedRowInvertsTitleOnly(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
+	h.agentStatus("sel-1", pane, "pi", "running", "--title", "deploy", "--activity", "testing")
+	h.waitSelected("deploy  testing")
+
+	var line string
+	for _, l := range h.capture() {
+		if hasSGR(sideOf(l), "7") {
+			line = sideOf(l)
+		}
+	}
+	on := reverseRE.FindStringIndex(line)
+	if on == nil {
+		t.Fatalf("no selected row in %q", line)
+	}
+	inverted, rest, _ := strings.Cut(line[on[1]:], "\x1b[")
+	if inverted != "deploy" {
+		t.Errorf("inverted %q, want the title alone; row %q", inverted, line)
+	}
+	if before := ansi.Strip(line[:on[0]]); !strings.HasPrefix(before, "╶") {
+		t.Errorf("before the title %q, want the tree glyph and indicator uninverted", before)
+	}
+	if hasSGR(rest, "7") {
+		t.Errorf("more than the title inverted: %q", line)
+	}
 }

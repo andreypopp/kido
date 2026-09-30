@@ -1,0 +1,35 @@
+(library
+ (name kido)
+ (flags
+  (:standard -open Containers))
+ (libraries
+  containers
+  unix
+  yojson
+  mtime
+  mtime.clock
+  tmux
+  mosaic
+  matrix
+  matrix.text
+  threads.posix)
+ (preprocess
+  (pps ppx_deriving_yojson)))
+
+(rule
+ (target embedded.ml)
+ (deps
+  %{project_root}/shell/zsh/integration.zsh
+  %{project_root}/shell/bash/integration.bash
+  %{project_root}/tmux/kido-tmux.conf)
+ (action
+  (with-stdout-to
+   %{target}
+   (progn
+    (echo "let zsh_integration = {kido|")
+    (cat %{project_root}/shell/zsh/integration.zsh)
+    (echo "|kido}\n\nlet bash_integration = {kido|")
+    (cat %{project_root}/shell/bash/integration.bash)
+    (echo "|kido}\n\nlet tmux_defaults = {kido|")
+    (cat %{project_root}/tmux/kido-tmux.conf)
+    (echo "|kido}\n")))))

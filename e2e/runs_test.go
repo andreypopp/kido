@@ -7,11 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"kido/internal/testutil"
 )
 
-// runInfo is cmd/kido/runs.go's RunInfo, just the fields these tests
+// runInfo is lib/runs.ml's info as JSON, just the fields these tests
 // read, with the outcome flattened: "running" when there is none.
 type runInfo struct {
 	ID          string
@@ -105,9 +103,9 @@ func TestRunRecordSurvivesReapAsCompleted(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	// The sleep is not decoration: tmux.NewWindow sets remain-on-exit in a
+	// The sleep is not decoration: Tmux.Exec.new_window sets remain-on-exit in a
 	// second call, and a command exiting before it lands loses its window
-	// outright (measured 20/20 for /bin/true; see NewWindow's own doc).
+	// outright (measured 20/20 for /bin/true; see new_window's own comment).
 	script := fmt.Sprintf(`sleep 0.3; %s run-outcome --result completed -- "$KIDO_AGENT_RUN_ID"`, kidoBin)
 	runID, windowID := h.spawnRun("done-e2e", script)
 
@@ -148,10 +146,10 @@ func TestStopRecordsStoppedOutcome(t *testing.T) {
 
 	runID, windowID := h.spawnRun("wedged-run-e2e", "exec sleep 300")
 	// A real inbox that never shuts the session down, standing in for a
-	// wedged pi extension, reporting under the run's own id (target.ID
-	// must equal the run id for stopCmd's outcome write to land anywhere).
+	// wedged pi extension, reporting under the run's own id (the target's
+	// session id must equal the run id for Control.stop's outcome write to land anywhere).
 	paneID := h.in("list-panes", "-t", windowID, "-F", "#{pane_id}")
-	in := testutil.StartInbox(h.t, "ok\n")
+	in := startInbox(h.t, "ok\n")
 	h.agentStatus(runID, paneID, "pi", "idle", "--inbox", in.Path)
 
 	out := h.runKido("alpha", "stop.out", "stop_subagent", runID)
@@ -164,4 +162,29 @@ func TestStopRecordsStoppedOutcome(t *testing.T) {
 	if got := h.runOutcome(runID); got != "stopped" {
 		t.Errorf("run %s outcome = %q, want %q", runID, got, "stopped")
 	}
+}
+
+// children-alive answers for one parent's runs that have not ended.
+func TestChildrenAliveCmd(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	alive := func(tag, session string) string {
+		return strings.TrimSpace(h.runKido("alpha", "children-"+tag+".out", "children-alive", session))
+	}
+	check := func(tag, session, want string) {
+		t.Helper()
+		if got := alive(tag, session); got != want {
+			t.Errorf("children-alive %s (%s) = %q, want %q", session, tag, got, want)
+		}
+	}
+
+	check("before", "root-e2e", "false\nrc=0")
+	_, windowID := h.spawnRun("kid-e2e", "exec sleep 300")
+	check("running", "root-e2e", "true\nrc=0")
+	check("other", "other-sess", "false\nrc=0")
+	h.killPane(h.in("list-panes", "-t", windowID, "-F", "#{pane_id}"))
+	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
+		msgf("the sidebar's sweep to close window %s", windowID))
+	check("ended", "root-e2e", "false\nrc=0")
+	check("usage", "''", "kido children-alive: usage: kido children-alive SESSION\nrc=1")
 }

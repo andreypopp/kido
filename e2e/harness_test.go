@@ -15,6 +15,7 @@ package e2e
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -28,9 +29,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
-
-	"kido/internal/testutil"
-	tmuxconf "kido/tmux"
 )
 
 var (
@@ -46,7 +44,7 @@ var (
 	// kido's directory, so a bare "kido" in tmux/kido-tmux.conf's bindings
 	// resolves to the binary this harness just built rather than to
 	// whatever is installed on the machine running the suite (or nothing,
-	// on CI) - mirroring what launch (cmd/kido/launch.go) does for a
+	// on CI) - mirroring what launch (lib/launch.ml) does for a
 	// real launch - plus tmuxDir, for the one binding that runs a literal
 	// "tmux" (the C-s popup).
 	serverPathPrefix string
@@ -82,14 +80,11 @@ func setup(m *testing.M) (int, error) {
 	// kido is laid out as an install lays it out, <prefix>/bin beside
 	// <prefix>/share/kido, so a kido pane gets the bin directory's shims
 	// and a shim finds the kido and kido-tmux it works back to.
+	if err := installKido(dir); err != nil {
+		return 0, err
+	}
 	kidoBin = filepath.Join(dir, "bin", "kido")
-	if out, err := exec.Command("go", "build", "-o", kidoBin, "kido/cmd/kido").CombinedOutput(); err != nil {
-		return 0, fmt.Errorf("go build kido: %v\n%s", err, out)
-	}
 	shareDir = filepath.Join(dir, "share", "kido")
-	if out, err := exec.Command("../scripts/install-share.sh", shareDir).CombinedOutput(); err != nil {
-		return 0, fmt.Errorf("install-share.sh: %v\n%s", err, out)
-	}
 	if claudeBin, err = buildFakeAgent(dir, dir, "claude"); err != nil {
 		return 0, err
 	}
@@ -99,7 +94,7 @@ func setup(m *testing.M) (int, error) {
 	if nodeBin, err = buildFakeAgent(dir, dir, "node"); err != nil {
 		return 0, err
 	}
-	// A resume that names no command defaults to "pi" (spawn_subagent.go),
+	// A resume that names no command defaults to "pi" (lib/spawn_subagent.ml),
 	// which is where the tool allowlist is spelled onto the command line -
 	// so that one fixture needs the literal name "pi" to resolve, not a
 	// fake standing in under some other name. The only way to make a name
@@ -120,7 +115,7 @@ func setup(m *testing.M) (int, error) {
 	}
 	tmuxBin, tmuxWhy = findTmux()
 	// A production kido resolves the tmux binary through a "kido-tmux"
-	// sibling (internal/tmux.resolveBinary); cleanEnv strips KIDO_TMUX from
+	// sibling (Tmux.Exec.resolve_binary); cleanEnv strips KIDO_TMUX from
 	// every environment this harness builds, including the servers' own, so
 	// without this symlink the built kidoBin would fall through to "tmux" on
 	// PATH instead - exercising a resolution step no install ever takes.
@@ -150,12 +145,34 @@ func setup(m *testing.M) (int, error) {
 	return m.Run(), nil
 }
 
+// installKido builds dune's install tree from the repository root and
+// copies its bin and share into prefix, dereferenced, so kido's own
+// lookups start from prefix rather than from _build. DUNE_BUILD_DIR is
+// dune's own, which scripts/ci-like points outside the bind-mounted
+// checkout.
+func installKido(prefix string) error {
+	build := exec.Command("dune", "build", "@install")
+	build.Dir = ".."
+	if b, err := build.CombinedOutput(); err != nil {
+		return fmt.Errorf("dune build @install: %v\n%s", err, b)
+	}
+	tree := filepath.Join(cmp.Or(os.Getenv("DUNE_BUILD_DIR"), "_build"), "install", "default")
+	if !filepath.IsAbs(tree) {
+		tree = filepath.Join("..", tree)
+	}
+	cp := exec.Command("cp", "-RL", filepath.Join(tree, "bin"), filepath.Join(tree, "share"), prefix)
+	if b, err := cp.CombinedOutput(); err != nil {
+		return fmt.Errorf("copy the install tree: %v\n%s", err, b)
+	}
+	return nil
+}
+
 // buildFakeAgent compiles a binary named name that sleeps (copying
 // /bin/sleep fails code signing on macOS) and echoes every stdin line it
 // reads, so a test can drive a claudePane with send-keys and read back
 // what arrived. Two lines are commands instead: "busy" and "esc" redraw
 // the pane as real Claude Code would, since kido reads a waiting pane's
-// screen to notice a dismissed prompt (internal/ui/screen.go).
+// screen to notice a dismissed prompt (lib/screen.ml).
 func buildFakeAgent(srcRoot, outDir, name string) (string, error) {
 	src := filepath.Join(srcRoot, "fakeagent-"+name)
 	if err := os.MkdirAll(src, 0o755); err != nil {
@@ -284,7 +301,7 @@ var sanitize = regexp.MustCompile(`[^A-Za-z0-9]+`)
 
 // start brings up both servers with one inner session and waits until the
 // sidebar has rendered it. Extra arguments are passed to kido: a long
-// -interval makes a test prove that an update came from tmux's control-mode
+// --interval makes a test prove that an update came from tmux's control-mode
 // notifications rather than from the next poll.
 func start(t *testing.T, session string, kidoArgs ...string) *harness {
 	t.Helper()
@@ -331,21 +348,25 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 	// itself inherit it rather than touching the developer's real state
 	// dir; h.hook and h.agentStatus set their own copies out of band.
 	// KIDO_LINGER_SECONDS/KIDO_STALL_THRESHOLD_MS/KIDO_STREAM_* shorten the
-	// window-lifecycle grace, state.StallThreshold and the streaming
+	// window-lifecycle grace, State.stall_threshold and the streaming
 	// wrapper's batch/backoff the same way for everything the inner server
 	// runs, so real production values (30s, 3min, 250ms) don't put every
 	// timing test past the 5s settle; global per server, so 3s (not
 	// shorter) leaves room for tests that sleep up to a second before
 	// checking a status is still shown running.
 	// The shipped defaults are written first, byte for byte
-	// (tmux/kido-tmux.conf via tmuxconf.Defaults, as a real launch does),
+	// (tmux/kido-tmux.conf, as a real launch does),
 	// then the harness's own overrides.
 	prefix := serverPathPrefix
 	if pathDir != "" {
 		prefix = pathDir + string(os.PathListSeparator) + prefix
 	}
+	defaults, err := os.ReadFile("../tmux/kido-tmux.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
 	var body bytes.Buffer
-	body.Write(tmuxconf.Defaults)
+	body.Write(defaults)
 	fmt.Fprintf(&body, `
 set-environment -g KIDO_STATE_DIR "%s"
 set-environment -g KIDO_LINGER_SECONDS 1
@@ -371,8 +392,8 @@ set -g side-status-command "%s%s"
 		// which could not distinguish this server's control client from one
 		// belonging to some other tmux server started during the test.
 		pids := controlClientPIDs(h.inner)
-		// More than one is a real bug: Conn's supervise loop kills the old
-		// child before dialling a new one (internal/tmux/conn.go).
+		// More than one is a real bug: Tmux.Conn kills the old child
+		// before dialling a new one (lib_tmux/conn.ml).
 		if len(pids) > 1 {
 			t.Errorf("more than one control client attached to %s: %v", h.inner, pids)
 		}
@@ -568,7 +589,7 @@ var sgrOn = map[string]*regexp.Regexp{
 
 // indField is the sidebar's two-column indicator field as the tests spell
 // it: the glyph and a space, or two spaces when there is none. It mirrors
-// field() in internal/ui.
+// Ui.field (lib/ui.ml).
 func indField(glyph string) string {
 	if glyph == "" {
 		return "  "
@@ -951,11 +972,11 @@ func (h *harness) agentStatus(sessionID, pane, agent, status string, extra ...st
 // record (via agentStatus, so its pid is this test binary's own and
 // stays alive) naming a real unix socket that answers "ok\n" to anything
 // and otherwise does nothing.
-func (h *harness) agentWithInbox(session, sessionID string) (*testutil.Inbox, string) {
+func (h *harness) agentWithInbox(session, sessionID string) (*inbox, string) {
 	h.t.Helper()
 	paneID := h.newWindow(session, "", "sh", "-c", "exec sleep 300")
 	h.waitPaneCommand(paneID, "sleep")
-	in := testutil.StartInbox(h.t, "ok\n")
+	in := startInbox(h.t, "ok\n")
 	h.agentStatus(sessionID, paneID, "pi", "idle",
 		"--inbox", in.Path)
 	return in, paneID
