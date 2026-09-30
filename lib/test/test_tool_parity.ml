@@ -2,7 +2,7 @@ let kido args =
   let err = Filename.temp_file "kido" "stderr" in
   let code =
     Sys.command
-      (Printf.sprintf "env -i KIDO_STATE_DIR=%s ../bin/main.exe %s </dev/null >/dev/null 2>%s"
+      (Printf.sprintf "env -i KIDO_STATE_DIR=%s ../../bin/main.exe %s </dev/null >/dev/null 2>%s"
          (Filename.quote (Filename.temp_dir "kido-state" ""))
          (String.concat " " (List.map Filename.quote args))
          err)
@@ -13,7 +13,7 @@ let kido args =
    invokes a subcommand of its own name. *)
 let%expect_test "every pi tool has a kido subcommand of its name" =
   let tools =
-    Yojson.Safe.(Util.convert_each Util.to_string (from_file "../pi/testdata/tools.json"))
+    Yojson.Safe.(Util.convert_each Util.to_string (from_file "../../share/pi/testdata/tools.json"))
   in
   List.iter
     (fun tool ->

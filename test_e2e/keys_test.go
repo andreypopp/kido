@@ -122,7 +122,7 @@ func TestEscReleasesFocus(t *testing.T) {
 }
 
 // Focused keys route to the side job and never reach the client-level
-// bindings in tmux/kido-tmux.conf, so S-Up/S-Down inside the sidebar must
+// bindings in share/tmux/kido-tmux.conf, so S-Up/S-Down inside the sidebar must
 // call the same window-switching path as `kido switch-window` itself.
 func TestShiftUpDownSwitchesWindow(t *testing.T) {
 	t.Parallel()
@@ -157,7 +157,7 @@ func TestShiftUpDownSwitchesWindow(t *testing.T) {
 }
 
 // With the sidebar unfocused the keys go to the pane, not the side job;
-// they must still reach the client-level binding in tmux/kido-tmux.conf.
+// they must still reach the client-level binding in share/tmux/kido-tmux.conf.
 func TestShiftUpDownUnfocusedSwitchesWindow(t *testing.T) {
 	t.Parallel()
 	h := setupSwitchWindowSessions(t)
@@ -201,10 +201,10 @@ func TestCtrlSTogglesFocusWithSidebarShown(t *testing.T) {
 
 // TestCtrlSOpensPickerWithSidebarHidden checks that, with the sidebar
 // hidden, C-s opens kido's one-shot picker in a popup, and that q closes
-// it again. The popup runs a literal "tmux" (tmux/kido-tmux.conf), which
+// it again. The popup runs a literal "tmux" (share/tmux/kido-tmux.conf), which
 // resolves through serverPathPrefix (start, via requireTmux, already
 // skips when there is no patched tmux to put there) rather than through
-// the shims/bin/tmux shim a real install has - see setup().
+// the share/bin/tmux shim a real install has - see setup().
 func TestCtrlSOpensPickerWithSidebarHidden(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

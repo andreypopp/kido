@@ -34,7 +34,7 @@ func (h *harness) newSessionSpaced(name string) {
 }
 
 // runSwitchSession runs against the inner server the way a key binding's
-// run-shell would (tmux/kido-tmux.conf).
+// run-shell would (share/tmux/kido-tmux.conf).
 func (h *harness) runSwitchSession(dir string) {
 	h.t.Helper()
 	tmuxEnv := h.in("display-message", "-p", "#{socket_path},#{pid},0")
@@ -78,7 +78,7 @@ func TestSwitchSessionOrder(t *testing.T) {
 	h.waitSession("b")
 }
 
-// The actual key binding documented in tmux/kido-tmux.conf and the
+// The actual key binding documented in share/tmux/kido-tmux.conf and the
 // README: bind-key -n ... run-shell "kido switch-session next --client
 // '#{client_name}'". Proves #{client_name} expands to the real client
 // name when run-shell fires from a key binding, not just when the test

@@ -72,7 +72,7 @@ func TestSpawnRefusesModelRejectedByPi(t *testing.T) {
 }
 
 // A child ending itself with no turn ever run (`kido run-outcome
-// --unreported`, what pi/kido-agents.ts's idle self-exit calls) must
+// --unreported`, what share/pi/kido-agents.ts's idle self-exit calls) must
 // save its own pane's screen before it exits, not leave that to a sweep
 // that may never run before the window closes - `kido close-run` never
 // captures a screen at all. The window is kept alive (`sleep 300`) so

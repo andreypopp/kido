@@ -51,14 +51,14 @@ let copy ?(perm = 0o644) src dst =
 let install root =
   let prefix = root // "my prefix" in
   let share = prefix // "share/kido" in
-  copy ~perm:0o755 "../shims/bin/tmux" (share // "bin/tmux");
-  copy ~perm:0o755 "../shims/bin/ssh" (share // "bin/ssh");
-  copy ~perm:0o755 "../shims/bin/pi" (share // "bin/pi");
-  copy ~perm:0o755 "../shims/bin/claude" (share // "bin/claude");
-  copy "../shims/shim.sh" (share // "shim.sh");
-  copy "../pi/kido-status.ts" (share // "pi/kido-status.ts");
-  copy "../pi/kido-agents.ts" (share // "pi/kido-agents.ts");
-  copy "../claude/settings.json" (share // "claude/settings.json");
+  copy ~perm:0o755 "../../share/bin/tmux" (share // "bin/tmux");
+  copy ~perm:0o755 "../../share/bin/ssh" (share // "bin/ssh");
+  copy ~perm:0o755 "../../share/bin/pi" (share // "bin/pi");
+  copy ~perm:0o755 "../../share/bin/claude" (share // "bin/claude");
+  copy "../../share/shim.sh" (share // "shim.sh");
+  copy "../../share/pi/kido-status.ts" (share // "pi/kido-status.ts");
+  copy "../../share/pi/kido-agents.ts" (share // "pi/kido-agents.ts");
+  copy "../../share/claude/settings.json" (share // "claude/settings.json");
   List.iter (fun name -> ignore (recorder (prefix // "bin") name)) [ "kido"; "kido-tmux" ];
   (prefix // "bin", share, share // "bin")
 
@@ -280,7 +280,7 @@ let%expect_test "only a local prime moves PATH" =
     |}]
 
 let%expect_test "the shipped claude settings are kido's hooks" =
-  let json = Yojson.Safe.from_file "../claude/settings.json" in
+  let json = Yojson.Safe.from_file "../../share/claude/settings.json" in
   let open Yojson.Safe.Util in
   List.iter
     (fun (event, entries) ->

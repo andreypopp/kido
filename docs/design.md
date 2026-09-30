@@ -232,7 +232,7 @@ activity, model, parent pid, parent session, depth - sends it again on
 every call. The agent knows all of them from its own state and
 environment, and reporting them fresh is more robust than walking the
 parent chain, which fails as soon as one intermediate record is gone. `--inbox ""` is how an agent
-says its socket is gone; `pi/kido-status.ts` sends `--title`, `--model`
+says its socket is gone; `share/pi/kido-status.ts` sends `--title`, `--model`
 and `--inbox` on every report, empty when there is nothing to say, for
 exactly this reason.
 
@@ -1732,8 +1732,8 @@ side says so: tmux parses OSC 133 off the pane's output stream and never
 learns the markers crossed a network, and `Ui.observe_remote`
 latches a pane once its far side marks a prompt later than the local
 shell marked the ssh as started. All of that needs the remote shell to
-source an integration of kido's - `shell/zsh/integration.zsh`, or
-`shell/bash/integration.bash`, which emit the same four markers. On a
+source an integration of kido's - `share/zsh/integration.zsh`, or
+`share/bash/integration.bash`, which emit the same four markers. On a
 host where nobody has installed anything the pane stays silent for the
 life of the connection.
 
@@ -1819,7 +1819,7 @@ nothing - indistinguishable from the intended outcome - while spending
 its whole life in posix mode, with the throwaway directory holding the
 file nothing read still on the remote when the session ends. Asking
 first means such a bash never reaches `--posix`, and the two halves of
-that are what test/test_prime.ml's "the bootstrap leaves a bash too old
+that are what lib/test/test_prime.ml's "the bootstrap leaves a bash too old
 for PS0 alone" asserts.
 
 The bash branch has no dotfile guard, where the zsh one does. That is
@@ -1895,7 +1895,7 @@ problems.
 
 A started server reads a configuration kido writes at every launch to
 `$KIDO_STATE_DIR/server.conf`, in this order: kido's defaults, which are
-`tmux/kido-tmux.conf` verbatim; `source-file -q` of the user's file,
+`share/tmux/kido-tmux.conf` verbatim; `source-file -q` of the user's file,
 `$XDG_CONFIG_HOME/kido/kido.conf` or `~/.config/kido/kido.conf`; then
 the two options kido owns, `side-status-command` and `default-command`,
 both naming the kido binary by absolute path. The user's file comes
@@ -1950,8 +1950,8 @@ plain-mode local shell gets tmux's dashed argv[0] where the remote gets
 ### The bin directory
 
 kido ships a bin directory at `<prefix>/share/kido/bin` holding four
-`sh` shims, `tmux`, `ssh`, `pi` and `claude` (source `shims/bin`, with
-the shared helper `shims/shim.sh` installed as `share/kido/shim.sh`).
+`sh` shims, `tmux`, `ssh`, `pi` and `claude` (source `share/bin`, with
+the shared helper `share/shim.sh` installed as `share/kido/shim.sh`).
 Inside a kido pane they are what those names resolve to:
 
 - `tmux` runs `$KIDO_TMUX` when set, else the `kido-tmux` beside kido,
@@ -1970,7 +1970,7 @@ Inside a kido pane they are what those names resolve to:
   session.
 - `claude` runs the real Claude Code with `--settings` naming
   `share/kido/claude/settings.json`, which holds one `kido hook` entry per
-  event `Hook.apply` maps (the list pinned by test/test_bin_dir.ml's
+  event `Hook.apply` maps (the list pinned by lib/test/test_bin_dir.ml's
   "the shipped claude settings are kido's hooks"). `--settings` merges with the
   user's own settings.json rather than replacing it, so nothing of theirs
   is touched and a debugging session can add events of its own there.
@@ -2031,9 +2031,10 @@ installed into `~/.pi/agent/extensions` by an older kido has no guard,
 loads after the shipped copy and conflicts; the fix is to delete
 `~/.pi/agent/extensions/kido-*.ts`.
 
-**Install layout.** The `install` stanza in the root `dune` file is
-the one description of share/kido: the two shell integrations,
-`shim.sh`, `bin/*`, `pi/*.ts` and `claude/settings.json`, beside
+**Install layout.** The `install` stanza in `share/dune` is the one
+description of share/kido, which mirrors the repository's `share/`:
+`bin/`, `shim.sh`, `bash/`, `zsh/`, `claude/` and pi's two extensions
+under `pi/` (not its tests, testdata or package files), beside
 `bin/kido`. `kido-tmux.conf` is not among them - the launcher writes the
 embedded copy into the configuration it starts the server with, and
 nothing reads it from disk. `dune build @install` lays the tree out in

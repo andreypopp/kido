@@ -81,13 +81,12 @@ These are fixed:
   `agent-alive`, `snapshot`, `ssh`, ...). `lib/` is the library `kido`,
   one module per domain or subcommand with logic of its own. `lib_tmux/` is the library `tmux` (call sites read
   `Tmux.Conn`, `Tmux.Pane`, `Tmux.Exec`). Tests are ppx_expect in
-  `test/`.
+  `lib/test/` and `lib_tmux/test/`.
 - **Every stanza compiles with `-open Containers`.** Every `.ml` has an
   `.mli` unless it holds only types. JSON is yojson with
   ppx_deriving_yojson. The TUI is Mosaic, pinned in `dune-project`.
   Concurrency is `unix` and `threads.posix`; no Eio, no Lwt.
-- **The command line is a contract** with `pi/`, `shims/`, `tmux/`,
-  `shell/` and `e2e/`: subcommands, flags, exit codes, every parsed or
+- **The command line is a contract** with `share/` and `test_e2e/`: subcommands, flags, exit codes, every parsed or
   asserted stdout/stderr line, JSON shapes, env vars. A long option is
   `--name`, never `-name`.
 
@@ -139,31 +138,35 @@ Conventions:
       control.ml (stop/interrupt_subagent)
                        one subcommand or family each
       fs.ml, timestamp.ml  files, time
+      test/            ppx_expect unit tests, test_<module>.ml; fixture.ml and
+                       sh.ml the shared scaffolding
     lib_tmux/          the library tmux: pane.ml (the pane format and its
                        parse), exec.ml (one-shot tmux commands, the binary
                        lookup), conn.ml (the control-mode client)
-    test/              ppx_expect unit tests, test_<module>.ml; fixture.ml and
-                       sh.ml the shared scaffolding; tmux_server/ the Conn
-                       tests against a real tmux, run only with $KIDO_TMUX
-    shell/             the zsh and bash OSC 133 integrations every primed shell sources
-    tmux/              kido-tmux.conf, the defaults the launcher writes into server.conf
-    shims/             the bin directory's sh shims (tmux, ssh, pi, claude) and shim.sh
-    claude/            settings.json, the hooks file the claude shim hands to Claude Code
-    dune               the install stanza, the one description of share/kido
+      test/            its ppx_expect tests, needing only tmux; fixture.ml's
+                       pane, which lib/test's Fixture includes; tmux_server/
+                       the Conn tests against a real tmux, run only with $KIDO_TMUX
+    share/             the source of share/kido, installed by share/dune:
+      bin/             the bin directory's sh shims (tmux, ssh, pi, claude)
+      shim.sh          their shared helper
+      bash/, zsh/      the OSC 133 integrations every primed shell sources
+      tmux/            kido-tmux.conf, the defaults the launcher writes into
+                       server.conf (embedded, not installed)
+      claude/          settings.json, the hooks file the claude shim hands to Claude Code
+      pi/              the two pi extensions, which the pi shim loads with --extension
     scripts/           the fork build; ci-watch.sh, which waits for a commit's CI run (async_bash it);
                        ci-like.sh; test-ts.sh; dump-prompts.ts, every prompt text pi registers
     third_party/tmux   the tmux fork, a git submodule built as kido-tmux
-    pi/                the two pi extensions, which the pi shim loads with --extension
-    e2e/               tests driving kido inside a real tmux server, in Go
+    test_e2e/          tests driving kido inside a real tmux server, in Go
 
 `dune build`; the binary is `bin/main.exe`, installed as `kido`. `lib/`
-embeds the shell integrations and `tmux/kido-tmux.conf` at build time.
+embeds the shell integrations and `share/tmux/kido-tmux.conf` at build time.
 
-**Tool name == subcommand name.** Every subagent tool in `pi/` invokes
+**Tool name == subcommand name.** Every subagent tool in `share/pi/` invokes
 the subcommand of its own name (table in docs/design-subagents.md). A new
 tool brings a subcommand spelled the same way; there are no aliases, and
 a divergence is a silent runtime failure, not a build one;
-`test/test_tool_parity.ml` runs each tool in `pi/testdata/tools.json` as
+`lib/test/test_tool_parity.ml` runs each tool in `share/pi/testdata/tools.json` as
 a subcommand. A subcommand
 no tool calls is named however it reads best (`async-run`); `async_bash`
 took the underscore before its tool existed, because renaming a command
@@ -237,7 +240,7 @@ program has taken the terminal.
 - `pane_command_duration` is deliberately **absent**: it ticks every
   second and would redraw the sidebar once a second forever.
 - Adding a field means bumping `Pane.fields`, which both the split count
-  and the short-line guard in `parse_line` read. test/test_pane.ml's
+  and the short-line guard in `parse_line` read. lib_tmux/test/test_pane.ml's
   "field count pinned" test ties the two together; its "fixture
   generated from the format" test exists because the hand-typed fixture
   in its "parse:" test stays green when a new field is left out of it.
@@ -264,7 +267,7 @@ logged events (`tail -f "$(kido debug-log)"`), not read from docs:
 
 Claude Code reports nothing when a question is dismissed or a permission
 denied; kido reads the pane's screen instead (`lib/screen.ml`, fixtures
-from real screens in test/test_screen.ml). That probe runs for a
+from real screens in lib/test/test_screen.ml). That probe runs for a
 `State.Claude` session in `Waiting` only, enforced by a match in
 `Ui.dismissals`, not by a type.
 
@@ -280,7 +283,7 @@ resolved by policy:
   taken); an existing record is overwritten only by the pid it names or
   once that pid is dead. `State.remove` follows the same rule. A refusal
   is `Error holder`, and `kido agent-status` exits **6** for it, which
-  `pi/kido-status.ts` reads to stop reporting. Change that exit code in
+  `share/pi/kido-status.ts` reads to stop reporting. Change that exit code in
   one half only and a second pi silently clobbers a live session.
 - `State.load_live` **removes** a file whose recorded pid is dead, rather than
   skipping it; that is what cleans up pi's per-turn headless Claude Code
@@ -291,7 +294,7 @@ resolved by policy:
   Anything not literally `"claude"` is outer, so two non-Claude records on
   one pane fall to the timestamp and the winner flips (a headless
   `pi --print` inherits `TMUX_PANE`). That flip is accepted
-  (test/test_state.ml, "the outer agent wins a shared pane"): nothing
+  (lib/test/test_state.ml, "the outer agent wins a shared pane"): nothing
   can tell it from an agent's own record legitimately changing.
 - **Never hand `Reap.sweep` a pane-keyed view.** The sidebar's view is
   `State.load_live` then `State.by_pane`; anything asking "is this
@@ -356,9 +359,9 @@ one.
 
 ## Tests
 
-    make test    dune test (the ppx_expect suite in test/) and
+    make test    dune test (the ppx_expect suites in lib/test/ and lib_tmux/test/) and
                  scripts/test-ts.sh: one node suite for both pi extensions
-    make e2e     builds the fork into build/ and runs go test ./e2e/ against it
+    make e2e     builds the fork into build/ and runs go test ./test_e2e/ against it
     make install binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
 
 Validation before a release is `make test` then `make e2e`, in full; CI
@@ -369,21 +372,21 @@ diff once it has been read.
 
 **Prefer e2e tests.** A behaviour a user or an agent can observe (a
 subcommand's output, exit code, side effects on tmux or state) is
-tested in `e2e/`, through the binary. Unit tests in `test/` are for pure
+tested in `test_e2e/`, through the binary. Unit tests in `lib/test/` and `lib_tmux/test/` are for pure
 library logic that e2e cannot reach or cannot pin precisely (parsers,
 formats, ordering); do not write a unit test that execs the binary.
 
 `make e2e` builds the fork into `build/tmux-fork/<revision>/` (rebuilt
 only on a submodule bump) and runs with `KIDO_E2E_REQUIRED=1`. A
 `KIDO_TMUX` in the environment names another fork and skips the build
-(how CI uses its cached one). A bare `go test ./e2e/` with neither
+(how CI uses its cached one). A bare `go test ./test_e2e/` with neither
 skips. The TypeScript suite skips without a node that runs `.ts`
 unflagged; `KIDO_TS_TEST_REQUIRED=1` (set in CI) makes that a failure.
 
 **Reproducing a CI-only failure:** `scripts/ci-like.sh` runs a Linux
 container with the repo bind-mounted, CPU/memory capped, and the fork
 built at the pinned revision (`make ci-like ARGS="--cpus 0.25 -- go test
-./e2e/ -run TestFoo"`). A CPU quota alone rarely reproduces timing
+./test_e2e/ -run TestFoo"`). A CPU quota alone rarely reproduces timing
 failures; `--contend N` starts N busy sibling containers, and with a low
 `--cpu-shares` desyncs a wrapper's timer from its command the way a
 loaded runner does. `--budget` (default 2) caps the host cores a run
@@ -391,7 +394,7 @@ takes, siblings included; contention is for one named failure, not a
 whole suite. Never saturate the host's own cores to chase a runner
 failure: other agents are working in parallel.
 
-**The e2e harness** (`e2e/harness_test.go`) nests two tmux servers — an
+**The e2e harness** (`test_e2e/harness_test.go`) nests two tmux servers — an
 outer one hosting a pty, the inner one under test with kido as its
 `side-status-command` — and reads the sidebar with `capture-pane`. It
 builds kido with `dune build` (so it needs that dune on PATH), and fake
@@ -442,7 +445,7 @@ Negative controls are load-bearing: never delete one half of a pair.
   from its boolean, not an empty tty (a read-only client has one too).
 - **`Tmux.Conn.run` kills the control client on any timeout** and the
   next call re-dials; one slow command costs a full reconnect.
-- **`shell/zsh/integration.zsh` must not name a local `status`** — a zsh
+- **`share/zsh/integration.zsh` must not name a local `status`** — a zsh
   special parameter; shadowing it silently stops the precmd hook. It is
   called `ret`.
 - **`kido hook` must never fail the caller.** Errors print to stderr and
@@ -458,8 +461,8 @@ Negative controls are load-bearing: never delete one half of a pair.
   carriage return. A space is quoted.
 - **`KIDO_HOOK_DEBUG` is the only switch for the hook's debug log**, set
   in the environment of the pane Claude Code starts in; no kido flag can
-  reach `kido hook`. It logs the events claude/settings.json registers
-  (test/test_bin_dir.ml pins the list); other events must be registered
+  reach `kido hook`. It logs the events share/claude/settings.json registers
+  (lib/test/test_bin_dir.ml pins the list); other events must be registered
   by hand in the user's settings.json (`--settings` merges).
 
 ## Working here as a spawned agent
@@ -485,9 +488,9 @@ repeat them.
   the test first, watch it fail, and quote that failure. A feature's
   tests need only pass. Then run `dune build` and `dune test` (an e2e
   test you wrote with `KIDO_E2E_REQUIRED=1 KIDO_TMUX=$(command -v
-  kido-tmux) go test ./e2e/ -run Name`, or the fork under
+  kido-tmux) go test ./test_e2e/ -run Name`, or the fork under
   `build/tmux-fork/` once `make e2e` built it; `scripts/test-ts.sh` if
-  you touched `pi/`), each once, with the environment scrubbed:
+  you touched `share/pi/`), each once, with the environment scrubbed:
 
       env -u KIDO_AGENT_PARENT_SESSION -u KIDO_AGENT_DEPTH -u KIDO_AGENT_TASK_FILE -u KIDO_AGENT_PARENT_PID -u KIDO_AGENT_RUN_ID -u TMUX_PANE dune test
 

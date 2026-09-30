@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run pi/kido-status.test.ts under node's native TypeScript support.
+# Run share/pi/kido-status.test.ts under node's native TypeScript support.
 #
 # Skips cleanly when node is missing or too old; KIDO_TS_TEST_REQUIRED=1
 # fails instead, the same convention e2e uses for KIDO_E2E_REQUIRED.
@@ -30,7 +30,7 @@ process.exit(maj >= 24 ? 0 : 1);
 	fail_or_skip "node $(node --version) is too old to run this suite (need >=24)"
 fi
 
-cd "$(dirname "$0")/../pi"
+cd "$(dirname "$0")/../share/pi"
 if [ ! -d node_modules ]; then
 	npm install --silent
 fi

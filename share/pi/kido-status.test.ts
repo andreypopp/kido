@@ -1104,7 +1104,7 @@ test("a /reload leaves exactly one listener, on the same socket", async () => {
 });
 
 // This half asserts the registered tools are exactly the names in
-// pi/testdata/tools.json; test/test_tool_parity.ml asserts
+// share/pi/testdata/tools.json; lib/test/test_tool_parity.ml asserts
 // every name in that file is a kido subcommand, so a tool added here fails until
 // both are updated.
 test("the registered tools are exactly the shared list both suites check subcommand parity against", async () => {
@@ -1120,12 +1120,12 @@ test("the registered tools are exactly the shared list both suites check subcomm
     assert.deepEqual(
       missing,
       [],
-      `pi/testdata/tools.json names ${JSON.stringify(missing)}, but no tool registers ${missing.length === 1 ? "it" : "them"}`,
+      `share/pi/testdata/tools.json names ${JSON.stringify(missing)}, but no tool registers ${missing.length === 1 ? "it" : "them"}`,
     );
     assert.deepEqual(
       extra,
       [],
-      `${JSON.stringify(extra)} ${extra.length === 1 ? "is" : "are"} registered but not in pi/testdata/tools.json, ` +
+      `${JSON.stringify(extra)} ${extra.length === 1 ? "is" : "are"} registered but not in share/pi/testdata/tools.json, ` +
         "so nothing checks that a kido subcommand of that name exists - add it to the fixture and give it a subcommand",
     );
   } finally {
@@ -1133,7 +1133,7 @@ test("the registered tools are exactly the shared list both suites check subcomm
   }
 });
 
-// Driven from the same fixture test/test_msg.ml's own discriminator table test
+// Driven from the same fixture lib/test/test_msg.ml's own discriminator table test
 // drives, so the two suites cannot drift apart by someone editing only one list.
 test("parseEnvelope agrees with Msg.parse's v0/v1 discriminator table", () => {
   const fixturePath = join(dirname(fileURLToPath(import.meta.url)), "testdata", "discriminator.json");
@@ -3195,7 +3195,7 @@ test("interleaving: an inbound ask from the same target is refused even while th
 });
 
 // Guaranteed to belong to no process by the time the caller uses it (the same
-// trick test/fixture.ml's dead_pid uses on the OCaml side).
+// trick lib/test/fixture.ml's dead_pid uses on the OCaml side).
 function deadPid(): number {
   const r = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
   return r.pid!;

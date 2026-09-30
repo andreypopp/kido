@@ -10,7 +10,7 @@ import (
 )
 
 // The delivery leg of the turn-completion notice: the settle-to-notice
-// latency is pi/kido-status.ts's own to prove against a real extension,
+// latency is share/pi/kido-status.ts's own to prove against a real extension,
 // since this harness cannot host one. What e2e proves is the other half
 // - a notice a child actually sends reaching its parent's inbox promptly
 // - with a fake command calling `kido notify_parent` naming no target,

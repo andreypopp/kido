@@ -1,0 +1,17 @@
+(library
+ (name kido_test)
+ (flags
+  (:standard -open Containers))
+ (libraries kido tmux tmux_test containers unix yojson mtime threads.posix)
+ (inline_tests
+  (deps
+   ../../share/pi/testdata/discriminator.json
+   ../../share/pi/testdata/tools.json
+   ../../bin/main.exe
+   (source_tree %{project_root}/share/bin)
+   %{project_root}/share/shim.sh
+   %{project_root}/share/pi/kido-status.ts
+   %{project_root}/share/pi/kido-agents.ts
+   %{project_root}/share/claude/settings.json))
+ (preprocess
+  (pps ppx_expect)))

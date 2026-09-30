@@ -154,7 +154,7 @@ func TestSwitchWindowOrderPrev(t *testing.T) {
 	h.waitWindow("a", "a0")
 }
 
-// The actual key binding in tmux/kido-tmux.conf and the README:
+// The actual key binding in share/tmux/kido-tmux.conf and the README:
 // bind-key -n ... run-shell "kido switch-window next --client
 // '#{client_name}'", proving #{client_name} expands when run-shell fires
 // from a key binding, not just when the test drives kido with --client.

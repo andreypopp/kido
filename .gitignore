@@ -1,5 +1,5 @@
-pi/node_modules/
-pi/.copy-*/
+share/pi/node_modules/
+share/pi/.copy-*/
 /build/
 _build/
 _build-ci-like/

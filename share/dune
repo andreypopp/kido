@@ -1,0 +1,6 @@
+(install
+ (section share)
+ (source_trees bin bash zsh claude)
+ (files
+  shim.sh
+  (glob_files pi/kido-{status,agents}.ts)))

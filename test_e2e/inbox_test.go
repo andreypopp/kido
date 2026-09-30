@@ -128,7 +128,7 @@ var lookModernBash = sync.OnceValues(func() (bash, skip string) {
 })
 
 // modernBash returns a bash new enough for the PS0 hook
-// shell/bash/integration.bash is built on, and skips the test when this
+// share/bash/integration.bash is built on, and skips the test when this
 // host has none - macOS ships 3.2 as its own /bin/bash.
 func modernBash(t testing.TB) string {
 	t.Helper()

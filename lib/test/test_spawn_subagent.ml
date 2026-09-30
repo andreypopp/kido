@@ -108,7 +108,7 @@ let outcome dir id =
 let meta dir id =
   Option.get_exn_or "meta" (Subrun.read_meta ~dir:(runs dir) (Result.get_exn (Subrun.parse_id id)))
 
-(* pi/kido-agents.ts splits the one line on spaces; the mark is what makes the window reapable. *)
+(* share/pi/kido-agents.ts splits the one line on spaces; the mark is what makes the window reapable. *)
 let%expect_test
     "a spawn prints window, pane and run, marks the pane, and never puts the task on a command line"
     =
@@ -388,9 +388,9 @@ let%expect_test "a model must be a configured provider's own, by exact provider/
     error: model "sonnet" is not a model of a configured provider; configured: acme/{claude-sonnet-5}
     |}]
 
-(* pi/kido-status.ts delivers a session's first message too; one cap for both. *)
+(* share/pi/kido-status.ts delivers a session's first message too; one cap for both. *)
 let%expect_test "the task cap is pi's MAX_PROMPT_BYTES" =
-  let ts = Option.get_exn_or "ts" (Fs.read "../pi/kido-status.ts") in
+  let ts = Option.get_exn_or "ts" (Fs.read "../../share/pi/kido-status.ts") in
   let line = List.find (String.prefix ~pre:"const MAX_PROMPT_BYTES = ") (String.lines ts) in
   print_endline line;
   Printf.printf "%d\n" Spawn_subagent.max_task_bytes;

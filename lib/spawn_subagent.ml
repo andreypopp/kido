@@ -1,6 +1,6 @@
 let max_depth = 2
 
-(* MAX_PROMPT_BYTES in pi/kido-status.ts: both deliver a session's first user message. *)
+(* MAX_PROMPT_BYTES in share/pi/kido-status.ts: both deliver a session's first user message. *)
 let max_task_bytes = 1024 * 1024
 let max_window_name_len = 64
 

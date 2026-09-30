@@ -9,7 +9,7 @@ import (
 
 // A forked child is `pi --fork <caller's session> --session-id <run id>`:
 // the fork is the context it was spawned for, the run id is what its own
-// extension proves its identity with (pi/kido-agents.ts's ownRunID). The
+// extension proves its identity with (share/pi/kido-agents.ts's ownRunID). The
 // unit test pins the argv kido builds; this reads it back via
 // startCommand.
 //

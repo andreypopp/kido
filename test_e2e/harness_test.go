@@ -3,7 +3,7 @@
 // side status column, and the tests read the rendered column back out of
 // the outer server with capture-pane.
 //
-//	go test ./e2e/ -count=1 -v
+//	go test ./test_e2e/ -count=1 -v
 //
 // KIDO_TMUX picks which tmux the harness tests (default: the "tmux" on
 // PATH); it is the harness's own knob and is kept out of every environment
@@ -41,7 +41,7 @@ var (
 	piBinDir  string // a directory holding one binary, named "pi"
 	tmuxDir   string // a directory holding one binary, named "tmux", the patched fork
 	// serverPathPrefix is the PATH prefix every inner server gets: the built
-	// kido's directory, so a bare "kido" in tmux/kido-tmux.conf's bindings
+	// kido's directory, so a bare "kido" in share/tmux/kido-tmux.conf's bindings
 	// resolves to the binary this harness just built rather than to
 	// whatever is installed on the machine running the suite (or nothing,
 	// on CI) - mirroring what launch (lib/launch.ml) does for a
@@ -123,9 +123,9 @@ func setup(m *testing.M) (int, error) {
 		if err := os.Symlink(tmuxBin, filepath.Join(filepath.Dir(kidoBin), "kido-tmux")); err != nil {
 			return 0, err
 		}
-		// tmux/kido-tmux.conf's C-s binding runs a literal "tmux", resolved
+		// share/tmux/kido-tmux.conf's C-s binding runs a literal "tmux", resolved
 		// through the inner server's own PATH the way a production kido
-		// pane resolves it through the shims/bin/tmux shim - which a bare
+		// pane resolves it through the share/bin/tmux shim - which a bare
 		// go build here has no installed copy of. This directory stands in
 		// for it, holding only the patched fork under that name so nothing
 		// else on PATH is shadowed; only the popup test puts it on a
@@ -355,13 +355,13 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 	// shorter) leaves room for tests that sleep up to a second before
 	// checking a status is still shown running.
 	// The shipped defaults are written first, byte for byte
-	// (tmux/kido-tmux.conf, as a real launch does),
+	// (share/tmux/kido-tmux.conf, as a real launch does),
 	// then the harness's own overrides.
 	prefix := serverPathPrefix
 	if pathDir != "" {
 		prefix = pathDir + string(os.PathListSeparator) + prefix
 	}
-	defaults, err := os.ReadFile("../tmux/kido-tmux.conf")
+	defaults, err := os.ReadFile("../share/tmux/kido-tmux.conf")
 	if err != nil {
 		t.Fatal(err)
 	}

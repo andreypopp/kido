@@ -47,7 +47,7 @@ func TestSSHRemoteShellStatus(t *testing.T) {
 	requireLocalSSH(t)
 	h := start(t, "alpha")
 
-	script, err := filepath.Abs(filepath.Join("..", "shell", "zsh", "integration.zsh"))
+	script, err := filepath.Abs(filepath.Join("..", "share", "zsh", "integration.zsh"))
 	if err != nil {
 		t.Fatal(err)
 	}

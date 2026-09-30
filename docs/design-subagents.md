@@ -40,9 +40,9 @@ name too: it reports a session's whole state on every turn, of which
 narrow command of its own (design.md, "Reporting, and what is carried
 forward") rather than the report being renamed after it.
 
-The parity is pinned rather than merely written down. `pi/testdata/
+The parity is pinned rather than merely written down. `share/pi/testdata/
 tools.json` is one list read by both suites: pi's own asserts the
-registered tools are exactly those names, and test/test_tool_parity.ml
+registered tools are exactly those names, and lib/test/test_tool_parity.ml
 runs each as a kido subcommand.
 A tool added without a command fails the first, then the second.
 

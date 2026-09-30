@@ -25,7 +25,7 @@ func integratedShellPane(t *testing.T, h *harness) string {
 	if err != nil {
 		t.Skip("no zsh in PATH")
 	}
-	script, err := filepath.Abs(filepath.Join("..", "shell", "zsh", "integration.zsh"))
+	script, err := filepath.Abs(filepath.Join("..", "share", "zsh", "integration.zsh"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func integratedShellPane(t *testing.T, h *harness) string {
 // either way - most often the developer's own localhost - and this test
 // can prove nothing about priming there: it skips rather than passing on
 // the far side's own rc files. The pristine-remote evidence lives where
-// a pristine remote can be built - test/test_prime.ml's "the bootstrap
+// a pristine remote can be built - lib/test/test_prime.ml's "the bootstrap
 // primes a pristine zsh".
 func TestKidoSSHPrimesARemoteShell(t *testing.T) {
 	t.Parallel()

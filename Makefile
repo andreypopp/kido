@@ -39,11 +39,11 @@ $(TMUX_FORK)/bin/kido-tmux:
 # drives kido inside a real tmux fork: the one above, unless KIDO_TMUX
 # names another (CI, with its cached build); it never skips
 e2e: $(if $(KIDO_TMUX),,$(TMUX_FORK)/bin/kido-tmux)
-	KIDO_TMUX=$${KIDO_TMUX:-$(CURDIR)/$(TMUX_FORK)/bin/kido-tmux} KIDO_E2E_REQUIRED=1 go test ./e2e/ -count=1 -v
+	KIDO_TMUX=$${KIDO_TMUX:-$(CURDIR)/$(TMUX_FORK)/bin/kido-tmux} KIDO_E2E_REQUIRED=1 go test ./test_e2e/ -count=1 -v
 
 # reproduces a CI-runner-only failure in a CPU/memory-capped Linux
 # container instead of by loading the host, e.g.:
-#   make ci-like ARGS="--cpus 0.25 -- go test ./e2e/ -run TestFoo"
+#   make ci-like ARGS="--cpus 0.25 -- go test ./test_e2e/ -run TestFoo"
 # a run is bounded to --budget host cores in total (default 2), siblings
 # included; --contend is for one named failure, not for a whole suite
 ci-like:

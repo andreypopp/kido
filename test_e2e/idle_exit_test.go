@@ -10,7 +10,7 @@ import (
 )
 
 // The window the client is actually looking at reads "true", any other
-// "false" - callable by pi/kido-agents.ts's idle self-exit timer before
+// "false" - callable by share/pi/kido-agents.ts's idle self-exit timer before
 // it shuts a session down.
 func TestWindowFocusedCmd(t *testing.T) {
 	t.Parallel()
@@ -44,7 +44,7 @@ func firstLine(s string) string {
 }
 
 // --keep-alive reaches the child's environment as KIDO_AGENT_KEEP_ALIVE=1,
-// the one thing pi/kido-agents.ts reads to opt out of idle self-exit.
+// the one thing share/pi/kido-agents.ts reads to opt out of idle self-exit.
 func TestSpawnKeepAliveSetsEnv(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

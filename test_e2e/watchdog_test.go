@@ -142,7 +142,7 @@ const childSocketsEnv = "KIDO_E2E_WATCHDOG_CHILD_SOCKETS"
 
 // Regression test for a test binary that ended without running its
 // cleanups and left both of a harness's tmux servers behind. Measured on
-// 2026-09-26: an agent's bash tool killed a `go test ./e2e/` process
+// 2026-09-26: an agent's bash tool killed a `go test ./test_e2e/` process
 // group at its 120s timeout, and the two servers were still up thirteen
 // hours later, the inner one restarting its side-status-command once a
 // second against a kido binary in a deleted temp directory.

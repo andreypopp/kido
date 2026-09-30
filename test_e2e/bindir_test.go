@@ -222,7 +222,7 @@ func TestPiShimLoadsKidosToolsOnce(t *testing.T) {
 	if _, err := exec.LookPath("pi"); err != nil {
 		t.Skip("no pi on PATH")
 	}
-	checkout, err := filepath.Abs("../pi")
+	checkout, err := filepath.Abs("../share/pi")
 	if err != nil {
 		t.Fatal(err)
 	}

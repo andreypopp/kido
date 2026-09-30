@@ -1,6 +1,6 @@
 val grace : unit -> float
 (** Seconds a finished subagent's window is left alone before a sweep may close it, from
-    [KIDO_LINGER_SECONDS] (default 30), the same knob pi/kido-agents.ts reads. *)
+    [KIDO_LINGER_SECONDS] (default 30), the same knob share/pi/kido-agents.ts reads. *)
 
 type close = { window_id : string; pane_id : string option }
 (** [pane_id] is [None] when the whole window is to be closed. *)

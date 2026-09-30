@@ -123,7 +123,7 @@ func TestShellStatusRow(t *testing.T) {
 		t.Fatal("no active pane in alpha")
 	}
 
-	script, err := filepath.Abs(filepath.Join("..", "shell", "zsh", "integration.zsh"))
+	script, err := filepath.Abs(filepath.Join("..", "share", "zsh", "integration.zsh"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestBashShellStatusRow(t *testing.T) {
 		t.Fatal("no active pane in alpha")
 	}
 
-	script, err := filepath.Abs(filepath.Join("..", "shell", "bash", "integration.bash"))
+	script, err := filepath.Abs(filepath.Join("..", "share", "bash", "integration.bash"))
 	if err != nil {
 		t.Fatal(err)
 	}

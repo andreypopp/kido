@@ -132,7 +132,7 @@ let%expect_test "a signalled wrapper passes the signal on, records the ending an
   let dir = Filename.temp_dir "kido-state" "" in
   let meta = bash ~dir "doomed" [ "sleep"; "30" ] in
   let wrapper =
-    Unix.create_process_env "../bin/main.exe"
+    Unix.create_process_env "../../bin/main.exe"
       [| "kido"; "async-run"; "--run-id"; "doomed" |]
       [| "KIDO_STATE_DIR=" ^ dir; "PATH=" ^ Sys.getenv "PATH" |]
       Unix.stdin Unix.stdout Unix.stderr
