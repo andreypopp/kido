@@ -4,6 +4,7 @@ import TmuxControl
 
 final class PaneView: NSView, @preconcurrency NSTextInputClient {
     let pane: PaneID
+    let born = DispatchTime.now()
     nonisolated(unsafe) var onInput: (Data) -> Void = { _ in }
     var onSelect: () -> Void = {}
     var onCellChange: () -> Void = {}
@@ -30,6 +31,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private let gridChanged = NSCondition()
     nonisolated(unsafe) private var grid = Grid.confirmed
     private var resizes = 0
+
+    private var presented = (visible: true, realized: true)
 
     private var markedText = NSMutableAttributedString()
     private var keyTextAccumulator: [String]?
@@ -161,6 +164,31 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         viewDidChangeBackingProperties()
+        let center = NotificationCenter.default
+        center.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: nil)
+        if let window {
+            center.addObserver(
+                self, selector: #selector(present), name: NSWindow.didChangeOcclusionStateNotification, object: window)
+        }
+        present()
+    }
+
+    override func viewDidHide() {
+        super.viewDidHide()
+        present()
+    }
+
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        present()
+    }
+
+    @objc private func present() {
+        let hidden = isHiddenOrHasHiddenAncestor
+        let next = (visible: !hidden && window?.occlusionState.contains(.visible) == true, realized: !hidden)
+        if next.realized != presented.realized { _ = ghostty_surface_set_renderer_realized(surface, next.realized) }
+        if next.visible != presented.visible { ghostty_surface_set_occlusion(surface, next.visible) }
+        presented = next
     }
 
     override func viewDidChangeBackingProperties() {
