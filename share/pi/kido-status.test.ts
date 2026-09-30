@@ -3400,7 +3400,8 @@ test("a running session re-sends its status on a heartbeat, bypassing the coales
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
-    await withHeartbeatEnv(20, async () => {
+    // Long enough that no heartbeat fires before the coalescing check, even on a loaded runner.
+    await withHeartbeatEnv(1000, async () => {
       const factory = await freshExtensions();
       const s = await startSession(fx, { factory });
       await s.emit("turn_start");
@@ -3409,7 +3410,7 @@ test("a running session re-sends its status on a heartbeat, bypassing the coales
       await pollUntil(() => fx.statusReportsWith("running").length >= 1, 2000, "the first running report");
       assert.equal(fx.statusReportsWith("running").length, 1, "coalescing must still drop the identical follow-ups");
 
-      await pollUntil(() => fx.statusReportsWith("running").length >= 2, 2000, "a heartbeat re-report past KIDO_HEARTBEAT_MS");
+      await pollUntil(() => fx.statusReportsWith("running").length >= 2, 5000, "a heartbeat re-report past KIDO_HEARTBEAT_MS");
       await s.emit("session_shutdown");
     });
   } finally {
