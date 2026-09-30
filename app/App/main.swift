@@ -1,15 +1,17 @@
 import AppKit
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     private var runtime: GhosttyRuntime!
     private var window: NSWindow!
-    private var connection: Connection!
+    private var banner: Banner!
+    private var session: SessionView?
+    private var connection: Connection?
+    private var redial: DispatchWorkItem?
     private let menus = SessionMenus()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let runtime = GhosttyRuntime() else { fatalError("libghostty failed to initialise") }
         self.runtime = runtime
-        let view = SessionView(runtime: runtime)
         NSApp.mainMenu = mainMenu()
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
@@ -17,31 +19,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false)
         window.title = "Kido"
-        window.contentView = view
+        banner = Banner(target: self, action: #selector(start))
+        banner.frame = window.contentView!.bounds
+        window.contentView!.addSubview(banner)
         window.center()
         if !background {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
+        start()
+    }
+
+    @objc private func start() {
+        guard connection == nil else { return }
+        redial?.cancel()
+        banner.show("Connecting to the kido server…", "", button: nil)
         Task {
             do {
-                let server = try await Task.detached { try Server.locate() }.value
-                connection = try Connection(server: server, view: view) { model in
-                    self.window.title = model.title
-                    self.menus.update(model)
-                }
-                menus.connection = connection
+                dial(try await Task.detached { try Server.locate() }.value, backoff: 0.1)
             } catch {
-                let alert = NSAlert()
-                alert.messageText = "Kido could not reach the kido server"
-                alert.informativeText = (error as? Server.Failure)?.message ?? "\(error)"
-                alert.runModal()
-                NSApp.terminate(nil)
+                banner.show(
+                    "Kido could not reach the kido server",
+                    (error as? Server.Failure)?.message ?? error.localizedDescription, button: action)
             }
         }
     }
 
-    @MainActor private func mainMenu() -> NSMenu {
+    private var action: String { Server.fixed == nil ? "Start kido server" : "Reconnect" }
+
+    private func dial(_ server: Server, backoff: TimeInterval) {
+        let view = SessionView(runtime: runtime)
+        do {
+            connection = try Connection(
+                server: server, view: view,
+                onChange: { [weak self] in self?.changed(view, $0) },
+                onClose: { [weak self] in self?.closed(server, view, $0, backoff: backoff) })
+        } catch {
+            banner.show("Kido could not run \(server.tmux)", error.localizedDescription, button: action)
+        }
+    }
+
+    private func changed(_ view: SessionView, _ model: SessionModel) {
+        window.title = model.title
+        menus.update(model)
+        guard view.superview == nil else { return }
+        session?.removeFromSuperview()
+        session = view
+        view.frame = window.contentView!.bounds
+        view.autoresizingMask = [.width, .height]
+        window.contentView!.addSubview(view, positioned: .below, relativeTo: banner)
+        banner.isHidden = true
+        menus.connection = connection
+    }
+
+    private func closed(_ server: Server, _ view: SessionView, _ reason: String?, backoff: TimeInterval) {
+        connection = nil
+        menus.connection = nil
+        menus.update(SessionModel())
+        window.title = "Kido"
+        let dropped = view === session
+        let detail = dropped ? reason : "No kido server at \(server.socket)."
+        banner.show(
+            session == nil ? "Kido could not reach the kido server" : "Disconnected from the kido server",
+            (detail.map { "\($0)\n" } ?? "") + "Reconnecting…", button: action)
+        let next = dropped ? 0.1 : min(backoff * 2, 2)
+        let item = DispatchWorkItem { [weak self] in self?.dial(server, backoff: next) }
+        redial = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + next, execute: item)
+    }
+
+    private func mainMenu() -> NSMenu {
         let app = NSMenu(title: "Kido")
         app.items = [
             NSMenuItem(title: "Hide Kido", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
