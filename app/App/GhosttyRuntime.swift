@@ -13,7 +13,7 @@ final class GhosttyRuntime {
         ghostty_config_load_default_files(config)
         ghostty_config_load_recursive_files(config)
         let tiling = "window-padding-x = 0\nwindow-padding-y = 0\n"
-        ghostty_config_load_string(config, tiling, UInt(tiling.utf8.count), "kido")
+        ghostty_config_load_string(config, tiling, UInt(tiling.utf8.count), "/kido")
         ghostty_config_finalize(config)
         for i in 0..<ghostty_config_diagnostics_count(config) {
             note("ghostty config: \(String(cString: ghostty_config_get_diagnostic(config, i).message))")
