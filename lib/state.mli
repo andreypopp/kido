@@ -29,7 +29,6 @@ val agent_of_string : string -> agent
 val dir : unit -> string
 val alive : int -> bool
 val get : dir:string -> string -> session option
-val read_all : dir:string -> (string * session) list
 val load_live : dir:string -> (string * session) list
 val by_pane : (string * session) list -> (string * session) String_map.t
 val is_agent_pane : (string * session) String_map.t -> pi:Procs.Int_set.t -> Tmux.Pane.t -> bool

@@ -80,7 +80,23 @@ let can_reply ~dir id =
   | Some m -> List.is_empty m.tools || List.mem ~eq:String.equal "message_agent" m.tools
   | None -> true
 
-let build ~dir ~threshold ~wake ~now states panes ~session ~self =
+let list_agents ~dir ~threshold ~self ~session =
+  let open Result.Infix in
+  let* panes = Exec.list_panes () in
+  let states = per_pane (State.load_live ~dir) in
+  let+ session =
+    if not (String.is_empty session) then Ok session
+    else
+      match Pane.find panes self with
+      | Some p -> Ok p.session_id
+      | None ->
+          Error
+            (Printf.sprintf
+               "no tmux session for pane %S; pass --session\n\
+                usage: kido list_agents [--session ID] [--json]"
+               self)
+  in
+  let wake = State.wake ~dir and now = Timestamp.now () in
   let scoped = in_session panes states session in
   let parent e =
     match parent_edge e with Some p when List.mem_assoc ~eq:String.equal p scoped -> p | _ -> ""
@@ -110,24 +126,6 @@ let build ~dir ~threshold ~wake ~now states panes ~session ~self =
         since_report = Float.to_int (now -. s.ts);
         stalled = State.stalled_since ~threshold ~wake ~now s;
       })
-
-let list_agents ~dir ~threshold ~self ~panes ~session =
-  let open Result.Infix in
-  let* panes = Lazy.force panes in
-  let states = per_pane (State.load_live ~dir) in
-  let+ session =
-    if not (String.is_empty session) then Ok session
-    else
-      match Pane.find panes self with
-      | Some p -> Ok p.session_id
-      | None ->
-          Error
-            (Printf.sprintf
-               "no tmux session for pane %S; pass --session\n\
-                usage: kido list_agents [--session ID] [--json]"
-               self)
-  in
-  build ~dir ~threshold ~wake:(State.wake ~dir) ~now:(Timestamp.now ()) states panes ~session ~self
 
 let table agents =
   String.split_on_char ' '

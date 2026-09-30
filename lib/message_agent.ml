@@ -71,7 +71,7 @@ let resolve ~live ~panes ~self recipient =
     Error (List_agents.display_name panes target ^ " is this agent")
   else Ok e
 
-let deliver ~states ~panes ~self ~paste spec (target : State.session) text =
+let deliver ~states ~panes ~self spec (target : State.session) text =
   let name = List_agents.display_name panes target in
   let kind = Msg.string_of_kind spec.kind in
   let is_message = match spec.kind with Message -> true | _ -> false in
@@ -104,7 +104,7 @@ let deliver ~states ~panes ~self ~paste spec (target : State.session) text =
     if is_message then
       Result.map_err
         (fun m -> Failed m)
-        (Prompt.deliver_or_paste ~paste ~inbox:target.inbox ~payload ~pane:target.pane text)
+        (Prompt.deliver_or_paste ~inbox:target.inbox ~payload ~pane:target.pane text)
     else
       match Msg.deliver ~path:target.inbox payload with
       | Ok () -> Ok `Inbox
@@ -117,7 +117,7 @@ let deliver ~states ~panes ~self ~paste spec (target : State.session) text =
                   (Msg.string_of_error e)))
       | Error (Msg.Failed m) -> Error (Failed m)
 
-let send ~dir ~self ~panes ~paste recipient spec text =
+let send ~dir ~self recipient spec text =
   let open Result.Infix in
   let not_sent r = Result.map_err (fun m -> Not_sent m) r in
   if String.is_empty text then Error No_text
@@ -125,7 +125,7 @@ let send ~dir ~self ~panes ~paste recipient spec text =
   else
     let live = State.load_live ~dir in
     let states = State.by_pane live in
-    let* panes = not_sent (Lazy.force panes) in
+    let* panes = not_sent (Tmux.Exec.list_panes ()) in
     let alternative = "use kido message_agent instead, which is one-way and needs no reply" in
     let* () =
       match (spec.kind, State.String_map.find_opt self states) with
@@ -148,7 +148,7 @@ let send ~dir ~self ~panes ~paste recipient spec text =
     in
     let* _, target = not_sent (resolve ~live ~panes ~self recipient) in
     let name = List_agents.display_name panes target in
-    match deliver ~states ~panes ~self ~paste spec target text with
+    match deliver ~states ~panes ~self spec target text with
     | Ok `Pasted -> Ok (Printf.sprintf "pasted into %s's pane" name)
     | Ok `Inbox -> Ok (Printf.sprintf "delivered to %s by inbox" name)
     | Error (Unavailable m | Failed m) -> Error (Not_sent m)
@@ -171,12 +171,12 @@ let report_notice ~warn ~dir run report =
                  (Fs.unix_message e fn arg));
             head_within report Msg.max_notice_bytes)
 
-let notify_parent ~dir ~self ~panes ~paste ~warn ~parent ~run text =
+let notify_parent ~dir ~self ~warn ~parent ~run text =
   if String.is_empty parent then
     Error
       (Not_sent "this session has no parent ($KIDO_AGENT_PARENT_SESSION is not set); nothing sent")
   else
     let run = Result.to_opt (Subrun.parse_id run) in
-    send ~dir ~self ~panes ~paste (Parent parent)
+    send ~dir ~self (Parent parent)
       { kind = Notice; reply_to = ""; id = "" }
       (report_notice ~warn ~dir run text)

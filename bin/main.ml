@@ -34,8 +34,8 @@ let send name doc spec =
   @@ let+ recipient, spec = spec in
      fun () ->
        sent
-         (Message_agent.send ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE") ~panes
-            ~paste:Tmux.Exec.send_prompt recipient spec (stdin ()))
+         (Message_agent.send ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE") recipient spec
+            (stdin ()))
 
 let message_agent =
   send "message_agent" "Send a message to another agent, read from stdin."
@@ -127,7 +127,7 @@ let notify_parent =
      fun () ->
        sent
          (Message_agent.notify_parent ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
-            ~panes ~paste:Tmux.Exec.send_prompt ~warn:(Cli.error "notify_parent")
+            ~warn:(Cli.error "notify_parent")
             ~parent:(Tmux.Exec.getenv "KIDO_AGENT_PARENT_SESSION")
             ~run:(Tmux.Exec.getenv "KIDO_AGENT_RUN_ID")
             (stdin ()))
@@ -141,7 +141,7 @@ let list_agents =
        let agents =
          ok
            (List_agents.list_agents ~dir:(State.dir ()) ~threshold:(State.stall_threshold ())
-              ~self:(Tmux.Exec.getenv "TMUX_PANE") ~panes ~session)
+              ~self:(Tmux.Exec.getenv "TMUX_PANE") ~session)
        in
        if json then
          print_endline

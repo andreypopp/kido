@@ -35,8 +35,7 @@ let record_stopped ~dir id =
     (Subrun.parse_id id)
 
 let request ~states ~panes ~self kind target =
-  Message_agent.deliver ~states ~panes ~self ~paste:Exec.send_prompt
-    { kind; reply_to = ""; id = "" } target ""
+  Message_agent.deliver ~states ~panes ~self { kind; reply_to = ""; id = "" } target ""
 
 let interrupt ~dir ~self to_ =
   let open Result.Infix in

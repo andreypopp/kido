@@ -29,24 +29,8 @@ val in_session :
 val parent_edge : string * State.session -> string option
 val is_ancestor : (string * string) list -> ancestor:string -> string -> bool
 
-val build :
-  dir:string ->
-  threshold:float ->
-  wake:Timestamp.t option ->
-  now:Timestamp.t ->
-  (string * State.session) list ->
-  Tmux.Pane.t list ->
-  session:string ->
-  self:string ->
-  agent_info list
-
 val list_agents :
-  dir:string ->
-  threshold:float ->
-  self:string ->
-  panes:(Tmux.Pane.t list, string) result Lazy.t ->
-  session:string ->
-  (agent_info list, string) result
+  dir:string -> threshold:float -> self:string -> session:string -> (agent_info list, string) result
 
 val table : agent_info list -> string list list
 (** The header row, then one row per agent. *)

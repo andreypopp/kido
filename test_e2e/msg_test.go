@@ -1,0 +1,519 @@
+package e2e
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
+)
+
+// kidoAs runs kido from the test binary as if typed in pane: TMUX names
+// the inner server, so kido sees its panes, and the caller is whatever
+// record the test gave that pane, or none. stdout and stderr come back
+// together, the trailing newline trimmed.
+func (h *harness) kidoAs(pane, input string, env []string, args ...string) (string, int) {
+	h.t.Helper()
+	sock := h.in("display-message", "-p", "#{socket_path}")
+	cmd := exec.Command(kidoBin, args...)
+	cmd.Env = cleanEnv(append([]string{
+		"TMUX=" + sock + ",0,0", "TMUX_PANE=" + pane, "KIDO_STATE_DIR=" + h.stateDir,
+	}, env...)...)
+	cmd.Stdin = strings.NewReader(input)
+	out, err := cmd.CombinedOutput()
+	code := 0
+	if exit := (*exec.ExitError)(nil); errors.As(err, &exit) {
+		code = exit.ExitCode()
+	} else if err != nil {
+		h.t.Fatalf("kido %v: %v", args, err)
+	}
+	return strings.TrimSuffix(string(out), "\n"), code
+}
+
+// expectKido runs kidoAs and requires exactly want on its output, with
+// exit 0 for a delivery line and 1 for anything kido refused.
+func (h *harness) expectKido(pane, input string, env []string, want string, args ...string) {
+	h.t.Helper()
+	code := 1
+	if !strings.HasPrefix(want, "kido ") {
+		code = 0
+	}
+	if got, rc := h.kidoAs(pane, input, env, args...); got != want || rc != code {
+		h.t.Errorf("kido %v:\n got (rc=%d) %q\nwant (rc=%d) %q", args, rc, got, code, want)
+	}
+}
+
+// firstPane is the pane a session was created with: the caller in these
+// tests, which has no record until a test reports one for it.
+func (h *harness) firstPane(session string) string {
+	h.t.Helper()
+	return h.in("display-message", "-p", "-t", session+":", "#{pane_id}")
+}
+
+// idleAgent opens a window that does nothing and reports a pi session on
+// it. Its pane title is blanked, since tmux titles a new pane after the
+// host and a record without a title is named from its pane's.
+func (h *harness) idleAgent(session, id string, extra ...string) string {
+	h.t.Helper()
+	p := h.newWindow(session, "", "sh", "-c", "exec sleep 300")
+	h.in("select-pane", "-t", p, "-T", "")
+	h.agentStatus(id, p, "pi", "idle", extra...)
+	return p
+}
+
+func envelopes(in *inbox) []map[string]any {
+	var out []map[string]any
+	for _, raw := range in.Received() {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			out = append(out, map[string]any{"v0": raw})
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func field(m map[string]any, path ...string) string {
+	var v any = m
+	for _, k := range path {
+		o, _ := v.(map[string]any)
+		v = o[k]
+	}
+	s, _ := v.(string)
+	return s
+}
+
+func TestMessageAgentResolvesByNameTitleIdAndPrefix(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	h.newSession("beta")
+	caller := h.firstPane("alpha")
+	h.agentStatus("me", caller, "pi", "idle", "--title", "Self")
+	in := startInbox(t, "ok\n")
+	h.idleAgent("alpha", "abc123", "--title", "Worker-2", "--inbox", in.Path)
+	h.idleAgent("alpha", "abd456", "--inbox", in.Path)
+	h.idleAgent("alpha", "worker-x", "--title", "scout")
+	h.idleAgent("alpha", "worker-y", "--title", "scout")
+	h.title(h.idleAgent("alpha", "untitled", "--inbox", in.Path), "worker-6")
+	h.idleAgent("beta", "elsewhere", "--title", "far-away", "--inbox", in.Path)
+	h.idleAgent("beta", "twin-a", "--title", "Twin")
+	h.idleAgent("beta", "twin-b", "--title", "Twin")
+
+	for _, c := range []struct{ to, want string }{
+		{"worker-2", "delivered to Worker-2 by inbox"},
+		{"worker-6", "delivered to worker-6 by inbox"},
+		{"abc123", "delivered to Worker-2 by inbox"},
+		{"abd", "delivered to  by inbox"},
+		{"ab", `kido message_agent: "ab" matches several agents by id: abc123 (Worker-2), abd456 ()`},
+		{"nope", `kido message_agent: no agent session matches "nope"`},
+		{"scout", `kido message_agent: "scout" matches several agents by name: worker-x (scout), worker-y (scout)`},
+		{"Self", "kido message_agent: Self is this agent"},
+		// Resolution tries the caller's own tmux session first, then says
+		// why a match elsewhere is out of reach.
+		{"elsewhere", "kido message_agent: elsewhere (elsewhere) is in another tmux session, not this one"},
+		{"Twin", `kido message_agent: "Twin" matches several agents by name: twin-a (Twin), twin-b (Twin), none in this tmux session`},
+	} {
+		h.expectKido(caller, "x", nil, c.want, "message_agent", "--", c.to)
+	}
+	h.expectKido(caller, "bad:\xff\xfe:end", nil, "kido message_agent: message is not valid UTF-8",
+		"message_agent", "--", "Worker-2")
+	if got := len(in.Received()); got != 4 {
+		t.Errorf("inbox received %d payloads, want the 4 deliveries: %q", got, in.Received())
+	}
+}
+
+var freshID = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+func TestMessageAgentSendsEnvelopesFromTheCaller(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	caller := h.firstPane("alpha")
+	h.agentStatus("caller", caller, "pi", "idle", "--title", "asker", "--inbox", startInbox(t, "ok\n").Path)
+	in := startInbox(t, "ok\n")
+	h.idleAgent("alpha", "target", "--title", "peer", "--inbox", in.Path)
+
+	h.expectKido(caller, "hi there", nil, "delivered to peer by inbox", "message_agent", "--reply-to", "ask-1", "--", "peer")
+	h.expectKido(caller, "hi there", nil, "delivered to peer by inbox", "message_agent", "--", "peer")
+	h.expectKido(caller, "are you done?", nil, "delivered to peer by inbox", "ask_agent", "--id", "ask-7", "--", "peer")
+
+	// An answer arrives on the asker's own inbox or not at all; the
+	// target getting nothing is the point.
+	mute := h.idleAgent("alpha", "mute", "--title", "mute")
+	h.expectKido(mute, "are you done?", nil,
+		"kido ask_agent: mute has no inbox for an answer to arrive on, and only a long-lived process has one; nothing sent - use kido message_agent instead, which is one-way and needs no reply",
+		"ask_agent", "--id", "t1", "--", "peer")
+
+	got := envelopes(in)
+	if len(got) != 3 {
+		t.Fatalf("inbox received %q, want 3 envelopes", in.Received())
+	}
+	for i, want := range []struct{ kind, id, replyTo, text string }{
+		{"reply", "", "ask-1", "hi there"},
+		{"message", "", "", "hi there"},
+		{"ask", "ask-7", "", "are you done?"},
+	} {
+		e := got[i]
+		id := field(e, "id")
+		if field(e, "kind") != want.kind || field(e, "replyTo") != want.replyTo || field(e, "text") != want.text ||
+			(want.id == "" && !freshID.MatchString(id)) || (want.id != "" && id != want.id) ||
+			field(e, "from", "session") != "caller" || field(e, "from", "name") != "asker" || field(e, "from", "pane") != caller {
+			t.Errorf("envelope %d = %v, want kind %s, id %q (fresh if empty), replyTo %q, text %q, from (caller, asker, %s)",
+				i, e, want.kind, want.id, want.replyTo, want.text, caller)
+		}
+	}
+}
+
+// A target with no inbox, or a dead one, has a plain message pasted into
+// its pane; an inbox that answers wrongly may have taken it already, so
+// that is an error and never a paste.
+func TestPlainMessageFallsBackToAPasteOnlyWhenNobodyListens(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	caller := h.firstPane("alpha")
+	pane := h.piPane("alpha", "π - pastee")
+
+	h.agentStatus("target", pane, "pi", "idle")
+	h.expectKido(caller, "hi claude", nil, "pasted into pastee's pane", "message_agent", "--", "target")
+	h.waitPaneText(pane, "got: hi claude")
+
+	h.agentStatus("target", pane, "pi", "idle", "--inbox", staleSocket(t))
+	h.expectKido(caller, "hello", nil, "pasted into pastee's pane", "message_agent", "--", "target")
+	h.waitPaneText(pane, "got: hello")
+
+	nope := startInbox(t, "nope\n")
+	h.agentStatus("target", pane, "pi", "idle", "--inbox", nope.Path)
+	h.expectKido(caller, "never pasted", nil,
+		fmt.Sprintf(`kido message_agent: inbox %s: answered "nope", want "ok"`, nope.Path),
+		"message_agent", "--", "target")
+	h.stays(func() bool { return !strings.Contains(h.paneText(pane), "never pasted") },
+		"a message the inbox may have taken was pasted as well")
+}
+
+// A non-message kind must never fall back to a paste: a notice's text is
+// model-authored, and pasted it would run as a command line in the
+// parent's pane.
+func TestAskReplyAndNoticeNeverPaste(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	caller := h.firstPane("alpha")
+	h.agentStatus("caller", caller, "pi", "idle", "--inbox", startInbox(t, "ok\n").Path)
+	pane := h.piPane("alpha", "π - victim")
+
+	h.agentStatus("target", pane, "pi", "idle")
+	h.expectKido(caller, "x", nil,
+		"kido ask_agent: victim has no inbox to send a ask to; only a plain message can be sent as v0 text",
+		"ask_agent", "--", "target")
+
+	h.agentStatus("target", pane, "pi", "idle", "--inbox", staleSocket(t))
+	for _, c := range []struct {
+		kind string
+		env  []string
+		args []string
+	}{
+		{"ask", nil, []string{"ask_agent", "--", "target"}},
+		{"reply", nil, []string{"message_agent", "--reply-to", "ask-1", "--", "target"}},
+		{"notice", []string{"KIDO_AGENT_PARENT_SESSION=target"}, []string{"notify_parent"}},
+	} {
+		want := fmt.Sprintf("kido %s: victim is not listening on its inbox; a %s cannot fall back to a paste: no agent listening on the inbox: ",
+			c.args[0], c.kind)
+		if got, rc := h.kidoAs(caller, "touch /tmp/pwned", c.env, c.args...); !strings.HasPrefix(got, want) || rc != 1 {
+			t.Errorf("kido %v: got (rc=%d) %q, want rc=1 and a line starting %q", c.args, rc, got, want)
+		}
+	}
+
+	h.agentStatus("target", pane, "pi", "idle", "--inbox", startInbox(t, "refused\n").Path)
+	h.expectKido(caller, "touch /tmp/pwned", nil, "kido ask_agent: victim refused the ask", "ask_agent", "--", "target")
+
+	h.stays(func() bool { return !strings.Contains(h.paneText(pane), "got:") },
+		"an ask, reply or notice was pasted into the target's pane")
+}
+
+// A steer reaches a descendant however deep; nothing reaches a peer, an
+// ancestor or the caller.
+func TestSteerReachesDescendantsOnly(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	in := startInbox(t, "ok\n")
+	caller := h.firstPane("alpha")
+	h.idleAgent("alpha", "root", "--title", "root", "--inbox", in.Path)
+	h.agentStatus("caller", caller, "pi", "idle", "--title", "caller", "--inbox", in.Path, "--parent-session", "root")
+	h.idleAgent("alpha", "child", "--title", "child", "--inbox", in.Path, "--parent-session", "caller")
+	h.idleAgent("alpha", "grandchild", "--title", "grandchild", "--inbox", in.Path, "--parent-session", "child")
+	h.idleAgent("alpha", "peer", "--title", "peer", "--inbox", in.Path)
+
+	for _, c := range []struct{ to, want string }{
+		{"child", "delivered to child by inbox"},
+		{"grandchild", "delivered to grandchild by inbox"},
+		{"peer", "kido steer_subagent: peer is not this agent's descendant"},
+		{"root", "kido steer_subagent: root is not this agent's descendant"},
+		{"caller", "kido steer_subagent: caller is this agent"},
+	} {
+		h.expectKido(caller, "stop and do X instead", nil, c.want, "steer_subagent", "--", c.to)
+	}
+	got := envelopes(in)
+	if len(got) != 2 {
+		t.Fatalf("inboxes received %q, want the 2 steers", in.Received())
+	}
+	for _, e := range got {
+		if field(e, "kind") != "steer" || field(e, "text") != "stop and do X instead" {
+			t.Errorf("envelope %v, want a steer carrying the text", e)
+		}
+	}
+}
+
+// The parent is the session its environment names, even one in another
+// tmux session, out of a named lookup's reach.
+func TestNotifyParentReachesTheSessionItsEnvironmentNames(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	h.newSession("beta")
+	caller := h.firstPane("alpha")
+	in := startInbox(t, "ok\n")
+	h.idleAgent("beta", "parent-sess", "--title", "boss", "--inbox", in.Path)
+
+	h.expectKido(caller, "the answer is 42", []string{"KIDO_AGENT_PARENT_SESSION=parent-sess"},
+		"delivered to boss by inbox", "notify_parent")
+	h.expectKido(caller, "nobody to tell", nil,
+		"kido notify_parent: this session has no parent ($KIDO_AGENT_PARENT_SESSION is not set); nothing sent",
+		"notify_parent")
+	h.expectKido(caller, "anybody there?", []string{"KIDO_AGENT_PARENT_SESSION=long-gone"},
+		`kido notify_parent: no live process holds session "long-gone"; the parent is gone, nothing sent`,
+		"notify_parent")
+
+	got := envelopes(in)
+	if len(got) != 1 || field(got[0], "kind") != "notice" || field(got[0], "text") != "the answer is 42" {
+		t.Errorf("parent inbox received %q, want one notice carrying the text", in.Received())
+	}
+}
+
+const maxNotice = 4000
+
+func TestNotifyParentKeepsAReportOverTheCap(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	caller := h.firstPane("alpha")
+	in := startInbox(t, "ok\n")
+	h.idleAgent("alpha", "parent-sess", "--inbox", in.Path)
+	const run = "run-cap-e2e"
+	report := filepath.Join(h.stateDir, "runs", run, "report")
+	if err := os.MkdirAll(filepath.Dir(report), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	notify := func(run, text string) string {
+		t.Helper()
+		env := []string{"KIDO_AGENT_PARENT_SESSION=parent-sess", "KIDO_AGENT_RUN_ID=" + run}
+		before := len(in.Received())
+		h.expectKido(caller, text, env, "delivered to  by inbox", "notify_parent")
+		got := envelopes(in)
+		if len(got) != before+1 {
+			t.Fatalf("parent inbox received %q, want one more notice", in.Received())
+		}
+		return field(got[before], "text")
+	}
+
+	short := "the merge is done; two conflicts, both in README.md"
+	if n := notify(run, short); n != short {
+		t.Errorf("a report under the cap arrived as %q, want it byte for byte", n)
+	}
+	if _, err := os.Stat(report); !os.IsNotExist(err) {
+		t.Errorf("a report under the cap left %s behind (%v)", report, err)
+	}
+
+	long := strings.Repeat("findings and more findings. ", 200) + "CONCLUSION: ship it"
+	n := notify(run, long)
+	kept, _ := os.ReadFile(report)
+	if string(kept) != long || len(n) > maxNotice || !strings.HasSuffix(n, "\n\nfull report: "+report) ||
+		!strings.HasPrefix(n, long[:100]) {
+		t.Errorf("a report over the cap: kept %d of %d bytes, notice of %d bytes %q; want it kept whole, the notice within %d bytes, starting with the report and naming %s",
+			len(kept), len(long), len(n), n, maxNotice, report)
+	}
+
+	if n := notify(run, strings.Repeat("日", 3000)); !utf8.ValidString(n) || strings.ContainsRune(n, utf8.RuneError) {
+		t.Errorf("the head of a multi-byte report was not cut on a rune boundary: %q", n)
+	}
+
+	if n := notify("", strings.Repeat("x", 4500)); len(n) != maxNotice || strings.Contains(n, "full report:") {
+		t.Errorf("a report with no run is %d bytes %q, want truncated to %d, naming no file", len(n), n, maxNotice)
+	}
+}
+
+// writeRecord writes a state record directly, for the fields agent-status
+// cannot set: a chosen report time. Its pid is the test binary's, alive
+// for the whole run.
+func (h *harness) writeRecord(id, pane string, ts time.Time, extra map[string]any) {
+	h.t.Helper()
+	rec := map[string]any{
+		"agent": "pi", "pane": pane, "pid": os.Getpid(), "status": "idle",
+		"ts": ts.UTC().Format("2006-01-02T15:04:05Z"),
+	}
+	for k, v := range extra {
+		rec[k] = v
+	}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.stateDir, id+".json"), b, 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+type listedAgent struct {
+	ID, Name, Pane, Window, Status, Parent, Cwd, Model string
+	Depth                                              int
+	Self, CanMessage, CanReply, Stalled                bool
+}
+
+func parseAgents(t *testing.T, out string) []listedAgent {
+	t.Helper()
+	var agents []listedAgent
+	if err := json.Unmarshal([]byte(out), &agents); err != nil {
+		t.Fatalf("kido list_agents --json: %v\n%s", err, out)
+	}
+	return agents
+}
+
+// jsonKeys is the keys, in order, of the first agent in `kido list_agents
+// --json`, which share/pi/kido-agents.ts reads.
+func jsonKeys(t *testing.T, out string) []string {
+	t.Helper()
+	var agents []json.RawMessage
+	if err := json.Unmarshal([]byte(out), &agents); err != nil || len(agents) == 0 {
+		t.Fatalf("kido list_agents --json: %v\n%s", err, out)
+	}
+	dec := json.NewDecoder(bytes.NewReader(agents[0]))
+	var keys []string
+	if _, err := dec.Token(); err != nil {
+		t.Fatal(err)
+	}
+	for dec.More() {
+		k, err := dec.Token()
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, k.(string))
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return keys
+}
+
+func TestListAgentsScopesOrdersAndDecorates(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	h.newSession("beta")
+	caller := h.firstPane("alpha")
+	pane := func(session string) string { return h.newWindow(session, "", "sh", "-c", "exec sleep 300") }
+	t0 := time.Now().Add(-time.Hour).Truncate(time.Second)
+	at := func(s int) time.Time { return t0.Add(time.Duration(s) * time.Second) }
+	parent := func(p string) map[string]any { return map[string]any{"parent": map[string]any{"session": p}} }
+	withDepth := func(m map[string]any, d int) map[string]any { m["depth"] = d; return m }
+
+	h.writeRecord("root", caller, at(0), map[string]any{
+		"status": "running", "title": "alpha-root", "inbox": "/nonexistent.sock", "model": "m1",
+	})
+	h.writeRecord("child2", pane("alpha"), at(2), withDepth(parent("root"), 1))
+	h.writeRecord("child1", pane("alpha"), at(1), withDepth(parent("root"), 1))
+	// The session id breaks a tie in ts, so identical state always lists
+	// in one order.
+	h.writeRecord("ccc", pane("alpha"), at(-1), nil)
+	h.writeRecord("bbb", pane("alpha"), at(-1), nil)
+	// A ring of bogus parent edges is reachable from no root, and
+	// list_agents is the only way to discover an agent at all: each comes
+	// out once.
+	h.writeRecord("cyc-a", pane("alpha"), at(3), parent("cyc-b"))
+	h.writeRecord("cyc-b", pane("alpha"), at(4), parent("cyc-a"))
+	h.writeRecord("selfish", pane("alpha"), at(5), parent("selfish"))
+	// The edge is matched on the parent's session, never its pid: a pid
+	// can be recycled.
+	h.writeRecord("orphan", pane("alpha"), at(6), map[string]any{"parent": map[string]any{"session": "someone-else", "pid": os.Getpid()}})
+	h.writeRecord("far", pane("beta"), at(0), nil)
+
+	out, rc := h.kidoAs(caller, "", nil, "list_agents", "--json")
+	if rc != 0 {
+		t.Fatalf("kido list_agents --json: rc=%d %s", rc, out)
+	}
+	if got, want := strings.Join(jsonKeys(t, out), " "),
+		"id name agent pane window status activity parent depth self cwd canMessage canReply model sinceReport stalled"; got != want {
+		t.Errorf("list_agents --json keys = %q, want %q", got, want)
+	}
+	var order []string
+	for _, a := range parseAgents(t, out) {
+		order = append(order, a.ID+"<"+a.Parent)
+		if a.ID == "root" {
+			want := listedAgent{ID: "root", Name: "alpha-root", Pane: caller, Status: "running", Model: "m1",
+				Window: h.in("display-message", "-p", "-t", caller, "#{window_id}"),
+				Cwd:    h.in("display-message", "-p", "-t", caller, "#{pane_current_path}"),
+				Self:   true, CanMessage: true, CanReply: true, Stalled: true}
+			if a != want {
+				t.Errorf("root = %+v, want %+v", a, want)
+			}
+		} else if a.Self || a.CanMessage || a.CanReply {
+			t.Errorf("%s = %+v, want neither self nor reachable", a.ID, a)
+		}
+	}
+	if got, want := strings.Join(order, " "),
+		"bbb< ccc< root< child1<root child2<root selfish< orphan< cyc-a<cyc-b cyc-b<cyc-a"; got != want {
+		t.Errorf("list_agents order (id<parent) = %q, want %q", got, want)
+	}
+}
+
+// canReply is false only for a run whose recorded tools leave out
+// message_agent; --session answers from no pane at all.
+func TestListAgentsSessionFlagAndCanReply(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	h.newSession("beta")
+	beta := h.in("display-message", "-p", "-t", "beta:", "#{session_id}")
+	t0 := time.Now().Add(-time.Hour).Truncate(time.Second)
+	for i, c := range []struct {
+		id    string
+		tools []string
+	}{
+		{"no-record", nil},
+		{"empty-tools", []string{}},
+		{"no-message-tool", []string{"read", "bash"}},
+		{"has-message-tool", []string{"read", "message_agent"}},
+	} {
+		if c.tools != nil {
+			meta, _ := json.Marshal(map[string]any{"id": c.id, "name": "", "kind": "agent", "depth": 0,
+				"pane": "", "pid": 0, "cwd": "", "tools": c.tools, "startedAt": "2023-11-14T22:13:20Z"})
+			dir := filepath.Join(h.stateDir, "runs", c.id)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "meta.json"), meta, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		h.writeRecord(c.id, h.newWindow("beta", "", "sh", "-c", "exec sleep 300"),
+			t0.Add(time.Duration(i)*time.Second), map[string]any{"inbox": "/nonexistent.sock"})
+	}
+	h.writeRecord("here", h.firstPane("alpha"), t0, nil)
+
+	out, rc := h.kidoAs("", "", nil, "list_agents", "--json", "--session", beta)
+	if rc != 0 {
+		t.Fatalf("kido list_agents --session %s from no pane: rc=%d %s", beta, rc, out)
+	}
+	var got []string
+	for _, a := range parseAgents(t, out) {
+		got = append(got, fmt.Sprintf("%s:%v", a.ID, a.CanReply))
+	}
+	if want := "no-record:true empty-tools:true no-message-tool:false has-message-tool:true"; strings.Join(got, " ") != want {
+		t.Errorf("list_agents --session %s = %q, want %q", beta, strings.Join(got, " "), want)
+	}
+
+	h.expectKido("", "", nil,
+		"kido list_agents: no tmux session for pane \"\"; pass --session\nusage: kido list_agents [--session ID] [--json]",
+		"list_agents", "--json")
+}
