@@ -46,6 +46,7 @@ final class SessionView: NSView {
 
     func show(_ window: WindowID?) {
         let start = DispatchTime.now(), before = shown, last = recent.first
+        let focused = (self.window?.firstResponder as? PaneView)?.isDescendant(of: self) == true
         defer { DispatchQueue.main.async { [weak self] in self?.evict() } }
         for (id, view) in windows { view.isHidden = id != window }
         others.values.forEach { $0.isHidden = true }
@@ -54,7 +55,7 @@ final class SessionView: NSView {
         recent.insert(window, at: 0)
         let synced = DispatchGroup()
         let (created, resynced) = view.present(synced)
-        view.focusActive(force: false)
+        view.focusActive(force: focused)
         if debugging {
             synced.notify(queue: .main) {
                 debug(
