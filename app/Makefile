@@ -13,7 +13,7 @@ all:
 run: all
 	open -W $(APP)
 
-test:
+test: all
 	cd Packages/TmuxControl && swift test
 	cd Packages/SidebarFeed && swift test
 
