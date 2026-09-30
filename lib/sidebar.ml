@@ -623,8 +623,16 @@ let step m (snap : snapshot) =
   (if detect_pause m.clock clock then
      try State.record_pause ~dir:m.opts.dir clock.wall with Unix.Unix_error _ | Sys_error _ -> ());
   let client =
-    match P.find snap.panes snap.active with
-    | Some p -> Some { session = p.session_id; window = p.window_id; pane = p.pane_id }
+    match snap.client with
+    | Some (c : Tmux.Exec.client_state) -> (
+        match
+          List.find_opt
+            (fun (p : P.t) ->
+              String.equal p.pane_id snap.active && String.equal p.session_id c.session_id)
+            snap.panes
+        with
+        | Some p -> Some { session = p.session_id; window = p.window_id; pane = p.pane_id }
+        | None -> m.client)
     | None -> m.client
   in
   let m = track { m with at = m.now (); clock; snap; client } in

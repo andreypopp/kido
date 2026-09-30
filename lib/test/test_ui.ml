@@ -74,7 +74,7 @@ let model ?(dir = temp ()) ?(clock = ref test_at) ?(started = test_at -. 3600.) 
   let m = Sidebar.make ~now:(fun () -> !clock) (opts ~dir ()) in
   { m with started; at = !clock }
 
-let client session = Some { Tmux.Exec.session; focused = false }
+let client session = Some { Tmux.Exec.session; session_id = "$0"; focused = false }
 let lines m = Array.to_list (Ui.lines (Sidebar.rebuild m))
 
 let render ?dir ?(current = "sess") panes st =

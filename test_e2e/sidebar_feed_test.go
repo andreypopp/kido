@@ -291,6 +291,40 @@ func TestSidebarFeedMatchesTheTUI(t *testing.T) {
 	}
 }
 
+// A window linked into two sessions has one copy of its pane per
+// session; the snapshot's client must name the session the client is
+// actually switched to, not whichever copy list-panes happens to return
+// first.
+func TestSidebarFeedLinkedWindowClientSession(t *testing.T) {
+	t.Parallel()
+	h := start(t, "one")
+	h.newSession("two")
+	f := h.startFeed("one")
+	f.waitLast(func(s feedSnapshot) bool { return len(s.Sessions) == 2 }, "both sessions")
+
+	windowID := h.in("display-message", "-p", "-t", "one", "#{window_id}")
+	h.in("link-window", "-s", "one", "-t", "two:")
+	var index string
+	for _, line := range strings.Split(h.in("list-windows", "-t", "two", "-F", "#{window_index} #{window_id}"), "\n") {
+		if idx, id, ok := strings.Cut(line, " "); ok && id == windowID {
+			index = idx
+		}
+	}
+	if index == "" {
+		t.Fatalf("linked window not found in two: %s",
+			h.in("list-windows", "-t", "two", "-F", "#{window_index} #{window_id}"))
+	}
+	h.in("switch-client", "-c", f.client, "-t", "two:"+index)
+
+	want := h.in("display-message", "-p", "-c", f.client, "#{session_id} #{window_id} #{pane_id}")
+	s := f.waitLast(func(s feedSnapshot) bool {
+		return s.Client.Session+" "+s.Client.Window+" "+s.Client.Pane == want
+	}, "client switched into two's copy of the linked window")
+	if got := s.Client.Session + " " + s.Client.Window + " " + s.Client.Pane; got != want {
+		t.Errorf("client = %q, want %q: %s", got, want, s.raw)
+	}
+}
+
 // A change is one new line; a quiet server is no line at all; the filter
 // narrows the next line and a bare "filter" clears it; an unknown command
 // is ignored; EOF on stdin is exit 0.

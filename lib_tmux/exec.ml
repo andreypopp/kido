@@ -119,25 +119,32 @@ let capture_screen ?socket pane = exec ?socket [ "capture-pane"; "-p"; "-t"; pan
 let current_client () =
   Result.get_or ~default:"" (exec [ "display-message"; "-p"; "#{client_name}" ])
 
-type client_state = { session : string; focused : bool }
+type client_state = { session : string; session_id : string; focused : bool }
 
 let side_focus_flag = "side-status-focus"
 
 let client_format =
   String.concat Pane.sep
-    [ "#{client_name}"; "#{client_session}"; "#{client_flags}"; "#{client_control_mode}" ]
+    [
+      "#{client_name}";
+      "#{client_session}";
+      "#{session_id}";
+      "#{client_flags}";
+      "#{client_control_mode}";
+    ]
 
 let client_fields line =
   match String.split ~by:Pane.sep line with
-  | name :: session :: flags :: control :: _ -> Some (name, session, flags, control)
+  | name :: session :: session_id :: flags :: control :: _ ->
+      Some (name, session, session_id, flags, control)
   | _ -> None
 
 let parse_client_state lines client =
   List.find_map
     (fun line ->
       match client_fields line with
-      | Some (name, session, flags, _) when String.equal name client ->
-          Some { session; focused = String.mem ~sub:side_focus_flag flags }
+      | Some (name, session, session_id, flags, _) when String.equal name client ->
+          Some { session; session_id; focused = String.mem ~sub:side_focus_flag flags }
       | _ -> None)
     lines
 
@@ -150,7 +157,7 @@ let real_clients lines =
   List.filter_map
     (fun line ->
       match client_fields line with
-      | Some (name, _, _, control) when not (String.is_empty name || String.equal control "1") ->
+      | Some (name, _, _, _, control) when not (String.is_empty name || String.equal control "1") ->
           Some name
       | _ -> None)
     lines

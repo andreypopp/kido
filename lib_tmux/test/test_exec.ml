@@ -30,8 +30,8 @@ let%expect_test "invoked_path: a bare name is looked up on PATH and left unresol
 
 let clients =
   [
-    String.concat Pane.sep [ "/dev/ttys001"; "other"; "attached,UTF-8"; "0" ];
-    String.concat Pane.sep [ "/dev/ttys012"; "work"; "attached,side-status-focus,UTF-8"; "0" ];
+    String.concat Pane.sep [ "/dev/ttys001"; "other"; "$1"; "attached,UTF-8"; "0" ];
+    String.concat Pane.sep [ "/dev/ttys012"; "work"; "$0"; "attached,side-status-focus,UTF-8"; "0" ];
     "junk";
   ]
 
@@ -40,12 +40,13 @@ let%expect_test "client state" =
     (fun c ->
       Printf.printf "%s: %s\n" c
         (Option.map_or ~default:"-"
-           (fun (s : Exec.client_state) -> Printf.sprintf "%s focused=%b" s.session s.focused)
+           (fun (s : Exec.client_state) ->
+             Printf.sprintf "%s %s focused=%b" s.session s.session_id s.focused)
            (Exec.parse_client_state clients c)))
     [ "/dev/ttys012"; "/dev/ttys001"; "/dev/ttys999" ];
   [%expect
     {|
-    /dev/ttys012: work focused=true
-    /dev/ttys001: other focused=false
+    /dev/ttys012: work $0 focused=true
+    /dev/ttys001: other $1 focused=false
     /dev/ttys999: -
     |}]

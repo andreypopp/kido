@@ -20,7 +20,7 @@ val list_panes : ?socket:string -> unit -> (Pane.t list, string) result
 val capture_pane : ?socket:string -> string -> (string list, string) result
 val capture_screen : ?socket:string -> string -> (string, string) result
 
-type client_state = { session : string; focused : bool }
+type client_state = { session : string; session_id : string; focused : bool }
 
 val current_client : unit -> string
 val client_format : string
