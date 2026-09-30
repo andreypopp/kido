@@ -8,18 +8,21 @@ func unquoteSideStatusCommand(_ raw: String) -> String {
 }
 
 final class Feed: @unchecked Sendable {
+    typealias Location = (kido: String, client: String)
+    typealias Locate = (@escaping @Sendable (Result<Location, Server.Failure>) -> Void) -> Void
+
     enum Status {
         case starting
         case running(Snapshot?)
         case restarting(String)
-        case failed(String)
     }
 
     private let socket: String
-    private let client: String
-    private let kido: String
+    private let locate: Locate
+    @MainActor private let query: () -> String
     private let reader = DispatchQueue(label: "Feed.reader")
     private let writer = DispatchQueue(label: "Feed.writer")
+    @MainActor private var located: Location?
     @MainActor private var process: Process?
     @MainActor private var input: FileHandle?
     @MainActor private var generation = 0
@@ -28,10 +31,12 @@ final class Feed: @unchecked Sendable {
     @MainActor private(set) var status: Status = .starting { didSet { onChange(status) } }
     @MainActor private let onChange: (Status) -> Void
 
-    @MainActor init(kido: String, socket: String, client: String, onChange: @escaping (Status) -> Void) {
-        self.kido = kido
+    @MainActor init(
+        socket: String, locate: @escaping Locate, query: @escaping () -> String, onChange: @escaping (Status) -> Void
+    ) {
         self.socket = socket
-        self.client = client
+        self.locate = locate
+        self.query = query
         self.onChange = onChange
         start()
     }
@@ -56,6 +61,7 @@ final class Feed: @unchecked Sendable {
     }
 
     @MainActor func switchWindow(next: Bool, failed: @escaping @MainActor (String) -> Void) {
+        guard let (kido, client) = located else { return failed("the sidebar feed has not found kido yet") }
         let process = Process(), stderr = Pipe()
         process.executableURL = URL(fileURLWithPath: kido)
         process.arguments = ["switch-window", next ? "next" : "prev", "--client", client, "--socket", socket]
@@ -84,8 +90,24 @@ final class Feed: @unchecked Sendable {
         status = .starting
         generation += 1
         let generation = generation
+        locate { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self, self.generation == generation else { return }
+                switch result {
+                case .failure(let failure): self.restart(failure.message)
+                case .success(let location): self.launch(location, generation)
+                }
+            }
+        }
+    }
+
+    @MainActor private func launch(_ location: Location, _ generation: Int) {
+        located = location
+        let (kido, client) = location
         let fake = ProcessInfo.processInfo.environment["KIDO_APP_FEED"]
         let path = fake ?? kido
+        guard !path.isEmpty else { return restart("the server's side-status-command is empty") }
+        guard path.hasPrefix("/") else { return restart("the server's side-status-command \(path) is not an absolute path") }
         let process = Process()
         let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
         process.executableURL = URL(fileURLWithPath: path)
@@ -104,6 +126,7 @@ final class Feed: @unchecked Sendable {
         do { try process.run() } catch { return restart("could not run \(path): \(error.localizedDescription)") }
         self.process = process
         input = stdin.fileHandleForWriting
+        filter(query())
         DispatchQueue.global().async(group: ended) { stderrTail = stderr.fileHandleForReading.readDataToEndOfFile() }
         readLines(stdout.fileHandleForReading, queue: reader, group: ended) { [weak self] line in
             let last = try? JSONDecoder().decode(Snapshot.self, from: Data(line.utf8))
