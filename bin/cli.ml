@@ -6,8 +6,17 @@ let run ?(failure = 1) name body =
     error name msg;
     failure
   in
-  match body () with
+  match
+    let code = body () in
+    flush stdout;
+    code
+  with
   | code -> code
+  (* sigpipe is ignored for the inbox sockets, so a closed stdout arrives as strerror(EPIPE) *)
+  | exception Sys_error m when String.equal m (Unix.error_message Unix.EPIPE) ->
+      Sys.set_signal Sys.sigpipe Sys.Signal_default;
+      Unix.kill (Unix.getpid ()) Sys.sigpipe;
+      failure
   | exception Failure msg -> fail msg
   | exception Sys_error msg -> fail msg
   | exception Yojson.Json_error msg -> fail msg

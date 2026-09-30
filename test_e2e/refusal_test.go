@@ -2,8 +2,10 @@ package e2e
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -42,5 +44,27 @@ func TestCommandLineRefusals(t *testing.T) {
 			t.Errorf("kido %v: exit %d, stderr %q, stdout %q; want exit %d, stderr %q, no stdout",
 				c.args, code, got, out, c.code, c.stderr)
 		}
+	}
+}
+
+// A reader that stops early (`kido runs | head -1`) ends kido the way it
+// ends any other program: by SIGPIPE, with nothing on stderr.
+func TestClosedStdoutEndsQuietly(t *testing.T) {
+	t.Parallel()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Close()
+	cmd := exec.Command(kidoBin, "runs")
+	cmd.Env = cleanEnv("KIDO_STATE_DIR=" + t.TempDir())
+	cmd.Stdout = w
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	w.Close()
+	ws, _ := cmd.ProcessState.Sys().(syscall.WaitStatus)
+	if !ws.Signaled() || ws.Signal() != syscall.SIGPIPE || stderr.Len() != 0 {
+		t.Errorf("kido runs into a closed pipe: %v, stderr %q; want killed by SIGPIPE, no stderr", err, stderr.String())
 	}
 }
