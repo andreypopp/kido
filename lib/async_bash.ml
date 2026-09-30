@@ -22,10 +22,9 @@ let async_bash ~dir ~self ~exe ~panes ~tmux ~name ~stream args =
   let* panes = Lazy.force panes in
   let* pane = List_agents.caller_pane panes self in
   let own = State.String_map.find_opt pane.pane_id (State.by_pane (State.load_live ~dir)) in
-  let runs = Filename.concat dir "runs" in
   let id = Subrun.new_id () in
-  Subrun.create ~dir:runs id (String.concat " " args);
-  Subrun.write_command ~dir:runs id argv;
+  Subrun.create ~dir id (String.concat " " args);
+  Subrun.write_command ~dir id argv;
   let meta : Subrun.meta =
     {
       id;
@@ -42,14 +41,13 @@ let async_bash ~dir ~self ~exe ~panes ~tmux ~name ~stream args =
       started_at = Timestamp.now ();
     }
   in
-  Subrun.write_meta ~dir:runs meta;
+  Subrun.write_meta ~dir meta;
   let parent =
     Option.map (fun (session, (s : State.session)) -> State.{ pid = s.pid; session }) own
   in
   let env =
-    Spawn_subagent.run_env ~runs id parent meta.depth ~keep_alive:false
-    @ [ "KIDO_STATE_DIR=" ^ dir ]
+    Spawn_subagent.run_env ~dir id parent meta.depth ~keep_alive:false @ [ "KIDO_STATE_DIR=" ^ dir ]
   in
-  Spawn_subagent.create_run_window ~runs tmux meta ~session:pane.session_id ~env
+  Spawn_subagent.create_run_window ~dir tmux meta ~session:pane.session_id ~env
     ([ exe; "async-run"; "--run-id"; Subrun.string_of_id id ]
     @ if stream then [ "--stream" ] else [])

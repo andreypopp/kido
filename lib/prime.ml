@@ -113,9 +113,7 @@ let local_mode ~dotdir path =
   match Filename.basename path with
   | "zsh"
     when List.exists
-           (fun name ->
-             let p = Filename.concat dotdir name in
-             Sys.file_exists p && not (Sys.is_directory p))
+           (fun name -> Tmux.Exec.is_file (Filename.concat dotdir name))
            [ ".zshrc"; ".zshenv"; ".zprofile"; ".zlogin" ] ->
       Zsh
   | "bash" when bash_has_ps0 (bash_version path) -> Bash

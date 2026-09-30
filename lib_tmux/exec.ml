@@ -1,4 +1,8 @@
+let getenv name = Option.get_or ~default:"" (Sys.getenv_opt name)
 let is_file p = try Sys.file_exists p && not (Sys.is_directory p) with Sys_error _ -> false
+
+let is_executable p =
+  is_file p && match Unix.access p [ X_OK ] with () -> true | exception Unix.Unix_error _ -> false
 
 let clean p =
   let rec go acc = function
@@ -14,13 +18,7 @@ let abs p = clean (if Filename.is_relative p then Filename.concat (Sys.getcwd ()
 let look_path ~path name =
   String.split_on_char ':' path
   |> List.map (fun dir -> Filename.concat (if String.is_empty dir then "." else dir) name)
-  |> List.find_opt (fun p ->
-      is_file p
-      &&
-        try
-          Unix.access p [ X_OK ];
-          true
-        with Unix.Unix_error _ -> false)
+  |> List.find_opt is_executable
 
 let invoked_path ~path arg0 =
   let found =
@@ -35,19 +33,17 @@ let candidates exe =
   | resolved when not (String.equal resolved exe) -> [ exe; resolved ]
   | _ | (exception Unix.Unix_error _) -> [ exe ]
 
-let resolve_binary ~kido_tmux ~path arg0 =
+let self = lazy (invoked_path ~path:(getenv "PATH") Sys.argv.(0))
+
+let resolve_binary ~kido_tmux exe =
   match kido_tmux with
   | Some b when not (String.is_empty b) -> b
   | _ ->
-      candidates (invoked_path ~path arg0)
+      candidates exe
       |> List.map (fun c -> Filename.concat (Filename.dirname c) "kido-tmux")
       |> List.find_opt is_file |> Option.get_or ~default:"tmux"
 
-let binary =
-  lazy
-    (resolve_binary ~kido_tmux:(Sys.getenv_opt "KIDO_TMUX")
-       ~path:(Option.get_or ~default:"" (Sys.getenv_opt "PATH"))
-       Sys.argv.(0))
+let binary = lazy (resolve_binary ~kido_tmux:(Sys.getenv_opt "KIDO_TMUX") (Lazy.force self))
 
 let read_all fd =
   let buf = Buffer.create 4096 and chunk = Bytes.create 65536 in

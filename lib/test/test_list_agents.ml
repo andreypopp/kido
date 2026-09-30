@@ -3,8 +3,8 @@ open Fixture
 
 let record ~dir id s = Result.get_exn (State.record ~dir id s)
 
-let build ?(runs = "/nonexistent") states panes ~session ~self =
-  List_agents.build ~runs ~threshold:60. ~wake:None ~now:1_700_000_100. states panes ~session ~self
+let build ?(dir = "/nonexistent") states panes ~session ~self =
+  List_agents.build ~dir ~threshold:60. ~wake:None ~now:1_700_000_100. states panes ~session ~self
 
 let show agents =
   List.iter
@@ -115,12 +115,12 @@ let%expect_test "a parent edge naming a session not in scope is no edge" =
     |}]
 
 let%expect_test "canReply: a run record whose tools leave out message_agent cannot answer an ask" =
-  let runs = Filename.temp_dir "kido-runs" "" in
+  let dir = Filename.temp_dir "kido-runs" "" in
   List.iter
     (fun (id, tools) ->
       let id = Result.get_exn (Subrun.parse_id id) in
-      Subrun.create ~dir:runs id "task";
-      Subrun.write_meta ~dir:runs
+      Subrun.create ~dir id "task";
+      Subrun.write_meta ~dir
         {
           id;
           name = "";
@@ -143,7 +143,7 @@ let%expect_test "canReply: a run record whose tools leave out message_agent cann
   let ids = [ "no-record"; "empty-tools"; "no-message-tool"; "has-message-tool" ] in
   let panes = List.mapi (fun i _ -> pane ~session_id:"$1" (Printf.sprintf "%%%d" i)) ids in
   show
-    (build ~runs
+    (build ~dir
        (List.mapi
           (fun i id -> (id, session ~pane:(Printf.sprintf "%%%d" i) ~inbox:"sock" Idle))
           ids)

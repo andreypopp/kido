@@ -79,12 +79,11 @@ let async_run ~dir ~knobs ~warn ~run_id ~stream args =
       (fun _ -> "--run-id is required (or $KIDO_AGENT_RUN_ID)\n" ^ usage)
       (Subrun.parse_id run_id)
   in
-  let runs = Filename.concat dir "runs" in
   let* meta =
-    Option.to_result (Printf.sprintf "run %s has no meta" run_id) (Subrun.read_meta ~dir:runs id)
+    Option.to_result (Printf.sprintf "run %s has no meta" run_id) (Subrun.read_meta ~dir id)
   in
   let* argv =
-    match Subrun.read_command ~dir:runs id with
+    match Subrun.read_command ~dir id with
     | Some (_ :: _ as argv) -> Ok argv
     | _ -> Error (Printf.sprintf "run %s has no command" run_id)
   in
@@ -101,13 +100,13 @@ let async_run ~dir ~knobs ~warn ~run_id ~stream args =
   let signals = Sys.[ sigterm; sighup; sigint ] in
   let previous = List.map (fun s -> (s, Sys.signal s (Signal_handle handler))) signals in
   let file =
-    Unix.openfile (Subrun.output_path ~dir:runs id) [ O_WRONLY; O_CREAT; O_TRUNC; O_CLOEXEC ] 0o644
+    Unix.openfile (Subrun.output_path ~dir id) [ O_WRONLY; O_CREAT; O_TRUNC; O_CLOEXEC ] 0o644
   in
   let stream = if stream then Some (Async_stream.start ~dir knobs meta) else None in
   let report result text =
     let unstreamed = Option.map_or ~default:0 Async_stream.close stream in
     let outcome : Subrun.outcome = { result; text; at = Some (Timestamp.now ()) } in
-    if Subrun.record_outcome ~dir:runs id outcome then
+    if Subrun.record_outcome ~dir id outcome then
       Result.iter_err
         (fun e -> warn (Msg.string_of_error e))
         (Reap.send ~dir { meta; outcome; detail = Bash { unstreamed } })

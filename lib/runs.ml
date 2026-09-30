@@ -12,17 +12,15 @@ let info_to_yojson ?(extra = []) { meta; outcome } =
         @ extra)
   | json -> json
 
-let load ~runs id =
+let load ~dir id =
   Option.map
-    (fun (meta : Subrun.meta) ->
-      { meta; outcome = Subrun.effective_outcome ~dir:runs id ~pid:meta.pid })
-    (Subrun.read_meta ~dir:runs id)
+    (fun (meta : Subrun.meta) -> { meta; outcome = Subrun.effective_outcome ~dir id ~pid:meta.pid })
+    (Subrun.read_meta ~dir id)
 
 let seconds t = Timestamp.to_local_string (Float.of_int (Float.to_int t))
 
 let list ~dir =
-  let runs = Filename.concat dir "runs" in
-  List.filter_map (load ~runs) (Subrun.list ~dir:runs)
+  List.filter_map (load ~dir) (Subrun.list ~dir)
   |> List.sort (fun a b -> Float.compare b.meta.started_at a.meta.started_at)
 
 let table ~now infos =
@@ -49,13 +47,12 @@ let table ~now infos =
 
 let show ~dir ~json id_str =
   let open Result.Infix in
-  let runs = Filename.concat dir "runs" in
   let* id = Subrun.parse_id id_str in
-  let+ info = Option.to_result (Printf.sprintf "run %S: no such run" id_str) (load ~runs id) in
+  let+ info = Option.to_result (Printf.sprintf "run %S: no such run" id_str) (load ~dir id) in
   let m = info.meta in
-  let task = Option.get_or ~default:"" (Subrun.read_task ~dir:runs id) in
-  let screen = Subrun.read_screen ~dir:runs id in
-  let cd = "cd " ^ Tmux.Conn.quote m.cwd ^ " && " in
+  let task = Option.get_or ~default:"" (Subrun.read_task ~dir id) in
+  let screen = Subrun.read_screen ~dir id in
+  let cd = "cd " ^ Filename.quote m.cwd ^ " && " in
   let resume = cd ^ "kido spawn_subagent --resume " ^ id_str in
   let fork = cd ^ "pi --fork " ^ id_str in
   if json then
@@ -84,7 +81,7 @@ let show ~dir ~json id_str =
         line "outcome" (Subrun.string_of_result o.result);
         Option.iter (fun at -> line "ended" (seconds at)) o.at;
         if not (String.is_empty o.text) then line "detail" o.text);
-    if Subrun.has_report ~dir:runs id then line "report" (Subrun.report_path ~dir:runs id);
+    if Subrun.has_report ~dir id then line "report" (Subrun.report_path ~dir id);
     line "resume" resume;
     line "fork" fork;
     Printf.bprintf b "task:\n%s\n" task;
@@ -111,13 +108,12 @@ let run_outcome ~dir ~capture ~warn ~result ~text ~unreported id_str =
         Error (Printf.sprintf "--result must be \"completed\" or \"failed\"\n%s" run_outcome_usage)
   in
   let* id = Subrun.parse_id id_str in
-  let runs = Filename.concat dir "runs" in
-  let meta = Subrun.read_meta ~dir:runs id in
+  let meta = Subrun.read_meta ~dir id in
   let text =
     match (meta, result) with
     | Some m, Failed ->
         Option.map_or ~default:text (refine_no_turn_detail text)
-          (Subrun.capture_own_screen ~dir:runs ~capture id m.pane)
+          (Subrun.capture_own_screen ~dir ~capture id m.pane)
     | _ -> text
   in
   let outcome : Subrun.outcome = { result; text; at = Some (Timestamp.now ()) } in
@@ -131,5 +127,5 @@ let run_outcome ~dir ~capture ~warn ~result ~text ~unreported id_str =
         (Reap.record_ending ~dir meta outcome);
       Ok ()
   | _ ->
-      if Subrun.record_outcome ~dir:runs id outcome then Ok ()
+      if Subrun.record_outcome ~dir id outcome then Ok ()
       else Error (Printf.sprintf "run %s already has an outcome, or is gone" id_str)

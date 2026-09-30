@@ -1,7 +1,7 @@
 open Kido
 open Fixture
 
-let temp () = Filename.temp_dir "kido-runs" ""
+let temp () = Filename.temp_dir "kido-state" ""
 let id s = Result.get_exn (Subrun.parse_id s)
 
 let%expect_test "Create writes meta and task, round-tripping what was written" =
@@ -26,7 +26,7 @@ let%expect_test "Create writes meta and task, round-tripping what was written" =
   let got = Option.get_exn_or "ReadMeta" (Subrun.read_meta ~dir i) in
   Printf.printf "%s %d %s\n" got.name got.depth got.pane;
   print_endline (Option.get_exn_or "ReadTask" (Subrun.read_task ~dir i));
-  Printf.printf "run dir exists: %b\n" (Sys.file_exists (Filename.concat dir "run-1"));
+  Printf.printf "run dir exists: %b\n" (Sys.file_exists (Filename.concat dir "runs/run-1"));
   [%expect {|
     kid 1 %1
     do the thing
@@ -95,7 +95,7 @@ let%expect_test "RecordOutcome writes once; a later write is refused and the fir
   let got = Option.get_exn_or "ReadOutcome" (Subrun.read_outcome ~dir i) in
   Printf.printf "%b %b %s\n" wrote_first wrote_second
     (match got.result with Completed -> "completed" | _ -> "wrong");
-  Sys.readdir (Filename.concat dir (Subrun.string_of_id i))
+  Sys.readdir (Filename.dirname (Subrun.task_path ~dir i))
   |> Array.to_list |> List.sort String.compare |> List.iter print_endline;
   [%expect {|
     true false completed
@@ -204,9 +204,9 @@ let%expect_test "ReadMeta: missing, truncated, or malformed JSON each read as No
   let i = id "run-bad" in
   Subrun.create ~dir i "x";
   Printf.printf "no meta written: %b\n" (Option.is_none (Subrun.read_meta ~dir i));
-  Fs.write (Filename.concat dir "run-bad/meta.json") {|{"id":"run-bad","name":|};
+  Fs.write (Subrun.meta_path ~dir i) {|{"id":"run-bad","name":|};
   Printf.printf "truncated: %b\n" (Option.is_none (Subrun.read_meta ~dir i));
-  Fs.write (Filename.concat dir "run-bad/meta.json") {|["not", "an", "object"]|};
+  Fs.write (Subrun.meta_path ~dir i) {|["not", "an", "object"]|};
   Printf.printf "array: %b\n" (Option.is_none (Subrun.read_meta ~dir i));
   [%expect {|
     no meta written: true

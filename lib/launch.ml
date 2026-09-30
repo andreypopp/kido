@@ -95,18 +95,20 @@ let run ~tmux =
              socket bin socket)
     | Up -> exec (Unix.environment ()) [ "attach-session" ]
     | Down ->
-        let env name = Option.get_or ~default:"" (Sys.getenv_opt name) in
-        let exe = Tmux.Exec.invoked_path ~path:(env "PATH") Sys.argv.(0) in
-        let* user_conf = user_conf ~xdg_config_home:(env "XDG_CONFIG_HOME") ~home:(env "HOME") in
+        let* user_conf =
+          user_conf
+            ~xdg_config_home:(Tmux.Exec.getenv "XDG_CONFIG_HOME")
+            ~home:(Tmux.Exec.getenv "HOME")
+        in
         let conf = Filename.concat (State.dir ()) "server.conf" in
         Fs.mkdir_p (State.dir ());
-        let* conf_text = server_conf ~exe ~user_conf in
+        let* conf_text = server_conf ~exe:(Lazy.force Tmux.Exec.self) ~user_conf in
         Fs.write conf conf_text;
         let env =
-          match Bin_dir.of_exe exe with
+          match Bin_dir.own () with
           | Some dir ->
               Shell.with_env (Unix.environment ())
-                [ ("PATH", Bin_dir.path_with_first dir (env "PATH")) ]
+                [ ("PATH", Bin_dir.path_with_first dir (Tmux.Exec.getenv "PATH")) ]
           | None -> Unix.environment ()
         in
         exec env [ "-f"; conf; "new-session"; "-s"; "main" ]

@@ -14,7 +14,7 @@ let%expect_test "resolve_binary: $KIDO_TMUX, then a kido-tmux beside kido, then 
   let dir, show = temp () in
   let exe = Filename.concat dir "kido" in
   touch exe;
-  let resolve kido_tmux = print_endline (show (Exec.resolve_binary ~kido_tmux ~path:"" exe)) in
+  let resolve kido_tmux = print_endline (show (Exec.resolve_binary ~kido_tmux exe)) in
   resolve None;
   touch (Filename.concat dir "kido-tmux");
   resolve (Some "/opt/kido-tmux");
@@ -37,7 +37,7 @@ let%expect_test "a kido-tmux beside the resolved executable is found through a s
   Unix.symlink (Filename.concat cellar "kido") (Filename.concat bin "kido");
   let exe = Filename.concat bin "kido" in
   List.iter (fun c -> print_endline (show c)) (Exec.candidates exe);
-  print_endline (show (Exec.resolve_binary ~kido_tmux:None ~path:"" exe));
+  print_endline (show (Exec.resolve_binary ~kido_tmux:None exe));
   [%expect {|
     $DIR/bin/kido
     $DIR/cellar/kido

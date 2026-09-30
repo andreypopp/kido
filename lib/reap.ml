@@ -1,7 +1,5 @@
 module P = Tmux.Pane
 
-let runs dir = Filename.concat dir "runs"
-
 let grace () =
   match Option.flat_map Int.of_string (Sys.getenv_opt "KIDO_LINGER_SECONDS") with
   | Some n when n > 0 -> Float.of_int n
@@ -37,8 +35,6 @@ let decide panes window_id =
 type detail = Bash of { unstreamed : int } | Agent of { unreported : bool }
 type ending = { meta : Subrun.meta; outcome : Subrun.outcome; detail : detail }
 
-let label e = if String.is_empty e.meta.name then Subrun.string_of_id e.meta.id else e.meta.name
-
 let quote s =
   let b = Buffer.create (String.length s + 2) in
   Buffer.add_char b '"';
@@ -56,22 +52,6 @@ let quote s =
   Buffer.add_char b '"';
   Buffer.contents b
 
-let max_notice_tail_bytes = 4000
-
-let valid_utf8 s =
-  let b = Buffer.create (String.length s) in
-  let rec go i =
-    if i < String.length s then begin
-      let d = String.get_utf_8_uchar s i in
-      let n = Uchar.utf_decode_length d in
-      if Uchar.utf_decode_is_valid d then Buffer.add_substring b s i n
-      else Buffer.add_string b "\u{FFFD}";
-      go (i + n)
-    end
-  in
-  go 0;
-  Buffer.contents b
-
 let tail_of_file path max =
   let ic = open_in_bin path in
   Fun.protect
@@ -84,20 +64,20 @@ let tail_of_file path max =
       let skip =
         if omitted > 0 then String.drop_while (fun c -> Char.code c land 0xC0 = 0x80) b else b
       in
-      (valid_utf8 skip, omitted + String.length b - String.length skip))
+      (Msg.valid_utf_8 skip, omitted + String.length b - String.length skip))
 
 let body ~dir e =
   let b = Buffer.create 256 in
   let result = Subrun.string_of_result e.outcome.result in
   (match e.detail with
   | Bash { unstreamed } -> (
-      let output = Subrun.output_path ~dir:(runs dir) e.meta.id in
-      Printf.bprintf b "async run %s %s: %s\n" (quote (label e)) result e.outcome.text;
+      let output = Subrun.output_path ~dir e.meta.id in
+      Printf.bprintf b "async run %s %s: %s\n" (quote (Subrun.label e.meta)) result e.outcome.text;
       Printf.bprintf b "run: %s\n" (Subrun.string_of_id e.meta.id);
       Printf.bprintf b "output: %s\n" output;
       if unstreamed > 0 then
         Printf.bprintf b "%d lines not streamed (the output file above has every one)\n" unstreamed;
-      match tail_of_file output max_notice_tail_bytes with
+      match tail_of_file output Msg.max_notice_bytes with
       | exception Sys_error err -> Printf.bprintf b "--- output unreadable: %s ---" err
       | "", _ -> Buffer.add_string b "--- no output ---"
       | tail, omitted when omitted > 0 ->
@@ -109,13 +89,13 @@ let body ~dir e =
         Printf.bprintf b
           "subagent %s %s without reporting: it never called notify_parent, so this is the whole \
            account of it\n"
-          (quote (label e))
+          (quote (Subrun.label e.meta))
           result
       else
         Printf.bprintf b
           "subagent %s ended without recording an outcome of its own, so kido recorded it as %s; \
            whether it called notify_parent is not known, and any report it sent stands\n"
-          (quote (label e))
+          (quote (Subrun.label e.meta))
           result;
       if not (String.is_empty e.outcome.text) then Printf.bprintf b "detail: %s\n" e.outcome.text;
       Printf.bprintf b "run: %s\n" (Subrun.string_of_id e.meta.id);
@@ -127,14 +107,12 @@ let send ~dir e =
   if String.is_empty e.meta.parent_session then Ok ()
   else
     Msg.notify ~dir ~parent_session:e.meta.parent_session
-      ~from:{ session = ""; name = label e; pane = "" }
+      ~from:{ session = ""; name = Subrun.label e.meta; pane = "" }
       (body ~dir e)
 
 let record_ending ~dir (meta : Subrun.meta) outcome =
-  if
-    (not (Subrun.record_outcome ~dir:(runs dir) meta.id outcome))
-    || String.is_empty meta.parent_session
-  then None
+  if (not (Subrun.record_outcome ~dir meta.id outcome)) || String.is_empty meta.parent_session then
+    None
   else
     let detail =
       match meta.kind with
@@ -158,11 +136,11 @@ let capture_screen ~dir ~capture run_id pane_ids =
     pane_ids;
   let data = Subrun.truncate_screen (Buffer.contents b) in
   if not (String.is_empty data) then
-    try Subrun.write_screen ~dir:(runs dir) run_id data with Unix.Unix_error _ | Sys_error _ -> ()
+    try Subrun.write_screen ~dir run_id data with Unix.Unix_error _ | Sys_error _ -> ()
 
 let guess_ending ~dir run_id ~now =
   let meta =
-    match Subrun.read_meta ~dir:(runs dir) run_id with
+    match Subrun.read_meta ~dir run_id with
     | Some m -> m
     | None ->
         {

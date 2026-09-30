@@ -53,7 +53,6 @@ let shell_run_hold = 0.5
 let procs_probe = 1.
 
 let lingering_subagents ~dir panes states prev =
-  let runs = Filename.concat dir "runs" in
   List.fold_left
     (fun out (p : P.t) ->
       match Option.map Subrun.parse_id p.run with
@@ -62,7 +61,7 @@ let lingering_subagents ~dir panes states prev =
         -> (
           let key = Subrun.string_of_id run_id in
           let outcome () =
-            Option.map (fun (o : Subrun.outcome) -> o.result) (Subrun.read_outcome ~dir:runs run_id)
+            Option.map (fun (o : Subrun.outcome) -> o.result) (Subrun.read_outcome ~dir run_id)
           in
           match String_map.find_opt key prev with
           | Some l ->
@@ -70,7 +69,7 @@ let lingering_subagents ~dir panes states prev =
                 { l with outcome = (if Option.is_some l.outcome then l.outcome else outcome ()) }
                 out
           | None -> (
-              match Subrun.read_meta ~dir:runs run_id with
+              match Subrun.read_meta ~dir run_id with
               | None -> out
               | Some meta ->
                   String_map.add key

@@ -2,15 +2,13 @@ open Kido
 open Fixture
 
 let attempt = function Ok () -> () | Error m -> Printf.printf "refused: %s\n" m
-let runs dir = Filename.concat dir "runs"
 let id s = Result.get_exn (Subrun.parse_id s)
 
 let outcome ~dir run result =
-  ignore
-    (Subrun.record_outcome ~dir:(runs dir) (id run) { result; text = ""; at = Some 1_700_000_090. })
+  ignore (Subrun.record_outcome ~dir (id run) { result; text = ""; at = Some 1_700_000_090. })
 
 let show_outcome ~dir run =
-  match Subrun.read_outcome ~dir:(runs dir) (id run) with
+  match Subrun.read_outcome ~dir (id run) with
   | None -> print_endline "no outcome"
   | Some o -> Printf.printf "outcome %s %S\n" (Subrun.string_of_result o.result) o.text
 
@@ -138,8 +136,7 @@ let%expect_test "run-outcome: a failure keeps the child's own screen, refined by
       in
       run_outcome ~dir ~capture ~text "failed" r;
       show_outcome ~dir r;
-      Printf.printf "screen: %S\n"
-        (Option.get_or ~default:"none" (Subrun.read_screen ~dir:(runs dir) (id r))))
+      Printf.printf "screen: %S\n" (Option.get_or ~default:"none" (Subrun.read_screen ~dir (id r))))
     [
       ("run-screen", "pi's last screen before it exited\n", no_turn);
       ("run-login", "Use /login to log into a provider via OAuth or API key\n", no_turn);
@@ -148,7 +145,7 @@ let%expect_test "run-outcome: a failure keeps the child's own screen, refined by
   ignore (run ~dir ~pane:"%9" "run-ok");
   run_outcome ~dir "completed" "run-ok";
   Printf.printf "screen for completed: %b\n"
-    (Option.is_some (Subrun.read_screen ~dir:(runs dir) (id "run-ok")));
+    (Option.is_some (Subrun.read_screen ~dir (id "run-ok")));
   [%expect
     {|
     captured %9

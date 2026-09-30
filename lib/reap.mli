@@ -15,10 +15,11 @@ val release : ops -> close -> (unit, string) result
 val decide : Tmux.Pane.t list -> string -> (close, string) result
 (** [kido close-run]'s decision for a window: the close to release, or the refusal to print. *)
 
+val quote : string -> string
+(** A Go [%q]-style double-quoted string: control bytes escaped, non-ASCII kept. *)
+
 type detail = Bash of { unstreamed : int } | Agent of { unreported : bool }
 type ending = { meta : Subrun.meta; outcome : Subrun.outcome; detail : detail }
-
-val max_notice_tail_bytes : int
 
 val tail_of_file : string -> int -> string * int
 (** The last [max] bytes of a file as valid UTF-8 and how many bytes were dropped from the front, a

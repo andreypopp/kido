@@ -26,13 +26,11 @@ let kill_run_pane ~list_panes ~ops ?(before = ignore) pane_id =
       let+ () = Reap.release ops { window_id = p.window_id; pane_id = Some p.pane_id } in
       `Killed
 
-let runs dir = Filename.concat dir "runs"
-
 let record_stopped ~dir id =
   Result.iter
     (fun id ->
       ignore
-        (Subrun.record_outcome ~dir:(runs dir) id
+        (Subrun.record_outcome ~dir id
            { result = Stopped; text = ""; at = Some (Timestamp.now ()) }))
     (Subrun.parse_id id)
 
@@ -49,25 +47,21 @@ let interrupt ~dir ~self ~panes to_ =
   | Ok _ -> Ok ("interrupted " ^ List_agents.display_name panes target)
   | Error (Message_agent.Unavailable m | Failed m) -> Error m
 
-let run_label (meta : Subrun.meta) =
-  Printf.sprintf "async run %S"
-    (if String.is_empty meta.name then Subrun.string_of_id meta.id else meta.name)
-
+let run_label meta = "async run " ^ Reap.quote (Subrun.label meta)
 let stopped_text = "stopped by kido stop_subagent; its wrapper did not report"
 
 let live_bash_run ~dir ~self ~list_panes to_ =
   let open Result.Infix in
-  let runs = runs dir in
   let matches =
     List.filter_map
       (fun id ->
-        match Subrun.read_meta ~dir:runs id with
+        match Subrun.read_meta ~dir id with
         | Some ({ kind = Some Bash; _ } as meta)
           when (String.equal_caseless meta.name to_ || String.equal (Subrun.string_of_id id) to_)
-               && Option.is_none (Subrun.read_outcome ~dir:runs id) ->
+               && Option.is_none (Subrun.read_outcome ~dir id) ->
             Some meta
         | _ -> None)
-      (Subrun.list ~dir:runs)
+      (Subrun.list ~dir)
   in
   match matches with
   | [] -> Ok None
@@ -85,14 +79,11 @@ let live_bash_run ~dir ~self ~list_panes to_ =
 
 let stop_bash_run ~dir ~list_panes ~ops ~escalation ~warn (meta : Subrun.meta) =
   let label = run_label meta in
-  let runs = runs dir in
   let signalled =
     meta.pid > 0
     && match Unix.kill meta.pid Sys.sigterm with () -> true | exception Unix.Unix_error _ -> false
   in
-  if
-    signalled
-    && wait_for escalation (fun () -> Option.is_some (Subrun.read_outcome ~dir:runs meta.id))
+  if signalled && wait_for escalation (fun () -> Option.is_some (Subrun.read_outcome ~dir meta.id))
   then Ok (Printf.sprintf "stopped %s; its wrapper reported the ending" label)
   else begin
     Reap.record_ending ~dir meta

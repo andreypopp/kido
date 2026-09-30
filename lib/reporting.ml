@@ -76,9 +76,7 @@ let one_line s ~max =
   in
   clean 0;
   let s = Buffer.contents b in
-  let rec boundary n = if n > 0 && Char.code s.[n] land 0xC0 = 0x80 then boundary (n - 1) else n in
-  let s = if String.length s <= max then s else String.sub s 0 (boundary max) in
-  String.rdrop_while (Char.equal ' ') s
+  String.rdrop_while (Char.equal ' ') (Msg.utf_8_prefix s max)
 
 type status_error = Invalid of string | Held of string
 

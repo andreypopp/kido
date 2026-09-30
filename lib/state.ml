@@ -154,9 +154,7 @@ let wake ~dir =
 let record_pause ~dir at =
   if not (Option.exists (fun prev -> Float.(at <= prev)) (wake ~dir)) then begin
     Fs.mkdir_p dir;
-    let tmp = wake_file ~dir ^ ".tmp" in
-    Fs.write tmp (Yojson.Safe.to_string (marker_to_yojson { at }));
-    Unix.rename tmp (wake_file ~dir)
+    Fs.write_atomic (wake_file ~dir) (Yojson.Safe.to_string (marker_to_yojson { at }))
   end
 
 type reading = { wall : Timestamp.t; mono : Mtime.t }

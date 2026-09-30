@@ -78,10 +78,9 @@ let start_inbox ~reply =
 
 let run ~dir ?(name = "") ?kind ?(parent = "") ?(pane = "") ?(pid = 0) ?(cwd = "")
     ?(started_at = 1_700_000_000.) ?command id =
-  let runs = Filename.concat dir "runs" in
   let id = Result.get_exn (Subrun.parse_id id) in
-  Subrun.create ~dir:runs id "do the thing";
-  Option.iter (Subrun.write_command ~dir:runs id) command;
+  Subrun.create ~dir id "do the thing";
+  Option.iter (Subrun.write_command ~dir id) command;
   let meta : Subrun.meta =
     {
       id;
@@ -98,5 +97,5 @@ let run ~dir ?(name = "") ?kind ?(parent = "") ?(pane = "") ?(pid = 0) ?(cwd = "
       started_at;
     }
   in
-  Subrun.write_meta ~dir:runs meta;
+  Subrun.write_meta ~dir meta;
   meta

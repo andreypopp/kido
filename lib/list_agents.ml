@@ -53,12 +53,12 @@ let is_ancestor parent_of ~ancestor target =
   in
   (not (String.equal ancestor target)) && walk [] (List.assoc_opt ~eq:String.equal target parent_of)
 
-let can_reply ~runs id =
-  match Result.to_opt (Subrun.parse_id id) |> Option.flat_map (Subrun.read_meta ~dir:runs) with
+let can_reply ~dir id =
+  match Result.to_opt (Subrun.parse_id id) |> Option.flat_map (Subrun.read_meta ~dir) with
   | Some m -> List.is_empty m.tools || List.mem ~eq:String.equal "message_agent" m.tools
   | None -> true
 
-let build ~runs ~threshold ~wake ~now states panes ~session ~self =
+let build ~dir ~threshold ~wake ~now states panes ~session ~self =
   let scoped = in_session panes states session in
   let parent e =
     match parent_edge e with Some p when List.mem_assoc ~eq:String.equal p scoped -> p | _ -> ""
@@ -83,7 +83,7 @@ let build ~runs ~threshold ~wake ~now states panes ~session ~self =
         self = String.equal s.pane self;
         cwd = Option.map_or ~default:"" (fun (p : Pane.t) -> p.current_path) p;
         can_message = not (String.is_empty s.inbox);
-        can_reply = (not (String.is_empty s.inbox)) && can_reply ~runs id;
+        can_reply = (not (String.is_empty s.inbox)) && can_reply ~dir id;
         model = s.model;
         since_report = Float.to_int (now -. s.ts);
         stalled = State.stalled_since ~threshold ~wake ~now s;
@@ -105,8 +105,7 @@ let list_agents ~dir ~threshold ~self ~panes ~session =
                 usage: kido list_agents [--session ID] [--json]"
                self)
   in
-  build ~runs:(Filename.concat dir "runs") ~threshold ~wake:(State.wake ~dir)
-    ~now:(Timestamp.now ()) states panes ~session ~self
+  build ~dir ~threshold ~wake:(State.wake ~dir) ~now:(Timestamp.now ()) states panes ~session ~self
 
 let table agents =
   String.split_on_char ' '

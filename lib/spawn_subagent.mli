@@ -48,10 +48,10 @@ val check_window_name : string -> (unit, string) result
 val validate_model : (unit -> (string, string) result) -> string list -> (unit, string) result
 
 val run_env :
-  runs:string -> Subrun.id -> State.parent option -> int -> keep_alive:bool -> string list
+  dir:string -> Subrun.id -> State.parent option -> int -> keep_alive:bool -> string list
 
 val create_run_window :
-  runs:string ->
+  dir:string ->
   tmux ->
   Subrun.meta ->
   session:string ->

@@ -239,9 +239,9 @@ let pi_session_file_exists pi cwd id =
       | exception Sys_error _ -> false
       | names -> Array.exists (String.suffix ~suf:suffix) names)
 
-let run_env ~runs id parent depth ~keep_alive =
+let run_env ~dir id parent depth ~keep_alive =
   [
-    "KIDO_AGENT_TASK_FILE=" ^ Subrun.task_path ~dir:runs id;
+    "KIDO_AGENT_TASK_FILE=" ^ Subrun.task_path ~dir id;
     "KIDO_AGENT_RUN_ID=" ^ Subrun.string_of_id id;
     "KIDO_AGENT_DEPTH=" ^ string_of_int depth;
   ]
@@ -251,15 +251,14 @@ let run_env ~runs id parent depth ~keep_alive =
     | None -> [])
   @ if keep_alive then [ "KIDO_AGENT_KEEP_ALIVE=1" ] else []
 
-let failed ~runs (meta : Subrun.meta) text =
+let failed ~dir (meta : Subrun.meta) text =
   ignore
-    (Subrun.record_outcome ~dir:runs meta.id
-       { result = Failed; text; at = Some (Timestamp.now ()) })
+    (Subrun.record_outcome ~dir meta.id { result = Failed; text; at = Some (Timestamp.now ()) })
 
-let create_run_window ~runs tmux (meta : Subrun.meta) ~session ~env command =
+let create_run_window ~dir tmux (meta : Subrun.meta) ~session ~env command =
   let open Result.Infix in
   let fail e =
-    failed ~runs meta e;
+    failed ~dir meta e;
     Error e
   in
   let* w =
@@ -268,7 +267,7 @@ let create_run_window ~runs tmux (meta : Subrun.meta) ~session ~env command =
     | Error e -> fail e
   in
   let meta = { meta with pane = w.pane_id; pid = w.pane_pid } in
-  Subrun.write_meta ~dir:runs meta;
+  Subrun.write_meta ~dir meta;
   let id = Subrun.string_of_id meta.id in
   let+ () =
     match tmux.mark_run w.pane_id id with
@@ -281,15 +280,13 @@ let create_run_window ~runs tmux (meta : Subrun.meta) ~session ~env command =
             fail e)
   in
   match meta.kind with
-  | Some Bash ->
-      String.concat " " [ w.window_id; w.pane_id; id; Subrun.output_path ~dir:runs meta.id ]
+  | Some Bash -> String.concat " " [ w.window_id; w.pane_id; id; Subrun.output_path ~dir meta.id ]
   | Some Agent | None -> String.concat " " [ w.window_id; w.pane_id; id ]
 
 let insert_after_head extra = function head :: rest -> (head :: extra) @ rest | [] -> extra
 
 let spawn ~dir ~self ~panes ~tmux ~pi req =
   let open Result.Infix in
-  let runs = Filename.concat dir "runs" in
   let* panes = Lazy.force panes in
   let* pane = List_agents.caller_pane panes self in
   let live = State.load_live ~dir in
@@ -349,11 +346,11 @@ let spawn ~dir ~self ~panes ~tmux ~pi req =
         let* meta =
           Option.to_result
             (Printf.sprintf "run %S: no readable %s" (Subrun.string_of_id run)
-               (Filename.concat (Filename.concat runs (Subrun.string_of_id run)) "meta.json"))
-            (Subrun.read_meta ~dir:runs run)
+               (Subrun.meta_path ~dir run))
+            (Subrun.read_meta ~dir run)
         in
         let* () =
-          if Option.is_none (Subrun.effective_outcome ~dir:runs meta.id ~pid:meta.pid) then
+          if Option.is_none (Subrun.effective_outcome ~dir meta.id ~pid:meta.pid) then
             Error
               (Printf.sprintf
                  "run %S is still running (pid %d); resuming a live agent makes no sense"
@@ -395,9 +392,9 @@ let spawn ~dir ~self ~panes ~tmux ~pi req =
   in
   (match req.mode with
   | Fresh { task; _ } ->
-      Subrun.create ~dir:runs meta.id task;
-      Subrun.write_meta ~dir:runs meta
-  | Resume _ -> Subrun.reset_for_resume ~dir:runs meta.id ~delivered:mint);
-  create_run_window ~runs tmux meta ~session:pane.session_id
-    ~env:(run_env ~runs meta.id parent depth ~keep_alive:meta.keep_alive)
+      Subrun.create ~dir meta.id task;
+      Subrun.write_meta ~dir meta
+  | Resume _ -> Subrun.reset_for_resume ~dir meta.id ~delivered:mint);
+  create_run_window ~dir tmux meta ~session:pane.session_id
+    ~env:(run_env ~dir meta.id parent depth ~keep_alive:meta.keep_alive)
     command

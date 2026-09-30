@@ -116,7 +116,7 @@ let take t =
           t.bytes <- 0;
           Some
             ( Printf.sprintf "... %d bytes streamed for this run; the rest is only in %s" run_budget
-                (Subrun.output_path ~dir:(Filename.concat t.dir "runs") t.meta.id),
+                (Subrun.output_path ~dir:t.dir t.meta.id),
               0,
               0 )
         end
@@ -151,7 +151,7 @@ let send t text =
       reply_to = "";
       text;
       run = Subrun.string_of_id t.meta.id;
-      output = Subrun.output_path ~dir:(Filename.concat t.dir "runs") t.meta.id;
+      output = Subrun.output_path ~dir:t.dir t.meta.id;
     }
   in
   match Msg.deliver ~path:resolved (Yojson.Safe.to_string (Msg.envelope_to_yojson env)) with

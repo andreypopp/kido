@@ -265,7 +265,7 @@ let parent_inbox () =
   let inbox, received = start_inbox ~reply:"ok\n" in
   record ~dir "parent-sess" (session ~pane:"%9" ~inbox Idle);
   let run_id = Subrun.new_id () in
-  Subrun.create ~dir:(Filename.concat dir "runs") run_id "task";
+  Subrun.create ~dir run_id "task";
   (dir, Subrun.string_of_id run_id, received)
 
 let panes_with_parent = [ pane ~session_id:"$1" "%1"; pane ~session_id:"$1" "%9" ]
@@ -281,7 +281,7 @@ let%expect_test "a report under the cap arrives byte for byte, with no file left
   notify ~panes:panes_with_parent ~dir ~parent:"parent-sess" ~run report;
   Printf.printf "same: %b, file: %b\n"
     (String.equal (notice received) report)
-    (Subrun.has_report ~dir:(Filename.concat dir "runs") (Result.get_exn (Subrun.parse_id run)));
+    (Subrun.has_report ~dir (Result.get_exn (Subrun.parse_id run)));
   [%expect {|
     delivered to  by inbox
     same: true, file: false
@@ -291,13 +291,11 @@ let%expect_test "a report over the cap is kept whole, named, and the notice stay
   let dir, run, received = parent_inbox () in
   let report = String.repeat "findings and more findings. " 200 ^ "CONCLUSION: ship it" in
   notify ~panes:panes_with_parent ~dir ~parent:"parent-sess" ~run report;
-  let path =
-    Subrun.report_path ~dir:(Filename.concat dir "runs") (Result.get_exn (Subrun.parse_id run))
-  in
+  let path = Subrun.report_path ~dir (Result.get_exn (Subrun.parse_id run)) in
   let n = notice received in
   Printf.printf "kept whole: %b\nwithin cap: %b\nnames the file: %b\nstarts with the report: %b\n"
     (Option.equal String.equal (Fs.read path) (Some report))
-    (String.length n <= Message_agent.max_report_bytes)
+    (String.length n <= Msg.max_notice_bytes)
     (String.suffix ~suf:("full report: " ^ path) n)
     (String.prefix ~pre:(String.sub report 0 100) n);
   [%expect
@@ -328,16 +326,4 @@ let%expect_test "a sender with no run directory has its report truncated, naming
   [%expect {|
     delivered to  by inbox
     4000 bytes, names a file: false
-    |}]
-
-let%expect_test "head_within drops a partial rune wherever the cut falls inside it" =
-  let s = "ab\u{1F389}cd" in
-  List.iter
-    (fun cut -> Printf.printf "%d: %S\n" cut (Message_agent.head_within s cut))
-    [ 3; 4; 5; 6 ];
-  [%expect {|
-    3: "ab"
-    4: "ab"
-    5: "ab"
-    6: "ab\240\159\142\137"
     |}]

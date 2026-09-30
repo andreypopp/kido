@@ -13,6 +13,24 @@ let write ?(perm = 0o644) path s =
 
 let remove path = try Unix.unlink path with Unix.Unix_error (ENOENT, _, _) -> ()
 
+let write_temp ?(perm = 0o644) path data place =
+  let rec create_unique () =
+    let tmp = Printf.sprintf "%s.tmp.%d.%d" path (Unix.getpid ()) (Random.bits ()) in
+    match Unix.openfile tmp [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_EXCL ] perm with
+    | fd -> (tmp, fd)
+    | exception Unix.Unix_error (Unix.EEXIST, _, _) -> create_unique ()
+  in
+  let tmp, fd = create_unique () in
+  Fun.protect
+    ~finally:(fun () -> remove tmp)
+    (fun () ->
+      Fun.protect
+        ~finally:(fun () -> Unix.close fd)
+        (fun () -> ignore (Unix.write_substring fd data 0 (String.length data)));
+      place tmp path)
+
+let write_atomic ?perm path data = write_temp ?perm path data Unix.rename
+
 let unix_message e fn arg =
   String.concat " " (List.filter (fun s -> not (String.is_empty s)) [ fn; arg ])
   ^ ": " ^ Unix.error_message e

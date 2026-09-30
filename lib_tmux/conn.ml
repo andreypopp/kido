@@ -200,27 +200,25 @@ let close t =
   t.closed <- true;
   kill t
 
-let quote s = "'" ^ String.replace ~sub:"'" ~by:{|'\''|} s ^ "'"
-
 let follow t session =
   match t.child with
   | Some ch when not (String.equal ch.attached session) -> (
-      match run t ("switch-client -t " ^ quote session) with
+      match run t ("switch-client -t " ^ Filename.quote session) with
       | Ok _ -> ch.attached <- session
       | Error _ -> ())
   | Some _ | None -> ()
 
 let list_panes t =
-  match run t ("list-panes -a -F " ^ quote Pane.format) with
+  match run t ("list-panes -a -F " ^ Filename.quote Pane.format) with
   | Ok lines -> Ok (Pane.parse lines)
   | Error _ -> Exec.list_panes ()
 
 let capture_pane t pane =
-  match run t ("capture-pane -p -t " ^ quote pane) with
+  match run t ("capture-pane -p -t " ^ Filename.quote pane) with
   | Ok lines -> Ok lines
   | Error _ -> Exec.capture_pane pane
 
 let client_state t client =
-  match run t ("list-clients -F " ^ quote Exec.client_format) with
+  match run t ("list-clients -F " ^ Filename.quote Exec.client_format) with
   | Ok (_ :: _ as lines) -> Exec.parse_client_state lines client
   | Ok [] | Error _ -> Exec.client_state client

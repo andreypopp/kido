@@ -8,6 +8,7 @@ val command_path : dir:string -> id -> string
 val output_path : dir:string -> id -> string
 val report_path : dir:string -> id -> string
 val delivered_path : dir:string -> id -> string
+val meta_path : dir:string -> id -> string
 
 type kind = Agent | Bash
 
@@ -28,6 +29,8 @@ type meta = {
   started_at : Timestamp.t;
 }
 [@@deriving yojson]
+
+val label : meta -> string
 
 type result = Completed | Failed | Died | Stopped
 type outcome = { result : result; text : string; at : Timestamp.t option } [@@deriving yojson]

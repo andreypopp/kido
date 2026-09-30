@@ -28,9 +28,7 @@ let kills w =
   w.kills := []
 
 let outcome w run =
-  match
-    Subrun.read_outcome ~dir:(Filename.concat w.dir "runs") (Result.get_exn (Subrun.parse_id run))
-  with
+  match Subrun.read_outcome ~dir:w.dir (Result.get_exn (Subrun.parse_id run)) with
   | None -> print_endline "no outcome"
   | Some o -> Printf.printf "outcome %s %S\n" (Subrun.string_of_result o.result) o.text
 
@@ -267,7 +265,7 @@ let%expect_test "stopping a bash run" =
       (fun () ->
         Unix.sleepf 0.15;
         ignore
-          (Subrun.record_outcome ~dir:(Filename.concat w.dir "runs") meta.id
+          (Subrun.record_outcome ~dir:w.dir meta.id
              { result = Failed; text = "killed by terminated"; at = None }))
       ()
   in
@@ -322,9 +320,7 @@ let%expect_test "a bash run is reached through the parent in its meta; a finishe
   kills w;
   kinds received;
   let finished = bash_run ~parent:"caller" w "child" in
-  ignore
-    (Subrun.record_outcome ~dir:(Filename.concat w.dir "runs") finished.id
-       { result = Completed; text = ""; at = None });
+  ignore (Subrun.record_outcome ~dir:w.dir finished.id { result = Completed; text = ""; at = None });
   stop ~escalation:0.1 w "child";
   kinds received;
   ignore (bash_run ~parent:"caller" w "twin");

@@ -81,7 +81,7 @@ let scrub ~dir ids s =
      ]
     @ List.filter_map (fun id -> if String.length id = 32 then Some (id, "<run>") else None) ids)
 
-let run_ids dir = List.map Subrun.string_of_id (Subrun.list ~dir:(runs dir))
+let run_ids dir = List.map Subrun.string_of_id (Subrun.list ~dir)
 
 let spawn ?(fake = fake ()) ?(pi = pi ()) ~dir flags =
   (match
@@ -100,13 +100,13 @@ let spawn ?(fake = fake ()) ?(pi = pi ()) ~dir flags =
   fake.calls := []
 
 let outcome dir id =
-  match Subrun.read_outcome ~dir:(runs dir) (Result.get_exn (Subrun.parse_id id)) with
+  match Subrun.read_outcome ~dir (Result.get_exn (Subrun.parse_id id)) with
   | None -> "none"
   | Some { result = Failed; text; _ } -> "failed: " ^ text
   | Some { result = Completed | Died | Stopped; _ } -> "ended"
 
 let meta dir id =
-  Option.get_exn_or "meta" (Subrun.read_meta ~dir:(runs dir) (Result.get_exn (Subrun.parse_id id)))
+  Option.get_exn_or "meta" (Subrun.read_meta ~dir (Result.get_exn (Subrun.parse_id id)))
 
 (* share/pi/kido-agents.ts splits the one line on spaces; the mark is what makes the window reapable. *)
 let%expect_test
@@ -256,7 +256,7 @@ let%expect_test "a bash run whose window is gone before its mark is not a failur
   let dir = Filename.temp_dir "kido-state" "" in
   let f = fake ~mark_error:"cannot find window @9" ~exists:false () in
   let id = Subrun.new_id () in
-  Subrun.create ~dir:(runs dir) id "true";
+  Subrun.create ~dir id "true";
   let m : Subrun.meta =
     {
       id;
@@ -276,7 +276,7 @@ let%expect_test "a bash run whose window is gone before its mark is not a failur
   print_endline
     (scrub ~dir (run_ids dir)
        (Result.get_exn
-          (Spawn_subagent.create_run_window ~runs:(runs dir) f.tmux m ~session:"$0" ~env:[]
+          (Spawn_subagent.create_run_window ~dir f.tmux m ~session:"$0" ~env:[]
              [ "kido"; "async-run" ])));
   Printf.printf "%s, killed [%s]\n"
     (outcome dir (Subrun.string_of_id id))
@@ -409,8 +409,8 @@ let session_dir ids =
 
 let dead_run ?(model = "") ?(pid = dead_pid ()) dir id =
   let id = Result.get_exn (Subrun.parse_id id) in
-  Subrun.create ~dir:(runs dir) id "do the thing";
-  Subrun.write_meta ~dir:(runs dir)
+  Subrun.create ~dir id "do the thing";
+  Subrun.write_meta ~dir
     {
       id;
       name = "kid";
@@ -426,7 +426,7 @@ let dead_run ?(model = "") ?(pid = dead_pid ()) dir id =
       started_at = 1_700_000_000.;
     };
   if pid <> Unix.getpid () then
-    ignore (Subrun.record_outcome ~dir:(runs dir) id { result = Died; text = ""; at = None })
+    ignore (Subrun.record_outcome ~dir id { result = Died; text = ""; at = None })
 
 let%expect_test "a resume refuses an unknown run, a live one, and a name, task or half a parent" =
   let dir = caller () in
@@ -457,9 +457,7 @@ let%expect_test "a resume continues the run's own session, cwd, id and task unde
   let dir = caller () in
   record ~dir "new-parent" (session ~pane:"%other" Idle);
   dead_run dir "resume-run";
-  Subrun.write_screen ~dir:(runs dir)
-    (Result.get_exn (Subrun.parse_id "resume-run"))
-    "first attempt";
+  Subrun.write_screen ~dir (Result.get_exn (Subrun.parse_id "resume-run")) "first attempt";
   let pi = pi ~session_dir:(session_dir [ "resume-run" ]) () in
   spawn ~pi ~dir { (resuming "resume-run") with parent_pid = 777; parent_session = "new-parent" };
   let m = meta dir "resume-run" in
@@ -467,9 +465,9 @@ let%expect_test "a resume continues the run's own session, cwd, id and task unde
     m.parent_session m.pane m.pid m.depth;
   let id = Result.get_exn (Subrun.parse_id "resume-run") in
   Printf.printf "task=%s outcome=%s screen=%b\n"
-    (Option.get_or ~default:"" (Subrun.read_task ~dir:(runs dir) id))
+    (Option.get_or ~default:"" (Subrun.read_task ~dir id))
     (outcome dir "resume-run")
-    (Option.is_some (Subrun.read_screen ~dir:(runs dir) id));
+    (Option.is_some (Subrun.read_screen ~dir id));
   (* No parent flags: the caller's own record is the edge; --no-parent drops even that. *)
   let dir = caller () in
   dead_run dir "defaulted";
@@ -503,9 +501,9 @@ let%expect_test "a resume with no pi session file mints one under the same run i
   let dir = caller () in
   dead_run dir "gone-run";
   let id = Result.get_exn (Subrun.parse_id "gone-run") in
-  Fs.write (Subrun.delivered_path ~dir:(runs dir) id) "";
+  Fs.write (Subrun.delivered_path ~dir id) "";
   spawn ~pi:(pi ~session_dir:(session_dir []) ()) ~dir (resuming "gone-run");
-  Printf.printf "delivered=%b\n" (Sys.file_exists (Subrun.delivered_path ~dir:(runs dir) id));
+  Printf.printf "delivered=%b\n" (Sys.file_exists (Subrun.delivered_path ~dir id));
   [%expect
     {|
     @9 %9 gone-run
@@ -538,7 +536,7 @@ let%expect_test "a resume carries the run's model, tools and keep-alive unless g
     };
   let run = snd (List.hd !(f.marks)) in
   ignore
-    (Subrun.record_outcome ~dir:(runs dir)
+    (Subrun.record_outcome ~dir
        (Result.get_exn (Subrun.parse_id run))
        { result = Completed; text = ""; at = None });
   let pi = Spawn_subagent.{ pi with session_dir = session_dir [ run ] } in
@@ -550,8 +548,8 @@ let%expect_test "a resume carries the run's model, tools and keep-alive unless g
   let pi = Spawn_subagent.{ pi with session_dir = session_dir [ "old-run" ] } in
   spawn ~pi ~dir { (resuming "old-run") with parent_pid = 1; parent_session = parent };
   let id = Result.get_exn (Subrun.parse_id "old-run") in
-  Subrun.reset_for_resume ~dir:(runs dir) id ~delivered:false;
-  ignore (Subrun.record_outcome ~dir:(runs dir) id { result = Died; text = ""; at = None });
+  Subrun.reset_for_resume ~dir id ~delivered:false;
+  ignore (Subrun.record_outcome ~dir id { result = Died; text = ""; at = None });
   spawn ~pi ~dir
     { (resuming "old-run") with parent_pid = 1; parent_session = parent; keep_alive = true };
   [%expect

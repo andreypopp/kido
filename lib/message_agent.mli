@@ -49,9 +49,6 @@ val send :
   (string, send_error) result
 (** The line naming how it was delivered. *)
 
-val max_report_bytes : int
-val head_within : string -> int -> string
-
 val notify_parent :
   dir:string ->
   self:string ->

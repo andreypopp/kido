@@ -20,6 +20,14 @@ type envelope = {
 }
 [@@deriving yojson]
 
+val max_notice_bytes : int
+
+val utf_8_prefix : string -> int -> string
+(** At most [n] bytes of [s], cut back to a character boundary. *)
+
+val valid_utf_8 : string -> string
+(** Each invalid sequence replaced by U+FFFD. *)
+
 val parse : string -> envelope option
 val new_id : unit -> string
 

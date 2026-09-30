@@ -2,7 +2,6 @@ open Kido
 open Fixture
 
 let knobs : Async_stream.knobs = { batch = 0.02; backoff_floor = 0.02; backoff_cap = 0.1 }
-let runs dir = Filename.concat dir "runs"
 let warn = Printf.printf "\nwarning: %s"
 
 let async_run ?(stream = false) ~dir run_id =
@@ -11,7 +10,7 @@ let async_run ?(stream = false) ~dir run_id =
   | Error m -> Printf.printf "\nrefused: %s\n" m
 
 let outcome ~dir (meta : Subrun.meta) =
-  match Subrun.read_outcome ~dir:(runs dir) meta.id with
+  match Subrun.read_outcome ~dir meta.id with
   | None -> print_endline "no outcome"
   | Some o -> Printf.printf "outcome %s %S\n" (Subrun.string_of_result o.result) o.text
 
@@ -28,7 +27,7 @@ let%expect_test "the wrapper tees both streams, and records the ending before it
       async_run ~dir name;
       outcome ~dir meta;
       Printf.printf "output file: %S\n"
-        (Option.get_or ~default:"none" (Fs.read (Subrun.output_path ~dir:(runs dir) meta.id))))
+        (Option.get_or ~default:"none" (Fs.read (Subrun.output_path ~dir meta.id))))
     [
       ("build", [ "sh"; "-c"; "printf out; printf err >&2; exit 3" ]);
       ("ok", [ "true" ]);
@@ -80,7 +79,7 @@ let%expect_test "a wrapper that loses the outcome race says nothing" =
   let dir = Filename.temp_dir "kido-state" "" in
   let parent = "nobody-alive-reports-this" in
   let lost = bash ~dir ~parent "raced" [ "true" ] in
-  ignore (Subrun.record_outcome ~dir:(runs dir) lost.id { result = Stopped; text = ""; at = None });
+  ignore (Subrun.record_outcome ~dir lost.id { result = Stopped; text = ""; at = None });
   async_run ~dir "raced";
   outcome ~dir lost;
   let _ = bash ~dir ~parent "won" [ "true" ] in
@@ -137,7 +136,7 @@ let%expect_test "a signalled wrapper passes the signal on, records the ending an
       [| "KIDO_STATE_DIR=" ^ dir; "PATH=" ^ Sys.getenv "PATH" |]
       Unix.stdin Unix.stdout Unix.stderr
   in
-  let output = Subrun.output_path ~dir:(runs dir) meta.id in
+  let output = Subrun.output_path ~dir meta.id in
   let deadline = Unix.gettimeofday () +. 5. in
   while (not (Sys.file_exists output)) && Float.(Unix.gettimeofday () < deadline) do
     Unix.sleepf 0.02

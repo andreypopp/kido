@@ -83,6 +83,26 @@ let envelope_to_yojson e =
     @ [ ("text", `String e.text) ]
     @ optional "run" e.run @ optional "output" e.output)
 
+let max_notice_bytes = 4000
+
+let utf_8_prefix s n =
+  let rec boundary n = if n > 0 && Char.code s.[n] land 0xC0 = 0x80 then boundary (n - 1) else n in
+  if String.length s <= n then s else String.sub s 0 (boundary (Int.max 0 n))
+
+let valid_utf_8 s =
+  let b = Buffer.create (String.length s) in
+  let rec go i =
+    if i < String.length s then begin
+      let d = String.get_utf_8_uchar s i in
+      let n = Uchar.utf_decode_length d in
+      if Uchar.utf_decode_is_valid d then Buffer.add_substring b s i n
+      else Buffer.add_string b "\u{FFFD}";
+      go (i + n)
+    end
+  in
+  go 0;
+  Buffer.contents b
+
 let parse raw =
   match Yojson.Safe.from_string raw with
   | `Assoc fields as json ->

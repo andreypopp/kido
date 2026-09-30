@@ -7,7 +7,6 @@ let str name docv doc = Arg.(value & opt string "" & info [ name ] ~docv ~doc)
 let num name docv doc = Arg.(value & opt int 0 & info [ name ] ~docv ~doc)
 let flag name doc = Arg.(value & flag & info [ name ] ~doc)
 let arg docv = Arg.(required & pos 0 (some string) None & info [] ~docv)
-let env name = Option.get_or ~default:"" (Sys.getenv_opt name)
 let stdin () = In_channel.input_all stdin
 let panes = lazy (Tmux.Exec.list_panes ())
 let cmd name doc term = Cmd.v (Cmd.info name ~doc) Term.(const (fun f -> Cli.run name f) $ term)
@@ -31,7 +30,7 @@ let send name doc spec =
   @@ let+ recipient, spec = spec in
      fun () ->
        sent
-         (Message_agent.send ~dir:(State.dir ()) ~self:(env "TMUX_PANE") ~panes
+         (Message_agent.send ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE") ~panes
             ~paste:Tmux.Exec.send_prompt recipient spec (stdin ()))
 
 let message_agent =
@@ -56,7 +55,8 @@ let steer_subagent =
 let interrupt_subagent =
   cmd "interrupt_subagent" "Abort a descendant agent's current turn."
   @@ let+ to_ = arg "AGENT" in
-     fun () -> print (Control.interrupt ~dir:(State.dir ()) ~self:(env "TMUX_PANE") ~panes to_)
+     fun () ->
+       print (Control.interrupt ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE") ~panes to_)
 
 let release_ops = { Reap.kill_window = Tmux.Exec.kill_window; kill_pane = Tmux.Exec.kill_pane }
 
@@ -67,9 +67,9 @@ let stop_subagent =
      and+ to_ = arg "AGENT" in
      fun () ->
        print
-         (Control.stop ~dir:(State.dir ()) ~self:(env "TMUX_PANE") ~list_panes:Tmux.Exec.list_panes
-            ~ops:release_ops ~escalation:(Control.stop_escalation ())
-            ~warn:(Cli.error "stop_subagent") ~force to_)
+         (Control.stop ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
+            ~list_panes:Tmux.Exec.list_panes ~ops:release_ops
+            ~escalation:(Control.stop_escalation ()) ~warn:(Cli.error "stop_subagent") ~force to_)
 
 let runs =
   cmd "runs" "List subagent and async runs, or show one."
@@ -113,7 +113,8 @@ let async_run =
          (Async_run.async_run ~dir:(State.dir ())
             ~knobs:(Async_stream.knobs Sys.getenv_opt)
             ~warn:(Cli.error "async-run")
-            ~run_id:(if String.is_empty run_id then env "KIDO_AGENT_RUN_ID" else run_id)
+            ~run_id:
+              (if String.is_empty run_id then Tmux.Exec.getenv "KIDO_AGENT_RUN_ID" else run_id)
             ~stream args)
 
 let notify_parent =
@@ -121,9 +122,11 @@ let notify_parent =
   @@ let+ () = Term.const () in
      fun () ->
        sent
-         (Message_agent.notify_parent ~dir:(State.dir ()) ~self:(env "TMUX_PANE") ~panes
-            ~paste:Tmux.Exec.send_prompt ~warn:(Cli.error "notify_parent")
-            ~parent:(env "KIDO_AGENT_PARENT_SESSION") ~run:(env "KIDO_AGENT_RUN_ID") (stdin ()))
+         (Message_agent.notify_parent ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
+            ~panes ~paste:Tmux.Exec.send_prompt ~warn:(Cli.error "notify_parent")
+            ~parent:(Tmux.Exec.getenv "KIDO_AGENT_PARENT_SESSION")
+            ~run:(Tmux.Exec.getenv "KIDO_AGENT_RUN_ID")
+            (stdin ()))
 
 let list_agents =
   cmd "list_agents" "List the agents in a tmux session."
@@ -134,7 +137,7 @@ let list_agents =
        let agents =
          ok
            (List_agents.list_agents ~dir:(State.dir ()) ~threshold:(State.stall_threshold ())
-              ~self:(env "TMUX_PANE") ~panes ~session)
+              ~self:(Tmux.Exec.getenv "TMUX_PANE") ~panes ~session)
        in
        if json then
          print_endline
@@ -146,7 +149,7 @@ let set_status =
   cmd "set_status" "Set this agent's activity; an empty one clears it."
   @@ let+ activity = arg "ACTIVITY" in
      fun () ->
-       let dir = State.dir () and self = env "TMUX_PANE" in
+       let dir = State.dir () and self = Tmux.Exec.getenv "TMUX_PANE" in
        match State.String_map.find_opt self (State.by_pane (State.load_live ~dir)) with
        | None ->
            Printf.ksprintf failwith
@@ -173,15 +176,14 @@ let agent_alive =
 let children_alive =
   answer "children-alive" "Print whether any subagent spawned by a session is still running."
     (fun ~dir session ->
-      let runs = Filename.concat dir "runs" in
       List.exists
         (fun id ->
-          match Subrun.read_meta ~dir:runs id with
+          match Subrun.read_meta ~dir id with
           | Some m ->
               String.equal m.parent_session session
-              && Option.is_none (Subrun.effective_outcome ~dir:runs id ~pid:m.pid)
+              && Option.is_none (Subrun.effective_outcome ~dir id ~pid:m.pid)
           | None -> false)
-        (Subrun.list ~dir:runs))
+        (Subrun.list ~dir))
 
 type window = { session : string; index : int; layout : string; n : int }
 
@@ -191,7 +193,7 @@ let snapshot =
      fun () ->
        let states = State.by_pane (State.load_live ~dir:(State.dir ())) in
        let pi = (Procs.sweep ()).pi in
-       let q = Tmux.Conn.quote in
+       let q = Filename.quote in
        let tm = Unix.localtime (Unix.time ()) in
        Printf.printf
          "#!/bin/sh\n# tmux sessions captured by kido snapshot on %04d-%02d-%02d %02d:%02d.\n"
@@ -255,7 +257,9 @@ let prompt =
          prerr_endline why;
          code
        in
-       match Prompt.prompt ~dir:(State.dir ()) ~self:(env "TMUX_PANE") ~window (stdin ()) with
+       match
+         Prompt.prompt ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE") ~window (stdin ())
+       with
        | Ok () -> 0
        | Error No_prompt -> refuse "no prompt given" 1
        | Error Not_found -> refuse "agent not found" 4
@@ -284,7 +288,9 @@ let switch name doc f =
        ok
          (f
             ~client:
-              (List.find_opt (fun c -> not (String.is_empty c)) [ client; env "TMUX_SIDE_CLIENT" ]
+              (List.find_opt
+                 (fun c -> not (String.is_empty c))
+                 [ client; Tmux.Exec.getenv "TMUX_SIDE_CLIENT" ]
               |> Option.get_lazy Tmux.Exec.current_client)
             ~next);
        0
@@ -328,14 +334,14 @@ let spawn_subagent =
      and+ command = rest in
      created "spawn_subagent" (fun () ->
          Result.flat_map
-           (Spawn_subagent.spawn ~dir:(State.dir ()) ~self:(env "TMUX_PANE") ~panes
+           (Spawn_subagent.spawn ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE") ~panes
               ~tmux:Spawn_subagent.tmux
               ~pi:
                 {
-                  list_models = Spawn_subagent.list_models ~path:(env "PATH");
-                  session_dir = env "PI_CODING_AGENT_SESSION_DIR";
-                  agent_dir = env "PI_CODING_AGENT_DIR";
-                  home = env "HOME";
+                  list_models = Spawn_subagent.list_models ~path:(Tmux.Exec.getenv "PATH");
+                  session_dir = Tmux.Exec.getenv "PI_CODING_AGENT_SESSION_DIR";
+                  agent_dir = Tmux.Exec.getenv "PI_CODING_AGENT_DIR";
+                  home = Tmux.Exec.getenv "HOME";
                 })
            (Spawn_subagent.parse
               {
@@ -358,9 +364,8 @@ let async_bash =
      and+ stream = flag "stream" "Send the command's output to this caller in batches as it runs."
      and+ args = rest in
      created "async_bash" (fun () ->
-         Async_bash.async_bash ~dir:(State.dir ()) ~self:(env "TMUX_PANE")
-           ~exe:(Tmux.Exec.invoked_path ~path:(env "PATH") Sys.argv.(0))
-           ~panes ~tmux:Spawn_subagent.tmux ~name ~stream args)
+         Async_bash.async_bash ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
+           ~exe:(Lazy.force Tmux.Exec.self) ~panes ~tmux:Spawn_subagent.tmux ~name ~stream args)
 
 let hook =
   Cmd.v (Cmd.info "hook" ~doc:"Record a Claude Code hook event read from stdin.")
@@ -432,7 +437,7 @@ let ssh =
   Cmd.v (Cmd.info "ssh" ~doc:"Run ssh, priming the remote login shell when it can.")
   @@ let+ args = rest in
      Cli.run "ssh" (fun () ->
-         let path = env "PATH" in
+         let path = Tmux.Exec.getenv "PATH" in
          let ssh =
            match Bin_dir.own () with
            | Some dir ->
@@ -512,9 +517,7 @@ let sidebar =
   match (Sys.argv, Sys.getenv_opt "TMUX_SIDE_CLIENT") with
   | [| _ |], (None | Some "") ->
       Cli.run "" (fun () ->
-          match Launch.run ~tmux:(Option.get_or ~default:"" (Sys.getenv_opt "TMUX")) with
-          | Ok _ -> 0
-          | Error m -> failwith m)
+          match Launch.run ~tmux:(Tmux.Exec.getenv "TMUX") with Ok _ -> 0 | Error m -> failwith m)
   | _ -> (
       match Ui.run ~interval ~client with
       | Ok () -> 0

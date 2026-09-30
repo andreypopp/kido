@@ -158,47 +158,23 @@ let send ~dir ~self ~panes ~paste recipient spec text =
       | Ok `Inbox -> Ok (Printf.sprintf "delivered to %s by inbox" name)
       | Error (Unavailable m | Failed m) -> Error (Not_sent m)
 
-let max_report_bytes = 4000
+let head_within s max = Msg.valid_utf_8 (Msg.utf_8_prefix s max)
 
-let to_valid_utf_8 s =
-  let b = Buffer.create (String.length s) in
-  let rec go i bad =
-    if i < String.length s then begin
-      let d = String.get_utf_8_uchar s i in
-      let n = Uchar.utf_decode_length d in
-      let valid = Uchar.utf_decode_is_valid d in
-      if valid then Buffer.add_string b (String.sub s i n)
-      else if not bad then Buffer.add_string b "\u{FFFD}";
-      go (i + n) (not valid)
-    end
-  in
-  go 0 false;
-  Buffer.contents b
-
-let head_within s max =
-  if max <= 0 then ""
-  else if String.length s <= max then s
-  else
-    let rec boundary n =
-      if n > 0 && Char.code s.[n] land 0xC0 = 0x80 then boundary (n - 1) else n
-    in
-    to_valid_utf_8 (String.sub s 0 (boundary max))
-
-let report_notice ~warn ~runs run report =
-  if String.length report <= max_report_bytes then report
+let report_notice ~warn ~dir run report =
+  if String.length report <= Msg.max_notice_bytes then report
   else
     match run with
-    | None -> head_within report max_report_bytes
+    | None -> head_within report Msg.max_notice_bytes
     | Some id -> (
-        match Subrun.write_report ~dir:runs id report with
+        match Subrun.write_report ~dir id report with
         | () ->
-            let suffix = "\n\nfull report: " ^ Subrun.report_path ~dir:runs id in
-            head_within report (max_report_bytes - String.length suffix) ^ suffix
+            let suffix = "\n\nfull report: " ^ Subrun.report_path ~dir id in
+            head_within report (Msg.max_notice_bytes - String.length suffix) ^ suffix
         | exception Unix.Unix_error (e, fn, arg) ->
             warn
               (Printf.sprintf "keeping the whole report failed (%s); sending a truncated one"
                  (Fs.unix_message e fn arg));
-            head_within report max_report_bytes)
+            head_within report Msg.max_notice_bytes)
 
 let notify_parent ~dir ~self ~panes ~paste ~warn ~parent ~run text =
   if String.is_empty parent then
@@ -209,4 +185,4 @@ let notify_parent ~dir ~self ~panes ~paste ~warn ~parent ~run text =
     let report = String.chop_suffix ~suf:"\n" text |> Option.get_or ~default:text in
     send ~dir ~self ~panes ~paste (Parent parent)
       { kind = Notice; reply_to = ""; id = "" }
-      (report_notice ~warn ~runs:(Filename.concat dir "runs") run report)
+      (report_notice ~warn ~dir run report)

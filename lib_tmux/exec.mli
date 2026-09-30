@@ -1,7 +1,14 @@
+val getenv : string -> string
+val is_file : string -> bool
+val is_executable : string -> bool
 val look_path : path:string -> string -> string option
 val invoked_path : path:string -> string -> string
 val candidates : string -> string list
-val resolve_binary : kido_tmux:string option -> path:string -> string -> string
+
+val self : string Lazy.t
+(** This executable as invoked ({!invoked_path} of [argv.(0)] on [$PATH]), unresolved. *)
+
+val resolve_binary : kido_tmux:string option -> string -> string
 val binary : string Lazy.t
 val write_all : Unix.file_descr -> string -> unit
 

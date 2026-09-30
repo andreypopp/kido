@@ -403,10 +403,9 @@ let%expect_test "order_windows_by_tree: the lingering fallback, and a record bea
     |}]
 
 let new_run ~dir ?(parent = "") ?result name =
-  let runs = Filename.concat dir "runs" in
   let id = Subrun.new_id () in
-  Subrun.create ~dir:runs id "task";
-  Subrun.write_meta ~dir:runs
+  Subrun.create ~dir id "task";
+  Subrun.write_meta ~dir
     {
       id;
       name;
@@ -422,7 +421,7 @@ let new_run ~dir ?(parent = "") ?result name =
       started_at = test_at;
     };
   Option.iter
-    (fun result -> ignore (Subrun.record_outcome ~dir:runs id { result; text = ""; at = None }))
+    (fun result -> ignore (Subrun.record_outcome ~dir id { result; text = ""; at = None }))
     result;
   Subrun.string_of_id id
 
@@ -512,9 +511,9 @@ let%expect_test "lingering entries carry forward; only a missing outcome is re-r
     Printf.printf "%s %s\n" l.name (Option.map_or ~default:"-" Subrun.string_of_result l.outcome)
   in
   show first;
-  Sys.remove (Filename.concat dir ("runs/" ^ id ^ "/meta.json"));
+  Sys.remove (Subrun.meta_path ~dir (Result.get_exn (Subrun.parse_id id)));
   ignore
-    (Subrun.record_outcome ~dir:(Filename.concat dir "runs")
+    (Subrun.record_outcome ~dir
        (Result.get_exn (Subrun.parse_id id))
        { result = Completed; text = ""; at = None });
   show (Ui.lingering_subagents ~dir panes State.String_map.empty first);

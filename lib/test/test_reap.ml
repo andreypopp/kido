@@ -63,8 +63,7 @@ let sweep ?(dir = temp ()) ?(capture = no_capture) ?(sessions = []) panes =
     (fun (p : Tmux.Pane.t) ->
       Option.iter
         (fun r ->
-          if not (Sys.file_exists (Filename.concat (runs dir) r)) then
-            Subrun.create ~dir:(runs dir) (id r) "x")
+          if not (Sys.file_exists (Filename.concat (runs dir) r)) then Subrun.create ~dir (id r) "x")
         p.run)
     panes;
   Reap.sweep ~dir ~capture ~grace:30. panes sessions ~now
@@ -85,8 +84,8 @@ let show (closes, endings) =
 
 let run ~dir ?(kind : Subrun.kind option) ?(parent = "") name id_s =
   let i = id id_s in
-  Subrun.create ~dir:(runs dir) i "task";
-  Subrun.write_meta ~dir:(runs dir)
+  Subrun.create ~dir i "task";
+  Subrun.write_meta ~dir
     {
       id = i;
       name;
@@ -104,7 +103,7 @@ let run ~dir ?(kind : Subrun.kind option) ?(parent = "") name id_s =
   i
 
 let outcome ~dir id_s =
-  match Subrun.read_outcome ~dir:(runs dir) (id id_s) with
+  match Subrun.read_outcome ~dir (id id_s) with
   | None -> "no outcome"
   | Some o -> Subrun.string_of_result o.result ^ " " ^ o.text
 
@@ -182,13 +181,12 @@ let%expect_test "a pane collision on the parent: the complete record set keeps t
 
 let%expect_test "outcomes: Died is recorded for a closed window and a recorded one stands" =
   let dir = temp () in
-  Subrun.create ~dir:(runs dir) (id "run-died") "x";
+  Subrun.create ~dir (id "run-died") "x";
   show (sweep ~dir [ other; pane ~run:"run-died" ~dead:60 "%1" "@1" ]);
   print_endline (outcome ~dir "run-died");
-  Subrun.create ~dir:(runs dir) (id "run-done") "x";
+  Subrun.create ~dir (id "run-done") "x";
   ignore
-    (Subrun.record_outcome ~dir:(runs dir) (id "run-done")
-       { result = Completed; text = ""; at = Some now });
+    (Subrun.record_outcome ~dir (id "run-done") { result = Completed; text = ""; at = Some now });
   show (sweep ~dir [ other; pane ~run:"run-done" ~dead:60 "%1" "@1" ]);
   print_endline (outcome ~dir "run-done");
   [%expect {|
@@ -201,7 +199,7 @@ let%expect_test "outcomes: Died is recorded for a closed window and a recorded o
 let stub pane_id text p = if String.equal p pane_id then Some text else None
 
 let screen ~dir id_s =
-  match Subrun.read_screen ~dir:(runs dir) (id id_s) with
+  match Subrun.read_screen ~dir (id id_s) with
   | None -> "no screen"
   | Some s ->
       Printf.sprintf "%d bytes, ends %S" (String.length s)
@@ -209,21 +207,21 @@ let screen ~dir id_s =
 
 let%expect_test "the screen is captured before closing, only for a window actually closed" =
   let dir = temp () in
-  Subrun.create ~dir:(runs dir) (id "run-crash") "x";
+  Subrun.create ~dir (id "run-crash") "x";
   show
     (sweep ~dir
        ~capture:(stub "%1" "panic: something went wrong\n")
        [ other; pane ~run:"run-crash" ~dead:60 "%1" "@1" ]);
   print_endline (screen ~dir "run-crash");
-  Subrun.create ~dir:(runs dir) (id "run-focused") "x";
+  Subrun.create ~dir (id "run-focused") "x";
   show
     (sweep ~dir ~capture:(stub "%1" "never")
        [ other; pane ~watched:true ~run:"run-focused" ~dead:600 "%1" "@1" ]);
   print_endline (screen ~dir "run-focused");
-  Subrun.create ~dir:(runs dir) (id "run-lastwindow") "x";
+  Subrun.create ~dir (id "run-lastwindow") "x";
   show (sweep ~dir ~capture:(stub "%2" "never") [ pane ~run:"run-lastwindow" ~dead:600 "%2" "@2" ]);
   print_endline (screen ~dir "run-lastwindow");
-  Subrun.create ~dir:(runs dir) (id "run-nopane") "x";
+  Subrun.create ~dir (id "run-nopane") "x";
   show
     (sweep ~dir ~capture:(stub "%never" "x") [ other; pane ~run:"run-nopane" ~dead:60 "%1" "@1" ]);
   print_endline (screen ~dir "run-nopane");
@@ -241,11 +239,11 @@ let%expect_test "the screen is captured before closing, only for a window actual
 
 let%expect_test "the captured screen is bounded to its tail" =
   let dir = temp () in
-  Subrun.create ~dir:(runs dir) (id "run-huge") "x";
+  Subrun.create ~dir (id "run-huge") "x";
   let huge = String.make (Subrun.max_screen_bytes * 2) 'x' ^ "TAIL" in
   show (sweep ~dir ~capture:(stub "%1" huge) [ other; pane ~run:"run-huge" ~dead:60 "%1" "@1" ]);
   Printf.printf "%s, within bound: %b\n" (screen ~dir "run-huge")
-    (String.length (Option.get_exn_or "screen" (Subrun.read_screen ~dir:(runs dir) (id "run-huge")))
+    (String.length (Option.get_exn_or "screen" (Subrun.read_screen ~dir (id "run-huge")))
     <= Subrun.max_screen_bytes);
   [%expect {|
     close @1
@@ -262,7 +260,7 @@ let%expect_test
   print_endline (outcome ~dir "run-killed");
   ignore (run ~dir ~kind:Bash ~parent:"root-sess" "build" "run-told");
   ignore
-    (Subrun.record_outcome ~dir:(runs dir) (id "run-told")
+    (Subrun.record_outcome ~dir (id "run-told")
        { result = Failed; text = "exit status 3"; at = Some now });
   show (sweep ~dir [ other; pane ~run:"run-told" ~dead:60 "%1" "@1" ]);
   print_endline (outcome ~dir "run-told");
@@ -284,8 +282,7 @@ let%expect_test
   print_endline (outcome ~dir "run-agent");
   ignore (run ~dir ~parent:"root-sess" "kid" "run-said");
   ignore
-    (Subrun.record_outcome ~dir:(runs dir) (id "run-said")
-       { result = Completed; text = ""; at = Some now });
+    (Subrun.record_outcome ~dir (id "run-said") { result = Completed; text = ""; at = Some now });
   show (sweep ~dir [ other; pane ~run:"run-said" ~dead:60 "%1" "@1" ]);
   print_endline (outcome ~dir "run-said");
   [%expect
@@ -340,13 +337,13 @@ let%expect_test "two run panes in one window: the sweep takes the first, as deci
 
 let%expect_test "a pane close captures the run's pane alone and notifies once" =
   let dir = temp () in
-  Subrun.create ~dir:(runs dir) (id "run-screen") "x";
+  Subrun.create ~dir (id "run-screen") "x";
   let shell = pane "%2" "@1" in
   show
     (sweep ~dir
        ~capture:(stub "%1" "the run's last screen\n")
        [ other; pane ~run:"run-screen" ~dead:600 "%1" "@1"; shell ]);
-  print_endline (Option.get_exn_or "screen" (Subrun.read_screen ~dir:(runs dir) (id "run-screen")));
+  print_endline (Option.get_exn_or "screen" (Subrun.read_screen ~dir (id "run-screen")));
   ignore (run ~dir ~kind:Bash ~parent:"root-sess" "build" "run-paned");
   let panes = [ other; pane ~run:"run-paned" ~dead:600 "%1" "@1"; shell ] in
   show (sweep ~dir panes);
@@ -412,8 +409,8 @@ let%expect_test "decide: close-run's refusals and closes" =
 let%expect_test "a bash ending's notice carries the run's name, status, id and output tail" =
   let dir = temp () in
   let i = run ~dir ~kind:Bash "build" "run-named" in
-  Fs.write (Subrun.output_path ~dir:(runs dir) i) "boom\n";
-  let meta = Option.get_exn_or "meta" (Subrun.read_meta ~dir:(runs dir) i) in
+  Fs.write (Subrun.output_path ~dir i) "boom\n";
+  let meta = Option.get_exn_or "meta" (Subrun.read_meta ~dir i) in
   let body e = print_string (String.replace ~sub:dir ~by:"DIR" (Reap.body ~dir e)) in
   body
     {
@@ -427,7 +424,7 @@ let%expect_test "a bash ending's notice carries the run's name, status, id and o
       outcome = { result = Completed; text = "exit status 0"; at = None };
       detail = Bash { unstreamed = 0 };
     };
-  Fs.remove (Subrun.output_path ~dir:(runs dir) i);
+  Fs.remove (Subrun.output_path ~dir i);
   print_string
     (Reap.body ~dir
        {
@@ -456,7 +453,7 @@ let%expect_test "a bash ending's notice carries the run's name, status, id and o
 let%expect_test "an agent ending's notice, reported and unreported" =
   let dir = temp () in
   let i = run ~dir ~parent:"root-sess" "kid" "run-agent" in
-  let meta = Option.get_exn_or "meta" (Subrun.read_meta ~dir:(runs dir) i) in
+  let meta = Option.get_exn_or "meta" (Subrun.read_meta ~dir i) in
   print_string
     (Reap.body ~dir
        {
@@ -486,12 +483,12 @@ let%expect_test "tail_of_file keeps the end, drops a partial rune and stays vali
   let dir = temp () in
   let path = Filename.concat dir "output" in
   Fs.write path (String.concat "" (List.init 1000 (Printf.sprintf "line %04d\n")));
-  let tail, omitted = Reap.tail_of_file path Reap.max_notice_tail_bytes in
+  let tail, omitted = Reap.tail_of_file path Msg.max_notice_bytes in
   Printf.printf "%d bytes, %d omitted, ends %S, has head: %b\n" (String.length tail) omitted
     (String.rev (String.take 10 (String.rev tail)))
     (String.mem ~sub:"line 0000\n" tail);
   Fs.write path "all of it\n";
-  let tail, omitted = Reap.tail_of_file path Reap.max_notice_tail_bytes in
+  let tail, omitted = Reap.tail_of_file path Msg.max_notice_bytes in
   Printf.printf "%S %d\n" tail omitted;
   let s = "ab🎉cd" in
   Fs.write path s;

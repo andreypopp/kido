@@ -29,7 +29,7 @@ val parent_edge : string * State.session -> string option
 val is_ancestor : (string * string) list -> ancestor:string -> string -> bool
 
 val build :
-  runs:string ->
+  dir:string ->
   threshold:float ->
   wake:Timestamp.t option ->
   now:Timestamp.t ->

@@ -53,11 +53,3 @@ let%expect_test "a truncated block is never handed out; a guard lookalike is dat
     --
     block [%end 5 8 0 | row]
     |}]
-
-let%expect_test "quote" =
-  List.iter (fun s -> print_endline (Conn.quote s)) [ "#{pane_id}"; "/dev/ttys012"; "it's" ];
-  [%expect {|
-    '#{pane_id}'
-    '/dev/ttys012'
-    'it'\''s'
-    |}]

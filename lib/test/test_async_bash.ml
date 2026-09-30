@@ -51,7 +51,6 @@ let%expect_test "a run's meta and command are written, then a window running kid
       Result.get_exn
         (Async_bash.async_bash ~dir ~self ~exe:"/bin/kido" ~panes ~tmux ~name ~stream args)
     in
-    let runs = Filename.concat dir "runs" in
     let id = List.hd (String.split_on_char ' ' line |> List.drop 2) in
     let scrub s =
       String.replace ~sub:id ~by:"<run>" s
@@ -60,12 +59,12 @@ let%expect_test "a run's meta and command are written, then a window running kid
     in
     print_endline (scrub line);
     let id = Result.get_exn (Subrun.parse_id id) in
-    let m = Option.get_exn_or "meta" (Subrun.read_meta ~dir:runs id) in
+    let m = Option.get_exn_or "meta" (Subrun.read_meta ~dir id) in
     Printf.printf "meta %s parent=%S depth=%d pane=%s pid=%d\n" m.name m.parent_session m.depth
       m.pane m.pid;
     Printf.printf "command [%s] task %S\n"
-      (String.concat "|" (Option.get_or ~default:[] (Subrun.read_command ~dir:runs id)))
-      (Option.get_or ~default:"" (Subrun.read_task ~dir:runs id));
+      (String.concat "|" (Option.get_or ~default:[] (Subrun.read_command ~dir id)))
+      (Option.get_or ~default:"" (Subrun.read_task ~dir id));
     List.iter
       (fun (session, name, cwd, env, command) ->
         Printf.printf "new-window %s %S %s\n  env %s\n  cmd %s\n" session name cwd

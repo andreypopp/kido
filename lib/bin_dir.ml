@@ -2,14 +2,10 @@ let of_exe exe =
   Tmux.Exec.candidates exe
   |> List.map (fun c ->
       Filename.concat (Filename.dirname (Filename.dirname c)) "share/kido/bin/tmux")
-  |> List.find_opt (fun p -> Sys.file_exists p && not (Sys.is_directory p))
-  |> Option.map Filename.dirname
+  |> List.find_opt Tmux.Exec.is_file |> Option.map Filename.dirname
   |> Option.filter (fun d -> not (String.contains d ':'))
 
-let own () =
-  of_exe
-    (Tmux.Exec.invoked_path ~path:(Option.get_or ~default:"" (Sys.getenv_opt "PATH")) Sys.argv.(0))
-
+let own () = of_exe (Lazy.force Tmux.Exec.self)
 let split path = if String.is_empty path then [] else String.split_on_char ':' path
 
 let path_with_first dir path =
@@ -36,14 +32,8 @@ let look_path_past ~path ~dir name =
   List.find_map
     (fun e ->
       let c = Filename.concat e name in
-      match stat c with
-      | Some st
-        when (not (is_dir e))
-             && Stdlib.(st.st_kind <> S_DIR)
-             && st.st_perm land 0o111 <> 0
-             && not (same (Some st) shim_st) ->
-          Some c
-      | _ -> None)
+      if (not (is_dir e)) && Tmux.Exec.is_executable c && not (same (stat c) shim_st) then Some c
+      else None)
     search
 
 let path_prepend_script dir =

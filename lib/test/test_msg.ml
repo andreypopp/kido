@@ -204,3 +204,31 @@ let%expect_test "InboxPath rejects a name that would escape or overflow sun_path
     "sub/agent": rejected
     "a..b": rejected
     |}]
+
+let%expect_test "utf_8_prefix drops a partial rune wherever the cut falls inside it" =
+  let s = "ab\u{1F389}cd" in
+  List.iter
+    (fun cut -> Printf.printf "%d: %S\n" cut (Msg.utf_8_prefix s cut))
+    [ -1; 0; 3; 4; 5; 6; 8 ];
+  [%expect
+    {|
+    -1: ""
+    0: ""
+    3: "ab"
+    4: "ab"
+    5: "ab"
+    6: "ab\240\159\142\137"
+    8: "ab\240\159\142\137cd"
+    |}]
+
+let%expect_test "valid_utf_8 replaces each invalid sequence and keeps the rest" =
+  List.iter
+    (fun s -> Printf.printf "%S\n" (Msg.valid_utf_8 s))
+    [ "ok \u{2603}"; "a\xffb"; "\xff\xfe"; "cut \xe2\x98" ];
+  [%expect
+    {|
+    "ok \226\152\131"
+    "a\239\191\189b"
+    "\239\191\189\239\191\189"
+    "cut \239\191\189"
+    |}]

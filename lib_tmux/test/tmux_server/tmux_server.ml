@@ -20,7 +20,7 @@ let probe () =
   Sys.set_signal Sys.sigpipe Signal_ignore;
   let conn = Conn.connect "" in
   show (Conn.run conn "display-message -p hello");
-  show (Conn.run conn ("display-message -p " ^ Conn.quote "it's #{session_name}"));
+  show (Conn.run conn ("display-message -p " ^ Filename.quote "it's #{session_name}"));
   show (Conn.run conn "bogus");
   List.iter
     (fun (p : Pane.t) -> Printf.printf "pane %s %s %s\n" p.session_name p.window_id p.pane_id)
