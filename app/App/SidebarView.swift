@@ -12,8 +12,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         case row(SessionID, Row)
 
         var target: (session: SessionID, window: WindowID, pane: PaneID)? {
-            guard case .row(let session, let row) = self, let window = row.window, let pane = row.pane else { return nil }
-            return (session, window, pane)
+            guard case .row(let session, let row) = self, let target = row.target else { return nil }
+            return (session, target.window, target.pane)
         }
     }
 
@@ -25,6 +25,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     private var items: [Item] = []
     private var feedNote: (String, NSColor)?
     private var failure: String?
+    private var activating: String?
 
     override var isFlipped: Bool { true }
 
@@ -84,8 +85,10 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         case .starting:
             show(nil)
             feedNote = ("Starting…", .secondaryLabelColor)
-        case .failed(let message):
+        case .restarting(let message):
             feedNote = ("The sidebar feed stopped, restarting…\n\(message)", .secondaryLabelColor)
+        case .failed(let message):
+            feedNote = ("The sidebar feed could not start.\n\(message)", .systemRed)
         case .running(nil):
             feedNote = ("The sidebar feed sent a snapshot this app cannot read.", .systemRed)
         case .running(let snapshot?):
@@ -121,6 +124,11 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         }
         table.selectRowIndexes([row], byExtendingSelection: false)
         if moved { table.scrollRowToVisible(row) }
+        if let query = activating, next?.filter == query { activate() }
+    }
+
+    private func activate() {
+        jump(table.selectedRow >= 0 ? table.selectedRow : items.firstIndex { $0.target != nil } ?? -1)
     }
 
     func focus() {
@@ -155,12 +163,10 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     }
 
     private func jump(_ index: Int) {
-        guard items.indices.contains(index), let target = items[index].target, let snapshot else { return }
+        activating = nil
+        guard items.indices.contains(index), let target = items[index].target else { return }
         failed(nil)
-        send(
-            (target.session == snapshot.client.session ? [] : [Command("switch-client", "-t", target.session)]) + [
-                Command("select-window", "-t", target.window), Command("select-pane", "-t", target.pane),
-            ])
+        send([Command("switch-client", "-t", "\(target.session):\(target.window).\(target.pane)")])
         if !search.stringValue.isEmpty {
             search.stringValue = ""
             filter("")
@@ -173,6 +179,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     }
 
     @objc private func searched() {
+        if activating != search.stringValue { activating = nil }
         filter(search.stringValue)
     }
 
@@ -198,7 +205,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
             move(table.selectedRow < 0 ? 1 : 0)
         case #selector(insertNewline(_:)):
             searched()
-            jump(table.selectedRow >= 0 ? table.selectedRow : items.firstIndex { $0.target != nil } ?? -1)
+            activating = search.stringValue
+            if snapshot?.filter == search.stringValue { activate() }
         case #selector(cancelOperation(_:)) where search.stringValue.isEmpty:
             leave()
         default:
@@ -366,20 +374,20 @@ private final class Cell: NSView {
     // subagent a dim ✓ when it completed and a dim × otherwise.
     private static func symbol(_ indicator: Indicator) -> NSImage? {
         let glyph: (name: String, color: NSColor, weight: NSFont.Weight)? =
-            switch (indicator.kind, indicator.outcome) {
-            case (.idle, _): nil
-            case (.running, _): ("square.fill", .systemGreen, .regular)
-            case (.waiting, _): ("diamond.fill", .systemOrange, .regular)
-            case (.compacting, _): ("circle.dotted", .systemPurple, .bold)
-            case (.done, _): ("checkmark", .systemGreen, .heavy)
-            case (.failed, _): ("square.fill", .systemRed, .regular)
-            case (.unknown, _): ("questionmark", .secondaryLabelColor, .bold)
-            case (.stalled, _): ("exclamationmark", .systemRed, .heavy)
-            case (.gone, .completed): ("checkmark", .tertiaryLabelColor, .bold)
-            case (.gone, _): ("xmark", .tertiaryLabelColor, .bold)
+            switch indicator {
+            case .idle: nil
+            case .running: ("square.fill", .systemGreen, .regular)
+            case .waiting: ("diamond.fill", .systemOrange, .regular)
+            case .compacting: ("circle.dotted", .systemPurple, .bold)
+            case .done: ("checkmark", .systemGreen, .heavy)
+            case .failed: ("square.fill", .systemRed, .regular)
+            case .unknown: ("questionmark", .secondaryLabelColor, .bold)
+            case .stalled: ("exclamationmark", .systemRed, .heavy)
+            case .gone(.completed): ("checkmark", .tertiaryLabelColor, .bold)
+            case .gone: ("xmark", .tertiaryLabelColor, .bold)
             }
         guard let glyph else { return nil }
-        return NSImage(systemSymbolName: glyph.name, accessibilityDescription: indicator.kind.rawValue)?
+        return NSImage(systemSymbolName: glyph.name, accessibilityDescription: nil)?
             .withSymbolConfiguration(
                 NSImage.SymbolConfiguration(pointSize: 9, weight: glyph.weight).applying(.init(paletteColors: [glyph.color])))
     }
