@@ -24,11 +24,9 @@ final class WindowView: NSView {
 
     override var isFlipped: Bool { true }
 
-    private var panes: [PaneView] { subviews.compactMap { $0 as? PaneView } }
+    var panes: [PaneView] { subviews.compactMap { $0 as? PaneView } }
 
-    private static func cell(_ panes: some Sequence<PaneView>) -> CGSize? {
-        panes.lazy.map(\.cell).first { $0.width > 0 && $0.height > 0 }
-    }
+    private var session: SessionView? { superview as? SessionView }
 
     func update(_ layout: Layout, _ visible: Layout) {
         shown = (layout, visible)
@@ -61,7 +59,7 @@ final class WindowView: NSView {
             views[pane.id] = existing[pane.id] ?? makePane(pane.id)
         }
         for (id, gone) in existing where views[id] == nil { connection?.detach(gone) }
-        let cell = Self.cell(views.values) ?? .zero
+        let cell = session?.cell ?? views.values.lazy.map(\.cell).first { $0.width > 0 && $0.height > 0 } ?? .zero
         func rect(_ x: Int, _ y: Int, _ width: Int, _ height: Int) -> CGRect {
             CGRect(
                 x: CGFloat(x) * cell.width, y: CGFloat(y) * cell.height,
@@ -93,15 +91,18 @@ final class WindowView: NSView {
         window?.invalidateCursorRects(for: self)
     }
 
+    func cellChanged() {
+        relayout()
+        sizeClient()
+    }
+
     private func makePane(_ id: PaneID) -> PaneView? {
-        guard let view = PaneView(runtime: runtime, pane: id) else { return nil }
+        guard let view = PaneView(runtime: runtime, pane: id, font: session?.font ?? 0) else { return nil }
         view.onInput = { [weak self] in self?.connection?.sendKeys(id, $0) }
         view.onSelect = { [weak self] in self?.connection?.send([Command("select-pane", "-t", id)]) }
         view.onCommand = { [weak self] in self?.connection?.send([$0.command(id)]) }
-        view.onCellChange = { [weak self] in
-            self?.relayout()
-            self?.sizeClient()
-        }
+        view.onCellChange = { [weak self] in self?.cellChanged() }
+        view.onFontChange = { [weak self] in self?.session?.fontChanged($0) }
         return view
     }
 
@@ -118,7 +119,7 @@ final class WindowView: NSView {
     private var drag: (divider: Divider, position: Int)?
 
     private func cell(at event: NSEvent) -> (x: Int, y: Int)? {
-        guard let cell = Self.cell(panes) else { return nil }
+        guard let cell = session?.cell else { return nil }
         let point = convert(event.locationInWindow, from: nil)
         return (Int(point.x / cell.width), Int(point.y / cell.height))
     }
@@ -144,7 +145,7 @@ final class WindowView: NSView {
     }
 
     override func resetCursorRects() {
-        guard let cell = Self.cell(panes) else { return }
+        guard let cell = session?.cell else { return }
         for d in shown?.visible.root.dividers ?? [] {
             let g = d.geometry
             let rect = CGRect(
@@ -155,7 +156,7 @@ final class WindowView: NSView {
     }
 
     private func sizeClient() {
-        guard let cell = Self.cell(panes) else { return }
+        guard let cell = session?.cell else { return }
         connection?.resize(cols: Int(bounds.width / cell.width), rows: Int(bounds.height / cell.height))
     }
 
