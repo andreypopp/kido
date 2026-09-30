@@ -27,8 +27,9 @@ trap 'rm -f "$state"; exit 0' TERM
 
 span() { printf '{"text":"%s","role":"%s"}' "$1" "$2"; }
 row() {
-  printf '{"pane":%s,"window":%s,"tree":"%s","indicator":%s,"title":[%s],"tail":[%s],"attention":%s}' \
-    "$1" "$2" "$3" "$4" "$5" "$6" "$7"
+  started=${8:-null}
+  printf '{"pane":%s,"window":%s,"tree":"%s","indicator":%s,"title":[%s],"tail":[%s],"started":%s,"attention":%s}' \
+    "$1" "$2" "$3" "$4" "$5" "$6" "$started" "$7"
 }
 session() {
   case $2 in *"$filter"*) ;; *) return ;; esac
@@ -36,6 +37,7 @@ session() {
   sep=,
 }
 
+started_at=$(($(date +%s) - 5))
 n=0
 while :; do
   n=$((n + 1))
@@ -55,7 +57,7 @@ while :; do
     printf ,
     row '"%1"' '"@0"' '└' null "$(span zsh proc)" '' false
     printf ,
-    row '"%5"' '"@4"' '╶' '{"kind":"running"}' "$(span 'make test' proc)" '' false
+    row '"%5"' '"@4"' '╶' '{"kind":"running"}' "$(span 'make test' proc)" '' false "$started_at"
   )
   work=$(
     row '"%6"' '"@5"' '╶' '{"kind":"stalled"}' "$(span 'review the pull request' plain)" "$(span 'reading files' stalled)" false
