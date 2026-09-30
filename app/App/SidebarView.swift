@@ -3,7 +3,7 @@ import SidebarFeed
 import TmuxControl
 
 final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
-    var send: ([Command]) -> Void = { _ in }
+    var send: ([Command], @escaping @MainActor @Sendable ([Reply]?) -> Void) -> Void = { $1(nil) }
     var filter: (String) -> Void = { _ in }
     var leave: () -> Void = {}
 
@@ -11,9 +11,9 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         case session(SessionRows)
         case row(SessionID, Row)
 
-        var target: (session: SessionID, window: WindowID, pane: PaneID)? {
+        var target: Snapshot.Position? {
             guard case .row(let session, let row) = self, let target = row.target else { return nil }
-            return (session, target.window, target.pane)
+            return Snapshot.Position(session: session, window: target.window, pane: target.pane)
         }
     }
 
@@ -57,7 +57,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         noMatches.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         noMatches.textColor = .secondaryLabelColor
         for view in [search, scroll, footer, noMatches] { addSubview(view) }
-        update(.starting)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -91,12 +90,18 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
             feedNote = ("Starting…", .secondaryLabelColor)
         case .restarting(let message):
             feedNote = ("The sidebar feed is not running, retrying…\n\(message)", .secondaryLabelColor)
-        case .running(nil):
+        case .unreadable:
             feedNote = ("The sidebar feed sent a snapshot this app cannot read.", .systemRed)
-        case .running(let snapshot?):
+        case .running(let snapshot):
             feedNote = nil
             if snapshot != self.snapshot { show(snapshot) }
         }
+        noteChanged()
+    }
+
+    func offline(_ reason: String) {
+        show(nil)
+        feedNote = (reason, .secondaryLabelColor)
         noteChanged()
     }
 
@@ -116,19 +121,20 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     }
 
     private func show(_ next: Snapshot?) {
-        let selected = items.indices.contains(table.selectedRow) ? items[table.selectedRow].target?.pane : nil
+        let selected = items.indices.contains(table.selectedRow) ? items[table.selectedRow].target : nil
         let cleared = next?.filter.isEmpty == true && snapshot?.filter.isEmpty == false
-        let recenter = cleared || next.map { $0.client.pane != snapshot?.client.pane } ?? false
+        let recenter = cleared || next.map { $0.client != snapshot?.client } ?? false
         snapshot = next
         noMatches.isHidden = next.map { $0.filter.isEmpty || !$0.sessions.isEmpty } ?? true
         items = next?.sessions.flatMap { s in [.session(s)] + s.rows.map { .row(s.id, $0) } } ?? []
         table.reloadData()
-        let follow = recenter ? next?.client.pane : selected
-        guard let row = items.firstIndex(where: { $0.target?.pane == follow && follow != nil }) else {
-            return table.deselectAll(nil)
+        let follow = recenter ? next?.client : selected
+        if let follow, let row = items.firstIndex(where: { $0.target == follow }) {
+            table.selectRowIndexes([row], byExtendingSelection: false)
+            if recenter { table.scrollRowToVisible(row) }
+        } else {
+            table.deselectAll(nil)
         }
-        table.selectRowIndexes([row], byExtendingSelection: false)
-        if recenter { table.scrollRowToVisible(row) }
         if let query = activating, next?.filter == query { activate() }
     }
 
@@ -137,8 +143,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     }
 
     func focus() {
-        if table.selectedRow < 0, let current = snapshot?.client.pane,
-            let row = items.firstIndex(where: { $0.target?.pane == current })
+        if table.selectedRow < 0, let current = snapshot?.client,
+            let row = items.firstIndex(where: { $0.target == current })
         {
             table.selectRowIndexes([row], byExtendingSelection: false)
         }
@@ -171,12 +177,19 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         activating = nil
         guard items.indices.contains(index), let target = items[index].target else { return }
         failed(nil)
-        send([Command("switch-client", "-t", "\(target.session):\(target.window).\(target.pane)")])
-        if !search.stringValue.isEmpty {
-            search.stringValue = ""
-            filter("")
+        send([Command("switch-client", "-t", "\(target.session):\(target.window).\(target.pane)")]) { [weak self] replies in
+            guard let self else { return }
+            switch replies?.first {
+            case .success?: break
+            case .failure(let lines)?: return failed(lines.joined(separator: "\n"))
+            case nil: return failed("the connection to tmux closed before the jump")
+            }
+            if !search.stringValue.isEmpty {
+                search.stringValue = ""
+                filter("")
+            }
+            leave()
         }
-        leave()
     }
 
     @objc private func clicked() {
@@ -231,7 +244,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
         let view = RowBackground()
-        view.current = items[row].target.map { $0.pane == snapshot?.client.pane } ?? false
+        view.current = items[row].target != nil && items[row].target == snapshot?.client
         return view
     }
 
@@ -265,8 +278,6 @@ private final class RowBackground: NSTableRowView {
     }
 }
 
-// The tree is drawn as lines rather than as its box-drawing characters, so
-// the columns join across rows at any row height.
 private final class Cell: NSView {
     static let id = NSUserInterfaceItemIdentifier("cell")
     private static let column: CGFloat = 10
