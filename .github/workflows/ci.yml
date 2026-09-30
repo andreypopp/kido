@@ -100,6 +100,12 @@ jobs:
       - name: Unit tests
         run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux dune test --force
 
+      # "fork failed: Device not configured" from tmux on macOS runners reads as
+      # pty exhaustion; this records the limit next to any such failure.
+      - name: Pty limit
+        if: runner.os == 'macOS'
+        run: sysctl kern.tty.ptmx_max; ls /dev/ttys* | wc -l
+
       - name: E2E tests
         run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux KIDO_E2E_REQUIRED=1 make e2e
 
