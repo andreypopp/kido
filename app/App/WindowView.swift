@@ -33,17 +33,20 @@ final class WindowView: NSView {
         active = visible.root.panes.first { $0.focus == .active }?.id ?? active
         let known = panes.contains { $0.pane == active }
         relayout()
-        if !known { focusActive() }
+        if !known { focusActive(force: false) }
     }
 
     func focus(_ pane: PaneID) {
         active = pane
-        focusActive()
+        focusActive(force: false)
     }
 
-    func focusActive() {
-        guard !isHidden, let view = panes.first(where: { $0.pane == active }) else { return }
-        window?.makeFirstResponder(view)
+    func focusActive(force: Bool) {
+        guard !isHidden, let view = panes.first(where: { $0.pane == active }), let window else { return }
+        let focused = window.firstResponder
+        guard force || focused === window || focused == nil || (focused as? PaneView)?.isDescendant(of: session ?? self) == true
+        else { return }
+        window.makeFirstResponder(view)
     }
 
     func close() {
