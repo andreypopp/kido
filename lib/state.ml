@@ -148,4 +148,3 @@ let record_pause ~dir at =
     Fs.mkdir_p dir;
     Fs.write_atomic (wake_file ~dir) (Timestamp.to_string at)
   end
-
