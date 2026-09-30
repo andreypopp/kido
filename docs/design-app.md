@@ -54,8 +54,24 @@ ones follow the app window's occlusion. tmux sends no `%output` for
 panes outside the client's session, so a window that left it is synced
 again when next shown. Surfaces of closed windows and sessions are freed.
 
-tmux's layout is authoritative: each surface is sized to exactly its
-pane's cells, and the client size is the content area's cells.
+tmux's layout is authoritative: every Ghostty surface is exactly its
+pane's grid, and `PaneLayout` maps cells to points. On each axis a
+pane's two inner paddings sum to one cell minus one device pixel, split
+floor/ceil in physical pixels so surfaces and dividers stay on the pixel
+grid. tmux's border cell between two panes is then exactly their
+paddings plus the one-pixel divider, so any tree, however asymmetric,
+lines up with no surplus. Around the whole terminal area only, the
+horizontal remainder is balanced over an 8pt minimum; vertically the
+first row is at a fixed 44pt (`PaneLayout.topMargin`) at every height and
+in both sidebar states, and all vertical remainder goes to the bottom,
+over a 6pt minimum. Zoom uses the same rule. Dividers have six-point hit
+areas; unfocused panes are dimmed by a theme-background overlay; a
+hovered pane shows a glass toolbar that splits, zooms and closes it.
+
+The standard window buttons are AppKit's: the toolbar re-lays them out
+at will, so nothing moves them. The fixed top clears them and the
+collapsed sidebar's Show button, which is constrained beside the green
+button, so the terminal never moves when the sidebar collapses.
 
 ## Threads
 
@@ -72,9 +88,45 @@ reader queue.
 The sidebar runs `kido sidebar-feed --socket --client` with the kido
 the server names in `side-status-command`, so the feed matches the
 server, and the app's own client name, so kido's rules follow what the
-app shows. The contract is in the feed's help and in kido's tests; the
-app decodes v1 only. The search field is the one store of the filter:
-each feed process is sent it on start and on every edit.
+app shows. The app decodes v2 only: sessions are source-list sections,
+window groups contain panes, and pane items can contain arbitrarily deep
+hoisted child windows. A node's identity is scoped to its session; linked
+windows may appear in several sections.
+
+`Sidebar` is an `NSSplitViewController` with a sidebar item, which
+supplies the floating glass, collapse animation and saved width (236pt,
+200-360pt). The window has an icon-only unified toolbar only because the
+sidebar's glass reaches the top of the window, traffic lights inside it,
+when there is one; without it AppKit adds a plain titlebar strip. Title
+and toolbar draw nothing over the terminal, and the window, chrome and
+terminal share the Ghostty theme background.
+
+`SidebarView` is a flat `NSOutlineView`: session headers with a
+new-window button, then one bracket per tmux window drawn as a guide
+line, with no window label. A top-level node is a window; an item's
+nested children (hoisted child windows) are subpanes, one guide column
+per level. Each row is title, then tail (or a started row's clock),
+then a status glyph: red for a real failure, orange for waiting,
+stalled or the feed's attention flag, a spinner for running or
+compacting, nothing otherwise. Titles keep their width and tails
+truncate first. Selection is a quiet pill, and glyph colours do not
+change with it. Selection and scroll survive snapshots by
+session-scoped node identity.
+
+The search and single-line, truncating diagnostic sit above the outline;
+the full diagnostic is available in its tooltip. The search field
+is the one store of the filter: each feed process receives it on start
+and every edit. Jump failures leave the filter and focus intact; a
+successful jump clears it and returns focus to the pane. External tmux
+switches update selection without taking keyboard focus.
+
+The toolbar and Control-Command-S toggle the sidebar; the View menu's
+Show/Hide title follows its collapsed state. Focus Sidebar uses
+Control-Command-F. Control-Command-N (Shift for previous) walks attention;
+Control-Command-J/K switches windows; Command-Shift-N creates a session. In the outline, j/k move, n/N jump
+to attention, Return jumps, Escape returns to the pane and / searches.
+The sidebar is visible by default; it does not automatically collapse
+at narrow widths.
 
 ## Testing
 

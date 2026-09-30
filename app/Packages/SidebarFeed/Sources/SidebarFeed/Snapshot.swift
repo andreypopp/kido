@@ -17,57 +17,102 @@ public struct Snapshot: Decodable, Equatable, Sendable {
     public let client: Position
     public let filter: String
     public let error: String?
-    public let sessions: [SessionRows]
+    public let sessions: [SessionNodes]
 
     private enum CodingKeys: String, CodingKey { case v, client, filter, error, sessions }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let v = try c.decode(Int.self, forKey: .v)
-        guard v == 1 else { throw DecodingError.dataCorruptedError(forKey: .v, in: c, debugDescription: "not a v1 snapshot: v \(v)") }
+        guard v == 2 else { throw DecodingError.dataCorruptedError(forKey: .v, in: c, debugDescription: "not a v2 snapshot: v \(v)") }
         client = try c.decode(Position.self, forKey: .client)
         filter = try c.decode(String.self, forKey: .filter)
         error = try c.decodeIfPresent(String.self, forKey: .error)
-        sessions = try c.decode([SessionRows].self, forKey: .sessions)
+        sessions = try c.decode([SessionNodes].self, forKey: .sessions)
     }
 }
 
-public struct SessionRows: Decodable, Equatable, Sendable {
+public struct SessionNodes: Decodable, Equatable, Sendable {
     public let id: SessionID
     public let name: String
     public let current: Bool
-    public let rows: [Row]
+    public let nodes: [Node]
+    private enum CodingKeys: String, CodingKey { case id, name, current, nodes }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(SessionID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        current = try c.decode(Bool.self, forKey: .current)
+        nodes = try c.decode([Node].self, forKey: .nodes)
+        var ids: Set<String> = []
+        func unique(_ nodes: [Node]) -> Bool {
+            nodes.allSatisfy { ids.insert($0.id).inserted && unique($0.children) }
+        }
+        guard unique(nodes) else { throw DecodingError.dataCorruptedError(forKey: .nodes, in: c, debugDescription: "duplicate node id in session") }
+    }
 }
 
-public struct Row: Decodable, Equatable, Sendable {
-    public struct Target: Equatable, Sendable {
-        public let window: WindowID
-        public let pane: PaneID
-    }
+public indirect enum Node: Decodable, Equatable, Sendable {
+    case window(Window)
+    case item(Item)
 
-    public let target: Target?
-    public let tree: String
+    public struct Window: Decodable, Equatable, Sendable {
+        public let id: WindowID
+        public let window: WindowID
+        public let name: String
+        public let children: [Item]
+        private enum CodingKeys: String, CodingKey { case id, window, name, children }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(WindowID.self, forKey: .id)
+            window = try c.decode(WindowID.self, forKey: .window)
+            name = try c.decode(String.self, forKey: .name)
+            children = try c.decode([Item].self, forKey: .children)
+            guard id == window, children.count > 1, children.allSatisfy({ $0.window == window }) else {
+                throw DecodingError.dataCorruptedError(forKey: .children, in: c, debugDescription: "invalid window group")
+            }
+        }
+    }
+    private enum CodingKeys: String, CodingKey { case kind }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if try c.decode(String.self, forKey: .kind) == "window" { self = .window(try Window(from: decoder)) }
+        else { self = .item(try Item(from: decoder)) }
+    }
+    public var id: String {
+        switch self { case .window(let w): w.id.description; case .item(let i): i.id.description }
+    }
+    public var children: [Node] {
+        switch self { case .window(let w): w.children.map(Node.item); case .item(let i): i.children }
+    }
+}
+
+public struct Item: Decodable, Equatable, Sendable {
+    public enum Kind: String, Decodable, Sendable { case agent, run, ssh, shell }
+    public let kind: Kind
+    public let id: PaneID
+    public let pane: PaneID
+    public let window: WindowID
     public let indicator: Indicator?
     public let title: [Span]
     public let tail: [Span]
     public let started: Date?
     public let attention: Bool
-
-    private enum CodingKeys: String, CodingKey { case pane, window, tree, indicator, title, tail, started, attention }
-
+    public let children: [Node]
+    private enum CodingKeys: String, CodingKey { case kind, id, pane, window, indicator, title, tail, started, attention, children }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        switch (try c.decodeIfPresent(WindowID.self, forKey: .window), try c.decodeIfPresent(PaneID.self, forKey: .pane)) {
-        case (let window?, let pane?): target = Target(window: window, pane: pane)
-        case (nil, nil): target = nil
-        default: throw DecodingError.dataCorruptedError(forKey: .pane, in: c, debugDescription: "a row with only one of pane and window")
-        }
-        tree = try c.decode(String.self, forKey: .tree)
+        kind = try c.decode(Kind.self, forKey: .kind)
+        id = try c.decode(PaneID.self, forKey: .id)
+        pane = try c.decode(PaneID.self, forKey: .pane)
+        guard id == pane else { throw DecodingError.dataCorruptedError(forKey: .id, in: c, debugDescription: "id must equal pane") }
+        window = try c.decode(WindowID.self, forKey: .window)
         indicator = try c.decodeIfPresent(Indicator.self, forKey: .indicator)
         title = try c.decode([Span].self, forKey: .title)
         tail = try c.decode([Span].self, forKey: .tail)
         started = try c.decodeIfPresent(Double.self, forKey: .started).map { Date(timeIntervalSince1970: $0) }
         attention = try c.decode(Bool.self, forKey: .attention)
+        children = try c.decode([Node].self, forKey: .children)
     }
 }
 
