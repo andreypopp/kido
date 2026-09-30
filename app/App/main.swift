@@ -5,9 +5,15 @@ import AppKit
     private var window: NSWindow!
     private var banner: Banner!
     private var session: SessionView?
-    private var connection: Connection?
-    private var redial: DispatchWorkItem?
+    private var link = Link.down
     private let menus = SessionMenus()
+
+    private enum Link {
+        case down
+        case locating
+        case connected(Connection)
+        case redialing(DispatchWorkItem)
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let runtime = GhosttyRuntime() else { fatalError("libghostty failed to initialise") }
@@ -31,13 +37,18 @@ import AppKit
     }
 
     @objc private func start() {
-        guard connection == nil else { return }
-        redial?.cancel()
+        switch link {
+        case .locating, .connected: return
+        case .redialing(let item): item.cancel()
+        case .down: break
+        }
+        link = .locating
         banner.show("Connecting to the kido server…", "", button: nil)
         Task {
             do {
                 dial(try await Task.detached { try Server.locate() }.value, backoff: 0.1)
             } catch {
+                link = .down
                 banner.show(
                     "Kido could not reach the kido server",
                     (error as? Server.Failure)?.message ?? error.localizedDescription, button: action)
@@ -50,11 +61,12 @@ import AppKit
     private func dial(_ server: Server, backoff: TimeInterval) {
         let view = SessionView(runtime: runtime)
         do {
-            connection = try Connection(
+            link = .connected(try Connection(
                 server: server, view: view,
                 onChange: { [weak self] in self?.changed(view, $0) },
-                onClose: { [weak self] in self?.closed(server, view, $0, backoff: backoff) })
+                onClose: { [weak self] in self?.closed(server, view, $0, backoff: backoff) }))
         } catch {
+            link = .down
             banner.show("Kido could not run \(server.tmux)", error.localizedDescription, button: action)
         }
     }
@@ -69,22 +81,21 @@ import AppKit
         view.autoresizingMask = [.width, .height]
         window.contentView!.addSubview(view, positioned: .below, relativeTo: banner)
         banner.isHidden = true
-        menus.connection = connection
+        if case .connected(let connection) = link { menus.connection = connection }
     }
 
     private func closed(_ server: Server, _ view: SessionView, _ reason: String?, backoff: TimeInterval) {
-        connection = nil
         menus.connection = nil
         menus.update(SessionModel())
         window.title = "Kido"
         let dropped = view === session
-        let detail = dropped ? reason : "No kido server at \(server.socket)."
+        let detail = reason ?? (dropped ? nil : "No kido server at \(server.socket).")
         banner.show(
             session == nil ? "Kido could not reach the kido server" : "Disconnected from the kido server",
             (detail.map { "\($0)\n" } ?? "") + "Reconnecting…", button: action)
         let next = dropped ? 0.1 : min(backoff * 2, 2)
         let item = DispatchWorkItem { [weak self] in self?.dial(server, backoff: next) }
-        redial = item
+        link = .redialing(item)
         DispatchQueue.main.asyncAfter(deadline: .now() + next, execute: item)
     }
 
