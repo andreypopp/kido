@@ -125,7 +125,7 @@ func liveClient() async throws {
     _ = try? await client.run(Command("kill-server"))
     let status = try await seen.wait("close") { _, s in s }
     #expect(status == 0)
-    _ = try await seen.wait("exit") { e, _ in e.last == .exit(reason: nil) ? () : nil }
+    _ = try await seen.wait("exit") { e, _ in e.last == .exit(.ended(nil)) ? () : nil }
     await #expect(throws: Closed.self) { try await client.run(Command("list-sessions")) }
 }
 
@@ -190,6 +190,29 @@ func liveLayout() async throws {
     #expect(zoomed.0.root.panes.count == 4)
     #expect(zoomed.1 == Layout(root: .pane(Pane(
         id: p1, index: 1, geometry: Geometry(x: 0, y: 0, width: 80, height: 24), focus: .active, layer: .tiled))))
+}
+
+@Test(.enabled(if: tmux != nil), .timeLimit(.minutes(1)))
+func liveDetach() async throws {
+    let tmux = try #require(tmux)
+    let socket = "/tmp/td-\(getpid()).sock"
+    #expect(try server(tmux, socket, "new-session", "-d", "-s", "t", "/bin/sh") == 0)
+    defer {
+        _ = try? server(tmux, socket, "kill-server")
+        try? FileManager.default.removeItem(atPath: socket)
+    }
+    let seen = Recorder<Event>()
+    let client = Client(tmux: tmux, socket: socket, session: "t", pauseAfter: 5)
+    try client.start(onEvent: seen.add, onClose: seen.close)
+    _ = try await seen.wait("attach") { e, _ in e.contains(.sessionChanged(SessionID(number: 0), "t")) ? () : nil }
+    guard case .success(let name) = try await client.run(Command("display-message", "-p", "#{client_name}")), let name = name.first
+    else {
+        Issue.record("no client name")
+        return
+    }
+    #expect(try server(tmux, socket, "detach-client", "-t", name) == 0)
+    #expect(try await seen.wait("close") { _, s in s } == 0)
+    #expect(try await seen.wait("exit") { e, _ in e.last } == .exit(.detached("detached (from session t)")))
 }
 
 @Test(.enabled(if: tmux != nil), .timeLimit(.minutes(1)))
