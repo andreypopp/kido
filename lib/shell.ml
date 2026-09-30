@@ -48,13 +48,14 @@ let run () =
         (resolve_login_shell [ Tmux.Exec.global_option "default-shell"; Tmux.Exec.getenv "SHELL" ])
       (match Tmux.Exec.global_option user_command_option with "" -> None | c -> Some c)
   in
+  let zdotdir = Sys.getenv_opt "ZDOTDIR" in
   let mode =
     Prime.local_mode
-      ~dotdir:(match Tmux.Exec.getenv "ZDOTDIR" with "" -> Tmux.Exec.getenv "HOME" | d -> d)
+      ~dotdir:(match zdotdir with None | Some "" -> Tmux.Exec.getenv "HOME" | Some d -> d)
       path
   in
   let mode, add =
-    match Prime.local ~zdotdir:(Sys.getenv_opt "ZDOTDIR") ~bin_dir:(Bin_dir.own ()) mode with
+    match Prime.local ~zdotdir ~bin_dir:(Bin_dir.own ()) mode with
     | add -> (mode, add)
     | exception (Sys_error _ | Unix.Unix_error _) -> (Prime.Plain, [])
   in

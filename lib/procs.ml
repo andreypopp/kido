@@ -87,10 +87,12 @@ let sweep () =
   List.fold_left
     (fun scan p ->
       let ssh =
-        match ssh_session (List.tl p.args) with
-        | Some s when String.equal (Filename.basename p.comm) "ssh" ->
-            scan.ssh |> Int_map.add p.pid s |> Int_map.add p.ppid s
-        | _ -> scan.ssh
+        match
+          if String.equal (Filename.basename p.comm) "ssh" then ssh_session (List.tl p.args)
+          else None
+        with
+        | Some s -> scan.ssh |> Int_map.add p.pid s |> Int_map.add p.ppid s
+        | None -> scan.ssh
       in
       { ssh; pi = (if is_pi p then mark_ancestors parent p.pid scan.pi else scan.pi) })
     { ssh = Int_map.empty; pi = Int_set.empty }

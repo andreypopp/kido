@@ -67,11 +67,13 @@ let format =
 
 let fields = 24
 
-let rec split_n n s =
-  match String.find ~sub:sep s with
-  | i when i >= 0 && n > 1 ->
-      String.sub s 0 i :: split_n (n - 1) (String.sub s (i + 1) (String.length s - i - 1))
-  | _ -> [ s ]
+let split_n n s =
+  let rec go n from =
+    match String.index_from_opt s from sep.[0] with
+    | Some i when n > 1 -> String.sub s from (i - from) :: go (n - 1) (i + 1)
+    | _ -> [ String.sub s from (String.length s - from) ]
+  in
+  go n 0
 
 let int s = Option.get_or ~default:0 (int_of_string_opt s)
 let time s = match int s with 0 -> None | n -> Some (Float.of_int n)

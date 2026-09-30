@@ -55,32 +55,30 @@ type child = {
   partial : Buffer.t;
   mutable parser : parser;
   replies : block Queue.t;
+  chunk : Bytes.t;
   mutable attached : string;
 }
 
-type t = {
-  client : string;
-  mutable child : child option;
-  mutable backoff : float;
-  mutable next_dial : float;
-  mutable changed : bool;
-  mutable closed : bool;
-}
+type link = Live of child | Down of { next_dial : float } | Closed
+type t = { client : string; mutable link : link; mutable backoff : float; mutable changed : bool }
 
-let kill t =
-  Option.iter
-    (fun ch ->
-      let p = ch.process in
-      List.iter Unix.close [ p.stdin; p.stdout ];
-      (try Unix.kill p.pid Sys.sigkill with Unix.Unix_error _ -> ());
-      ignore (Unix.waitpid [] p.pid))
-    t.child;
-  t.child <- None
+let kill ch =
+  let p = ch.process in
+  List.iter Unix.close [ p.stdin; p.stdout ];
+  (try Unix.kill p.pid Sys.sigkill with Unix.Unix_error _ -> ());
+  ignore (Unix.waitpid [] p.pid)
 
 let drop t =
-  kill t;
-  t.next_dial <- Unix.gettimeofday () +. t.backoff;
-  t.backoff <- Float.min max_backoff (t.backoff *. 2.)
+  let retry () =
+    t.link <- Down { next_dial = Unix.gettimeofday () +. t.backoff };
+    t.backoff <- Float.min max_backoff (t.backoff *. 2.)
+  in
+  match t.link with
+  | Live ch ->
+      kill ch;
+      retry ()
+  | Down _ -> retry ()
+  | Closed -> ()
 
 let feed t ch line =
   let parser, event = step ch.parser (String.rdrop_while (Char.equal '\r') line) in
@@ -96,11 +94,10 @@ let pump t ch ~deadline =
   match Unix.select [ ch.process.stdout ] [] [] (Float.max 0. left) with
   | [], _, _ -> ()
   | _ -> (
-      let chunk = Bytes.create 65536 in
-      match Unix.read ch.process.stdout chunk 0 (Bytes.length chunk) with
+      match Unix.read ch.process.stdout ch.chunk 0 (Bytes.length ch.chunk) with
       | 0 -> drop t
       | n -> (
-          Buffer.add_subbytes ch.partial chunk 0 n;
+          Buffer.add_subbytes ch.partial ch.chunk 0 n;
           match List.rev (String.split_on_char '\n' (Buffer.contents ch.partial)) with
           | rest :: complete ->
               Buffer.clear ch.partial;
@@ -111,11 +108,11 @@ let pump t ch ~deadline =
   | exception Unix.Unix_error (EINTR, _, _) -> ()
 
 let rec reply t ch ~deadline =
-  match Queue.take_opt ch.replies with
-  | Some b -> `Reply b
-  | None when Option.is_none t.child -> `Dead
-  | None when Float.(Unix.gettimeofday () >= deadline) -> `Timeout
-  | None ->
+  match (Queue.take_opt ch.replies, t.link) with
+  | Some b, _ -> `Reply b
+  | None, (Down _ | Closed) -> `Dead
+  | None, Live _ when Float.(Unix.gettimeofday () >= deadline) -> `Timeout
+  | None, Live _ ->
       pump t ch ~deadline;
       reply t ch ~deadline
 
@@ -136,10 +133,11 @@ let dial t =
           partial = Buffer.create 4096;
           parser = Outside;
           replies = Queue.create ();
+          chunk = Bytes.create 65536;
           attached = Option.get_or ~default:"" session;
         }
       in
-      t.child <- Some ch;
+      t.link <- Live ch;
       match reply t ch ~deadline:(Unix.gettimeofday () +. run_timeout) with
       | `Reply (Ok _) ->
           t.backoff <- min_backoff;
@@ -148,15 +146,16 @@ let dial t =
       | `Dead -> ())
 
 let connect client =
-  { client; child = None; backoff = min_backoff; next_dial = 0.; changed = false; closed = false }
+  { client; link = Down { next_dial = 0. }; backoff = min_backoff; changed = false }
 
 let live t =
-  match t.child with
-  | Some ch -> Some ch
-  | None when t.closed || Float.(Unix.gettimeofday () < t.next_dial) -> None
-  | None ->
+  match t.link with
+  | Live ch -> Some ch
+  | Down { next_dial } when Float.(Unix.gettimeofday () < next_dial) -> None
+  | Down _ -> (
       dial t;
-      t.child
+      match t.link with Live ch -> Some ch | Down _ | Closed -> None)
+  | Closed -> None
 
 let down = Error "tmux: control connection is down"
 
@@ -184,12 +183,15 @@ let wait t timeout =
     if Float.(now < deadline) then
       match live t with
       | Some ch ->
-          (* A redial inside live is itself a change: pump to the debounce, not the interval. *)
           let deadline = if t.changed then Float.min deadline (now +. debounce) else deadline in
           pump t ch ~deadline;
           go deadline
       | None ->
-          let until = if t.closed then deadline else Float.min deadline t.next_dial in
+          let until =
+            match t.link with
+            | Down { next_dial } -> Float.min deadline next_dial
+            | Live _ | Closed -> deadline
+          in
           Unix.sleepf (Float.max 0. (until -. now));
           go deadline
   in
@@ -197,16 +199,16 @@ let wait t timeout =
   t.changed <- false
 
 let close t =
-  t.closed <- true;
-  kill t
+  (match t.link with Live ch -> kill ch | Down _ | Closed -> ());
+  t.link <- Closed
 
 let follow t session =
-  match t.child with
-  | Some ch when not (String.equal ch.attached session) -> (
+  match t.link with
+  | Live ch when not (String.equal ch.attached session) -> (
       match run t ("switch-client -t " ^ Filename.quote session) with
       | Ok _ -> ch.attached <- session
       | Error _ -> ())
-  | Some _ | None -> ()
+  | Live _ | Down _ | Closed -> ()
 
 let list_panes t =
   match run t ("list-panes -a -F " ^ Filename.quote Pane.format) with

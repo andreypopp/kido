@@ -81,14 +81,13 @@ let bash_has_ps0 out =
 let local ~zdotdir ~bin_dir mode =
   let prime env =
     let dir = Filename.temp_dir "kido-shell." "" in
+    let files = files ~bin_dir mode in
     match
-      List.iter
-        (fun (name, body) -> Fs.write ~perm:0o600 (Filename.concat dir name) body)
-        (files ~bin_dir mode)
+      List.iter (fun (name, body) -> Fs.write ~perm:0o600 (Filename.concat dir name) body) files
     with
     | () -> env dir
     | exception e ->
-        List.iter (fun (name, _) -> Fs.remove (Filename.concat dir name)) (files ~bin_dir mode);
+        List.iter (fun (name, _) -> Fs.remove (Filename.concat dir name)) files;
         Unix.rmdir dir;
         raise e
   in

@@ -199,7 +199,7 @@ let switch_window ~client ~next windows =
         List.find_opt (fun (p : Pane.t) -> String.equal p.session_name c.session && p.active) panes)
       (client_state client)
   in
-  let unmarked j = Option.is_none (Pane.run_pane windows.(j) (first windows.(j)).window_id) in
+  let unmarked j = List.for_all (fun (p : Pane.t) -> Option.is_none p.run) windows.(j) in
   let rec find j k =
     if k = 0 then None else if unmarked j then Some j else find (step ~next j n) (k - 1)
   in
@@ -228,31 +228,29 @@ let switch_window ~client ~next windows =
             ]
       | _ -> Ok ())
 
+let release_args client = [ "refresh-client"; "-t"; client; "-f"; "!" ^ side_focus_flag ]
+
 let jump ~client pane =
   run
-    [
-      "switch-client";
-      "-c";
-      client;
-      "-t";
-      pane;
-      ";";
-      "select-window";
-      "-t";
-      pane;
-      ";";
-      "select-pane";
-      "-t";
-      pane;
-      ";";
-      "refresh-client";
-      "-t";
-      client;
-      "-f";
-      "!" ^ side_focus_flag;
-    ]
+    ([
+       "switch-client";
+       "-c";
+       client;
+       "-t";
+       pane;
+       ";";
+       "select-window";
+       "-t";
+       pane;
+       ";";
+       "select-pane";
+       "-t";
+       pane;
+       ";";
+     ]
+    @ release_args client)
 
-let release_side_focus client = run [ "refresh-client"; "-t"; client; "-f"; "!" ^ side_focus_flag ]
+let release_side_focus client = run (release_args client)
 
 let send_prompt pane text =
   let buf = Printf.sprintf "kido-prompt-%d" (Unix.getpid ()) in
