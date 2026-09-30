@@ -12,6 +12,7 @@ final class Connection: @unchecked Sendable {
     private let client: Client
     private var panes: [PaneID: PaneView]? = [:]
     private var reasons: [String] = []
+    private var detached: String?
     @MainActor private var retiring: [ObjectIdentifier: PaneView] = [:]
     @MainActor private weak var view: SessionView?
     @MainActor private var sizing: DispatchWorkItem?
@@ -19,11 +20,11 @@ final class Connection: @unchecked Sendable {
         didSet { onChange(model) }
     }
     @MainActor private let onChange: (SessionModel) -> Void
-    @MainActor private let onClose: (String?) -> Void
+    @MainActor private let onClose: (Exit) -> Void
 
     @MainActor init(
         server: Server, view: SessionView, onChange: @escaping (SessionModel) -> Void,
-        onClose: @escaping (String?) -> Void
+        onClose: @escaping (Exit) -> Void
     ) throws {
         self.view = view
         self.onChange = onChange
@@ -58,7 +59,7 @@ final class Connection: @unchecked Sendable {
 
     // side-status-command names the kido that owns the server (lib/launch.ml);
     // the feed must run that one, not whatever `kido` resolves to on PATH.
-    func locateFeed(_ done: @escaping @Sendable (Result<(kido: String, client: String), Server.Failure>) -> Void) {
+    func locateFeed(_ done: @escaping @Sendable (Result<Feed.Location, Server.Failure>) -> Void) {
         client.send([Command("show-options", "-gv", "side-status-command"), Command("display-message", "-p", "#{client_name}")]) {
             replies in
             guard let replies, replies.count == 2, case .success(let command) = replies[0], let raw = command.first,
@@ -99,7 +100,9 @@ final class Connection: @unchecked Sendable {
         case .sessionChanged, .sessionsChanged, .sessionRenamed, .windowAdd(_, .linked), .windowClose(_, .linked),
             .windowRenamed(_, .linked, _):
             refresh()
-        case .exit(let reason?):
+        case .exit(.detached(let reason)):
+            detached = reason
+        case .exit(.ended(let reason?)):
             reasons.append(reason)
         case .block(.failure(let lines), .other):
             reasons += lines
@@ -142,8 +145,9 @@ final class Connection: @unchecked Sendable {
 
     private func closed(_ stderr: String) {
         let gone = panes, reason = (reasons + [stderr]).filter { !$0.isEmpty }.joined(separator: "\n")
+        let exit = detached.map(Exit.detached) ?? .ended(reason.isEmpty ? nil : reason)
         panes = nil
-        DispatchQueue.main.async { withExtendedLifetime(gone) { self.onClose(reason.isEmpty ? nil : reason) } }
+        DispatchQueue.main.async { withExtendedLifetime(gone) { self.onClose(exit) } }
     }
 
     private func report(_ message: String) {
