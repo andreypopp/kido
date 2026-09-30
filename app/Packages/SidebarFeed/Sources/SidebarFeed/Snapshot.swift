@@ -1,3 +1,4 @@
+import Foundation
 import TmuxControl
 
 public struct Snapshot: Decodable, Equatable, Sendable {
@@ -49,9 +50,10 @@ public struct Row: Decodable, Equatable, Sendable {
     public let indicator: Indicator?
     public let title: [Span]
     public let tail: [Span]
+    public let started: Date?
     public let attention: Bool
 
-    private enum CodingKeys: String, CodingKey { case pane, window, tree, indicator, title, tail, attention }
+    private enum CodingKeys: String, CodingKey { case pane, window, tree, indicator, title, tail, started, attention }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -64,6 +66,7 @@ public struct Row: Decodable, Equatable, Sendable {
         indicator = try c.decodeIfPresent(Indicator.self, forKey: .indicator)
         title = try c.decode([Span].self, forKey: .title)
         tail = try c.decode([Span].self, forKey: .tail)
+        started = try c.decodeIfPresent(Double.self, forKey: .started).map { Date(timeIntervalSince1970: $0) }
         attention = try c.decode(Bool.self, forKey: .attention)
     }
 }
