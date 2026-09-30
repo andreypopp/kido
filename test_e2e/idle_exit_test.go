@@ -167,6 +167,71 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 	}
 }
 
+// A completed pane can linger across a resume. Collecting that old life
+// must not capture its screen or record an ending for the new one.
+func TestSpawnResumeBeforeOldPaneIsSwept(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	h.hideSidebar()
+	in := h.asyncParent("alpha", "resume-parent-e2e")
+	gate := filepath.Join(h.dir, "finish")
+	fake := filepath.Join(h.dir, "pi")
+	script := fmt.Sprintf(`#!/bin/bash
+%s agent-status --agent pi --session "$KIDO_AGENT_RUN_ID" --status idle --parent-session resume-parent-e2e
+until [ -f %s ]; do
+  [ "$SECONDS" -lt 10 ] || exit 1
+  read -r -t 1 ignored
+done
+printf 'finished first life' | %s notify_parent
+%s run-outcome --result completed -- "$KIDO_AGENT_RUN_ID"
+`, kidoBin, shellQuote(gate), kidoBin, kidoBin)
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := h.runKido("alpha", "first-life.out", "spawn_subagent", "--parent-pid", "1",
+		"--parent-session", "resume-parent-e2e", "--name", "resumable",
+		"--task-file", h.writeTaskFile("resumable"), "--", fake)
+	fields := strings.Fields(firstLine(out))
+	if len(fields) != 3 {
+		t.Fatalf("spawn output = %q", out)
+	}
+	oldWindow, oldPane, runID := fields[0], fields[1], fields[2]
+	if err := os.WriteFile(gate, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.waitFor(func() bool { return h.in("display-message", "-p", "-t", oldPane, "#{pane_dead}") == "1" }, settle,
+		msgf("the reported first life to exit"))
+	if got := h.runOutcomeNamed("first-life", runID); got != "completed" {
+		t.Fatalf("first life outcome = %q, want completed", got)
+	}
+	if len(in.Received()) != 1 || !strings.Contains(in.Received()[0], "finished first life") {
+		t.Fatalf("first life notices = %q", in.Received())
+	}
+	out = h.runKido("alpha", "second-life.out", "spawn_subagent", "--resume", runID,
+		"--parent-pid", "1", "--parent-session", "resume-parent-e2e", "--", "/bin/sh", "-c", shellQuote("exec sleep 300"))
+	fields = strings.Fields(firstLine(out))
+	if len(fields) != 3 {
+		t.Fatalf("resume output = %q", out)
+	}
+	newPane := fields[1]
+	attempt := 0
+	h.waitFor(func() bool {
+		attempt++
+		h.runKido("alpha", fmt.Sprintf("collect-old-%d.out", attempt), "reap")
+		return !h.windowExists(oldWindow)
+	}, settle, msgf("the old pane to be collected"))
+	if got := h.runOutcomeNamed("second-life", runID); got != "running" {
+		t.Errorf("resumed live run outcome = %q, want running", got)
+	}
+	if got := h.in("display-message", "-p", "-t", newPane, "#{pane_dead}"); got != "0" {
+		t.Errorf("resumed pane dead = %q, want 0", got)
+	}
+	if _, ok := h.runMeta("second-life", runID)["screen"]; ok {
+		t.Error("resumed live run has the old life's screen")
+	}
+	h.stableCount(in, 1, "a resumed live run must not send an inferred ending")
+}
+
 // runOutcomeNamed is runOutcome (runs_test.go) with a tag on the output
 // file, for a test checking one run id's outcome more than once.
 func (h *harness) runOutcomeNamed(tag, runID string) string {

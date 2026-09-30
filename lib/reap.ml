@@ -122,15 +122,6 @@ let record_ending ~dir (meta : Subrun.meta) outcome =
     in
     Some { meta; outcome; detail }
 
-let guess_ending ~dir run_id ~now =
-  Option.flat_map
-    (fun (meta : Subrun.meta) ->
-      record_ending ~dir meta
-        (match meta.kind with
-        | Bash -> { result = Failed; text = "ended without its wrapper reporting"; at = Some now }
-        | Agent -> { result = Died; text = ""; at = Some now }))
-    (Subrun.read_meta ~dir run_id)
-
 let sweep ?socket ~dir ~grace panes sessions ~now =
   let mark ((closing, endings) as acc) (p : P.t) =
     let window = p.window_id in
@@ -140,8 +131,25 @@ let sweep ?socket ~dir ~grace panes sessions ~now =
       when not (P.window_focused panes window || List.exists closes closing) -> (
         match (close_of panes window p.pane_id, Subrun.parse_id run) with
         | Some close, Ok run_id ->
-            ignore (Subrun.save_screen ?socket ~dir run_id p.pane_id);
-            (closing @ [ close ], endings @ Option.to_list (guess_ending ~dir run_id ~now))
+            let ending =
+              Option.flat_map
+                (fun (m : Subrun.meta) ->
+                  if not (String.equal m.pane p.pane_id) then None
+                  else begin
+                    ignore (Subrun.save_screen ?socket ~dir run_id p.pane_id);
+                    record_ending ~dir m
+                      (match m.kind with
+                      | Bash ->
+                          {
+                            result = Failed;
+                            text = "ended without its wrapper reporting";
+                            at = Some now;
+                          }
+                      | Agent -> { result = Died; text = ""; at = Some now })
+                  end)
+                (Subrun.read_meta ~dir run_id)
+            in
+            (closing @ [ close ], endings @ Option.to_list ending)
         | _ -> acc)
     | _ -> acc
   in

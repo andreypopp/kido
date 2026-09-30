@@ -221,7 +221,7 @@ let run_env ~dir id parent depth ~keep_alive =
     | None -> [])
   @ if keep_alive then [ "KIDO_AGENT_KEEP_ALIVE=1" ] else []
 
-let create_run_window ~dir (meta : Subrun.meta) ~session ~env command =
+let create_run_window ?resume ~dir (meta : Subrun.meta) ~session ~env command =
   let open Result.Infix in
   let fail e =
     ignore
@@ -236,6 +236,7 @@ let create_run_window ~dir (meta : Subrun.meta) ~session ~env command =
   in
   let meta = { meta with pane = w.pane_id; pid = w.pane_pid } in
   Subrun.write_meta ~dir meta;
+  Option.iter (fun delivered -> Subrun.reset_for_resume ~dir meta.id ~delivered) resume;
   let id = Subrun.string_of_id meta.id in
   let+ () =
     match Tmux.Exec.mark_run w.pane_id id with
@@ -370,7 +371,8 @@ let spawn ~dir ~self ~pi req =
   | Fresh { task; _ } ->
       Subrun.create ~dir meta.id task;
       Subrun.write_meta ~dir meta
-  | Resume _ -> Subrun.reset_for_resume ~dir meta.id ~delivered:mint);
-  create_run_window ~dir meta ~session:pane.session_id
+  | Resume _ -> ());
+  let resume = match req.mode with Fresh _ -> None | Resume _ -> Some mint in
+  create_run_window ?resume ~dir meta ~session:pane.session_id
     ~env:(run_env ~dir meta.id parent depth ~keep_alive:meta.keep_alive)
     command

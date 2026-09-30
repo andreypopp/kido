@@ -30,6 +30,7 @@ val run_env :
   dir:string -> Subrun.id -> State.parent option -> int -> keep_alive:bool -> string list
 
 val create_run_window :
+  ?resume:bool ->
   dir:string ->
   Subrun.meta ->
   session:string ->
