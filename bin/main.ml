@@ -110,7 +110,7 @@ let run_outcome =
 let async_run =
   cmd "async-run" "Run an async run's command, recording and reporting how it ended."
   @@ let+ run_id =
-       str "run-id" "ID" "The run this window is running; defaults to $KIDO_AGENT_RUN_ID."
+       str "run-id" "ID" "The run this window is running; defaults to $(b,KIDO_AGENT_RUN_ID)."
      and+ stream = flag "stream" "Send the command's output to the parent in batches as it runs." in
      fun () ->
        ok
@@ -287,7 +287,7 @@ let switch name doc f =
          required
          & pos 0 (some (enum [ ("next", true); ("prev", false) ])) None
          & info [] ~docv:"next|prev")
-     and+ client = str "client" "NAME" "tmux client to switch; defaults to $TMUX_SIDE_CLIENT." in
+     and+ client = str "client" "NAME" "tmux client to switch; defaults to $(b,TMUX_SIDE_CLIENT)." in
      fun () ->
        ok
          (f
