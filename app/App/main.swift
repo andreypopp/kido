@@ -3,28 +3,26 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var runtime: GhosttyRuntime!
     private var window: NSWindow!
-    private var session: PaneSession!
+    private var connection: Connection!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard let runtime = GhosttyRuntime(), let pane = PaneView(runtime: runtime) else {
-            fatalError("libghostty failed to initialise")
-        }
+        guard let runtime = GhosttyRuntime() else { fatalError("libghostty failed to initialise") }
         self.runtime = runtime
+        let view = WindowView(runtime: runtime)
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false)
         window.title = "Kido"
-        window.contentView = pane
-        window.makeFirstResponder(pane)
+        window.contentView = view
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         Task {
             do {
                 let server = try await Task.detached { try Server.locate() }.value
-                session = try PaneSession(server: server, view: pane)
+                connection = try Connection(server: server, view: view)
             } catch {
                 let alert = NSAlert()
                 alert.messageText = "Kido could not reach the kido server"
