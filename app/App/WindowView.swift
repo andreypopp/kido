@@ -2,17 +2,15 @@ import AppKit
 import TmuxControl
 
 final class WindowView: NSView {
-    let id: WindowID
     private weak var connection: Connection?
     private let runtime: GhosttyRuntime
     private var shown: (layout: Layout, visible: Layout)?
     private var active: PaneID?
     var stale = false
 
-    init(runtime: GhosttyRuntime, connection: Connection?, id: WindowID) {
+    init(runtime: GhosttyRuntime, connection: Connection?) {
         self.runtime = runtime
         self.connection = connection
-        self.id = id
         super.init(frame: .zero)
         autoresizingMask = [.width, .height]
         wantsLayer = true
@@ -32,11 +30,12 @@ final class WindowView: NSView {
     private var session: SessionView? { superview as? SessionView }
 
     func update(_ layout: Layout, _ visible: Layout) {
+        let changed = shown.map { $0.layout != layout || $0.visible != visible } ?? true
         shown = (layout, visible)
         active = visible.root.panes.first { $0.focus == .active }?.id ?? active
         guard hot else { return }
         let known = panes.contains { $0.pane == active }
-        relayout()
+        if changed { relayout() }
         if !known { focusActive(force: false) }
     }
 
@@ -77,16 +76,17 @@ final class WindowView: NSView {
 
     private func relayout(_ synced: DispatchGroup? = nil) {
         guard let shown else { return }
+        let layoutPanes = shown.layout.root.panes
         let existing = Dictionary(uniqueKeysWithValues: panes.map { ($0.pane, $0) })
         var views: [PaneID: PaneView] = [:]
-        for pane in shown.layout.root.panes {
+        for pane in layoutPanes {
             views[pane.id] = existing[pane.id] ?? makePane(pane.id)
         }
         for (id, gone) in existing where views[id] == nil { connection?.detach(gone) }
         let cell = session?.cell ?? views.values.lazy.map(\.cell).first { $0.width > 0 && $0.height > 0 } ?? .zero
         let seen = Dictionary(uniqueKeysWithValues: shown.visible.root.panes.map { ($0.id, $0) })
         var tiled: [NSView] = [], floating: [(z: Int, views: [NSView])] = []
-        for pane in shown.layout.root.panes {
+        for pane in layoutPanes {
             guard let view = views[pane.id] else { continue }
             let g = (seen[pane.id] ?? pane).geometry
             view.isHidden = seen[pane.id] == nil
