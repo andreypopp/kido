@@ -8,15 +8,23 @@ struct Server: Decodable {
     let tmux: String
     let socket: String
 
-    static func locate() throws -> Server {
+    static var fixed: Server? {
         let env = ProcessInfo.processInfo.environment
-        if let socket = env["KIDO_APP_SOCKET"], let tmux = env["KIDO_APP_TMUX"] {
-            return Server(tmux: tmux, socket: socket)
+        guard let socket = env["KIDO_APP_SOCKET"], let tmux = env["KIDO_APP_TMUX"] else { return nil }
+        return Server(tmux: tmux, socket: socket)
+    }
+
+    static func locate() throws -> Server {
+        if let fixed { return fixed }
+        guard let kido = kido(ProcessInfo.processInfo.environment) else {
+            throw Failure(message: "kido is neither on the login shell's PATH nor at /opt/homebrew/bin/kido")
         }
-        guard let kido = kido(env) else { throw Failure(message: "kido not found") }
         let (status, out, err) = try run(kido, ["server"])
         guard status == 0 else { throw Failure(message: err.isEmpty ? "kido server exited \(status)" : err) }
-        return try JSONDecoder().decode(Server.self, from: Data(out.utf8))
+        guard let server = try? JSONDecoder().decode(Server.self, from: Data(out.utf8)) else {
+            throw Failure(message: "kido server printed \(out.isEmpty ? "nothing" : out)")
+        }
+        return server
     }
 
     private static func kido(_ env: [String: String]) -> String? {
@@ -35,7 +43,7 @@ struct Server: Decodable {
         process.arguments = args
         process.standardOutput = out
         process.standardError = err
-        try process.run()
+        do { try process.run() } catch { throw Failure(message: "could not run \(path): \(error.localizedDescription)") }
         nonisolated(unsafe) var stdout = Data(), stderr = Data()
         let drained = DispatchGroup()
         DispatchQueue.global().async(group: drained) { stdout = out.fileHandleForReading.readDataToEndOfFile() }
