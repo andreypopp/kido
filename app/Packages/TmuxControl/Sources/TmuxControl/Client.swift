@@ -3,6 +3,8 @@ import Foundation
 public final class Client: @unchecked Sendable {
     public struct Closed: Error {}
 
+    public let queue = DispatchQueue(label: "TmuxControl.reader")
+
     private typealias Pending = (count: Int, replies: [Reply], done: @Sendable ([Reply]?) -> Void)
 
     private let process = Process()
@@ -34,17 +36,18 @@ public final class Client: @unchecked Sendable {
         onEvent: @escaping @Sendable (Event) -> Void, onClose: @escaping @Sendable (Int32) -> Void
     ) throws {
         try process.run()
-        output.readabilityHandler = { [weak self, process] h in
-            let data = h.availableData
-            guard data.isEmpty else {
-                self?.read(data, onEvent)
-                return
-            }
-            h.readabilityHandler = nil
+        let source = DispatchSource.makeReadSource(fileDescriptor: output.fileDescriptor, queue: queue)
+        var buffer = [UInt8](repeating: 0, count: 1 << 16)
+        source.setEventHandler { [weak self, process, output] in
+            let n = Foundation.read(output.fileDescriptor, &buffer, buffer.count)
+            if n > 0 { return self?.read(buffer[..<n], onEvent) ?? () }
+            if n < 0, errno == EAGAIN || errno == EINTR { return }
+            source.cancel()
             self?.close()
             process.waitUntilExit()
             onClose(process.terminationStatus)
         }
+        source.resume()
     }
 
     public func close() {
@@ -55,10 +58,10 @@ public final class Client: @unchecked Sendable {
             defer { pending = [] }
             return pending
         }
-        orphans.forEach { $0.done(nil) }
+        queue.async { orphans.forEach { $0.done(nil) } }
     }
 
-    private func read(_ data: Data, _ onEvent: (Event) -> Void) {
+    private func read(_ data: ArraySlice<UInt8>, _ onEvent: (Event) -> Void) {
         parser.feed(data) { event in
             if case .block(let reply, .control) = event, let done = complete(reply) {
                 done()
@@ -81,7 +84,7 @@ public final class Client: @unchecked Sendable {
     }
 
     public func send(_ commands: [Command], then done: @escaping @Sendable ([Reply]?) -> Void) {
-        guard !commands.isEmpty else { return done([]) }
+        guard !commands.isEmpty else { return queue.async { done([]) } }
         let line = Data((commands.map(\.line).joined(separator: " ; ") + "\n").utf8)
         let accepted = lock.withLock {
             guard !closed else { return false }
@@ -91,7 +94,7 @@ public final class Client: @unchecked Sendable {
             }
             return true
         }
-        if !accepted { done(nil) }
+        if !accepted { queue.async { done(nil) } }
     }
 
     public func run(_ commands: [Command]) async throws -> [Reply] {
