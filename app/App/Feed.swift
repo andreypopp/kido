@@ -10,7 +10,7 @@ func unquoteSideStatusCommand(_ raw: String) -> String {
 final class Feed: @unchecked Sendable {
     enum Status: Equatable {
         case starting
-        case running(snapshots: Int, last: Snapshot?)
+        case running(Snapshot?)
         case failed(String)
     }
 
@@ -53,7 +53,28 @@ final class Feed: @unchecked Sendable {
     func filter(_ text: String) {
         queue.async { [weak self] in
             guard let input = self?.input else { return }
-            try? input.write(contentsOf: Data("filter \(text)\n".utf8))
+            try? input.write(contentsOf: Data((text.isEmpty ? "filter\n" : "filter \(text)\n").utf8))
+        }
+    }
+
+    @MainActor func switchWindow(next: Bool, failed: @escaping @MainActor (String) -> Void) {
+        let process = Process(), stderr = Pipe()
+        process.executableURL = URL(fileURLWithPath: kido)
+        process.arguments = ["switch-window", next ? "next" : "prev", "--client", client, "--socket", socket]
+        process.environment = Self.environment
+        process.standardError = stderr
+        process.terminationHandler = { process in
+            guard process.terminationStatus != 0 else { return }
+            let message = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            DispatchQueue.main.async { failed(message.isEmpty ? "kido switch-window exited \(process.terminationStatus)" : message) }
+        }
+        do { try process.run() } catch { failed("could not run \(kido): \(error.localizedDescription)") }
+    }
+
+    private static var environment: [String: String] {
+        ProcessInfo.processInfo.environment.filter { key, _ in
+            key != "TMUX" && key != "TMUX_PANE" && !key.hasPrefix("KIDO_AGENT_")
         }
     }
 
@@ -61,14 +82,13 @@ final class Feed: @unchecked Sendable {
         status = .starting
         generation += 1
         let generation = generation
-        let env = ProcessInfo.processInfo.environment
-        let fake = env["KIDO_APP_FEED"]
+        let fake = ProcessInfo.processInfo.environment["KIDO_APP_FEED"]
         let path = fake ?? kido
         let process = Process()
         let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = fake == nil ? ["sidebar-feed", "--socket", socket, "--client", client] : []
-        process.environment = ["PATH": env["PATH"] ?? "", "HOME": env["HOME"] ?? ""]
+        process.environment = Self.environment
         process.standardInput = stdin
         process.standardOutput = stdout
         process.standardError = stderr
@@ -77,7 +97,6 @@ final class Feed: @unchecked Sendable {
         input = writeEnd
         _ = fcntl(writeEnd.fileDescriptor, F_SETNOSIGPIPE, 1)
 
-        var snapshots = 0
         nonisolated(unsafe) var stderrTail = Data()
         // waitUntilExit can miss the exit off the main thread (Client.start).
         let ended = DispatchGroup()
@@ -92,11 +111,10 @@ final class Feed: @unchecked Sendable {
         }
         DispatchQueue.global().async(group: ended) { stderrTail = stderr.fileHandleForReading.readDataToEndOfFile() }
         readLines(stdout.fileHandleForReading, queue: queue, group: ended) { [weak self] line in
-            snapshots += 1
             let last = try? JSONDecoder().decode(Snapshot.self, from: Data(line.utf8))
             DispatchQueue.main.async {
                 guard let self, self.generation == generation else { return }
-                self.status = .running(snapshots: snapshots, last: last)
+                self.status = .running(last)
             }
         }
         ended.notify(queue: .main) { [weak self] in
