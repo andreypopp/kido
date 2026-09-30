@@ -52,6 +52,9 @@ func liveClient() async throws {
     #expect(try await client.run(Command("set-option", "-g", "@odd", odd)) == .success([]))
     #expect(try await client.run(Command("show-options", "-gv", "@odd")) == .success([odd]))
     #expect(try await client.run(Command("no-such-command")) == .failure(["parse error: unknown command: no-such-command"]))
+    let unparsed = Reply.failure(["parse error: unknown command: no-such-command"])
+    #expect(try await client.run([Command("list-sessions"), Command("no-such-command")]) == [unparsed, unparsed])
+    #expect(try await client.run(Command("show-options", "-gv", "@odd")) == .success([odd]))
 
     let pane = PaneID(number: 0)
     for c in Command.sendKeys(pane, Array("echo 'hi there'\r".utf8), chunk: 4) {
