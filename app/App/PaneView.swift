@@ -20,7 +20,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     // the old grid. grid_metrics reads the surface's size without a lock,
     // which only main writes, so main polls it to confirm a new grid, and feed
     // waits for that. Output a grid never confirmed is dropped, and the pane
-    // is captured again once it is.
+    // is captured again once it is, or once the confirmation is given up.
     private enum Grid {
         case confirmed
         case pending(until: Date)
@@ -106,9 +106,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         let size = ghostty_surface_size(surface)
         guard (Int(size.columns), Int(size.rows)) != (cols, rows) else { return }
         resizes += 1
-        guard ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil) else {
-            return gridChanged.withLock { grid = .lost }
-        }
+        guard ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil) else { return settle(resync: true) }
         let now = Date.now
         gridChanged.withLock { if case .confirmed = grid { grid = .pending(until: now + 1) } }
         confirm(cols, rows, resizes, until: now + 10)
@@ -119,18 +117,22 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         var metrics = ghostty_surface_grid_metrics_s()
         guard ghostty_surface_grid_metrics(surface, &metrics), (Int(metrics.columns), Int(metrics.rows)) == (cols, rows)
         else {
-            guard Date.now < until else { return }
+            guard Date.now < until else { return settle(resync: true) }
             return DispatchQueue.main.asyncAfter(deadline: .now() + 0.005) { [weak self] in
                 self?.confirm(cols, rows, resize, until: until)
             }
         }
+        settle(resync: false)
+    }
+
+    private func settle(resync: Bool) {
         let lost = gridChanged.withLock {
             let lost = if case .lost = grid { true } else { false }
             grid = .confirmed
             gridChanged.broadcast()
             return lost
         }
-        if lost { onResync() }
+        if lost || resync { onResync() }
     }
 
     // MARK: - NSView
