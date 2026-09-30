@@ -5,10 +5,12 @@ import TmuxControl
 // there, so a PaneView leaves `panes` between two feeds; `retiring` holds it
 // on main until the queue has let go of it, so it is freed on main (detach).
 // A layout reaches main synchronously, so its grid is set before the reader
-// feeds the output that follows it. Main never waits on client.queue.
+// feeds the output that follows it. Main never waits on client.queue. Once
+// the client has closed, `panes` is emptied and released on main.
 final class Connection: @unchecked Sendable {
     private let client: Client
     private var panes: [PaneID: PaneView] = [:]
+    private var exitReason: String?
     @MainActor private var retiring: [ObjectIdentifier: PaneView] = [:]
     @MainActor private weak var view: SessionView?
     @MainActor private var sizing: DispatchWorkItem?
@@ -16,15 +18,20 @@ final class Connection: @unchecked Sendable {
         didSet { onChange(model) }
     }
     @MainActor private let onChange: (SessionModel) -> Void
+    @MainActor private let onClose: (String?) -> Void
 
-    @MainActor init(server: Server, view: SessionView, onChange: @escaping (SessionModel) -> Void) throws {
+    @MainActor init(
+        server: Server, view: SessionView, onChange: @escaping (SessionModel) -> Void,
+        onClose: @escaping (String?) -> Void
+    ) throws {
         self.view = view
         self.onChange = onChange
+        self.onClose = onClose
         client = Client(tmux: URL(fileURLWithPath: server.tmux), socket: server.socket, session: nil, pauseAfter: 5)
         view.connection = self
         try client.start(
             onEvent: { [weak self] in self?.handle($0) },
-            onClose: { [weak self] in self?.report("tmux exited with status \($0)") })
+            onClose: { [weak self] _ in self?.closed() })
     }
 
     @MainActor func attach(_ pane: PaneView) {
@@ -76,8 +83,8 @@ final class Connection: @unchecked Sendable {
         case .sessionChanged, .sessionsChanged, .sessionRenamed, .windowAdd(_, .linked), .windowClose(_, .linked),
             .windowRenamed(_, .linked, _):
             refresh()
-        case .exit(let reason?):
-            report(reason)
+        case .exit(let reason):
+            exitReason = reason
         default:
             break
         }
@@ -113,6 +120,12 @@ final class Connection: @unchecked Sendable {
             panes[pane]?.feed(
                 PaneSync.restore(replies.dropFirst(first.count)) ?? Self.notice("could not capture \(pane): \(replies)"))
         }
+    }
+
+    private func closed() {
+        let gone = panes, reason = exitReason
+        panes = [:]
+        DispatchQueue.main.async { withExtendedLifetime(gone) { self.onClose(reason) } }
     }
 
     private func report(_ message: String) {
