@@ -122,12 +122,13 @@ final class GhosttyRuntime {
             case GHOSTTY_RESIZE_SPLIT_DOWN: .down
             default: .right
             }
-            return .resize(side, Int(a.resize_split.amount))
+            return .resize(side, points: Double(a.resize_split.amount))
         case GHOSTTY_ACTION_GOTO_TAB:
             return switch a.goto_tab {
             case GHOSTTY_GOTO_TAB_PREVIOUS: .previousWindow
             case GHOSTTY_GOTO_TAB_NEXT: .nextWindow
             case GHOSTTY_GOTO_TAB_LAST: .lastWindow
+            case let n where n.rawValue >= 1: .window(Int(n.rawValue))
             default: nil
             }
         case GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM: return .zoom
