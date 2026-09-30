@@ -15,6 +15,7 @@ run: all
 
 test:
 	cd Packages/TmuxControl && swift test
+	cd Packages/SidebarFeed && swift test
 
 clean:
 	rm -rf build/derived Kido.xcodeproj
