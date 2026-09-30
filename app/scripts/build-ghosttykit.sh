@@ -1,14 +1,16 @@
 #!/bin/sh
 # Build GhosttyKit.xcframework from the ghostty fork at app/third_party/ghostty
-# into app/build/ghosttykit/<pinned revision>/, once per revision, and print
-# its path. Builds in place: every product lands in paths the fork gitignores.
+# into app/build/ghosttykit/<pinned revision>-<flags hash>/, once per revision
+# and flags, and print its path. Builds in place: every product lands in paths
+# the fork gitignores.
 
 set -eu
 
 app_root=$(cd "$(dirname "$0")/.." && pwd)
 submodule="$app_root/third_party/ghostty"
 revision=$(git -C "$app_root" ls-files -s third_party/ghostty | awk '{print $2}')
-out="$app_root/build/ghosttykit/$revision"
+flags="-Dsentry=false -Di18n=false"
+out="$app_root/build/ghosttykit/$revision-$(printf %s "$flags" | shasum | cut -c1-12)"
 
 if [ ! -e "$out/GhosttyKit.xcframework" ]; then
 	if [ ! -e "$submodule/build.zig" ]; then
@@ -20,7 +22,7 @@ if [ ! -e "$out/GhosttyKit.xcframework" ]; then
 	prefix=$(mktemp -d)
 	trap 'rm -rf "$prefix"' EXIT INT TERM
 	(cd "$submodule" && zig build -p "$prefix" -Doptimize=ReleaseFast \
-		-Demit-xcframework=true -Demit-macos-app=false -Dxcframework-target=native)
+		-Demit-xcframework=true -Demit-macos-app=false -Dxcframework-target=native $flags)
 	mkdir -p "$out.tmp"
 	rm -rf "$out.tmp/GhosttyKit.xcframework"
 	cp -R "$submodule/macos/GhosttyKit.xcframework" "$out.tmp/"
