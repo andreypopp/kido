@@ -37,18 +37,37 @@ import TmuxControl
         NSApp.mainMenu = mainMenu()
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false)
         window.title = SessionModel().title
         window.contentMinSize = Sidebar.minSize
-        sidebar.frame = window.contentView!.bounds
-        sidebar.autoresizingMask = [.width, .height]
-        window.contentView!.addSubview(sidebar)
-        sidebar.view.send = { [weak self] in self?.send($0, then: $1) }
+        let width = background ? 236 : UserDefaults.standard.object(forKey: "nativeSidebarWidth") as? Double ?? 236
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.backgroundColor = runtime.background
+        if (runtime.background.usingColorSpace(.deviceRGB)?.brightnessComponent ?? 0) < 0.5 {
+            window.appearance = NSAppearance(named: .darkAqua)
+        }
+        window.contentViewController = sidebar
+        let toolbar = NSToolbar(identifier: "KidoSidebar")
+        toolbar.delegate = sidebar
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
+        window.setContentSize(NSSize(width: 900, height: 560))
+        window.contentView?.layoutSubtreeIfNeeded()
+        sidebar.splitView.setPosition(max(200, min(360, width)), ofDividerAt: 0)
+        if !background { sidebar.isCollapsed = UserDefaults.standard.bool(forKey: "sidebarCollapsed") }
+        sidebar.changed = { [weak self] in self?.updateSidebarMenu() }
+        sidebar.list.send = { [weak self] in self?.send($0, then: $1) }
+        sidebar.list.newSession = { [weak self] in self?.newSession() }
+        sidebar.list.newWindow = { [weak self] in self?.create(Command("new-window", "-d", "-P", "-F", "#{session_id}:#{window_id}.#{pane_id}", "-t", $0)) }
         menus.send = { [weak self] in self?.send($0) }
-        sidebar.view.filter = { [weak self] in self?.feed?.filter($0) }
-        sidebar.view.leave = { [weak self] in self?.session?.focusActive() }
+        sidebar.list.filter = { [weak self] in self?.feed?.filter($0) }
+        sidebar.list.leave = { [weak self] in self?.session?.focusActive() }
         banner = Banner(target: self, action: #selector(start))
         banner.frame = sidebar.content.bounds
         sidebar.content.addSubview(banner)
@@ -57,6 +76,7 @@ import TmuxControl
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
+        updateSidebarMenu()
         start()
     }
 
@@ -67,7 +87,7 @@ import TmuxControl
 
     private func down(_ title: String, _ detail: String, button: String?) {
         banner.show(title, detail, button: button)
-        sidebar.view.offline(title)
+        sidebar.list.offline(title)
     }
 
     @objc private func start() {
@@ -103,8 +123,8 @@ import TmuxControl
                 onClose: { [weak self] in self?.closed(server, view, $0, backoff: backoff) })
             link = .connected(connection)
             feed = Feed(
-                socket: server.socket, locate: connection.locateFeed, query: { [weak self] in self?.sidebar.view.query ?? "" },
-                onChange: { [weak self] in self?.sidebar.view.update($0) })
+                socket: server.socket, locate: connection.locateFeed, query: { [weak self] in self?.sidebar.list.query ?? "" },
+                onChange: { [weak self] in self?.sidebar.list.update($0) })
         } catch {
             note("could not run \(server.tmux): \(error.localizedDescription)")
             link = .down
@@ -165,39 +185,67 @@ import TmuxControl
             return item
         }
         view.items = [
-            item("Toggle Sidebar", #selector(toggleSidebar), "\\", .command),
-            item("Focus Sidebar", #selector(focusSidebar), "s", [.command, .control]),
+            item("Hide Sidebar", #selector(toggleSidebar), "s", [.command, .control]),
+            item("Focus Sidebar", #selector(focusSidebar), "f", [.command, .control]),
             .separator(),
             item("Next Needing Attention", #selector(nextAttention), "n", [.command, .control]),
             item("Previous Needing Attention", #selector(previousAttention), "N", [.command, .control]),
             item("Next Window in Sidebar", #selector(nextWindow), "j", [.command, .control]),
             item("Previous Window in Sidebar", #selector(previousWindow), "k", [.command, .control]),
         ]
+        let file = NSMenu(title: "File")
+        file.items = [item("New Session", #selector(newSession), "N", [.command, .shift])]
         let bar = NSMenu()
-        for menu in [app, view, menus.window, menus.session] {
+        for menu in [app, file, view, menus.window, menus.session] {
             bar.addItem(withTitle: menu.title, action: nil, keyEquivalent: "").submenu = menu
         }
         bar.insertItem(PaneCommand.menu, at: 2)
         return bar
     }
 
+    @objc private func newSession() {
+        create(Command("new-session", "-d", "-P", "-F", "#{session_id}:#{window_id}.#{pane_id}"))
+    }
+
+    private func create(_ command: Command) {
+        sidebar.list.failed(nil)
+        send([command]) { [weak self] replies in
+            guard let self else { return }
+            guard case .success(let lines)? = replies?.first, let target = lines.first else {
+                if case .failure(let lines)? = replies?.first { sidebar.list.failed(lines.joined(separator: "\n")) }
+                else { sidebar.list.failed("The connection closed before creation completed") }
+                return
+            }
+            send([Command("switch-client", "-t", target)]) { [weak self] replies in
+                guard let self else { return }
+                if case .success? = replies?.first { session?.focusActive() }
+                else if case .failure(let lines)? = replies?.first { sidebar.list.failed(lines.joined(separator: "\n")) }
+                else { sidebar.list.failed("The connection closed before selection completed") }
+            }
+        }
+    }
+
+    private func updateSidebarMenu() {
+        NSApp.mainMenu?.items.first(where: { $0.title == "View" })?.submenu?.items.first?.title = sidebar.isCollapsed ? "Show Sidebar" : "Hide Sidebar"
+    }
+
     @objc private func toggleSidebar() {
-        sidebar.toggle()
+        sidebar.toggleSidebar(nil)
     }
 
     @objc private func focusSidebar() {
-        if sidebar.isCollapsed { sidebar.toggle() }
-        sidebar.view.focus()
+        if sidebar.isCollapsed { sidebar.toggleSidebar(nil) }
+        sidebar.list.focus()
     }
 
-    @objc private func nextAttention() { sidebar.view.nextAttention(1) }
-    @objc private func previousAttention() { sidebar.view.nextAttention(-1) }
+    @objc private func nextAttention() { sidebar.list.nextAttention(1) }
+    @objc private func previousAttention() { sidebar.list.nextAttention(-1) }
     @objc private func nextWindow() { switchWindow(next: true) }
     @objc private func previousWindow() { switchWindow(next: false) }
 
     private func switchWindow(next: Bool) {
-        sidebar.view.failed(nil)
-        feed?.switchWindow(next: next) { [weak self] in self?.sidebar.view.failed($0) }
+        sidebar.list.failed(nil)
+        feed?.switchWindow(next: next) { [weak self] in self?.sidebar.list.failed($0) }
     }
 
     @objc private func quitItem() { quit("the Quit menu item") }
