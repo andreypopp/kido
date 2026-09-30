@@ -1,11 +1,5 @@
 import AppKit
 
-// Lays out sidebar | divider | content, and remembers the sidebar's width
-// and collapsed state across launches, except in a test launch, which must
-// leave the user's preferences alone. `content` is the tmux area's
-// container: SessionView keeps computing the client size from its own
-// bounds, unaffected by whether it sits in `content` or in a window's
-// contentView.
 final class Sidebar: NSView {
     let view = SidebarView()
     let content = NSView()

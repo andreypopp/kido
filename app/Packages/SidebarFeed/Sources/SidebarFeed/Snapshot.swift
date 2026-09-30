@@ -5,6 +5,12 @@ public struct Snapshot: Decodable, Equatable, Sendable {
         public let session: SessionID
         public let window: WindowID
         public let pane: PaneID
+
+        public init(session: SessionID, window: WindowID, pane: PaneID) {
+            self.session = session
+            self.window = window
+            self.pane = pane
+        }
     }
 
     public let client: Position
