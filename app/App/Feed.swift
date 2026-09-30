@@ -1,19 +1,14 @@
 import Foundation
 import SidebarFeed
 
-// The %-quoting `Launch.conf_command` writes around a path that contains a
-// space; the value otherwise reaches show-options unquoted (lib/launch.ml).
-func unquoteSideStatusCommand(_ raw: String) -> String {
-    raw.hasPrefix("\"") && raw.hasSuffix("\"") && raw.count >= 2 ? String(raw.dropFirst().dropLast()) : raw
-}
-
 final class Feed: @unchecked Sendable {
     typealias Location = (kido: String, client: String)
-    typealias Locate = (@escaping @Sendable (Result<Location, Server.Failure>) -> Void) -> Void
+    typealias Locate = (@escaping @Sendable (Result<Location, Failure>) -> Void) -> Void
 
     enum Status {
         case starting
-        case running(Snapshot?)
+        case running(Snapshot)
+        case unreadable
         case restarting(String)
     }
 
@@ -23,12 +18,10 @@ final class Feed: @unchecked Sendable {
     private let reader = DispatchQueue(label: "Feed.reader")
     private let writer = DispatchQueue(label: "Feed.writer")
     @MainActor private var located: Location?
-    @MainActor private var process: Process?
     @MainActor private var input: FileHandle?
     @MainActor private var generation = 0
     @MainActor private var restartWork: DispatchWorkItem?
     @MainActor private var backoff: TimeInterval = 0.1
-    @MainActor private(set) var status: Status = .starting { didSet { onChange(status) } }
     @MainActor private let onChange: (Status) -> Void
 
     @MainActor init(
@@ -45,7 +38,6 @@ final class Feed: @unchecked Sendable {
         restartWork?.cancel()
         restartWork = nil
         generation += 1
-        process = nil
         closeInput()
     }
 
@@ -62,21 +54,14 @@ final class Feed: @unchecked Sendable {
 
     @MainActor func switchWindow(next: Bool, failed: @escaping @MainActor (String) -> Void) {
         guard let (kido, client) = located else { return failed("the sidebar feed has not found kido yet") }
-        let process = Process(), stderr = Pipe()
-        process.executableURL = URL(fileURLWithPath: kido)
-        process.arguments = ["switch-window", next ? "next" : "prev", "--client", client, "--socket", socket]
-        process.environment = Self.environment
-        process.standardError = stderr
-        let ended = DispatchGroup()
-        ended.enter()
-        process.terminationHandler = { _ in ended.leave() }
-        do { try process.run() } catch { return failed("could not run \(kido): \(error.localizedDescription)") }
-        nonisolated(unsafe) var message = Data()
-        DispatchQueue.global().async(group: ended) { message = stderr.fileHandleForReading.readDataToEndOfFile() }
-        ended.notify(queue: .main) {
-            guard process.terminationStatus != 0 else { return }
-            let text = String(decoding: message, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            failed(text.isEmpty ? "kido switch-window exited \(process.terminationStatus)" : text)
+        let args = ["switch-window", next ? "next" : "prev", "--client", client, "--socket", socket]
+        Task {
+            do throws(Failure) {
+                let (status, _, err) = try await Child.run(kido, args, env: Self.environment)
+                if status != 0 { failed(err.isEmpty ? "kido switch-window exited \(status)" : err) }
+            } catch {
+                failed(error.message)
+            }
         }
     }
 
@@ -87,7 +72,7 @@ final class Feed: @unchecked Sendable {
     }
 
     @MainActor private func start() {
-        status = .starting
+        onChange(.starting)
         generation += 1
         let generation = generation
         locate { [weak self] result in
@@ -108,74 +93,55 @@ final class Feed: @unchecked Sendable {
         let path = fake ?? kido
         guard !path.isEmpty else { return restart("the server's side-status-command is empty") }
         guard path.hasPrefix("/") else { return restart("the server's side-status-command \(path) is not an absolute path") }
-        let process = Process()
-        let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = fake == nil ? ["sidebar-feed", "--socket", socket, "--client", client] : []
-        process.environment = Self.environment
-        process.standardInput = stdin
-        process.standardOutput = stdout
-        process.standardError = stderr
+        let stdin = Pipe(), stdout = Pipe()
+        let child: Child
+        do throws(Failure) {
+            child = try Child(
+                path, fake == nil ? ["sidebar-feed", "--socket", socket, "--client", client] : [], env: Self.environment,
+                stdin: stdin, stdout: stdout)
+        } catch {
+            return restart(error.message)
+        }
         _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
-
-        nonisolated(unsafe) var stderrTail = Data()
-        // waitUntilExit can miss the exit off the main thread (Client.start).
-        let ended = DispatchGroup()
-        ended.enter()
-        process.terminationHandler = { _ in ended.leave() }
-        do { try process.run() } catch { return restart("could not run \(path): \(error.localizedDescription)") }
-        self.process = process
         input = stdin.fileHandleForWriting
         filter(query())
-        DispatchQueue.global().async(group: ended) { stderrTail = stderr.fileHandleForReading.readDataToEndOfFile() }
-        readLines(stdout.fileHandleForReading, queue: reader, group: ended) { [weak self] line in
-            let last = try? JSONDecoder().decode(Snapshot.self, from: Data(line.utf8))
-            DispatchQueue.main.async {
-                guard let self, self.generation == generation else { return }
-                if last != nil { self.backoff = 0.1 }
-                self.status = .running(last)
+        let output = stdout.fileHandleForReading.fileDescriptor
+        let source = DispatchSource.makeReadSource(fileDescriptor: output, queue: reader)
+        nonisolated(unsafe) var buffer = Data()
+        child.ended.enter()
+        source.setEventHandler { @Sendable [weak self] in
+            var chunk = [UInt8](repeating: 0, count: 1 << 16)
+            let n = Foundation.read(output, &chunk, chunk.count)
+            guard n > 0 else {
+                if n < 0, errno == EAGAIN || errno == EINTR { return }
+                source.cancel()
+                return child.ended.leave()
+            }
+            buffer.append(contentsOf: chunk[..<n])
+            while let newline = buffer.firstIndex(of: 0x0A) {
+                let last = try? JSONDecoder().decode(Snapshot.self, from: buffer[..<newline])
+                buffer.removeSubrange(...newline)
+                DispatchQueue.main.async {
+                    guard let self, self.generation == generation else { return }
+                    guard let last else { return self.onChange(.unreadable) }
+                    self.backoff = 0.1
+                    self.onChange(.running(last))
+                }
             }
         }
-        ended.notify(queue: .main) { [weak self] in
+        source.resume()
+        child.ended.notify(queue: .main) { [weak self] in
             guard let self, self.generation == generation else { return }
-            let tail = String(decoding: stderrTail, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            restart(tail.isEmpty ? "kido sidebar-feed exited" : tail)
+            restart(child.stderr.isEmpty ? "kido sidebar-feed exited" : child.stderr)
         }
     }
 
     @MainActor private func restart(_ reason: String) {
-        process = nil
         closeInput()
-        status = .restarting(reason)
-        backoff = min(backoff * 2, 8)
+        onChange(.restarting(reason))
         let item = DispatchWorkItem { [weak self] in self?.start() }
         restartWork = item
         DispatchQueue.main.asyncAfter(deadline: .now() + backoff, execute: item)
+        backoff = min(backoff * 2, 8)
     }
-}
-
-// A DispatchSource read source over the pipe's fd, split into lines; entered
-// into `group` so `ended.notify` runs only after the last line is delivered.
-private func readLines(
-    _ handle: FileHandle, queue: DispatchQueue, group: DispatchGroup, _ onLine: @escaping (String) -> Void
-) {
-    group.enter()
-    let source = DispatchSource.makeReadSource(fileDescriptor: handle.fileDescriptor, queue: queue)
-    var buffer = Data()
-    source.setEventHandler {
-        var chunk = [UInt8](repeating: 0, count: 1 << 16)
-        let n = Foundation.read(handle.fileDescriptor, &chunk, chunk.count)
-        if n > 0 {
-            buffer.append(contentsOf: chunk[..<n])
-            while let newline = buffer.firstIndex(of: 0x0A) {
-                onLine(String(decoding: buffer[..<newline], as: UTF8.self))
-                buffer.removeSubrange(...newline)
-            }
-            return
-        }
-        if n < 0, errno == EAGAIN || errno == EINTR { return }
-        source.cancel()
-        group.leave()
-    }
-    source.resume()
 }
