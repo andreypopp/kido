@@ -11,6 +11,8 @@ final class GhosttyRuntime {
               let config = ghostty_config_new() else { return nil }
         ghostty_config_load_default_files(config)
         ghostty_config_load_recursive_files(config)
+        let tiling = "window-padding-x = 0\nwindow-padding-y = 0\n"
+        ghostty_config_load_string(config, tiling, UInt(tiling.utf8.count), "kido")
         ghostty_config_finalize(config)
         self.config = config
 
@@ -64,6 +66,13 @@ final class GhosttyRuntime {
         }
     }
 
+    var background: NSColor {
+        var color = ghostty_config_color_s()
+        let key = "background"
+        guard ghostty_config_get(config, &color, key, UInt(key.utf8.count)) else { return .black }
+        return NSColor(srgbRed: CGFloat(color.r) / 255, green: CGFloat(color.g) / 255, blue: CGFloat(color.b) / 255, alpha: 1)
+    }
+
     nonisolated(unsafe) private static var shared: GhosttyRuntime?
     private static let ticking = OSAllocatedUnfairLock(initialState: false)
 
@@ -79,7 +88,7 @@ final class GhosttyRuntime {
         case GHOSTTY_ACTION_CELL_SIZE:
             guard target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface else { return false }
             let pane = PaneView.from(ghostty_surface_userdata(surface))
-            DispatchQueue.main.async { pane.updateGrid() }
+            DispatchQueue.main.async { pane.onCellChange() }
             return true
         default:
             return false
