@@ -372,7 +372,8 @@ one.
 ## Tests
 
     make test    dune test (the ppx_expect suites in lib/test/ and lib_tmux/test/) and
-                 scripts/test-ts.sh: one node suite for both pi extensions
+                 scripts/test-ts.sh: tsc against the pi version pinned in
+                 share/pi/package.json, then one node suite for both pi extensions
     make e2e     builds the fork into build/ and runs go test ./test_e2e/ against it
     make install binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
 

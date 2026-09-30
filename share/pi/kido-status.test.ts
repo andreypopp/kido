@@ -448,7 +448,7 @@ function createFakePi() {
   let seq = 0;
   const delivered: Array<{ text: string; opts: unknown; seq: number }> = [];
   const messages: Array<{ message: any; opts: unknown; seq: number }> = [];
-  const renderers = new Map<string, (message: any, options: any, theme: any) => unknown>();
+  const renderers = new Map<string, (message: any, options: any, theme: any) => { render(width: number): string[] }>();
   // Keyed the same way the real UI keys a widget: content undefined means "cleared".
   const widgets = new Map<string, { content: string[] | undefined; options?: unknown }>();
   // What the host does with a user message: in pi, start a turn for it when the
@@ -471,7 +471,7 @@ function createFakePi() {
     sendMessage(message: any, opts: unknown) {
       messages.push({ message, opts, seq: seq++ });
     },
-    registerMessageRenderer(customType: string, renderer: (message: any, options: any, theme: any) => unknown) {
+    registerMessageRenderer(customType: string, renderer: (message: any, options: any, theme: any) => { render(width: number): string[] }) {
       renderers.set(customType, renderer);
     },
   };
@@ -731,14 +731,14 @@ function envelope(kind: string, text: string, extra: { id?: string; replyTo?: st
 // customMessages returns every message of one kido custom type a session
 // recorded, the shared lookup every kido-ask/kido-notice/kido-message site
 // below filters through.
-function customMessages(s: { messages: Array<{ message: any; opts: unknown }> }, customType: string): Array<{ message: any; opts: unknown }> {
+function customMessages(s: Pick<ReturnType<typeof createFakePi>, "messages">, customType: string) {
   return s.messages.filter((m) => m.message.customType === customType);
 }
 
 // askSent finds the kido-ask message a handleInboundAsk call handed to
 // sendMessage, matching by a substring of its full content (the model's
 // text, not the renderer's trimmed-down question).
-function askSent(s: { messages: Array<{ message: any; opts: unknown }> }, includes: string): { message: any; opts: unknown } | undefined {
+function askSent(s: Pick<ReturnType<typeof createFakePi>, "messages">, includes: string) {
   return customMessages(s, "kido-ask").find((m) => m.message.content.includes(includes));
 }
 
@@ -756,7 +756,7 @@ function pendingState(p: Promise<unknown>, ms = 30): Promise<"pending" | "settle
 // settlesWithin asserts a promise resolves before ms elapse - the
 // "promptly" half of the abandonPending contract - by racing it against a
 // timer that throws.
-function settlesWithin<T>(p: Promise<T>, ms: number): Promise<T> {
+function settlesWithin<T = { content: Array<{ text: string }> }>(p: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
     p,
     new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`did not settle within ${ms}ms`)), ms)),
@@ -1010,7 +1010,7 @@ test("abandonPending: session_shutdown and a failed rebind settle a waiting ask 
   }
 });
 
-function noticesIn(s: { messages: Array<{ message: any; opts: unknown }> }, text: string) {
+function noticesIn(s: Pick<ReturnType<typeof createFakePi>, "messages">, text: string) {
   return customMessages(s, "kido-notice").filter((m) => m.message.content.includes(text));
 }
 
@@ -2501,7 +2501,7 @@ test("async_bash's result carries the run id and the output path kido printed, a
 // A "stream" envelope is buffered on arrival and reaches the model only when
 // flushStreams runs, so every case below asserts on pi.sendMessage calls, never on
 // what arrived on the wire.
-const streamMessages = (messages: Array<{ message: any }>) =>
+const streamMessages = (messages: ReturnType<typeof createFakePi>["messages"]) =>
   messages.filter((m) => m.message.customType === "kido-stream");
 
 function streamEnvelope(text: string, run = "run-1", output = "/state/runs/run-1/output"): string {

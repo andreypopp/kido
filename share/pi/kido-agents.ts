@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -261,7 +261,7 @@ function resolveAgent(agents: AgentInfo[], to: string): { agent?: AgentInfo; err
 }
 
 // Mirrors lib/list_agents.ml's is_ancestor, the same walk kept in step. seen guards a cyclic parent chain.
-export function isAncestor(agents: AgentInfo[], self: AgentInfo, target: AgentInfo): boolean {
+export function isAncestor(agents: Pick<AgentInfo, "id" | "parent">[], self: Pick<AgentInfo, "id">, target: Pick<AgentInfo, "id" | "parent">): boolean {
   if (self.id === target.id) return false;
   const byId = new Map(agents.map((a) => [a.id, a]));
   const seen = new Set<string>();
@@ -1166,10 +1166,11 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.on("message_start", (event: { message?: { role?: string; customType?: string; details?: { noticeId?: string } } }) => {
+  pi.on("message_start", (event) => {
     const m = event?.message;
     if (m?.role !== "custom" || m.customType !== NOTICE_CUSTOM_TYPE) return;
-    const noticeId = m.details?.noticeId;
+    // pi's message_start exposes CustomMessage details as unknown, without the renderer's details generic.
+    const noticeId = (m.details as { noticeId?: string } | undefined)?.noticeId;
     if (!noticeId || !pendingNotices.has(noticeId)) return;
     pendingNotices.delete(noticeId);
     renderNoticeWidget();
@@ -1188,15 +1189,15 @@ export default function (pi: ExtensionAPI) {
     const content = typeof message.content === "string" ? message.content : "";
     const [firstLine, ...rest] = content.split("\n");
     if (!options.expanded) {
-      return { render: () => [theme.fg("dim", `${firstLine} — ctrl-o to expand`)] };
+      return { render: () => [theme.fg("dim", `${firstLine} — ctrl-o to expand`)], invalidate: () => {} };
     }
-    return { render: () => [theme.fg("dim", firstLine), ...rest] };
+    return { render: () => [theme.fg("dim", firstLine), ...rest], invalidate: () => {} };
   });
 
   // A renderer that returns its own component skips the box pi paints in customMessageBg behind an extension message, so it is painted here.
   const stripAnsi = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, "");
   // Padded to the visible width before theme.bg, which does not pad; cached per width, since pi calls render on every redraw.
-  const withBackground = (theme: { bg: (color: string, text: string) => string }, lines: string[]) => {
+  const withBackground = (theme: Pick<Theme, "bg">, lines: string[]) => {
     let cachedWidth = -1;
     let cached: string[] = [];
     return (width: number): string[] => {
@@ -1209,11 +1210,12 @@ export default function (pi: ExtensionAPI) {
   };
 
   const renderInbound = (
-    theme: { fg: (style: string, text: string) => string; bg: (color: string, text: string) => string },
+    theme: Pick<Theme, "fg" | "bg">,
     headerLine: string,
     body: string,
-  ): { render: (width: number) => string[] } => ({
+  ) => ({
     render: withBackground(theme, [theme.fg("dim", headerLine), ...body.split("\n")]),
+    invalidate: () => {},
   });
 
   // A message is never collapsed (unlike a notice); any of the three MESSAGE_RELATION headers is recognised, so a transcript reloaded without details still shows it.
@@ -1234,9 +1236,7 @@ export default function (pi: ExtensionAPI) {
     return renderInbound(theme, `ask from @${from}:`, question);
   });
 
-  // ctrl-o expansion is pi's own built-in toggle (options.expanded), not a keybinding
-  // registered here. The returned object satisfies pi-tui's Component interface without
-  // importing @earendil-works/pi-tui, which this package's test suite does not install.
+  // ctrl-o expansion is pi's own built-in toggle (options.expanded), not a keybinding registered here.
   pi.registerMessageRenderer<{ from: string }>(NOTICE_CUSTOM_TYPE, (message, options, theme) => {
     const from = message.details?.from || "another agent";
     const raw = typeof message.content === "string" ? message.content : "";
@@ -1248,7 +1248,7 @@ export default function (pi: ExtensionAPI) {
       const firstLine = content.split("\n", 1)[0];
       const summary = firstLine ? `: ${firstLine}` : "";
       const line = theme.fg("dim", `notification from ${from}${summary} — ctrl-o to expand`);
-      return { render: withBackground(theme, [line]) };
+      return { render: withBackground(theme, [line]), invalidate: () => {} };
     }
     return renderInbound(theme, `notification from ${from}:`, content);
   });
@@ -1349,7 +1349,7 @@ export default function (pi: ExtensionAPI) {
       // method; both simply get no `@name` completion. Registered once: session_start fires
       // again on a /reload, and nothing is fetched until the first `@` keystroke.
       if (!ctx.ui?.addAutocompleteProvider || completion) return;
-      const cache: NonNullable<typeof completion> = { agents: [], at: 0, refreshing: null };
+      const cache: { agents: AgentInfo[]; at: number; refreshing: Promise<void> | null } = { agents: [], at: 0, refreshing: null };
       completion = cache;
       // `@` is pi's own file-reference trigger; this wraps the built-in provider rather than
       // replacing it, agent matches first then whatever files pi found for the same token.

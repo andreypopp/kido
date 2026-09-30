@@ -29,7 +29,7 @@ export type DeliverAs = "followUp" | "steer";
 
 export type Sender =
   | { kind: "agent"; session: string; name?: string; pane?: string }
-  | { kind: "kido"; name: string }
+  | { kind: "kido"; name: string; pane?: never }
   | { kind: "human"; pane: string };
 
 export type Envelope = { id: string; from: Sender; text: string } & (

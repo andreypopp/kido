@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run share/pi/kido-status.test.ts under node's native TypeScript support.
+# Typecheck the pi extensions and run their tests under node's native TypeScript support.
 #
 # Skips cleanly when node is missing or too old; KIDO_TS_TEST_REQUIRED=1
 # fails instead, the same convention e2e uses for KIDO_E2E_REQUIRED.
@@ -31,7 +31,9 @@ process.exit(maj >= 24 ? 0 : 1);
 fi
 
 cd "$(dirname "$0")/../share/pi"
-if [ ! -d node_modules ]; then
+if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then
 	npm install --silent
+	touch node_modules
 fi
+./node_modules/.bin/tsc -p .
 exec node --test kido-status.test.ts
