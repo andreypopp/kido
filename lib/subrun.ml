@@ -93,8 +93,9 @@ let read_command ~dir id =
       | json -> ( match argv_of_json json with Some [] | None -> None | Some argv -> Some argv))
 
 (* A same-directory temp file unique per writer (O_EXCL retried on a name
-   clash), then rename: two writers of one path never share a temp file. *)
-let write_atomic ?(perm = 0o644) path data =
+   clash), then renamed or linked into place: two writers of one path never
+   share a temp file. *)
+let write_temp ?(perm = 0o644) path data place =
   let rec create_unique () =
     let tmp = Printf.sprintf "%s.tmp.%d.%d" path (Unix.getpid ()) (Random.bits ()) in
     match Unix.openfile tmp [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_EXCL ] perm with
@@ -108,7 +109,9 @@ let write_atomic ?(perm = 0o644) path data =
       Fun.protect
         ~finally:(fun () -> Unix.close fd)
         (fun () -> ignore (Unix.write_substring fd data 0 (String.length data)));
-      Unix.rename tmp path)
+      place tmp path)
+
+let write_atomic ?perm path data = write_temp ?perm path data Unix.rename
 
 let write_meta ~dir m =
   Fs.mkdir_p (dir_for ~dir m.id);
@@ -127,14 +130,10 @@ let has_report ~dir id = Sys.file_exists (report_path ~dir id)
 let read_task ~dir id = Fs.read (task_path ~dir id)
 
 let record_outcome ~dir id o =
-  let path = outcome_path ~dir id in
-  match Unix.openfile path [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_EXCL ] 0o644 with
-  | fd ->
-      let data = Yojson.Safe.to_string (outcome_to_yojson o) in
-      Fun.protect
-        ~finally:(fun () -> Unix.close fd)
-        (fun () -> ignore (Unix.write_substring fd data 0 (String.length data)));
-      true
+  match
+    write_temp (outcome_path ~dir id) (Yojson.Safe.to_string (outcome_to_yojson o)) Unix.link
+  with
+  | () -> true
   | exception Unix.Unix_error _ -> false
 
 let write_screen ~dir id data = write_atomic (screen_path ~dir id) data

@@ -71,9 +71,9 @@ type process = { pid : int; stdin : Unix.file_descr; stdout : Unix.file_descr }
 
 let spawn args =
   let bin = Lazy.force binary in
+  let null = Unix.openfile "/dev/null" [ O_WRONLY; O_CLOEXEC ] 0 in
   let in_r, in_w = Unix.pipe ~cloexec:true () in
   let out_r, out_w = Unix.pipe ~cloexec:true () in
-  let null = Unix.openfile "/dev/null" [ O_WRONLY; O_CLOEXEC ] 0 in
   let spawned =
     try
       Ok

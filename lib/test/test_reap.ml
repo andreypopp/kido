@@ -327,6 +327,17 @@ let%expect_test "a run's pane in a shared window: the pane goes, the split stays
     close @1 pane %1
     |}]
 
+let%expect_test "two run panes in one window: the sweep takes the first, as decide does" =
+  let panes =
+    [ other; pane ~run:"run-first" ~dead:600 "%1" "@1"; pane ~run:"run-second" ~dead:600 "%2" "@1" ]
+  in
+  show (sweep panes);
+  show (Result.to_list (Reap.decide panes "@1"), []);
+  [%expect {|
+    close @1 pane %1
+    close @1 pane %1
+    |}]
+
 let%expect_test "a pane close captures the run's pane alone and notifies once" =
   let dir = temp () in
   Subrun.create ~dir:(runs dir) (id "run-screen") "x";

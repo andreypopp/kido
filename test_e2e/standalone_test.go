@@ -201,3 +201,29 @@ func TestSidebarIgnoresQ(t *testing.T) {
 		t.Fatal("q closed the sidebar")
 	}
 }
+
+// An error stays in the footer only until the next key: a jump to a client
+// that is not there fails, and the "/" pressed after it must still bring up
+// the search prompt the error was drawn over.
+func TestStandaloneErrorClearsOnNextKey(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	h.keepDeadPanes()
+	pane := h.newWindow("alpha", "picker", "env", "-u", "TMUX_SIDE_CLIENT",
+		kidoBin, "--client", "no-such-client")
+	p := &picker{h: h, pane: pane}
+	p.waitRow("alpha")
+
+	p.keys("Enter")
+	p.waitRow("no-such-client")
+	p.mustBeAlive()
+
+	p.keys("/")
+	p.h.waitFor(func() bool {
+		rows := p.rows()
+		return len(rows) > 0 && rows[len(rows)-1] == "/" && !hasLine(rows, "no-such-client")
+	}, settle, func() string { return fmt.Sprintf("the search prompt in place of the error (shows %q)", p.rows()) })
+
+	p.keys("Escape", "q")
+	p.waitExit()
+}

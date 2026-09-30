@@ -332,9 +332,12 @@ let%expect_test "a sender with no run directory has its report truncated, naming
 
 let%expect_test "head_within drops a partial rune wherever the cut falls inside it" =
   let s = "ab\u{1F389}cd" in
-  List.iter (fun cut -> Printf.printf "%d: %S\n" cut (Message_agent.head_within s cut)) [ 3; 4; 5 ];
+  List.iter
+    (fun cut -> Printf.printf "%d: %S\n" cut (Message_agent.head_within s cut))
+    [ 3; 4; 5; 6 ];
   [%expect {|
     3: "ab"
     4: "ab"
     5: "ab"
+    6: "ab\240\159\142\137"
     |}]

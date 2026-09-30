@@ -722,7 +722,7 @@ let jump m =
 let key m (k : Mosaic.Event.key) =
   let e = Mosaic.Event.Key.data k in
   let pend = m.g_pend in
-  let m = { m with g_pend = false } in
+  let m = { m with g_pend = false; status = "" } in
   let none m = (m, Mosaic.Cmd.none) in
   let text =
     match e.key with

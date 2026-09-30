@@ -179,11 +179,10 @@ let head_within s max =
   if max <= 0 then ""
   else if String.length s <= max then s
   else
-    let continuation i = Char.code s.[i] land 0xC0 = 0x80 in
-    let rec back n = if n > 0 && continuation (n - 1) then back (n - 1) else n in
-    let n = back max in
-    let n = if n > 0 && Char.code s.[n - 1] land 0xC0 = 0xC0 then n - 1 else n in
-    to_valid_utf_8 (String.sub s 0 n)
+    let rec boundary n =
+      if n > 0 && Char.code s.[n] land 0xC0 = 0x80 then boundary (n - 1) else n
+    in
+    to_valid_utf_8 (String.sub s 0 (boundary max))
 
 let report_notice ~warn ~runs run report =
   if String.length report <= max_report_bytes then report

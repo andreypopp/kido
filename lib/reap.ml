@@ -201,7 +201,7 @@ let fold_windows panes =
         {
           w with
           pane_ids = w.pane_ids @ [ p.pane_id ];
-          run = Option.map_or ~default:w.run (fun r -> Some (p, r)) p.run;
+          run = Option.or_ ~else_:(Option.map (fun r -> (p, r)) p.run) w.run;
           focused = w.focused || P.watched p;
         }
       in

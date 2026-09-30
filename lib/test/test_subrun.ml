@@ -95,7 +95,13 @@ let%expect_test "RecordOutcome writes once; a later write is refused and the fir
   let got = Option.get_exn_or "ReadOutcome" (Subrun.read_outcome ~dir i) in
   Printf.printf "%b %b %s\n" wrote_first wrote_second
     (match got.result with Completed -> "completed" | _ -> "wrong");
-  [%expect {| true false completed |}]
+  Sys.readdir (Filename.concat dir (Subrun.string_of_id i))
+  |> Array.to_list |> List.sort String.compare |> List.iter print_endline;
+  [%expect {|
+    true false completed
+    outcome
+    task
+    |}]
 
 let%expect_test "RecordOutcome into a run directory that is gone lost the write, not an error" =
   let i = id "run-missing" in
