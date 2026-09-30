@@ -7,6 +7,7 @@ final class WindowView: NSView {
     private let runtime: GhosttyRuntime
     private var shown: (layout: Layout, visible: Layout)?
     private var active: PaneID?
+    var stale = false
 
     init(runtime: GhosttyRuntime, connection: Connection?, id: WindowID) {
         self.runtime = runtime
@@ -26,14 +27,34 @@ final class WindowView: NSView {
 
     var panes: [PaneView] { subviews.compactMap { $0 as? PaneView } }
 
+    var hot: Bool { !panes.isEmpty }
+
     private var session: SessionView? { superview as? SessionView }
 
     func update(_ layout: Layout, _ visible: Layout) {
         shown = (layout, visible)
         active = visible.root.panes.first { $0.focus == .active }?.id ?? active
+        guard hot else { return }
         let known = panes.contains { $0.pane == active }
         relayout()
         if !known { focusActive(force: false) }
+    }
+
+    func present(_ synced: DispatchGroup) -> (created: Int, resynced: Int) {
+        let resync = stale ? panes : []
+        stale = false
+        for pane in resync {
+            synced.enter()
+            connection?.sync(pane.pane) { synced.leave() }
+        }
+        guard !hot else { return (0, resync.count) }
+        relayout(synced)
+        return (panes.count, 0)
+    }
+
+    func evict() {
+        panes.forEach { connection?.detach($0) }
+        subviews = []
     }
 
     func focus(_ pane: PaneID) {
@@ -50,11 +71,11 @@ final class WindowView: NSView {
     }
 
     func close() {
-        panes.forEach { connection?.detach($0) }
+        evict()
         removeFromSuperview()
     }
 
-    private func relayout() {
+    private func relayout(_ synced: DispatchGroup? = nil) {
         guard let shown else { return }
         let existing = Dictionary(uniqueKeysWithValues: panes.map { ($0.pane, $0) })
         var views: [PaneID: PaneView] = [:]
@@ -85,7 +106,10 @@ final class WindowView: NSView {
             return box(line, border: 0, fill: .gray)
         }
         subviews = dividers + tiled + floating.sorted { $0.z > $1.z }.flatMap(\.views)
-        views.values.filter { existing[$0.pane] == nil }.forEach { connection?.attach($0) }
+        for view in views.values where existing[view.pane] == nil {
+            synced?.enter()
+            connection?.attach(view) { synced?.leave() }
+        }
         window?.invalidateCursorRects(for: self)
     }
 
@@ -96,6 +120,7 @@ final class WindowView: NSView {
     }
 
     func cellChanged() {
+        guard hot else { return }
         relayout()
         sizeClient()
     }
