@@ -23,6 +23,7 @@ import TmuxControl
                   "indicator": { "kind": "running" },
                   "title": [ { "text": "kido", "role": "current" } ],
                   "tail": [ { "text": " fixing tests", "role": "dim" } ],
+                  "started": null,
                   "attention": false
                 }
               ]
@@ -46,7 +47,19 @@ import TmuxControl
     #expect(row.indicator == .running)
     #expect(row.title == [Span(text: "kido", role: .current)])
     #expect(row.tail == [Span(text: " fixing tests", role: .dim)])
+    #expect(row.started == nil)
     #expect(!row.attention)
+}
+
+@Test func decodesAStartedRunningRun() throws {
+    let line = """
+        {"v":1,"client":{"session":"$1","window":"@1","pane":"%1"},"filter":"","error":null,
+         "sessions":[{"id":"$1","name":"main","current":true,"rows":[
+           {"pane":"%1","window":"@1","tree":"","indicator":{"kind":"running"},"title":[],"tail":[],"started":1700000000.5,"attention":false}
+         ]}]}
+        """
+    let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(line.utf8))
+    #expect(snapshot.sessions[0].rows[0].started == Date(timeIntervalSince1970: 1_700_000_000.5))
 }
 
 @Test func decodesAGoneRowAndAnErrorLine() throws {

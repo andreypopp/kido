@@ -28,8 +28,13 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     private var failure: String?
     private var activating: String?
     private let fonts = Fonts()
+    private var tick: Timer?
 
     override var isFlipped: Bool { true }
+
+    override var isHidden: Bool {
+        didSet { updateTick() }
+    }
 
     init() {
         super.init(frame: .zero)
@@ -137,6 +142,31 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
             table.deselectAll(nil)
         }
         if let query = activating, next?.filter == query { activate() }
+        updateTick()
+    }
+
+    private var startedRows: IndexSet {
+        IndexSet(items.indices.filter { if case .row(_, let row) = items[$0] { return row.started != nil } else { return false } })
+    }
+
+    private func updateTick() {
+        guard !isHidden, !startedRows.isEmpty else {
+            tick?.invalidate()
+            tick = nil
+            return
+        }
+        guard tick == nil else { return }
+        let delay = 1 - Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 1)
+        let timer = Timer(timeInterval: 1, target: self, selector: #selector(ticked), userInfo: nil, repeats: true)
+        RunLoop.main.add(timer, forMode: .common)
+        timer.fireDate = Date(timeIntervalSinceNow: delay)
+        tick = timer
+    }
+
+    @objc private func ticked() {
+        let rows = startedRows
+        guard !rows.isEmpty else { return updateTick() }
+        table.reloadData(forRowIndexes: rows, columnIndexes: IndexSet(integer: 0))
     }
 
     private func activate() {
@@ -330,8 +360,14 @@ private final class Cell: NSView {
                         height: size.height))
             }
             let text = NSMutableAttributedString()
-            let gap: [(String, Span.Role)] = row.tail.isEmpty ? [] : [("  ", .plain)]
-            for (string, role) in row.title.map({ ($0.text, $0.role) }) + gap + row.tail.map({ ($0.text, $0.role) }) {
+            let tail: [(String, Span.Role)] =
+                if let started = row.started {
+                    [(Self.elapsed(Date().timeIntervalSince(started)), .dim)]
+                } else {
+                    row.tail.map { ($0.text, $0.role) }
+                }
+            let gap: [(String, Span.Role)] = tail.isEmpty ? [] : [("  ", .plain)]
+            for (string, role) in row.title.map({ ($0.text, $0.role) }) + gap + tail {
                 text.append(NSAttributedString(string: string, attributes: style(role)))
             }
             let right = bounds.width - (row.attention ? 22 : 8)
@@ -375,6 +411,14 @@ private final class Cell: NSView {
         NSColor.tertiaryLabelColor.setStroke()
         path.lineWidth = 1
         path.stroke()
+    }
+
+    // Matches kido's lib/ui.ml `elapsed`.
+    private static func elapsed(_ secs: TimeInterval) -> String {
+        let s = max(0, Int(secs))
+        if s < 60 { return "\(s)s" }
+        if s < 3600 { return String(format: "%dm%02ds", s / 60, s % 60) }
+        return String(format: "%dh%02dm", s / 3600, (s / 60) % 60)
     }
 
     private static let truncating: NSParagraphStyle = {
