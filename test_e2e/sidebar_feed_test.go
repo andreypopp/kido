@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -148,10 +150,12 @@ func feedCmd(h *harness, args ...string) *exec.Cmd {
 	return cmd
 }
 
-func (h *harness) startFeed(session string) *feed {
+// env overrides feedCmd's environment.
+func (h *harness) startFeed(session string, env ...string) *feed {
 	h.t.Helper()
 	f := &feed{h: h, client: h.appClient(session), stderr: &bytes.Buffer{}, done: make(chan error, 1)}
 	f.cmd = feedCmd(h, "--socket", socketPath("", h.inner), "--client", f.client)
+	f.cmd.Env = append(f.cmd.Env, env...)
 	f.cmd.Stderr = f.stderr
 	var err error
 	if f.stdin, err = f.cmd.StdinPipe(); err != nil {
@@ -370,5 +374,76 @@ func TestSidebarFeedFailures(t *testing.T) {
 		if len(out) != 0 {
 			t.Errorf("%q: stdout %q, want nothing", c.args, out)
 		}
+	}
+}
+
+// A failed poll is sent as "error" and the feed keeps going; the next good
+// poll clears it. The failure is load_live removing a dead record from a
+// read-only state directory, which it cannot swallow; the feed has that
+// directory to itself, so nothing else removes the record first.
+func TestSidebarFeedRecoversFromAnError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root removes a file from a read-only directory")
+	}
+	t.Parallel()
+	h := start(t, "alpha")
+	dir := t.TempDir()
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+	f := h.startFeed("alpha", "KIDO_STATE_DIR="+dir)
+	f.waitLast(func(s feedSnapshot) bool { return len(s.Sessions) == 1 }, "the first line")
+
+	holder := exec.Command("sleep", "300")
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	rec := fmt.Sprintf(`{"agent":"claude","pane":"%%999","pid":%d,"status":"idle","ts":"2026-01-01T00:00:00Z"}`,
+		holder.Process.Pid)
+	if err := os.WriteFile(filepath.Join(dir, "held.json"), []byte(rec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	holder.Process.Kill()
+	holder.Wait()
+
+	f.waitLast(func(s feedSnapshot) bool { return s.Error != nil }, "the error line")
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.waitLast(func(s feedSnapshot) bool { return s.Error == nil && len(s.Sessions) == 1 }, "the recovery")
+}
+
+// A stdin that cannot be read ends the feed with exit 1, as EOF ends it
+// with 0: a directory's descriptor fails every read.
+func TestSidebarFeedStdinError(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	cmd := feedCmd(h, "--socket", socketPath("", h.inner), "--client", h.appClient("alpha"))
+	d, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	cmd.Stdin = d
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 1 {
+			t.Errorf("exit %v, want 1", err)
+		}
+		if msg := stderr.String(); !strings.HasPrefix(msg, "kido sidebar-feed: ") {
+			t.Errorf("stderr %q, want kido sidebar-feed: ...", msg)
+		}
+	case <-time.After(settle):
+		cmd.Process.Kill()
+		<-done
+		t.Fatalf("still running with an unreadable stdin; stderr %q", stderr.String())
 	}
 }

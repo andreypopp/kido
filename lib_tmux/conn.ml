@@ -60,7 +60,14 @@ type child = {
 }
 
 type link = Live of child | Down of { next_dial : float } | Closed
-type t = { client : string; mutable link : link; mutable backoff : float; mutable changed : bool }
+
+type t = {
+  client : string;
+  socket : string option;
+  mutable link : link;
+  mutable backoff : float;
+  mutable changed : bool;
+}
 
 let kill ch =
   let p = ch.process in
@@ -118,13 +125,15 @@ let rec reply t ch ~deadline =
 
 let dial t =
   let session =
-    Option.map (fun (c : Exec.client_state) -> c.session) (Exec.client_state t.client)
+    Option.map
+      (fun (c : Exec.client_state) -> c.session)
+      (Exec.client_state ?socket:t.socket t.client)
   in
   let args =
     [ "-C"; "attach-session"; "-f"; "no-output,ignore-size" ]
     @ Option.map_or ~default:[] (fun s -> [ "-t"; s ]) session
   in
-  match Exec.spawn args with
+  match Exec.spawn ?socket:t.socket args with
   | Error _ -> drop t
   | Ok process -> (
       let ch =
@@ -145,8 +154,8 @@ let dial t =
       | `Reply (Error _) | `Timeout -> drop t
       | `Dead -> ())
 
-let connect client =
-  { client; link = Down { next_dial = 0. }; backoff = min_backoff; changed = false }
+let connect ?socket client =
+  { client; socket; link = Down { next_dial = 0. }; backoff = min_backoff; changed = false }
 
 let live t =
   match t.link with
@@ -213,14 +222,14 @@ let follow t session =
 let list_panes t =
   match run t ("list-panes -a -F " ^ Filename.quote Pane.format) with
   | Ok lines -> Ok (Pane.parse lines)
-  | Error _ -> Exec.list_panes ()
+  | Error _ -> Exec.list_panes ?socket:t.socket ()
 
 let capture_pane t pane =
   match run t ("capture-pane -p -t " ^ Filename.quote pane) with
   | Ok lines -> Ok lines
-  | Error _ -> Exec.capture_pane pane
+  | Error _ -> Exec.capture_pane ?socket:t.socket pane
 
 let client_state t client =
   match run t ("list-clients -F " ^ Filename.quote Exec.client_format) with
   | Ok (_ :: _ as lines) -> Exec.parse_client_state lines client
-  | Ok [] | Error _ -> Exec.client_state client
+  | Ok [] | Error _ -> Exec.client_state ?socket:t.socket client

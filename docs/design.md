@@ -1750,13 +1750,17 @@ sent: a rebuild the debounce forces with nothing visible changed sends
 nothing. The texts go out uncut; the app truncates. Besides drawing, it
 does what the TUI's tick does, the reap sweep and the Claude screen
 probe, and both are idempotent with a TUI sidebar running beside it. The
-client's ids come from its session's active pane. The feed exits 1 once
-the client is not found, which is also how a vanished server shows.
+client's ids come from its session's active pane, and the last known ones
+stand while it has none. A tick that fails is sent as `error` and the feed
+goes on, as the TUI shows the error and recovers; only an absent client,
+which is also how a vanished server shows, ends it with exit 1.
 
-The feed runs outside any tmux, so the socket reaches tmux as `-S` on
-every command kido runs (`Tmux.Exec.use_socket`, set once at the edge
-before any), not as a faked `TMUX`. Stdin is read by a thread that only
-queues lines behind a mutex; the tick drains the queue. The control
+The feed runs outside any tmux, so the socket is a value passed
+explicitly, not a faked `TMUX`: `Sidebar.options.socket` reaches
+`Tmux.Conn.connect ~socket` and the reap and probe calls as `-S`, and
+`kido switch-window --socket` does the same. Stdin is read by a thread
+that only queues lines, EOF or a read error behind a mutex; the tick
+drains the queue, and a read error ends the feed with exit 1. The control
 connection stays on the one thread, since `Tmux.Conn` has no lock. A
 `filter` line therefore shows on the next tick, and EOF ends the feed
 there with exit 0.

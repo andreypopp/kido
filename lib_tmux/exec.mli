@@ -11,25 +11,27 @@ val self : string Lazy.t
 
 val binary : string Lazy.t
 val write_all : Unix.file_descr -> string -> unit
-val use_socket : string -> unit
 
 type process = { pid : int; stdin : Unix.file_descr; stdout : Unix.file_descr }
 
-val spawn : string list -> (process, string) result
+val spawn : ?socket:string -> string list -> (process, string) result
 val global_option : string -> string
-val list_panes : unit -> (Pane.t list, string) result
-val capture_pane : string -> (string list, string) result
-val capture_screen : string -> (string, string) result
+val list_panes : ?socket:string -> unit -> (Pane.t list, string) result
+val capture_pane : ?socket:string -> string -> (string list, string) result
+val capture_screen : ?socket:string -> string -> (string, string) result
 
 type client_state = { session : string; focused : bool }
 
 val current_client : unit -> string
 val client_format : string
 val parse_client_state : string list -> string -> client_state option
-val client_state : string -> client_state option
+val client_state : ?socket:string -> string -> client_state option
 val resolve_client : pane:string -> tmux_env:string -> string option
-val switch_session : client:string -> next:bool -> (unit, string) result
-val switch_window : client:string -> next:bool -> Pane.t list list -> (unit, string) result
+val switch_session : socket:string option -> client:string -> next:bool -> (unit, string) result
+
+val switch_window :
+  ?socket:string -> client:string -> next:bool -> Pane.t list list -> (unit, string) result
+
 val jump : client:string -> string -> (unit, string) result
 val release_side_focus : string -> (unit, string) result
 val send_prompt : string -> string -> (unit, string) result
@@ -45,6 +47,6 @@ val new_window :
   string list ->
   (window, string) result
 
-val kill_window : string -> (unit, string) result
-val kill_pane : string -> (unit, string) result
+val kill_window : ?socket:string -> string -> (unit, string) result
+val kill_pane : ?socket:string -> string -> (unit, string) result
 val mark_run : string -> string -> (unit, string) result

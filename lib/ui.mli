@@ -1,12 +1,15 @@
 module Style = Mosaic.Ansi.Style
 
 type span = Mosaic.span = { text : string; style : Style.t }
+type line = Header of { name : string; current : bool } | Row of Sidebar.row | Message of string
+
+val lines : Sidebar.model -> line array
 
 type model = {
   side : Sidebar.model;
+  lines : line array;
   conn : Tmux.Conn.t option;
   standalone : bool;
-      (** One-shot picker: q, Esc and C-c quit, and picking a pane jumps and quits. *)
   cursor : int;
   top : int;
   width : int;
@@ -17,8 +20,8 @@ type model = {
 
 val make : ?conn:Tmux.Conn.t -> standalone:bool -> Sidebar.model -> model
 val style : Sidebar.role -> Style.t
-val spans : Sidebar.line -> span list
-val row_text : Sidebar.line -> string
+val spans : line -> span list
+val row_text : line -> string
 val truncate : int -> span list -> span list
 
 type msg =

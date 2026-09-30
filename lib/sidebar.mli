@@ -1,13 +1,22 @@
 module String_map = State.String_map
 
-type options = { interval : float; client : string; dir : string; threshold : float; grace : float }
+type options = {
+  interval : float;
+  client : string;
+  socket : string option;
+  dir : string;
+  threshold : float;
+  grace : float;
+}
+
+val default_interval : float
+
 type lingering = { name : string; parent : string; outcome : Subrun.result option }
 type probe = { reported : float; read : float; dismissed : bool }
 
 type snapshot = {
-  current : string;
+  client : Tmux.Exec.client_state option;
   active : string;
-  focused : bool;
   panes : Tmux.Pane.t list;
   states : (string * State.session) String_map.t;
   ssh : Procs.ssh_session Procs.Int_map.t;
@@ -36,6 +45,8 @@ type reading = { wall : Timestamp.t; mono : Mtime.t }
 
 val detect_pause : reading -> reading -> bool
 
+type client = { session : string; window : string; pane : string }
+
 type role =
   [ `Plain | `Current | `Proc | `Dim | `Err | `Running | `Waiting | `Compacting | `Done | `Stalled ]
 
@@ -58,17 +69,14 @@ type row = {
   tail : span list;
 }
 
-type line =
-  | Header of { id : string; name : string; current : bool }
-  | Row of row
-  | Message of string
-
+type section = { id : string; name : string; current : bool; rows : row list }
 type phase = { running : bool; since : float; drawn : bool; held : Tmux.Pane.exit option }
 
 type model = {
   opts : options;
   snap : snapshot;
-  lines : line array;
+  sessions : section list;
+  client : client option;
   search : string option;
   started : float;
   seen : float String_map.t;
@@ -104,9 +112,14 @@ val windows_in_order :
   lingering String_map.t ->
   Tmux.Pane.t list list
 
-val switch_window : dir:string -> client:string -> next:bool -> (unit, string) result
+val switch_window :
+  socket:string option -> dir:string -> client:string -> next:bool -> (unit, string) result
+
 val rebuild : model -> model
 val poll : ?wait:bool -> opts:options -> Tmux.Conn.t -> snapshot -> snapshot
 val step : model -> snapshot -> model * bool
-val client_json : model -> Yojson.Safe.t option
-val to_json : client:Yojson.Safe.t -> model -> Yojson.Safe.t
+
+type command = Filter of string option | Ignored
+
+val command : string -> command
+val to_json : model -> Yojson.Safe.t option

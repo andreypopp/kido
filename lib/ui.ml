@@ -3,9 +3,21 @@ module Style = Mosaic.Ansi.Style
 module Color = Mosaic.Ansi.Color
 
 type span = Mosaic.span = { text : string; style : Style.t }
+type line = Header of { name : string; current : bool } | Row of S.row | Message of string
+
+let lines (side : S.model) =
+  match side.snap.err with
+  | Some e -> [| Message e |]
+  | None ->
+      Array.of_list
+        (List.concat_map
+           (fun (s : S.section) ->
+             Header { name = s.name; current = s.current } :: List.map (fun r -> Row r) s.rows)
+           side.sessions)
 
 type model = {
   side : S.model;
+  lines : line array;
   conn : Tmux.Conn.t option;
   standalone : bool;
   cursor : int;
@@ -19,6 +31,7 @@ type model = {
 let make ?conn ~standalone side =
   {
     side;
+    lines = lines side;
     conn;
     standalone;
     cursor = 0;
@@ -59,7 +72,7 @@ let glyph : S.indicator -> span option = function
   | Gone (Some Completed) -> Some (span `Dim "✓")
   | Gone _ -> Some (span `Dim "×")
 
-let parts : S.line -> span list * span list * span list = function
+let parts : line -> span list * span list * span list = function
   | Header h -> ([], [ span (if h.current then `Current else `Plain) h.name ], [])
   | Message e -> ([], [ span `Err e ], [])
   | Row r ->
@@ -84,20 +97,15 @@ let spans line =
   lead @ title @ tail
 
 let row_text line = String.concat "" (List.map (fun s -> s.text) (spans line))
-
-let pane_of : S.line -> string option = function
-  | Row r -> Some r.pane
-  | Header _ | Message _ -> None
-
-let rows m = m.side.lines
+let pane_of : line -> string option = function Row r -> Some r.pane | Header _ | Message _ -> None
 
 let index_of m pane =
   Option.map fst
-    (CCArray.find_idx (fun l -> Option.equal String.equal (pane_of l) (Some pane)) (rows m))
+    (CCArray.find_idx (fun l -> Option.equal String.equal (pane_of l) (Some pane)) m.lines)
 
-let selected m = Option.flat_map pane_of (CCArray.get_safe (rows m) m.cursor)
-let view_rows m = if m.height > 1 then m.height - 1 else Array.length (rows m)
-let clamp_top m = { m with top = max 0 (min m.top (Array.length (rows m) - view_rows m)) }
+let selected m = Option.flat_map pane_of (CCArray.get_safe m.lines m.cursor)
+let view_rows m = if m.height > 1 then m.height - 1 else Array.length m.lines
+let clamp_top m = { m with top = max 0 (min m.top (Array.length m.lines - view_rows m)) }
 
 let ensure_visible m =
   let h = view_rows m in
@@ -111,8 +119,8 @@ let ensure_visible m =
 
 let move m delta =
   let rec go i =
-    if i < 0 || i >= Array.length (rows m) then m
-    else if Option.is_some (pane_of (rows m).(i)) then ensure_visible { m with cursor = i }
+    if i < 0 || i >= Array.length m.lines then m
+    else if Option.is_some (pane_of m.lines.(i)) then ensure_visible { m with cursor = i }
     else go (i + delta)
   in
   go (m.cursor + delta)
@@ -122,7 +130,7 @@ let focus m pane =
 
 let redraw m side =
   let prev = selected m in
-  let m = { m with side } in
+  let m = { m with side; lines = lines side } in
   match side.snap.err with
   | Some _ -> { m with cursor = -1 }
   | None ->
@@ -134,8 +142,8 @@ let redraw m side =
       clamp_top m
 
 let next_attention m delta =
-  let n = Array.length (rows m) in
-  let wants i = Option.exists (S.attention m.side) (pane_of (rows m).(i)) in
+  let n = Array.length m.lines in
+  let wants i = Option.exists (S.attention m.side) (pane_of m.lines.(i)) in
   let rec go k i =
     if k = n then m
     else
@@ -196,7 +204,7 @@ let key m (k : Mosaic.Event.key) =
   let ctrl c = e.modifier.ctrl && Option.equal Char.equal ch (Some c) in
   let is c = (not e.modifier.ctrl) && (not e.modifier.alt) && Option.equal Char.equal ch (Some c) in
   let top m = move { m with cursor = -1 } 1
-  and bottom m = move { m with cursor = Array.length (rows m) } (-1) in
+  and bottom m = move { m with cursor = Array.length m.lines } (-1) in
   let leave m =
     match m.side.search with
     | Some _ -> none (set_search m None)
@@ -260,8 +268,11 @@ let update msg m =
         match S.step m.side snap with side, true -> redraw m side | side, false -> { m with side }
       in
       let m =
+        let focused (s : S.snapshot) =
+          Option.exists (fun (c : Tmux.Exec.client_state) -> c.focused) s.client
+        in
         if
-          ((not (String.equal snap.active was.active)) || (was.focused && not snap.focused))
+          ((not (String.equal snap.active was.active)) || (focused was && not (focused snap)))
           && not (String.is_empty snap.active)
         then focus m snap.active
         else m
@@ -271,7 +282,7 @@ let update msg m =
       match Mosaic.Event.Mouse.kind ev with
       | Down { button = Left } -> (
           let i = m.top + Mosaic.Event.Mouse.y ev in
-          match Option.flat_map pane_of (CCArray.get_safe (rows m) i) with
+          match Option.flat_map pane_of (CCArray.get_safe m.lines i) with
           | Some _ -> jump { m with cursor = i }
           | None -> (m, Mosaic.Cmd.none))
       | Scroll { direction = Scroll_up; _ } ->
@@ -309,7 +320,7 @@ let view m =
       (List.map (fun s -> Mosaic.text ~style:s.style ~selectable:false s.text) spans)
   in
   let row i =
-    let lead, title, tail = parts (rows m).(i) in
+    let lead, title, tail = parts m.lines.(i) in
     let title =
       if i = m.cursor then
         List.map (fun s -> { s with style = Style.with_inverse true s.style }) title
@@ -328,7 +339,7 @@ let view m =
     ~size:(Mosaic.size_wh (Mosaic.pct 100) (Mosaic.pct 100))
     [
       Mosaic.box ~flex_direction:Column ~flex_grow:1. ~flex_shrink:1.
-        (List.init (max 0 (min h (Array.length (rows m) - m.top))) (fun k -> row (m.top + k)));
+        (List.init (max 0 (min h (Array.length m.lines - m.top))) (fun k -> row (m.top + k)));
       footer;
     ]
 
@@ -341,7 +352,7 @@ let subscriptions _ =
     ]
 
 let run ~standalone (opts : S.options) =
-  let conn = Tmux.Conn.connect opts.client in
+  let conn = Tmux.Conn.connect ?socket:opts.socket opts.client in
   let init () =
     let m = make ~conn ~standalone (S.make ~now:Unix.gettimeofday opts) in
     (m, tick ~wait:false m)

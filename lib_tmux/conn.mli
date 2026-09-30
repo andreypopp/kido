@@ -7,7 +7,7 @@ val notifications : string list
 
 type t
 
-val connect : string -> t
+val connect : ?socket:string -> string -> t
 val run : t -> string -> block
 val wait : t -> float -> unit
 val close : t -> unit

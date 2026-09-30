@@ -4,7 +4,7 @@ val grace : unit -> float
 
 type close = Window of string | Pane of { window : string; pane : string }
 
-val release : close -> (unit, string) result
+val release : ?socket:string -> close -> (unit, string) result
 
 val decide : Tmux.Pane.t list -> string -> (close, string) result
 (** [kido close-run]'s decision for a window: the close to release, or the refusal to print. *)
@@ -22,6 +22,7 @@ val record_ending : dir:string -> Subrun.meta -> Subrun.outcome -> ending option
 (** Writes the outcome and returns the ending when this writer won the write. *)
 
 val collect :
+  ?socket:string ->
   dir:string ->
   grace:float ->
   Tmux.Pane.t list ->

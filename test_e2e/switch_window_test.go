@@ -343,3 +343,31 @@ func TestSwitchWindowFromHoistedSubagent(t *testing.T) {
 	h.sendKeys("S-Up")
 	h.waitWindow("a", "a0")
 }
+
+// Kido.app runs switch-window outside tmux, so --socket is the only way
+// to name the server. The control runs the same command without it, with
+// TMUX unset and a private TMUX_TMPDIR, so no ambient server can answer
+// (nor the developer's own be switched): it must fail and move nothing.
+func TestSwitchWindowSocket(t *testing.T) {
+	t.Parallel()
+	h := start(t, "a")
+	h.renameWindow("a", 0, "a0")
+	h.addWindow("a", "a1")
+	h.waitWindow("a", "a0")
+
+	run := func(args ...string) error {
+		cmd := exec.Command(kidoBin, append([]string{"switch-window", "next", "--client", h.client}, args...)...)
+		cmd.Env = cleanEnv("TMUX=", "TMUX_PANE=", "TMUX_TMPDIR="+t.TempDir())
+		return cmd.Run()
+	}
+	if err := run(); err == nil {
+		t.Errorf("switch-window without --socket succeeded outside tmux")
+	}
+	if _, w := h.clientWindow(); w != "a0" {
+		t.Fatalf("switch-window without --socket moved the client to %s", w)
+	}
+	if err := run("--socket", socketPath("", h.inner)); err != nil {
+		t.Fatalf("switch-window --socket: %v", err)
+	}
+	h.waitWindow("a", "a1")
+}

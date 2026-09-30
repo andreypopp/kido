@@ -7,9 +7,9 @@ let grace () =
 
 type close = Window of string | Pane of { window : string; pane : string }
 
-let release = function
-  | Window w -> Tmux.Exec.kill_window w
-  | Pane { pane; _ } -> Tmux.Exec.kill_pane pane
+let release ?socket = function
+  | Window w -> Tmux.Exec.kill_window ?socket w
+  | Pane { pane; _ } -> Tmux.Exec.kill_pane ?socket pane
 
 let close_of panes window pane =
   if not (P.last_pane panes window) then Some (Pane { window; pane })
@@ -126,7 +126,7 @@ let guess_ending ~dir run_id ~now =
         | Agent -> { result = Died; text = ""; at = Some now }))
     (Subrun.read_meta ~dir run_id)
 
-let sweep ~dir ~grace panes sessions ~now =
+let sweep ?socket ~dir ~grace panes sessions ~now =
   let mark ((closing, endings) as acc) (p : P.t) =
     let window = p.window_id in
     let closes = function Window w | Pane { window = w; _ } -> String.equal w window in
@@ -135,7 +135,7 @@ let sweep ~dir ~grace panes sessions ~now =
       when not (P.window_focused panes window || List.exists closes closing) -> (
         match (close_of panes window p.pane_id, Subrun.parse_id run) with
         | Some close, Ok run_id ->
-            ignore (Subrun.save_screen ~dir run_id p.pane_id);
+            ignore (Subrun.save_screen ?socket ~dir run_id p.pane_id);
             (closing @ [ close ], endings @ Option.to_list (guess_ending ~dir run_id ~now))
         | _ -> acc)
     | _ -> acc
@@ -161,7 +161,7 @@ let sweep ~dir ~grace panes sessions ~now =
       | _ -> acc)
     acc sessions
 
-let collect ~dir ~grace panes sessions ~now =
-  let closing, endings = sweep ~dir ~grace panes sessions ~now in
-  List.iter (fun c -> ignore (release c)) closing;
+let collect ?socket ~dir ~grace panes sessions ~now =
+  let closing, endings = sweep ?socket ~dir ~grace panes sessions ~now in
+  List.iter (fun c -> ignore (release ?socket c)) closing;
   List.iter (fun e -> ignore (send ~dir e)) endings

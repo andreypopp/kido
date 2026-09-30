@@ -63,12 +63,9 @@ let write_all fd s =
   in
   go 0
 
-let socket = ref []
-let use_socket path = socket := [ "-S"; path ]
-
 type process = { pid : int; stdin : Unix.file_descr; stdout : Unix.file_descr }
 
-let spawn args =
+let spawn ?socket args =
   let bin = Lazy.force binary in
   let null = Unix.openfile "/dev/null" [ O_WRONLY; O_CLOEXEC ] 0 in
   let in_r, in_w = Unix.pipe ~cloexec:true () in
@@ -77,7 +74,11 @@ let spawn args =
     try
       Ok
         {
-          pid = Unix.create_process bin (Array.of_list ((bin :: !socket) @ args)) in_r out_w null;
+          pid =
+            Unix.create_process bin
+              (Array.of_list
+                 ((bin :: Option.map_or ~default:[] (fun s -> [ "-S"; s ]) socket) @ args))
+              in_r out_w null;
           stdin = in_w;
           stdout = out_r;
         }
@@ -88,9 +89,9 @@ let spawn args =
   List.iter Unix.close [ in_r; out_w; null ];
   spawned
 
-let exec ?(stdin = "") args =
+let exec ?socket ?(stdin = "") args =
   let failed why = Error (Printf.sprintf "tmux %s: %s" (String.concat " " args) why) in
-  match spawn args with
+  match spawn ?socket args with
   | Error e -> failed e
   | Ok p -> (
       (try write_all p.stdin stdin with Unix.Unix_error (EPIPE, _, _) -> ());
@@ -103,15 +104,17 @@ let exec ?(stdin = "") args =
       | WEXITED n -> failed (Printf.sprintf "exit status %d" n)
       | WSIGNALED n | WSTOPPED n -> failed (Printf.sprintf "signal %d" n))
 
-let run args = Result.map ignore (exec args)
+let run ?socket args = Result.map ignore (exec ?socket args)
 let lines out = String.split_on_char '\n' out
 let global_option name = Result.get_or ~default:"" (exec [ "show-options"; "-gqv"; name ])
 
-let list_panes () =
-  Result.map (fun out -> Pane.parse (lines out)) (exec [ "list-panes"; "-a"; "-F"; Pane.format ])
+let list_panes ?socket () =
+  Result.map
+    (fun out -> Pane.parse (lines out))
+    (exec ?socket [ "list-panes"; "-a"; "-F"; Pane.format ])
 
-let capture_pane pane = Result.map lines (exec [ "capture-pane"; "-p"; "-t"; pane ])
-let capture_screen pane = exec [ "capture-pane"; "-p"; "-t"; pane; "-S"; "-1000" ]
+let capture_pane ?socket pane = Result.map lines (exec ?socket [ "capture-pane"; "-p"; "-t"; pane ])
+let capture_screen ?socket pane = exec ?socket [ "capture-pane"; "-p"; "-t"; pane; "-S"; "-1000" ]
 
 let current_client () =
   Result.get_or ~default:"" (exec [ "display-message"; "-p"; "#{client_name}" ])
@@ -138,10 +141,10 @@ let parse_client_state lines client =
       | _ -> None)
     lines
 
-let client_state client =
+let client_state ?socket client =
   Option.flat_map
     (fun out -> parse_client_state (lines out) client)
-    (Result.to_opt (exec [ "list-clients"; "-F"; client_format ]))
+    (Result.to_opt (exec ?socket [ "list-clients"; "-F"; client_format ]))
 
 let real_clients lines =
   List.filter_map
@@ -172,13 +175,13 @@ let resolve_client ~pane ~tmux_env =
 
 let step ~next i n = (i + (if next then 1 else -1) + n) mod n
 
-let switch_session ~client ~next =
+let switch_session ~socket ~client ~next =
   Result.flat_map
     (fun panes ->
       let sessions = Array.of_list (Pane.order_sessions panes) in
       if Array.length sessions < 2 then Ok ()
       else
-        let current = client_state client in
+        let current = client_state ?socket client in
         match
           Array.find_idx
             (fun (s : Pane.session) ->
@@ -187,11 +190,11 @@ let switch_session ~client ~next =
         with
         | Some (i, _) ->
             let target = sessions.(step ~next i (Array.length sessions)) in
-            run [ "switch-client"; "-c"; client; "-t"; target.id ]
+            run ?socket [ "switch-client"; "-c"; client; "-t"; target.id ]
         | None -> Ok ())
-    (list_panes ())
+    (list_panes ?socket ())
 
-let switch_window ~client ~next windows =
+let switch_window ?socket ~client ~next windows =
   let panes = List.concat windows in
   let windows = Array.of_list windows in
   let first (w : Pane.t list) = List.hd w in
@@ -200,7 +203,7 @@ let switch_window ~client ~next windows =
     Option.flat_map
       (fun c ->
         List.find_opt (fun (p : Pane.t) -> String.equal p.session_name c.session && p.active) panes)
-      (client_state client)
+      (client_state ?socket client)
   in
   let unmarked j = List.for_all (fun (p : Pane.t) -> Option.is_none p.run) windows.(j) in
   let rec find j k =
@@ -217,7 +220,7 @@ let switch_window ~client ~next windows =
       match find (step ~next i n) n with
       | Some j when j <> i ->
           let target = first windows.(j) in
-          run
+          run ?socket
             [
               "switch-client";
               "-c";
@@ -314,6 +317,6 @@ let new_window ~session ~name ~cwd ~env command =
   | Error e when window_exists w.window_id -> Error e
   | Ok _ | Error _ -> Ok w
 
-let kill_window window_id = run [ "kill-window"; "-t"; window_id ]
-let kill_pane pane_id = run [ "kill-pane"; "-t"; pane_id ]
+let kill_window ?socket window_id = run ?socket [ "kill-window"; "-t"; window_id ]
+let kill_pane ?socket pane_id = run ?socket [ "kill-pane"; "-t"; pane_id ]
 let mark_run pane_id run_id = run [ "set-option"; "-p"; "-t"; pane_id; Pane.run_option; run_id ]

@@ -1,14 +1,23 @@
 module P = Tmux.Pane
 module String_map = State.String_map
 
-type options = { interval : float; client : string; dir : string; threshold : float; grace : float }
+type options = {
+  interval : float;
+  client : string;
+  socket : string option;
+  dir : string;
+  threshold : float;
+  grace : float;
+}
+
+let default_interval = 0.1
+
 type lingering = { name : string; parent : string; outcome : Subrun.result option }
 type probe = { reported : float; read : float; dismissed : bool }
 
 type snapshot = {
-  current : string;
+  client : Tmux.Exec.client_state option;
   active : string;
-  focused : bool;
   panes : P.t list;
   states : (string * State.session) String_map.t;
   ssh : Procs.ssh_session Procs.Int_map.t;
@@ -22,9 +31,8 @@ type snapshot = {
 
 let empty =
   {
-    current = "";
+    client = None;
     active = "";
-    focused = false;
     panes = [];
     states = String_map.empty;
     ssh = Procs.Int_map.empty;
@@ -80,15 +88,10 @@ let dismissals conn prev states =
       | _ -> out)
     states String_map.empty
 
-let take ~opts conn prev =
-  let current, focused =
-    match Tmux.Conn.client_state conn opts.client with
-    | Some (c : Tmux.Exec.client_state) -> (c.session, c.focused)
-    | None -> ("", false)
-  in
-  if not (String.is_empty current) then Tmux.Conn.follow conn current;
+let take ~opts conn prev client =
+  Option.iter (fun (c : Tmux.Exec.client_state) -> Tmux.Conn.follow conn c.session) client;
   match Tmux.Conn.list_panes conn with
-  | Error e -> { empty with current; focused; err = Some e }
+  | Error e -> { empty with client; err = Some e }
   | Ok panes ->
       let live = State.load_live ~dir:opts.dir in
       let states = State.by_pane live in
@@ -119,7 +122,8 @@ let take ~opts conn prev =
           panes
       in
       if not (List.is_empty panes) then
-        Reap.collect ~dir:opts.dir ~grace:opts.grace panes live ~now:(Unix.gettimeofday ());
+        Reap.collect ?socket:opts.socket ~dir:opts.dir ~grace:opts.grace panes live
+          ~now:(Unix.gettimeofday ());
       let probes = dismissals conn prev.probes states in
       let states =
         String_map.fold
@@ -133,9 +137,12 @@ let take ~opts conn prev =
           probes states
       in
       {
-        current;
-        focused;
-        active = Option.value ~default:"" (P.active_pane panes current);
+        client;
+        active =
+          Option.value ~default:""
+            (Option.flat_map
+               (fun (c : Tmux.Exec.client_state) -> P.active_pane panes c.session)
+               client);
         panes;
         states;
         ssh;
@@ -159,8 +166,8 @@ let same a b =
     }
   in
   let session (_, (s : State.session)) = { s with ts = 0. } in
-  String.equal a.current b.current && String.equal a.active b.active
-  && Bool.equal a.focused b.focused && Option.is_none a.err && Option.is_none b.err
+  Option.equal Stdlib.( = ) a.client b.client
+  && String.equal a.active b.active && Option.is_none a.err && Option.is_none b.err
   && Option.equal Float.equal a.wake b.wake
   && List.equal (fun x y -> Stdlib.( = ) (drawn x) (drawn y)) a.panes b.panes
   && String_map.equal (fun x y -> Stdlib.( = ) (session x) (session y)) a.states b.states
@@ -175,6 +182,8 @@ let read_clock () = { wall = Timestamp.now (); mono = Mtime_clock.now () }
 let detect_pause prev now =
   let mono = Mtime.Span.to_float_ns (Mtime.span prev.mono now.mono) /. 1e9 in
   Float.(now.wall - prev.wall - mono > 5.)
+
+type client = { session : string; window : string; pane : string }
 
 type role =
   [ `Plain | `Current | `Proc | `Dim | `Err | `Running | `Waiting | `Compacting | `Done | `Stalled ]
@@ -198,17 +207,14 @@ type row = {
   tail : span list;
 }
 
-type line =
-  | Header of { id : string; name : string; current : bool }
-  | Row of row
-  | Message of string
-
+type section = { id : string; name : string; current : bool; rows : row list }
 type phase = { running : bool; since : float; drawn : bool; held : P.exit option }
 
 type model = {
   opts : options;
   snap : snapshot;
-  lines : line array;
+  sessions : section list;
+  client : client option;
   search : string option;
   started : float;
   seen : float String_map.t;
@@ -224,7 +230,8 @@ let make ~now opts =
   {
     opts;
     snap = empty;
-    lines = [||];
+    sessions = [];
+    client = None;
     search = None;
     started = at;
     seen = String_map.empty;
@@ -360,7 +367,7 @@ let agent_title_of m (p : P.t) =
 let span role text = { text; role }
 let plain = span `Plain
 
-let lingering_label (p : P.t) l =
+let lingering_label (p : P.t) (l : lingering) =
   let base =
     {
       pane = p.pane_id;
@@ -493,13 +500,13 @@ let windows_in_order panes states lingering =
       List.map (fun p -> p.panes) (order_windows_by_tree s.windows states lingering))
     (P.order_sessions panes)
 
-let switch_window ~dir ~client ~next =
+let switch_window ~socket ~dir ~client ~next =
   Result.flat_map
     (fun panes ->
       let states = State.by_pane (State.load_live ~dir) in
-      Tmux.Exec.switch_window ~client ~next
+      Tmux.Exec.switch_window ?socket ~client ~next
         (windows_in_order panes states (lingering_subagents ~dir panes states String_map.empty)))
-    (Tmux.Exec.list_panes ())
+    (Tmux.Exec.list_panes ?socket ())
 
 let glyph i n = if n = 1 then "╶" else if i = 0 then "┌" else if i = n - 1 then "└" else "├"
 let continuation i n = if i < n - 1 then "│" else " "
@@ -532,7 +539,7 @@ let append_windows m placements =
                 ( (if j > 0 then group_stem else lead) ^ glyph j n,
                   prefix ^ group_stem ^ continuation j n ^ " " )
           in
-          rows := Row { (pane_label m p) with tree = prefix ^ g } :: !rows;
+          rows := { (pane_label m p) with tree = prefix ^ g } :: !rows;
           let kids =
             List.rev (Option.get_or ~default:[] (String_map.find_opt p.pane_id anchored))
           in
@@ -558,70 +565,79 @@ let fuzzy pattern s =
   go 0 0 0 0
 
 let rebuild m =
-  match m.snap.err with
-  | Some e -> { m with lines = [| Message e |] }
-  | None ->
-      let order = P.order_sessions m.snap.panes in
-      let order =
-        match m.search with
-        | None -> order
-        | Some filter ->
-            List.filter_map
-              (fun (s : P.session) ->
-                let texts =
-                  s.name
-                  :: List.concat_map
-                       (List.filter_map (fun (p : P.t) ->
-                            match agent_title_of m p with
-                            | Some t -> Some t
-                            | None ->
-                                Option.map
-                                  (fun (x : Procs.ssh_session) -> x.host)
-                                  (Procs.Int_map.find_opt p.pane_pid m.snap.ssh)))
-                       s.windows
-                in
-                List.filter_map (fuzzy filter) texts
-                |> List.reduce max
-                |> Option.map (fun score -> (score, s)))
-              order
-            |> List.stable_sort (fun (a, _) (b, _) -> Int.compare b a)
-            |> List.map snd
-      in
-      let lines =
-        List.concat_map
+  let order = P.order_sessions m.snap.panes in
+  let order =
+    match m.search with
+    | None -> order
+    | Some filter ->
+        List.filter_map
           (fun (s : P.session) ->
-            Header { id = s.id; name = s.name; current = String.equal s.name m.snap.current }
-            :: append_windows m (order_windows_by_tree s.windows m.snap.states m.snap.lingering))
+            let texts =
+              s.name
+              :: List.concat_map
+                   (List.filter_map (fun (p : P.t) ->
+                        match agent_title_of m p with
+                        | Some t -> Some t
+                        | None ->
+                            Option.map
+                              (fun (x : Procs.ssh_session) -> x.host)
+                              (Procs.Int_map.find_opt p.pane_pid m.snap.ssh)))
+                   s.windows
+            in
+            List.filter_map (fuzzy filter) texts
+            |> List.reduce max
+            |> Option.map (fun score -> (score, s)))
           order
-      in
-      { m with lines = Array.of_list lines }
+        |> List.stable_sort (fun (a, _) (b, _) -> Int.compare b a)
+        |> List.map snd
+  in
+  let sessions =
+    List.map
+      (fun (s : P.session) ->
+        {
+          id = s.id;
+          name = s.name;
+          current =
+            Option.exists
+              (fun (c : Tmux.Exec.client_state) -> String.equal s.name c.session)
+              m.snap.client;
+          rows = append_windows m (order_windows_by_tree s.windows m.snap.states m.snap.lingering);
+        })
+      order
+  in
+  { m with sessions }
 
 let poll ?(wait = true) ~opts conn prev =
   if wait then Tmux.Conn.wait conn opts.interval;
-  match take ~opts conn prev with
+  let client = Tmux.Conn.client_state conn opts.client in
+  let failed e = { empty with client; err = Some e } in
+  match take ~opts conn prev client with
   | snap -> snap
-  | exception (Failure e | Sys_error e) -> { empty with err = Some e }
-  | exception Unix.Unix_error (e, fn, arg) -> { empty with err = Some (Fs.unix_message e fn arg) }
+  | exception (Failure e | Sys_error e) -> failed e
+  | exception Unix.Unix_error (e, fn, arg) -> failed (Fs.unix_message e fn arg)
 
-let step m snap =
+let step m (snap : snapshot) =
   let was = m.snap in
   let pending = shell_pending m || stall_pending m in
   let clock = read_clock () in
   (if detect_pause m.clock clock then
      try State.record_pause ~dir:m.opts.dir clock.wall with Unix.Unix_error _ | Sys_error _ -> ());
-  let m = track { m with at = m.now (); clock; snap } in
+  let client =
+    match P.find snap.panes snap.active with
+    | Some p -> Some { session = p.session_id; window = p.window_id; pane = p.pane_id }
+    | None -> m.client
+  in
+  let m = track { m with at = m.now (); clock; snap; client } in
   if (not (same snap was)) || pending then (rebuild m, true) else (m, false)
 
-let client_json m =
-  Option.map
-    (fun (p : P.t) ->
-      `Assoc
-        [
-          ("session", `String p.session_id);
-          ("window", `String p.window_id);
-          ("pane", `String p.pane_id);
-        ])
-    (P.find m.snap.panes m.snap.active)
+type command = Filter of string option | Ignored
+
+let command line =
+  if String.equal line "filter" then Filter None
+  else
+    match String.chop_prefix ~pre:"filter " line with
+    | Some text -> Filter (Some text)
+    | None -> Ignored
 
 let role_name : role -> string = function
   | `Plain -> "plain"
@@ -635,33 +651,29 @@ let role_name : role -> string = function
   | `Done -> "done"
   | `Stalled -> "stalled"
 
-let indicator_json ind =
-  let kind k = ("kind", `String k) in
-  match ind with
+let kind = function
+  | Status s -> State.string_of_status s
+  | Unknown -> "unknown"
+  | Done -> "done"
+  | Failed -> "failed"
+  | Stalled -> "stalled"
+  | Gone _ -> "gone"
+
+let indicator_json = function
   | None -> `Null
-  | Some (Gone o) ->
-      `Assoc
-        [
-          kind "gone";
-          ("outcome", Option.map_or ~default:`Null (fun o -> `String (Subrun.string_of_result o)) o);
-        ]
   | Some i ->
       `Assoc
-        [
-          kind
-            (match i with
-            | Status Running -> "running"
-            | Status Waiting -> "waiting"
-            | Status Compacting -> "compacting"
-            | Status Idle -> "idle"
-            | Unknown -> "unknown"
-            | Done -> "done"
-            | Failed -> "failed"
-            | Stalled -> "stalled"
-            | Gone _ -> "gone");
-        ]
+        (("kind", `String (kind i))
+        ::
+        (match i with
+        | Gone o ->
+            [
+              ( "outcome",
+                Option.map_or ~default:`Null (fun o -> `String (Subrun.string_of_result o)) o );
+            ]
+        | Status _ | Unknown | Done | Failed | Stalled -> []))
 
-let to_json ~client m =
+let to_json m =
   let spans l =
     `List
       (List.map
@@ -680,31 +692,31 @@ let to_json ~client m =
         ("attention", `Bool (attention m r.pane));
       ]
   in
-  let sessions =
-    Array.fold_left
-      (fun acc line ->
-        match (line, acc) with
-        | Header { id; name; current }, _ -> ((id, name, current), []) :: acc
-        | Row r, (h, rows) :: rest -> (h, r :: rows) :: rest
-        | (Row _ | Message _), _ -> acc)
-      [] m.lines
-  in
-  `Assoc
-    [
-      ("v", `Int 1);
-      ("client", client);
-      ("filter", `String (Option.get_or ~default:"" m.search));
-      ("error", Option.map_or ~default:`Null (fun e -> `String e) m.snap.err);
-      ( "sessions",
-        `List
-          (List.rev_map
-             (fun ((id, name, current), rows) ->
-               `Assoc
-                 [
-                   ("id", `String id);
-                   ("name", `String name);
-                   ("current", `Bool current);
-                   ("rows", `List (List.rev_map row rows));
-                 ])
-             sessions) );
-    ]
+  Option.map
+    (fun (c : client) ->
+      `Assoc
+        [
+          ("v", `Int 1);
+          ( "client",
+            `Assoc
+              [
+                ("session", `String c.session);
+                ("window", `String c.window);
+                ("pane", `String c.pane);
+              ] );
+          ("filter", `String (Option.get_or ~default:"" m.search));
+          ("error", Option.map_or ~default:`Null (fun e -> `String e) m.snap.err);
+          ( "sessions",
+            `List
+              (List.map
+                 (fun s ->
+                   `Assoc
+                     [
+                       ("id", `String s.id);
+                       ("name", `String s.name);
+                       ("current", `Bool s.current);
+                       ("rows", `List (List.map row s.rows));
+                     ])
+                 m.sessions) );
+        ])
+    m.client

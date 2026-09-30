@@ -57,6 +57,6 @@ val effective_outcome : dir:string -> id -> pid:int -> outcome option
 val list : dir:string -> id list
 val truncate_screen : string -> string
 
-val save_screen : dir:string -> id -> string -> string option
+val save_screen : ?socket:string -> dir:string -> id -> string -> string option
 (** Saves a pane's screen with 1000 lines of history, bounded to its tail, into the run's directory
     and returns it; [None] for an empty pane id or a failed capture. *)

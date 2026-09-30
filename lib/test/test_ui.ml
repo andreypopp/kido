@@ -4,7 +4,14 @@ let test_at = 1_700_000_000.
 let temp () = Filename.temp_dir "kido-ui" ""
 
 let opts ?(dir = temp ()) () : Sidebar.options =
-  { interval = 0.1; client = ""; dir; threshold = 180.; grace = 30. }
+  {
+    interval = Sidebar.default_interval;
+    client = "";
+    socket = None;
+    dir;
+    threshold = 180.;
+    grace = 30.;
+  }
 
 let pane ?(session = "sess") ?(window = "@1") ?(command = "") ?(title = "") ?(pid = 0) ?run ?dead_at
     ?(alternate = false) ?(running = false) ?start ?prompt ?exit ?(command_line = "")
@@ -67,19 +74,22 @@ let model ?(dir = temp ()) ?(clock = ref test_at) ?(started = test_at -. 3600.) 
   let m = Sidebar.make ~now:(fun () -> !clock) (opts ~dir ()) in
   { m with started; at = !clock }
 
+let client session = Some { Tmux.Exec.session; focused = false }
+let lines m = Array.to_list (Ui.lines (Sidebar.rebuild m))
+
 let render ?dir ?(current = "sess") panes st =
   let m = model ?dir () in
   let states = states st in
   let snap =
     {
       Sidebar.empty with
-      current;
+      client = client current;
       panes;
       states;
       lingering = Sidebar.lingering_subagents ~dir:m.opts.dir panes states State.String_map.empty;
     }
   in
-  Array.iter (fun r -> print_endline (Ui.row_text r)) (Sidebar.rebuild { m with snap }).lines
+  List.iter (fun r -> print_endline (Ui.row_text r)) (lines { m with snap })
 
 let%expect_test "a subagent's window nests under the pane that spawned it" =
   render
@@ -289,9 +299,7 @@ let%expect_test "the same state renders the same rows every time" =
   let rows () =
     let m = model () in
     let states = states st in
-    Array.to_list
-      (Sidebar.rebuild { m with snap = { Sidebar.empty with current = "sess"; panes; states } })
-        .lines
+    lines { m with snap = { Sidebar.empty with client = client "sess"; panes; states } }
     |> List.map Ui.row_text
   in
   let want = rows () in
@@ -776,12 +784,12 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
   let m = ref (Ui.make ~standalone:false (model ~clock ())) in
   let green () =
     Array.exists
-      (fun (l : Sidebar.line) ->
+      (fun (l : Ui.line) ->
         match l with
         | Row { pane = "%1"; _ } ->
             List.exists (fun (s : Ui.span) -> String.equal s.text "◼") (Ui.spans l)
         | _ -> false)
-      !m.side.lines
+      !m.lines
   in
   let snap running =
     let p =
@@ -789,7 +797,7 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
         ?exit:(if running then None else Some (0, test_at))
         "%1"
     in
-    { Sidebar.empty with current = "alpha"; active = "%1"; panes = [ p ] }
+    { Sidebar.empty with client = client "alpha"; active = "%1"; panes = [ p ] }
   in
   let tick d running =
     clock := !clock +. d;
@@ -810,7 +818,7 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
   let snap =
     {
       Sidebar.empty with
-      current = "alpha";
+      client = client "alpha";
       active = "%1";
       panes = [ pane ~session:"alpha" ~title:"wedged" "%1" ];
       states = states [ ("%1", ("i", session ~ts:!clock "")) ];
@@ -819,7 +827,7 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
   let stalled () =
     Array.exists
       (fun r -> List.exists (fun (s : Ui.span) -> String.equal s.text "!") (Ui.spans r))
-      !m.side.lines
+      !m.lines
   in
   let tick d =
     clock := !clock +. d;
@@ -917,7 +925,7 @@ let ssh_tick clock m p =
       snap =
         {
           Sidebar.empty with
-          current = "alpha";
+          client = client "alpha";
           panes = [ p ];
           ssh = Procs.Int_map.singleton 4242 { Procs.host = ssh_host; interactive = true };
         };
@@ -993,7 +1001,7 @@ let%expect_test
         snap =
           {
             Sidebar.empty with
-            current = "alpha";
+            client = client "alpha";
             panes = [ pane ~session:"alpha" ~command:"zsh" ~pid:4242 ~prompt:(test_at +. 2.) "%1" ];
           };
       };
@@ -1085,7 +1093,7 @@ let%expect_test
       snap =
         {
           Sidebar.empty with
-          current = "alpha";
+          client = client "alpha";
           panes;
           states = states [ ("%2", ("i", session ~title:"kido" "")) ];
         };
@@ -1093,9 +1101,7 @@ let%expect_test
   in
   let show filter =
     Printf.printf "%S: %s\n" filter
-      (String.concat " | "
-         (Array.to_list
-            (Array.map Ui.row_text (Sidebar.rebuild { m with search = Some filter }).lines)))
+      (String.concat " | " (List.map Ui.row_text (lines { m with search = Some filter })))
   in
   show "";
   show "zz";
@@ -1182,29 +1188,24 @@ let%expect_test "a snapshot as the feed sends it" =
         ("%5", ("asker", session ~status:Waiting ""));
       ]
   in
-  let m = model ~dir () in
-  let m =
-    Sidebar.track
+  let m, _ =
+    Sidebar.step (model ~dir ())
       {
-        m with
-        snap =
-          {
-            Sidebar.empty with
-            current = "alpha";
-            active = "%1";
-            panes;
-            states;
-            lingering = Sidebar.lingering_subagents ~dir panes states State.String_map.empty;
-          };
+        Sidebar.empty with
+        client = client "alpha";
+        active = "%1";
+        panes;
+        states;
+        lingering = Sidebar.lingering_subagents ~dir panes states State.String_map.empty;
       }
   in
-  let m = Sidebar.rebuild m in
-  let client = Option.get_exn_or "client" (Sidebar.client_json m) in
-  print_endline (Yojson.Safe.pretty_to_string (Sidebar.to_json ~client m));
+  let json m = Option.get_exn_or "client" (Sidebar.to_json m) in
+  print_endline (Yojson.Safe.pretty_to_string (json m));
   print_endline
     (Yojson.Safe.to_string
-       (Sidebar.to_json ~client
-          (Sidebar.rebuild { m with snap = { m.snap with err = Some "tmux: gone" } })));
+       (json
+          (fst
+             (Sidebar.step m { Sidebar.empty with client = m.snap.client; err = Some "tmux: gone" }))));
   [%expect
     {|
     {

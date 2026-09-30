@@ -134,7 +134,7 @@ let truncate_screen data =
   let n = String.length data in
   if n > max_screen_bytes then String.sub data (n - max_screen_bytes) max_screen_bytes else data
 
-let save_screen ~dir id pane =
+let save_screen ?socket ~dir id pane =
   if String.is_empty pane then None
   else
     Option.map
@@ -144,4 +144,4 @@ let save_screen ~dir id pane =
            try Fs.write_atomic (screen_path ~dir id) data
            with Unix.Unix_error _ | Sys_error _ -> ());
         data)
-      (Result.to_opt (Tmux.Exec.capture_screen pane))
+      (Result.to_opt (Tmux.Exec.capture_screen ?socket pane))
