@@ -8,21 +8,23 @@ func unquoteSideStatusCommand(_ raw: String) -> String {
 }
 
 final class Feed: @unchecked Sendable {
-    enum Status: Equatable {
+    enum Status {
         case starting
         case running(Snapshot?)
+        case restarting(String)
         case failed(String)
     }
 
     private let socket: String
-    private var client: String
+    private let client: String
     private let kido: String
-    private let queue = DispatchQueue(label: "Feed.reader")
-    private var process: Process?
-    private var input: FileHandle?
-    private var generation = 0
-    private var restartWork: DispatchWorkItem?
-    private var backoff: TimeInterval = 0.1
+    private let reader = DispatchQueue(label: "Feed.reader")
+    private let writer = DispatchQueue(label: "Feed.writer")
+    @MainActor private var process: Process?
+    @MainActor private var input: FileHandle?
+    @MainActor private var generation = 0
+    @MainActor private var restartWork: DispatchWorkItem?
+    @MainActor private var backoff: TimeInterval = 0.1
     @MainActor private(set) var status: Status = .starting { didSet { onChange(status) } }
     @MainActor private let onChange: (Status) -> Void
 
@@ -34,27 +36,23 @@ final class Feed: @unchecked Sendable {
         start()
     }
 
-    @MainActor func reconnect(client: String) {
-        self.client = client
-        backoff = 0.1
-        stop()
-        start()
-    }
-
     @MainActor func stop() {
         restartWork?.cancel()
         restartWork = nil
         generation += 1
-        try? input?.close()
-        input = nil
         process = nil
+        closeInput()
     }
 
-    func filter(_ text: String) {
-        queue.async { [weak self] in
-            guard let input = self?.input else { return }
-            try? input.write(contentsOf: Data((text.isEmpty ? "filter\n" : "filter \(text)\n").utf8))
-        }
+    @MainActor private func closeInput() {
+        guard let input else { return }
+        self.input = nil
+        writer.async { try? input.close() }
+    }
+
+    @MainActor func filter(_ text: String) {
+        guard let input else { return }
+        writer.async { try? input.write(contentsOf: Data((text.isEmpty ? "filter\n" : "filter \(text)\n").utf8)) }
     }
 
     @MainActor func switchWindow(next: Bool, failed: @escaping @MainActor (String) -> Void) {
@@ -63,13 +61,17 @@ final class Feed: @unchecked Sendable {
         process.arguments = ["switch-window", next ? "next" : "prev", "--client", client, "--socket", socket]
         process.environment = Self.environment
         process.standardError = stderr
-        process.terminationHandler = { process in
+        let ended = DispatchGroup()
+        ended.enter()
+        process.terminationHandler = { _ in ended.leave() }
+        do { try process.run() } catch { return failed("could not run \(kido): \(error.localizedDescription)") }
+        nonisolated(unsafe) var message = Data()
+        DispatchQueue.global().async(group: ended) { message = stderr.fileHandleForReading.readDataToEndOfFile() }
+        ended.notify(queue: .main) {
             guard process.terminationStatus != 0 else { return }
-            let message = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            DispatchQueue.main.async { failed(message.isEmpty ? "kido switch-window exited \(process.terminationStatus)" : message) }
+            let text = String(decoding: message, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            failed(text.isEmpty ? "kido switch-window exited \(process.terminationStatus)" : text)
         }
-        do { try process.run() } catch { failed("could not run \(kido): \(error.localizedDescription)") }
     }
 
     private static var environment: [String: String] {
@@ -92,43 +94,40 @@ final class Feed: @unchecked Sendable {
         process.standardInput = stdin
         process.standardOutput = stdout
         process.standardError = stderr
-        self.process = process
-        let writeEnd = stdin.fileHandleForWriting
-        input = writeEnd
-        _ = fcntl(writeEnd.fileDescriptor, F_SETNOSIGPIPE, 1)
+        _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
 
         nonisolated(unsafe) var stderrTail = Data()
         // waitUntilExit can miss the exit off the main thread (Client.start).
         let ended = DispatchGroup()
         ended.enter()
         process.terminationHandler = { _ in ended.leave() }
-        do {
-            try process.run()
-        } catch {
-            status = .failed("could not run \(path): \(error.localizedDescription)")
-            ended.leave()
-            return
-        }
+        do { try process.run() } catch { return restart("could not run \(path): \(error.localizedDescription)") }
+        self.process = process
+        input = stdin.fileHandleForWriting
         DispatchQueue.global().async(group: ended) { stderrTail = stderr.fileHandleForReading.readDataToEndOfFile() }
-        readLines(stdout.fileHandleForReading, queue: queue, group: ended) { [weak self] line in
+        readLines(stdout.fileHandleForReading, queue: reader, group: ended) { [weak self] line in
             let last = try? JSONDecoder().decode(Snapshot.self, from: Data(line.utf8))
             DispatchQueue.main.async {
                 guard let self, self.generation == generation else { return }
+                if last != nil { self.backoff = 0.1 }
                 self.status = .running(last)
             }
         }
         ended.notify(queue: .main) { [weak self] in
             guard let self, self.generation == generation else { return }
-            self.process = nil
-            writeEnd.closeFile()
-            self.input = nil
             let tail = String(decoding: stderrTail, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            self.status = .failed(tail.isEmpty ? "kido sidebar-feed exited" : tail)
-            self.backoff = min(self.backoff * 2, 8)
-            let item = DispatchWorkItem { [weak self] in self?.start() }
-            self.restartWork = item
-            DispatchQueue.main.asyncAfter(deadline: .now() + self.backoff, execute: item)
+            restart(tail.isEmpty ? "kido sidebar-feed exited" : tail)
         }
+    }
+
+    @MainActor private func restart(_ reason: String) {
+        process = nil
+        closeInput()
+        status = .restarting(reason)
+        backoff = min(backoff * 2, 8)
+        let item = DispatchWorkItem { [weak self] in self?.start() }
+        restartWork = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + backoff, execute: item)
     }
 }
 
