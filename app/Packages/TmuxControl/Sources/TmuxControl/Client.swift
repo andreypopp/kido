@@ -8,6 +8,7 @@ public final class Client: @unchecked Sendable {
     private let process = Process()
     private let input: FileHandle
     private let output: FileHandle
+    private let errors: FileHandle
     private let writer = DispatchQueue(label: "TmuxControl.writer")
     private let lock = NSLock()
     private var pending: [Pending] = []
@@ -15,14 +16,16 @@ public final class Client: @unchecked Sendable {
     private var parser = Parser()
 
     public init(tmux: URL, socket: String, session: String?, pauseAfter: Int) {
-        let stdin = Pipe(), stdout = Pipe()
+        let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
         process.executableURL = tmux
         process.arguments = ["-S", socket, "-N", "-C", "attach-session"] + (session.map { ["-t", $0] } ?? [])
             + ["-f", "pause-after=\(pauseAfter),new-layouts"]
         process.standardInput = stdin
         process.standardOutput = stdout
+        process.standardError = stderr
         input = stdin.fileHandleForWriting
         output = stdout.fileHandleForReading
+        errors = stderr.fileHandleForReading
         _ = fcntl(input.fileDescriptor, F_SETNOSIGPIPE, 1)
     }
 
@@ -31,16 +34,26 @@ public final class Client: @unchecked Sendable {
     }
 
     public func start(
-        onEvent: @escaping @Sendable (Event) -> Void, onClose: @escaping @Sendable (Int32) -> Void
+        onEvent: @escaping @Sendable (Event) -> Void, onClose: @escaping @Sendable (Int32, String) -> Void
     ) throws {
         // waitUntilExit spins the calling thread's run loop and can miss the
         // exit when called from a dispatch queue, blocking forever.
         let ended = DispatchGroup()
         ended.enter()
         ended.enter()
+        ended.enter()
         process.terminationHandler = { _ in ended.leave() }
         try process.run()
-        ended.notify(queue: queue) { [process] in onClose(process.terminationStatus) }
+        nonisolated(unsafe) var stderr = Data()
+        DispatchQueue.global().async { [errors] in
+            stderr = errors.readDataToEndOfFile()
+            ended.leave()
+        }
+        ended.notify(queue: queue) { [process] in
+            onClose(
+                process.terminationStatus,
+                String(decoding: stderr, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
         let source = DispatchSource.makeReadSource(fileDescriptor: output.fileDescriptor, queue: queue)
         var buffer = [UInt8](repeating: 0, count: 1 << 16)
         source.setEventHandler { [weak self, output] in
