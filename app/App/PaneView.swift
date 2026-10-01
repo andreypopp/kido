@@ -19,7 +19,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onScroll: () -> Void = {}
     var onLoadMore: () -> Void = {}
     var onScrollSettled: () -> Void = {}
-    private let scroller = PaneScroller()
+    let scroller = PaneScroller()
     var find: PaneFind?
     private var alternate = false
     private let terminal = TerminalView()
@@ -202,7 +202,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         rowHeight = cell.height
         presentScroll()
         find?.frame = NSRect(x: 0, y: max(0, bounds.height - 36), width: bounds.width, height: 36)
-        scroller.frame = NSRect(x: max(0, bounds.width - 12), y: 0, width: 12, height: bounds.height)
         historyLimit.frame.size = historyLimit.contentView!.fittingSize
         historyLimit.frame.size.width += 16
         historyLimit.frame.size.height += 4
@@ -293,7 +292,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         scroller.alphaValue = 0
         scroller.isHidden = true
         scroller.jump = { [weak self] in self?.requestScroll($0) }
-        addSubview(scroller)
         let label = NSTextField(labelWithString: "Older history not loaded (memory limit)")
         label.font = .systemFont(ofSize: 11)
         label.textColor = .secondaryLabelColor
