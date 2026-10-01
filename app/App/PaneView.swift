@@ -17,11 +17,13 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onCommand: (PaneCommand) -> Void = { _ in }
     var onResync: () -> Void = {}
     var onScroll: () -> Void = {}
+    var onLoadMore: () -> Void = {}
     private let scroller = PaneScroller()
     var find: PaneFind?
     private var alternate = false
     private let terminal = TerminalView()
-    private let historyLimit = NSTextField(labelWithString: "Older history not loaded (memory limit)")
+    private let historyLimit = NSBox()
+    @objc private func loadMoreHistory() { onLoadMore() }
     private var shifted: Bool { (terminal.layer?.transform.m42 ?? 0) != 0 }
     private var pressed: Set<Int> = []
     private var scrollGeometry = (history: 0, position: ScrollPosition(history: 0, offset: 0, rows: 1), captured: false, limited: false)
@@ -87,17 +89,24 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     func updateScroller(history: Int, position: ScrollPosition, alternate: Bool, limited: Bool = false) {
         updateAlternate(alternate)
-        let history = limited ? min(history, position.history) : history
         scrollGeometry = (history, position, scrollGeometry.captured, limited)
         if alternate { clearScrollTarget() }
-        else { target.withLock { if let distance = $0 { $0 = min(history, distance) } } }
+        else {
+            let limit = scrollLimit
+            target.withLock { if let distance = $0 { $0 = min(limit, distance) } }
+        }
         presentScroll()
+    }
+
+    private var scrollLimit: Int {
+        let (history, position, _, limited) = scrollGeometry
+        return limited ? min(history, position.history) : history
     }
 
     private func presentScroll() {
         let (history, position, _, limited) = scrollGeometry
-        let distance = min(history, scrollTarget ?? (position.history - position.offset))
-        historyLimit.isHidden = !limited || distance < history - position.rows
+        let distance = min(scrollLimit, scrollTarget ?? (position.history - position.offset))
+        historyLimit.isHidden = !limited || distance < position.history - position.rows
         let shifted = distance > position.history
         if shifted && !self.shifted {
             for button in pressed {
@@ -115,11 +124,12 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             layer.setNeedsDisplay()
         }
         CATransaction.commit()
-        scroller.update(history: history, rows: position.rows, offset: history - distance, alternate: alternate)
+        scroller.update(history: history, rows: position.rows, offset: history - distance, alternate: alternate,
+                        unavailable: limited ? max(0, history - position.history) : 0)
     }
 
     func requestScroll(_ distance: Int) {
-        let distance = max(0, min(scrollGeometry.history, distance))
+        let distance = max(0, min(scrollLimit, distance))
         target.withLock { $0 = distance }
         presentScroll()
         scrollRevision += 1
@@ -160,7 +170,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         presentScroll()
         find?.frame = NSRect(x: 0, y: max(0, bounds.height - 36), width: bounds.width, height: 36)
         scroller.frame = NSRect(x: max(0, bounds.width - 12), y: 0, width: 12, height: bounds.height)
-        historyLimit.sizeToFit()
+        historyLimit.frame.size = historyLimit.contentView!.fittingSize
         historyLimit.frame.size.width += 16
         historyLimit.frame.size.height += 4
         historyLimit.frame.origin = NSPoint(x: (bounds.width - historyLimit.frame.width) / 2, y: max(0, bounds.height - historyLimit.frame.height - (find == nil ? 8 : 44)))
@@ -251,13 +261,19 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         scroller.isHidden = true
         scroller.jump = { [weak self] in self?.requestScroll($0) }
         addSubview(scroller)
-        historyLimit.font = .systemFont(ofSize: 11)
-        historyLimit.textColor = .secondaryLabelColor
-        historyLimit.alignment = .center
-        historyLimit.drawsBackground = true
-        historyLimit.backgroundColor = .windowBackgroundColor
-        historyLimit.wantsLayer = true
-        historyLimit.layer?.cornerRadius = 5
+        let label = NSTextField(labelWithString: "Older history not loaded (memory limit)")
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = .secondaryLabelColor
+        let loadMore = NSButton(title: "Load more", target: self, action: #selector(loadMoreHistory))
+        loadMore.bezelStyle = .rounded
+        loadMore.controlSize = .small
+        let content = NSStackView(views: [label, loadMore])
+        historyLimit.boxType = .custom
+        historyLimit.borderWidth = 0
+        historyLimit.fillColor = .windowBackgroundColor
+        historyLimit.cornerRadius = 5
+        historyLimit.contentViewMargins = NSSize(width: 8, height: 2)
+        historyLimit.contentView = content
         historyLimit.isHidden = true
         addSubview(historyLimit)
         ghostty_surface_set_color_scheme(surface, runtime.colorScheme)
