@@ -90,6 +90,18 @@ rows can outlive tmux's history limit until resync; the scroller clamps to
 tmux's retained range. Its colours resolve in the current effective
 appearance when drawn.
 
+Command-F opens a pane's native find bar. Each query scans tmux's history
+and screen in 5000-row, whole-logical-line chunks on a worker queue,
+retaining only match distances from the screen and discarding captured
+text. Matching is plain substring, ASCII case-insensitive like Ghostty.
+Query edits, closing the bar and resync cancel the scan; alternate screens
+search only their screen. Next and previous wrap through the newest-first
+match list, loading older matches through the scroller's jump path. Ghostty
+search supplies the highlights and loaded-match selection; it is restarted
+after prepending history. A match beyond the byte budget is reported as out
+of reach without evicting rows. Command-G and Shift-Command-G (also Return
+and Shift-Return) navigate; Escape closes the bar and clears highlights.
+
 An unsafe paste is asked about in a sheet showing its text, and the
 request is completed exactly once: pasted, or refused with an empty
 completion on Cancel or when its surface is freed. Other confirmations
