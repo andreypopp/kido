@@ -11,6 +11,51 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onFontChange: (Float) -> Void = { _ in }
     var onCommand: (PaneCommand) -> Void = { _ in }
     var onResync: () -> Void = {}
+    var onScroll: (Int?) -> Void = { _ in }
+    private let scroller = PaneScroller()
+
+    struct ScrollPosition: Sendable {
+        let history: Int
+        let offset: Int
+        let rows: Int
+    }
+
+    nonisolated var historyEpoch: Int { gridChanged.withLock { epoch } }
+    nonisolated(unsafe) private var epoch = 0
+
+    nonisolated func scrollPosition() -> ScrollPosition {
+        var value = ghostty_surface_scrollbar_s()
+        _ = ghostty_surface_scrollbar(surface, &value)
+        return ScrollPosition(history: max(0, Int(value.total) - Int(value.len)), offset: Int(value.offset), rows: Int(value.len))
+    }
+
+    nonisolated func prepend(_ bytes: Data, epoch expected: Int) -> Int {
+        gridChanged.withLock {
+            guard epoch == expected, case .confirmed = grid else { return 0 }
+            return bytes.withUnsafeBytes {
+                guard let base = $0.baseAddress else { return 0 }
+                return Int(ghostty_surface_prepend_history(surface, base.assumingMemoryBound(to: CChar.self), UInt($0.count)))
+            }
+        }
+    }
+
+    nonisolated func scroll(to row: Int) {
+        var value = ghostty_surface_scrollbar_s()
+        guard ghostty_surface_scrollbar(surface, &value) else { return }
+        _ = ghostty_surface_scroll_to_row_if_revision(surface, UInt64(row), value.row_space_revision, &value)
+    }
+
+    func updateScroller(history: Int, position: ScrollPosition, alternate: Bool) {
+        scroller.update(history: history, rows: position.rows,
+                        offset: history - position.history + position.offset, alternate: alternate)
+    }
+
+    func scrolled() { onScroll(nil) }
+
+    override func layout() {
+        super.layout()
+        scroller.frame = NSRect(x: max(0, bounds.width - 12), y: 0, width: 12, height: bounds.height)
+    }
 
     // Freed in deinit, so the last reference must be dropped on the main
     // thread, and never while the reader may feed it (Connection).
@@ -76,6 +121,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         }
         guard let surface = ghostty_surface_new(runtime.app, &config) else { return nil }
         self.surface = surface
+        scroller.alphaValue = 0
+        scroller.isHidden = true
+        scroller.jump = { [weak self] in self?.onScroll($0) }
+        addSubview(scroller)
         ghostty_surface_set_color_scheme(surface, runtime.colorScheme)
         // The callback must not reenter the surface (ghostty.h).
         _ = ghostty_surface_set_font_size_action_callback(surface, { userdata, _, _, points, _, _ in
@@ -137,6 +186,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         let size = ghostty_surface_size(surface)
         guard (Int(size.columns), Int(size.rows)) != (cols, rows) else { return }
         resizes += 1
+        gridChanged.withLock { epoch += 1 }
         guard ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil) else { return settle(resync: true) }
         let now = Date.now, resize = resizes
         gridChanged.withLock { if case .confirmed = grid { grid = .pending(until: now + 1) } }
@@ -155,7 +205,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
                 self?.confirm(cols, rows, resize, until: until)
             }
         }
-        settle(resync: false)
+        settle(resync: true)
     }
 
     private func settle(resync: Bool) {
@@ -329,6 +379,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        scroller.reveal()
         let precise = event.hasPreciseScrollingDeltas
         let momentum: ghostty_input_mouse_momentum_e = switch event.momentumPhase {
         case .began: GHOSTTY_MOUSE_MOMENTUM_BEGAN
