@@ -36,6 +36,12 @@ final class WindowView: NSView {
 
     var hot: Bool { !panes.isEmpty }
 
+    func updateBackground() {
+        layer?.backgroundColor = runtime.background.cgColor
+        subviews.compactMap { $0 as? PaneChrome }.forEach { $0.needsDisplay = true }
+        floatingBoxes.values.forEach { $0.fillColor = runtime.background }
+    }
+
     private var session: SessionView? { superview as? SessionView }
 
     func update(_ layout: Layout, _ visible: Layout) {
@@ -124,7 +130,7 @@ final class WindowView: NSView {
             view.isHidden = seen[pane.id] == nil
             view.frame = placement.grid(g)
             view.resize(cols: g.width, rows: g.height)
-            let chrome = overlays[pane.id] ?? PaneChrome(pane: pane.id, background: runtime.background)
+            let chrome = overlays[pane.id] ?? PaneChrome(pane: pane.id, runtime: runtime)
             chrome.select = view.onSelect
             chrome.hover = { [weak self] chrome, point in self?.hover(chrome, point) }
             chrome.frame = placement.frame(g)
