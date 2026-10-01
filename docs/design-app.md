@@ -79,12 +79,18 @@ scrollbar. The API returns the number of inserted physical rows, or zero
 on alternate screens, allocation failure or insufficient scrollback byte
 budget. A chunk is accepted whole or not at all, never evicting newer rows
 to make room. Kido defaults to a 512 MiB Ghostty scrollback budget; the
-user's configuration can override it. Hitting it stops older fetches until
-resync: the scroller's range and the target clamp immediately to loaded
-history, without another tmux request. A native pill near the loaded top
-says "Older history not loaded (memory limit)"; it hides more than a screen
-away from that edge. Live output still follows
-Ghostty's normal byte-budget trimming.
+user's configuration can override it. Hitting it stops older fetches; the
+scroller keeps tmux's full range and thumb size, fading the track above the
+loaded top. The thumb and target clamp to that boundary, so dragging or
+wheeling beyond it reveals no blank space and makes no history request.
+A native pill near the loaded top says "Older history not loaded (memory
+limit)" and offers "Load more"; it hides more than a screen away from that
+edge. The button doubles only that surface's byte budget under Ghostty's
+renderer mutex and resumes fetching at the current target. The budget
+survives appearance and config reloads, which do not change PageList's
+limit; surface eviction or reconnect returns it to the configured default.
+Live output still follows Ghostty's normal byte-budget trimming, recycling
+oldest pages when the budget is full.
 
 Each pane draws one thin overlay scroller, shown during scrolling or
 hovering and fading afterwards. Ghostty's own scrollbar is disabled. The
