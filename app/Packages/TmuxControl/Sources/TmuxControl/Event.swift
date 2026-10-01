@@ -78,6 +78,7 @@ public struct Parser: Sendable {
     private mutating func line(_ bytes: ArraySlice<UInt8>, _ emit: (Event) -> Void) {
         if let id = block?.guard {
             let text = String(decoding: bytes, as: UTF8.self)
+            guard bytes.first == 0x25 else { block?.lines.append(text); return }
             let w = text.split(separator: " ")
             if w.count == 4, w[0] == "%end" || w[0] == "%error", "\(w[1]) \(w[2])" == id, let open = block {
                 block = nil
