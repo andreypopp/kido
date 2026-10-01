@@ -11,6 +11,8 @@ def group(window, children):
     return dict(kind="window", id="@"+str(window), window="@"+str(window), name={0:"Workspace", 6:"Build", 7:"Review"}.get(window, "Tasks"), children=children)
 while True:
     main = group(0, [item("agent", 0, 0, "orchestrator", dict(kind="running"), [
+        group(9, [item("shell", 12, 9, "child first"), item("shell", 13, 9, "child last")]),
+        group(10, [item("shell", 14, 10, "sibling first"), item("shell", 15, 10, "sibling last")]),
         item("agent", 2, 1, "tests", dict(kind="waiting"), [
             item("agent", 3, 2, "docs", dict(kind="done"), [
                 item("agent", 4, 3, "lint", dict(kind="gone", outcome="completed"), tail="completed"),
