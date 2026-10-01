@@ -252,7 +252,10 @@ final class WindowView: NSView {
         }
         view.onCellChange = { [weak self] in self?.session?.cellChanged() }
         view.onFontChange = { [weak self] in self?.session?.fontChanged($0) }
-        view.onResync = { [weak self] in self?.connection?.sync(id) }
+        view.onResync = { [weak self] done in
+            guard let connection = self?.connection else { return done() }
+            connection.sync(id, synced: done)
+        }
         return view
     }
 

@@ -232,7 +232,7 @@ final class Connection: @unchecked Sendable {
                     feed.metadataDirty = false
                     feed.initialHistory = position.history
                     if let anchor = feed.view.resizeAnchor {
-                        self.restoreAnchor(pane, feed, anchor: anchor, token: token, epoch: epoch, history: history, synced: synced)
+                        self.restoreAnchor(pane, feed, anchor: anchor, token: token, epoch: epoch, history: history, captured: chunk, synced: synced)
                         return
                     }
                     feed.history = history > position.history ? .more(gap: history - position.history) : .complete
@@ -247,7 +247,7 @@ final class Connection: @unchecked Sendable {
     }
 
     private func restoreAnchor(_ pane: PaneID, _ feed: PaneFeed, anchor: ScrollAnchor, token: UUID,
-                               epoch: Int, history: Int, end: Int? = nil, chunk: Int = 5000,
+                               epoch: Int, history: Int, captured: Int, end: Int? = nil, chunk: Int = 5000,
                                synced: (@Sendable () -> Void)?) {
         client.send(SearchCapture.commands(pane, end: end, chunk: chunk)) { [weak self, weak feed] replies in
             guard let self, let feed, self.panes?[pane] === feed, feed.view.historyEpoch == epoch,
@@ -256,16 +256,21 @@ final class Connection: @unchecked Sendable {
             switch replies.flatMap({ anchor.locate($0, end: end) }) {
             case .next(let remaining, let next):
                 if next == end {
-                    self.restoreAnchor(pane, feed, anchor: anchor, token: token, epoch: epoch, history: history, end: end,
+                    self.restoreAnchor(pane, feed, anchor: anchor, token: token, epoch: epoch, history: history, captured: captured, end: end,
                                        chunk: min(history + 1, chunk * 2), synced: synced)
                 } else {
-                    self.restoreAnchor(pane, feed, anchor: remaining, token: token, epoch: epoch, history: history, end: next, synced: synced)
+                    self.restoreAnchor(pane, feed, anchor: remaining, token: token, epoch: epoch, history: history, captured: captured, end: next, synced: synced)
                 }
                 return
             case .found(let row): distance = row
             case nil: distance = min(history, max(1, anchor.lines))
             }
-            let position = feed.view.scrollPosition()
+            let loaded = feed.view.scrollPosition()
+            if distance > loaded.history, captured < history {
+                self.sync(pane, synced: synced, chunk: min(history, max(captured * 2, distance + loaded.rows)))
+                return
+            }
+            let position = feed.view.scrollPosition(distance: distance)
             feed.history = history > position.history ? .more(gap: history - position.history) : .complete
             feed.view.resizeAnchor = nil
             self.publish(feed, history: history)
