@@ -8,9 +8,13 @@ enum PaneSync {
         "cursor_blinking", "cursor_shape", "pane_key_mode", "pane_tabs", "pane_private_modes",
     ].map { "#{\($0)}" }.joined(separator: "\u{1F}")
 
-    static func commands(_ pane: PaneID) -> [Command] {
-        [
-            Command("capture-pane", "-p", "-e", "-J", "-S", "-2000", "-E", "-1", "-t", pane),
+    enum Restore {
+        case snapshot(Data, history: Int)
+        case expand(Int)
+    }
+
+    static func commands(_ pane: PaneID, chunk: Int = 5000) -> [Command] {
+        HistoryCapture.commands(pane, loaded: 0, chunk: chunk) + [
             Command("capture-pane", "-p", "-e", "-J", "-t", pane),
             Command("capture-pane", "-p", "-e", "-J", "-a", "-q", "-t", pane),
             Command("capture-pane", "-p", "-P", "-C", "-t", pane),
@@ -18,14 +22,17 @@ enum PaneSync {
         ]
     }
 
-    static func restore(_ replies: some Collection<Reply>) -> Data? {
+    static func restore(_ replies: some Collection<Reply>) -> Restore? {
         let lines = replies.compactMap { if case .success(let l) = $0 { l } else { nil } }
-        guard lines.count == 5, let state = lines[4].first else { return nil }
-        return restore(history: lines[0], screen: lines[1], main: lines[2], pending: lines[3].first ?? "", state: state)
+        guard lines.count == 7, let state = lines[6].first,
+              let history = HistoryCapture(replies.prefix(3), loaded: 0, initial: true) else { return nil }
+        if history.history > 0 && history.rows == 0 { return .expand(history.history) }
+        return restore(history: history, screen: lines[3], main: lines[4], pending: lines[5].first ?? "", state: state)
+            .map { .snapshot($0, history: history.history) }
     }
 
     private static func restore(
-        history: [String], screen: [String], main: [String], pending: String, state: String
+        history: HistoryCapture, screen: [String], main: [String], pending: String, state: String
     ) -> Data? {
         let f = state.split(separator: "\u{1F}", omittingEmptySubsequences: false)
         let n = f.prefix(11).compactMap { Int($0) }
@@ -34,8 +41,8 @@ enum PaneSync {
             (n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7], n[8], n[9], n[10])
         let (shape, keys, tabs, modes) = (f[11], f[12], f[13].split(separator: ","), f[14].split(separator: ","))
         let e = "\u{1B}"
-        let scrollback = hsize == 0 ? [] : history
-        var out = "\(e)c\(e)[3J" + (scrollback + (alternate == 1 ? main : screen)).joined(separator: "\r\n")
+        let scrollback = hsize == 0 || history.rows == 0 ? "" : history.text + (history.wrapsIntoScreen ? "" : "\r\n")
+        var out = "\(e)c\(e)[3J" + scrollback + (alternate == 1 ? main : screen).joined(separator: "\r\n")
         if alternate == 1 {
             out += "\(e)[m"
             if savedX != UInt32.max { out += "\(e)[\(savedY + 1);\(savedX + 1)H" }
