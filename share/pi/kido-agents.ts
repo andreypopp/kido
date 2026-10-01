@@ -1251,7 +1251,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerMessageRenderer<{ from: string }>(STREAM_CUSTOM_TYPE, (message, _options, theme) => {
     const content = typeof message.content === "string" ? message.content : "";
-    return renderInbound(message, theme, message.details?.from, undefined, content);
+    return renderInbound(message, theme, message.details?.from, undefined, content.slice(content.indexOf("\n") + 1));
   });
 
   pi.registerMessageRenderer<{ from: string }>(MESSAGE_CUSTOM_TYPE, (message, _options, theme) => {

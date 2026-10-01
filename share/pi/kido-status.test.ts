@@ -1404,7 +1404,7 @@ test("all four inbound renderers dim headers, wrap normal text behind a border, 
       const draw = (expanded: boolean) => renderer(JSON.parse(JSON.stringify(message)), { expanded, outputPad: 1 }, theme);
       s.pi.getSettings = () => ({ tuiMode: "fullscreen" });
       const component = draw(true);
-      const collapsedLines = [`\x1b[34m│ \x1b[0m\x1b[2m${header}\x1b[0m ${content.split("\n", 1)[0]}...`];
+      const collapsedLines = [`\x1b[34m│ \x1b[0m\x1b[2m${header}\x1b[0m ${body.split("\n", 1)[0]}...`];
       assert.deepEqual(component.render(80), collapsedLines, `${kind}: fullscreen ignores ctrl-o and starts collapsed`);
       assert.deepEqual(component.handleMouse({ ...click, type: "press" }), { handled: true, render: false });
       assert.deepEqual(component.render(80), collapsedLines, "press does not toggle");
@@ -1419,10 +1419,10 @@ test("all four inbound renderers dim headers, wrap normal text behind a border, 
         assert.ok(lines.every((line) => line.startsWith("\x1b[34m│ \x1b[0m")));
         assert.ok(lines.every((line) => visibleWidth(line) <= width));
         if (width === 80) {
-          assert.deepEqual(lines.slice(0, kind === "stream" ? 3 : 2), [
+          assert.deepEqual(lines.slice(0, 2), [
             `\x1b[34m│ \x1b[0m\x1b[2m${header}\x1b[0m`,
-            ...content.split("\n").slice(0, kind === "stream" ? 2 : 1).map((line) => `\x1b[34m│ \x1b[0m${line}`),
-          ], "the same dim sender header precedes normal body text, including the stream run label");
+            ...body.split("\n").slice(0, 1).map((line) => `\x1b[34m│ \x1b[0m${line}`),
+          ], "the same dim sender header precedes normal body text, excluding the stream run label");
         }
         assert.ok(lines.map(stripTerminalSequences).includes("│ last line"), "recreated component keeps expansion");
         assert.ok(lines.length > 5, `${kind}: long content wraps`);
@@ -1444,7 +1444,7 @@ test("all four inbound renderers dim headers, wrap normal text behind a border, 
         ["short\nmore", 80, `│ ${header} short...`],
         ["\x1b[31m" + "界".repeat(30) + "\x1b[0m", 2 + visibleWidth(header) + 1 + 4 + 3, `│ ${header} 界界...`],
       ] as const) {
-        const lines = renderer({ ...message, content: text, details: { from: "boss", question: text } }, { expanded: true }, theme).render(width);
+        const lines = renderer({ ...message, content: kind === "stream" ? `label\n${text}` : text, details: { from: "boss", question: text } }, { expanded: true }, theme).render(width);
         assert.deepEqual(lines.map(stripTerminalSequences), [expected], `${kind}: collapsed preview never wraps`);
         assert.ok(visibleWidth(lines[0]) <= width, "ANSI and CJK fit the available width");
         assert.ok(lines[0].includes(`\x1b[2m${header}\x1b[0m`), "only the preview header is dim");
