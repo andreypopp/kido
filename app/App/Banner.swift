@@ -10,10 +10,10 @@ final class Banner: NSView {
         super.init(frame: .zero)
         autoresizingMask = [.width, .height]
         wantsLayer = true
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.6).cgColor
+        updateBackground()
         title.font = .boldSystemFont(ofSize: 15)
         for label in [title, detail] {
-            label.textColor = .white
+            label.textColor = .labelColor
             label.alignment = .center
         }
         let stack = NSStackView(views: [title, detail, button])
@@ -29,6 +29,17 @@ final class Banner: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateBackground()
+    }
+
+    private func updateBackground() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.85).cgColor
+        }
     }
 
     func show(_ title: String, _ detail: String, button: String?) {
