@@ -381,7 +381,7 @@ already on disk - produces nothing extra when its child gets round to
 shutting down.
 
 On the parent's side a notice is rendered the moment it lands, as a
-`notification from <name>` line above the editor, and separately
+dimmed `│ @<name> notifies: <first line>` line above the editor, and separately
 enters the model's context at the next turn boundary as a collapsed
 message that ctrl-o expands. Delivered as one event the two would queue
 together behind the running turn: measured live, two children's notices

@@ -1334,8 +1334,7 @@ turn - kept to two sentences for that reason.
 
 **The rendered side.** An inbound `notice` is sent as a custom message
 (`pi.sendMessage` with a `customType`, not `pi.sendUserMessage`) so it
-can render collapsed to one line - "notification from X - ctrl-o to
-expand" - with the full text behind pi's own `registerMessageRenderer`
+can render collapsed to one line - "@X notifies: <first line>..." - with the full text behind pi's own `registerMessageRenderer`
 `options.expanded`, which is driven by pi's built-in ctrl-o and is not a
 keybinding this extension registers; a second extension bound to the same
 key would conflict, riding the existing flag does not. The collapse is a
@@ -1362,8 +1361,8 @@ uses - queues behind the running turn for the transcript entry and the
 model text alike: measured live, two subagents called `notify_parent`
 while their parent was mid-turn and both notices sat invisible for several
 minutes, then appeared together the instant the parent's turn happened to
-end. The row a human sees is a `ctx.ui.setWidget` line -
-"notification from X" - set the moment the envelope is dispatched, before
+end. The row a human sees is a `ctx.ui.setWidget` line - the
+collapsed "@X notifies: <first line>..." drawn entirely dim - set the moment the envelope is dispatched, before
 anything about the message is awaited; a pi widget sits in its own
 VStack beside the transcript's scroll view rather than inside it, so it
 renders regardless of what turn is in progress. Once the identical

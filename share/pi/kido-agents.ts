@@ -123,14 +123,30 @@ const ASK_CUSTOM_TYPE = "kido-ask";
 
 const STREAM_CUSTOM_TYPE = "kido-stream";
 
+const REPLY_CUSTOM_TYPE = "kido-reply";
+
+const replyHeader = (from: string, replyTo: string): string => `${from} replied (to ask ${replyTo}): `;
+
+const inboundHeader = (sender: string | undefined, verb: string | undefined): string =>
+  `${sender && sender !== "another agent" ? `@${sender}` : "another agent"}${verb ? ` ${verb}` : ""}:`;
+
+type Paint = (color: "border" | "dim" | undefined, text: string) => string;
+
+const collapsedInbound = (width: number, header: string, body: string, paint: Paint): string => {
+  if (width <= 2) return paint("border", "│ ".slice(0, width));
+  const preview = body ? ` ${body.split("\n", 1)[0]}${body.includes("\n") ? "..." : ""}` : "";
+  return paint("border", "│ ") + truncateToWidth(paint("dim", header) + paint(undefined, preview), width - 2);
+};
+
 // Read as the user's words whenever the run below cannot drop it; kept short and neutral.
-type CustomType = "kido-message" | "kido-notice" | "kido-ask" | "kido-stream";
+type CustomType = "kido-message" | "kido-notice" | "kido-ask" | "kido-stream" | "kido-reply";
 
 const WAKE_TRIGGERS: Record<CustomType, string> = {
   "kido-message": "(kido: a message arrived; it follows)",
   "kido-notice": "(kido: a notification arrived; it follows)",
   "kido-ask": "(kido: a question arrived; it follows)",
   "kido-stream": "(kido: a background run's output follows)",
+  "kido-reply": "(kido: a reply arrived; it follows)",
 };
 
 const TRIGGER_TEXTS: ReadonlySet<unknown> = new Set(Object.values(WAKE_TRIGGERS));
@@ -318,7 +334,7 @@ export default function (pi: ExtensionAPI) {
   // fires with the same id in details.noticeId), at which point pi's own
   // registerMessageRenderer takes over showing it and this entry is
   // removed - the widget is a stand-in for the wait, not a second copy.
-  const pendingNotices = new Map<string, string>(); // notice id -> sender label
+  const pendingNotices = new Map<string, { from: string; text: string }>();
 
   const NOTICE_WIDGET_KEY = "kido-notice-pending";
 
@@ -329,8 +345,12 @@ export default function (pi: ExtensionAPI) {
       ui.setWidget(NOTICE_WIDGET_KEY, undefined);
       return;
     }
-    const lines = [...pendingNotices.values()].map((from) => `notification from ${from}`);
-    ui.setWidget(NOTICE_WIDGET_KEY, lines);
+    const entries = [...pendingNotices.values()];
+    ui.setWidget(NOTICE_WIDGET_KEY, (_tui, theme) => ({
+      render: (width: number): string[] =>
+        entries.map(({ from, text }) => collapsedInbound(width, inboundHeader(from, "notifies"), text, (_color, t) => theme.fg("dim", t))),
+      invalidate: () => {},
+    }));
   };
 
   type GaveUp = "timeout" | "inbox" | "unsent" | "gone" | "aborted";
@@ -442,7 +462,7 @@ export default function (pi: ExtensionAPI) {
   const deliverNotice = (text: string, from: string): void => {
     clearIdleExit();
     const noticeId = randomUUID();
-    pendingNotices.set(noticeId, from);
+    pendingNotices.set(noticeId, { from, text });
     renderNoticeWidget();
     wake({ customType: NOTICE_CUSTOM_TYPE, content: `${noticeHeader(from)}\n${text}`, display: true, details: { from, noticeId } }, "steer");
   };
@@ -540,9 +560,18 @@ export default function (pi: ExtensionAPI) {
       waiter.settle({ reply: env.text });
       return;
     }
-    if (env.text) {
-      seam().host?.deliver(`${labelFrom(env.from)} replied (to ask ${env.replyTo}): ${env.text}`);
-    }
+    if (!env.text) return;
+    const from = labelFrom(env.from);
+    workStarted();
+    wake(
+      {
+        customType: REPLY_CUSTOM_TYPE,
+        content: replyHeader(from, env.replyTo) + env.text,
+        display: true,
+        details: { from, replyTo: env.replyTo },
+      },
+      "followUp",
+    );
   };
 
   // Mirrors Message_agent.resolve's Descendant recipient (lib/message_agent.ml). Checked here too because `from` is
@@ -1210,10 +1239,9 @@ export default function (pi: ExtensionAPI) {
 
   const inboundExpanded = new Map<string, boolean>();
   const renderInbound = (message: Parameters<MessageRenderer>[0], theme: Pick<Theme, "fg">, sender: string | undefined, verb: string | undefined, body: string) => {
-    const name = sender && sender !== "another agent" ? `@${sender}` : "another agent";
     const key = JSON.stringify([message.customType, message.timestamp, message.details]);
     const expanded = () => pi.getSettings().tuiMode !== "fullscreen" || (inboundExpanded.get(key) ?? false);
-    const border = theme.fg("border", "│ ");
+    const paint: Paint = (color, text) => (color ? theme.fg(color, text) : text);
     return {
       handleMouse: (event: TuiMouseEvent) => {
         if (event.button !== "left") return;
@@ -1223,11 +1251,9 @@ export default function (pi: ExtensionAPI) {
         return { handled: true, render: true };
       },
       render: (width: number): string[] => {
-        if (width <= 2) return [theme.fg("border", "│ ".slice(0, width))];
-        const header = theme.fg("dim", `${name}${verb ? ` ${verb}` : ""}:`);
-        if (expanded()) return wrapTextWithAnsi(`${header}\n${body}`, width - 2).map((line) => border + line);
-        const preview = body ? ` ${body.split("\n", 1)[0]}${body.includes("\n") ? "..." : ""}` : "";
-        return [border + truncateToWidth(header + preview, width - 2)];
+        const header = inboundHeader(sender, verb);
+        if (!expanded() || width <= 2) return [collapsedInbound(width, header, body, paint)];
+        return wrapTextWithAnsi(`${paint("dim", header)}\n${body}`, width - 2).map((line) => paint("border", "│ ") + line);
       },
       invalidate: () => {},
     };
@@ -1251,6 +1277,12 @@ export default function (pi: ExtensionAPI) {
   pi.registerMessageRenderer<{ from: string; question: string }>(ASK_CUSTOM_TYPE, (message, _options, theme) => {
     const question = message.details?.question ?? (typeof message.content === "string" ? message.content : "");
     return renderInbound(message, theme, message.details?.from, "asks", question);
+  });
+
+  pi.registerMessageRenderer<{ from: string; replyTo: string }>(REPLY_CUSTOM_TYPE, (message, _options, theme) => {
+    const raw = typeof message.content === "string" ? message.content : "";
+    const header = replyHeader(message.details?.from ?? "", message.details?.replyTo ?? "");
+    return renderInbound(message, theme, message.details?.from, "replies", raw.startsWith(header) ? raw.slice(header.length) : raw);
   });
 
   pi.registerMessageRenderer<{ from: string }>(NOTICE_CUSTOM_TYPE, (message, _options, theme) => {

@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { accessSync, constants, mkdirSync, unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
@@ -147,7 +147,7 @@ export interface CompletionProvider {
 }
 
 interface SessionUI {
-  setWidget(key: string, content: string[] | undefined, options?: { placement?: "aboveEditor" | "belowEditor" }): void;
+  setWidget(key: string, content: ((tui: unknown, theme: Theme) => { render(width: number): string[]; invalidate(): void }) | undefined): void;
   notify?(message: string, type?: string): void;
   // Missing before pi 0.87.1.
   addAutocompleteProvider?(factory: (current: CompletionProvider) => CompletionProvider): void;

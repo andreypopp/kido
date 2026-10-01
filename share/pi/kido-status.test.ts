@@ -455,7 +455,7 @@ function createFakePi() {
   const messages: Array<{ message: any; opts: unknown; seq: number }> = [];
   const renderers = new Map<string, (message: any, options: any, theme: any) => { render(width: number): string[]; handleMouse(event: any): unknown }>();
   // Keyed the same way the real UI keys a widget: content undefined means "cleared".
-  const widgets = new Map<string, { content: string[] | undefined; options?: unknown }>();
+  const widgets = new Map<string, { content: ((tui: unknown, theme: any) => { render(width: number): string[] }) | undefined; options?: unknown }>();
   // What the host does with a user message: in pi, start a turn for it when the
   // session is idle. Wired by startSessionCore; a case wanting the gap between the
   // two held open replaces it.
@@ -489,7 +489,7 @@ function createFakePi() {
   const autocompleteFactories: Array<(current: any) => any> = [];
   const notifications: Array<{ message: string; type?: string }> = [];
   const ui = {
-    setWidget(key: string, content: string[] | undefined, options?: unknown) {
+    setWidget(key: string, content: ((tui: unknown, theme: any) => { render(width: number): string[] }) | undefined, options?: unknown) {
       widgets.set(key, { content, options });
     },
     notify(message: string, type?: string) {
@@ -790,7 +790,7 @@ test("reply correlation: a foreign replyTo settles nothing and is surfaced; the 
 
     const foreign = await sendToInbox(s.inboxPath, envelope("reply", "stray answer", { replyTo: "nope", from: { session: "someone-else" } }));
     assert.equal(foreign, "ok");
-    assert.ok(s.delivered.some((d) => d.text.includes("stray answer")), "an unmatched reply is surfaced to the model");
+    assert.ok(customMessages(s, "kido-reply").some((m) => m.message.content.includes("stray answer")), "an unmatched reply is surfaced to the model");
     assert.equal(await pendingState(p1), "pending");
     assert.equal(await pendingState(p2), "pending");
 
@@ -833,10 +833,11 @@ test("a reply arriving after its ask timed out is still surfaced, never dropped"
 
     const resp = await sendToInbox(s.inboxPath, envelope("reply", "late answer", { replyTo: sent!.id, from: { session: "peer-a", name: "peer-a" } }));
     assert.equal(resp, "ok");
-    assert.ok(
-      s.delivered.some((d) => d.text.includes("late answer") && d.text.includes(sent!.id)),
-      "a late reply is delivered as a message, naming the ask it answered",
-    );
+    const late = customMessages(s, "kido-reply");
+    assert.equal(late.length, 1, "a late reply is delivered as a kido-reply custom message");
+    assert.equal(late[0]!.message.content, `peer-a replied (to ask ${sent!.id}): late answer`, "the model reads the same text, naming the ask it answered");
+    assert.equal((late[0]!.opts as any).deliverAs, "nextTurn", "an idle session queues it behind the wake trigger");
+    assert.equal(triggers(s)[0]?.text, "(kido: a reply arrived; it follows)");
   } finally {
     fx.restore();
   }
@@ -1201,7 +1202,7 @@ test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 r
     );
 
     await sendToInbox(s.inboxPath, envelope("reply", "an answer", { replyTo: "no-such-ask", from }));
-    assert.ok(s.delivered.some((d) => d.text.includes("replied") && d.text.includes("an answer")));
+    assert.ok(customMessages(s, "kido-reply").some((m) => m.message.content === "peer-a replied (to ask no-such-ask): an answer"));
 
     await sendToInbox(s.inboxPath, envelope("ping", "unknown kind text", { from }));
     assert.ok(s.delivered.some((d) => d.text.includes("unrecognised message kind") && d.text.includes("unknown kind text")));
@@ -1391,7 +1392,7 @@ test("all four inbound renderers dim headers, wrap normal text behind a border, 
       type: "click", button: "left", x: 0, y: 0, screenX: 0, screenY: 0,
       width: 80, height: 1, shift: false, alt: false, ctrl: false, clickCount: 1,
     };
-    for (const [kind, verb] of [["stream", ""], ["message", "says"], ["ask", "asks"], ["notice", "notifies"]]) {
+    for (const [kind, verb] of [["stream", ""], ["message", "says"], ["ask", "asks"], ["notice", "notifies"], ["reply", "replies"]]) {
       const renderer = s.renderers.get(`kido-${kind}`)!;
       const suffix = `${verb ? ` ${verb}` : ""}:`;
       const header = `@boss${suffix}`;
@@ -1656,7 +1657,13 @@ test("an inbound notice renders a widget the instant it is received, not when it
     const widget = s.widgets.get("kido-notice-pending");
     assert.ok(widget, "a widget was set for the pending notice");
     assert.ok(widget!.content, "the widget has content, not a clear");
-    assert.ok(widget!.content!.some((line) => line.includes("peer-a")), "the widget row names the sender");
+    const dimTheme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
+    assert.deepEqual(
+      widget!.content!(undefined, dimTheme).render(80),
+      ["<dim>│ </dim><dim>@peer-a notifies:</dim><dim> build finished</dim>"],
+      "the pending row is the notice's collapsed line, border, header and body all dim",
+    );
+    assert.ok(visibleWidth(widget!.content!(undefined, fakeTheme).render(14)[0]!) <= 14, "and it fits");
 
     const sent = customMessages(s, "kido-notice")[0];
     assert.ok(sent, "the notice was also handed to sendMessage, unconditionally");
@@ -1721,6 +1728,7 @@ test("an idle session is woken through prompt(): the arrival is queued as nextTu
       { kind: "message", customType: "kido-message", trigger: "(kido: a message arrived; it follows)", deliverAs: "followUp" },
       { kind: "notice", customType: "kido-notice", trigger: "(kido: a notification arrived; it follows)", deliverAs: "steer" },
       { kind: "ask", customType: "kido-ask", trigger: "(kido: a question arrived; it follows)", deliverAs: "followUp" },
+      { kind: "reply", customType: "kido-reply", trigger: "(kido: a reply arrived; it follows)", deliverAs: "followUp" },
     ];
     for (const c of cases) {
       await sendToInbox(s.inboxPath, envelope(c.kind, `${c.kind} text`, { id: `env-${c.kind}`, from }));
@@ -3999,7 +4007,7 @@ test("a waiting ask honours pi's abort signal, so the turn can be interrupted", 
     const resp = await sendToInbox(s.inboxPath, envelope("reply", "late answer", { replyTo: sent!.id, from: { session: "peer-a", name: "peer-a" } }));
     assert.equal(resp, "ok");
     assert.ok(
-      s.delivered.some((d) => d.text.includes("late answer")),
+      customMessages(s, "kido-reply").some((m) => m.message.content.includes("late answer")),
       "an abandoned ask leaves no waiter behind for a later reply to settle",
     );
   } finally {
