@@ -182,11 +182,10 @@ final class WindowView: NSView {
     private func place(_ chrome: PaneChrome, _ view: PaneView, _ g: Geometry, _ placement: PaneLayout) {
         chrome.frame = placement.frame(g)
         let grid = placement.grid(g)
-        let rightmost = grid.maxX == placement.rightEdge
-        if rightmost { chrome.frame.size.width = bounds.maxX - chrome.frame.minX }
+        if grid.maxX == placement.rightEdge { chrome.frame.size.width = bounds.maxX - chrome.frame.minX }
         chrome.grid = CGRect(origin: CGPoint(x: placement.before.width, y: placement.before.height), size: grid.size)
         if view.scroller.superview !== chrome { chrome.addSubview(view.scroller, positioned: .below, relativeTo: nil) }
-        view.scroller.frame = CGRect(x: max(0, (rightmost ? chrome.bounds.maxX : chrome.grid.maxX) - 12),
+        view.scroller.frame = CGRect(x: max(0, chrome.bounds.maxX - 12),
                                      y: chrome.grid.minY, width: 12, height: chrome.grid.height)
     }
 
