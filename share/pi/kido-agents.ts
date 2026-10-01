@@ -159,15 +159,8 @@ if (typeof runAgentPrompt === "function") {
   });
 }
 
-// The idle flush schedule: a held batch is flushed after the first delay, then after
-// twice that, capped at the second - the whole bound on what a long-running build costs
-// an idle agent, each flush costing a turn.
-const STREAM_FLUSH_MS = Number(process.env.KIDO_STREAM_FLUSH_MS) || 10000;
-const STREAM_FLUSH_CAP_MS = Number(process.env.KIDO_STREAM_FLUSH_CAP_MS) || 300000;
-
-export function nextStreamFlushDelay(prev: number): number {
-  return Math.min(prev * 2, STREAM_FLUSH_CAP_MS);
-}
+const STREAM_FLUSH_MS = 1000;
+const STREAM_MAX_WAIT_MS = 30000;
 
 const STREAM_BATCH_LINES = 200;
 const STREAM_BATCH_BYTES = 16 * 1024;
@@ -458,29 +451,19 @@ export default function (pi: ExtensionAPI) {
   // per poll, so one message per chunk would be one LLM turn per chunk.
   const streamBuffers = new Map<string, { name: string; output: string; lines: string[]; dropped: number }>();
 
-  // Reset when a run completes: the next run's first lines deserve the floor, not whatever the last one escalated to.
-  const streamFlush: { timer: NodeJS.Timeout | null; delay: number } = { timer: null, delay: STREAM_FLUSH_MS };
+  let streamTimer: NodeJS.Timeout | null = null;
+  let streamFirstAt = 0;
 
   const clearStreamTimer = (): void => {
-    if (streamFlush.timer) {
-      clearTimeout(streamFlush.timer);
-      streamFlush.timer = null;
+    if (streamTimer) {
+      clearTimeout(streamTimer);
+      streamTimer = null;
     }
-  };
-
-  // Only ever one timer: a second run's lines ride the one already ticking.
-  const armStreamFlush = (): void => {
-    if (streamFlush.timer) return;
-    streamFlush.timer = setTimeout(() => {
-      streamFlush.timer = null;
-      streamFlush.delay = nextStreamFlushDelay(streamFlush.delay);
-      flushStreams();
-    }, streamFlush.delay);
-    streamFlush.timer.unref?.(); // a held batch must never hold pi's event loop open
   };
 
   const handleInboundStream = (env: Envelope & { kind: "stream" }): void => {
     const run = env.run;
+    if (streamBuffers.size === 0) streamFirstAt = Date.now();
     const entry = streamBuffers.get(run) ?? {
       name: (env.from.kind !== "human" && env.from.name) || run,
       output: env.output,
@@ -493,10 +476,12 @@ export default function (pi: ExtensionAPI) {
       entry.lines = entry.lines.slice(entry.lines.length - STREAM_BUFFER_LINES);
     }
     streamBuffers.set(run, entry);
-    armStreamFlush();
+    clearStreamTimer();
+    streamTimer = setTimeout(flushStreams, Math.max(0, Math.min(STREAM_FLUSH_MS, streamFirstAt + STREAM_MAX_WAIT_MS - Date.now())));
+    streamTimer.unref?.(); // a held batch must never hold pi's event loop open
   };
 
-  // The only place a stream chunk is delivered; called from the idle timer, a turn that
+  // The only place a stream chunk is delivered; called from the debounce timer, a turn that
   // ran tools, and a run's own completion notice, which must not arrive before this.
   const flushStreams = (): void => {
     if (streamBuffers.size === 0) return;
@@ -605,7 +590,6 @@ export default function (pi: ExtensionAPI) {
       case "notice":
         // Before the notice itself: a run's ending must not reach the model ahead of the output tail it refers to.
         flushStreams();
-        streamFlush.delay = STREAM_FLUSH_MS;
         if (env.text) deliverNotice(env.text, labelFrom(env.from));
         return "ok";
       case "stream":
@@ -1218,7 +1202,7 @@ export default function (pi: ExtensionAPI) {
   // pi awaits this handler before it polls the steering queue (measured against pi
   // 0.85.1's agent-loop.js), so a batch sent here is drained by the very next poll. A turn
   // that ran no tools was the agent stopping; flushing there would loop for as long as
-  // output keeps arriving, so those batches wait for the idle schedule instead.
+  // output keeps arriving, so those batches wait for the debounce instead.
   pi.on("turn_end", (event: { toolResults?: unknown[] }) => {
     if (!event?.toolResults?.length) return;
     flushStreams();
@@ -1367,7 +1351,6 @@ export default function (pi: ExtensionAPI) {
       pendingNotices.clear();
       clearStreamTimer();
       streamBuffers.clear();
-      streamFlush.delay = STREAM_FLUSH_MS;
       wakeInFlight = false;
       // A headless session has no ui, and a pi older than 0.87.1 has one without this
       // method; both simply get no `@name` completion. Registered once: session_start fires

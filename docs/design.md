@@ -2137,12 +2137,11 @@ rather than sharing it - see "Idle self-exit, and resuming a run"),
 `KIDO_STALL_THRESHOLD_MS`, `KIDO_STOP_ESCALATION_MS`,
 `KIDO_HEARTBEAT_MS`, `KIDO_PARENT_POLL_MS`, `KIDO_ASK_POLL_MS`,
 `KIDO_SPAWN_TIMEOUT_MS`, `KIDO_STOP_TIMEOUT_MS`, `KIDO_AGENT_LIST_TTL_MS`,
-and streaming's five:
+and streaming's three:
 `KIDO_STREAM_BATCH_MS`, `KIDO_STREAM_BACKOFF_MS` and
 `KIDO_STREAM_BACKOFF_CAP_MS` on the wrapper's side (how often a batch
-goes, and how long it waits after a failed send before trying again),
-`KIDO_STREAM_FLUSH_MS` and `KIDO_STREAM_FLUSH_CAP_MS` on the receiver's
-(the idle flush schedule's floor and its cap). The extension reads
+goes, and how long it waits after a failed send before trying again).
+The extension reads
 its own once at module scope, so its test suite re-imports both files
 under a cache-busting specifier to pick up a fresh value, and re-imports
 both together, because a fresh half and a cached half would silently pair

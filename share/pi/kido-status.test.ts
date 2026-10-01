@@ -21,7 +21,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import kidoStatus, { parseEnvelope } from "./kido-status.ts";
 import { AgentSession } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
-import kidoAgents, { isAncestor, nextStreamFlushDelay, streamBatch } from "./kido-agents.ts";
+import kidoAgents, { isAncestor, streamBatch } from "./kido-agents.ts";
 
 // Written to disk once per fixture as a file literally named "kido": findKido()
 // joins a PATH entry with that name and checks it is executable, nothing fancier.
@@ -1766,16 +1766,15 @@ test("pi's run drops a wake trigger and keeps the rest of the turn", async () =>
 });
 
 // A held batch is the fourth kind that wakes an idle session, and the one that
-// can be flushed with no turn in sight at all - its idle schedule fires on kido's own timer.
+// can be flushed with no turn in sight at all - its debounce fires on kido's own timer.
 test("a stream batch flushed while the session is idle wakes it the same way", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
-    const factory = await withEnv({ KIDO_STREAM_FLUSH_MS: "40", KIDO_STREAM_FLUSH_CAP_MS: "120" }, () => freshExtensions());
-    const s = await startSession(fx, { factory });
+    const s = await startSession(fx);
 
     assert.equal(await sendToInbox(s.inboxPath, streamEnvelope("line 1")), "ok");
-    await pollUntil(() => streamMessages(s.messages).length === 1, 2000, "the idle schedule to flush the batch");
+    await pollUntil(() => streamMessages(s.messages).length === 1, 3000, "the debounce to flush the batch");
     assert.equal((streamMessages(s.messages)[0].opts as any).deliverAs, "nextTurn", "an idle flush rides the turn its trigger starts");
     const trigger = s.delivered.find((d) => d.text === "(kido: a background run's output follows)");
     assert.ok(trigger, `the batch was triggered by a user message: ${JSON.stringify(s.delivered.map((d) => d.text))}`);
@@ -2546,14 +2545,13 @@ function streamEnvelope(text: string, run = "run-1", output = "/state/runs/run-1
 }
 
 // Negative control (second half): the same chunks after a turn with no tool calls
-// must produce nothing until the idle timer fires - flushing on every turn_end
+// must produce nothing until the debounce fires - flushing on every turn_end
 // would buy an endless run of empty turns.
-test("a batch rides a turn that ran tools, and a turn that ran none leaves it held for the idle schedule (TestStreamBatchRidesAToolTurn)", async () => {
+test("a batch rides a turn that ran tools, and a turn that ran none leaves it held for the debounce (TestStreamBatchRidesAToolTurn)", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
-    const factory = await withEnv({ KIDO_STREAM_FLUSH_MS: "120", KIDO_STREAM_FLUSH_CAP_MS: "400" }, () => freshExtensions());
-    const s = await startSession(fx, { factory, idle: () => false });
+    const s = await startSession(fx, { idle: () => false });
 
     for (const text of ["line 1\nline 2", "line 3", "line 4\nline 5"]) {
       assert.equal(await sendToInbox(s.inboxPath, streamEnvelope(text)), "ok");
@@ -2572,37 +2570,29 @@ test("a batch rides a turn that ran tools, and a turn that ran none leaves it he
     await s.emit("turn_end", { turnIndex: 1, toolResults: [] });
     assert.equal(streamMessages(s.messages).length, 1, "a turn with no tool calls was the agent stopping: flushing there would buy a turn, and another");
 
-    await pollUntil(() => streamMessages(s.messages).length === 2, 2000, "the held batch to be flushed by the idle schedule");
-    assert.match(streamMessages(s.messages)[1].message.content, /line 6[\s\S]*line 7/, "the held lines arrive on the idle schedule instead");
+    await pollUntil(() => streamMessages(s.messages).length === 2, 3000, "the held batch to be flushed by the debounce");
+    assert.match(streamMessages(s.messages)[1].message.content, /line 6[\s\S]*line 7/, "the held lines arrive on the debounce instead");
   } finally {
     fx.restore();
   }
 });
 
-// The schedule is a pure function, checked with no clock at all; what a clock
-// could only measure badly is checked as a flush count over a fixed window instead.
-test("the idle flush schedule doubles up to its cap, and the flushes over a window are the few that implies (TestStreamBackoffDoubles)", async () => {
-  assert.equal(nextStreamFlushDelay(10000), 20000, "each idle flush costs a turn, so the next one waits twice as long");
-  assert.equal(nextStreamFlushDelay(20000), 40000);
-  assert.equal(nextStreamFlushDelay(160000), 300000, "the doubling stops at the cap");
-  assert.equal(nextStreamFlushDelay(300000), 300000, "and stays there");
-
+test("a chunk flushes after 1s of quiet, and a chunk inside that second restarts it: one delivery with both (TestStreamDebounce)", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
-    const factory = await withEnv({ KIDO_STREAM_FLUSH_MS: "40", KIDO_STREAM_FLUSH_CAP_MS: "120" }, () => freshExtensions());
-    const s = await startSession(fx, { factory });
+    const s = await startSession(fx);
 
-    const window = 600;
-    const deadline = Date.now() + window;
-    let n = 0;
-    while (Date.now() < deadline) {
-      await sendToInbox(s.inboxPath, streamEnvelope(`line ${++n}`));
-      await new Promise((r) => setTimeout(r, 15));
-    }
-    const flushes = streamMessages(s.messages).length;
-    assert.ok(flushes >= 2, `only ${flushes} flushes in ${window}ms: a held batch must still get through`);
-    assert.ok(flushes <= 8, `${flushes} flushes in ${window}ms: the schedule is not slowing down`);
+    assert.equal(await sendToInbox(s.inboxPath, streamEnvelope("line 1")), "ok");
+    await new Promise((r) => setTimeout(r, 600));
+    assert.equal(await sendToInbox(s.inboxPath, streamEnvelope("line 2")), "ok");
+    await new Promise((r) => setTimeout(r, 600));
+    assert.equal(streamMessages(s.messages).length, 0, "1.2s after the first chunk, but only 0.6s after the last: still held");
+
+    await pollUntil(() => streamMessages(s.messages).length === 1, 3000, "the debounce to flush after the quiet second");
+    assert.match(streamMessages(s.messages)[0].message.content, /line 1[\s\S]*line 2/, "both chunks arrive in the one message");
+    await new Promise((r) => setTimeout(r, 1300));
+    assert.equal(streamMessages(s.messages).length, 1, "and nothing else follows");
   } finally {
     fx.restore();
   }
@@ -3238,6 +3228,28 @@ function deadPid(): number {
   const r = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
   return r.pid!;
 }
+
+test("a stream that never goes quiet for 1s is still delivered 30s after its first chunk (TestStreamMaxWait)", async (t) => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
+    const s = await startSession(fx);
+
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    for (let i = 0; i < 59; i++) {
+      assert.equal(await sendToInbox(s.inboxPath, streamEnvelope(`line ${i}`)), "ok");
+      t.mock.timers.tick(500);
+    }
+    assert.equal(streamMessages(s.messages).length, 0, "29.5s of chunks 0.5s apart: the debounce never fires");
+    assert.equal(await sendToInbox(s.inboxPath, streamEnvelope("line 59")), "ok");
+    t.mock.timers.tick(500);
+    assert.equal(streamMessages(s.messages).length, 1, "30s after the first chunk the held batch goes anyway");
+    assert.match(streamMessages(s.messages)[0].message.content, /line 59/);
+  } finally {
+    t.mock.timers.reset();
+    fx.restore();
+  }
+});
 
 async function withParentEnv<T>(pid: number, session: string, pollMs: number, fn: () => Promise<T>): Promise<T> {
   const vars = { KIDO_AGENT_PARENT_PID: String(pid), KIDO_AGENT_PARENT_SESSION: session, KIDO_PARENT_POLL_MS: String(pollMs) };

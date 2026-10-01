@@ -771,13 +771,11 @@ collapsed custom message at one of three moments:
   either, more lines arrive while it runs, and the loop ends when the
   command does - the seizure this design exists to avoid, re-entering
   through the coalesced channel.
-- otherwise on a backoff schedule - 10s, then 20s, 40s, ..., capped at
-  300s - each flush costing one genuine turn. The first wakes are
-  frequent, which is when an early failure is worth seeing; the later
-  ones are sparse, which is when there is nothing to do but wait. One
-  timer for the session, not one per run.
-- immediately before a run's completion notice, which also resets the
-  schedule, so the model never reads "this is how it ended" above the
+- otherwise 1s after the last chunk, and at most 30s after the first held
+  one: every chunk restarts one timer for the session (not one per run),
+  so a burst is one batch and a quiet watcher's lines reach the model a
+  second after they are written, each such flush costing one genuine turn.
+- immediately before a run's completion notice, so the model never reads "this is how it ended" above the
   output it is the ending of.
 
 A batch carries the last 200 lines or 16KB, whichever binds first, under
@@ -789,9 +787,8 @@ row and in the batch's first line, because a bash run has no state
 record and the label would otherwise fall through to a pane id.
 
 What this costs, stated plainly: while the agent is working, the stream
-costs it context bytes and no turns at all; while it is idle, a
-ten-minute build wakes it about six times and an hour-long one about
-sixteen. `stream` defaults to off.
+costs it context bytes and no turns at all; while it is idle, each pause of a second
+in the output wakes it. `stream` defaults to off.
 
 ## A human at a shell
 
