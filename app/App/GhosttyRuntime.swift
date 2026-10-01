@@ -132,6 +132,27 @@ import GhosttyKit
         }
         guard target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface else { return false }
         let userdata = ghostty_surface_userdata(surface)
+        switch action.tag {
+        case GHOSTTY_ACTION_START_SEARCH:
+            let needle = action.action.start_search.needle.map { String(cString: $0) }
+            PaneView.onMain(userdata) {
+                $0.showFind()
+                if let needle { $0.find?.field.stringValue = needle; $0.find?.search() }
+            }
+            return true
+        case GHOSTTY_ACTION_END_SEARCH:
+            PaneView.onMain(userdata) { $0.find?.close() }
+            return true
+        case GHOSTTY_ACTION_SEARCH_TOTAL:
+            let total = action.action.search_total.total
+            PaneView.onMain(userdata) { $0.find?.ghosttyTotal(total) }
+            return true
+        case GHOSTTY_ACTION_SEARCH_SELECTED:
+            let selected = action.action.search_selected.selected
+            PaneView.onMain(userdata) { $0.find?.ghosttySelected(selected) }
+            return true
+        default: break
+        }
         if action.tag == GHOSTTY_ACTION_SCROLLBAR {
             PaneView.onMain(userdata) { $0.scrolled() }
             return true
