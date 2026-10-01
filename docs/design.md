@@ -393,6 +393,13 @@ That decides all four text-carrying kinds:
   schedule, and why a flush on the wrong turn boundary is a loop rather
   than an expense, is design-subagents.md, "Streaming a run's output".
 
+Escape and the dequeue key restore only queued user text to the editor.
+Custom messages stay in their steering and follow-up queues, in order,
+and reach the next turn boundary exactly once. The agent extension wraps
+`AgentSession.clearQueue` to preserve those entries while pi clears its
+editor queues; the original method lives on `globalThis` so a `/reload`
+re-wraps it rather than stacking wrappers.
+
 ### Waking an idle session
 
 While the session is idle neither queue is consulted, so an arrival has to
@@ -1041,7 +1048,8 @@ deliberately long-lived helper that opts out of self-reaping entirely.
 child's report settles a turn exactly as finished work does, so before
 shutting down the timer asks `kido get-agent --children <session>` - are any
 of this session's runs still going, read from the run records, which
-are where a parent edge outlives a turn - and re-arms if any are. A
+are where a parent edge outlives a turn - and re-arms unless the answer
+is definitely no. Errors and timeouts leave the session open. A
 parent that exited here would take its child with it: the orphan rule
 closes the window of the very child it was waiting for
 (design-subagents.md, "Idle self-exit").

@@ -1,4 +1,4 @@
-import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { accessSync, constants, mkdirSync, unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
@@ -209,6 +209,7 @@ declare global {
   var __kidoPiExtensionSeam: Seam | undefined;
   var __kidoPiExtensionStatusCopy: string | undefined;
   var __kidoPiExtensionRunAgentPrompt: unknown;
+  var __kidoPiExtensionClearQueue: AgentSession["clearQueue"] | undefined;
 }
 
 function heldInbox(): InboxHold | null {

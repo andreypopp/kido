@@ -425,9 +425,9 @@ turn exactly as finished work does, and a clock that cannot tell them
 apart shuts a parent down thirty seconds after it spawns, whereupon the
 orphan rule closes the child it was waiting for, mid-work. So the
 timer asks `kido get-agent --children <session>` first and re-arms if the
-answer is yes, exactly as it does for a focused window. The last child
-ending resumes the clock, as does that child's notice, which is new work
-like any other.
+answer is yes or inconclusive, exactly as it does for a focused window.
+The last child ending resumes the clock, as does that child's notice,
+which is new work like any other.
 
 The reading is of the **run records**, not of anything the session
 remembers: a run whose meta names this session as its parent and which
@@ -437,8 +437,8 @@ and a `/reload` forgets everything in memory, while the record is the
 durable half and is where a parent edge lives. A child whose process is
 gone but whose outcome has not landed yet reads as ended, which is the
 safe direction: a parent held open by a corpse would never go idle again.
-kido being unreachable reads the same way, which is the behaviour the
-clock has with no query at all.
+An error or timeout is inconclusive: the timer re-arms until kido
+definitely answers that no child is alive.
 
 **Shutdown.** Whether it quit, self-exited, was stopped, or lost its
 parent, the child runs one teardown: the parent poll and idle timer

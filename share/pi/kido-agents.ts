@@ -175,6 +175,24 @@ if (typeof runAgentPrompt === "function") {
   });
 }
 
+function isMessageQueue(queue: unknown): queue is { messages: AgentSession["messages"] } {
+  return typeof queue === "object" && queue !== null && "messages" in queue && Array.isArray(queue.messages);
+}
+
+// pi's core/agent-session.js clearQueue() discards custom messages alongside editor text.
+const clearQueue = (globalThis.__kidoPiExtensionClearQueue ??= AgentSession.prototype.clearQueue);
+AgentSession.prototype.clearQueue = function () {
+  const agent: object = this.agent;
+  if (!("steeringQueue" in agent) || !("followUpQueue" in agent)
+    || !isMessageQueue(agent.steeringQueue) || !isMessageQueue(agent.followUpQueue)) return clearQueue.call(this);
+  const steering = agent.steeringQueue.messages.filter((m) => m.role === "custom");
+  const followUp = agent.followUpQueue.messages.filter((m) => m.role === "custom");
+  const cleared = clearQueue.call(this);
+  for (const message of steering) this.agent.steer(message);
+  for (const message of followUp) this.agent.followUp(message);
+  return cleared;
+};
+
 const STREAM_FLUSH_MS = 1000;
 const STREAM_MAX_WAIT_MS = 30000;
 
@@ -744,7 +762,7 @@ export default function (pi: ExtensionAPI) {
       // run records, not process memory, since a child outlives the turn that spawned it.
       const sessionId = seam().host?.sessionId() ?? "";
       const children = await runKido(["get-agent", sessionId, "--children"], { timeoutMs: 2000 });
-      if (lookupBoolean(children, sessionId, "childrenAlive") === true) {
+      if (lookupBoolean(children, sessionId, "childrenAlive") !== false) {
         armIdleExit();
         return;
       }

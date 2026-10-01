@@ -62,8 +62,14 @@ switch (args[0]) {
     if (args.includes("--children")) {
       const logFile = process.env.KIDO_FAKE_CHILDREN_ALIVE_LOG;
       if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
-      process.stdout.write(JSON.stringify({ id: args[1], alive: true, childrenAlive: process.env.KIDO_FAKE_CHILDREN_ALIVE === "1" }) + "\\n");
-      process.exit(0);
+      const mode = process.env.KIDO_FAKE_CHILDREN_ALIVE;
+      if (mode === "fail") process.exit(1);
+      const respond = () => {
+        process.stdout.write(JSON.stringify({ id: args[1], alive: true, childrenAlive: mode === "1" }) + "\\n");
+        process.exit(0);
+      };
+      if (mode === "timeout") setTimeout(respond, 10000); else respond();
+      break;
     }
     const logFile = process.env.KIDO_FAKE_PARENT_ALIVE_LOG;
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
@@ -1771,6 +1777,97 @@ test("pi's run drops a wake trigger and keeps the rest of the turn", async () =>
   await run([user("(kido: a notification arrived; it follows) and more"), arrival]);
   await run(arrival);
   assert.deepEqual(prompted, [[arrival], [user("(kido: a notification arrived; it follows) and more"), arrival], arrival]);
+});
+
+test("pi's clearQueue restores only editor text and preserves both custom queues in order across reload", async () => {
+  assert.equal(typeof globalThis.__kidoPiExtensionClearQueue, "function", "pi must expose clearQueue");
+  const piDist = new URL("./", import.meta.resolve("@earendil-works/pi-coding-agent"));
+  const { Agent } = await import(new URL("../node_modules/@earendil-works/pi-agent-core/dist/agent.js", piDist).href);
+  const agent = new Agent();
+  const custom = ["kido-message", "kido-ask", "kido-notice", "kido-stream", "kido-reply"].map((customType) => ({
+    role: "custom", customType, content: customType, display: true, timestamp: 0,
+  }));
+  const user = { role: "user", content: "editor text", timestamp: 0 };
+  for (const message of [custom[0], user, ...custom.slice(1)]) {
+    agent.steer(message);
+    agent.followUp(message);
+  }
+  const session = Object.assign(Object.create(AgentSession.prototype), {
+    agent, _steeringMessages: ["steering text"], _followUpMessages: ["follow-up text"], _emitQueueUpdate() {},
+  });
+  await freshExtensions();
+  assert.deepEqual(session.clearQueue(), { steering: ["steering text"], followUp: ["follow-up text"] });
+  assert.deepEqual(session.clearQueue(), { steering: [], followUp: [] });
+  assert.deepEqual(agent.steeringQueue.messages, custom);
+  assert.deepEqual(agent.followUpQueue.messages, custom);
+  let cleared = false;
+  Object.assign(session, {
+    agent: { clearAllQueues() { cleared = true; } },
+    _steeringMessages: ["steering text"], _followUpMessages: ["follow-up text"],
+  });
+  assert.deepEqual(session.clearQueue(), { steering: ["steering text"], followUp: ["follow-up text"] });
+  assert.equal(cleared, true, "missing core queues must leave the original clearQueue intact");
+});
+
+test("a queued custom follow-up survives Escape during a tool call", { timeout: 5000 }, async (t) => {
+  const piDist = new URL("./", import.meta.resolve("@earendil-works/pi-coding-agent"));
+  const { Agent } = await import(new URL("../node_modules/@earendil-works/pi-agent-core/dist/agent.js", piDist).href);
+  const { InteractiveMode } = await import(new URL("modes/interactive/interactive-mode.js", piDist).href);
+  for (const escape of [false, true]) {
+    await t.test(escape ? "Escape restores the editor and aborts" : "abort alone preserves the queue", async () => {
+      let started!: () => void;
+      const toolStarted = new Promise<void>((resolve) => { started = resolve; });
+      let requests = 0;
+      const agent = new Agent({
+        streamFn: async (_model: unknown, _context: unknown, options: any) => {
+          const message = {
+            role: "assistant", api: "test", provider: "test", model: "test", timestamp: 0,
+            content: requests++ === 0 ? [{ type: "toolCall", id: "blocked", name: "wait", arguments: {} }] : [],
+            stopReason: options.signal.aborted ? "aborted" : requests === 1 ? "toolUse" : "stop",
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+          };
+          return {
+            async *[Symbol.asyncIterator]() { yield { type: "done", message }; },
+            result: async () => message,
+          };
+        },
+        initialState: { tools: [{
+          name: "wait", label: "Wait", description: "Wait for interruption", parameters: { type: "object", properties: {} },
+          execute: async (_id: string, _args: unknown, signal: AbortSignal) => {
+            started();
+            await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+            return { content: [{ type: "text", text: "Command aborted" }], details: {} };
+          },
+        }] },
+      });
+      const session = Object.assign(Object.create(AgentSession.prototype), {
+        agent, _isAgentRunActive: true, _steeringMessages: [], _followUpMessages: [], _emitQueueUpdate() {},
+        abortRetry() {}, abortCompaction() {}, abortBranchSummary() {},
+        waitForIdle: () => agent.waitForIdle(),
+      });
+      const run = agent.prompt("start");
+      await toolStarted;
+      await session.sendCustomMessage({ customType: "kido-message", content: "peer evidence", display: true }, { deliverAs: "followUp", triggerTurn: true });
+      assert.equal(agent.hasQueuedMessages(), true);
+      assert.deepEqual(session.getFollowUpMessages(), [], "custom entries have no editor text");
+      let aborted: Promise<void> | undefined;
+      if (escape) {
+        const interactive = Object.assign(Object.create(InteractiveMode.prototype), {
+          runtimeHost: { session }, compactionQueuedMessages: [], updatePendingMessagesDisplay() {},
+          editor: { getText: () => "", setText() { assert.fail("custom message must not become editor text"); } },
+        });
+        const abort = session.abort.bind(session);
+        session.abort = () => (aborted = abort());
+        interactive.restoreQueuedMessagesToEditor({ abort: true });
+      } else aborted = session.abort();
+      await aborted;
+      await run;
+      assert.equal(agent.state.messages.some((m: any) => m.role === "custom"), false, "not consumed during the aborted turn");
+      await agent.prompt("next user turn");
+      assert.equal(agent.state.messages.filter((m: any) => m.role === "custom" && m.content === "peer evidence").length, 1,
+        "acknowledged kido follow-up must reach the next turn exactly once");
+    });
+  }
 });
 
 // A held batch is the fourth kind that wakes an idle session, and the one that
@@ -4221,6 +4318,31 @@ test("idle self-exit: a live child run re-arms the clock, and the session exits 
     fx.restore();
   }
 });
+
+for (const mode of ["fail", "timeout"]) {
+  test(`idle self-exit: a ${mode} children check re-arms until it definitely answers false`, { timeout: 15000 }, async () => {
+    const fx = makeFixture();
+    try {
+      fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
+      process.env.KIDO_FAKE_CHILDREN_ALIVE = mode;
+      await withParentEnv(process.pid, "boss-session", 5000, async () => {
+        await withIdleExitEnv(0.05, false, async () => {
+          const factory = await freshExtensions();
+          const s = await startWithShutdownSpy(fx, factory);
+          await s.emit("agent_settled", {}, { isIdle: () => true });
+          await pollUntil(() => fx.childrenAliveCalls().length >= 2 || s.shutdowns() > 0, 6000, "another children check or shutdown");
+          if (mode === "timeout") await new Promise((resolve) => setTimeout(resolve, 2500));
+          assert.equal(s.shutdowns(), 0, "an inconclusive children check must not shut down the session");
+          assert.ok(fx.childrenAliveCalls().length >= 2, "the children check must re-arm");
+          fx.setChildrenAlive(false);
+          await pollUntil(() => s.shutdowns() > 0, 5000, "shutdown after a definite no-live-children answer");
+        });
+      });
+    } finally {
+      fx.restore();
+    }
+  });
+}
 
 // pi may decline a shutdown request while mid-compaction; the clock must not
 // take ctx.shutdown() at its word, and re-arms so a declined request is asked for again.
