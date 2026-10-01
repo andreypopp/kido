@@ -48,6 +48,48 @@ bytes and mode state. tmux queues `%output` ahead of the reply, so
 output before the reply is wiped by the restore and output after it is
 fed live. The same resync follows a `%pause`.
 
+The initial history capture requests the newest 5000 physical rows. Its
+upper edge moves down to a whole logical line; if a single line spans the
+entire capture, the capture expands until that line fits. Captures use
+`-e -J` for VT text and a companion `-F -L -T` capture for physical row
+numbers and wrap flags. tmux has no flags-only capture. History, these
+captures and `alternate_on` are read on one command line. Whole logical
+lines are never split between chunks, including the history/screen join
+in the initial restore.
+
+Scrolling within one screen of the loaded top fetches the next 5000 rows,
+aligned the same way. The gap is tmux's `history_size` minus Ghostty's
+retained history rows, read through its mutex-protected scrollbar snapshot
+(`total - len`), not the renderer's asynchronous scrollbar notification.
+Offsets count from the bottom; output queued ahead of a capture reply is
+already fed before calculating its overlap, and overlapping rows are
+excluded. Trimming tmux's oldest history therefore changes the gap, not
+the identity of the loaded rows. There is one fetch per pane; sync tokens,
+view identity and a grid epoch reject obsolete replies. Every resize
+resyncs from the newest 5000 rows. Alternate screens never receive history.
+
+`ghostty_surface_prepend_history` parses a chunk in a scratch terminal at
+the primary screen's width and clones its pages before the existing first
+page, under the same renderer mutex as manual output. Existing pins and
+selections stay attached to their content; a viewport at the old top
+becomes pinned there. The renderer is invalidated and publishes the new
+scrollbar. The API returns the number of inserted physical rows, or zero
+on alternate screens, allocation failure or insufficient scrollback byte
+budget. A chunk is accepted whole or not at all, never evicting newer rows
+to make room. Kido defaults to a 256 MiB Ghostty scrollback budget; the
+user's configuration can override it. Hitting it stops older fetches until
+resync, and jumps clamp to the loaded range. Live output still follows
+Ghostty's normal byte-budget trimming.
+
+Each pane draws one thin overlay scroller, shown during scrolling or
+hovering and fading afterwards. Ghostty's own scrollbar is disabled. The
+thumb uses tmux's full retained history plus the screen, with a native-style
+minimum knob size. Clicks and drags fetch as many chunks as needed before
+scrolling to the requested row, without placeholder rows. Already-loaded
+rows can outlive tmux's history limit until resync; the scroller clamps to
+tmux's retained range. Its colours resolve in the current effective
+appearance when drawn.
+
 An unsafe paste is asked about in a sheet showing its text, and the
 request is completed exactly once: pasted, or refused with an empty
 completion on Cancel or when its surface is freed. Other confirmations
