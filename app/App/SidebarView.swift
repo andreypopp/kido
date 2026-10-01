@@ -16,7 +16,6 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate,
         let session: SessionID
         let content: Content
         var guides: [(top: CGFloat, bottom: CGFloat)] = []
-        var node: SidebarFeed.Node? { if case .pane(let item) = content { return .item(item) }; return nil }
         var section: SessionNodes? { if case .section(let s) = content { return s }; return nil }
         var key: String {
             let id: String = switch content { case .section: "section"; case .spacer(let id, _): "space:\(id)"; case .pane(let item): item.id.description }
@@ -170,6 +169,8 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate,
     private func show(_ next: Snapshot?) {
         let selected = entry(table.selectedRow)?.key
         let origin = scroll.contentView.bounds.origin
+        let first = table.rows(in: table.visibleRect).location
+        let anchor = first == NSNotFound ? nil : entry(first).map { ($0.key, origin.y - table.rect(ofRow: first).minY) }
         let cleared = next?.filter.isEmpty == true && snapshot?.filter.isEmpty == false
         let recenter = cleared || next.map { $0.client != snapshot?.client } ?? false
         snapshot = next
@@ -178,12 +179,16 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate,
             func panes(_ nodes: [SidebarFeed.Node], depth: Int) -> [Entry] {
                 nodes.flatMap { node -> [Entry] in
                     switch node {
-                    case .window(let group): return panes(group.children.map(SidebarFeed.Node.item), depth: depth)
+                    case .window:
+                        let rows = panes(node.children, depth: depth)
+                        rows.first?.guides[depth].top = 5
+                        rows.last?.guides[depth].bottom = 5
+                        return rows
                     case .item(let item):
                         let row = Entry(session.id, .pane(item))
                         row.guides = Array(repeating: (0, 0), count: depth + 1)
                         let children = panes(item.children, depth: depth + 1)
-                        children.last?.guides[depth + 1].bottom = 6
+                        if let last = children.last, last.guides[depth + 1].bottom == 0 { last.guides[depth + 1].bottom = 6 }
                         return [row] + children
                     }
                 }
@@ -202,7 +207,11 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate,
             table.selectRowIndexes([row], byExtendingSelection: false)
             if recenter { table.scrollRowToVisible(row) }
         } else { table.deselectAll(nil) }
-        if !recenter { scroll.contentView.scroll(to: origin); scroll.reflectScrolledClipView(scroll.contentView) }
+        if !recenter {
+            let y = anchor.flatMap { key, offset in items.firstIndex { $0.key == key }.map { table.rect(ofRow: $0).minY + offset } } ?? origin.y
+            scroll.contentView.scroll(to: NSPoint(x: origin.x, y: y))
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
         if let query = activating, next?.filter == query { activate() }
         updateTick()
     }
@@ -211,13 +220,13 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate,
         let visible = table.rows(in: table.visibleRect)
         guard visible.location != NSNotFound else { return [] }
         return IndexSet((visible.location..<min(table.numberOfRows, NSMaxRange(visible))).filter {
-            if case .item(let item) = entry($0)?.node { return item.started != nil }
+            if case .pane(let item) = entry($0)?.content { return item.started != nil }
             return false
         })
     }
 
     private func updateTick() {
-        guard !isHidden, items.contains(where: { if case .item(let i) = $0.node { return i.started != nil }; return false }) else {
+        guard !isHidden, items.contains(where: { if case .pane(let i) = $0.content { return i.started != nil }; return false }) else {
             tick?.invalidate()
             tick = nil
             return
@@ -234,7 +243,7 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate,
         guard !isHiddenOrHasHiddenAncestor else { return }
         let rows = startedRows
         guard !rows.isEmpty else { return updateTick() }
-        table.reloadData(forRowIndexes: rows, columnIndexes: IndexSet(integer: 0))
+        for row in rows { (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? Cell)?.updateClock() }
     }
 
     private func activate() {
@@ -252,13 +261,12 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate,
     }
 
     func nextAttention(_ delta: Int) {
-        let all = items
-        guard !all.isEmpty else { return }
-        var i = all.firstIndex { $0 === entry(table.selectedRow) } ?? (delta > 0 ? -1 : all.count)
-        for _ in all.indices {
-            i = (i + delta + all.count) % all.count
-            if case .item(let item) = all[i].node, item.attention {
-                let row = table.row(forItem: all[i])
+        let count = table.numberOfRows
+        guard count > 0 else { return }
+        var row = table.selectedRow >= 0 ? table.selectedRow : (delta > 0 ? -1 : count)
+        for _ in 0..<count {
+            row = (row + delta + count) % count
+            if case .pane(let item) = entry(row)?.content, item.attention {
                 table.selectRowIndexes([row], byExtendingSelection: false)
                 table.scrollRowToVisible(row)
                 return jump(row)
@@ -381,8 +389,18 @@ private struct Fonts {
 }
 
 private final class SelectionRow: NSTableRowView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(contrastChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    deinit { NSWorkspace.shared.notificationCenter.removeObserver(self) }
+    @objc private func contrastChanged() { needsDisplay = true }
     override func drawSelection(in dirtyRect: NSRect) {
-        NSColor.labelColor.withAlphaComponent(isEmphasized && window?.isKeyWindow == true ? 0.10 : 0.06).setFill()
+        let color = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+            ? NSColor.selectedContentBackgroundColor
+            : NSColor.labelColor.withAlphaComponent(isEmphasized && window?.isKeyWindow == true ? 0.10 : 0.06)
+        color.setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
     }
     override var isSelected: Bool { didSet { subviews.forEach { $0.needsDisplay = true } } }
@@ -452,12 +470,19 @@ private final class Cell: NSTableCellView {
         }
     }
 
+    func updateClock() {
+        guard case .pane(let row) = entry?.content, let started = row.started else { return }
+        let s = max(0, Int(Date().timeIntervalSince(started)))
+        tail.stringValue = s < 60 ? "\(s)s" : s < 3600 ? String(format: "%dm%02ds", s / 60, s % 60) : String(format: "%dh%02dm", s / 3600, (s / 60) % 60)
+        needsLayout = true
+    }
+
     func configure(_ entry: SidebarView.Entry) {
         self.entry = entry
         title.stringValue = ""
         tail.stringValue = ""
-        title.textColor = .labelColor.withAlphaComponent(0.92)
-        tail.textColor = .labelColor.withAlphaComponent(0.50)
+        title.textColor = .labelColor
+        tail.textColor = .secondaryLabelColor
         title.font = entry.guides.count > 1 ? fonts.small : fonts.regular
         tail.font = fonts.small
         glyph.image = nil
@@ -468,28 +493,26 @@ private final class Cell: NSTableCellView {
         case .section(let section):
             title.stringValue = section.name
             title.font = fonts.section
-            title.textColor = .labelColor.withAlphaComponent(0.50)
+            title.textColor = .secondaryLabelColor
             addWindow.toolTip = "New window in " + section.name
             addWindow.setAccessibilityLabel(addWindow.toolTip)
         case .spacer: break
         case .pane(let row):
             title.stringValue = row.title.map(\.text).joined()
-            if let started = row.started {
-                let s = max(0, Int(Date().timeIntervalSince(started)))
-                tail.stringValue = s < 60 ? "\(s)s" : s < 3600 ? String(format: "%dm%02ds", s / 60, s % 60) : String(format: "%dh%02dm", s / 3600, (s / 60) % 60)
-            } else { tail.stringValue = row.tail.map(\.text).joined() }
+            if row.started != nil { updateClock() }
+            else { tail.stringValue = row.tail.map(\.text).joined() }
             let symbol: String?
             let failed: Bool = switch row.indicator { case .failed, .gone(.failed), .gone(.died): true; default: false }
             if failed {
                 symbol = "xmark.circle.fill"
                 status = "Error"
                 glyph.contentTintColor = .systemRed
-                tail.textColor = NSColor(srgbRed: 1, green: 0.48, blue: 0.45, alpha: 1)
+                tail.textColor = .systemRed
             } else if row.attention || row.indicator == .waiting || row.indicator == .stalled {
                 symbol = "exclamationmark.circle.fill"
                 status = "Needs attention"
                 glyph.contentTintColor = .systemOrange
-                tail.textColor = NSColor(srgbRed: 1, green: 0.70, blue: 0.25, alpha: 1)
+                tail.textColor = .systemOrange
             } else {
                 symbol = nil
                 if row.indicator == .running || row.indicator == .compacting {
@@ -498,13 +521,6 @@ private final class Cell: NSTableCellView {
                 }
             }
             if let symbol { glyph.image = NSImage(systemSymbolName: symbol, accessibilityDescription: status) }
-        }
-        for field in [title, tail] {
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.lineBreakMode = .byTruncatingTail
-            field.attributedStringValue = NSAttributedString(string: field.stringValue, attributes: [
-                .font: field.font!, .foregroundColor: field.textColor!, .paragraphStyle: paragraph,
-            ])
         }
         toolTip = [title.stringValue, tail.stringValue, status].filter { !$0.isEmpty }.joined(separator: ", ")
         setAccessibilityLabel(toolTip)
