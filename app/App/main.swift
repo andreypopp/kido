@@ -41,15 +41,19 @@ import TmuxControl
             backing: .buffered,
             defer: false)
         window.title = SessionModel().title
+        window.collectionBehavior = .fullScreenPrimary
         window.contentMinSize = Sidebar.minSize
         let width = background ? 236 : UserDefaults.standard.object(forKey: "nativeSidebarWidth") as? Double ?? 236
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.backgroundColor = runtime.background
-        if (runtime.background.usingColorSpace(.deviceRGB)?.brightnessComponent ?? 0) < 0.5 {
-            window.appearance = NSAppearance(named: .darkAqua)
+        let rgb = runtime.background.usingColorSpace(.deviceRGB) ?? .black
+        let channels = [rgb.redComponent, rgb.greenComponent, rgb.blueComponent].map {
+            $0 <= 0.04045 ? $0 / 12.92 : pow(($0 + 0.055) / 1.055, 2.4)
         }
+        let luminance = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
+        window.appearance = NSAppearance(named: luminance < 0.5 ? .darkAqua : .aqua)
         window.contentViewController = sidebar
         let toolbar = NSToolbar(identifier: "KidoSidebar")
         toolbar.delegate = sidebar
@@ -186,7 +190,7 @@ import TmuxControl
         }
         view.items = [
             item("Hide Sidebar", #selector(toggleSidebar), "s", [.command, .control]),
-            item("Focus Sidebar", #selector(focusSidebar), "f", [.command, .control]),
+            item("Focus Sidebar", #selector(focusSidebar), "l", [.command, .control]),
             .separator(),
             item("Next Needing Attention", #selector(nextAttention), "n", [.command, .control]),
             item("Previous Needing Attention", #selector(previousAttention), "N", [.command, .control]),
