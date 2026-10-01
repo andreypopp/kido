@@ -10,7 +10,9 @@ final class GhosttyRuntime {
     init?() {
         guard ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS,
               let config = ghostty_config_new() else { return nil }
-        ghostty_config_load_default_files(config)
+        let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : $0 }
+        let file = (xdg ?? NSHomeDirectory() + "/.config") + "/kido/kido-app.conf"
+        if FileManager.default.fileExists(atPath: file) { ghostty_config_load_file(config, file) }
         ghostty_config_load_recursive_files(config)
         let tiling = "window-padding-x = 0\nwindow-padding-y = 0\n"
         ghostty_config_load_string(config, tiling, UInt(tiling.utf8.count), "/kido")
