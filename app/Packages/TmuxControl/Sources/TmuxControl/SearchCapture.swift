@@ -16,16 +16,15 @@ public struct SearchCapture: Sendable {
     }
 
     public init?(_ replies: [Reply], query: String) {
-        guard let capture = Capture(replies), let first = capture.lines.first else { return nil }
+        guard let capture = Capture(replies), !capture.lines.isEmpty else { return nil }
         history = capture.state.history
         alternate = capture.state.alternate
-        let skip = first.start > -history && first.start < 0
-        next = alternate || first.start <= -history ? nil : (skip ? first.end : first.start - 1)
+        next = capture.next
         let needle = query.utf8.map { (65...90).contains($0) ? $0 + 32 : $0 }
         guard !needle.isEmpty else { distances = []; return }
         var found: [Int] = []
-        for index in capture.lines.indices.reversed() where !skip || index > 0 {
-            let bytes = capture.lines[index].text.utf8.map { (65...90).contains($0) ? $0 + 32 : $0 }
+        for line in capture.completeLines.reversed() {
+            let bytes = line.text.utf8.map { (65...90).contains($0) ? $0 + 32 : $0 }
             var count = 0, offset = 0
             while offset + needle.count <= bytes.count {
                 if bytes[offset..<(offset + needle.count)].elementsEqual(needle) {
@@ -33,7 +32,7 @@ public struct SearchCapture: Sendable {
                 }
                 offset += 1
             }
-            found.append(contentsOf: repeatElement(-capture.lines[index].start, count: count))
+            found.append(contentsOf: repeatElement(-line.start, count: count))
         }
         distances = found
     }
