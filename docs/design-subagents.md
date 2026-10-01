@@ -734,10 +734,9 @@ third writer that batches whole lines and sends one `stream` envelope
 per 250ms or 4KB, whichever comes first, with ANSI escapes and control
 bytes stripped from what travels (the output file keeps the bytes as
 written). A line the command has not finished writing waits for the next
-batch, or for the close. The parent's inbox is resolved **once** and
-held, and re-resolved only after a failed send: `send()`'s own
-resolution is a state-directory read plus a tmux pane listing, which is
-right for one notice and not for a chunk stream.
+batch, or for the close. The parent's inbox is resolved by session id on
+every send, a state-directory read and no tmux pane listing, so a parent
+restarted on the same session id receives the next batch.
 
 Nothing about it may cost the command anything. The tee to the output
 file is unconditional and is the source of truth; the stream is

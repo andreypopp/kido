@@ -2,6 +2,8 @@ package e2e
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -94,4 +96,31 @@ func lastNotice(h *harness, in interface{ Received() []string }) string {
 		}
 	}
 	return ""
+}
+
+// Pins that a parent restarted on the same session id (a new pid's socket
+// recorded under it) receives the very next batch: the command stays
+// alive after its second line, so no later chunk or completion notice can
+// stand in for a batch lost to the dead socket.
+func TestAsyncBashStreamFollowsAParentRestart(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	h.in("set-environment", "-g", "KIDO_STREAM_BATCH_MS", "100")
+	old := h.asyncParent("alpha", "parent-stream-restart")
+	gate := filepath.Join(h.dir, "restarted")
+
+	h.asyncBashWith([]string{"--stream"}, "restarted",
+		"sh", "-c", fmt.Sprintf("echo before; while [ ! -e %s ]; do sleep 0.05; done; echo after; sleep 30", gate))
+	h.waitFor(func() bool { return len(old.Received()) > 0 }, settle, msgf("the first batch to reach the original inbox"))
+
+	restarted := startInbox(h.t, "ok\n")
+	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
+	h.agentStatus("parent-stream-restart", pane, "pi", "idle", "--inbox", restarted.Path)
+	os.Remove(old.Path)
+	if err := os.WriteFile(gate, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h.waitFor(func() bool { return strings.Contains(strings.Join(restarted.Received(), "\n"), "after") }, settle,
+		msgf("the batch after the restart to reach the new inbox"))
 }

@@ -47,14 +47,11 @@ let sanitize line =
   go 0;
   String.rdrop_while (String.contains " \t\r") (Buffer.contents b)
 
-(* The sender thread alone touches [inbox], and [close] once it has stopped: resolved once and
-   again only after a failed send, the one event that can mean the address changed. Every other
-   mutable field is under [mu]. *)
+(* Every mutable field is under [mu]. *)
 type stream = {
   dir : string;
   knobs : knobs;
   meta : Subrun.meta;
-  mutable inbox : string;
   mu : Mutex.t;
   partial : Buffer.t;
   pending : string Queue.t;
@@ -133,33 +130,23 @@ let credit t lines n =
       t.streamed <- t.streamed + n)
 
 let send t text =
-  let resolved =
-    if (not (String.is_empty t.inbox)) || String.is_empty t.meta.parent_session then t.inbox
-    else
-      match List.assoc_opt ~eq:String.equal t.meta.parent_session (State.load_live ~dir:t.dir) with
-      | Some p -> p.inbox
-      | None -> ""
-  in
-  (not (String.is_empty resolved))
-  &&
-  let env : Msg.envelope =
-    {
-      kind = Stream;
-      id = Msg.new_id ();
-      from = { session = ""; name = t.meta.name; pane = "" };
-      reply_to = "";
-      text;
-      run = Subrun.string_of_id t.meta.id;
-      output = Subrun.output_path ~dir:t.dir t.meta.id;
-    }
-  in
-  match Msg.deliver ~path:resolved (Yojson.Safe.to_string (Msg.envelope_to_yojson env)) with
-  | Ok () ->
-      t.inbox <- resolved;
-      true
-  | Error _ ->
-      t.inbox <- "";
-      false
+  match List.assoc_opt ~eq:String.equal t.meta.parent_session (State.load_live ~dir:t.dir) with
+  | Some { inbox; _ } when not (String.is_empty inbox) -> (
+      let env : Msg.envelope =
+        {
+          kind = Stream;
+          id = Msg.new_id ();
+          from = { session = ""; name = t.meta.name; pane = "" };
+          reply_to = "";
+          text;
+          run = Subrun.string_of_id t.meta.id;
+          output = Subrun.output_path ~dir:t.dir t.meta.id;
+        }
+      in
+      match Msg.deliver ~path:inbox (Yojson.Safe.to_string (Msg.envelope_to_yojson env)) with
+      | Ok () -> true
+      | Error _ -> false)
+  | _ -> false
 
 let deliver t =
   match take t with
@@ -210,7 +197,6 @@ let start ~dir knobs meta =
       dir;
       knobs;
       meta;
-      inbox = "";
       mu = Mutex.create ();
       partial = Buffer.create 256;
       pending = Queue.create ();
