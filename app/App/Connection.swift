@@ -152,10 +152,10 @@ final class Connection: @unchecked Sendable {
     // fed before the restore is wiped by it and output after it is not in it.
     func sync(_ pane: PaneID, first: [Command] = [], synced: (@Sendable () -> Void)? = nil) {
         client.send(first + PaneSync.commands(pane)) { [weak self] replies in
+            defer { synced?() }
             guard let self, let replies else { return }
             panes?[pane]?.feed(
                 PaneSync.restore(replies.dropFirst(first.count)) ?? Self.notice("could not capture \(pane): \(replies)"))
-            synced?()
         }
     }
 
