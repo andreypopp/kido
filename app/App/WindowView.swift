@@ -112,7 +112,6 @@ final class WindowView: NSView {
         guard let shown else { return }
         guard !isHidden else { return }
         if !needsReconcile { place(resizeGrids: true); return }
-        toolbar?.removeFromSuperview()
         let layoutPanes = shown.layout.root.panes
         let existing = Dictionary(uniqueKeysWithValues: panes.map { ($0.pane, $0) })
         var views: [PaneID: PaneView] = [:]
