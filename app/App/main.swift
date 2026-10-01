@@ -206,8 +206,16 @@ import TmuxControl
         ]
         let file = NSMenu(title: "File")
         file.items = [item("New Session", #selector(newSession), "N", [.command, .shift])]
+        let find = NSMenu(title: "Find")
+        find.items = [
+            item("Find…", #selector(PaneView.showFind(_:)), "f", .command),
+            item("Find Next", #selector(PaneView.findNext(_:)), "g", .command),
+            item("Find Previous", #selector(PaneView.findPrevious(_:)), "g", [.command, .shift]),
+        ]
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Find", action: nil, keyEquivalent: "").submenu = find
         let bar = NSMenu()
-        for menu in [app, file, view, menus.window, menus.session] {
+        for menu in [app, file, edit, view, menus.window, menus.session] {
             bar.addItem(withTitle: menu.title, action: nil, keyEquivalent: "").submenu = menu
         }
         bar.insertItem(PaneCommand.menu, at: 2)
