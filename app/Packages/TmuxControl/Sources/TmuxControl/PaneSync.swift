@@ -1,19 +1,18 @@
 import Foundation
-import TmuxControl
 
-enum PaneSync {
+public enum PaneSync {
     private static let state = [
         "history_size", "alternate_on", "cursor_x", "cursor_y", "scroll_region_upper",
         "scroll_region_lower", "keypad_flag", "insert_flag", "alternate_saved_x", "alternate_saved_y",
         "cursor_blinking", "cursor_shape", "pane_key_mode", "pane_tabs", "pane_private_modes",
     ].map { "#{\($0)}" }.joined(separator: "\u{1F}")
 
-    enum Restore {
+    public enum Restore {
         case snapshot(Data, history: Int)
         case expand(Int)
     }
 
-    static func commands(_ pane: PaneID, chunk: Int = 5000) -> [Command] {
+    public static func commands(_ pane: PaneID, chunk: Int = 5000) -> [Command] {
         HistoryCapture.commands(pane, loaded: 0, chunk: chunk) + [
             Command("capture-pane", "-p", "-e", "-J", "-t", pane),
             Command("capture-pane", "-p", "-e", "-J", "-a", "-q", "-t", pane),
@@ -22,7 +21,7 @@ enum PaneSync {
         ]
     }
 
-    static func restore(_ replies: some Collection<Reply>) -> Restore? {
+    public static func restore(_ replies: some Collection<Reply>) -> Restore? {
         let lines = replies.compactMap { if case .success(let l) = $0 { l } else { nil } }
         guard lines.count == 7, let state = lines[6].first,
               let history = HistoryCapture(replies.prefix(3), loaded: 0, initial: true) else { return nil }

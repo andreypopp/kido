@@ -9,12 +9,16 @@ final class Connection: @unchecked Sendable {
             case complete
             case more(gap: Int)
             case limited
-            case alternate
             case fetching(UUID)
         }
         let view: PaneView
         var history: History = .syncing(UUID())
-        var search: (token: UUID, matches: [Int])?
+        enum Search {
+            case scanning(token: UUID, matches: [Int])
+            case stale(since: DispatchTime, restart: DispatchWorkItem?)
+        }
+        var search: Search?
+        var metadataDirty = false
         init(_ view: PaneView) { self.view = view }
     }
     private var panes: [PaneID: PaneFeed]? = [:]
@@ -118,7 +122,11 @@ final class Connection: @unchecked Sendable {
     private func handle(_ event: Event) {
         switch event {
         case .output(let p, let bytes), .extendedOutput(let p, _, let bytes):
-            panes?[p]?.view.feed(Data(bytes))
+            if let feed = panes?[p] {
+                feed.metadataDirty = true
+                invalidateSearch(feed, restart: true)
+                feed.view.feed(Data(bytes))
+            }
         case .pause(let p):
             let resume = Command("refresh-client", "-A", "\(p):continue")
             if panes?[p] == nil { send([resume]) } else { sync(p, first: [resume]) }
@@ -177,6 +185,7 @@ final class Connection: @unchecked Sendable {
             guard let feed = self.panes?[pane] else { return synced?() ?? () }
             let token = UUID()
             feed.history = .syncing(token)
+            self.invalidateSearch(feed, restart: false)
             feed.view.clearScrollTarget()
             DispatchQueue.main.async { [weak view = feed.view] in view?.resetScroll() }
             self.client.send(first + PaneSync.commands(pane, chunk: chunk)) { [weak self, weak feed] replies in
@@ -189,6 +198,7 @@ final class Connection: @unchecked Sendable {
                 case .snapshot(let data, let history):
                     feed.view.feed(data)
                     let position = feed.view.scrollPosition()
+                    feed.metadataDirty = false
                     feed.history = history > position.history ? .more(gap: history - position.history) : .complete
                     self.publish(feed, history: history)
                     DispatchQueue.main.async { [weak view = feed.view] in view?.find?.search() }
@@ -200,11 +210,33 @@ final class Connection: @unchecked Sendable {
         }
     }
 
+    private func invalidateSearch(_ feed: PaneFeed, restart: Bool) {
+        let since: DispatchTime
+        switch feed.search {
+        case .scanning:
+            since = .now()
+            DispatchQueue.main.async { [weak view = feed.view] in view?.find?.invalidate() }
+        case .stale(let start, let work): since = start; work?.cancel()
+        case nil: return
+        }
+        feed.search = .stale(since: since, restart: nil)
+        guard restart else { return }
+        if case .syncing = feed.history { return }
+        let work = DispatchWorkItem { [weak feed] in
+            guard let feed, case .stale = feed.search else { return }
+            DispatchQueue.main.async { [weak view = feed.view] in view?.find?.search() }
+        }
+        feed.search = .stale(since: since, restart: work)
+        client.queue.asyncAfter(deadline: min(.now() + 0.3, since + 2), execute: work)
+    }
+
     private func search(_ pane: PaneID, query: String, token: UUID) {
         client.queue.async {
             guard let feed = self.panes?[pane] else { return }
-            feed.search = (token, [])
+            if case .stale(_, let work) = feed.search { work?.cancel() }
+            feed.search = query.isEmpty ? nil : .scanning(token: token, matches: [])
             guard !query.isEmpty else { return }
+            if case .syncing = feed.history { return self.invalidateSearch(feed, restart: false) }
             self.searchChunk(pane, feed, query: query, token: token, end: nil)
         }
     }
@@ -212,14 +244,15 @@ final class Connection: @unchecked Sendable {
     private func searchChunk(_ pane: PaneID, _ feed: PaneFeed, query: String, token: UUID,
                              end: Int?, chunk: Int = 5000) {
         client.send(SearchCapture.commands(pane, end: end, chunk: chunk)) { [weak self, weak feed] replies in
-            guard let self, let feed, self.panes?[pane] === feed, feed.search?.token == token else { return }
+            guard let self, let feed, self.panes?[pane] === feed,
+                  case .scanning(let current, _) = feed.search, current == token else { return }
             guard let replies else { return }
             let identity = ObjectIdentifier(feed)
             DispatchQueue.global(qos: .userInitiated).async {
                 let capture = SearchCapture(replies, query: query)
                 self.client.queue.async {
                     guard let feed = self.panes?[pane], ObjectIdentifier(feed) == identity,
-                          feed.search?.token == token else { return }
+                          case .scanning(let current, let matches) = feed.search, current == token else { return }
                     guard let capture else {
                         return DispatchQueue.main.async { [weak view = feed.view] in view?.find?.failed(token) }
                     }
@@ -228,12 +261,12 @@ final class Connection: @unchecked Sendable {
                             self.searchChunk(pane, feed, query: query, token: token, end: end,
                                              chunk: min(capture.history + 1, chunk * 2))
                         } else {
-                            feed.search?.matches.append(contentsOf: capture.distances)
+                            feed.search = .scanning(token: token, matches: matches + capture.distances)
                             self.searchChunk(pane, feed, query: query, token: token, end: next)
                         }
                     } else {
-                        feed.search?.matches.append(contentsOf: capture.distances)
-                        let all = feed.search?.matches ?? []
+                        let all = matches + capture.distances
+                        feed.search = .scanning(token: token, matches: all)
                         DispatchQueue.main.async { [weak view = feed.view] in view?.find?.finished(all, token: token) }
                     }
                 }
@@ -248,27 +281,31 @@ final class Connection: @unchecked Sendable {
             let destination = feed.view.scrollTarget ?? (position.history - position.offset)
             switch feed.history {
             case .syncing, .fetching: return
+            case .limited where !feed.metadataDirty:
+                self.publish(feed, history: position.history)
+                return
             case .more(let gap) where destination >= position.history - position.rows:
                 self.publish(feed, history: position.history + gap)
                 let token = UUID()
                 feed.history = .fetching(token)
                 self.fetch(pane, feed, token: token, chunk: min(5000, gap))
             default:
+                guard feed.metadataDirty else { return }
                 let limited = if case .limited = feed.history { true } else { false }
+                feed.metadataDirty = false
                 let token = UUID()
                 feed.history = .fetching(token)
                 self.client.send([Command("display-message", "-p", "-t", pane, "#{history_size} #{alternate_on}")]) {
                     [weak self, weak feed] replies in
                     guard let self, let feed, self.panes?[pane] === feed,
                           case .fetching(let current) = feed.history, current == token else { return }
-                    guard let replies, case .success(let lines) = replies.first,
-                          let values = lines.first?.split(separator: " ").compactMap({ Int($0) }), values.count == 2 else {
+                    guard let metadata = HistoryMetadata(replies?.first) else {
                         feed.history = .complete
                         return
                     }
-                    let history = values[0], position = feed.view.scrollPosition()
-                    if values[1] != 0 {
-                        feed.history = .alternate
+                    let history = metadata.history, position = feed.view.scrollPosition()
+                    if metadata.alternate {
+                        feed.history = .complete
                         return self.publish(feed, history: 0, alternate: true)
                     }
                     feed.history = limited ? .limited : (history > position.history ? .more(gap: history - position.history) : .complete)
@@ -287,19 +324,20 @@ final class Connection: @unchecked Sendable {
                   case .fetching(let current) = feed.history, current == token,
                   feed.view.historyEpoch == epoch, let replies else { return }
             let position = feed.view.scrollPosition()
+            feed.metadataDirty = false
+            if let destination = feed.view.scrollTarget, destination < position.history - position.rows,
+               let metadata = HistoryMetadata(replies.first) {
+                feed.history = metadata.history > position.history ? .more(gap: metadata.history - position.history) : .complete
+                self.publish(feed, history: metadata.history, alternate: metadata.alternate)
+                return
+            }
             guard let capture = HistoryCapture(replies, loaded: position.history) else {
                 feed.history = .limited
                 return
             }
             if capture.alternate {
-                feed.history = .alternate
+                feed.history = .complete
                 return self.publish(feed, history: 0, alternate: true)
-            }
-            if let destination = feed.view.scrollTarget, destination < position.history - position.rows {
-                feed.history = capture.history > position.history ? .more(gap: capture.history - position.history) : .complete
-                self.publish(feed, history: capture.history)
-                self.scroll(pane)
-                return
             }
             if capture.rows == 0 && capture.history > position.history && chunk < capture.history {
                 return self.fetch(pane, feed, token: token, chunk: min(capture.history, chunk * 2))
