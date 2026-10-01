@@ -68,17 +68,22 @@ the identity of the loaded rows. There is one fetch per pane; sync tokens,
 view identity and a grid epoch reject obsolete replies. Every resize
 resyncs from the newest 5000 rows. Alternate screens never receive history.
 
-`ghostty_surface_prepend_history` parses a chunk in a scratch terminal at
-the primary screen's width and clones its pages before the existing first
-page, under the same renderer mutex as manual output. Existing pins and
+`ghostty_surface_prepend_history` snapshots the primary screen's width and
+identity under the renderer mutex, then allocates and parses a scratch
+terminal outside it. It locks again to validate the snapshot and clone
+pages before the existing first page; a changed grid or history identity
+rejects the chunk. The scratch terminal is freed after unlocking. Existing pins and
 selections stay attached to their content; a viewport at the old top
 becomes pinned there. The renderer is invalidated and publishes the new
 scrollbar. The API returns the number of inserted physical rows, or zero
 on alternate screens, allocation failure or insufficient scrollback byte
 budget. A chunk is accepted whole or not at all, never evicting newer rows
-to make room. Kido defaults to a 256 MiB Ghostty scrollback budget; the
+to make room. Kido defaults to a 512 MiB Ghostty scrollback budget; the
 user's configuration can override it. Hitting it stops older fetches until
-resync, and jumps clamp to the loaded range. Live output still follows
+resync: the scroller's range and the target clamp immediately to loaded
+history, without another tmux request. A native pill near the loaded top
+says "Older history not loaded (memory limit)"; it hides more than a screen
+away from that edge. Live output still follows
 Ghostty's normal byte-budget trimming.
 
 Each pane draws one thin overlay scroller, shown during scrolling or
@@ -89,22 +94,31 @@ thumb immediately, without waiting for the reader or renderer mutex. A
 per-pane queue moves Ghostty's viewport independently of capture replies.
 Above the loaded top, the terminal's child view is translated down inside
 the clipped pane, revealing blank terminal background without changing the
-grid. As chunks arrive, the viewport moves to the target and the translation
+grid. While translated, terminal pointer events are suppressed and an
+active selection drag is cancelled; wheel scrolling still works.
+As chunks arrive, the viewport moves to the target and the translation
 shrinks; the target stays put. A translated layer is explicitly invalidated
 when brought back into view. Only the latest target matters: a reply no
 longer needed at the loaded top is discarded, and fetching stops when the
 target is loaded. Wheel fetching does not depend on Ghostty's scrollbar
 notifications, which only change when a draw sees a new scrollbar snapshot.
 Already-loaded rows can outlive tmux's history limit until resync; the
-scroller clamps to tmux's retained range. Its colours resolve in the current effective
-appearance when drawn.
+scroller clamps to tmux's retained range. Loaded, unchanged scrolling sends
+no tmux commands: metadata is cached until output or resync invalidates it,
+and is refreshed once when needed. Its colours resolve in the current
+effective appearance when drawn.
 
 Command-F opens a pane's native find bar. Each query scans tmux's history
 and screen in 5000-row, whole-logical-line chunks on a worker queue,
 retaining only match distances from the screen and discarding captured
 text. Matching is plain substring, ASCII case-insensitive like Ghostty.
-Query edits, closing the bar and resync cancel the scan; alternate screens
-search only their screen. Next and previous wrap through the newest-first
+Search uses one `-F -L -T -N` capture per chunk, joining bodies on wrap
+flags without trimming their whitespace. Query edits and closing the bar
+cancel the scan. Output immediately invalidates results and cancels chunks;
+stale results cannot navigate. A new scan starts after 300 ms of quiet,
+or at most every two seconds during continuous output. Connection owns
+this lifetime: resync invalidates immediately and restarts only after a
+successful restore. Alternate screens search only their screen. Next and previous wrap through the newest-first
 match list, loading older matches through the scroller's jump path. Ghostty
 search supplies the highlights and loaded-match selection; it is restarted
 after prepending history. A match beyond the byte budget is reported as out
