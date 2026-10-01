@@ -67,10 +67,10 @@ excluded. Trimming tmux's oldest history therefore changes the gap, not
 the identity of the loaded rows. There is one fetch per pane; sync tokens,
 view identity and a grid epoch reject obsolete replies. A resize retains the
 viewport's top logical line counted from the bottom, resyncs from the newest
-5000 rows, then maps the anchor through tmux's wrap metadata and pages to it
-through the scroller's jump path; live resizing restores once after it settles,
-and a trimmed anchor clamps to the oldest surviving line. Alternate screens
-never receive history.
+5000 rows, then scans tmux's wrap metadata once to locate the anchor and
+reaches it through the scroller's paged target, stopping at the memory limit.
+Live resizing restores after it settles; a trimmed anchor clamps to the oldest
+surviving line. Alternate screens never receive history.
 
 `ghostty_surface_prepend_history` snapshots the primary screen's width and
 identity under the renderer mutex, then allocates and parses a scratch
@@ -159,10 +159,11 @@ window gains its surfaces when shown. Showing another window evicts the
 least recent past the budget, never the shown one, off the switch path;
 surfaces are freed one per main-queue turn and at least a second after
 they were created, since a young one takes hundreds of milliseconds to
-free. A hidden surface is occluded and its renderer released; the shown
-ones follow the app window's occlusion. tmux sends no `%output` for
-panes outside the client's session, so a window that left it is synced
-again when next shown. Surfaces of closed windows and sessions are freed.
+free. A hidden surface is occluded and its renderer released. Shown surfaces
+follow the app window's occlusion, except during resize: presentation is held
+until the restored target is loaded or memory-limited, with a two-second
+fallback. tmux sends no `%output` for panes outside the client's session,
+so a window that left it is synced again when next shown. Surfaces of closed windows and sessions are freed.
 
 tmux's layout is authoritative: every Ghostty surface is exactly its
 pane's grid, and `PaneLayout` maps cells to points. On each axis a
