@@ -20,6 +20,7 @@ final class Connection: @unchecked Sendable {
         }
         var search: Search?
         var metadataDirty = false
+        var initialHistory = 0
         init(_ view: PaneView) { self.view = view }
     }
     private var panes: [PaneID: PaneFeed]? = [:]
@@ -57,6 +58,25 @@ final class Connection: @unchecked Sendable {
         pane.onScroll = { [weak self, weak pane] in
             guard let pane else { return }
             self?.scroll(pane.pane)
+        }
+        pane.onScrollSettled = { [weak self, id = pane.pane] in
+            guard let self else { return }
+            self.client.queue.async {
+                guard let feed = self.panes?[id], feed.search == nil else { return }
+                let position = feed.view.scrollPosition()
+                let history: Int
+                switch feed.history {
+                case .syncing, .fetching: return
+                case .complete: history = position.history
+                case .more(let gap): history = position.history + gap
+                case .limited(let total): history = total
+                }
+                let removed = feed.view.trimHistory(keeping: feed.initialHistory)
+                guard removed > 0 else { return }
+                let gap = max(0, history - feed.view.scrollPosition().history)
+                feed.history = gap > 0 ? .more(gap: gap) : .complete
+                self.publish(feed, history: history)
+            }
         }
         pane.onLoadMore = { [weak self, id = pane.pane] in
             guard let self else { return }
@@ -209,6 +229,7 @@ final class Connection: @unchecked Sendable {
                     feed.view.feed(data)
                     let position = feed.view.scrollPosition()
                     feed.metadataDirty = false
+                    feed.initialHistory = position.history
                     feed.history = history > position.history ? .more(gap: history - position.history) : .complete
                     self.publish(feed, history: history)
                     DispatchQueue.main.async { [weak view = feed.view] in view?.find?.search() }
