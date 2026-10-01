@@ -373,8 +373,12 @@ final class WindowView: NSView {
             let g = pane.geometry
             let width = max(2, g.width + (edge?.right == true ? dx : edge?.left == true ? -dx : 0))
             let height = max(2, g.height + (edge?.bottom == true ? dy : edge?.top == true ? -dy : 0))
-            let x = g.x + (edge == nil ? dx : edge?.left == true ? g.width - width : 0)
-            let y = g.y + (edge == nil ? dy : edge?.top == true ? g.height - height : 0)
+            var x = g.x + (edge == nil ? dx : edge?.left == true ? g.width - width : 0)
+            var y = g.y + (edge == nil ? dy : edge?.top == true ? g.height - height : 0)
+            if edge == nil, let placement {
+                x = min(max(0, x), max(0, Int(placement.client.width) - width))
+                y = min(max(0, y), max(0, Int(placement.client.height) - height))
+            }
             if dx != 0 || dy != 0 || lastFloatCommand != nil {
                 var commands: [Command] = []
                 if edge != nil {
@@ -489,7 +493,8 @@ final class WindowView: NSView {
     override func resetCursorRects() {
         guard let placement else { return }
         for d in shown?.visible.root.dividers ?? [] {
-            addCursorRect(hitArea(d, placement), cursor: d.direction == .leftRight ? .resizeLeftRight : .resizeUpDown)
+            let rect = hitArea(d, placement).intersection(bounds)
+            if !rect.isEmpty { addCursorRect(rect, cursor: d.direction == .leftRight ? .resizeLeftRight : .resizeUpDown) }
         }
         guard !zoomed else { return }
         for pane in shown?.visible.root.panes ?? [] where pane.layer != .tiled {
@@ -503,7 +508,10 @@ final class WindowView: NSView {
                 (CGRect(x: r.maxX - 5, y: r.minY, width: 5, height: 5), .topRight),
                 (CGRect(x: r.minX, y: r.maxY - 5, width: 5, height: 5), .bottomLeft),
                 (CGRect(x: r.maxX - 5, y: r.maxY - 5, width: 5, height: 5), .bottomRight)
-            ] { addCursorRect(rect.intersection(bounds), cursor: .frameResize(position: position, directions: .all)) }
+            ] {
+                let rect = rect.intersection(bounds)
+                if !rect.isEmpty { addCursorRect(rect, cursor: .frameResize(position: position, directions: .all)) }
+            }
         }
     }
 
