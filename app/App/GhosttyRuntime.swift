@@ -19,13 +19,13 @@ import GhosttyKit
         guard ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS,
               let config = ghostty_config_new() else { return nil }
         let themes = Bundle.main.resourceURL!.appendingPathComponent("themes").path
-        let defaults = "theme = light:\(themes)/kido-light,dark:\(themes)/kido-dark\ncursor-style-blink = false\nalpha-blending = linear\n"
+        let defaults = "theme = light:\(themes)/kido-light,dark:\(themes)/kido-dark\ncursor-style-blink = false\nalpha-blending = linear\nscrollback-limit = 268435456\n"
         ghostty_config_load_string(config, defaults, UInt(defaults.utf8.count), "/kido-defaults")
         let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : $0 }
         let file = (xdg ?? NSHomeDirectory() + "/.config") + "/kido/kido-app.conf"
         if FileManager.default.fileExists(atPath: file) { ghostty_config_load_file(config, file) }
         ghostty_config_load_recursive_files(config)
-        let tiling = "window-padding-x = 0\nwindow-padding-y = 0\n"
+        let tiling = "window-padding-x = 0\nwindow-padding-y = 0\nscrollbar = never\n"
         ghostty_config_load_string(config, tiling, UInt(tiling.utf8.count), "/kido")
         ghostty_config_finalize(config)
         for i in 0..<ghostty_config_diagnostics_count(config) {
@@ -132,6 +132,10 @@ import GhosttyKit
         }
         guard target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface else { return false }
         let userdata = ghostty_surface_userdata(surface)
+        if action.tag == GHOSTTY_ACTION_SCROLLBAR {
+            PaneView.onMain(userdata) { $0.scrolled() }
+            return true
+        }
         if action.tag == GHOSTTY_ACTION_CELL_SIZE {
             PaneView.onMain(userdata) { $0.onCellChange() }
             return true
