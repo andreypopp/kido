@@ -3,7 +3,7 @@ import TmuxControl
 
 final class PaneChrome: NSView {
     let pane: PaneID
-    private let background: NSColor
+    private let runtime: GhosttyRuntime
     var select: () -> Void = {}
     var hover: (PaneChrome, NSPoint?) -> Void = { _, _ in }
     var grid = CGRect.zero
@@ -16,16 +16,16 @@ final class PaneChrome: NSView {
                width: toolbarFrame.width + 24, height: toolbarFrame.height + 24).intersection(bounds)
     }
 
-    init(pane: PaneID, background: NSColor) {
+    init(pane: PaneID, runtime: GhosttyRuntime) {
         self.pane = pane
-        self.background = background
+        self.runtime = runtime
         super.init(frame: .zero)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect], owner: self))
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
-        if dimmed { background.withAlphaComponent(0.45).setFill(); bounds.fill() }
+        if dimmed { runtime.background.withAlphaComponent(0.45).setFill(); bounds.fill() }
     }
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden else { return nil }
