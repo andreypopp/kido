@@ -232,7 +232,7 @@ final class Connection: @unchecked Sendable {
                     feed.metadataDirty = false
                     feed.initialHistory = position.history
                     if let anchor = feed.view.resizeAnchor {
-                        self.restoreAnchor(pane, feed, anchor: anchor, token: token, epoch: epoch, history: history, captured: chunk, synced: synced)
+                        self.restoreAnchor(pane, feed, anchor: anchor, token: token, epoch: epoch, history: history, synced: synced)
                         return
                     }
                     feed.history = history > position.history ? .more(gap: history - position.history) : .complete
@@ -247,7 +247,7 @@ final class Connection: @unchecked Sendable {
     }
 
     private func restoreAnchor(_ pane: PaneID, _ feed: PaneFeed, anchor: ScrollAnchor, token: UUID,
-                               epoch: Int, history: Int, captured: Int, end: Int? = nil, chunk: Int = 5000,
+                               epoch: Int, history: Int, end: Int? = nil, chunk: Int = 5000,
                                synced: (@Sendable () -> Void)?) {
         client.send(SearchCapture.commands(pane, end: end, chunk: chunk)) { [weak self, weak feed] replies in
             guard let self, let feed, self.panes?[pane] === feed, feed.view.historyEpoch == epoch,
@@ -255,30 +255,22 @@ final class Connection: @unchecked Sendable {
             let distance: Int
             switch replies.flatMap({ anchor.locate($0, end: end) }) {
             case .next(let remaining, let next):
-                if next == end {
-                    self.restoreAnchor(pane, feed, anchor: anchor, token: token, epoch: epoch, history: history, captured: captured, end: end,
-                                       chunk: min(history + 1, chunk * 2), synced: synced)
-                } else {
-                    self.restoreAnchor(pane, feed, anchor: remaining, token: token, epoch: epoch, history: history, captured: captured, end: next, synced: synced)
-                }
-                return
+                return self.restoreAnchor(pane, feed, anchor: next == end ? anchor : remaining, token: token,
+                                          epoch: epoch, history: history, end: next,
+                                          chunk: next == end ? min(history + 1, chunk * 2) : 5000, synced: synced)
             case .found(let row): distance = row
             case nil: distance = min(history, max(1, anchor.lines))
             }
-            let loaded = feed.view.scrollPosition()
-            if distance > loaded.history, captured < history {
-                self.sync(pane, synced: synced, chunk: min(history, max(captured * 2, distance + loaded.rows)))
-                return
-            }
-            let position = feed.view.scrollPosition(distance: distance)
+            let position = feed.view.scrollPosition()
             feed.history = history > position.history ? .more(gap: history - position.history) : .complete
-            feed.view.resizeAnchor = nil
             self.publish(feed, history: history)
             DispatchQueue.main.async { [weak view = feed.view] in
-                view?.requestScroll(distance)
-                view?.find?.search()
+                guard let view, view.historyEpoch == epoch else { return synced?() ?? () }
+                view.requestScroll(distance)
+                view.resizeAnchor = nil
+                view.find?.search()
+                synced?()
             }
-            synced?()
         }
     }
 
@@ -324,23 +316,19 @@ final class Connection: @unchecked Sendable {
                 let capture = SearchCapture(replies, query: query)
                 self.client.queue.async {
                     guard let feed = self.panes?[pane], ObjectIdentifier(feed) == identity,
-                          case .scanning(let current, let matches) = feed.search, current == token else { return }
+                          case .scanning(let current, var matches) = feed.search, current == token else { return }
                     guard let capture else {
                         return DispatchQueue.main.async { [weak view = feed.view] in view?.find?.failed(token) }
                     }
-                    if let next = capture.next {
-                        if next == end || (end == nil && next >= -1 && capture.distances.isEmpty) {
-                            self.searchChunk(pane, feed, query: query, token: token, end: end,
-                                             chunk: min(capture.history + 1, chunk * 2))
-                        } else {
-                            feed.search = .scanning(token: token, matches: matches + capture.distances)
-                            self.searchChunk(pane, feed, query: query, token: token, end: next)
-                        }
-                    } else {
-                        let all = matches + capture.distances
-                        feed.search = .scanning(token: token, matches: all)
-                        DispatchQueue.main.async { [weak view = feed.view] in view?.find?.finished(all, token: token) }
+                    if let next = capture.next, next == end || (end == nil && next >= -1 && capture.distances.isEmpty) {
+                        return self.searchChunk(pane, feed, query: query, token: token, end: end,
+                                                chunk: min(capture.history + 1, chunk * 2))
                     }
+                    feed.search = nil
+                    matches.append(contentsOf: capture.distances)
+                    feed.search = .scanning(token: token, matches: matches)
+                    if let next = capture.next { self.searchChunk(pane, feed, query: query, token: token, end: next) }
+                    else { DispatchQueue.main.async { [weak view = feed.view, matches] in view?.find?.finished(matches, token: token) } }
                 }
             }
         }
