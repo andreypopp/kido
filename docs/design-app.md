@@ -66,12 +66,18 @@ first row is at a fixed 44pt (`PaneLayout.topMargin`) at every height and
 in both sidebar states, and all vertical remainder goes to the bottom,
 over a 6pt minimum. Zoom uses the same rule. Dividers have six-point hit
 areas; unfocused panes are dimmed by a theme-background overlay; a
-hovered pane shows a glass toolbar that splits, zooms and closes it.
+pane shows the window’s shared glass toolbar only in its top-right hot
+zone: the toolbar frame plus 24pt to its left and below, clipped to the
+pane. It splits, zooms and closes through the same commands as the menus.
+Frame changes place only the shown window; membership and stacking are
+reconciled only when tmux’s topology changes. Hidden windows are placed
+when shown. Terminal focus survives resizing and sidebar collapse;
+showing another window or creating the active pane’s view can move focus.
 
 The standard window buttons are AppKit's: the toolbar re-lays them out
 at will, so nothing moves them. The fixed top clears them and the
-collapsed sidebar's Show button, which is constrained beside the green
-button, so the terminal never moves when the sidebar collapses.
+sidebar toggle, which AppKit keeps in the collapsed titlebar,
+so the terminal never moves vertically when the sidebar collapses.
 
 ## Threads
 
@@ -99,19 +105,22 @@ supplies the floating glass, collapse animation and saved width (236pt,
 sidebar's glass reaches the top of the window, traffic lights inside it,
 when there is one; without it AppKit adds a plain titlebar strip. Title
 and toolbar draw nothing over the terminal, and the window, chrome and
-terminal share the Ghostty theme background.
+terminal share the Ghostty theme background. New Session is a standard
+image toolbar item, as is the sidebar toggle, targeting the split view
+controller. Both are borderless and the toolbar is not customizable.
 
 `SidebarView` is a flat `NSOutlineView`: session headers with a
-new-window button, then one bracket per tmux window drawn as a guide
+new-window button, then one bracket per tmux window at every depth drawn as a guide
 line, with no window label. A top-level node is a window; an item's
 nested children (hoisted child windows) are subpanes, one guide column
 per level. Each row is title, then tail (or a started row's clock),
 then a status glyph: red for a real failure, orange for waiting,
 stalled or the feed's attention flag, a spinner for running or
 compacting, nothing otherwise. Titles keep their width and tails
-truncate first. Selection is a quiet pill, and glyph colours do not
-change with it. Selection and scroll survive snapshots by
-session-scoped node identity.
+truncate first. Selection is a quiet pill (a stronger semantic fill with Increase
+Contrast), and glyph colours do not change with it. Selection and scroll survive snapshots by
+session-scoped node identity. Scroll anchors the first visible identity
+and its intra-row offset, falling back to pixels only if that row disappears.
 
 The search and single-line, truncating diagnostic sit above the outline;
 the full diagnostic is available in its tooltip. The search field
@@ -122,7 +131,7 @@ switches update selection without taking keyboard focus.
 
 The toolbar and Control-Command-S toggle the sidebar; the View menu's
 Show/Hide title follows its collapsed state. Focus Sidebar uses
-Control-Command-F. Control-Command-N (Shift for previous) walks attention;
+Control-Command-L. Control-Command-F enters full screen. Control-Command-N (Shift for previous) walks attention;
 Control-Command-J/K switches windows; Command-Shift-N creates a session. In the outline, j/k move, n/N jump
 to attention, Return jumps, Escape returns to the pane and / searches.
 The sidebar is visible by default; it does not automatically collapse
