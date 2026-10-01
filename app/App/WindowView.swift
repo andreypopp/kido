@@ -10,6 +10,7 @@ final class WindowView: NSView {
     private var needsReconcile = true
     private var dividers: [NSBox] = []
     private var floatingBoxes: [PaneID: NSBox] = [:]
+    private let floatingRadius: CGFloat = 10
     private var toolbar: PaneToolbar?
     override var isHidden: Bool {
         didSet {
@@ -143,6 +144,14 @@ final class WindowView: NSView {
                 if view.isHidden { floating.append((z, [view, chrome])) }
                 else {
                     let backing = box(chrome.frame, border: pixel, fill: runtime.background)
+                    backing.wantsLayer = true
+                    backing.cornerRadius = floatingRadius
+                    backing.borderColor = .separatorColor
+                    let shadow = NSShadow()
+                    shadow.shadowColor = NSColor.black.withAlphaComponent(0.22)
+                    shadow.shadowBlurRadius = 12
+                    shadow.shadowOffset = NSSize(width: 0, height: -3)
+                    backing.shadow = shadow
                     floatingBoxes[pane.id] = backing
                     floating.append((z, [backing, view, chrome]))
                 }
@@ -184,6 +193,16 @@ final class WindowView: NSView {
         let grid = placement.grid(g)
         if grid.maxX == placement.rightEdge { chrome.frame.size.width = bounds.maxX - chrome.frame.minX }
         chrome.grid = CGRect(origin: CGPoint(x: placement.before.width, y: placement.before.height), size: grid.size)
+        let floating = shown?.visible.root.panes.contains { $0.id == chrome.pane && $0.layer != .tiled } ?? false
+        chrome.wantsLayer = true
+        chrome.layer?.cornerRadius = floating ? floatingRadius : 0
+        chrome.layer?.masksToBounds = floating
+        if floating {
+            let mask = CAShapeLayer()
+            let rect = chrome.bounds.offsetBy(dx: chrome.frame.minX - grid.minX, dy: grid.maxY - chrome.frame.maxY)
+            mask.path = CGPath(roundedRect: rect, cornerWidth: floatingRadius, cornerHeight: floatingRadius, transform: nil)
+            view.layer?.mask = mask
+        } else { view.layer?.mask = nil }
         if view.scroller.superview !== chrome { chrome.addSubview(view.scroller, positioned: .below, relativeTo: nil) }
         view.scroller.frame = CGRect(x: max(0, chrome.bounds.maxX - 12),
                                      y: chrome.grid.minY, width: 12, height: chrome.grid.height)
