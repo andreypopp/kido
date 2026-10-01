@@ -76,6 +76,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         }
         guard let surface = ghostty_surface_new(runtime.app, &config) else { return nil }
         self.surface = surface
+        ghostty_surface_set_color_scheme(surface, runtime.colorScheme)
         // The callback must not reenter the surface (ghostty.h).
         _ = ghostty_surface_set_font_size_action_callback(surface, { userdata, _, _, points, _, _ in
             PaneView.onMain(userdata) { $0.onFontChange(points) }
