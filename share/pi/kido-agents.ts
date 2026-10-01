@@ -1,4 +1,4 @@
-import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import { AgentSession, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -122,7 +122,7 @@ const ASK_CUSTOM_TYPE = "kido-ask";
 
 const STREAM_CUSTOM_TYPE = "kido-stream";
 
-// pi has no renderer for a user message, so this line is in the transcript for good; kept short and neutral.
+// Read as the user's words whenever the run below cannot drop it; kept short and neutral.
 type CustomType = "kido-message" | "kido-notice" | "kido-ask" | "kido-stream";
 
 const WAKE_TRIGGERS: Record<CustomType, string> = {
@@ -131,6 +131,32 @@ const WAKE_TRIGGERS: Record<CustomType, string> = {
   "kido-ask": "(kido: a question arrived; it follows)",
   "kido-stream": "(kido: a background run's output follows)",
 };
+
+const TRIGGER_TEXTS: ReadonlySet<unknown> = new Set(Object.values(WAKE_TRIGGERS));
+
+function isWakeTrigger(message: unknown): boolean {
+  if (typeof message !== "object" || message === null || !("role" in message) || message.role !== "user") return false;
+  if (!("content" in message) || !Array.isArray(message.content)) return false;
+  const [part, ...rest]: unknown[] = message.content;
+  return rest.length === 0 && typeof part === "object" && part !== null && "text" in part && TRIGGER_TEXTS.has(part.text);
+}
+
+// prompt() hands the turn's messages to the private _runAgentPrompt, which records and sends
+// them: the one place to drop wake()'s trigger. Remove with wake()'s detour
+// (https://github.com/earendil-works/pi/issues/5581).
+const runAgentPrompt: unknown = (globalThis.__kidoPiExtensionRunAgentPrompt ??= Object.getOwnPropertyDescriptor(
+  AgentSession.prototype,
+  "_runAgentPrompt",
+)?.value);
+if (typeof runAgentPrompt === "function") {
+  Object.defineProperty(AgentSession.prototype, "_runAgentPrompt", {
+    configurable: true,
+    writable: true,
+    value(this: unknown, messages: unknown): unknown {
+      return Reflect.apply(runAgentPrompt, this, [Array.isArray(messages) ? messages.filter((m) => !isWakeTrigger(m)) : messages]);
+    },
+  });
+}
 
 // The idle flush schedule: a held batch is flushed after the first delay, then after
 // twice that, capped at the second - the whole bound on what a long-running build costs
@@ -330,7 +356,7 @@ export default function (pi: ExtensionAPI) {
   // builds. Cleared at pi's turn_start.
   let wakeInFlight = false;
 
-  // pi 0.87.1's sendMessage(triggerTurn) on an idle session skips prompt() - no
+  // pi's sendMessage(triggerTurn) on an idle session skips prompt() - no
   // before_agent_start, and a resumed session's stale system prompt makes
   // pi-claude-bridge refuse the turn. Queueing as "nextTurn" and starting it with
   // sendUserMessage goes through prompt() instead, keeping the arrival's custom type,

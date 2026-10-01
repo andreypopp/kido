@@ -208,6 +208,7 @@ declare global {
   var __kidoPiExtensionInbox: InboxHold | undefined;
   var __kidoPiExtensionSeam: Seam | undefined;
   var __kidoPiExtensionStatusCopy: string | undefined;
+  var __kidoPiExtensionRunAgentPrompt: unknown;
 }
 
 function heldInbox(): InboxHold | null {

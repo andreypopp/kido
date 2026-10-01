@@ -19,6 +19,7 @@ import { join, delimiter, dirname } from "node:path";
 import net from "node:net";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import kidoStatus, { parseEnvelope } from "./kido-status.ts";
+import { AgentSession } from "@earendil-works/pi-coding-agent";
 import kidoAgents, { isAncestor, nextStreamFlushDelay, streamBatch } from "./kido-agents.ts";
 
 // Written to disk once per fixture as a file literally named "kido": findKido()
@@ -1731,6 +1732,30 @@ test("an idle session is woken through prompt(): the arrival is queued as nextTu
   } finally {
     fx.restore();
   }
+});
+
+// The trigger only starts the turn: pi's own run, wrapped by kido, must never record or send
+// it, while everything prompt() prepared alongside it goes through. Runs the pinned pi's
+// _runAgentPrompt, so a pi that renames it or changes what it takes fails here.
+test("pi's run drops a wake trigger and keeps the rest of the turn", async () => {
+  const user = (text: string) => ({ role: "user", content: [{ type: "text", text }], timestamp: 0 });
+  const arrival = { role: "custom", customType: "kido-notice", content: "notice text", display: true, timestamp: 0 };
+  const prompted: unknown[] = [];
+  const noop = async () => false;
+  const session = {
+    _recordSelection() {},
+    _handlePostAgentRun: noop,
+    _runBeforeSettleBoundary: noop,
+    _flushPendingBashMessages() {},
+    _flushPendingCustomMessages() {},
+    _emitAgentSettled: noop,
+    agent: { prompt: async (messages: unknown) => void prompted.push(messages) },
+  };
+  const run = (messages: unknown) => (AgentSession.prototype as any)._runAgentPrompt.call(session, messages);
+  await run([user("(kido: a notification arrived; it follows)"), arrival]);
+  await run([user("(kido: a notification arrived; it follows) and more"), arrival]);
+  await run(arrival);
+  assert.deepEqual(prompted, [[arrival], [user("(kido: a notification arrived; it follows) and more"), arrival], arrival]);
 });
 
 // A held batch is the fourth kind that wakes an idle session, and the one that

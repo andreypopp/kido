@@ -411,13 +411,16 @@ pi prepares every later turn itself, so a steer or a followUp is handed
 the message exactly as before, and no trigger is sent.
 
 The trigger is one line, varying only in which kind is coming - `(kido: a
-message arrived; it follows)` and its three siblings. It is short because
-it is permanent: pi renders custom messages through an extension's
-renderer but has none for a user message, so the trigger is in the
-transcript as typed and the model reads it as the user's own words. It
-says no more than what follows, since what follows carries the sender,
-the text and every instruction. `expandPromptTemplates` is off, so it is
-never dispatched as a command.
+message arrived; it follows)` and its three siblings. It only starts the
+turn: `prompt()` hands the messages it prepared to pi's private
+`_runAgentPrompt`, which records and sends them, and kido wraps that method
+to drop the trigger there. So it is never drawn, never in the transcript
+and never read by the model; the arrival leads the turn. When the drop
+cannot happen - the race below, where pi queues the trigger instead of
+prompting, or a pi that renamed the method - the trigger is in the
+transcript as typed and the model reads it as the user's own words, so it
+is short and says no more than what follows. `expandPromptTemplates` is
+off, so it is never dispatched as a command.
 
 **One trigger at a time.** Pending `nextTurn` messages are all injected
 into the one turn `prompt()` builds, so an arrival that lands while a
