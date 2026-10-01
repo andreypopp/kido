@@ -8,8 +8,9 @@ final class PaneChrome: NSView {
     var hover: (PaneChrome, NSPoint?) -> Void = { _, _ in }
     var grid = CGRect.zero
     var dimmed = false { didSet { needsDisplay = true } }
+    var drop: CGRect? { didSet { needsDisplay = true } }
     var toolbarFrame: CGRect {
-        NSRect(x: max(0, bounds.width - 127), y: 8, width: min(119, bounds.width), height: 32)
+        NSRect(x: max(0, bounds.width - 153), y: 8, width: min(145, bounds.width), height: 32)
     }
     var hotZone: CGRect {
         CGRect(x: toolbarFrame.minX - 24, y: toolbarFrame.minY,
@@ -26,6 +27,12 @@ final class PaneChrome: NSView {
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
         if dimmed { runtime.background.withAlphaComponent(0.45).setFill(); bounds.fill() }
+        if let drop {
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                NSColor.controlAccentColor.withAlphaComponent(0.3).setFill()
+                NSBezierPath(roundedRect: drop.insetBy(dx: 3, dy: 3), xRadius: 8, yRadius: 8).fill()
+            }
+        }
     }
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden else { return nil }
@@ -41,6 +48,7 @@ final class PaneChrome: NSView {
 
 final class PaneToolbar: NSGlassEffectView {
     private let separator = NSView()
+    private let grip = IconButton("line.3.horizontal", "Drag pane", size: 15)
     private let zoom = IconButton("arrow.up.left.and.arrow.down.right", "Zoom pane", size: 15)
     private let right = IconButton("rectangle.split.2x1", "Split right", size: 15)
     private let down = IconButton("rectangle.split.1x2", "Split down", size: 15)
@@ -52,12 +60,12 @@ final class PaneToolbar: NSGlassEffectView {
 
     init() {
         super.init(frame: .zero)
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: 119, height: 32))
-        for (button, x) in [(right, 3.0), (down, 29.0), (zoom, 55.0), (close, 90.0)] {
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 145, height: 32))
+        for (button, x) in [(grip, 3.0), (right, 29.0), (down, 55.0), (zoom, 81.0), (close, 116.0)] {
             button.frame = NSRect(x: x, y: 3, width: 26, height: 26)
             content.addSubview(button)
         }
-        separator.frame = NSRect(x: 85, y: 9, width: 0.5, height: 14)
+        separator.frame = NSRect(x: 111, y: 9, width: 0.5, height: 14)
         separator.wantsLayer = true
         content.addSubview(separator)
         cornerRadius = 12
@@ -73,7 +81,9 @@ final class PaneToolbar: NSGlassEffectView {
     private func updateSeparator() {
         effectiveAppearance.performAsCurrentDrawingAppearance { separator.layer?.backgroundColor = NSColor.separatorColor.cgColor }
     }
-    func update(command: @escaping (PaneCommand) -> Void, zoomed: Bool) {
+    func update(command: @escaping (PaneCommand) -> Void, zoomed: Bool, drag: @escaping (NSEvent) -> Void) {
+        grip.isEnabled = !zoomed
+        grip.press = zoomed ? nil : drag
         right.invoke = { command(.split(.right)) }
         down.invoke = { command(.split(.down)) }
         zoom.invoke = { command(.zoom) }
