@@ -30,7 +30,7 @@ final class PaneChrome: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden else { return nil }
         let local = convert(point, from: superview)
-        if let toolbar = subviews.first, toolbar.alphaValue > 0, toolbar.frame.contains(local) { return super.hitTest(point) }
+        if subviews.contains(where: { !$0.isHidden && $0.alphaValue > 0 && $0.frame.contains(local) }) { return super.hitTest(point) }
         return bounds.contains(local) && !grid.contains(local) ? self : nil
     }
     override func mouseDown(with event: NSEvent) { select() }
