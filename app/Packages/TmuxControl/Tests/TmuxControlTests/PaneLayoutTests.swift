@@ -21,6 +21,9 @@ func paddedLayout(area: CGSize, pixel: CGFloat) {
     ])
     let layout = PaneLayout(root: root, bounds: bounds, cell: cell, pixel: pixel)
     let frames = root.panes.map { layout.frame($0.geometry) }
+    #expect(layout.grid(root.panes[0].geometry).maxX == layout.rightEdge)
+    #expect(layout.grid(root.panes[1].geometry).maxX < layout.rightEdge)
+    #expect(layout.grid(root.panes[2].geometry).maxX == layout.rightEdge)
     #expect(frames[0].minX == frames[1].minX)
     #expect(frames[0].maxX == frames[2].maxX)
     #expect(frames[0].maxY + pixel == frames[1].minY)
@@ -61,6 +64,7 @@ func paddedLayout(area: CGSize, pixel: CGFloat) {
     #expect(frame.minX == frames[0].minX && frame.maxX == frames[0].maxX)
     #expect(frame.minY == frames[0].minY && frame.maxY == frames[2].maxY)
     #expect(zoom.client == client)
+    #expect(zoom.grid(zoomed.panes[0].geometry).maxX == zoom.rightEdge)
     #expect(layout.before.width + layout.after.width + pixel == cell.width)
     #expect(layout.before.height + layout.after.height + pixel == cell.height)
     if pixel == 0.5 {
