@@ -36,9 +36,12 @@ from the app; its menus and Ghostty's split and tab actions stand in.
 Ghostty's configuration is `kido-app.conf` beside `kido.conf`
 (`$XDG_CONFIG_HOME/kido/`, else `~/.config/kido/`), in Ghostty's syntax,
 and Ghostty's own config files are not read; `config-file =
-~/.config/ghostty/config` there shares them. It is read once at launch.
-The window's background and light or dark appearance follow its
-`background`.
+~/.config/ghostty/config` there shares them. It is read once at launch,
+over built-in light and dark themes that follow the macOS appearance
+and switch live on existing panes. The file overrides these defaults,
+including the theme, background and non-blinking cursor. The window
+and pane chrome follow the effective Ghostty background and its light
+or dark appearance.
 
 A pane is synced by one command line: its captures, pending parser
 bytes and mode state. tmux queues `%output` ahead of the reply, so
