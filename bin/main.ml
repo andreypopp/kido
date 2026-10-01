@@ -172,29 +172,38 @@ let set_status =
            | Ok () -> 0
            | Error holder -> failwith (State.held_message id holder))
 
-let answer name doc f =
-  cmd name doc
-  @@ let+ session = arg "SESSION" in
+let get_agent =
+  cmd "get-agent" "Print an agent session's liveness as JSON."
+  @@ let+ session = arg "SESSION"
+     and+ children = Arg.(value & flag & info [ "children" ] ~doc:"Include child-run liveness.") in
      fun () ->
-       if String.is_empty session then Printf.ksprintf failwith "usage: kido %s SESSION" name;
-       print_endline (Bool.to_string (f ~dir:(State.dir ()) session));
+       if String.is_empty session then failwith "usage: kido get-agent SESSION";
+       let dir = State.dir () in
+       let fields =
+         [
+           ("id", `String session);
+           ("alive", `Bool (List.mem_assoc ~eq:String.equal session (State.load_live ~dir)));
+         ]
+       in
+       let fields =
+         if not children then fields
+         else
+           fields
+           @ [
+               ( "childrenAlive",
+                 `Bool
+                   (List.exists
+                      (fun id ->
+                        match Subrun.read_meta ~dir id with
+                        | Some m ->
+                            String.equal m.parent_session session
+                            && Option.is_none (Subrun.effective_outcome ~dir id ~pid:m.pid)
+                        | None -> false)
+                      (Subrun.list ~dir)) );
+             ]
+       in
+       print_endline (Yojson.Safe.to_string (`Assoc fields));
        0
-
-let agent_alive =
-  answer "agent-alive" "Print whether a live process holds an agent session." (fun ~dir session ->
-      List.mem_assoc ~eq:String.equal session (State.load_live ~dir))
-
-let children_alive =
-  answer "children-alive" "Print whether any subagent spawned by a session is still running."
-    (fun ~dir session ->
-      List.exists
-        (fun id ->
-          match Subrun.read_meta ~dir id with
-          | Some m ->
-              String.equal m.parent_session session
-              && Option.is_none (Subrun.effective_outcome ~dir id ~pid:m.pid)
-          | None -> false)
-        (Subrun.list ~dir))
 
 type window = { session : string; index : int; layout : string; n : int }
 
@@ -277,14 +286,20 @@ let prompt =
        | Error Several -> refuse "multiple agents found" 5
        | Error (Failed m) -> failwith m
 
-let window_focused =
-  cmd "window-focused" "Print whether a client is looking at a window."
+let get_window =
+  cmd "get-window" "Print a window's focus as JSON."
   @@ let+ window = arg "WINDOW_ID" in
      fun () ->
-       if String.is_empty window then failwith "usage: kido window-focused WINDOW_ID";
+       if String.is_empty window then failwith "usage: kido get-window WINDOW_ID";
        if not (Tmux.Pane.is_window_id window) then
          Printf.ksprintf failwith "%S is not a window id (@N)" window;
-       print_endline (Bool.to_string (Tmux.Pane.window_focused (ok (Lazy.force panes)) window));
+       print_endline
+         (Yojson.Safe.to_string
+            (`Assoc
+               [
+                 ("id", `String window);
+                 ("focused", `Bool (Tmux.Pane.window_focused (ok (Lazy.force panes)) window));
+               ]));
        0
 
 let switch name doc f =
@@ -421,7 +436,7 @@ let agent_status =
      and+ inbox =
        str "inbox" "PATH"
          "Path of the unix socket the agent takes prompts on, speaking kido's own protocol (see \
-          $(b,kido inbox-path)); empty means none."
+          $(b,kido get-inbox)); empty means none."
      and+ activity =
        str "activity" "TEXT"
          "Free text describing what the agent is doing, one line of at most 256 bytes."
@@ -462,14 +477,13 @@ let server =
        print_endline (Yojson.Safe.to_string (Launch.endpoint_to_yojson (ok (Launch.ensure ()))));
        0
 
-let inbox_path =
-  Cmd.v (Cmd.info "inbox-path" ~doc:"Print, and create the directory of, an agent's inbox socket.")
-  @@ let+ args = rest in
-     match args with
-     | [ name ] -> Cli.run "inbox-path" (fun () -> print (Msg.inbox_path ~dir:(State.dir ()) name))
-     | _ ->
-         prerr_endline "usage: kido inbox-path NAME";
-         1
+let get_inbox =
+  cmd "get-inbox" "Print an agent process's inbox socket path as JSON."
+  @@ let+ pid = Arg.(required & pos 0 (some int) None & info [] ~docv:"PID") in
+     fun () ->
+       let path = ok (Msg.inbox_path ~dir:(State.dir ()) (Int.to_string pid)) in
+       print_endline (Yojson.Safe.to_string (`Assoc [ ("path", `String path) ]));
+       0
 
 let shell =
   Cmd.v (Cmd.info "shell" ~doc:"Exec the pane's login shell, primed with kido's shell integration.")
@@ -715,16 +729,15 @@ let () =
         agent_status;
         debug_log;
         server;
-        inbox_path;
+        get_inbox;
         tool;
         runs;
         run_outcome;
         async_run;
-        agent_alive;
-        children_alive;
+        get_agent;
         snapshot;
         prompt;
-        window_focused;
+        get_window;
         switch_session;
         switch_window;
         shell;

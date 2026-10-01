@@ -78,7 +78,7 @@ These are fixed:
 
 - **Layout.** `bin/main.ml` is the cmdliner command table, plus the
   bodies of commands that only read, print and exit (`set_status`,
-  `agent-alive`, `snapshot`, `ssh`, ...). `lib/` is the library `kido`,
+  `get-agent`, `snapshot`, `ssh`, ...). `lib/` is the library `kido`,
   one module per domain or subcommand with logic of its own. `lib_tmux/` is the library `tmux` (call sites read
   `Tmux.Conn`, `Tmux.Pane`, `Tmux.Exec`). Tests are ppx_expect in
   `lib/test/` and `lib_tmux/test/`.
@@ -113,8 +113,8 @@ Conventions:
 ## Layout
 
     bin/main.ml        the cmdliner command table and the small commands:
-                       set_status, agent-alive, children-alive, snapshot,
-                       ssh, window-focused, switch-session/window, server,
+                       set_status, get-agent, get-inbox, snapshot,
+                       ssh, get-window, switch-session/window, server,
                        sidebar-feed
     bin/cli.ml         failure printing and tables
     lib/               the library kido:

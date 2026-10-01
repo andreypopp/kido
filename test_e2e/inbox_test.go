@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -137,4 +138,22 @@ func modernBash(t testing.TB) string {
 		t.Skip(skip)
 	}
 	return bash
+}
+
+func TestGetInboxCmd(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	dir := filepath.Join(socketDir(t), "state")
+	out := h.runScript("alpha", "get-inbox.out", fmt.Sprintf("KIDO_STATE_DIR=%s %s get-inbox 123", shellQuote(dir), kidoBin))
+	var value map[string]string
+	if err := json.Unmarshal([]byte(firstLine(out)), &value); err != nil {
+		t.Fatalf("get-inbox: %s: %v", out, err)
+	}
+	want := filepath.Join(dir, "inbox", "123.sock")
+	if len(value) != 1 || value["path"] != want {
+		t.Errorf("get-inbox = %v, want path %s", value, want)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("get-inbox created state directory: %v", err)
+	}
 }

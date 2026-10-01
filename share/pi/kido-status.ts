@@ -1,8 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
-import { accessSync, constants, unlinkSync } from "node:fs";
+import { accessSync, constants, mkdirSync, unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Set by `kido tool spawn_subagent` in a subagent's environment; absent for a root session.
@@ -364,10 +364,22 @@ export default function (pi: ExtensionAPI) {
   const startInbox = async (): Promise<void> => {
     // A refusal from kido means no inbox. The path is named after this process's
     // pid, so a leftover file there cannot belong to a running listener.
-    const asked = await runKido(["inbox-path", String(process.pid)], { timeoutMs: 2000 });
+    const asked = await runKido(["get-inbox", String(process.pid)], { timeoutMs: 2000 });
     if (!asked.ok) return;
-    const path = asked.out;
-    if (!path || !isAbsolute(path)) return;
+    let inbox: unknown;
+    try {
+      inbox = JSON.parse(asked.out);
+    } catch {
+      return;
+    }
+    if (!inbox || typeof inbox !== "object" || !("path" in inbox) || typeof inbox.path !== "string" || !isAbsolute(inbox.path)) return;
+    const path = inbox.path;
+    try {
+      mkdirSync(dirname(dirname(path)), { recursive: true, mode: 0o755 });
+      mkdirSync(dirname(path), { mode: 0o700 });
+    } catch (err) {
+      if (!(err instanceof Error && "code" in err && err.code === "EEXIST")) return;
+    }
     try {
       unlinkSync(path);
     } catch {}

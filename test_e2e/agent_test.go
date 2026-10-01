@@ -119,8 +119,8 @@ func TestPiBeatsClaudeOnTheSamePane(t *testing.T) {
 }
 
 // A second live agent on the parent's pane wins it in the per-pane view;
-// agent-alive reads every live record, so the parent still answers true.
-func TestAgentAliveCmd(t *testing.T) {
+// get-agent reads every live record, so the parent still answers true.
+func TestGetAgentCmd(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	h.liveParent("alpha", "parent")
@@ -136,16 +136,39 @@ func TestAgentAliveCmd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for i, c := range []struct{ session, want string }{
-		{"parent", "true\nrc=0"},
-		{"intruder", "true\nrc=0"},
-		{"dead-sess", "false\nrc=0"},
-		{"never-existed", "false\nrc=0"},
-		{"''", "kido agent-alive: usage: kido agent-alive SESSION\nrc=1"},
+	for i, c := range []struct {
+		session string
+		alive   bool
+	}{
+		{"parent", true},
+		{"intruder", true},
+		{"dead-sess", false},
+		{"never-existed", false},
 	} {
-		if got := strings.TrimSpace(h.runKido("alpha", fmt.Sprintf("alive-%d.out", i), "agent-alive", c.session)); got != c.want {
-			t.Errorf("agent-alive %s = %q, want %q", c.session, got, c.want)
+		for _, children := range []bool{false, true} {
+			args := []string{"get-agent", c.session}
+			want := map[string]any{"id": c.session, "alive": c.alive}
+			if children {
+				args = append(args, "--children")
+				want["childrenAlive"] = false
+			}
+			got := firstLine(h.runKido("alpha", fmt.Sprintf("alive-%d-%t.out", i, children), args...))
+			var value map[string]any
+			if err := json.Unmarshal([]byte(got), &value); err != nil {
+				t.Fatalf("get-agent: %s: %v", got, err)
+			}
+			b, _ := json.Marshal(want)
+			actual, _ := json.Marshal(value)
+			if string(actual) != string(b) {
+				t.Errorf("get-agent %v = %s, want %s", args, actual, b)
+			}
 		}
+	}
+	if _, err := os.Stat(filepath.Join(h.stateDir, "dead-sess.json")); !os.IsNotExist(err) {
+		t.Errorf("dead record was not removed: %v", err)
+	}
+	if got := strings.TrimSpace(h.runKido("alpha", "empty-session.out", "get-agent", "''")); got != "kido get-agent: usage: kido get-agent SESSION\nrc=1" {
+		t.Errorf("empty session = %q", got)
 	}
 }
 

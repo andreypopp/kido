@@ -39,11 +39,10 @@ if ([
   "interrupt_subagent", "stop_subagent", "set_status", "spawn_subagent", "async_bash",
 ].includes(args[0]) && argv[0] !== "tool") process.exit(1);
 switch (args[0]) {
-  case "inbox-path": {
+  case "get-inbox": {
     if (process.env.KIDO_FAKE_INBOX_FAIL === "1") process.exit(1);
     const dir = process.env.KIDO_FAKE_INBOX_DIR;
-    fs.mkdirSync(dir, { recursive: true });
-    process.stdout.write(path.join(dir, args[1] + ".sock") + "\\n");
+    process.stdout.write(JSON.stringify({ path: path.join(dir, args[1] + ".sock") }) + "\\n");
     process.exit(0);
   }
   case "list_agents": {
@@ -58,7 +57,13 @@ switch (args[0]) {
     if (delay > 0) setTimeout(respond, delay); else respond();
     break;
   }
-  case "agent-alive": {
+  case "get-agent": {
+    if (args.includes("--children")) {
+      const logFile = process.env.KIDO_FAKE_CHILDREN_ALIVE_LOG;
+      if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
+      process.stdout.write(JSON.stringify({ id: args[1], alive: true, childrenAlive: process.env.KIDO_FAKE_CHILDREN_ALIVE === "1" }) + "\\n");
+      process.exit(0);
+    }
     const logFile = process.env.KIDO_FAKE_PARENT_ALIVE_LOG;
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
     // Named sessions answer "false" whatever the global mode says, so a test can
@@ -67,28 +72,22 @@ switch (args[0]) {
     if (deadFile && fs.existsSync(deadFile)) {
       const dead = fs.readFileSync(deadFile, "utf8").split("\\n").filter(Boolean);
       if (dead.includes(args[1])) {
-        process.stdout.write("false\\n");
+        process.stdout.write(JSON.stringify({ id: args[1], alive: false }) + "\\n");
         process.exit(0);
       }
     }
     const mode = process.env.KIDO_FAKE_PARENT_ALIVE ?? "1";
     const respond = () => {
       if (mode === "fail") {
-        process.stderr.write("kido agent-alive: nope\\n");
+        process.stderr.write("kido get-agent: nope\\n");
         process.exit(1);
       }
-      process.stdout.write((mode === "1" ? "true" : "false") + "\\n");
+      process.stdout.write(JSON.stringify({ id: args[1], alive: mode === "1" }) + "\\n");
       process.exit(0);
     };
     const delay = Number(process.env.KIDO_FAKE_PARENT_ALIVE_DELAY_MS || 0);
     if (delay > 0) setTimeout(respond, delay); else respond();
     break;
-  }
-  case "children-alive": {
-    const logFile = process.env.KIDO_FAKE_CHILDREN_ALIVE_LOG;
-    if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
-    process.stdout.write((process.env.KIDO_FAKE_CHILDREN_ALIVE === "1" ? "true" : "false") + "\\n");
-    process.exit(0);
   }
   case "agent-status": {
     const logFile = process.env.KIDO_FAKE_STATUS_LOG;
@@ -167,10 +166,10 @@ switch (args[0]) {
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
     process.exit(0);
   }
-  case "window-focused": {
+  case "get-window": {
     const logFile = process.env.KIDO_FAKE_WINDOW_FOCUSED_LOG;
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
-    process.stdout.write((process.env.KIDO_FAKE_WINDOW_FOCUSED === "1" ? "true" : "false") + "\\n");
+    process.stdout.write(JSON.stringify({ id: args[1], focused: process.env.KIDO_FAKE_WINDOW_FOCUSED === "1" }) + "\\n");
     process.exit(0);
   }
   case "interrupt_subagent":
@@ -247,7 +246,6 @@ function makeFixture(): Fixture {
   mkdirSync(binDir);
   writeFileSync(join(binDir, "kido"), FAKE_KIDO, { mode: 0o755 });
   const inboxDir = join(dir, "inbox");
-  mkdirSync(inboxDir);
   const agentsFile = join(dir, "agents.json");
   const logFile = join(dir, "log.jsonl");
   const spawnLogFile = join(dir, "spawn.jsonl");
@@ -273,9 +271,9 @@ function makeFixture(): Fixture {
   writeFileSync(asyncBashLogFile, "");
   writeFileSync(agentsCallLogFile, "");
   writeFileSync(parentAliveLogFile, "");
-  const windowFocusedLogFile = join(dir, "window-focused.jsonl");
+  const windowFocusedLogFile = join(dir, "get-window.jsonl");
   writeFileSync(windowFocusedLogFile, "");
-  const childrenAliveLogFile = join(dir, "children-alive.jsonl");
+  const childrenAliveLogFile = join(dir, "get-agent --children.jsonl");
   writeFileSync(childrenAliveLogFile, "");
 
   const saved = {
@@ -666,6 +664,7 @@ test("either load order wires the pair up: agents first, status second", async (
     const factory = await freshExtensions("agents-first");
     const s = await startSession(fx, { factory });
     assert.ok(s.tools.get("ask_agent"), "the agent half registered its tools");
+    assert.equal(statSync(fx.inboxDir).mode & 0o777, 0o700, "the extension creates the uid-private inbox directory");
     const resp = await sendToInbox(s.inboxPath, envelope("notice", "loaded either way", { from: { session: "peer-a", name: "peer-a" } }));
     assert.equal(resp, "ok");
     assert.ok(
@@ -2922,7 +2921,7 @@ test("session_shutdown records this run's own outcome as completed when it ends 
 
 // A reload (reason "reload") carries the session straight on in the same
 // process; recording an outcome there would report a live run as finished, and
-// since RecordOutcome is O_EXCL the real ending could never be recorded after.
+// since RecordOutcome refuses to overwrite the real ending could never be recorded after.
 test("a session_shutdown that is a reload or a session replacement records no outcome", async () => {
   for (const reason of ["reload", "new", "resume", "fork"]) {
     const fx = makeFixture();
@@ -3259,9 +3258,9 @@ test("parent-liveness poll: shuts the session down when the parent's process is 
   }
 });
 
-// Also pins what the poll asks: `kido agent-alive` naming its own parent
+// Also pins what the poll asks: `kido get-agent` naming its own parent
 // session, never `kido tool list_agents`, whose per-pane view is the wrong source for a liveness fact.
-test("parent-liveness poll: does not shut down while the parent is alive, and asks agent-alive about its own parent session", async () => {
+test("parent-liveness poll: does not shut down while the parent is alive, and asks get-agent about its own parent session", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
@@ -3270,11 +3269,11 @@ test("parent-liveness poll: does not shut down while the parent is alive, and as
       const factory = await freshExtensions();
       const s = await startWithShutdownSpy(fx, factory);
       const agentsBefore = fx.agentsCallCount();
-      await pollUntil(() => fx.parentAliveCalls().length >= 3, 2000, "several agent-alive polls");
+      await pollUntil(() => fx.parentAliveCalls().length >= 3, 2000, "several get-agent polls");
       assert.equal(s.shutdowns(), 0, "a live, correctly-matched parent must never trigger a shutdown");
       assert.deepEqual(
         fx.parentAliveCalls()[0],
-        ["agent-alive", "boss-session"],
+        ["get-agent", "boss-session"],
         "the poll asks about its own parent session, by session id and nothing else",
       );
       assert.equal(
@@ -3299,7 +3298,7 @@ test("parent-liveness poll: a kido that cannot answer is not evidence, and never
     await withParentEnv(process.pid, "boss-session", 20, async () => {
       const factory = await freshExtensions();
       const s = await startWithShutdownSpy(fx, factory);
-      await pollUntil(() => fx.parentAliveCalls().length >= 4, 2000, "several failed agent-alive polls");
+      await pollUntil(() => fx.parentAliveCalls().length >= 4, 2000, "several failed get-agent polls");
       assert.equal(s.shutdowns(), 0, "a failing query says nothing; it must not be read as a dead parent");
       await s.emit("session_shutdown");
     });
@@ -4153,7 +4152,7 @@ test("idle self-exit: a focused window re-arms instead of shutting down, then ex
         assert.equal(s.shutdowns(), 0, "a focused window must not be closed out from under the user");
         assert.ok(
           fx.windowFocusedCallCount() >= 2,
-          `window-focused was checked ${fx.windowFocusedCallCount()} times, want re-arming to have checked more than once`,
+          `get-window was checked ${fx.windowFocusedCallCount()} times, want re-arming to have checked more than once`,
         );
 
         fx.setWindowFocused(false);
@@ -4182,7 +4181,7 @@ test("idle self-exit: a live child run re-arms the clock, and the session exits 
         assert.equal(s.shutdowns(), 0, "a session waiting on a child it spawned is not idle");
         assert.ok(
           fx.childrenAliveCalls().length >= 2,
-          `children-alive was asked ${fx.childrenAliveCalls().length} times, want re-arming to have asked more than once`,
+          `get-agent --children was asked ${fx.childrenAliveCalls().length} times, want re-arming to have asked more than once`,
         );
 
         // Negative control: the last child ends and the clock resumes.

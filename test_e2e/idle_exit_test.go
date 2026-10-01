@@ -12,7 +12,7 @@ import (
 // The window the client is actually looking at reads "true", any other
 // "false" - callable by share/pi/kido-agents.ts's idle self-exit timer before
 // it shuts a session down.
-func TestWindowFocusedCmd(t *testing.T) {
+func TestGetWindowCmd(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
@@ -20,20 +20,25 @@ func TestWindowFocusedCmd(t *testing.T) {
 	unfocusedPane := h.newWindow("alpha", "background", "sleep", "300")
 	unfocused := h.windowID(unfocusedPane)
 
-	if got := firstLine(h.runKido("alpha", "focused.out", "window-focused", focused)); got != "true" {
-		t.Errorf("window-focused on the client's own window = %q, want %q", got, "true")
-	}
-	if got := firstLine(h.runKido("alpha", "unfocused.out", "window-focused", unfocused)); got != "false" {
-		t.Errorf("window-focused on a window nobody is looking at = %q, want %q", got, "false")
+	for i, c := range []struct {
+		id      string
+		focused bool
+	}{
+		{focused, true}, {unfocused, false}, {"@999999", false},
+	} {
+		want := fmt.Sprintf(`{"id":%q,"focused":%t}`, c.id, c.focused)
+		if got := firstLine(h.runKido("alpha", fmt.Sprintf("focus-%d.out", i), "get-window", c.id)); got != want {
+			t.Errorf("get-window %s = %q, want %q", c.id, got, want)
+		}
 	}
 	for i, c := range []struct{ arg, want string }{
-		{"''", "kido window-focused: usage: kido window-focused WINDOW_ID\nrc=1"},
-		{"@", `kido window-focused: "@" is not a window id (@N)` + "\nrc=1"},
-		{"7", `kido window-focused: "7" is not a window id (@N)` + "\nrc=1"},
-		{"@1x", `kido window-focused: "@1x" is not a window id (@N)` + "\nrc=1"},
+		{"''", "kido get-window: usage: kido get-window WINDOW_ID\nrc=1"},
+		{"@", `kido get-window: "@" is not a window id (@N)` + "\nrc=1"},
+		{"7", `kido get-window: "7" is not a window id (@N)` + "\nrc=1"},
+		{"@1x", `kido get-window: "@1x" is not a window id (@N)` + "\nrc=1"},
 	} {
-		if got := strings.TrimSpace(h.runKido("alpha", fmt.Sprintf("invalid-%d.out", i), "window-focused", c.arg)); got != c.want {
-			t.Errorf("window-focused %s = %q, want %q", c.arg, got, c.want)
+		if got := strings.TrimSpace(h.runKido("alpha", fmt.Sprintf("invalid-%d.out", i), "get-window", c.arg)); got != c.want {
+			t.Errorf("get-window %s = %q, want %q", c.arg, got, c.want)
 		}
 	}
 }

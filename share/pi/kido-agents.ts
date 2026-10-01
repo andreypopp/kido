@@ -638,12 +638,24 @@ export default function (pi: ExtensionAPI) {
   // provider is registered (sessionStarting).
   let completion: { agents: AgentInfo[]; at: number; refreshing: Promise<void> | null } | null = null;
 
-  // Only a definite "false" from `kido agent-alive` is evidence; anything else - an error, an
+  // Only a definite false from `kido get-agent` is evidence; anything else - an error, an
   // unreachable kido - is inconclusive and never shuts the session down on a guess. Not
   // `kido tool list_agents --json`: it scopes to the caller's tmux session and collapses to one
   // record per pane, so a `pi --print` started in the parent's pane and inheriting
   // TMUX_PANE would win that pane and make a healthy parent look gone.
   // kill(pid, 0) success or EPERM is not proof of life - a pid can be recycled.
+  const lookupBoolean = (res: RunKidoResult, id: string, field: "alive" | "childrenAlive" | "focused"): boolean | undefined => {
+    if (!res.ok) return undefined;
+    try {
+      const value: unknown = JSON.parse(res.out);
+      if (!value || typeof value !== "object" || !("id" in value) || value.id !== id) return undefined;
+      if (field === "alive" && "alive" in value && typeof value.alive === "boolean") return value.alive;
+      if (field === "childrenAlive" && "childrenAlive" in value && typeof value.childrenAlive === "boolean") return value.childrenAlive;
+      if (field === "focused" && "focused" in value && typeof value.focused === "boolean") return value.focused;
+    } catch {}
+    return undefined;
+  };
+
   const parentIsAlive = async (): Promise<boolean> => {
     if (PARENT_PID === undefined || PARENT_SESSION === undefined) return true;
     try {
@@ -651,8 +663,8 @@ export default function (pi: ExtensionAPI) {
     } catch (err) {
       if (err instanceof Error && "code" in err && err.code === "ESRCH") return false;
     }
-    const res = await runKido(["agent-alive", PARENT_SESSION], { timeoutMs: 2000 });
-    return !(res.ok && res.out === "false");
+    const res = await runKido(["get-agent", PARENT_SESSION], { timeoutMs: 2000 });
+    return lookupBoolean(res, PARENT_SESSION, "alive") !== false;
   };
 
   // Stops a tick from starting a second parentIsAlive() call while the previous one is
@@ -716,8 +728,9 @@ export default function (pi: ExtensionAPI) {
       // A session with a child of its own still running is not idle, however quiet it has
       // been; exiting would orphan the child for the sweep to close mid-work. Read from the
       // run records, not process memory, since a child outlives the turn that spawned it.
-      const children = await runKido(["children-alive", seam().host?.sessionId() ?? ""], { timeoutMs: 2000 });
-      if (children.ok && children.out.trim() === "true") {
+      const sessionId = seam().host?.sessionId() ?? "";
+      const children = await runKido(["get-agent", sessionId, "--children"], { timeoutMs: 2000 });
+      if (lookupBoolean(children, sessionId, "childrenAlive") === true) {
         armIdleExit();
         return;
       }
@@ -725,8 +738,8 @@ export default function (pi: ExtensionAPI) {
       const self = listed.ok ? listed.agents.find((a) => a.self) : undefined;
       // A window a client is currently looking at is not reaped out from under them; the
       // timer re-arms instead, so it is collected once the user looks away.
-      const focused = self?.window ? await runKido(["window-focused", self.window], { timeoutMs: 2000 }) : null;
-      if (focused?.ok && focused.out.trim() === "true") {
+      const focused = self?.window ? await runKido(["get-window", self.window], { timeoutMs: 2000 }) : null;
+      if (focused && self?.window && lookupBoolean(focused, self.window, "focused") === true) {
         armIdleExit();
         return;
       }
@@ -864,8 +877,8 @@ export default function (pi: ExtensionAPI) {
       if (target.stalled) {
         return reply(`${who} has been quiet for ${target.sinceReport}s while reporting running; likely stalled, refusing to wait for a reply`);
       }
-      const alive = await runKido(["agent-alive", target.id], { timeoutMs: 2000 });
-      if (alive.ok && alive.out === "false") return reply(`${who} is no longer running; refusing to wait for a reply`);
+      const alive = await runKido(["get-agent", target.id], { timeoutMs: 2000 });
+      if (lookupBoolean(alive, target.id, "alive") === false) return reply(`${who} is no longer running; refusing to wait for a reply`);
 
       // Checked synchronously, with no await before pendingOutbound.set below, so a teardown
       // either already caught this waiter with abandonPending or closed the inbox first.
@@ -916,9 +929,9 @@ export default function (pi: ExtensionAPI) {
         watch = setInterval(() => {
           if (reading) return;
           reading = true;
-          runKido(["agent-alive", targetID], { timeoutMs: 2000 }).then((res) => {
+          runKido(["get-agent", targetID], { timeoutMs: 2000 }).then((res) => {
             reading = false;
-            if (res.ok && res.out === "false") settle({ gaveUp: "gone" });
+            if (lookupBoolean(res, targetID, "alive") === false) settle({ gaveUp: "gone" });
           });
         }, ASK_LIVENESS_POLL_MS);
         watch.unref();
@@ -1336,7 +1349,7 @@ export default function (pi: ExtensionAPI) {
   // The two things that happen exactly once, when this process's own run actually ends:
   // record how it ended, and schedule its window's linger. Gated on it actually being the
   // run's own child (ownRunID) and this being the run ending, not a /reload rebuilding the
-  // extension runtime in the same process - an outcome is O_EXCL, so a reload recording
+  // extension runtime in the same process - an outcome is first-write-wins, so a reload recording
   // "completed" would leave the run's real ending unrecordable.
   const endOwnRun = async (reason?: ShutdownReason): Promise<void> => {
     const host = seam().host;

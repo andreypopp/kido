@@ -127,20 +127,16 @@ let%expect_test "a stale socket is Unavailable" =
   | _ -> print_endline "WRONG");
   [%expect {| unavailable, as expected |}]
 
-let%expect_test "InboxPath: absolute, mode 0700, and dialable" =
+let%expect_test "InboxPath: absolute and pure" =
   let dir = Filename.temp_dir "kido-inbox" "" in
   let got = Result.get_exn (Msg.inbox_path ~dir "pi-123") in
   Printf.printf "%s\n" (if Filename.check_suffix got "/inbox/pi-123.sock" then "suffix ok" else got);
   Printf.printf "absolute: %b\n" (Filename.is_relative got |> not);
-  let st = Unix.stat (Filename.concat dir "inbox") in
-  Printf.printf "dir mode: %o\n" (st.st_perm land 0o777);
-  let ln = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
-  Unix.bind ln (Unix.ADDR_UNIX got);
-  Unix.close ln;
+  Printf.printf "directory exists: %b\n" (Sys.file_exists (Filename.concat dir "inbox"));
   [%expect {|
     suffix ok
     absolute: true
-    dir mode: 700
+    directory exists: false
     |}]
 
 let%expect_test "InboxPath rejects a name that would escape or overflow sun_path" =

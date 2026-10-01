@@ -33,7 +33,7 @@ agent binaries.
 
 The rule runs one way only: a tool names its command, while a subcommand
 that is nobody's tool keeps whatever name fits it - `hook`, `shell`,
-`ssh`, `agent-alive`, `prompt`, `snapshot`, `reap`, `runs`
+`ssh`, `get-agent`, `prompt`, `snapshot`, `reap`, `runs`
 and the rest. `kido agent-status` is the sharpest case and keeps its own
 name too: it reports a session's whole state on every turn, of which
 `set_status`'s activity is one flag of thirteen, so the narrow tool got a
@@ -301,7 +301,7 @@ would otherwise leave the instruction behind.
 so no signal tells it the parent has gone. It polls every five seconds:
 `kill(pid, 0)` first, where ESRCH is definite and ends the session on
 that poll without spawning anything; a live pid is not proof, since pids
-are recycled, so anything else asks `kido agent-alive <parent-session>`
+are recycled, so anything else asks `kido get-agent <parent-session>`
 and acts on the answer, on one reading. That command reads every live
 state record and answers whether one holds that session - the same
 question the orphan sweep asks, of the same registry. It is deliberately
@@ -375,7 +375,7 @@ silently:
   recorded at all: the crash, the kill, the window closed by hand.
 
 Which of them speaks is settled the way every other ending is, by the
-O_EXCL outcome write ("Exactly one ending", below), so a run stopped
+atomic-link outcome write ("Exactly one ending", below), so a run stopped
 from outside - whose stopper has already spoken, and whose outcome is
 already on disk - produces nothing extra when its child gets round to
 shutting down.
@@ -424,7 +424,7 @@ has been. "I have spawned it and I am waiting for its report" settles a
 turn exactly as finished work does, and a clock that cannot tell them
 apart shuts a parent down thirty seconds after it spawns, whereupon the
 orphan rule closes the child it was waiting for, mid-work. So the
-timer asks `kido children-alive <session>` first and re-arms if the
+timer asks `kido get-agent --children <session>` first and re-arms if the
 answer is yes, exactly as it does for a focused window. The last child
 ending resumes the clock, as does that child's notice, which is new work
 like any other.
@@ -641,7 +641,8 @@ acts twice.
 
 The winner of the outcome write is the sender of the notice.
 `Subrun.record_outcome` is already a once-only, crash-safe arbiter of exactly
-this question (O_EXCL), so nothing else is introduced to decide it: not
+this question (linking a completed temporary file with `Unix.link`), so
+nothing else is introduced to decide it: not
 a flag, not a "notified" marker, the same write read the same way. Three
 observers can win it:
 
@@ -880,7 +881,8 @@ window aged out.
 - A child that is shutting down on its own notice when its parent dies
   can have its window closed mid-exit and be recorded as `died` rather
   than recording its own outcome. Whatever it managed to write first
-  wins (`Subrun.record_outcome` is O_EXCL).
+  wins (`Subrun.record_outcome` links a completed temporary file with
+  `Unix.link`).
 - Nesting stops at depth 2 and no flag raises it.
 - A `--no-parent` child is nobody's to collect: no idle self-exit, no
   orphan rule, no report home. Its window is the user's to close. Its

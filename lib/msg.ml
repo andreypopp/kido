@@ -15,11 +15,7 @@ let inbox_path ~dir name =
     Error
       (Printf.sprintf "socket path is %d bytes, over the %d-byte limit: %s" (String.length path)
          sun_path_max path)
-  else begin
-    Fs.mkdir_p (Filename.dirname dir);
-    Fs.mkdir_p ~perm:0o700 dir;
-    Ok path
-  end
+  else Ok path
 
 type kind = Message | Ask | Reply | Notice | Stream | Steer | Interrupt | Stop
 

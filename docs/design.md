@@ -82,7 +82,7 @@ socket. The `wake` file is the staleness rebase marker described below.
 
 **An agent is its session, not its process.** The session id is the
 identity: the name of its state file, what a child names as its parent,
-what `kido agent-alive` answers about, and what the tree, the reaper and
+what `kido get-agent` answers about, and what the tree, the reaper and
 the ask cycle rule all match on. A pid is not an identity - pids are
 recycled, and kido's liveness test (`kill(pid, 0)`) reads EPERM as
 alive, so a pid reused by another user's process looks like a living
@@ -177,9 +177,12 @@ alternative, carrying the edge across, would have a child address its
 report to a session nobody is reading.
 
 **What the child asks, and of what.** `parentIsAlive()` asks
-`kido agent-alive <session>`, a command of its own, which reads
+`kido get-agent <session>`, a command of its own, which reads
 `State.load_live` - every live record, nothing collapsed - and prints
-`true` or `false`. One reading decides, and there is no debounce.
+`{"id": SESSION, "alive": bool}`. An unknown session answers false.
+Dead records are removed by `State.load_live`. One reading decides, and
+there is no debounce. The optional `--children` flag adds
+`"childrenAlive": bool`, scanning run records only when requested.
 
 The question may not be put to a display. `kido tool list_agents` answers from
 a per-pane view (`State.by_pane`), which is right for a display and wrong
@@ -188,7 +191,7 @@ the parent's record is then not in the answer at all - nor is the child's
 own row, if something shells out to pi in the child's pane. Either way a
 healthy parent reads as gone, and a debounce waiting for a second
 identical wrong answer treats a bad answer as a slow one. A pane
-collision settles who owns a pane, which `agent-alive` never asks, so
+collision settles who owns a pane, which `get-agent` never asks, so
 nothing can disturb its answer. It is a separate subcommand rather than a
 flag on `kido tool list_agents` because it shares nothing with that command
 but a prefix - no pane listing, no session scoping, no per-pane collapse -
@@ -269,10 +272,12 @@ mistaken for a duplicate of one sent before the bind.
 ## The inbox
 
 A pi session that can take a prompt as a real user message listens on a
-unix stream socket and reports its path. `kido inbox-path <name>` says
-where: `<state>/inbox/<name>.sock`, absolute, with the directory created,
-refusing a name with a separator or `..` and a path over the kernel's
-`sun_path` limit. The path is kido's decision so that the extension does
+unix stream socket and reports its path. `kido get-inbox <pid>` prints
+`{"path": "<state>/inbox/<pid>.sock"}`, absolute, without creating anything,
+refusing a path over the kernel's `sun_path` limit. The extension creates
+the state directory and then the uid-private inbox directory with mode 0700
+immediately before binding. The path is kido's decision so that the
+extension does
 not have to reimplement the state-directory precedence or guess the
 length budget; a refusal means the session runs without an inbox rather
 than listening where kido cannot dial. The name is the pi process's pid,
@@ -681,7 +686,7 @@ answer that can no longer exist. The endings that produce it are ordinary
 ones: a child that finishes its work and exits without replying, and a
 child killed with `stop_subagent`.
 
-So a waiting ask keeps asking `kido agent-alive <session>` - the same
+So a waiting ask keeps asking `kido get-agent <session>` - the same
 one-bit question, on the same terms, as the parent-liveness poll in the
 status extension: a definite `false` settles the waiter, and an
 unanswerable kido says nothing either way and never gives up. The
@@ -944,7 +949,7 @@ rule, having only the one sweep to do it in.
 
 The cost of having no grace is that a child already shutting down on
 its own notice can have its window closed mid-exit and be stamped
-`died` rather than recording its own outcome. `Subrun.record_outcome`'s O_EXCL
+`died` rather than recording its own outcome. `Subrun.record_outcome`'s atomic link
 keeps whatever the child managed to write first, so what is at risk is
 the outcome of a child that has not written one yet - and a parent that
 is genuinely gone is the case where that outcome is least worth waiting
@@ -958,12 +963,12 @@ amount of scrollback (`Tmux.Exec.capture_screen`) to that run's own directory,
 before the caller actually closes the window - `Subrun.save_screen`
 writes `<run-dir>/screen` temp-then-rename, the way `State.record` writes a
 state file, and last writer wins. This is deliberately not `record_outcome`'s
-O_EXCL discipline: an outcome has precedence to defend (`stopped` written
+first-write-wins discipline: an outcome has precedence to defend (`stopped` written
 before `completed` must not lose to it), but two screen captures of one
 window do not - rule 1's panes are already dead and frozen, so both captures
 read the same thing, and rule 2's pane is still live, so a later capture is
 only ever more complete, never a worse answer competing with a better one.
-O_EXCL here would also have permanently stranded
+First-write-wins here would also permanently strand
 `kido tool spawn_subagent --resume`: nothing besides a sweep ever writes this
 file, so a first attempt's screen would outlive every subsequent attempt
 with no way to write a fresh one. `kido tool spawn_subagent --resume` clears it
@@ -991,7 +996,7 @@ window first.
 **Parent death.** The child's pi is a child of the tmux server, not of
 the parent's pi, so no OS parent-death signal reaches it. It polls every
 five seconds: `kill(pid, 0)` first, where ESRCH is a definite answer
-given without a subprocess, and otherwise `kido agent-alive
+given without a subprocess, and otherwise `kido get-agent
 <parent-session>`, which a recycled pid cannot fake ("What the child
 asks, and of what" above, for why that command and not a listing). kido
 being unavailable is not evidence of anything and never shuts a session
@@ -1034,7 +1039,7 @@ deliberately long-lived helper that opts out of self-reaping entirely.
 
 **A session with a live child of its own is not idle.** Waiting for a
 child's report settles a turn exactly as finished work does, so before
-shutting down the timer asks `kido children-alive <session>` - are any
+shutting down the timer asks `kido get-agent --children <session>` - are any
 of this session's runs still going, read from the run records, which
 are where a parent edge outlives a turn - and re-arms if any are. A
 parent that exited here would take its child with it: the orphan rule
@@ -1042,7 +1047,8 @@ closes the window of the very child it was waiting for
 (design-subagents.md, "Idle self-exit").
 
 **A window a client is looking at is not reaped out from under them.**
-Before shutting down, the timer asks `kido window-focused <id>` - the
+Before shutting down, the timer asks `kido get-window <id>`, which prints
+`{"id": ID, "focused": bool}` (false for a missing window) - the
 same `Tmux.Pane.window_focused` test `kido close-run` and the sweep already
 share - and, if focused, simply re-arms rather than giving up, exactly as
 the linger helper re-checks on its own next pass; the window is collected
@@ -1097,7 +1103,7 @@ fresh spawn uses, but:
   changed;
 - clears any outcome already recorded. This is the one place outside
   `Subrun.record_outcome` allowed to touch an outcome at all, and it does not
-  weaken the O_EXCL "first writer wins" rule: that rule exists so that
+  weaken the atomic-link "first writer wins" rule: that rule exists so that
   several *exit paths racing to describe the same ending* cannot clobber
   each other, and a resume is not a race between exit paths, it is a
   deliberate act, by a human or an agent, asserting the run is alive
@@ -1282,7 +1288,7 @@ target at all: it reads `KIDO_AGENT_PARENT_SESSION` from its own
 environment - the parent edge `kido tool spawn_subagent` put there, inherited
 through the child's pi and on into everything the child runs - and
 resolves that session against `State.load_live`, the same registry and
-the same question `kido agent-alive` asks. Resolving it the long way round
+the same question `kido get-agent` asks. Resolving it the long way round
 - list every agent, find your own row, read `parent` off it, hand that
 back to kido to address - would be a display asked for a fact kido has
 already handed the process, and would carry the per-pane view's weakness
@@ -1408,8 +1414,9 @@ names what it found, a wrapper that ended without reporting
 (design-subagents.md, "Exactly one ending"). `stopped` is written by
 `kido tool stop_subagent`.
 
-**Written once.** `Subrun.record_outcome` opens with `O_EXCL` and refuses to
-overwrite. Several exit paths race to describe the same run, and the
+**Written once.** `Subrun.record_outcome` links a completed temporary file
+into place with `Unix.link`, atomically refusing to overwrite. Several
+exit paths race to describe the same run, and the
 first to observe it ending is definitionally the true story; a later,
 cruder guess must never clobber it. That single rule decides the
 ordering everywhere else:

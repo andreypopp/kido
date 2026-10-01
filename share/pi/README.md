@@ -108,10 +108,11 @@ see AGENTS.md), and a sender that sees no advertised protocol sends plain v0
 text instead of a JSON envelope. On `session_shutdown` the socket is closed and
 the file unlinked.
 
-Where to bind is kido's decision, not the extension's: it runs `kido inbox-path
-<pid>`, which prints `<state>/inbox/<pid>.sock`, creating the directory mode
-0700. kido owns the state-directory precedence and the socket-path length
-budget; if the path would not fit, `inbox-path` exits non-zero and the extension
+Where to bind is kido's decision, not the extension's: it runs `kido get-inbox
+<pid>`, which prints `{"path": "<state>/inbox/<pid>.sock"}` without creating
+anything. The extension creates the state directory and then the inbox
+directory mode 0700 immediately before binding. kido owns the state-directory precedence and the socket-path length
+budget; if the path would not fit, `get-inbox` exits non-zero and the extension
 simply runs without an inbox. Because the name is this pi's process id, no live
 process can own a leftover file at that path, so one is unlinked unconditionally
 before binding — no liveness probe, no fallback names.

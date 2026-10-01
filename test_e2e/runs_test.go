@@ -180,27 +180,26 @@ func TestStopRecordsStoppedOutcome(t *testing.T) {
 	}
 }
 
-// children-alive answers for one parent's runs that have not ended.
-func TestChildrenAliveCmd(t *testing.T) {
+// get-agent --children answers for one parent's runs that have not ended.
+func TestGetAgentChildrenCmd(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	alive := func(tag, session string) string {
-		return strings.TrimSpace(h.runKido("alpha", "children-"+tag+".out", "children-alive", session))
+		return firstLine(h.runKido("alpha", "children-"+tag+".out", "get-agent", session, "--children"))
 	}
 	check := func(tag, session, want string) {
 		t.Helper()
 		if got := alive(tag, session); got != want {
-			t.Errorf("children-alive %s (%s) = %q, want %q", session, tag, got, want)
+			t.Errorf("get-agent --children %s (%s) = %q, want %q", session, tag, got, want)
 		}
 	}
 
-	check("before", "root-e2e", "false\nrc=0")
+	check("before", "root-e2e", `{"id":"root-e2e","alive":false,"childrenAlive":false}`)
 	_, windowID := h.spawnRun("kid-e2e", "exec sleep 300")
-	check("running", "root-e2e", "true\nrc=0")
-	check("other", "other-sess", "false\nrc=0")
+	check("running", "root-e2e", `{"id":"root-e2e","alive":true,"childrenAlive":true}`)
+	check("other", "other-sess", `{"id":"other-sess","alive":false,"childrenAlive":false}`)
 	h.killPane(h.in("list-panes", "-t", windowID, "-F", "#{pane_id}"))
 	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
 		msgf("the sidebar's sweep to close window %s", windowID))
-	check("ended", "root-e2e", "false\nrc=0")
-	check("usage", "''", "kido children-alive: usage: kido children-alive SESSION\nrc=1")
+	check("ended", "root-e2e", `{"id":"root-e2e","alive":true,"childrenAlive":false}`)
 }
