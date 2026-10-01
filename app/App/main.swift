@@ -47,13 +47,9 @@ import TmuxControl
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
-        window.backgroundColor = runtime.background
-        let rgb = runtime.background.usingColorSpace(.deviceRGB) ?? .black
-        let channels = [rgb.redComponent, rgb.greenComponent, rgb.blueComponent].map {
-            $0 <= 0.04045 ? $0 / 12.92 : pow(($0 + 0.055) / 1.055, 2.4)
-        }
-        let luminance = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
-        window.appearance = NSAppearance(named: luminance < 0.5 ? .darkAqua : .aqua)
+        updateAppearance()
+        runtime.onConfigChange = { [weak self] in self?.updateAppearance() }
+        runtime.onColorSchemeChange = { [weak self] in self?.session?.updateColorScheme() }
         window.contentViewController = sidebar
         let toolbar = NSToolbar(identifier: "KidoSidebar")
         toolbar.delegate = sidebar
@@ -82,6 +78,17 @@ import TmuxControl
         }
         updateSidebarMenu()
         start()
+    }
+
+    private func updateAppearance() {
+        window.backgroundColor = runtime.background
+        let rgb = runtime.background.usingColorSpace(.deviceRGB) ?? .black
+        let channels = [rgb.redComponent, rgb.greenComponent, rgb.blueComponent].map {
+            $0 <= 0.04045 ? $0 / 12.92 : pow(($0 + 0.055) / 1.055, 2.4)
+        }
+        let luminance = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
+        window.appearance = NSAppearance(named: luminance < 0.5 ? .darkAqua : .aqua)
+        session?.updateBackground()
     }
 
     private func send(_ commands: [Command], then done: (@MainActor @Sendable ([Reply]?) -> Void)? = nil) {
