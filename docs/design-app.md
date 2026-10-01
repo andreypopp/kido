@@ -89,8 +89,16 @@ edge. The button doubles only that surface's byte budget under Ghostty's
 renderer mutex and resumes fetching at the current target. The budget
 survives appearance and config reloads, which do not change PageList's
 limit; surface eviction or reconnect returns it to the configured default.
-Live output still follows Ghostty's normal byte-budget trimming, recycling
-oldest pages when the budget is full.
+After 1.5 seconds without scrolling, older loaded rows are erased, keeping
+one 5000-row chunk above the viewport and never less than the initial
+capture. The boundary stays on a whole logical line. Trimming uses
+PageList's erase machinery under the renderer mutex; pins and viewport
+follow their content. It clears the memory-limit state without lowering
+a raised budget. The thumb still spans tmux's history and does not move;
+scrolling back up reveals blank space and reloads through the same fetch
+path. Any active selection or open find bar prevents trimming, so neither
+can lose its content or highlights. Live output still follows Ghostty's
+normal byte-budget trimming, recycling oldest pages when the budget is full.
 
 Each pane draws one thin overlay scroller, shown during scrolling or
 hovering and fading afterwards. Ghostty's own scrollbar is disabled. The
