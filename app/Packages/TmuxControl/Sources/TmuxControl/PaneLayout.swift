@@ -8,6 +8,7 @@ public struct PaneLayout {
     public let before: CGSize
     public let after: CGSize
     public let origin: CGPoint
+    public let rightEdge: CGFloat
     private let cell: CGSize
 
     public init(root: Node, bounds: CGRect, cell: CGSize, pixel: CGFloat) {
@@ -22,6 +23,7 @@ public struct PaneLayout {
         origin = CGPoint(
             x: bounds.minX + floor((bounds.width - CGFloat(g.width) * cell.width - before.width - after.width) / (2 * pixel)) * pixel + before.width,
             y: bounds.minY + top)
+        rightEdge = origin.x + CGFloat(g.x + g.width) * cell.width
     }
 
     public func grid(_ g: Geometry) -> CGRect {
