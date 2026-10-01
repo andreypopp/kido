@@ -2,14 +2,25 @@ import AppKit
 import os
 import GhosttyKit
 
-final class GhosttyRuntime {
+@MainActor final class GhosttyRuntime {
     private(set) var app: ghostty_app_t!
-    let config: ghostty_config_t
-    private let ticking = OSAllocatedUnfairLock(initialState: false)
+    private(set) var config: ghostty_config_t
+    private var appearance: NSKeyValueObservation?
+    var onConfigChange: () -> Void = {}
+    var onColorSchemeChange: () -> Void = {}
+
+    var colorScheme: ghostty_color_scheme_e {
+        NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
+    }
+    nonisolated private let ticking = OSAllocatedUnfairLock(initialState: false)
 
     init?() {
         guard ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS,
               let config = ghostty_config_new() else { return nil }
+        let themes = Bundle.main.resourceURL!.appendingPathComponent("themes").path
+        let defaults = "theme = light:\(themes)/kido-light,dark:\(themes)/kido-dark\ncursor-style-blink = false\n"
+        ghostty_config_load_string(config, defaults, UInt(defaults.utf8.count), "/kido-defaults")
         let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : $0 }
         let file = (xdg ?? NSHomeDirectory() + "/.config") + "/kido/kido-app.conf"
         if FileManager.default.fileExists(atPath: file) { ghostty_config_load_file(config, file) }
@@ -25,8 +36,8 @@ final class GhosttyRuntime {
         var runtime = ghostty_runtime_config_s(
             userdata: Unmanaged.passUnretained(self).toOpaque(),
             supports_selection_clipboard: false,
-            wakeup_cb: { userdata in
-                nonisolated(unsafe) let runtime = Unmanaged<GhosttyRuntime>.fromOpaque(userdata!).takeUnretainedValue()
+            wakeup_cb: { @Sendable userdata in
+                let runtime = Unmanaged<GhosttyRuntime>.fromOpaque(userdata!).takeUnretainedValue()
                 guard runtime.ticking.withLock({ ticking in
                     defer { ticking = true }
                     return !ticking
@@ -36,13 +47,15 @@ final class GhosttyRuntime {
                     if let app = runtime.app { ghostty_app_tick(app) }
                 }
             },
-            action_cb: { _, target, action in GhosttyRuntime.action(target, action) },
-            read_clipboard_cb: { userdata, location, state in
+            action_cb: { @Sendable app, target, action in
+                GhosttyRuntime.action(app!, target, action)
+            },
+            read_clipboard_cb: { @Sendable userdata, location, state in
                 GhosttyRuntime.readClipboard(PaneView.surface(userdata), location, state)
             },
             // Ghostty asks from the main thread: from a paste binding, or from
             // its app tick for an OSC 52 read.
-            confirm_read_clipboard_cb: { userdata, string, state, request in
+            confirm_read_clipboard_cb: { @Sendable userdata, string, state, request in
                 nonisolated(unsafe) let (userdata, state) = (userdata, state)
                 let text = request == GHOSTTY_CLIPBOARD_REQUEST_PASTE ? string.map { String(cString: $0) } : nil
                 MainActor.assumeIsolated {
@@ -51,19 +64,24 @@ final class GhosttyRuntime {
                     view.confirmPaste(text, state)
                 }
             },
-            write_clipboard_cb: { _, location, content, count, confirm in
+            write_clipboard_cb: { @Sendable _, location, content, count, confirm in
                 GhosttyRuntime.writeClipboard(location, content, count, confirm)
             },
-            close_surface_cb: { userdata, _ in PaneView.onMain(userdata) { $0.onCommand(.close) } },
+            close_surface_cb: { @Sendable userdata, _ in PaneView.onMain(userdata) { $0.onCommand(.close) } },
             tmux_control_cb: nil)
-        guard let new = ghostty_app_new(&runtime, config) else {
-            ghostty_config_free(config)
-            return nil
-        }
+        guard let new = ghostty_app_new(&runtime, config) else { return nil }
         nonisolated(unsafe) let app = new
         self.app = app
+        ghostty_app_set_color_scheme(app, colorScheme)
+        appearance = NSApp.observe(\.effectiveAppearance) { @Sendable [weak self] _, _ in
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                ghostty_app_set_color_scheme(app, self.colorScheme)
+                self.onColorSchemeChange()
+            }
+        }
 
-        ghostty_app_set_focus(app, MainActor.assumeIsolated { NSApp.isActive })
+        ghostty_app_set_focus(app, NSApp.isActive)
         let center = NotificationCenter.default
         center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
             ghostty_app_set_focus(app, true)
@@ -85,7 +103,29 @@ final class GhosttyRuntime {
         return NSColor(srgbRed: CGFloat(color.r) / 255, green: CGFloat(color.g) / 255, blue: CGFloat(color.b) / 255, alpha: 1)
     }
 
-    private static func action(_ target: ghostty_target_s, _ action: ghostty_action_s) -> Bool {
+    deinit { MainActor.assumeIsolated { ghostty_config_free(config) } }
+
+    nonisolated private static func action(_ app: ghostty_app_t, _ target: ghostty_target_s, _ action: ghostty_action_s) -> Bool {
+        let runtime = Unmanaged<GhosttyRuntime>.fromOpaque(ghostty_app_userdata(app)!).takeUnretainedValue()
+        if action.tag == GHOSTTY_ACTION_CONFIG_CHANGE {
+            guard target.tag == GHOSTTY_TARGET_APP,
+                  let config = ghostty_config_clone(action.action.config_change.config) else { return true }
+            nonisolated(unsafe) let owned = config
+            DispatchQueue.main.async {
+                ghostty_config_free(runtime.config)
+                runtime.config = owned
+                runtime.onConfigChange()
+            }
+            return true
+        }
+        if action.tag == GHOSTTY_ACTION_RELOAD_CONFIG {
+            if target.tag == GHOSTTY_TARGET_APP {
+                DispatchQueue.main.async { ghostty_app_update_config_without_surface_propagation(runtime.app, runtime.config) }
+            } else if let surface = target.target.surface {
+                PaneView.onMain(ghostty_surface_userdata(surface)) { ghostty_surface_update_config($0.surface, runtime.config) }
+            }
+            return true
+        }
         if action.tag == GHOSTTY_ACTION_QUIT {
             DispatchQueue.main.async { (NSApp.delegate as? AppDelegate)?.quit("Ghostty's quit action") }
             return true
@@ -101,7 +141,7 @@ final class GhosttyRuntime {
         return true
     }
 
-    private static func command(_ action: ghostty_action_s) -> PaneCommand? {
+    nonisolated private static func command(_ action: ghostty_action_s) -> PaneCommand? {
         let a = action.action
         switch action.tag {
         case GHOSTTY_ACTION_NEW_SPLIT:
@@ -143,11 +183,11 @@ final class GhosttyRuntime {
         }
     }
 
-    private static func pasteboard(_ location: ghostty_clipboard_e) -> NSPasteboard? {
+    nonisolated private static func pasteboard(_ location: ghostty_clipboard_e) -> NSPasteboard? {
         location == GHOSTTY_CLIPBOARD_STANDARD ? .general : nil
     }
 
-    private static func readClipboard(
+    nonisolated private static func readClipboard(
         _ surface: ghostty_surface_t?, _ location: ghostty_clipboard_e, _ state: UnsafeMutableRawPointer?
     ) -> Bool {
         guard let surface,
@@ -156,7 +196,7 @@ final class GhosttyRuntime {
         return true
     }
 
-    private static func writeClipboard(
+    nonisolated private static func writeClipboard(
         _ location: ghostty_clipboard_e,
         _ content: UnsafePointer<ghostty_clipboard_content_s>?,
         _ count: Int,
