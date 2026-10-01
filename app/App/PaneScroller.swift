@@ -21,7 +21,7 @@ final class PaneScroller: NSView {
         let height = min(bounds.height, max(24, bounds.height * CGFloat(geometry.rows) / CGFloat(geometry.history + geometry.rows)))
         let travel = bounds.height - height
         let y = geometry.history == 0 ? 0 : travel * CGFloat(geometry.offset) / CGFloat(geometry.history)
-        return NSRect(x: 3, y: y + 2, width: 5, height: max(0, height - 4))
+        return NSRect(x: 5, y: y + 2, width: 5, height: max(0, height - 4))
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -29,7 +29,7 @@ final class PaneScroller: NSView {
             if unavailable > 0, geometry.history > 0 {
                 let travel = bounds.height - knob.height - 4
                 NSColor.labelColor.withAlphaComponent(0.08).setFill()
-                NSBezierPath(roundedRect: NSRect(x: 2, y: 0, width: 7,
+                NSBezierPath(roundedRect: NSRect(x: 4, y: 0, width: 7,
                     height: travel * CGFloat(unavailable) / CGFloat(geometry.history)), xRadius: 3, yRadius: 3).fill()
             }
             NSColor.labelColor.withAlphaComponent(hovering || dragging != nil ? 0.5 : 0.3).setFill()
