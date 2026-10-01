@@ -62,6 +62,15 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
         pane?.onSearch(field.stringValue, token)
     }
 
+    func invalidate() {
+        token = UUID()
+        matches = []
+        target = nil
+        navigating = false
+        count.stringValue = field.stringValue.isEmpty ? "" : "Searching…"
+        action("search:")
+    }
+
     func finished(_ matches: [Int], token: UUID) {
         guard token == self.token else { return }
         self.matches = matches

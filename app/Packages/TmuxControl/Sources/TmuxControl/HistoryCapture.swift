@@ -17,35 +17,19 @@ public struct HistoryCapture: Sendable {
     }
 
     public init?(_ replies: some Collection<Reply>, loaded: Int, initial: Bool = false) {
-        let lines = replies.compactMap { if case .success(let lines) = $0 { lines } else { nil } }
-        guard lines.count == 3, let state = lines[0].first else { return nil }
-        let numbers = state.split(separator: " ").compactMap { Int($0) }
-        guard numbers.count == 2 else { return nil }
-        history = numbers[0]
-        alternate = numbers[1] != 0
-        var groups: [(start: Int, end: Int, wrapped: Bool)] = []
-        var start: Int?
-        for line in lines[2] {
-            let fields = line.split(separator: " ", maxSplits: 2)
-            guard fields.count >= 2, let row = Int(fields[0]) else { return nil }
-            if start == nil { start = row }
-            let wrapped = fields[1].contains("W")
-            if !wrapped { groups.append((start!, row, false)); start = nil }
-        }
-        if let start, let last = lines[2].last?.split(separator: " ").first.flatMap({ Int($0) }) {
-            groups.append((start, last, true))
-        }
-        guard groups.count == lines[1].count else { return nil }
+        guard let capture = Capture(replies, styled: true) else { return nil }
+        history = capture.state.history
+        alternate = capture.state.alternate
         var selected: [String] = [], skipped: [String] = []
         var count = 0, wraps = false
-        for (index, group) in groups.enumerated() {
+        for (index, group) in capture.lines.enumerated() {
             let wholeTop = index > 0 || group.start == -history
             let wholeBottom = initial || (!group.wrapped && group.end < -loaded)
             if history > 0 && wholeTop && wholeBottom {
-                selected.append(lines[1][index])
+                selected.append(group.text)
                 count += group.end - group.start + 1
                 wraps = group.wrapped
-            } else if selected.isEmpty { skipped.append(lines[1][index]) }
+            } else if selected.isEmpty { skipped.append(group.text) }
         }
         rows = count
         wrapsIntoScreen = wraps
