@@ -15,7 +15,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onCellChange: () -> Void = {}
     var onFontChange: (Float) -> Void = { _ in }
     var onCommand: (PaneCommand) -> Void = { _ in }
-    var onResync: () -> Void = {}
+    var onResync: (@escaping @Sendable () -> Void) -> Void = { $0() }
     var onScroll: () -> Void = {}
     var onLoadMore: () -> Void = {}
     var onScrollSettled: () -> Void = {}
@@ -34,6 +34,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private var scrollRevision = 0
     private var trimming: DispatchWorkItem?
     private var resyncing: DispatchWorkItem?
+    private var thawing: DispatchWorkItem?
     nonisolated private let anchor = OSAllocatedUnfairLock<ScrollAnchor?>(initialState: nil)
     nonisolated var resizeAnchor: ScrollAnchor? {
         get { anchor.withLock { $0 } }
@@ -381,6 +382,14 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         let size = ghostty_surface_size(surface)
         guard (Int(size.columns), Int(size.rows)) != (cols, rows) else { return }
         resyncing?.cancel()
+        thawing?.cancel()
+        let thaw = DispatchWorkItem { [weak self] in
+            self?.thawing = nil
+            self?.present()
+        }
+        thawing = thaw
+        present()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: thaw)
         if resizeAnchor == nil, !ghostty_surface_is_alternate_screen(surface) {
             let position = scrollPosition()
             if (scrollTarget ?? (position.history - position.offset)) > 0 {
@@ -434,7 +443,15 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.window?.inLiveResize != true else { return }
             self.resyncing = nil
-            self.onResync()
+            let epoch = self.historyEpoch
+            self.onResync { [weak self] in
+                DispatchQueue.main.async {
+                    guard let self, epoch == self.historyEpoch else { return }
+                    self.thawing?.cancel()
+                    self.thawing = nil
+                    self.present()
+                }
+            }
         }
         resyncing = work
         if window?.inLiveResize != true { DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work) }
@@ -519,7 +536,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     @objc private func present() {
         let hidden = isHiddenOrHasHiddenAncestor
-        let next = (visible: !hidden && window?.occlusionState.contains(.visible) == true, realized: !hidden)
+        let next = (visible: !hidden && thawing == nil && window?.occlusionState.contains(.visible) == true, realized: !hidden)
         if next.realized != presented.realized { _ = ghostty_surface_set_renderer_realized(surface, next.realized) }
         if next.visible != presented.visible { ghostty_surface_set_occlusion(surface, next.visible) }
         presented = next
