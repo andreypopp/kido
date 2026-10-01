@@ -14,7 +14,6 @@ final class Connection: @unchecked Sendable {
         }
         let view: PaneView
         var history: History = .syncing(UUID())
-        var destination: Int?
         var search: (token: UUID, matches: [Int])?
         init(_ view: PaneView) { self.view = view }
     }
@@ -50,9 +49,9 @@ final class Connection: @unchecked Sendable {
             guard self.panes != nil else { return DispatchQueue.main.async { _ = pane } }
             self.panes?[pane.pane] = PaneFeed(pane)
         }
-        pane.onScroll = { [weak self, weak pane] distance in
+        pane.onScroll = { [weak self, weak pane] in
             guard let pane else { return }
-            self?.scroll(pane.pane, distance: distance)
+            self?.scroll(pane.pane)
         }
         pane.onSearch = { [weak self, weak pane] query, token in
             guard let pane else { return }
@@ -178,7 +177,8 @@ final class Connection: @unchecked Sendable {
             guard let feed = self.panes?[pane] else { return synced?() ?? () }
             let token = UUID()
             feed.history = .syncing(token)
-            feed.destination = nil
+            feed.view.clearScrollTarget()
+            DispatchQueue.main.async { [weak view = feed.view] in view?.resetScroll() }
             self.client.send(first + PaneSync.commands(pane, chunk: chunk)) { [weak self, weak feed] replies in
                 guard let self, let feed, self.panes?[pane] === feed,
                       case .syncing(let current) = feed.history, current == token, let replies else { return synced?() ?? () }
@@ -241,47 +241,40 @@ final class Connection: @unchecked Sendable {
         }
     }
 
-    private func scroll(_ pane: PaneID, distance: Int?) {
+    private func scroll(_ pane: PaneID) {
         client.queue.async {
             guard let feed = self.panes?[pane] else { return }
-            if let distance { feed.destination = distance }
+            let position = feed.view.scrollPosition()
+            let destination = feed.view.scrollTarget ?? (position.history - position.offset)
             switch feed.history {
             case .syncing, .fetching: return
-            default: break
-            }
-            let token = UUID(), position = feed.view.scrollPosition()
-            if case .more(let gap) = feed.history, position.history > 0,
-               position.offset <= position.rows, feed.destination == nil {
+            case .more(let gap) where destination >= position.history - position.rows:
+                self.publish(feed, history: position.history + gap)
+                let token = UUID()
                 feed.history = .fetching(token)
-                return self.fetch(pane, feed, token: token, chunk: min(5000, gap))
-            }
-            let limited = if case .limited = feed.history { true } else { false }
-            feed.history = .fetching(token)
-            self.client.send([Command("display-message", "-p", "-t", pane, "#{history_size} #{alternate_on}")]) {
-                [weak self, weak feed] replies in
-                guard let self, let feed, self.panes?[pane] === feed,
-                      case .fetching(let current) = feed.history, current == token else { return }
-                guard let replies, case .success(let lines) = replies.first,
-                      let values = lines.first?.split(separator: " ").compactMap({ Int($0) }), values.count == 2 else {
-                    feed.history = .complete
-                    return
-                }
-                let history = values[0], position = feed.view.scrollPosition()
-                if values[1] != 0 {
-                    feed.history = .alternate
-                    feed.destination = nil
-                    return self.publish(feed, history: 0, alternate: true)
-                }
-                let needsRows = feed.destination.map { $0 > position.history } ?? (position.offset <= position.rows)
-                if !limited && history > position.history && needsRows {
-                    self.fetch(pane, feed, token: token)
-                } else {
-                    feed.history = limited ? .limited : (history > position.history ? .more(gap: history - position.history) : .complete)
-                    if let destination = feed.destination {
-                        feed.view.scroll(to: max(0, position.history - min(destination, history)))
-                        feed.destination = nil
+                self.fetch(pane, feed, token: token, chunk: min(5000, gap))
+            default:
+                let limited = if case .limited = feed.history { true } else { false }
+                let token = UUID()
+                feed.history = .fetching(token)
+                self.client.send([Command("display-message", "-p", "-t", pane, "#{history_size} #{alternate_on}")]) {
+                    [weak self, weak feed] replies in
+                    guard let self, let feed, self.panes?[pane] === feed,
+                          case .fetching(let current) = feed.history, current == token else { return }
+                    guard let replies, case .success(let lines) = replies.first,
+                          let values = lines.first?.split(separator: " ").compactMap({ Int($0) }), values.count == 2 else {
+                        feed.history = .complete
+                        return
                     }
+                    let history = values[0], position = feed.view.scrollPosition()
+                    if values[1] != 0 {
+                        feed.history = .alternate
+                        return self.publish(feed, history: 0, alternate: true)
+                    }
+                    feed.history = limited ? .limited : (history > position.history ? .more(gap: history - position.history) : .complete)
                     self.publish(feed, history: history)
+                    let destination = feed.view.scrollTarget ?? (position.history - position.offset)
+                    if !limited && history > position.history && destination >= position.history - position.rows { self.scroll(pane) }
                 }
             }
         }
@@ -300,8 +293,13 @@ final class Connection: @unchecked Sendable {
             }
             if capture.alternate {
                 feed.history = .alternate
-                feed.destination = nil
                 return self.publish(feed, history: 0, alternate: true)
+            }
+            if let destination = feed.view.scrollTarget, destination < position.history - position.rows {
+                feed.history = capture.history > position.history ? .more(gap: capture.history - position.history) : .complete
+                self.publish(feed, history: capture.history)
+                self.scroll(pane)
+                return
             }
             if capture.rows == 0 && capture.history > position.history && chunk < capture.history {
                 return self.fetch(pane, feed, token: token, chunk: min(capture.history, chunk * 2))
@@ -311,17 +309,17 @@ final class Connection: @unchecked Sendable {
             feed.history = added == 0 && capture.history > loaded ? .limited
                 : (capture.history > loaded ? .more(gap: capture.history - loaded) : .complete)
             self.publish(feed, history: capture.history)
-            if feed.destination != nil {
-                self.scroll(pane, distance: nil)
+            if feed.view.scrollTarget != nil {
+                self.scroll(pane)
             }
         }
     }
 
     private func publish(_ feed: PaneFeed, history: Int, alternate: Bool = false) {
-        let position = feed.view.scrollPosition()
+        let position = feed.view.scrollPosition(distance: feed.view.scrollTarget)
         let limited = if case .limited = feed.history { true } else { false }
         DispatchQueue.main.async { [weak view = feed.view] in
-            view?.updateScroller(history: history, position: position, alternate: alternate)
+            view?.updateScroller(history: history, position: position, alternate: alternate, limited: limited)
             view?.find?.loaded(position, limited: limited)
         }
     }
