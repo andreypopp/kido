@@ -65,8 +65,12 @@ Offsets count from the bottom; output queued ahead of a capture reply is
 already fed before calculating its overlap, and overlapping rows are
 excluded. Trimming tmux's oldest history therefore changes the gap, not
 the identity of the loaded rows. There is one fetch per pane; sync tokens,
-view identity and a grid epoch reject obsolete replies. Every resize
-resyncs from the newest 5000 rows. Alternate screens never receive history.
+view identity and a grid epoch reject obsolete replies. A resize retains the
+viewport's top logical line counted from the bottom, resyncs from the newest
+5000 rows, then maps the anchor through tmux's wrap metadata and pages to it
+through the scroller's jump path; live resizing restores once after it settles,
+and a trimmed anchor clamps to the oldest surviving line. Alternate screens
+never receive history.
 
 `ghostty_surface_prepend_history` snapshots the primary screen's width and
 identity under the renderer mutex, then allocates and parses a scratch
@@ -99,6 +103,11 @@ scrolling back up reveals blank space and reloads through the same fetch
 path. Any active selection or open find bar prevents trimming, so neither
 can lose its content or highlights. Live output still follows Ghostty's
 normal byte-budget trimming, recycling oldest pages when the budget is full.
+Weightless placeholder rows inside Ghostty and an app-side far-view surface
+were considered and rejected (a gap touches about 80 row consumers across
+26 Ghostty files, with 16-bit row counts and crash-prone renderer and selection
+paths; a far view adds a second surface and split selection), so deep history
+is reached by paging within the memory limit.
 
 Each pane draws one thin overlay scroller, shown during scrolling or
 hovering and fading afterwards. Ghostty's own scrollbar is disabled. The
