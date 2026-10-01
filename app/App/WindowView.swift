@@ -7,6 +7,15 @@ final class WindowView: NSView {
     private var shown: (layout: Layout, visible: Layout)?
     private var active: PaneID?
     var stale = false
+    private var needsReconcile = true
+    private var dividers: [NSBox] = []
+    private var floatingBoxes: [PaneID: NSBox] = [:]
+    private var toolbar: PaneToolbar?
+    override var isHidden: Bool {
+        didSet {
+            if isHidden { toolbar?.removeFromSuperview(); toolbar = nil }
+        }
+    }
 
     init(runtime: GhosttyRuntime, connection: Connection?) {
         self.runtime = runtime
@@ -31,28 +40,43 @@ final class WindowView: NSView {
 
     func update(_ layout: Layout, _ visible: Layout) {
         let changed = shown.map { $0.layout != layout || $0.visible != visible } ?? true
+        func sameTopology(_ a: Node, _ b: Node) -> Bool {
+            switch (a, b) {
+            case (.pane(let a), .pane(let b)): a.id == b.id && a.layer == b.layer
+            case (.split(let a, _, let ac), .split(let b, _, let bc)):
+                a == b && ac.count == bc.count && zip(ac, bc).allSatisfy { sameTopology($0, $1) }
+            default: false
+            }
+        }
+        needsReconcile = needsReconcile || (shown.map { !sameTopology($0.layout.root, layout.root) || !sameTopology($0.visible.root, visible.root) } ?? true)
         shown = (layout, visible)
         active = visible.root.panes.first { $0.focus == .active }?.id ?? active
         guard hot else { return }
         let known = panes.contains { $0.pane == active }
-        if changed { relayout() }
+        if changed && !isHidden { relayout() }
         if !known { focusActive(force: false) }
     }
 
     func present(_ synced: DispatchGroup) -> (created: Int, resynced: Int) {
-        let resync = stale ? panes : []
+        let created = !hot
+        relayout(created ? synced : nil)
+        sizeClient()
+        let resync = !created && stale ? panes : []
         stale = false
         for pane in resync {
             synced.enter()
             connection?.sync(pane.pane) { synced.leave() }
         }
-        guard !hot else { return (0, resync.count) }
-        relayout(synced)
-        return (panes.count, 0)
+        return (created ? panes.count : 0, resync.count)
     }
 
     func evict() {
         panes.forEach { connection?.detach($0) }
+        toolbar?.removeFromSuperview()
+        toolbar = nil
+        dividers = []
+        floatingBoxes = [:]
+        needsReconcile = true
         subviews = []
     }
 
@@ -77,7 +101,9 @@ final class WindowView: NSView {
 
     private func relayout(_ synced: DispatchGroup? = nil) {
         guard let shown else { return }
-        let focused = (window?.firstResponder as? PaneView)?.isDescendant(of: self) == true
+        guard !isHidden else { return }
+        if !needsReconcile { place(resizeGrids: true); return }
+        toolbar?.removeFromSuperview()
         let layoutPanes = shown.layout.root.panes
         let existing = Dictionary(uniqueKeysWithValues: panes.map { ($0.pane, $0) })
         var views: [PaneID: PaneView] = [:]
@@ -91,30 +117,34 @@ final class WindowView: NSView {
         let seen = Dictionary(uniqueKeysWithValues: shown.visible.root.panes.map { ($0.id, $0) })
         let overlays = Dictionary(uniqueKeysWithValues: subviews.compactMap { $0 as? PaneChrome }.map { ($0.pane, $0) })
         var tiled: [NSView] = [], floating: [(z: Int, views: [NSView])] = []
+        floatingBoxes = [:]
         for pane in layoutPanes {
             guard let view = views[pane.id] else { continue }
             let g = (seen[pane.id] ?? pane).geometry
             view.isHidden = seen[pane.id] == nil
             view.frame = placement.grid(g)
             view.resize(cols: g.width, rows: g.height)
-            let chrome = overlays[pane.id] ?? PaneChrome(pane: pane.id, background: runtime.background) { [weak connection] command in
-                connection?.send([command])
-            }
-            chrome.select = { [weak connection] in connection?.send([Command("select-pane", "-t", pane.id)]) }
+            let chrome = overlays[pane.id] ?? PaneChrome(pane: pane.id, background: runtime.background)
+            chrome.select = view.onSelect
+            chrome.hover = { [weak self] chrome, point in self?.hover(chrome, point) }
             chrome.frame = placement.frame(g)
             chrome.grid = CGRect(origin: CGPoint(x: placement.before.width, y: placement.before.height), size: view.frame.size)
             chrome.isHidden = view.isHidden
             chrome.dimmed = pane.id != active
-            chrome.update(zoomed: seen.count == 1 && layoutPanes.count > 1)
             switch (seen[pane.id] ?? pane).layer {
             case .tiled:
                 tiled += [view, chrome]
             case .floating(let z):
-                floating.append((z, view.isHidden ? [view, chrome] : [box(chrome.frame, border: pixel, fill: runtime.background), view, chrome]))
+                if view.isHidden { floating.append((z, [view, chrome])) }
+                else {
+                    let backing = box(chrome.frame, border: pixel, fill: runtime.background)
+                    floatingBoxes[pane.id] = backing
+                    floating.append((z, [backing, view, chrome]))
+                }
             }
         }
-        let dividers = shown.visible.root.dividers.map { d in
-            box(placement.line(d, pixel: pixel), border: 0, fill: .white.withAlphaComponent(0.12))
+        dividers = shown.visible.root.dividers.map { d in
+            box(placement.line(d, pixel: pixel), border: 0, fill: .separatorColor)
         }
         subviews = dividers + tiled + floating.sorted { $0.z > $1.z }.flatMap(\.views)
         for view in views.values where existing[view.pane] == nil {
@@ -122,7 +152,44 @@ final class WindowView: NSView {
             connection?.attach(view) { synced?.leave() }
         }
         window?.invalidateCursorRects(for: self)
-        if focused { focusActive(force: true) }
+        needsReconcile = false
+    }
+
+    private func place(resizeGrids: Bool = false) {
+        guard !isHidden, let shown, let placement else { return }
+        let seen = Dictionary(uniqueKeysWithValues: shown.visible.root.panes.map { ($0.id, $0.geometry) })
+        for view in panes where resizeGrids || !view.isHidden {
+            guard let g = seen[view.pane] ?? shown.layout.root.panes.first(where: { $0.id == view.pane })?.geometry else { continue }
+            if !view.isHidden { view.frame = placement.grid(g) }
+            if resizeGrids { view.resize(cols: g.width, rows: g.height) }
+        }
+        for chrome in subviews.compactMap({ $0 as? PaneChrome }) where !chrome.isHidden {
+            guard let g = seen[chrome.pane] else { continue }
+            chrome.dimmed = chrome.pane != active
+            chrome.frame = placement.frame(g)
+            chrome.grid = CGRect(origin: CGPoint(x: placement.before.width, y: placement.before.height), size: placement.grid(g).size)
+            floatingBoxes[chrome.pane]?.frame = chrome.frame
+            if toolbar?.superview === chrome { toolbar?.frame = chrome.toolbarFrame }
+        }
+        for (box, divider) in zip(dividers, shown.visible.root.dividers) { box.frame = placement.line(divider, pixel: pixel) }
+        window?.invalidateCursorRects(for: self)
+    }
+
+    private func hover(_ chrome: PaneChrome, _ point: NSPoint?) {
+        guard !isHidden else { return }
+        let show = point.map { chrome.hotZone.contains($0) } ?? false
+        if show, let view = panes.first(where: { $0.pane == chrome.pane }) {
+            let toolbar = self.toolbar ?? PaneToolbar()
+            self.toolbar = toolbar
+            if toolbar.superview !== chrome { toolbar.removeFromSuperview(); chrome.addSubview(toolbar) }
+            toolbar.frame = chrome.toolbarFrame
+            toolbar.update(command: view.onCommand, zoomed: shown?.visible.root.panes.count == 1 && (shown?.layout.root.panes.count ?? 0) > 1)
+        }
+        guard let toolbar, toolbar.superview === chrome else { return }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            toolbar.animator().alphaValue = show ? 1 : 0
+        }
     }
 
     private var pixel: CGFloat { 1 / (window?.backingScaleFactor ?? 2) }
@@ -133,8 +200,8 @@ final class WindowView: NSView {
     }
 
     func cellChanged() {
-        guard hot else { return }
-        relayout()
+        guard hot, !isHidden else { return }
+        place(resizeGrids: true)
         sizeClient()
     }
 
@@ -168,8 +235,7 @@ final class WindowView: NSView {
 
     private var drag: (divider: Divider, origin: NSPoint, position: Int)?
 
-    private func hitArea(_ divider: Divider) -> CGRect {
-        guard let placement else { return .zero }
+    private func hitArea(_ divider: Divider, _ placement: PaneLayout) -> CGRect {
         let line = placement.line(divider, pixel: pixel)
         return divider.direction == .leftRight ? line.insetBy(dx: -(6 - pixel) / 2, dy: 0) : line.insetBy(dx: 0, dy: -(6 - pixel) / 2)
     }
@@ -177,13 +243,14 @@ final class WindowView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         guard !isHidden, bounds.contains(local) else { return nil }
-        if shown?.visible.root.dividers.contains(where: { hitArea($0).contains(local) }) == true { return self }
+        if let placement, shown?.visible.root.dividers.contains(where: { hitArea($0, placement).contains(local) }) == true { return self }
         return super.hitTest(point)
     }
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        drag = shown?.visible.root.dividers.first { hitArea($0).contains(point) }
+        guard let placement else { return }
+        drag = shown?.visible.root.dividers.first { hitArea($0, placement).contains(point) }
             .map { ($0, point, $0.direction == .leftRight ? $0.geometry.x : $0.geometry.y) }
     }
 
@@ -203,8 +270,9 @@ final class WindowView: NSView {
     }
 
     override func resetCursorRects() {
+        guard let placement else { return }
         for d in shown?.visible.root.dividers ?? [] {
-            addCursorRect(hitArea(d), cursor: d.direction == .leftRight ? .resizeLeftRight : .resizeUpDown)
+            addCursorRect(hitArea(d, placement), cursor: d.direction == .leftRight ? .resizeLeftRight : .resizeUpDown)
         }
     }
 
@@ -214,8 +282,10 @@ final class WindowView: NSView {
     }
 
     override func setFrameSize(_ newSize: NSSize) {
+        guard frame.size != newSize else { return }
         super.setFrameSize(newSize)
-        if hot { relayout() }
+        guard !isHidden else { return }
+        if hot { place() }
         sizeClient()
     }
 
