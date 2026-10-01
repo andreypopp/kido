@@ -21,7 +21,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var find: PaneFind?
     private var alternate = false
     private let terminal = TerminalView()
-    private var scrollGeometry = (history: 0, position: ScrollPosition(history: 0, offset: 0, rows: 1), captured: false)
+    private let historyLimit = NSTextField(labelWithString: "Older history not loaded (memory limit)")
+    private var shifted: Bool { (terminal.layer?.transform.m42 ?? 0) != 0 }
+    private var pressed: Set<Int> = []
+    private var scrollGeometry = (history: 0, position: ScrollPosition(history: 0, offset: 0, rows: 1), captured: false, limited: false)
     nonisolated private let target = OSAllocatedUnfairLock<Int?>(initialState: nil)
     nonisolated private let scrolling = DispatchQueue(label: "kido.scroll", qos: .userInteractive)
     nonisolated var scrollTarget: Int? { target.withLock { $0 } }
@@ -84,14 +87,26 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     func updateScroller(history: Int, position: ScrollPosition, alternate: Bool, limited: Bool = false) {
         updateAlternate(alternate)
-        scrollGeometry = (history, position, scrollGeometry.captured)
-        if alternate || limited { target.withLock { $0 = nil } }
+        let history = limited ? min(history, position.history) : history
+        scrollGeometry = (history, position, scrollGeometry.captured, limited)
+        if alternate { clearScrollTarget() }
+        else { target.withLock { if let distance = $0 { $0 = min(history, distance) } } }
         presentScroll()
     }
 
     private func presentScroll() {
-        let (history, position, _) = scrollGeometry
+        let (history, position, _, limited) = scrollGeometry
         let distance = min(history, scrollTarget ?? (position.history - position.offset))
+        historyLimit.isHidden = !limited || distance < history - position.rows
+        let shifted = distance > position.history
+        if shifted && !self.shifted {
+            for button in pressed {
+                let value = button == 0 ? GHOSTTY_MOUSE_LEFT : button == 1 ? GHOSTTY_MOUSE_RIGHT : GHOSTTY_MOUSE_MIDDLE
+                _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, value, GHOSTTY_MODS_NONE)
+            }
+            pressed.removeAll()
+            ghostty_surface_mouse_pressure(surface, 0, 0)
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         let transform = CATransform3DMakeTranslation(0, -min(bounds.height, CGFloat(max(0, distance - position.history)) * rowHeight), 0)
@@ -104,7 +119,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     func requestScroll(_ distance: Int) {
-        target.withLock { $0 = max(0, min(scrollGeometry.history, distance)) }
+        let distance = max(0, min(scrollGeometry.history, distance))
+        target.withLock { $0 = distance }
         presentScroll()
         scrollRevision += 1
         let revision = scrollRevision
@@ -144,6 +160,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         presentScroll()
         find?.frame = NSRect(x: 0, y: max(0, bounds.height - 36), width: bounds.width, height: 36)
         scroller.frame = NSRect(x: max(0, bounds.width - 12), y: 0, width: 12, height: bounds.height)
+        historyLimit.sizeToFit()
+        historyLimit.frame.size.width += 16
+        historyLimit.frame.size.height += 4
+        historyLimit.frame.origin = NSPoint(x: (bounds.width - historyLimit.frame.width) / 2, y: max(0, bounds.height - historyLimit.frame.height - (find == nil ? 8 : 44)))
     }
 
     // Freed in deinit, so the last reference must be dropped on the main
@@ -165,7 +185,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     private let gridChanged = NSCondition()
     nonisolated(unsafe) private var grid = Grid.confirmed
-    private var resizes = 0
 
     private var presented = (visible: true, realized: true)
     private var keyUpMonitor: Any?
@@ -232,6 +251,15 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         scroller.isHidden = true
         scroller.jump = { [weak self] in self?.requestScroll($0) }
         addSubview(scroller)
+        historyLimit.font = .systemFont(ofSize: 11)
+        historyLimit.textColor = .secondaryLabelColor
+        historyLimit.alignment = .center
+        historyLimit.drawsBackground = true
+        historyLimit.backgroundColor = .windowBackgroundColor
+        historyLimit.wantsLayer = true
+        historyLimit.layer?.cornerRadius = 5
+        historyLimit.isHidden = true
+        addSubview(historyLimit)
         ghostty_surface_set_color_scheme(surface, runtime.colorScheme)
         // The callback must not reenter the surface (ghostty.h).
         _ = ghostty_surface_set_font_size_action_callback(surface, { userdata, _, _, points, _, _ in
@@ -305,10 +333,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     func resize(cols: Int, rows: Int) {
         let size = ghostty_surface_size(surface)
         guard (Int(size.columns), Int(size.rows)) != (cols, rows) else { return }
-        resizes += 1
         gridChanged.withLock { epoch += 1 }
-        guard ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil) else { return settle(resync: true) }
-        let now = Date.now, resize = resizes
+        guard ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil) else { return settle() }
+        let now = Date.now, resize = historyEpoch
         gridChanged.withLock { if case .confirmed = grid { grid = .pending(until: now + 1) } }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
             self?.confirm(cols, rows, resize, until: now + 10)
@@ -316,26 +343,24 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func confirm(_ cols: Int, _ rows: Int, _ resize: Int, until: Date) {
-        guard resize == resizes else { return }
+        guard resize == historyEpoch else { return }
         var metrics = ghostty_surface_grid_metrics_s()
         guard ghostty_surface_grid_metrics(surface, &metrics), (Int(metrics.columns), Int(metrics.rows)) == (cols, rows)
         else {
-            guard Date.now < until else { return settle(resync: true) }
+            guard Date.now < until else { return settle() }
             return DispatchQueue.main.asyncAfter(deadline: .now() + 0.005) { [weak self] in
                 self?.confirm(cols, rows, resize, until: until)
             }
         }
-        settle(resync: true)
+        settle()
     }
 
-    private func settle(resync: Bool) {
-        let lost = gridChanged.withLock {
-            let lost = if case .lost = grid { true } else { false }
+    private func settle() {
+        gridChanged.withLock {
             grid = .confirmed
             gridChanged.broadcast()
-            return lost
         }
-        if lost || resync { onResync() }
+        onResync()
     }
 
     // MARK: - Clipboard
@@ -448,6 +473,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     // MARK: - Mouse
 
     private func button(_ event: NSEvent, _ state: ghostty_input_mouse_state_e) -> Bool {
+        guard !shifted else { return true }
+        if state == GHOSTTY_MOUSE_PRESS { pressed.insert(event.buttonNumber) }
+        else { pressed.remove(event.buttonNumber) }
         let button = switch event.buttonNumber {
         case 0: GHOSTTY_MOUSE_LEFT
         case 1: GHOSTTY_MOUSE_RIGHT
@@ -458,6 +486,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func position(_ event: NSEvent) {
+        guard !shifted else { return }
         let pos = convert(event.locationInWindow, from: nil)
         ghostty_surface_mouse_pos(surface, pos.x, bounds.height - pos.y, Self.mods(event.modifierFlags))
     }
@@ -490,11 +519,12 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     override func otherMouseDragged(with event: NSEvent) { position(event) }
 
     override func mouseExited(with event: NSEvent) {
-        guard NSEvent.pressedMouseButtons == 0 else { return }
+        guard !shifted, NSEvent.pressedMouseButtons == 0 else { return }
         ghostty_surface_mouse_pos(surface, -1, -1, Self.mods(event.modifierFlags))
     }
 
     override func pressureChange(with event: NSEvent) {
+        guard !shifted else { return }
         ghostty_surface_mouse_pressure(surface, UInt32(event.stage), Double(event.pressure))
     }
 
