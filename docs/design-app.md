@@ -84,10 +84,19 @@ Ghostty's normal byte-budget trimming.
 Each pane draws one thin overlay scroller, shown during scrolling or
 hovering and fading afterwards. Ghostty's own scrollbar is disabled. The
 thumb uses tmux's full retained history plus the screen, with a native-style
-minimum knob size. Clicks and drags fetch as many chunks as needed before
-scrolling to the requested row, without placeholder rows. Already-loaded
-rows can outlive tmux's history limit until resync; the scroller clamps to
-tmux's retained range. Its colours resolve in the current effective
+minimum knob size. Wheel events, clicks and drags update a shared target and
+thumb immediately, without waiting for the reader or renderer mutex. A
+per-pane queue moves Ghostty's viewport independently of capture replies.
+Above the loaded top, the terminal's child view is translated down inside
+the clipped pane, revealing blank terminal background without changing the
+grid. As chunks arrive, the viewport moves to the target and the translation
+shrinks; the target stays put. A translated layer is explicitly invalidated
+when brought back into view. Only the latest target matters: a reply no
+longer needed at the loaded top is discarded, and fetching stops when the
+target is loaded. Wheel fetching does not depend on Ghostty's scrollbar
+notifications, which only change when a draw sees a new scrollbar snapshot.
+Already-loaded rows can outlive tmux's history limit until resync; the
+scroller clamps to tmux's retained range. Its colours resolve in the current effective
 appearance when drawn.
 
 Command-F opens a pane's native find bar. Each query scans tmux's history
@@ -146,8 +155,10 @@ so the terminal never moves vertically when the sidebar collapses.
 ## Threads
 
 Client callbacks run on the client's reader queue, and the pane map is
-touched only there, so a surface is fed on one queue. A pane leaving
-the layout is held on main until the queue has dropped it, so its
+touched only there. Output is fed synchronously on the pane's scroll queue,
+so live output and viewport moves cannot race the target's distance from
+the bottom. A pane leaving the layout is held on main until the queue has
+dropped it, so its
 surface is freed on main. A layout reaches main synchronously, and a
 pane's first feed after a resize waits until Ghostty confirms the new
 grid, so output never lands in the old one. Main never waits on the
