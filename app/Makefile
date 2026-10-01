@@ -3,7 +3,7 @@ export DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
 DERIVED := build/derived
 APP := $(DERIVED)/Build/Products/Debug/Kido.app
 
-.PHONY: all run test clean tsan asan
+.PHONY: all run test clean tsan asan demo demo-stop
 
 all:
 	ln -sfn "$$(GHOSTTY_OPTIMIZE=$(GHOSTTY_OPTIMIZE) scripts/build-ghosttykit.sh)" build/GhosttyKit.xcframework
@@ -18,6 +18,16 @@ tsan asan:
 
 run: all
 	open -W $(APP)
+
+FORK := build/tmux-fork/$(shell ../scripts/install-tmux-fork.sh --print-revision)/bin/kido-tmux
+DEMO := KIDO_DEMO_DIR=$(CURDIR)/build/demo KIDO_TMUX=$(abspath ../$(FORK)) KIDO_APP_KIDO=$(abspath ../_build/default/bin/main.exe)
+
+demo: all
+	$(MAKE) -C .. build $(FORK)
+	$(DEMO) scripts/demo.sh $(APP)/Contents/MacOS/Kido
+
+demo-stop:
+	$(DEMO) scripts/demo.sh stop
 
 test: all
 	cd Packages/TmuxControl && swift test
