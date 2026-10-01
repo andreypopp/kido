@@ -1,7 +1,7 @@
 import AppKit
 
 final class IconButton: NSButton {
-    static let sidebarSymbols = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular, scale: .small)
+    static let sidebarSymbols = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular, scale: .small)
     var invoke: () -> Void = {}
     private var hovered = false
 
