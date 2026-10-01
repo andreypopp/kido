@@ -33,6 +33,25 @@ if ! t has-session 2>/dev/null; then
   t new-window -d -t research -n deep
   t new-session -d -s ops -n logs
   t send-keys -t ops:logs "tail -f /var/log/system.log" Enter
+  t set-option -g history-limit 1100000
+  cat > "$D/log.awk" <<'AWK'
+BEGIN {
+  for (i = 1; i <= lines; i++) {
+    level = i % 4999 == 0 ? "\033[31mERROR" : i % 997 == 0 ? "\033[33mWARN" : "\033[32mINFO"
+    text = sprintf("built module-%03d in %dms", i % 256, 10 + i % 190)
+    if (i % 10000 == 0) text = text " dependencies=" sprintf("%0300d", i)
+    if (i == 10) text = "DEMO-MARKER near top"
+    if (i == int(lines / 2)) text = "DEMO-MARKER middle"
+    if (i == lines - 10) text = "DEMO-MARKER near bottom"
+    printf "2026-10-01 %02d:%02d:%02d %s\033[0m [%07d] %s\n", int(i / 3600) % 24, int(i / 60) % 60, i % 60, level, i, text
+  }
+}
+AWK
+  for size in 1m 100k; do
+    case $size in 1m) lines=1000000 ;; 100k) lines=100000 ;; esac
+    t new-window -d -t ops -n "log-$size"
+    t send-keys -t "ops:log-$size" "awk -v lines=$lines -f '$D/log.awk'" Enter
+  done
   t send-keys -t main:kido.0 "$K async_bash --name build -- sleep 3600" Enter
 fi
 # Agents are status records only; they turn stalled without heartbeats, so rerun to refresh.
