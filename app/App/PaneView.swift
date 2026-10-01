@@ -13,6 +13,23 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onResync: () -> Void = {}
     var onScroll: (Int?) -> Void = { _ in }
     private let scroller = PaneScroller()
+    var find: PaneFind?
+    private var alternate = false
+    var onSearch: (String, UUID) -> Void = { _, _ in }
+
+    @objc func showFind(_ sender: Any? = nil) {
+        if find == nil {
+            let bar = PaneFind(self)
+            find = bar
+            addSubview(bar)
+            needsLayout = true
+        }
+        window?.makeFirstResponder(find?.field)
+    }
+
+    @objc func findNext(_ sender: Any? = nil) { find?.next() }
+    @objc func findPrevious(_ sender: Any? = nil) { find?.previous() }
+
 
     struct ScrollPosition: Sendable {
         let history: Int
@@ -46,6 +63,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     func updateScroller(history: Int, position: ScrollPosition, alternate: Bool) {
+        if self.alternate != alternate {
+            self.alternate = alternate
+            find?.search()
+        }
         scroller.update(history: history, rows: position.rows,
                         offset: history - position.history + position.offset, alternate: alternate)
     }
@@ -54,6 +75,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     override func layout() {
         super.layout()
+        find?.frame = NSRect(x: 0, y: max(0, bounds.height - 36), width: bounds.width, height: 36)
         scroller.frame = NSRect(x: max(0, bounds.width - 12), y: 0, width: 12, height: bounds.height)
     }
 
@@ -476,6 +498,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func keyDown(with event: NSEvent) {
+        if let find, event.keyCode == 53 { find.close(); return }
+        if let find, event.keyCode == 36, event.modifierFlags.isDisjoint(with: [.command, .control, .option]) {
+            if event.modifierFlags.contains(.shift) { find.previous() } else { find.next() }
+            return
+        }
         let translated = Self.flags(ghostty_surface_key_translation_mods(surface, Self.mods(event.modifierFlags)))
         var translationMods = event.modifierFlags
         for flag in [NSEvent.ModifierFlags.shift, .control, .option, .command] {
