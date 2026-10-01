@@ -35,6 +35,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private var trimming: DispatchWorkItem?
     private var resyncing: DispatchWorkItem?
     private var thawing: DispatchWorkItem?
+    private var restoreCompleted = false
     nonisolated private let anchor = OSAllocatedUnfairLock<ScrollAnchor?>(initialState: nil)
     nonisolated var resizeAnchor: ScrollAnchor? {
         get { anchor.withLock { $0 } }
@@ -117,7 +118,15 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             target.withLock { if let distance = $0 { $0 = min(limit, distance) } }
         }
         presentScroll()
+        finishResize()
         scheduleTrim()
+    }
+
+    private func finishResize() {
+        guard restoreCompleted, resizeAnchor == nil, (scrollTarget ?? 0) <= scrollGeometry.position.history else { return }
+        thawing?.cancel()
+        thawing = nil
+        present()
     }
 
     private var scrollLimit: Int {
@@ -382,6 +391,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         let size = ghostty_surface_size(surface)
         guard (Int(size.columns), Int(size.rows)) != (cols, rows) else { return }
         resyncing?.cancel()
+        restoreCompleted = false
         thawing?.cancel()
         let thaw = DispatchWorkItem { [weak self] in
             self?.thawing = nil
@@ -393,19 +403,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         if resizeAnchor == nil, !ghostty_surface_is_alternate_screen(surface) {
             let position = scrollPosition()
             if (scrollTarget ?? (position.history - position.offset)) > 0 {
-                var text = ghostty_text_s()
-                let selection = ghostty_selection_s(
-                    top_left: ghostty_point_s(tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0),
-                    bottom_right: ghostty_point_s(tag: GHOSTTY_POINT_SCREEN, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0),
-                    rectangle: false)
-                if ghostty_surface_read_text(surface, selection, &text), let ptr = text.text {
-                    let bytes = UnsafeRawBufferPointer(start: ptr, count: Int(text.text_len))
-                    var lines = String(decoding: bytes, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false)
-                    while lines.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { lines.removeLast() }
-                    let saved = ScrollAnchor(lines: lines.count)
-                    resizeAnchor = saved
-                    ghostty_surface_free_text(surface, &text)
-                }
+                resizeAnchor = ScrollAnchor(lines: Int(ghostty_surface_viewport_logical_lines(surface)))
             }
         }
         gridChanged.withLock { epoch += 1 }
@@ -447,9 +445,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             self.onResync { [weak self] in
                 DispatchQueue.main.async {
                     guard let self, epoch == self.historyEpoch else { return }
-                    self.thawing?.cancel()
-                    self.thawing = nil
-                    self.present()
+                    self.restoreCompleted = true
+                    self.finishResize()
                 }
             }
         }
