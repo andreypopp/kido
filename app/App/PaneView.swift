@@ -18,6 +18,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onResync: () -> Void = {}
     var onScroll: () -> Void = {}
     var onLoadMore: () -> Void = {}
+    var onScrollSettled: () -> Void = {}
     private let scroller = PaneScroller()
     var find: PaneFind?
     private var alternate = false
@@ -31,6 +32,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     nonisolated private let scrolling = DispatchQueue(label: "kido.scroll", qos: .userInteractive)
     nonisolated var scrollTarget: Int? { target.withLock { $0 } }
     private var scrollRevision = 0
+    private var trimming: DispatchWorkItem?
     private var wheelRemainder = 0.0
     private var wheelMultiplier = (precision: 1.0, discrete: 3.0)
     private var rowHeight: CGFloat = 1
@@ -81,6 +83,18 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
+    nonisolated func trimHistory(keeping minimum: Int) -> Int {
+        scrolling.sync {
+            gridChanged.withLock {
+                guard case .confirmed = grid else { return 0 }
+                let position = scrollPosition()
+                let distance = scrollTarget ?? (position.history - position.offset)
+                let rows = max(0, min(position.offset - 5000, position.history - max(minimum, distance + 5000)))
+                return Int(ghostty_surface_trim_history(surface, UInt(rows)))
+            }
+        }
+    }
+
     nonisolated func scroll(to row: Int) {
         var value = ghostty_surface_scrollbar_s()
         guard ghostty_surface_scrollbar(surface, &value), Int(value.offset) != row else { return }
@@ -96,6 +110,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             target.withLock { if let distance = $0 { $0 = min(limit, distance) } }
         }
         presentScroll()
+        scheduleTrim()
     }
 
     private var scrollLimit: Int {
@@ -146,6 +161,17 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             }
         }
         onScroll()
+        scheduleTrim()
+    }
+
+    private func scheduleTrim() {
+        trimming?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.alternate, self.find == nil, self.pressed.isEmpty else { return }
+            self.onScrollSettled()
+        }
+        trimming = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
     }
 
     nonisolated func clearScrollTarget() { target.withLock { $0 = nil } }
@@ -154,6 +180,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         scrollRevision += 1
         clearScrollTarget()
         presentScroll()
+        scheduleTrim()
     }
 
     private func updateAlternate(_ alternate: Bool) {
@@ -545,6 +572,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        scheduleTrim()
         scroller.reveal()
         let precise = event.hasPreciseScrollingDeltas
         if !alternate && !scrollGeometry.captured && scrollGeometry.history > 0 && event.scrollingDeltaY != 0 {
