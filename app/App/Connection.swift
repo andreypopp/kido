@@ -218,8 +218,9 @@ final class Connection: @unchecked Sendable {
             self.invalidateSearch(feed, restart: false)
             feed.view.clearScrollTarget()
             DispatchQueue.main.async { [weak view = feed.view] in view?.resetScroll() }
+            let epoch = feed.view.historyEpoch
             self.client.send(first + PaneSync.commands(pane, chunk: chunk)) { [weak self, weak feed] replies in
-                guard let self, let feed, self.panes?[pane] === feed,
+                guard let self, let feed, self.panes?[pane] === feed, feed.view.historyEpoch == epoch,
                       case .syncing(let current) = feed.history, current == token, let replies else { return synced?() ?? () }
                 switch PaneSync.restore(replies.dropFirst(first.count)) {
                 case .expand(let history):
@@ -230,6 +231,10 @@ final class Connection: @unchecked Sendable {
                     let position = feed.view.scrollPosition()
                     feed.metadataDirty = false
                     feed.initialHistory = position.history
+                    if let anchor = feed.view.resizeAnchor {
+                        self.restoreAnchor(pane, feed, anchor: anchor, token: token, epoch: epoch, history: history, synced: synced)
+                        return
+                    }
                     feed.history = history > position.history ? .more(gap: history - position.history) : .complete
                     self.publish(feed, history: history)
                     DispatchQueue.main.async { [weak view = feed.view] in view?.find?.search() }
@@ -238,6 +243,37 @@ final class Connection: @unchecked Sendable {
                 }
                 synced?()
             }
+        }
+    }
+
+    private func restoreAnchor(_ pane: PaneID, _ feed: PaneFeed, anchor: ScrollAnchor, token: UUID,
+                               epoch: Int, history: Int, end: Int? = nil, chunk: Int = 5000,
+                               synced: (@Sendable () -> Void)?) {
+        client.send(SearchCapture.commands(pane, end: end, chunk: chunk)) { [weak self, weak feed] replies in
+            guard let self, let feed, self.panes?[pane] === feed, feed.view.historyEpoch == epoch,
+                  case .syncing(let current) = feed.history, current == token else { return synced?() ?? () }
+            let distance: Int
+            switch replies.flatMap({ anchor.locate($0, end: end) }) {
+            case .next(let remaining, let next):
+                if next == end {
+                    self.restoreAnchor(pane, feed, anchor: anchor, token: token, epoch: epoch, history: history, end: end,
+                                       chunk: min(history + 1, chunk * 2), synced: synced)
+                } else {
+                    self.restoreAnchor(pane, feed, anchor: remaining, token: token, epoch: epoch, history: history, end: next, synced: synced)
+                }
+                return
+            case .found(let row): distance = row
+            case nil: distance = min(history, max(1, anchor.lines))
+            }
+            let position = feed.view.scrollPosition()
+            feed.history = history > position.history ? .more(gap: history - position.history) : .complete
+            feed.view.resizeAnchor = nil
+            self.publish(feed, history: history)
+            DispatchQueue.main.async { [weak view = feed.view] in
+                view?.requestScroll(distance)
+                view?.find?.search()
+            }
+            synced?()
         }
     }
 
