@@ -19,7 +19,7 @@ import GhosttyKit
         guard ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS,
               let config = ghostty_config_new() else { return nil }
         let themes = Bundle.main.resourceURL!.appendingPathComponent("themes").path
-        let defaults = "theme = light:\(themes)/kido-light,dark:\(themes)/kido-dark\ncursor-style-blink = false\n"
+        let defaults = "theme = light:\(themes)/kido-light,dark:\(themes)/kido-dark\ncursor-style-blink = false\nalpha-blending = linear\n"
         ghostty_config_load_string(config, defaults, UInt(defaults.utf8.count), "/kido-defaults")
         let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : $0 }
         let file = (xdg ?? NSHomeDirectory() + "/.config") + "/kido/kido-app.conf"
