@@ -417,7 +417,7 @@ private final class Cell: NSTableCellView {
     private let tail = Label(labelWithString: "")
     private let glyph = NSImageView()
     private let spinner = NSProgressIndicator()
-    let addWindow = IconButton("plus", "New window", size: 12)
+    let addWindow = IconButton("plus", "New window")
     private var entry: SidebarView.Entry?
     override var isFlipped: Bool { true }
 
