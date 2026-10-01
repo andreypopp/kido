@@ -179,6 +179,18 @@ areas; unfocused panes are dimmed by a theme-background overlay; a
 pane shows the window’s shared glass toolbar only in its top-right hot
 zone: the toolbar frame plus 24pt to its left and below, clipped to the
 pane. It splits, zooms and closes through the same commands as the menus.
+The toolbar's grip drags a tiled pane: the target's outer quarters dock
+left, right, above or below; its centre swaps. The accent highlight follows
+the effective appearance. A drop sends one `move-pane` or `swap-pane`, and
+only tmux's layout notification moves the views. A click, Escape, a drop
+on the source or a floating pane cancels. Dragging is disabled while zoomed.
+Floating grips move in whole cells; their edges and corners resize, and a
+click raises a covered float with `move-pane -z 0`. Live floating commands
+are coalesced behind one in-flight batch and redraw from tmux, including its
+border-dependent position and size semantics. Escape stops further commands,
+not changes tmux has already applied. Pane command errors appear in a sheet.
+Sidebar drops are not supported.
+
 Frame changes place only the shown window; membership and stacking are
 reconciled only when tmux’s topology changes. Hidden windows are placed
 when shown. Terminal focus survives resizing and sidebar collapse;
