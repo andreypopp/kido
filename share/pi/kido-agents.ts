@@ -1,4 +1,5 @@
-import { AgentSession, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
+import { AgentSession, type ExtensionAPI, type MessageRenderer, type Theme } from "@earendil-works/pi-coding-agent";
+import { type TuiMouseEvent, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -1223,40 +1224,36 @@ export default function (pi: ExtensionAPI) {
     flushStreams();
   });
 
-  pi.registerMessageRenderer<{ from: string }>(STREAM_CUSTOM_TYPE, (message, options, theme) => {
-    const content = typeof message.content === "string" ? message.content : "";
-    const [firstLine, ...rest] = content.split("\n");
-    if (!options.expanded) {
-      return { render: () => [theme.fg("dim", `${firstLine} — ctrl-o to expand`)], invalidate: () => {} };
-    }
-    return { render: () => [theme.fg("dim", firstLine), ...rest], invalidate: () => {} };
-  });
-
-  // A renderer that returns its own component skips the box pi paints in customMessageBg behind an extension message, so it is painted here.
-  const stripAnsi = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, "");
-  // Padded to the visible width before theme.bg, which does not pad; cached per width, since pi calls render on every redraw.
-  const withBackground = (theme: Pick<Theme, "bg">, lines: string[]) => {
-    let cachedWidth = -1;
-    let cached: string[] = [];
-    return (width: number): string[] => {
-      if (width !== cachedWidth) {
-        cachedWidth = width;
-        cached = lines.map((line) => theme.bg("customMessageBg", line + " ".repeat(Math.max(0, width - stripAnsi(line).length))));
-      }
-      return cached;
+  const inboundExpanded = new Map<string, boolean>();
+  const renderInbound = (message: Parameters<MessageRenderer>[0], theme: Pick<Theme, "fg">, sender: string | undefined, verb: string | undefined, body: string) => {
+    const name = sender && sender !== "another agent" ? `@${sender}` : "another agent";
+    const key = JSON.stringify([message.customType, message.timestamp, message.details]);
+    const expanded = () => pi.getSettings().tuiMode !== "fullscreen" || (inboundExpanded.get(key) ?? false);
+    const border = theme.fg("border", "│ ");
+    return {
+      handleMouse: (event: TuiMouseEvent) => {
+        if (event.button !== "left") return;
+        if (event.type === "press") return { handled: true, render: false };
+        if (event.type !== "click") return;
+        inboundExpanded.set(key, !expanded());
+        return { handled: true, render: true };
+      },
+      render: (width: number): string[] => {
+        if (width <= 2) return [theme.fg("border", "│ ".slice(0, width))];
+        const header = theme.fg("dim", `${name}${verb ? ` ${verb}` : ""}:`);
+        if (expanded()) return wrapTextWithAnsi(`${header}\n${body}`, width - 2).map((line) => border + line);
+        const preview = body ? ` ${body.split("\n", 1)[0]}${body.includes("\n") ? "..." : ""}` : "";
+        return [border + truncateToWidth(header + preview, width - 2)];
+      },
+      invalidate: () => {},
     };
   };
 
-  const renderInbound = (
-    theme: Pick<Theme, "fg" | "bg">,
-    headerLine: string,
-    body: string,
-  ) => ({
-    render: withBackground(theme, [theme.fg("dim", headerLine), ...body.split("\n")]),
-    invalidate: () => {},
+  pi.registerMessageRenderer<{ from: string }>(STREAM_CUSTOM_TYPE, (message, _options, theme) => {
+    const content = typeof message.content === "string" ? message.content : "";
+    return renderInbound(message, theme, message.details?.from, undefined, content);
   });
 
-  // A message is never collapsed (unlike a notice); any of the three MESSAGE_RELATION headers is recognised, so a transcript reloaded without details still shows it.
   pi.registerMessageRenderer<{ from: string }>(MESSAGE_CUSTOM_TYPE, (message, _options, theme) => {
     const from = message.details?.from || "another agent";
     const raw = typeof message.content === "string" ? message.content : "";
@@ -1264,31 +1261,20 @@ export default function (pi: ExtensionAPI) {
       .map((relation) => `${senderHeader("message", from, relation)}\n`)
       .find((line) => raw.startsWith(line));
     const content = header ? raw.slice(header.length) : raw;
-    return renderInbound(theme, `message from @${from}:`, content);
+    return renderInbound(message, theme, message.details?.from, "says", content);
   });
 
-  // Shows only the question, not the id or reply instructions the model needs; a reload with no details falls back to the raw content.
   pi.registerMessageRenderer<{ from: string; question: string }>(ASK_CUSTOM_TYPE, (message, _options, theme) => {
-    const from = message.details?.from || "another agent";
     const question = message.details?.question ?? (typeof message.content === "string" ? message.content : "");
-    return renderInbound(theme, `ask from @${from}:`, question);
+    return renderInbound(message, theme, message.details?.from, "asks", question);
   });
 
-  // ctrl-o expansion is pi's own built-in toggle (options.expanded), not a keybinding registered here.
-  pi.registerMessageRenderer<{ from: string }>(NOTICE_CUSTOM_TYPE, (message, options, theme) => {
+  pi.registerMessageRenderer<{ from: string }>(NOTICE_CUSTOM_TYPE, (message, _options, theme) => {
     const from = message.details?.from || "another agent";
     const raw = typeof message.content === "string" ? message.content : "";
     const header = `${noticeHeader(from)}\n`;
     const content = raw.startsWith(header) ? raw.slice(header.length) : raw;
-    if (!options.expanded) {
-      // The collapsed row is the notice's own first line and nothing past it; a sender that
-      // wants a better summary writes it as line one.
-      const firstLine = content.split("\n", 1)[0];
-      const summary = firstLine ? `: ${firstLine}` : "";
-      const line = theme.fg("dim", `notification from ${from}${summary} — ctrl-o to expand`);
-      return { render: withBackground(theme, [line]), invalidate: () => {} };
-    }
-    return renderInbound(theme, `notification from ${from}:`, content);
+    return renderInbound(message, theme, message.details?.from, "notifies", content);
   });
 
   const trimErrorMessage = (msg: string): string => (msg.length > 400 ? `${msg.slice(0, 400)}…` : msg);

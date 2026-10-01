@@ -20,6 +20,7 @@ import net from "node:net";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import kidoStatus, { parseEnvelope } from "./kido-status.ts";
 import { AgentSession } from "@earendil-works/pi-coding-agent";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import kidoAgents, { isAncestor, nextStreamFlushDelay, streamBatch } from "./kido-agents.ts";
 
 // Written to disk once per fixture as a file literally named "kido": findKido()
@@ -452,7 +453,7 @@ function createFakePi() {
   let seq = 0;
   const delivered: Array<{ text: string; opts: unknown; seq: number }> = [];
   const messages: Array<{ message: any; opts: unknown; seq: number }> = [];
-  const renderers = new Map<string, (message: any, options: any, theme: any) => { render(width: number): string[] }>();
+  const renderers = new Map<string, (message: any, options: any, theme: any) => { render(width: number): string[]; handleMouse(event: any): unknown }>();
   // Keyed the same way the real UI keys a widget: content undefined means "cleared".
   const widgets = new Map<string, { content: string[] | undefined; options?: unknown }>();
   // What the host does with a user message: in pi, start a turn for it when the
@@ -460,6 +461,7 @@ function createFakePi() {
   // two held open replaces it.
   let onUserMessage: (() => unknown) | null = null;
   const pi = {
+    getSettings: () => ({ tuiMode: "regular" }),
     registerTool(tool: any) {
       tools.set(tool.name, tool);
     },
@@ -475,7 +477,7 @@ function createFakePi() {
     sendMessage(message: any, opts: unknown) {
       messages.push({ message, opts, seq: seq++ });
     },
-    registerMessageRenderer(customType: string, renderer: (message: any, options: any, theme: any) => { render(width: number): string[] }) {
+    registerMessageRenderer(customType: string, renderer: Parameters<typeof renderers.set>[1]) {
       renderers.set(customType, renderer);
     },
   };
@@ -515,9 +517,6 @@ function createFakePi() {
   };
 }
 
-// fg() is identity, so a rendered line's text is asserted on directly rather than
-// through a colour-code-stripping helper. bg() is identity too but records every
-// call, so a test can assert a renderer painted a background.
 const fakeTheme = {
   fg: (_color: string, text: string) => text,
   bgCalls: [] as Array<{ color: string; text: string }>,
@@ -1244,11 +1243,11 @@ test("a message from an agent is labelled with its sender and their relationship
       const renderer = s.renderers.get("kido-message");
       assert.ok(renderer, "the agent half registered a renderer for its own message type");
       const drawn = renderer!(labelled()[0], { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
-      assert.match(drawn, /^message from @boss:/, "the row names the sender");
+      assert.match(drawn, /^│ @boss says:/, "the row names the sender");
       assert.ok(!drawn.includes("who spawned you"), "the parenthetical is for the model; the transcript does not repeat it");
       assert.ok(
         drawn.includes("fix the failing test") && drawn.includes("then report"),
-        "and a message is drawn in full without expanding: unlike a report, it is meant to be read",
+        "regular mode draws the message in full regardless of ctrl-o",
       );
 
       // Negative control: a human at a bare pane has no state record, so kido puts
@@ -1289,7 +1288,7 @@ test("an inbound ask is headed like a message and renders as just the question, 
       const renderer = s.renderers.get("kido-ask");
       assert.ok(renderer, "the agent half registered a renderer for its own ask type");
       const drawn = renderer!(sent.message, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
-      assert.match(drawn, /^ask from @boss:/, "the row names the sender, without the parenthetical");
+      assert.match(drawn, /^│ @boss asks:/, "the row names the sender, without the parenthetical");
       assert.ok(drawn.includes("is the build green?"), "and shows the question");
       assert.ok(!drawn.includes("ask-hdr"), "the id is hidden");
       assert.ok(!drawn.includes("message_agent"), "the reply instructions are hidden");
@@ -1306,10 +1305,7 @@ test("an inbound ask is headed like a message and renders as just the question, 
   }
 });
 
-// Collapses under pi's own ctrl-o toggle (options.expanded), which this
-// extension never binds itself; the collapsed line is the notice's own first
-// line, not a generic placeholder.
-test("an inbound notice renders collapsed by default, naming the sender and its own first line, and expands to the full text", async () => {
+test("an inbound notice names the sender and always shows its full text in regular mode", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
@@ -1325,16 +1321,9 @@ test("an inbound notice renders collapsed by default, naming the sender and its 
     const renderer = s.renderers.get("kido-notice");
     assert.ok(renderer, "the agent half registered a renderer for its own custom type");
 
-    const collapsed = renderer!(sent!.message, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
-    assert.match(
-      collapsed,
-      /notification from peer-a: async run "build" failed: exit status 3 .*ctrl-o to expand/,
-      "the collapsed line names the sender, carries the notice's own first line as its summary, and hints at expansion",
-    );
-    assert.ok(!collapsed.includes("boom"), "the collapsed line does not leak the body past the first line");
-
-    const expanded = renderer!(sent!.message, { expanded: true, outputPad: 1 }, fakeTheme).render(80).join("\n");
-    assert.ok(expanded.includes("boom"), "expanding shows the full content, tail included");
+    const drawn = renderer!(sent!.message, { expanded: false, outputPad: 1 }, fakeTheme).render(120).join("\n");
+    assert.match(drawn, /@peer-a notifies:\n│ async run "build" failed: exit status 3\n/, "regular mode names the sender above the notice body");
+    assert.ok(drawn.includes("boom"), "regular mode shows the full body even when options.expanded is false");
   } finally {
     fx.restore();
   }
@@ -1356,11 +1345,10 @@ test("a notice reaches the model under a header naming what it is, and the heade
     assert.equal(body.join("\n"), text, "the child's own text follows, from the next line, byte for byte");
 
     const renderer = s.renderers.get("kido-notice")!;
-    const collapsed = renderer(sent.message, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
-    assert.match(collapsed, /notification from kid-1: reviewed internal\/ui: two findings/, "the collapsed row is the child's first line, not the header");
-    const expanded = renderer(sent.message, { expanded: true, outputPad: 1 }, fakeTheme).render(80).join("\n");
-    assert.ok(!expanded.includes("not the user"), "nor does expanding show a header the transcript already carries");
-    assert.ok(expanded.includes("needs a decision"), "expanding still shows the whole text");
+    const drawn = renderer(sent.message, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
+    assert.match(drawn, /@kid-1 notifies:\n│ reviewed internal\/ui: two findings/, "regular mode shows the text below the sender");
+    assert.ok(!drawn.includes("not the user"), "the transcript does not repeat the model header");
+    assert.ok(drawn.includes("needs a decision"), "regular mode shows the whole text");
 
     await sendToInbox(s.inboxPath, envelope("message", "do the other thing", { from: { session: "", pane: "%99" } as any }));
     assert.ok(s.delivered.some((d) => d.text === "do the other thing"), "a shell's message is delivered unlabelled");
@@ -1369,7 +1357,7 @@ test("a notice reaches the model under a header naming what it is, and the heade
   }
 });
 
-test("a notice from a nameless sender still renders sanely, collapsed and expanded", async () => {
+test("a notice from a nameless sender still renders sanely in regular mode", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
@@ -1380,68 +1368,88 @@ test("a notice from a nameless sender still renders sanely, collapsed and expand
     assert.equal(sent!.message.details.from, "%12", "the pane stands in for a name when there is none");
 
     const renderer = s.renderers.get("kido-notice")!;
-    const collapsed = renderer(sent!.message, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
-    assert.match(collapsed, /notification from %12/, "a nameless sender still gets a sane, non-empty label");
+    const drawn = renderer(sent!.message, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
+    assert.match(drawn, /@%12 notifies:/, "a nameless sender still gets a sane, non-empty label");
   } finally {
     fx.restore();
   }
 });
 
-// Each renders its own component instead of pi's own CustomMessageComponent box,
-// so bypassing it without repainting would leave the entry on the plain
-// background a user's own typing sits on.
-test("a message, an ask and a notice each paint the full-width customMessageBg background pi's own box uses", async () => {
+test("all four inbound renderers dim headers, wrap normal text behind a border, and retain click toggles across component recreation", async () => {
   const fx = makeFixture();
   try {
-    fx.setAgents([
-      { id: DEFAULT_SESSION, name: "worker", parent: "boss-session", pane: "%1", self: true, canMessage: true },
-      { id: "boss-session", name: "boss", parent: "", pane: "%2", self: false, canMessage: true, canReply: true },
-    ]);
-    await asSubagent(DEFAULT_SESSION, async () => {
-      const s = await startSession(fx, { factory: await freshExtensions() });
-
-      await sendToInbox(s.inboxPath, envelope("message", "ping", { from: { session: "boss-session", name: "boss" } }));
-      await sendToInbox(s.inboxPath, envelope("ask", "still there?", { id: "ask-bg", from: { session: "boss-session", name: "boss" } }));
-      await sendToInbox(s.inboxPath, envelope("notice", "build finished", { from: { session: "boss-session", name: "boss" } }));
-
-      const message = customMessages(s, "kido-message")[0]!;
-      const ask = customMessages(s, "kido-ask")[0]!;
-      const notice = customMessages(s, "kido-notice")[0]!;
-
-      for (const [label, entry, width] of [
-        ["message", message, 80],
-        ["ask", ask, 40],
-      ] as const) {
-        fakeTheme.bgCalls.length = 0;
-        const renderer = s.renderers.get(`kido-${label}`)!;
-        const lines = renderer(entry.message, { expanded: true, outputPad: 1 }, fakeTheme).render(width);
-        assert.ok(fakeTheme.bgCalls.length > 0, `${label}: theme.bg was called at all`);
-        assert.ok(
-          fakeTheme.bgCalls.every((c: { color: string }) => c.color === "customMessageBg"),
-          `${label}: every background call used the theme's customMessageBg key, the same one pi's own box paints`,
-        );
-        assert.equal(fakeTheme.bgCalls.length, lines.length, `${label}: every drawn line, not just the first, went through the background`);
-        assert.ok(
-          fakeTheme.bgCalls.every((c: { text: string }) => c.text.length === width),
-          `${label}: each line is padded to the full render width before the background wraps it`,
-        );
+    const s = await startSession(fx);
+    const body = "output line\n\x1b[31m" + "界".repeat(60) + "\x1b[0m\n\nlast line";
+    const theme = {
+      ...fakeTheme,
+      fg: (color: string, text: string) => {
+        assert.ok(color === "border" || color === "dim");
+        return color === "border" ? `\x1b[34m${text}\x1b[0m` : `\x1b[2m${text}\x1b[0m`;
+      },
+    };
+    const click = {
+      type: "click", button: "left", x: 0, y: 0, screenX: 0, screenY: 0,
+      width: 80, height: 1, shift: false, alt: false, ctrl: false, clickCount: 1,
+    };
+    for (const [kind, verb] of [["stream", ""], ["message", "says"], ["ask", "asks"], ["notice", "notifies"]]) {
+      const renderer = s.renderers.get(`kido-${kind}`)!;
+      const suffix = `${verb ? ` ${verb}` : ""}:`;
+      const header = `@boss${suffix}`;
+      const content = kind === "stream" ? `async run "boss" output (run abc)\n${body}` : body;
+      const message = {
+        customType: `kido-${kind}`, timestamp: 123,
+        content,
+        details: { from: "boss", question: body, noticeId: "notice-1" },
+      };
+      const draw = (expanded: boolean) => renderer(JSON.parse(JSON.stringify(message)), { expanded, outputPad: 1 }, theme);
+      s.pi.getSettings = () => ({ tuiMode: "fullscreen" });
+      const component = draw(true);
+      const collapsedLines = [`\x1b[34m│ \x1b[0m\x1b[2m${header}\x1b[0m ${content.split("\n", 1)[0]}...`];
+      assert.deepEqual(component.render(80), collapsedLines, `${kind}: fullscreen ignores ctrl-o and starts collapsed`);
+      assert.deepEqual(component.handleMouse({ ...click, type: "press" }), { handled: true, render: false });
+      assert.deepEqual(component.render(80), collapsedLines, "press does not toggle");
+      assert.equal(component.handleMouse({ ...click, button: "right" }), undefined);
+      assert.equal(component.handleMouse({ ...click, type: "release" }), undefined);
+      assert.deepEqual(component.handleMouse(click), { handled: true, render: true });
+      assert.ok(component.render(80).map(stripTerminalSequences).includes("│ last line"), "click expands the body");
+      const recreated = draw(false);
+      fakeTheme.bgCalls.length = 0;
+      for (const width of [80, 20]) {
+        const lines = recreated.render(width);
+        assert.ok(lines.every((line) => line.startsWith("\x1b[34m│ \x1b[0m")));
+        assert.ok(lines.every((line) => visibleWidth(line) <= width));
+        if (width === 80) {
+          assert.deepEqual(lines.slice(0, kind === "stream" ? 3 : 2), [
+            `\x1b[34m│ \x1b[0m\x1b[2m${header}\x1b[0m`,
+            ...content.split("\n").slice(0, kind === "stream" ? 2 : 1).map((line) => `\x1b[34m│ \x1b[0m${line}`),
+          ], "the same dim sender header precedes normal body text, including the stream run label");
+        }
+        assert.ok(lines.map(stripTerminalSequences).includes("│ last line"), "recreated component keeps expansion");
+        assert.ok(lines.length > 5, `${kind}: long content wraps`);
       }
-
-      const noticeRenderer = s.renderers.get("kido-notice")!;
-      fakeTheme.bgCalls.length = 0;
-      const collapsed = noticeRenderer(notice.message, { expanded: false, outputPad: 1 }, fakeTheme).render(60);
-      assert.equal(collapsed.length, 1, "the collapsed notice is one line");
-      assert.equal(fakeTheme.bgCalls.length, 1, "and that one line went through the background");
-      assert.equal(fakeTheme.bgCalls[0].text.length, 60, "padded to the full width even collapsed to one line");
-
-      fakeTheme.bgCalls.length = 0;
-      const expanded = noticeRenderer(notice.message, { expanded: true, outputPad: 1 }, fakeTheme).render(60);
-      assert.equal(fakeTheme.bgCalls.length, expanded.length, "every line of the expanded notice went through the background too");
-      assert.ok(
-        fakeTheme.bgCalls.every((c: { text: string }) => c.text.length === 60),
-        "including the expanded form, padded to the same full width",
-      );
-    });
+      assert.equal(fakeTheme.bgCalls.length, 0, "no background");
+      assert.deepEqual(draw(false).handleMouse(click), { handled: true, render: true });
+      assert.deepEqual(recreated.render(80), collapsedLines, "a second click collapses only this message");
+      assert.deepEqual(renderer({ ...message, timestamp: 124 }, { expanded: true }, theme).render(80), collapsedLines, "another message starts collapsed");
+      s.pi.getSettings = () => ({ tuiMode: "regular" });
+      for (const expanded of [false, true]) {
+        assert.ok(draw(expanded).render(80).map(stripTerminalSequences).includes("│ last line"), "regular mode is always expanded");
+      }
+      const fallback = renderer({ ...message, details: undefined, content: "plain text" }, { expanded: false }, theme).render(80);
+      assert.deepEqual(fallback.map(stripTerminalSequences), [`│ another agent${suffix}`, "│ plain text"]);
+      s.pi.getSettings = () => ({ tuiMode: "fullscreen" });
+      for (const [text, width, expected] of [
+        ["", 80, `│ ${header}`],
+        ["short", 80, `│ ${header} short`],
+        ["short\nmore", 80, `│ ${header} short...`],
+        ["\x1b[31m" + "界".repeat(30) + "\x1b[0m", 2 + visibleWidth(header) + 1 + 4 + 3, `│ ${header} 界界...`],
+      ] as const) {
+        const lines = renderer({ ...message, content: text, details: { from: "boss", question: text } }, { expanded: true }, theme).render(width);
+        assert.deepEqual(lines.map(stripTerminalSequences), [expected], `${kind}: collapsed preview never wraps`);
+        assert.ok(visibleWidth(lines[0]) <= width, "ANSI and CJK fit the available width");
+        assert.ok(lines[0].includes(`\x1b[2m${header}\x1b[0m`), "only the preview header is dim");
+      }
+    }
   } finally {
     fx.restore();
   }
