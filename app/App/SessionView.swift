@@ -23,6 +23,16 @@ final class SessionView: NSView {
         fatalError("init(coder:) is not supported")
     }
 
+    func updateBackground() {
+        layer?.backgroundColor = runtime.background.cgColor
+        for view in windows.values { view.updateBackground() }
+        for view in others.values { view.updateBackground() }
+    }
+
+    func updateColorScheme() {
+        forEachPane { ghostty_surface_set_color_scheme($0.surface, runtime.colorScheme) }
+    }
+
     func update(_ listing: [WindowListing], alive: Set<WindowID>) {
         let old = windows.merging(others) { $1 }
         windows = [:]

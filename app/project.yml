@@ -18,7 +18,11 @@ targets:
   Kido:
     type: application
     platform: macOS
-    sources: [App]
+    sources:
+      - App
+      - path: Resources/themes
+        type: folder
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.andreypopp.kido
