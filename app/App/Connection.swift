@@ -15,6 +15,7 @@ final class Connection: @unchecked Sendable {
         let view: PaneView
         var history: History = .syncing(UUID())
         var destination: Int?
+        var search: (token: UUID, matches: [Int])?
         init(_ view: PaneView) { self.view = view }
     }
     private var panes: [PaneID: PaneFeed]? = [:]
@@ -52,6 +53,10 @@ final class Connection: @unchecked Sendable {
         pane.onScroll = { [weak self, weak pane] distance in
             guard let pane else { return }
             self?.scroll(pane.pane, distance: distance)
+        }
+        pane.onSearch = { [weak self, weak pane] query, token in
+            guard let pane else { return }
+            self?.search(pane.pane, query: query, token: token)
         }
         sync(pane.pane, synced: synced)
     }
@@ -186,10 +191,52 @@ final class Connection: @unchecked Sendable {
                     let position = feed.view.scrollPosition()
                     feed.history = history > position.history ? .more(gap: history - position.history) : .complete
                     self.publish(feed, history: history)
+                    DispatchQueue.main.async { [weak view = feed.view] in view?.find?.search() }
                 case nil:
                     feed.view.feed(Self.notice("could not capture \(pane): \(replies)"))
                 }
                 synced?()
+            }
+        }
+    }
+
+    private func search(_ pane: PaneID, query: String, token: UUID) {
+        client.queue.async {
+            guard let feed = self.panes?[pane] else { return }
+            feed.search = (token, [])
+            guard !query.isEmpty else { return }
+            self.searchChunk(pane, feed, query: query, token: token, end: nil)
+        }
+    }
+
+    private func searchChunk(_ pane: PaneID, _ feed: PaneFeed, query: String, token: UUID,
+                             end: Int?, chunk: Int = 5000) {
+        client.send(SearchCapture.commands(pane, end: end, chunk: chunk)) { [weak self, weak feed] replies in
+            guard let self, let feed, self.panes?[pane] === feed, feed.search?.token == token else { return }
+            guard let replies else { return }
+            let identity = ObjectIdentifier(feed)
+            DispatchQueue.global(qos: .userInitiated).async {
+                let capture = SearchCapture(replies, query: query)
+                self.client.queue.async {
+                    guard let feed = self.panes?[pane], ObjectIdentifier(feed) == identity,
+                          feed.search?.token == token else { return }
+                    guard let capture else {
+                        return DispatchQueue.main.async { [weak view = feed.view] in view?.find?.failed(token) }
+                    }
+                    if let next = capture.next {
+                        if next == end || (end == nil && next >= -1 && capture.distances.isEmpty) {
+                            self.searchChunk(pane, feed, query: query, token: token, end: end,
+                                             chunk: min(capture.history + 1, chunk * 2))
+                        } else {
+                            feed.search?.matches.append(contentsOf: capture.distances)
+                            self.searchChunk(pane, feed, query: query, token: token, end: next)
+                        }
+                    } else {
+                        feed.search?.matches.append(contentsOf: capture.distances)
+                        let all = feed.search?.matches ?? []
+                        DispatchQueue.main.async { [weak view = feed.view] in view?.find?.finished(all, token: token) }
+                    }
+                }
             }
         }
     }
@@ -272,8 +319,10 @@ final class Connection: @unchecked Sendable {
 
     private func publish(_ feed: PaneFeed, history: Int, alternate: Bool = false) {
         let position = feed.view.scrollPosition()
+        let limited = if case .limited = feed.history { true } else { false }
         DispatchQueue.main.async { [weak view = feed.view] in
             view?.updateScroller(history: history, position: position, alternate: alternate)
+            view?.find?.loaded(position, limited: limited)
         }
     }
 
