@@ -87,7 +87,7 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
         count.stringValue = "\(index + 1) of \(matches.count)"
         target = index
         if matches[index] > pane.scrollPosition().history {
-            pane.onScroll(matches[index])
+            pane.requestScroll(matches[index])
         } else { navigate() }
     }
 
@@ -98,7 +98,7 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
             restartGhostty()
         }
         guard target != nil else { return }
-        if matches[index] <= position.history { navigate() }
+        if matches[index] <= position.history { pane?.resetScroll(); navigate() }
         else if limited {
             target = nil
             count.stringValue = "Match out of reach"
