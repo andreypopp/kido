@@ -14,7 +14,7 @@ final class WindowView: NSView {
     private var toolbar: PaneToolbar?
     override var isHidden: Bool {
         didSet {
-            if isHidden { toolbar?.removeFromSuperview(); toolbar = nil }
+            if isHidden { endDrag(); toolbar?.removeFromSuperview(); toolbar = nil }
         }
     }
 
@@ -59,6 +59,7 @@ final class WindowView: NSView {
         shown = (layout, visible)
         active = visible.root.panes.first { $0.focus == .active }?.id ?? active
         guard hot else { return }
+        if zoomed { endDrag() }
         let known = panes.contains { $0.pane == active }
         if changed && !isHidden { relayout() }
         if !known { focusActive(force: false) }
@@ -78,6 +79,7 @@ final class WindowView: NSView {
     }
 
     func evict() {
+        endDrag()
         panes.forEach { connection?.detach($0) }
         toolbar?.removeFromSuperview()
         toolbar = nil
@@ -204,6 +206,7 @@ final class WindowView: NSView {
             view.layer?.mask = mask
         } else { view.layer?.mask = nil }
         if view.scroller.superview !== chrome { chrome.addSubview(view.scroller, positioned: .below, relativeTo: nil) }
+        view.scroller.select = view.onSelect
         view.scroller.frame = CGRect(x: max(0, chrome.bounds.maxX - 12),
                                      y: chrome.grid.minY, width: 12, height: chrome.grid.height)
     }
@@ -216,7 +219,7 @@ final class WindowView: NSView {
             self.toolbar = toolbar
             if toolbar.superview !== chrome { toolbar.removeFromSuperview(); chrome.addSubview(toolbar) }
             toolbar.frame = chrome.toolbarFrame
-            toolbar.update(command: view.onCommand, zoomed: shown?.visible.root.panes.count == 1 && (shown?.layout.root.panes.count ?? 0) > 1)
+            toolbar.update(command: { view.onSelect(); view.onCommand($0) }, zoomed: zoomed, drag: { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0) })
         }
         guard let toolbar, toolbar.superview === chrome else { return }
         NSAnimationContext.runAnimationGroup { context in
@@ -243,12 +246,19 @@ final class WindowView: NSView {
             runtime: runtime, pane: id, font: session?.font ?? 0,
             onInput: { [weak connection] in connection?.sendKeys(id, $0) })
         else { return nil }
-        view.onSelect = { [weak self] in self?.connection?.send([Command("select-pane", "-t", id)]) }
+        view.onSelect = { [weak self] in
+            guard let self else { return }
+            var commands = [Command("select-pane", "-t", id)]
+            if case .floating(let z) = self.shown?.visible.root.panes.first(where: { $0.id == id })?.layer, z > 0 {
+                commands.append(Command("move-pane", "-t", id, "-z", 0))
+            }
+            self.sendPane(commands)
+        }
         view.onCommand = { [weak self] command in
             guard let connection = self?.connection,
                 let tmux = command.command(id, cell: self?.session?.cell ?? .zero, model: connection.model)
             else { return }
-            connection.send([tmux])
+            self?.sendPane([tmux])
         }
         view.onCellChange = { [weak self] in self?.session?.cellChanged() }
         view.onFontChange = { [weak self] in self?.session?.fontChanged($0) }
@@ -269,6 +279,155 @@ final class WindowView: NSView {
         return box
     }
 
+    private var zoomed: Bool { shown?.visible.root.panes.count == 1 && (shown?.layout.root.panes.count ?? 0) > 1 }
+
+    private enum DropZone {
+        case left, right, top, bottom, centre
+    }
+    private enum FloatEdge {
+        case left, right, top, bottom, topLeft, topRight, bottomLeft, bottomRight
+        var left: Bool { self == .left || self == .topLeft || self == .bottomLeft }
+        var right: Bool { self == .right || self == .topRight || self == .bottomRight }
+        var top: Bool { self == .top || self == .topLeft || self == .topRight }
+        var bottom: Bool { self == .bottom || self == .bottomLeft || self == .bottomRight }
+    }
+    private enum PaneDrag {
+        case tiled(PaneID, NSPoint)
+        case floating(Pane, NSPoint, FloatEdge?)
+    }
+    private var paneDrag: PaneDrag?
+    private enum Delivery { case idle, sending(pending: [Command]?) }
+    private var delivery = Delivery.idle
+    private var lastFloatCommand: [Command]?
+
+    private func floatEdge(_ point: NSPoint) -> (Pane, FloatEdge)? {
+        guard !zoomed, let placement else { return nil }
+        for pane in (shown?.visible.root.panes ?? []).filter({ $0.layer != .tiled }).sorted(by: {
+            guard case .floating(let a) = $0.layer, case .floating(let b) = $1.layer else { return false }; return a < b
+        }) {
+            let frame = placement.frame(pane.geometry)
+            guard frame.contains(point) else { continue }
+            let left = point.x < frame.minX + 5, right = point.x > frame.maxX - 5
+            let top = point.y < frame.minY + 5, bottom = point.y > frame.maxY - 5
+            let edge: FloatEdge? = left ? (top ? .topLeft : bottom ? .bottomLeft : .left)
+                : right ? (top ? .topRight : bottom ? .bottomRight : .right)
+                : top ? .top : bottom ? .bottom : nil
+            return edge.map { (pane, $0) }
+        }
+        return nil
+    }
+
+    private func sendPane(_ commands: [Command], done: (@MainActor @Sendable () -> Void)? = nil) {
+        connection?.send(commands) { [weak self] replies in
+            if let failure = replies?.compactMap({ reply -> String? in
+                if case .failure(let lines) = reply { return lines.joined(separator: "\n") }; return nil
+            }).first, let window = self?.window {
+                let alert = NSAlert()
+                alert.messageText = "Pane command failed"
+                alert.informativeText = failure
+                alert.beginSheetModal(for: window)
+            }
+            done?()
+        }
+    }
+
+    private func sendFloat(_ commands: [Command]) {
+        guard commands != lastFloatCommand else { return }
+        lastFloatCommand = commands
+        if case .sending = delivery { delivery = .sending(pending: commands); return }
+        delivery = .sending(pending: nil)
+        sendPane(commands) { [weak self] in
+            guard let self, case .sending(let pending) = self.delivery else { return }
+            self.delivery = .idle
+            if let pending { self.lastFloatCommand = nil; self.sendFloat(pending) }
+        }
+    }
+
+    private func beginDrag(_ pane: PaneID, _ event: NSEvent) {
+        if event.type == .keyDown {
+            if case .sending = delivery { delivery = .sending(pending: nil) }
+            endDrag(); focusActive(force: true); return
+        }
+        if event.type != .leftMouseDown { updateDrag(event); return }
+        guard !zoomed, let pane = shown?.visible.root.panes.first(where: { $0.id == pane }) else { return }
+        endDrag()
+        if pane.layer != .tiled { panes.first(where: { $0.pane == pane.id })?.onSelect() }
+        switch pane.layer {
+        case .tiled: paneDrag = .tiled(pane.id, event.locationInWindow)
+        case .floating: paneDrag = .floating(pane, event.locationInWindow, nil)
+        }
+    }
+
+    private func endDrag() {
+        paneDrag = nil
+        lastFloatCommand = nil
+        for chrome in subviews.compactMap({ $0 as? PaneChrome }) { chrome.drop = nil }
+    }
+
+    private func updateDrag(_ event: NSEvent) {
+        guard let paneDrag else { return }
+        if case .floating(let pane, let origin, let edge) = paneDrag {
+            guard let cell = session?.cell else { return }
+            let dx = Int(((event.locationInWindow.x - origin.x) / cell.width).rounded())
+            let dy = Int(((origin.y - event.locationInWindow.y) / cell.height).rounded())
+            let g = pane.geometry
+            let width = max(2, g.width + (edge?.right == true ? dx : edge?.left == true ? -dx : 0))
+            let height = max(2, g.height + (edge?.bottom == true ? dy : edge?.top == true ? -dy : 0))
+            let x = g.x + (edge == nil ? dx : edge?.left == true ? g.width - width : 0)
+            let y = g.y + (edge == nil ? dy : edge?.top == true ? g.height - height : 0)
+            if dx != 0 || dy != 0 || lastFloatCommand != nil {
+                var commands: [Command] = []
+                if edge != nil {
+                    commands.append(Command("if-shell", "-F", "-t", pane.id, "#{==:#{pane-border-lines},none}",
+                        Command("resize-pane", "-t", pane.id, "-x", width, "-y", height).line,
+                        Command("resize-pane", "-t", pane.id, "-x", width + 2, "-y", height + 2).line))
+                }
+                if edge == nil || edge?.left == true || edge?.top == true {
+                    commands.append(Command("move-pane", "-t", pane.id,
+                        "-X", "#{?#{==:#{pane-border-lines},none},\(x),\(x - 1)}",
+                        "-Y", "#{?#{==:#{pane-border-lines},none},\(y),\(y - 1)}"))
+                }
+                sendFloat(commands)
+            }
+            if event.type == .leftMouseUp { endDrag(); focusActive(force: true) }
+            return
+        }
+        guard case .tiled(let source, let origin) = paneDrag else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        let moved = hypot(event.locationInWindow.x - origin.x, event.locationInWindow.y - origin.y) >= 4
+        var target: (PaneID, DropZone)?
+        for chrome in subviews.compactMap({ $0 as? PaneChrome }).reversed() {
+            chrome.drop = nil
+        }
+        if moved, let chrome = subviews.reversed().compactMap({ $0 as? PaneChrome }).first(where: { !$0.isHidden && $0.frame.contains(point) }),
+           chrome.pane != source, shown?.visible.root.panes.first(where: { $0.id == chrome.pane })?.layer == .tiled {
+            let p = chrome.convert(point, from: self), b = chrome.bounds
+            let x = p.x / b.width, y = p.y / b.height
+            let zone: DropZone = x < 0.25 ? .left : x > 0.75 ? .right : y < 0.25 ? .top : y > 0.75 ? .bottom : .centre
+            let rect: CGRect = switch zone {
+            case .left: CGRect(x: 0, y: 0, width: b.width / 4, height: b.height)
+            case .right: CGRect(x: b.width * 0.75, y: 0, width: b.width / 4, height: b.height)
+            case .top: CGRect(x: 0, y: 0, width: b.width, height: b.height / 4)
+            case .bottom: CGRect(x: 0, y: b.height * 0.75, width: b.width, height: b.height / 4)
+            case .centre: b.insetBy(dx: b.width / 4, dy: b.height / 4)
+            }
+            chrome.drop = rect
+            target = (chrome.pane, zone)
+        }
+        guard event.type == .leftMouseUp else { return }
+        endDrag()
+        focusActive(force: true)
+        guard let (target, zone) = target else { return }
+        let command: Command = switch zone {
+        case .centre: Command("swap-pane", "-s", source, "-t", target)
+        case .left: Command("move-pane", "-s", source, "-t", target, "-h", "-b")
+        case .right: Command("move-pane", "-s", source, "-t", target, "-h")
+        case .top: Command("move-pane", "-s", source, "-t", target, "-v", "-b")
+        case .bottom: Command("move-pane", "-s", source, "-t", target, "-v")
+        }
+        sendPane([command])
+    }
+
     private var drag: (divider: Divider, origin: NSPoint, position: Int)?
 
     private func hitArea(_ divider: Divider, _ placement: PaneLayout) -> CGRect {
@@ -279,18 +438,30 @@ final class WindowView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         guard !isHidden, bounds.contains(local) else { return nil }
+        if floatEdge(local) != nil { return self }
+        if let placement, shown?.visible.root.panes.contains(where: { $0.layer != .tiled && placement.frame($0.geometry).contains(local) }) == true {
+            return super.hitTest(point)
+        }
         if let placement, shown?.visible.root.dividers.contains(where: { hitArea($0, placement).contains(local) }) == true { return self }
         return super.hitTest(point)
     }
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        if let (pane, edge) = floatEdge(point) {
+            endDrag()
+            paneDrag = .floating(pane, event.locationInWindow, edge)
+            panes.first(where: { $0.pane == pane.id })?.onSelect()
+            window?.makeFirstResponder(self)
+            return
+        }
         guard let placement else { return }
         drag = shown?.visible.root.dividers.first { hitArea($0, placement).contains(point) }
             .map { ($0, point, $0.direction == .leftRight ? $0.geometry.x : $0.geometry.y) }
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if paneDrag != nil { updateDrag(event); return }
         guard let drag, let cell = session?.cell else { return }
         let point = convert(event.locationInWindow, from: nil)
         let position = drag.divider.direction == .leftRight
@@ -302,13 +473,37 @@ final class WindowView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if paneDrag != nil { updateDrag(event) }
         drag = nil
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53, paneDrag != nil {
+            if case .sending = delivery { delivery = .sending(pending: nil) }
+            endDrag(); focusActive(force: true)
+        }
+        else { super.keyDown(with: event) }
     }
 
     override func resetCursorRects() {
         guard let placement else { return }
         for d in shown?.visible.root.dividers ?? [] {
             addCursorRect(hitArea(d, placement), cursor: d.direction == .leftRight ? .resizeLeftRight : .resizeUpDown)
+        }
+        guard !zoomed else { return }
+        for pane in shown?.visible.root.panes ?? [] where pane.layer != .tiled {
+            let r = placement.frame(pane.geometry)
+            for (rect, position) in [
+                (CGRect(x: r.minX, y: r.minY + 5, width: 5, height: max(0, r.height - 10)), NSCursor.FrameResizePosition.left),
+                (CGRect(x: r.maxX - 5, y: r.minY + 5, width: 5, height: max(0, r.height - 10)), .right),
+                (CGRect(x: r.minX + 5, y: r.minY, width: max(0, r.width - 10), height: 5), .top),
+                (CGRect(x: r.minX + 5, y: r.maxY - 5, width: max(0, r.width - 10), height: 5), .bottom),
+                (CGRect(x: r.minX, y: r.minY, width: 5, height: 5), .topLeft),
+                (CGRect(x: r.maxX - 5, y: r.minY, width: 5, height: 5), .topRight),
+                (CGRect(x: r.minX, y: r.maxY - 5, width: 5, height: 5), .bottomLeft),
+                (CGRect(x: r.maxX - 5, y: r.maxY - 5, width: 5, height: 5), .bottomRight)
+            ] { addCursorRect(rect.intersection(bounds), cursor: .frameResize(position: position, directions: .all)) }
         }
     }
 
