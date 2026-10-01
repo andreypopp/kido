@@ -1,17 +1,17 @@
 #!/bin/sh
-# Build GhosttyKit.xcframework from the ghostty fork at app/third_party/ghostty
-# into app/build/ghosttykit/<pinned revision>-<flags hash>/, once per revision
-# and flags, and print its path. $GHOSTTY_OPTIMIZE picks the zig optimize mode
-# (default ReleaseFast). Builds in place: every product lands in paths
-# the fork gitignores.
-
 set -eu
 
 app_root=$(cd "$(dirname "$0")/.." && pwd)
 submodule="$app_root/third_party/ghostty"
-revision=$(git -C "$app_root" ls-files -s third_party/ghostty | awk '{print $2}')
+revision=$(git -C "$submodule" rev-parse HEAD)
+source_hash=$({
+	git -C "$submodule" diff HEAD --binary
+	git -C "$submodule" ls-files --others --exclude-standard | while IFS= read -r file; do
+		shasum "$submodule/$file"
+	done
+} | shasum | cut -c1-12)
 flags="-Doptimize=${GHOSTTY_OPTIMIZE:-ReleaseFast} -Dsentry=false -Di18n=false"
-out="$app_root/build/ghosttykit/$revision-$(printf %s "$flags" | shasum | cut -c1-12)"
+out="$app_root/build/ghosttykit/$revision-$source_hash-$(printf %s "$flags" | shasum | cut -c1-12)"
 
 if [ ! -e "$out/GhosttyKit.xcframework" ]; then
 	if [ ! -e "$submodule/build.zig" ]; then
