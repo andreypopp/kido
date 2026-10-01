@@ -33,6 +33,13 @@ A pane is drawn by a Ghostty surface in manual-IO mode
 because tmux answers them. tmux prefix bindings therefore do not fire
 from the app; its menus and Ghostty's split and tab actions stand in.
 
+Ghostty's configuration is `kido-app.conf` beside `kido.conf`
+(`$XDG_CONFIG_HOME/kido/`, else `~/.config/kido/`), in Ghostty's syntax,
+and Ghostty's own config files are not read; `config-file =
+~/.config/ghostty/config` there shares them. It is read once at launch.
+The window's background and light or dark appearance follow its
+`background`.
+
 A pane is synced by one command line: its captures, pending parser
 bytes and mode state. tmux queues `%output` ahead of the reply, so
 output before the reply is wiped by the restore and output after it is
