@@ -70,7 +70,8 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         if id.rawValue == "newSession" || id.rawValue == "toggleSidebar" {
             let toggle = id.rawValue == "toggleSidebar"
             let item = NSToolbarItem(itemIdentifier: id)
-            item.image = NSImage(systemSymbolName: toggle ? "sidebar.left" : "plus.square.on.square", accessibilityDescription: toggle ? "Toggle Sidebar" : "New Session")
+            item.image = NSImage(systemSymbolName: toggle ? "sidebar.left" : "plus.square.on.square", accessibilityDescription: toggle ? "Toggle Sidebar" : "New Session")?
+                .withSymbolConfiguration(IconButton.sidebarSymbols)
             item.label = toggle ? "Toggle Sidebar" : "New Session"
             item.paletteLabel = item.label
             item.toolTip = item.label

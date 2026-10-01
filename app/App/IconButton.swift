@@ -1,13 +1,14 @@
 import AppKit
 
 final class IconButton: NSButton {
+    static let sidebarSymbols = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular, scale: .small)
     var invoke: () -> Void = {}
     private var hovered = false
 
-    init(_ symbol: String, _ label: String, size: CGFloat = 17) {
+    init(_ symbol: String, _ label: String, size: CGFloat? = nil) {
         super.init(frame: .zero)
         image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?
-            .withSymbolConfiguration(.init(pointSize: size, weight: .regular, scale: .medium))
+            .withSymbolConfiguration(size.map { .init(pointSize: $0, weight: .regular, scale: .medium) } ?? Self.sidebarSymbols)
         toolTip = label
         setAccessibilityLabel(label)
         isBordered = false
