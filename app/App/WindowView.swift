@@ -133,8 +133,7 @@ final class WindowView: NSView {
             let chrome = overlays[pane.id] ?? PaneChrome(pane: pane.id, runtime: runtime)
             chrome.select = view.onSelect
             chrome.hover = { [weak self] chrome, point in self?.hover(chrome, point) }
-            chrome.frame = placement.frame(g)
-            chrome.grid = CGRect(origin: CGPoint(x: placement.before.width, y: placement.before.height), size: view.frame.size)
+            place(chrome, view, g, placement)
             chrome.isHidden = view.isHidden
             chrome.dimmed = pane.id != active
             switch (seen[pane.id] ?? pane).layer {
@@ -172,13 +171,23 @@ final class WindowView: NSView {
         for chrome in subviews.compactMap({ $0 as? PaneChrome }) where !chrome.isHidden {
             guard let g = seen[chrome.pane] else { continue }
             chrome.dimmed = chrome.pane != active
-            chrome.frame = placement.frame(g)
-            chrome.grid = CGRect(origin: CGPoint(x: placement.before.width, y: placement.before.height), size: placement.grid(g).size)
+            if let view = panes.first(where: { $0.pane == chrome.pane }) { place(chrome, view, g, placement) }
             floatingBoxes[chrome.pane]?.frame = chrome.frame
             if toolbar?.superview === chrome { toolbar?.frame = chrome.toolbarFrame }
         }
         for (box, divider) in zip(dividers, shown.visible.root.dividers) { box.frame = placement.line(divider, pixel: pixel) }
         window?.invalidateCursorRects(for: self)
+    }
+
+    private func place(_ chrome: PaneChrome, _ view: PaneView, _ g: Geometry, _ placement: PaneLayout) {
+        chrome.frame = placement.frame(g)
+        let grid = placement.grid(g)
+        let rightmost = grid.maxX == placement.rightEdge
+        if rightmost { chrome.frame.size.width = bounds.maxX - chrome.frame.minX }
+        chrome.grid = CGRect(origin: CGPoint(x: placement.before.width, y: placement.before.height), size: grid.size)
+        if view.scroller.superview !== chrome { chrome.addSubview(view.scroller, positioned: .below, relativeTo: nil) }
+        view.scroller.frame = CGRect(x: max(0, (rightmost ? chrome.bounds.maxX : chrome.grid.maxX) - 12),
+                                     y: chrome.grid.minY, width: 12, height: chrome.grid.height)
     }
 
     private func hover(_ chrome: PaneChrome, _ point: NSPoint?) {
