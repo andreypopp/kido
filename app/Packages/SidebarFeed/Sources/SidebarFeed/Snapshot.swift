@@ -58,14 +58,14 @@ public indirect enum Node: Decodable, Equatable, Sendable {
 
     public struct Window: Decodable, Equatable, Sendable {
         public let id: WindowID
-        public let window: WindowID
+        public var window: WindowID { id }
         public let name: String
         public let children: [Item]
         private enum CodingKeys: String, CodingKey { case id, window, name, children }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             id = try c.decode(WindowID.self, forKey: .id)
-            window = try c.decode(WindowID.self, forKey: .window)
+            let window = try c.decode(WindowID.self, forKey: .window)
             name = try c.decode(String.self, forKey: .name)
             children = try c.decode([Item].self, forKey: .children)
             guard id == window, children.count > 1, children.allSatisfy({ $0.window == window }) else {
@@ -91,7 +91,7 @@ public struct Item: Decodable, Equatable, Sendable {
     public enum Kind: String, Decodable, Sendable { case agent, run, ssh, shell }
     public let kind: Kind
     public let id: PaneID
-    public let pane: PaneID
+    public var pane: PaneID { id }
     public let window: WindowID
     public let indicator: Indicator?
     public let title: [Span]
@@ -104,7 +104,7 @@ public struct Item: Decodable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         kind = try c.decode(Kind.self, forKey: .kind)
         id = try c.decode(PaneID.self, forKey: .id)
-        pane = try c.decode(PaneID.self, forKey: .pane)
+        let pane = try c.decode(PaneID.self, forKey: .pane)
         guard id == pane else { throw DecodingError.dataCorruptedError(forKey: .id, in: c, debugDescription: "id must equal pane") }
         window = try c.decode(WindowID.self, forKey: .window)
         indicator = try c.decodeIfPresent(Indicator.self, forKey: .indicator)
