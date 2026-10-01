@@ -4,5 +4,5 @@
 	branch = fork
 [submodule "app/third_party/ghostty"]
 	path = app/third_party/ghostty
-	url = https://github.com/manaflow-ai/ghostty.git
-	branch = main
+	url = https://github.com/andreypopp/ghostty.git
+	branch = kido
