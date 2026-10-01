@@ -3,14 +3,16 @@ import AppKit
 final class PaneScroller: NSView {
     var jump: (Int) -> Void = { _ in }
     private var geometry = (history: 0, rows: 1, offset: 0)
+    private var unavailable = 0
     private var fade: DispatchWorkItem?
     private var hovering = false
     private var dragging: CGFloat?
     override var isFlipped: Bool { true }
 
-    func update(history: Int, rows: Int, offset: Int, alternate: Bool) {
+    func update(history: Int, rows: Int, offset: Int, alternate: Bool, unavailable: Int = 0) {
         if geometry.history - geometry.offset != history - offset { reveal() }
         geometry = (history, max(1, rows), max(0, min(history, offset)))
+        self.unavailable = unavailable
         isHidden = alternate || history == 0
         needsDisplay = true
     }
@@ -24,6 +26,12 @@ final class PaneScroller: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         effectiveAppearance.performAsCurrentDrawingAppearance {
+            if unavailable > 0, geometry.history > 0 {
+                let travel = bounds.height - knob.height - 4
+                NSColor.labelColor.withAlphaComponent(0.08).setFill()
+                NSBezierPath(roundedRect: NSRect(x: 2, y: 0, width: 7,
+                    height: travel * CGFloat(unavailable) / CGFloat(geometry.history)), xRadius: 3, yRadius: 3).fill()
+            }
             NSColor.labelColor.withAlphaComponent(hovering || dragging != nil ? 0.5 : 0.3).setFill()
             NSBezierPath(roundedRect: knob, xRadius: 2.5, yRadius: 2.5).fill()
         }
