@@ -1,4 +1,5 @@
 import AppKit
+import GhosttyKit
 import TmuxControl
 
 final class Connection: @unchecked Sendable {
@@ -8,7 +9,7 @@ final class Connection: @unchecked Sendable {
             case syncing(UUID)
             case complete
             case more(gap: Int)
-            case limited
+            case limited(history: Int)
             case fetching(UUID)
         }
         let view: PaneView
@@ -56,6 +57,15 @@ final class Connection: @unchecked Sendable {
         pane.onScroll = { [weak self, weak pane] in
             guard let pane else { return }
             self?.scroll(pane.pane)
+        }
+        pane.onLoadMore = { [weak self, id = pane.pane] in
+            guard let self else { return }
+            self.client.queue.async {
+                guard let feed = self.panes?[id], case .limited(let history) = feed.history else { return }
+                ghostty_surface_raise_scrollback_limit(feed.view.surface)
+                feed.history = .more(gap: max(0, history - feed.view.scrollPosition().history))
+                self.scroll(id)
+            }
         }
         pane.onSearch = { [weak self, weak pane] query, token in
             guard let pane else { return }
@@ -281,8 +291,8 @@ final class Connection: @unchecked Sendable {
             let destination = feed.view.scrollTarget ?? (position.history - position.offset)
             switch feed.history {
             case .syncing, .fetching: return
-            case .limited where !feed.metadataDirty:
-                self.publish(feed, history: position.history)
+            case .limited(let history) where !feed.metadataDirty:
+                self.publish(feed, history: history)
                 return
             case .more(let gap) where destination >= position.history - position.rows:
                 self.publish(feed, history: position.history + gap)
@@ -308,7 +318,7 @@ final class Connection: @unchecked Sendable {
                         feed.history = .complete
                         return self.publish(feed, history: 0, alternate: true)
                     }
-                    feed.history = limited ? .limited : (history > position.history ? .more(gap: history - position.history) : .complete)
+                    feed.history = limited ? .limited(history: history) : (history > position.history ? .more(gap: history - position.history) : .complete)
                     self.publish(feed, history: history)
                     let destination = feed.view.scrollTarget ?? (position.history - position.offset)
                     if !limited && history > position.history && destination >= position.history - position.rows { self.scroll(pane) }
@@ -332,7 +342,7 @@ final class Connection: @unchecked Sendable {
                 return
             }
             guard let capture = HistoryCapture(replies, loaded: position.history) else {
-                feed.history = .limited
+                feed.history = .limited(history: HistoryMetadata(replies.first)?.history ?? position.history)
                 return
             }
             if capture.alternate {
@@ -344,7 +354,7 @@ final class Connection: @unchecked Sendable {
             }
             let added = capture.rows == 0 ? 0 : feed.view.prepend(Data(capture.text.utf8), epoch: epoch)
             let loaded = feed.view.scrollPosition().history
-            feed.history = added == 0 && capture.history > loaded ? .limited
+            feed.history = added == 0 && capture.history > loaded ? .limited(history: capture.history)
                 : (capture.history > loaded ? .more(gap: capture.history - loaded) : .complete)
             self.publish(feed, history: capture.history)
             if feed.view.scrollTarget != nil {
