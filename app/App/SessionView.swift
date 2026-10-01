@@ -90,21 +90,13 @@ final class SessionView: NSView {
     }
 
     var cell: CGSize? {
-        var best: (id: UInt32, cell: CGSize)?
-        forEachPane { pane in
-            let c = pane.cell
-            guard c.width > 0, c.height > 0 else { return }
-            if best == nil || pane.pane.number < best!.id { best = (pane.pane.number, c) }
-        }
-        return best?.cell
+        let panes = (windows.values.flatMap(\.panes) + others.values.flatMap(\.panes)).sorted { $0.pane.number < $1.pane.number }
+        return panes.lazy.map(\.cell).first { $0.width > 0 && $0.height > 0 }
     }
 
     var font: Float {
-        var best: (id: UInt32, font: Float)?
-        forEachPane { pane in
-            if best == nil || pane.pane.number < best!.id { best = (pane.pane.number, pane.font) }
-        }
-        return best?.font ?? 0
+        let panes = windows.values.flatMap(\.panes) + others.values.flatMap(\.panes)
+        return panes.min { $0.pane.number < $1.pane.number }?.font ?? 0
     }
 
     func fontChanged(_ points: Float) {
