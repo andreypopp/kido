@@ -33,6 +33,12 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     nonisolated var scrollTarget: Int? { target.withLock { $0 } }
     private var scrollRevision = 0
     private var trimming: DispatchWorkItem?
+    private var resyncing: DispatchWorkItem?
+    nonisolated private let anchor = OSAllocatedUnfairLock<ScrollAnchor?>(initialState: nil)
+    nonisolated var resizeAnchor: ScrollAnchor? {
+        get { anchor.withLock { $0 } }
+        set { anchor.withLock { $0 = newValue } }
+    }
     private var wheelRemainder = 0.0
     private var wheelMultiplier = (precision: 1.0, discrete: 3.0)
     private var rowHeight: CGFloat = 1
@@ -376,6 +382,25 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     func resize(cols: Int, rows: Int) {
         let size = ghostty_surface_size(surface)
         guard (Int(size.columns), Int(size.rows)) != (cols, rows) else { return }
+        resyncing?.cancel()
+        if resizeAnchor == nil, !ghostty_surface_is_alternate_screen(surface) {
+            let position = scrollPosition()
+            if (scrollTarget ?? (position.history - position.offset)) > 0 {
+                var text = ghostty_text_s()
+                let selection = ghostty_selection_s(
+                    top_left: ghostty_point_s(tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0),
+                    bottom_right: ghostty_point_s(tag: GHOSTTY_POINT_SCREEN, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0),
+                    rectangle: false)
+                if ghostty_surface_read_text(surface, selection, &text), let ptr = text.text {
+                    let bytes = UnsafeRawBufferPointer(start: ptr, count: Int(text.text_len))
+                    var lines = String(decoding: bytes, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false)
+                    while lines.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { lines.removeLast() }
+                    let saved = ScrollAnchor(lines: lines.count)
+                    resizeAnchor = saved
+                    ghostty_surface_free_text(surface, &text)
+                }
+            }
+        }
         gridChanged.withLock { epoch += 1 }
         guard ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil) else { return settle() }
         let now = Date.now, resize = historyEpoch
@@ -403,7 +428,23 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             grid = .confirmed
             gridChanged.broadcast()
         }
-        onResync()
+        scheduleResync()
+    }
+
+    private func scheduleResync() {
+        resyncing?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.window?.inLiveResize != true else { return }
+            self.resyncing = nil
+            self.onResync()
+        }
+        resyncing = work
+        if window?.inLiveResize != true { DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work) }
+    }
+
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        if resyncing != nil, gridChanged.withLock({ if case .confirmed = grid { true } else { false } }) { scheduleResync() }
     }
 
     // MARK: - Clipboard
