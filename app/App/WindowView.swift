@@ -343,10 +343,8 @@ final class WindowView: NSView {
         view.onAlternateChange = { [weak self] in self?.place() }
         view.onCellChange = { [weak self] in self?.session?.cellChanged() }
         view.onFontChange = { [weak self] in self?.session?.fontChanged($0) }
-        view.onResync = { [weak self] done in
-            guard let connection = self?.connection else { return done() }
-            connection.sync(id, synced: done)
-        }
+        view.onResync = { [weak connection] in connection?.syncResize(id) ?? false }
+        view.onGridFailure = { [weak connection] in connection?.gridFailed() }
         return view
     }
 
@@ -754,6 +752,21 @@ final class WindowView: NSView {
         for d in shown?.visible.root.dividers ?? [] {
             add(hitArea(d, placement), d.direction == .leftRight ? .resizeLeftRight : .resizeUpDown)
         }
+    }
+
+    func debugResize(_ reason: @autoclosure () -> String, pane: PaneID? = nil) {
+        guard debugging else { return }
+        let sizes = Dictionary(uniqueKeysWithValues: (shown?.visible.root.panes ?? []).map { ($0.id, $0.geometry) })
+        for view in panes where !view.isHidden && (pane == nil || pane == view.pane) {
+            let tmux = sizes[view.pane].map { "\($0.width)x\($0.height)" } ?? "none"
+            debug("resize t=\(ProcessInfo.processInfo.systemUptime) \(reason()) pane=\(view.pane) tmux=\(tmux) \(view.resizeDebug)")
+        }
+    }
+
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        debugResize("live-end")
+        connection?.flushSize()
     }
 
     private func sizeClient() {
