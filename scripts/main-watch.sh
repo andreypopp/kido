@@ -68,8 +68,30 @@ $jobs"
 	if [ "$conclusion" != success ]; then
 		log=$(gh run view "$run" --log-failed 2>/dev/null) || return 1
 		failed=$(printf '%s\n' "$log" | cut -f1,3- | sed -E 's/[0-9T:.-]+Z //' |
-			grep -E -- '--- FAIL|FAIL:|panic:|Error|_test\.go:[0-9]+:|✖|AssertionError' |
-			grep -v -E 'conn_test|measured|older-than|no-unattended|no-zsh|DEBUG' | head -25 | sed 's/^/      /')
+			awk -F '\t' '
+				{
+					line = $0
+					sub(/^[^\t]*\t[[:space:]]*/, "", line)
+					split(line, words, /[[:space:]]+/)
+					if (line ~ /^=== (RUN|PAUSE|CONT|NAME) /) {
+						current[$1] = words[3]
+						next
+					}
+					if (line ~ /^--- (FAIL|PASS|SKIP): /) {
+						key = $1 SUBSEP words[3]
+						if (words[2] == "FAIL:") {
+							printf "%s", messages[key]
+							print
+						}
+						delete messages[key]
+						next
+					}
+					if (line ~ /_test\.go:[0-9]+:/) {
+						key = $1 SUBSEP current[$1]
+						messages[key] = messages[key] $0 "\n"
+					} else if (line ~ /^(FAIL:|panic:|Error:|File ".*", line)|✖|AssertionError/)
+						print
+				}' | head -25 | sed 's/^/      /')
 		[ -z "$failed" ] || report="$report
 $failed"
 	fi
