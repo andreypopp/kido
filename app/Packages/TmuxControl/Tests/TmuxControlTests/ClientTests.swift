@@ -50,6 +50,43 @@ func server(_ tmux: URL, _ socket: String, _ args: String...) throws -> Int32 {
     return p.terminationStatus
 }
 
+@Test(.timeLimit(.minutes(1)))
+func nestedTranscript() async throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("tc-nested-\(UUID())")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let script = dir.appendingPathComponent("tmux")
+    let input = dir.appendingPathComponent("input")
+    let transcript = String(decoding: try fixture("nested"), as: UTF8.self)
+    try """
+        #!/bin/sh
+        IFS= read -r line
+        printf '%s\\n' "$line" >> '\(input.path)'
+        cat <<'TRANSCRIPT'
+        \(transcript)
+        TRANSCRIPT
+        while IFS= read -r line; do
+            printf '%s\\n' "$line" >> '\(input.path)'
+            printf '%%begin 1790925152 322 1\\n%s\\n%%end 1790925152 322 1\\n' "${line##* }"
+        done
+        """.write(to: script, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+    let seen = Recorder<Event>()
+    let client = Client(tmux: script, socket: dir.appendingPathComponent("unused").path, session: nil, pauseAfter: 5)
+    try client.start(onEvent: seen.add, onClose: seen.close)
+    #expect(try await client.run([
+        Command("if-shell", "-F", "1", "resize-pane -t %1 -x 25 -y 12"),
+        Command("move-pane", "-t", "%1", "-X", "12", "-Y", "6"),
+    ]) == [.success([]), .success([]), .success([])])
+    #expect(try await client.run(Command("display-message", "-p", "next")) == .success(["next"]))
+    client.close()
+    _ = try await seen.wait("close") { _, status in status }
+    let lines = try String(contentsOf: input, encoding: .utf8).split(separator: "\n")
+    try #require(lines.count == 3)
+    #expect(lines[1].hasPrefix("display-message -p "))
+    #expect(lines[2] == "display-message -p next")
+}
+
 @Test(.enabled(if: tmux != nil), .timeLimit(.minutes(1)))
 func liveClient() async throws {
     let tmux = try #require(tmux)
@@ -83,6 +120,18 @@ func liveClient() async throws {
         #expect(got[0] == (0..<failing).map { .success(["\($0)"]) } + [.failure(["can't find pane: %999"])])
         #expect(got[1] == [.success(["next"])])
     }
+
+    let nested = Recorder<[Reply]?>()
+    client.send([
+        Command("if-shell", "-F", "1", "select-pane -t %999"),
+        Command("display-message", "-p", "outer"),
+    ], then: nested.add)
+    client.send([Command("display-message", "-p", "next")], then: nested.add)
+    let paired = try await nested.wait("nested failure") { r, _ in r.count == 2 ? r : nil }
+    #expect(paired == [
+        [.success([]), .failure(["can't find pane: %999"]), .success(["outer"])],
+        [.success(["next"])],
+    ])
 
     let pane = PaneID(number: 0)
     for c in Command.sendKeys(pane, Array("echo 'hi there'\r".utf8), chunk: 4) {
@@ -182,6 +231,13 @@ func liveLayout() async throws {
     #expect(try Layout(json: json).root.dividers.map(\.geometry) == [
         Geometry(x: 30, y: 0, width: 1, height: 24), Geometry(x: 31, y: 8, width: 49, height: 1),
     ])
+
+    #expect(try await client.run([
+        Command("if-shell", "-F", "1", "resize-pane -t %3 -x 25 -y 12"),
+        Command("move-pane", "-t", p3, "-X", "12", "-Y", "6"),
+    ]) == [.success([]), .success([]), .success([])])
+    #expect(try await client.run(Command("display-message", "-p", "-t", p3,
+        "#{pane_left},#{pane_top},#{pane_width},#{pane_height}")) == .success(["13,7,23,10"]))
 
     #expect(try await client.run(Command("resize-pane", "-Z", "-t", p1)) == .success([]))
     let zoomed = try await seen.wait("zoom") { e, _ in
