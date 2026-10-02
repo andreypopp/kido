@@ -161,12 +161,18 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     func refreshScroller() {
         let position = scrollPosition()
-        updateScroller(history: max(scrollGeometry.history, position.history), position: position,
-                       alternate: ghostty_surface_is_alternate_screen(surface), limited: scrollGeometry.limited)
+        updateScroller(history: scrollGeometry.history, position: position,
+                       alternate: ghostty_surface_is_alternate_screen(surface), limited: scrollGeometry.limited, clampTarget: false)
     }
 
-    func updateScroller(history: Int, position: ScrollPosition, alternate: Bool, limited: Bool = false, discardTarget: Bool = false) {
-        let changed = discardTarget || self.alternate != alternate || scrollGeometry.history != history
+    func updateScroller(history: Int, position: ScrollPosition, alternate: Bool, limited: Bool = false, discardTarget: Bool = false,
+                        clampTarget: Bool = true) {
+        let clamped = target.withLock { target in
+            guard clampTarget, let distance = target else { return false }
+            target = min(Double(limited ? min(history, position.history) : history), distance)
+            return target != distance
+        }
+        let changed = clamped || discardTarget || self.alternate != alternate || scrollGeometry.history != history
             || scrollGeometry.position.history != position.history || scrollGeometry.position.rows != position.rows
             || scrollGeometry.limited != limited || (scrollTarget == nil && scrollGeometry.position.offset != position.offset)
         guard changed else { return }
@@ -174,10 +180,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         updateAlternate(alternate)
         scrollGeometry = (history, position, scrollGeometry.captured, limited)
         if alternate { clearScrollTarget() }
-        else {
-            let limit = scrollLimit
-            target.withLock { $0 = $0.map { min(Double(limit), $0) } }
-        }
         queueScroll()
     }
 
@@ -234,11 +236,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    private var scrollLimit: Int {
-        let (history, position, _, limited) = scrollGeometry
-        return limited ? min(history, position.history) : history
-    }
-
     private func presentScroll() {
         let (position, applied, _) = scrollPresentation
         let history = scrollGeometry.history, limited = scrollGeometry.limited
@@ -274,7 +271,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private func requestScrollDistance(_ move: @Sendable (Double) -> Double) {
         resizeAnchor = nil
         invalidateScroll()
-        let position = Double(scrollGeometry.position.history - scrollGeometry.position.offset), limit = Double(scrollLimit)
+        let position = Double(scrollGeometry.position.history - scrollGeometry.position.offset)
+        let limit = scrollGeometry.limited ? Double(min(scrollGeometry.history, scrollGeometry.position.history)) : .infinity
         target.withLock {
             let previous = $0 ?? position
             $0 = max(0, min(limit, move(previous)))
