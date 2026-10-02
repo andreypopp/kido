@@ -365,7 +365,7 @@ final class WindowView: NSView {
         case floating(Pane, NSPoint, CGRect, NSCursor.FrameResizePosition?)
     }
     private var paneDrag: PaneDrag?
-    private var dragCursor: NSCursor?
+    private var dragWindow: NSWindow?
     #if KIDO_STRESS
     var stressEvent: (String, String) -> Void = { _, _ in }
     var stressFloats: [(pane: Pane, frame: CGRect, free: Bool)] {
@@ -502,27 +502,31 @@ final class WindowView: NSView {
         }
     }
 
-    private func cancelDrag() {
+    @objc func cancelDrag() {
+        guard paneDrag != nil || drag != nil else { return }
         if case .sending = delivery { delivery = .sending(pending: nil) }
         liveFrame = nil
-        endDrag(); place(); focusActive(force: true)
+        place(); endDrag(); focusActive(force: true)
     }
 
     private func invalidateCursorRects() {
-        if dragCursor == nil { window?.invalidateCursorRects(for: self) }
+        if paneDrag == nil { window?.invalidateCursorRects(for: self) }
     }
 
     private func endDrag() {
-        if dragCursor != nil {
+        guard paneDrag != nil || drag != nil else { return }
+        let target = dragWindow ?? window
+        if let dragWindow {
             if !background { NSCursor.pop() }
-            window?.enableCursorRects()
-            dragCursor = nil
+            dragWindow.enableCursorRects()
+            self.dragWindow = nil
         }
         if case .dragging = liveFrame { liveFrame = nil }
         paneDrag = nil
+        drag = nil
         lastFloatCommand = nil
         preview.rect = nil
-        window?.invalidateCursorRects(for: self)
+        target?.invalidateCursorRects(for: self)
     }
 
     private func updateDrag(_ event: NSEvent) {
@@ -536,11 +540,11 @@ final class WindowView: NSView {
                 if event.type == .leftMouseUp { endDrag(); focusActive(force: true) }
                 return
             }
-            if dragCursor == nil {
+            if dragWindow == nil, let window {
                 let cursor = cursorEdge.map { NSCursor.frameResize(position: $0, directions: .all) } ?? .closedHand
-                window?.disableCursorRects()
+                window.disableCursorRects()
                 if !background { cursor.push() }
-                dragCursor = cursor
+                dragWindow = window
             }
             var frame = initial
             if edge == nil { frame.origin.x += dx; frame.origin.y += dy }
@@ -755,12 +759,24 @@ final class WindowView: NSView {
         sizeClient()
     }
 
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if window !== newWindow { cancelDrag() }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         let center = NotificationCenter.default
-        center.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil)
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+                     NSWindow.willCloseNotification, NSApplication.didResignActiveNotification] {
+            center.removeObserver(self, name: name, object: nil)
+        }
         guard let window else { return }
         center.addObserver(self, selector: #selector(didBecomeKey), name: NSWindow.didBecomeKeyNotification, object: window)
+        for name in [NSWindow.didResignKeyNotification, NSWindow.willCloseNotification] {
+            center.addObserver(self, selector: #selector(cancelDrag), name: name, object: window)
+        }
+        center.addObserver(self, selector: #selector(cancelDrag), name: NSApplication.didResignActiveNotification, object: NSApp)
     }
 
     @objc private func didBecomeKey() {
