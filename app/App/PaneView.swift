@@ -18,7 +18,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onCommand: (PaneCommand) -> Void = { _ in }
     var onResync: () -> Bool = { false }
     var onGridFailure: () -> Void = {}
-    var onScroll: () -> Void = {}
+    var onScrollRequest: () -> Void = {}
     var onLoadMore: () -> Void = {}
     var onScrollSettled: () -> Void = {}
     let scroller = PaneScroller()
@@ -159,8 +159,14 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         _ = ghostty_surface_scroll_to_row_if_revision(surface, UInt64(row), value.row_space_revision, &value)
     }
 
-    func updateScroller(history: Int, position: ScrollPosition, alternate: Bool, limited: Bool = false) {
-        let changed = self.alternate != alternate || scrollGeometry.history != history
+    func refreshScroller() {
+        let position = scrollPosition()
+        updateScroller(history: max(scrollGeometry.history, position.history), position: position,
+                       alternate: ghostty_surface_is_alternate_screen(surface), limited: scrollGeometry.limited)
+    }
+
+    func updateScroller(history: Int, position: ScrollPosition, alternate: Bool, limited: Bool = false, discardTarget: Bool = false) {
+        let changed = discardTarget || self.alternate != alternate || scrollGeometry.history != history
             || scrollGeometry.position.history != position.history || scrollGeometry.position.rows != position.rows
             || scrollGeometry.limited != limited || (scrollTarget == nil && scrollGeometry.position.offset != position.offset)
         guard changed else { return }
@@ -274,6 +280,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             $0 = max(0, min(limit, move(previous)))
         }
         queueScroll()
+        onScrollRequest()
     }
 
     private func queueScroll() {
@@ -297,7 +304,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
                     self.scrollPresentation = (moved, distance, revision)
                     self.presentScroll()
                 }
-                self.onScroll()
                 self.scheduleTrim()
                 if self.scrollDistance != distance { self.queueScroll() }
                 else if moved != nil { self.requestFinalRender() }
@@ -759,7 +765,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             let captured = ghostty_surface_mouse_captured(surface), alternate = ghostty_surface_is_alternate_screen(surface)
             DispatchQueue.main.async { [weak self] in
                 guard let self, historyEpoch == epoch else { return }
-                if kind == .snapshot { queueScroll() }
+                refreshScroller()
+                if kind == .snapshot || scrollDistance != scrollPresentation.distance { queueScroll() }
                 if captured != scrollGeometry.captured { snapScroll() }
                 scrollGeometry.captured = captured
                 updateAlternate(alternate)
