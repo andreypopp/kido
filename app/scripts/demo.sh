@@ -17,7 +17,8 @@ stop) t kill-server; exit ;;
 esac
 
 mkdir -p "$D/state" && chmod 700 "$D"
-if ! t has-session 2>/dev/null; then
+if ! t has-session -t main:kido 2>/dev/null; then
+  t kill-server 2>/dev/null || true
   "$K" server
   sleep 1
   t rename-window -t main:1 kido
