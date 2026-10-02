@@ -25,10 +25,11 @@ final class PaneChrome: NSView {
     var drag: ((NSEvent) -> Void)?
     var padding: [CGRect] {
         bounds.insetBy(dx: 5, dy: 5).subtracting(
-            [grid] + subviews.filter { !$0.isHidden && ($0 is PaneScroller || $0.alphaValue > 0) }.map(\.frame))
+            [content] + subviews.filter { !$0.isHidden && ($0 is PaneScroller || $0.alphaValue > 0) }.map(\.frame))
     }
     var hover: (PaneChrome, NSPoint?) -> Void = { _, _ in }
     var grid = CGRect.zero { didSet { if grid != oldValue { needsDisplay = true } } }
+    var content = CGRect.zero { didSet { if content != oldValue { needsDisplay = true } } }
     private(set) var scrollEdges = (top: false, bottom: false)
     static let scrollEdgeHeight: CGFloat = 12
 
@@ -59,15 +60,15 @@ final class PaneChrome: NSView {
             guard dimmed || scrollEdges.top || scrollEdges.bottom else { return }
             let background = runtime.background
             if dimmed { background.withAlphaComponent(0.45).setFill(); bounds.fill() }
-            guard (scrollEdges.top || scrollEdges.bottom), !grid.isEmpty else { return }
-            let height = min(Self.scrollEdgeHeight, grid.height / 2)
+            guard (scrollEdges.top || scrollEdges.bottom), !content.isEmpty else { return }
+            let height = min(Self.scrollEdgeHeight, content.height / 2)
             let gradient = NSGradient(
                 colors: [1.0, 0.9, 0.6, 0.25, 0.0].map { background.withAlphaComponent($0) },
                 atLocations: [0.0, 0.2, 0.45, 0.7, 1.0], colorSpace: .deviceRGB)!
-            for (visible, y, direction) in [(scrollEdges.top, grid.minY, 1.0), (scrollEdges.bottom, grid.maxY, -1.0)] where visible {
+            for (visible, y, direction) in [(scrollEdges.top, content.minY, 1.0), (scrollEdges.bottom, content.maxY, -1.0)] where visible {
                 NSGraphicsContext.saveGraphicsState()
-                NSBezierPath(rect: CGRect(x: grid.minX, y: min(y, y + direction * height), width: grid.width, height: height)).addClip()
-                gradient.draw(from: CGPoint(x: grid.midX, y: y), to: CGPoint(x: grid.midX, y: y + direction * height), options: [])
+                NSBezierPath(rect: CGRect(x: content.minX, y: min(y, y + direction * height), width: content.width, height: height)).addClip()
+                gradient.draw(from: CGPoint(x: content.midX, y: y), to: CGPoint(x: content.midX, y: y + direction * height), options: [])
                 NSGraphicsContext.restoreGraphicsState()
             }
         }
@@ -80,7 +81,7 @@ final class PaneChrome: NSView {
         guard !isHidden else { return nil }
         let local = convert(point, from: superview)
         if subviews.contains(where: { !$0.isHidden && $0.alphaValue > 0 && $0.frame.contains(local) }) { return super.hitTest(point) }
-        return bounds.contains(local) && !grid.contains(local) ? self : nil
+        return bounds.contains(local) && !content.contains(local) ? self : nil
     }
     override func mouseDown(with event: NSEvent) {
         if let drag, padding.contains(where: { $0.contains(convert(event.locationInWindow, from: nil)) }) {
