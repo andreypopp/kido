@@ -17,6 +17,9 @@ final class WindowView: NSView {
     private var needsReconcile = true
     private var dividers: [NSBox] = []
     private var floatingBoxes: [PaneID: NSBox] = [:]
+    private var freeFrames: [PaneID: CGRect] = [:]
+    private enum FloatFrame { case dragging(PaneID, CGRect), settling(PaneID, CGRect) }
+    private var liveFrame: FloatFrame?
     private let floatingRadius: CGFloat = 10
     private var toolbar: PaneToolbar?
     private let preview = PaneDropPreview()
@@ -68,7 +71,7 @@ final class WindowView: NSView {
         if let paneDrag {
             let valid: Bool = switch paneDrag {
             case .tiled(let id, _): visible.root.panes.contains { $0.id == id && $0.layer == .tiled }
-            case .floating(let pane, _, _): visible.root.panes.contains { $0.id == pane.id && $0.layer != .tiled }
+            case .floating(let pane, _, _, _): visible.root.panes.contains { $0.id == pane.id && $0.layer != .tiled }
             }
             if zoomed || !valid {
                 #if KIDO_STRESS
@@ -77,6 +80,17 @@ final class WindowView: NSView {
                 cancelDrag()
             }
         }
+        if let placement {
+            freeFrames = freeFrames.filter { id, frame in
+                let keep = !zoomed && visible.root.panes.contains {
+                    $0.id == id && $0.layer != .tiled && matches(frame, $0.geometry, placement)
+                }
+                #if KIDO_STRESS
+                stressEvent(keep ? "free-frame-kept" : "free-frame-dropped", id.description)
+                #endif
+                return keep
+            }
+        } else { freeFrames = [:] }
         active = visible.root.panes.first { $0.focus == .active }?.id ?? active
         guard hot else { return }
         let known = panes.contains { $0.pane == active }
@@ -104,6 +118,8 @@ final class WindowView: NSView {
         toolbar = nil
         dividers = []
         floatingBoxes = [:]
+        freeFrames = [:]
+        liveFrame = nil
         needsReconcile = true
         subviews = []
     }
@@ -211,11 +227,14 @@ final class WindowView: NSView {
     }
 
     private func place(_ chrome: PaneChrome, _ view: PaneView, _ g: Geometry, _ placement: PaneLayout) {
-        chrome.frame = placement.frame(g)
-        let grid = placement.grid(g)
-        if grid.maxX == placement.rightEdge { chrome.frame.size.width = bounds.maxX - chrome.frame.minX }
-        chrome.grid = CGRect(origin: CGPoint(x: placement.before.width, y: placement.before.height), size: grid.size)
         let floating = shown?.visible.root.panes.contains { $0.id == chrome.pane && $0.layer != .tiled } ?? false
+        chrome.frame = floating ? floatFrame(chrome.pane, g, placement) : placement.frame(g)
+        var grid = placement.grid(g)
+        if floating {
+            grid.origin = CGPoint(x: chrome.frame.minX + placement.before.width, y: chrome.frame.minY + placement.before.height)
+            view.frame = grid
+        } else if grid.maxX == placement.rightEdge { chrome.frame.size.width = bounds.maxX - chrome.frame.minX }
+        chrome.grid = CGRect(origin: CGPoint(x: placement.before.width, y: placement.before.height), size: grid.size)
         chrome.wantsLayer = true
         chrome.layer?.cornerRadius = floating ? floatingRadius : 0
         chrome.layer?.masksToBounds = floating
@@ -311,7 +330,7 @@ final class WindowView: NSView {
     }
     private enum PaneDrag {
         case tiled(PaneID, NSPoint)
-        case floating(Pane, NSPoint, NSCursor.FrameResizePosition?)
+        case floating(Pane, NSPoint, CGRect, NSCursor.FrameResizePosition?)
     }
     private var paneDrag: PaneDrag?
     #if KIDO_STRESS
@@ -321,12 +340,51 @@ final class WindowView: NSView {
     private var delivery = Delivery.idle
     private var lastFloatCommand: [Command]?
 
+    private func floatFrame(_ id: PaneID, _ geometry: Geometry, _ placement: PaneLayout) -> CGRect {
+        if let liveFrame {
+            switch liveFrame {
+            case .dragging(let pane, let frame), .settling(let pane, let frame):
+                if pane == id { return frame }
+            }
+        }
+        return freeFrames[id] ?? placement.frame(geometry)
+    }
+
+    private func floatGeometry(_ frame: CGRect, _ placement: PaneLayout) -> CGRect {
+        guard let cell = session?.cell else { return .zero }
+        return CGRect(x: ((frame.minX + placement.before.width - placement.origin.x) / cell.width).rounded(),
+                      y: ((frame.minY + placement.before.height - placement.origin.y) / cell.height).rounded(),
+                      width: max(2, ((frame.width - placement.before.width - placement.after.width) / cell.width).rounded()),
+                      height: max(2, ((frame.height - placement.before.height - placement.after.height) / cell.height).rounded()))
+    }
+
+    private func matches(_ frame: CGRect, _ g: Geometry, _ placement: PaneLayout) -> Bool {
+        floatGeometry(frame, placement) == CGRect(x: g.x, y: g.y, width: g.width, height: g.height)
+    }
+
+    private func settleFloat() {
+        guard case .settling(let id, let frame) = liveFrame else { return }
+        connection?.send([Command("display-message", "-p", "")]) { [weak self] _ in
+            guard let self, case .settling(let current, let rect) = self.liveFrame, current == id, rect == frame else { return }
+            self.liveFrame = nil
+            if !self.zoomed, let placement = self.placement,
+               let pane = self.shown?.visible.root.panes.first(where: { $0.id == id && $0.layer != .tiled }),
+               self.matches(frame, pane.geometry, placement) {
+                self.freeFrames[id] = frame
+                #if KIDO_STRESS
+                self.stressEvent("free-frame-kept", id.description)
+                #endif
+            }
+            self.place()
+        }
+    }
+
     private func floatEdge(_ point: NSPoint) -> (Pane, NSCursor.FrameResizePosition)? {
         guard !zoomed, let placement else { return nil }
         for pane in (shown?.visible.root.panes ?? []).filter({ $0.layer != .tiled }).sorted(by: {
             guard case .floating(let a) = $0.layer, case .floating(let b) = $1.layer else { return false }; return a < b
         }) {
-            let frame = placement.frame(pane.geometry)
+            let frame = floatFrame(pane.id, pane.geometry, placement)
             guard frame.contains(point) else { continue }
             return floatEdges(frame).first { $0.1.contains(point) }.map { (pane, $0.0) }
         }
@@ -374,6 +432,7 @@ final class WindowView: NSView {
             guard let self, case .sending(let pending) = self.delivery else { return }
             self.delivery = .idle
             if let pending { self.lastFloatCommand = nil; self.sendFloat(pending) }
+            else { self.settleFloat() }
         }
     }
 
@@ -390,16 +449,20 @@ final class WindowView: NSView {
         #endif
         switch pane.layer {
         case .tiled: paneDrag = .tiled(pane.id, event.locationInWindow)
-        case .floating: paneDrag = .floating(pane, event.locationInWindow, nil)
+        case .floating:
+            guard let placement else { return }
+            paneDrag = .floating(pane, event.locationInWindow, floatFrame(pane.id, pane.geometry, placement), nil)
         }
     }
 
     private func cancelDrag() {
         if case .sending = delivery { delivery = .sending(pending: nil) }
-        endDrag(); focusActive(force: true)
+        liveFrame = nil
+        endDrag(); place(); focusActive(force: true)
     }
 
     private func endDrag() {
+        if case .dragging = liveFrame { liveFrame = nil }
         paneDrag = nil
         lastFloatCommand = nil
         preview.rect = nil
@@ -407,19 +470,31 @@ final class WindowView: NSView {
 
     private func updateDrag(_ event: NSEvent) {
         guard let paneDrag else { return }
-        if case .floating(let pane, let origin, let edge) = paneDrag {
-            guard let cell = session?.cell else { return }
-            let dx = Int(((event.locationInWindow.x - origin.x) / cell.width).rounded())
-            let dy = Int(((origin.y - event.locationInWindow.y) / cell.height).rounded())
-            let g = pane.geometry
-            let width = max(2, g.width + (edge?.right == true ? dx : edge?.left == true ? -dx : 0))
-            let height = max(2, g.height + (edge?.bottom == true ? dy : edge?.top == true ? -dy : 0))
-            var x = g.x + (edge == nil ? dx : edge?.left == true ? g.width - width : 0)
-            var y = g.y + (edge == nil ? dy : edge?.top == true ? g.height - height : 0)
-            if edge == nil, let placement {
-                x = min(max(0, x), max(0, Int(placement.client.width) - width))
-                y = min(max(0, y), max(0, Int(placement.client.height) - height))
+        if case .floating(let pane, let origin, let initial, let edge) = paneDrag {
+            guard let cell = session?.cell, let placement else { return }
+            let dx = event.locationInWindow.x - origin.x
+            let dy = origin.y - event.locationInWindow.y
+            var frame = initial
+            if edge == nil { frame.origin.x += dx; frame.origin.y += dy }
+            else {
+                let minimum = CGSize(width: 2 * cell.width + placement.before.width + placement.after.width,
+                                     height: 2 * cell.height + placement.before.height + placement.after.height)
+                if edge?.right == true { frame.size.width = max(minimum.width, initial.width + dx) }
+                if edge?.bottom == true { frame.size.height = max(minimum.height, initial.height + dy) }
+                if edge?.left == true { frame.size.width = max(minimum.width, initial.width - dx); frame.origin.x = initial.maxX - frame.width }
+                if edge?.top == true { frame.size.height = max(minimum.height, initial.height - dy); frame.origin.y = initial.maxY - frame.height }
             }
+            let area = CGRect(x: placement.origin.x - placement.before.width, y: placement.origin.y - placement.before.height,
+                              width: placement.client.width * cell.width + placement.before.width + placement.after.width,
+                              height: placement.client.height * cell.height + placement.before.height + placement.after.height)
+            frame.size.width = min(frame.width, area.width)
+            frame.size.height = min(frame.height, area.height)
+            frame.origin.x = min(max(area.minX, frame.minX), area.maxX - frame.width)
+            frame.origin.y = min(max(area.minY, frame.minY), area.maxY - frame.height)
+            liveFrame = .dragging(pane.id, frame)
+            place()
+            let geometry = floatGeometry(frame, placement)
+            let x = Int(geometry.minX), y = Int(geometry.minY), width = Int(geometry.width), height = Int(geometry.height)
             if dx != 0 || dy != 0 || lastFloatCommand != nil {
                 var commands: [Command] = []
                 if edge != nil {
@@ -434,7 +509,12 @@ final class WindowView: NSView {
                 }
                 sendFloat(commands)
             }
-            if event.type == .leftMouseUp { endDrag(); focusActive(force: true) }
+            if event.type == .leftMouseUp {
+                liveFrame = .settling(pane.id, frame)
+                endDrag()
+                if case .idle = delivery { settleFloat() }
+                focusActive(force: true)
+            }
             return
         }
         guard case .tiled(let source, let origin) = paneDrag else { return }
@@ -520,7 +600,7 @@ final class WindowView: NSView {
         let local = convert(point, from: superview)
         guard !isHidden, bounds.contains(local) else { return nil }
         if floatEdge(local) != nil { return self }
-        if let placement, shown?.visible.root.panes.contains(where: { $0.layer != .tiled && placement.frame($0.geometry).contains(local) }) == true {
+        if let placement, shown?.visible.root.panes.contains(where: { $0.layer != .tiled && floatFrame($0.id, $0.geometry, placement).contains(local) }) == true {
             return super.hitTest(point)
         }
         if let placement, shown?.visible.root.dividers.contains(where: { hitArea($0, placement).contains(local) }) == true { return self }
@@ -531,7 +611,8 @@ final class WindowView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         if let (pane, edge) = floatEdge(point) {
             endDrag()
-            paneDrag = .floating(pane, event.locationInWindow, edge)
+            guard let placement else { return }
+            paneDrag = .floating(pane, event.locationInWindow, floatFrame(pane.id, pane.geometry, placement), edge)
             #if KIDO_STRESS
             stressEvent("edge-resize-started", pane.id.description)
             #endif
@@ -577,7 +658,7 @@ final class WindowView: NSView {
         }
         guard !zoomed else { return }
         for pane in shown?.visible.root.panes ?? [] where pane.layer != .tiled {
-            let r = placement.frame(pane.geometry)
+            let r = floatFrame(pane.id, pane.geometry, placement)
             for (position, rect) in floatEdges(r) {
                 let rect = rect.intersection(bounds)
                 if !rect.isEmpty { addCursorRect(rect, cursor: .frameResize(position: position, directions: .all)) }
