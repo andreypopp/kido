@@ -323,6 +323,7 @@ final class Connection: @unchecked Sendable {
                 guard let view, view.historyEpoch == epoch else { return synced?() ?? () }
                 debug("resize t=\(ProcessInfo.processInfo.systemUptime) anchor-found pane=\(pane) distance=\(distance)")
                 if view.resizeAnchor != nil { view.requestScroll(distance) }
+                else if view.scrollTarget != nil { self.scroll(pane) }
                 view.resizeAnchor = nil
                 view.restored(epoch: epoch)
                 view.find?.search()
