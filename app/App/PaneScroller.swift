@@ -11,10 +11,12 @@ final class PaneScroller: NSView {
     override var isFlipped: Bool { true }
 
     func update(history: Int, rows: Int, offset: Double, alternate: Bool, unavailable: Int = 0) {
-        if Double(geometry.history) - geometry.offset != Double(history) - offset { reveal() }
-        geometry = (history, max(1, rows), max(0, min(Double(history), offset)))
-        self.unavailable = unavailable
+        let next = (history, max(1, rows), max(0, min(Double(history), offset)))
         let hidden = alternate || history == 0
+        guard geometry != next || self.unavailable != unavailable || isHidden != hidden else { return }
+        if Double(geometry.history) - geometry.offset != Double(history) - offset { reveal() }
+        geometry = next
+        self.unavailable = unavailable
         if isHidden != hidden {
             isHidden = hidden
             if let view = superview?.superview { window?.invalidateCursorRects(for: view) }
