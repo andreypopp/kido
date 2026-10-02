@@ -5,6 +5,8 @@ import GhosttyKit
 #if KIDO_STRESS
 
 final class StressWindow: NSWindow {
+    var resizeRendering = false
+    override var occlusionState: NSWindow.OcclusionState { resizeRendering ? [.visible] : super.occlusionState }
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 }
@@ -31,6 +33,7 @@ typealias AppWindow = StressWindow
     private var seed: UInt64
     private var step = 0
     private var counts: [String: Int] = [:]
+    private var resizeCompleted = Set<ObjectIdentifier>()
 
     init(window: NSWindow, send: @escaping ([Command]) -> Void, reconnect: @escaping () -> Void) {
         self.window = window
@@ -53,8 +56,167 @@ typealias AppWindow = StressWindow
             else if self.env["KIDO_SNAP_VERIFY"] == "1" { self.verifySnap(0) }
             else if self.env["KIDO_ALT_VERIFY"] == "1" || self.env["KIDO_INPUT_VERIFY"] == "1" { self.verifyAlternate() }
             else if self.env["KIDO_FLOAT_VERIFY"] == "1" { self.verifyFloat(0) }
+            else if self.env["KIDO_RESIZE_VERIFY"] == "1" || self.env["KIDO_GRID_VERIFY"] == "1" || self.env["KIDO_REPLAY_VERIFY"] == "1" || self.env["KIDO_REPLAY_FENCE_VERIFY"] == "1" || self.env["KIDO_VIEWPORT_VERIFY"] == "1" { self.verifyResize() }
             else { self.tick() }
         }
+    }
+
+    private func verifyResize() {
+        guard let original = (window.contentView.map(views) ?? []).compactMap({ $0 as? PaneView }).first else { exit(1) }
+        let runtime = Unmanaged<GhosttyRuntime>.fromOpaque(ghostty_app_userdata(ghostty_surface_app(original.surface)!)!).takeUnretainedValue()
+        guard let pane = PaneView(runtime: runtime, pane: original.pane, font: original.font, onInput: { _ in }),
+              let reference = PaneView(runtime: runtime, pane: original.pane, font: original.font, onInput: { _ in }) else { exit(1) }
+        (window as? StressWindow)?.resizeRendering = true
+        let surfaces = [pane, reference]
+        for surface in surfaces {
+            window.contentView?.addSubview(surface)
+            surface.frame = NSRect(x: -10000, y: -10000, width: surface.cell.width * 80, height: surface.cell.height * 12 + 9.5)
+            surface.resize(cols: 80, rows: 12)
+            surface.historyStrip = 9.5
+            surface.layoutSubtreeIfNeeded()
+            ghostty_surface_set_occlusion(surface.surface, true)
+        }
+        if env["KIDO_GRID_VERIFY"] == "1" {
+            let passed = injectFailedGrid(pane)
+            log(["grid-verify": passed ? "passed" : "failed", "ready": pane.gridReady])
+            if !passed { exit(1) }
+            (NSApp.delegate as? AppDelegate)?.quit("grid verification complete")
+            return
+        }
+        let bytes = Data(("\u{1b}c" + (0..<200).map { "\u{1b}[48;2;255;0;0mrow\($0)\u{1b}[m\r\n" }.joined()
+                          + "\u{1b}[48;2;0;0;255mBLUE FINAL\u{1b}[m\u{1b}[?25l").utf8)
+        resizeCompleted.removeAll()
+        for surface in surfaces {
+            let identifier = ObjectIdentifier(surface)
+            surface.onFinalRender = { self.resizeCompleted.insert(identifier) }
+        }
+        DispatchQueue.global().async {
+            for surface in surfaces { surface.feed(bytes) }
+            DispatchQueue.main.async {
+                if self.env["KIDO_VIEWPORT_VERIFY"] == "1" {
+                    pane.verifyFailedViewport { passed in
+                        self.log(["viewport-verify": passed ? "passed" : "failed"])
+                        if !passed { exit(1) }
+                        (NSApp.delegate as? AppDelegate)?.quit("viewport verification complete")
+                    }
+                    return
+                }
+                if self.env["KIDO_REPLAY_VERIFY"] == "1" || self.env["KIDO_REPLAY_FENCE_VERIFY"] == "1" {
+                    let position = pane.scrollPosition()
+                    pane.updateScroller(history: position.history, position: position, alternate: false)
+                    pane.requestScroll(21)
+                    reference.updateScroller(history: position.history, position: position, alternate: false)
+                    reference.requestScroll(21)
+                    pane.afterScroll {
+                        let before = pane.scrollPosition()
+                        guard before.history - before.offset == 21 else { exit(1) }
+                        let replayed: @MainActor @Sendable (Bool) -> Void = { rejected in
+                            guard rejected else { self.log(["replay-fence-app-validation": "failed"]); exit(1) }
+                            pane.updateScroller(history: position.history, position: position, alternate: false)
+                            for surface in surfaces { surface.restored(epoch: surface.historyEpoch) }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                let after = pane.scrollPosition()
+                                let acknowledged = self.resizeCompleted.count == 2
+                                let pixels = reference.renderedPixels != nil && pane.renderedPixels == reference.renderedPixels
+                                let passed = pane.scrollTarget == 21 && after.history - after.offset == 21 && pixels && acknowledged
+                                self.log(["replay-verify": passed ? "passed" : "failed", "target": pane.scrollTarget ?? -1,
+                                          "before-distance": before.history - before.offset, "after-distance": after.history - after.offset,
+                                          "pixels": pixels, "acknowledged": acknowledged])
+                                if !passed { exit(1) }
+                                (NSApp.delegate as? AppDelegate)?.quit("replay verification complete")
+                            }
+                        }
+                        if self.env["KIDO_REPLAY_FENCE_VERIFY"] == "1" {
+                            for surface in surfaces { surface.restored(epoch: surface.historyEpoch) }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                guard self.resizeCompleted.count == 2, pane.renderedPixels != nil,
+                                      pane.renderedPixels == reference.renderedPixels else { exit(1) }
+                                let rejected = pane.verifySnapReplayRevision()
+                                self.log(["snap-replay-app-validation": rejected ? "passed" : "failed"])
+                                guard rejected else { exit(1) }
+                                self.resizeCompleted.removeAll()
+                                pane.afterScroll {
+                                    pane.verifyReplayFence(bytes) { rejected in
+                                        self.log(["replay-fence-app-validation": rejected ? "passed" : "failed"])
+                                        replayed(rejected)
+                                    }
+                                }
+                            }
+                        } else {
+                            DispatchQueue.global().async {
+                                pane.feed(bytes, kind: .snapshot)
+                                DispatchQueue.main.async { replayed(true) }
+                            }
+                        }
+                    }
+                    return
+                }
+                let before = pane.renderedPixels
+                pane.resize(cols: 73, rows: 9)
+                pane.frame.size = NSSize(width: pane.cell.width * 73, height: pane.cell.height * 9 + 9.5)
+                pane.layoutSubtreeIfNeeded()
+                _ = ghostty_surface_set_renderer_realized(pane.surface, false)
+                pane.resizeAnchor = nil
+                pane.resetScroll()
+                pane.restored(epoch: pane.historyEpoch)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    guard self.resizeCompleted.isEmpty else { self.log(["resize-verify": "failed", "reason": "premature completion"]); exit(1) }
+                    self.log(["resize-verify": "wrong-inset frame rejected", "old-pixels": before?.count ?? 0])
+                    _ = ghostty_surface_set_renderer_realized(pane.surface, true)
+                    reference.resize(cols: 73, rows: 9)
+                    reference.frame.size = pane.frame.size
+                    reference.layoutSubtreeIfNeeded()
+                    DispatchQueue.global().async {
+                        for surface in surfaces { surface.feed(bytes) }
+                        DispatchQueue.main.async {
+                            for surface in surfaces {
+                                surface.resizeAnchor = nil
+                                surface.resetScroll()
+                                surface.restored(epoch: surface.historyEpoch)
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                guard self.resizeCompleted.count == 2, let expected = reference.renderedPixels,
+                                      pane.renderedPixels == expected else {
+                                    self.log(["resize-verify": "failed", "reason": "snapshot pixels", "completed": self.resizeCompleted.count]); exit(1)
+                                }
+                                let colors = Array(expected)
+                                var red = 0, blue = 0
+                                for i in stride(from: 0, to: colors.count, by: 4) {
+                                    if Int(colors[i + 2]) > Int(colors[i]) + 80 && Int(colors[i + 2]) > Int(colors[i + 1]) + 80 { red += 1 }
+                                    if Int(colors[i]) > Int(colors[i + 2]) + 80 && Int(colors[i]) > Int(colors[i + 1]) + 80 { blue += 1 }
+                                }
+                                guard red > 100, blue > 100 else {
+                                    self.log(["resize-verify": "failed", "reason": "expected colors", "red": red, "blue": blue]); exit(1)
+                                }
+                                guard self.injectFailedGrid(pane) else {
+                                    self.log(["resize-verify": "failed", "reason": "grid failure confirmed"]); exit(1)
+                                }
+                                let position = pane.scrollPosition()
+                                DispatchQueue.global().async {
+                                    pane.feed(Data("MUST NOT FEED\r\n".utf8))
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                        guard pane.scrollPosition().history == position.history, pane.renderedPixels == expected else {
+                                            self.log(["resize-verify": "failed", "reason": "failed grid feed or late stale frame"]); exit(1)
+                                        }
+                                        self.log(["resize-verify": "passed", "snapshot-bytes": expected.count, "grid-failure-rejected": true])
+                                        (NSApp.delegate as? AppDelegate)?.quit("resize verification complete")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func injectFailedGrid(_ pane: PaneView) -> Bool {
+        var failures = 0
+        pane.onGridFailure = { failures += 1 }
+        pane.failGridInstall = true
+        let epoch = pane.historyEpoch
+        pane.resize(cols: 74, rows: 10)
+        return !pane.gridReady && pane.historyEpoch > epoch && failures == 1
     }
 
     private func verifySnap(_ index: Int) {
@@ -411,7 +573,7 @@ typealias AppWindow = StressWindow
             if action == .findNext { pane.find?.field.stringValue = "built"; pane.find?.search(); pane.find?.next() }
         case .findCloseResync:
             pane.find?.close()
-            pane.onResync {}
+            _ = pane.onResync()
         case .resizeBurst:
             for _ in 0..<6 { window.setContentSize(NSSize(width: 760 + fraction(700), height: 430 + fraction(400))) }
         case .loadMore:
