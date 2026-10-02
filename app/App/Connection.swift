@@ -7,9 +7,7 @@ final class Connection: @unchecked Sendable {
     private final class PaneFeed: @unchecked Sendable {
         enum History {
             case syncing(UUID)
-            case complete
-            case more(gap: Int)
-            case limited(history: Int)
+            case settled(HistoryAvailability)
             case fetching(UUID)
         }
         let view: PaneView
@@ -19,7 +17,6 @@ final class Connection: @unchecked Sendable {
             case stale(since: DispatchTime, restart: DispatchWorkItem?)
         }
         var search: Search?
-        var metadataDirty = false
         var initialHistory = 0
         init(_ view: PaneView) { self.view = view }
     }
@@ -58,7 +55,7 @@ final class Connection: @unchecked Sendable {
             guard self.panes != nil else { return DispatchQueue.main.async { _ = pane } }
             self.panes?[pane.pane] = PaneFeed(pane)
         }
-        pane.onScroll = { [weak self, weak pane] in
+        pane.onScrollRequest = { [weak self, weak pane] in
             guard let pane else { return }
             self?.scroll(pane.pane)
         }
@@ -70,23 +67,20 @@ final class Connection: @unchecked Sendable {
                 let history: Int
                 switch feed.history {
                 case .syncing, .fetching: return
-                case .complete: history = position.history
-                case .more(let gap): history = position.history + gap
-                case .limited(let total): history = total
+                case .settled(.ready(let gap)): history = position.history + gap
+                case .settled(.limited(let total)): history = total
                 }
                 let removed = feed.view.trimHistory(keeping: feed.initialHistory)
                 guard removed > 0 else { return }
-                let gap = max(0, history - feed.view.scrollPosition().history)
-                feed.history = gap > 0 ? .more(gap: gap) : .complete
                 self.publish(feed, history: history)
             }
         }
         pane.onLoadMore = { [weak self, id = pane.pane] in
             guard let self else { return }
             self.client.queue.async {
-                guard let feed = self.panes?[id], case .limited(let history) = feed.history else { return }
+                guard let feed = self.panes?[id], case .settled(.limited(let history)) = feed.history else { return }
                 ghostty_surface_raise_scrollback_limit(feed.view.surface)
-                feed.history = .more(gap: max(0, history - feed.view.scrollPosition().history))
+                self.publish(feed, history: history)
                 self.scroll(id)
             }
         }
@@ -188,7 +182,6 @@ final class Connection: @unchecked Sendable {
         switch event {
         case .output(let p, let bytes), .extendedOutput(let p, _, let bytes):
             if let feed = panes?[p] {
-                feed.metadataDirty = true
                 invalidateSearch(feed, restart: true)
                 feed.view.feed(Data(bytes))
             }
@@ -289,14 +282,13 @@ final class Connection: @unchecked Sendable {
                 feed.view.feed(data, kind: .snapshot)
                 debug("resize t=\(ProcessInfo.processInfo.systemUptime) replay-done pane=\(pane)")
                 let position = feed.view.scrollPosition()
-                feed.metadataDirty = false
                 feed.initialHistory = position.history
                 if let anchor = feed.view.resizeAnchor {
                     self.restoreAnchor(pane, feed, anchor: anchor, token: token, epoch: epoch, history: history, synced: synced)
                     return
                 }
-                feed.history = history > position.history ? .more(gap: history - position.history) : .complete
                 self.publish(feed, history: history)
+                if feed.view.scrollTarget != nil { self.scroll(pane) }
                 DispatchQueue.main.async { [weak view = feed.view] in
                     view?.restored(epoch: epoch)
                     view?.find?.search()
@@ -326,8 +318,6 @@ final class Connection: @unchecked Sendable {
             case .found(let row): distance = row
             case nil: distance = min(history, max(1, anchor.lines))
             }
-            let position = feed.view.scrollPosition()
-            feed.history = history > position.history ? .more(gap: history - position.history) : .complete
             self.publish(feed, history: history)
             DispatchQueue.main.async { [weak view = feed.view] in
                 guard let view, view.historyEpoch == epoch else { return synced?() ?? () }
@@ -403,44 +393,25 @@ final class Connection: @unchecked Sendable {
 
     private func scroll(_ pane: PaneID) {
         client.queue.async { [self] in
-            guard let feed = self.panes?[pane], !feed.view.resizeDirty else { return }
-            let position = feed.view.scrollPosition()
-            let destination = feed.view.scrollTarget ?? (position.history - position.offset)
-            switch feed.history {
-            case .syncing, .fetching: return
-            case .limited where !feed.metadataDirty:
-                return
-            case .more(let gap) where destination >= position.history - position.rows:
-                if feed.metadataDirty {
-                    feed.metadataDirty = false
-                    self.publish(feed, history: position.history + gap)
+            guard let feed = panes?[pane], !feed.view.resizeDirty,
+                  case .settled(let availability) = feed.history else { return }
+            let limited = if case .limited = availability { true } else { false }
+            let token = UUID(), epoch = feed.view.historyEpoch
+            feed.history = .fetching(token)
+            client.send([Command("display-message", "-p", "-t", pane, "#{history_size} #{alternate_on}")]) {
+                [weak self, weak feed] replies in
+                guard let self, let feed, self.panes?[pane] === feed,
+                      feed.view.historyEpoch == epoch, !feed.view.resizeDirty,
+                      case .fetching(let current) = feed.history, current == token else { return }
+                guard let metadata = HistoryMetadata(replies?.first) else {
+                    self.publish(feed, history: feed.view.scrollPosition().history, discardTarget: true)
+                    return
                 }
-                let token = UUID()
-                feed.history = .fetching(token)
-                self.fetch(pane, feed, token: token, chunk: min(5000, gap))
-            default:
-                guard feed.metadataDirty else { return }
-                let limited = if case .limited = feed.history { true } else { false }
-                feed.metadataDirty = false
-                let token = UUID()
-                feed.history = .fetching(token)
-                self.client.send([Command("display-message", "-p", "-t", pane, "#{history_size} #{alternate_on}")]) {
-                    [weak self, weak feed] replies in
-                    guard let self, let feed, self.panes?[pane] === feed,
-                          case .fetching(let current) = feed.history, current == token else { return }
-                    guard let metadata = HistoryMetadata(replies?.first) else {
-                        feed.history = .complete
-                        return
-                    }
-                    let history = metadata.history, position = feed.view.scrollPosition()
-                    if metadata.alternate {
-                        feed.history = .complete
-                        return self.publish(feed, history: 0, alternate: true)
-                    }
-                    feed.history = history > position.history ? (limited ? .limited(history: history) : .more(gap: history - position.history)) : .complete
-                    self.publish(feed, history: history)
-                    let destination = feed.view.scrollTarget ?? (position.history - position.offset)
-                    if !limited && history > position.history && destination >= position.history - position.rows { self.scroll(pane) }
+                let position = self.publish(feed, history: metadata.history, alternate: metadata.alternate, insertionRefused: limited)
+                if !limited, !metadata.alternate, metadata.history > position.history,
+                   let destination = feed.view.scrollTarget, destination >= position.history - position.rows {
+                    feed.history = .fetching(token)
+                    self.fetch(pane, feed, token: token, chunk: min(5000, metadata.history - position.history))
                 }
             }
         }
@@ -455,43 +426,47 @@ final class Connection: @unchecked Sendable {
                   case .fetching(let current) = feed.history, current == token,
                   feed.view.historyEpoch == epoch, !feed.view.resizeDirty, let replies else { return }
             let position = feed.view.scrollPosition()
-            feed.metadataDirty = false
             if let destination = feed.view.scrollTarget, destination < position.history - position.rows,
                let metadata = HistoryMetadata(replies.first) {
-                feed.history = metadata.history > position.history ? .more(gap: metadata.history - position.history) : .complete
                 self.publish(feed, history: metadata.history, alternate: metadata.alternate)
                 return
             }
             guard let capture = HistoryCapture(replies, loaded: position.history) else {
-                feed.history = .limited(history: HistoryMetadata(replies.first)?.history ?? position.history)
+                self.publish(feed, history: HistoryMetadata(replies.first)?.history ?? position.history, discardTarget: true)
                 return
             }
             if capture.alternate {
-                feed.history = .complete
-                return self.publish(feed, history: 0, alternate: true)
+                self.publish(feed, history: 0, alternate: true)
+                return
             }
             if capture.rows == 0 && capture.history > position.history && chunk < capture.history {
                 return self.fetch(pane, feed, token: token, chunk: min(capture.history, chunk * 2))
             }
             let added = capture.rows == 0 ? 0 : feed.view.prepend(Data(capture.text.utf8), epoch: epoch)
             debug("resize t=\(ProcessInfo.processInfo.systemUptime) history-prepend-done pane=\(pane) added=\(added)")
-            let loaded = feed.view.scrollPosition().history
-            feed.history = added == 0 && capture.history > loaded ? .limited(history: capture.history)
-                : (capture.history > loaded ? .more(gap: capture.history - loaded) : .complete)
-            self.publish(feed, history: capture.history)
-            if feed.view.scrollTarget != nil {
-                self.scroll(pane)
+            let loaded = self.publish(feed, history: capture.history, insertionRefused: capture.rows > 0 && added == 0,
+                                      discardTarget: capture.rows == 0).history
+            if case .settled(.ready(let gap)) = feed.history, gap > 0, capture.rows > 0,
+               let destination = feed.view.scrollTarget, destination >= loaded - position.rows {
+                feed.history = .fetching(token)
+                self.fetch(pane, feed, token: token, chunk: min(5000, gap))
             }
         }
     }
 
-    private func publish(_ feed: PaneFeed, history: Int, alternate: Bool = false) {
+    @discardableResult private func publish(_ feed: PaneFeed, history: Int, alternate: Bool = false,
+                                           insertionRefused: Bool = false, discardTarget: Bool = false) -> PaneView.ScrollPosition {
+        if discardTarget { feed.view.clearScrollTarget() }
         let position = feed.view.scrollPosition()
-        let limited = if case .limited = feed.history { true } else { false }
+        let state = HistoryAvailability.settled(total: alternate ? 0 : history, loaded: position.history,
+                                                insertionRefused: insertionRefused)
+        feed.history = .settled(state)
+        let limited = if case .limited = state { true } else { false }
         DispatchQueue.main.async { [weak view = feed.view] in
-            view?.updateScroller(history: history, position: position, alternate: alternate, limited: limited)
+            view?.updateScroller(history: history, position: position, alternate: alternate, limited: limited, discardTarget: discardTarget)
             view?.find?.loaded(position, limited: limited)
         }
+        return position
     }
 
     private func closed(_ status: Int32, _ stderr: String) {
