@@ -158,6 +158,7 @@ Conventions:
                        server.conf (embedded, not installed)
       claude/          settings.json, the hooks file the claude shim hands to Claude Code
       pi/              the two pi extensions, which the pi shim loads with --extension
+    .pi/prompts/       gh-watch.md, /gh-watch: starts scripts/main-watch.sh streamed
     scripts/           the fork build; main-watch.sh, which watches main and reports each new commit's CI;
                        ci-like.sh; test-ts.sh; dump-prompts.ts, every prompt text pi registers
     third_party/tmux   the tmux fork, a git submodule built as kido-tmux
@@ -380,7 +381,7 @@ one.
 Validation before a release is `make test` then `make e2e`, in full; CI
 runs both on Ubuntu and macOS on every push and PR (`scripts/main-watch.sh`
 watches main and reports each new commit's CI), building the fork at the
-pinned revision, cached by SHA.
+pinned revision, cached by SHA. `/gh-watch` starts it via streamed `async_bash`.
 While working, `dune test` is the loop; `dune promote` accepts an expect
 diff once it has been read.
 

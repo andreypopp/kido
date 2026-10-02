@@ -1,26 +1,75 @@
 #!/usr/bin/env bash
+# Usage: scripts/main-watch.sh [commit...]
 # Prints origin/main moves and each new commit's CI result and failure lines.
 # Meant to run streamed: async_bash with stream: true.
 cd "$(dirname "$0")/.." || exit 1
+pending=()
+fetched=
+for c in "$@"; do
+	if ! sha=$(git rev-parse --verify "$c^{commit}" 2>/dev/null); then
+		if [ -z "$fetched" ]; then
+			git fetch -q origin 2>/dev/null
+			fetched=1
+		fi
+		sha=$(git rev-parse --verify "$c^{commit}" 2>/dev/null) || {
+			printf 'main-watch: cannot resolve commit %s\n' "$c" >&2
+			exit 1
+		}
+	fi
+	pending+=("$sha")
+done
+peer=$(python3 - <<'PY'
+import json, os, pathlib, re
+runs = pathlib.Path(os.environ.get('KIDO_STATE_DIR') or (os.environ.get('XDG_STATE_HOME') or os.path.expanduser('~/.local/state')) + '/kido') / 'runs'
+try:
+    own = runs / os.environ['KIDO_AGENT_RUN_ID']
+    meta = json.loads((own / 'meta.json').read_text())
+    parent = meta['parentSession'] if meta['kind'] == 'bash' else ''
+except (KeyError, OSError, ValueError):
+    parent = ''
+if parent:
+    for path in runs.glob('*/meta.json'):
+        try:
+            peer = json.loads(path.read_text())
+            if path.parent == own or peer['parentSession'] != parent or peer['kind'] != 'bash' or peer['pid'] <= 0 or (path.parent / 'outcome').exists():
+                continue
+            command = json.loads((path.parent / 'command').read_text())
+            if not any(re.search(r'''(^|[\s/'"])scripts/main-watch\.sh($|[\s;'"&|])''', arg) for arg in command):
+                continue
+            os.kill(peer['pid'], 0)
+            print(path.parent.name)
+            break
+        except (KeyError, OSError, ValueError):
+            continue
+PY
+)
+if [ -n "$peer" ]; then
+	echo "main-watch already running (run $peer)"
+	exit 0
+fi
 last=$(git ls-remote origin refs/heads/main | cut -f1)
 echo "watching origin/main from ${last:0:7}"
-pending=(${KIDO_WATCH_PENDING:-})
 
 report() {
-	local sha=$1 run status conclusion jobs failed log report
+	local sha=$1 run status conclusion url title metadata jobs failed log report
 	report=$(gh run list --commit "$sha" --workflow ci.yml --limit 1 \
-		--json databaseId,status,conclusion -q '.[0] | "\(.databaseId) \(.status) \(.conclusion)"' 2>/dev/null) || return 1
-	read -r run status conclusion <<< "$report"
+		--json databaseId,status,conclusion,url,displayTitle -q '.[0] | "\(.databaseId) \(.status) \(.conclusion) \(.url) \(.displayTitle)"' 2>/dev/null) || return 1
+	read -r run status conclusion url title <<< "$report"
 	[ -z "$run" ] || [ "$status" != completed ] && return 1
-	jobs=$(gh run view "$run" --json jobs -q '.jobs[] | "  \(.name): \(.conclusion)"' 2>/dev/null) || return 1
+	jobs=$(gh run view "$run" --json jobs -q '.jobs[] | "    \(.name): \(.conclusion) (\u001b]8;;\(.url)\u001b\\link\u001b]8;;\u001b\\)"' 2>/dev/null) || return 1
 	[ -n "$jobs" ] || return 1
-	report="CI ${sha:0:7}: $conclusion (run $run)
+	if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
+		git fetch -q origin 2>/dev/null
+	fi
+	metadata=$(git log -1 --format='at %cd by %an%n  %s' --date=format-local:'%Y-%m-%d %H:%M' "$sha" 2>/dev/null) || metadata="(metadata unavailable)"$'\n  '"$title"
+	report="commit $(printf '\033]8;;%s\033\\%s\033]8;;\033\\' "${url%/actions/runs/*}/commit/$sha" "${sha:0:7}") $metadata
+  CI run $(printf '\033]8;;%s\033\\%s\033]8;;\033\\' "$url" "$run"): $conclusion
 $jobs"
 	if [ "$conclusion" != success ]; then
 		log=$(gh run view "$run" --log-failed 2>/dev/null) || return 1
 		failed=$(printf '%s\n' "$log" | cut -f1,3- | sed -E 's/[0-9T:.-]+Z //' |
 			grep -E -- '--- FAIL|FAIL:|panic:|Error|_test\.go:[0-9]+:|✖|AssertionError' |
-			grep -v -E 'conn_test|measured|older-than|no-unattended|no-zsh|DEBUG' | head -25)
+			grep -v -E 'conn_test|measured|older-than|no-unattended|no-zsh|DEBUG' | head -25 | sed 's/^/      /')
 		[ -z "$failed" ] || report="$report
 $failed"
 	fi
