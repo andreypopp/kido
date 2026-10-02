@@ -147,6 +147,7 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
 
     private func action(_ name: String) {
         guard let pane else { return }
+        if name.hasPrefix("navigate_search:") { pane.resetScroll() }
         _ = ghostty_surface_binding_action(pane.surface, name, UInt(name.utf8.count))
     }
 
