@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Build the andreypopp/tmux fork vendored at third_party/tmux and install it
 # into the prefix given as $1, as <prefix>/bin/kido-tmux. Used by CI
 # (.github/workflows/ci.yml), scripts/ci-like/, `make install`, and by
@@ -14,7 +14,7 @@
 # bison, autoconf, automake, pkg-config, and the libevent/ncurses/utf8proc
 # development headers.
 
-set -eu
+set -euo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
@@ -68,6 +68,9 @@ mv "$prefix/bin/tmux" "$prefix/bin/kido-tmux"
 if [ -e "$prefix/share/man/man1/tmux.1" ]; then
 	mv "$prefix/share/man/man1/tmux.1" "$prefix/share/man/man1/kido-tmux.1"
 fi
+
+mkdir -p "$prefix/share/kido-tmux"
+git -C "$submodule" rev-parse HEAD > "$prefix/share/kido-tmux/REVISION"
 
 echo "==> installed:" >&2
 "$prefix/bin/kido-tmux" -V

@@ -32,13 +32,36 @@ test:
 # new one and a second run of the same pin builds nothing
 TMUX_FORK_REV := $(shell ./scripts/install-tmux-fork.sh --print-revision)
 TMUX_FORK := build/tmux-fork/$(TMUX_FORK_REV)
-$(TMUX_FORK)/bin/kido-tmux:
-	git submodule update --init third_party/tmux
-	./scripts/install-tmux-fork.sh $(CURDIR)/$(TMUX_FORK)
+.PHONY: pinned-fork verify flake clean-forks preview-pi unpreview-pi release prompts
+prompts:
+	./scripts/lint.sh --update-prompts
+pinned-fork:
+	@if ! test -x $(TMUX_FORK)/bin/kido-tmux || ! test -f $(TMUX_FORK)/share/kido-tmux/REVISION; then ./scripts/install-tmux-fork.sh $(CURDIR)/$(TMUX_FORK); fi
+
+verify:
+	E2E='$(E2E)' STAGES='$(STAGES)' bash scripts/verify.sh
+
+flake:
+	RUN='$(RUN)' COUNT='$(or $(COUNT),20)' bash scripts/verify.sh flake
+
+clean-forks:
+	@for dir in build/tmux-fork/*; do if test -d "$$dir" && test "$$dir" != '$(TMUX_FORK)'; then echo "Removing $$dir"; rm -rf "$$dir"; fi; done
+
+preview-pi unpreview-pi:
+	@set -eu; prefix="$${KIDO_PREVIEW_PREFIX:-$$(brew --prefix kido)}"; dir=$$(cd "$$prefix/share/kido/pi" && pwd -P); \
+	for file in kido-agents.ts kido-status.ts; do \
+	  if test '$@' = preview-pi; then \
+	    test -e "$$dir/$$file.orig" || cp -p "$$dir/$$file" "$$dir/$$file.orig"; src="share/pi/$$file"; \
+	  else src="$$dir/$$file.orig"; fi; \
+	  tmp=$$(mktemp "$$dir/$$file.XXXXXX"); cp -p "$$src" "$$tmp"; mv "$$tmp" "$$dir/$$file"; \
+	done; echo 'Run /reload in the panes'
+
+release:
+	bash scripts/release.sh '$(VERSION)' $(ARGS)
 
 # drives kido inside a real tmux fork: the one above, unless KIDO_TMUX
 # names another (CI, with its cached build); it never skips
-e2e: $(if $(KIDO_TMUX),,$(TMUX_FORK)/bin/kido-tmux)
+e2e: $(if $(KIDO_TMUX),,pinned-fork)
 	KIDO_TMUX=$${KIDO_TMUX:-$(CURDIR)/$(TMUX_FORK)/bin/kido-tmux} KIDO_E2E_REQUIRED=1 go test ./test_e2e/ -count=1 -v
 
 # reproduces a CI-runner-only failure in a CPU/memory-capped Linux

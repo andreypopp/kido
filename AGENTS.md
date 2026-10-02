@@ -372,13 +372,17 @@ one.
 
 ## Tests
 
-    make test    dune test (the ppx_expect suites in lib/test/ and lib_tmux/test/) and
-                 scripts/test-ts.sh: tsc against the pi version pinned in
-                 share/pi/package.json, then one node suite for both pi extensions
-    make e2e     builds the fork into build/ and runs go test ./test_e2e/ against it
+    make verify  scrubbed dune build, dune test --force, full e2e and TypeScript tests
+    make test    dune test --force and scripts/test-ts.sh (including scripts/lint.sh)
+    make prompts regenerate the prompt fixtures through scripts/lint.sh --update-prompts
+    make e2e     builds the pinned fork and runs the e2e suite
+    make flake RUN=TestFoo COUNT=20  repeat one e2e test in the scrubbed environment
+    make clean-forks  remove fork builds other than the pin
     make install binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
 
-Validation before a release is `make test` then `make e2e`, in full; CI
+`make verify E2E=TestFoo` limits e2e; `STAGES=e2e` selects only that stage.
+Every selected stage runs even after a failure and prints PASS/FAIL.
+Validation before a release is `make verify`, in full; CI
 runs both on Ubuntu and macOS on every push and PR (`scripts/main-watch.sh`
 watches main and reports each new commit's CI), building the fork at the
 pinned revision, cached by SHA. `/gh-watch` starts it via streamed `async_bash`.
@@ -395,7 +399,9 @@ formats, ordering); do not write a unit test that execs the binary.
 only on a submodule bump) and runs with `KIDO_E2E_REQUIRED=1`. A
 `KIDO_TMUX` in the environment names another fork and skips the build
 (how CI uses its cached one). A bare `go test ./test_e2e/` with neither
-skips. The TypeScript suite skips without a node that runs `.ts`
+skips. The harness requires the fork's `share/kido-tmux/REVISION` to
+match the gitlink pin; rebuild with `scripts/install-tmux-fork.sh` if it
+is missing or differs. The TypeScript suite skips without a node that runs `.ts`
 unflagged; `KIDO_TS_TEST_REQUIRED=1` (set in CI) makes that a failure.
 
 **Reproducing a CI-only failure:** `scripts/ci-like.sh` runs a Linux
@@ -419,7 +425,8 @@ builds kido with `dune build` (so it needs that dune on PATH), and fake
   (`serverPathPrefix`), because `kido-tmux.conf` bindings name bare
   `kido`/`tmux` resolved by `run-shell` against the server's PATH. An
   installed kido masks a missing entry locally; CI gets exit 127.
-- `cleanEnv` strips `KIDO_AGENT_*` and `KIDO_TMUX`: the suite is often
+- `cleanEnv` strips installed `share/kido/bin` PATH entries, `TMUX`,
+  `TMUX_PANE`, `KIDO_AGENT_*` and `KIDO_TMUX`: the suite is often
   run from a tracked agent's pane, and the inner server's environment is
   what `new-window` gives a spawned child, so the developer's own parent
   edge would leak into tests.
@@ -507,16 +514,12 @@ repeat them.
   strings it breaks and adds no new tests. Negative controls (breaking the code to prove
   a test can fail) only where a test could plausibly pass vacuously -
   timing, races, deduplication, polling; never for a trivial change
-  such as text, spacing or a renamed field. Then run `dune build` and `dune test` (an e2e
-  test you wrote with `KIDO_E2E_REQUIRED=1 KIDO_TMUX=$(command -v
-  kido-tmux) go test ./test_e2e/ -run Name`, or the fork under
-  `build/tmux-fork/` once `make e2e` built it; `scripts/test-ts.sh` if
-  you touched `share/pi/`), each once, with the environment scrubbed:
-
-      env -u KIDO_AGENT_PARENT_SESSION -u KIDO_AGENT_DEPTH -u KIDO_AGENT_TASK_FILE -u KIDO_AGENT_PARENT_PID -u KIDO_AGENT_RUN_ID -u TMUX_PANE dune test
-
-  Do not run `make test` or `make e2e`: the top-level session pushes and
-  CI runs both. No loops, no second tmux build. Report PASS/FAIL/SKIP as
+  such as text, spacing or a renamed field. Then run `make verify` once
+  after the last edit (`E2E=TestFoo` to limit e2e to the touched behaviour).
+  It owns environment scrubbing and pinned-fork selection. This replaces
+  the separate build/test recipes: do not also run `make test` or `make e2e`.
+  No loops or second tmux build unless the brief requests `make flake`.
+  Report PASS/FAIL/SKIP as
   printed; a failure in a file you do not own is reported, not fixed.
 - **Docs are not per task.** Do not edit `docs/` or this file unless the
   brief assigns them. Put any prose a change deserves in your report.
@@ -529,12 +532,19 @@ The repo carries **no version and no tags, deliberately**. Versioning
 lives in `andreypopp/homebrew-tap`'s `kido` formula: a git `revision:`
 with a hand-bumped `version`. The formula fetches the tmux fork as a
 resource at the revision `scripts/install-tmux-fork.sh --print-revision`
-prints (the separate `tmux` formula is retired). A release is
+prints (the separate `tmux` formula is retired).
 
-1. land on `main` here (CI green),
-2. bump `revision:` and `version` in the `kido` formula — and its tmux
-   resource when the submodule pin moved — then push the tap,
-3. `brew upgrade`.
+After landing on `main`, run `scripts/release.sh VERSION` (or
+`make release VERSION=x.y.z`); use `--dry-run` to inspect its actions.
+It requires green CI for origin/main, compares tool and subcommand lists
+with the tap's current revision, and requires a minor bump for removals
+or renames: panes must be restarted, not /reloaded. It edits and commits
+the brew tap formula, fast-forwards `~/Workspace/homebrew-tap`, and pushes
+from that SSH checkout. It never runs `brew upgrade`.
+
+`make preview-pi` atomically replaces the installed pi extensions,
+backing up originals once; `make unpreview-pi` restores them. Run `/reload`
+in the panes afterward. `KIDO_PREVIEW_PREFIX` selects a fake install for tests.
 
 Do not add a tag. `brew audit`/`brew style` vendor gems into the
 Homebrew checkout itself, which can leave it dirty. Verify against a real

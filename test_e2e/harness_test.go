@@ -71,6 +71,34 @@ func TestMain(m *testing.M) {
 }
 
 func setup(m *testing.M) (int, error) {
+	if bin := os.Getenv("KIDO_TMUX"); bin != "" {
+		cmd := exec.Command("git", "ls-files", "-s", "third_party/tmux")
+		cmd.Dir = ".."
+		pin, err := cmd.Output()
+		if err != nil {
+			return 0, fmt.Errorf("read pinned tmux revision: %w", err)
+		}
+		fields := strings.Fields(string(pin))
+		if len(fields) != 4 {
+			return 0, fmt.Errorf("invalid tmux gitlink: %q", pin)
+		}
+		path, err := exec.LookPath(bin)
+		if err != nil {
+			return 0, err
+		}
+		path, err = filepath.EvalSymlinks(path)
+		if err != nil {
+			return 0, err
+		}
+		stamp := filepath.Join(filepath.Dir(path), "..", "share", "kido-tmux", "REVISION")
+		revision, err := os.ReadFile(stamp)
+		if err != nil {
+			return 0, fmt.Errorf("tmux fork REVISION missing at %s: rebuild with scripts/install-tmux-fork.sh: %w", stamp, err)
+		}
+		if strings.TrimSpace(string(revision)) != fields[1] {
+			return 0, fmt.Errorf("tmux fork revision %q differs from pin %s; rebuild with scripts/install-tmux-fork.sh", strings.TrimSpace(string(revision)), fields[1])
+		}
+	}
 	dir, err := os.MkdirTemp("", "kido-e2e-bin")
 	if err != nil {
 		return 0, err
@@ -230,11 +258,23 @@ func main() {
 func cleanEnv(extra ...string) []string {
 	env := make([]string, 0, len(os.Environ())+len(extra))
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "KIDO_TMUX=") && !strings.HasPrefix(kv, "KIDO_AGENT_") {
+		if !strings.HasPrefix(kv, "KIDO_TMUX=") && !strings.HasPrefix(kv, "KIDO_AGENT_") && !strings.HasPrefix(kv, "TMUX=") && !strings.HasPrefix(kv, "TMUX_PANE=") {
 			env = append(env, kv)
 		}
 	}
-	return append(env, extra...)
+	env = append(env, extra...)
+	for i, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			paths := []string{}
+			for _, path := range filepath.SplitList(strings.TrimPrefix(kv, "PATH=")) {
+				if !strings.HasSuffix(strings.TrimRight(path, "/"), "share/kido/bin") {
+					paths = append(paths, path)
+				}
+			}
+			env[i] = "PATH=" + strings.Join(paths, string(os.PathListSeparator))
+		}
+	}
+	return env
 }
 
 func findTmux() (bin, why string) {
