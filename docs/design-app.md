@@ -128,7 +128,16 @@ Ghostty's mouse-scroll-multiplier precision setting remains the user's speed
 override; precision 2 restores the previous speed. Discrete wheel notches
 are unchanged. An active selection gesture uses integral wheel steps.
 Thumb drags replace the target; a thumb press snaps once and suppresses
-old momentum. Clicks, selection, typing, paste, IME, find, resize, font
+old momentum. Snaps apply the integral viewport directly on main before the
+triggering input reaches Ghostty. A short viewport lock excludes worker applies
+from that operation; pending applies retain their slot and read the aligned
+target, while their obsolete presentation is rejected by the revision.
+The pixel-scroll API returns geometry and signed whole-row viewport movement
+from the same renderer lock as revision validation and mutation. A failed
+attempt publishes neither; a committed move remains successful even if its
+render wake fails. Snaps record only the successful attempt's movement, never
+a separately sampled before/after difference.
+Clicks, selection, typing, paste, IME, find, resize, font
 changes and focus loss also snap and suppress momentum; idle trimming does
 not snap. Main publishes only the worker's successfully applied distance and
 geometry to the thumb and terminal translation, not the requested target.
@@ -172,7 +181,20 @@ this lifetime: resync invalidates immediately and restarts only after a
 successful restore. Alternate screens search only their screen. Next and previous wrap through the newest-first
 match list, loading older matches through the scroller's jump path. Ghostty
 search supplies the highlights and loaded-match selection; it is restarted
-after prepending history. A match beyond the byte budget is reported as out
+after prepending history. Each restart ends the previous Ghostty lifetime.
+Ghostty tags totals and selected indices with that lifetime's immutable
+generation and rejects queued events after it ends. The surface's delivery
+epoch advances on each new search and both public stop operations, including
+stops with no active search. Nonempty edits in a live search keep its epoch.
+The runtime captures the main-only epoch getter when accepting an action,
+then checks it again inside the weak, asynchronous PaneView delivery.
+Clearing or invalidating without restarting therefore rejects already accepted
+actions too. A replaced search cannot
+inherit an old count or selection. End-search also captures the find-view
+identity on main, so its queued close cannot close an empty reopened bar,
+which has not issued a new Ghostty lifetime yet. Nonempty needle changes without stopping remain in one lifetime;
+these generations are not per-query tokens for arbitrary Ghostty clients.
+A match beyond the byte budget is reported as out
 of reach without evicting rows. Command-G and Shift-Command-G (also Return
 and Shift-Return) navigate; Escape closes the bar and clears highlights.
 
@@ -297,8 +319,42 @@ so the terminal never moves vertically when the sidebar collapses.
 
 Client callbacks run on the client's reader queue, and the pane map is
 touched only there. Output is fed synchronously on the pane's scroll queue,
-so live output and viewport moves cannot race the target's distance from
-the bottom. A pane leaving the layout is held on main until the queue has
+serializing live output with asynchronous viewport applies. Main must never
+wait for that queue: parsing can fill Ghostty's app mailbox, whose surface
+messages are drained by `ghostty_app_tick` on main. Ghostty's stream handler
+releases the renderer mutex before waiting for mailbox capacity, so main can
+still take that mutex through the thread-safe pixel-scroll API to snap before
+handling input. The viewport lock serializes snaps with worker applies, but
+is never held across output parsing. Its cumulative snap adjustment removes
+snap-induced offset changes from feed's before/after output-pinning delta:
+`D1 - D0 - sum(snap movements)`. The ledger is cumulative across feed intervals
+and is not reset while one can be active. It distinguishes multiple snaps
+from concurrent output, even when history grows between a read and an apply.
+A zero target still follows the bottom. Lock order is viewport then target
+or renderer, with neither held while waiting for viewport. MANUAL_MIRROR
+applies grid resizes inline in Termio, not on a debounced IO-thread callback;
+grid confirmation reads the actual grid under the renderer mutex.
+Only feed and idle history trimming synchronize with the scroll queue; both
+are called on the client queue, never main or a Ghostty callback. Renderer
+callbacks publish asynchronously to main; runtime wakeups coalesce main ticks.
+Ghostty requests IO/process termination, marks search stopping and joins it,
+then joins IO while the renderer still drains. Only after both producers have
+stopped does it stop and join the renderer and release shared resources.
+Search and PTY IO surface-message sends retry in 10ms intervals, checking their
+stopping flag between attempts, so a full app mailbox cannot prevent these
+joins on main. Canceled owning parser messages are freed. Renderer messages,
+including ordinary end-search highlight clears, remain ordered and delivered;
+blocking batches wake their consumer before enqueueing. Manual-output callers
+must already be quiesced before destruction; joining Ghostty IO does not stop
+an external parser caller.
+Search input uses a mutex-protected growable FIFO. Producers append, release
+the mutex and wake; the consumer detaches one batch and processes it outside
+the mutex, freeing unprocessed needles on stop or failure. Main never waits
+for search-input capacity, including navigation bursts while search is waiting
+for main's app mailbox. Pending growth under an indefinite producer is the
+tradeoff for preserving command order. Other main-to-renderer blocking sends
+are not removed by this change.
+A pane leaving the layout is held on main until the queue has
 dropped it, so its
 surface is freed on main. A layout reaches main synchronously, and a
 pane's first feed after a resize waits until Ghostty confirms the new
@@ -416,6 +472,31 @@ logged instead of opening an error sheet. Only a “can't find pane” error for
 a pane tmux reported gone or either harness side logged as killed is expected
 (`killed_race`); every other
 pane-command error fails the run.
+
+`KIDO_ALT_VERIFY=1` on a stress build runs a bounded deterministic mailbox
+pressure probe instead of random actions. It seeds numbered history, applies
+a fractional viewport and immediately double-clicks through PaneView to check
+the selected row after snapping. A background feed then enters/exits alternate
+screen around 20000 title changes and output rows. Main holds mailbox draining until 65 app wakeups from the parser thread
+establish pressure against the 64-entry app mailbox, then snaps during that
+feed; both main and worker must complete. Renderer-thread wakeups do not count.
+`KIDO_INPUT_VERIFY=1` uses that same barrier, waits for the search sender at the
+full app mailbox, and submits 256 alternating navigation commands plus needle
+changes before stopping without a main drain. `KIDO_SNAP_VERIFY=1` rendezvouses
+output between main's snap preparation and apply, checking one and two snaps,
+bottom following, a rejected revision followed by success, and pinned numbered
+rows after the pending worker apply. `KIDO_FIND_VERIFY=1` checks deferred stale
+actions, real current navigation/selection, history prepend, and close/reopen.
+The Zig counterpart checks that current selection enqueues a renderer highlight;
+together these are two halves, not an end-to-end rendered-highlight observation.
+`scripts/concurrency-probes.py <absolute-app-path> <KIDO_*_VERIFY> <log-name>`
+launches each off screen against its own private socket with a 25-second process
+deadline, killing only that launched pid on timeout. Every probe records the
+same invisibility/focus checks as random stress. No Swift Task spins a run loop.
+Set `KIDO_MTC_VERIFY=1` with `DEVELOPER_DIR` for Main Thread Checker: the runner
+injects it only into Kido and verifies its mapped image in that PID. Injecting
+it into the Python launcher with `MTC_RESET_INSERT_LIBRARIES=1` removes the
+injection variable before Kido starts, so does not check Kido.
 
 To cover a new feature, add a case to `Stress.Action` and its weighted array,
 and an exhaustive branch in `Stress.perform` driving existing internal API; add tmux
