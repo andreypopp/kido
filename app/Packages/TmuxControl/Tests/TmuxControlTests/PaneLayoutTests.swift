@@ -11,6 +11,9 @@ func floatingGeometry(pixel: CGFloat) {
         geometry: Geometry(x: 0, y: 0, width: 100, height: 40), focus: .active, layer: .tiled))
     let layout = PaneLayout(root: root, bounds: CGRect(x: 0, y: 0, width: 824, height: 750), cell: cell, pixel: pixel)
     let initial = layout.frame(g)
+    let moved = initial.offsetBy(dx: 13.3, dy: 3.1)
+    #expect(layout.clamp(moved) == moved)
+    #expect(abs(moved.minX - initial.minX - 13.3) < 0.0001)
     #expect(layout.geometry(initial) == g)
     let bordered = Geometry(x: g.x + 1, y: g.y + 1, width: g.width - 2, height: g.height - 2)
     let borderFrame = layout.frame(bordered)
@@ -59,7 +62,7 @@ func floatingGeometry(pixel: CGFloat) {
     #expect(initial.minY == layout.origin.y + 8 * cell.height - layout.before.height)
 }
 
-@Test(arguments: [CGSize(width: 563, height: 500), CGSize(width: 664, height: 560), CGSize(width: 664, height: 558), CGSize(width: 664, height: 558.5), CGSize(width: 1281, height: 803)], [CGFloat(1), CGFloat(0.5)])
+@Test(arguments: [CGSize(width: 563, height: 500), CGSize(width: 664, height: 560), CGSize(width: 664, height: 558), CGSize(width: 1281, height: 803)], [CGFloat(1), CGFloat(0.5)])
 func paddedLayout(area: CGSize, pixel: CGFloat) {
     let cell = CGSize(width: 8, height: 17)
     func pane(_ id: UInt32, _ x: Int, _ y: Int, _ width: Int, _ height: Int) -> Node {
@@ -89,15 +92,14 @@ func paddedLayout(area: CGSize, pixel: CGFloat) {
     #expect(frames[0].minY >= PaneLayout.minimumMargin.height)
     #expect(frames[0].minX < PaneLayout.minimumMargin.width + cell.width / 2)
     #expect(PaneLayout.minimumMargin == CGSize(width: 4, height: 0))
-    #expect(layout.origin.y == 40)
-    #expect(frames[0].minY == 40 - layout.before.height)
-    #expect(bounds.maxY - frames[2].maxY >= PaneLayout.minimumMargin.height)
-    #expect(bounds.maxY - frames[2].maxY < PaneLayout.minimumMargin.height + cell.height)
-    if area.height == 40 + CGFloat(rows) * cell.height + layout.after.height {
-        #expect(frames[2].maxY == bounds.maxY)
-        #expect(layout.floatingBounds.maxY == bounds.maxY)
-        #expect(layout.clamp(frames[2].offsetBy(dx: 0, dy: cell.height)).maxY == bounds.maxY)
-    }
+    #expect(client.height == floor((area.height - 40) / cell.height))
+    #expect(layout.origin.y == area.height - CGFloat(rows) * cell.height)
+    #expect(layout.historyStrip == area.height - 40 - CGFloat(rows) * cell.height)
+    #expect(layout.historyStrip >= 0 && layout.historyStrip < cell.height)
+    #expect(frames[0].minY == layout.origin.y - layout.before.height)
+    #expect(layout.grid(root.panes[2].geometry).maxY == bounds.maxY)
+    #expect(frames[2].maxY == bounds.maxY + layout.after.height)
+    #expect(layout.floatingBounds.maxY == bounds.maxY)
     let collapsedBounds = CGRect(origin: .zero, size: CGSize(width: area.width + 236, height: area.height))
     let collapsed = PaneLayout(root: root, bounds: collapsedBounds, cell: cell, pixel: pixel)
     #expect(collapsed.client.height == client.height)
@@ -120,6 +122,13 @@ func paddedLayout(area: CGSize, pixel: CGFloat) {
     #expect(vertical.width == pixel && vertical.minX == frames[1].maxX)
     #expect((horizontal.minY / pixel).rounded() == horizontal.minY / pixel)
     #expect((vertical.minX / pixel).rounded() == vertical.minX / pixel)
+    let sideBySide = Node.split(.leftRight, Geometry(x: 0, y: 0, width: cols, height: rows), [
+        pane(0, 0, 0, left, rows), pane(1, left + 1, 0, cols - left - 1, rows),
+    ])
+    let stripDivider = layout.line(sideBySide.dividers[0], pixel: pixel)
+    #expect(stripDivider.minY == 40)
+    #expect(stripDivider.maxY == bounds.maxY)
+    #expect(stripDivider.minX == layout.frame(sideBySide.panes[0].geometry).maxX)
     let zoomed = pane(1, 0, 0, cols, rows)
     let zoom = PaneLayout(root: zoomed, bounds: bounds, cell: cell, pixel: pixel)
     let frame = zoom.frame(zoomed.panes[0].geometry)
@@ -132,5 +141,26 @@ func paddedLayout(area: CGSize, pixel: CGFloat) {
     if pixel == 0.5 {
         #expect(layout.before.width == 3.5 && layout.after.width == 4)
         #expect(layout.before.height == 8 && layout.after.height == 8.5)
+    }
+}
+
+@Test func fractionalPointLayout() {
+    paddedLayout(area: CGSize(width: 664, height: 558.5), pixel: 0.5)
+}
+
+@Test func resizingHistoryStrip() {
+    let cell = CGSize(width: 8, height: 17)
+    for height in stride(from: CGFloat(400), through: 700, by: 0.5) {
+        for rows in [Int(floor((height - 40) / cell.height)), 20, 40] {
+            let g = Geometry(x: 0, y: 0, width: 80, height: rows)
+            let root = Node.pane(Pane(id: PaneID(number: 0), index: 0, geometry: g, focus: .active, layer: .tiled))
+            let layout = PaneLayout(root: root, bounds: CGRect(x: 0, y: 0, width: 700, height: height), cell: cell, pixel: 0.5)
+            #expect(layout.client.height == floor((height - 40) / cell.height))
+            #expect(layout.grid(g).maxY == height)
+            #expect(layout.historyStrip >= 0 && layout.historyStrip < cell.height)
+            if rows == Int(layout.client.height) {
+                #expect(layout.historyStrip == height - 40 - CGFloat(rows) * cell.height)
+            }
+        }
     }
 }
