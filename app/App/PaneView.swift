@@ -403,7 +403,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         if resizeAnchor == nil, !ghostty_surface_is_alternate_screen(surface) {
             let position = scrollPosition()
             if (scrollTarget ?? (position.history - position.offset)) > 0 {
-                resizeAnchor = ScrollAnchor(lines: Int(ghostty_surface_viewport_logical_lines(surface)))
+                var text = ghostty_text_s()
+                let lines = ghostty_surface_viewport_anchor(surface, &text)
+                let body = text.text.map { String(decoding: UnsafeRawBufferPointer(start: $0, count: Int(text.text_len)), as: UTF8.self) }
+                resizeAnchor = ScrollAnchor(lines: Int(lines), text: body)
+                if text.text != nil { ghostty_surface_free_text(surface, &text) }
             }
         }
         gridChanged.withLock { epoch += 1 }
