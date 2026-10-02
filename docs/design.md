@@ -1417,9 +1417,9 @@ report because any spawned command can end, including one that never
 reported a status in its life. `died` is written by a sweep closing a
 marked window with no outcome recorded: the child never got to say
 anything - except for a bash run, where the sweep writes `failed` and
-names what it found, a wrapper that ended without reporting
-(design-subagents.md, "Exactly one ending"). `stopped` is written by
-`kido tool stop_subagent`.
+names what it found: a wrapper that ended without reporting, or a run
+whose parent ended (design-subagents.md, "Exactly one ending"). `stopped`
+is written by `kido tool stop_subagent`.
 
 **Written once.** `Subrun.record_outcome` links a completed temporary file
 into place with `Unix.link`, atomically refusing to overwrite. Several

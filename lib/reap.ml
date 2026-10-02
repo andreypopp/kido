@@ -123,7 +123,8 @@ let record_ending ~dir (meta : Subrun.meta) outcome =
     Some { meta; outcome; detail }
 
 let sweep ?socket ~dir ~grace panes sessions ~now =
-  let mark ((closing, endings) as acc) (p : P.t) =
+  let mark ?(text = "ended without its wrapper reporting") ((closing, endings) as acc)
+      (p : P.t) =
     let window = p.window_id in
     let closes = function Window w | Pane { window = w; _ } -> String.equal w window in
     match P.run_pane panes window with
@@ -142,7 +143,7 @@ let sweep ?socket ~dir ~grace panes sessions ~now =
                       | Bash ->
                           {
                             result = Failed;
-                            text = "ended without its wrapper reporting";
+                            text;
                             at = Some now;
                           }
                       | Agent -> { result = Died; text = ""; at = Some now })
@@ -166,13 +167,29 @@ let sweep ?socket ~dir ~grace panes sessions ~now =
         | _ -> acc)
       ([], []) panes
   in
+  let acc =
+    List.fold_left
+      (fun acc (_, (s : State.session)) ->
+        match s.parent with
+        | Some parent when not (List.mem_assoc ~eq:String.equal parent.session sessions) ->
+            Option.map_or ~default:acc (mark acc) (P.find panes s.pane)
+        | _ -> acc)
+      acc sessions
+  in
   List.fold_left
-    (fun acc (_, (s : State.session)) ->
-      match s.parent with
-      | Some parent when not (List.mem_assoc ~eq:String.equal parent.session sessions) ->
-          Option.map_or ~default:acc (mark acc) (P.find panes s.pane)
+    (fun acc (p : P.t) ->
+      match
+        Option.flat_map
+          (fun run -> Result.to_opt (Subrun.parse_id run) |> Option.flat_map (Subrun.read_meta ~dir))
+          p.run
+      with
+      | Some { kind = Bash; parent_session; pane; _ }
+        when String.equal pane p.pane_id
+             && not (String.is_empty parent_session)
+             && not (List.mem_assoc ~eq:String.equal parent_session sessions) ->
+          mark ~text:"its parent ended" acc p
       | _ -> acc)
-    acc sessions
+    acc panes
 
 let collect ?socket ~dir ~grace panes sessions ~now =
   let closing, endings = sweep ?socket ~dir ~grace panes sessions ~now in

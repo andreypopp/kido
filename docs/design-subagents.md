@@ -483,15 +483,16 @@ advisory. A human at the CLI, with
 no record, may act on anything (design.md, "Steer, interrupt and
 stop").
 
-An orphan is the sweep's business. A live marked window whose child
-names a parent session no live record holds is closed, on one
-reading. The reading is trustworthy because of what it is taken from:
-every live record, not the per-pane view `State.by_pane` returns. In that
-view a `pi --print` started inside an agent's pane inherits that pane
-and wins it for as long as it reports, and the real parent is then not
-in what the sweep was handed at all - measured live, that killed two
-children with nothing wrong with them, and a debounce absorbing it treats
-a bad answer as a slow one. Asking the whole registry makes the collision
+An orphan is the sweep's business. A live marked window whose agent
+record or bash run meta names a parent session no live record holds is
+closed, on one reading. A bash run is recorded as failed with the detail
+"its parent ended" before its pane is closed; the wrapper forwards the
+hangup to its command. A notice to the absent parent fails quietly. The
+reading takes every live record, not the per-pane view `State.by_pane`
+returns. In that view a `pi --print` started inside an agent's pane
+inherits that pane and wins it for as long as it reports, hiding the
+real parent. A debounce treats that bad answer as a slow one. Asking
+the whole registry makes the collision
 irrelevant: it settles who owns a pane, and the sweep only ever asks
 whether a session is running somewhere. A one-shot `kido reap` applies
 this rule too, needing no second sweep to do it.
@@ -500,10 +501,11 @@ The parent edge names the parent's **session**, so a parent that is quit
 and resumed (`pi --resume`, a new process on the same session id) has its
 children back the moment it reports again. What it does not have is the
 gap: while no process holds that session id its children are orphans by
-this rule, and the sweep acts on one reading. Children whose own windows
-are all that is left of them - `kido tool async_bash` runs, which have no state
-record for this rule to read - are unaffected and wait out a restart.
-An agent child is not: this rule, or its own parent-liveness poll, ends it.
+this rule, and the sweep acts on one reading. This includes
+`kido tool async_bash` runs: their parent edge is read from the run meta.
+An agent child's own parent-liveness poll can also end it. `/new`,
+`/resume` and `/fork` change the parent's session id and orphan its runs;
+`/reload` keeps the parent's record and does not.
 
 ## Resuming a run
 
@@ -700,9 +702,10 @@ wrapper that is already gone is not waited for at all, since waiting
 would delay a notice nobody else was ever going to send. Each observer's
 outcome text says which of them it was.
 
-Apart from stop, a bash run is deliberately not an agent. It has no state
-record, so it is not in `kido tool list_agents`, cannot be addressed by
-`message_agent` or `ask_agent`, and has no status to report - there is
+Apart from stop and orphan collection, a bash run is deliberately not an
+agent. It has no state record, so it is not in `kido tool list_agents`,
+cannot be addressed by `message_agent` or `ask_agent`, and has no status
+to report - there is
 nothing there to answer. What it has is the run record, which is already
 the store for facts that outlive a process, and `kido runs` shows it like
 any other.
@@ -735,8 +738,9 @@ per 250ms or 4KB, whichever comes first, with ANSI escapes and control
 bytes stripped from what travels (the output file keeps the bytes as
 written). A line the command has not finished writing waits for the next
 batch, or for the close. The parent's inbox is resolved by session id on
-every send, a state-directory read and no tmux pane listing, so a parent
-restarted on the same session id receives the next batch.
+every send, a state-directory read and no tmux pane listing, so a parent's
+current inbox receives the next batch. A quit-then-resume gap ends the run
+if the orphan sweep observes it; resuming the parent does not revive it.
 
 Nothing about it may cost the command anything. The tee to the output
 file is unconditional and is the source of truth; the stream is
@@ -908,9 +912,6 @@ window aged out.
   is only the screen: the wrapper has already recorded and reported. For
   an agent run the spawn itself reports the failure, which is the whole
   account of it there will be.
-- The orphan rule does not reach a bash run - rule 2 reads state
-  records, and a bash run has none - so a run whose parent has died
-  keeps going until the command ends.
 - A subagent's window moved to another tmux session is outside its
   parent's scope and cannot be reached.
 - Everything assumes one machine: shared filesystem, shared pid

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -172,11 +173,47 @@ func TestAsyncBashStillRunningSaysNothing(t *testing.T) {
 	}
 }
 
-// Run from a pane with no state record - a human's shell, or a run that
-// outlives its parent - so there is nobody to notify; the run must still
-// finish and record its outcome. The live inbox in the same session
-// makes "nobody" checkable: a wrapper resolving some other parent would
-// show up there.
+func TestAsyncBashEndsWhenItsParentQuits(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	outFile := filepath.Join(h.dir, "orphan-run.out")
+	childPIDFile := filepath.Join(h.dir, "orphan-command.pid")
+	fake := filepath.Join(h.dir, "pi")
+	script := fmt.Sprintf(`#!/bin/bash
+%s agent-status --agent pi --session orphan-parent-e2e --status idle
+%s tool async_bash --name orphan-bash -- sh -c %s > %s
+read -r -t 30 ignored
+%s agent-status --agent pi --session orphan-parent-e2e --remove
+`, kidoBin, kidoBin, shellQuote("echo $$ > "+shellQuote(childPIDFile)+"; exec sleep 300"), shellQuote(outFile), kidoBin)
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	parentPane := h.newWindow("alpha", "orphan-parent", fake, "ignored")
+	fields := strings.Fields(h.waitFileNonEmpty(outFile))
+	if len(fields) < 3 {
+		t.Fatalf("async_bash output = %q", fields)
+	}
+	runID := fields[2]
+	wrapperPID := h.wrapperPID(runID)
+	childPID, err := strconv.Atoi(strings.TrimSpace(h.waitFileNonEmpty(childPIDFile)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info := h.runInfo(runID); info.Outcome != "running" {
+		t.Fatalf("run before parent quit = %q, want running", info.Outcome)
+	}
+	h.in("send-keys", "-t", parentPane, "Enter")
+	h.waitFor(func() bool {
+		return syscall.Kill(wrapperPID, 0) == syscall.ESRCH && syscall.Kill(childPID, 0) == syscall.ESRCH
+	}, settle, msgf("orphan bash wrapper and command to exit after their parent quits"))
+	info := h.waitOutcome(runID)
+	if info.Outcome != "failed" || info.OutcomeText != "its parent ended" {
+		t.Errorf("orphan outcome = %q/%q, want failed/its parent ended", info.Outcome, info.OutcomeText)
+	}
+}
+
+// Run from a pane with no state record, so there is nobody to notify.
+// The unrelated live inbox makes an incorrectly resolved parent observable.
 func TestAsyncBashWithNoParentStillRecordsItsOutcome(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
