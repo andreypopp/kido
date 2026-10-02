@@ -66,7 +66,7 @@ already fed before calculating its overlap, and overlapping rows are
 excluded. Trimming tmux's oldest history therefore changes the gap, not
 the identity of the loaded rows. There is one fetch per pane; sync tokens,
 view identity and a grid epoch reject obsolete replies. A resize retains the
-viewport's top logical line's text and its count from the bottom, resyncs from
+first full grid row's logical line's text and its count from the bottom, resyncs from
 the newest 5000 rows, then matches that text within ±32 logical lines of the
 counted guess. It takes the nearest match across capture pages, ties going to
 the newer side, and falls back to the count. It reaches the anchor through the
@@ -113,7 +113,9 @@ paths; a far view adds a second surface and split selection), so deep history
 is reached by paging within the memory limit.
 
 Each pane draws one thin overlay scroller, shown during scrolling or
-hovering and fading afterwards. Chrome draws 12pt background-colour edge fades from that same scroll geometry only when content remains above or below, never on alternate screens. Ghostty's own scrollbar is disabled. The
+hovering and fading afterwards. Chrome draws 12pt background-colour edge fades from that same scroll geometry only when content remains above or below, never on alternate screens. The top fade starts at the content top, including
+the history strip; the scroller track spans that expanded content while its
+thumb and targets still count whole grid rows. Ghostty's own scrollbar is disabled. The
 thumb uses tmux's full retained history plus the screen, with a native-style
 minimum knob size. Every precise wheel event adds its delta 1:1 to the
 fractional target, including nonzero ended packets. At most one apply is
@@ -198,11 +200,30 @@ floor/ceil in physical pixels so surfaces and dividers stay on the pixel
 grid. tmux's border cell between two panes is then exactly their
 paddings plus the one-pixel divider, so any tree, however asymmetric,
 lines up with no surplus. Around the whole terminal area only, the
-horizontal remainder is balanced over a 4pt minimum; vertically the
-first row is at a fixed 40pt (`PaneLayout.topMargin`) at every height and
-in both sidebar states, and all vertical remainder goes to the bottom,
-over a 0pt minimum. Zoom uses the same rule. Dividers have six-point hit
-areas; unfocused panes are dimmed by a theme-background overlay; a
+horizontal remainder is balanced over a 4pt minimum. Client rows are
+floor((height - 40pt) / cell height), with no outer bottom padding reserved.
+The tiled grid bottom is flush with the terminal area bottom; outer tiled
+chrome is clipped there, without clipping the grid. Below the fixed 40pt
+`PaneLayout.topMargin`, the global vertical subcell remainder sits above the
+whole tiled tree. Only outer-top tiled panes expand upward into it, rendering
+the bottom slice of their preceding history row through Ghostty's top render
+inset in backing pixels. Empty history shows background. Alternate-screen
+panes keep their unexpanded grid view and a zero inset, leaving background
+in the strip. Zoom uses the same rule. A stale root during live resize stays
+bottom-aligned, but its strip is clamped below one cell, never interpreting a
+multi-cell gap as history. Interior padding and divider math are unchanged;
+outer-top vertical dividers and their hit/cursor areas extend to the strip's
+top, never into the 40pt titlebar margin.
+
+Expanded content and the real grid have separate chrome rects. Strip clicks
+only focus/select the pane: no terminal mouse press or selection starts there.
+Mouse and IME coordinates use the grid origin below the strip. Render insets
+never enter set_size or set_grid_size, scroll distances, snaps, output pinning
+or resize anchors; the live bottom remains distance zero. Floats stay inset-free
+in the same shifted grid coordinate space, with the point-to-cell inverse and
+pixel-exact free frames unchanged. Floating bounds end at the window bottom,
+so a float's existing bottom padding remains inside the window. Dividers have
+six-point hit areas; unfocused panes are dimmed by a theme-background overlay; a
 pane shows the window’s shared glass toolbar only in its top-right hot
 zone: the toolbar frame plus 24pt to its left and below, clipped to the
 pane. It splits, zooms and closes through the same commands as the menus.
