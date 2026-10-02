@@ -280,3 +280,41 @@ server; `KIDO_APP_FEED` names a stand-in feed. `KIDO_APP_BACKGROUND=1`
 keeps a test launch off screen: it never activates, never takes focus
 and keeps no preferences. `KIDO_APP_DEBUG=1` logs each switch, eviction
 and free to stderr with its timing.
+
+### Stress harness
+
+`make stress SEED=N DURATION=S [FIND=0]` builds the app with the
+`KIDO_STRESS` compilation condition into `build/derived-stress` and runs it
+for S seconds against a private tmux server; `make tsan-stress` and
+`make asan-stress` do the same with the sanitizers (own derived dirs). The
+condition is set only by these targets: `App/Stress.swift` holds only a typealias in every
+other build and `main.swift` has one `#if KIDO_STRESS` call site.
+
+`scripts/stress.py` (stdlib Python) builds the demo-like layout, including
+1M- and 100k-line history panes, with `scrollback-limit = 8 MiB`, and every 0.4s
+applies a tmux action chosen from `SEED` (switches, splits, kills, zoom,
+resizes, move-pane, client resizes, feed kills, server restarts at 40% and
+80%). In the app `Stress` does the same on the main queue, also seeded: wheel,
+scroller drags, scroll requests, find and next, resync, window resize
+bursts, load-more, pane grip drags (some killed mid-drag), edge resizes,
+detach and reconnect, appearance. It writes one JSON line per action to
+stderr (`build/stress/<target>-<seed>/stderr.log`; `actions.jsonl` is the tmux
+side; `summary.json` the counts). `FIND=0` swaps the find actions for scroll
+requests. A run fails, exits 1 and prints its replay command on a sanitizer
+report, panic, non-zero exit, an app that did not finish, a new
+`Kido*.ips`, or a step that saw the window visible, key, main or active.
+A seed replays the same action choices; timing against live tmux output is
+not reproducible.
+
+Off-screen rule: the window is never ordered in (`KIDO_APP_BACKGROUND=1`),
+is a `StressWindow` that refuses key and main, and input is only
+`NSWindow.sendEvent` with `NSEvent.mouseEvent`/`keyEvent` or a direct call.
+No CGEvent is posted, nothing activates. Every step logs `visible`, `key`,
+`main`, `active` and the number of this process's windows in the on-screen
+window list. Wheel events do not reach a view through `sendEvent` off
+screen, so the wheel action calls `PaneView.scrollWheel` with an NSEvent
+made from a scroll CGEvent.
+
+To cover a new feature, add a name to `Stress.names` and a `case` in
+`Stress.perform` that drives it through existing internal API, and add tmux
+actions in `scripts/stress.py` if the feature reacts to server state.
