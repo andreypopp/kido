@@ -56,9 +56,11 @@ final class PaneChrome: NSView {
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            if dimmed { runtime.background.withAlphaComponent(0.45).setFill(); bounds.fill() }
-            let height = min(Self.scrollEdgeHeight, grid.height / 2)
+            guard dimmed || scrollEdges.top || scrollEdges.bottom else { return }
             let background = runtime.background
+            if dimmed { background.withAlphaComponent(0.45).setFill(); bounds.fill() }
+            guard (scrollEdges.top || scrollEdges.bottom), !grid.isEmpty else { return }
+            let height = min(Self.scrollEdgeHeight, grid.height / 2)
             let gradient = NSGradient(starting: background.withAlphaComponent(0.65), ending: background.withAlphaComponent(0))!
             for (visible, y, direction) in [(scrollEdges.top, grid.minY, 1.0), (scrollEdges.bottom, grid.maxY, -1.0)] where visible {
                 NSGraphicsContext.saveGraphicsState()
