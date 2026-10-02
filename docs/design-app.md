@@ -200,12 +200,21 @@ Floating grips and resize edges follow the pointer in points; a click raises
 a covered float with `move-pane -z 0`. WindowView keeps a view-only free frame
 per float after release. Coalesced, one-in-flight command batches send its
 rounded cell geometry to tmux with the border-dependent position and size
-semantics. Every layout install drops a free frame unless the same conversion
-still equals tmux's geometry; zoom, removal, layer changes and reconnect also
-clear it. Nothing is persisted. Ghostty remains exactly tmux's whole-cell grid,
+semantics. Nested command batches finish at a private marker on a separate
+input line: tmux gives nested replies the same control flag as direct ones,
+and a failed batch drops the remainder of its line. Ordinary command batches
+still pair by count, with no marker or extra round trip. PaneLayout owns the point-to-cell inverse and floating bounds.
+Layout installs and placement validate free frames against that same conversion;
+presentation validates hidden windows too. A changed placement cancels an active
+gesture and drains only the already-sent commands. Zoom, removal, layer changes
+and reconnect also clear free frames. Nothing is persisted. Ghostty remains exactly tmux's whole-cell grid,
 with the fractional size remainder in the right and bottom padding. Chrome,
 mask, shadow and hit areas use the drawn frame; pixel clamping keeps it inside
-the window grid. In-flight gestures retain their pixel frame until a follow-up
+the window grid. Resizing clamps only the dragged edges, preserving their
+opposite edges; a right or bottom resize never moves the origin. Each pointer
+update places only that float, its backing and toolbar, and unchanged clamped
+frames do no placement or cursor invalidation. Full placement assigns each
+pane's final frame once. In-flight gestures retain their pixel frame until a follow-up
 command reply has drained the final batch's layout notifications, then keep it
 only if it matches tmux. Escape stops further commands,
 not changes tmux has already applied. Pane command errors appear in a sheet.
