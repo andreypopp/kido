@@ -234,7 +234,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         let (position, applied, _) = scrollPresentation
         let history = scrollGeometry.history, limited = scrollGeometry.limited
         let distance = applied ?? Double(position.history - position.offset)
-        historyLimit.isHidden = !limited || distance < Double(position.history - position.rows)
+        historyLimit.isHidden = !limited || history <= position.history || distance < Double(position.history - position.rows)
         let shifted = distance > Double(position.history)
         if shifted && !self.shifted {
             for button in pressed {
