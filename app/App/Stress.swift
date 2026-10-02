@@ -191,15 +191,27 @@ typealias AppWindow = StressWindow
         switch action {
         case .wheel:
             let delta = Int32(random(2) == 0 ? 1500 : -500)
-            if let cg = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0),
-               let e = NSEvent(cgEvent: cg) {
-                pane.scrollWheel(with: e)
+            let precise = random(2) == 0
+            let packets: [(Int64, Int64)] = precise ? [(1, 0), (2, 0), (4, 0), (0, 1), (0, 2), (0, 3)] : [(0, 0)]
+            for (phase, momentum) in packets {
+                if let cg = CGEvent(scrollWheelEvent2Source: nil, units: precise ? .pixel : .line,
+                                    wheelCount: 1, wheel1: phase == 4 || momentum == 3 ? 0 : delta, wheel2: 0, wheel3: 0) {
+                    cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
+                    cg.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentum)
+                    if let e = NSEvent(cgEvent: cg) {
+                        counts[e.hasPreciseScrollingDeltas ? "wheel-precise-packet" : "wheel-discrete-packet", default: 0] += 1
+                        if !e.momentumPhase.isEmpty { counts["wheel-momentum-packet", default: 0] += 1 }
+                        pane.scrollWheel(with: e)
+                    }
+                }
             }
         case .scrollerDrag:
             do {
                 let scroller = pane.scroller
                 let x = scroller.bounds.midX
-                let from = scroller.convert(NSPoint(x: x, y: scroller.bounds.height * 0.75), to: nil)
+                let thumb = random(2) == 0
+                let from = scroller.convert(thumb ? scroller.stressThumb : NSPoint(x: x, y: scroller.bounds.height * 0.75), to: nil)
+                if thumb { counts["scroller-thumb-drag", default: 0] += 1 }
                 let to = scroller.convert(NSPoint(x: x, y: CGFloat(random(20)) / 20 * scroller.bounds.height), to: nil)
                 scroller.mouseDown(with: event(.leftMouseDown, from))
                 scroller.mouseDragged(with: event(.leftMouseDragged, to))
