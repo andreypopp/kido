@@ -160,6 +160,7 @@ import TmuxControl
     }
 
     private func closed(_ server: Server, _ view: SessionView, _ exit: Exit, backoff: TimeInterval) {
+        view.subviews.compactMap { $0 as? WindowView }.forEach { $0.cancelDrag() }
         menus.update(SessionModel())
         feed?.stop()
         feed = nil
