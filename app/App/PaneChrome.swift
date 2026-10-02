@@ -8,7 +8,6 @@ final class PaneChrome: NSView {
     var hover: (PaneChrome, NSPoint?) -> Void = { _, _ in }
     var grid = CGRect.zero
     var dimmed = false { didSet { needsDisplay = true } }
-    var drop: CGRect? { didSet { if drop != oldValue { needsDisplay = true } } }
     var toolbarFrame: CGRect {
         NSRect(x: max(0, bounds.width - 153), y: 8, width: min(145, bounds.width), height: 32)
     }
@@ -27,12 +26,6 @@ final class PaneChrome: NSView {
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
         if dimmed { runtime.background.withAlphaComponent(0.45).setFill(); bounds.fill() }
-        if let drop {
-            effectiveAppearance.performAsCurrentDrawingAppearance {
-                NSColor.controlAccentColor.withAlphaComponent(0.3).setFill()
-                NSBezierPath(roundedRect: drop.insetBy(dx: 3, dy: 3), xRadius: 8, yRadius: 8).fill()
-            }
-        }
     }
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden else { return nil }
@@ -44,6 +37,20 @@ final class PaneChrome: NSView {
     override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
     override func mouseMoved(with event: NSEvent) { hover(self, convert(event.locationInWindow, from: nil)) }
     override func mouseExited(with event: NSEvent) { hover(self, nil) }
+}
+
+final class PaneDropPreview: NSView {
+    var rect: CGRect? { didSet { if rect != oldValue { needsDisplay = true } } }
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func draw(_ dirtyRect: NSRect) {
+        guard let rect else { return }
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            NSColor.controlAccentColor.withAlphaComponent(0.3).setFill()
+            let bar = rect.width == 4 || rect.height == 4
+            NSBezierPath(roundedRect: bar ? rect : rect.insetBy(dx: 3, dy: 3), xRadius: bar ? 2 : 8, yRadius: bar ? 2 : 8).fill()
+        }
+    }
 }
 
 final class PaneToolbar: NSGlassEffectView {
