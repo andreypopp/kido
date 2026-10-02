@@ -3,7 +3,8 @@ import Foundation
 public final class Client: @unchecked Sendable {
     public let queue = DispatchQueue(label: "TmuxControl.reader")
 
-    private typealias Pending = (count: Int, replies: [Reply], done: @Sendable ([Reply]?) -> Void)
+    private enum Boundary { case count(Int), marker(String) }
+    private typealias Pending = (boundary: Boundary, replies: [Reply], done: @Sendable ([Reply]?) -> Void)
 
     private let process = Process()
     private let input: FileHandle
@@ -88,13 +89,19 @@ public final class Client: @unchecked Sendable {
         }
     }
 
-    // A failed command makes tmux drop the rest of its line (cmdq_remove_group
-    // in cmd-queue.c), so a failure is the line's last reply.
+    // Nested commands inherit CMDQ_STATE_CONTROL (cmd-if-shell.c), so their
+    // blocks have the same flag as direct replies. A separate marker line
+    // survives cmdq_remove_group's removal of a failed command's line.
     private func complete(_ reply: Reply) -> (() -> Void)? {
         lock.withLock {
             guard !pending.isEmpty else { return nil }
-            pending[0].replies.append(reply)
-            if case .success = reply, pending[0].replies.count < pending[0].count { return {} }
+            switch pending[0].boundary {
+            case .marker(let marker):
+                if reply != .success([marker]) { pending[0].replies.append(reply); return {} }
+            case .count(let count):
+                pending[0].replies.append(reply)
+                if case .success = reply, pending[0].replies.count < count { return {} }
+            }
             let p = pending.removeFirst()
             return { p.done(p.replies) }
         }
@@ -102,10 +109,14 @@ public final class Client: @unchecked Sendable {
 
     public func send(_ commands: [Command], then done: @escaping @Sendable ([Reply]?) -> Void) {
         guard !commands.isEmpty else { return queue.async { done([]) } }
-        let line = Data((commands.map(\.line).joined(separator: " ; ") + "\n").utf8)
+        let nested = commands.contains { ["if-shell", "run-shell", "source-file"].contains(String($0.line.prefix { $0 != " " })) }
+        let marker = nested ? UUID().uuidString : nil
+        var text = commands.map(\.line).joined(separator: " ; ") + "\n"
+        if let marker { text += Command("display-message", "-p", marker).line + "\n" }
+        let line = Data(text.utf8)
         let accepted = lock.withLock {
             guard !closed else { return false }
-            pending.append((commands.count, [], done))
+            pending.append((marker.map(Boundary.marker) ?? .count(commands.count), [], done))
             writer.async { [weak self, input] in
                 do { try input.write(contentsOf: line) } catch { self?.close() }
             }
