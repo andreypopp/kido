@@ -71,8 +71,12 @@ the newest 5000 rows, then matches that text within ±32 logical lines of the
 counted guess. It takes the nearest match across capture pages, ties going to
 the newer side, and falls back to the count. It reaches the anchor through the
 scroller's paged target, stopping at the memory limit.
-Live resizing restores after it settles; a trimmed anchor clamps to the oldest
-surviving line. Alternate screens never receive history.
+Live resizing retains a dirty grid, then restores as soon as the final client
+size is flushed and its accepted layout is installed; a trimmed anchor clamps
+to the oldest surviving line. Client sizes deduplicate whole cells, coalesce
+on a non-restarting 16ms timer and keep one refresh in flight. Further sizes
+replace its pending successor until the reply. Ending a native drag flushes
+immediately. New scrolling, typing, paste or find intent cancels the old anchor. Alternate screens never receive history.
 
 `ghostty_surface_prepend_history` snapshots the primary screen's width and
 identity under the renderer mutex, then allocates and parses a scratch
@@ -146,7 +150,14 @@ and the target waits for another event or geometry update, with no idle retry.
 Capture publication
 updates loaded geometry and requests presentation, never moving the viewport
 itself; unchanged geometry and memory-limit state do not request another
-apply. Live output shares the serial worker and pins a scrolled viewport,
+apply. Snapshot replay invalidates applied viewport revisions at both its
+start and end, then asynchronously reapplies the latest preserved target even
+when capture metadata is unchanged. Replay cannot complete a final render;
+revision validation and acknowledgement commit share the scroll-intent lock.
+Main snaps and resets stamp the revision captured before their apply, so replay
+cannot make an older apply appear current. Replay never enters live-output
+pin-delta accounting.
+Live output shares the serial worker and pins a scrolled viewport,
 adjusting its distance from the bottom; a zero target follows the bottom.
 Hidden and occluded panes retain their renderer rules and do no idle
 scrolling work.
@@ -210,9 +221,13 @@ least recent past the budget, never the shown one, off the switch path;
 surfaces are freed one per main-queue turn and at least a second after
 they were created, since a young one takes hundreds of milliseconds to
 free. A hidden surface is occluded and its renderer released. Shown surfaces
-follow the app window's occlusion, except during resize: presentation is held
-until the restored target is loaded or memory-limited, with a two-second
-fallback. tmux sends no `%output` for panes outside the client's session,
+follow the app window's occlusion during resize too. Provisional Ghostty reflow
+remains visible while the authoritative capture is in flight. After replay and
+the successful restored viewport apply, an asynchronous tokened render fences
+completion, not visibility. Its acknowledgement must match the pane's epoch,
+backing dimensions, inset and viewport revision/target. Superseded requests
+coalesce; a current discarded request gets one asynchronous retry. Backend
+failure remains incomplete and diagnostic, without a visibility hold. tmux sends no `%output` for panes outside the client's session,
 so a window that left it is synced again when next shown. Surfaces of closed windows and sessions are freed.
 
 tmux's layout is authoritative: every Ghostty surface is exactly its
@@ -357,8 +372,10 @@ are not removed by this change.
 A pane leaving the layout is held on main until the queue has
 dropped it, so its
 surface is freed on main. A layout reaches main synchronously, and a
-pane's first feed after a resize waits until Ghostty confirms the new
-grid, so output never lands in the old one. Main never waits on the
+pane's grid is verified synchronously through Ghostty's mutex-protected actual
+grid metrics before layout installation returns. A failed setter or mismatched
+grid rejects feed, prepend and trim, logs a diagnostic and closes the control
+client through its ordinary redial lifecycle; failure is never confirmation. Main never waits on the
 reader queue.
 
 ## Sidebar
@@ -493,6 +510,23 @@ together these are two halves, not an end-to-end rendered-highlight observation.
 launches each off screen against its own private socket with a 25-second process
 deadline, killing only that launched pid on timeout. Every probe records the
 same invisibility/focus checks as random stress. No Swift Task spins a run loop.
+`KIDO_RESIZE_VERIFY=1` enables rendering only for unordered test surfaces,
+checks a rejected unrealized final frame, compares stopped-output IOSurface
+pixels against a fresh replay with identical geometry and a 19px inset,
+asserts red/blue fixture content, and checks stability and failed-grid feed
+rejection. `KIDO_GRID_VERIFY=1` isolates the failed-setter assertion.
+`KIDO_REPLAY_VERIFY=1` establishes a new scroll target's successful apply before
+snapshot replay, then checks its restored viewport, reference pixels and final
+acknowledgement with unchanged metadata. `KIDO_REPLAY_FENCE_VERIFY=1` adds an
+app-validator fixtures: a replay reset between a snap's apply and publication
+must invalidate that apply, and a synthetic old presentation callback delivered
+during barrier-held replay must not acknowledge it. Normal replay completion must then
+produce the current viewport, pixels and real render acknowledgement.
+`KIDO_VIEWPORT_VERIFY=1`
+rejects a final frame when a same-target viewport revision failed all three
+apply attempts. These
+probes do not establish Metal's late GPU-completion ordering; the bounded
+same-queue handler gate probe could not advance past its older handler.
 Set `KIDO_MTC_VERIFY=1` with `DEVELOPER_DIR` for Main Thread Checker: the runner
 injects it only into Kido and verifies its mapped image in that PID. Injecting
 it into the Python launcher with `MTC_RESET_INSERT_LIBRARIES=1` removes the
