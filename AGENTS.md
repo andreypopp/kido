@@ -158,7 +158,7 @@ Conventions:
                        server.conf (embedded, not installed)
       claude/          settings.json, the hooks file the claude shim hands to Claude Code
       pi/              the two pi extensions, which the pi shim loads with --extension
-    scripts/           the fork build; ci-watch.sh, which waits for a commit's CI run (async_bash it);
+    scripts/           the fork build; main-watch.sh, which watches main and reports each new commit's CI;
                        ci-like.sh; test-ts.sh; dump-prompts.ts, every prompt text pi registers
     third_party/tmux   the tmux fork, a git submodule built as kido-tmux
     test_e2e/          tests driving kido inside a real tmux server, in Go
@@ -378,8 +378,9 @@ one.
     make install binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
 
 Validation before a release is `make test` then `make e2e`, in full; CI
-runs both on Ubuntu and macOS on every push and PR (`scripts/ci-watch.sh`
-waits for it), building the fork at the pinned revision, cached by SHA.
+runs both on Ubuntu and macOS on every push and PR (`scripts/main-watch.sh`
+watches main and reports each new commit's CI), building the fork at the
+pinned revision, cached by SHA.
 While working, `dune test` is the loop; `dune promote` accepts an expect
 diff once it has been read.
 
