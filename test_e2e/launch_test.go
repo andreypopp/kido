@@ -162,7 +162,7 @@ func (r *kidoRun) kido(args ...string) (string, error) {
 	full := append([]string{"-S", r.kidoSock}, args...)
 	cmd := exec.Command(tmuxBin, full...)
 	cmd.Env = cleanEnv("TMUX=", "TMUX_TMPDIR="+r.tmpdir)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	return strings.TrimRight(string(out), "\n"), err
 }
 
@@ -170,7 +170,7 @@ func (r *kidoRun) mustKido(args ...string) string {
 	r.t.Helper()
 	out, err := r.kido(args...)
 	if err != nil {
-		r.t.Fatalf("tmux -L kido %s: %v", strings.Join(args, " "), err)
+		r.t.Fatalf("tmux -S %s %s: %v: %s", r.kidoSock, strings.Join(args, " "), err, out)
 	}
 	return out
 }
@@ -184,11 +184,13 @@ func (r *kidoRun) launch(window string) {
 		fmt.Sprintf("unset TMUX; exec env %s %q", r.envAssign(), kidoBin))
 }
 
-// waitUp waits until a server answers on the kido socket.
+// waitUp waits until the launcher's initial session exists.
 func (r *kidoRun) waitUp() {
 	r.t.Helper()
-	r.waitFor(func() bool { _, err := r.kido("list-sessions"); return err == nil },
-		"a server to answer on the kido socket")
+	r.waitFor(func() bool {
+		out, err := r.kido("list-sessions", "-F", "#{session_name}")
+		return err == nil && out != ""
+	}, "the initial session on the kido socket")
 }
 
 // waitFor polls cond, reporting what the outer screens showed at the
@@ -460,7 +462,7 @@ func TestKidoConfDefaultCommandNamingAShellIsPrimed(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(conf, "kido.conf"),
-		[]byte(`set -g default-command "zsh"`+"\n"), 0o644); err != nil {
+		[]byte("run-shell 'sleep 0.5'\n"+`set -g default-command "zsh"`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
