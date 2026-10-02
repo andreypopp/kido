@@ -341,11 +341,13 @@ final class Connection: @unchecked Sendable {
             let destination = feed.view.scrollTarget ?? (position.history - position.offset)
             switch feed.history {
             case .syncing, .fetching: return
-            case .limited(let history) where !feed.metadataDirty:
-                self.publish(feed, history: history)
+            case .limited where !feed.metadataDirty:
                 return
             case .more(let gap) where destination >= position.history - position.rows:
-                self.publish(feed, history: position.history + gap)
+                if feed.metadataDirty {
+                    feed.metadataDirty = false
+                    self.publish(feed, history: position.history + gap)
+                }
                 let token = UUID()
                 feed.history = .fetching(token)
                 self.fetch(pane, feed, token: token, chunk: min(5000, gap))
@@ -414,7 +416,7 @@ final class Connection: @unchecked Sendable {
     }
 
     private func publish(_ feed: PaneFeed, history: Int, alternate: Bool = false) {
-        let position = feed.view.restoreScrollPosition()
+        let position = feed.view.scrollPosition()
         let limited = if case .limited = feed.history { true } else { false }
         DispatchQueue.main.async { [weak view = feed.view] in
             view?.updateScroller(history: history, position: position, alternate: alternate, limited: limited)

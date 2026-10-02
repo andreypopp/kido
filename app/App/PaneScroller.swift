@@ -1,6 +1,7 @@
 import AppKit
 
 final class PaneScroller: NSView {
+    var begin: () -> Void = {}
     var jump: (Int) -> Void = { _ in }
     var select: () -> Void = {}
     private var geometry = (history: 0, rows: 1, offset: 0.0)
@@ -69,6 +70,7 @@ final class PaneScroller: NSView {
 
     override func mouseDown(with event: NSEvent) {
         select()
+        begin()
         let point = convert(event.locationInWindow, from: nil)
         dragging = knob.contains(point) ? point.y - knob.minY : knob.height / 2
         mouseDragged(with: event)
