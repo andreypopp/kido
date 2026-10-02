@@ -1,25 +1,31 @@
 import AppKit
 import TmuxControl
 
+extension CGRect {
+    func subtracting(_ cuts: [CGRect]) -> [CGRect] {
+        cuts.reduce(isNull || isEmpty ? [] : [self]) { rects, cut in
+            rects.flatMap { rect -> [CGRect] in
+                let overlap = rect.intersection(cut)
+                guard !overlap.isNull, !overlap.isEmpty else { return [rect] }
+                return [
+                    CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: overlap.minY - rect.minY),
+                    CGRect(x: rect.minX, y: overlap.maxY, width: rect.width, height: rect.maxY - overlap.maxY),
+                    CGRect(x: rect.minX, y: overlap.minY, width: overlap.minX - rect.minX, height: overlap.height),
+                    CGRect(x: overlap.maxX, y: overlap.minY, width: rect.maxX - overlap.maxX, height: overlap.height),
+                ].filter { !$0.isNull && !$0.isEmpty }
+            }
+        }
+    }
+}
+
 final class PaneChrome: NSView {
     let pane: PaneID
     private let runtime: GhosttyRuntime
     var select: () -> Void = {}
     var drag: ((NSEvent) -> Void)?
     var padding: [CGRect] {
-        ([grid] + subviews.filter { !$0.isHidden && ($0 is PaneScroller || $0.alphaValue > 0) }.map(\.frame))
-            .reduce([bounds.insetBy(dx: 5, dy: 5)]) { rects, cut in
-                rects.flatMap { rect -> [CGRect] in
-                    let overlap = rect.intersection(cut)
-                    guard !overlap.isNull, !overlap.isEmpty else { return [rect] }
-                    return [
-                        CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: overlap.minY - rect.minY),
-                        CGRect(x: rect.minX, y: overlap.maxY, width: rect.width, height: rect.maxY - overlap.maxY),
-                        CGRect(x: rect.minX, y: overlap.minY, width: overlap.minX - rect.minX, height: overlap.height),
-                        CGRect(x: overlap.maxX, y: overlap.minY, width: rect.maxX - overlap.maxX, height: overlap.height),
-                    ].filter { !$0.isNull && !$0.isEmpty }
-                }
-            }.filter { !$0.isNull && !$0.isEmpty }
+        bounds.insetBy(dx: 5, dy: 5).subtracting(
+            [grid] + subviews.filter { !$0.isHidden && ($0 is PaneScroller || $0.alphaValue > 0) }.map(\.frame))
     }
     var hover: (PaneChrome, NSPoint?) -> Void = { _, _ in }
     var grid = CGRect.zero
