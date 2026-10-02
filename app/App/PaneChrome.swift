@@ -7,7 +7,7 @@ final class PaneChrome: NSView {
     var select: () -> Void = {}
     var hover: (PaneChrome, NSPoint?) -> Void = { _, _ in }
     var grid = CGRect.zero
-    var dimmed = false { didSet { needsDisplay = true } }
+    var dimmed = false { didSet { if dimmed != oldValue { needsDisplay = true } } }
     var toolbarFrame: CGRect {
         NSRect(x: max(0, bounds.width - 153), y: 8, width: min(145, bounds.width), height: 32)
     }
