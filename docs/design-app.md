@@ -97,7 +97,8 @@ survives appearance and config reloads, which do not change PageList's
 limit; surface eviction or reconnect returns it to the configured default.
 After 1.5 seconds without scrolling, older loaded rows are erased, keeping
 one 5000-row chunk above the viewport and never less than the initial
-capture. The boundary stays on a whole logical line. Trimming uses
+capture. Trimming preserves the fractional viewport; clicks, find and
+resizing still snap it to a row. The boundary stays on a whole logical line. Trimming uses
 PageList's erase machinery under the renderer mutex; pins and viewport
 follow their content. It clears the memory-limit state without lowering
 a raised budget. The thumb still spans tmux's history and does not move;
@@ -117,7 +118,11 @@ thumb uses tmux's full retained history plus the screen, with a native-style
 minimum knob size. Wheel events, clicks and drags update a shared target
 without waiting for the reader or renderer mutex. Visible panes apply the latest target and
 thumb once per view display-link callback; the link stops on its first
-callback without a pending target. Hidden panes apply directly without a
+callback without a pending target. When momentum begins within half a
+display interval of the last finger event, its stream is presented one
+packet behind so the hand-off does not combine two full deltas into one
+frame. The final packet is released on momentum end; the requested target
+still includes it for paging. Hidden panes apply directly without a
 display link. A per-pane queue moves Ghostty's viewport independently of
 capture replies. `KIDO_APP_DEBUG=1` logs wheel timestamps, phases and deltas,
 and each applied target's row and fractional pixel offset.
