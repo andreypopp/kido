@@ -221,7 +221,10 @@ raises a covered float with `move-pane -z 0`. Draggable padding is inside the
 drawn frame but outside the Ghostty grid, including the fractional right/bottom
 remainder. The 5pt resize edges and corners, toolbar and scroller strip take
 precedence; terminal clicks remain Ghostty's. Padding cursor rects show an open
-hand, changing to a closed hand over the drawn frame during a move. Tiled padding
+hand. A moving or resizing float holds its gesture cursor, with the window's
+cursor rects disabled until release or cancellation. Placement requests no cursor
+invalidation during that gesture; release enables and invalidates them once,
+so overlapping floats use their current frames immediately. Tiled padding
 still only selects. WindowView keeps a view-only free frame
 per float after release. Coalesced, one-in-flight command batches send its
 rounded cell geometry to tmux with the border-dependent position and size
@@ -239,7 +242,8 @@ the window grid. Resizing clamps only the dragged edges, preserving their
 opposite edges; a right or bottom resize never moves the origin. Each pointer
 update places only that float, its backing and toolbar, and unchanged clamped
 frames do no placement or cursor invalidation. Full placement assigns each
-pane's final frame once. In-flight gestures retain their pixel frame until a follow-up
+pane's final frame once. Placement skips unchanged backing, toolbar and scroller
+frames and retains an installed mask rather than assigning it again. In-flight gestures retain their pixel frame until a follow-up
 command reply has drained the final batch's layout notifications, then keep it
 only if it matches tmux. Escape stops further commands,
 not changes tmux has already applied. Pane command errors appear in a sheet.
