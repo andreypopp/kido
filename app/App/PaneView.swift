@@ -55,7 +55,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
     private var scrollPending: Int?
     private var trimming: DispatchWorkItem?
-    private var resizeDirty = false
+    nonisolated private(set) var resizeDirty: Bool {
+        get { grid.withLock { $0.dirty } }
+        set { grid.withLock { $0.dirty = newValue } }
+    }
     private var finalEpoch: Int?
     private var renderSequence: UInt64 = 0
     private var renderRetry = false
@@ -582,7 +585,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     // MANUAL_MIRROR applies set_grid_size inline (termio/Termio.zig);
     // grid_metrics confirms the actual terminal grid under its renderer lock.
-    nonisolated private let grid = OSAllocatedUnfairLock(initialState: (epoch: 0, ready: true))
+    nonisolated private let grid = OSAllocatedUnfairLock(initialState: (epoch: 0, ready: true, dirty: false))
 
     private var installedSurface: IOSurfaceRef? {
         for layer in [terminal.layer].compactMap({ $0 }) + (terminal.layer?.sublayers ?? []) {
