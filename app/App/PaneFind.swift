@@ -146,8 +146,17 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
         action("search:\(field.stringValue)")
     }
 
+    #if KIDO_STRESS
+    private var navigationCount = 0
+    var stressState: (selected: Int?, total: Int, navigationCount: Int) { (selected, total, navigationCount) }
+    func stressMatches(_ matches: [Int]) { finished(matches, token: token) }
+    #endif
+
     private func action(_ name: String) {
         guard let pane else { return }
+        #if KIDO_STRESS
+        if name.hasPrefix("navigate_search:") { navigationCount += 1 }
+        #endif
         _ = ghostty_surface_binding_action(pane.surface, name, UInt(name.utf8.count))
     }
 
