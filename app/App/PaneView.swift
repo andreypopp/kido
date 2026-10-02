@@ -648,13 +648,18 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     // MARK: - Mouse
 
+    private func inHistoryStrip(_ event: NSEvent) -> Bool {
+        historyStrip > 0 && bounds.height - convert(event.locationInWindow, from: nil).y < historyStrip
+    }
+
     private func button(_ event: NSEvent, _ state: ghostty_input_mouse_state_e) -> Bool {
         if state == GHOSTTY_MOUSE_PRESS {
-            guard bounds.height - convert(event.locationInWindow, from: nil).y >= historyStrip else {
+            let strip = inHistoryStrip(event)
+            if event.buttonNumber == 0 || strip {
                 window?.makeFirstResponder(self)
                 onSelect()
-                return true
             }
+            if strip { position(event); return true }
             snapScroll()
         } else if !pressed.contains(event.buttonNumber) { return true }
         guard !shifted else { return true }
@@ -670,16 +675,17 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func position(_ event: NSEvent) {
+        if inHistoryStrip(event) && pressed.isEmpty {
+            ghostty_surface_mouse_pos(surface, -1, -1, Self.mods(event.modifierFlags))
+            return
+        }
         guard !shifted, scrollDistance.map({ $0 == $0.rounded() }) != false else { return }
         let pos = convert(event.locationInWindow, from: nil)
         let y = bounds.height - pos.y - historyStrip
-        guard y >= 0 || !pressed.isEmpty else { return }
         ghostty_surface_mouse_pos(surface, pos.x, y, Self.mods(event.modifierFlags))
     }
 
     override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
-        onSelect()
         _ = button(event, GHOSTTY_MOUSE_PRESS)
     }
 
@@ -717,10 +723,12 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     override func scrollWheel(with event: NSEvent) {
         let time = CACurrentMediaTime()
         debug("wheel pane=\(pane) time=\(time) phase=\(event.phase.rawValue) momentum=\(event.momentumPhase.rawValue) precise=\(event.hasPreciseScrollingDeltas) delta=\(event.scrollingDeltaY) eventTime=\(event.timestamp)")
+        let strip = inHistoryStrip(event)
+        if strip { position(event) }
         let precise = event.hasPreciseScrollingDeltas
         if event.momentumPhase.isEmpty && event.scrollingDeltaY != 0 { suppressMomentum = false }
         if suppressMomentum && !event.momentumPhase.isEmpty { return }
-        if !alternate && !scrollGeometry.captured && scrollGeometry.history > 0 {
+        if !alternate && (!scrollGeometry.captured || strip) && scrollGeometry.history > 0 {
             guard event.scrollingDeltaY != 0 else { return }
             let delta = event.scrollingDeltaY
             let distance = scrollDistance ?? Double(scrollGeometry.position.history - scrollGeometry.position.offset)
@@ -739,6 +747,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             }
             return
         }
+        if strip { return }
         scheduleTrim()
         scroller.reveal()
         if scrollDistance.map({ $0 != $0.rounded() }) == true { snapScroll() }
