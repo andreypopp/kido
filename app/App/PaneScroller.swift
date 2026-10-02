@@ -3,16 +3,16 @@ import AppKit
 final class PaneScroller: NSView {
     var jump: (Int) -> Void = { _ in }
     var select: () -> Void = {}
-    private var geometry = (history: 0, rows: 1, offset: 0)
+    private var geometry = (history: 0, rows: 1, offset: 0.0)
     private var unavailable = 0
     private var fade: DispatchWorkItem?
     private var hovering = false
     private var dragging: CGFloat?
     override var isFlipped: Bool { true }
 
-    func update(history: Int, rows: Int, offset: Int, alternate: Bool, unavailable: Int = 0) {
-        if geometry.history - geometry.offset != history - offset { reveal() }
-        geometry = (history, max(1, rows), max(0, min(history, offset)))
+    func update(history: Int, rows: Int, offset: Double, alternate: Bool, unavailable: Int = 0) {
+        if Double(geometry.history) - geometry.offset != Double(history) - offset { reveal() }
+        geometry = (history, max(1, rows), max(0, min(Double(history), offset)))
         self.unavailable = unavailable
         isHidden = alternate || history == 0
         needsDisplay = true
