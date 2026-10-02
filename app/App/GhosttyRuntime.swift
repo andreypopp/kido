@@ -14,6 +14,17 @@ import GhosttyKit
             ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
     }
     nonisolated private let ticking = OSAllocatedUnfairLock(initialState: false)
+    #if KIDO_STRESS
+    private final class WakeProbe: Sendable {
+        let run: @Sendable () -> Void
+        init(_ run: @escaping @Sendable () -> Void) { self.run = run }
+    }
+    nonisolated private let wakeProbe = OSAllocatedUnfairLock<WakeProbe?>(initialState: nil)
+    static func observeWakeups(_ surface: ghostty_surface_t, _ probe: (@Sendable () -> Void)?) {
+        let runtime = Unmanaged<GhosttyRuntime>.fromOpaque(ghostty_app_userdata(ghostty_surface_app(surface)!)!).takeUnretainedValue()
+        runtime.wakeProbe.withLock { $0 = probe.map(WakeProbe.init) }
+    }
+    #endif
 
     init?() {
         guard ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS,
@@ -38,6 +49,10 @@ import GhosttyKit
             supports_selection_clipboard: false,
             wakeup_cb: { @Sendable userdata in
                 let runtime = Unmanaged<GhosttyRuntime>.fromOpaque(userdata!).takeUnretainedValue()
+                #if KIDO_STRESS
+                let probe = runtime.wakeProbe.withLock { $0 }
+                probe?.run()
+                #endif
                 guard runtime.ticking.withLock({ ticking in
                     defer { ticking = true }
                     return !ticking
@@ -141,15 +156,29 @@ import GhosttyKit
             }
             return true
         case GHOSTTY_ACTION_END_SEARCH:
-            PaneView.onMain(userdata) { $0.find?.close() }
+            let generation = ghostty_surface_search_generation(surface)
+            let view = Unmanaged<PaneView>.fromOpaque(userdata!)
+            let find = MainActor.assumeIsolated { view._withUnsafeGuaranteedRef(\.find) }
+            PaneView.onMain(userdata) {
+                guard ghostty_surface_search_generation($0.surface) == generation, $0.find === find else { return }
+                $0.find?.close()
+            }
             return true
         case GHOSTTY_ACTION_SEARCH_TOTAL:
             let total = action.action.search_total.total
-            PaneView.onMain(userdata) { $0.find?.ghosttyTotal(total) }
+            let generation = ghostty_surface_search_generation(surface)
+            PaneView.onMain(userdata) {
+                guard ghostty_surface_search_generation($0.surface) == generation else { return }
+                $0.find?.ghosttyTotal(total)
+            }
             return true
         case GHOSTTY_ACTION_SEARCH_SELECTED:
             let selected = action.action.search_selected.selected
-            PaneView.onMain(userdata) { $0.find?.ghosttySelected(selected) }
+            let generation = ghostty_surface_search_generation(surface)
+            PaneView.onMain(userdata) {
+                guard ghostty_surface_search_generation($0.surface) == generation else { return }
+                $0.find?.ghosttySelected(selected)
+            }
             return true
         default: break
         }
@@ -165,6 +194,21 @@ import GhosttyKit
         PaneView.onMain(userdata) { $0.onCommand(command) }
         return true
     }
+
+    #if KIDO_STRESS
+    static func verifyDeferredSearchAction(_ surface: ghostty_surface_t) {
+        var target = ghostty_target_s()
+        target.tag = GHOSTTY_TARGET_SURFACE
+        target.target.surface = surface
+        var notification = ghostty_action_s()
+        notification.tag = GHOSTTY_ACTION_SEARCH_SELECTED
+        notification.action.search_selected.selected = 0
+        _ = action(ghostty_surface_app(surface)!, target, notification)
+        notification.tag = GHOSTTY_ACTION_SEARCH_TOTAL
+        notification.action.search_total.total = 999
+        _ = action(ghostty_surface_app(surface)!, target, notification)
+    }
+    #endif
 
     nonisolated private static func command(_ action: ghostty_action_s) -> PaneCommand? {
         let a = action.action
