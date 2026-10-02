@@ -115,17 +115,27 @@ is reached by paging within the memory limit.
 Each pane draws one thin overlay scroller, shown during scrolling or
 hovering and fading afterwards. Ghostty's own scrollbar is disabled. The
 thumb uses tmux's full retained history plus the screen, with a native-style
-minimum knob size. Wheel events, clicks and drags update a shared target
-without waiting for the reader or renderer mutex. Visible panes apply the latest target and
-thumb once per view display-link callback; the link stops on its first
-callback without a pending target. When momentum begins within half a
-display interval of the last finger event, its stream is presented one
-packet behind so the hand-off does not combine two full deltas into one
-frame. The final packet is released on momentum end; the requested target
-still includes it for paging. Hidden panes apply directly without a
-display link. A per-pane queue moves Ghostty's viewport independently of
-capture replies. `KIDO_APP_DEBUG=1` logs wheel timestamps, phases and deltas,
-and each applied target's row and fractional pixel offset.
+minimum knob size. Wheel events and thumb drags replace a shared pending
+target without waiting for the reader or renderer mutex; a thumb press
+snaps once and suppresses the old momentum. An active selection gesture
+uses integral wheel steps. Visible panes snapshot the target once per view
+display-link callback. A per-pane queue applies that snapshot to Ghostty,
+then main publishes its exact applied distance and geometry to the thumb
+and terminal translation. Capture publication updates loaded geometry and
+requests presentation, never moving the viewport itself; unchanged geometry
+and memory-limit state do not request another apply. The link stops on its
+first callback without pending work. Hiding a pane or its ancestor, or
+occluding its window, drains pending work and invalidates the link; hidden
+and occluded panes apply directly without a display link.
+When momentum begins within half a display interval of the last finger
+event, its stream is presented one packet behind so the hand-off does not
+combine two full deltas into one frame. Momentum end or cancellation
+releases the final packet immediately, conserving its distance even with
+find open; the requested target includes it for paging throughout. Live
+output pins the presented distance, adjusting requested and presented
+components independently: either component at zero stays at the bottom.
+`KIDO_APP_DEBUG=1` logs wheel timestamps, phases and deltas, and each applied
+target's row and fractional pixel offset.
 Above the loaded top, the terminal's child view is translated down inside
 the clipped pane, revealing blank terminal background without changing the
 grid. While translated, terminal pointer events are suppressed and an
