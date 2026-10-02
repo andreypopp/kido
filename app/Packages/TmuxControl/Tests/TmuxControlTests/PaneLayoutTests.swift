@@ -144,6 +144,45 @@ func paddedLayout(area: CGSize, pixel: CGFloat) {
     }
 }
 
+@Test(arguments: [CGFloat(1), CGFloat(0.5)])
+func tiledPlacement(pixel: CGFloat) {
+    let bounds = CGRect(x: 0, y: 0, width: 700, height: 568)
+    let cell = CGSize(width: 8, height: 17)
+    let g = Geometry(x: 0, y: 0, width: 80, height: 30)
+    let top = Geometry(x: 0, y: 0, width: 80, height: 14)
+    let interior = Geometry(x: 0, y: 15, width: 80, height: 15)
+    let panes = [top, interior].enumerated().map { index, geometry in
+        Node.pane(Pane(id: PaneID(number: UInt32(index)), index: index, geometry: geometry, focus: .active, layer: .tiled))
+    }
+    let layout = PaneLayout(root: .split(.topBottom, g, panes), bounds: bounds, cell: cell, pixel: pixel)
+    let upper = layout.tiled(top, alternate: false), lower = layout.tiled(interior, alternate: false)
+    #expect(upper.grid == layout.grid(top))
+    #expect(upper.inset == 16)
+    #expect(upper.content.minY == 40 && upper.chrome.minY == 40)
+    #expect(upper.content.maxY == upper.grid.maxY)
+    #expect(upper.chrome.maxY == upper.grid.maxY + layout.after.height)
+    #expect(upper.chrome.maxX == bounds.maxX)
+    #expect(lower.inset == 0 && lower.content == lower.grid)
+    #expect(lower.chrome.minY == lower.grid.minY - layout.before.height)
+    #expect(lower.grid.maxY == bounds.maxY - 2)
+    #expect(lower.chrome.maxY == bounds.maxY)
+    let alternate = layout.tiled(top, alternate: true)
+    #expect(alternate.inset == 0 && alternate.content == upper.grid)
+    #expect(alternate.chrome.minY == upper.grid.minY - layout.before.height)
+    let zoomRoot = Node.pane(Pane(id: PaneID(number: 0), index: 0, geometry: g, focus: .active, layer: .tiled))
+    let zoom = PaneLayout(root: zoomRoot, bounds: bounds, cell: cell, pixel: pixel).tiled(g, alternate: false)
+    #expect(zoom.grid.maxY == bounds.maxY - 2)
+    #expect(zoom.content.minY == 40 && zoom.chrome.maxY == bounds.maxY)
+    for height in [CGFloat(400), 700] {
+        let staleBounds = CGRect(x: 0, y: 0, width: 700, height: height)
+        let stale = PaneLayout(root: zoomRoot, bounds: staleBounds, cell: cell, pixel: pixel)
+        let result = stale.tiled(g, alternate: false)
+        #expect(result.grid.maxY == height - 2)
+        #expect(result.inset == max(0, min(cell.height - pixel, result.grid.minY - 40)))
+        #expect(result.chrome.maxY == height)
+    }
+}
+
 @Test func fractionalPointLayout() {
     paddedLayout(area: CGSize(width: 664, height: 558.5), pixel: 0.5)
 }
