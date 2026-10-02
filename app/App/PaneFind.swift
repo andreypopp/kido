@@ -133,6 +133,7 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
         let forward = selected.map { (target - $0 + total) % total } ?? (target + 1)
         let backward = selected.map { ($0 - target + total) % total } ?? (total - target)
         navigating = true
+        pane.resetScroll()
         action(forward <= backward ? "navigate_search:next" : "navigate_search:previous")
     }
 
@@ -147,7 +148,6 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
 
     private func action(_ name: String) {
         guard let pane else { return }
-        if name.hasPrefix("navigate_search:") { pane.resetScroll() }
         _ = ghostty_surface_binding_action(pane.surface, name, UInt(name.utf8.count))
     }
 
