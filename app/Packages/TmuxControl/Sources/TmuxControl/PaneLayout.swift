@@ -16,6 +16,7 @@ public struct PaneLayout: Equatable {
     public let after: CGSize
     public let origin: CGPoint
     public let rightEdge: CGFloat
+    public let historyStrip: CGFloat
     private let cell: CGSize
     private let bounds: CGRect
 
@@ -27,11 +28,12 @@ public struct PaneLayout: Equatable {
         after = CGSize(width: cell.width - pixel - before.width, height: cell.height - pixel - before.height)
         let top = ceil(Self.topMargin / pixel) * pixel
         client = CGSize(width: max(1, floor((bounds.width - 2 * Self.minimumMargin.width - cell.width + pixel) / cell.width)),
-                        height: max(1, floor((bounds.height - top - Self.minimumMargin.height - after.height) / cell.height)))
+                        height: max(1, floor((bounds.height - top) / cell.height)))
         let g: Geometry = switch root { case .pane(let p): p.geometry; case .split(_, let g, _): g }
         origin = CGPoint(
             x: bounds.minX + floor((bounds.width - CGFloat(g.width) * cell.width - before.width - after.width) / (2 * pixel)) * pixel + before.width,
-            y: bounds.minY + top)
+            y: bounds.maxY - CGFloat(g.y + g.height) * cell.height)
+        historyStrip = max(0, min(cell.height - pixel, origin.y - bounds.minY - top))
         rightEdge = origin.x + CGFloat(g.x + g.width) * cell.width
     }
 
@@ -56,7 +58,7 @@ public struct PaneLayout: Equatable {
     public var floatingBounds: CGRect {
         CGRect(x: origin.x - before.width, y: origin.y - before.height,
                width: client.width * cell.width + before.width + after.width,
-               height: client.height * cell.height + before.height + after.height)
+               height: max(0, bounds.maxY - origin.y + before.height))
     }
 
     public func clamp(_ frame: CGRect, resizing edge: ResizeEdge? = nil) -> CGRect {
@@ -78,8 +80,13 @@ public struct PaneLayout: Equatable {
 
     public func line(_ divider: Divider, pixel: CGFloat) -> CGRect {
         let rect = grid(divider.geometry)
-        return divider.direction == .leftRight
-            ? CGRect(x: rect.minX + after.width, y: rect.minY - before.height, width: pixel, height: rect.height + before.height + after.height)
-            : CGRect(x: rect.minX - before.width, y: rect.minY + after.height, width: rect.width + before.width + after.width, height: pixel)
+        if divider.direction == .leftRight {
+            let top = divider.geometry.y == 0
+                ? max(bounds.minY + ceil(Self.topMargin / pixel) * pixel, rect.minY - historyStrip)
+                : rect.minY - before.height
+            return CGRect(x: rect.minX + after.width, y: top, width: pixel,
+                          height: min(rect.maxY + after.height, bounds.maxY) - top)
+        }
+        return CGRect(x: rect.minX - before.width, y: rect.minY + after.height, width: rect.width + before.width + after.width, height: pixel)
     }
 }

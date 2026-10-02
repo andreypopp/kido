@@ -21,7 +21,15 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onScrollSettled: () -> Void = {}
     let scroller = PaneScroller()
     var find: PaneFind?
-    private var alternate = false
+    private(set) var alternate = false
+    var onAlternateChange: () -> Void = {}
+    var historyStrip: CGFloat = 0 {
+        didSet {
+            if historyStrip != oldValue {
+                ghostty_surface_set_render_insets(surface, UInt32((historyStrip * (window?.backingScaleFactor ?? 2)).rounded()), 0)
+            }
+        }
+    }
     private let terminal = TerminalView()
     private let historyLimit = NSBox()
     @objc private func loadMoreHistory() { onLoadMore() }
@@ -260,6 +268,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private func updateAlternate(_ alternate: Bool) {
         guard self.alternate != alternate else { return }
         self.alternate = alternate
+        onAlternateChange()
         resetScroll()
         find?.search()
     }
@@ -621,6 +630,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         snapScroll()
         let scale = window.backingScaleFactor
         ghostty_surface_set_content_scale(surface, scale, scale)
+        ghostty_surface_set_render_insets(surface, UInt32((historyStrip * scale).rounded()), 0)
     }
 
     override func updateTrackingAreas() {
@@ -639,7 +649,14 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     // MARK: - Mouse
 
     private func button(_ event: NSEvent, _ state: ghostty_input_mouse_state_e) -> Bool {
-        if state == GHOSTTY_MOUSE_PRESS { snapScroll() }
+        if state == GHOSTTY_MOUSE_PRESS {
+            guard bounds.height - convert(event.locationInWindow, from: nil).y >= historyStrip else {
+                window?.makeFirstResponder(self)
+                onSelect()
+                return true
+            }
+            snapScroll()
+        } else if !pressed.contains(event.buttonNumber) { return true }
         guard !shifted else { return true }
         if state == GHOSTTY_MOUSE_PRESS { position(event); pressed.insert(event.buttonNumber) }
         else { pressed.remove(event.buttonNumber) }
@@ -655,7 +672,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private func position(_ event: NSEvent) {
         guard !shifted, scrollDistance.map({ $0 == $0.rounded() }) != false else { return }
         let pos = convert(event.locationInWindow, from: nil)
-        ghostty_surface_mouse_pos(surface, pos.x, bounds.height - pos.y, Self.mods(event.modifierFlags))
+        let y = bounds.height - pos.y - historyStrip
+        guard y >= 0 || !pressed.isEmpty else { return }
+        ghostty_surface_mouse_pos(surface, pos.x, y, Self.mods(event.modifierFlags))
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -691,7 +710,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func pressureChange(with event: NSEvent) {
-        guard !shifted else { return }
+        guard !shifted, !pressed.isEmpty else { return }
         ghostty_surface_mouse_pressure(surface, UInt32(event.stage), Double(event.pressure))
     }
 
@@ -1023,7 +1042,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         snapScroll()
         var x = 0.0, y = 0.0, width = 0.0, height = 0.0
         ghostty_surface_ime_point(surface, &x, &y, &width, &height)
-        let rect = convert(NSRect(x: x, y: bounds.height - y, width: width, height: max(height, cell.height)), to: nil)
+        let rect = convert(NSRect(x: x, y: bounds.height - historyStrip - y, width: width, height: max(height, cell.height)), to: nil)
         return window?.convertToScreen(rect) ?? rect
     }
 
