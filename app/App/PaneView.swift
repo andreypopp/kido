@@ -34,6 +34,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     nonisolated private var scrollDistance: Double? { target.withLock { $0 } }
     private var suppressMomentum = false
     private var scrollRevision = 0
+    private var scrollDisplayLink: CADisplayLink?
+    private var scrollPending = false
     private var trimming: DispatchWorkItem?
     private var resyncing: DispatchWorkItem?
     private var thawing: DispatchWorkItem?
@@ -80,7 +82,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
                 let top = max(0, Double(value.total - value.len) - distance)
                 let row = floor(top)
                 let pixels = Float(top - row) * Float(ghostty_surface_size(surface).cell_height_px)
-                if ghostty_surface_scroll_to_row_pixel_if_revision(surface, UInt64(row), pixels, value.row_space_revision, &value) { break }
+                if ghostty_surface_scroll_to_row_pixel_if_revision(surface, UInt64(row), pixels, value.row_space_revision, &value) {
+                    debug("scroll-apply pane=\(pane) time=\(CACurrentMediaTime()) distance=\(distance) row=\(value.offset) pixel=\(pixels)")
+                    break
+                }
                 guard ghostty_surface_scrollbar(surface, &value) else { break }
             }
         }
@@ -179,8 +184,26 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private func requestScrollDistance(_ distance: Double) {
         let distance = max(0, min(Double(scrollLimit), distance))
         target.withLock { $0 = distance }
-        presentScroll()
         scrollRevision += 1
+        scrollPending = true
+        if window?.occlusionState.contains(.visible) != true { flushScroll(); return }
+        if scrollDisplayLink == nil {
+            let link = displayLink(target: self, selector: #selector(flushScroll))
+            let rate = Float(window?.screen?.maximumFramesPerSecond ?? 60)
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
+            link.add(to: .main, forMode: .common)
+            scrollDisplayLink = link
+        }
+    }
+
+    @objc private func flushScroll() {
+        guard scrollPending else {
+            scrollDisplayLink?.invalidate()
+            scrollDisplayLink = nil
+            return
+        }
+        scrollPending = false
+        presentScroll()
         let revision = scrollRevision
         scrolling.async { [weak self] in
             guard let self else { return }
@@ -214,6 +237,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         suppressMomentum = true
         wheelRemainder = 0
         scrollRevision += 1
+        scrollPending = false
+        scrollDisplayLink?.invalidate()
+        scrollDisplayLink = nil
         scrolling.sync {
             if let distance = scrollDistance {
                 let aligned = distance.rounded()
@@ -552,6 +578,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if window == nil {
+            if scrollPending { flushScroll() }
+            scrollDisplayLink?.invalidate()
+            scrollDisplayLink = nil
+        }
         viewDidChangeBackingProperties()
         let center = NotificationCenter.default
         center.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: nil)
@@ -668,8 +699,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func scrollWheel(with event: NSEvent) {
-        scheduleTrim()
-        scroller.reveal()
+        debug("wheel pane=\(pane) time=\(CACurrentMediaTime()) phase=\(event.phase.rawValue) momentum=\(event.momentumPhase.rawValue) precise=\(event.hasPreciseScrollingDeltas) delta=\(event.scrollingDeltaY)")
         let precise = event.hasPreciseScrollingDeltas
         if event.momentumPhase.isEmpty && event.scrollingDeltaY != 0 { suppressMomentum = false }
         if suppressMomentum && !event.momentumPhase.isEmpty { return }
@@ -691,6 +721,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             }
             return
         }
+        scheduleTrim()
+        scroller.reveal()
         if scrollDistance.map({ $0 != $0.rounded() }) == true { snapScroll() }
         let momentum: ghostty_input_mouse_momentum_e = switch event.momentumPhase {
         case .began: GHOSTTY_MOUSE_MOMENTUM_BEGAN
