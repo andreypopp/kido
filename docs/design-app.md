@@ -113,7 +113,7 @@ paths; a far view adds a second surface and split selection), so deep history
 is reached by paging within the memory limit.
 
 Each pane draws one thin overlay scroller, shown during scrolling or
-hovering and fading afterwards. Ghostty's own scrollbar is disabled. The
+hovering and fading afterwards. Chrome draws 12pt background-colour edge fades from that same scroll geometry only when content remains above or below, never on alternate screens. Ghostty's own scrollbar is disabled. The
 thumb uses tmux's full retained history plus the screen, with a native-style
 minimum knob size. Every precise wheel event adds its delta 1:1 to the
 fractional target and immediately enqueues an apply on the pane's serial
