@@ -414,7 +414,7 @@ final class Connection: @unchecked Sendable {
     }
 
     private func publish(_ feed: PaneFeed, history: Int, alternate: Bool = false) {
-        let position = feed.view.scrollPosition(distance: feed.view.scrollTarget)
+        let position = feed.view.restoreScrollPosition()
         let limited = if case .limited = feed.history { true } else { false }
         DispatchQueue.main.async { [weak view = feed.view] in
             view?.updateScroller(history: history, position: position, alternate: alternate, limited: limited)
