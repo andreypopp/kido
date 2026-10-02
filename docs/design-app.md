@@ -217,8 +217,12 @@ multi-cell gap as history. Interior padding and divider math are unchanged;
 outer-top vertical dividers and their hit/cursor areas extend to the strip's
 top, never into the 40pt titlebar margin.
 
-Expanded content and the real grid have separate chrome rects. Strip clicks
-only focus/select the pane: no terminal mouse press or selection starts there.
+PaneLayout returns the grid, expanded content, clipped chrome and render inset
+for each tiled pane. Chrome uses the content rect for fades and hit testing;
+window-edge drops and their previews use the union of the visible tiled chrome.
+Strip clicks only focus/select the pane once: no terminal mouse press or selection
+starts there. Entering the strip clears Ghostty's hover position. Strip wheels
+scroll primary history without sending application mouse reports.
 Mouse and IME coordinates use the grid origin below the strip. Render insets
 never enter set_size or set_grid_size, scroll distances, snaps, output pinning
 or resize anchors; the live bottom remains distance zero. Floats stay inset-free

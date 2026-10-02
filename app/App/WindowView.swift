@@ -256,22 +256,20 @@ final class WindowView: NSView {
     }
 
     private func place(_ chrome: PaneChrome, _ view: PaneView, _ g: Geometry, _ placement: PaneLayout, floating: Bool) {
-        var frame = floating ? floatFrame(chrome.pane, g, placement) : placement.frame(g)
-        var grid = placement.grid(g)
+        let frame: CGRect, grid: CGRect, content: CGRect, strip: CGFloat
         if floating {
-            grid.origin = CGPoint(x: frame.minX + placement.before.width, y: frame.minY + placement.before.height)
-        } else if grid.maxX == placement.rightEdge { frame.size.width = bounds.maxX - frame.minX }
-        let strip = !floating && g.y == 0 && !view.alternate ? placement.historyStrip : 0
-        let content = CGRect(x: grid.minX, y: grid.minY - strip, width: grid.width, height: grid.height + strip)
-        if !floating {
-            frame.origin.y = min(frame.minY, content.minY)
-            frame.size.height = min(grid.maxY + placement.after.height, bounds.maxY) - frame.minY
+            frame = floatFrame(chrome.pane, g, placement)
+            grid = CGRect(origin: CGPoint(x: frame.minX + placement.before.width, y: frame.minY + placement.before.height),
+                          size: placement.grid(g).size)
+            content = grid
+            strip = 0
+        } else {
+            let tiled = placement.tiled(g, alternate: view.alternate)
+            (frame, grid, content, strip) = (tiled.chrome, tiled.grid, tiled.content, tiled.inset)
         }
         if chrome.frame != frame { chrome.frame = frame }
         view.historyStrip = strip
-        view.onAlternateChange = { [weak self] in self?.place() }
         if view.frame != content { view.frame = content }
-        chrome.grid = grid.offsetBy(dx: -frame.minX, dy: -frame.minY)
         chrome.content = content.offsetBy(dx: -frame.minX, dy: -frame.minY)
         chrome.drag = floating && !zoomed ? { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0) } : nil
         chrome.wantsLayer = true
@@ -342,6 +340,7 @@ final class WindowView: NSView {
             else { return }
             self?.sendPane([tmux])
         }
+        view.onAlternateChange = { [weak self] in self?.place() }
         view.onCellChange = { [weak self] in self?.session?.cellChanged() }
         view.onFontChange = { [weak self] in self?.session?.fontChanged($0) }
         view.onResync = { [weak self] done in
@@ -601,13 +600,15 @@ final class WindowView: NSView {
             let hit = subviews.reversed().lazy.compactMap { $0 as? PaneChrome }.first { !$0.isHidden && $0.frame.contains(point) }
             if tiled.count > 1, let placement,
                hit == nil || tiled.contains(where: { $0.id == hit?.pane }) {
-                let area = tiled.reduce(CGRect.null) { $0.union(placement.frame($1.geometry)) }
+                let area = tiled.reduce(CGRect.null) { area, pane in
+                    area.union(placement.tiled(pane.geometry, alternate: panes.first { $0.pane == pane.id }?.alternate ?? false).chrome)
+                }
                 let outer = CGRect(x: bounds.minX, y: area.minY, width: bounds.width, height: bounds.maxY - area.minY)
                 let edge: Edge? = !outer.contains(point) ? nil
                     : point.x < area.minX + 22 ? .left : point.x > area.maxX - 22 ? .right
                     : point.y < area.minY + 22 ? .top : point.y > area.maxY - 22 ? .bottom : nil
                 if let edge, let target = tiled.first(where: { $0.id != source }) {
-                    drop = (.window(target.id, edge), CGRect(x: area.minX, y: area.minY, width: bounds.maxX - area.minX, height: area.height))
+                    drop = (.window(target.id, edge), area)
                 } else if let hit, hit.pane != source {
                     let p = hit.convert(point, from: self), b = hit.bounds
                     let x = p.x / b.width, y = p.y / b.height
