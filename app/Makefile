@@ -21,9 +21,7 @@ SEED ?= 1
 DURATION ?= 60
 FIND ?= 1
 
-stress: STRESS_DERIVED = build/derived-stress
-tsan-stress: STRESS_DERIVED = build/derived-tsan-stress
-asan-stress: STRESS_DERIVED = build/derived-asan-stress
+STRESS_DERIVED = build/derived-$@
 tsan-stress: SANITIZER = Thread
 asan-stress: SANITIZER = Address
 tsan-stress asan-stress: STRESS_OPTIMIZE = GHOSTTY_OPTIMIZE=ReleaseSafe
