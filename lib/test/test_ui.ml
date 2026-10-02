@@ -86,7 +86,7 @@ let render ?dir ?(current = "sess") ?(at = test_at) panes st =
       client = client current;
       panes;
       states;
-      lingering = Sidebar.lingering_subagents ~dir:m.opts.dir panes states State.String_map.empty;
+      lingering = Sidebar.lingering_subagents ~dir:m.opts.dir panes State.String_map.empty;
     }
   in
   List.iter (fun r -> print_endline (Ui.row_text ~now:m.at r)) (lines { m with snap })
@@ -371,7 +371,7 @@ let%expect_test "order_windows_by_tree: child after parent, anchored to the pare
 
 let%expect_test "order_windows_by_tree: the lingering fallback, and a record beating a stale mark" =
   let lingering parent =
-    State.String_map.singleton "run-1" { Sidebar.name = ""; parent; outcome = None; run = `Agent }
+    State.String_map.singleton "run-1" { Sidebar.name = ""; parent; outcome = None; run = `Agent test_at }
   in
   placements
     [ w "root"; w ~run:"run-1" "kid" ]
@@ -451,9 +451,9 @@ let%expect_test
     sess
     ╶×fix the flaky test
     sess
-    ╶◼fix the flaky test
+    ╶◼fix the flaky test 0s
     sess
-    ┌◼fix the flaky test
+    ┌◼fix the flaky test 0s
     └ zsh
     sess
     ╶✓subagent completed
@@ -488,6 +488,24 @@ let%expect_test "a running bash run shows its elapsed time, and its outcome once
     ╶✓build completed
     |}]
 
+let%expect_test "a live subagent uses its run start unless it has activity text" =
+  let dir = temp () in
+  let run = new_run ~dir "helper" in
+  let panes = [ agent_pane ~run "@20" "%30" "helper" ] in
+  List.iter
+    (fun activity ->
+      render ~dir ~at:(test_at +. 65.) panes
+        [ ("%30", (run, session ~activity ~ts:(test_at +. 60.) "")) ])
+    [ ""; "checking tests"; "" ];
+  [%expect {|
+    sess
+    ╶◼helper 1m05s
+    sess
+    ╶◼helper checking tests
+    sess
+    ╶◼helper 1m05s
+    |}]
+
 let%expect_test "elapsed time is compact: seconds, then minutes and seconds, then hours and minutes"
     =
   List.iter
@@ -509,7 +527,7 @@ let%expect_test "elapsed time is compact: seconds, then minutes and seconds, the
     |}]
 
 (* With the interval alone, a displayed second changes up to a whole tick late. *)
-let%expect_test "a running bash run wakes the tick at its next second boundary" =
+let%expect_test "a live run wakes the tick at its next second boundary" =
   let dir = temp () in
   let clock = ref test_at in
   let wait panes =
@@ -520,7 +538,7 @@ let%expect_test "a running bash run wakes the tick at its next second boundary" 
           client = client "sess";
           panes;
           lingering =
-            Sidebar.lingering_subagents ~dir panes State.String_map.empty State.String_map.empty;
+            Sidebar.lingering_subagents ~dir panes State.String_map.empty;
         }
     in
     Printf.printf "%.3f\n" (Ui.next_wait (Ui.make ~standalone:false side))
@@ -535,7 +553,7 @@ let%expect_test "a running bash run wakes the tick at its next second boundary" 
   [%expect {|
     0.100
     0.050
-    0.100
+    0.050
     |}]
 
 let%expect_test
@@ -586,7 +604,7 @@ let%expect_test "lingering entries carry forward; only a missing outcome is re-r
   let id = new_run ~dir "subagent" in
   let panes = [ pane ~window:"@20" ~dead_at:1. ~run:id "%30" ] in
   let first =
-    Sidebar.lingering_subagents ~dir panes State.String_map.empty State.String_map.empty
+    Sidebar.lingering_subagents ~dir panes State.String_map.empty
   in
   let show l =
     let (l : Sidebar.lingering) = State.String_map.find id l in
@@ -598,7 +616,7 @@ let%expect_test "lingering entries carry forward; only a missing outcome is re-r
     (Subrun.record_outcome ~dir
        (Result.get_exn (Subrun.parse_id id))
        { result = Completed; text = ""; at = None });
-  show (Sidebar.lingering_subagents ~dir panes State.String_map.empty first);
+  show (Sidebar.lingering_subagents ~dir panes first);
   [%expect {|
     subagent -
     subagent completed
@@ -1269,7 +1287,7 @@ let%expect_test "a snapshot as the feed sends it" =
         active = "%1";
         panes;
         states;
-        lingering = Sidebar.lingering_subagents ~dir panes states State.String_map.empty;
+        lingering = Sidebar.lingering_subagents ~dir panes State.String_map.empty;
       }
   in
   let json m = Option.get_exn_or "client" (Sidebar.to_json m) in
@@ -1412,7 +1430,7 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
         active = "%1";
         panes;
         states;
-        lingering = Sidebar.lingering_subagents ~dir panes states State.String_map.empty;
+        lingering = Sidebar.lingering_subagents ~dir panes State.String_map.empty;
       }
   in
   print_endline (Yojson.Safe.pretty_to_string (Option.get_exn_or "client" (Sidebar.to_json m)));

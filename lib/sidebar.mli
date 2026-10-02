@@ -15,7 +15,7 @@ type lingering = {
   name : string;
   parent : string;
   outcome : Subrun.result option;
-  run : [ `Agent | `Bash of Timestamp.t ];
+  run : [ `Agent of Timestamp.t | `Bash of Timestamp.t ];
 }
 
 type probe = { reported : float; read : float; dismissed : bool }
@@ -39,11 +39,7 @@ val shell_run_delay : float
 val shell_run_hold : float
 
 val lingering_subagents :
-  dir:string ->
-  Tmux.Pane.t list ->
-  (string * State.session) String_map.t ->
-  lingering String_map.t ->
-  lingering String_map.t
+  dir:string -> Tmux.Pane.t list -> lingering String_map.t -> lingering String_map.t
 
 val same : snapshot -> snapshot -> bool
 

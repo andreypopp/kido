@@ -16,7 +16,7 @@ type lingering = {
   name : string;
   parent : string;
   outcome : Subrun.result option;
-  run : [ `Agent | `Bash of Timestamp.t ];
+  run : [ `Agent of Timestamp.t | `Bash of Timestamp.t ];
 }
 
 type probe = { reported : float; read : float; dismissed : bool }
@@ -53,11 +53,11 @@ let empty =
 let shell_run_delay = 0.2
 let shell_run_hold = 0.5
 
-let lingering_subagents ~dir panes states prev =
+let lingering_subagents ~dir panes prev =
   List.fold_left
     (fun out (p : P.t) ->
       match Option.map Subrun.parse_id p.run with
-      | Some (Ok run_id) when not (String_map.mem p.pane_id states) -> (
+      | Some (Ok run_id) -> (
           let key = Subrun.string_of_id run_id in
           let outcome () =
             Option.map (fun (o : Subrun.outcome) -> o.result) (Subrun.read_outcome ~dir run_id)
@@ -75,7 +75,10 @@ let lingering_subagents ~dir panes states prev =
                       name = meta.name;
                       parent = meta.parent_session;
                       outcome = outcome ();
-                      run = (match meta.kind with Agent -> `Agent | Bash -> `Bash meta.started_at);
+                      run =
+                        (match meta.kind with
+                        | Agent -> `Agent meta.started_at
+                        | Bash -> `Bash meta.started_at);
                     }
                     out))
       | _ -> out)
@@ -162,7 +165,7 @@ let take ~opts conn prev client =
         wake = State.wake ~dir:opts.dir;
         err = None;
         probes;
-        lingering = lingering_subagents ~dir:opts.dir panes states prev.lingering;
+        lingering = lingering_subagents ~dir:opts.dir panes prev.lingering;
       }
 
 let same a b =
@@ -386,7 +389,7 @@ let plain = span `Plain
 
 let lingering_label (p : P.t) (l : lingering) =
   let kind, caption =
-    match l.run with `Agent -> (Agent, Text []) | `Bash at -> (Run, Elapsed at)
+    match l.run with `Agent at -> (Agent, Elapsed at) | `Bash at -> (Run, Elapsed at)
   in
   let base =
     {
@@ -398,9 +401,9 @@ let lingering_label (p : P.t) (l : lingering) =
       caption;
     }
   in
-  match p.dead_at with
-  | None -> base
-  | Some _ ->
+  match (p.dead_at, l.outcome) with
+  | None, None -> base
+  | _ ->
       {
         base with
         indicator = Some (Gone l.outcome);
@@ -413,8 +416,8 @@ let lingering_label (p : P.t) (l : lingering) =
       }
 
 let pane_label m (p : P.t) =
-  let row kind indicator title tail =
-    { pane = p.pane_id; window = p.window_id; kind; indicator; title; caption = Text tail }
+  let row kind indicator title caption =
+    { pane = p.pane_id; window = p.window_id; kind; indicator; title; caption }
   in
   match agent_title_of m p with
   | None -> (
@@ -448,7 +451,7 @@ let pane_label m (p : P.t) =
                 (fun ph -> Option.get_or ~default:(Status Idle) (shell_indicator m ph))
                 (String_map.find_opt p.pane_id m.phases)
           in
-          row kind ind text [])
+          row kind ind text (Text []))
   | Some title ->
       let ind, activity =
         match String_map.find_opt p.pane_id m.snap.states with
@@ -459,10 +462,15 @@ let pane_label m (p : P.t) =
                else Status s.status),
               s.activity )
       in
-      row Agent
-        (Some (if done_ m p.pane_id then Done else ind))
-        [ plain title ]
-        (if String.is_empty activity then [] else [ span `Dim activity ])
+      let caption =
+        if not (String.is_empty activity) then Text [ span `Dim activity ]
+        else
+          match Option.flat_map (fun run -> String_map.find_opt run m.snap.lingering) p.run with
+          | Some { run = `Agent at; outcome = None; _ } when Option.is_none p.dead_at ->
+              Elapsed at
+          | _ -> Text []
+      in
+      row Agent (Some (if done_ m p.pane_id then Done else ind)) [ plain title ] caption
 
 type placement = { panes : P.t list; anchor : string option }
 
@@ -528,7 +536,7 @@ let switch_window ~socket ~dir ~client ~next =
     (fun panes ->
       let states = State.by_pane (State.load_live ~dir) in
       Tmux.Exec.switch_window ?socket ~client ~next
-        (windows_in_order panes states (lingering_subagents ~dir panes states String_map.empty)))
+        (windows_in_order panes states (lingering_subagents ~dir panes String_map.empty)))
     (Tmux.Exec.list_panes ?socket ())
 
 let append_windows m placements =

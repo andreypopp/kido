@@ -354,7 +354,7 @@ func TestSidebarFeedMatchesTheTUI(t *testing.T) {
 		t.Errorf("the lingering run's row: %+v in %s", r, s.raw)
 	}
 	for title, r := range byTitle {
-		if title != "slow-e2e" && r.Started != nil {
+		if title != "slow-e2e" && *r.Window != childWindow && r.Started != nil {
 			t.Errorf("row %q sends a start time: %s", title, s.raw)
 		}
 	}
@@ -363,6 +363,9 @@ func TestSidebarFeedMatchesTheTUI(t *testing.T) {
 		for _, r := range feedItems(root.Children) {
 			if *r.Window == childWindow {
 				nested = r.Kind == "agent"
+				if r.Started == nil || len(r.Tail) != 0 {
+					t.Errorf("the subagent's elapsed caption: %s", s.raw)
+				}
 				if r.Indicator == nil || r.Indicator.Kind != "idle" {
 					t.Errorf("the idle subagent's indicator: %s", s.raw)
 				}

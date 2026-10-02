@@ -1769,7 +1769,7 @@ columns from the tree in depth-first order, puts the glyph against the
 title and one space before a non-empty tail, cuts each row to the column's width,
 and owns the cursor, the scroll and the keys.
 
-A running bash run's tail is its elapsed time (`12s`, `1m05s`, `1h02m`),
+A live bash run's caption, or a live subagent run's caption without activity text, is its elapsed run time (`12s`, `1m05s`, `1h02m`),
 formatted by the view from the model's clock reading of the tick, so the
 rows and `same` never change by the second. Mosaic renders the view after
 every message and diffs the screen, so each tick's new reading reaches
