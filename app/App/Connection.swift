@@ -403,7 +403,7 @@ final class Connection: @unchecked Sendable {
 
     private func scroll(_ pane: PaneID) {
         client.queue.async { [self] in
-            guard let feed = self.panes?[pane] else { return }
+            guard let feed = self.panes?[pane], !feed.view.resizeDirty else { return }
             let position = feed.view.scrollPosition()
             let destination = feed.view.scrollTarget ?? (position.history - position.offset)
             switch feed.history {
@@ -453,7 +453,7 @@ final class Connection: @unchecked Sendable {
             debug("resize t=\(ProcessInfo.processInfo.systemUptime) history-page-reply pane=\(pane)")
             guard let self, let feed, self.panes?[pane] === feed,
                   case .fetching(let current) = feed.history, current == token,
-                  feed.view.historyEpoch == epoch, let replies else { return }
+                  feed.view.historyEpoch == epoch, !feed.view.resizeDirty, let replies else { return }
             let position = feed.view.scrollPosition()
             feed.metadataDirty = false
             if let destination = feed.view.scrollTarget, destination < position.history - position.rows,
