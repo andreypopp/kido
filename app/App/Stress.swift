@@ -13,13 +13,14 @@ typealias AppWindow = StressWindow
 
 @MainActor final class Stress {
     private enum Action: String {
-        case wheel, scrollerDrag = "scroller-drag", scrollRequest = "scroll-request"
+        case wheel, stripPress = "strip-press", stripWheel = "strip-wheel", alternate
+        case scrollerDrag = "scroller-drag", scrollRequest = "scroll-request"
         case find, findNext = "find-next", findCloseResync = "find-close-resync"
         case resizeBurst = "resize-burst", loadMore = "load-more", gripDrag = "grip-drag"
         case gripDragKill = "grip-drag-kill", appearance, edgeResize = "edge-resize", detachReconnect = "detach-reconnect"
     }
     private static let actions: [Action] = [
-        .wheel, .wheel, .scrollerDrag, .scrollerDrag, .scrollRequest, .find, .findNext, .findCloseResync,
+        .wheel, .wheel, .stripPress, .stripWheel, .alternate, .scrollerDrag, .scrollerDrag, .scrollRequest, .find, .findNext, .findCloseResync,
         .resizeBurst, .loadMore, .gripDrag, .gripDragKill, .appearance, .edgeResize, .detachReconnect,
     ]
     private let window: NSWindow
@@ -42,8 +43,165 @@ typealias AppWindow = StressWindow
 
     func run() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            if self.env["KIDO_FLOAT_VERIFY"] == "1" { self.verifyFloat(0) }
+            if self.env["KIDO_FIND_CLEAR_VERIFY"] == "1" || self.env["KIDO_FIND_INVALIDATE_VERIFY"] == "1" {
+                guard let pane = (self.window.contentView.map(self.views) ?? []).compactMap({ $0 as? PaneView }).first else { exit(1) }
+                pane.onSearch = { _, _ in }
+                pane.showFind()
+                self.verifyStoppedFind(pane, phase: self.env["KIDO_FIND_CLEAR_VERIFY"] == "1" ? 0 : 1)
+            }
+            else if self.env["KIDO_FIND_VERIFY"] == "1" { self.verifyFind() }
+            else if self.env["KIDO_SNAP_VERIFY"] == "1" { self.verifySnap(0) }
+            else if self.env["KIDO_ALT_VERIFY"] == "1" || self.env["KIDO_INPUT_VERIFY"] == "1" { self.verifyAlternate() }
+            else if self.env["KIDO_FLOAT_VERIFY"] == "1" { self.verifyFloat(0) }
             else { self.tick() }
+        }
+    }
+
+    private func verifySnap(_ index: Int) {
+        let cases = [(1, false, false), (2, false, false), (1, true, false), (1, false, true)]
+        guard index < cases.count else {
+            (NSApp.delegate as? AppDelegate)?.quit("snap verification complete")
+            return
+        }
+        guard let pane = (window.contentView.map(views) ?? []).compactMap({ $0 as? PaneView }).first else { exit(1) }
+        let (snaps, bottom, retry) = cases[index]
+        pane.verifySnapAccounting(snaps: snaps, bottom: bottom, retry: retry) { passed in
+            self.log(["snap-verify": passed ? "passed" : "failed", "snaps": snaps, "bottom": bottom, "revision-retry": retry])
+            guard passed else { exit(1) }
+            self.verifySnap(index + 1)
+        }
+    }
+
+    private func verifyFind() {
+        guard let pane = (window.contentView.map(views) ?? []).compactMap({ $0 as? PaneView }).first else { exit(1) }
+        pane.onSearch = { _, _ in }
+        pane.showFind()
+        pane.find?.field.stringValue = "row"
+        pane.find?.search()
+        let old = ghostty_surface_search_generation(pane.surface)
+        GhosttyRuntime.verifyDeferredSearchAction(pane.surface)
+        pane.find?.search()
+        let current = ghostty_surface_search_generation(pane.surface)
+        guard current > old else { exit(1) }
+        DispatchQueue.main.async {
+            guard let find = pane.find else { exit(1) }
+            let state = find.stressState
+            let rejected = state.selected == nil && state.total == 0
+            self.log(["find-deferred": rejected ? "passed" : "failed", "total": state.total, "selected": state.selected ?? -1])
+            guard rejected else { exit(1) }
+            find.stressMatches([0])
+            self.waitForSelection(pane, stage: 0, deadline: .now() + 5)
+        }
+    }
+
+    private func waitForSelection(_ pane: PaneView, stage: Int, deadline: DispatchTime) {
+        guard let find = pane.find else { exit(1) }
+        let state = find.stressState
+        if state.selected == 0 && state.total > 0 && state.navigationCount > stage {
+            self.log(["find-current": "passed", "total": state.total, "selected": state.selected!, "navigations": state.navigationCount])
+            GhosttyRuntime.verifyDeferredSearchAction(pane.surface)
+            if stage == 0 {
+                let previous = ghostty_surface_search_generation(pane.surface)
+                let inserted = pane.prepend(Data(String(repeating: "prepended row\r\n", count: 10).utf8), epoch: pane.historyEpoch)
+                guard inserted > 0 else { exit(1) }
+                find.loaded(pane.scrollPosition(), limited: false)
+                guard ghostty_surface_search_generation(pane.surface) > previous else { exit(1) }
+                DispatchQueue.main.async {
+                    let rejected = find.stressState.selected == nil && find.stressState.total != 999
+                    self.log(["find-prepend": rejected ? "passed" : "failed", "inserted": inserted])
+                    guard rejected else { exit(1) }
+                    find.stressMatches([0])
+                    self.waitForSelection(pane, stage: 1, deadline: .now() + 5)
+                }
+                return
+            }
+            find.close()
+            pane.showFind()
+            pane.find?.field.stringValue = "row"
+            pane.find?.search()
+            DispatchQueue.main.async {
+                let rejected = pane.find != nil && pane.find?.stressState.selected == nil && pane.find?.stressState.total != 999
+                self.log(["find-reopen": rejected ? "passed" : "failed", "find-exists": pane.find != nil,
+                          "total": pane.find?.stressState.total ?? -1])
+                guard rejected else { exit(1) }
+                GhosttyRuntime.verifyDeferredSearchAction(pane.surface)
+                pane.find?.close()
+                pane.showFind()
+                DispatchQueue.main.async {
+                    let state = pane.find?.stressState
+                    let passed = pane.find != nil && state?.selected == nil && state?.total == 0
+                    self.log(["find-empty-reopen": passed ? "passed" : "failed", "find-exists": pane.find != nil,
+                              "selected": state?.selected ?? -1, "total": state?.total ?? -1])
+                    guard passed else { exit(1) }
+                    self.verifyStoppedFind(pane, phase: 0)
+                }
+            }
+        } else {
+            guard DispatchTime.now() < deadline else {
+                self.log(["find-current": "failed", "total": state.total, "selected": state.selected ?? -1, "navigations": state.navigationCount])
+                exit(1)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { self.waitForSelection(pane, stage: stage, deadline: deadline) }
+        }
+    }
+
+    private func verifyStoppedFind(_ pane: PaneView, phase: Int) {
+        guard phase < 2 else {
+            (NSApp.delegate as? AppDelegate)?.quit("find verification complete")
+            return
+        }
+        guard let find = pane.find else { exit(1) }
+        find.field.stringValue = "row"
+        find.search()
+        GhosttyRuntime.verifyDeferredSearchAction(pane.surface)
+        if phase == 0 { find.field.stringValue = ""; find.search() }
+        else { find.invalidate() }
+        DispatchQueue.main.async {
+            let state = find.stressState
+            let rejected = state.selected == nil && state.total == 0
+            self.log(["find-stop": rejected ? "passed" : "failed", "phase": phase == 0 ? "clear" : "invalidate",
+                      "selected": state.selected ?? -1, "total": state.total])
+            guard rejected else { exit(1) }
+            self.verifyStoppedFind(pane, phase: phase + 1)
+        }
+    }
+
+    private func verifyAlternate() {
+        guard let pane = (window.contentView.map(views) ?? []).compactMap({ $0 as? PaneView }).first else {
+            log(["alternate-verify": "no pane"])
+            exit(1)
+        }
+        let ready = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            pane.feed(Data(("\u{1b}c" + (0..<500).map { "row\($0)\r\n" }.joined()).utf8))
+            DispatchQueue.main.async {
+                let position = pane.scrollPosition()
+                pane.updateScroller(history: position.history, position: position, alternate: false)
+                guard pane.verifyFractionalClick() else {
+                    self.log(["fractional-click": "failed"])
+                    exit(1)
+                }
+                self.log(["fractional-click": "passed"])
+                pane.verifyMailboxPressure(ready)
+                DispatchQueue.global().async {
+                    let output = "\u{1b}[?1049h" + String(repeating: "\u{1b}]2;mailbox pressure\u{7}ALT\r\n", count: 20000) + "\u{1b}[?1049l"
+                    pane.feed(Data(output.utf8))
+                    DispatchQueue.main.async {
+                        pane.finishMailboxPressure()
+                        pane.resetScroll()
+                        self.log(["alternate-verify": "passed", "worker-completed": true])
+                        (NSApp.delegate as? AppDelegate)?.quit("alternate verification complete")
+                    }
+                }
+                guard ready.wait(timeout: .now() + 2) == .success else { exit(1) }
+                self.log(["alternate-verify": "snap under mailbox pressure", "producer-wakes": 65])
+                if self.env["KIDO_INPUT_VERIFY"] == "1" {
+                    let passed = pane.verifySearchInputPressure()
+                    self.log(["input-verify": passed ? "passed" : "failed", "commands": 259, "search-send-reached": passed])
+                    guard passed else { exit(1) }
+                }
+                pane.snapScroll()
+            }
         }
     }
 
@@ -140,8 +298,12 @@ typealias AppWindow = StressWindow
     }
 
     private func log(_ fields: [String: Any]) {
+        var fields = fields
+        fields.merge(["visible": window.isVisible, "key": window.isKeyWindow, "main": window.isMainWindow,
+                      "active": NSApp.isActive, "onScreenWindows": onScreen()]) { _, current in current }
         guard let data = try? JSONSerialization.data(withJSONObject: fields, options: .sortedKeys) else { return }
         FileHandle.standardError.write(data + Data("\n".utf8))
+        if window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive || fields["onScreenWindows"] as? Int != 0 { exit(1) }
     }
 
     private func onScreen() -> Int {
@@ -178,18 +340,28 @@ typealias AppWindow = StressWindow
                 self.log(["tick": self.step, "event": event, "detail": detail])
             }
         }
-        let pane = panes.isEmpty ? nil : panes[random(panes.count)]
+        counts["alternate-pane-steps", default: 0] += panes.filter(\.alternate).count
+        let pool = action == .stripPress || action == .stripWheel ? panes.filter { $0.historyStrip > 0 } : panes
+        let pane = pool.isEmpty ? nil : pool[random(pool.count)]
         counts[action.rawValue, default: 0] += 1
         log(["step": step, "action": action.rawValue, "pane": pane?.pane.description ?? "", "panes": panes.count,
              "visible": window.isVisible, "key": window.isKeyWindow, "main": window.isMainWindow,
              "active": NSApp.isActive, "onScreenWindows": onScreen()])
         if let pane { perform(action, pane, all) }
+        log(["tick": step, "counts": counts])
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.tick() }
     }
 
     private func perform(_ action: Action, _ pane: PaneView, _ all: [NSView]) {
         switch action {
-        case .wheel:
+        case .stripPress:
+            let point = pane.convert(NSPoint(x: pane.bounds.midX, y: pane.bounds.height - pane.historyStrip / 2), to: nil)
+            pane.mouseDown(with: event(.leftMouseDown, point))
+            pane.mouseUp(with: event(.leftMouseUp, point))
+            counts["strip-press-delivered", default: 0] += 1
+        case .alternate:
+            send([Command("new-window", "-n", "stress-alt", "while :; do printf '\\033[?1049hALT SCREEN\\n'; sleep 2; printf '\\033[?1049l'; sleep 2; done")])
+        case .wheel, .stripWheel:
             let delta = Int32(random(2) == 0 ? 1500 : -500)
             let precise = random(2) == 0
             let packets: [(Int64, Int64)] = precise ? [(1, 0), (2, 0), (4, 0), (0, 1), (0, 2), (0, 3)] : [(0, 0)]
@@ -198,7 +370,20 @@ typealias AppWindow = StressWindow
                                     wheelCount: 1, wheel1: phase == 4 || momentum == 3 ? 0 : delta, wheel2: 0, wheel3: 0) {
                     cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
                     cg.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentum)
+                    if action == .stripWheel, let initial = NSEvent(cgEvent: cg) {
+                        let point = pane.convert(NSPoint(x: pane.bounds.midX, y: pane.bounds.height - pane.historyStrip / 2), to: nil)
+                        cg.location = CGPoint(x: cg.location.x + point.x - initial.locationInWindow.x,
+                                              y: cg.location.y - point.y + initial.locationInWindow.y)
+                    }
                     if let e = NSEvent(cgEvent: cg) {
+                        if action == .stripWheel {
+                            let local = pane.convert(e.locationInWindow, from: nil)
+                            guard pane.bounds.contains(local), pane.bounds.height - local.y < pane.historyStrip else {
+                                counts["strip-wheel-missed", default: 0] += 1
+                                continue
+                            }
+                            counts["strip-wheel-delivered", default: 0] += 1
+                        }
                         counts[e.hasPreciseScrollingDeltas ? "wheel-precise-packet" : "wheel-discrete-packet", default: 0] += 1
                         if !e.momentumPhase.isEmpty { counts["wheel-momentum-packet", default: 0] += 1 }
                         pane.scrollWheel(with: e)
@@ -228,7 +413,7 @@ typealias AppWindow = StressWindow
             pane.find?.close()
             pane.onResync {}
         case .resizeBurst:
-            for _ in 0..<6 { window.setContentSize(NSSize(width: 760 + random(700), height: 430 + random(400))) }
+            for _ in 0..<6 { window.setContentSize(NSSize(width: 760 + fraction(700), height: 430 + fraction(400))) }
         case .loadMore:
             pane.onLoadMore()
         case .gripDrag, .gripDragKill:
