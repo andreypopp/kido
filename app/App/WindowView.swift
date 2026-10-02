@@ -19,6 +19,7 @@ final class WindowView: NSView {
     private var floatingBoxes: [PaneID: NSBox] = [:]
     private let floatingRadius: CGFloat = 10
     private var toolbar: PaneToolbar?
+    private let preview = PaneDropPreview()
     override var isHidden: Bool {
         didSet {
             if isHidden { endDrag(); toolbar?.removeFromSuperview(); toolbar = nil }
@@ -168,7 +169,9 @@ final class WindowView: NSView {
         dividers = shown.visible.root.dividers.map { d in
             box(placement.line(d, pixel: pixel), border: 0, fill: .separatorColor)
         }
-        subviews = dividers + tiled + floating.sorted { $0.z > $1.z }.flatMap(\.views)
+        preview.frame = bounds
+        preview.autoresizingMask = [.width, .height]
+        subviews = dividers + tiled + floating.sorted { $0.z > $1.z }.flatMap(\.views) + [preview]
         for view in views.values where existing[view.pane] == nil {
             synced?.enter()
             connection?.attach(view) { synced?.leave() }
@@ -289,8 +292,11 @@ final class WindowView: NSView {
 
     private var zoomed: Bool { shown?.visible.root.panes.count == 1 && (shown?.layout.root.panes.count ?? 0) > 1 }
 
+    private enum Edge { case left, right, top, bottom }
     private enum DropZone {
-        case left, right, top, bottom, centre
+        case centre(PaneID)
+        case pane(PaneID, Edge)
+        case window(PaneID, Edge)
     }
     private enum PaneDrag {
         case tiled(PaneID, NSPoint)
@@ -374,7 +380,7 @@ final class WindowView: NSView {
     private func endDrag() {
         paneDrag = nil
         lastFloatCommand = nil
-        for chrome in subviews.compactMap({ $0 as? PaneChrome }) { chrome.drop = nil }
+        preview.rect = nil
     }
 
     private func updateDrag(_ event: NSEvent) {
@@ -412,37 +418,67 @@ final class WindowView: NSView {
         guard case .tiled(let source, let origin) = paneDrag else { return }
         let point = convert(event.locationInWindow, from: nil)
         let moved = hypot(event.locationInWindow.x - origin.x, event.locationInWindow.y - origin.y) >= 4
-        var drop: (chrome: PaneChrome, zone: DropZone, rect: CGRect)?
-        if moved, let chrome = subviews.reversed().compactMap({ $0 as? PaneChrome }).first(where: { !$0.isHidden && $0.frame.contains(point) }),
-           chrome.pane != source, shown?.visible.root.panes.first(where: { $0.id == chrome.pane })?.layer == .tiled {
-            let p = chrome.convert(point, from: self), b = chrome.bounds
-            let x = p.x / b.width, y = p.y / b.height
-            let zone: DropZone = x < 0.25 ? .left : x > 0.75 ? .right : y < 0.25 ? .top : y > 0.75 ? .bottom : .centre
-            let rect: CGRect = switch zone {
-            case .left: CGRect(x: 0, y: 0, width: b.width / 4, height: b.height)
-            case .right: CGRect(x: b.width * 0.75, y: 0, width: b.width / 4, height: b.height)
-            case .top: CGRect(x: 0, y: 0, width: b.width, height: b.height / 4)
-            case .bottom: CGRect(x: 0, y: b.height * 0.75, width: b.width, height: b.height / 4)
-            case .centre: b.insetBy(dx: b.width / 4, dy: b.height / 4)
+        var drop: (zone: DropZone, rect: CGRect)?
+        let tiled = shown?.visible.root.panes.filter { $0.layer == .tiled } ?? []
+        let chromes = subviews.reversed().compactMap { $0 as? PaneChrome }.filter { !$0.isHidden }
+        let hit = chromes.first { $0.frame.contains(point) }
+        if moved, tiled.count > 1, let placement,
+           hit == nil || tiled.contains(where: { $0.id == hit?.pane }) {
+            let area = tiled.map { placement.frame($0.geometry) }.reduce(CGRect.null) { $0.union($1) }
+            let outer = CGRect(x: bounds.minX, y: area.minY, width: bounds.width, height: bounds.maxY - area.minY)
+            let edge: Edge? = !outer.contains(point) ? nil
+                : point.x < area.minX + 22 ? .left : point.x > area.maxX - 22 ? .right
+                : point.y < area.minY + 22 ? .top : point.y > area.maxY - 22 ? .bottom : nil
+            if let edge, let target = tiled.first(where: { $0.id != source }) {
+                drop = (.window(target.id, edge), CGRect(x: area.minX, y: area.minY, width: bounds.maxX - area.minX, height: area.height))
+            } else if let hit, hit.pane != source {
+                let p = hit.convert(point, from: self), b = hit.bounds
+                let x = p.x / b.width, y = p.y / b.height
+                let edge: Edge? = x < 0.25 ? .left : x > 0.75 ? .right : y < 0.25 ? .top : y > 0.75 ? .bottom : nil
+                drop = (edge.map { .pane(hit.pane, $0) } ?? .centre(hit.pane), hit.frame)
             }
-            drop = (chrome, zone, rect)
+            if let (zone, rect) = drop {
+                let edge: Edge? = switch zone {
+                case .centre: nil
+                case .pane(_, let edge), .window(_, let edge): edge
+                }
+                let width: CGFloat, height: CGFloat
+                switch zone {
+                case .pane: width = 4; height = 4
+                default: width = rect.width / 2; height = rect.height / 2
+                }
+                let result: CGRect = switch edge {
+                case .left: CGRect(x: rect.minX, y: rect.minY, width: width, height: rect.height)
+                case .right: CGRect(x: rect.maxX - width, y: rect.minY, width: width, height: rect.height)
+                case .top: CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: height)
+                case .bottom: CGRect(x: rect.minX, y: rect.maxY - height, width: rect.width, height: height)
+                case nil: rect
+                }
+                drop = (zone, result)
+            }
         }
         if event.type != .leftMouseUp {
-            for chrome in subviews.compactMap({ $0 as? PaneChrome }) {
-                chrome.drop = drop?.chrome === chrome ? drop?.rect : nil
-            }
+            preview.rect = drop?.rect
             return
         }
         endDrag()
         focusActive(force: true)
-        guard let (chrome, zone, _) = drop else { return }
-        let target = chrome.pane
-        let command: Command = switch zone {
-        case .centre: Command("swap-pane", "-s", source, "-t", target)
-        case .left: Command("move-pane", "-s", source, "-t", target, "-h", "-b")
-        case .right: Command("move-pane", "-s", source, "-t", target, "-h")
-        case .top: Command("move-pane", "-s", source, "-t", target, "-v", "-b")
-        case .bottom: Command("move-pane", "-s", source, "-t", target, "-v")
+        guard let (zone, _) = drop else { return }
+        let command: Command
+        switch zone {
+        case .centre(let target): command = Command("swap-pane", "-s", source, "-t", target)
+        case .pane(let target, let edge), .window(let target, let edge):
+            let axis = edge == .left || edge == .right ? "-h" : "-v"
+            switch zone {
+            case .window where edge == .left || edge == .top:
+                command = Command("move-pane", "-s", source, "-t", target, "-f", axis, "-b")
+            case .window:
+                command = Command("move-pane", "-s", source, "-t", target, "-f", axis)
+            default:
+                command = edge == .left || edge == .top
+                    ? Command("move-pane", "-s", source, "-t", target, axis, "-b")
+                    : Command("move-pane", "-s", source, "-t", target, axis)
+            }
         }
         sendPane([command])
     }
