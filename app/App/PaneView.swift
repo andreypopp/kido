@@ -35,6 +35,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     nonisolated private var scrollDistance: Double? { target.withLock { $0 } }
     private var suppressMomentum = false
     private var scrollRevision = 0
+    private var scrollPending: Int?
     private var trimming: DispatchWorkItem?
     private var resyncing: DispatchWorkItem?
     private var thawing: DispatchWorkItem?
@@ -73,11 +74,13 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     nonisolated var historyEpoch: Int { gridChanged.withLock { epoch } }
     nonisolated(unsafe) private var epoch = 0
 
-    nonisolated func scrollPosition(distance: Double? = nil) -> ScrollPosition {
+    nonisolated func scrollPosition() -> ScrollPosition { scrollPosition(distance: nil)! }
+
+    nonisolated private func scrollPosition(distance: Double?) -> ScrollPosition? {
         var value = ghostty_surface_scrollbar_s()
         _ = ghostty_surface_scrollbar(surface, &value)
         if let distance {
-            for _ in 0..<3 {
+            for attempt in 0..<3 {
                 let top = max(0, Double(value.total - value.len) - distance)
                 let row = floor(top)
                 let pixels = Float(top - row) * Float(ghostty_surface_size(surface).cell_height_px)
@@ -85,7 +88,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
                     debug("scroll-apply pane=\(pane) time=\(CACurrentMediaTime()) distance=\(distance) row=\(value.offset) pixel=\(pixels) goal=\(scrollDistance ?? distance) history=\(value.total - value.len)")
                     break
                 }
-                guard ghostty_surface_scrollbar(surface, &value) else { break }
+                guard attempt < 2, ghostty_surface_scrollbar(surface, &value) else { return nil }
             }
         }
         return ScrollPosition(history: max(0, Int(value.total) - Int(value.len)), offset: Int(value.offset), rows: Int(value.len))
@@ -134,7 +137,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             target.withLock { $0 = $0.map { min(Double(limit), $0) } }
         }
         queueScroll()
-        scheduleTrim()
     }
 
     private func finishResize() {
@@ -190,22 +192,29 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func queueScroll() {
-        let distance = scrollDistance
+        guard scrollPending == nil else { return }
         let revision = scrollRevision
+        scrollPending = revision
         scrolling.async { [weak self] in
             guard let self else { return }
             defer { DispatchQueue.main.async { _ = self } }
+            let distance = scrollDistance
             let moved = scrollPosition(distance: distance)
             DispatchQueue.main.async {
-                guard self.scrollRevision == revision else { return }
-                self.scrollGeometry.position = moved
-                self.scrollPresentation = (moved, distance)
-                self.presentScroll()
-                self.finishResize()
+                guard self.scrollPending == revision else { return }
+                self.scrollPending = nil
+                if self.scrollRevision != revision { self.queueScroll(); return }
+                if let moved {
+                    self.scrollGeometry.position = moved
+                    self.scrollPresentation = (moved, distance)
+                    self.presentScroll()
+                    self.finishResize()
+                }
+                self.onScroll()
+                self.scheduleTrim()
+                if self.scrollDistance != distance { self.queueScroll() }
             }
         }
-        onScroll()
-        scheduleTrim()
     }
 
     private func scheduleTrim() {
@@ -228,11 +237,13 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             if let distance = scrollDistance {
                 let aligned = distance.rounded()
                 target.withLock { $0 = aligned }
-                let moved = scrollPosition(distance: aligned)
-                scrollGeometry.position = moved
-                scrollPresentation = (moved, aligned)
+                if let moved = scrollPosition(distance: aligned) {
+                    scrollGeometry.position = moved
+                    scrollPresentation = (moved, aligned)
+                }
             }
         }
+        scrollPending = nil
         presentScroll()
     }
 
