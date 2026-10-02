@@ -609,7 +609,7 @@ const DEFAULT_SESSION = "self-session";
 // same save/restore; the extensions read all of it once at module scope, so each
 // case still goes through freshExtensions() to pick it up.
 async function asSubagent<T>(sessionId: string, fn: () => Promise<T>, extra: Record<string, string> = {}): Promise<T> {
-  return withEnv({ KIDO_AGENT_PARENT_SESSION: "boss-session", KIDO_AGENT_RUN_ID: sessionId, ...extra }, fn);
+  return withEnv({ KIDO_AGENT_PARENT_SESSION: "boss-session", KIDO_AGENT_PARENT_PID: undefined, KIDO_AGENT_RUN_ID: sessionId, ...extra }, fn);
 }
 
 // Restores whatever was there. The extensions read their knobs once at module
