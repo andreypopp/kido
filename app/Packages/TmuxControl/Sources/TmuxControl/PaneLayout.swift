@@ -1,7 +1,14 @@
 import Foundation
 import CoreGraphics
 
-public struct PaneLayout {
+public struct PaneLayout: Equatable {
+    public enum ResizeEdge {
+        case left, right, top, bottom, topLeft, topRight, bottomLeft, bottomRight
+        public var left: Bool { self == .left || self == .topLeft || self == .bottomLeft }
+        public var right: Bool { self == .right || self == .topRight || self == .bottomRight }
+        public var top: Bool { self == .top || self == .topLeft || self == .topRight }
+        public var bottom: Bool { self == .bottom || self == .bottomLeft || self == .bottomRight }
+    }
     public static let minimumMargin = CGSize(width: 8, height: 6)
     public static let topMargin: CGFloat = 44
     public let client: CGSize
@@ -10,9 +17,11 @@ public struct PaneLayout {
     public let origin: CGPoint
     public let rightEdge: CGFloat
     private let cell: CGSize
+    private let bounds: CGRect
 
     public init(root: Node, bounds: CGRect, cell: CGSize, pixel: CGFloat) {
         self.cell = cell
+        self.bounds = bounds
         before = CGSize(width: floor((cell.width / pixel - 1) / 2) * pixel,
                         height: floor((cell.height / pixel - 1) / 2) * pixel)
         after = CGSize(width: cell.width - pixel - before.width, height: cell.height - pixel - before.height)
@@ -35,6 +44,36 @@ public struct PaneLayout {
         let grid = grid(g)
         return CGRect(x: grid.minX - before.width, y: grid.minY - before.height,
                       width: grid.width + before.width + after.width, height: grid.height + before.height + after.height)
+    }
+
+    public func geometry(_ frame: CGRect) -> Geometry {
+        Geometry(x: Int(((frame.minX + before.width - origin.x) / cell.width).rounded()),
+                 y: Int(((frame.minY + before.height - origin.y) / cell.height).rounded()),
+                 width: max(2, Int(((frame.width - before.width - after.width) / cell.width).rounded())),
+                 height: max(2, Int(((frame.height - before.height - after.height) / cell.height).rounded())))
+    }
+
+    public var floatingBounds: CGRect {
+        CGRect(x: origin.x - before.width, y: origin.y - before.height,
+               width: client.width * cell.width + before.width + after.width,
+               height: client.height * cell.height + before.height + after.height)
+    }
+
+    public func clamp(_ frame: CGRect, resizing edge: ResizeEdge? = nil) -> CGRect {
+        let area = floatingBounds
+        var r = frame
+        if let edge {
+            if edge.left { let x = max(area.minX, r.minX); r.size.width = r.maxX - x; r.origin.x = x }
+            if edge.right { r.size.width = min(r.maxX, area.maxX) - r.minX }
+            if edge.top { let y = max(area.minY, r.minY); r.size.height = r.maxY - y; r.origin.y = y }
+            if edge.bottom { r.size.height = min(r.maxY, area.maxY) - r.minY }
+        } else {
+            r.size.width = min(r.width, area.width)
+            r.size.height = min(r.height, area.height)
+            r.origin.x = min(max(area.minX, r.minX), area.maxX - r.width)
+            r.origin.y = min(max(area.minY, r.minY), area.maxY - r.height)
+        }
+        return r
     }
 
     public func line(_ divider: Divider, pixel: CGFloat) -> CGRect {
