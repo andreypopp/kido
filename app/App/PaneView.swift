@@ -39,6 +39,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private var scrollPresentation = (position: ScrollPosition(history: 0, offset: 0, rows: 1), distance: Optional<Double>.none)
     nonisolated private let target = OSAllocatedUnfairLock<Double?>(initialState: nil)
     nonisolated private let scrolling = DispatchQueue(label: "kido.scroll", qos: .userInteractive)
+    nonisolated private let viewport = OSAllocatedUnfairLock(initialState: 0)
     nonisolated var scrollTarget: Int? { target.withLock { $0.map { Int($0.rounded(.up)) } } }
     nonisolated private var scrollDistance: Double? { target.withLock { $0 } }
     private var suppressMomentum = false
@@ -82,24 +83,37 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     nonisolated var historyEpoch: Int { gridChanged.withLock { epoch } }
     nonisolated(unsafe) private var epoch = 0
 
-    nonisolated func scrollPosition() -> ScrollPosition { scrollPosition(distance: nil)! }
-
-    nonisolated private func scrollPosition(distance: Double?) -> ScrollPosition? {
+    nonisolated func scrollPosition() -> ScrollPosition {
         var value = ghostty_surface_scrollbar_s()
         _ = ghostty_surface_scrollbar(surface, &value)
-        if let distance {
-            for attempt in 0..<3 {
-                let top = max(0, Double(value.total - value.len) - distance)
-                let row = floor(top)
-                let pixels = Float(top - row) * Float(ghostty_surface_size(surface).cell_height_px)
-                if ghostty_surface_scroll_to_row_pixel_if_revision(surface, UInt64(row), pixels, value.row_space_revision, &value) {
-                    debug("scroll-apply pane=\(pane) time=\(CACurrentMediaTime()) distance=\(distance) row=\(value.offset) pixel=\(pixels) goal=\(scrollDistance ?? distance) history=\(value.total - value.len)")
-                    break
-                }
-                guard attempt < 2, ghostty_surface_scrollbar(surface, &value) else { return nil }
-            }
-        }
         return ScrollPosition(history: max(0, Int(value.total) - Int(value.len)), offset: Int(value.offset), rows: Int(value.len))
+    }
+
+    nonisolated private func scrollPosition(distance: Double) -> (position: ScrollPosition, viewportDelta: Int)? {
+        var value = ghostty_surface_scrollbar_s()
+        guard ghostty_surface_scrollbar(surface, &value) else { return nil }
+        for attempt in 0..<3 {
+            let top = max(0, Double(value.total - value.len) - distance)
+            let row = floor(top)
+            let pixels = Float(top - row) * Float(ghostty_surface_size(surface).cell_height_px)
+            var delta: Int64 = 0
+            let expectedRevision = value.row_space_revision
+            #if KIDO_STRESS
+            let revision = applyProbe.withLock { probe in
+                if attempt > 0 { probe.retries += 1 }
+                defer { probe.failNext = false }
+                return probe.failNext ? expectedRevision ^ 1 : expectedRevision
+            }
+            #else
+            let revision = expectedRevision
+            #endif
+            if ghostty_surface_scroll_to_row_pixel_if_revision(surface, UInt64(row), pixels, revision, &value, &delta) {
+                debug("scroll-apply pane=\(pane) time=\(CACurrentMediaTime()) distance=\(distance) row=\(value.offset) pixel=\(pixels) goal=\(scrollDistance ?? distance) history=\(value.total - value.len)")
+                return (ScrollPosition(history: max(0, Int(value.total) - Int(value.len)), offset: Int(value.offset), rows: Int(value.len)), Int(delta))
+            }
+            guard attempt < 2, ghostty_surface_scrollbar(surface, &value) else { return nil }
+        }
+        return nil
     }
 
     nonisolated func prepend(_ bytes: Data, epoch expected: Int) -> Int {
@@ -207,8 +221,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         scrolling.async { [weak self] in
             guard let self else { return }
             defer { DispatchQueue.main.async { _ = self } }
-            let distance = scrollDistance
-            let moved = scrollPosition(distance: distance)
+            let (distance, moved) = viewport.withLock { _ in
+                let distance = scrollDistance
+                let moved = if let distance { scrollPosition(distance: distance)?.position } else { scrollPosition() }
+                return (distance, moved)
+            }
             DispatchQueue.main.async {
                 guard self.scrollPending == revision else { return }
                 self.scrollPending = nil
@@ -242,19 +259,143 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         suppressMomentum = true
         wheelRemainder = 0
         scrollRevision += 1
-        scrolling.sync {
-            if let distance = scrollDistance {
-                let aligned = distance.rounded()
-                target.withLock { $0 = aligned }
-                if let moved = scrollPosition(distance: aligned) {
-                    scrollGeometry.position = moved
-                    scrollPresentation = (moved, aligned)
-                }
-            }
+        #if KIDO_STRESS
+        snapProbe?()
+        #endif
+        let applied = viewport.withLock { adjustment -> (ScrollPosition, Double)? in
+            guard let distance = scrollDistance else { return nil }
+            let aligned = distance.rounded()
+            target.withLock { $0 = aligned }
+            guard let moved = scrollPosition(distance: aligned) else { return nil }
+            adjustment += moved.viewportDelta
+            return (moved.position, aligned)
         }
-        scrollPending = nil
+        if let (moved, aligned) = applied {
+            scrollGeometry.position = moved
+            scrollPresentation = (moved, aligned)
+        }
         presentScroll()
     }
+
+    #if KIDO_STRESS
+    nonisolated private let feedProbe = OSAllocatedUnfairLock<(before: @Sendable () -> Void, after: @Sendable () -> Void)?>(initialState: nil)
+    private var snapProbe: (() -> Void)?
+    nonisolated private let applyProbe = OSAllocatedUnfairLock(initialState: (failNext: false, retries: 0))
+
+    func verifyMailboxPressure(_ reached: DispatchSemaphore) {
+        let progress = OSAllocatedUnfairLock<(thread: mach_port_t?, wakes: Int)>(initialState: (nil, 0))
+        feedProbe.withLock { $0 = (before: { progress.withLock { $0.thread = pthread_mach_thread_np(pthread_self()) } }, after: {}) }
+        GhosttyRuntime.observeWakeups(surface) {
+            let saturated = progress.withLock { value in
+                guard value.thread == pthread_mach_thread_np(pthread_self()) else { return false }
+                value.wakes += 1
+                return value.wakes == 65
+            }
+            if saturated { reached.signal() }
+        }
+    }
+
+    func verifySearchInputPressure() -> Bool {
+        let entered = DispatchSemaphore(value: 0)
+        GhosttyRuntime.observeWakeups(surface) {
+            var name = [CChar](repeating: 0, count: 32)
+            pthread_getname_np(pthread_self(), &name, name.count)
+            if name.prefix(6).elementsEqual("search".utf8.map { CChar($0) }) { entered.signal() }
+        }
+        let needle = "search:row"
+        guard ghostty_surface_binding_action(surface, needle, UInt(needle.utf8.count)),
+              entered.wait(timeout: .now() + 2) == .success else { return false }
+        for i in 0..<256 {
+            let action = i % 2 == 0 ? "navigate_search:next" : "navigate_search:previous"
+            guard ghostty_surface_binding_action(surface, action, UInt(action.utf8.count)) else { return false }
+        }
+        let latest = "search:row4"
+        guard ghostty_surface_binding_action(surface, latest, UInt(latest.utf8.count)) else { return false }
+        let stop = "search:"
+        return ghostty_surface_binding_action(surface, stop, UInt(stop.utf8.count))
+    }
+
+    func finishMailboxPressure() {
+        GhosttyRuntime.observeWakeups(surface, nil)
+        feedProbe.withLock { $0 = nil }
+    }
+
+    func verifySnapAccounting(snaps: Int, bottom: Bool, retry: Bool, completion: @escaping @MainActor @Sendable (Bool) -> Void) {
+        clearScrollTarget()
+        DispatchQueue.global().async {
+            self.feed(Data(("\u{1b}c" + (0..<500).map { "row\($0)\r\n" }.joined()).utf8))
+            DispatchQueue.main.async {
+                let history = self.scrollPosition().history
+                _ = self.viewport.withLock { _ in self.scrollPosition(distance: 21) }
+                self.target.withLock { $0 = 20.25 }
+                let started = DispatchSemaphore(value: 0), proceed = DispatchSemaphore(value: 0)
+                let parsed = DispatchSemaphore(value: 0), finish = DispatchSemaphore(value: 0)
+                self.feedProbe.withLock { $0 = (
+                    before: { started.signal(); guard proceed.wait(timeout: .now() + 2) == .success else { exit(1) } },
+                    after: { parsed.signal(); guard finish.wait(timeout: .now() + 2) == .success else { exit(1) } }
+                ) }
+                self.snapProbe = {
+                    proceed.signal()
+                    guard parsed.wait(timeout: .now() + 2) == .success else { exit(1) }
+                }
+                DispatchQueue.global().async {
+                    self.feed(Data((500..<510).map { "row\($0)\r\n" }.joined().utf8))
+                    DispatchQueue.main.async {
+                        self.feedProbe.withLock { $0 = nil }
+                        let distance = self.scrollDistance
+                        let expectedDistance = bottom ? 0.0 : snaps == 2 ? 27.0 : 30.0
+                        let expectedOffset = bottom ? history + 10 : history - (snaps == 2 ? 17 : 20)
+                        self.queueScroll()
+                        self.scrolling.async {
+                            DispatchQueue.main.async {
+                                let position = self.scrollPosition()
+                                note("snap accounting target=\(distance ?? -1) expected=\(expectedDistance) offset=\(position.offset) expectedOffset=\(expectedOffset)")
+                                let retried = self.applyProbe.withLock { $0.retries }
+                                completion(distance == expectedDistance && position.offset == expectedOffset && (!retry || retried == 1))
+                            }
+                        }
+                    }
+                }
+                guard started.wait(timeout: .now() + 2) == .success else { exit(1) }
+                self.applyProbe.withLock { $0 = (retry, 0) }
+                if bottom { self.target.withLock { $0 = 0 } }
+                self.snapScroll()
+                self.snapProbe = nil
+                if snaps == 2 {
+                    self.target.withLock { $0 = 17.4 }
+                    self.snapScroll()
+                }
+                finish.signal()
+            }
+        }
+    }
+
+    func verifyFractionalClick() -> Bool {
+        let moved = viewport.withLock { _ in
+            target.withLock { $0 = 20.25 }
+            return scrollPosition(distance: 20.25)?.position
+        }
+        guard let moved else { return false }
+        scrollGeometry.position = moved
+        scrollPresentation = (moved, 20.25)
+        presentScroll()
+        let point = convert(NSPoint(x: cell.width * 2, y: bounds.height - historyStrip - cell.height * 0.9), to: nil)
+        let event = NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 1,
+                                     windowNumber: window!.windowNumber, context: nil, eventNumber: 0, clickCount: 2, pressure: 1)!
+        for _ in 0..<2 {
+            mouseDown(with: event)
+            mouseUp(with: NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: [], timestamp: 1,
+                                           windowNumber: window!.windowNumber, context: nil, eventNumber: 0, clickCount: 2, pressure: 0)!)
+        }
+        let position = scrollPosition()
+        var text = ghostty_text_s()
+        guard ghostty_surface_read_selection(surface, &text), let bytes = text.text else { return false }
+        defer { ghostty_surface_free_text(surface, &text) }
+        let selected = String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(text.text_len)), as: UTF8.self)
+        note("fractional click selected=\(selected) offset=\(position.offset) history=\(position.history) distance=\(scrollDistance ?? -1)")
+        return scrollDistance == 20 && position.history - position.offset == 20 && selected == "row\(position.offset)"
+    }
+    #endif
 
     func resetScroll() {
         snapScroll()
@@ -289,13 +430,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     // thread, and never while the reader may feed it (Connection).
     nonisolated(unsafe) private(set) var surface: ghostty_surface_t!
 
-    // Ghostty resizes the terminal on its IO thread at least 25ms after
-    // set_grid_size (termio/Thread.zig), so output fed before that lands in
-    // the old grid. grid_metrics reads the terminal's grid under the renderer
-    // lock, making the IO thread yield to it (renderer/State.zig lockDemand),
-    // so main polls it from 25ms on to confirm a new grid, and feed waits for
-    // that. Output a grid never confirmed is dropped, and the pane is captured
-    // again once it is, or once the confirmation is given up.
+    // MANUAL_MIRROR applies set_grid_size inline (termio/Termio.zig);
+    // grid_metrics confirms the actual terminal grid under its renderer lock.
     private enum Grid {
         case confirmed
         case pending(until: Date)
@@ -430,16 +566,27 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         }
         guard confirmed else { return }
         scrolling.sync {
-            let pinned = scrollDistance.map { $0 > 0 } == true ? scrollPosition() : nil
+            let pinned = viewport.withLock { adjustment in
+                scrollDistance.map { $0 > 0 } == true ? (scrollPosition(), adjustment) : nil
+            }
+            #if KIDO_STRESS
+            let probes = feedProbe.withLock { $0 }
+            probes?.before()
+            #endif
             bytes.withUnsafeBytes { buffer in
                 guard let base = buffer.baseAddress else { return }
                 ghostty_surface_process_output(surface, base.assumingMemoryBound(to: CChar.self), UInt(buffer.count))
             }
-            if let pinned {
-                let position = scrollPosition()
-                let delta = (position.history - position.offset) - (pinned.history - pinned.offset)
-                target.withLock {
-                    if let distance = $0, distance > 0 { $0 = max(0, distance + Double(delta)) }
+            #if KIDO_STRESS
+            probes?.after()
+            #endif
+            if let (pinned, before) = pinned {
+                viewport.withLock { adjustment in
+                    let position = scrollPosition()
+                    let delta = (position.history - position.offset) - (pinned.history - pinned.offset) - (adjustment - before)
+                    target.withLock {
+                        if let distance = $0, distance > 0 { $0 = max(0, distance + Double(delta)) }
+                    }
                 }
             }
             let captured = ghostty_surface_mouse_captured(surface), alternate = ghostty_surface_is_alternate_screen(surface)
