@@ -181,7 +181,16 @@ pane shows the window’s shared glass toolbar only in its top-right hot
 zone: the toolbar frame plus 24pt to its left and below, clipped to the
 pane. It splits, zooms and closes through the same commands as the menus.
 The toolbar's grip drags a tiled pane: the target's outer quarters dock
-left, right, above or below; its centre swaps. The accent highlight follows
+left, right, above or below; its centre swaps. The outer margin and a 22pt
+band inside the tiled area's edges take precedence, docking across the whole
+window with `move-pane -f`. Window edges preview the resulting half-window;
+centre drops preview the whole target for a swap. Pane edges show a 4pt
+insertion bar, not a predicted size: tmux splits the target before removing
+the source and redistributes its space (`third_party/tmux/cmd-join-pane.c`,
+`cmd_join_pane_exec`), so predicting that size would duplicate its layout code.
+Window-edge drops let
+tmux handle already-spanning panes; one tiled pane has no drop targets.
+The accent highlight follows
 the effective appearance. A drop sends one `move-pane` or `swap-pane`, and
 only tmux's layout notification moves the views. A click, Escape, a drop
 on the source or a floating pane cancels. Dragging is disabled while zoomed.
