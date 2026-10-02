@@ -9,6 +9,12 @@ public struct PaneLayout: Equatable {
         public var top: Bool { self == .top || self == .topLeft || self == .topRight }
         public var bottom: Bool { self == .bottom || self == .bottomLeft || self == .bottomRight }
     }
+    public struct TiledPlacement: Equatable {
+        public let grid: CGRect
+        public let content: CGRect
+        public let chrome: CGRect
+        public let inset: CGFloat
+    }
     public static let minimumMargin = CGSize(width: 4, height: 2)
     public static let topMargin: CGFloat = 40
     public let client: CGSize
@@ -20,6 +26,7 @@ public struct PaneLayout: Equatable {
     private let cell: CGSize
     private let bounds: CGRect
     private let bottom: CGFloat
+    private let rootTop: Int
 
     public init(root: Node, bounds: CGRect, cell: CGSize, pixel: CGFloat) {
         self.cell = cell
@@ -32,10 +39,11 @@ public struct PaneLayout: Equatable {
         client = CGSize(width: max(1, floor((bounds.width - 2 * Self.minimumMargin.width - cell.width + pixel) / cell.width)),
                         height: max(1, floor((bounds.height - top - Self.minimumMargin.height) / cell.height)))
         let g: Geometry = switch root { case .pane(let p): p.geometry; case .split(_, let g, _): g }
+        rootTop = g.y
         origin = CGPoint(
             x: bounds.minX + floor((bounds.width - CGFloat(g.width) * cell.width - before.width - after.width) / (2 * pixel)) * pixel + before.width,
             y: bottom - CGFloat(g.y + g.height) * cell.height)
-        historyStrip = max(0, min(cell.height - pixel, origin.y - bounds.minY - top))
+        historyStrip = max(0, min(cell.height - pixel, origin.y + CGFloat(g.y) * cell.height - bounds.minY - top))
         rightEdge = origin.x + CGFloat(g.x + g.width) * cell.width
     }
 
@@ -48,6 +56,17 @@ public struct PaneLayout: Equatable {
         let grid = grid(g)
         return CGRect(x: grid.minX - before.width, y: grid.minY - before.height,
                       width: grid.width + before.width + after.width, height: grid.height + before.height + after.height)
+    }
+
+    public func tiled(_ g: Geometry, alternate: Bool) -> TiledPlacement {
+        let grid = grid(g)
+        let inset = g.y == rootTop && !alternate ? historyStrip : 0
+        let content = CGRect(x: grid.minX, y: grid.minY - inset, width: grid.width, height: grid.height + inset)
+        var chrome = frame(g)
+        if grid.maxX == rightEdge { chrome.size.width = bounds.maxX - chrome.minX }
+        chrome.origin.y = min(chrome.minY, content.minY)
+        chrome.size.height = min(grid.maxY + after.height, bounds.maxY) - chrome.minY
+        return TiledPlacement(grid: grid, content: content, chrome: chrome, inset: inset)
     }
 
     public func geometry(_ frame: CGRect) -> Geometry {
@@ -83,8 +102,8 @@ public struct PaneLayout: Equatable {
     public func line(_ divider: Divider, pixel: CGFloat) -> CGRect {
         let rect = grid(divider.geometry)
         if divider.direction == .leftRight {
-            let top = divider.geometry.y == 0
-                ? max(bounds.minY + ceil(Self.topMargin / pixel) * pixel, rect.minY - historyStrip)
+            let top = divider.geometry.y == rootTop
+                ? max(bounds.minY + ceil(Self.topMargin / pixel) * pixel, tiled(divider.geometry, alternate: false).content.minY)
                 : rect.minY - before.height
             return CGRect(x: rect.minX + after.width, y: top, width: pixel,
                           height: min(rect.maxY + after.height, bottom) - top)
