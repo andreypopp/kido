@@ -3,6 +3,62 @@ import Foundation
 import Testing
 @testable import TmuxControl
 
+@Test(arguments: [CGFloat(1), CGFloat(0.5)])
+func floatingGeometry(pixel: CGFloat) {
+    let cell = CGSize(width: 8, height: 17)
+    let g = Geometry(x: 10, y: 8, width: 20, height: 10)
+    let root = Node.pane(Pane(id: PaneID(number: 0), index: 0,
+        geometry: Geometry(x: 0, y: 0, width: 100, height: 40), focus: .active, layer: .tiled))
+    let layout = PaneLayout(root: root, bounds: CGRect(x: 0, y: 0, width: 824, height: 750), cell: cell, pixel: pixel)
+    let initial = layout.frame(g)
+    #expect(layout.geometry(initial) == g)
+    let bordered = Geometry(x: g.x + 1, y: g.y + 1, width: g.width - 2, height: g.height - 2)
+    let borderFrame = layout.frame(bordered)
+    #expect(layout.geometry(borderFrame) == bordered)
+    #expect(borderFrame.minX == initial.minX + cell.width)
+    #expect(borderFrame.minY == initial.minY + cell.height)
+    #expect(borderFrame.width == initial.width - 2 * cell.width)
+    #expect(borderFrame.height == initial.height - 2 * cell.height)
+    for delta in [CGFloat(3.99), 4, 4.01] {
+        let moved = initial.offsetBy(dx: delta, dy: 0)
+        #expect(layout.geometry(moved).x == g.x + (delta < 4 ? 0 : 1))
+        var sized = initial
+        sized.size.width += delta
+        #expect(layout.geometry(sized).width == g.width + (delta < 4 ? 0 : 1))
+    }
+    for delta in [CGFloat(8.49), 8.5, 8.51] {
+        #expect(layout.geometry(initial.offsetBy(dx: 0, dy: delta)).y == g.y + (delta < 8.5 ? 0 : 1))
+        var sized = initial
+        sized.size.height += delta
+        #expect(layout.geometry(sized).height == g.height + (delta < 8.5 ? 0 : 1))
+    }
+    let minimum = layout.frame(Geometry(x: 0, y: 0, width: 2, height: 2))
+    #expect(layout.geometry(minimum).width == 2 && layout.geometry(minimum).height == 2)
+    #expect(minimum.width == 2 * cell.width + layout.before.width + layout.after.width)
+    #expect(minimum.height == 2 * cell.height + layout.before.height + layout.after.height)
+    #expect(layout.geometry(CGRect(x: initial.minX, y: initial.minY, width: 1, height: 1)).width == 2)
+    #expect(layout.geometry(CGRect(x: initial.minX, y: initial.minY, width: 1, height: 1)).height == 2)
+    var right = initial
+    right.size.width = 2000
+    let clampedRight = layout.clamp(right, resizing: .right)
+    #expect(clampedRight.minX == initial.minX)
+    #expect(clampedRight.maxX == layout.floatingBounds.maxX)
+    var bottom = initial
+    bottom.size.height = 2000
+    let clampedBottom = layout.clamp(bottom, resizing: .bottom)
+    #expect(clampedBottom.minY == initial.minY)
+    #expect(clampedBottom.maxY == layout.floatingBounds.maxY)
+    let left = CGRect(x: -1000, y: initial.minY, width: initial.maxX + 1000, height: initial.height)
+    let top = CGRect(x: initial.minX, y: -1000, width: initial.width, height: initial.maxY + 1000)
+    #expect(layout.clamp(left, resizing: .left).maxX == initial.maxX)
+    #expect(layout.clamp(left, resizing: .left).minX == layout.floatingBounds.minX)
+    #expect(layout.clamp(top, resizing: .top).maxY == initial.maxY)
+    #expect(layout.clamp(top, resizing: .top).minY == layout.floatingBounds.minY)
+    #expect(layout.floatingBounds.contains(layout.clamp(initial.offsetBy(dx: 2000, dy: 2000))))
+    #expect(initial.minX == layout.origin.x + 10 * cell.width - layout.before.width)
+    #expect(initial.minY == layout.origin.y + 8 * cell.height - layout.before.height)
+}
+
 @Test(arguments: [CGSize(width: 563, height: 500), CGSize(width: 664, height: 560), CGSize(width: 1281, height: 803)], [CGFloat(1), CGFloat(0.5)])
 func paddedLayout(area: CGSize, pixel: CGFloat) {
     let cell = CGSize(width: 8, height: 17)
