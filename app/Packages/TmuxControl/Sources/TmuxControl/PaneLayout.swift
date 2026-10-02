@@ -9,7 +9,7 @@ public struct PaneLayout: Equatable {
         public var top: Bool { self == .top || self == .topLeft || self == .topRight }
         public var bottom: Bool { self == .bottom || self == .bottomLeft || self == .bottomRight }
     }
-    public static let minimumMargin = CGSize(width: 4, height: 0)
+    public static let minimumMargin = CGSize(width: 4, height: 2)
     public static let topMargin: CGFloat = 40
     public let client: CGSize
     public let before: CGSize
@@ -19,6 +19,7 @@ public struct PaneLayout: Equatable {
     public let historyStrip: CGFloat
     private let cell: CGSize
     private let bounds: CGRect
+    private let bottom: CGFloat
 
     public init(root: Node, bounds: CGRect, cell: CGSize, pixel: CGFloat) {
         self.cell = cell
@@ -27,12 +28,13 @@ public struct PaneLayout: Equatable {
                         height: floor((cell.height / pixel - 1) / 2) * pixel)
         after = CGSize(width: cell.width - pixel - before.width, height: cell.height - pixel - before.height)
         let top = ceil(Self.topMargin / pixel) * pixel
+        bottom = floor((bounds.maxY - Self.minimumMargin.height) / pixel) * pixel
         client = CGSize(width: max(1, floor((bounds.width - 2 * Self.minimumMargin.width - cell.width + pixel) / cell.width)),
-                        height: max(1, floor((bounds.height - top) / cell.height)))
+                        height: max(1, floor((bounds.height - top - Self.minimumMargin.height) / cell.height)))
         let g: Geometry = switch root { case .pane(let p): p.geometry; case .split(_, let g, _): g }
         origin = CGPoint(
             x: bounds.minX + floor((bounds.width - CGFloat(g.width) * cell.width - before.width - after.width) / (2 * pixel)) * pixel + before.width,
-            y: bounds.maxY - CGFloat(g.y + g.height) * cell.height)
+            y: bottom - CGFloat(g.y + g.height) * cell.height)
         historyStrip = max(0, min(cell.height - pixel, origin.y - bounds.minY - top))
         rightEdge = origin.x + CGFloat(g.x + g.width) * cell.width
     }
@@ -58,7 +60,7 @@ public struct PaneLayout: Equatable {
     public var floatingBounds: CGRect {
         CGRect(x: origin.x - before.width, y: origin.y - before.height,
                width: client.width * cell.width + before.width + after.width,
-               height: max(0, bounds.maxY - origin.y + before.height))
+               height: max(0, bottom - origin.y + before.height))
     }
 
     public func clamp(_ frame: CGRect, resizing edge: ResizeEdge? = nil) -> CGRect {
@@ -85,7 +87,7 @@ public struct PaneLayout: Equatable {
                 ? max(bounds.minY + ceil(Self.topMargin / pixel) * pixel, rect.minY - historyStrip)
                 : rect.minY - before.height
             return CGRect(x: rect.minX + after.width, y: top, width: pixel,
-                          height: min(rect.maxY + after.height, bounds.maxY) - top)
+                          height: min(rect.maxY + after.height, bottom) - top)
         }
         return CGRect(x: rect.minX - before.width, y: rect.minY + after.height, width: rect.width + before.width + after.width, height: pixel)
     }
