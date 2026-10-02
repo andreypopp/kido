@@ -261,9 +261,18 @@ final class WindowView: NSView {
         if floating {
             grid.origin = CGPoint(x: frame.minX + placement.before.width, y: frame.minY + placement.before.height)
         } else if grid.maxX == placement.rightEdge { frame.size.width = bounds.maxX - frame.minX }
+        let strip = !floating && g.y == 0 && !view.alternate ? placement.historyStrip : 0
+        let content = CGRect(x: grid.minX, y: grid.minY - strip, width: grid.width, height: grid.height + strip)
+        if !floating {
+            frame.origin.y = min(frame.minY, content.minY)
+            frame.size.height = min(grid.maxY + placement.after.height, bounds.maxY) - frame.minY
+        }
         if chrome.frame != frame { chrome.frame = frame }
-        if view.frame != grid { view.frame = grid }
-        chrome.grid = CGRect(origin: CGPoint(x: placement.before.width, y: placement.before.height), size: grid.size)
+        view.historyStrip = strip
+        view.onAlternateChange = { [weak self] in self?.place() }
+        if view.frame != content { view.frame = content }
+        chrome.grid = grid.offsetBy(dx: -frame.minX, dy: -frame.minY)
+        chrome.content = content.offsetBy(dx: -frame.minX, dy: -frame.minY)
         chrome.drag = floating && !zoomed ? { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0) } : nil
         chrome.wantsLayer = true
         chrome.layer?.cornerRadius = floating ? floatingRadius : 0
@@ -279,7 +288,7 @@ final class WindowView: NSView {
         if view.scroller.superview !== chrome { chrome.addSubview(view.scroller, positioned: .below, relativeTo: nil) }
         view.scroller.select = view.onSelect
         let scrollerFrame = CGRect(x: max(0, chrome.bounds.maxX - 12),
-                                   y: chrome.grid.minY, width: 12, height: chrome.grid.height)
+                                   y: chrome.content.minY, width: 12, height: chrome.content.height)
         if view.scroller.frame != scrollerFrame { view.scroller.frame = scrollerFrame }
     }
 
