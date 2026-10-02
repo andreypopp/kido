@@ -222,9 +222,11 @@ drawn frame but outside the Ghostty grid, including the fractional right/bottom
 remainder. The 5pt resize edges and corners, toolbar and scroller strip take
 precedence; terminal clicks remain Ghostty's. Padding cursor rects show an open
 hand. A moving or resizing float holds its gesture cursor, with the window's
-cursor rects disabled until release or cancellation. Placement requests no cursor
-invalidation during that gesture; release enables and invalidates them once,
-so overlapping floats use their current frames immediately. Tiled padding
+cursor rects disabled until release or cancellation. Disconnect, removal from the
+window, window resignation or closing, and app deactivation cancel the gesture.
+Placement requests no cursor invalidation during that gesture; release enables
+and invalidates the acquired window's rects once, so overlapping floats use their
+current frames immediately. Tiled padding
 still only selects. WindowView keeps a view-only free frame
 per float after release. Coalesced, one-in-flight command batches send its
 rounded cell geometry to tmux with the border-dependent position and size
