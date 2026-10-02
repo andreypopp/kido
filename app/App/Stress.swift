@@ -11,9 +11,15 @@ final class StressWindow: NSWindow {
 typealias AppWindow = StressWindow
 
 @MainActor final class Stress {
-    private static let names = [
-        "wheel", "wheel", "scroller-drag", "scroller-drag", "scroll-request", "find", "find-next", "find-close-resync",
-        "resize-burst", "load-more", "grip-drag", "grip-drag-kill", "appearance", "edge-resize", "detach-reconnect",
+    private enum Action: String {
+        case wheel, scrollerDrag = "scroller-drag", scrollRequest = "scroll-request"
+        case find, findNext = "find-next", findCloseResync = "find-close-resync"
+        case resizeBurst = "resize-burst", loadMore = "load-more", gripDrag = "grip-drag"
+        case gripDragKill = "grip-drag-kill", appearance, edgeResize = "edge-resize", detachReconnect = "detach-reconnect"
+    }
+    private static let actions: [Action] = [
+        .wheel, .wheel, .scrollerDrag, .scrollerDrag, .scrollRequest, .find, .findNext, .findCloseResync,
+        .resizeBurst, .loadMore, .gripDrag, .gripDragKill, .appearance, .edgeResize, .detachReconnect,
     ]
     private let window: NSWindow
     private let send: ([Command]) -> Void
@@ -56,18 +62,10 @@ typealias AppWindow = StressWindow
         return list.count { ($0[kCGWindowOwnerPID as String] as? Int32) == getpid() }
     }
 
-    private func mouse(_ type: NSEvent.EventType, _ point: NSPoint) {
-        let time = ProcessInfo.processInfo.systemUptime
-        func event(_ type: NSEvent.EventType, pressure: Float) -> NSEvent? {
-            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: time, windowNumber: window.windowNumber,
-                               context: nil, eventNumber: step, clickCount: 1, pressure: pressure)
-        }
-        guard let e = event(type, pressure: 1) else { return }
-        if type == .leftMouseDown, let hit = window.contentView.flatMap({ $0.hitTest($0.convert(point, from: nil)) }),
-           hit is NSButton, (hit as? IconButton)?.press == nil, let up = event(.leftMouseUp, pressure: 0) {
-            NSApp.postEvent(up, atStart: false)
-        }
-        window.sendEvent(e)
+    private func event(_ type: NSEvent.EventType, _ point: NSPoint) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                          windowNumber: window.windowNumber, context: nil, eventNumber: step, clickCount: 1,
+                          pressure: type == .leftMouseUp ? 0 : 1)!
     }
 
     private func tick() {
@@ -79,86 +77,119 @@ typealias AppWindow = StressWindow
         }
         let all = window.contentView.map(views) ?? []
         let panes = visible(all, PaneView.self)
-        var n = random(Self.names.count)
-        if env["STRESS_NO_FIND"] == "1" && (n == 5 || n == 6) { n = 4 }
+        var action = Self.actions[random(Self.actions.count)]
+        if env["STRESS_NO_FIND"] == "1" {
+            switch action {
+            case .find, .findNext: action = .scrollRequest
+            default: break
+            }
+        }
+        for view in visible(all, WindowView.self) {
+            view.stressEvent = { [weak self] event, detail in
+                guard let self else { return }
+                self.counts[event, default: 0] += 1
+                self.log(["tick": self.step, "event": event, "detail": detail])
+            }
+        }
         let pane = panes.isEmpty ? nil : panes[random(panes.count)]
-        counts[Self.names[n], default: 0] += 1
-        log(["step": step, "action": Self.names[n], "pane": pane?.pane.description ?? "", "panes": panes.count,
+        counts[action.rawValue, default: 0] += 1
+        log(["step": step, "action": action.rawValue, "pane": pane?.pane.description ?? "", "panes": panes.count,
              "visible": window.isVisible, "key": window.isKeyWindow, "main": window.isMainWindow,
              "active": NSApp.isActive, "onScreenWindows": onScreen()])
-        if let pane { perform(n, pane, all) }
+        if let pane { perform(action, pane, all) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.tick() }
     }
 
-    private func perform(_ n: Int, _ pane: PaneView, _ all: [NSView]) {
-        switch n {
-        case 0, 1:
+    private func perform(_ action: Action, _ pane: PaneView, _ all: [NSView]) {
+        switch action {
+        case .wheel:
             let delta = Int32(random(2) == 0 ? 1500 : -500)
             if let cg = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0),
                let e = NSEvent(cgEvent: cg) {
                 pane.scrollWheel(with: e)
             }
-        case 2, 3:
+        case .scrollerDrag:
             do {
                 let scroller = pane.scroller
                 let x = scroller.bounds.midX
                 let from = scroller.convert(NSPoint(x: x, y: scroller.bounds.height * 0.75), to: nil)
                 let to = scroller.convert(NSPoint(x: x, y: CGFloat(random(20)) / 20 * scroller.bounds.height), to: nil)
-                mouse(.leftMouseDown, from); mouse(.leftMouseDragged, to); mouse(.leftMouseUp, to)
+                scroller.mouseDown(with: event(.leftMouseDown, from))
+                scroller.mouseDragged(with: event(.leftMouseDragged, to))
+                scroller.mouseUp(with: event(.leftMouseUp, to))
             }
-        case 4:
+        case .scrollRequest:
             pane.requestScroll(random(3) == 0 ? 1000000 : random(1000000))
-        case 5, 6:
+        case .find, .findNext:
             pane.showFind()
             pane.find?.field.stringValue = ["ERROR", "999", "INFO", "DEMO-MARKER", "missing"][random(5)]
             pane.find?.search()
-            if n == 6 { pane.find?.field.stringValue = "built"; pane.find?.search(); pane.find?.next() }
-        case 7:
+            if action == .findNext { pane.find?.field.stringValue = "built"; pane.find?.search(); pane.find?.next() }
+        case .findCloseResync:
             pane.find?.close()
             pane.onResync {}
-        case 8:
+        case .resizeBurst:
             for _ in 0..<6 { window.setContentSize(NSSize(width: 760 + random(700), height: 430 + random(400))) }
-        case 9:
+        case .loadMore:
             pane.onLoadMore()
-        case 10, 11:
-            grip(edge: n == 10, kill: n == 11 && step % 5 == 0, all)
-        case 13:
-            if let chrome = visible(all, PaneChrome.self).first {
-                let p = chrome.convert(NSPoint(x: chrome.bounds.maxX - 14, y: chrome.bounds.midY), to: nil)
-                mouse(.leftMouseDown, p); mouse(.leftMouseDragged, NSPoint(x: p.x + 200, y: p.y - 90)); mouse(.leftMouseUp, p)
+        case .gripDrag, .gripDragKill:
+            grip(edge: action == .gripDrag, kill: action == .gripDragKill, all)
+        case .edgeResize:
+            if let chrome = visible(all, PaneChrome.self).first, let view = chrome.superview as? WindowView {
+                let p = chrome.convert(NSPoint(x: chrome.bounds.maxX - 2, y: chrome.bounds.midY), to: nil)
+                view.mouseDown(with: event(.leftMouseDown, p))
+                view.mouseDragged(with: event(.leftMouseDragged, NSPoint(x: p.x + 200, y: p.y - 90)))
+                view.mouseUp(with: event(.leftMouseUp, p))
             }
-        case 14:
+        case .detachReconnect:
             send([Command("detach-client")])
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.reconnect() }
-        default:
+        case .appearance:
             NSApp.appearance = NSAppearance(named: random(2) == 0 ? .aqua : .darkAqua)
         }
     }
 
     private func grip(edge: Bool, kill: Bool, _ all: [NSView]) {
         let chromes = visible(all, PaneChrome.self)
-        guard let chrome = chromes.first else { return }
+        guard !chromes.isEmpty else { counts["drag-skipped", default: 0] += 1; return }
+        let chrome = chromes[random(chromes.count)]
         let hot = chrome.convert(NSPoint(x: chrome.toolbarFrame.minX + 16, y: chrome.toolbarFrame.midY), to: nil)
-        mouse(.mouseMoved, hot)
-        guard let button = window.contentView.map(views)?.compactMap({ $0 as? IconButton }).first(where: {
-            $0.toolTip == "Drag pane" && !$0.isHiddenOrHasHiddenAncestor && $0.superview?.superview?.alphaValue != 0
-        }) else { return }
-        mouse(.leftMouseDown, button.convert(NSPoint(x: 13, y: 13), to: nil))
-        let target = chromes.count > 1
-            ? chromes[1].convert(NSPoint(x: edge ? 5 : chromes[1].bounds.midX, y: chromes[1].bounds.midY), to: nil)
-            : NSPoint(x: -100, y: -100)
-        mouse(.leftMouseDragged, target)
-        if kill {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.send([Command("kill-pane", "-t", chrome.pane)]) }
+        chrome.mouseMoved(with: event(.mouseMoved, hot))
+        guard let button = visible(views(chrome), IconButton.self).first(where: {
+            $0.toolTip == "Drag pane" && $0.isEnabled
+        }), let press = button.press else { counts["drag-skipped", default: 0] += 1; return }
+        press(event(.leftMouseDown, button.convert(NSPoint(x: 13, y: 13), to: nil)))
+        let other = chromes.first { $0 !== chrome }
+        var target = other.map {
+            $0.convert(NSPoint(x: edge ? $0.bounds.width * 0.15 : $0.bounds.midX, y: $0.bounds.midY), to: nil)
+        } ?? NSPoint(x: -100, y: -100)
+        if edge, random(2) == 0, let view = chrome.superview {
+            let area = chromes.reduce(CGRect.null) { $0.union($1.frame) }
+            let point: NSPoint = switch random(4) {
+            case 0: NSPoint(x: area.minX + 10, y: area.midY)
+            case 1: NSPoint(x: area.maxX - 10, y: area.midY)
+            case 2: NSPoint(x: area.midX, y: area.minY + 10)
+            default: NSPoint(x: area.midX, y: area.maxY - 10)
+            }
+            target = view.convert(point, to: nil)
         }
-        let escape = step % 3 == 0
+        press(event(.leftMouseDragged, target))
+        if kill {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                self.counts["drag-killed", default: 0] += 1
+                self.log(["tick": self.step, "event": "drag-killed", "detail": chrome.pane.description])
+                self.send([Command("kill-pane", "-t", chrome.pane)])
+            }
+        }
+        let escape = !kill && step % 3 == 0
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             if escape, let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                                 windowNumber: self.window.windowNumber, context: nil, characters: "\u{1b}",
                                                 charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53) {
-                self.window.sendEvent(e)
+                press(e)
             }
-            self.mouse(.leftMouseUp, target)
+            press(self.event(.leftMouseUp, target))
+            self.log(["tick": self.step, "event": "drag-released", "source": chrome.pane.description, "killed": kill])
         }
     }
 }
