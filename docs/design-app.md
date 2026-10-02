@@ -114,9 +114,13 @@ is reached by paging within the memory limit.
 Each pane draws one thin overlay scroller, shown during scrolling or
 hovering and fading afterwards. Ghostty's own scrollbar is disabled. The
 thumb uses tmux's full retained history plus the screen, with a native-style
-minimum knob size. Wheel events, clicks and drags update a shared target and
-thumb immediately, without waiting for the reader or renderer mutex. A
-per-pane queue moves Ghostty's viewport independently of capture replies.
+minimum knob size. Wheel events, clicks and drags update a shared target
+without waiting for the reader or renderer mutex. Visible panes apply the latest target and
+thumb once per view display-link callback; the link stops on its first
+callback without a pending target. Hidden panes apply directly without a
+display link. A per-pane queue moves Ghostty's viewport independently of
+capture replies. `KIDO_APP_DEBUG=1` logs wheel timestamps, phases and deltas,
+and each applied target's row and fractional pixel offset.
 Above the loaded top, the terminal's child view is translated down inside
 the clipped pane, revealing blank terminal background without changing the
 grid. While translated, terminal pointer events are suppressed and an
