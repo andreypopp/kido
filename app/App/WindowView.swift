@@ -264,6 +264,7 @@ final class WindowView: NSView {
         if chrome.frame != frame { chrome.frame = frame }
         if view.frame != grid { view.frame = grid }
         chrome.grid = CGRect(origin: CGPoint(x: placement.before.width, y: placement.before.height), size: grid.size)
+        chrome.drag = floating && !zoomed ? { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0) } : nil
         chrome.wantsLayer = true
         chrome.layer?.cornerRadius = floating ? floatingRadius : 0
         chrome.layer?.masksToBounds = floating
@@ -292,6 +293,7 @@ final class WindowView: NSView {
             toolbar.update(command: { view.onSelect(); view.onCommand($0) }, zoomed: zoomed, drag: { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0) })
         }
         guard let toolbar, toolbar.superview === chrome else { return }
+        window?.invalidateCursorRects(for: self)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.15
             toolbar.animator().alphaValue = show ? 1 : 0
@@ -509,6 +511,7 @@ final class WindowView: NSView {
         paneDrag = nil
         lastFloatCommand = nil
         preview.rect = nil
+        window?.invalidateCursorRects(for: self)
     }
 
     private func updateDrag(_ event: NSEvent) {
@@ -518,6 +521,10 @@ final class WindowView: NSView {
             guard let cell = session?.cell, let placement else { return }
             let dx = event.locationInWindow.x - origin.x
             let dy = origin.y - event.locationInWindow.y
+            if edge == nil, lastFloatCommand == nil, hypot(dx, dy) < 4 {
+                if event.type == .leftMouseUp { endDrag(); focusActive(force: true) }
+                return
+            }
             var frame = initial
             if edge == nil { frame.origin.x += dx; frame.origin.y += dy }
             else {
@@ -529,6 +536,7 @@ final class WindowView: NSView {
                 if edge?.top == true { frame.size.height = max(minimum.height, initial.height - dy); frame.origin.y = initial.maxY - frame.height }
             }
             frame = placement.clamp(frame, resizing: edge)
+            if edge == nil, lastFloatCommand == nil { window?.invalidateCursorRects(for: self) }
             liveFrame = .dragging(pane.id, frame)
             placeFloat(pane.id, placement)
             let geometry = placement.geometry(frame)
@@ -692,14 +700,26 @@ final class WindowView: NSView {
         guard let placement else { return }
         for d in shown?.visible.root.dividers ?? [] {
             let rect = hitArea(d, placement).intersection(bounds)
-            if !rect.isEmpty { addCursorRect(rect, cursor: d.direction == .leftRight ? .resizeLeftRight : .resizeUpDown) }
+            if !rect.isNull, !rect.isEmpty { addCursorRect(rect, cursor: d.direction == .leftRight ? .resizeLeftRight : .resizeUpDown) }
         }
         guard !zoomed else { return }
         for pane in shown?.visible.root.panes ?? [] where pane.layer != .tiled {
             let r = floatFrame(pane.id, pane.geometry, placement)
+            if case .floating(let moving, _, _, nil) = paneDrag, moving.id == pane.id,
+               case .dragging = liveFrame {
+                let rect = r.intersection(bounds)
+                if !rect.isNull, !rect.isEmpty { addCursorRect(rect, cursor: .closedHand) }
+                continue
+            }
+            if let chrome = subviews.compactMap({ $0 as? PaneChrome }).first(where: { $0.pane == pane.id }) {
+                for rect in chrome.padding {
+                    let rect = convert(rect, from: chrome).intersection(bounds)
+                    if !rect.isNull, !rect.isEmpty { addCursorRect(rect, cursor: .openHand) }
+                }
+            }
             for (position, rect) in floatEdges(r) {
                 let rect = rect.intersection(bounds)
-                if !rect.isEmpty { addCursorRect(rect, cursor: .frameResize(position: position, directions: .all)) }
+                if !rect.isNull, !rect.isEmpty { addCursorRect(rect, cursor: .frameResize(position: position, directions: .all)) }
             }
         }
     }
