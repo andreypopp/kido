@@ -6,6 +6,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
+    SWIFT_ACTIVE_COMPILATION_CONDITIONS: ["$(inherited)", "$(KIDO_STRESS_CONDITION)"]
     ARCHS: arm64
     CODE_SIGN_IDENTITY: "-"
     CODE_SIGN_STYLE: Manual

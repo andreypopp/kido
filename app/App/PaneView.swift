@@ -183,10 +183,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         requestScrollDistance { _ in Double(distance) }
     }
 
-    private func requestScrollDistance(_ move: (Double) -> Double) {
+    private func requestScrollDistance(_ move: @Sendable (Double) -> Double) {
+        let position = Double(scrollGeometry.position.history - scrollGeometry.position.offset), limit = Double(scrollLimit)
         target.withLock {
-            let previous = $0 ?? Double(scrollGeometry.position.history - scrollGeometry.position.offset)
-            $0 = max(0, min(Double(scrollLimit), move(previous)))
+            let previous = $0 ?? position
+            $0 = max(0, min(limit, move(previous)))
         }
         queueScroll()
     }
@@ -705,7 +706,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             let delta = event.scrollingDeltaY
             let distance = scrollDistance ?? Double(scrollGeometry.position.history - scrollGeometry.position.offset)
             if precise && pressed.isEmpty {
-                requestScrollDistance { $0 + delta * wheelMultiplier.precision / Double(max(1, rowHeight)) }
+                let rows = delta * wheelMultiplier.precision / Double(max(1, rowHeight))
+                requestScrollDistance { $0 + rows }
                 return
             }
             if distance != distance.rounded() { snapScroll() }
