@@ -116,8 +116,11 @@ Each pane draws one thin overlay scroller, shown during scrolling or
 hovering and fading afterwards. Chrome draws 12pt background-colour edge fades from that same scroll geometry only when content remains above or below, never on alternate screens. Ghostty's own scrollbar is disabled. The
 thumb uses tmux's full retained history plus the screen, with a native-style
 minimum knob size. Every precise wheel event adds its delta 1:1 to the
-fractional target and immediately enqueues an apply on the pane's serial
-scroll worker, including nonzero ended packets. Ghostty schedules rendering;
+fractional target, including nonzero ended packets. At most one apply is
+pending on the pane's serial scroll worker; it starts immediately and reads
+the latest output-adjusted target when it runs. Its main callback coalesces
+presentation, paging and trim scheduling, then applies a changed target.
+Ghostty schedules rendering;
 the app adds no display link, deferred packet, easing or momentum filter.
 Ghostty's mouse-scroll-multiplier precision setting remains the user's speed
 override; precision 2 restores the previous speed. Discrete wheel notches
@@ -125,8 +128,11 @@ are unchanged. An active selection gesture uses integral wheel steps.
 Thumb drags replace the target; a thumb press snaps once and suppresses
 old momentum. Clicks, selection, typing, paste, IME, find, resize, font
 changes and focus loss also snap and suppress momentum; idle trimming does
-not snap. Main publishes the worker's applied distance and geometry to the
-thumb and terminal translation, not the requested target. Capture publication
+not snap. Main publishes only the worker's successfully applied distance and
+geometry to the thumb and terminal translation, not the requested target.
+If all three revision attempts fail, presentation stays at the last success
+and the target waits for another event or geometry update, with no idle retry.
+Capture publication
 updates loaded geometry and requests presentation, never moving the viewport
 itself; unchanged geometry and memory-limit state do not request another
 apply. Live output shares the serial worker and pins a scrolled viewport,
