@@ -274,7 +274,7 @@ export default function (pi: any) {
 			if err := json.Unmarshal(b, &tools); err != nil {
 				t.Fatal(err)
 			}
-			for _, tool := range []string{"list_agents", "spawn_subagent", "notify_parent"} {
+			for _, tool := range []string{"list_runs", "spawn_subagent", "notify_parent"} {
 				if n := strings.Count(","+strings.Join(tools, ",")+",", ","+tool+","); n != 1 {
 					t.Errorf("%s registered %d times, want once: %q", tool, n, tools)
 				}

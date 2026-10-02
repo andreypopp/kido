@@ -29,8 +29,18 @@ val in_session :
 val parent_edge : string * State.session -> string option
 val is_ancestor : (string * string) list -> ancestor:string -> string -> bool
 
-val list_agents :
-  dir:string -> threshold:float -> self:string -> session:string -> (agent_info list, string) result
+val agents :
+  dir:string ->
+  threshold:float ->
+  self:string ->
+  session:string ->
+  panes:Tmux.Pane.t list ->
+  (agent_info list, string) result
 
-val table : agent_info list -> string list list
-(** The header row, then one row per agent. *)
+type row
+
+val list_runs :
+  dir:string -> threshold:float -> self:string -> session:string -> (row list, string) result
+
+val row_to_yojson : row -> Yojson.Safe.t
+val table : row list -> string list list

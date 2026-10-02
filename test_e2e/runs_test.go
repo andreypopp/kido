@@ -153,7 +153,7 @@ func TestRunScreenCapturedOnReap(t *testing.T) {
 	}
 }
 
-// stop_subagent's escalation kill must record the run's outcome as
+// stop_run's escalation kill must record the run's outcome as
 // Stopped, not leave the sweep to call it Died a moment later -
 // indistinguishable once the window is gone.
 func TestStopRecordsStoppedOutcome(t *testing.T) {
@@ -168,9 +168,9 @@ func TestStopRecordsStoppedOutcome(t *testing.T) {
 	in := startInbox(h.t, "ok\n")
 	h.agentStatus(runID, paneID, "pi", "idle", "--inbox", in.Path)
 
-	out := h.runKido("alpha", "stop.out", "tool", "stop_subagent", runID)
+	out := h.runKido("alpha", "stop.out", "tool", "stop_run", runID)
 	if !strings.Contains(out, "killed") {
-		t.Fatalf("kido tool stop_subagent output = %q, want the escalation to kill the wedged child's window", out)
+		t.Fatalf("kido tool stop_run output = %q, want the escalation to kill the wedged child's window", out)
 	}
 	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
 		msgf("window %s to be killed by the stop escalation", windowID))

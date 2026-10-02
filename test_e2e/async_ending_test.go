@@ -90,10 +90,9 @@ func TestKilledWrapperIsReportedByWhoeverFindsIt(t *testing.T) {
 	}
 }
 
-// The live wrapper forwards the signal and normally reports its own exit
-// status; stop_subagent's own report is the backstop for when it does
-// not, and the outcome text says which one ran. Sidebar hidden so the
-// two paths under test are the only observers.
+// Stop records its intent before TERM, so the wrapper's signal error
+// cannot win; the wrapper forwards TERM and one ending reaches the parent.
+// Sidebar hidden so the stop and wrapper are the only observers.
 func TestStopBashRunNotifiesOnce(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -102,9 +101,9 @@ func TestStopBashRunNotifiesOnce(t *testing.T) {
 	runID := h.asyncBash("stopme", "sleep", "60")
 	h.hideSidebar()
 
-	out := h.runKido("alpha", "stop.out", "tool", "stop_subagent", "--force", "--", "stopme")
+	out := h.runKido("alpha", "stop.out", "tool", "stop_run", "--force", "--", "stopme")
 	if !strings.Contains(out, "rc=0") {
-		t.Fatalf("kido tool stop_subagent output = %q, want a clean exit", out)
+		t.Fatalf("kido tool stop_run output = %q, want a clean exit", out)
 	}
 
 	h.waitFor(func() bool { return len(in.Received()) > 0 }, 2*time.Second,
@@ -115,16 +114,9 @@ func TestStopBashRunNotifiesOnce(t *testing.T) {
 	}
 	h.stableCount(in, 1, "a stop is one ending, whichever observer reports it")
 
-	// Either observer may have got there first; the text must say which.
 	info := h.waitOutcome(runID)
-	switch {
-	case info.Outcome == "failed" && strings.Contains(info.OutcomeText, "terminated"):
-		t.Logf("the wrapper reported the stop itself: %q", info.OutcomeText)
-	case info.Outcome == "stopped" && strings.Contains(info.OutcomeText, "stop_subagent"):
-		t.Logf("the stop spoke for a wrapper that did not report: %q", info.OutcomeText)
-	default:
-		t.Errorf("kido runs reports %q/%q, want either the wrapper's own ending or the stop's, each saying which it is",
-			info.Outcome, info.OutcomeText)
+	if info.Outcome != "stopped" || info.OutcomeText != "stopped by its parent" {
+		t.Errorf("kido runs reports %q/%q, want stopped by its parent", info.Outcome, info.OutcomeText)
 	}
 }
 
@@ -139,9 +131,9 @@ func TestStopSpeaksForAWrapperThatCannot(t *testing.T) {
 	h.hideSidebar() // before the kill, so nothing else sweeps the corpse first
 	h.killWrapper(runID)
 
-	out := h.runKido("alpha", "stopdead.out", "tool", "stop_subagent", "--force", "--", "zombie")
+	out := h.runKido("alpha", "stopdead.out", "tool", "stop_run", "--force", "--", "zombie")
 	if !strings.Contains(out, "rc=0") {
-		t.Fatalf("kido tool stop_subagent output = %q, want a clean exit", out)
+		t.Fatalf("kido tool stop_run output = %q, want a clean exit", out)
 	}
 
 	h.waitFor(func() bool { return len(in.Received()) > 0 }, 2*time.Second,
@@ -152,7 +144,7 @@ func TestStopSpeaksForAWrapperThatCannot(t *testing.T) {
 	h.stableCount(in, 1, "one ending, one notice")
 
 	info := h.waitOutcome(runID)
-	if info.Outcome != "stopped" || !strings.Contains(info.OutcomeText, "stop_subagent") {
+	if info.Outcome != "stopped" || info.OutcomeText != "stopped by its parent" {
 		t.Errorf("kido runs reports %q/%q, want stopped with the stop naming itself", info.Outcome, info.OutcomeText)
 	}
 }

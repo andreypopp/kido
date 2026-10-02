@@ -68,16 +68,15 @@ let interrupt_subagent =
      fun () ->
        print (Control.interrupt ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE") to_)
 
-let stop_subagent =
-  cmd ~group:"tool " "stop_subagent" "Stop a descendant agent, or an async run."
+let stop_run =
+  cmd ~group:"tool " "stop_run" "Stop a descendant agent, or an async run."
   @@ let+ force =
        flag "force" "Kill the target's window directly when it has no inbox to ask nicely over."
-     and+ to_ = address "AGENT" in
+     and+ to_ = address "RUN" in
      fun () ->
        print
          (Control.stop ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
-            ~escalation:(Control.stop_escalation ()) ~warn:(Cli.error "tool stop_subagent") ~force
-            to_)
+            ~escalation:(Control.stop_escalation ()) ~warn:(Cli.error "tool stop_run") ~force to_)
 
 let runs =
   cmd "runs" "List subagent and async runs, or show one."
@@ -139,21 +138,20 @@ let notify_parent =
             ~run:(Tmux.Exec.getenv "KIDO_AGENT_RUN_ID")
             (stdin ()))
 
-let list_agents =
-  cmd ~group:"tool " "list_agents" "List the agents in a tmux session."
+let list_runs =
+  cmd ~group:"tool " "list_runs" "List peers, the caller's parent and its own agent and bash runs."
   @@ let+ session =
        str "session" "ID" "tmux session id to list; defaults to the caller's own session."
      and+ json = flag "json" "Print JSON instead of a table." in
      fun () ->
        let agents =
          ok
-           (List_agents.list_agents ~dir:(State.dir ()) ~threshold:(State.stall_threshold ())
+           (List_runs.list_runs ~dir:(State.dir ()) ~threshold:(State.stall_threshold ())
               ~self:(Tmux.Exec.getenv "TMUX_PANE") ~session)
        in
        if json then
-         print_endline
-           (Yojson.Safe.to_string (`List (List.map List_agents.agent_info_to_yojson agents)))
-       else Cli.table (List_agents.table agents);
+         print_endline (Yojson.Safe.to_string (`List (List.map List_runs.row_to_yojson agents)))
+       else Cli.table (List_runs.table agents);
        0
 
 let set_status =
@@ -174,36 +172,50 @@ let set_status =
 
 let get_agent =
   cmd "get-agent" "Print an agent session's liveness as JSON."
-  @@ let+ session = arg "SESSION"
+  @@ let+ session = Arg.(value & pos 0 string "" & info [] ~docv:"SESSION")
+     and+ context = flag "context" "Print the live agent graph for internal message validation."
      and+ children = Arg.(value & flag & info [ "children" ] ~doc:"Include child-run liveness.") in
      fun () ->
-       if String.is_empty session then failwith "usage: kido get-agent SESSION";
        let dir = State.dir () in
-       let fields =
-         [
-           ("id", `String session);
-           ("alive", `Bool (List.mem_assoc ~eq:String.equal session (State.load_live ~dir)));
-         ]
-       in
-       let fields =
-         if not children then fields
-         else
-           fields
-           @ [
-               ( "childrenAlive",
-                 `Bool
-                   (List.exists
-                      (fun id ->
-                        match Subrun.read_meta ~dir id with
-                        | Some m ->
-                            String.equal m.parent_session session
-                            && Option.is_none (Subrun.effective_outcome ~dir id ~pid:m.pid)
-                        | None -> false)
-                      (Subrun.list ~dir)) );
-             ]
-       in
-       print_endline (Yojson.Safe.to_string (`Assoc fields));
-       0
+       if context then begin
+         let agents =
+           ok
+             (List_runs.agents ~dir ~threshold:(State.stall_threshold ())
+                ~self:(Tmux.Exec.getenv "TMUX_PANE") ~session:""
+                ~panes:(ok (Tmux.Exec.list_panes ())))
+         in
+         print_endline
+           (Yojson.Safe.to_string (`List (List.map List_runs.agent_info_to_yojson agents)));
+         0
+       end
+       else begin
+         if String.is_empty session then failwith "usage: kido get-agent SESSION";
+         let fields =
+           [
+             ("id", `String session);
+             ("alive", `Bool (List.mem_assoc ~eq:String.equal session (State.load_live ~dir)));
+           ]
+         in
+         let fields =
+           if not children then fields
+           else
+             fields
+             @ [
+                 ( "childrenAlive",
+                   `Bool
+                     (List.exists
+                        (fun id ->
+                          match Subrun.read_meta ~dir id with
+                          | Some m ->
+                              String.equal m.parent_session session
+                              && Option.is_none (Subrun.effective_outcome ~dir id ~pid:m.pid)
+                          | None -> false)
+                        (Subrun.list ~dir)) );
+               ]
+         in
+         print_endline (Yojson.Safe.to_string (`Assoc fields));
+         0
+       end
 
 type window = { session : string; index : int; layout : string; n : int }
 
@@ -713,8 +725,8 @@ let tool =
       notify_parent;
       steer_subagent;
       interrupt_subagent;
-      stop_subagent;
-      list_agents;
+      stop_run;
+      list_runs;
       set_status;
       spawn_subagent;
       async_bash;

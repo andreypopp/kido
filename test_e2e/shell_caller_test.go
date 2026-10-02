@@ -65,8 +65,8 @@ func TestMessageFromAShellReachesTheAgent(t *testing.T) {
 
 	in, _ := h.agentWithInbox("alpha", "msg-target-e2e")
 
-	if out := h.runKido("alpha", "list.out", "tool", "list_agents", "--json"); !strings.Contains(out, "msg-target-e2e") {
-		t.Errorf("kido tool list_agents from a shell = %q, want it to name the registered agent", out)
+	if out := h.runKido("alpha", "list.out", "tool", "list_runs", "--json"); !strings.Contains(out, "msg-target-e2e") {
+		t.Errorf("kido tool list_runs from a shell = %q, want it to name the registered agent", out)
 	}
 
 	out := h.pipeKido("alpha", "msg.out", "the build is green",

@@ -132,14 +132,14 @@ Conventions:
       procs.ml         process-tree scan: agent panes, ssh destinations
       msg.ml           the inbox wire protocol and its client: v0 raw prompt,
                        v1 envelope, the unix-socket sender and notify
-      tree.ml          the parent-first walk behind list_agents and the sidebar
+      tree.ml          the parent-first walk behind list_runs and the sidebar
       reap.ml          which subagent windows are finished with, and when;
                        an ending's text and its send to the parent's inbox
       subrun.ml        the durable record of one `kido tool spawn_subagent`
       prompt.ml, message_agent.ml (also ask_agent and notify_parent),
-      list_agents.ml, spawn_subagent.ml, async_bash.ml,
+      list_runs.ml, spawn_subagent.ml, async_bash.ml,
       async_run.ml (its wrapper), async_stream.ml, runs.ml,
-      control.ml (stop/interrupt_subagent)
+      control.ml (stop_run, interrupt_subagent)
                        one subcommand or family each
       fs.ml, timestamp.ml  files, time
       test/            ppx_expect unit tests, test_<module>.ml; fixture.ml and

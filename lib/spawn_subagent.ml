@@ -257,7 +257,7 @@ let insert_after_head extra = function head :: rest -> (head :: extra) @ rest | 
 let caller ~dir ~self owner =
   let open Result.Infix in
   let* panes = Tmux.Exec.list_panes () in
-  let+ pane = List_agents.caller_pane panes self in
+  let+ pane = List_runs.caller_pane panes self in
   let own = State.String_map.find_opt pane.pane_id (State.by_pane (State.load_live ~dir)) in
   let parent =
     match (owner, own) with

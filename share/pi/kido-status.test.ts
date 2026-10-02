@@ -36,9 +36,10 @@ function readStdin() {
 const argv = process.argv.slice(2);
 const args = argv[0] === "tool" ? argv.slice(1) : argv;
 if ([
-  "list_agents", "message_agent", "ask_agent", "notify_parent", "steer_subagent",
-  "interrupt_subagent", "stop_subagent", "set_status", "spawn_subagent", "async_bash",
+  "list_runs", "message_agent", "ask_agent", "notify_parent", "steer_subagent",
+  "interrupt_subagent", "stop_run", "set_status", "spawn_subagent", "async_bash",
 ].includes(args[0]) && argv[0] !== "tool") process.exit(1);
+if (args[0] === "get-agent" && args.includes("--context")) args[0] = "list_runs";
 switch (args[0]) {
   case "get-inbox": {
     if (process.env.KIDO_FAKE_INBOX_FAIL === "1") process.exit(1);
@@ -46,7 +47,7 @@ switch (args[0]) {
     process.stdout.write(JSON.stringify({ path: path.join(dir, args[1] + ".sock") }) + "\\n");
     process.exit(0);
   }
-  case "list_agents": {
+  case "list_runs": {
     const file = process.env.KIDO_FAKE_AGENTS_FILE;
     const callLog = process.env.KIDO_FAKE_AGENTS_CALL_LOG;
     if (callLog) fs.appendFileSync(callLog, "1\\n");
@@ -180,7 +181,7 @@ switch (args[0]) {
     process.exit(0);
   }
   case "interrupt_subagent":
-  case "stop_subagent": {
+  case "stop_run": {
     const logFile = process.env.KIDO_FAKE_CONTROL_LOG;
     if (logFile) fs.appendFileSync(logFile, JSON.stringify(argv) + "\\n");
     process.stdout.write((args[0] === "interrupt_subagent" ? "interrupted " : "stopped ") + args[args.length - 1] + "\\n");
@@ -1514,7 +1515,7 @@ const completionAgents = [
   { id: "p1", name: "helm", parent: "", self: false, canMessage: true, canReply: true, status: "idle" },
   { id: "c1", name: "helper-one", parent: "p1", self: false, canMessage: true, canReply: true, status: "running", activity: "refactoring internal/ui" },
   { id: "c2", name: "builder", parent: "p1", self: false, canMessage: true, canReply: true, status: "waiting" },
-  // A session the user never named: `kido tool list_agents` falls back to the
+  // A session the user never named: `kido tool list_runs` falls back to the
   // pane title, which is a phrase with spaces in it (a Claude Code title
   // here) rather than a handle. Its id shares eight characters with the
   // next agent's, so the prefix that identifies it has to be longer than
@@ -1566,6 +1567,24 @@ test("@ completion offers this session's agents first and still returns the buil
 // it; inserting the agent's unique id prefix is what makes accepting it
 // mean something, since resolveAgent takes an id prefix as readily as a
 // name.
+test("@ completion uses list_runs' live agent rows, not bash or ended runs", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setAgents([
+      { id: "12345678-agent", run: "12345678-agent", name: "helper", kind: "subagent", state: "running", relationship: "own", parent: "self" },
+      { id: "bash-run", run: "bash-run", name: "helper-job", kind: "bash", state: "running", relationship: "own" },
+      { id: "ended-run", run: "ended-run", name: "helper-ended", kind: "subagent", state: "ended", relationship: "own" },
+    ]);
+    const s = await startSession(fx);
+    const { provider } = stackOver(s.autocompleteFactories, []);
+    const suggestions = await suggestOnceListed(provider, "@hel");
+    assert.deepEqual(suggestions.items.map((i: any) => i.value), ["@12345678"]);
+    assert.equal(suggestions.items[0].label, "@helper");
+  } finally {
+    fx.restore();
+  }
+});
+
 test("@ completion matches a word inside an agent's name, and inserts an id prefix when the name cannot be typed as a token", async () => {
   const fx = makeFixture();
   try {
@@ -2033,7 +2052,7 @@ test("a subagent's before_agent_start hook adds the notify_parent instruction to
   }
 });
 
-test("interrupt_subagent runs kido tool interrupt_subagent with the target, and stop_subagent runs kido tool stop_subagent, passing --force through", async () => {
+test("interrupt_subagent runs kido tool interrupt_subagent with the target, and stop_run runs kido tool stop_run, passing --force through", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents(twoPeers);
@@ -2043,12 +2062,46 @@ test("interrupt_subagent runs kido tool interrupt_subagent with the target, and 
     assert.match(interruptRes.content[0].text, /interrupted peer-a/);
     assert.deepEqual(fx.lastControlArgs(), ["tool", "interrupt_subagent", "--", "peer-a"]);
 
-    const stopRes = await s.tools.get("stop_subagent").execute("c2", { to: "peer-b" });
+    const stopRes = await s.tools.get("stop_run").execute("c2", { to: "peer-b" });
     assert.match(stopRes.content[0].text, /stopped peer-b/);
-    assert.deepEqual(fx.lastControlArgs(), ["tool", "stop_subagent", "--", "peer-b"]);
+    assert.deepEqual(fx.lastControlArgs(), ["tool", "stop_run", "--", "peer-b"]);
 
-    await s.tools.get("stop_subagent").execute("c3", { to: "peer-b", force: true });
-    assert.deepEqual(fx.lastControlArgs(), ["tool", "stop_subagent", "--force", "--", "peer-b"]);
+    await s.tools.get("stop_run").execute("c3", { to: "peer-b", force: true });
+    assert.deepEqual(fx.lastControlArgs(), ["tool", "stop_run", "--force", "--", "peer-b"]);
+  } finally {
+    fx.restore();
+  }
+});
+
+test("list_runs returns both kinds and tool prompts crosslink listing and stopping", async () => {
+  const fx = makeFixture();
+  try {
+    const rows = [
+      { id: "parent", name: "parent", kind: "agent", relationship: "parent", canReply: true },
+      { id: "sibling", name: "sibling", kind: "subagent", relationship: "peer", canReply: true },
+      { id: "job", name: "job", kind: "bash", relationship: "own", state: "running", run: "job" },
+    ];
+    fx.setAgents(rows);
+    const s = await startSession(fx);
+    const result = await s.tools.get("list_runs").execute("list", {});
+    assert.deepEqual(JSON.parse(result.content[0].text), rows);
+    const list = s.tools.get("list_runs");
+    assert.match(list.description, /same-parent peers and your parent/);
+    assert.match(list.description, /stop_run/);
+    assert.match(list.description, /newest 20 ended/);
+    assert.match(list.promptSnippet, /same-parent peers/);
+    const stop = s.tools.get("stop_run");
+    assert.match(stop.description, /list_runs/);
+    assert.match(stop.description, /sends TERM to a bash wrapper/);
+    for (const name of ["spawn_subagent", "async_bash"]) {
+      const tool = s.tools.get(name);
+      assert.match(tool.description, /list_runs.*stop_run/);
+      assert.match(tool.promptSnippet, /list_runs.*stop_run/);
+      assert.ok(tool.promptGuidelines.some((r: string) => /list_runs.*stop_run/.test(r)));
+    }
+    for (const name of ["steer_subagent", "interrupt_subagent"]) {
+      assert.match(s.tools.get(name).description, /stop_run/);
+    }
   } finally {
     fx.restore();
   }
@@ -2085,7 +2138,7 @@ test("spawn_subagent and ask_agent's descriptions teach the notify_parent patter
     const s = await startSession(fx);
     assert.match(
       s.tools.get("spawn_subagent").description!,
-      /Its result arrives as a notice when it calls notify_parent; do not ask_agent a child for its result\./,
+      /Its result arrives as a notice when it calls notify_parent; do not ask_agent a child for its result; list_runs.*stop_run/,
     );
     assert.match(
       s.tools.get("ask_agent").description!,
@@ -2140,7 +2193,7 @@ test("spawn_subagent and async_bash carry promptGuidelines pi will merge into it
     }
 
     assert.ok(
-      spawnRules.some((r) => /arrives on its own as a notice/.test(r) && /never ask a child for its result/.test(r) && /poll list_agents/.test(r)),
+      spawnRules.some((r) => /arrives on its own as a notice/.test(r) && /never ask a child for its result/.test(r) && /poll list_runs/.test(r)),
       "spawn_subagent: the result arrives on its own; neither ask nor poll for it",
     );
     assert.ok(
@@ -3384,7 +3437,7 @@ test("parent-liveness poll: shuts the session down when the parent's process is 
 });
 
 // Also pins what the poll asks: `kido get-agent` naming its own parent
-// session, never `kido tool list_agents`, whose per-pane view is the wrong source for a liveness fact.
+// session, never `kido tool list_runs`, whose per-pane view is the wrong source for a liveness fact.
 test("parent-liveness poll: does not shut down while the parent is alive, and asks get-agent about its own parent session", async () => {
   const fx = makeFixture();
   try {
@@ -3404,7 +3457,7 @@ test("parent-liveness poll: does not shut down while the parent is alive, and as
       assert.equal(
         fx.agentsCallCount(),
         agentsBefore,
-        "and never through kido tool list_agents, whose per-pane view can lose the parent's record",
+        "and never through kido tool list_runs, whose per-pane view can lose the parent's record",
       );
       await s.emit("session_shutdown");
     });

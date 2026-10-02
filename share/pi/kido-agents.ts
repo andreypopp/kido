@@ -82,7 +82,7 @@ const KEEP_ALIVE = process.env.KIDO_AGENT_KEEP_ALIVE === "1";
 
 const SPAWN_TIMEOUT_MS = Number(process.env.KIDO_SPAWN_TIMEOUT_MS) || 5000;
 
-// Must comfortably exceed Control.stop_escalation (lib/control.ml, default 5s), which `kido tool stop_subagent` can itself block for.
+// Must comfortably exceed Control.stop_escalation (lib/control.ml, default 5s), which `kido tool stop_run` can itself block for.
 const STOP_TIMEOUT_MS = Number(process.env.KIDO_STOP_TIMEOUT_MS) || 8000;
 
 const DEFAULT_ASK_TIMEOUT_MS = 5 * 60 * 1000;
@@ -231,14 +231,15 @@ const NEVER_SLEEP_RULE =
   "Never run `sleep` in bash to wait for anything - an async run, a subagent, a message, or another agent's work settling. What you are waiting for arrives as a notice or message that wakes you after you end your turn; if a build breaks because of another agent's half-done work, report that rather than sleeping until it clears. Ending your turn while you wait is always safe: a running async run or subagent of yours keeps you alive, and its notice starts your next turn.";
 
 const SPAWN_RESULT_RULE =
-  "its result arrives as a notice when it calls notify_parent - you know nothing about it until then, so do not report, assume or predict it, and do not ask it for its result; continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you";
+  "its result arrives as a notice when it calls notify_parent - you know nothing about it until then, so do not report, assume or predict it, and do not ask it for its result; continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you; list_runs lists this run and stop_run stops it with the returned run id";
 
 const NO_FIRST_TURN_TEXT =
   "no turn ever ran: the task was delivered and the session never started work on it (the pane's own screen, kept with the run, is the only account of why)";
 
-// AgentInfo mirrors lib/list_agents.ml's agent_info, what `kido
-// list_agents --json` prints. Only the fields read here are declared.
 interface AgentInfo {
+  kind?: "agent" | "subagent" | "bash";
+  state?: "running" | "ended";
+  run?: string;
   id: string;
   name: string;
   parent: string;
@@ -260,7 +261,7 @@ const MIN_ID_PREFIX = 8;
 // A name carrying whitespace cannot survive as one `@` token, so it is addressed by the
 // shortest unique id prefix instead.
 function completionValue(agents: AgentInfo[], agent: AgentInfo): string {
-  if (!/\s/.test(agent.name)) return `@${agent.name}`;
+  if (!agent.run && !/\s/.test(agent.name)) return `@${agent.name}`;
   const others = agents.filter((a) => a.id !== agent.id);
   for (let n = MIN_ID_PREFIX; n <= agent.id.length; n++) {
     const prefix = agent.id.slice(0, n);
@@ -311,7 +312,6 @@ function resolveAgent(agents: AgentInfo[], to: string): { agent?: AgentInfo; err
   return { error: `no agent matches "${to}"` };
 }
 
-// Mirrors lib/list_agents.ml's is_ancestor, the same walk kept in step. seen guards a cyclic parent chain.
 export function isAncestor(agents: Pick<AgentInfo, "id" | "parent">[], self: Pick<AgentInfo, "id">, target: Pick<AgentInfo, "id" | "parent">): boolean {
   if (self.id === target.id) return false;
   const byId = new Map(agents.map((a) => [a.id, a]));
@@ -655,8 +655,9 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  const fetchAgents = async (): Promise<{ ok: true; agents: AgentInfo[] } | { ok: false; error: string }> => {
-    const res = await runKido(["tool", "list_agents", "--json"], { timeoutMs: 2000 });
+  const fetchAgents = async (source: "context" | "runs" = "context"): Promise<{ ok: true; agents: AgentInfo[] } | { ok: false; error: string }> => {
+    const args = source === "runs" ? ["tool", "list_runs", "--json"] : ["get-agent", "--context"];
+    const res = await runKido(args, { timeoutMs: 2000 });
     if (!res.ok) return res;
     try {
       return { ok: true, agents: res.out ? JSON.parse(res.out) : [] };
@@ -665,14 +666,14 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // A keystroke must never wait on `kido tool list_agents --json`: the editor gets whatever the
+  // A keystroke must never wait on `kido tool list_runs --json`: the editor gets whatever the
   // last call returned, stale or empty, while a refresh runs behind it. Null until the
   // provider is registered (sessionStarting).
   let completion: { agents: AgentInfo[]; at: number; refreshing: Promise<void> | null } | null = null;
 
   // Only a definite false from `kido get-agent` is evidence; anything else - an error, an
   // unreachable kido - is inconclusive and never shuts the session down on a guess. Not
-  // `kido tool list_agents --json`: it scopes to the caller's tmux session and collapses to one
+  // `kido tool list_runs --json`: it scopes to the caller's tmux session and collapses to one
   // record per pane, so a `pi --print` started in the parent's pane and inheriting
   // TMUX_PANE would win that pane and make a healthy parent look gone.
   // kill(pid, 0) success or EPERM is not proof of life - a pid can be recycled.
@@ -784,14 +785,14 @@ export default function (pi: ExtensionAPI) {
   };
 
   pi.registerTool({
-    name: "list_agents",
-    label: "List Agents",
-    description: "List every agent visible in this tmux session, including yourself.",
-    promptSnippet: "list_agents() - see every agent in this tmux session",
+    name: "list_runs",
+    label: "List Runs",
+    description: "List same-parent peers and your parent in this tmux session, plus your own subagents and async_bash jobs: all running and the newest 20 ended, newest first. Use message_agent for agents and stop_run with a run id to stop your runs.",
+    promptSnippet: "list_runs() - find same-parent peers and your parent to message, and your own subagents and jobs to stop with stop_run",
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute() {
-      const res = await fetchAgents();
-      if (!res.ok) return reply("[]", []);
+      const res = await fetchAgents("runs");
+      if (!res.ok) return reply(`could not list runs: ${res.error}`);
       return reply(JSON.stringify(res.agents), res.agents);
     },
   });
@@ -801,7 +802,7 @@ export default function (pi: ExtensionAPI) {
     label: "Set Status",
     description:
       "Set the free-text activity shown next to you in kido's tmux sidebar. Separate from your running/waiting/idle status.",
-    promptSnippet: "set_status(activity) - tell everyone else what you are doing, visible in list_agents()",
+    promptSnippet: "set_status(activity) - tell everyone else what you are doing, visible in list_runs()",
     parameters: Type.Object(
       {
         // No maxLength here: it would count UTF-16 code units against a
@@ -986,13 +987,13 @@ export default function (pi: ExtensionAPI) {
     name: "spawn_subagent",
     label: "Spawn Subagent",
     description:
-      "Create a subagent in its own tmux window with a task, or resume a dead or finished one by its run id. With fork: true it starts holding this session's context, for a judgement step that has to know what was already decided. Returns its identity immediately without waiting for it to finish. Its result arrives as a notice when it calls notify_parent; do not ask_agent a child for its result.",
+      "Create a subagent in its own tmux window with a task, or resume a dead or finished one by its run id. With fork: true it starts holding this session's context, for a judgement step that has to know what was already decided. Returns its identity immediately without waiting for it to finish. Its result arrives as a notice when it calls notify_parent; do not ask_agent a child for its result; list_runs lists its run and stop_run stops it with the returned run id.",
     promptSnippet:
-      "spawn_subagent(task, name?, model?, tools?, keepAlive?, fork?) or spawn_subagent(resume, model?, tools?, keepAlive?) - delegate a task to a new subagent, optionally forked from your own context, or resume a dead one, in its own window",
+      "spawn_subagent(task, name?, model?, tools?, keepAlive?, fork?) or spawn_subagent(resume, model?, tools?, keepAlive?) - delegate a task to a new subagent, optionally forked from your own context, or resume a dead one, in its own window; list_runs lists it and stop_run stops it with its run id",
     // pi's buildRules (system-prompt.js) merges these into the system prompt's rules section;
     // NOT_THE_USER_RULE is the same string in async_bash's list, de-duplicated to one bullet.
     promptGuidelines: [
-      "A subagent's result arrives on its own as a notice when it finishes; never ask a child for its result and never poll list_agents for it.",
+      "A subagent's result arrives on its own as a notice when it finishes; never ask a child for its result and never poll list_runs for it; list_runs lists the run and stop_run stops it with the returned run id.",
       "Trust but verify: a child's report says what it intended to do, not what it did - check the diff before relaying success.",
       NOT_THE_USER_RULE,
     ],
@@ -1082,8 +1083,8 @@ export default function (pi: ExtensionAPI) {
       name: "steer_subagent",
       label: "Steer Subagent",
       description:
-        "Redirect a descendant that is already working, without aborting its turn: the message joins the run it is in rather than waiting for it to finish. For anything a running descendant needs before it finishes: new evidence, a change of scope, a correction or a warning. Refused for anything but a descendant. Use message_agent when the message can wait for the current turn to end.",
-      promptSnippet: "steer_subagent(to, message) - redirect a descendant mid-task, without aborting its turn",
+        "Redirect a descendant that is already working, without aborting its turn: the message joins the run it is in rather than waiting for it to finish. For anything a running descendant needs before it finishes: new evidence, a change of scope, a correction or a warning. Refused for anything but a descendant. Use message_agent when the message can wait for the current turn to end; use stop_run to end a run.",
+      promptSnippet: "steer_subagent(to, message) - redirect a descendant mid-task without aborting; stop_run ends a run",
       parameters: Type.Object(
         {
           to: Type.String({
@@ -1101,8 +1102,8 @@ export default function (pi: ExtensionAPI) {
       name: "interrupt_subagent",
       label: "Interrupt Subagent",
       description:
-        "Abort a descendant's current turn without ending its session - it stays alive and idle, ready for a corrected instruction. Refused for anything but a descendant.",
-      promptSnippet: "interrupt_subagent(to) - abort a descendant's current turn, without ending its session",
+        "Abort a descendant's current turn without ending its session - it stays alive and idle, ready for a corrected instruction. Refused for anything but a descendant; use stop_run to end a run.",
+      promptSnippet: "interrupt_subagent(to) - abort a descendant's turn without ending its session; stop_run ends a run",
       parameters: Type.Object(
         {
           to: Type.String({
@@ -1116,20 +1117,20 @@ export default function (pi: ExtensionAPI) {
       timeoutMs: 5000,
     },
     {
-      name: "stop_subagent",
-      label: "Stop Subagent",
+      name: "stop_run",
+      label: "Stop Run",
       description:
-        "End a descendant's session. Asks it to shut down over its inbox and, if it does not within a few seconds, kills its window instead. Refused for anything but a descendant.",
-      promptSnippet: "stop_subagent(to, force?) - end a descendant's session, killing its window if it does not respond",
+        "Stop a descendant subagent or async_bash run found in list_runs. Asks a subagent to shut down, killing its pane if needed; sends TERM to a bash wrapper, which forwards it to its command.",
+      promptSnippet: "stop_run(to, force?) - end a descendant subagent or bash run found in list_runs",
       parameters: Type.Object(
         {
           to: Type.String({
-            description: "Who to stop: an agent's exact name, exact session id, or a unique prefix of its session id.",
+            description: "Run id, unique prefix of at least 8 characters, or unambiguous run name; one leading @ is ignored.",
           }),
           force: Type.Optional(
             Type.Boolean({
               description:
-                "Kill the target's window directly if it has no inbox to ask nicely over. Destructive and irreversible - only set this when you mean it.",
+                "For a subagent with no usable inbox, allow killing its pane. Not needed for bash runs. Destructive and irreversible.",
             }),
           ),
         },
@@ -1158,11 +1159,12 @@ export default function (pi: ExtensionAPI) {
     name: "async_bash",
     label: "Async Bash",
     description:
-      "Run a shell command in the background, for a command whose result you do not need for your next step - this session keeps working while it runs. Exactly one notice arrives when the command ends, carrying its exit status and a tail of its output; read the output file with the ordinary read tool at any time before then to check on progress. With stream=true the output also arrives in batches as it runs - between your own tool calls while you are working, on a slowing schedule when you are idle, capped per batch and per run, so some lines are only ever in the file, which always has all of them. If your next step needs the result and you have nothing else to do meanwhile, use bash with a timeout instead.",
+      "Run a shell command in the background, for a command whose result you do not need for your next step - this session keeps working while it runs. Exactly one notice arrives when the command ends, carrying its exit status and a tail of its output; read the output file with the ordinary read tool at any time before then to check on progress. With stream=true the output also arrives in batches as it runs - between your own tool calls while you are working, on a slowing schedule when you are idle, capped per batch and per run, so some lines are only ever in the file, which always has all of them. If your next step needs the result and you have nothing else to do meanwhile, use bash with a timeout instead; list_runs lists its run and stop_run stops it with the returned run id.",
     promptSnippet:
-      "async_bash(command, name?) - run a command in the background; a notice with its exit status arrives when it ends, read the output file meanwhile",
+      "async_bash(command, name?) - run a command in the background; a notice with its exit status arrives when it ends, read the output file meanwhile; list_runs lists it and stop_run stops it with its run id",
     promptGuidelines: [
       "A command whose result you need before continuing (tests, a build, anything you will act on) runs in foreground bash, however long it takes - length alone is never a reason to use async_bash. Once a command is in async_bash, its notice is the only way you learn that it ended: never run `sleep` in bash to wait for it, and never loop over its output file. If you have nothing else to do, end your turn; the notice wakes you.",
+      "list_runs lists an async_bash run and stop_run stops it with the returned run id.",
       NOT_THE_USER_RULE,
     ],
     parameters: Type.Object(
@@ -1194,7 +1196,7 @@ export default function (pi: ExtensionAPI) {
       if (!res.ok) return reply(`could not start background command: ${res.error}`);
       const [windowID, paneID, runID, outputPath] = res.out.split(/\s+/);
       return reply(
-        `started run ${runID}${params.name ? ` (${params.name})` : ""} in window ${windowID}; ` +
+        `started run ${runID}${params.name ? ` (${params.name})` : ""} in window ${windowID}; list_runs lists it and stop_run("${runID}") stops it; ` +
           `a notice with its exit status and a tail of its output arrives when it ends and starts your next turn; you stay alive while it runs, so ending your turn now is safe - do not sleep or poll for it, and end your turn if nothing else is left - ` +
           (params.stream
             ? `batches of its output arrive meanwhile, capped, with anything they leave out in ${outputPath}`
@@ -1416,9 +1418,9 @@ export default function (pi: ExtensionAPI) {
           const token = atToken((lines[cursorLine] ?? "").slice(0, cursorCol));
           if (token === undefined) return current.getSuggestions(lines, cursorLine, cursorCol, options);
           if (!cache.refreshing && Date.now() - cache.at >= AGENT_LIST_TTL_MS) {
-            cache.refreshing = fetchAgents()
+            cache.refreshing = fetchAgents("runs")
               .then((listed) => {
-                if (listed.ok) cache.agents = listed.agents;
+                if (listed.ok) cache.agents = listed.agents.filter((a) => a.kind !== "bash" && a.state !== "ended");
                 cache.at = Date.now();
               })
               .catch(() => {})

@@ -29,7 +29,7 @@ let prompt ~dir ~self ~window text =
   if String.is_empty text then Error No_prompt
   else
     let* panes = failed (Exec.list_panes ()) in
-    let* self = failed (List_agents.caller_pane panes self) in
+    let* self = failed (List_runs.caller_pane panes self) in
     let states = State.by_pane (State.load_live ~dir) in
     let sweep = lazy (Procs.sweep ()).pi in
     let candidates whole_session =

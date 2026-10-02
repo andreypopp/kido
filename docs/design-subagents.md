@@ -19,7 +19,7 @@ agent binaries.
 
 | tool | command |
 |---|---|
-| `list_agents()` | `kido tool list_agents --json` |
+| `list_runs()` | `kido tool list_runs --json` |
 | `set_status(activity)` | `kido tool set_status -- <activity>` |
 | `message_agent(to, message, replyTo?)` | `kido tool message_agent [--reply-to ID] -- <to>` |
 | `ask_agent(to, question, timeoutMs?)` | `kido tool ask_agent --id ID -- <to>` |
@@ -27,7 +27,7 @@ agent binaries.
 | `spawn_subagent(resume, model?, tools?, keepAlive?)` | `kido tool spawn_subagent --resume` |
 | `steer_subagent(to, message)` | `kido tool steer_subagent -- <to>` |
 | `interrupt_subagent(to)` | `kido tool interrupt_subagent -- <to>` |
-| `stop_subagent(to, force?)` | `kido tool stop_subagent [--force] -- <to>` |
+| `stop_run(to, force?)` | `kido tool stop_run [--force] -- <to>` |
 | `async_bash(command, name?, stream?)` | `kido tool async_bash [--name NAME] [--stream] -- COMMAND...` |
 | `notify_parent(summary)` | `kido tool notify_parent` |
 
@@ -58,8 +58,9 @@ something, and the second one is a rule:
 
 | suffix | who it may act on | tools |
 |---|---|---|
-| `_agent` | any agent in this tmux session | `list_agents`, `message_agent`, `ask_agent` |
-| `_subagent` | your own descendants | `spawn_subagent`, `steer_subagent`, `interrupt_subagent`, `stop_subagent` |
+| `_agent` | any agent in this tmux session | `message_agent`, `ask_agent` |
+| `_subagent` | your own descendants | `spawn_subagent`, `steer_subagent`, `interrupt_subagent` |
+| `_run` / `_runs` | run listing and stopping | `list_runs`, `stop_run` |
 
 Descendants, not children: nesting goes two deep, so a grandchild is
 reachable, and one predicate answers it for all four (the `Descendant`
@@ -110,14 +111,31 @@ which cost a subagent a redo of its one report. An activity is a UI label
 and is truncated; a report is a work product and is kept whole, with only
 what the parent is *sent* bounded ("Reporting", below).
 
-`list_agents` returns every agent whose pane is in the caller's tmux
-session, itself included, ordered parent-first: id, name, agent, pane,
-window, status, activity, parent, depth, self, cwd, model, `canMessage`,
-`canReply` (false only when its run record narrows its tools away from
-message_agent, the one tool a reply is sent through)
-(whether it has an inbox; a Claude Code session is visible but only
-reachable by paste), `sinceReport` and `stalled`. Sessions in another
-tmux session are not listed, and nothing here can reach them.
+`list_runs` is the one tool for finding agents to message and runs to stop
+with `stop_run`. A top-level caller sees other top-level agents in its
+tmux session as peers. A subagent sees its parent and its live sibling
+subagents as peers, not other top-level agents or its parent's bash jobs.
+Both see their own runs, including all running ones and the newest 20
+ended ones by start time, newest first within the own-run group. The
+caller itself and unrelated agents' runs are excluded. An untracked shell
+sees top-level agents in its tmux session and has no own runs.
+
+Rows carry `kind` (`agent`, `subagent`, `bash`) and `relationship`
+(`peer`, `parent`, `own`). Live agents retain id, name, agent, pane,
+window, status, activity, parent, depth, cwd, model, `canMessage`,
+`canReply`, `sinceReport` and `stalled`. Own runs add `run`, `startedAt`,
+`state` (`running` or `ended`) and the ending's `outcome` result and text.
+A bash run or an ended subagent without a live record has no agent
+status and cannot reply. `canReply` also reflects an agent run's tool
+allowlist. Names still resolve across the entire tmux session for
+messaging, asking, steering and interrupting; listing is not an addressing
+restriction.
+
+The extension's autocomplete reads `list_runs`, filtering out bash and
+ended rows. Internal sender validation, ancestry, self-window lookup and
+`resolveAgent`/`canReply` checks use the live graph returned by the pure
+`get-agent --context` lookup, not the scoped display: an unlisted sender
+is still an agent, and a grandparent remains an ancestor.
 
 ## What a child is given
 
@@ -179,7 +197,7 @@ about it could say which pane is the run's. A pane option has no such
 fallback and reads empty on the split. The sidebar draws the run's row -
 running, or the tombstone with its outcome - on the pane carrying it,
 and every other pane of the window as the shell or command it is. The
-sweep and `kido tool stop_subagent` act on the run's own pane specifically,
+sweep and `kido tool stop_run` act on the run's own pane specifically,
 not the whole window: the user's split is left standing, and killing the
 run's pane clears `@kido_run` with it, with no separate unmark step,
 since the option never lived anywhere else.
@@ -264,7 +282,7 @@ function taking a `Subrun.id` trusts it.
   given that a resume has to start it with again, which is why `keepAlive`
   is there at all (design.md, "Idle self-exit, and resuming a run");
 - `outcome`, once the run has ended: `completed` or `failed` from the
-  child itself, `died` from a sweep, `stopped` from `kido tool stop_subagent`;
+  child itself, `died` from a sweep, `stopped` from `kido tool stop_run`;
 - `report`, for a `notify_parent` report too long to send whole - the
   text as the child wrote it, which the parent's notice names ("A child's
   life", below);
@@ -305,7 +323,7 @@ are recycled, so anything else asks `kido get-agent <parent-session>`
 and acts on the answer, on one reading. That command reads every live
 state record and answers whether one holds that session - the same
 question the orphan sweep asks, of the same registry. It is deliberately
-not a display: `kido tool list_agents` keeps one record per pane, so a
+not a display: `kido tool list_runs` keeps one record per pane, so a
 `pi --print` inside the parent's pane takes the pane and the parent's
 record goes missing from the answer altogether, which is a wrong answer no
 debounce fixes. Nor does the poll list panes, so it costs one process and
@@ -474,7 +492,7 @@ with the correction instead of starting over. It is labelled with its
 sender on arrival, since an instruction landing mid-task would otherwise
 read as if the child had thought of it itself. `interrupt_subagent`
 aborts the target's current turn and leaves it idle with its context
-intact. `stop_subagent` asks it to shut down, waits up to five seconds
+intact. `stop_run` asks it to shut down, waits up to five seconds
 for its record to go, and kills its pane if it is still there; a target
 with no inbox, or a stale one, is killed outright and only with `force`.
 All three reach descendants only, checked twice: by kido before sending
@@ -623,7 +641,7 @@ for the same reason. A bash run writes no state record, so the sender
 kido can fill in is whichever *process* observed the ending - the
 wrapper's own pane, which is no agent, leaving a parent reading
 "notification from %47", or a sweeping sidebar, or the unrelated agent
-that typed `kido tool stop_subagent`. The run's name is the only honest
+that typed `kido tool stop_run`. The run's name is the only honest
 answer, and it is what the parent's widget row shows.
 
 The output file is the source of truth
@@ -652,7 +670,7 @@ observers can win it:
 |---|---|---|---|
 | the wrapper | its own `wait(2)`, or a signal it can catch | `completed`/`failed` | yes, with the exit status |
 | a sweep's rule 1 (`Reap.sweep`) | a marked window dead for the linger | `failed`, "ended without its wrapper reporting" | yes, if it won |
-| `kido tool stop_subagent` | a deliberate stop | `stopped`, naming itself | yes, if it won |
+| `kido tool stop_run` | a deliberate stop | `stopped`, "stopped by its parent" | yes, if it won |
 
 The wrapper covers every ending it lives to see, which is why `SIGTERM`,
 `SIGHUP` and `SIGINT` are passed on to the command and then reported as
@@ -684,26 +702,28 @@ is what sweeps, releases, and then sends each ending (`Reap.send`). A window swe
 has no business knowing what an inbox is, and the one thing it can know
 is that a run ended with nothing said about it.
 
-**Stopping one.** `kido tool stop_subagent --force -- <name>` ends a run,
-addressed by the name or the run id `kido tool async_bash` printed. A run has
-no state record for the usual target resolution to find, so stop matches
-it against the runs that have no outcome yet - a finished run can never
-shadow a live agent - and applies the same scope rule every `_subagent`
-command shares to the only parent edge a run has, the session in its
-meta. `--force` is required for the reason it always is: a bash run has
-no inbox to ask nicely over, so stopping it degrades straight to killing
-something.
+**Stopping one.** `kido tool stop_run -- <name>` ends a run,
+addressed by the exact run id first, then a unique id prefix of at least
+eight characters, then an unambiguous running run name (case-insensitive).
+One leading `@` is stripped at the edge. An ambiguous name lists the
+matching run ids, and an explicitly addressed ended run is refused.
+Both agent and bash runs obey descendant scope; bash runs reach their
+caller through the `parentSession` in their meta. A human with no record
+may stop any run.
 
-The stop signals the wrapper first and waits out the stop escalation,
-because a wrapper that is still there reports the ending itself with the
-exit status and the output tail the stop could only guess at. Only if it
-does not report does the stop record and send its own notice - and a
-wrapper that is already gone is not waited for at all, since waiting
-would delay a notice nobody else was ever going to send. Each observer's
-outcome text says which of them it was.
+For an agent run, stop asks its inbox to shut down, waits up to five
+seconds, and kills its pane if necessary; `--force` permits a pane kill
+when no usable inbox exists. A bash run needs no `--force`: stop records
+`stopped` with the text "stopped by its parent" before sending TERM to the
+wrapper pid. The wrapper forwards TERM to its command. First-write-wins
+keeps the stopping outcome instead of the wrapper's generic signal error.
+Stop waits for the wrapper's pid, escalates with KILL if necessary, and
+sends the one ending notice with the output tail. Stopping a live wrapper
+does not depend on its pane; a gone wrapper's lingering pane is cleaned
+up through the existing pane-kill path.
 
 Apart from stop and orphan collection, a bash run is deliberately not an
-agent. It has no state record, so it is not in `kido tool list_agents`,
+agent. It has no state record, but appears among its caller's own runs in `kido tool list_runs`,
 cannot be addressed by `message_agent` or `ask_agent`, and has no status
 to report - there is
 nothing there to answer. What it has is the run record, which is already
@@ -817,11 +837,11 @@ What works:
 - `kido tool spawn_subagent --resume <id>` - parentless by default from an
   untracked pane, and `--no-parent` from a tracked one. The line
   `kido runs <id>` prints is exactly this.
-- `kido tool steer_subagent`, `interrupt_subagent`, `stop_subagent` - a caller
+- `kido tool steer_subagent`, `interrupt_subagent`, `stop_run` - a caller
   with no record is nobody's ancestor, and is allowed to act on anything
   rather than nothing (design.md, "Steer, interrupt and stop").
-- `kido tool list_agents`, `kido runs`, `kido reap` - all read-only or
-  read-mostly, and none of them ask who is calling.
+- `kido tool list_runs` shows top-level agents from an untracked shell;
+  `kido runs` and `kido reap` are read-only or read-mostly and unscoped.
 
 What is refused, each naming what to do instead:
 

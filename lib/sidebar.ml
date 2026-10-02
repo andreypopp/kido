@@ -379,7 +379,7 @@ let agent_title_of m (p : P.t) =
   else
     match String_map.find_opt p.pane_id m.snap.states with
     | Some (_, { title; _ }) when not (String.is_empty title) -> Some title
-    | _ -> ( match List_agents.agent_title p.title with "" -> Some "-" | t -> Some t)
+    | _ -> ( match List_runs.agent_title p.title with "" -> Some "-" | t -> Some t)
 
 let span role text = { text; role }
 let plain = span `Plain

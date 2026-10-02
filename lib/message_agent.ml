@@ -1,4 +1,10 @@
-type recipient = Named of string | Descendant of string | Parent of string
+type recipient =
+  | Named of string
+  | Descendant of string
+  | Descendant_run of Subrun.id
+  | Parent of string
+
+type address = Name of string | Run of Subrun.id
 type spec = { kind : Msg.kind; reply_to : string; id : string }
 type failure = Unavailable of string | Failed of string
 type send_error = No_text | Not_sent of string
@@ -7,14 +13,14 @@ let decide ~panes to_ by = function
   | [] -> None
   | [ e ] -> Some (Ok e)
   | many ->
-      List.map (fun (id, s) -> Printf.sprintf "%s (%s)" id (List_agents.display_name panes s)) many
+      List.map (fun (id, s) -> Printf.sprintf "%s (%s)" id (List_runs.display_name panes s)) many
       |> List.sort String.compare |> String.concat ", "
       |> Printf.sprintf "%S matches several agents by %s: %s" to_ by
       |> fun m -> Some (Error m)
 
 let match_target ~panes sessions to_ =
   let named (_, s) =
-    let name = List_agents.display_name panes s in
+    let name = List_runs.display_name panes s in
     (not (String.is_empty name)) && String.equal_caseless name to_
   in
   match decide ~panes to_ "name" (List.filter named sessions) with
@@ -25,13 +31,22 @@ let match_target ~panes sessions to_ =
       | None ->
           decide ~panes to_ "id" (List.filter (fun (id, _) -> String.prefix ~pre:to_ id) sessions))
 
-let resolve_target states panes ~self to_ =
+let resolve_target states panes ~self address =
   let open Result.Infix in
-  let* caller = List_agents.caller_pane panes self in
-  match match_target ~panes (List_agents.in_session panes states caller.session_id) to_ with
+  let to_, matched =
+    match address with
+    | Name to_ -> (to_, fun states -> match_target ~panes states to_)
+    | Run id ->
+        let id = Subrun.string_of_id id in
+        ( id,
+          fun states -> Option.map (fun s -> Ok (id, s)) (List.assoc_opt ~eq:String.equal id states)
+        )
+  in
+  let* caller = List_runs.caller_pane panes self in
+  match matched (List_runs.in_session panes states caller.session_id) with
   | Some r -> r
   | None -> (
-      match match_target ~panes states to_ with
+      match matched states with
       | Some (Error m) -> Error (m ^ ", none in this tmux session")
       | Some (Ok (id, _)) ->
           Error (Printf.sprintf "%s (%s) is in another tmux session, not this one" to_ id)
@@ -46,33 +61,34 @@ let reaches states panes ~self id =
         (fun (p : Tmux.Pane.t) ->
           let parent_of =
             List.filter_map
-              (fun e -> Option.map (fun p -> (fst e, p)) (List_agents.parent_edge e))
-              (List_agents.in_session panes states p.session_id)
+              (fun e -> Option.map (fun p -> (fst e, p)) (List_runs.parent_edge e))
+              (List_runs.in_session panes states p.session_id)
           in
-          List_agents.is_ancestor parent_of ~ancestor:caller id)
-        (List_agents.caller_pane panes self)
+          List_runs.is_ancestor parent_of ~ancestor:caller id)
+        (List_runs.caller_pane panes self)
 
 let descendant_target states panes ~self to_ =
   let open Result.Infix in
   let* ((id, target) as e) = resolve_target states panes ~self to_ in
   let* reached = reaches states panes ~self id in
   if reached then Ok e
-  else Error (List_agents.display_name panes target ^ " is not this agent's descendant")
+  else Error (List_runs.display_name panes target ^ " is not this agent's descendant")
 
 let resolve ~live ~panes ~self recipient =
   let open Result.Infix in
   let* ((_, target) as e) =
     match recipient with
-    | Named to_ -> resolve_target (List_agents.per_pane live) panes ~self to_
-    | Descendant to_ -> descendant_target (List_agents.per_pane live) panes ~self to_
+    | Named to_ -> resolve_target (List_runs.per_pane live) panes ~self (Name to_)
+    | Descendant to_ -> descendant_target (List_runs.per_pane live) panes ~self (Name to_)
+    | Descendant_run id -> descendant_target (List_runs.per_pane live) panes ~self (Run id)
     | Parent session -> Result.map (fun s -> (session, s)) (Msg.live_parent live session)
   in
   if String.equal target.pane self then
-    Error (List_agents.display_name panes target ^ " is this agent")
+    Error (List_runs.display_name panes target ^ " is this agent")
   else Ok e
 
 let deliver ~states ~panes ~self spec (target : State.session) text =
-  let name = List_agents.display_name panes target in
+  let name = List_runs.display_name panes target in
   let kind = Msg.string_of_kind spec.kind in
   let is_message = match spec.kind with Message -> true | _ -> false in
   if (not is_message) && String.is_empty target.inbox then
@@ -142,17 +158,17 @@ let send ~dir ~self recipient spec text =
                (Printf.sprintf
                   "%s has no inbox for an answer to arrive on, and only a long-lived process has \
                    one; nothing sent - %s"
-                  (List_agents.display_name panes caller)
+                  (List_runs.display_name panes caller)
                   alternative))
       | _ -> Ok ()
     in
     let* id, target = not_sent (resolve ~live ~panes ~self recipient) in
-    let name = List_agents.display_name panes target in
+    let name = List_runs.display_name panes target in
     match (deliver ~states ~panes ~self spec target text, spec.kind, target.status) with
     | Ok `Pasted, _, _ -> Ok (Printf.sprintf "pasted into %s's pane" name)
     | Ok `Inbox, Message, (State.Running | Compacting) ->
         let steerable =
-          Result.get_or ~default:false (reaches (List_agents.per_pane live) panes ~self id)
+          Result.get_or ~default:false (reaches (List_runs.per_pane live) panes ~self id)
         in
         Ok
           (Printf.sprintf "queued for %s: it is running and reads this when its current turn ends%s"

@@ -18,7 +18,7 @@ a pair of slots on `globalThis.__kidoPiExtensionSeam`.
 purpose: pi evaluates each extension in a module registry of its own, so
 an ordinary import of the neighbouring file loads a second copy of it
 rather than reaching the one pi started (measured against pi 0.85.1 —
-list_agents answered `[]`). Load order does not matter either: pi may run
+list_runs answered `[]`). Load order does not matter either: pi may run
 either factory first, and neither reads the other's slot until a tool call
 or an event.
 
@@ -152,8 +152,21 @@ reporting carries on unaffected.
 These register unconditionally when `kido-agents.ts` loads, and simply do
 nothing useful until a session has started and kido has been found:
 
-- `list_agents()` runs `kido tool list_agents --json` and returns every agent visible
-  in the current tmux session, including this one.
+- `list_runs()` runs `kido tool list_runs --json` and returns same-parent
+  peers, the caller's parent and its own subagent and bash runs, excluding
+  itself. A root sees other roots; a subagent sees its live siblings.
+  All running own runs and the newest 20 ended ones are included, with
+  kind, relationship, status and outcome. Autocomplete uses its live
+  agent rows; internal sender, ancestry and reply validation uses
+  `get-agent --context` so addressing stays session-wide.
+- `stop_run(to, force?)` runs `kido tool stop_run [--force] -- <to>`,
+  resolving run ids (unique prefixes of at least eight characters) before
+  unambiguous running names. It stops descendant agent or bash runs,
+  asking an agent to shut down with pane-kill escalation, or signalling
+  a bash wrapper by pid. Bash needs no force flag and records
+  "stopped by its parent". `steer_subagent` and `interrupt_subagent`
+  remain agent-only; both `spawn_subagent` and `async_bash` return the
+  run id to use with `stop_run`.
 - `set_status(activity)` runs `kido tool set_status -- <text>`, free text
   capped at 256 bytes and shown next to this session in kido's sidebar,
   separate from the running/waiting/idle status above. An empty string
@@ -279,11 +292,11 @@ was mis-delivered. A refused ask is not delivered to the model at all.
   delivers an `interrupt` envelope; this session answers one addressed to
   it with `ctx.abort()`, aborting the current turn without ending the
   session.
-- `stop_subagent(to, force?)` runs `kido tool stop_subagent [--force] -- <to>`,
+- `stop_run(to, force?)` runs `kido tool stop_run [--force] -- <to>`,
   which delivers a `stop` envelope; this session answers one addressed to it
   with `ctx.shutdown()`, the same teardown a normal exit runs
   (`session_shutdown`: inbox closed, record removed, own window's linger
-  scheduled). `kido tool stop_subagent` escalates to killing the target's pane
+  scheduled). `kido tool stop_run` escalates to killing the target's pane
   if it does not go within a few seconds - see docs/design.md, "Interrupt and
   stop".
 - `notify_parent(summary)` runs `kido tool notify_parent`, piping `summary` on
@@ -300,6 +313,6 @@ be verified as an ancestor of this session (the same ancestor walk
 `ask_agent`'s own refusal uses, in the opposite direction): a caller may
 only steer, interrupt or stop its own descendants, which is what the
 `_subagent` suffix in those names means. `kido tool steer_subagent`,
-`kido tool interrupt_subagent` and `kido tool stop_subagent` already enforce this
+`kido tool interrupt_subagent` and `kido tool stop_run` already enforce this
 before ever sending the envelope; this session
 checks it again on receipt, since `from` is advisory.

@@ -184,7 +184,7 @@ Dead records are removed by `State.load_live`. One reading decides, and
 there is no debounce. The optional `--children` flag adds
 `"childrenAlive": bool`, scanning run records only when requested.
 
-The question may not be put to a display. `kido tool list_agents` answers from
+The question may not be put to a display. `kido tool list_runs` answers from
 a per-pane view (`State.by_pane`), which is right for a display and wrong
 here: a `pi --print` started inside the parent's pane wins that pane, and
 the parent's record is then not in the answer at all - nor is the child's
@@ -193,7 +193,7 @@ healthy parent reads as gone, and a debounce waiting for a second
 identical wrong answer treats a bad answer as a slow one. A pane
 collision settles who owns a pane, which `get-agent` never asks, so
 nothing can disturb its answer. It is a separate subcommand rather than a
-flag on `kido tool list_agents` because it shares nothing with that command
+flag on `kido tool list_runs` because it shares nothing with that command
 but a prefix - no pane listing, no session scoping, no per-pane collapse -
 and a display growing a second meaning is how a liveness poll comes to
 read a pane's owner. Asking no pane list also keeps a tmux round trip out
@@ -213,7 +213,7 @@ reader of this same fact, which is server-wide as well; scoping the poll
 would put the two out of step, and a child whose window was moved to
 another tmux session would poll a list its parent is not in and shut
 itself down while the sweep, reading every record, is perfectly happy
-with it. Messaging stays session-scoped (`list_agents` is the display,
+with it. Messaging stays session-scoped (`list_runs` is the display,
 and the limit below stands); liveness never needed to be. The one
 inconclusive reading is kido failing to answer at all, which says nothing
 and is never acted on.
@@ -253,7 +253,7 @@ command that is only about a label.
 Activity is the one field a model writes directly into a state record, so it
 is sanitised once, on the way in, by both commands: control characters
 become spaces and the result is cut at 256 bytes on a rune boundary. The
-sidebar budgets one terminal line per row and `kido tool list_agents` prints a
+sidebar budgets one terminal line per row and `kido tool list_runs` prints a
 tab-separated table, and defending each of those against a newline is more
 work than refusing one at the single place a record is built from arguments.
 A model is free to ignore a schema and any same-uid process can run either
@@ -541,20 +541,25 @@ wrote, run in its parent's pane. The rule for a dead parent is that
 there is nobody to tell.
 
 Two more refusals happen before anything is sent. A message to the
-sender's own pane is refused, because `list_agents` reports the caller
-alongside everyone else and a model picking a name off that list can
-pick its own, which would hand it its own message back as a fresh user
-turn. Invalid UTF-8 is refused, because the two delivery paths disagree
+sender's own pane is refused: even though `list_runs` excludes the caller,
+an explicitly addressed self-message would hand it its own message back
+as a fresh user turn. Invalid UTF-8 is refused, because the two delivery paths disagree
 about it: JSON marshalling substitutes U+FFFD while a paste writes the
 bytes through, and the same message would then arrive differently
 depending on whether the target happened to have an inbox.
 
 ## Addressing
 
-The tmux session is the visibility boundary. `kido tool list_agents` lists every
-agent whose pane is currently in the caller's session, and
-`kido tool message_agent`, `ask_agent`, `interrupt_subagent` and
-`stop_subagent` resolve their target within that same scope. A
+The tmux session is the addressing boundary for `message_agent`,
+`ask_agent`, `steer_subagent` and `interrupt_subagent`. `list_runs` is narrower:
+it shows same-parent peers (other top-level agents for a root, live
+siblings for a subagent), the caller's parent and its own runs. It
+excludes the caller itself, other agents' children and bash jobs.
+Own runs include all running ones and the newest 20 ended ones by start
+time, newest first. This display scope does not restrict addressing.
+`stop_run` resolves run ids (unique prefixes of at least eight characters)
+before running run names, across both kinds, then applies descendant
+scope through agent records or bash meta's parent session. A
 target that exists but sits in another session is reported as such, not
 as "not found"; an ambiguity out there is reported as an ambiguity rather
 than as a single match with an empty id.
@@ -562,9 +567,9 @@ than as a single match with an empty id.
 Within scope the rules run in order, and each errors on its own ambiguity
 rather than falling through to guess with a different rule: an exact
 case-insensitive name, then an exact session id, then a unique id prefix.
-The name a session is matched by is the same one `kido tool list_agents` displays
+The name a session is matched by is the same one `kido tool list_runs` displays
 for it, its reported title falling back to its pane's title, so a name read
-off `list_agents` can always be resolved back. Refusal over guessing is the
+off `list_runs` can always be resolved back. Refusal over guessing is the
 stance throughout: `replyTo` is never inferred even when exactly one ask
 from the target is pending, because guessing wrong does not fail safe, it
 resolves the wrong pending ask on the far side and hands one question's
@@ -572,9 +577,12 @@ answer to another. `ask_agent` resolves the target once in the extension and
 passes the resolved id to `kido tool ask_agent`, so a second resolution inside
 kido cannot disagree with the first.
 
-In pi's prompt editor, `@` and a prefix completes agents in the session
-by name, top-level and subagents alike, the caller excluded, each row
-showing status, activity and a subagent's parent. `@` is also pi's file
+In pi's prompt editor, `@` and a prefix completes the live agent rows in
+`list_runs`: same-parent peers, the caller's parent and its own subagents,
+not bash or ended runs. Each row shows status, activity and a subagent's
+parent. Internal sender, ancestry and reply checks use
+`get-agent --context`, the live agent graph, so an unlisted sender is
+not mistaken for a human and addressing remains session-wide. `@` is also pi's file
 trigger, so the provider wraps pi's own: agent matches come first, the
 built-in's file matches follow under the same prefix, and a token that
 matches no agent (`@src/...`) is the built-in's answer untouched. The
@@ -582,7 +590,7 @@ token matches the start of the name or of any word in it, whole-name
 matches first; a name with whitespace, which cannot be typed back as one
 `@` token, inserts the shortest unique prefix of the agent's id instead,
 which addressing resolves like a name. A
-keystroke never waits on `kido tool list_agents`: it is served the last list,
+keystroke never waits on `kido tool list_runs`: it is served the last list,
 and a refresh runs behind it once that is older than
 `KIDO_AGENT_LIST_TTL_MS` (1s). Nothing is fetched until the first `@`.
 
@@ -613,7 +621,7 @@ wanted.
 
 A target that cannot reply is refused too: a reply is a `message_agent`
 call, so a child spawned with a tools allowlist that excludes it has
-nothing to answer with, and the ask would only block. `kido tool list_agents
+nothing to answer with, and the ask would only block. `kido tool list_runs
 --json` reports this as `canReply`, read beside `canMessage`. Measured
 live: a parent asked four such reviewers for their reports seconds after
 spawning them; each said so through `notify_parent` and the asks waited
@@ -642,7 +650,7 @@ stays a valid correlation for that.
 
 A subagent may not ask an ancestor, so the parent stays free to
 orchestrate; that rule is walked on the extension side from the parent
-field `kido tool list_agents` reports. Asks still run parent to child and between
+field `kido get-agent --context` reports. Asks still run parent to child and between
 peers, so two peers can block on each other. The rule for that is kept
 in memory, in each extension: an inbound ask from a session this one is
 holding an outstanding ask to is answered `refused` on the wire, and is
@@ -691,7 +699,7 @@ that moment and dead a second later would leave the asker sitting out its
 whole `timeoutMs`, which is minutes of a parent's attention spent on an
 answer that can no longer exist. The endings that produce it are ordinary
 ones: a child that finishes its work and exits without replying, and a
-child killed with `stop_subagent`.
+child killed with `stop_run`.
 
 So a waiting ask keeps asking `kido get-agent <session>` - the same
 one-bit question, on the same terms, as the parent-liveness poll in the
@@ -925,7 +933,7 @@ the tree nests the window under its parent, `switch-window` skips it,
 the sidebar draws the run's label on it, and a later sweep would
 consider it again. With the pane gone the window is drawn as the plain
 window it is, with whatever the user left in it. The same holds for a
-stop's escalation and a bash run stopped with `--force`: the target's
+stop's escalation and a bash run's dead-wrapper cleanup: the target's
 pane is killed, and the window goes back to being an ordinary one the
 same way. A pane the user splits off carries no `@kido_run` of its own -
 there is no window-scoped fallback to inherit it through - and no
@@ -1216,7 +1224,7 @@ This is not a security boundary, it exists so a confused peer
 cannot reach into a part of the tree it does not own. It is enforced
 twice on purpose: kido checks it before sending, using its own view of
 the tree, and the receiving extension checks it again on receipt, using
-its own `list_agents`, because the sender field is advisory and a session
+`get-agent --context`, because the sender field is advisory and a session
 must not act on an envelope just because it arrived claiming to be from
 an ancestor. The receiver recognises a human by the pair, an empty sender
 session and a pane no agent occupies, so a confused agent has to get two
@@ -1419,7 +1427,7 @@ marked window with no outcome recorded: the child never got to say
 anything - except for a bash run, where the sweep writes `failed` and
 names what it found: a wrapper that ended without reporting, or a run
 whose parent ended (design-subagents.md, "Exactly one ending"). `stopped`
-is written by `kido tool stop_subagent`.
+is written by `kido tool stop_run`.
 
 **Written once.** `Subrun.record_outcome` links a completed temporary file
 into place with `Unix.link`, atomically refusing to overwrite. Several
@@ -1569,11 +1577,11 @@ same question at two instants to decide whether to redraw, and two
 separate reads would answer those two instants from different
 baselines, which is not a comparison of anything. It also kept a file
 open per session in the 100ms path for a value that changes once per
-suspend. `kido tool list_agents`, which asks once and exits, reads it once
+suspend. `kido tool list_runs`, which asks once and exits, reads it once
 too (`State.wake`) and passes it the same way.
 
 The marker is on disk rather than in the sidebar's memory because
-`kido tool list_agents` is a fresh process per call, with no tick of its own,
+`kido tool list_runs` is a fresh process per call, with no tick of its own,
 and it is what `ask_agent` shells out to; both have to reach the same
 verdict without pi's extension knowing anything about sleep.
 
@@ -1614,7 +1622,7 @@ in a module registry of its own, so `kido-agents.ts` importing a runtime
 value from `kido-status.ts` produces a second evaluation of that file,
 under the identical URL, with its own module scope. Module-scope slots
 leave each half holding a copy of the
-other that no session ever started: measured, `list_agents` in a real pi
+other that no session ever started: measured, `list_runs` in a real pi
 answered `[]` while every unit test passed. `globalThis` is shared across
 those evaluations, also measured. `kido-status.ts` declares the global
 property's type; `kido-agents.ts` imports nothing but types from it, which
@@ -1730,13 +1738,13 @@ sidebar and not by cycling. The walk also draws as a root
 anything whose anchor row never appeared, for the same reason the
 ordering emits what it missed: a dropped row is an agent nobody can see.
 
-Both walks, the sidebar's and `kido tool list_agents`', share one parent-first
+Both walks, the sidebar's and `kido tool list_runs`', share one parent-first
 ordering that emits every item exactly once, tree or no tree. A cycle is
 reachable through a bug in a reporting agent or a replayed old state
 file, and a walk from the roots alone would never reach a ring; whatever
 the walk missed is emitted afterwards as a root, so a nonsense edge costs
 an item its place in the tree and nothing else. A self-edge is read as
-"no parent". Siblings keep the order they arrived in, so `kido tool list_agents`
+"no parent". Siblings keep the order they arrived in, so `kido tool list_runs`
 sorts by report time first, with the id as a tiebreak because two agents
 reporting inside one clock tick would otherwise reorder between two calls
 that saw the same state.

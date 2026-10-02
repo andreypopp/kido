@@ -1,12 +1,12 @@
 [
-  "list_agents",
+  "list_runs",
   "set_status",
   "message_agent",
   "ask_agent",
   "spawn_subagent",
   "steer_subagent",
   "interrupt_subagent",
-  "stop_subagent",
+  "stop_run",
   "async_bash",
   "notify_parent"
 ]

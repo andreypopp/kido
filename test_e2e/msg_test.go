@@ -377,18 +377,18 @@ func parseAgents(t *testing.T, out string) []listedAgent {
 	t.Helper()
 	var agents []listedAgent
 	if err := json.Unmarshal([]byte(out), &agents); err != nil {
-		t.Fatalf("kido tool list_agents --json: %v\n%s", err, out)
+		t.Fatalf("kido tool list_runs --json: %v\n%s", err, out)
 	}
 	return agents
 }
 
-// jsonKeys is the keys, in order, of the first agent in `kido tool list_agents
+// jsonKeys is the keys, in order, of the first agent in `kido tool list_runs
 // --json`, which share/pi/kido-agents.ts reads.
 func jsonKeys(t *testing.T, out string) []string {
 	t.Helper()
 	var agents []json.RawMessage
 	if err := json.Unmarshal([]byte(out), &agents); err != nil || len(agents) == 0 {
-		t.Fatalf("kido tool list_agents --json: %v\n%s", err, out)
+		t.Fatalf("kido tool list_runs --json: %v\n%s", err, out)
 	}
 	dec := json.NewDecoder(bytes.NewReader(agents[0]))
 	var keys []string
@@ -409,7 +409,7 @@ func jsonKeys(t *testing.T, out string) []string {
 	return keys
 }
 
-func TestListAgentsScopesOrdersAndDecorates(t *testing.T) {
+func TestListRunsScopesOrdersAndDecorates(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	h.newSession("beta")
@@ -423,14 +423,17 @@ func TestListAgentsScopesOrdersAndDecorates(t *testing.T) {
 	h.writeRecord("root", caller, at(0), map[string]any{
 		"status": "running", "title": "alpha-root", "inbox": "/nonexistent.sock", "model": "m1",
 	})
-	h.writeRecord("child2", pane("alpha"), at(2), withDepth(parent("root"), 1))
-	h.writeRecord("child1", pane("alpha"), at(1), withDepth(parent("root"), 1))
+	child2, child1 := pane("alpha"), pane("alpha")
+	h.writeRecord("child2", child2, at(2), withDepth(parent("root"), 1))
+	h.writeRecord("child1", child1, at(1), withDepth(parent("root"), 1))
+	h.agentRunMeta("child2", child2, "child2", "root")
+	h.agentRunMeta("child1", child1, "child1", "root")
 	// The session id breaks a tie in ts, so identical state always lists
 	// in one order.
 	h.writeRecord("ccc", pane("alpha"), at(-1), nil)
 	h.writeRecord("bbb", pane("alpha"), at(-1), nil)
 	// A ring of bogus parent edges is reachable from no root, and
-	// list_agents is the only way to discover an agent at all: each comes
+	// list_runs is the only way to discover an agent at all: each comes
 	// out once.
 	h.writeRecord("cyc-a", pane("alpha"), at(3), parent("cyc-b"))
 	h.writeRecord("cyc-b", pane("alpha"), at(4), parent("cyc-a"))
@@ -440,38 +443,33 @@ func TestListAgentsScopesOrdersAndDecorates(t *testing.T) {
 	h.writeRecord("orphan", pane("alpha"), at(6), map[string]any{"parent": map[string]any{"session": "someone-else", "pid": os.Getpid()}})
 	h.writeRecord("far", pane("beta"), at(0), nil)
 
-	out, rc := h.kidoAs(caller, "", nil, "tool", "list_agents", "--json")
+	out, rc := h.kidoAs(caller, "", nil, "tool", "list_runs", "--json")
 	if rc != 0 {
-		t.Fatalf("kido tool list_agents --json: rc=%d %s", rc, out)
+		t.Fatalf("kido tool list_runs --json: rc=%d %s", rc, out)
 	}
 	if got, want := strings.Join(jsonKeys(t, out), " "),
-		"id name agent pane window status activity parent depth self cwd canMessage canReply model sinceReport stalled"; got != want {
-		t.Errorf("list_agents --json keys = %q, want %q", got, want)
+		"id name agent pane window status activity parent depth self cwd canMessage canReply model sinceReport stalled kind relationship"; got != want {
+		t.Errorf("list_runs --json keys = %q, want %q", got, want)
 	}
 	var order []string
 	for _, a := range parseAgents(t, out) {
 		order = append(order, a.ID+"<"+a.Parent)
 		if a.ID == "root" {
-			want := listedAgent{ID: "root", Name: "alpha-root", Pane: caller, Status: "running", Model: "m1",
-				Window: h.in("display-message", "-p", "-t", caller, "#{window_id}"),
-				Cwd:    h.in("display-message", "-p", "-t", caller, "#{pane_current_path}"),
-				Self:   true, CanMessage: true, CanReply: true, Stalled: true}
-			if a != want {
-				t.Errorf("root = %+v, want %+v", a, want)
-			}
-		} else if a.Self || a.CanMessage || a.CanReply {
+			t.Error("the caller must not list itself")
+		}
+		if a.Self || a.CanMessage || a.CanReply {
 			t.Errorf("%s = %+v, want neither self nor reachable", a.ID, a)
 		}
 	}
 	if got, want := strings.Join(order, " "),
-		"bbb< ccc< root< child1<root child2<root selfish< orphan< cyc-a<cyc-b cyc-b<cyc-a"; got != want {
-		t.Errorf("list_agents order (id<parent) = %q, want %q", got, want)
+		"bbb< ccc< child1<root child2<root"; got != want {
+		t.Errorf("list_runs order (id<parent) = %q, want %q", got, want)
 	}
 }
 
 // canReply is false only for a run whose recorded tools leave out
 // message_agent; --session answers from no pane at all.
-func TestListAgentsSessionFlagAndCanReply(t *testing.T) {
+func TestListRunsSessionFlagAndCanReply(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	h.newSession("beta")
@@ -502,21 +500,21 @@ func TestListAgentsSessionFlagAndCanReply(t *testing.T) {
 	}
 	h.writeRecord("here", h.firstPane("alpha"), t0, nil)
 
-	out, rc := h.kidoAs("", "", nil, "tool", "list_agents", "--json", "--session", beta)
+	out, rc := h.kidoAs("", "", nil, "tool", "list_runs", "--json", "--session", beta)
 	if rc != 0 {
-		t.Fatalf("kido tool list_agents --session %s from no pane: rc=%d %s", beta, rc, out)
+		t.Fatalf("kido tool list_runs --session %s from no pane: rc=%d %s", beta, rc, out)
 	}
 	var got []string
 	for _, a := range parseAgents(t, out) {
 		got = append(got, fmt.Sprintf("%s:%v", a.ID, a.CanReply))
 	}
 	if want := "no-record:true empty-tools:true no-message-tool:false has-message-tool:true"; strings.Join(got, " ") != want {
-		t.Errorf("list_agents --session %s = %q, want %q", beta, strings.Join(got, " "), want)
+		t.Errorf("list_runs --session %s = %q, want %q", beta, strings.Join(got, " "), want)
 	}
 
 	h.expectKido("", "", nil,
-		"kido tool list_agents: no tmux session for pane \"\"; pass --session\nusage: kido tool list_agents [--session ID] [--json]",
-		"tool", "list_agents", "--json")
+		"kido tool list_runs: no tmux session for pane \"\"; pass --session\nusage: kido tool list_runs [--session ID] [--json]",
+		"tool", "list_runs", "--json")
 }
 
 // A plain message to a running agent waits for its turn to end, so the

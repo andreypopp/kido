@@ -1,4 +1,9 @@
-type recipient = Named of string | Descendant of string | Parent of string
+type recipient =
+  | Named of string
+  | Descendant of string
+  | Descendant_run of Subrun.id
+  | Parent of string
+
 type spec = { kind : Msg.kind; reply_to : string; id : string }
 type failure = Unavailable of string | Failed of string
 type send_error = No_text | Not_sent of string

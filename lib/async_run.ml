@@ -129,7 +129,9 @@ let async_run ~dir ~knobs ~warn ~run_id ~stream =
           | `Signalled | `Timeout ->
               let s = Option.get_exn_or "caught" (Atomic.get caught) in
               (try Unix.kill pid s with Unix.Unix_error _ -> ());
-              ignore (pump ~watch:false ~deadline:(Unix.gettimeofday () +. signal_grace));
+              (match pump ~watch:false ~deadline:(Unix.gettimeofday () +. signal_grace) with
+              | `Timeout -> ( try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ())
+              | `Exited _ | `Signalled -> ());
               if not child.eof then Unix.close out;
               report Failed ("killed by " ^ signal_name s);
               Ok 1))

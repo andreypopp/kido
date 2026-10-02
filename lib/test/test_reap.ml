@@ -148,7 +148,7 @@ let%expect_test "an agent ending's notice, reported and unreported" =
     (Reap.body ~dir
        {
          meta;
-         outcome = { result = Stopped; text = "killed by stop_subagent"; at = None };
+         outcome = { result = Stopped; text = "killed by stop_run"; at = None };
          detail = Agent { unreported = true };
        });
   [%expect
@@ -157,7 +157,7 @@ let%expect_test "an agent ending's notice, reported and unreported" =
     run: run-agent
     resume: spawn_subagent(resume: "run-agent")
     subagent "kid" stopped without reporting: it never called notify_parent, so this is the whole account of it
-    detail: killed by stop_subagent
+    detail: killed by stop_run
     run: run-agent
     resume: spawn_subagent(resume: "run-agent")
     |}]
