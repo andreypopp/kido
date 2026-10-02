@@ -14,7 +14,11 @@ final class PaneScroller: NSView {
         if Double(geometry.history) - geometry.offset != Double(history) - offset { reveal() }
         geometry = (history, max(1, rows), max(0, min(Double(history), offset)))
         self.unavailable = unavailable
-        isHidden = alternate || history == 0
+        let hidden = alternate || history == 0
+        if isHidden != hidden {
+            isHidden = hidden
+            if let view = superview?.superview { window?.invalidateCursorRects(for: view) }
+        }
         needsDisplay = true
     }
 
