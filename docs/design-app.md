@@ -66,9 +66,11 @@ already fed before calculating its overlap, and overlapping rows are
 excluded. Trimming tmux's oldest history therefore changes the gap, not
 the identity of the loaded rows. There is one fetch per pane; sync tokens,
 view identity and a grid epoch reject obsolete replies. A resize retains the
-viewport's top logical line counted from the bottom, resyncs from the newest
-5000 rows, then scans tmux's wrap metadata once to locate the anchor and
-reaches it through the scroller's paged target, stopping at the memory limit.
+viewport's top logical line's text and its count from the bottom, resyncs from
+the newest 5000 rows, then matches that text within ±32 logical lines of the
+counted guess. It takes the nearest match across capture pages, ties going to
+the newer side, and falls back to the count. It reaches the anchor through the
+scroller's paged target, stopping at the memory limit.
 Live resizing restores after it settles; a trimmed anchor clamps to the oldest
 surviving line. Alternate screens never receive history.
 
@@ -312,18 +314,29 @@ side; `summary.json` the counts). `FIND=0` swaps the find actions for scroll
 requests. A run fails, exits 1 and prints its replay command on a sanitizer
 report, panic, non-zero exit, an app that did not finish, a new
 `Kido*.ips`, or a step that saw the window visible, key, main or active.
-A seed replays the same action choices; timing against live tmux output is
-not reproducible.
+A seed is a best-effort reproduction: choices also depend on the observed
+tmux topology, and timing against live output is not reproducible.
+`actions.jsonl` records the tmux actions actually taken.
 
 Off-screen rule: the window is never ordered in (`KIDO_APP_BACKGROUND=1`),
 is a `StressWindow` that refuses key and main, and input is only
 `NSWindow.sendEvent` with `NSEvent.mouseEvent`/`keyEvent` or a direct call.
-No CGEvent is posted, nothing activates. Every step logs `visible`, `key`,
-`main`, `active` and the number of this process's windows in the on-screen
-window list. Wheel events do not reach a view through `sendEvent` off
-screen, so the wheel action calls `PaneView.scrollWheel` with an NSEvent
-made from a scroll CGEvent.
+App-local `NSApp.postEvent` queuing is allowed and needed by button tracking;
+system-wide or pid-targeted CGEvent posting is forbidden. Nothing activates.
+Every step logs `visible`, `key`, `main`, `active` and the number of this
+process's windows in the on-screen window list. Wheel events do not reach a
+view through `sendEvent` off screen, so the wheel action calls
+`PaneView.scrollWheel` with an NSEvent made from a scroll CGEvent. Grip actions
+expose the chosen chrome's toolbar through `mouseMoved`, then invoke that
+enabled grip's existing `press` closure for down, drag, up and Escape.
+Scroller drags and floating edge resizes call their own mouse entry points:
+off-screen `sendEvent` does not reliably reach them. This covers the drag
+logic, not AppKit event delivery or hover. Stress pane-command failures are
+logged instead of opening an error sheet. Only a “can't find pane” error for
+a pane tmux reported gone or either harness side logged as killed is expected
+(`killed_race`); every other
+pane-command error fails the run.
 
-To cover a new feature, add a name to `Stress.names` and a `case` in
-`Stress.perform` that drives it through existing internal API, and add tmux
+To cover a new feature, add a case to `Stress.Action` and its weighted array,
+and an exhaustive branch in `Stress.perform` driving existing internal API; add tmux
 actions in `scripts/stress.py` if the feature reacts to server state.
