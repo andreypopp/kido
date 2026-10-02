@@ -196,10 +196,18 @@ The accent highlight follows
 the effective appearance. A drop sends one `move-pane` or `swap-pane`, and
 only tmux's layout notification moves the views. A click, Escape, a drop
 on the source or a floating pane cancels. Dragging is disabled while zoomed.
-Floating grips move in whole cells; their edges and corners resize, and a
-click raises a covered float with `move-pane -z 0`. Live floating commands
-are coalesced behind one in-flight batch and redraw from tmux, including its
-border-dependent position and size semantics. Escape stops further commands,
+Floating grips and resize edges follow the pointer in points; a click raises
+a covered float with `move-pane -z 0`. WindowView keeps a view-only free frame
+per float after release. Coalesced, one-in-flight command batches send its
+rounded cell geometry to tmux with the border-dependent position and size
+semantics. Every layout install drops a free frame unless the same conversion
+still equals tmux's geometry; zoom, removal, layer changes and reconnect also
+clear it. Nothing is persisted. Ghostty remains exactly tmux's whole-cell grid,
+with the fractional size remainder in the right and bottom padding. Chrome,
+mask, shadow and hit areas use the drawn frame; pixel clamping keeps it inside
+the window grid. In-flight gestures retain their pixel frame until a follow-up
+command reply has drained the final batch's layout notifications, then keep it
+only if it matches tmux. Escape stops further commands,
 not changes tmux has already applied. Pane command errors appear in a sheet.
 Sidebar drops are not supported.
 
