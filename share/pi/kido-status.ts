@@ -467,6 +467,7 @@ export default function (pi: ExtensionAPI) {
   const runKido = (args: string[], opts: { input?: string; timeoutMs: number }): Promise<RunKidoResult> => {
     const command = kido;
     if (!command) return Promise.resolve({ ok: false, error: "kido is not on PATH" });
+    const label = `kido ${args.slice(0, args[0] === "tool" ? 2 : 1).join(" ")}`;
     return new Promise((resolve) => {
       const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
       const finish = (result: RunKidoResult): void => {
@@ -476,7 +477,7 @@ export default function (pi: ExtensionAPI) {
       const timer = setTimeout(() => {
         child.kill();
         // Unknown, not failed: kido may already have done its work.
-        finish({ ok: false, error: `kido ${args.slice(0, args[0] === "tool" ? 2 : 1).join(" ")} timed out after ${opts.timeoutMs}ms` });
+        finish({ ok: false, error: `${label} timed out after ${opts.timeoutMs}ms` });
       }, opts.timeoutMs);
       timer.unref(); // a hung kido must never hold pi's event loop open
 
@@ -490,7 +491,7 @@ export default function (pi: ExtensionAPI) {
           finish({ ok: true, out: Buffer.concat(stdout).toString("utf8").trim() });
         } else {
           const errText = Buffer.concat(stderr).toString("utf8").trim();
-          finish({ ok: false, error: errText || `kido ${args.slice(0, args[0] === "tool" ? 2 : 1).join(" ")} exited with code ${code}`, code: code ?? undefined });
+          finish({ ok: false, error: errText || `${label} exited with code ${code}`, code: code ?? undefined });
         }
       });
       // A child exiting before reading all of stdin turns the write into an EPIPE,

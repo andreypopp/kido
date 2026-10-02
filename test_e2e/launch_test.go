@@ -162,7 +162,7 @@ func (r *kidoRun) kido(args ...string) (string, error) {
 	full := append([]string{"-S", r.kidoSock}, args...)
 	cmd := exec.Command(tmuxBin, full...)
 	cmd.Env = cleanEnv("TMUX=", "TMUX_TMPDIR="+r.tmpdir)
-	out, err := cmd.CombinedOutput()
+	out, err := cmd.Output()
 	return strings.TrimRight(string(out), "\n"), err
 }
 
@@ -170,7 +170,11 @@ func (r *kidoRun) mustKido(args ...string) string {
 	r.t.Helper()
 	out, err := r.kido(args...)
 	if err != nil {
-		r.t.Fatalf("tmux -S %s %s: %v: %s", r.kidoSock, strings.Join(args, " "), err, out)
+		var stderr []byte
+		if exit, ok := err.(*exec.ExitError); ok {
+			stderr = exit.Stderr
+		}
+		r.t.Fatalf("tmux -S %s %s: %v: %s%s", r.kidoSock, strings.Join(args, " "), err, out, stderr)
 	}
 	return out
 }

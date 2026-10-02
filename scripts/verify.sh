@@ -15,9 +15,7 @@ stage() {
   if "$@"; then echo "PASS: $name"; else echo "FAIL: $name"; status=1; fi
 }
 e2e() {
-  make pinned-fork || return
-  export KIDO_TMUX="$PWD/build/tmux-fork/$(scripts/install-tmux-fork.sh --print-revision)/bin/kido-tmux"
-  go test ./test_e2e/ -count="${COUNT:-1}" -run="${E2E:-.}" -v
+  make e2e KIDO_TMUX= COUNT="${COUNT:-1}" E2E="${E2E:-.}"
 }
 case ${1:-verify} in
   flake)

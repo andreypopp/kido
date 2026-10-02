@@ -9,15 +9,18 @@ let info_to_yojson ?(extra = []) { meta; outcome } =
         @ extra)
   | json -> json
 
-let load ~dir id =
-  Option.map
-    (fun (meta : Subrun.meta) -> { meta; outcome = Subrun.effective_outcome ~dir id ~pid:meta.pid })
+let load ?parent_session ~dir id =
+  Option.flat_map
+    (fun (meta : Subrun.meta) ->
+      if Option.exists (fun parent -> not (String.equal parent meta.parent_session)) parent_session
+      then None
+      else Some { meta; outcome = Subrun.effective_outcome ~dir id ~pid:meta.pid })
     (Subrun.read_meta ~dir id)
 
 let seconds t = Timestamp.to_local_string (Float.of_int (Float.to_int t))
 
-let list ~dir =
-  List.filter_map (load ~dir) (Subrun.list ~dir)
+let list ?parent_session ~dir () =
+  List.filter_map (load ?parent_session ~dir) (Subrun.list ~dir)
   |> List.sort (fun a b -> Float.compare b.meta.started_at a.meta.started_at)
 
 let table ~now infos =

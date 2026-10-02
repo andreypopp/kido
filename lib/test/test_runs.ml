@@ -30,7 +30,7 @@ let%expect_test "runs: the table newest first, one run shown, and --json" =
       ]
   in
   (* Local time, whatever this machine's zone. *)
-  Runs.table ~now:(Timestamp.now ()) (Runs.list ~dir)
+  Runs.table ~now:(Timestamp.now ()) (Runs.list ~dir ())
   |> List.iter (fun row ->
       List.filter (Fun.negate String.is_empty) row |> String.concat " | " |> local |> print_endline);
   print_string (local (Result.get_exn (Runs.show ~dir ~json:false "run-a")));
@@ -54,7 +54,7 @@ let%expect_test "runs: the table newest first, one run shown, and --json" =
     do the thing
     |}];
   let shown = Yojson.Safe.from_string (Result.get_exn (Runs.show ~dir ~json:true "run-a")) in
-  let listed = `List (List.map Runs.info_to_yojson (Runs.list ~dir)) in
+  let listed = `List (List.map Runs.info_to_yojson (Runs.list ~dir ())) in
   Yojson.Safe.Util.(
     print_endline (String.concat " " (keys shown));
     List.iter
@@ -68,6 +68,23 @@ let%expect_test "runs: the table newest first, one run shown, and --json" =
     id name kind parentSession depth pane pid cwd startedAt outcome task resume fork
     run-b died
     run-a completed
+    |}]
+
+let%expect_test "runs: filter by parent, still newest first" =
+  let dir = Filename.temp_dir "kido-state" "" in
+  ignore (run ~dir ~parent:"root" ~started_at:1. "old");
+  ignore (run ~dir ~parent:"other" ~started_at:3. "other");
+  ignore (run ~dir ~parent:"root" ~pid:(Unix.getpid ()) ~started_at:2. "new");
+  outcome ~dir "old" Completed;
+  Runs.list ~parent_session:"root" ~dir ()
+  |> List.iter (fun (r : Runs.info) ->
+      Printf.printf "%s %s\n" (Subrun.string_of_id r.meta.id)
+        (Option.map_or ~default:"running"
+           (fun o -> Subrun.string_of_result o.Subrun.result)
+           r.outcome));
+  [%expect {|
+    new running
+    old completed
     |}]
 
 let%expect_test "runs: running while the run's process lives, died once it is gone" =

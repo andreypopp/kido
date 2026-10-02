@@ -41,14 +41,7 @@ root,old,new,previous,version=sys.argv[1:]
 def names(rev):
     p=pathlib.Path(root)/rev
     tools=json.loads((p/'share/pi/testdata/tools.json').read_text())
-    result=set()
-    def walk(v):
-        if isinstance(v,dict):
-            if 'name' in v: result.add('tool:'+v['name'])
-            for x in v.values(): walk(x)
-        elif isinstance(v,list):
-            for x in v: walk(x)
-    walk(tools)
+    result={'tool:'+n for n in tools}
     for scope in ('top','tool'):
         help=(p/(scope+'.help')).read_text().split('COMMANDS\n',1)[1]
         help=re.split(r'\n[A-Z][A-Z ]*\n',help,maxsplit=1)[0]

@@ -439,14 +439,22 @@ func TestSidebarFeedStream(t *testing.T) {
 	quiet("settled")
 
 	// Its elapsed time ticks in the TUI; the feed sends only the start.
+	caller := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 	h.asyncBash("tick-e2e", "sleep", "300")
-	f.waitLast(func(s feedSnapshot) bool { return strings.Contains(s.raw, `"tick-e2e"`) }, "the bash run's row")
-	// The typing shell settles a debounce after the run starts.
-	h.waitFor(func() bool {
-		n := f.count()
-		time.Sleep(700 * time.Millisecond)
-		return f.count() == n
-	}, settle, msgf("the feed to settle after the bash run started"))
+	f.waitLast(func(s feedSnapshot) bool {
+		var shellSettled, bashRunning bool
+		for _, session := range s.Sessions {
+			for _, r := range feedItems(session.Nodes) {
+				if r.Pane != nil && *r.Pane == caller {
+					shellSettled = r.Kind == "shell" && r.Indicator == nil && r.Started == nil
+				}
+				if r.Kind == "run" && len(r.Title) == 1 && r.Title[0].Text == "tick-e2e" {
+					bashRunning = r.Indicator != nil && r.Indicator.Kind == "running"
+				}
+			}
+		}
+		return shellSettled && bashRunning
+	}, "the caller shell settled and the bash run running")
 	quiet("a running bash run")
 
 	n := f.count()

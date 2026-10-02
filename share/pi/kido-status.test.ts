@@ -12,7 +12,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Value } from "typebox/value";
-import { spawnSync } from "node:child_process";
+import childProcess, { spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, rmSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, delimiter, dirname } from "node:path";
@@ -233,7 +234,8 @@ interface Fixture {
   agentsCallCount(): number;
   lastControlArgs(): string[] | undefined;
   waitForLog(to: string, kind?: string, ms?: number): Promise<{ id: string; replyTo: string; to: string; text: string; failed?: boolean }>;
-  restore(): void;
+  sessions: Array<() => Promise<unknown>>;
+  restore(): Promise<void>;
 }
 
 function jsonLines(file: string): any[] {
@@ -248,11 +250,28 @@ function last<T>(items: T[]): T | undefined {
   return items[items.length - 1];
 }
 
+const commandWork = new Map<string, Set<childProcess.ChildProcess>>();
+const spawn = childProcess.spawn;
+childProcess.spawn = ((command: string, args: string[] = [], options: childProcess.SpawnOptions = {}) => {
+  const child = spawn(command, args, options);
+  const work = commandWork.get(command) ?? args?.map((arg) => commandWork.get(arg)).find(Boolean);
+  if (work) {
+    work.add(child);
+    child.once("close", () => work.delete(child));
+  }
+  return child;
+}) as typeof childProcess.spawn;
+syncBuiltinESMExports();
+
 function makeFixture(): Fixture {
   const dir = mkdtempSync(join(tmpdir(), "kido-status-test-"));
   const binDir = join(dir, "bin");
   mkdirSync(binDir);
-  writeFileSync(join(binDir, "kido"), FAKE_KIDO, { mode: 0o755 });
+  const command = join(binDir, "kido");
+  writeFileSync(command, FAKE_KIDO, { mode: 0o755 });
+  const work = new Set<childProcess.ChildProcess>();
+  commandWork.set(command, work);
+  const sessions: Array<() => Promise<unknown>> = [];
   const inboxDir = join(dir, "inbox");
   const agentsFile = join(dir, "agents.json");
   const logFile = join(dir, "log.jsonl");
@@ -290,7 +309,8 @@ function makeFixture(): Fixture {
     KIDO_FAKE_AGENTS_FILE: process.env.KIDO_FAKE_AGENTS_FILE,
     KIDO_FAKE_LOG: process.env.KIDO_FAKE_LOG,
     KIDO_FAKE_SPAWN_LOG: process.env.KIDO_FAKE_SPAWN_LOG,
-    KIDO_FAKE_CLOSE_WINDOW_LOG: process.env.KIDO_FAKE_CLOSE_WINDOW_LOG,
+    KIDO_FAKE_CLOSE_RUN_LOG: process.env.KIDO_FAKE_CLOSE_RUN_LOG,
+    KIDO_LINGER_SECONDS: process.env.KIDO_LINGER_SECONDS,
     KIDO_FAKE_STATUS_LOG: process.env.KIDO_FAKE_STATUS_LOG,
     KIDO_FAKE_SET_STATUS_LOG: process.env.KIDO_FAKE_SET_STATUS_LOG,
     KIDO_FAKE_CONTROL_LOG: process.env.KIDO_FAKE_CONTROL_LOG,
@@ -318,6 +338,7 @@ function makeFixture(): Fixture {
   process.env.KIDO_FAKE_LOG = logFile;
   process.env.KIDO_FAKE_SPAWN_LOG = spawnLogFile;
   process.env.KIDO_FAKE_CLOSE_RUN_LOG = closeRunLogFile;
+  process.env.KIDO_LINGER_SECONDS = "0.05";
   process.env.KIDO_FAKE_STATUS_LOG = statusLogFile;
   process.env.KIDO_FAKE_SET_STATUS_LOG = setStatusLogFile;
   process.env.KIDO_FAKE_CONTROL_LOG = controlLogFile;
@@ -439,15 +460,16 @@ function makeFixture(): Fixture {
       await pollUntil(() => (found = this.lastLogFor(to, kind)) !== undefined, ms, `a log entry for ${JSON.stringify({ to, kind })}`);
       return found;
     },
-    restore() {
+    sessions,
+    async restore() {
+      for (const shutdown of sessions.reverse()) await shutdown();
+      await pollUntil(() => work.size === 0, 15000, "all fake commands to close");
+      commandWork.delete(command);
       for (const [k, v] of Object.entries(saved)) {
         if (v === undefined) delete process.env[k];
         else process.env[k] = v;
       }
-      // maxRetries/retryDelay: a liveness or send poll's real subprocess can still be
-      // writing its log line after a test's own assertions are done, which a bare
-      // rmSync reads as ENOTEMPTY rather than retrying past.
-      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+      rmSync(dir, { recursive: true, force: true });
     },
   };
 }
@@ -533,21 +555,12 @@ const fakeTheme = {
   },
 } as any;
 
-// abort()/shutdown() are not decoration: the extensions find each other through
-// one global slot, so a session_start here rebinds the ctx of whichever agents
-// module owns the seam - including a stale one from an earlier case whose
-// idle-exit or liveness timer is still armed. A ctx missing shutdown() crashes
-// the run when that timer later fires. idle is a function, not a boolean,
-// because pi's own ctx.isIdle() is one and a case watching a turn start has to
-// answer differently on the next call.
 function fakeCtx(sessionId = "self-session", ui?: unknown, idle: () => boolean = () => true) {
   return {
     sessionManager: { getSessionId: () => sessionId, getSessionName: () => undefined },
     model: undefined,
     isIdle: idle,
     hasPendingMessages: () => false,
-    abort: () => {},
-    shutdown: () => {},
     ui,
   };
 }
@@ -565,6 +578,7 @@ async function startSessionCore(fx: Fixture, factory: (pi: unknown) => void, bui
   created.setOnUserMessage(() => {
     if (ctx.isIdle?.()) void created.emit("turn_start", {});
   });
+  fx.sessions.push(() => created.emit("session_shutdown", { reason: "new" }));
   await created.emit("session_start", {}, ctx);
   return { ...created, inboxPath: fx.selfInboxPath() };
 }
@@ -678,7 +692,7 @@ test("either load order wires the pair up: agents first, status second", async (
       "the envelope was dispatched by the agent half, not delivered as plain text",
     );
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -810,7 +824,7 @@ test("reply correlation: a foreign replyTo settles nothing and is surfaced; the 
     assert.equal(r2, "ok");
     assert.equal((await p2).content[0].text, "answer 2");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -825,7 +839,7 @@ test("a timed-out ask names its id in the error", async () => {
     assert.match(result.content[0].text, /no reply/);
     assert.ok(result.content[0].text.includes(sent!.id), "the timeout error names the ask id");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -846,7 +860,7 @@ test("a reply arriving after its ask timed out is still surfaced, never dropped"
     assert.equal((late[0]!.opts as any).deliverAs, "nextTurn", "an idle session queues it behind the wake trigger");
     assert.equal(triggers(s)[0]?.text, "(kido: a reply arrived; it follows)");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -871,7 +885,7 @@ test("cycle refusal: an inbound ask from a session we're already asking is refus
     await sendToInbox(s.inboxPath, envelope("reply", "done", { replyTo: sent!.id, from: { session: "peer-a" } }));
     await p1;
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -907,7 +921,7 @@ test("the cycle edge is released by a correlated reply or a timeout, but not by 
       "a timeout releases the edge",
     );
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -944,7 +958,7 @@ test("a reply to an unnamed asker still reaches it after the asker reloads and i
     assert.ok(sent, "the reply was actually addressed to the asker's current session, not its stale one");
     assert.equal(fx.lastLogFor("peer-a-old"), undefined, "the stale session id was never dialled");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -974,7 +988,7 @@ test("message_agent's result says to stop after replying to a pending ask, but n
       "a replyTo naming no ask this session has pending carries no such instruction either",
     );
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1018,7 +1032,7 @@ test("abandonPending: session_shutdown and a failed rebind settle a waiting ask 
       assert.equal(out.content[0].text, "still here");
     }
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1041,7 +1055,7 @@ test("a notice sent across a /reload is delivered to the reloaded session exactl
     assert.equal(noticesIn(s2, "ci run finished").length, 1, "the reloaded session was told more than once");
     assert.equal(noticesIn(s1, "ci run finished").length, 0, "the module that shut down must not deliver it too");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1069,7 +1083,7 @@ test("an envelope that arrives in the /reload gap is held, then answered and del
     assert.equal(inGap(s2), 1, "the held message was delivered more than once");
     assert.equal(inGap(s1), 0, "the module that shut down must not deliver it too");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1088,7 +1102,7 @@ test("a session_shutdown that is not a reload still closes the inbox", async () 
       /ENOENT|ECONNREFUSED/,
     );
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1111,7 +1125,7 @@ test("a /reload leaves exactly one listener, on the same socket", async () => {
     }
     assert.equal(noticesIn(s1, "after one").length + noticesIn(s1, "after two").length, 0, "a second listener still pointing at the old module");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1141,7 +1155,7 @@ test("the registered tools are exactly the shared list both suites check subcomm
         "so nothing checks that a kido subcommand of that name exists - add it to the fixture and give it a subcommand",
     );
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1171,7 +1185,7 @@ test("an inbound ask's delivered text says the message_agent reply is the whole 
     assert.match(delivered, /no summary|sign-off/i, "says plainly not to follow the reply with narration");
     assert.match(delivered, /self-contained/i, "still tells the model the asker cannot see this session's context");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1214,7 +1228,7 @@ test("kind dispatch: message, ask, reply, notice, an unrecognised kind, and v0 r
     await sendToInbox(s.inboxPath, envelope("ping", "unknown kind text", { from }));
     assert.ok(s.delivered.some((d) => d.text.includes("unrecognised message kind") && d.text.includes("unknown kind text")));
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1265,7 +1279,7 @@ test("a message from an agent is labelled with its sender and their relationship
       assert.equal(labelled().length, 3, "and it is not dressed up as an agent's message");
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1309,7 +1323,7 @@ test("an inbound ask is headed like a message and renders as just the question, 
       assert.ok(fallback.includes("is the build green?"), "the fallback still shows the question, from the raw content");
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1333,7 +1347,7 @@ test("an inbound notice names the sender and always shows its full text in regul
     assert.match(drawn, /@peer-a notifies:\n│ async run "build" failed: exit status 3\n/, "regular mode names the sender above the notice body");
     assert.ok(drawn.includes("boom"), "regular mode shows the full body even when options.expanded is false");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1361,7 +1375,7 @@ test("a notice reaches the model under a header naming what it is, and the heade
     await sendToInbox(s.inboxPath, envelope("message", "do the other thing", { from: { session: "", pane: "%99" } as any }));
     assert.ok(s.delivered.some((d) => d.text === "do the other thing"), "a shell's message is delivered unlabelled");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1379,7 +1393,7 @@ test("a notice from a nameless sender still renders sanely in regular mode", asy
     const drawn = renderer(sent!.message, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
     assert.match(drawn, /@%12 notifies:/, "a nameless sender still gets a sane, non-empty label");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1459,7 +1473,7 @@ test("all four inbound renderers dim headers, wrap normal text behind a border, 
       }
     }
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1555,7 +1569,7 @@ test("@ completion offers this session's agents first and still returns the buil
     const applied = provider.applyCompletion(["@hel"], 0, 4, suggestions.items[0], "@hel");
     assert.equal(applied.lines[0], "@helm ", "the accepted item replaces the token with @name");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1581,7 +1595,7 @@ test("@ completion uses list_runs' live agent rows, not bash or ended runs", asy
     assert.deepEqual(suggestions.items.map((i: any) => i.value), ["@12345678"]);
     assert.equal(suggestions.items[0].label, "@helper");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1614,7 +1628,7 @@ test("@ completion matches a word inside an agent's name, and inserts an id pref
     const spaceless = suggestions.items.find((i: any) => i.label === "@config-linter");
     assert.equal(spaceless.value, "@config-linter", "a spaceless name inserts the name");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1632,7 +1646,7 @@ test("a token that is not an @ reference is handed to the built-in provider unto
     const files = await suggest(provider, "@src/ma");
     assert.deepEqual(files.items.map((i: any) => i.value), ["src/main.ts"], "@src/... still completes files");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1663,7 +1677,7 @@ test("@ completion serves the last agent list without waiting for the subprocess
   } finally {
     if (savedTTL === undefined) delete process.env.KIDO_AGENT_LIST_TTL_MS;
     else process.env.KIDO_AGENT_LIST_TTL_MS = savedTTL;
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1693,7 +1707,7 @@ test("an inbound notice renders a widget the instant it is received, not when it
     const sent = customMessages(s, "kido-notice")[0];
     assert.ok(sent, "the notice was also handed to sendMessage, unconditionally");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1725,7 +1739,7 @@ test("a notice is delivered by steer, not followUp; plain messages and asks are 
     assert.equal((askMsg!.opts as any).deliverAs, "followUp", "an ask still queues behind the running turn rather than joining it");
     assert.equal(triggers(s).length, 0, "a streaming session needs no trigger: pi prepares the next turn itself");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1770,7 +1784,7 @@ test("an idle session is woken through prompt(): the arrival is queued as nextTu
     }
     assert.equal(triggers(s).length, cases.length, "one trigger per arrival, no more");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1904,7 +1918,7 @@ test("a stream batch flushed while the session is idle wakes it the same way", a
     assert.ok(trigger, `the batch was triggered by a user message: ${JSON.stringify(s.delivered.map((d) => d.text))}`);
     assert.equal((trigger!.opts as any).deliverAs, "steer", "and the trigger carries a batch's own mode");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1945,7 +1959,7 @@ test("two asks arriving while idle ride one turn: one trigger, both delivered", 
       assert.match(sent!.message.content as string, new RegExp(`\\(id ${id}\\)`), "each carries its own id, which is what makes sharing a turn safe");
     }
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1970,7 +1984,7 @@ test("a trigger whose turn never starts does not hold the next arrival back", as
     await pollUntil(() => triggers(s).length === 2, 2000, "the next arrival to wake the session itself");
     assert.ok(askSent(s, "second question"), "and it reached the model");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -1998,7 +2012,7 @@ test("a notice reaches the model exactly once, and its widget row is removed onc
     await s.emit("message_start", { message: { role: "custom", customType: "some-other-type" } });
     assert.equal(s.widgets.get("kido-notice-pending")?.content, undefined, "an unrelated message_start leaves the cleared widget alone");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2035,7 +2049,7 @@ test("a subagent's before_agent_start hook adds the notify_parent instruction to
       assert.equal(event2.systemPromptOptions.promptGuidelines.length, 2, "a second turn's own fresh options get the instructions once, not accumulated onto the first turn's");
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 
   const rootFx = makeFixture();
@@ -2048,7 +2062,7 @@ test("a subagent's before_agent_start hook adds the notify_parent instruction to
     assert.equal(event.systemPromptOptions.promptGuidelines.length, 1, "the never-sleep rule still applies to a root session; the notify_parent instruction does not");
     assert.match(event.systemPromptOptions.promptGuidelines[0], /sleep/, "the always-on never-sleep rule");
   } finally {
-    rootFx.restore();
+    await rootFx.restore();
   }
 });
 
@@ -2069,7 +2083,7 @@ test("interrupt_subagent runs kido tool interrupt_subagent with the target, and 
     await s.tools.get("stop_run").execute("c3", { to: "peer-b", force: true });
     assert.deepEqual(fx.lastControlArgs(), ["tool", "stop_run", "--force", "--", "peer-b"]);
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2103,7 +2117,7 @@ test("list_runs returns both kinds and tool prompts crosslink listing and stoppi
       assert.match(s.tools.get(name).description, /stop_run/);
     }
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2125,7 +2139,7 @@ test("spawn_subagent's model parameter documents the provider/model-id format", 
     assert.match(description, /provider\/model-id/, "names the expected shape");
     assert.match(description, /claude-bridge\/claude-sonnet-5/, "gives a concrete example");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2145,7 +2159,7 @@ test("spawn_subagent and ask_agent's descriptions teach the notify_parent patter
       /Not for collecting a subagent's result: that arrives on its own as a notice when the child finishes, and an ask blocks this turn until the target answers, so the notice cannot be read until the ask returns\./,
     );
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2167,7 +2181,7 @@ test("a spawn and a resume both end by saying the result arrives as a notice and
       assert.match(text, /if nothing else is left, end your turn - the notice wakes you/, `${what}: says to end the turn when there is nothing else to do`);
     }
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2211,7 +2225,7 @@ test("spawn_subagent and async_bash carry promptGuidelines pi will merge into it
     assert.match(shared[0]!, /not the user speaking/, "the shared rule is the one about what a notice is");
     assert.match(shared[0]!, /do not thank or answer it/, "and says what not to do with it");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2228,7 +2242,7 @@ test("spawn_subagent's task parameter tells the model how to write the prompt a 
     assert.match(task, /write code or only research/, "says to state which of the two the child is for");
     assert.match(task, /based on your findings/, "and names the phrase that hands the parent's own synthesis to the child");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2259,7 +2273,7 @@ test("spawn_subagent passes its task as text on stdin and calls kido tool spawn_
     assert.ok(sepIndex >= 0, "the child command follows --");
     assert.deepEqual(spawnArgs!.slice(sepIndex + 1), ["pi", "--name", "kid-1"]);
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2282,7 +2296,7 @@ test("spawn_subagent passes --model and --tools through to the child's pi invoca
     assert.doesNotMatch(name!, /['"$#`\n\r]/, "a generated name avoids the characters tmux's own parsing cannot survive");
     assert.match(result.content[0].text, new RegExp(name!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2307,7 +2321,7 @@ test("spawn_subagent(resume) calls kido tool spawn_subagent --resume with its ow
     assert.ok(!spawnArgs!.includes("--name"), "a resume keeps its own original window name");
     assert.deepEqual(spawnArgs!.slice(spawnArgs!.indexOf("--") + 1), ["pi"], "no command override is sent when neither model nor tools is given");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2327,7 +2341,7 @@ test("spawn_subagent(resume) with model/tools overrides them in the resumed pi's
     assert.equal(argAfter(command, "--model"), "claude-opus-5");
     assert.equal(argAfter(command, "--tools"), "read");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2345,7 +2359,7 @@ test("spawn_subagent(resume) tells the caller the run is idle and needs a messag
     assert.match(text, /message/i, "and says what moves it: a message from whoever resumed it");
     assert.match(text, /fake-run-id/, "still naming the run it brought back");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2370,7 +2384,7 @@ test("spawn_subagent(fork) passes --fork with this session's own id, and nothing
     const command = spawnArgs.slice(spawnArgs.indexOf("--") + 1);
     assert.deepEqual(command, ["pi", "--name", "kid-fork"], "the child command is untouched: --fork is kido's to place");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2400,7 +2414,7 @@ test("spawn_subagent forwards resume alongside task, name or fork, and a call wi
     assert.ok(!fx.lastSpawnArgs()!.includes("--resume"), "no resume to forward");
     assert.ok(!fx.lastSpawnArgs()!.includes("--task-file"), "no task to forward, which kido refuses");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2424,7 +2438,7 @@ test("spawn_subagent reports a kido tool spawn_subagent timeout as a timeout, no
       else process.env.KIDO_SPAWN_TIMEOUT_MS = savedTimeout;
     }
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2453,7 +2467,7 @@ test("a child started with KIDO_AGENT_TASK_FILE delivers its task as the first m
       else process.env.KIDO_AGENT_TASK_FILE = saved;
     }
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2484,7 +2498,7 @@ test("a /reload does not deliver an already-delivered task a second time", async
       else process.env.KIDO_AGENT_TASK_FILE = saved;
     }
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2509,7 +2523,7 @@ test("an unreadable KIDO_AGENT_TASK_FILE delivers nothing, breaks nothing, and l
       if (existsSync(taskFile)) chmodSync(taskFile, 0o600);
     }
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2528,7 +2542,7 @@ test("a missing KIDO_AGENT_TASK_FILE does not break session_start", async () => 
       else process.env.KIDO_AGENT_TASK_FILE = saved;
     }
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2568,7 +2582,7 @@ test("a child whose task is delivered but whose first turn never starts self-exi
       },
     );
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2607,7 +2621,7 @@ test("a child whose task starts a turn is untouched by the startup clock", async
       },
     );
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2628,7 +2642,7 @@ test("a settled turn sends no automatic notice, and neither does a plain shutdow
       assert.equal(jsonLines(fx.logFile).filter((l) => l.kind === "notice").length, 0, "a plain shutdown must send no notice either");
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2651,7 +2665,7 @@ test("async_bash passes -- and the command unchanged, with --name only when give
       "a multi-word command line still travels as one argument after --, unchanged; kido's own commandArgv decides bash -c vs argv",
     );
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2668,7 +2682,7 @@ test("async_bash asks for --stream only when the model did", async () => {
     await asyncBash.execute("c2", { command: "make", name: "build", stream: true });
     assert.deepEqual(fx.lastAsyncBashArgs(), ["tool", "async_bash", "--name", "build", "--stream", "--", "make"]);
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2688,7 +2702,7 @@ test("async_bash's result carries the run id and the output path kido printed, a
     assert.match(result.content[0].text, /notice/, "the result text says a notice arrives on completion");
     assert.match(result.content[0].text, /read/, "the result text says the output file can be read meanwhile");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2731,7 +2745,7 @@ test("a batch rides a turn that ran tools, and a turn that ran none leaves it he
     await pollUntil(() => streamMessages(s.messages).length === 2, 3000, "the held batch to be flushed by the debounce");
     assert.match(streamMessages(s.messages)[1].message.content, /line 6[\s\S]*line 7/, "the held lines arrive on the debounce instead");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2752,7 +2766,7 @@ test("a chunk flushes after 1s of quiet, and a chunk inside that second restarts
     await new Promise((r) => setTimeout(r, 1300));
     assert.equal(streamMessages(s.messages).length, 1, "and nothing else follows");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2780,7 +2794,7 @@ test("a batch is the tail, with one line saying how many it left out and where t
     assert.equal(lines[1], "... 800 lines omitted (see /state/runs/run-1/output)");
     assert.equal(lines[lines.length - 1], "line 1000");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2802,7 +2816,7 @@ test("a completion notice flushes whatever output was still held, and arrives af
     const kinds = s.messages.map((m) => m.message.customType);
     assert.deepEqual(kinds, ["kido-stream", "kido-notice"], "the held batch goes first; the ending follows the output it is the ending of");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2829,7 +2843,7 @@ test("notify_parent sends a notice to the parent in its environment, carrying th
       assert.equal(fx.agentsCallCount(), listedBefore, "and no agent list was fetched to find it");
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2856,7 +2870,7 @@ test("notify_parent's schema accepts a summary over the byte cap, and execute() 
       assert.equal(sent!.text, longSummary, "the whole report reaches kido untouched; where it is split, and what is kept, is the command's own business");
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2896,7 +2910,7 @@ test("set_status's schema accepts an activity over the byte cap, and setActivity
     const i = report!.indexOf("--activity");
     assert.equal(report![i + 1], longActivity, "the report carries the same untruncated activity");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2910,7 +2924,7 @@ test("notify_parent from a session with no parent refuses clearly, and sends not
     assert.match(result.content[0].text, /no parent/i, "the refusal names the reason rather than reading as a silent no-op");
     assert.equal(jsonLines(fx.logFile).length, 0, "nothing was sent");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2935,7 +2949,7 @@ test("a subagent's errored turn notifies the parent at once, naming the error an
       assert.match(sent!.text, /resume|retry/i, "says how to continue it");
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2954,7 +2968,7 @@ test("an aborted turn sends no error notice", async () => {
       assert.equal(jsonLines(fx.logFile).length, 0, "an interrupt is not an error and sends nothing");
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -2968,7 +2982,7 @@ test("a top-level session's errored turn sends no notice: it has nobody to tell"
     await new Promise((r) => setTimeout(r, 30));
     assert.equal(jsonLines(fx.logFile).length, 0);
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3000,7 +3014,7 @@ test("once per error: a redundant settle does not resend, and a later fresh fail
       assert.match(notices[1].text, /second failure/);
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3025,7 +3039,7 @@ test("the idle-exit ending's outcome text carries the last turn's error when the
       assert.match(args![i + 1], /prompt-capture: no capture/);
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3042,7 +3056,7 @@ test("session_shutdown schedules the window linger helper for a subagent", async
       assert.deepEqual(args, ["close-run", "@7"], "the linger helper closes this session's own window");
     }, { KIDO_LINGER_SECONDS: "0.05" });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3057,7 +3071,7 @@ test("session_shutdown records this run's own outcome as completed when it ends 
       assert.deepEqual(fx.lastRunOutcomeArgs(), ["run-outcome", "--result", "completed", "--unreported", "--", "run-completed"]);
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 
   const fx2 = makeFixture();
@@ -3071,7 +3085,7 @@ test("session_shutdown records this run's own outcome as completed when it ends 
       assert.deepEqual(fx2.lastRunOutcomeArgs(), ["run-outcome", "--result", "failed", "--unreported", "--", "run-failed"]);
     });
   } finally {
-    fx2.restore();
+    await fx2.restore();
   }
 });
 
@@ -3090,7 +3104,7 @@ test("a session_shutdown that is a reload or a session replacement records no ou
         assert.equal(fx.lastRunOutcomeArgs(), undefined, `a "${reason}" shutdown does not end the run`);
       });
     } finally {
-      fx.restore();
+      await fx.restore();
     }
   }
 
@@ -3105,7 +3119,7 @@ test("a session_shutdown that is a reload or a session replacement records no ou
       assert.deepEqual(fx.lastRunOutcomeArgs(), ["run-outcome", "--result", "completed", "--unreported", "--", "run-quit"]);
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3124,7 +3138,7 @@ test("session_shutdown removes the record for every reason except a reload", asy
       await s.emit("session_shutdown", reason === undefined ? undefined : { type: "session_shutdown", reason });
       await pollUntil(() => fx.statusReportsWithRemove().length >= 1, 2000, `a "${reason}" shutdown to report --remove`);
     } finally {
-      fx.restore();
+      await fx.restore();
     }
   }
 
@@ -3138,7 +3152,7 @@ test("session_shutdown removes the record for every reason except a reload", asy
     await new Promise((r) => setTimeout(r, 200));
     assert.equal(fx.statusReportsWithRemove().length, 0, "a reload must never report --remove");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3150,7 +3164,7 @@ test("session_shutdown never records an outcome for a root session", async () =>
     await s.emit("session_shutdown");
     assert.equal(fx.lastRunOutcomeArgs(), undefined, "a root session has no run record to write into");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3171,7 +3185,7 @@ test("a reload shutdown schedules no linger; a quit does", async () => {
       assert.equal(closeRunLog, "not called", "a reload must not schedule this session's own window to close");
     }, { KIDO_LINGER_SECONDS: "0.05" });
   } finally {
-    reload.restore();
+    await reload.restore();
   }
 
   // Negative control: an actual quit still schedules the linger.
@@ -3186,7 +3200,7 @@ test("a reload shutdown schedules no linger; a quit does", async () => {
       assert.deepEqual(args, ["close-run", "@9"], "a quit still schedules this session's own window to close");
     }, { KIDO_LINGER_SECONDS: "0.05" });
   } finally {
-    quit.restore();
+    await quit.restore();
   }
 });
 
@@ -3207,7 +3221,7 @@ test("session_shutdown never schedules a window linger for a root session", asyn
       delete process.env.KIDO_LINGER_SECONDS;
     }
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3259,7 +3273,7 @@ test("a process that merely inherited a subagent's environment is not a subagent
       },
     );
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3301,7 +3315,7 @@ test("a real subagent, fresh or resumed, is still a subagent in every respect", 
         },
       );
     } finally {
-      fx.restore();
+      await fx.restore();
     }
   }
 });
@@ -3336,7 +3350,7 @@ test("an unresolved session id is not a subagent, whatever the environment claim
       { KIDO_IDLE_EXIT_SECONDS: "0.05" },
     );
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3376,7 +3390,7 @@ test("interleaving: an inbound ask from the same target is refused even while th
       delete process.env.KIDO_FAKE_MESSAGE_DELAY_MS;
     }
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3405,7 +3419,7 @@ test("a stream that never goes quiet for 1s is still delivered 30s after its fir
     assert.match(streamMessages(s.messages)[0].message.content, /line 59/);
   } finally {
     t.mock.timers.reset();
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3420,6 +3434,26 @@ async function startWithShutdownSpy(fx: Fixture, factory: (pi: unknown) => void,
   return { ...s, shutdowns: () => shutdowns };
 }
 
+test("fixture teardown stops parent polls before another session starts", async () => {
+  const fx = makeFixture();
+  await asSubagent(DEFAULT_SESSION, async () => {
+    try {
+      fx.setParentAliveDelay(100);
+      await startSession(fx, { factory: await freshExtensions() });
+      await pollUntil(() => fx.parentAliveCalls().length > 0, 2000, "the parent poll to start");
+    } finally {
+      await fx.restore();
+    }
+  }, { KIDO_AGENT_PARENT_PID: String(process.pid), KIDO_PARENT_POLL_MS: "20" });
+  const next = makeFixture();
+  try {
+    await startSession(next, { factory: await freshExtensions() });
+    assert.equal(await pollForStable(() => next.parentAliveCalls().length, 200, 2000, "no inherited parent polls"), 0);
+  } finally {
+    await next.restore();
+  }
+});
+
 test("parent-liveness poll: shuts the session down when the parent's process is gone", async () => {
   const fx = makeFixture();
   try {
@@ -3432,7 +3466,7 @@ test("parent-liveness poll: shuts the session down when the parent's process is 
       await s.emit("session_shutdown"); // stop the poll, as a real shutdown would
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3462,7 +3496,7 @@ test("parent-liveness poll: does not shut down while the parent is alive, and as
       await s.emit("session_shutdown");
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3481,7 +3515,7 @@ test("parent-liveness poll: a kido that cannot answer is not evidence, and never
       await s.emit("session_shutdown");
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3502,7 +3536,7 @@ test("parent-liveness poll: a recycled pid with no live record of the session co
       await s.emit("session_shutdown");
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3534,7 +3568,7 @@ test("parent-liveness poll: a slow reply does not let ticks pile up concurrent r
       await s.emit("session_shutdown");
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3585,7 +3619,7 @@ test("a second pi on one session id claims nothing, reports nothing, and says so
       await new Promise((r) => setTimeout(r, 20));
     }
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3600,7 +3634,7 @@ test("the first pi on a session id is tracked and goes on reporting", async () =
     assert.deepEqual(s.notifications, [], "nothing to tell the user about");
     await s.emit("session_shutdown", { reason: "quit" });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3622,7 +3656,7 @@ test("a running session re-sends its status on a heartbeat, bypassing the coales
       await s.emit("session_shutdown");
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3650,7 +3684,7 @@ test("the heartbeat stops once the session is no longer running", async () => {
       await s.emit("session_shutdown");
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3713,7 +3747,7 @@ test("an interrupt envelope from an ancestor calls ctx.abort() and does not shut
     assert.equal(s.aborts(), 1, "ctx.abort() must be called exactly once");
     assert.equal(s.shutdowns(), 0, "an interrupt must never shut the session down");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3727,7 +3761,7 @@ test("a stop envelope from an ancestor shuts the session down", async () => {
     assert.equal(s.shutdowns(), 1, "ctx.shutdown() must be called exactly once");
     assert.equal(s.aborts(), 0, "a stop must not also abort");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3746,7 +3780,7 @@ test("interrupt and stop are both refused, and neither abort nor shutdown is cal
     assert.equal(s.aborts(), 0);
     assert.equal(s.shutdowns(), 0);
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3762,7 +3796,7 @@ test("interrupt and stop are refused when the sender's id matches no agent kido 
     assert.equal(resp, "refused");
     assert.equal(s.aborts(), 0);
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3786,7 +3820,7 @@ test("an interrupt of an idle agent is harmless, and the session still answers a
       "the session must still accept a message after an interrupt",
     );
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3844,7 +3878,7 @@ test("an interrupt does not answer until ctx.abort() settles, so a message sent 
       "the message sent right after the interrupt must reach pi.sendMessage",
     );
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3862,7 +3896,7 @@ test("an interrupt to an idle session still answers promptly", async () => {
     assert.equal(s.aborts(), 1);
     assert.ok(Date.now() - before < 150, `an interrupt to an idle session must not be held up (answered after ${Date.now() - before}ms)`);
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3883,7 +3917,7 @@ test("a control envelope from a human at the CLI is honoured; one merely missing
     assert.equal(impostor, "refused", "a pane an agent occupies is an agent, whatever `from` says");
     assert.equal(s.shutdowns(), 0);
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3907,7 +3941,7 @@ test("steer_subagent runs kido tool steer_subagent with the target behind -- and
     const sent = await fx.waitForLog("peer-a", "steer");
     assert.equal(sent.text, "drop that, do X", "the message goes on stdin, verbatim");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3938,7 +3972,7 @@ test("an inbound steer is delivered as steer; a message and an ask stay followUp
     assert.ok(asked, "the ask reached the model");
     assert.equal((asked!.opts as any).deliverAs, "followUp", "an ask must never steer: a correlated reply has to be answered one at a time");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3951,7 +3985,7 @@ test("an inbound steer from a non-ancestor is refused and delivers nothing", asy
     assert.equal(resp, "refused");
     assert.equal(s.delivered.filter((d) => d.text.includes("do my bidding")).length, 0, "and nothing reached the model");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3964,7 +3998,7 @@ test("ask_agent allows a parent asking its own child", async () => {
     assert.doesNotMatch(result.content[0].text, /ancestor/, "a parent asking its own child must not be refused as an ancestor violation");
     assert.ok(await fx.waitForLog("child", "ask"), "the ask was actually sent to the child");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3977,7 +4011,7 @@ test("ask_agent refuses a child asking its parent", async () => {
     assert.match(result.content[0].text, /ancestor/, "a child asking its parent must be refused");
     assert.equal(fx.lastLogFor("mid", "ask"), undefined, "nothing must actually be sent to the parent");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -3990,7 +4024,7 @@ test("ask_agent refuses a child asking its grandparent, two levels up", async ()
     assert.match(result.content[0].text, /ancestor/, "a child asking its grandparent must be refused");
     assert.equal(fx.lastLogFor("grand", "ask"), undefined, "nothing must actually be sent to the grandparent");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -4003,7 +4037,7 @@ test("ask_agent still allows a peer asking a peer, unaffected by the ancestor gu
     assert.doesNotMatch(result.content[0].text, /ancestor/);
     assert.ok(await fx.waitForLog("peer-a", "ask"), "the ask was actually sent to the peer");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -4016,7 +4050,7 @@ test("ask_agent still refuses asking yourself", async () => {
     assert.match(result.content[0].text, /cannot ask yourself/);
     assert.equal(fx.lastLogFor("mid", "ask"), undefined);
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -4035,7 +4069,7 @@ test("ask_agent refuses a stalled target immediately, without sending anything",
     assert.match(result.content[0].text, /245/);
     assert.equal(fx.lastLogFor("peer-a", "ask"), undefined, "a stalled target must never actually be asked");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -4060,7 +4094,7 @@ test("ask_agent refuses a target that is not alive, promptly and without sending
       "the resolved target's own session id was queried",
     );
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -4079,7 +4113,7 @@ test("ask_agent refuses a target spawned without the message_agent tool, without
     assert.match(result.content[0].text, /notify_parent/);
     assert.equal(fx.lastLogFor("peer-a", "ask"), undefined, "a target that cannot reply must never actually be asked");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -4095,7 +4129,7 @@ test("ask_agent still sends to a target with canReply true", async () => {
     assert.doesNotMatch(result.content[0].text, /message_agent tool/);
     assert.ok(await fx.waitForLog("peer-a", "ask"), "the ask was actually sent to a target that can reply");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -4134,7 +4168,7 @@ test("ask_agent releases its waiter when the target dies mid-wait, long before t
       assert.ok(result.content[0].text.includes(sent!.id), "the error names the ask id");
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -4161,7 +4195,7 @@ test("a waiting ask honours pi's abort signal, so the turn can be interrupted", 
       "an abandoned ask leaves no waiter behind for a later reply to settle",
     );
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -4193,7 +4227,7 @@ test("an ask aborted while its send is in flight leaves no liveness watch runnin
       await pollForStable(readings, 400, 6000, "the liveness readings for an abandoned ask to stop");
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -4224,7 +4258,7 @@ test("a live target that takes its time is still waited for, and its reply is wh
       assert.equal((await settlesWithin(p, 2000)).content[0].text, "the slow answer");
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -4249,7 +4283,7 @@ test("idle self-exit: a settled turn with no further work shuts the session down
       });
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -4271,7 +4305,7 @@ test("idle self-exit: new work resets the timer instead of letting it fire mid-t
       });
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -4294,7 +4328,7 @@ test("idle self-exit: a root session (no parent) never arms the timer", async ()
       else process.env.KIDO_AGENT_PARENT_SESSION = saved;
     }
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -4312,7 +4346,7 @@ test("idle self-exit: keepAlive opts a child out entirely", async () => {
       });
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -4338,7 +4372,7 @@ test("idle self-exit: a focused window re-arms instead of shutting down, then ex
       });
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -4368,7 +4402,7 @@ test("idle self-exit: a live child run re-arms the clock, and the session exits 
       });
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -4392,7 +4426,7 @@ for (const mode of ["fail", "timeout"]) {
         });
       });
     } finally {
-      fx.restore();
+      await fx.restore();
     }
   });
 }
@@ -4419,7 +4453,7 @@ test("idle self-exit: a shutdown pi declined is asked for again", async () => {
       });
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });
 
@@ -4436,7 +4470,7 @@ test("a child that never called notify_parent flags its silence as it ends, and 
       ], "a silent child asks kido to speak for it");
     });
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 
   // Negative control: a child that reported must not get a second notice too.
@@ -4454,7 +4488,7 @@ test("a child that never called notify_parent flags its silence as it ends, and 
       ], "a child that reported must not have a second ending sent for it");
     });
   } finally {
-    fx2.restore();
+    await fx2.restore();
   }
 });
 
@@ -4471,6 +4505,6 @@ test("spawn_subagent passes --keep-alive through only when keepAlive is set", as
     await spawn.execute("c2", { task: "b", name: "kid-b", keepAlive: true });
     assert.ok(fx.lastSpawnArgs()!.includes("--keep-alive"), "keepAlive: true must pass --keep-alive");
   } finally {
-    fx.restore();
+    await fx.restore();
   }
 });

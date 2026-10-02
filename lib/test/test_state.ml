@@ -109,6 +109,24 @@ let%expect_test "load_live deletes a dead agent's record and skips a malformed o
     malformed.json true
     |}]
 
+let%expect_test "get_live reads one session without deleting dead records" =
+  let dir = temp () in
+  write ~dir "live" (session Idle ~pane:"%1");
+  write ~dir "dead" (session Idle ~pane:"%2" ~pid:(dead_pid ()));
+  write ~dir "no-pane" (session Idle ~pane:"");
+  List.iter
+    (fun id -> Printf.printf "%s %b\n" id (Option.is_some (State.get_live ~dir id)))
+    [ "live"; "dead"; "no-pane"; "missing" ];
+  Printf.printf "dead record kept %b\n" (Option.is_some (State.get ~dir "dead"));
+  [%expect
+    {|
+    live true
+    dead false
+    no-pane false
+    missing false
+    dead record kept true
+    |}]
+
 let%expect_test "one live holder per session id" =
   let dir = temp () in
   let me = Unix.getpid () in

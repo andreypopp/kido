@@ -130,7 +130,7 @@ let credit t lines n =
       t.streamed <- t.streamed + n)
 
 let send t text =
-  match List.assoc_opt ~eq:String.equal t.meta.parent_session (State.load_live ~dir:t.dir) with
+  match State.get_live ~dir:t.dir t.meta.parent_session with
   | Some { inbox; _ } when not (String.is_empty inbox) -> (
       let env : Msg.envelope =
         {

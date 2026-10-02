@@ -85,7 +85,7 @@ let runs =
        let dir = State.dir () in
        match args with
        | [] ->
-           let infos = Runs.list ~dir in
+           let infos = Runs.list ~dir () in
            if json then
              print_endline (Yojson.Safe.to_string (`List (List.map Runs.info_to_yojson infos)))
            else Cli.table (Runs.table ~now:(Timestamp.now ()) infos);
@@ -192,8 +192,7 @@ let get_agent =
          if String.is_empty session then failwith "usage: kido get-agent SESSION";
          let fields =
            [
-             ("id", `String session);
-             ("alive", `Bool (List.mem_assoc ~eq:String.equal session (State.load_live ~dir)));
+             ("id", `String session); ("alive", `Bool (Option.is_some (State.get_live ~dir session)));
            ]
          in
          let fields =

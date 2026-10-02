@@ -160,8 +160,7 @@ let list_runs ~dir ~threshold ~self ~session =
   let runs =
     if String.is_empty own then []
     else
-      Runs.list ~dir
-      |> List.filter (fun (r : Runs.info) -> String.equal r.meta.parent_session own)
+      Runs.list ~parent_session:own ~dir ()
       |> List.filter (fun (r : Runs.info) ->
           match r.outcome with
           | None -> true

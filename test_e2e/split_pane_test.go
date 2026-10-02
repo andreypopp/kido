@@ -1,31 +1,9 @@
 package e2e
 
 import (
-	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 )
-
-// asyncBashFields is asyncBash but keeps all three fields, since this
-// test needs the pane id to split off of.
-func (h *harness) asyncBashFields(name string, command ...string) (windowID, paneID, runID string) {
-	h.t.Helper()
-	outFile := filepath.Join(h.dir, "async-"+name+".out")
-	quoted := make([]string, len(command))
-	for i, c := range command {
-		quoted[i] = shellQuote(c)
-	}
-	h.sendLiteral(fmt.Sprintf("%s tool async_bash --name %s -- %s > %s 2>&1; echo rc=$? >> %s",
-		kidoBin, name, strings.Join(quoted, " "), outFile, outFile))
-	h.sendKeys("Enter")
-	out := h.waitFileContains(outFile, "rc=")
-	fields := strings.Fields(out)
-	if len(fields) < 3 || !strings.Contains(out, "rc=0") {
-		h.t.Fatalf("kido tool async_bash printed %q, want \"<window id> <pane id> <run id>\" and rc=0", out)
-	}
-	return fields[0], fields[1], fields[2]
-}
 
 func countRows(lines []string, sub string) int {
 	n := 0
@@ -46,7 +24,7 @@ func TestSidebarShowsASplitBashRunPaneAsAnOrdinaryShell(t *testing.T) {
 	h := start(t, "alpha")
 	h.asyncParent("alpha", "parent-split-e2e")
 
-	_, paneID, _ := h.asyncBashFields("split-e2e", "sleep", "300")
+	_, paneID, _ := h.asyncBashIDs(nil, "split-e2e", "sleep", "300")
 	h.waitRow("split-e2e")
 	if n := countRows(h.rows(), "split-e2e"); n != 1 {
 		t.Fatalf("before the split: %d rows carry the run's name, want 1", n)

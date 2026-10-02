@@ -2,7 +2,6 @@ package e2e
 
 import (
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"testing"
@@ -47,10 +46,8 @@ func TestSubagentRowShowsElapsedUnlessActivity(t *testing.T) {
 		}
 	}
 	for _, activity := range []string{"checking tests", ""} {
-		cmd := exec.Command(kidoBin, "tool", "set_status", "--", activity)
-		cmd.Env = cleanEnv("TMUX_PANE="+pane, "KIDO_STATE_DIR="+h.stateDir)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("set_status: %v: %s", err, out)
+		if out, rc := h.kidoAs(pane, "", nil, "tool", "set_status", "--", activity); rc != 0 {
+			t.Fatalf("set_status: rc=%d: %s", rc, out)
 		}
 		h.waitFor(func() bool {
 			if activity == "" {

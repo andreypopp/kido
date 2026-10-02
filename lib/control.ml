@@ -46,32 +46,6 @@ let interrupt ~dir ~self to_ =
   | Ok _ -> Ok ("interrupted " ^ List_runs.display_name panes target)
   | Error (Message_agent.Unavailable m | Failed m) -> Error m
 
-let run_label meta = "async run " ^ Reap.quote (Subrun.label meta)
-
-let stop_bash_run ~dir ~escalation ~warn (meta : Subrun.meta) =
-  let label = run_label meta in
-  let ending =
-    Reap.record_ending ~dir meta
-      { result = Stopped; text = "stopped by its parent"; at = Some (Timestamp.now ()) }
-  in
-  let signalled =
-    meta.pid > 0
-    && match Unix.kill meta.pid Sys.sigterm with () -> true | exception Unix.Unix_error _ -> false
-  in
-  let gone = (not signalled) || wait_for escalation (fun () -> not (State.alive meta.pid)) in
-  (if not gone then try Unix.kill meta.pid Sys.sigkill with Unix.Unix_error _ -> ());
-  Option.iter
-    (fun e -> Result.iter_err (fun e -> warn (Msg.string_of_error e)) (Reap.send ~dir e))
-    ending;
-  if gone && signalled then Ok (Printf.sprintf "stopped %s" label)
-  else
-    match kill_run_pane meta.pane with
-    | Ok `Killed -> Ok (Printf.sprintf "stopped %s; killed its pane" label)
-    | Ok `Gone -> Ok (Printf.sprintf "stopped %s; its pane was already gone" label)
-    | Error m ->
-        Error
-          (Printf.sprintf "%s was recorded stopped, but its pane could not be killed: %s" label m)
-
 let stop ~dir ~self ~escalation ~warn ~force to_ =
   let open Result.Infix in
   let unforced what =
@@ -115,12 +89,38 @@ let stop ~dir ~self ~escalation ~warn ~force to_ =
   let live = State.load_live ~dir in
   let* panes = Exec.list_panes () in
   match meta.kind with
-  | Bash ->
+  | Bash -> (
       let* reached =
         Message_agent.reaches (List_runs.per_pane live) panes ~self meta.parent_session
       in
-      if reached then stop_bash_run ~dir ~escalation ~warn meta
-      else Error (run_label meta ^ " is not this agent's descendant")
+      let label = "async run " ^ Reap.quote (Subrun.label meta) in
+      if not reached then Error (label ^ " is not this agent's descendant")
+      else
+        let ending =
+          Reap.record_ending ~dir meta
+            { result = Stopped; text = "stopped by its parent"; at = Some (Timestamp.now ()) }
+        in
+        let signalled =
+          meta.pid > 0
+          &&
+          match Unix.kill meta.pid Sys.sigterm with
+          | () -> true
+          | exception Unix.Unix_error _ -> false
+        in
+        let gone = (not signalled) || wait_for escalation (fun () -> not (State.alive meta.pid)) in
+        (if not gone then try Unix.kill meta.pid Sys.sigkill with Unix.Unix_error _ -> ());
+        Option.iter
+          (fun e -> Result.iter_err (fun e -> warn (Msg.string_of_error e)) (Reap.send ~dir e))
+          ending;
+        if gone && signalled then Ok (Printf.sprintf "stopped %s" label)
+        else
+          match kill_run_pane meta.pane with
+          | Ok `Killed -> Ok (Printf.sprintf "stopped %s; killed its pane" label)
+          | Ok `Gone -> Ok (Printf.sprintf "stopped %s; its pane was already gone" label)
+          | Error m ->
+              Error
+                (Printf.sprintf "%s was recorded stopped, but its pane could not be killed: %s"
+                   label m))
   | Agent -> (
       let* id, target = Message_agent.resolve ~live ~panes ~self (Descendant_run meta.id) in
       let name = "subagent " ^ List_runs.display_name panes target in

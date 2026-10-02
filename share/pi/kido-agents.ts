@@ -669,7 +669,8 @@ export default function (pi: ExtensionAPI) {
   // A keystroke must never wait on `kido tool list_runs --json`: the editor gets whatever the
   // last call returned, stale or empty, while a refresh runs behind it. Null until the
   // provider is registered (sessionStarting).
-  let completion: { agents: AgentInfo[]; at: number; refreshing: Promise<void> | null } | null = null;
+  type CompletionCache = { agents: AgentInfo[]; at: number; refreshing: Promise<void> | null };
+  let completion: CompletionCache | null = null;
 
   // Only a definite false from `kido get-agent` is evidence; anything else - an error, an
   // unreachable kido - is inconclusive and never shuts the session down on a guess. Not
@@ -1408,7 +1409,7 @@ export default function (pi: ExtensionAPI) {
       // method; both simply get no `@name` completion. Registered once: session_start fires
       // again on a /reload, and nothing is fetched until the first `@` keystroke.
       if (!ctx.ui?.addAutocompleteProvider || completion) return;
-      const cache: { agents: AgentInfo[]; at: number; refreshing: Promise<void> | null } = { agents: [], at: 0, refreshing: null };
+      const cache: CompletionCache = { agents: [], at: 0, refreshing: null };
       completion = cache;
       // `@` is pi's own file-reference trigger; this wraps the built-in provider rather than
       // replacing it, agent matches first then whatever files pi found for the same token.

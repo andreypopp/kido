@@ -65,6 +65,9 @@ let parse b =
 
 let get ~dir id = Option.flat_map parse (Fs.read (path ~dir id))
 
+let get_live ~dir id =
+  Option.filter (fun s -> (not (String.is_empty s.pane)) && alive s.pid) (get ~dir id)
+
 let read_all ~dir =
   match if Sys.file_exists dir then Sys.readdir dir else [||] with
   | names ->

@@ -92,7 +92,7 @@ sleeps = {
     'test_e2e/leak_check_test.go': {'time.Sleep(50 * time.Millisecond)': 2},
     'test_e2e/reap_test.go': {'time.Sleep(100 * time.Millisecond)': 1, 'time.Sleep(1200 * time.Millisecond)': 1},
     'test_e2e/render_test.go': {'time.Sleep(1200 * time.Millisecond)': 2},
-    'test_e2e/sidebar_feed_test.go': {'time.Sleep(100 * time.Millisecond)': 1, 'time.Sleep(700 * time.Millisecond)': 1},
+    'test_e2e/sidebar_feed_test.go': {'time.Sleep(100 * time.Millisecond)': 1},
     'test_e2e/snapshot_test.go': {'time.Sleep(200 * time.Millisecond)': 1},
     'test_e2e/ssh_prime_test.go': {'time.Sleep(100 * time.Millisecond)': 1},
     'test_e2e/stall_test.go': {'time.Sleep(6 * time.Second)': 1},

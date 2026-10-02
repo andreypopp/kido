@@ -2,7 +2,7 @@ type info = { meta : Subrun.meta; outcome : Subrun.outcome option }
 
 val info_to_yojson : ?extra:(string * Yojson.Safe.t) list -> info -> Yojson.Safe.t
 
-val list : dir:string -> info list
+val list : ?parent_session:string -> dir:string -> unit -> info list
 (** Newest first. *)
 
 val table : now:Timestamp.t -> info list -> string list list
