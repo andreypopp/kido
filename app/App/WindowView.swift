@@ -2,10 +2,19 @@ import AppKit
 import TmuxControl
 
 private extension NSCursor.FrameResizePosition {
-    var left: Bool { self == .left || self == .topLeft || self == .bottomLeft }
-    var right: Bool { self == .right || self == .topRight || self == .bottomRight }
-    var top: Bool { self == .top || self == .topLeft || self == .topRight }
-    var bottom: Bool { self == .bottom || self == .bottomLeft || self == .bottomRight }
+    var layoutEdge: PaneLayout.ResizeEdge {
+        switch self {
+        case .left: .left
+        case .right: .right
+        case .top: .top
+        case .bottom: .bottom
+        case .topLeft: .topLeft
+        case .topRight: .topRight
+        case .bottomLeft: .bottomLeft
+        case .bottomRight: .bottomRight
+        @unknown default: fatalError("Unknown resize edge")
+        }
+    }
 }
 
 final class WindowView: NSView {
@@ -18,6 +27,7 @@ final class WindowView: NSView {
     private var dividers: [NSBox] = []
     private var floatingBoxes: [PaneID: NSBox] = [:]
     private var freeFrames: [PaneID: CGRect] = [:]
+    private var placed: PaneLayout?
     private enum FloatFrame { case dragging(PaneID, CGRect), settling(PaneID, CGRect) }
     private var liveFrame: FloatFrame?
     private let floatingRadius: CGFloat = 10
@@ -80,17 +90,8 @@ final class WindowView: NSView {
                 cancelDrag()
             }
         }
-        if let placement {
-            freeFrames = freeFrames.filter { id, frame in
-                let keep = !zoomed && visible.root.panes.contains {
-                    $0.id == id && $0.layer != .tiled && matches(frame, $0.geometry, placement)
-                }
-                #if KIDO_STRESS
-                stressEvent(keep ? "free-frame-kept" : "free-frame-dropped", id.description)
-                #endif
-                return keep
-            }
-        } else { freeFrames = [:] }
+        if let placement { validateFrames(placement) }
+        else { freeFrames = [:] }
         active = visible.root.panes.first { $0.focus == .active }?.id ?? active
         guard hot else { return }
         let known = panes.contains { $0.pane == active }
@@ -120,6 +121,7 @@ final class WindowView: NSView {
         floatingBoxes = [:]
         freeFrames = [:]
         liveFrame = nil
+        placed = nil
         needsReconcile = true
         subviews = []
     }
@@ -157,6 +159,7 @@ final class WindowView: NSView {
         let cell = session?.cell ?? views.values.lazy.map(\.cell).first { $0.width > 0 && $0.height > 0 } ?? .zero
         guard cell.width > 0, cell.height > 0 else { return }
         let placement = PaneLayout(root: shown.visible.root, bounds: bounds, cell: cell, pixel: pixel)
+        validateFrames(placement)
         let seen = Dictionary(uniqueKeysWithValues: shown.visible.root.panes.map { ($0.id, $0) })
         let overlays = Dictionary(uniqueKeysWithValues: subviews.compactMap { $0 as? PaneChrome }.map { ($0.pane, $0) })
         var tiled: [NSView] = [], floating: [(z: Int, views: [NSView])] = []
@@ -165,12 +168,11 @@ final class WindowView: NSView {
             guard let view = views[pane.id] else { continue }
             let g = (seen[pane.id] ?? pane).geometry
             view.isHidden = seen[pane.id] == nil
-            view.frame = placement.grid(g)
             view.resize(cols: g.width, rows: g.height)
             let chrome = overlays[pane.id] ?? PaneChrome(pane: pane.id, runtime: runtime)
             chrome.select = view.onSelect
             chrome.hover = { [weak self] chrome, point in self?.hover(chrome, point) }
-            place(chrome, view, g, placement)
+            place(chrome, view, g, placement, floating: (seen[pane.id] ?? pane).layer != .tiled)
             chrome.isHidden = view.isHidden
             chrome.dimmed = pane.id != active
             switch (seen[pane.id] ?? pane).layer {
@@ -209,31 +211,58 @@ final class WindowView: NSView {
 
     private func place(resizeGrids: Bool = false) {
         guard !isHidden, let shown, let placement else { return }
-        let seen = Dictionary(uniqueKeysWithValues: shown.visible.root.panes.map { ($0.id, $0.geometry) })
-        for view in panes where resizeGrids || !view.isHidden {
-            guard let g = seen[view.pane] ?? shown.layout.root.panes.first(where: { $0.id == view.pane })?.geometry else { continue }
-            if !view.isHidden { view.frame = placement.grid(g) }
-            if resizeGrids { view.resize(cols: g.width, rows: g.height) }
+        validateFrames(placement)
+        #if KIDO_STRESS
+        stressEvent("place-window", "")
+        #endif
+        let seen = Dictionary(uniqueKeysWithValues: shown.visible.root.panes.map { ($0.id, $0) })
+        let layout = Dictionary(uniqueKeysWithValues: shown.layout.root.panes.map { ($0.id, $0) })
+        let views = Dictionary(uniqueKeysWithValues: panes.map { ($0.pane, $0) })
+        if resizeGrids {
+            for view in views.values {
+                guard let pane = seen[view.pane] ?? layout[view.pane] else { continue }
+                view.resize(cols: pane.geometry.width, rows: pane.geometry.height)
+            }
         }
+        var changed = false
         for chrome in subviews.compactMap({ $0 as? PaneChrome }) where !chrome.isHidden {
-            guard let g = seen[chrome.pane] else { continue }
+            guard let pane = seen[chrome.pane], let view = views[chrome.pane] else { continue }
             chrome.dimmed = chrome.pane != active
-            if let view = panes.first(where: { $0.pane == chrome.pane }) { place(chrome, view, g, placement) }
-            floatingBoxes[chrome.pane]?.frame = chrome.frame
+            let previous = chrome.frame
+            place(chrome, view, pane.geometry, placement, floating: pane.layer != .tiled)
+            changed = changed || previous != chrome.frame
+            if floatingBoxes[chrome.pane]?.frame != chrome.frame { floatingBoxes[chrome.pane]?.frame = chrome.frame }
             if toolbar?.superview === chrome { toolbar?.frame = chrome.toolbarFrame }
         }
-        for (box, divider) in zip(dividers, shown.visible.root.dividers) { box.frame = placement.line(divider, pixel: pixel) }
-        window?.invalidateCursorRects(for: self)
+        for (box, divider) in zip(dividers, shown.visible.root.dividers) {
+            let frame = placement.line(divider, pixel: pixel)
+            if box.frame != frame { box.frame = frame; changed = true }
+        }
+        if changed { window?.invalidateCursorRects(for: self) }
     }
 
-    private func place(_ chrome: PaneChrome, _ view: PaneView, _ g: Geometry, _ placement: PaneLayout) {
-        let floating = shown?.visible.root.panes.contains { $0.id == chrome.pane && $0.layer != .tiled } ?? false
-        chrome.frame = floating ? floatFrame(chrome.pane, g, placement) : placement.frame(g)
+    private func placeFloat(_ id: PaneID, _ placement: PaneLayout) {
+        guard let pane = shown?.visible.root.panes.first(where: { $0.id == id && $0.layer != .tiled }),
+              let chrome = subviews.lazy.compactMap({ $0 as? PaneChrome }).first(where: { $0.pane == id }),
+              let view = panes.first(where: { $0.pane == id }),
+              chrome.frame != floatFrame(id, pane.geometry, placement) else { return }
+        place(chrome, view, pane.geometry, placement, floating: true)
+        floatingBoxes[id]?.frame = chrome.frame
+        if toolbar?.superview === chrome { toolbar?.frame = chrome.toolbarFrame }
+        window?.invalidateCursorRects(for: self)
+        #if KIDO_STRESS
+        stressEvent("place-float", id.description)
+        #endif
+    }
+
+    private func place(_ chrome: PaneChrome, _ view: PaneView, _ g: Geometry, _ placement: PaneLayout, floating: Bool) {
+        var frame = floating ? floatFrame(chrome.pane, g, placement) : placement.frame(g)
         var grid = placement.grid(g)
         if floating {
-            grid.origin = CGPoint(x: chrome.frame.minX + placement.before.width, y: chrome.frame.minY + placement.before.height)
-            view.frame = grid
-        } else if grid.maxX == placement.rightEdge { chrome.frame.size.width = bounds.maxX - chrome.frame.minX }
+            grid.origin = CGPoint(x: frame.minX + placement.before.width, y: frame.minY + placement.before.height)
+        } else if grid.maxX == placement.rightEdge { frame.size.width = bounds.maxX - frame.minX }
+        if chrome.frame != frame { chrome.frame = frame }
+        if view.frame != grid { view.frame = grid }
         chrome.grid = CGRect(origin: CGPoint(x: placement.before.width, y: placement.before.height), size: grid.size)
         chrome.wantsLayer = true
         chrome.layer?.cornerRadius = floating ? floatingRadius : 0
@@ -335,6 +364,12 @@ final class WindowView: NSView {
     private var paneDrag: PaneDrag?
     #if KIDO_STRESS
     var stressEvent: (String, String) -> Void = { _, _ in }
+    var stressFloats: [(pane: Pane, frame: CGRect, free: Bool)] {
+        guard let placement else { return [] }
+        return (shown?.visible.root.panes ?? []).filter { $0.layer != .tiled }.map {
+            ($0, floatFrame($0.id, $0.geometry, placement), freeFrames[$0.id] != nil)
+        }
+    }
     #endif
     private enum Delivery { case idle, sending(pending: [Command]?) }
     private var delivery = Delivery.idle
@@ -347,19 +382,27 @@ final class WindowView: NSView {
                 if pane == id { return frame }
             }
         }
-        return freeFrames[id] ?? placement.frame(geometry)
+        if let frame = freeFrames[id], placement.geometry(frame) == geometry { return frame }
+        freeFrames[id] = nil
+        return placement.frame(geometry)
     }
 
-    private func floatGeometry(_ frame: CGRect, _ placement: PaneLayout) -> CGRect {
-        guard let cell = session?.cell else { return .zero }
-        return CGRect(x: ((frame.minX + placement.before.width - placement.origin.x) / cell.width).rounded(),
-                      y: ((frame.minY + placement.before.height - placement.origin.y) / cell.height).rounded(),
-                      width: max(2, ((frame.width - placement.before.width - placement.after.width) / cell.width).rounded()),
-                      height: max(2, ((frame.height - placement.before.height - placement.after.height) / cell.height).rounded()))
-    }
-
-    private func matches(_ frame: CGRect, _ g: Geometry, _ placement: PaneLayout) -> Bool {
-        floatGeometry(frame, placement) == CGRect(x: g.x, y: g.y, width: g.width, height: g.height)
+    private func validateFrames(_ placement: PaneLayout) {
+        if let placed, placed != placement {
+            if case .sending = delivery { delivery = .sending(pending: nil) }
+            liveFrame = nil
+            endDrag()
+        }
+        placed = placement
+        let floats = Dictionary(uniqueKeysWithValues: (shown?.visible.root.panes ?? [])
+            .filter { $0.layer != .tiled }.map { ($0.id, $0.geometry) })
+        freeFrames = freeFrames.filter { id, frame in
+            let keep = !zoomed && floats[id] == placement.geometry(frame)
+            #if KIDO_STRESS
+            stressEvent(keep ? "free-frame-kept" : "free-frame-dropped", id.description)
+            #endif
+            return keep
+        }
     }
 
     private func settleFloat() {
@@ -369,13 +412,13 @@ final class WindowView: NSView {
             self.liveFrame = nil
             if !self.zoomed, let placement = self.placement,
                let pane = self.shown?.visible.root.panes.first(where: { $0.id == id && $0.layer != .tiled }),
-               self.matches(frame, pane.geometry, placement) {
+               placement.geometry(frame) == pane.geometry {
                 self.freeFrames[id] = frame
                 #if KIDO_STRESS
                 self.stressEvent("free-frame-kept", id.description)
                 #endif
             }
-            self.place()
+            if let placement = self.placement { self.placeFloat(id, placement) }
         }
     }
 
@@ -470,7 +513,8 @@ final class WindowView: NSView {
 
     private func updateDrag(_ event: NSEvent) {
         guard let paneDrag else { return }
-        if case .floating(let pane, let origin, let initial, let edge) = paneDrag {
+        if case .floating(let pane, let origin, let initial, let cursorEdge) = paneDrag {
+            let edge = cursorEdge?.layoutEdge
             guard let cell = session?.cell, let placement else { return }
             let dx = event.locationInWindow.x - origin.x
             let dy = origin.y - event.locationInWindow.y
@@ -484,17 +528,11 @@ final class WindowView: NSView {
                 if edge?.left == true { frame.size.width = max(minimum.width, initial.width - dx); frame.origin.x = initial.maxX - frame.width }
                 if edge?.top == true { frame.size.height = max(minimum.height, initial.height - dy); frame.origin.y = initial.maxY - frame.height }
             }
-            let area = CGRect(x: placement.origin.x - placement.before.width, y: placement.origin.y - placement.before.height,
-                              width: placement.client.width * cell.width + placement.before.width + placement.after.width,
-                              height: placement.client.height * cell.height + placement.before.height + placement.after.height)
-            frame.size.width = min(frame.width, area.width)
-            frame.size.height = min(frame.height, area.height)
-            frame.origin.x = min(max(area.minX, frame.minX), area.maxX - frame.width)
-            frame.origin.y = min(max(area.minY, frame.minY), area.maxY - frame.height)
+            frame = placement.clamp(frame, resizing: edge)
             liveFrame = .dragging(pane.id, frame)
-            place()
-            let geometry = floatGeometry(frame, placement)
-            let x = Int(geometry.minX), y = Int(geometry.minY), width = Int(geometry.width), height = Int(geometry.height)
+            placeFloat(pane.id, placement)
+            let geometry = placement.geometry(frame)
+            let x = geometry.x, y = geometry.y, width = geometry.width, height = geometry.height
             if dx != 0 || dy != 0 || lastFloatCommand != nil {
                 var commands: [Command] = []
                 if edge != nil {
