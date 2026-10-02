@@ -30,6 +30,9 @@ final class Connection: @unchecked Sendable {
     @MainActor private var freeing: [PaneView] = []
     @MainActor private weak var view: SessionView?
     @MainActor private var sizing: DispatchWorkItem?
+    @MainActor private var desiredSize: String?
+    @MainActor private var sentSize: String?
+    @MainActor private var sizeInFlight = false
     @MainActor private(set) var model = SessionModel() {
         didSet { onChange(model) }
     }
@@ -143,11 +146,43 @@ final class Connection: @unchecked Sendable {
     }
 
     @MainActor func resize(cols: Int, rows: Int) {
-        sizing?.cancel()
-        let item = DispatchWorkItem { [weak self] in self?.send([Command("refresh-client", "-C", "\(cols)x\(rows)")]) }
+        let size = "\(cols)x\(rows)"
+        desiredSize = size == sentSize ? nil : size
+        guard desiredSize != nil, sizing == nil, !sizeInFlight else { return }
+        let item = DispatchWorkItem { [weak self] in self?.flushSize() }
         sizing = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.016, execute: item)
     }
+
+    @MainActor func flushSize() {
+        sizing?.cancel()
+        sizing = nil
+        guard !sizeInFlight else { return }
+        guard let size = desiredSize else {
+            for window in view?.windows.values ?? [:].values {
+                for pane in window.panes { pane.syncResize() }
+            }
+            return
+        }
+        desiredSize = nil
+        sentSize = size
+        sizeInFlight = true
+        debug("resize t=\(ProcessInfo.processInfo.systemUptime) client-size-send \(size)")
+        send([Command("refresh-client", "-C", size)]) { [weak self] _ in
+            guard let self else { return }
+            debug("resize t=\(ProcessInfo.processInfo.systemUptime) client-size-reply \(size)")
+            self.sizeInFlight = false
+            self.flushSize()
+        }
+    }
+
+    @MainActor func syncResize(_ pane: PaneID) -> Bool {
+        guard !sizeInFlight, desiredSize == nil else { return false }
+        sync(pane)
+        return true
+    }
+
+    func gridFailed() { client.close() }
 
     private func handle(_ event: Event) {
         switch event {
@@ -161,6 +196,7 @@ final class Connection: @unchecked Sendable {
             let resume = Command("refresh-client", "-A", "\(p):continue")
             if panes?[p] == nil { send([resume]) } else { sync(p, first: [resume]) }
         case .layoutChange(let window, let layout, let visible, _):
+            debug("resize t=\(ProcessInfo.processInfo.systemUptime) layout-received window=\(window)")
             DispatchQueue.main.sync { self.view?.windows[window]?.update(layout, visible) }
         case .windowPaneChanged(let window, let pane):
             DispatchQueue.main.async { self.view?.windows[window]?.focus(pane) }
@@ -210,46 +246,75 @@ final class Connection: @unchecked Sendable {
     // %output queued before a reply is written ahead of its %begin
     // (control.c), and the reply is completed on the reader queue, so output
     // fed before the restore is wiped by it and output after it is not in it.
-    func sync(_ pane: PaneID, first: [Command] = [], synced: (@Sendable () -> Void)? = nil, chunk: Int = 5000) {
+    func sync(_ pane: PaneID, first: [Command] = [], synced: (@Sendable () -> Void)? = nil) {
+        let prepared: (view: PaneView, epoch: Int)? = Thread.isMainThread ? MainActor.assumeIsolated {
+            guard let pane = view?.windows.values.lazy.flatMap(\.panes).first(where: { $0.pane == pane }) else { return nil }
+            let epoch = pane.historyEpoch
+            pane.resetScroll()
+            return (pane, epoch)
+        } : nil
         client.queue.async { [self] in
-            guard let feed = self.panes?[pane] else { return synced?() ?? () }
-            let token = UUID()
+            guard let feed = panes?[pane],
+                  prepared.map({ $0.view === feed.view && $0.epoch == feed.view.historyEpoch }) ?? true else { return synced?() ?? () }
+            let token = UUID(), epoch = feed.view.historyEpoch, revision = feed.view.scrollRevision
             feed.history = .syncing(token)
-            self.invalidateSearch(feed, restart: false)
-            feed.view.clearScrollTarget()
-            DispatchQueue.main.async { [weak view = feed.view] in view?.resetScroll() }
-            let epoch = feed.view.historyEpoch
-            self.client.send(first + PaneSync.commands(pane, chunk: chunk)) { [weak self, weak feed] replies in
-                guard let self, let feed, self.panes?[pane] === feed, feed.view.historyEpoch == epoch,
-                      case .syncing(let current) = feed.history, current == token, let replies else { return synced?() ?? () }
-                switch PaneSync.restore(replies.dropFirst(first.count)) {
-                case .expand(let history):
-                    self.sync(pane, synced: synced, chunk: min(history, chunk * 2))
-                    return
-                case .snapshot(let data, let history):
-                    feed.view.feed(data)
-                    let position = feed.view.scrollPosition()
-                    feed.metadataDirty = false
-                    feed.initialHistory = position.history
-                    if let anchor = feed.view.resizeAnchor {
-                        self.restoreAnchor(pane, feed, anchor: anchor, token: token, epoch: epoch, history: history, synced: synced)
-                        return
-                    }
-                    feed.history = history > position.history ? .more(gap: history - position.history) : .complete
-                    self.publish(feed, history: history)
-                    DispatchQueue.main.async { [weak view = feed.view] in view?.find?.search() }
-                case nil:
-                    feed.view.feed(Self.notice("could not capture \(pane): \(replies)"))
+            invalidateSearch(feed, restart: false)
+            if prepared != nil { return capture(pane, feed, token: token, epoch: epoch, first: first, synced: synced) }
+            DispatchQueue.main.async { [weak view = feed.view] in
+                guard let view, view.historyEpoch == epoch,
+                      self.view?.windows.values.lazy.flatMap(\.panes).contains(where: { $0 === view }) == true else { return synced?() ?? () }
+                if view.scrollRevision == revision { view.resetScroll() }
+                self.client.queue.async {
+                    guard self.panes?[pane] === feed, view.historyEpoch == epoch,
+                          case .syncing(let current) = feed.history, current == token else { return synced?() ?? () }
+                    self.capture(pane, feed, token: token, epoch: epoch, first: first, synced: synced)
                 }
-                synced?()
             }
         }
+    }
+
+    private func capture(_ pane: PaneID, _ feed: PaneFeed, token: UUID, epoch: Int, first: [Command],
+                         synced: (@Sendable () -> Void)?, chunk: Int = 5000) {
+        debug("resize t=\(ProcessInfo.processInfo.systemUptime) capture-send pane=\(pane) chunk=\(chunk)")
+        self.client.send(first + PaneSync.commands(pane, chunk: chunk)) { [weak self, weak feed] replies in
+            debug("resize t=\(ProcessInfo.processInfo.systemUptime) capture-reply pane=\(pane)")
+            guard let self, let feed, self.panes?[pane] === feed, feed.view.historyEpoch == epoch,
+                  case .syncing(let current) = feed.history, current == token, let replies else { return synced?() ?? () }
+            switch PaneSync.restore(replies.dropFirst(first.count)) {
+            case .expand(let history):
+                self.capture(pane, feed, token: token, epoch: epoch, first: [], synced: synced, chunk: min(history, chunk * 2))
+                return
+            case .snapshot(let data, let history):
+                debug("resize t=\(ProcessInfo.processInfo.systemUptime) replay-start pane=\(pane) bytes=\(data.count)")
+                feed.view.feed(data, kind: .snapshot)
+                debug("resize t=\(ProcessInfo.processInfo.systemUptime) replay-done pane=\(pane)")
+                let position = feed.view.scrollPosition()
+                feed.metadataDirty = false
+                feed.initialHistory = position.history
+                if let anchor = feed.view.resizeAnchor {
+                    self.restoreAnchor(pane, feed, anchor: anchor, token: token, epoch: epoch, history: history, synced: synced)
+                    return
+                }
+                feed.history = history > position.history ? .more(gap: history - position.history) : .complete
+                self.publish(feed, history: history)
+                DispatchQueue.main.async { [weak view = feed.view] in
+                    view?.restored(epoch: epoch)
+                    view?.find?.search()
+                }
+            case nil:
+                feed.view.feed(Self.notice("could not capture \(pane): \(replies)"))
+            }
+            synced?()
+        }
+
     }
 
     private func restoreAnchor(_ pane: PaneID, _ feed: PaneFeed, anchor: ScrollAnchor, token: UUID,
                                epoch: Int, history: Int, end: Int? = nil, chunk: Int = 5000,
                                synced: (@Sendable () -> Void)?) {
+        debug("resize t=\(ProcessInfo.processInfo.systemUptime) anchor-page-send pane=\(pane) end=\(end ?? -1) chunk=\(chunk)")
         client.send(SearchCapture.commands(pane, end: end, chunk: chunk)) { [weak self, weak feed] replies in
+            debug("resize t=\(ProcessInfo.processInfo.systemUptime) anchor-page-reply pane=\(pane)")
             guard let self, let feed, self.panes?[pane] === feed, feed.view.historyEpoch == epoch,
                   case .syncing(let current) = feed.history, current == token else { return synced?() ?? () }
             let distance: Int
@@ -266,8 +331,10 @@ final class Connection: @unchecked Sendable {
             self.publish(feed, history: history)
             DispatchQueue.main.async { [weak view = feed.view] in
                 guard let view, view.historyEpoch == epoch else { return synced?() ?? () }
-                view.requestScroll(distance)
+                debug("resize t=\(ProcessInfo.processInfo.systemUptime) anchor-found pane=\(pane) distance=\(distance)")
+                if view.resizeAnchor != nil { view.requestScroll(distance) }
                 view.resizeAnchor = nil
+                view.restored(epoch: epoch)
                 view.find?.search()
                 synced?()
             }
@@ -381,7 +448,9 @@ final class Connection: @unchecked Sendable {
 
     private func fetch(_ pane: PaneID, _ feed: PaneFeed, token: UUID, chunk: Int = 5000) {
         let position = feed.view.scrollPosition(), epoch = feed.view.historyEpoch
+        debug("resize t=\(ProcessInfo.processInfo.systemUptime) history-page-send pane=\(pane) loaded=\(position.history) chunk=\(chunk)")
         client.send(HistoryCapture.commands(pane, loaded: position.history, chunk: chunk)) { [weak self, weak feed] replies in
+            debug("resize t=\(ProcessInfo.processInfo.systemUptime) history-page-reply pane=\(pane)")
             guard let self, let feed, self.panes?[pane] === feed,
                   case .fetching(let current) = feed.history, current == token,
                   feed.view.historyEpoch == epoch, let replies else { return }
@@ -405,6 +474,7 @@ final class Connection: @unchecked Sendable {
                 return self.fetch(pane, feed, token: token, chunk: min(capture.history, chunk * 2))
             }
             let added = capture.rows == 0 ? 0 : feed.view.prepend(Data(capture.text.utf8), epoch: epoch)
+            debug("resize t=\(ProcessInfo.processInfo.systemUptime) history-prepend-done pane=\(pane) added=\(added)")
             let loaded = feed.view.scrollPosition().history
             feed.history = added == 0 && capture.history > loaded ? .limited(history: capture.history)
                 : (capture.history > loaded ? .more(gap: capture.history - loaded) : .complete)
