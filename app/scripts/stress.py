@@ -73,6 +73,16 @@ def reports():
     return set(glob.glob(os.path.expanduser('~/Library/Logs/DiagnosticReports/Kido*.ips')))
 
 
+def report_matches(text, pid):
+    for part in text.split('\n', 1):
+        try:
+            if json.loads(part).get('pid') == pid:
+                return True
+        except ValueError:
+            pass
+    return False
+
+
 def app_children(pid):
     for line in subprocess.check_output(['ps', '-axo', 'pid=,ppid=,comm='], text=True).splitlines():
         bits = line.split(None, 2)
@@ -186,7 +196,8 @@ done = next((l for l in app if l.get('done')), None)
 steps_logged = [l for l in app if 'step' in l]
 bad = [l for l in lines if any(w in l for w in ('Sanitizer', 'SUMMARY:', 'panic', 'Fatal error', 'Assertion failed'))]
 shown = [l for l in steps_logged if l['visible'] or l['key'] or l['main'] or l['active'] or l['onScreenWindows']]
-new = sorted(reports() - before)
+new = sorted(path for path in reports() - before
+             if report_matches(open(path).read(), p.pid))
 problems = []
 gone = {event['detail'] for event in app if event.get('event') == 'drag-killed'}
 for line in open(out + '/actions.jsonl'):
