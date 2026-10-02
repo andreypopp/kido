@@ -198,10 +198,10 @@ floor/ceil in physical pixels so surfaces and dividers stay on the pixel
 grid. tmux's border cell between two panes is then exactly their
 paddings plus the one-pixel divider, so any tree, however asymmetric,
 lines up with no surplus. Around the whole terminal area only, the
-horizontal remainder is balanced over an 8pt minimum; vertically the
-first row is at a fixed 44pt (`PaneLayout.topMargin`) at every height and
+horizontal remainder is balanced over a 4pt minimum; vertically the
+first row is at a fixed 36pt (`PaneLayout.topMargin`) at every height and
 in both sidebar states, and all vertical remainder goes to the bottom,
-over a 6pt minimum. Zoom uses the same rule. Dividers have six-point hit
+over a 2pt minimum. Zoom uses the same rule. Dividers have six-point hit
 areas; unfocused panes are dimmed by a theme-background overlay; a
 pane shows the window’s shared glass toolbar only in its top-right hot
 zone: the toolbar frame plus 24pt to its left and below, clipped to the
