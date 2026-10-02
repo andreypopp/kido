@@ -848,8 +848,8 @@ export default function (pi: ExtensionAPI) {
       // Re-resolved from the asker's pane, not the model's `to`: a `/reload` since the ask
       // arrived can have moved the asker to a new session id, but not its pane.
       let to = params.to;
-      if (askerPane) {
-        pendingInboundAsks.delete(params.replyTo!);
+      if (askerPane && params.replyTo) {
+        pendingInboundAsks.delete(params.replyTo);
         const listed = await fetchAgents();
         if (listed.ok) to = listed.agents.find((a) => a.pane === askerPane)?.id ?? to;
       }

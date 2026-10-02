@@ -43,8 +43,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-// Mirrors Msg.parse (lib/msg.ml): a payload is a v1 envelope only if it parses as a
-// JSON object carrying both "v" and "kind"; anything else is v0 raw prompt text.
+// The inbox protocol distinguishes v1 envelopes from v0 raw prompt text by
+// a JSON object carrying both "v" and "kind" (docs/design.md, "The inbox").
 export function parseEnvelope(text: string): Envelope | null {
   let parsed: unknown;
   try {
@@ -55,7 +55,6 @@ export function parseEnvelope(text: string): Envelope | null {
   if (!isRecord(parsed) || Array.isArray(parsed)) return null;
   const obj = parsed;
   if (!("v" in obj) || !("kind" in obj)) return null;
-  // Coerced rather than required, to match Msg.parse, which reads a missing string field as "".
   const str = (v: unknown): string => (typeof v === "string" ? v : "");
   const from = isRecord(obj.from) ? obj.from : {};
   const [session, name, pane] = [str(from.session), str(from.name), str(from.pane)];

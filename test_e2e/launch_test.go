@@ -446,11 +446,9 @@ func TestKidoConfDefaultCommandIsCaptured(t *testing.T) {
 	}, "the pane to be running the user's own default-command")
 }
 
-// A user's `default-command "zsh"` used to be handed an unprimed,
-// non-login zsh with no integration: the parked command ran as `zsh -l -c
-// zsh`, whose inner zsh is bare, non-interactive, and never fires OSC
-// 133. TestKidoConfDefaultCommandIsCaptured pins the case this must not
-// change: a real command still runs as the command.
+// A shell named by default-command needs priming and OSC 133 integration.
+// TestKidoConfDefaultCommandIsCaptured is the negative control: a real
+// command must still run as the command.
 func TestKidoConfDefaultCommandNamingAShellIsPrimed(t *testing.T) {
 	t.Parallel()
 	if _, err := exec.LookPath("zsh"); err != nil {

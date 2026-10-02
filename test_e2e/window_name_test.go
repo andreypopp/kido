@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-// A fresh kido server used to leave tmux to pick the session name, a
-// bare integer ("0") rather than anything meaningful.
 func TestFreshServerSessionIsMain(t *testing.T) {
 	t.Parallel()
 	r := newKidoRun(t)

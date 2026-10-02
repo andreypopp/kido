@@ -480,8 +480,8 @@ A payload counts as v1 only if it parses as a JSON object and carries
 both `v` and `kind`. Anything else, including a JSON object missing one
 of the two, is v0 text. The case that matters is a user prompt that
 happens to be a JSON object: it must not be swallowed as a control
-message. The rule is implemented twice, in `Msg.parse` and in the extension, and
-both are driven from the same fixture table so they cannot drift.
+message. The extension's parser is driven from a fixture table covering
+both envelope and raw-text payloads.
 
 A target's `inbox` field is the only thing a sender reads to decide: any
 pi session that has bound one always speaks v1, so a non-empty `inbox` means
@@ -1550,13 +1550,13 @@ The sidebar is the only thing in kido that ticks continuously, so it is
 the only thing positioned to notice a gap. It compares two readings
 taken across one tick: the wall clock's account of the interval against
 the monotonic clock's account of the same interval. Each reading is a
-`State.reading`, a wall time and an `Mtime.t` taken together by
-`State.read_clock`; `Mtime_clock` reads `mach_absolute_time` on macOS
+`Sidebar.reading`, a wall time and an `Mtime.t` taken together by
+`Sidebar.read_clock`; `Mtime_clock` reads `mach_absolute_time` on macOS
 and `CLOCK_MONOTONIC` on Linux, and neither advances across a suspend.
 A tick that was merely slow for an awake reason advances both readings
 together; only a suspend leaves the monotonic one behind. The wall
 account outrunning the monotonic one by more than five seconds is a
-sleep (`State.detect_pause`). A wall time alone - a `Timestamp.t`, or
+sleep (`Sidebar.detect_pause`). A wall time alone - a `Timestamp.t`, or
 anything read back from disk - has no monotonic half and cannot take
 part.
 

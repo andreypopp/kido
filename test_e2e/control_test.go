@@ -70,9 +70,8 @@ func TestStopDoesNotKillAHealthyChild(t *testing.T) {
 
 	paneID, windowID, in := h.wedgedChild("alpha", "healthy-e2e")
 
-	// Removing the record before the stop request actually reaches the
-	// target (racing the freshly created window's own startup) used to fail
-	// this test with "no agent session matches"; in.Received() gates it.
+	// in.Received() gates removal of the record on the stop request reaching
+	// the target, avoiding a race with the freshly created window's startup.
 	go func() {
 		deadline := time.Now().Add(settle)
 		for len(in.Received()) == 0 && time.Now().Before(deadline) {
