@@ -28,7 +28,15 @@ final class PaneChrome: NSView {
             [grid] + subviews.filter { !$0.isHidden && ($0 is PaneScroller || $0.alphaValue > 0) }.map(\.frame))
     }
     var hover: (PaneChrome, NSPoint?) -> Void = { _, _ in }
-    var grid = CGRect.zero
+    var grid = CGRect.zero { didSet { if grid != oldValue { needsDisplay = true } } }
+    private(set) var scrollEdges = (top: false, bottom: false)
+    static let scrollEdgeHeight: CGFloat = 12
+
+    func updateScrollEdges(top: Bool, bottom: Bool) {
+        guard scrollEdges != (top, bottom) else { return }
+        scrollEdges = (top, bottom)
+        needsDisplay = true
+    }
     var dimmed = false { didSet { if dimmed != oldValue { needsDisplay = true } } }
     var toolbarFrame: CGRect {
         NSRect(x: max(0, bounds.width - 153), y: 8, width: min(145, bounds.width), height: 32)
@@ -47,7 +55,22 @@ final class PaneChrome: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
-        if dimmed { runtime.background.withAlphaComponent(0.45).setFill(); bounds.fill() }
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            if dimmed { runtime.background.withAlphaComponent(0.45).setFill(); bounds.fill() }
+            let height = min(Self.scrollEdgeHeight, grid.height / 2)
+            let background = runtime.background
+            let gradient = NSGradient(starting: background.withAlphaComponent(0.65), ending: background.withAlphaComponent(0))!
+            for (visible, y, direction) in [(scrollEdges.top, grid.minY, 1.0), (scrollEdges.bottom, grid.maxY, -1.0)] where visible {
+                NSGraphicsContext.saveGraphicsState()
+                NSBezierPath(rect: CGRect(x: grid.minX, y: min(y, y + direction * height), width: grid.width, height: height)).addClip()
+                gradient.draw(from: CGPoint(x: grid.midX, y: y), to: CGPoint(x: grid.midX, y: y + direction * height), options: [])
+                NSGraphicsContext.restoreGraphicsState()
+            }
+        }
+    }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
     }
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden else { return nil }
