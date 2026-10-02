@@ -437,7 +437,7 @@ final class Connection: @unchecked Sendable {
                         feed.history = .complete
                         return self.publish(feed, history: 0, alternate: true)
                     }
-                    feed.history = limited ? .limited(history: history) : (history > position.history ? .more(gap: history - position.history) : .complete)
+                    feed.history = history > position.history ? (limited ? .limited(history: history) : .more(gap: history - position.history)) : .complete
                     self.publish(feed, history: history)
                     let destination = feed.view.scrollTarget ?? (position.history - position.offset)
                     if !limited && history > position.history && destination >= position.history - position.rows { self.scroll(pane) }
