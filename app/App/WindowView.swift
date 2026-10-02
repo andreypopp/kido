@@ -205,7 +205,7 @@ final class WindowView: NSView {
             synced?.enter()
             connection?.attach(view) { synced?.leave() }
         }
-        window?.invalidateCursorRects(for: self)
+        invalidateCursorRects()
         needsReconcile = false
     }
 
@@ -238,7 +238,7 @@ final class WindowView: NSView {
             let frame = placement.line(divider, pixel: pixel)
             if box.frame != frame { box.frame = frame; changed = true }
         }
-        if changed { window?.invalidateCursorRects(for: self) }
+        if changed { invalidateCursorRects() }
     }
 
     private func placeFloat(_ id: PaneID, _ placement: PaneLayout) {
@@ -247,9 +247,9 @@ final class WindowView: NSView {
               let view = panes.first(where: { $0.pane == id }),
               chrome.frame != floatFrame(id, pane.geometry, placement) else { return }
         place(chrome, view, pane.geometry, placement, floating: true)
-        floatingBoxes[id]?.frame = chrome.frame
-        if toolbar?.superview === chrome { toolbar?.frame = chrome.toolbarFrame }
-        window?.invalidateCursorRects(for: self)
+        if floatingBoxes[id]?.frame != chrome.frame { floatingBoxes[id]?.frame = chrome.frame }
+        if toolbar?.superview === chrome, toolbar?.frame != chrome.toolbarFrame { toolbar?.frame = chrome.toolbarFrame }
+        invalidateCursorRects()
         #if KIDO_STRESS
         stressEvent("place-float", id.description)
         #endif
@@ -274,12 +274,13 @@ final class WindowView: NSView {
             if mask.path?.boundingBoxOfPath != rect {
                 mask.path = CGPath(roundedRect: rect, cornerWidth: floatingRadius, cornerHeight: floatingRadius, transform: nil)
             }
-            view.layer?.mask = mask
-        } else { view.layer?.mask = nil }
+            if view.layer?.mask !== mask { view.layer?.mask = mask }
+        } else if view.layer?.mask != nil { view.layer?.mask = nil }
         if view.scroller.superview !== chrome { chrome.addSubview(view.scroller, positioned: .below, relativeTo: nil) }
         view.scroller.select = view.onSelect
-        view.scroller.frame = CGRect(x: max(0, chrome.bounds.maxX - 12),
-                                     y: chrome.grid.minY, width: 12, height: chrome.grid.height)
+        let scrollerFrame = CGRect(x: max(0, chrome.bounds.maxX - 12),
+                                   y: chrome.grid.minY, width: 12, height: chrome.grid.height)
+        if view.scroller.frame != scrollerFrame { view.scroller.frame = scrollerFrame }
     }
 
     private func hover(_ chrome: PaneChrome, _ point: NSPoint?) {
@@ -293,7 +294,7 @@ final class WindowView: NSView {
             toolbar.update(command: { view.onSelect(); view.onCommand($0) }, zoomed: zoomed, drag: { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0) })
         }
         guard let toolbar, toolbar.superview === chrome else { return }
-        window?.invalidateCursorRects(for: self)
+        invalidateCursorRects()
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.15
             toolbar.animator().alphaValue = show ? 1 : 0
@@ -364,6 +365,7 @@ final class WindowView: NSView {
         case floating(Pane, NSPoint, CGRect, NSCursor.FrameResizePosition?)
     }
     private var paneDrag: PaneDrag?
+    private var dragCursor: NSCursor?
     #if KIDO_STRESS
     var stressEvent: (String, String) -> Void = { _, _ in }
     var stressFloats: [(pane: Pane, frame: CGRect, free: Bool)] {
@@ -506,7 +508,16 @@ final class WindowView: NSView {
         endDrag(); place(); focusActive(force: true)
     }
 
+    private func invalidateCursorRects() {
+        if dragCursor == nil { window?.invalidateCursorRects(for: self) }
+    }
+
     private func endDrag() {
+        if dragCursor != nil {
+            if !background { NSCursor.pop() }
+            window?.enableCursorRects()
+            dragCursor = nil
+        }
         if case .dragging = liveFrame { liveFrame = nil }
         paneDrag = nil
         lastFloatCommand = nil
@@ -525,6 +536,12 @@ final class WindowView: NSView {
                 if event.type == .leftMouseUp { endDrag(); focusActive(force: true) }
                 return
             }
+            if dragCursor == nil {
+                let cursor = cursorEdge.map { NSCursor.frameResize(position: $0, directions: .all) } ?? .closedHand
+                window?.disableCursorRects()
+                if !background { cursor.push() }
+                dragCursor = cursor
+            }
             var frame = initial
             if edge == nil { frame.origin.x += dx; frame.origin.y += dy }
             else {
@@ -536,7 +553,6 @@ final class WindowView: NSView {
                 if edge?.top == true { frame.size.height = max(minimum.height, initial.height - dy); frame.origin.y = initial.maxY - frame.height }
             }
             frame = placement.clamp(frame, resizing: edge)
-            if edge == nil, lastFloatCommand == nil { window?.invalidateCursorRects(for: self) }
             liveFrame = .dragging(pane.id, frame)
             placeFloat(pane.id, placement)
             let geometry = placement.geometry(frame)
