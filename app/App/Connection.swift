@@ -98,7 +98,7 @@ final class Connection: @unchecked Sendable {
         let id = pane.pane, key = ObjectIdentifier(pane)
         retiring[key] = pane
         client.queue.async {
-            if self.panes?[id].map { ObjectIdentifier($0.view) } == key { self.panes?[id] = nil }
+            if self.panes?[id].map({ ObjectIdentifier($0.view) }) == key { self.panes?[id] = nil }
             DispatchQueue.main.async {
                 guard let pane = self.retiring.removeValue(forKey: key) else { return }
                 self.freeing.append(pane)
@@ -211,7 +211,7 @@ final class Connection: @unchecked Sendable {
     // (control.c), and the reply is completed on the reader queue, so output
     // fed before the restore is wiped by it and output after it is not in it.
     func sync(_ pane: PaneID, first: [Command] = [], synced: (@Sendable () -> Void)? = nil, chunk: Int = 5000) {
-        client.queue.async {
+        client.queue.async { [self] in
             guard let feed = self.panes?[pane] else { return synced?() ?? () }
             let token = UUID()
             feed.history = .syncing(token)
@@ -335,7 +335,7 @@ final class Connection: @unchecked Sendable {
     }
 
     private func scroll(_ pane: PaneID) {
-        client.queue.async {
+        client.queue.async { [self] in
             guard let feed = self.panes?[pane] else { return }
             let position = feed.view.scrollPosition()
             let destination = feed.view.scrollTarget ?? (position.history - position.offset)
