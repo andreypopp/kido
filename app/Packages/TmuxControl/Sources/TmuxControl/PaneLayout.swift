@@ -9,8 +9,8 @@ public struct PaneLayout: Equatable {
         public var top: Bool { self == .top || self == .topLeft || self == .topRight }
         public var bottom: Bool { self == .bottom || self == .bottomLeft || self == .bottomRight }
     }
-    public static let minimumMargin = CGSize(width: 4, height: 2)
-    public static let topMargin: CGFloat = 36
+    public static let minimumMargin = CGSize(width: 4, height: 0)
+    public static let topMargin: CGFloat = 40
     public let client: CGSize
     public let before: CGSize
     public let after: CGSize

@@ -59,7 +59,7 @@ func floatingGeometry(pixel: CGFloat) {
     #expect(initial.minY == layout.origin.y + 8 * cell.height - layout.before.height)
 }
 
-@Test(arguments: [CGSize(width: 563, height: 500), CGSize(width: 664, height: 560), CGSize(width: 1281, height: 803)], [CGFloat(1), CGFloat(0.5)])
+@Test(arguments: [CGSize(width: 563, height: 500), CGSize(width: 664, height: 560), CGSize(width: 664, height: 558), CGSize(width: 664, height: 558.5), CGSize(width: 1281, height: 803)], [CGFloat(1), CGFloat(0.5)])
 func paddedLayout(area: CGSize, pixel: CGFloat) {
     let cell = CGSize(width: 8, height: 17)
     func pane(_ id: UInt32, _ x: Int, _ y: Int, _ width: Int, _ height: Int) -> Node {
@@ -88,11 +88,16 @@ func paddedLayout(area: CGSize, pixel: CGFloat) {
     #expect(frames[0].minX >= PaneLayout.minimumMargin.width)
     #expect(frames[0].minY >= PaneLayout.minimumMargin.height)
     #expect(frames[0].minX < PaneLayout.minimumMargin.width + cell.width / 2)
-    #expect(PaneLayout.minimumMargin == CGSize(width: 4, height: 2))
-    #expect(layout.origin.y == 36)
-    #expect(frames[0].minY == 36 - layout.before.height)
+    #expect(PaneLayout.minimumMargin == CGSize(width: 4, height: 0))
+    #expect(layout.origin.y == 40)
+    #expect(frames[0].minY == 40 - layout.before.height)
     #expect(bounds.maxY - frames[2].maxY >= PaneLayout.minimumMargin.height)
     #expect(bounds.maxY - frames[2].maxY < PaneLayout.minimumMargin.height + cell.height)
+    if area.height == 40 + CGFloat(rows) * cell.height + layout.after.height {
+        #expect(frames[2].maxY == bounds.maxY)
+        #expect(layout.floatingBounds.maxY == bounds.maxY)
+        #expect(layout.clamp(frames[2].offsetBy(dx: 0, dy: cell.height)).maxY == bounds.maxY)
+    }
     let collapsedBounds = CGRect(origin: .zero, size: CGSize(width: area.width + 236, height: area.height))
     let collapsed = PaneLayout(root: root, bounds: collapsedBounds, cell: cell, pixel: pixel)
     #expect(collapsed.client.height == client.height)
