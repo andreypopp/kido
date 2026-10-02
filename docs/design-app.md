@@ -57,8 +57,13 @@ captures and `alternate_on` are read on one command line. Whole logical
 lines are never split between chunks, including the history/screen join
 in the initial restore.
 
-Scrolling within one screen of the loaded top fetches the next 5000 rows,
-aligned the same way. The gap is tmux's `history_size` minus Ghostty's
+An explicit wheel, thumb, find or resize-anchor request within one screen
+of the loaded top fetches the next 5000 rows, aligned the same way. Load more
+also requests paging. A finished fetch continues only toward an outstanding
+user target. Presentation applies, snapshot replay, output and Ghostty scrollbar
+notifications never start paging or metadata queries; they only update presentation.
+The next scroll request refreshes tmux's history metadata. Ghostty's own row count
+updates the loaded portion of the scroller as output arrives. The gap is tmux's `history_size` minus Ghostty's
 retained history rows, read through its mutex-protected scrollbar snapshot
 (`total - len`), not the renderer's asynchronous scrollbar notification.
 Offsets count from the bottom; output queued ahead of a capture reply is
@@ -89,7 +94,11 @@ scrollbar. The API returns the number of inserted physical rows, or zero
 on alternate screens, allocation failure or insufficient scrollback byte
 budget. A chunk is accepted whole or not at all, never evicting newer rows
 to make room. Kido defaults to a 512 MiB Ghostty scrollback budget; the
-user's configuration can override it. Hitting it stops older fetches; the
+user's configuration can override it. Only a nonempty history chunk that
+Ghostty refuses to insert is reported as a memory limit; an empty capture is
+an exhausted boundary, not a budget failure. A malformed capture abandons its
+scroll target and publishes usable geometry without a memory-limit pill.
+Hitting the limit stops older fetches; the
 scroller keeps tmux's full range and thumb size, fading the track above the
 loaded top. The thumb and target clamp to that boundary, so dragging or
 wheeling beyond it reveals no blank space and makes no history request.
@@ -125,7 +134,7 @@ minimum knob size. Every precise wheel event adds its delta 1:1 to the
 fractional target, including nonzero ended packets. At most one apply is
 pending on the pane's serial scroll worker; it starts immediately and reads
 the latest output-adjusted target when it runs. Its main callback coalesces
-presentation, paging and trim scheduling, then applies a changed target.
+presentation and trim scheduling, then applies a changed target.
 Ghostty schedules rendering;
 the app adds no display link, deferred packet, easing or momentum filter.
 Ghostty's mouse-scroll-multiplier precision setting remains the user's speed
@@ -174,9 +183,8 @@ longer needed at the loaded top is discarded, and fetching stops when the
 target is loaded. Wheel fetching does not depend on Ghostty's scrollbar
 notifications, which only change when a draw sees a new scrollbar snapshot.
 Already-loaded rows can outlive tmux's history limit until resync; the
-scroller clamps to tmux's retained range. Loaded, unchanged scrolling sends
-no tmux commands: metadata is cached until output or resync invalidates it,
-and is refreshed once when needed. Its colours resolve in the current
+scroller clamps to tmux's retained range. Metadata queries belong to scroll
+requests, not live output or presentation callbacks. Its colours resolve in the current
 effective appearance when drawn.
 
 Command-F opens a pane's native find bar. Each query scans tmux's history
