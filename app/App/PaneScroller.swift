@@ -32,6 +32,10 @@ final class PaneScroller: NSView {
         return NSRect(x: bounds.maxX - 9, y: y + 2, width: 5, height: max(0, height - 4))
     }
 
+    #if KIDO_STRESS
+    var stressThumb: NSPoint { NSPoint(x: knob.midX, y: knob.midY) }
+    #endif
+
     override func draw(_ dirtyRect: NSRect) {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             if unavailable > 0, geometry.history > 0 {
