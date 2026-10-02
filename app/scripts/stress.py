@@ -25,6 +25,16 @@ log = open(out + '/actions.jsonl', 'w', buffering=1)
 
 
 def t(*a):
+    if a[0] in ('kill-pane', 'kill-window', 'kill-session', 'kill-server'):
+        if a[0] == 'kill-pane':
+            victims = [a[-1]]
+        elif a[0] == 'kill-window':
+            victims = rows('list-panes', '-t', a[-1], '-F', '#{pane_id}')
+        elif a[0] == 'kill-session':
+            victims = rows('list-panes', '-s', '-t', a[-1], '-F', '#{pane_id}')
+        else:
+            victims = rows('list-panes', '-a', '-F', '#{pane_id}')
+        log.write(json.dumps(dict(event='panes-killed', panes=victims, command=a)) + '\n')
     try:
         p = subprocess.run([args.tmux, '-S', sock, *a], capture_output=True, text=True, timeout=8)
         if p.returncode:
@@ -85,13 +95,19 @@ errlog = open(out + '/stderr.log', 'w')
 start = time.time()
 p = subprocess.Popen([args.app], env=env, stdout=errlog, stderr=errlog)
 steps = int(args.duration / 0.4)
+previous = set()
 try:
     for i in range(steps):
         if p.poll() is not None:
             break
         c = rng.choice(rows('list-clients', '-F', '#{client_name}') or [None])
         ws = rows('list-windows', '-a', '-F', '#{session_name}:#{window_index}')
-        target = rng.choice(rows('list-panes', '-a', '-F', '#{pane_id}') or [None])
+        panes = rows('list-panes', '-a', '-F', '#{pane_id}')
+        current = set(panes)
+        if previous - current:
+            log.write(json.dumps(dict(event='panes-gone', panes=sorted(previous - current))) + '\n')
+        previous = current
+        target = rng.choice(panes or [None])
         a = 0 if i % 100 < 35 else rng.randrange(22)
         counts[a] += 1
         log.write(json.dumps(dict(i=i, elapsed=time.time() - start, action=a, pane=target, client=c)) + '\n')
@@ -172,6 +188,21 @@ bad = [l for l in lines if any(w in l for w in ('Sanitizer', 'SUMMARY:', 'panic'
 shown = [l for l in steps_logged if l['visible'] or l['key'] or l['main'] or l['active'] or l['onScreenWindows']]
 new = sorted(reports() - before)
 problems = []
+gone = {event['detail'] for event in app if event.get('event') == 'drag-killed'}
+for line in open(out + '/actions.jsonl'):
+    event = json.loads(line)
+    if event.get('event') in ('panes-killed', 'panes-gone'):
+        gone.update(event['panes'])
+killed_race = 0
+for event in app:
+    if event.get('event') == 'pane-command-failed':
+        detail = event['detail']
+        if detail.startswith("can't find pane: ") and detail.removeprefix("can't find pane: ") in gone:
+            killed_race += 1
+        else:
+            problems.append('pane command failed: ' + detail)
+if done:
+    done['counts']['killed_race'] = killed_race
 if bad:
     problems.append(f'{len(bad)} sanitizer/panic lines, first: {bad[0]}')
 if p.returncode != 0 or not done:
