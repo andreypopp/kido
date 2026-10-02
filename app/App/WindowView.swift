@@ -698,29 +698,31 @@ final class WindowView: NSView {
 
     override func resetCursorRects() {
         guard let placement else { return }
-        for d in shown?.visible.root.dividers ?? [] {
-            let rect = hitArea(d, placement).intersection(bounds)
-            if !rect.isNull, !rect.isEmpty { addCursorRect(rect, cursor: d.direction == .leftRight ? .resizeLeftRight : .resizeUpDown) }
+        var covered: [CGRect] = []
+        func add(_ rect: CGRect, _ cursor: NSCursor) {
+            for rect in rect.intersection(bounds).subtracting(covered) { addCursorRect(rect, cursor: cursor) }
         }
-        guard !zoomed else { return }
-        for pane in shown?.visible.root.panes ?? [] where pane.layer != .tiled {
-            let r = floatFrame(pane.id, pane.geometry, placement)
-            if case .floating(let moving, _, _, nil) = paneDrag, moving.id == pane.id,
-               case .dragging = liveFrame {
-                let rect = r.intersection(bounds)
-                if !rect.isNull, !rect.isEmpty { addCursorRect(rect, cursor: .closedHand) }
-                continue
-            }
-            if let chrome = subviews.compactMap({ $0 as? PaneChrome }).first(where: { $0.pane == pane.id }) {
-                for rect in chrome.padding {
-                    let rect = convert(rect, from: chrome).intersection(bounds)
-                    if !rect.isNull, !rect.isEmpty { addCursorRect(rect, cursor: .openHand) }
+        if !zoomed {
+            for pane in (shown?.visible.root.panes ?? []).filter({ $0.layer != .tiled }).sorted(by: {
+                guard case .floating(let a) = $0.layer, case .floating(let b) = $1.layer else { return false }; return a < b
+            }) {
+                let r = floatFrame(pane.id, pane.geometry, placement)
+                defer { covered.append(r) }
+                if case .floating(let moving, _, _, nil) = paneDrag, moving.id == pane.id,
+                   case .dragging = liveFrame {
+                    add(r, .closedHand)
+                    continue
+                }
+                if let chrome = subviews.compactMap({ $0 as? PaneChrome }).first(where: { $0.pane == pane.id }) {
+                    for rect in chrome.padding { add(convert(rect, from: chrome), .openHand) }
+                }
+                for (position, rect) in floatEdges(r) {
+                    add(rect, .frameResize(position: position, directions: .all))
                 }
             }
-            for (position, rect) in floatEdges(r) {
-                let rect = rect.intersection(bounds)
-                if !rect.isNull, !rect.isEmpty { addCursorRect(rect, cursor: .frameResize(position: position, directions: .all)) }
-            }
+        }
+        for d in shown?.visible.root.dividers ?? [] {
+            add(hitArea(d, placement), d.direction == .leftRight ? .resizeLeftRight : .resizeUpDown)
         }
     }
 
