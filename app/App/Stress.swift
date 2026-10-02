@@ -222,10 +222,12 @@ typealias AppWindow = StressWindow
         case .gripDrag, .gripDragKill:
             grip(edge: action == .gripDrag, kill: action == .gripDragKill, all)
         case .edgeResize:
-            if let chrome = visible(all, PaneChrome.self).first, let view = chrome.superview as? WindowView {
+            let chromes = visible(all, PaneChrome.self)
+            let floats = floatChromes(chromes, all)
+            if let chrome = (random(3) > 0 && !floats.isEmpty ? floats : chromes).first, let view = chrome.superview as? WindowView {
                 let p = chrome.convert(NSPoint(x: chrome.bounds.maxX - 2, y: chrome.bounds.midY), to: nil)
                 view.mouseDown(with: event(.leftMouseDown, p))
-                view.mouseDragged(with: event(.leftMouseDragged, NSPoint(x: p.x + 200, y: p.y - 90)))
+                view.mouseDragged(with: event(.leftMouseDragged, NSPoint(x: p.x + fraction(250) - 50, y: p.y - fraction(120) + 30)))
                 view.mouseUp(with: event(.leftMouseUp, p))
             }
         case .detachReconnect:
@@ -236,10 +238,19 @@ typealias AppWindow = StressWindow
         }
     }
 
+    private func fraction(_ n: Int) -> CGFloat { CGFloat(random(n * 100)) / 100 + 0.37 }
+
+    private func floatChromes(_ chromes: [PaneChrome], _ all: [NSView]) -> [PaneChrome] {
+        let ids = Set(visible(all, WindowView.self).flatMap { $0.stressFloats.map(\.pane.id) })
+        return chromes.filter { ids.contains($0.pane) }
+    }
+
     private func grip(edge: Bool, kill: Bool, _ all: [NSView]) {
         let chromes = visible(all, PaneChrome.self)
         guard !chromes.isEmpty else { counts["drag-skipped", default: 0] += 1; return }
-        let chrome = chromes[random(chromes.count)]
+        let floats = floatChromes(chromes, all)
+        let pool = random(2) == 0 && !floats.isEmpty ? floats : chromes
+        let chrome = pool[random(pool.count)]
         let hot = chrome.convert(NSPoint(x: chrome.toolbarFrame.minX + 16, y: chrome.toolbarFrame.midY), to: nil)
         chrome.mouseMoved(with: event(.mouseMoved, hot))
         guard let button = visible(views(chrome), IconButton.self).first(where: {
@@ -260,6 +271,8 @@ typealias AppWindow = StressWindow
             }
             target = view.convert(point, to: nil)
         }
+        target.x += fraction(40) - 20
+        target.y += fraction(40) - 20
         press(event(.leftMouseDragged, target))
         if kill {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
