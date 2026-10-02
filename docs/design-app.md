@@ -196,8 +196,14 @@ The accent highlight follows
 the effective appearance. A drop sends one `move-pane` or `swap-pane`, and
 only tmux's layout notification moves the views. A click, Escape, a drop
 on the source or a floating pane cancels. Dragging is disabled while zoomed.
-Floating grips and resize edges follow the pointer in points; a click raises
-a covered float with `move-pane -z 0`. WindowView keeps a view-only free frame
+Floating grips and padding share one move gesture, starting after 4pt of
+movement; resize edges follow the pointer immediately. A press without movement
+raises a covered float with `move-pane -z 0`. Draggable padding is inside the
+drawn frame but outside the Ghostty grid, including the fractional right/bottom
+remainder. The 5pt resize edges and corners, toolbar and scroller strip take
+precedence; terminal clicks remain Ghostty's. Padding cursor rects show an open
+hand, changing to a closed hand over the drawn frame during a move. Tiled padding
+still only selects. WindowView keeps a view-only free frame
 per float after release. Coalesced, one-in-flight command batches send its
 rounded cell geometry to tmux with the border-dependent position and size
 semantics. Nested command batches finish at a private marker on a separate
