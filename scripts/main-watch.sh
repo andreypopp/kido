@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: scripts/main-watch.sh [commit...]
-# Prints origin/main moves and each new commit's CI result and failure lines.
+# Prints each new commit's CI result and failure lines.
 # Meant to run streamed: async_bash with stream: true.
 cd "$(dirname "$0")/.." || exit 1
 pending=()
@@ -56,14 +56,14 @@ report() {
 		--json databaseId,status,conclusion,url,displayTitle -q '.[0] | "\(.databaseId) \(.status) \(.conclusion) \(.url) \(.displayTitle)"' 2>/dev/null) || return 1
 	read -r run status conclusion url title <<< "$report"
 	[ -z "$run" ] || [ "$status" != completed ] && return 1
-	jobs=$(gh run view "$run" --json jobs -q '.jobs[] | "    \(.name): \(.conclusion) (\u001b]8;;\(.url)\u001b\\link\u001b]8;;\u001b\\)"' 2>/dev/null) || return 1
+	jobs=$(gh run view "$run" --json jobs -q '.jobs[] | "    \(.name): \(.conclusion) (\u001b]8;;\(.url)\u001b\\\u001b[34mlink\u001b[39m\u001b]8;;\u001b\\)"' 2>/dev/null) || return 1
 	[ -n "$jobs" ] || return 1
 	if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
 		git fetch -q origin 2>/dev/null
 	fi
 	metadata=$(git log -1 --format='at %cd by %an%n  %s' --date=format-local:'%Y-%m-%d %H:%M' "$sha" 2>/dev/null) || metadata="(metadata unavailable)"$'\n  '"$title"
-	report="commit $(printf '\033]8;;%s\033\\%s\033]8;;\033\\' "${url%/actions/runs/*}/commit/$sha" "${sha:0:7}") $metadata
-  CI run $(printf '\033]8;;%s\033\\%s\033]8;;\033\\' "$url" "$run"): $conclusion
+	report="commit $(printf '\033]8;;%s\033\\\033[34m%s\033[39m\033]8;;\033\\' "${url%/actions/runs/*}/commit/$sha" "${sha:0:7}") $metadata
+  CI run $(printf '\033]8;;%s\033\\\033[34m%s\033[39m\033]8;;\033\\' "$url" "$run"): $conclusion
 $jobs"
 	if [ "$conclusion" != success ]; then
 		log=$(gh run view "$run" --log-failed 2>/dev/null) || return 1
@@ -82,8 +82,6 @@ while :; do
 	cur=$(git ls-remote origin refs/heads/main 2>/dev/null | cut -f1)
 	if [ -n "$cur" ] && [ "$cur" != "$last" ]; then
 		git fetch -q origin main 2>/dev/null
-		echo "origin/main moved ${last:0:7} -> ${cur:0:7}:"
-		git log --format='  %h %an: %s' "$last..$cur" 2>/dev/null || echo "  (history rewritten?)"
 		pending+=("$cur")
 		last=$cur
 	fi
