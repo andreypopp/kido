@@ -35,7 +35,7 @@ import TmuxControl
         guard let runtime = GhosttyRuntime() else { fatalError("libghostty failed to initialise") }
         self.runtime = runtime
         NSApp.mainMenu = mainMenu()
-        window = NSWindow(
+        window = AppWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
@@ -78,6 +78,9 @@ import TmuxControl
         }
         updateSidebarMenu()
         start()
+        #if KIDO_STRESS
+        Stress(window: window, send: { [weak self] in self?.send($0) }, reconnect: { [weak self] in self?.start() }).run()
+        #endif
     }
 
     private func updateAppearance() {
