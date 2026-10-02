@@ -16,7 +16,6 @@ asan: SANITIZER = Address
 tsan asan:
 	$(MAKE) all DERIVED=build/derived-$@ GHOSTTY_OPTIMIZE=ReleaseSafe SANITIZE="-enable$(SANITIZER)Sanitizer YES"
 
-STRESS_FLAGS = SWIFT_ACTIVE_COMPILATION_CONDITIONS='$$(inherited) KIDO_STRESS'
 SEED ?= 1
 DURATION ?= 60
 FIND ?= 1
@@ -28,7 +27,7 @@ tsan-stress asan-stress: STRESS_OPTIMIZE = GHOSTTY_OPTIMIZE=ReleaseSafe
 tsan-stress asan-stress: STRESS_SANITIZE = -enable$(SANITIZER)Sanitizer YES
 stress tsan-stress asan-stress:
 	$(MAKE) -C .. $(FORK)
-	$(MAKE) all DERIVED=$(STRESS_DERIVED) $(STRESS_OPTIMIZE) SANITIZE="$(STRESS_SANITIZE) $(STRESS_FLAGS)"
+	$(MAKE) all DERIVED=$(STRESS_DERIVED) $(STRESS_OPTIMIZE) SANITIZE="$(STRESS_SANITIZE) KIDO_STRESS_CONDITION=KIDO_STRESS"
 	KIDO_STRESS_TARGET=$@ scripts/stress.py --app $(STRESS_DERIVED)/Build/Products/Debug/Kido.app/Contents/MacOS/Kido --tmux $(abspath ../$(FORK)) \
 		--seed $(SEED) --duration $(DURATION) --find $(FIND) --out build/stress/$@-$(SEED)
 
