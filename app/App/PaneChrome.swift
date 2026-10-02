@@ -28,7 +28,6 @@ final class PaneChrome: NSView {
             [content] + subviews.filter { !$0.isHidden && ($0 is PaneScroller || $0.alphaValue > 0) }.map(\.frame))
     }
     var hover: (PaneChrome, NSPoint?) -> Void = { _, _ in }
-    var grid = CGRect.zero { didSet { if grid != oldValue { needsDisplay = true } } }
     var content = CGRect.zero { didSet { if content != oldValue { needsDisplay = true } } }
     private(set) var scrollEdges = (top: false, bottom: false)
     static let scrollEdgeHeight: CGFloat = 12
