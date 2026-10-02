@@ -1,5 +1,6 @@
 import AppKit
 import TmuxControl
+import GhosttyKit
 
 #if KIDO_STRESS
 
@@ -39,7 +40,93 @@ typealias AppWindow = StressWindow
         window.acceptsMouseMovedEvents = true
     }
 
-    func run() { DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.tick() } }
+    func run() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            if self.env["KIDO_FLOAT_VERIFY"] == "1" { self.verifyFloat(0) }
+            else { self.tick() }
+        }
+    }
+
+    private var expected: CGRect?
+    private var fixed: CGPoint?
+    private var verificationFailures = 0
+
+    private func verifyFloat(_ phase: Int) {
+        let all = window.contentView.map(views) ?? []
+        guard let view = visible(all, WindowView.self).first,
+              let float = view.stressFloats.first,
+              let chrome = view.subviews.compactMap({ $0 as? PaneChrome }).first(where: { $0.pane == float.pane.id }),
+              let pane = view.panes.first(where: { $0.pane == float.pane.id }) else {
+            log(["verification": phase, "error": "missing float"])
+            NSApp.terminate(nil); return
+        }
+        view.stressEvent = { [weak self] event, detail in
+            self?.counts[event, default: 0] += 1
+            self?.log(["event": event, "detail": detail, "phase": phase])
+        }
+        var passed = !window.isVisible && !window.isKeyWindow && !window.isMainWindow && !NSApp.isActive && onScreen() == 0
+        if let expected { passed = passed && abs(float.frame.minX - expected.minX) < 0.01 && abs(float.frame.minY - expected.minY) < 0.01 && abs(float.frame.width - expected.width) < 0.01 && abs(float.frame.height - expected.height) < 0.01 }
+        if let fixed { passed = passed && abs(float.frame.minX - fixed.x) < 0.01 && abs(float.frame.minY - fixed.y) < 0.01 }
+        var metrics = ghostty_surface_grid_metrics_s()
+        passed = passed && ghostty_surface_grid_metrics(pane.surface, &metrics)
+            && Int(metrics.columns) == float.pane.geometry.width && Int(metrics.rows) == float.pane.geometry.height
+            && abs(pane.frame.width - CGFloat(float.pane.geometry.width) * pane.cell.width) < 0.01
+            && abs(pane.frame.height - CGFloat(float.pane.geometry.height) * pane.cell.height) < 0.01
+            && chrome.frame.maxX >= pane.frame.maxX && chrome.frame.maxY >= pane.frame.maxY
+        log(["verification": phase, "passed": passed, "free": float.free,
+             "geometry": "\(float.pane.geometry)", "frame": "\(float.frame)", "cell": "\(pane.cell)",
+             "visible": window.isVisible, "key": window.isKeyWindow, "main": window.isMainWindow,
+             "active": NSApp.isActive, "onScreenWindows": onScreen()])
+        if !passed { verificationFailures += 1 }
+        expected = nil; fixed = nil
+        switch phase {
+        case 0, 6, 8, 10:
+            let hot = chrome.convert(NSPoint(x: chrome.toolbarFrame.minX + 16, y: chrome.toolbarFrame.midY), to: nil)
+            chrome.mouseMoved(with: event(.mouseMoved, hot))
+            guard let button = views(chrome).compactMap({ $0 as? IconButton }).first(where: { $0.toolTip == "Drag pane" }), let press = button.press else { NSApp.terminate(nil); return }
+            let from = button.convert(NSPoint(x: 13, y: 13), to: nil)
+            let to = NSPoint(x: from.x + 13.3, y: from.y - 3.1)
+            press(event(.leftMouseDown, from)); press(event(.leftMouseDragged, to)); press(event(.leftMouseUp, to))
+            expected = phase == 0 ? float.frame.offsetBy(dx: 13.3, dy: 3.1) : chrome.frame
+        case 1, 2, 3, 4:
+            let local: NSPoint = switch phase {
+            case 2: NSPoint(x: chrome.bounds.midX, y: chrome.bounds.maxY - 2)
+            case 3: NSPoint(x: 2, y: 2)
+            default: NSPoint(x: chrome.bounds.maxX - 2, y: chrome.bounds.midY)
+            }
+            let from = chrome.convert(local, to: nil)
+            let to = NSPoint(x: from.x + (phase == 1 ? 2000 : phase == 3 ? 17.3 : phase == 4 ? -11.7 : 0),
+                             y: from.y - (phase == 2 ? 2000 : phase == 3 ? 11.7 : 0))
+            view.mouseDown(with: event(.leftMouseDown, from))
+            let windows = counts["place-window", default: 0], floats = counts["place-float", default: 0]
+            view.mouseDragged(with: event(.leftMouseDragged, to))
+            let firstWindows = counts["place-window", default: 0] - windows
+            let firstFloats = counts["place-float", default: 0] - floats
+            if phase == 1 || phase == 2 { fixed = float.frame.origin }
+            expected = chrome.frame
+            if phase == 4 { expected = CGRect(origin: float.frame.origin, size: CGSize(width: float.frame.width - 11.7, height: float.frame.height)) }
+            view.mouseDragged(with: event(.leftMouseDragged, to))
+            view.mouseUp(with: event(.leftMouseUp, to))
+            let repeated = counts["place-float", default: 0] - floats - firstFloats
+            log(["pointerPlacement": phase, "wholeWindow": firstWindows, "affectedFloat": firstFloats,
+                 "repeatedAndUp": repeated, "panes": view.panes.count, "floats": view.stressFloats.count])
+            if firstWindows != 0 || firstFloats != 1 || repeated != 0 { verificationFailures += 1 }
+        case 5: break
+        case 7: pane.onFontChange(pane.font + 2)
+        case 9: window.setContentSize(NSSize(width: 1100, height: 670))
+        case 11:
+            view.isHidden = true
+            pane.onFontChange(pane.font + 2)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                view.isHidden = false
+                _ = view.present(DispatchGroup())
+            }
+        default:
+            log(["done": true, "verificationFailures": verificationFailures, "counts": counts])
+            NSApp.terminate(nil); return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.verifyFloat(phase + 1) }
+    }
 
     private func random(_ n: Int) -> Int {
         seed = seed &* 6364136223846793005 &+ 1442695040888963407
