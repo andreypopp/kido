@@ -126,7 +126,7 @@ paths; a far view adds a second surface and split selection), so deep history
 is reached by paging within the memory limit.
 
 Each pane draws one thin overlay scroller, shown during scrolling or
-hovering and fading afterwards. Chrome draws a background-colour top fade with height `PaneLayout.minimumMargin.height` (12pt), shared with the outer bottom margin, from that same scroll geometry only at the terminal area's outer top when content remains above, never on floating panes or alternate screens. The top fade starts at the content top, including
+hovering and fading afterwards. Chrome draws a background-colour top fade with height `PaneLayout.minimumMargin.height` (12pt), shared with the reserved bottom grid gap, from that same scroll geometry only at the terminal area's outer top when content remains above, never on floating panes or alternate screens. The top fade starts at the content top, including
 the history strip; the scroller track spans that expanded content while its
 thumb and targets still count whole grid rows. Ghostty's own scrollbar is disabled. The
 thumb uses tmux's full retained history plus the screen, with a native-style
@@ -246,11 +246,15 @@ grid. tmux's border cell between two panes is then exactly their
 paddings plus the one-pixel divider, so any tree, however asymmetric,
 lines up with no surplus. Around the whole terminal area only, the
 horizontal remainder is balanced over a 4pt minimum. Client rows are
-floor((height - 40pt - 12pt) / cell height), reserving an 12pt outer bottom margin.
+floor((height - 40pt - 12pt) / cell height), reserving a 12pt bottom grid gap.
 The tiled grid bottom is 12pt above the terminal area bottom, rounded upward
 onto a whole device pixel if necessary: the gap is at least 12pt and less
-than 12pt plus one device pixel. Outer tiled chrome is clipped at the terminal
-area bottom, without clipping the grid. Below the fixed 40pt
+than 12pt plus one device pixel. Left, right and bottom edge panes extend their chrome to the terminal
+area bounds, owning the side margins and bottom gap as padding. Background,
+dimming and padding input reach those edges; toolbar hot zones and scroller
+strips follow the new pane boundary, with the knob still 4pt inward. The
+40pt top remains unowned titlebar space. Grids and content/history insets do
+not change. Below the fixed 40pt
 `PaneLayout.topMargin`, the global vertical subcell remainder sits above the
 whole tiled tree. Only outer-top tiled panes expand upward into it, rendering
 the bottom slice of their preceding history row through Ghostty's top render
@@ -279,8 +283,8 @@ pane shows the window’s shared glass toolbar only in its top-right hot
 zone: the toolbar frame plus 24pt to its left and below, clipped to the
 pane. It splits, zooms and closes through the same commands as the menus.
 The toolbar's grip drags a tiled pane: the target's outer quarters dock
-left, right, above or below; its centre swaps. The outer margin and a 22pt
-band inside the tiled area's edges take precedence, docking across the whole
+left, right, above or below; its centre swaps. A 22pt
+band inside the tiled area's outer edges takes precedence, docking across the whole
 window with `move-pane -f`. Window edges preview the resulting half-window;
 centre drops preview the whole target for a swap. Pane edges show a 4pt
 insertion bar, not a predicted size: tmux splits the target before removing
