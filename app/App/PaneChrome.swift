@@ -29,9 +29,6 @@ final class PaneChrome: NSView {
     }
     var hover: (PaneChrome, NSPoint?) -> Void = { _, _ in }
     var content = CGRect.zero { didSet { if content != oldValue { needsDisplay = true } } }
-    var scrollContent = false { didSet { if scrollContent != oldValue { needsDisplay = true } } }
-    var outerTop = false { didSet { if outerTop != oldValue { needsDisplay = true } } }
-    var scrollTop: Bool { scrollContent && outerTop }
     var dimmed = false { didSet { if dimmed != oldValue { needsDisplay = true } } }
     var toolbarFrame: CGRect {
         NSRect(x: max(0, bounds.width - 153), y: 8, width: min(145, bounds.width), height: 32)
@@ -50,20 +47,10 @@ final class PaneChrome: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
-        let scrollTop = scrollTop
+        guard dimmed else { return }
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            guard dimmed || scrollTop else { return }
-            let background = runtime.background
-            if dimmed { background.withAlphaComponent(0.45).setFill(); bounds.fill() }
-            guard scrollTop, !content.isEmpty else { return }
-            let height = min(PaneLayout.minimumMargin.height, content.height / 2)
-            let gradient = NSGradient(
-                colors: [1.0, 0.9, 0.6, 0.25, 0.0].map { background.withAlphaComponent($0) },
-                atLocations: [0.0, 0.2, 0.45, 0.7, 1.0], colorSpace: .deviceRGB)!
-            NSGraphicsContext.saveGraphicsState()
-            NSBezierPath(rect: CGRect(x: content.minX, y: content.minY, width: content.width, height: height)).addClip()
-            gradient.draw(from: CGPoint(x: content.midX, y: content.minY), to: CGPoint(x: content.midX, y: content.minY + height), options: [])
-            NSGraphicsContext.restoreGraphicsState()
+            runtime.background.withAlphaComponent(0.45).setFill()
+            bounds.fill()
         }
     }
     override func viewDidChangeEffectiveAppearance() {
