@@ -134,6 +134,7 @@ import TmuxControl
             let connection = try Connection(
                 server: server, view: view,
                 onChange: { [weak self] in self?.changed(view, $0) },
+                onDiagnostic: { [weak self] in self?.banner.show($0, "", button: nil) },
                 onClose: { [weak self] in self?.closed(server, view, $0, backoff: backoff) })
             link = .connected(connection)
             feed = Feed(
