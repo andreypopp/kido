@@ -251,7 +251,7 @@ than 12pt plus one device pixel. Left, right and bottom edge panes extend their 
 area bounds, owning the side margins and bottom gap as padding. Background,
 dimming and padding input reach those edges; toolbar hot zones and scroller
 strips follow the new pane boundary, with the knob still 4pt inward. The
-content and divider tops respect the 40pt titlebar margin, and chrome stops below the line. Grids do not change. Below the fixed 40pt
+content, chrome and divider tops respect the 44pt titlebar margin plus the separator's device pixel. Client rows reserve both, with device-pixel rounding. Below the fixed 44pt
 `PaneLayout.topMargin`, the global vertical subcell remainder sits above the
 whole tiled tree. Only outer-top tiled panes expand upward into it, rendering
 the bottom slice of their preceding history row through Ghostty's top render
@@ -265,7 +265,7 @@ content bottom through the bottom render inset, showing following rows when
 scrolled up, clipped only at the window edge. At the live bottom there are no
 following rows, so the band is plain background below the fully visible last
 row. Empty history shows background. Alternate-screen panes keep their
-unexpanded grid view and zero insets, leaving background in both bands. Zoom uses the same rule. The outer-top band extends from the grid to a full-width, one-device-pixel separator at 40pt, drawn with the split dividers above floats too. No sub-cell clamp is needed. Outer-top vertical dividers meet that line. Grids, client rows and floating placement do not change.
+unexpanded grid view and zero insets, leaving background in both bands. Zoom uses the same rule. Each top band runs from the grid top to the separator or split divider, possibly spanning several history rows. The full-width one-device-pixel separator sits at 44pt; outer-top vertical dividers meet its bottom edge. Dividers stay behind tiled panes and floats. During a stale-root shrink, terminal content is clipped below the separator without changing its grid. Committed and free floating chrome frames are bounded below the separator too.
 
 PaneLayout returns the grid, expanded content, clipped chrome and paired render insets
 for each tiled pane. Chrome uses the content rect for hit testing;
