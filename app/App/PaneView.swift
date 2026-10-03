@@ -260,8 +260,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private func presentScroll() {
         let (position, applied, _) = scrollPresentation
         let distance = applied ?? Double(position.history - position.offset)
-        historyLimit.isHidden = alternate || !scrollGeometry.older || scrollGeometry.history <= position.history
-            || distance < Double(max(0, position.history - position.rows))
+        historyLimit.isHidden = alternate || resizeDirty || resizeIntent || restoreRequested != nil
+            || !scrollGeometry.older || position.history == 0 || scrollGeometry.history <= position.history
+            || distance < Double(position.history)
         scroller.update(history: position.history, rows: position.rows,
                         offset: Double(position.history) - distance, alternate: alternate)
     }
@@ -794,6 +795,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         if !resizeDirty && !resizeIntent { beginResizeIntent(gesture: false) }
         snapScroll()
         resizeDirty = superview != nil
+        presentScroll()
         finalEpoch = nil
         let deferred = grid.withLock { state in
             state.epoch += 1
@@ -844,6 +846,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         onRestoreDrain()
         syncResize()
         if !resizeDirty { resizeAnchor = nil }
+        presentScroll()
     }
 
     func reflow(_ change: @escaping @MainActor () -> Void) {
