@@ -126,9 +126,7 @@ paths; a far view adds a second surface and split selection), so deep history
 is reached by paging within the memory limit.
 
 Each pane draws one thin overlay scroller, shown during scrolling or
-hovering and fading afterwards. Chrome draws a background-colour top fade with height `PaneLayout.minimumMargin.height` (12pt), shared with the reserved bottom grid gap, from that same scroll geometry only at the terminal area's outer top when content remains above, never on unzoomed floating panes or alternate screens. The top fade starts at the content top, including
-the history strip; the scroller track spans that expanded content while its
-thumb and targets still count whole grid rows. Ghostty's own scrollbar is disabled. The
+hovering and fading afterwards. The scroller track spans the expanded content while its thumb and targets count whole grid rows. Ghostty's own scrollbar is disabled. The
 thumb uses tmux's full retained history plus the screen, with a native-style
 minimum knob size. Every precise wheel event adds its delta 1:1 to the
 fractional target, including nonzero ended packets. At most one apply is
@@ -253,8 +251,7 @@ than 12pt plus one device pixel. Left, right and bottom edge panes extend their 
 area bounds, owning the side margins and bottom gap as padding. Background,
 dimming and padding input reach those edges; toolbar hot zones and scroller
 strips follow the new pane boundary, with the knob still 4pt inward. The
-content and divider tops respect the 40pt titlebar margin, but the top pane's
-half-cell chrome padding can enter it. Grids do not change. Below the fixed 40pt
+content and divider tops respect the 40pt titlebar margin, and chrome stops below the line. Grids do not change. Below the fixed 40pt
 `PaneLayout.topMargin`, the global vertical subcell remainder sits above the
 whole tiled tree. Only outer-top tiled panes expand upward into it, rendering
 the bottom slice of their preceding history row through Ghostty's top render
@@ -268,14 +265,10 @@ content bottom through the bottom render inset, showing following rows when
 scrolled up, clipped only at the window edge. At the live bottom there are no
 following rows, so the band is plain background below the fully visible last
 row. Empty history shows background. Alternate-screen panes keep their
-unexpanded grid view and zero insets, leaving background in both bands. Zoom uses the same rule. A stale root during live resize stays
-bottom-aligned, but its strip is clamped below one cell, never interpreting a
-multi-cell gap as history. Padding sizes and divider math are unchanged;
-outer-top vertical dividers and their hit/cursor areas extend to the strip's
-top, never into the 40pt titlebar margin.
+unexpanded grid view and zero insets, leaving background in both bands. Zoom uses the same rule. The outer-top band extends from the grid to a full-width, one-device-pixel separator at 40pt, drawn with the split dividers above floats too. No sub-cell clamp is needed. Outer-top vertical dividers meet that line. Grids, client rows and floating placement do not change.
 
 PaneLayout returns the grid, expanded content, clipped chrome and paired render insets
-for each tiled pane. Chrome uses the content rect for the fade and hit testing;
+for each tiled pane. Chrome uses the content rect for hit testing;
 window-edge drops and their previews use the union of the visible tiled chrome.
 Top and bottom band clicks only focus/select the pane once: no terminal mouse press or selection
 starts there. Entering either band clears Ghostty's hover position. Band wheels
