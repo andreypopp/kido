@@ -1,0 +1,90 @@
+name: Kido
+options:
+  bundleIdPrefix: com.andreypopp
+  deploymentTarget:
+    macOS: "26.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_ACTIVE_COMPILATION_CONDITIONS: ["$(inherited)", "$(KIDO_STRESS_CONDITION)", "$(KIDO_VISUAL_CONDITION)"]
+    ARCHS: arm64
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+  configs:
+    Release:
+      DEBUG_INFORMATION_FORMAT: dwarf
+packages:
+  SnapshotTesting:
+    url: https://github.com/pointfreeco/swift-snapshot-testing
+    exactVersion: 1.18.7
+  TmuxControl:
+    path: Packages/TmuxControl
+  SidebarFeed:
+    path: Packages/SidebarFeed
+targets:
+  Kido:
+    type: application
+    platform: macOS
+    sources:
+      - App
+      - path: Resources/Assets.xcassets
+        buildPhase: resources
+      - path: Resources/themes
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.andreypopp.kido
+        PRODUCT_NAME: Kido
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        LM_SKIP_METADATA_EXTRACTION: YES
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        INFOPLIST_KEY_CFBundleDisplayName: Kido
+        OTHER_LDFLAGS: [-lc++]
+    dependencies:
+      - package: TmuxControl
+      - package: SidebarFeed
+      - framework: build/GhosttyKit.xcframework
+        embed: false
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+      - sdk: IOSurface.framework
+      - sdk: Carbon.framework
+  VisualTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: VisualTests
+        excludes: ["__Snapshots__"]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Kido.app/Contents/MacOS/Kido"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+    dependencies:
+      - target: Kido
+      - sdk: Carbon.framework
+      - package: SnapshotTesting
+      - package: TmuxControl
+      - framework: build/GhosttyKit.xcframework
+        embed: false
+schemes:
+  Kido:
+    build:
+      targets:
+        Kido: all
+  Visual:
+    build:
+      targets:
+        Kido: all
+        VisualTests: [test]
+    test:
+      targets: [VisualTests]
+      environmentVariables:
+        KIDO_APP_BACKGROUND: "1"
+        KIDO_APP_SOCKET: /tmp/kido-visual-unconnected
+        KIDO_APP_TMUX: /usr/bin/false
+        XDG_CONFIG_HOME: "$(SRCROOT)/build/visual/config"
+        KIDO_VISUAL_RECORD: "$(KIDO_VISUAL_RECORD)"
+        KIDO_VISUAL_TMUX: "$(KIDO_VISUAL_TMUX)"
