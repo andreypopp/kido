@@ -72,7 +72,7 @@ typealias AppWindow = StressWindow
             window.contentView?.addSubview(surface)
             surface.frame = NSRect(x: -10000, y: -10000, width: surface.cell.width * 80, height: surface.cell.height * 12 + 9.5)
             surface.resize(cols: 80, rows: 12)
-            surface.historyStrip = 9.5
+            surface.renderInsets.top = 9.5
             surface.layoutSubtreeIfNeeded()
             ghostty_surface_set_occlusion(surface.surface, true)
         }
@@ -526,7 +526,7 @@ typealias AppWindow = StressWindow
             }
         }
         counts["alternate-pane-steps", default: 0] += panes.filter(\.alternate).count
-        let pool = action == .stripPress || action == .stripWheel ? panes.filter { $0.historyStrip > 0 } : panes
+        let pool = action == .stripPress || action == .stripWheel ? panes.filter { $0.renderInsets.top > 0 } : panes
         let pane = pool.isEmpty ? nil : pool[random(pool.count)]
         counts[action.rawValue, default: 0] += 1
         log(["step": step, "action": action.rawValue, "pane": pane?.pane.description ?? "", "panes": panes.count,
@@ -540,7 +540,7 @@ typealias AppWindow = StressWindow
     private func perform(_ action: Action, _ pane: PaneView, _ all: [NSView]) {
         switch action {
         case .stripPress:
-            let point = pane.convert(NSPoint(x: pane.bounds.midX, y: pane.bounds.height - pane.historyStrip / 2), to: nil)
+            let point = pane.convert(NSPoint(x: pane.bounds.midX, y: pane.bounds.height - pane.renderInsets.top / 2), to: nil)
             pane.mouseDown(with: event(.leftMouseDown, point))
             pane.mouseUp(with: event(.leftMouseUp, point))
             counts["strip-press-delivered", default: 0] += 1
@@ -556,14 +556,14 @@ typealias AppWindow = StressWindow
                     cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
                     cg.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentum)
                     if action == .stripWheel, let initial = NSEvent(cgEvent: cg) {
-                        let point = pane.convert(NSPoint(x: pane.bounds.midX, y: pane.bounds.height - pane.historyStrip / 2), to: nil)
+                        let point = pane.convert(NSPoint(x: pane.bounds.midX, y: pane.bounds.height - pane.renderInsets.top / 2), to: nil)
                         cg.location = CGPoint(x: cg.location.x + point.x - initial.locationInWindow.x,
                                               y: cg.location.y - point.y + initial.locationInWindow.y)
                     }
                     if let e = NSEvent(cgEvent: cg) {
                         if action == .stripWheel {
                             let local = pane.convert(e.locationInWindow, from: nil)
-                            guard pane.bounds.contains(local), pane.bounds.height - local.y < pane.historyStrip else {
+                            guard pane.bounds.contains(local), pane.bounds.height - local.y < pane.renderInsets.top else {
                                 counts["strip-wheel-missed", default: 0] += 1
                                 continue
                             }
