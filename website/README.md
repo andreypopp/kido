@@ -20,11 +20,10 @@ The landing page is `src/pages/index.astro`.
 Internal links and media follow the base. For a domain change, update
 the config and `public/CNAME`.
 
-Move `deploy-pages.yml.example` to `.github/workflows/website.yml` when
-ready. Enable GitHub Pages with the GitHub Actions source, set its custom
-domain to `kido.tools`, and configure DNS and HTTPS. The workflow builds
-on pushes to main touching the website, or on manual dispatch, then
-deploys `dist/`. The CNAME is copied into the output.
+`.github/workflows/website.yml` deploys to GitHub Pages (GitHub Actions
+source, custom domain `kido.tools`). It builds on pushes to main touching
+the website, or on manual dispatch, then deploys `dist/`. The CNAME is
+copied into the output.
 
 ## Media
 
