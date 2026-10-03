@@ -20,10 +20,11 @@ typealias AppWindow = StressWindow
         case find, findNext = "find-next", findCloseResync = "find-close-resync"
         case resizeBurst = "resize-burst", loadMore = "load-more", gripDrag = "grip-drag"
         case gripDragKill = "grip-drag-kill", appearance, edgeResize = "edge-resize", detachReconnect = "detach-reconnect"
+        case hiddenResize = "hidden-resize", clearHistory = "clear-history"
     }
     private static let actions: [Action] = [
         .wheel, .wheel, .stripPress, .stripWheel, .alternate, .scrollerDrag, .scrollerDrag, .scrollRequest, .find, .findNext, .findCloseResync,
-        .resizeBurst, .loadMore, .gripDrag, .gripDragKill, .appearance, .edgeResize, .detachReconnect,
+        .resizeBurst, .loadMore, .gripDrag, .gripDragKill, .appearance, .edgeResize, .detachReconnect, .hiddenResize, .clearHistory,
     ]
     private let window: NSWindow
     private let send: ([Command]) -> Void
@@ -91,8 +92,11 @@ typealias AppWindow = StressWindow
             surface.onFinalRender = { self.resizeCompleted.insert(identifier) }
         }
         DispatchQueue.global().async {
-            for surface in surfaces { surface.feed(bytes) }
-            DispatchQueue.main.async {
+            for surface in surfaces {
+                let epoch = surface.historyEpoch
+                guard surface.feed(bytes, kind: .snapshot, epoch: epoch), surface.commitSnapshot(epoch: epoch) else { exit(1) }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 if self.env["KIDO_VIEWPORT_VERIFY"] == "1" {
                     pane.verifyFailedViewport { passed in
                         self.log(["viewport-verify": passed ? "passed" : "failed"])
@@ -219,16 +223,32 @@ typealias AppWindow = StressWindow
         return !pane.gridReady && pane.historyEpoch > epoch && failures == 1
     }
 
+    private var snapFixture: PaneView?
+
     private func verifySnap(_ index: Int) {
+        if snapFixture == nil {
+            guard let original = (window.contentView.map(views) ?? []).compactMap({ $0 as? PaneView }).first else { exit(1) }
+            let runtime = Unmanaged<GhosttyRuntime>.fromOpaque(ghostty_app_userdata(ghostty_surface_app(original.surface)!)!).takeUnretainedValue()
+            guard let fixture = PaneView(runtime: runtime, pane: original.pane, font: original.font, onInput: { _ in }) else { exit(1) }
+            window.contentView?.addSubview(fixture)
+            fixture.frame = NSRect(x: -10000, y: -10000, width: fixture.cell.width * 80, height: fixture.cell.height * 24)
+            fixture.resize(cols: 80, rows: 24)
+            snapFixture = fixture
+            DispatchQueue.global().async {
+                let epoch = fixture.historyEpoch
+                guard fixture.feed(Data("\u{1b}c".utf8), kind: .snapshot, epoch: epoch), fixture.commitSnapshot(epoch: epoch) else { exit(1) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.verifySnap(index) }
+            }
+            return
+        }
         if index == 0 {
-            for pane in (window.contentView.map(views) ?? []).compactMap({ $0 as? PaneView }) {
+            for pane in (window.contentView.map(views) ?? []).compactMap({ $0 as? PaneView }).filter({ $0 !== snapFixture }) {
                 let position = pane.scrollPosition(), loaded = position.history
                 guard loaded > 0 else { exit(1) }
                 for total in [loaded + 10000, loaded, max(1, loaded - 100)] {
                     pane.updateScroller(history: total, position: position, alternate: false)
                     pane.requestScroll(loaded + 9000)
-                    guard pane.scrollTarget == loaded + 9000 else { exit(1) }
-                    if total > loaded { continue }
+                    guard pane.scrollTarget == loaded else { exit(1) }
                     pane.requestScroll(loaded)
                     for precise in [true, false] {
                         for _ in 0..<30 {
@@ -248,7 +268,7 @@ typealias AppWindow = StressWindow
             (NSApp.delegate as? AppDelegate)?.quit("snap verification complete")
             return
         }
-        guard let pane = (window.contentView.map(views) ?? []).compactMap({ $0 as? PaneView }).first else { exit(1) }
+        guard let pane = snapFixture else { exit(1) }
         let (snaps, bottom, retry) = cases[index]
         pane.verifySnapAccounting(snaps: snaps, bottom: bottom, retry: retry) { passed in
             self.log(["snap-verify": passed ? "passed" : "failed", "snaps": snaps, "bottom": bottom, "revision-retry": retry])
@@ -289,7 +309,7 @@ typealias AppWindow = StressWindow
                 let previous = ghostty_surface_search_generation(pane.surface)
                 let inserted = pane.prepend(Data(String(repeating: "prepended row\r\n", count: 10).utf8), epoch: pane.historyEpoch)
                 guard inserted > 0 else { exit(1) }
-                find.loaded(pane.scrollPosition(), limited: false)
+                find.loaded(pane.scrollPosition())
                 guard ghostty_surface_search_generation(pane.surface) > previous else { exit(1) }
                 DispatchQueue.main.async {
                     let rejected = find.stressState.selected == nil && find.stressState.total != 999
@@ -589,6 +609,7 @@ typealias AppWindow = StressWindow
             }
         case .scrollRequest:
             pane.requestScroll(random(3) == 0 ? 1000000 : random(1000000))
+            guard (pane.scrollTarget ?? 0) <= pane.scrollPosition().history else { exit(1) }
         case .find, .findNext:
             pane.showFind()
             pane.find?.field.stringValue = ["ERROR", "999", "INFO", "DEMO-MARKER", "missing"][random(5)]
@@ -609,12 +630,25 @@ typealias AppWindow = StressWindow
             if let chrome = (random(3) > 0 && !floats.isEmpty ? floats : chromes).first, let view = chrome.superview as? WindowView {
                 let p = chrome.convert(NSPoint(x: chrome.bounds.maxX - 2, y: chrome.bounds.midY), to: nil)
                 view.mouseDown(with: event(.leftMouseDown, p))
-                view.mouseDragged(with: event(.leftMouseDragged, NSPoint(x: p.x + fraction(250) - 50, y: p.y - fraction(120) + 30)))
-                view.mouseUp(with: event(.leftMouseUp, p))
+                let end = NSPoint(x: p.x + fraction(250) - 50, y: p.y - fraction(120) + 30)
+                for i in 1...8 {
+                    view.mouseDragged(with: event(.leftMouseDragged, NSPoint(x: p.x + (end.x - p.x) * CGFloat(i) / 8,
+                                                                          y: p.y + (end.y - p.y) * CGFloat(i) / 8)))
+                }
+                view.mouseUp(with: event(.leftMouseUp, end))
             }
         case .detachReconnect:
             send([Command("detach-client")])
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.reconnect() }
+        case .hiddenResize:
+            if let hidden = all.compactMap({ $0 as? PaneView }).first(where: { $0.isHiddenOrHasHiddenAncestor }) {
+                let size = ghostty_surface_size(hidden.surface)
+                send([Command("resize-pane", "-t", hidden.pane, "-x", Int(size.columns) + 3),
+                      Command("resize-pane", "-t", hidden.pane, "-x", Int(size.columns)),
+                      Command("select-window", "-t", hidden.pane)])
+            }
+        case .clearHistory:
+            send([Command("clear-history", "-t", pane.pane)])
         case .appearance:
             NSApp.appearance = NSAppearance(named: random(2) == 0 ? .aqua : .darkAqua)
         }
