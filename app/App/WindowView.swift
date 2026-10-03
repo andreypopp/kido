@@ -241,11 +241,10 @@ final class WindowView: NSView {
         if changed { invalidateCursorRects() }
     }
 
-    func outerEdges(_ id: PaneID) -> (Bool, Bool) {
+    func outerTop(_ id: PaneID) -> Bool {
         guard let placement = placed, let pane = shown?.visible.root.panes.first(where: { $0.id == id }),
-              pane.layer == .tiled || zoomed else { return (false, false) }
-        let tiled = placement.tiled(pane.geometry, alternate: false)
-        return (tiled.outerTop, tiled.outerBottom)
+              pane.layer == .tiled || zoomed else { return false }
+        return placement.tiled(pane.geometry, alternate: false).outerTop
     }
 
     private func placeFloat(_ id: PaneID, _ placement: PaneLayout) {
