@@ -9,11 +9,16 @@ public struct PaneLayout: Equatable {
         public var top: Bool { self == .top || self == .topLeft || self == .topRight }
         public var bottom: Bool { self == .bottom || self == .bottomLeft || self == .bottomRight }
     }
+    public struct RenderInsets: Equatable, Sendable {
+        public var top: CGFloat = 0
+        public var bottom: CGFloat = 0
+        public init(top: CGFloat = 0, bottom: CGFloat = 0) { self.top = top; self.bottom = bottom }
+    }
     public struct TiledPlacement: Equatable {
         public let grid: CGRect
         public let content: CGRect
         public let chrome: CGRect
-        public let inset: CGFloat
+        public let insets: RenderInsets
         public let outerTop: Bool
     }
     public static let minimumMargin = CGSize(width: 4, height: 12)
@@ -61,8 +66,9 @@ public struct PaneLayout: Equatable {
 
     public func tiled(_ g: Geometry, alternate: Bool) -> TiledPlacement {
         let grid = grid(g)
-        let inset = g.y == rootTop && !alternate ? historyStrip : 0
-        let content = CGRect(x: grid.minX, y: grid.minY - inset, width: grid.width, height: grid.height + inset)
+        let insets = RenderInsets(top: g.y == rootTop && !alternate ? historyStrip : 0,
+                                  bottom: grid.maxY == bottom && !alternate ? bounds.maxY - grid.maxY : 0)
+        let content = CGRect(x: grid.minX, y: grid.minY - insets.top, width: grid.width, height: grid.height + insets.top + insets.bottom)
         var chrome = frame(g)
         let left = g.x == 0 ? bounds.minX : chrome.minX
         let right = grid.maxX == rightEdge ? bounds.maxX : chrome.maxX
@@ -70,7 +76,7 @@ public struct PaneLayout: Equatable {
         chrome.size.width = right - left
         chrome.origin.y = min(chrome.minY, content.minY)
         chrome.size.height = (grid.maxY == bottom ? bounds.maxY : min(grid.maxY + after.height, bounds.maxY)) - chrome.minY
-        return TiledPlacement(grid: grid, content: content, chrome: chrome, inset: inset,
+        return TiledPlacement(grid: grid, content: content, chrome: chrome, insets: insets,
                               outerTop: g.y == rootTop)
     }
 
