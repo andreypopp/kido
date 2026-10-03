@@ -29,12 +29,16 @@ final class PaneChrome: NSView {
     }
     var hover: (PaneChrome, NSPoint?) -> Void = { _, _ in }
     var content = CGRect.zero { didSet { if content != oldValue { needsDisplay = true } } }
-    private(set) var scrollEdges = (top: false, bottom: false)
+    private var scrollContent = (top: false, bottom: false)
+    var scrollEdges: (top: Bool, bottom: Bool) {
+        let edges = (superview as? WindowView)?.outerEdges(pane) ?? (false, false)
+        return (scrollContent.top && edges.0, scrollContent.bottom && edges.1)
+    }
     static let scrollEdgeHeight: CGFloat = 12
 
     func updateScrollEdges(top: Bool, bottom: Bool) {
-        guard scrollEdges != (top, bottom) else { return }
-        scrollEdges = (top, bottom)
+        guard scrollContent != (top, bottom) else { return }
+        scrollContent = (top, bottom)
         needsDisplay = true
     }
     var dimmed = false { didSet { if dimmed != oldValue { needsDisplay = true } } }
