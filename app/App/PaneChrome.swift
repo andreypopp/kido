@@ -29,15 +29,12 @@ final class PaneChrome: NSView {
     }
     var hover: (PaneChrome, NSPoint?) -> Void = { _, _ in }
     var content = CGRect.zero { didSet { if content != oldValue { needsDisplay = true } } }
-    private var scrollContent = (top: false, bottom: false)
-    var scrollEdges: (top: Bool, bottom: Bool) {
-        let edges = (superview as? WindowView)?.outerEdges(pane) ?? (false, false)
-        return (scrollContent.top && edges.0, scrollContent.bottom && edges.1)
-    }
+    private var scrollContent = false
+    var scrollTop: Bool { scrollContent && ((superview as? WindowView)?.outerTop(pane) ?? false) }
 
-    func updateScrollEdges(top: Bool, bottom: Bool) {
-        guard scrollContent != (top, bottom) else { return }
-        scrollContent = (top, bottom)
+    func updateScrollTop(_ top: Bool) {
+        guard scrollContent != top else { return }
+        scrollContent = top
         needsDisplay = true
     }
     var dimmed = false { didSet { if dimmed != oldValue { needsDisplay = true } } }
@@ -59,20 +56,18 @@ final class PaneChrome: NSView {
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            guard dimmed || scrollEdges.top || scrollEdges.bottom else { return }
+            guard dimmed || scrollTop else { return }
             let background = runtime.background
             if dimmed { background.withAlphaComponent(0.45).setFill(); bounds.fill() }
-            guard (scrollEdges.top || scrollEdges.bottom), !content.isEmpty else { return }
+            guard scrollTop, !content.isEmpty else { return }
             let height = min(PaneLayout.minimumMargin.height, content.height / 2)
             let gradient = NSGradient(
                 colors: [1.0, 0.9, 0.6, 0.25, 0.0].map { background.withAlphaComponent($0) },
                 atLocations: [0.0, 0.2, 0.45, 0.7, 1.0], colorSpace: .deviceRGB)!
-            for (visible, y, direction) in [(scrollEdges.top, content.minY, 1.0), (scrollEdges.bottom, content.maxY, -1.0)] where visible {
-                NSGraphicsContext.saveGraphicsState()
-                NSBezierPath(rect: CGRect(x: content.minX, y: min(y, y + direction * height), width: content.width, height: height)).addClip()
-                gradient.draw(from: CGPoint(x: content.midX, y: y), to: CGPoint(x: content.midX, y: y + direction * height), options: [])
-                NSGraphicsContext.restoreGraphicsState()
-            }
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: CGRect(x: content.minX, y: content.minY, width: content.width, height: height)).addClip()
+            gradient.draw(from: CGPoint(x: content.midX, y: content.minY), to: CGPoint(x: content.midX, y: content.minY + height), options: [])
+            NSGraphicsContext.restoreGraphicsState()
         }
     }
     override func viewDidChangeEffectiveAppearance() {
