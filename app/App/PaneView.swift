@@ -25,10 +25,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var find: PaneFind?
     private(set) var alternate = false
     var onAlternateChange: () -> Void = {}
-    var historyStrip: CGFloat = 0 {
+    var renderInsets = PaneLayout.RenderInsets() {
         didSet {
-            if historyStrip != oldValue {
-                ghostty_surface_set_render_insets(surface, UInt32((historyStrip * (window?.backingScaleFactor ?? 2)).rounded()), 0)
+            if renderInsets != oldValue {
+                ghostty_surface_set_render_insets(surface, UInt32((renderInsets.top * (window?.backingScaleFactor ?? 2)).rounded()), UInt32((renderInsets.bottom * (window?.backingScaleFactor ?? 2)).rounded()))
                 if finalEpoch != nil {
                     DispatchQueue.main.async { [weak self] in self?.requestFinalRender() }
                 }
@@ -62,7 +62,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private var finalEpoch: Int?
     private var renderSequence: UInt64 = 0
     private var renderRetry = false
-    private var rendering: (token: UInt64, epoch: Int, pixels: CGSize, inset: CGFloat, revision: Int, distance: Double?)?
+    private var rendering: (token: UInt64, epoch: Int, pixels: CGSize, inset: PaneLayout.RenderInsets, revision: Int, distance: Double?)?
     nonisolated private let anchor = OSAllocatedUnfairLock<ScrollAnchor?>(initialState: nil)
     nonisolated var resizeAnchor: ScrollAnchor? {
         get { anchor.withLock { $0 } }
@@ -199,7 +199,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         renderSequence += 1
         let appliedRevision = scrollPresentation.revision
         guard let revision = scrollIntent.withLock({ $0.replay == nil && $0.revision == appliedRevision ? $0.revision : nil }) else { return }
-        rendering = (renderSequence, epoch, convertToBacking(bounds.size), historyStrip, revision, scrollDistance)
+        rendering = (renderSequence, epoch, convertToBacking(bounds.size), renderInsets, revision, scrollDistance)
         if !ghostty_surface_request_render_with_token(surface, renderSequence) {
             rendering = nil
             debug("resize render-rejected pane=\(pane) epoch=\(epoch)")
@@ -211,7 +211,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         guard let request = rendering, request.token == token else { return }
         rendering = nil
         let geometry = request.epoch == historyEpoch && request.epoch == finalEpoch
-            && request.pixels == convertToBacking(bounds.size) && request.inset == historyStrip
+            && request.pixels == convertToBacking(bounds.size) && request.inset == renderInsets
             && request.distance == scrollDistance
         let applied = scrollPending == nil && resizeAnchor == nil && scrollPresentation.distance == scrollDistance
             && scrollPresentation.revision == request.revision
@@ -356,7 +356,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         renderSequence += 1
         let token = renderSequence, epoch = historyEpoch
         finalEpoch = epoch
-        rendering = (token, epoch, convertToBacking(bounds.size), historyStrip, scrollRevision, scrollDistance)
+        rendering = (token, epoch, convertToBacking(bounds.size), renderInsets, scrollRevision, scrollDistance)
         let callback = onFinalRender
         finalRenderCount = 0
         onFinalRender = { [weak self] in self?.finalRenderCount += 1 }
@@ -528,7 +528,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         scrollGeometry.position = moved
         scrollPresentation = (moved, 20.25, scrollRevision)
         presentScroll()
-        let point = convert(NSPoint(x: cell.width * 2, y: bounds.height - historyStrip - cell.height * 0.9), to: nil)
+        let point = convert(NSPoint(x: cell.width * 2, y: bounds.height - renderInsets.top - cell.height * 0.9), to: nil)
         let event = NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 1,
                                      windowNumber: window!.windowNumber, context: nil, eventNumber: 0, clickCount: 2, pressure: 1)!
         for _ in 0..<2 {
@@ -606,7 +606,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var resizeDebug: String {
         let size = ghostty_surface_size(surface)
         let io = installedPixels.map { "\(Int($0.width))x\(Int($0.height))" } ?? "none"
-        return "frame=\(frame) grid=\(size.columns)x\(size.rows) inset=\((historyStrip * (window?.backingScaleFactor ?? 2)).rounded())px visible=\(presented.visible) finalPending=\(finalEpoch != nil) io=\(io)"
+        return "frame=\(frame) grid=\(size.columns)x\(size.rows) inset=\((renderInsets.top * (window?.backingScaleFactor ?? 2)).rounded())px visible=\(presented.visible) finalPending=\(finalEpoch != nil) io=\(io)"
     }
 
     private var presented = (visible: true, realized: true)
@@ -919,7 +919,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         snapScroll()
         let scale = window.backingScaleFactor
         ghostty_surface_set_content_scale(surface, scale, scale)
-        ghostty_surface_set_render_insets(surface, UInt32((historyStrip * scale).rounded()), 0)
+        ghostty_surface_set_render_insets(surface, UInt32((renderInsets.top * scale).rounded()), UInt32((renderInsets.bottom * scale).rounded()))
     }
 
     override func updateTrackingAreas() {
@@ -937,14 +937,16 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     // MARK: - Mouse
 
-    private func inHistoryStrip(_ event: NSEvent) -> Bool {
-        historyStrip > 0 && bounds.height - convert(event.locationInWindow, from: nil).y < historyStrip
+    private func inRenderBand(_ event: NSEvent) -> Bool {
+        let y = convert(event.locationInWindow, from: nil).y
+        return (renderInsets.bottom > 0 && y < renderInsets.bottom)
+            || (renderInsets.top > 0 && bounds.height - y < renderInsets.top)
     }
 
     private func button(_ event: NSEvent, _ state: ghostty_input_mouse_state_e) -> Bool {
         if state == GHOSTTY_MOUSE_PRESS {
             resizeAnchor = nil
-            let strip = inHistoryStrip(event)
+            let strip = inRenderBand(event)
             if event.buttonNumber == 0 || strip {
                 window?.makeFirstResponder(self)
                 onSelect()
@@ -965,13 +967,13 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func position(_ event: NSEvent) {
-        if inHistoryStrip(event) && pressed.isEmpty {
+        if inRenderBand(event) && pressed.isEmpty {
             ghostty_surface_mouse_pos(surface, -1, -1, Self.mods(event.modifierFlags))
             return
         }
         guard !shifted, scrollDistance.map({ $0 == $0.rounded() }) != false else { return }
         let pos = convert(event.locationInWindow, from: nil)
-        let y = bounds.height - pos.y - historyStrip
+        let y = bounds.height - pos.y - renderInsets.top
         ghostty_surface_mouse_pos(surface, pos.x, y, Self.mods(event.modifierFlags))
     }
 
@@ -1013,7 +1015,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     override func scrollWheel(with event: NSEvent) {
         let time = CACurrentMediaTime()
         debug("wheel pane=\(pane) time=\(time) phase=\(event.phase.rawValue) momentum=\(event.momentumPhase.rawValue) precise=\(event.hasPreciseScrollingDeltas) delta=\(event.scrollingDeltaY) eventTime=\(event.timestamp)")
-        let strip = inHistoryStrip(event)
+        let strip = inRenderBand(event)
         if strip { position(event) }
         let precise = event.hasPreciseScrollingDeltas
         if event.momentumPhase.isEmpty && event.scrollingDeltaY != 0 { suppressMomentum = false }
@@ -1345,7 +1347,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         snapScroll()
         var x = 0.0, y = 0.0, width = 0.0, height = 0.0
         ghostty_surface_ime_point(surface, &x, &y, &width, &height)
-        let rect = convert(NSRect(x: x, y: bounds.height - historyStrip - y, width: width, height: max(height, cell.height)), to: nil)
+        let rect = convert(NSRect(x: x, y: bounds.height - renderInsets.top - y, width: width, height: max(height, cell.height)), to: nil)
         return window?.convertToScreen(rect) ?? rect
     }
 
