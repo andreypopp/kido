@@ -28,6 +28,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.andreypopp.kido
         PRODUCT_NAME: Kido
+        LM_SKIP_METADATA_EXTRACTION: YES
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
         INFOPLIST_KEY_CFBundleDisplayName: Kido
