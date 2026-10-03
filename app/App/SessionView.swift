@@ -113,7 +113,7 @@ final class SessionView: NSView {
         let action = "set_font_size:\(points)"
         forEachPane { pane in
             guard pane.font != points else { return }
-            _ = ghostty_surface_binding_action(pane.surface, action, UInt(action.utf8.count))
+            pane.reflow { _ = ghostty_surface_binding_action(pane.surface, action, UInt(action.utf8.count)) }
         }
         cellChanged()
     }
