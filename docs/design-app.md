@@ -54,7 +54,7 @@ bytes and mode state. tmux queues `%output` ahead of the reply, so
 output before the reply is wiped by the restore and output after it is
 fed live. The same resync follows a `%pause`.
 
-Every restore captures the newest 50,000 physical history rows plus
+Every restore captures the newest 10,000 physical history rows plus
 screen, pending parser bytes and mode state in one command batch, then
 resets and replays the surface. Initial sync, reconnect, resize and showing
 a content-dirty pane share that path. History uses styled `-e -J` and
@@ -67,7 +67,7 @@ dropped.
 Wheel and thumb cover only Ghostty's retained rows. They never capture
 history or expose unloaded blank space. One native Load more pill appears
 near the loaded top when tmux has older rows. A click loads the next
-50,000-row chunk, aligned to whole logical lines, through the shared
+10,000-row chunk, aligned to whole logical lines, through the shared
 loader. Explicit loads can expand a chunk for a long line, bounded by
 tmux's total. Empty or malformed captures stop without pretending to be
 memory pressure. A refused nonempty insertion leaves the same pill;
@@ -175,7 +175,7 @@ or at most every two seconds during continuous output. Connection owns
 this lifetime: resync invalidates immediately and restarts only after a
 successful restore. Alternate screens search only their screen. Next and previous wrap through the newest-first
 match list. An unloaded match submits a tokened coverage goal to the same
-50k loader as the pill, automatically raising the surface budget on
+10k loader as the pill, automatically raising the surface budget on
 refusal. Later navigation replaces that goal, including cancellation when
 a loaded match is selected. Query changes, output and resize cancel it;
 a post-restore scan does not automatically reload a canceled old goal. Ghostty
