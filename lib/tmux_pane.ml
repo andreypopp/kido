@@ -32,6 +32,7 @@ type t = {
   run : string option;
   ssh : (string * string) option;
   session_attached : bool;
+  modal : bool;
   program_status : Program_status.t;
   title : string;
 }
@@ -59,7 +60,8 @@ let format =
       "#{window_name}";
       "#{window_layout}";
       "#{pane_id}";
-      "#{&&:#{window_active},#{pane_active}}";
+      (* A popup is a modal pane the fork makes active; the pane it covers is the last one. *)
+      "#{&&:#{window_active},#{?#{window_modal_pane},#{pane_last},#{pane_active}}}";
       "#{pane_pid}";
       "#{pane_current_command}";
       "#{pane_current_path}";
@@ -74,14 +76,15 @@ let format =
       "#{pane_dead_time}";
       "#{session_attached}";
       "#{" ^ run_option ^ "}";
-      "#{pane_active}";
+      "#{?#{window_modal_pane},#{pane_last},#{pane_active}}";
       "#{@kido_ssh}";
       "#{pane_program_status}";
+      "#{pane_modal_flag}";
       "#{" ^ order_option ^ "}";
       "#{pane_title}";
     ]
 
-let fields = 28
+let fields = 29
 
 let split_n n s =
   let rec go n from =
@@ -110,8 +113,8 @@ let parse_line line =
           session_created = Float.of_int (int f.(2));
           session_order =
             Option.filter
-              (fun n -> String.equal (string_of_int n) f.(26))
-              (int_of_string_opt f.(26));
+              (fun n -> String.equal (string_of_int n) f.(27))
+              (int_of_string_opt f.(27));
           window_index = int f.(3);
           window_id = window_id_of_string f.(4);
           window_name = f.(5);
@@ -141,7 +144,8 @@ let parse_line line =
                   (String.sub f.(24) 0 i, String.sub f.(24) (i + 1) (String.length f.(24) - i - 1))
             | _ -> None);
           program_status;
-          title = f.(27);
+          modal = String.equal f.(26) "1";
+          title = f.(28);
         }
 
 let parse lines = List.filter_map parse_line lines
@@ -387,6 +391,7 @@ let%test_module "Tests" =
         run;
         ssh = None;
         session_attached = attached;
+        modal = false;
         program_status = { serial = 0; records = [] };
         title;
       }
@@ -398,7 +403,7 @@ let%test_module "Tests" =
       Printf.printf
         "%s %s created=%.0f order=%s win=%d %s %s %s %s active=%b pane_active=%b pid=%d cmd=%s \
          cwd=%s alt=%b running=%b start=%s prompt=%s exit=%s line=%S dead=%s run=%s ssh=%s \
-         attached=%b title=%S\n"
+         attached=%b modal=%b title=%S\n"
         p.session_name
         (string_of_session_id p.session_id)
         p.session_created
@@ -409,7 +414,7 @@ let%test_module "Tests" =
         (opt (fun (e : exit) -> Printf.sprintf "%d@%.0f" e.code e.at) p.last_exit)
         p.command_line (time p.dead_at) (opt Fun.id p.run)
         (opt (fun (user, host) -> user ^ "@" ^ host) p.ssh)
-        p.session_attached p.title
+        p.session_attached p.modal p.title
 
     let line = String.concat sep
 
@@ -419,7 +424,7 @@ let%test_module "Tests" =
         (List.hd (List.rev tokens))
         (String.mem ~sub:"pane_command_duration" format)
         (List.length tokens) fields;
-      [%expect {| last=#{pane_title} duration=false fields=28 const=28 |}]
+      [%expect {| last=#{pane_title} duration=false fields=29 const=29 |}]
 
     let%expect_test "a fixture generated from the format parses into every field" =
       let values =
@@ -429,11 +434,11 @@ let%test_module "Tests" =
             | 1 -> "$1"
             | 4 -> "@4"
             | 7 -> "%7"
-            | 8 | 12 | 13 | 19 | 21 | 23 -> "1"
+            | 8 | 12 | 13 | 19 | 21 | 23 | 26 -> "1"
             | 16 -> "16"
             | 24 -> "deploy@realm@example.test"
             | 25 -> {|{"serial":7,"records":[{"id":"","state":"working","app":"pi"}]}|}
-            | 26 -> "-26"
+            | 27 -> "-27"
             | 2 | 3 | 9 | 14 | 15 | 17 | 20 -> string_of_int (1_000_000 + i)
             | _ -> Printf.sprintf "str%d" i)
           (String.split ~by:sep format)
@@ -446,7 +451,7 @@ let%test_module "Tests" =
         (parse [ line values ]);
       [%expect
         {|
-    str0 $1 created=1000002 order=-26 win=1000003 @4 str5 str6 %7 active=true pane_active=true pid=1000009 cmd=str10 cwd=str11 alt=true running=true start=1000014 prompt=1000015 exit=16@1000017 line="str18" dead=1000020 run=str22 ssh=deploy@realm@example.test attached=true title="str27"
+    str0 $1 created=1000002 order=-27 win=1000003 @4 str5 str6 %7 active=true pane_active=true pid=1000009 cmd=str10 cwd=str11 alt=true running=true start=1000014 prompt=1000015 exit=16@1000017 line="str18" dead=1000020 run=str22 ssh=deploy@realm@example.test attached=true modal=true title="str28"
     user="deploy@realm" host="example.test"
     {"serial":7,"records":[{"id":"","state":"working","app":"pi"}]}
     |}]
@@ -462,7 +467,7 @@ let%test_module "Tests" =
                 | 4 -> "@4"
                 | 7 -> "%7"
                 | 25 -> status
-                | 27 -> "kept"
+                | 28 -> "kept"
                 | _ -> "")
               (String.split ~by:sep format)
           in
@@ -517,6 +522,7 @@ let%test_module "Tests" =
                  "1";
                  "";
                  {|{"serial":0,"records":[]}|};
+                 "0";
                  "3";
                  "✳ Title";
                ];
@@ -549,6 +555,7 @@ let%test_module "Tests" =
                  "1";
                  "";
                  {|{"serial":0,"records":[]}|};
+                 "1";
                  "";
                  "zsh";
                ];
@@ -580,15 +587,16 @@ let%test_module "Tests" =
                  "0";
                  "";
                  {|{"serial":0,"records":[]}|};
+                 "";
                  "007";
                  "kid\x1fmore";
                ];
            ]);
       [%expect
         {|
-    work $1 created=1700000000 order=3 win=2 @7 win layout %3 active=true pane_active=true pid=4242 cmd=claude cwd=/tmp alt=false running=true start=1700000100 prompt=1700000050 exit=2@1700000090 line="make test" dead=- run=- ssh=- attached=true title="\226\156\179 Title"
-    work $1 created=1700000000 order=- win=2 @7 win layout %3 active=false pane_active=true pid=4242 cmd=zsh cwd=/tmp alt=true running=false start=- prompt=1700000050 exit=- line="" dead=- run=- ssh=- attached=false title="zsh"
-    work $1 created=1700000000 order=- win=2 @7 kid layout %3 active=false pane_active=false pid=4242 cmd= cwd=/tmp alt=false running=false start=- prompt=- exit=- line="" dead=1700000200 run=run-abc ssh=- attached=true title="kid\031more"
+    work $1 created=1700000000 order=3 win=2 @7 win layout %3 active=true pane_active=true pid=4242 cmd=claude cwd=/tmp alt=false running=true start=1700000100 prompt=1700000050 exit=2@1700000090 line="make test" dead=- run=- ssh=- attached=true modal=false title="\226\156\179 Title"
+    work $1 created=1700000000 order=- win=2 @7 win layout %3 active=false pane_active=true pid=4242 cmd=zsh cwd=/tmp alt=true running=false start=- prompt=1700000050 exit=- line="" dead=- run=- ssh=- attached=false modal=true title="zsh"
+    work $1 created=1700000000 order=- win=2 @7 kid layout %3 active=false pane_active=false pid=4242 cmd= cwd=/tmp alt=false running=false start=- prompt=- exit=- line="" dead=1700000200 run=run-abc ssh=- attached=true modal=false title="kid\031more"
     |}]
 
     let%expect_test
@@ -676,7 +684,7 @@ let%test_module "Tests" =
                           | 2 -> "100"
                           | 4 -> "@" ^ string_of_int i
                           | 7 -> "%" ^ String.sub id 1 (String.length id - 1)
-                          | 26 -> order
+                          | 27 -> order
                           | _ -> "")
                         (String.split ~by:sep format)))
                  [

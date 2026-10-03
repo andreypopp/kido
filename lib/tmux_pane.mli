@@ -26,6 +26,7 @@ type t = {
   run : string option;
   ssh : (string * string) option;
   session_attached : bool;
+  modal : bool;
   program_status : Tmux.Program_status.t;
   title : string;
 }
