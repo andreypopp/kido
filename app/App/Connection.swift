@@ -55,9 +55,9 @@ final class Connection: @unchecked Sendable {
             guard self.panes != nil else { return DispatchQueue.main.async { _ = pane } }
             self.panes?[pane.pane] = PaneFeed(pane)
         }
-        pane.onScrollRequest = { [weak self, weak pane] in
+        pane.onScrollRequest = { [weak self, weak pane] wheel in
             guard let pane else { return }
-            self?.scroll(pane.pane)
+            self?.scroll(pane.pane, wheel: wheel)
         }
         pane.onScrollSettled = { [weak self, id = pane.pane] in
             guard let self else { return }
@@ -392,10 +392,11 @@ final class Connection: @unchecked Sendable {
         }
     }
 
-    private func scroll(_ pane: PaneID) {
+    private func scroll(_ pane: PaneID, wheel: Bool = false) {
         client.queue.async { [self] in
             guard let feed = panes?[pane], !feed.view.resizeDirty,
                   case .settled(let availability) = feed.history else { return }
+            if wheel, availability == .ready(gap: 0) { return }
             let limited = if case .limited = availability { true } else { false }
             let token = UUID(), epoch = feed.view.historyEpoch
             feed.history = .fetching(token)
@@ -440,13 +441,13 @@ final class Connection: @unchecked Sendable {
                 self.publish(feed, history: 0, alternate: true)
                 return
             }
-            if capture.rows == 0 && capture.history > position.history && chunk < capture.history {
-                return self.fetch(pane, feed, token: token, chunk: min(capture.history, chunk * 2))
+            if capture.rows == 0 && capture.history > position.history && chunk < capture.history - position.history {
+                return self.fetch(pane, feed, token: token, chunk: min(capture.history - position.history, chunk * 2))
             }
             let added = capture.rows == 0 ? 0 : feed.view.prepend(Data(capture.text.utf8), epoch: epoch)
             debug("resize t=\(ProcessInfo.processInfo.systemUptime) history-prepend-done pane=\(pane) added=\(added)")
             let loaded = self.publish(feed, history: capture.history, insertionRefused: capture.rows > 0 && added == 0,
-                                      discardTarget: capture.rows == 0).history
+                                      emptyCaptureChunk: capture.rows == 0 ? chunk : nil, discardTarget: capture.rows == 0).history
             if case .settled(.ready(let gap)) = feed.history, gap > 0, capture.rows > 0,
                let destination = feed.view.scrollTarget, destination >= loaded - position.rows {
                 feed.history = .fetching(token)
@@ -456,15 +457,16 @@ final class Connection: @unchecked Sendable {
     }
 
     @discardableResult private func publish(_ feed: PaneFeed, history: Int, alternate: Bool = false,
-                                           insertionRefused: Bool = false, discardTarget: Bool = false) -> PaneView.ScrollPosition {
+                                           insertionRefused: Bool = false, emptyCaptureChunk: Int? = nil, discardTarget: Bool = false) -> PaneView.ScrollPosition {
         if discardTarget { feed.view.clearScrollTarget() }
         let position = feed.view.scrollPosition()
         let state = HistoryAvailability.settled(total: alternate ? 0 : history, loaded: position.history,
-                                                insertionRefused: insertionRefused)
+                                                insertionRefused: insertionRefused, emptyCaptureChunk: emptyCaptureChunk)
         feed.history = .settled(state)
         let limited = if case .limited = state { true } else { false }
         DispatchQueue.main.async { [weak view = feed.view] in
-            view?.updateScroller(history: history, position: position, alternate: alternate, limited: limited, discardTarget: discardTarget)
+            let total = if case .ready(let gap) = state { position.history + gap } else { history }
+            view?.updateScroller(history: total, position: position, alternate: alternate, limited: limited, discardTarget: discardTarget)
             view?.find?.loaded(position, limited: limited)
         }
         return position
