@@ -342,7 +342,9 @@ final class WindowView: NSView {
             guard let connection = self?.connection,
                 let tmux = command.command(id, cell: self?.session?.cell ?? .zero, model: connection.model)
             else { return }
-            self?.sendPane([tmux])
+            if case .clear = command {
+                connection.sync(id, first: [tmux, Command("clear-history", "-t", id)])
+            } else { self?.sendPane([tmux]) }
         }
         view.onAlternateChange = { [weak self] in self?.place() }
         view.onCellChange = { [weak self] in self?.session?.cellChanged() }
@@ -396,12 +398,16 @@ final class WindowView: NSView {
                 if pane == id { return placement.clamp(frame) }
             }
         }
-        if let frame = freeFrames[id], placement.geometry(frame) == geometry { return placement.clamp(frame) }
+        if let frame = freeFrames[id], placement.geometry(frame) == geometry { return frame }
         freeFrames[id] = nil
-        return placement.clamp(placement.frame(geometry))
+        return placement.frame(geometry)
     }
 
     private func validateFrames(_ placement: PaneLayout) {
+        let mask = layer?.mask as? CAShapeLayer ?? CAShapeLayer()
+        mask.path = CGPath(rect: CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width,
+                                       height: max(0, bounds.height - placement.topLine.maxY)), transform: nil)
+        layer?.mask = mask
         if let placed, placed != placement {
             if case .sending = delivery { delivery = .sending(pending: nil) }
             liveFrame = nil
