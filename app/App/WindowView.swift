@@ -421,8 +421,8 @@ final class WindowView: NSView {
 
     private func validateFrames(_ placement: PaneLayout) {
         let mask = layer?.mask as? CAShapeLayer ?? CAShapeLayer()
-        mask.path = CGPath(rect: CGRect(x: bounds.minX, y: placement.topLine.maxY, width: bounds.width,
-                                       height: max(0, bounds.maxY - placement.topLine.maxY)), transform: nil)
+        mask.path = CGPath(rect: CGRect(x: bounds.minX, y: placement.topLine.minY, width: bounds.width,
+                                       height: max(0, bounds.maxY - placement.topLine.minY)), transform: nil)
         layer?.mask = mask
         if let placed, placed != placement {
             if case .sending = delivery { delivery = .sending(pending: nil) }
