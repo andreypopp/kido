@@ -35,14 +35,16 @@ final class Connection: @unchecked Sendable {
     }
     @MainActor private let onChange: (SessionModel) -> Void
     @MainActor private let onClose: (Exit) -> Void
+    @MainActor private let onDiagnostic: (String) -> Void
 
     @MainActor init(
         server: Server, view: SessionView, onChange: @escaping (SessionModel) -> Void,
-        onClose: @escaping (Exit) -> Void
+        onDiagnostic: @escaping (String) -> Void, onClose: @escaping (Exit) -> Void
     ) throws {
         self.view = view
         self.onChange = onChange
         self.onClose = onClose
+        self.onDiagnostic = onDiagnostic
         client = Client(tmux: URL(fileURLWithPath: server.tmux), socket: server.socket, session: nil, pauseAfter: 5)
         view.connection = self
         try client.start(
@@ -294,7 +296,7 @@ final class Connection: @unchecked Sendable {
                     view?.find?.search()
                 }
             case nil:
-                feed.view.feed(Self.notice("could not capture \(pane): \(replies)"))
+                self.report("could not capture \(pane): \(replies)")
             }
             synced?()
         }
@@ -485,10 +487,8 @@ final class Connection: @unchecked Sendable {
     }
 
     private func report(_ message: String) {
-        panes?.values.forEach { $0.view.feed(Self.notice(message)) }
-    }
-
-    private static func notice(_ message: String) -> Data {
-        Data("\r\n\u{1B}[m[kido: \(message)]".utf8)
+        note(message)
+        let line = message.replacingOccurrences(of: "\n", with: "; ")
+        DispatchQueue.main.async { self.onDiagnostic(line) }
     }
 }
