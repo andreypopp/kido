@@ -137,7 +137,9 @@ import GhosttyKit
             if target.tag == GHOSTTY_TARGET_APP {
                 DispatchQueue.main.async { ghostty_app_update_config_without_surface_propagation(runtime.app, runtime.config) }
             } else if let surface = target.target.surface {
-                PaneView.onMain(ghostty_surface_userdata(surface)) { ghostty_surface_update_config($0.surface, runtime.config) }
+                PaneView.onMain(ghostty_surface_userdata(surface)) { pane in
+                    pane.reflow { ghostty_surface_update_config(pane.surface, runtime.config) }
+                }
             }
             return true
         }
