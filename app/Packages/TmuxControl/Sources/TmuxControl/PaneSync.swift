@@ -10,7 +10,17 @@ public enum PaneSync {
     public struct Snapshot {
         public let data: Data
         public let history: Int
-        public let anchorRows: [Reply]
+        fileprivate let retainedRows: Int
+        fileprivate let alternate: Bool
+        fileprivate let historyMetadata: [String]
+        fileprivate let screenMetadata: [String]
+        public var anchorRows: [Reply] {
+            let retained = historyMetadata.filter {
+                guard let row = $0.split(separator: " ", maxSplits: 1).first.flatMap({ Int($0) }) else { return false }
+                return row >= -retainedRows && row < 0
+            }
+            return [.success(["\(retainedRows) \(alternate ? 1 : 0)"]), .success(retained + screenMetadata)]
+        }
     }
 
     public static func commands(_ pane: PaneID, chunk: Int = 50000) -> [Command] {
@@ -27,13 +37,9 @@ public enum PaneSync {
         let lines = replies.compactMap { if case .success(let l) = $0 { l } else { nil } }
         guard lines.count == 8, let state = lines[6].first,
               let history = HistoryCapture(replies.prefix(3), loaded: 0, initial: true) else { return nil }
-        let retained = lines[2].filter {
-            guard let row = $0.split(separator: " ").first.flatMap({ Int($0) }) else { return false }
-            return row >= -history.rows && row < 0
-        }
-        let anchorRows: [Reply] = [.success(["\(history.rows) \(history.alternate ? 1 : 0)"]), .success(retained + lines[7])]
         return restore(history: history, screen: lines[3], main: lines[4], pending: lines[5].first ?? "", state: state)
-            .map { Snapshot(data: $0, history: history.history, anchorRows: anchorRows) }
+            .map { Snapshot(data: $0, history: history.history, retainedRows: history.rows, alternate: history.alternate,
+                            historyMetadata: lines[2], screenMetadata: lines[7]) }
     }
 
     private static func restore(
