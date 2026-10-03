@@ -2,6 +2,8 @@
 
 A workflow on top of tmux to manage coding agents (pi and Claude Code are supported).
 
+Website: <https://kido.tools>
+
 Kido runs a modified tmux to gather status from every pane and to render a
 sidebar with this information. On top of that, kido ships with a small set of pi
 extensions for process management (subagents, an async bash tool), which use
