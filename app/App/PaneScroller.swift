@@ -14,7 +14,7 @@ final class PaneScroller: NSView {
     func update(history: Int, rows: Int, offset: Double, alternate: Bool, unavailable: Int = 0) {
         let next = (history, max(1, rows), max(0, min(Double(history), offset)))
         let hidden = alternate || history == 0
-        (superview as? PaneChrome)?.updateScrollEdges(top: !hidden && next.2 > 0, bottom: !hidden && next.2 < Double(history))
+        (superview as? PaneChrome)?.updateScrollTop(!hidden && next.2 > 0)
         guard geometry != next || self.unavailable != unavailable || isHidden != hidden else { return }
         if Double(geometry.history) - geometry.offset != Double(history) - offset { reveal() }
         geometry = next
