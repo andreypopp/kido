@@ -243,5 +243,7 @@ let table rows =
            | _ -> ""
          in
          List.map (value json) columns
-         @ List.map (value (member "outcome" json)) [ "result"; "text" ])
+         @ (match member "outcome" json with
+           | `Null -> [ ""; "" ]
+           | o -> List.map (value o) [ "result"; "text" ]))
        rows

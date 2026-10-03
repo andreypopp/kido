@@ -64,6 +64,21 @@ func TestListRunsPeersParentSiblingsAndOwnRuns(t *testing.T) {
 	}
 	childBash := fields[2]
 
+	out, rc = h.kidoAs(root, "", nil, "tool", "list_runs")
+	if rc != 0 {
+		t.Fatalf("list_runs table: rc=%d %q", rc, out)
+	}
+	found := false
+	for _, line := range strings.Split(out, "\n") {
+		cells := strings.Fields(line)
+		if len(cells) >= 4 && cells[0] == bash && cells[1] == "root-job" && cells[2] == "bash" && cells[3] == "own" && strings.Contains(line, "running") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("list_runs table missing running bash row %s: %q", bash, out)
+	}
+
 	rows := h.listedRuns(root)
 	seen := map[string]listedRun{}
 	for _, row := range rows {
