@@ -241,12 +241,6 @@ final class WindowView: NSView {
         if changed { invalidateCursorRects() }
     }
 
-    func outerTop(_ id: PaneID) -> Bool {
-        guard let placement = placed, let pane = shown?.visible.root.panes.first(where: { $0.id == id }),
-              pane.layer == .tiled || zoomed else { return false }
-        return placement.tiled(pane.geometry, alternate: false).outerTop
-    }
-
     private func placeFloat(_ id: PaneID, _ placement: PaneLayout) {
         guard let pane = shown?.visible.root.panes.first(where: { $0.id == id && $0.layer != .tiled }),
               let chrome = subviews.lazy.compactMap({ $0 as? PaneChrome }).first(where: { $0.pane == id }),
@@ -277,6 +271,7 @@ final class WindowView: NSView {
         view.renderInsets = insets
         if view.frame != content { view.frame = content }
         chrome.content = content.offsetBy(dx: -frame.minX, dy: -frame.minY)
+        chrome.outerTop = zoomed || (!floating && placement.outerTop(g))
         chrome.drag = floating && !zoomed ? { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0) } : nil
         chrome.wantsLayer = true
         chrome.layer?.cornerRadius = floating ? floatingRadius : 0
