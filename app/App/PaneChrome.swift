@@ -28,7 +28,7 @@ final class PaneChrome: NSView {
             [content] + subviews.filter { !$0.isHidden && ($0 is PaneScroller || $0.alphaValue > 0) }.map(\.frame))
     }
     var hover: (PaneChrome, NSPoint?) -> Void = { _, _ in }
-    var content = CGRect.zero { didSet { if content != oldValue { needsDisplay = true } } }
+    var content = CGRect.zero
     var dimmed = false { didSet { if dimmed != oldValue { needsDisplay = true } } }
     var toolbarFrame: CGRect {
         NSRect(x: max(0, bounds.width - 153), y: 8, width: min(145, bounds.width), height: 32)
