@@ -15,7 +15,6 @@ public struct PaneLayout: Equatable {
         public let chrome: CGRect
         public let inset: CGFloat
         public let outerTop: Bool
-        public let outerBottom: Bool
     }
     public static let minimumMargin = CGSize(width: 4, height: 12)
     public static let topMargin: CGFloat = 40
@@ -69,7 +68,7 @@ public struct PaneLayout: Equatable {
         chrome.origin.y = min(chrome.minY, content.minY)
         chrome.size.height = min(grid.maxY + after.height, bounds.maxY) - chrome.minY
         return TiledPlacement(grid: grid, content: content, chrome: chrome, inset: inset,
-                              outerTop: g.y == rootTop, outerBottom: grid.maxY == bottom)
+                              outerTop: g.y == rootTop)
     }
 
     public func geometry(_ frame: CGRect) -> Geometry {
