@@ -118,7 +118,7 @@ invalidation and confirmed-grid path; color-only changes remain local.
 
 Each pane draws one thin overlay scroller, shown during scrolling or
 hovering and fading afterwards. The scroller track spans the expanded content while its thumb and targets count whole grid rows. Ghostty's own scrollbar is disabled. The
-thumb uses tmux's full retained history plus the screen, with a native-style
+thumb uses the loaded history rows plus the screen, with a native-style
 minimum knob size. Every precise wheel event adds its delta 1:1 to the
 fractional target, including nonzero ended packets. At most one apply is
 pending on the pane's serial scroll worker; it starts immediately and reads
