@@ -18,7 +18,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onCommand: (PaneCommand) -> Void = { _ in }
     var onResync: () -> Bool = { false }
     var onGridFailure: () -> Void = {}
-    var onScrollRequest: () -> Void = {}
+    var onScrollRequest: (_ wheel: Bool) -> Void = { _ in }
     var onLoadMore: () -> Void = {}
     var onScrollSettled: () -> Void = {}
     let scroller = PaneScroller()
@@ -268,7 +268,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         requestScrollDistance { _ in Double(distance) }
     }
 
-    private func requestScrollDistance(_ move: @Sendable (Double) -> Double) {
+    private func requestScrollDistance(wheel: Bool = false, _ move: @Sendable (Double) -> Double) {
         resizeAnchor = nil
         invalidateScroll()
         let position = Double(scrollGeometry.position.history - scrollGeometry.position.offset)
@@ -278,7 +278,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             $0 = max(0, min(limit, move(previous)))
         }
         queueScroll()
-        onScrollRequest()
+        onScrollRequest(wheel)
     }
 
     private func queueScroll() {
@@ -1028,7 +1028,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             let distance = scrollDistance ?? Double(scrollGeometry.position.history - scrollGeometry.position.offset)
             if precise && pressed.isEmpty {
                 let rows = delta * wheelMultiplier.precision / Double(max(1, rowHeight))
-                requestScrollDistance { min(limit, $0 + rows) }
+                requestScrollDistance(wheel: true) { min(limit, $0 + rows) }
                 return
             }
             if distance != distance.rounded() { snapScroll() }
@@ -1037,7 +1037,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             let rows = Int(wheelRemainder)
             wheelRemainder -= Double(rows)
             if rows != 0 {
-                requestScrollDistance { min(limit, $0.rounded() + Double(rows)) }
+                requestScrollDistance(wheel: true) { min(limit, $0.rounded() + Double(rows)) }
             }
             return
         }
