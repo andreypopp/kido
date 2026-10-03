@@ -294,7 +294,7 @@ final class Connection: @unchecked Sendable {
 
     private func capture(_ pane: PaneID, _ feed: PaneFeed, request: PaneFeed.RestoreRequest, first: [Command]) {
         let epoch = request.epoch
-        debug("resize t=\(ProcessInfo.processInfo.systemUptime) capture-send pane=\(pane) chunk=50000")
+        debug("resize t=\(ProcessInfo.processInfo.systemUptime) capture-send pane=\(pane) chunk=\(historyChunkSize)")
         client.send(first + PaneSync.commands(pane)) { [weak self, weak feed] replies in
             debug("resize t=\(ProcessInfo.processInfo.systemUptime) capture-reply pane=\(pane)")
             guard let self, let feed, self.panes?[pane] === feed,
@@ -434,12 +434,12 @@ final class Connection: @unchecked Sendable {
                     return
                 }
                 feed.total = metadata.history
-                self.fetch(pane, feed, token: token, chunk: min(50000, metadata.history - position.history))
+                self.fetch(pane, feed, token: token, chunk: min(historyChunkSize, metadata.history - position.history))
             }
         }
     }
 
-    private func fetch(_ pane: PaneID, _ feed: PaneFeed, token: UUID, chunk: Int = 50000, retries: Int = 0) {
+    private func fetch(_ pane: PaneID, _ feed: PaneFeed, token: UUID, chunk: Int = historyChunkSize, retries: Int = 0) {
         let position = feed.view.scrollPosition(), epoch = feed.view.historyEpoch
         debug("resize t=\(ProcessInfo.processInfo.systemUptime) history-page-send pane=\(pane) loaded=\(position.history) chunk=\(chunk)")
         client.send(HistoryCapture.commands(pane, loaded: position.history, chunk: chunk)) { [weak self, weak feed] replies in
@@ -480,7 +480,7 @@ final class Connection: @unchecked Sendable {
             if let goal = feed.goal, loaded < goal.distance {
                 guard added > 0 else { self.failGoal(feed); return }
                 feed.history = .fetching(token)
-                self.fetch(pane, feed, token: token, chunk: min(50000, max(0, capture.history - loaded)))
+                self.fetch(pane, feed, token: token, chunk: min(historyChunkSize, max(0, capture.history - loaded)))
             } else { feed.goal = nil }
         }
     }
