@@ -432,6 +432,20 @@ at narrow widths.
 
 ## Testing
 
+`make visual` runs hosted SnapshotTesting tests against a private tmux
+socket, never ordering or activating a window. Menlo 13 and the built-in
+light/dark themes isolate terminal-area image and compact layout references:
+single panes at three heights, splits, floats, zoom, fractional history,
+alternate screen, settled resize and the Load more pill. A test-only
+`KIDO_VISUAL` build condition exposes an occlusion bypass through
+`@testable`; normal builds retain their occlusion policy. Each image waits
+for a tokened Ghostty presented-frame callback, not a timed delay.
+Liquid Glass (sidebar and pane toolbar) and animation/scroll smoothness are
+not covered. Re-record with `make visual RECORD=1` after intentional visual
+changes, a macOS update or a different backing scale, and review the images
+and layout diffs. References live in `app/VisualTests/__Snapshots__`.
+
+
 `make tsan` and `make asan` build Debug with ReleaseSafe GhosttyKit into
 `build/derived-{tsan,asan}`. ASan defaults to `use_sigaltstack=0` because Zig
 threads replace its alternate signal stack with thread-local storage.
