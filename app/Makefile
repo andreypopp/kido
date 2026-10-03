@@ -4,7 +4,7 @@ DERIVED := build/derived
 CONFIG ?= Debug
 APP = $(DERIVED)/Build/Products/$(CONFIG)/Kido.app
 
-.PHONY: all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-stop
+.PHONY: visual all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-stop
 
 all:
 	ln -sfn "$$(GHOSTTY_OPTIMIZE=$(GHOSTTY_OPTIMIZE) scripts/build-ghosttykit.sh)" build/GhosttyKit.xcframework
@@ -31,6 +31,16 @@ stress tsan-stress asan-stress:
 	$(MAKE) all DERIVED=$(STRESS_DERIVED) $(STRESS_OPTIMIZE) SANITIZE="$(STRESS_SANITIZE) KIDO_STRESS_CONDITION=KIDO_STRESS"
 	KIDO_STRESS_TARGET=$@ scripts/stress.py --app $(STRESS_DERIVED)/Build/Products/Debug/Kido.app/Contents/MacOS/Kido --tmux $(abspath ../$(FORK)) \
 		--seed $(SEED) --duration $(DURATION) --find $(FIND) --out build/stress/$@-$(SEED)
+
+RECORD ?= 0
+visual: DERIVED = build/derived-visual
+visual:
+	mkdir -p build/visual/config
+	$(MAKE) -C .. $(FORK)
+	$(MAKE) all DERIVED=$(DERIVED) SANITIZE="KIDO_VISUAL_CONDITION=KIDO_VISUAL"
+	xcodebuild -quiet -project Kido.xcodeproj -scheme Visual -configuration Debug \
+		-destination platform=macOS -derivedDataPath $(DERIVED) KIDO_VISUAL_CONDITION=KIDO_VISUAL \
+		KIDO_VISUAL_RECORD=$(RECORD) KIDO_VISUAL_TMUX=$(abspath ../$(FORK)) test
 
 run: all
 	open -W $(APP)
