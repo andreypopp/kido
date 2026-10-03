@@ -21,6 +21,7 @@ import TmuxControl
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.applicationIconImage = NSImage(named: "AppIcon")
         for signal in [SIGTERM, SIGINT, SIGHUP] {
             Darwin.signal(signal, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: signal, queue: .main)
