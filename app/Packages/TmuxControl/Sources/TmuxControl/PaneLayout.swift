@@ -17,7 +17,7 @@ public struct PaneLayout: Equatable {
         public let outerTop: Bool
         public let outerBottom: Bool
     }
-    public static let minimumMargin = CGSize(width: 4, height: 8)
+    public static let minimumMargin = CGSize(width: 4, height: 12)
     public static let topMargin: CGFloat = 40
     public let client: CGSize
     public let before: CGSize
