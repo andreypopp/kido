@@ -21,13 +21,12 @@ public struct PaneLayout: Equatable {
         public let insets: RenderInsets
     }
     public static let minimumMargin = CGSize(width: 4, height: 12)
-    public static let topMargin: CGFloat = 40
+    public static let topMargin: CGFloat = 44
     public let client: CGSize
     public let before: CGSize
     public let after: CGSize
     public let origin: CGPoint
     public let rightEdge: CGFloat
-    public let historyStrip: CGFloat
     private let cell: CGSize
     private let bounds: CGRect
     private let bottom: CGFloat
@@ -40,17 +39,15 @@ public struct PaneLayout: Equatable {
         before = CGSize(width: floor((cell.width / pixel - 1) / 2) * pixel,
                         height: floor((cell.height / pixel - 1) / 2) * pixel)
         after = CGSize(width: cell.width - pixel - before.width, height: cell.height - pixel - before.height)
-        let top = ceil(Self.topMargin / pixel) * pixel
+        topLine = CGRect(x: bounds.minX, y: ceil((bounds.minY + Self.topMargin) / pixel) * pixel, width: bounds.width, height: pixel)
         bottom = floor((bounds.maxY - Self.minimumMargin.height) / pixel) * pixel
         client = CGSize(width: max(1, floor((bounds.width - 2 * Self.minimumMargin.width - cell.width + pixel) / cell.width)),
-                        height: max(1, floor((bounds.height - top - Self.minimumMargin.height) / cell.height)))
+                        height: max(1, floor((bottom - topLine.maxY) / cell.height)))
         let g: Geometry = switch root { case .pane(let p): p.geometry; case .split(_, let g, _): g }
         rootTop = g.y
-        topLine = CGRect(x: bounds.minX, y: bounds.minY + top, width: bounds.width, height: pixel)
         origin = CGPoint(
             x: bounds.minX + floor((bounds.width - CGFloat(g.width) * cell.width - before.width - after.width) / (2 * pixel)) * pixel + before.width,
             y: bottom - CGFloat(g.y + g.height) * cell.height)
-        historyStrip = max(0, origin.y + CGFloat(g.y) * cell.height - topLine.maxY)
         rightEdge = origin.x + CGFloat(g.x + g.width) * cell.width
     }
 
@@ -67,17 +64,17 @@ public struct PaneLayout: Equatable {
 
     public func tiled(_ g: Geometry, alternate: Bool) -> TiledPlacement {
         let grid = grid(g)
-        let insets = alternate ? RenderInsets() : RenderInsets(
-            top: g.y == rootTop ? historyStrip : before.height,
-            bottom: grid.maxY == bottom ? bounds.maxY - grid.maxY : after.height)
-        let content = CGRect(x: grid.minX, y: grid.minY - insets.top, width: grid.width, height: grid.height + insets.top + insets.bottom)
         var chrome = frame(g)
         let left = g.x == 0 ? bounds.minX : chrome.minX
         let right = grid.maxX == rightEdge ? bounds.maxX : chrome.maxX
         chrome.origin.x = left
         chrome.size.width = right - left
-        chrome.origin.y = g.y == rootTop ? topLine.maxY : min(chrome.minY, content.minY)
+        chrome.origin.y = max(topLine.maxY, g.y == rootTop ? topLine.maxY : chrome.minY)
         chrome.size.height = (grid.maxY == bottom ? bounds.maxY : min(grid.maxY + after.height, bounds.maxY)) - chrome.minY
+        let insets = alternate ? RenderInsets() : RenderInsets(
+            top: max(0, grid.minY - chrome.minY),
+            bottom: grid.maxY == bottom ? bounds.maxY - grid.maxY : after.height)
+        let content = CGRect(x: grid.minX, y: grid.minY - insets.top, width: grid.width, height: grid.height + insets.top + insets.bottom)
         return TiledPlacement(grid: grid, content: content, chrome: chrome, insets: insets)
     }
 
@@ -89,9 +86,9 @@ public struct PaneLayout: Equatable {
     }
 
     public var floatingBounds: CGRect {
-        CGRect(x: origin.x - before.width, y: origin.y - before.height,
+        CGRect(x: origin.x - before.width, y: topLine.maxY,
                width: client.width * cell.width + before.width + after.width,
-               height: max(0, bottom - origin.y + before.height))
+               height: max(0, bottom - topLine.maxY))
     }
 
     public func clamp(_ frame: CGRect, resizing edge: ResizeEdge? = nil) -> CGRect {
