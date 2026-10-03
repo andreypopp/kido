@@ -126,7 +126,7 @@ paths; a far view adds a second surface and split selection), so deep history
 is reached by paging within the memory limit.
 
 Each pane draws one thin overlay scroller, shown during scrolling or
-hovering and fading afterwards. Chrome draws background-colour edge fades with height `PaneLayout.minimumMargin.height` (12pt), shared with the outer bottom margin, from that same scroll geometry only at the terminal area's outer top and bottom when content remains above or below, never on floating panes or alternate screens. The top fade starts at the content top, including
+hovering and fading afterwards. Chrome draws a background-colour top fade with height `PaneLayout.minimumMargin.height` (12pt), shared with the outer bottom margin, from that same scroll geometry only at the terminal area's outer top when content remains above, never on floating panes or alternate screens. The top fade starts at the content top, including
 the history strip; the scroller track spans that expanded content while its
 thumb and targets still count whole grid rows. Ghostty's own scrollbar is disabled. The
 thumb uses tmux's full retained history plus the screen, with a native-style
@@ -263,7 +263,7 @@ outer-top vertical dividers and their hit/cursor areas extend to the strip's
 top, never into the 40pt titlebar margin.
 
 PaneLayout returns the grid, expanded content, clipped chrome and render inset
-for each tiled pane. Chrome uses the content rect for fades and hit testing;
+for each tiled pane. Chrome uses the content rect for the fade and hit testing;
 window-edge drops and their previews use the union of the visible tiled chrome.
 Strip clicks only focus/select the pane once: no terminal mouse press or selection
 starts there. Entering the strip clears Ghostty's hover position. Strip wheels
