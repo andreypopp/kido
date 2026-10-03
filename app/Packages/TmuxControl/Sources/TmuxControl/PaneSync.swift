@@ -7,27 +7,33 @@ public enum PaneSync {
         "cursor_blinking", "cursor_shape", "pane_key_mode", "pane_tabs", "pane_private_modes",
     ].map { "#{\($0)}" }.joined(separator: "\u{1F}")
 
-    public enum Restore {
-        case snapshot(Data, history: Int)
-        case expand(Int)
+    public struct Snapshot {
+        public let data: Data
+        public let history: Int
+        public let anchorRows: [Reply]
     }
 
-    public static func commands(_ pane: PaneID, chunk: Int = 5000) -> [Command] {
+    public static func commands(_ pane: PaneID, chunk: Int = 50000) -> [Command] {
         HistoryCapture.commands(pane, loaded: 0, chunk: chunk) + [
             Command("capture-pane", "-p", "-e", "-J", "-t", pane),
             Command("capture-pane", "-p", "-e", "-J", "-a", "-q", "-t", pane),
             Command("capture-pane", "-p", "-P", "-C", "-t", pane),
             Command("display-message", "-p", "-t", pane, state),
+            Command("capture-pane", "-p", "-F", "-L", "-T", "-N", "-t", pane),
         ]
     }
 
-    public static func restore(_ replies: some Collection<Reply>) -> Restore? {
+    public static func restore(_ replies: some Collection<Reply>) -> Snapshot? {
         let lines = replies.compactMap { if case .success(let l) = $0 { l } else { nil } }
-        guard lines.count == 7, let state = lines[6].first,
+        guard lines.count == 8, let state = lines[6].first,
               let history = HistoryCapture(replies.prefix(3), loaded: 0, initial: true) else { return nil }
-        if history.history > 0 && history.rows == 0 { return .expand(history.history) }
+        let retained = lines[2].filter {
+            guard let row = $0.split(separator: " ").first.flatMap({ Int($0) }) else { return false }
+            return row >= -history.rows && row < 0
+        }
+        let anchorRows: [Reply] = [.success(["\(history.rows) \(history.alternate ? 1 : 0)"]), .success(retained + lines[7])]
         return restore(history: history, screen: lines[3], main: lines[4], pending: lines[5].first ?? "", state: state)
-            .map { .snapshot($0, history: history.history) }
+            .map { Snapshot(data: $0, history: history.history, anchorRows: anchorRows) }
     }
 
     private static func restore(

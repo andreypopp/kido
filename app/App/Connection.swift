@@ -5,19 +5,31 @@ import TmuxControl
 final class Connection: @unchecked Sendable {
     private let client: Client
     private final class PaneFeed: @unchecked Sendable {
+        enum Boundary { case older, exhausted(epoch: Int), refused }
+        final class RestoreRequest: @unchecked Sendable {
+            let epoch: Int
+            var completions: [@Sendable () -> Void]
+            init(epoch: Int, synced: (@Sendable () -> Void)?) {
+                self.epoch = epoch
+                completions = synced.map { [$0] } ?? []
+            }
+        }
         enum History {
-            case syncing(UUID)
-            case settled(HistoryAvailability)
+            case syncing(RestoreRequest)
+            case settled(Boundary)
             case fetching(UUID)
         }
         let view: PaneView
-        var history: History = .syncing(UUID())
+        var history: History = .settled(.older)
         enum Search {
             case scanning(token: UUID, matches: [Int])
             case stale(since: DispatchTime, restart: DispatchWorkItem?)
         }
         var search: Search?
-        var initialHistory = 0
+        var total = 0
+        var outputEpoch = 0
+        var goal: (distance: Int, token: UUID)?
+        var pendingRestore: (first: [Command], synced: (@Sendable () -> Void)?)?
         init(_ view: PaneView) { self.view = view }
     }
     private var panes: [PaneID: PaneFeed]? = [:]
@@ -50,6 +62,7 @@ final class Connection: @unchecked Sendable {
         try client.start(
             onEvent: { [weak self] in self?.handle($0) },
             onClose: { [weak self] status, stderr in self?.closed(status, stderr) })
+        refreshHistory()
     }
 
     @MainActor func attach(_ pane: PaneView, synced: (@Sendable () -> Void)? = nil) {
@@ -57,34 +70,16 @@ final class Connection: @unchecked Sendable {
             guard self.panes != nil else { return DispatchQueue.main.async { _ = pane } }
             self.panes?[pane.pane] = PaneFeed(pane)
         }
-        pane.onScrollRequest = { [weak self, weak pane] wheel in
-            guard let pane else { return }
-            self?.scroll(pane.pane, wheel: wheel)
-        }
-        pane.onScrollSettled = { [weak self, id = pane.pane] in
+        pane.onRestoreDrain = { [weak self, id = pane.pane] in
             guard let self else { return }
             self.client.queue.async {
-                guard let feed = self.panes?[id], feed.search == nil else { return }
-                let position = feed.view.scrollPosition()
-                let history: Int
-                switch feed.history {
-                case .syncing, .fetching: return
-                case .settled(.ready(let gap)): history = position.history + gap
-                case .settled(.limited(let total)): history = total
-                }
-                let removed = feed.view.trimHistory(keeping: feed.initialHistory)
-                guard removed > 0 else { return }
-                self.publish(feed, history: history)
+                guard let feed = self.panes?[id], case .settled = feed.history, feed.pendingRestore != nil else { return }
+                self.sync(id)
             }
         }
-        pane.onLoadMore = { [weak self, id = pane.pane] in
-            guard let self else { return }
-            self.client.queue.async {
-                guard let feed = self.panes?[id], case .settled(.limited(let history)) = feed.history else { return }
-                ghostty_surface_raise_scrollback_limit(feed.view.surface)
-                self.publish(feed, history: history)
-                self.scroll(id)
-            }
+        pane.onLoadMore = { [weak self, id = pane.pane] in self?.load(id) }
+        pane.onFindCoverage = { [weak self, id = pane.pane] distance, token in
+            self?.load(id, goal: (distance, token))
         }
         pane.onSearch = { [weak self, weak pane] query, token in
             guard let pane else { return }
@@ -156,7 +151,7 @@ final class Connection: @unchecked Sendable {
         guard !sizeInFlight else { return }
         guard let size = desiredSize else {
             for window in view?.windows.values ?? [:].values {
-                for pane in window.panes { pane.syncResize() }
+                for pane in window.panes { pane.endResizeIntent() }
             }
             return
         }
@@ -184,6 +179,7 @@ final class Connection: @unchecked Sendable {
         switch event {
         case .output(let p, let bytes), .extendedOutput(let p, _, let bytes):
             if let feed = panes?[p] {
+                feed.outputEpoch += 1
                 invalidateSearch(feed, restart: true)
                 feed.view.feed(Data(bytes))
             }
@@ -242,99 +238,123 @@ final class Connection: @unchecked Sendable {
     // (control.c), and the reply is completed on the reader queue, so output
     // fed before the restore is wiped by it and output after it is not in it.
     func sync(_ pane: PaneID, first: [Command] = [], synced: (@Sendable () -> Void)? = nil) {
-        let prepared: (view: PaneView, epoch: Int)? = Thread.isMainThread ? MainActor.assumeIsolated {
-            guard let pane = view?.windows.values.lazy.flatMap(\.panes).first(where: { $0.pane == pane }) else { return nil }
-            let epoch = pane.historyEpoch
-            pane.resetScroll()
-            return (pane, epoch)
-        } : nil
         client.queue.async { [self] in
-            guard let feed = panes?[pane],
-                  prepared.map({ $0.view === feed.view && $0.epoch == feed.view.historyEpoch }) ?? true else { return synced?() ?? () }
-            let token = UUID(), epoch = feed.view.historyEpoch, revision = feed.view.scrollRevision
-            feed.history = .syncing(token)
-            invalidateSearch(feed, restart: false)
-            if prepared != nil { return capture(pane, feed, token: token, epoch: epoch, first: first, synced: synced) }
-            DispatchQueue.main.async { [weak view = feed.view] in
-                guard let view, view.historyEpoch == epoch,
-                      self.view?.windows.values.lazy.flatMap(\.panes).contains(where: { $0 === view }) == true else { return synced?() ?? () }
-                if view.scrollRevision == revision { view.resetScroll() }
-                self.client.queue.async {
-                    guard self.panes?[pane] === feed, view.historyEpoch == epoch,
-                          case .syncing(let current) = feed.history, current == token else { return synced?() ?? () }
-                    self.capture(pane, feed, token: token, epoch: epoch, first: first, synced: synced)
-                }
-            }
-        }
-    }
-
-    private func capture(_ pane: PaneID, _ feed: PaneFeed, token: UUID, epoch: Int, first: [Command],
-                         synced: (@Sendable () -> Void)?, chunk: Int = 5000) {
-        debug("resize t=\(ProcessInfo.processInfo.systemUptime) capture-send pane=\(pane) chunk=\(chunk)")
-        self.client.send(first + PaneSync.commands(pane, chunk: chunk)) { [weak self, weak feed] replies in
-            debug("resize t=\(ProcessInfo.processInfo.systemUptime) capture-reply pane=\(pane)")
-            guard let self, let feed, self.panes?[pane] === feed, feed.view.historyEpoch == epoch,
-                  case .syncing(let current) = feed.history, current == token, let replies else { return synced?() ?? () }
-            switch PaneSync.restore(replies.dropFirst(first.count)) {
-            case .expand(let history):
-                self.capture(pane, feed, token: token, epoch: epoch, first: [], synced: synced, chunk: min(history, chunk * 2))
+            guard let feed = panes?[pane] else { return synced?() ?? () }
+            feed.goal = nil
+            switch feed.history {
+            case .syncing(let request) where request.epoch == feed.view.historyEpoch && first.isEmpty:
+                if let synced { request.completions.append(synced) }
                 return
-            case .snapshot(let data, let history):
-                debug("resize t=\(ProcessInfo.processInfo.systemUptime) replay-start pane=\(pane) bytes=\(data.count)")
-                feed.view.feed(data, kind: .snapshot)
-                debug("resize t=\(ProcessInfo.processInfo.systemUptime) replay-done pane=\(pane)")
-                let position = feed.view.scrollPosition()
-                feed.initialHistory = position.history
-                if let anchor = feed.view.resizeAnchor {
-                    self.restoreAnchor(pane, feed, anchor: anchor, token: token, epoch: epoch, history: history, synced: synced)
+            case .syncing, .fetching:
+                if let pending = feed.pendingRestore {
+                    feed.pendingRestore = (pending.first + first, { pending.synced?(); synced?() })
+                } else { feed.pendingRestore = (first, synced) }
+                return
+            case .settled: break
+            }
+            if let pending = feed.pendingRestore {
+                feed.pendingRestore = nil
+                self.sync(pane, first: pending.first + first, synced: { pending.synced?(); synced?() })
+                return
+            }
+            DispatchQueue.main.async { [weak view = feed.view] in
+                guard let view else { return synced?() ?? () }
+                if (view.superview as? WindowView)?.defersRestore == true {
+                    self.client.queue.async {
+                        if let pending = feed.pendingRestore {
+                            feed.pendingRestore = (pending.first + first, { pending.synced?(); synced?() })
+                        } else { feed.pendingRestore = (first, synced) }
+                    }
                     return
                 }
-                self.publish(feed, history: history)
-                if feed.view.scrollTarget != nil { self.scroll(pane) }
-                DispatchQueue.main.async { [weak view = feed.view] in
-                    view?.restored(epoch: epoch)
-                    view?.find?.search()
+                let epoch = view.historyEpoch
+                view.resetScroll()
+                self.client.queue.async {
+                    guard self.panes?[pane] === feed else { return synced?() ?? () }
+                    guard view.historyEpoch == epoch else {
+                        self.sync(pane, first: first, synced: synced)
+                        return
+                    }
+                    if case .settled = feed.history {
+                        let request = PaneFeed.RestoreRequest(epoch: epoch, synced: synced)
+                        feed.history = .syncing(request)
+                        self.invalidateSearch(feed, restart: false)
+                        self.capture(pane, feed, request: request, first: first)
+                    } else {
+                        self.sync(pane, first: first, synced: synced)
+                    }
                 }
-            case nil:
-                self.report("could not capture \(pane): \(replies)")
             }
-            synced?()
         }
-
     }
 
-    private func restoreAnchor(_ pane: PaneID, _ feed: PaneFeed, anchor: ScrollAnchor, token: UUID,
-                               epoch: Int, history: Int, end: Int? = nil, chunk: Int = 5000,
-                               synced: (@Sendable () -> Void)?) {
-        debug("resize t=\(ProcessInfo.processInfo.systemUptime) anchor-page-send pane=\(pane) end=\(end ?? -1) chunk=\(chunk)")
-        client.send(SearchCapture.commands(pane, end: end, chunk: chunk)) { [weak self, weak feed] replies in
-            debug("resize t=\(ProcessInfo.processInfo.systemUptime) anchor-page-reply pane=\(pane)")
-            guard let self, let feed, self.panes?[pane] === feed, feed.view.historyEpoch == epoch,
-                  case .syncing(let current) = feed.history, current == token else { return synced?() ?? () }
-            let distance: Int
-            switch replies.flatMap({ anchor.locate($0, end: end) }) {
-            case .next(let remaining, let next):
-                return self.restoreAnchor(pane, feed, anchor: next == end ? anchor : remaining, token: token,
-                                          epoch: epoch, history: history, end: next,
-                                          chunk: next == end ? min(history + 1, chunk * 2) : 5000, synced: synced)
-            case .found(let row): distance = row
-            case nil: distance = min(history, max(1, anchor.lines))
-            }
-            self.publish(feed, history: history)
+    private func drain(_ pane: PaneID, _ feed: PaneFeed, retry: Bool = true) {
+        if let pending = feed.pendingRestore {
+            feed.pendingRestore = nil
             DispatchQueue.main.async { [weak view = feed.view] in
-                guard let view, view.historyEpoch == epoch else { return synced?() ?? () }
-                debug("resize t=\(ProcessInfo.processInfo.systemUptime) anchor-found pane=\(pane) distance=\(distance)")
-                if view.resizeAnchor != nil { view.requestScroll(distance) }
-                else if view.scrollTarget != nil { self.scroll(pane) }
-                view.resizeAnchor = nil
-                view.restored(epoch: epoch)
-                view.find?.search()
-                synced?()
+                guard let view else { return pending.synced?() ?? () }
+                if (view.superview as? WindowView)?.defersRestore == true {
+                    self.client.queue.async {
+                        if let next = feed.pendingRestore {
+                            feed.pendingRestore = (pending.first + next.first, { pending.synced?(); next.synced?() })
+                        } else { feed.pendingRestore = pending }
+                    }
+                } else { self.sync(pane, first: pending.first, synced: pending.synced) }
+            }
+        } else if retry && feed.view.resizeDirty {
+            DispatchQueue.main.async { [weak view = feed.view] in view?.syncResize() }
+        }
+    }
+
+    private func capture(_ pane: PaneID, _ feed: PaneFeed, request: PaneFeed.RestoreRequest, first: [Command]) {
+        let epoch = request.epoch
+        debug("resize t=\(ProcessInfo.processInfo.systemUptime) capture-send pane=\(pane) chunk=50000")
+        client.send(first + PaneSync.commands(pane)) { [weak self, weak feed] replies in
+            debug("resize t=\(ProcessInfo.processInfo.systemUptime) capture-reply pane=\(pane)")
+            guard let self, let feed, self.panes?[pane] === feed,
+                  case .syncing(let current) = feed.history, current === request else { return request.completions.forEach { $0() } }
+            var retry = true
+            defer { request.completions.forEach { $0() }; self.drain(pane, feed, retry: retry) }
+            guard feed.view.historyEpoch == epoch, let replies else {
+                if !feed.view.resizeDirty { feed.view.markContentDirty(preserveAnchor: true) }
+                feed.history = .settled(.older)
+                return
+            }
+            if let snapshot = PaneSync.restore(replies.dropFirst(first.count)) {
+                let (data, history, anchorRows) = (snapshot.data, snapshot.history, snapshot.anchorRows)
+                debug("resize t=\(ProcessInfo.processInfo.systemUptime) replay-start pane=\(pane) bytes=\(data.count)")
+                guard feed.view.feed(data, kind: .snapshot, epoch: epoch) else {
+                    if !feed.view.resizeDirty { feed.view.markContentDirty(preserveAnchor: true) }
+                    feed.history = .settled(.older)
+                    return
+                }
+                debug("resize t=\(ProcessInfo.processInfo.systemUptime) replay-done pane=\(pane)")
+                guard feed.view.commitSnapshot(epoch: epoch) else {
+                    if !feed.view.resizeDirty { feed.view.markContentDirty(preserveAnchor: true) }
+                    feed.history = .settled(.older)
+                    return
+                }
+                let position = feed.view.scrollPosition()
+                let distance = feed.view.resizeAnchor?.locate(anchorRows).flatMap { $0 <= position.history ? $0 : nil } ?? 0
+                self.publish(feed, history: history, alternate: ghostty_surface_is_alternate_screen(feed.view.surface), insertionRefused: false)
+                DispatchQueue.main.async { [weak view = feed.view] in
+                    guard let view, view.historyEpoch == epoch else { return }
+                    if view.resizeAnchor != nil { view.requestScroll(distance) }
+                    view.resizeAnchor = nil
+                    view.restored(epoch: epoch)
+                    view.find?.search(navigate: false)
+                }
+            } else {
+                retry = false
+                feed.history = .settled(.older)
+                DispatchQueue.main.async { [weak view = feed.view] in view?.restoreFailed(epoch: epoch) }
+                self.report("could not capture \(pane): \(replies)")
             }
         }
     }
 
     private func invalidateSearch(_ feed: PaneFeed, restart: Bool) {
+        feed.goal = nil
         let since: DispatchTime
         switch feed.search {
         case .scanning:
@@ -358,6 +378,7 @@ final class Connection: @unchecked Sendable {
         client.queue.async {
             guard let feed = self.panes?[pane] else { return }
             if case .stale(_, let work) = feed.search { work?.cancel() }
+            feed.goal = nil
             feed.search = query.isEmpty ? nil : .scanning(token: token, matches: [])
             guard !query.isEmpty else { return }
             if case .syncing = feed.history { return self.invalidateSearch(feed, restart: false) }
@@ -394,84 +415,154 @@ final class Connection: @unchecked Sendable {
         }
     }
 
-    private func scroll(_ pane: PaneID, wheel: Bool = false) {
+    private func load(_ pane: PaneID, goal: (Int, UUID)? = nil) {
         client.queue.async { [self] in
-            guard let feed = panes?[pane], !feed.view.resizeDirty,
-                  case .settled(let availability) = feed.history else { return }
-            if wheel, availability == .ready(gap: 0) { return }
-            let limited = if case .limited = availability { true } else { false }
+            guard let feed = panes?[pane], !feed.view.resizeDirty else { return }
+            if let goal {
+                guard case .scanning(let token, _) = feed.search, token == goal.1 else { return }
+                feed.goal = goal.0 > feed.view.scrollPosition().history ? goal : nil
+                if feed.goal == nil { return }
+            }
+            guard case .settled(let availability) = feed.history else { return }
+            if case .refused = availability { ghostty_surface_raise_scrollback_limit(feed.view.surface) }
             let token = UUID(), epoch = feed.view.historyEpoch
             feed.history = .fetching(token)
             client.send([Command("display-message", "-p", "-t", pane, "#{history_size} #{alternate_on}")]) {
                 [weak self, weak feed] replies in
                 guard let self, let feed, self.panes?[pane] === feed,
-                      feed.view.historyEpoch == epoch, !feed.view.resizeDirty,
                       case .fetching(let current) = feed.history, current == token else { return }
-                guard let metadata = HistoryMetadata(replies?.first) else {
-                    self.publish(feed, history: feed.view.scrollPosition().history, discardTarget: true)
+                guard feed.view.historyEpoch == epoch, !feed.view.resizeDirty else {
+                    self.publish(feed, history: feed.total)
+                    self.drain(pane, feed)
                     return
                 }
-                let position = self.publish(feed, history: metadata.history, alternate: metadata.alternate, insertionRefused: limited)
-                if !limited, !metadata.alternate, metadata.history > position.history,
-                   let destination = feed.view.scrollTarget, destination >= position.history - position.rows {
-                    feed.history = .fetching(token)
-                    self.fetch(pane, feed, token: token, chunk: min(5000, metadata.history - position.history))
+                guard let metadata = HistoryMetadata(replies?.first) else {
+                    self.publish(feed, history: feed.total)
+                    self.drain(pane, feed)
+                    return
                 }
+                if self.repair(feed, metadata: metadata) {
+                    self.publish(feed, history: metadata.history, alternate: metadata.alternate)
+                    self.drain(pane, feed)
+                    return
+                }
+                let position = feed.view.scrollPosition()
+                if metadata.alternate || metadata.history <= position.history {
+                    self.publish(feed, history: metadata.history, alternate: metadata.alternate)
+                    feed.goal = nil
+                    self.drain(pane, feed)
+                    return
+                }
+                feed.total = metadata.history
+                self.fetch(pane, feed, token: token, chunk: min(50000, metadata.history - position.history))
             }
         }
     }
 
-    private func fetch(_ pane: PaneID, _ feed: PaneFeed, token: UUID, chunk: Int = 5000) {
+    private func fetch(_ pane: PaneID, _ feed: PaneFeed, token: UUID, chunk: Int = 50000, retries: Int = 0) {
         let position = feed.view.scrollPosition(), epoch = feed.view.historyEpoch
         debug("resize t=\(ProcessInfo.processInfo.systemUptime) history-page-send pane=\(pane) loaded=\(position.history) chunk=\(chunk)")
         client.send(HistoryCapture.commands(pane, loaded: position.history, chunk: chunk)) { [weak self, weak feed] replies in
-            debug("resize t=\(ProcessInfo.processInfo.systemUptime) history-page-reply pane=\(pane)")
             guard let self, let feed, self.panes?[pane] === feed,
-                  case .fetching(let current) = feed.history, current == token,
-                  feed.view.historyEpoch == epoch, !feed.view.resizeDirty, let replies else { return }
+                  case .fetching(let current) = feed.history, current == token else { return }
+            defer { if case .settled = feed.history { self.drain(pane, feed) } }
+            guard feed.view.historyEpoch == epoch, !feed.view.resizeDirty, let replies else {
+                self.publish(feed, history: feed.total)
+                return
+            }
             let position = feed.view.scrollPosition()
-            if let destination = feed.view.scrollTarget, destination < position.history - position.rows,
-               let metadata = HistoryMetadata(replies.first) {
-                self.publish(feed, history: metadata.history, alternate: metadata.alternate)
-                return
-            }
             guard let capture = HistoryCapture(replies, loaded: position.history) else {
-                self.publish(feed, history: HistoryMetadata(replies.first)?.history ?? position.history, discardTarget: true)
+                self.publish(feed, history: feed.total)
+                self.failGoal(feed)
+                self.report("could not load older history for \(pane)")
                 return
             }
-            if capture.alternate {
-                self.publish(feed, history: 0, alternate: true)
+            if let metadata = HistoryMetadata(replies.first), self.repair(feed, metadata: metadata) {
+                self.publish(feed, history: capture.history, alternate: capture.alternate)
                 return
             }
+            if capture.alternate { self.publish(feed, history: capture.history, alternate: true); return }
             if capture.rows == 0 && capture.history > position.history && chunk < capture.history - position.history {
                 return self.fetch(pane, feed, token: token, chunk: min(capture.history - position.history, chunk * 2))
             }
             let added = capture.rows == 0 ? 0 : feed.view.prepend(Data(capture.text.utf8), epoch: epoch)
-            debug("resize t=\(ProcessInfo.processInfo.systemUptime) history-prepend-done pane=\(pane) added=\(added)")
-            let loaded = self.publish(feed, history: capture.history, insertionRefused: capture.rows > 0 && added == 0,
-                                      emptyCaptureChunk: capture.rows == 0 ? chunk : nil, discardTarget: capture.rows == 0).history
-            if case .settled(.ready(let gap)) = feed.history, gap > 0, capture.rows > 0,
-               let destination = feed.view.scrollTarget, destination >= loaded - position.rows {
-                feed.history = .fetching(token)
-                self.fetch(pane, feed, token: token, chunk: min(5000, gap))
+            guard feed.view.historyEpoch == epoch, !feed.view.resizeDirty else {
+                self.publish(feed, history: feed.total)
+                return
             }
+            if capture.rows > 0 && added == 0, feed.goal != nil, retries < 16,
+               feed.view.historyEpoch == epoch, !feed.view.resizeDirty {
+                ghostty_surface_raise_scrollback_limit(feed.view.surface)
+                return self.fetch(pane, feed, token: token, chunk: chunk, retries: retries + 1)
+            }
+            let loaded = self.publish(feed, history: capture.history, insertionRefused: capture.rows > 0 && added == 0,
+                                      emptyCaptureChunk: capture.rows == 0 ? chunk : nil).history
+            if let goal = feed.goal, loaded < goal.distance {
+                guard added > 0 else { self.failGoal(feed); return }
+                feed.history = .fetching(token)
+                self.fetch(pane, feed, token: token, chunk: min(50000, max(0, capture.history - loaded)))
+            } else { feed.goal = nil }
         }
     }
 
+    private func failGoal(_ feed: PaneFeed) {
+        guard let goal = feed.goal else { return }
+        feed.goal = nil
+        DispatchQueue.main.async { [weak view = feed.view] in view?.find?.failed(goal.token) }
+    }
+
     @discardableResult private func publish(_ feed: PaneFeed, history: Int, alternate: Bool = false,
-                                           insertionRefused: Bool = false, emptyCaptureChunk: Int? = nil, discardTarget: Bool = false) -> PaneView.ScrollPosition {
-        if discardTarget { feed.view.clearScrollTarget() }
+                                           insertionRefused: Bool? = nil, emptyCaptureChunk: Int? = nil) -> PaneView.ScrollPosition {
         let position = feed.view.scrollPosition()
-        let state = HistoryAvailability.settled(total: alternate ? 0 : history, loaded: position.history,
-                                                insertionRefused: insertionRefused, emptyCaptureChunk: emptyCaptureChunk)
-        feed.history = .settled(state)
-        let limited = if case .limited = state { true } else { false }
+        let refused = insertionRefused ?? { if case .settled(.refused) = feed.history { return true }; return false }()
+        let unchangedExhaustion = insertionRefused == nil && history == feed.total && {
+            if case .settled(.exhausted(let epoch)) = feed.history { return epoch == feed.outputEpoch }
+            return false
+        }()
+        feed.total = history
+        let exhausted = unchangedExhaustion || alternate || history <= position.history || emptyCaptureChunk.map { $0 >= history - position.history } == true
+        feed.history = .settled(exhausted ? .exhausted(epoch: feed.outputEpoch) : refused ? .refused : .older)
+        let epoch = feed.view.historyEpoch
         DispatchQueue.main.async { [weak view = feed.view] in
-            let total = if case .ready(let gap) = state { position.history + gap } else { history }
-            view?.updateScroller(history: total, position: position, alternate: alternate, limited: limited, discardTarget: discardTarget)
-            view?.find?.loaded(position, limited: limited)
+            guard let view, view.historyEpoch == epoch else { return }
+            view.updateScroller(history: history, position: position, alternate: alternate, older: !exhausted)
+            view.find?.loaded(position)
         }
         return position
+    }
+
+    private func repair(_ feed: PaneFeed, metadata: HistoryMetadata) -> Bool {
+        guard metadata.history < feed.total || (!metadata.alternate && metadata.history < feed.view.scrollPosition().history) else { return false }
+        feed.total = metadata.history
+        feed.goal = nil
+        invalidateSearch(feed, restart: false)
+        if !feed.view.resizeDirty { feed.view.markContentDirty() }
+        DispatchQueue.main.async { [weak view = feed.view] in view?.syncResize() }
+        return true
+    }
+
+    @MainActor private func refreshHistory() {
+        let shown = view?.windows.values.filter { !$0.isHidden }.flatMap(\.panes).filter { !$0.isHidden }.map(\.pane) ?? []
+        client.queue.async { [weak self] in
+            guard let self, self.panes != nil else { return }
+            let samples = shown.compactMap { id -> (PaneID, PaneFeed, Int)? in
+                guard let feed = self.panes?[id], case .settled = feed.history else { return nil }
+                return (id, feed, feed.outputEpoch)
+            }
+            if !samples.isEmpty {
+                self.client.send(samples.map { Command("display-message", "-p", "-t", $0.0, "#{history_size} #{alternate_on}") }) { [weak self] replies in
+                    guard let self, let replies, replies.count == samples.count else { return }
+                    for ((id, feed, epoch), reply) in zip(samples, replies) {
+                        guard self.panes?[id] === feed, epoch == feed.outputEpoch,
+                              case .settled = feed.history, let metadata = HistoryMetadata(reply) else { continue }
+                        if !self.repair(feed, metadata: metadata) {
+                            self.publish(feed, history: metadata.history, alternate: metadata.alternate)
+                        }
+                    }
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.refreshHistory() }
+        }
     }
 
     private func closed(_ status: Int32, _ stderr: String) {
