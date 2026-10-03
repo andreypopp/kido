@@ -241,6 +241,13 @@ final class WindowView: NSView {
         if changed { invalidateCursorRects() }
     }
 
+    func outerEdges(_ id: PaneID) -> (Bool, Bool) {
+        guard let placement = placed, let pane = shown?.visible.root.panes.first(where: { $0.id == id }),
+              pane.layer == .tiled || zoomed else { return (false, false) }
+        let tiled = placement.tiled(pane.geometry, alternate: false)
+        return (tiled.outerTop, tiled.outerBottom)
+    }
+
     private func placeFloat(_ id: PaneID, _ placement: PaneLayout) {
         guard let pane = shown?.visible.root.panes.first(where: { $0.id == id && $0.layer != .tiled }),
               let chrome = subviews.lazy.compactMap({ $0 as? PaneChrome }).first(where: { $0.pane == id }),
