@@ -163,8 +163,8 @@ func tiledPlacement(pixel: CGFloat) {
     }
     let layout = PaneLayout(root: .split(.topBottom, g, panes), bounds: bounds, cell: cell, pixel: pixel)
     let upper = layout.tiled(top, alternate: false), lower = layout.tiled(interior, alternate: false)
-    #expect(upper.outerTop)
-    #expect(!lower.outerTop)
+    #expect(layout.outerTop(top))
+    #expect(!layout.outerTop(interior))
     #expect(upper.grid == layout.grid(top))
     #expect(upper.insets.top == 6)
     #expect(upper.content.minY == 40 && upper.chrome.minY == upper.grid.minY - layout.before.height)
@@ -190,7 +190,7 @@ func tiledPlacement(pixel: CGFloat) {
     let zoomRoot = Node.pane(Pane(id: PaneID(number: 0), index: 0, geometry: g, focus: .active, layer: .tiled))
     let zoom = PaneLayout(root: zoomRoot, bounds: bounds, cell: cell, pixel: pixel).tiled(g, alternate: false)
     #expect(zoom.insets.bottom == 12 && zoom.content.maxY == bounds.maxY)
-    #expect(zoom.outerTop)
+    #expect(PaneLayout(root: zoomRoot, bounds: bounds, cell: cell, pixel: pixel).outerTop(g))
     #expect(zoom.grid.maxY == bounds.maxY - 12)
     #expect(zoom.content.minY == 40 && zoom.chrome.maxY == bounds.maxY)
     for height in [CGFloat(400), 700] {
