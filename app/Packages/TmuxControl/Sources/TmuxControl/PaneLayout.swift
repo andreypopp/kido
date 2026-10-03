@@ -19,7 +19,6 @@ public struct PaneLayout: Equatable {
         public let content: CGRect
         public let chrome: CGRect
         public let insets: RenderInsets
-        public let outerTop: Bool
     }
     public static let minimumMargin = CGSize(width: 4, height: 12)
     public static let topMargin: CGFloat = 40
@@ -64,10 +63,12 @@ public struct PaneLayout: Equatable {
                       width: grid.width + before.width + after.width, height: grid.height + before.height + after.height)
     }
 
+    public func outerTop(_ g: Geometry) -> Bool { g.y == rootTop }
+
     public func tiled(_ g: Geometry, alternate: Bool) -> TiledPlacement {
         let grid = grid(g)
         let insets = alternate ? RenderInsets() : RenderInsets(
-            top: g.y == rootTop ? historyStrip : before.height,
+            top: outerTop(g) ? historyStrip : before.height,
             bottom: grid.maxY == bottom ? bounds.maxY - grid.maxY : after.height)
         let content = CGRect(x: grid.minX, y: grid.minY - insets.top, width: grid.width, height: grid.height + insets.top + insets.bottom)
         var chrome = frame(g)
@@ -77,8 +78,7 @@ public struct PaneLayout: Equatable {
         chrome.size.width = right - left
         chrome.origin.y = min(chrome.minY, content.minY)
         chrome.size.height = (grid.maxY == bottom ? bounds.maxY : min(grid.maxY + after.height, bounds.maxY)) - chrome.minY
-        return TiledPlacement(grid: grid, content: content, chrome: chrome, insets: insets,
-                              outerTop: g.y == rootTop)
+        return TiledPlacement(grid: grid, content: content, chrome: chrome, insets: insets)
     }
 
     public func geometry(_ frame: CGRect) -> Geometry {
@@ -114,7 +114,7 @@ public struct PaneLayout: Equatable {
     public func line(_ divider: Divider, pixel: CGFloat) -> CGRect {
         let rect = grid(divider.geometry)
         if divider.direction == .leftRight {
-            let top = divider.geometry.y == rootTop
+            let top = outerTop(divider.geometry)
                 ? max(bounds.minY + ceil(Self.topMargin / pixel) * pixel, tiled(divider.geometry, alternate: false).content.minY)
                 : rect.minY - before.height
             return CGRect(x: rect.minX + after.width, y: top, width: pixel,
