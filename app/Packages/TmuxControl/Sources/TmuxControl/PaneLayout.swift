@@ -66,8 +66,9 @@ public struct PaneLayout: Equatable {
 
     public func tiled(_ g: Geometry, alternate: Bool) -> TiledPlacement {
         let grid = grid(g)
-        let insets = RenderInsets(top: g.y == rootTop && !alternate ? historyStrip : 0,
-                                  bottom: grid.maxY == bottom && !alternate ? bounds.maxY - grid.maxY : 0)
+        let insets = alternate ? RenderInsets() : RenderInsets(
+            top: g.y == rootTop ? historyStrip : before.height,
+            bottom: grid.maxY == bottom ? bounds.maxY - grid.maxY : after.height)
         let content = CGRect(x: grid.minX, y: grid.minY - insets.top, width: grid.width, height: grid.height + insets.top + insets.bottom)
         var chrome = frame(g)
         let left = g.x == 0 ? bounds.minX : chrome.minX
