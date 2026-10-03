@@ -29,8 +29,14 @@ final class Connection: @unchecked Sendable {
         var total = 0
         var outputEpoch = 0
         var goal: (distance: Int, token: UUID)?
+        var preparingRestore = false
         var pendingRestore: (first: [Command], synced: (@Sendable () -> Void)?)?
         init(_ view: PaneView) { self.view = view }
+        func completePendingRestore() {
+            let pending = pendingRestore
+            pendingRestore = nil
+            pending?.synced?()
+        }
     }
     private var panes: [PaneID: PaneFeed]? = [:]
     private var reasons: [String] = []
@@ -92,7 +98,10 @@ final class Connection: @unchecked Sendable {
         let id = pane.pane, key = ObjectIdentifier(pane)
         retiring[key] = pane
         client.queue.async {
-            if self.panes?[id].map({ ObjectIdentifier($0.view) }) == key { self.panes?[id] = nil }
+            if let feed = self.panes?[id], ObjectIdentifier(feed.view) == key {
+                self.panes?[id] = nil
+                feed.completePendingRestore()
+            }
             DispatchQueue.main.async {
                 guard let pane = self.retiring.removeValue(forKey: key) else { return }
                 self.freeing.append(pane)
@@ -241,66 +250,43 @@ final class Connection: @unchecked Sendable {
         client.queue.async { [self] in
             guard let feed = panes?[pane] else { return synced?() ?? () }
             feed.goal = nil
-            switch feed.history {
-            case .syncing(let request) where request.epoch == feed.view.historyEpoch && first.isEmpty:
+            if case .syncing(let request) = feed.history,
+               request.epoch == feed.view.historyEpoch, first.isEmpty, feed.pendingRestore == nil {
                 if let synced { request.completions.append(synced) }
                 return
-            case .syncing, .fetching:
-                if let pending = feed.pendingRestore {
-                    feed.pendingRestore = (pending.first + first, { pending.synced?(); synced?() })
-                } else { feed.pendingRestore = (first, synced) }
-                return
-            case .settled: break
             }
-            if let pending = feed.pendingRestore {
-                feed.pendingRestore = nil
-                self.sync(pane, first: pending.first + first, synced: { pending.synced?(); synced?() })
-                return
-            }
-            DispatchQueue.main.async { [weak view = feed.view] in
-                guard let view else { return synced?() ?? () }
-                if (view.superview as? WindowView)?.defersRestore == true {
-                    self.client.queue.async {
-                        if let pending = feed.pendingRestore {
-                            feed.pendingRestore = (pending.first + first, { pending.synced?(); synced?() })
-                        } else { feed.pendingRestore = (first, synced) }
-                    }
-                    return
-                }
+            if let older = feed.pendingRestore {
+                feed.pendingRestore = (older.first + first, { older.synced?(); synced?() })
+            } else { feed.pendingRestore = (first, synced) }
+            guard case .settled = feed.history, !feed.preparingRestore else { return }
+            feed.preparingRestore = true
+            DispatchQueue.main.async {
+                let view = feed.view
+                let deferred = (view.superview as? WindowView)?.defersRestore == true
                 let epoch = view.historyEpoch
-                view.resetScroll()
+                if !deferred { view.resetScroll() }
                 self.client.queue.async {
-                    guard self.panes?[pane] === feed else { return synced?() ?? () }
-                    guard view.historyEpoch == epoch else {
-                        self.sync(pane, first: first, synced: synced)
+                    feed.preparingRestore = false
+                    guard self.panes?[pane] === feed else {
+                        feed.completePendingRestore()
                         return
                     }
-                    if case .settled = feed.history {
-                        let request = PaneFeed.RestoreRequest(epoch: epoch, synced: synced)
-                        feed.history = .syncing(request)
-                        self.invalidateSearch(feed, restart: false)
-                        self.capture(pane, feed, request: request, first: first)
-                    } else {
-                        self.sync(pane, first: first, synced: synced)
-                    }
+                    guard !deferred else { return }
+                    guard view.historyEpoch == epoch else { return self.sync(pane) }
+                    guard case .settled = feed.history, let pending = feed.pendingRestore else { return }
+                    feed.pendingRestore = nil
+                    let request = PaneFeed.RestoreRequest(epoch: epoch, synced: pending.synced)
+                    feed.history = .syncing(request)
+                    self.invalidateSearch(feed, restart: false)
+                    self.capture(pane, feed, request: request, first: pending.first)
                 }
             }
         }
     }
 
     private func drain(_ pane: PaneID, _ feed: PaneFeed, retry: Bool = true) {
-        if let pending = feed.pendingRestore {
-            feed.pendingRestore = nil
-            DispatchQueue.main.async { [weak view = feed.view] in
-                guard let view else { return pending.synced?() ?? () }
-                if (view.superview as? WindowView)?.defersRestore == true {
-                    self.client.queue.async {
-                        if let next = feed.pendingRestore {
-                            feed.pendingRestore = (pending.first + next.first, { pending.synced?(); next.synced?() })
-                        } else { feed.pendingRestore = pending }
-                    }
-                } else { self.sync(pane, first: pending.first, synced: pending.synced) }
-            }
+        if feed.pendingRestore != nil {
+            sync(pane)
         } else if retry && feed.view.resizeDirty {
             DispatchQueue.main.async { [weak view = feed.view] in view?.syncResize() }
         }
@@ -321,7 +307,7 @@ final class Connection: @unchecked Sendable {
                 return
             }
             if let snapshot = PaneSync.restore(replies.dropFirst(first.count)) {
-                let (data, history, anchorRows) = (snapshot.data, snapshot.history, snapshot.anchorRows)
+                let (data, history) = (snapshot.data, snapshot.history)
                 debug("resize t=\(ProcessInfo.processInfo.systemUptime) replay-start pane=\(pane) bytes=\(data.count)")
                 guard feed.view.feed(data, kind: .snapshot, epoch: epoch) else {
                     if !feed.view.resizeDirty { feed.view.markContentDirty(preserveAnchor: true) }
@@ -335,7 +321,7 @@ final class Connection: @unchecked Sendable {
                     return
                 }
                 let position = feed.view.scrollPosition()
-                let distance = feed.view.resizeAnchor?.locate(anchorRows).flatMap { $0 <= position.history ? $0 : nil } ?? 0
+                let distance = feed.view.resizeAnchor?.locate(snapshot.anchorRows).flatMap { $0 <= position.history ? $0 : nil } ?? 0
                 self.publish(feed, history: history, alternate: ghostty_surface_is_alternate_screen(feed.view.surface), insertionRefused: false)
                 DispatchQueue.main.async { [weak view = feed.view] in
                     guard let view, view.historyEpoch == epoch else { return }
@@ -431,26 +417,20 @@ final class Connection: @unchecked Sendable {
                 [weak self, weak feed] replies in
                 guard let self, let feed, self.panes?[pane] === feed,
                       case .fetching(let current) = feed.history, current == token else { return }
-                guard feed.view.historyEpoch == epoch, !feed.view.resizeDirty else {
+                defer { if case .settled = feed.history { self.drain(pane, feed) } }
+                guard feed.view.historyEpoch == epoch, !feed.view.resizeDirty,
+                      let metadata = HistoryMetadata(replies?.first) else {
                     self.publish(feed, history: feed.total)
-                    self.drain(pane, feed)
-                    return
-                }
-                guard let metadata = HistoryMetadata(replies?.first) else {
-                    self.publish(feed, history: feed.total)
-                    self.drain(pane, feed)
                     return
                 }
                 if self.repair(feed, metadata: metadata) {
                     self.publish(feed, history: metadata.history, alternate: metadata.alternate)
-                    self.drain(pane, feed)
                     return
                 }
                 let position = feed.view.scrollPosition()
                 if metadata.alternate || metadata.history <= position.history {
                     self.publish(feed, history: metadata.history, alternate: metadata.alternate)
                     feed.goal = nil
-                    self.drain(pane, feed)
                     return
                 }
                 feed.total = metadata.history
@@ -534,7 +514,6 @@ final class Connection: @unchecked Sendable {
     private func repair(_ feed: PaneFeed, metadata: HistoryMetadata) -> Bool {
         guard metadata.history < feed.total || (!metadata.alternate && metadata.history < feed.view.scrollPosition().history) else { return false }
         feed.total = metadata.history
-        feed.goal = nil
         invalidateSearch(feed, restart: false)
         if !feed.view.resizeDirty { feed.view.markContentDirty() }
         DispatchQueue.main.async { [weak view = feed.view] in view?.syncResize() }
@@ -574,6 +553,7 @@ final class Connection: @unchecked Sendable {
         }
         note("connection closed, tmux exited \(status), \(why.replacingOccurrences(of: "\n", with: "; "))")
         panes = nil
+        gone?.values.forEach { $0.completePendingRestore() }
         DispatchQueue.main.async { withExtendedLifetime(gone) { self.onClose(exit) } }
     }
 
