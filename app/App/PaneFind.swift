@@ -13,6 +13,7 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
     private var target: Int?
     private var navigating = false
     private var searchedHistory = 0
+    private var autoNavigate = true
 
     init(_ pane: PaneView) {
         self.pane = pane
@@ -52,7 +53,8 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
 
     func controlTextDidChange(_ notification: Notification) { search() }
 
-    func search() {
+    func search(navigate: Bool = true) {
+        autoNavigate = navigate
         token = UUID()
         matches = []
         index = 0
@@ -75,7 +77,8 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
         guard token == self.token else { return }
         self.matches = matches
         if matches.isEmpty { count.stringValue = "No matches" }
-        else { land() }
+        else if autoNavigate { land() }
+        else { count.stringValue = "\(matches.count) matches" }
     }
 
     func failed(_ token: UUID) {
@@ -95,23 +98,16 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
         guard let pane else { return }
         count.stringValue = "\(index + 1) of \(matches.count)"
         target = index
-        if matches[index] > pane.scrollPosition().history {
-            pane.requestScroll(matches[index])
-        } else { navigate() }
+        pane.onFindCoverage(matches[index], token)
+        if matches[index] <= pane.scrollPosition().history { navigate() }
     }
 
-    func loaded(_ position: PaneView.ScrollPosition, limited: Bool) {
+    func loaded(_ position: PaneView.ScrollPosition) {
         guard matches.indices.contains(index) else { return }
-        if position.history != searchedHistory && matches[index] <= position.history {
-            target = index
-            restartGhostty()
-        }
+        if position.history != searchedHistory && matches[index] <= position.history { restartGhostty() }
         guard target != nil else { return }
         if matches[index] <= position.history { pane?.resetScroll(); navigate() }
-        else if limited {
-            target = nil
-            count.stringValue = "Match out of reach"
-        }
+
     }
 
     func ghosttyTotal(_ total: Int) { self.total = max(0, total); navigate() }

@@ -17,10 +17,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onFontChange: (Float) -> Void = { _ in }
     var onCommand: (PaneCommand) -> Void = { _ in }
     var onResync: () -> Bool = { false }
+    var onRestoreDrain: () -> Void = {}
     var onGridFailure: () -> Void = {}
-    var onScrollRequest: (_ wheel: Bool) -> Void = { _ in }
+    var onFindCoverage: (Int, UUID) -> Void = { _, _ in }
     var onLoadMore: () -> Void = {}
-    var onScrollSettled: () -> Void = {}
     let scroller = PaneScroller()
     var find: PaneFind?
     private(set) var alternate = false
@@ -38,9 +38,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private let terminal = TerminalView()
     private let historyLimit = NSBox()
     @objc private func loadMoreHistory() { onLoadMore() }
-    private var shifted: Bool { (terminal.layer?.transform.m42 ?? 0) != 0 }
     private var pressed: Set<Int> = []
-    private var scrollGeometry = (history: 0, position: ScrollPosition(history: 0, offset: 0, rows: 1), captured: false, limited: false)
+    private var scrollGeometry = (history: 0, position: ScrollPosition(history: 0, offset: 0, rows: 1), captured: false, older: false)
     private var scrollPresentation = (position: ScrollPosition(history: 0, offset: 0, rows: 1), distance: Optional<Double>.none, revision: 0)
     nonisolated private let target = OSAllocatedUnfairLock<Double?>(initialState: nil)
     nonisolated private let scrolling = DispatchQueue(label: "kido.scroll", qos: .userInteractive)
@@ -54,11 +53,12 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         scrollIntent.withLock { $0.revision += 1; return $0.revision }
     }
     private var scrollPending: Int?
-    private var trimming: DispatchWorkItem?
     nonisolated private(set) var resizeDirty: Bool {
         get { grid.withLock { $0.dirty } }
         set { grid.withLock { $0.dirty = newValue } }
     }
+    private var resizeIntent = false
+    private var restoreRequested: Int?
     private var finalEpoch: Int?
     private var renderSequence: UInt64 = 0
     private var renderRetry = false
@@ -131,25 +131,36 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     nonisolated func prepend(_ bytes: Data, epoch expected: Int) -> Int {
-        grid.withLock {
-            guard $0.epoch == expected, $0.ready else { return 0 }
-            return bytes.withUnsafeBytes {
-                guard let base = $0.baseAddress else { return 0 }
-                return Int(ghostty_surface_prepend_history(surface, base.assumingMemoryBound(to: CChar.self), UInt($0.count)))
+        guard grid.withLock({ state in
+            guard state.epoch == expected, state.ready, !state.suspended, !state.replay else { return false }
+            state.replay = true
+            return true
+        }) else { return 0 }
+        defer { finishMutation() }
+        return bytes.withUnsafeBytes {
+            guard let base = $0.baseAddress else { return 0 }
+            return Int(ghostty_surface_prepend_history(surface, base.assumingMemoryBound(to: CChar.self), UInt($0.count)))
+        }
+    }
+
+    nonisolated private func finishMutation() {
+        let deferred = grid.withLock { state in
+            state.replay = false
+            return !state.ready
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            guard !grid.withLock({ $0.replay }) else { return }
+            applyReflows()
+            if deferred, !grid.withLock({ $0.ready }), let acceptedGrid {
+                resize(cols: acceptedGrid.cols, rows: acceptedGrid.rows)
             }
         }
     }
 
-    nonisolated func trimHistory(keeping minimum: Int) -> Int {
-        scrolling.sync {
-            grid.withLock {
-                guard $0.ready else { return 0 }
-                let position = scrollPosition()
-                let distance = scrollTarget ?? (position.history - position.offset)
-                let rows = max(0, min(position.offset - 5000, position.history - max(minimum, distance + 5000)))
-                return Int(ghostty_surface_trim_history(surface, UInt(rows)))
-            }
-        }
+    nonisolated func markContentDirty(preserveAnchor: Bool = false) {
+        grid.withLock { $0.epoch += 1; $0.dirty = true; $0.suspended = true }
+        if !preserveAnchor { resizeAnchor = nil }
     }
 
     nonisolated func scroll(to row: Int) {
@@ -162,29 +173,39 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     func refreshScroller() {
         let position = scrollPosition()
         updateScroller(history: scrollGeometry.history, position: position,
-                       alternate: ghostty_surface_is_alternate_screen(surface), limited: scrollGeometry.limited, clampTarget: false)
+                       alternate: ghostty_surface_is_alternate_screen(surface), clampTarget: false)
     }
 
-    func updateScroller(history: Int, position: ScrollPosition, alternate: Bool, limited: Bool = false, discardTarget: Bool = false,
-                        clampTarget: Bool = true) {
+    func updateScroller(history: Int, position: ScrollPosition, alternate: Bool, older: Bool? = nil, clampTarget: Bool = true) {
         let clamped = target.withLock { target in
             guard clampTarget, let distance = target else { return false }
-            target = min(Double(limited ? min(history, position.history) : history), distance)
+            target = min(Double(position.history), distance)
             return target != distance
         }
-        let changed = clamped || discardTarget || self.alternate != alternate || scrollGeometry.history != history
+        let available = older ?? scrollGeometry.older
+        let changed = available != scrollGeometry.older || clamped || self.alternate != alternate || scrollGeometry.history != history
             || scrollGeometry.position.history != position.history || scrollGeometry.position.rows != position.rows
-            || scrollGeometry.limited != limited || (scrollTarget == nil && scrollGeometry.position.offset != position.offset)
+            || (scrollTarget == nil && scrollGeometry.position.offset != position.offset)
         guard changed else { return }
         invalidateScroll()
         updateAlternate(alternate)
-        scrollGeometry = (history, position, scrollGeometry.captured, limited)
+        scrollGeometry = (history, position, scrollGeometry.captured, available)
         if alternate { clearScrollTarget() }
         queueScroll()
     }
 
+    nonisolated func commitSnapshot(epoch: Int) -> Bool {
+        grid.withLock { state in
+            guard state.epoch == epoch, state.ready else { return false }
+            state.suspended = false
+            state.dirty = false
+            return true
+        }
+    }
+
     func restored(epoch: Int) {
         guard epoch == historyEpoch else { return }
+        restoreRequested = nil
         finalEpoch = epoch
         renderRetry = true
         requestFinalRender()
@@ -238,28 +259,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     private func presentScroll() {
         let (position, applied, _) = scrollPresentation
-        let history = scrollGeometry.history, limited = scrollGeometry.limited
         let distance = applied ?? Double(position.history - position.offset)
-        historyLimit.isHidden = !limited || history <= position.history || distance < Double(position.history - position.rows)
-        let shifted = distance > Double(position.history)
-        if shifted && !self.shifted {
-            for button in pressed {
-                let value = button == 0 ? GHOSTTY_MOUSE_LEFT : button == 1 ? GHOSTTY_MOUSE_RIGHT : GHOSTTY_MOUSE_MIDDLE
-                _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, value, GHOSTTY_MODS_NONE)
-            }
-            pressed.removeAll()
-            ghostty_surface_mouse_pressure(surface, 0, 0)
-        }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        let transform = CATransform3DMakeTranslation(0, -min(bounds.height, CGFloat(max(0, distance - Double(position.history))) * rowHeight), 0)
-        if let layer = terminal.layer, !CATransform3DEqualToTransform(layer.transform, transform) {
-            layer.transform = transform
-            layer.setNeedsDisplay()
-        }
-        CATransaction.commit()
-        scroller.update(history: history, rows: position.rows, offset: Double(history) - distance, alternate: alternate,
-                        unavailable: limited ? max(0, history - position.history) : 0)
+        historyLimit.isHidden = alternate || !scrollGeometry.older || scrollGeometry.history <= position.history
+            || distance < Double(max(0, position.history - position.rows))
+        scroller.update(history: position.history, rows: position.rows,
+                        offset: Double(position.history) - distance, alternate: alternate)
     }
 
     func requestScroll(_ distance: Int) {
@@ -268,17 +272,16 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         requestScrollDistance { _ in Double(distance) }
     }
 
-    private func requestScrollDistance(wheel: Bool = false, _ move: @Sendable (Double) -> Double) {
+    private func requestScrollDistance( _ move: @Sendable (Double) -> Double) {
         resizeAnchor = nil
         invalidateScroll()
         let position = Double(scrollGeometry.position.history - scrollGeometry.position.offset)
-        let limit = scrollGeometry.limited ? Double(min(scrollGeometry.history, scrollGeometry.position.history)) : .infinity
+        let limit = Double(scrollPosition().history)
         target.withLock {
             let previous = $0 ?? position
             $0 = max(0, min(limit, move(previous)))
         }
         queueScroll()
-        onScrollRequest(wheel)
     }
 
     private func queueScroll() {
@@ -302,21 +305,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
                     self.scrollPresentation = (moved, distance, revision)
                     self.presentScroll()
                 }
-                self.scheduleTrim()
                 if self.scrollDistance != distance { self.queueScroll() }
                 else if moved != nil { self.requestFinalRender() }
             }
         }
-    }
-
-    private func scheduleTrim() {
-        trimming?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, !self.alternate, self.find == nil, self.pressed.isEmpty else { return }
-            self.onScrollSettled()
-        }
-        trimming = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
     }
 
     nonisolated func clearScrollTarget() { target.withLock { $0 = nil } }
@@ -560,7 +552,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             scrollPresentation = (moved, nil, revision)
         }
         presentScroll()
-        scheduleTrim()
     }
 
     private func updateAlternate(_ alternate: Bool) {
@@ -589,7 +580,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     // MANUAL_MIRROR applies set_grid_size inline (termio/Termio.zig);
     // grid_metrics confirms the actual terminal grid under its renderer lock.
-    nonisolated private let grid = OSAllocatedUnfairLock(initialState: (epoch: 0, ready: true, dirty: false))
+    nonisolated private let grid = OSAllocatedUnfairLock(initialState: (epoch: 0, ready: true, dirty: false, suspended: false, replay: false))
+    private var pendingReflow: [@MainActor () -> Void] = []
+    private var acceptedGrid: (cols: Int, rows: Int)?
 
     private var installedSurface: IOSurfaceRef? {
         for layer in [terminal.layer].compactMap({ $0 }) + (terminal.layer?.sublayers ?? []) {
@@ -680,7 +673,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         scroller.isHidden = true
         scroller.begin = { [weak self] in self?.resizeAnchor = nil; self?.snapScroll() }
         scroller.jump = { [weak self] in self?.requestScroll($0) }
-        let label = NSTextField(labelWithString: "Older history not loaded (memory limit)")
+        let label = NSTextField(labelWithString: "Older history not loaded")
         label.font = .systemFont(ofSize: 11)
         label.textColor = .secondaryLabelColor
         let loadMore = NSButton(title: "Load more", target: self, action: #selector(loadMoreHistory))
@@ -698,7 +691,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         ghostty_surface_set_color_scheme(surface, runtime.colorScheme)
         // The callback must not reenter the surface (ghostty.h).
         _ = ghostty_surface_set_font_size_action_callback(surface, { userdata, _, _, points, _, _ in
-            PaneView.onMain(userdata) { $0.snapScroll(); $0.onFontChange(points) }
+            PaneView.onMain(userdata) { pane in pane.reflow { pane.onFontChange(points) } }
         }, this)
         updateTrackingAreas()
         // AppKit sends no keyUp through the responder chain while Command is
@@ -730,11 +723,17 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     enum FeedKind { case live, snapshot }
 
-    nonisolated func feed(_ bytes: Data, kind: FeedKind = .live) {
-        guard grid.withLock({ $0.ready }) else { return }
-        scrolling.sync {
-            guard grid.withLock({ $0.ready }) else { return }
-            let epoch = historyEpoch
+    @discardableResult nonisolated func feed(_ bytes: Data, kind: FeedKind = .live, epoch expected: Int? = nil) -> Bool {
+        guard grid.withLock({ $0.ready }) else { return false }
+        return scrolling.sync {
+            let admitted = grid.withLock { state -> Int? in
+                guard state.ready, kind == .snapshot || !state.suspended,
+                      expected.map({ $0 == state.epoch }) ?? true else { return nil }
+                if kind == .snapshot { state.replay = true }
+                return state.epoch
+            }
+            guard let epoch = admitted else { return false }
+            defer { if kind == .snapshot { finishMutation() } }
             if kind == .snapshot { scrollIntent.withLock { $0.revision += 1; $0.replay = epoch } }
             let pinned = viewport.withLock { adjustment in
                 kind == .live && scrollDistance.map { $0 > 0 } == true ? (scrollPosition(), adjustment) : nil
@@ -763,12 +762,18 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             let captured = ghostty_surface_mouse_captured(surface), alternate = ghostty_surface_is_alternate_screen(surface)
             DispatchQueue.main.async { [weak self] in
                 guard let self, historyEpoch == epoch else { return }
+                let returningToPrimary = kind == .live && self.alternate && !alternate
                 refreshScroller()
                 if kind == .snapshot || scrollDistance != scrollPresentation.distance { queueScroll() }
                 if captured != scrollGeometry.captured { snapScroll() }
                 scrollGeometry.captured = captured
                 updateAlternate(alternate)
+                if returningToPrimary {
+                    markContentDirty()
+                    syncResize()
+                }
             }
+            return true
         }
     }
 
@@ -780,25 +785,23 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     func resize(cols: Int, rows: Int) {
+        acceptedGrid = (cols, rows)
         let size = ghostty_surface_size(surface)
         var actual = ghostty_surface_grid_metrics_s()
         if (Int(size.columns), Int(size.rows)) == (cols, rows), grid.withLock({ $0.ready }),
            ghostty_surface_grid_metrics(surface, &actual),
            (Int(actual.columns), Int(actual.rows)) == (cols, rows) { return }
+        if !resizeDirty && !resizeIntent { beginResizeIntent(gesture: false) }
         snapScroll()
         resizeDirty = superview != nil
         finalEpoch = nil
-        if resizeAnchor == nil, !ghostty_surface_is_alternate_screen(surface) {
-            let position = scrollPosition()
-            if (scrollTarget ?? (position.history - position.offset)) > 0 {
-                var text = ghostty_text_s()
-                let lines = ghostty_surface_viewport_anchor(surface, &text)
-                let body = text.text.map { String(decoding: UnsafeRawBufferPointer(start: $0, count: Int(text.text_len)), as: UTF8.self) }
-                resizeAnchor = ScrollAnchor(lines: Int(lines), text: body)
-                if text.text != nil { ghostty_surface_free_text(surface, &text) }
-            }
+        let deferred = grid.withLock { state in
+            state.epoch += 1
+            state.ready = false
+            if state.replay { state.suspended = true }
+            return state.replay
         }
-        grid.withLock { $0.epoch += 1; $0.ready = false }
+        if deferred { return }
         var metrics = ghostty_surface_grid_metrics_s()
         #if KIDO_STRESS
         let set = !failGridInstall && ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil)
@@ -817,9 +820,62 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         DispatchQueue.main.async { [weak self] in self?.syncResize() }
     }
 
+    func beginResizeIntent(gesture: Bool = true) {
+        if gesture { resizeIntent = true }
+        snapScroll()
+        grid.withLock { $0.epoch += 1 }
+        restoreRequested = nil
+        finalEpoch = nil
+        resizeAnchor = nil
+        if !ghostty_surface_is_alternate_screen(surface) {
+            let position = scrollPosition()
+            if (scrollTarget ?? (position.history - position.offset)) > 0 {
+                var text = ghostty_text_s()
+                let lines = ghostty_surface_viewport_anchor(surface, &text)
+                let body = text.text.map { String(decoding: UnsafeRawBufferPointer(start: $0, count: Int(text.text_len)), as: UTF8.self) }
+                resizeAnchor = ScrollAnchor(lines: Int(lines), text: body)
+                if text.text != nil { ghostty_surface_free_text(surface, &text) }
+            }
+        }
+    }
+
+    func endResizeIntent() {
+        resizeIntent = false
+        onRestoreDrain()
+        syncResize()
+        if !resizeDirty { resizeAnchor = nil }
+    }
+
+    func reflow(_ change: @escaping @MainActor () -> Void) {
+        beginResizeIntent(gesture: false)
+        grid.withLock { $0.dirty = true; $0.suspended = true }
+        pendingReflow.append(change)
+        applyReflows()
+    }
+
+    private func applyReflows() {
+        guard !pendingReflow.isEmpty, grid.withLock({ state in
+            guard !state.replay else { return false }
+            state.ready = false
+            return true
+        }) else { return }
+        let changes = pendingReflow
+        pendingReflow = []
+        changes.forEach { $0() }
+        if let acceptedGrid { resize(cols: acceptedGrid.cols, rows: acceptedGrid.rows) }
+        else { grid.withLock { $0.ready = true } }
+        syncResize()
+    }
+
+    func restoreFailed(epoch: Int) {
+        if restoreRequested == epoch { restoreRequested = nil }
+    }
+
     func syncResize() {
-        guard resizeDirty, window?.inLiveResize != true, grid.withLock({ $0.ready }) else { return }
-        if onResync() { resizeDirty = false }
+        guard resizeDirty, (superview as? WindowView)?.defersRestore != true,
+              window?.inLiveResize != true, !isHidden, superview?.isHidden != true,
+              grid.withLock({ $0.ready }), restoreRequested != historyEpoch else { return }
+        if onResync() { restoreRequested = historyEpoch }
     }
 
     // MARK: - Clipboard
@@ -918,7 +974,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         }
         snapScroll()
         let scale = window.backingScaleFactor
-        ghostty_surface_set_content_scale(surface, scale, scale)
+        reflow { [weak self] in
+            guard let self else { return }
+            ghostty_surface_set_content_scale(surface, scale, scale)
+        }
         ghostty_surface_set_render_insets(surface, UInt32((renderInsets.top * scale).rounded()), UInt32((renderInsets.bottom * scale).rounded()))
     }
 
@@ -954,7 +1013,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             if strip { position(event); return true }
             snapScroll()
         } else if !pressed.contains(event.buttonNumber) { return true }
-        guard !shifted else { return true }
         if state == GHOSTTY_MOUSE_PRESS { position(event); pressed.insert(event.buttonNumber) }
         else { pressed.remove(event.buttonNumber) }
         let button = switch event.buttonNumber {
@@ -971,7 +1029,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             ghostty_surface_mouse_pos(surface, -1, -1, Self.mods(event.modifierFlags))
             return
         }
-        guard !shifted, scrollDistance.map({ $0 == $0.rounded() }) != false else { return }
+        guard scrollDistance.map({ $0 == $0.rounded() }) != false else { return }
         let pos = convert(event.locationInWindow, from: nil)
         let y = bounds.height - pos.y - renderInsets.top
         ghostty_surface_mouse_pos(surface, pos.x, y, Self.mods(event.modifierFlags))
@@ -1003,12 +1061,12 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     override func otherMouseDragged(with event: NSEvent) { position(event) }
 
     override func mouseExited(with event: NSEvent) {
-        guard !shifted, NSEvent.pressedMouseButtons == 0 else { return }
+        guard NSEvent.pressedMouseButtons == 0 else { return }
         ghostty_surface_mouse_pos(surface, -1, -1, Self.mods(event.modifierFlags))
     }
 
     override func pressureChange(with event: NSEvent) {
-        guard !shifted, !pressed.isEmpty else { return }
+        guard !pressed.isEmpty else { return }
         ghostty_surface_mouse_pressure(surface, UInt32(event.stage), Double(event.pressure))
     }
 
@@ -1023,12 +1081,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         if !alternate && (!scrollGeometry.captured || strip) && scrollGeometry.history > 0 {
             guard event.scrollingDeltaY != 0 else { return }
             let delta = event.scrollingDeltaY
-            let loaded = scrollGeometry.position.history, total = scrollGeometry.history
-            let limit = loaded >= total ? Double(loaded) : .infinity
+            let limit = Double(scrollPosition().history)
             let distance = scrollDistance ?? Double(scrollGeometry.position.history - scrollGeometry.position.offset)
             if precise && pressed.isEmpty {
                 let rows = delta * wheelMultiplier.precision / Double(max(1, rowHeight))
-                requestScrollDistance(wheel: true) { min(limit, $0 + rows) }
+                requestScrollDistance { min(limit, $0 + rows) }
                 return
             }
             if distance != distance.rounded() { snapScroll() }
@@ -1037,12 +1094,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             let rows = Int(wheelRemainder)
             wheelRemainder -= Double(rows)
             if rows != 0 {
-                requestScrollDistance(wheel: true) { min(limit, $0.rounded() + Double(rows)) }
+                requestScrollDistance { min(limit, $0.rounded() + Double(rows)) }
             }
             return
         }
         if strip { return }
-        scheduleTrim()
         scroller.reveal()
         if scrollDistance.map({ $0 != $0.rounded() }) == true { snapScroll() }
         let momentum: ghostty_input_mouse_momentum_e = switch event.momentumPhase {
