@@ -200,7 +200,7 @@ final class WindowView: NSView {
         }
         preview.frame = bounds
         preview.autoresizingMask = [.width, .height]
-        subviews = tiled + floating.sorted { $0.z > $1.z }.flatMap(\.views) + dividers + [preview]
+        subviews = dividers + tiled + floating.sorted { $0.z > $1.z }.flatMap(\.views) + [preview]
         for view in views.values where existing[view.pane] == nil {
             synced?.enter()
             connection?.attach(view) { synced?.leave() }
@@ -281,6 +281,11 @@ final class WindowView: NSView {
                 mask.path = CGPath(roundedRect: rect, cornerWidth: floatingRadius, cornerHeight: floatingRadius, transform: nil)
             }
             if view.layer?.mask !== mask { view.layer?.mask = mask }
+        } else if content.minY < placement.topLine.maxY {
+            let mask = view.layer?.mask as? CAShapeLayer ?? CAShapeLayer()
+            let rect = CGRect(x: 0, y: 0, width: content.width, height: max(0, content.maxY - placement.topLine.maxY))
+            mask.path = CGPath(rect: rect, transform: nil)
+            view.layer?.mask = mask
         } else if view.layer?.mask != nil { view.layer?.mask = nil }
         if view.scroller.superview !== chrome { chrome.addSubview(view.scroller, positioned: .below, relativeTo: nil) }
         view.scroller.select = view.onSelect
@@ -388,12 +393,12 @@ final class WindowView: NSView {
         if let liveFrame {
             switch liveFrame {
             case .dragging(let pane, let frame), .settling(let pane, let frame):
-                if pane == id { return frame }
+                if pane == id { return placement.clamp(frame) }
             }
         }
-        if let frame = freeFrames[id], placement.geometry(frame) == geometry { return frame }
+        if let frame = freeFrames[id], placement.geometry(frame) == geometry { return placement.clamp(frame) }
         freeFrames[id] = nil
-        return placement.frame(geometry)
+        return placement.clamp(placement.frame(geometry))
     }
 
     private func validateFrames(_ placement: PaneLayout) {
