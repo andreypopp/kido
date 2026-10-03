@@ -6,7 +6,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    SWIFT_ACTIVE_COMPILATION_CONDITIONS: ["$(inherited)", "$(KIDO_STRESS_CONDITION)"]
+    SWIFT_ACTIVE_COMPILATION_CONDITIONS: ["$(inherited)", "$(KIDO_STRESS_CONDITION)", "$(KIDO_VISUAL_CONDITION)"]
     ARCHS: arm64
     CODE_SIGN_IDENTITY: "-"
     CODE_SIGN_STYLE: Manual
@@ -14,6 +14,9 @@ settings:
     Release:
       DEBUG_INFORMATION_FORMAT: dwarf
 packages:
+  SnapshotTesting:
+    url: https://github.com/pointfreeco/swift-snapshot-testing
+    exactVersion: 1.18.7
   TmuxControl:
     path: Packages/TmuxControl
   SidebarFeed:
@@ -48,3 +51,40 @@ targets:
       - sdk: QuartzCore.framework
       - sdk: IOSurface.framework
       - sdk: Carbon.framework
+  VisualTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: VisualTests
+        excludes: ["__Snapshots__"]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Kido.app/Contents/MacOS/Kido"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+    dependencies:
+      - target: Kido
+      - sdk: Carbon.framework
+      - package: SnapshotTesting
+      - package: TmuxControl
+      - framework: build/GhosttyKit.xcframework
+        embed: false
+schemes:
+  Kido:
+    build:
+      targets:
+        Kido: all
+  Visual:
+    build:
+      targets:
+        Kido: all
+        VisualTests: [test]
+    test:
+      targets: [VisualTests]
+      environmentVariables:
+        KIDO_APP_BACKGROUND: "1"
+        KIDO_APP_SOCKET: /tmp/kido-visual-unconnected
+        KIDO_APP_TMUX: /usr/bin/false
+        XDG_CONFIG_HOME: "$(SRCROOT)/build/visual/config"
+        KIDO_VISUAL_RECORD: "$(KIDO_VISUAL_RECORD)"
+        KIDO_VISUAL_TMUX: "$(KIDO_VISUAL_TMUX)"
