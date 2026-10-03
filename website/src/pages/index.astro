@@ -1,0 +1,154 @@
+---
+import Demo from '../components/Demo.astro';
+import Brand from '../components/Brand.astro';
+import Install from '../components/Install.astro';
+import InstallCommand from '../components/InstallCommand.astro';
+import { description, github, mediaLabels, socialImage, title, url } from '../lib/site';
+import '../styles/landing.css';
+const canonical = new URL(url(), Astro.site);
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#0a0f0d" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={socialImage} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={socialImage} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" type="image/svg+xml" href={url('favicon.svg')} />
+    <title>{title}</title>
+    <script is:inline>
+      if ('IntersectionObserver' in window) document.documentElement.classList.add('scroll-nav');
+    </script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="topbar">
+      <nav aria-label="Main navigation">
+        <a class="wordmark" href={url()} aria-label="kido home"><Brand /></a>
+        <div class="nav-links">
+          <a href="#overview" aria-current="page">Overview</a>
+          <a href={github}>GitHub</a>
+          <InstallCommand id="nav-install" compact />
+        </div>
+      </nav>
+    </header>
+    <main id="main">
+      <section class="hero" id="overview">
+        <Install id="hero-install" />
+      </section>
+
+      <section class="feature">
+        <div class="section-copy reveal">
+          <h2>Interactive sidebar.<br /><span>An overview for your tmux sessions.</span></h2>
+          <p class="subhead">Sidebar shows all your tmux sessions, windows, panes. It tracks shell and agents (pi and Claude Code) status: idle, running, error, success. Shell integration works over ssh too.</p>
+        </div>
+        <Demo name="tmux" label={mediaLabels.tmux} />
+      </section>
+
+      <section class="feature" id="subagents">
+        <div class="section-copy reveal">
+          <h2>Subagents.<br /><span>Orchestration and collaboration.</span></h2>
+          <p class="subhead">An extension to pi to spawn subagents and surface them as tmux windows. Allows subagents to communicate and collaborate.</p>
+        </div>
+        <Demo name="subagents" label={mediaLabels.subagents} />
+      </section>
+
+      <section class="feature" id="async">
+        <div class="section-copy reveal">
+          <h2>Async bash / Monitors.<br /><span>Spawn async processes.</span></h2>
+          <p class="subhead">An extension to pi to spawn async bash processes and monitors. Follow execution status and react in real time.</p>
+        </div>
+        <Demo name="async" label={mediaLabels.async} />
+      </section>
+
+      <section class="get-started" id="install">
+        <Install heading="h2" id="footer-install" />
+      </section>
+    </main>
+    <footer><a class="wordmark" href={url()} aria-label="kido home"><Brand /></a><p>Made in Leipzig, Germany.</p><div><a href={github}>GitHub</a></div></footer>
+    <script>
+      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+      const topbar = document.querySelector<HTMLElement>('.topbar')!;
+      const heroInstall = document.querySelector('#overview .install-box')!;
+      if ('IntersectionObserver' in window) {
+        topbar.inert = true;
+        const navObserver = new IntersectionObserver(([entry]) => {
+          const visible = !entry.isIntersecting && entry.boundingClientRect.bottom <= 0;
+          topbar.inert = !visible;
+          topbar.classList.toggle('visible', visible);
+        });
+        navObserver.observe(heroInstall);
+      }
+      if (!reducedMotion.matches && 'IntersectionObserver' in window) {
+        const observer = new IntersectionObserver((entries) => {
+          entries.forEach((entry) => {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('visible');
+              observer.unobserve(entry.target);
+            }
+          });
+        }, { threshold: 0.08 });
+        document.querySelectorAll('.reveal').forEach((element) => {
+          element.classList.add('animate');
+          observer.observe(element);
+        });
+        reducedMotion.addEventListener('change', () => {
+          if (reducedMotion.matches) document.querySelectorAll('.reveal').forEach((element) => element.classList.add('visible'));
+        });
+      }
+      document.querySelectorAll<HTMLButtonElement>('[data-copy]').forEach((button) => {
+        const announcement = button.closest('.install-box')!.querySelector('.copy-announcement')!;
+        const original = button.innerHTML;
+        let reset: ReturnType<typeof setTimeout>;
+        button.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(button.dataset.copy!);
+            announcement.textContent = 'Copied to clipboard.';
+            button.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m5 12 4 4 10-10" /></svg>';
+            clearTimeout(reset);
+            reset = setTimeout(() => { button.innerHTML = original; announcement.textContent = ''; }, 1500);
+          } catch {
+            announcement.textContent = 'Select the command to copy it.';
+          }
+        });
+      });
+      document.querySelectorAll<HTMLVideoElement>('video').forEach((video) => {
+        const figure = video.closest('figure')!;
+        const toggle = figure.querySelector<HTMLButtonElement>('.video-toggle')!;
+        const update = () => { toggle.textContent = video.paused ? 'Play' : 'Pause'; toggle.setAttribute('aria-label', video.paused ? 'Play video' : 'Pause video'); };
+        const fallback = () => { video.hidden = true; toggle.hidden = true; };
+        video.addEventListener('play', update);
+        video.addEventListener('pause', update);
+        video.addEventListener('error', fallback);
+        video.querySelectorAll('source').forEach((source) => source.addEventListener('error', () => {
+          if (video.networkState === HTMLMediaElement.NETWORK_NO_SOURCE) fallback();
+        }));
+        video.addEventListener('loadeddata', () => {
+          video.hidden = false;
+          toggle.hidden = false;
+          update();
+        });
+        const observer = new IntersectionObserver((entries) => {
+          if (entries.some((entry) => entry.isIntersecting) && !reducedMotion.matches) {
+            video.play().catch(fallback);
+            observer.disconnect();
+          }
+        });
+        observer.observe(video);
+        reducedMotion.addEventListener('change', () => { if (reducedMotion.matches) { video.pause(); update(); } });
+        toggle.addEventListener('click', () => { if (video.paused) video.play().catch(fallback); else video.pause(); update(); });
+        update();
+      });
+    </script>
+  </body>
+</html>
