@@ -220,6 +220,29 @@ typealias AppWindow = StressWindow
     }
 
     private func verifySnap(_ index: Int) {
+        if index == 0 {
+            for pane in (window.contentView.map(views) ?? []).compactMap({ $0 as? PaneView }) {
+                let position = pane.scrollPosition(), loaded = position.history
+                guard loaded > 0 else { exit(1) }
+                for total in [loaded + 10000, loaded, max(1, loaded - 100)] {
+                    pane.updateScroller(history: total, position: position, alternate: false)
+                    pane.requestScroll(loaded + 9000)
+                    guard pane.scrollTarget == loaded + 9000 else { exit(1) }
+                    if total > loaded { continue }
+                    pane.requestScroll(loaded)
+                    for precise in [true, false] {
+                        for _ in 0..<30 {
+                            guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: precise ? .pixel : .line,
+                                                   wheelCount: 1, wheel1: 7, wheel2: 0, wheel3: 0),
+                                  let event = NSEvent(cgEvent: cg) else { exit(1) }
+                            pane.scrollWheel(with: event)
+                            guard pane.scrollTarget == loaded else { exit(1) }
+                        }
+                    }
+                }
+                self.log(["wheel-top": "passed", "loaded": loaded, "absolute-stale-total": "passed", "live-past-total": "passed"])
+            }
+        }
         let cases = [(1, false, false), (2, false, false), (1, true, false), (1, false, true)]
         guard index < cases.count else {
             (NSApp.delegate as? AppDelegate)?.quit("snap verification complete")
