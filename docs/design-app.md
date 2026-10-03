@@ -3,7 +3,11 @@
 Kido.app (`app/`) is a native macOS view of the kido server: a tmux
 control-mode client that renders every pane with libghostty, beside a
 native sidebar fed by `kido sidebar-feed`. Sessions, windows and panes
-live in tmux; the app holds none of them.
+live in tmux; the app holds none of them. tmux is always the source of
+truth for pane content, including history and its line wrapping, and
+for geometry. Ghostty's reflow during a resize is provisional, replaced
+by a tmux capture once the gesture ends. The app never retains
+Ghostty-derived content that disagrees with tmux.
 
 ## One control client
 
