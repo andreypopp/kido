@@ -190,11 +190,54 @@ import XCTest
         try await snapshot("resize-settled-dark")
     }
 
+    func testHistoryChunksAndResizeAnchors() async throws {
+        try await start(history: 200000)
+        let pane = try XCTUnwrap(terminal?.panes.first)
+        let fixture = directory.appendingPathComponent("history.txt")
+        try (0..<100000).map { "row-\($0)\r\n" }.joined().write(to: fixture, atomically: true, encoding: .utf8)
+        let done = directory.appendingPathComponent("history-done")
+        _ = try await command(["respawn-pane", "-k", "-t", pane.pane.description,
+                               "/bin/cat '" + fixture.path + "'; /usr/bin/touch '" + done.path + "'; exec /bin/sleep 600"])
+        try await wait("100k fixture completed") { FileManager.default.fileExists(atPath: done.path) }
+        let restored = expectation(description: "100k restore")
+        pane.markContentDirty()
+        connection.sync(pane.pane) { restored.fulfill() }
+        await fulfillment(of: [restored], timeout: 20)
+        try await settle()
+        XCTAssertEqual(pane.scrollPosition().history, historyChunkSize)
+        pane.requestScroll(historyChunkSize)
+        try await wait("100k pill visible") { pane.visualPill }
+        pane.onLoadMore()
+        try await wait("pill adds one chunk") { pane.scrollPosition().history == 2 * historyChunkSize }
+        pane.showFind()
+        pane.find?.field.stringValue = "row-12345"
+        pane.find?.search()
+        try await wait("find loads deep match") { pane.scrollPosition().history > 80000 }
+        try await wait("find navigates to deep match") {
+            let position = pane.scrollPosition()
+            return position.history - position.offset > 80000
+        }
+        pane.find?.close()
+        pane.requestScroll(5000)
+        try await settle()
+        window.setContentSize(NSSize(width: 700, height: 590))
+        try await settle()
+        XCTAssertEqual(pane.scrollTarget ?? 0, 5000, accuracy: 4)
+        pane.onLoadMore()
+        try await wait("older chunk reloaded") { pane.scrollPosition().history == 2 * historyChunkSize }
+        pane.requestScroll(15000)
+        try await settle()
+        window.setContentSize(NSSize(width: 700, height: 560))
+        try await settle()
+        XCTAssertEqual(pane.scrollTarget ?? 0, 0)
+        XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
+    }
+
     func testHistoryPill() async throws {
         try await start(history: 100000)
-        try await paint(lines: 51000)
+        try await paint(lines: historyChunkSize + 1000)
         let pane = try XCTUnwrap(terminal?.panes.first)
-        pane.requestScroll(50000)
+        pane.requestScroll(historyChunkSize)
         try await wait("Load more visible") { pane.visualPill }
         try await snapshot("history-top", pill: true)
     }
