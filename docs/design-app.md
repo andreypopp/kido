@@ -54,82 +54,67 @@ bytes and mode state. tmux queues `%output` ahead of the reply, so
 output before the reply is wiped by the restore and output after it is
 fed live. The same resync follows a `%pause`.
 
-The initial history capture requests the newest 5000 physical rows. Its
-upper edge moves down to a whole logical line; if a single line spans the
-entire capture, the capture expands until that line fits. Captures use
-`-e -J` for VT text and a companion `-F -L -T` capture for physical row
-numbers and wrap flags. tmux has no flags-only capture. History, these
-captures and `alternate_on` are read on one command line. Whole logical
-lines are never split between chunks, including the history/screen join
-in the initial restore.
+Every restore captures the newest 50,000 physical history rows plus
+screen, pending parser bytes and mode state in one command batch, then
+resets and replays the surface. Initial sync, reconnect, resize and showing
+a content-dirty pane share that path. History uses styled `-e -J` and
+plain `-F -L -T -N` companions; a plain screen companion joins the same
+logical rows across the history/screen seam. The oldest partial logical
+line is omitted. A line spanning the entire interval is omitted rather
+than expanding the restore. Extra history loaded earlier is deliberately
+dropped.
 
-An explicit wheel, thumb, find or resize-anchor request within one screen
-of the loaded top fetches the next 5000 rows, aligned the same way. Load more
-also requests paging. A finished fetch continues only toward an outstanding
-user target. Presentation applies, snapshot replay, output and Ghostty scrollbar
-notifications never start paging or metadata queries; they only update presentation.
-The next scroll request refreshes tmux's history metadata. Ghostty's own row count
-updates the loaded portion of the scroller as output arrives. The gap is tmux's `history_size` minus Ghostty's
-retained history rows, read through its mutex-protected scrollbar snapshot
-(`total - len`), not the renderer's asynchronous scrollbar notification.
-Offsets count from the bottom; output queued ahead of a capture reply is
-already fed before calculating its overlap, and overlapping rows are
-excluded. Trimming tmux's oldest history therefore changes the gap, not
-the identity of the loaded rows. There is one fetch per pane; sync tokens,
-view identity and a grid epoch reject obsolete replies. A resize retains the
-first full grid row's logical line's text and its count from the bottom, resyncs from
-the newest 5000 rows, then matches that text within ±32 logical lines of the
-counted guess. It takes the nearest match across capture pages, ties going to
-the newer side, and falls back to the count. It reaches the anchor through the
-scroller's paged target, stopping at the memory limit.
-Live resizing retains a dirty grid, then restores as soon as the final client
-size is flushed and its accepted layout is installed; a trimmed anchor clamps
-to the oldest surviving line. Client sizes deduplicate whole cells, coalesce
-on a non-restarting 16ms timer and keep one refresh in flight. Further sizes
-replace its pending successor until the reply. Ending a native drag flushes
-immediately. New scrolling, typing, paste or find intent cancels the old anchor. Alternate screens never receive history.
+Wheel and thumb cover only Ghostty's retained rows. They never capture
+history or expose unloaded blank space. One native Load more pill appears
+near the loaded top when tmux has older rows. A click loads the next
+50,000-row chunk, aligned to whole logical lines, through the shared
+loader. Explicit loads can expand a chunk for a long line, bounded by
+tmux's total. Empty or malformed captures stop without pretending to be
+memory pressure. A refused nonempty insertion leaves the same pill;
+another click raises that surface's byte budget and retries. Refusal
+survives metadata refreshes. There is no idle trim.
 
-`ghostty_surface_prepend_history` snapshots the primary screen's width and
-identity under the renderer mutex, then allocates and parses a scratch
-terminal outside it. It locks again to validate the snapshot and clone
-pages before the existing first page; a changed grid or history identity
-rejects the chunk. The scratch terminal is freed after unlocking. Existing pins and
-selections stay attached to their content; a viewport at the old top
-becomes pinned there. The renderer is invalidated and publishes the new
-scrollbar. The API returns the number of inserted physical rows, or zero
-on alternate screens, allocation failure or insufficient scrollback byte
-budget. A chunk is accepted whole or not at all, never evicting newer rows
-to make room. Kido defaults to a 512 MiB Ghostty scrollback budget; the
-user's configuration can override it. Only a nonempty history chunk that
-Ghostty refuses to insert is reported as a memory limit; an empty capture is
-an exhausted boundary, not a budget failure. A malformed capture abandons its
-scroll target and publishes usable geometry without a memory-limit pill.
-Hitting the limit stops older fetches; the
-scroller keeps tmux's full range and thumb size, fading the track above the
-loaded top. The thumb and target clamp to that boundary, so dragging or
-wheeling beyond it reveals no blank space and makes no history request.
-A native pill near the loaded top says "Older history not loaded (memory
-limit)" and offers "Load more"; it hides more than a screen away from that
-edge. The button doubles only that surface's byte budget under Ghostty's
-renderer mutex and resumes fetching at the current target. The budget
-survives appearance and config reloads, which do not change PageList's
-limit; surface eviction or reconnect returns it to the configured default.
-After 1.5 seconds without scrolling, older loaded rows are erased, keeping
-one 5000-row chunk above the viewport and never less than the initial
-capture. Trimming preserves the fractional viewport; clicks, find and
-resizing still snap it to a row. The boundary stays on a whole logical line. Trimming uses
-PageList's erase machinery under the renderer mutex; pins and viewport
-follow their content. It clears the memory-limit state without lowering
-a raised budget. The thumb still spans tmux's history and does not move;
-scrolling back up reveals blank space and reloads through the same fetch
-path. Any active selection or open find bar prevents trimming, so neither
-can lose its content or highlights. Live output still follows Ghostty's
-normal byte-budget trimming, recycling oldest pages when the budget is full.
-Weightless placeholder rows inside Ghostty and an app-side far-view surface
-were considered and rejected (a gap touches about 80 row consumers across
-26 Ghostty files, with 16-bit row counts and crash-prone renderer and selection
-paths; a far view adds a second surface and split selection), so deep history
-is reached by paging within the memory limit.
+`ghostty_surface_prepend_history` snapshots the primary grid and page
+identity under the renderer mutex, parses a scratch terminal outside it,
+then validates and clones the pages under the mutex. Existing pins and
+selections stay attached to their content. The chunk is accepted whole
+or not at all, without evicting newer rows. Kido defaults to a 512 MiB
+scrollback budget; configuration can override it. Raised limits survive
+appearance/config updates but not surface destruction or reconnect.
+Ghostty's normal byte-budget eviction and the app's surface LRU remain.
+
+Connection keeps tmux's sampled history total separate from retained
+Ghostty rows. Output invalidates metadata/exhaustion but never loads
+older history. Restore/load/search requests read metadata, and one
+batched, low-rate query refreshes shown panes each second; hidden panes
+refresh on show. Neither wheel packets nor renderer notifications query
+tmux. A fresh shrink/clear invalidates navigation and repairs content
+through the common restore, joining an active gesture's final repair.
+tmux has no universal history-content generation: arbitrary same-sized
+external replacement between samples is not immediately observable.
+
+A resize captures the viewport's logical count and text once at its first
+intent. Intermediate accepted grids are installed and confirmed inline;
+Ghostty's local reflow is provisional. Capture waits for gesture end and
+the final client-size or floating-command/layout drain. A newer gesture
+invalidates an in-flight snapshot even if its dimensions end unchanged.
+There is at most one snapshot in flight and one coalesced successor;
+already-sent obsolete transactions drain without publishing. Move-only
+or unchanged-cell gestures need no new content capture unless a prior
+restore obligation or content invalidation remains.
+
+The anchor resolves only inside that snapshot, with nearest matching text
+within ±32 logical lines, ties toward newer rows, and an in-range count
+fallback. An anchor outside the capture or actual budget-shortened
+retention goes to the live bottom. It never pages or clamps to the oldest
+loaded row. Scrolling, typing, paste and find cancel the old viewport
+intent without canceling required content repair.
+
+Retained hidden panes install accepted grid changes too, so subsequent
+output is parsed at tmux's width. Dirty epochs survive A→B→A and equal
+dimensions; only a current authoritative restore clears them. Showing a
+dirty pane repairs it. Possible font/scale/config reflow follows the same
+invalidation and confirmed-grid path; color-only changes remain local.
 
 Each pane draws one thin overlay scroller, shown during scrolling or
 hovering and fading afterwards. The scroller track spans the expanded content while its thumb and targets count whole grid rows. Ghostty's own scrollbar is disabled. The
@@ -138,7 +123,7 @@ minimum knob size. Every precise wheel event adds its delta 1:1 to the
 fractional target, including nonzero ended packets. At most one apply is
 pending on the pane's serial scroll worker; it starts immediately and reads
 the latest output-adjusted target when it runs. Its main callback coalesces
-presentation and trim scheduling, then applies a changed target.
+presentation, then applies a changed target.
 Ghostty schedules rendering;
 the app adds no display link, deferred packet, easing or momentum filter.
 Ghostty's mouse-scroll-multiplier precision setting remains the user's speed
@@ -155,9 +140,8 @@ attempt publishes neither; a committed move remains successful even if its
 render wake fails. Snaps record only the successful attempt's movement, never
 a separately sampled before/after difference.
 Clicks, selection, typing, paste, IME, find, resize, font
-changes and focus loss also snap and suppress momentum; idle trimming does
-not snap. Main publishes only the worker's successfully applied distance and
-geometry to the thumb and terminal translation, not the requested target.
+changes and focus loss also snap and suppress momentum. Main publishes only the worker's successfully applied distance and
+geometry to the thumb and presentation, not the requested target.
 If all three revision attempts fail, presentation stays at the last success
 and the target waits for another event or geometry update, with no idle retry.
 Capture publication
@@ -176,19 +160,7 @@ Hidden and occluded panes retain their renderer rules and do no idle
 scrolling work.
 `KIDO_APP_DEBUG=1` logs wheel timestamps, phases and deltas, and each applied
 target's row and fractional pixel offset.
-Above the loaded top, the terminal's child view is translated down inside
-the clipped pane, revealing blank terminal background without changing the
-grid. While translated, terminal pointer events are suppressed and an
-active selection drag is cancelled; wheel scrolling still works.
-As chunks arrive, the viewport moves to the target and the translation
-shrinks; the target stays put. A translated layer is explicitly invalidated
-when brought back into view. Only the latest target matters: a reply no
-longer needed at the loaded top is discarded, and fetching stops when the
-target is loaded. Wheel fetching does not depend on Ghostty's scrollbar
-notifications, which only change when a draw sees a new scrollbar snapshot.
-Already-loaded rows can outlive tmux's history limit until resync; the
-scroller clamps to tmux's retained range. Metadata queries belong to scroll
-requests, not live output or presentation callbacks. Its colours resolve in the current
+The thumb's range and size use loaded geometry. Colours resolve in the current
 effective appearance when drawn.
 
 Command-F opens a pane's native find bar. Each query scans tmux's history
@@ -202,7 +174,11 @@ stale results cannot navigate. A new scan starts after 300 ms of quiet,
 or at most every two seconds during continuous output. Connection owns
 this lifetime: resync invalidates immediately and restarts only after a
 successful restore. Alternate screens search only their screen. Next and previous wrap through the newest-first
-match list, loading older matches through the scroller's jump path. Ghostty
+match list. An unloaded match submits a tokened coverage goal to the same
+50k loader as the pill, automatically raising the surface budget on
+refusal. Later navigation replaces that goal, including cancellation when
+a loaded match is selected. Query changes, output and resize cancel it;
+a post-restore scan does not automatically reload a canceled old goal. Ghostty
 search supplies the highlights and loaded-match selection; it is restarted
 after prepending history. Each restart ends the previous Ghostty lifetime.
 Ghostty tags totals and selected indices with that lifetime's immutable
@@ -217,8 +193,8 @@ inherit an old count or selection. End-search also captures the find-view
 identity on main, so its queued close cannot close an empty reopened bar,
 which has not issued a new Ghostty lifetime yet. Nonempty needle changes without stopping remain in one lifetime;
 these generations are not per-query tokens for arbitrary Ghostty clients.
-A match beyond the byte budget is reported as out
-of reach without evicting rows. Command-G and Shift-Command-G (also Return
+Budget retries and chunk expansion are bounded; genuine resource or capture
+failure reports a failed search without evicting newer rows. Command-G and Shift-Command-G (also Return
 and Shift-Return) navigate; Escape closes the bar and clears highlights.
 
 An unsafe paste is asked about in a sheet showing its text, and the
@@ -368,8 +344,14 @@ A zero target still follows the bottom. Lock order is viewport then target
 or renderer, with neither held while waiting for viewport. MANUAL_MIRROR
 applies grid resizes inline in Termio, not on a debounced IO-thread callback;
 grid confirmation reads the actual grid under the renderer mutex.
-Only feed and idle history trimming synchronize with the scroll queue; both
-are called on the client queue, never main or a Ghostty callback. Renderer
+Only feed synchronizes with the scroll queue, from the client queue, never
+main or a Ghostty callback. Snapshot/prepend admission validates the content
+epoch under a short app lock, which is released before parsing. While a
+mutation is admitted, main coalesces the latest accepted grid/reflow rather
+than waiting for the worker. Completion installs and confirms that grid.
+If output was dropped while a grid was unconfirmed, incremental feed stays
+suspended until a current reset-and-replay commits; a provisional parse
+cannot clear a newer dirty epoch. Renderer
 callbacks publish asynchronously to main; runtime wakeups coalesce main ticks.
 Ghostty requests IO/process termination, marks search stopping and joins it,
 then joins IO while the renderer still drains. Only after both producers have
@@ -390,10 +372,13 @@ tradeoff for preserving command order. Other main-to-renderer blocking sends
 are not removed by this change.
 A pane leaving the layout is held on main until the queue has
 dropped it, so its
-surface is freed on main. A layout reaches main synchronously, and a
-pane's grid is verified synchronously through Ghostty's mutex-protected actual
-grid metrics before layout installation returns. A failed setter or mismatched
-grid rejects feed, prepend and trim, logs a diagnostic and closes the control
+surface is freed on main. A layout reaches main synchronously. Unless a
+parser/prepend mutation is admitted, its grid is installed and verified through
+Ghostty's mutex-protected actual metrics before layout installation returns.
+During an admitted mutation the latest desired layout is recorded instead;
+unconfirmed geometry suspends feed until installation/readback and a current
+authoritative restore. A failed setter or mismatched
+grid rejects feed and prepend, logs a diagnostic and closes the control
 client through its ordinary redial lifecycle; failure is never confirmation. Main never waits on the
 reader queue.
 
