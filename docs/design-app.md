@@ -126,7 +126,7 @@ paths; a far view adds a second surface and split selection), so deep history
 is reached by paging within the memory limit.
 
 Each pane draws one thin overlay scroller, shown during scrolling or
-hovering and fading afterwards. Chrome draws 12pt background-colour edge fades from that same scroll geometry only at the terminal area's outer top and bottom when content remains above or below, never on floating panes or alternate screens. The top fade starts at the content top, including
+hovering and fading afterwards. Chrome draws background-colour edge fades with height `PaneLayout.minimumMargin.height` (12pt), shared with the outer bottom margin, from that same scroll geometry only at the terminal area's outer top and bottom when content remains above or below, never on floating panes or alternate screens. The top fade starts at the content top, including
 the history strip; the scroller track spans that expanded content while its
 thumb and targets still count whole grid rows. Ghostty's own scrollbar is disabled. The
 thumb uses tmux's full retained history plus the screen, with a native-style
@@ -246,10 +246,10 @@ grid. tmux's border cell between two panes is then exactly their
 paddings plus the one-pixel divider, so any tree, however asymmetric,
 lines up with no surplus. Around the whole terminal area only, the
 horizontal remainder is balanced over a 4pt minimum. Client rows are
-floor((height - 40pt - 8pt) / cell height), reserving an 8pt outer bottom margin.
-The tiled grid bottom is 8pt above the terminal area bottom, rounded upward
-onto a whole device pixel if necessary: the gap is at least 8pt and less
-than 8pt plus one device pixel. Outer tiled chrome is clipped at the terminal
+floor((height - 40pt - 12pt) / cell height), reserving an 12pt outer bottom margin.
+The tiled grid bottom is 12pt above the terminal area bottom, rounded upward
+onto a whole device pixel if necessary: the gap is at least 12pt and less
+than 12pt plus one device pixel. Outer tiled chrome is clipped at the terminal
 area bottom, without clipping the grid. Below the fixed 40pt
 `PaneLayout.topMargin`, the global vertical subcell remainder sits above the
 whole tiled tree. Only outer-top tiled panes expand upward into it, rendering
@@ -272,7 +272,7 @@ Mouse and IME coordinates use the grid origin below the strip. Render insets
 never enter set_size or set_grid_size, scroll distances, snaps, output pinning
 or resize anchors; the live bottom remains distance zero. Floats stay inset-free
 in the same shifted grid coordinate space, with the point-to-cell inverse and
-pixel-exact free frames unchanged. Floating bounds end at the same pixel-aligned 8pt bottom margin,
+pixel-exact free frames unchanged. Floating bounds end at the same pixel-aligned 12pt bottom margin,
 so a float's existing bottom padding remains above that margin. Dividers have
 six-point hit areas; unfocused panes are dimmed by a theme-background overlay; a
 pane shows the window’s shared glass toolbar only in its top-right hot
