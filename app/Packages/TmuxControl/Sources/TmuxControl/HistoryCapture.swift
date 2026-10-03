@@ -7,12 +7,12 @@ public struct HistoryCapture: Sendable {
     public let text: String
     public let wrapsIntoScreen: Bool
 
-    public static func commands(_ pane: PaneID, loaded: Int, chunk: Int = 5000) -> [Command] {
+    public static func commands(_ pane: PaneID, loaded: Int, chunk: Int = 50000) -> [Command] {
         let start = "-\(loaded + chunk + 1)", end = "-\(loaded + 1)"
         return [
             Command("display-message", "-p", "-t", pane, "#{history_size} #{alternate_on}"),
             Command("capture-pane", "-p", "-e", "-J", "-S", start, "-E", end, "-t", pane),
-            Command("capture-pane", "-p", "-F", "-L", "-T", "-S", start, "-E", end, "-t", pane),
+            Command("capture-pane", "-p", "-F", "-L", "-T", "-N", "-S", start, "-E", end, "-t", pane),
         ]
     }
 
