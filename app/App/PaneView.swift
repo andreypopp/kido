@@ -229,6 +229,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func rendered(_ token: UInt64, status: ghostty_render_presentation_status_e) {
+        #if KIDO_VISUAL
+        if let completion = visualFrames.removeValue(forKey: token) { completion(status == GHOSTTY_RENDER_PRESENTATION_PRESENTED); return }
+        #endif
         let success = status == GHOSTTY_RENDER_PRESENTATION_PRESENTED
         guard let request = rendering, request.token == token else { return }
         rendering = nil
@@ -610,6 +613,24 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         return "frame=\(frame) grid=\(size.columns)x\(size.rows) inset=\((renderInsets.top * (window?.backingScaleFactor ?? 2)).rounded())px visible=\(presented.visible) finalPending=\(finalEpoch != nil) io=\(io)"
     }
 
+    #if KIDO_VISUAL
+    static var renderOffscreen = false
+    private var visualFrames: [UInt64: (Bool) -> Void] = [:]
+    var visualReady: Bool { !resizeDirty && finalEpoch == nil && restoreRequested == nil && scrollPending == nil && rendering == nil }
+    var visualState: String {
+        "insets=\(renderInsets.top),\(renderInsets.bottom) pill=\(!historyLimit.isHidden) find=\(find != nil) alternate=\(alternate) scroll=\(scrollDistance)"
+    }
+    var visualPill: Bool { !historyLimit.isHidden }
+    func visualScroll(_ distance: Double) { requestScrollDistance { _ in distance } }
+    func visualFrame(_ completion: @escaping (Bool) -> Void) {
+        renderSequence += 1
+        visualFrames[renderSequence] = completion
+        if !ghostty_surface_request_render_with_token(surface, renderSequence) {
+            visualFrames.removeValue(forKey: renderSequence)?(false)
+        }
+    }
+    #endif
+
     private var presented = (visible: true, realized: true)
     private var keyUpMonitor: Any?
     private var paste: (alert: NSAlert, state: UnsafeMutableRawPointer?)?
@@ -966,7 +987,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     @objc private func present() {
         let hidden = isHiddenOrHasHiddenAncestor
-        let next = (visible: !hidden && window?.occlusionState.contains(.visible) == true, realized: !hidden)
+        var visible = window?.occlusionState.contains(.visible) == true
+        #if KIDO_VISUAL
+        visible = visible || Self.renderOffscreen
+        #endif
+        let next = (visible: !hidden && visible, realized: !hidden)
         if next.realized != presented.realized { _ = ghostty_surface_set_renderer_realized(surface, next.realized) }
         if next.visible != presented.visible { ghostty_surface_set_occlusion(surface, next.visible) }
         presented = next
