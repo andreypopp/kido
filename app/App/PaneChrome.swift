@@ -34,7 +34,6 @@ final class PaneChrome: NSView {
         let edges = (superview as? WindowView)?.outerEdges(pane) ?? (false, false)
         return (scrollContent.top && edges.0, scrollContent.bottom && edges.1)
     }
-    static let scrollEdgeHeight: CGFloat = 12
 
     func updateScrollEdges(top: Bool, bottom: Bool) {
         guard scrollContent != (top, bottom) else { return }
@@ -64,7 +63,7 @@ final class PaneChrome: NSView {
             let background = runtime.background
             if dimmed { background.withAlphaComponent(0.45).setFill(); bounds.fill() }
             guard (scrollEdges.top || scrollEdges.bottom), !content.isEmpty else { return }
-            let height = min(Self.scrollEdgeHeight, content.height / 2)
+            let height = min(PaneLayout.minimumMargin.height, content.height / 2)
             let gradient = NSGradient(
                 colors: [1.0, 0.9, 0.6, 0.25, 0.0].map { background.withAlphaComponent($0) },
                 atLocations: [0.0, 0.2, 0.45, 0.7, 1.0], colorSpace: .deviceRGB)!
