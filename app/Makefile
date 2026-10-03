@@ -1,14 +1,15 @@
 export DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
 
 DERIVED := build/derived
-APP := $(DERIVED)/Build/Products/Debug/Kido.app
+CONFIG ?= Debug
+APP = $(DERIVED)/Build/Products/$(CONFIG)/Kido.app
 
-.PHONY: all run test clean tsan asan stress tsan-stress asan-stress demo demo-stop
+.PHONY: all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-stop
 
 all:
 	ln -sfn "$$(GHOSTTY_OPTIMIZE=$(GHOSTTY_OPTIMIZE) scripts/build-ghosttykit.sh)" build/GhosttyKit.xcframework
 	xcodegen --quiet --spec project.yml
-	xcodebuild -quiet -project Kido.xcodeproj -scheme Kido -configuration Debug \
+	xcodebuild -quiet -project Kido.xcodeproj -scheme Kido -configuration $(CONFIG) \
 		-destination platform=macOS -derivedDataPath $(DERIVED) $(SANITIZE) build
 
 tsan: SANITIZER = Thread
@@ -37,7 +38,9 @@ run: all
 FORK := build/tmux-fork/$(shell ../scripts/install-tmux-fork.sh --print-revision)/bin/kido-tmux
 DEMO := KIDO_DEMO_DIR=$(CURDIR)/build/demo KIDO_TMUX=$(abspath ../$(FORK)) KIDO_APP_KIDO=$(abspath ../_build/default/bin/main.exe)
 
-demo: all
+demo: CONFIG = Release
+demo-debug: CONFIG = Debug
+demo demo-debug: all
 	$(MAKE) -C .. build $(FORK)
 	$(DEMO) scripts/demo.sh $(APP)/Contents/MacOS/Kido
 
