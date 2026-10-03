@@ -3,7 +3,7 @@ import Testing
 
 @Test func deepAnchorCannotMatchRepeatedBoundaryText() {
     let replies: [Reply] = [.success(["200000 0"]), .success([
-        "-50001 - partial", "-50000 - repeated", "-49999 - repeated", "0 - prompt",
+        "-10001 - partial", "-10000 - repeated", "-9999 - repeated", "0 - prompt",
     ])]
     #expect(ScrollAnchor(lines: 100000, text: "repeated").locate(replies) == nil)
 }
@@ -14,7 +14,18 @@ import Testing
     ]) == nil)
 }
 
-@Test func restoreAlwaysRequestsNewestFiftyThousand() {
+@Test func captureASCIIFlagsPreserveUnicodeBodies() {
+    let capture = Capture([.success(["3 0"]), .success([
+        "-3 W 界🙂 ", "-2 - café W", "-1 - ", "0 W 終",
+    ])])!
+    #expect(capture.lines.map(\.text) == ["界🙂 café W", "", "終"])
+    #expect(capture.lines.map(\.start) == [-3, -1, 0])
+    #expect(capture.lines.map(\.end) == [-2, -1, 0])
+    #expect(capture.lines.map(\.wrapped) == [false, false, true])
+    #expect(Capture([.success(["1 0"]), .success(["-1 malformed"])]) == nil)
+}
+
+@Test func restoreAlwaysRequestsNewestTenThousand() {
     let commands = PaneSync.commands(PaneID("%1")!)
-    #expect(commands.contains { $0.line.contains("-S -50001") })
+    #expect(commands.contains { $0.line.contains("-S -10001") })
 }
