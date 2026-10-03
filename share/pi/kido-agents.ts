@@ -1017,7 +1017,7 @@ export default function (pi: ExtensionAPI) {
         model: Type.Optional(
           Type.String({
             description:
-              'Model for the subagent to run, as "provider/model-id" (e.g. claude-bridge/claude-sonnet-5) - see `pi --list-models`. A bare alias like "sonnet" is refused, not resolved.',
+              'Model for the subagent to run, as "provider/model-id" (e.g. claude-bridge/claude-sonnet-5), optionally suffixed :<thinking>, e.g. claude-bridge/claude-sonnet-5:low - see `pi --list-models`. A bare alias like "sonnet" is refused, not resolved.',
           }),
         ),
         tools: Type.Optional(

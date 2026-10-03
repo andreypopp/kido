@@ -98,18 +98,29 @@ func TestSpawnModelMustBeAConfiguredProvidersOwn(t *testing.T) {
 
 	spawn := func(tag, path string, command ...string) string {
 		out := filepath.Join(h.dir, tag+".out")
-		h.sendLiteral(fmt.Sprintf("PATH=%s %s tool spawn_subagent --parent-pid 1 --parent-session model-e2e-parent --name %s --task-file %s --fork caller-e2e -- %s > %s 2>&1; echo rc=$? >> %s",
-			path, kidoBin, tag, h.writeTaskFile(tag), strings.Join(command, " "), out, out))
+		model := ""
+		for i, arg := range command {
+			if arg == "--model" && i+1 < len(command) {
+				model = "--model " + shellQuote(command[i+1])
+				break
+			}
+		}
+		h.sendLiteral(fmt.Sprintf("PATH=%s %s tool spawn_subagent --parent-pid 1 --parent-session model-e2e-parent --name %s --task-file %s --fork caller-e2e %s -- %s > %s 2>&1; echo rc=$? >> %s",
+			path, kidoBin, tag, h.writeTaskFile(tag), model, strings.Join(command, " "), out, out))
 		h.sendKeys("Enter")
 		return h.waitFileContains(out, "rc=")
 	}
 	withPi := shellQuote(piDir) + ":$PATH"
 	const configured = "acme/{claude-sonnet-5,claude-opus-5}, other/{gemini-pro}"
-	for _, m := range []string{"sonnet", "claude-sonnet-5", "nope/claude-sonnet-5"} {
+	for _, m := range []string{"sonnet", "claude-sonnet-5", "nope/claude-sonnet-5", "nope/claude-sonnet-5:low"} {
 		want := fmt.Sprintf("kido tool spawn_subagent: model %q is not a model of a configured provider; configured: %s\nrc=1\n", m, configured)
 		if got := spawn("refused", withPi, "pi", "--model", m); got != want {
 			t.Errorf("--model %s: got %q, want %q", m, got, want)
 		}
+	}
+	wantLevel := "kido tool spawn_subagent: unknown thinking level \"bogus\"; valid levels: off, minimal, low, medium, high, xhigh, max\nrc=1\n"
+	if got := spawn("refused-level", withPi, "pi", "--model", "acme/claude-opus-5:bogus"); got != wantLevel {
+		t.Errorf("unknown thinking level: got %q, want %q", got, wantLevel)
 	}
 	want := `kido tool spawn_subagent: could not validate model "acme/claude-opus-5": pi --list-models: exec: "pi": executable file not found in $PATH` + "\nrc=1\n"
 	if got := spawn("nopi", noPi, "pi", "--model", "acme/claude-opus-5"); got != want {
@@ -134,6 +145,37 @@ func TestSpawnModelMustBeAConfiguredProvidersOwn(t *testing.T) {
 	wantLine := "pi --fork caller-e2e --session-id " + fields[2] + " --name kid --model acme/claude-opus-5"
 	if started := h.startCommand(fields[0]); started != wantLine {
 		t.Errorf("accepted pane's command = %q, want %q", started, wantLine)
+	}
+	for _, level := range []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"} {
+		model := "acme/claude-opus-5:" + level
+		got := spawn("thinking-"+level, withPi, "pi", "--model", model)
+		fields := strings.Fields(got)
+		if len(fields) != 4 || !strings.Contains(got, "rc=0") {
+			t.Fatalf("--model %s = %q, want it spawned", model, got)
+		}
+		wantLine := "pi --fork caller-e2e --session-id " + fields[2] + " --model " + model
+		if started := h.startCommand(fields[0]); started != wantLine {
+			t.Errorf("thinking pane's command = %q, want %q", started, wantLine)
+		}
+		if level == "low" {
+			if recorded := h.runMeta("thinking-model", fields[2])["model"]; recorded != model {
+				t.Errorf("recorded model = %q, want %q", recorded, model)
+			}
+			h.killPane(fields[1])
+			h.waitFor(func() bool { return !h.windowExists(fields[0]) }, settle, msgf("thinking window to close"))
+			out := filepath.Join(h.dir, "thinking-resume.out")
+			h.sendLiteral(fmt.Sprintf("PATH=%s PI_CODING_AGENT_SESSION_DIR=%s %s tool spawn_subagent --resume %s > %s 2>&1; echo rc=$? >> %s",
+				withPi, shellQuote(t.TempDir()), kidoBin, fields[2], out, out))
+			h.sendKeys("Enter")
+			resumed := strings.Fields(h.waitFileContains(out, "rc="))
+			if len(resumed) != 4 || resumed[3] != "rc=0" {
+				t.Fatalf("resume thinking model = %q, want it spawned", resumed)
+			}
+			wantLine := "pi --session-id " + fields[2] + " --model " + model
+			if started := h.startCommand(resumed[0]); started != wantLine {
+				t.Errorf("resumed pane's command = %q, want %q", started, wantLine)
+			}
+		}
 	}
 }
 

@@ -121,17 +121,20 @@ let parse (f : flags) =
   in
   { mode; owner; keep_alive = f.keep_alive; command }
 
+let thinking_levels = [ "off"; "minimal"; "low"; "medium"; "high"; "xhigh"; "max" ]
+
 (* A model no configured provider can run makes pi print "Use /login ..." and exit 0 having run
    no turn. pi --list-models prints a header, then one row per model: provider, model id. *)
 let validate_model ~path command =
-  let model =
+  let open Result.Infix in
+  let argument =
     match command with
     | "pi" :: _ ->
         let rec after = function "--model" :: m :: _ -> m | _ :: rest -> after rest | [] -> "" in
         after command
     | _ -> ""
   in
-  if String.is_empty model then Ok ()
+  if String.is_empty argument then Ok ()
   else
     let listed =
       match Tmux.Exec.look_path ~path "pi" with
@@ -155,7 +158,8 @@ let validate_model ~path command =
           | WSIGNALED n | WSTOPPED n -> Error (Printf.sprintf "signal %d" n))
     in
     match listed with
-    | Error e -> Error (Printf.sprintf "could not validate model %S: pi --list-models: %s" model e)
+    | Error e ->
+        Error (Printf.sprintf "could not validate model %S: pi --list-models: %s" argument e)
     | Ok out ->
         let rows =
           List.filter_map
@@ -163,7 +167,22 @@ let validate_model ~path command =
               match Procs.split_fields line with [ p :: m :: _ ] -> Some (p, m) | _ -> None)
             (List.drop 1 (String.lines out))
         in
-        if List.exists (fun (p, m) -> String.equal (p ^ "/" ^ m) model) rows then Ok ()
+        let configured id = List.exists (fun (p, m) -> String.equal (p ^ "/" ^ m) id) rows in
+        let* model =
+          if configured argument then Ok argument
+          else
+            match String.rindex_opt argument ':' with
+            | None -> Ok argument
+            | Some i ->
+                let id = String.sub argument 0 i in
+                let level = String.sub argument (i + 1) (String.length argument - i - 1) in
+                if List.mem ~eq:String.equal level thinking_levels then Ok id
+                else
+                  Error
+                    (Printf.sprintf "unknown thinking level %S; valid levels: %s" level
+                       (String.concat ", " thinking_levels))
+        in
+        if configured model then Ok ()
         else
           let providers =
             List.rev
@@ -178,7 +197,8 @@ let validate_model ~path command =
             ^ "}"
           in
           Error
-            (Printf.sprintf "model %S is not a model of a configured provider; configured: %s" model
+            (Printf.sprintf "model %S is not a model of a configured provider; configured: %s"
+               argument
                (String.concat ", " (List.map group providers)))
 
 (* pi 0.85.1's getDefaultSessionDirPath (session-manager.js): PI_CODING_AGENT_SESSION_DIR, else

@@ -112,7 +112,7 @@ parameters:
 
 - `task` (string): The task to give the new subagent, delivered as its first message. Required unless resume is given - a resumed run keeps its own original task and refuses a new one. The subagent starts with no context beyond this text (a fork excepted), so name the files, the lines and the specific change, say what it must report back, and say whether it is to write code or only research. Synthesize what you already know into the task rather than writing "based on your findings".
 - `name` (string): A name for the subagent's window and session; a name is generated when omitted. Refused together with resume - a resumed run keeps its original window name.
-- `model` (string): Model for the subagent to run, as "provider/model-id" (e.g. claude-bridge/claude-sonnet-5) - see `pi --list-models`. A bare alias like "sonnet" is refused, not resolved.
+- `model` (string): Model for the subagent to run, as "provider/model-id" (e.g. claude-bridge/claude-sonnet-5), optionally suffixed :<thinking>, e.g. claude-bridge/claude-sonnet-5:low - see `pi --list-models`. A bare alias like "sonnet" is refused, not resolved.
 - `tools` (string[]): Tool names the subagent may use - its capability ceiling. Omit to leave it at pi's default set.
 - `keepAlive` (boolean): Keep the subagent alive after it goes idle instead of letting it self-reap after a short timeout. For a deliberately long-lived helper; defaults to false.
 - `resume` (string): Resume a dead or finished subagent by its own run id (from this tool's earlier result, or `kido runs`) instead of starting a new one, in its own new window. Refused together with task or name.
