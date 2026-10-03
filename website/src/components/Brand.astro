@@ -1,0 +1,11 @@
+---
+import mark from '../../public/favicon.svg?raw';
+const { headline = false } = Astro.props;
+---
+<span class:list={['brand-mark', { 'headline-mark': headline }]} aria-hidden="true" set:html={mark} /><span class:list={{ 'brand-name': !headline }} translate="no">kido</span>
+<style>
+  .brand-name { font-family: var(--font-sans); font-size: 22px; font-weight: 600; letter-spacing: -.03em; }
+  .brand-mark { display: inline-flex; flex-shrink: 0; }
+  .brand-mark :global(svg) { width: 26px; height: 26px; }
+  .brand-mark.headline-mark :global(svg) { width: .9em; height: .9em; }
+</style>

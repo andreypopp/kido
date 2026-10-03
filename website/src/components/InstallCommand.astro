@@ -1,0 +1,14 @@
+---
+import { install } from '../lib/site';
+const { id, compact = false } = Astro.props;
+---
+<div class:list={['install-box', { compact }]}>
+  <div class="install-command">
+    <span class="prompt" aria-hidden="true">$</span><code>{install}</code>
+    <button id={`${id}-copy`} class="copy-button" type="button" data-copy={install} aria-label="Copy install command">
+      <svg viewBox="0 0 24 24" width={compact ? 18 : 16} height={compact ? 18 : 16} fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="1" /><path d="M16 5V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h1" /></svg>
+    </button>
+  </div>
+  <slot />
+  <span class="copy-announcement" role="status" aria-live="polite"></span>
+</div>

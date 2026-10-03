@@ -1,0 +1,27 @@
+{
+  "name": "demo",
+  "appearance": "dark",
+  "vars": {
+    "text": "#dfe8e3", "muted": "#9aa8a1", "border": "#2a3a33",
+    "blue": "#94bdf0", "green": "#a4efca", "red": "#f08c96",
+    "yellow": "#ecd08f", "violet": "#c3a6ef", "panel": "#16201c"
+  },
+  "colors": {
+    "accent": "blue", "border": "border", "borderAccent": "border", "borderMuted": "border",
+    "success": "green", "error": "red", "warning": "yellow", "muted": "muted", "dim": "muted",
+    "text": "text", "thinkingText": "muted", "selectedBg": "#2a3a33",
+    "userMessageBg": "panel", "userMessageText": "text", "customMessageBg": "panel",
+    "customMessageText": "text", "customMessageLabel": "blue",
+    "toolPendingBg": "panel", "toolSuccessBg": "panel", "toolErrorBg": "panel",
+    "toolTitle": "text", "toolOutput": "muted", "mdHeading": "text", "mdLink": "blue",
+    "mdLinkUrl": "muted", "mdCode": "text", "mdCodeBlock": "text", "mdCodeBlockBorder": "border",
+    "mdQuote": "muted", "mdQuoteBorder": "border", "mdHr": "border", "mdListBullet": "muted",
+    "toolDiffAdded": "green", "toolDiffRemoved": "red", "toolDiffContext": "muted",
+    "syntaxComment": "muted", "syntaxKeyword": "blue", "syntaxFunction": "text",
+    "syntaxVariable": "text", "syntaxString": "green", "syntaxNumber": "yellow",
+    "syntaxType": "text", "syntaxOperator": "muted", "syntaxPunctuation": "muted",
+    "thinkingOff": "border", "thinkingMinimal": "border", "thinkingLow": "border",
+    "thinkingMedium": "border", "thinkingHigh": "border", "thinkingXhigh": "border",
+    "thinkingMax": "border", "bashMode": "border"
+  }
+}

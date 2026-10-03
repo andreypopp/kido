@@ -1,0 +1,3 @@
+output/
+__pycache__/
+scenarios/__pycache__/
