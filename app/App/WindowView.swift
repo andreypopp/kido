@@ -56,6 +56,36 @@ final class WindowView: NSView {
 
     var panes: [PaneView] { subviews.compactMap { $0 as? PaneView } }
 
+    #if KIDO_VISUAL
+    var visualGeometryReady: Bool {
+        guard let shown, let placement else { return false }
+        let geometry = switch shown.visible.root {
+        case .pane(let p): p.geometry
+        case .split(_, let g, _): g
+        }
+        return geometry.width == Int(placement.client.width) && geometry.height == Int(placement.client.height)
+    }
+    var visualLayout: String {
+        func rect(_ r: CGRect) -> String {
+            [r.minX, r.minY, r.width, r.height].map { String(format: "%.2f", Double($0)) }.joined(separator: ",")
+        }
+        func bannerVisible(_ view: NSView) -> Bool {
+            !view.isHidden && (view is Banner || view.subviews.contains(where: bannerVisible))
+        }
+        var lines = ["bounds=\(rect(bounds)) separator=\(placed.map { rect($0.topLine) } ?? "-") banner=\(window?.contentView.map(bannerVisible) ?? false)"]
+        for pane in panes.filter({ !$0.isHidden }).sorted(by: { $0.pane.number < $1.pane.number }) {
+            let geometry = shown?.visible.root.panes.first { $0.id == pane.pane }
+            let chrome = subviews.compactMap { $0 as? PaneChrome }.first { $0.pane == pane.pane }
+            let grid = CGRect(x: pane.frame.minX, y: pane.frame.minY + pane.renderInsets.top,
+                              width: pane.frame.width, height: pane.frame.height - pane.renderInsets.top - pane.renderInsets.bottom)
+            lines.append("pane \(pane.pane) tmux=\(geometry.map { String(describing: $0.geometry) } ?? "-") layer=\(geometry.map { String(describing: $0.layer) } ?? "-") grid=\(rect(grid)) content=\(rect(pane.frame)) chrome=\(chrome.map { rect($0.frame) } ?? "-") \(pane.visualState)")
+        }
+        lines += dividers.map { "divider=\(rect($0.frame))" }.sorted()
+        lines += floatingBoxes.sorted { $0.key.number < $1.key.number }.map { "float \($0.key)=\(rect($0.value.frame))" }
+        return lines.joined(separator: "\n")
+    }
+    #endif
+
     var hot: Bool { !panes.isEmpty }
 
     private var dividerDrain: UUID?

@@ -26,14 +26,14 @@ import GhosttyKit
     }
     #endif
 
-    init?() {
+    init?(configFile: String? = nil) {
         guard ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS,
               let config = ghostty_config_new() else { return nil }
         let themes = Bundle.main.resourceURL!.appendingPathComponent("themes").path
         let defaults = "theme = light:\(themes)/kido-light,dark:\(themes)/kido-dark\ncursor-style-blink = false\nalpha-blending = linear\nscrollback-limit = 536870912\nkeybind = super+k=unbind\n"
         ghostty_config_load_string(config, defaults, UInt(defaults.utf8.count), "/kido-defaults")
         let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : $0 }
-        let file = (xdg ?? NSHomeDirectory() + "/.config") + "/kido/kido-app.conf"
+        let file = configFile ?? (xdg ?? NSHomeDirectory() + "/.config") + "/kido/kido-app.conf"
         if FileManager.default.fileExists(atPath: file) { ghostty_config_load_file(config, file) }
         ghostty_config_load_recursive_files(config)
         let tiling = "window-padding-x = 0\nwindow-padding-y = 0\nscrollbar = never\n"
