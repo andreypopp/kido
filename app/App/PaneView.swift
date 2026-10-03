@@ -53,6 +53,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         scrollIntent.withLock { $0.revision += 1; return $0.revision }
     }
     private var scrollPending: Int?
+    private var scrollRender = false
     nonisolated private(set) var resizeDirty: Bool {
         get { grid.withLock { $0.dirty } }
         set { grid.withLock { $0.dirty = newValue } }
@@ -282,6 +283,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             let previous = $0 ?? position
             $0 = max(0, min(limit, move(previous)))
         }
+        scrollRender = true
         queueScroll()
     }
 
@@ -301,10 +303,15 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
                 guard self.scrollPending == revision else { return }
                 self.scrollPending = nil
                 if self.scrollRevision != revision { self.queueScroll(); return }
+                let render = self.scrollRender
+                self.scrollRender = false
                 if let moved {
                     self.scrollGeometry.position = moved
                     self.scrollPresentation = (moved, distance, revision)
                     self.presentScroll()
+                    if render, self.presented.visible, self.finalEpoch == nil, self.window?.firstResponder !== self {
+                        _ = ghostty_surface_request_render_with_token(self.surface, 0)
+                    }
                 }
                 if self.scrollDistance != distance { self.queueScroll() }
                 else if moved != nil { self.requestFinalRender() }
