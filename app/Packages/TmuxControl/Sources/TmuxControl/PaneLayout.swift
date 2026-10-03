@@ -64,9 +64,12 @@ public struct PaneLayout: Equatable {
         let inset = g.y == rootTop && !alternate ? historyStrip : 0
         let content = CGRect(x: grid.minX, y: grid.minY - inset, width: grid.width, height: grid.height + inset)
         var chrome = frame(g)
-        if grid.maxX == rightEdge { chrome.size.width = bounds.maxX - chrome.minX }
+        let left = g.x == 0 ? bounds.minX : chrome.minX
+        let right = grid.maxX == rightEdge ? bounds.maxX : chrome.maxX
+        chrome.origin.x = left
+        chrome.size.width = right - left
         chrome.origin.y = min(chrome.minY, content.minY)
-        chrome.size.height = min(grid.maxY + after.height, bounds.maxY) - chrome.minY
+        chrome.size.height = (grid.maxY == bottom ? bounds.maxY : min(grid.maxY + after.height, bounds.maxY)) - chrome.minY
         return TiledPlacement(grid: grid, content: content, chrome: chrome, inset: inset,
                               outerTop: g.y == rootTop)
     }
