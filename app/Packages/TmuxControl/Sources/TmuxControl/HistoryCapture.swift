@@ -1,5 +1,7 @@
 import Foundation
 
+public let historyChunkSize = 10_000
+
 public struct HistoryCapture: Sendable {
     public let history: Int
     public let alternate: Bool
@@ -7,7 +9,7 @@ public struct HistoryCapture: Sendable {
     public let text: String
     public let wrapsIntoScreen: Bool
 
-    public static func commands(_ pane: PaneID, loaded: Int, chunk: Int = 50000) -> [Command] {
+    public static func commands(_ pane: PaneID, loaded: Int, chunk: Int = historyChunkSize) -> [Command] {
         let start = "-\(loaded + chunk + 1)", end = "-\(loaded + 1)"
         return [
             Command("display-message", "-p", "-t", pane, "#{history_size} #{alternate_on}"),
