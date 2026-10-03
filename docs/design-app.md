@@ -253,24 +253,26 @@ than 12pt plus one device pixel. Left, right and bottom edge panes extend their 
 area bounds, owning the side margins and bottom gap as padding. Background,
 dimming and padding input reach those edges; toolbar hot zones and scroller
 strips follow the new pane boundary, with the knob still 4pt inward. The
-40pt top remains unowned titlebar space. Grids and content/history insets do
-not change. Below the fixed 40pt
+40pt top remains unowned titlebar space. Grids do not change. Below the fixed 40pt
 `PaneLayout.topMargin`, the global vertical subcell remainder sits above the
 whole tiled tree. Only outer-top tiled panes expand upward into it, rendering
 the bottom slice of their preceding history row through Ghostty's top render
-inset in backing pixels. Empty history shows background. Alternate-screen
-panes keep their unexpanded grid view and a zero inset, leaving background
-in the strip. Zoom uses the same rule. A stale root during live resize stays
+inset in backing pixels. Outer-bottom tiled panes expand down to the window
+content bottom through the bottom render inset, showing following rows when
+scrolled up, clipped only at the window edge. At the live bottom there are no
+following rows, so the band is plain background below the fully visible last
+row. Empty history shows background. Alternate-screen panes keep their
+unexpanded grid view and zero insets, leaving background in both bands. Zoom uses the same rule. A stale root during live resize stays
 bottom-aligned, but its strip is clamped below one cell, never interpreting a
 multi-cell gap as history. Interior padding and divider math are unchanged;
 outer-top vertical dividers and their hit/cursor areas extend to the strip's
 top, never into the 40pt titlebar margin.
 
-PaneLayout returns the grid, expanded content, clipped chrome and render inset
+PaneLayout returns the grid, expanded content, clipped chrome and paired render insets
 for each tiled pane. Chrome uses the content rect for the fade and hit testing;
 window-edge drops and their previews use the union of the visible tiled chrome.
-Strip clicks only focus/select the pane once: no terminal mouse press or selection
-starts there. Entering the strip clears Ghostty's hover position. Strip wheels
+Top and bottom band clicks only focus/select the pane once: no terminal mouse press or selection
+starts there. Entering either band clears Ghostty's hover position. Band wheels
 scroll primary history without sending application mouse reports.
 Mouse and IME coordinates use the grid origin below the strip. Render insets
 never enter set_size or set_grid_size, scroll distances, snaps, output pinning
