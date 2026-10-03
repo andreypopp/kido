@@ -7,7 +7,9 @@ live in tmux; the app holds none of them. tmux is always the source of
 truth for pane content, including history and its line wrapping, and
 for geometry. Ghostty's reflow during a resize is provisional, replaced
 by a tmux capture once the gesture ends. The app never retains
-Ghostty-derived content that disagrees with tmux.
+Ghostty-derived content that disagrees with tmux. Purely client/UI state
+(scroll position, selection, find, sidebar UI, gestures, fonts and themes)
+belongs to Kido.app, not tmux.
 
 ## One control client
 
