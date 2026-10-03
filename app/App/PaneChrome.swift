@@ -29,14 +29,9 @@ final class PaneChrome: NSView {
     }
     var hover: (PaneChrome, NSPoint?) -> Void = { _, _ in }
     var content = CGRect.zero { didSet { if content != oldValue { needsDisplay = true } } }
-    private var scrollContent = false
-    var scrollTop: Bool { scrollContent && ((superview as? WindowView)?.outerTop(pane) ?? false) }
-
-    func updateScrollTop(_ top: Bool) {
-        guard scrollContent != top else { return }
-        scrollContent = top
-        needsDisplay = true
-    }
+    var scrollContent = false { didSet { if scrollContent != oldValue { needsDisplay = true } } }
+    var outerTop = false { didSet { if outerTop != oldValue { needsDisplay = true } } }
+    var scrollTop: Bool { scrollContent && outerTop }
     var dimmed = false { didSet { if dimmed != oldValue { needsDisplay = true } } }
     var toolbarFrame: CGRect {
         NSRect(x: max(0, bounds.width - 153), y: 8, width: min(145, bounds.width), height: 32)
@@ -55,6 +50,7 @@ final class PaneChrome: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
+        let scrollTop = scrollTop
         effectiveAppearance.performAsCurrentDrawingAppearance {
             guard dimmed || scrollTop else { return }
             let background = runtime.background
