@@ -24,6 +24,8 @@ targets:
     platform: macOS
     sources:
       - App
+      - path: Resources/Assets.xcassets
+        buildPhase: resources
       - path: Resources/themes
         type: folder
         buildPhase: resources
@@ -31,6 +33,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.andreypopp.kido
         PRODUCT_NAME: Kido
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         LM_SKIP_METADATA_EXTRACTION: YES
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
