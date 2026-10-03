@@ -58,6 +58,14 @@ final class WindowView: NSView {
 
     var hot: Bool { !panes.isEmpty }
 
+    private var dividerDrain = false
+    var defersRestore: Bool {
+        if dividerDrain { return true }
+        if paneDrag != nil || drag != nil || liveFrame != nil { return true }
+        if case .sending = delivery { return true }
+        return window?.inLiveResize == true
+    }
+
     func updateBackground() {
         layer?.backgroundColor = runtime.background.cgColor
         subviews.compactMap { $0 as? PaneChrome }.forEach { $0.needsDisplay = true }
@@ -95,7 +103,13 @@ final class WindowView: NSView {
         active = visible.root.panes.first { $0.focus == .active }?.id ?? active
         guard hot else { return }
         let known = panes.contains { $0.pane == active }
-        if changed && !isHidden { relayout() }
+        if changed {
+            if isHidden {
+                for pane in layout.root.panes {
+                    panes.first(where: { $0.pane == pane.id })?.resize(cols: pane.geometry.width, rows: pane.geometry.height)
+                }
+            } else { relayout() }
+        }
         if !known { focusActive(force: false) }
     }
 
@@ -103,7 +117,7 @@ final class WindowView: NSView {
         let created = !hot
         relayout(created ? synced : nil)
         sizeClient()
-        let resync = !created && stale ? panes : []
+        let resync = !created ? panes.filter { stale || $0.resizeDirty } : []
         stale = false
         for pane in resync {
             synced.enter()
@@ -439,6 +453,7 @@ final class WindowView: NSView {
                 #endif
             }
             if let placement = self.placement { self.placeFloat(id, placement) }
+            self.panes.forEach { $0.endResizeIntent() }
         }
     }
 
@@ -495,7 +510,10 @@ final class WindowView: NSView {
             guard let self, case .sending(let pending) = self.delivery else { return }
             self.delivery = .idle
             if let pending { self.lastFloatCommand = nil; self.sendFloat(pending) }
-            else { self.settleFloat() }
+            else {
+                self.settleFloat()
+                if self.liveFrame == nil { self.panes.forEach { $0.endResizeIntent() } }
+            }
         }
     }
 
@@ -543,6 +561,7 @@ final class WindowView: NSView {
         lastFloatCommand = nil
         preview.rect = nil
         target?.invalidateCursorRects(for: self)
+        if !defersRestore { panes.forEach { $0.endResizeIntent() } }
     }
 
     private func updateDrag(_ event: NSEvent) {
@@ -697,6 +716,7 @@ final class WindowView: NSView {
             endDrag()
             guard let placement else { return }
             paneDrag = .floating(pane, event.locationInWindow, floatFrame(pane.id, pane.geometry, placement), edge)
+            panes.first(where: { $0.pane == pane.id })?.beginResizeIntent()
             #if KIDO_STRESS
             stressEvent("edge-resize-started", pane.id.description)
             #endif
@@ -707,6 +727,7 @@ final class WindowView: NSView {
         guard let placement else { return }
         drag = shown?.visible.root.dividers.first { hitArea($0, placement).contains(point) }
             .map { ($0, point, $0.direction == .leftRight ? $0.geometry.x : $0.geometry.y) }
+        if drag != nil { panes.forEach { $0.beginResizeIntent() } }
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -723,7 +744,14 @@ final class WindowView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         if paneDrag != nil { updateDrag(event) }
-        drag = nil
+        if drag != nil {
+            dividerDrain = true
+            drag = nil
+            connection?.send([Command("display-message", "-p", "")]) { [weak self] _ in
+                self?.dividerDrain = false
+                self?.panes.forEach { $0.endResizeIntent() }
+            }
+        }
     }
 
     override var acceptsFirstResponder: Bool { true }
@@ -771,6 +799,11 @@ final class WindowView: NSView {
             let tmux = sizes[view.pane].map { "\($0.width)x\($0.height)" } ?? "none"
             debug("resize t=\(ProcessInfo.processInfo.systemUptime) \(reason()) pane=\(view.pane) tmux=\(tmux) \(view.resizeDebug)")
         }
+    }
+
+    override func viewWillStartLiveResize() {
+        super.viewWillStartLiveResize()
+        panes.forEach { $0.beginResizeIntent() }
     }
 
     override func viewDidEndLiveResize() {
