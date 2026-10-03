@@ -657,6 +657,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         }
         guard let surface = ghostty_surface_new(runtime.app, &config) else { return nil }
         self.surface = surface
+        ghostty_surface_set_focus(surface, window?.firstResponder === self)
         _ = ghostty_surface_set_render_presented_callback(surface, { @Sendable userdata, token in
             PaneView.onMain(userdata) { $0.rendered(token, status: GHOSTTY_RENDER_PRESENTATION_PRESENTED) }
         }, this)
