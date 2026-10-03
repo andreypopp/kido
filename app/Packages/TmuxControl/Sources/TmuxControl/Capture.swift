@@ -33,10 +33,10 @@ struct Capture {
         self.state = state
         var start: Int?, body = ""
         for line in metadata {
-            guard let space = line.firstIndex(of: " "), let row = Int(line[..<space]),
-                  let separator = line[line.index(after: space)...].firstIndex(of: " ") else { return nil }
+            guard let space = line.utf8.firstIndex(of: 32), let row = Int(line[..<space]),
+                  let separator = line.utf8[line.utf8.index(after: space)...].firstIndex(of: 32) else { return nil }
             if start == nil { start = row }
-            let wrapped = line[line.index(after: space)..<separator].contains("W")
+            let wrapped = line.utf8[line.utf8.index(after: space)..<separator].contains(87)
             if !styled { body += line[line.index(after: separator)...] }
             if !wrapped { lines.append((body, start!, row, false)); start = nil; body = "" }
         }
