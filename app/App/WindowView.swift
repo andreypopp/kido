@@ -58,9 +58,9 @@ final class WindowView: NSView {
 
     var hot: Bool { !panes.isEmpty }
 
-    private var dividerDrain = false
+    private var dividerDrain: UUID?
     var defersRestore: Bool {
-        if dividerDrain { return true }
+        if dividerDrain != nil { return true }
         if paneDrag != nil || drag != nil || liveFrame != nil { return true }
         if case .sending = delivery { return true }
         return window?.inLiveResize == true
@@ -105,9 +105,7 @@ final class WindowView: NSView {
         let known = panes.contains { $0.pane == active }
         if changed {
             if isHidden {
-                for pane in layout.root.panes {
-                    panes.first(where: { $0.pane == pane.id })?.resize(cols: pane.geometry.width, rows: pane.geometry.height)
-                }
+                installGrids(panes)
             } else { relayout() }
         }
         if !known { focusActive(force: false) }
@@ -175,6 +173,7 @@ final class WindowView: NSView {
         let placement = PaneLayout(root: shown.visible.root, bounds: bounds, cell: cell, pixel: pixel)
         validateFrames(placement)
         let seen = Dictionary(uniqueKeysWithValues: shown.visible.root.panes.map { ($0.id, $0) })
+        installGrids(Array(views.values))
         let overlays = Dictionary(uniqueKeysWithValues: subviews.compactMap { $0 as? PaneChrome }.map { ($0.pane, $0) })
         var tiled: [NSView] = [], floating: [(z: Int, views: [NSView])] = []
         floatingBoxes = [:]
@@ -182,7 +181,6 @@ final class WindowView: NSView {
             guard let view = views[pane.id] else { continue }
             let g = (seen[pane.id] ?? pane).geometry
             view.isHidden = seen[pane.id] == nil
-            view.resize(cols: g.width, rows: g.height)
             let chrome = overlays[pane.id] ?? PaneChrome(pane: pane.id, runtime: runtime)
             chrome.select = view.onSelect
             chrome.hover = { [weak self] chrome, point in self?.hover(chrome, point) }
@@ -223,6 +221,16 @@ final class WindowView: NSView {
         needsReconcile = false
     }
 
+    private func installGrids(_ views: [PaneView]) {
+        guard let shown else { return }
+        let visible = Dictionary(uniqueKeysWithValues: shown.visible.root.panes.map { ($0.id, $0) })
+        let layout = Dictionary(uniqueKeysWithValues: shown.layout.root.panes.map { ($0.id, $0) })
+        for view in views {
+            guard let pane = visible[view.pane] ?? layout[view.pane] else { continue }
+            view.resize(cols: pane.geometry.width, rows: pane.geometry.height)
+        }
+    }
+
     private func place(resizeGrids: Bool = false) {
         guard !isHidden, let shown, let placement else { return }
         validateFrames(placement)
@@ -230,14 +238,8 @@ final class WindowView: NSView {
         stressEvent("place-window", "")
         #endif
         let seen = Dictionary(uniqueKeysWithValues: shown.visible.root.panes.map { ($0.id, $0) })
-        let layout = Dictionary(uniqueKeysWithValues: shown.layout.root.panes.map { ($0.id, $0) })
         let views = Dictionary(uniqueKeysWithValues: panes.map { ($0.pane, $0) })
-        if resizeGrids {
-            for view in views.values {
-                guard let pane = seen[view.pane] ?? layout[view.pane] else { continue }
-                view.resize(cols: pane.geometry.width, rows: pane.geometry.height)
-            }
-        }
+        if resizeGrids { installGrids(panes) }
         var changed = false
         for chrome in subviews.compactMap({ $0 as? PaneChrome }) where !chrome.isHidden {
             guard let pane = seen[chrome.pane], let view = views[chrome.pane] else { continue }
@@ -419,8 +421,8 @@ final class WindowView: NSView {
 
     private func validateFrames(_ placement: PaneLayout) {
         let mask = layer?.mask as? CAShapeLayer ?? CAShapeLayer()
-        mask.path = CGPath(rect: CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width,
-                                       height: max(0, bounds.height - placement.topLine.maxY)), transform: nil)
+        mask.path = CGPath(rect: CGRect(x: bounds.minX, y: placement.topLine.maxY, width: bounds.width,
+                                       height: max(0, bounds.maxY - placement.topLine.maxY)), transform: nil)
         layer?.mask = mask
         if let placed, placed != placement {
             if case .sending = delivery { delivery = .sending(pending: nil) }
@@ -557,7 +559,7 @@ final class WindowView: NSView {
         }
         if case .dragging = liveFrame { liveFrame = nil }
         paneDrag = nil
-        drag = nil
+        finishDividerDrag()
         lastFloatCommand = nil
         preview.rect = nil
         target?.invalidateCursorRects(for: self)
@@ -744,13 +746,18 @@ final class WindowView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         if paneDrag != nil { updateDrag(event) }
-        if drag != nil {
-            dividerDrain = true
-            drag = nil
-            connection?.send([Command("display-message", "-p", "")]) { [weak self] _ in
-                self?.dividerDrain = false
-                self?.panes.forEach { $0.endResizeIntent() }
-            }
+        finishDividerDrag()
+    }
+
+    private func finishDividerDrag() {
+        guard drag != nil else { return }
+        let token = UUID()
+        dividerDrain = token
+        drag = nil
+        connection?.send([Command("display-message", "-p", "")]) { [weak self] _ in
+            guard let self, self.dividerDrain == token else { return }
+            self.dividerDrain = nil
+            if !self.defersRestore { self.panes.forEach { $0.endResizeIntent() } }
         }
     }
 
