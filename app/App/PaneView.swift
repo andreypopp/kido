@@ -1021,10 +1021,12 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         if !alternate && (!scrollGeometry.captured || strip) && scrollGeometry.history > 0 {
             guard event.scrollingDeltaY != 0 else { return }
             let delta = event.scrollingDeltaY
+            let loaded = scrollGeometry.position.history, total = scrollGeometry.history
+            let limit = scrollGeometry.limited ? Double(min(total, loaded)) : (loaded >= total ? Double(loaded) : .infinity)
             let distance = scrollDistance ?? Double(scrollGeometry.position.history - scrollGeometry.position.offset)
             if precise && pressed.isEmpty {
                 let rows = delta * wheelMultiplier.precision / Double(max(1, rowHeight))
-                requestScrollDistance { $0 + rows }
+                requestScrollDistance { min(limit, $0 + rows) }
                 return
             }
             if distance != distance.rounded() { snapScroll() }
@@ -1033,7 +1035,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             let rows = Int(wheelRemainder)
             wheelRemainder -= Double(rows)
             if rows != 0 {
-                requestScrollDistance { $0.rounded() + Double(rows) }
+                requestScrollDistance { min(limit, $0.rounded() + Double(rows)) }
             }
             return
         }
