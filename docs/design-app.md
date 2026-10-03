@@ -257,14 +257,19 @@ strips follow the new pane boundary, with the knob still 4pt inward. The
 `PaneLayout.topMargin`, the global vertical subcell remainder sits above the
 whole tiled tree. Only outer-top tiled panes expand upward into it, rendering
 the bottom slice of their preceding history row through Ghostty's top render
-inset in backing pixels. Outer-bottom tiled panes expand down to the window
+inset in backing pixels. Every inner tiled top and bottom expands through its
+vertical padding to the horizontal divider: the top uses the floor half and
+the bottom the ceil half of a cell minus one device pixel. Following rows
+and history are clipped at the divider, not the grid's padding edge; the
+line remains above both panes and its hit/cursor zone wins over band input.
+Outer-bottom tiled panes expand down to the window
 content bottom through the bottom render inset, showing following rows when
 scrolled up, clipped only at the window edge. At the live bottom there are no
 following rows, so the band is plain background below the fully visible last
 row. Empty history shows background. Alternate-screen panes keep their
 unexpanded grid view and zero insets, leaving background in both bands. Zoom uses the same rule. A stale root during live resize stays
 bottom-aligned, but its strip is clamped below one cell, never interpreting a
-multi-cell gap as history. Interior padding and divider math are unchanged;
+multi-cell gap as history. Padding sizes and divider math are unchanged;
 outer-top vertical dividers and their hit/cursor areas extend to the strip's
 top, never into the 40pt titlebar margin.
 
