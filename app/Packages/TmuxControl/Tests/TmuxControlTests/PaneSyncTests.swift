@@ -30,7 +30,7 @@ import Testing
 @Test func paneSyncOmitsIncompleteLogicalLineWithoutExpansion() throws {
     let state = ["100000", "0", "0", "0", "0", "1", "0", "0", "0", "0", "0", "block", "", "", "7"].joined(separator: "\u{1F}")
     let replies: [Reply] = [
-        .success(["100000 0"]), .success(["partial"]), .success(["-50001 W partial"]),
+        .success(["100000 0"]), .success(["partial"]), .success(["-10001 W partial"]),
         .success(["screen"]), .success([]), .success([]), .success([state]), .success(["0 - screen"]),
     ]
     let snapshot = try #require(PaneSync.restore(replies))
