@@ -195,12 +195,12 @@ final class WindowView: NSView {
                 }
             }
         }
-        dividers = shown.visible.root.dividers.map { d in
-            box(placement.line(d, pixel: pixel), border: 0, fill: .separatorColor)
+        dividers = (shown.visible.root.dividers.map { placement.line($0, pixel: pixel) } + [placement.topLine]).map {
+            box($0, border: 0, fill: .separatorColor)
         }
         preview.frame = bounds
         preview.autoresizingMask = [.width, .height]
-        subviews = dividers + tiled + floating.sorted { $0.z > $1.z }.flatMap(\.views) + [preview]
+        subviews = tiled + floating.sorted { $0.z > $1.z }.flatMap(\.views) + dividers + [preview]
         for view in views.values where existing[view.pane] == nil {
             synced?.enter()
             connection?.attach(view) { synced?.leave() }
@@ -234,8 +234,7 @@ final class WindowView: NSView {
             if floatingBoxes[chrome.pane]?.frame != chrome.frame { floatingBoxes[chrome.pane]?.frame = chrome.frame }
             if toolbar?.superview === chrome { toolbar?.frame = chrome.toolbarFrame }
         }
-        for (box, divider) in zip(dividers, shown.visible.root.dividers) {
-            let frame = placement.line(divider, pixel: pixel)
+        for (box, frame) in zip(dividers, shown.visible.root.dividers.map { placement.line($0, pixel: pixel) } + [placement.topLine]) {
             if box.frame != frame { box.frame = frame; changed = true }
         }
         if changed { invalidateCursorRects() }
@@ -271,7 +270,6 @@ final class WindowView: NSView {
         view.renderInsets = insets
         if view.frame != content { view.frame = content }
         chrome.content = content.offsetBy(dx: -frame.minX, dy: -frame.minY)
-        chrome.outerTop = zoomed || (!floating && placement.outerTop(g))
         chrome.drag = floating && !zoomed ? { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0) } : nil
         chrome.wantsLayer = true
         chrome.layer?.cornerRadius = floating ? floatingRadius : 0
