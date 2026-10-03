@@ -40,7 +40,7 @@ struct Capture {
             if !styled { body += line[line.index(after: separator)...] }
             if !wrapped { lines.append((body, start!, row, false)); start = nil; body = "" }
         }
-        if let start, let row = metadata.last?.split(separator: " ").first.flatMap({ Int($0) }) {
+        if let start, let row = metadata.last?.split(separator: " ", maxSplits: 1).first.flatMap({ Int($0) }) {
             lines.append((body, start, row, true))
         }
         if styled {
