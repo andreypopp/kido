@@ -262,19 +262,19 @@ final class WindowView: NSView {
     }
 
     private func place(_ chrome: PaneChrome, _ view: PaneView, _ g: Geometry, _ placement: PaneLayout, floating: Bool) {
-        let frame: CGRect, grid: CGRect, content: CGRect, strip: CGFloat
+        let frame: CGRect, grid: CGRect, content: CGRect, insets: PaneLayout.RenderInsets
         if floating {
             frame = floatFrame(chrome.pane, g, placement)
             grid = CGRect(origin: CGPoint(x: frame.minX + placement.before.width, y: frame.minY + placement.before.height),
                           size: placement.grid(g).size)
             content = grid
-            strip = 0
+            insets = .init()
         } else {
             let tiled = placement.tiled(g, alternate: view.alternate)
-            (frame, grid, content, strip) = (tiled.chrome, tiled.grid, tiled.content, tiled.inset)
+            (frame, grid, content, insets) = (tiled.chrome, tiled.grid, tiled.content, tiled.insets)
         }
         if chrome.frame != frame { chrome.frame = frame }
-        view.historyStrip = strip
+        view.renderInsets = insets
         if view.frame != content { view.frame = content }
         chrome.content = content.offsetBy(dx: -frame.minX, dy: -frame.minY)
         chrome.drag = floating && !zoomed ? { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0) } : nil
