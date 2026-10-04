@@ -48,6 +48,7 @@ final class Connection: @unchecked Sendable {
     @MainActor private var desiredSize: String?
     @MainActor private var sentSize: String?
     @MainActor private var sizeInFlight = false
+    @MainActor var navigationModel: () -> SessionModel = { SessionModel() }
     @MainActor private(set) var model = SessionModel() {
         didSet { onChange(model) }
     }
@@ -68,6 +69,7 @@ final class Connection: @unchecked Sendable {
         try client.start(
             onEvent: { [weak self] in self?.handle($0) },
             onClose: { [weak self] status, stderr in self?.closed(status, stderr) })
+        client.send([Command("refresh-client", "-B", "windows::#{W:#{window_id}=#{window_index},}")]) { _ in }
     }
 
     @MainActor func attach(_ pane: PaneView, synced: (@Sendable () -> Void)? = nil) {
@@ -122,7 +124,14 @@ final class Connection: @unchecked Sendable {
         }
     }
 
+    #if KIDO_VISUAL
+    var visualCommands: [Command] = []
+    #endif
+
     func send(_ commands: [Command], then done: (@MainActor @Sendable ([Reply]?) -> Void)? = nil) {
+        #if KIDO_VISUAL
+        visualCommands += commands
+        #endif
         client.send(commands) { replies in
             if let done { DispatchQueue.main.async { done(replies) } }
         }
@@ -200,6 +209,8 @@ final class Connection: @unchecked Sendable {
             DispatchQueue.main.async {
                 if s == self.model.session { self.model.window = window }
             }
+        case .unrecognized(let line) where line.hasPrefix("%subscription-changed windows "):
+            refresh()
         case .sessionChanged:
             reasons = []
             refresh()
