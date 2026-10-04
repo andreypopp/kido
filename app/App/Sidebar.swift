@@ -1,6 +1,13 @@
 import AppKit
 
 final class Sidebar: NSSplitViewController, NSToolbarDelegate {
+    private final class ToolbarButtonCell: NSButtonCell {
+        override func hitTest(for event: NSEvent, in cellFrame: NSRect, of controlView: NSView) -> NSCell.HitResult {
+            guard isEnabled, cellFrame.contains(controlView.convert(event.locationInWindow, from: nil)) else { return [] }
+            return [.contentArea, .trackableArea]
+        }
+    }
+
     let list = SidebarView()
     let content = NSView()
     private let terminalHost = NSView()
@@ -70,14 +77,26 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         if id.rawValue == "newSession" || id.rawValue == "toggleSidebar" {
             let toggle = id.rawValue == "toggleSidebar"
             let item = NSToolbarItem(itemIdentifier: id)
-            item.image = NSImage(systemSymbolName: toggle ? "sidebar.left" : "plus.square.on.square", accessibilityDescription: toggle ? "Toggle Sidebar" : "New Session")?
-                .withSymbolConfiguration(IconButton.sidebarSymbols)
             item.label = toggle ? "Toggle Sidebar" : "New Session"
             item.paletteLabel = item.label
             item.toolTip = item.label
             item.isBordered = false
-            item.target = self
-            item.action = toggle ? #selector(NSSplitViewController.toggleSidebar(_:)) : #selector(newSession)
+            let button = NSButton(frame: .zero)
+            button.cell = ToolbarButtonCell()
+            button.image = NSImage(systemSymbolName: toggle ? "sidebar.left" : "plus.square.on.square", accessibilityDescription: item.label)?
+                .withSymbolConfiguration(IconButton.sidebarSymbols)
+            button.imagePosition = .imageOnly
+            button.target = self
+            button.action = toggle ? #selector(NSSplitViewController.toggleSidebar(_:)) : #selector(newSession)
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.isBordered = false
+            button.toolTip = item.label
+            button.setAccessibilityLabel(item.label)
+            NSLayoutConstraint.activate([
+                button.widthAnchor.constraint(equalToConstant: 32),
+                button.heightAnchor.constraint(equalToConstant: 28),
+            ])
+            item.view = button
             return item
         }
         return nil
