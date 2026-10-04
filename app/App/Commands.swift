@@ -33,7 +33,7 @@ enum PaneCommand {
     // Ghostty's resize amount is in points.
     func command(_ pane: PaneID, cell: CGSize, model: SessionModel) -> Command? {
         switch self {
-        case .split(let side): Command("split-window", side.split, "-t", pane)
+        case .split(let side): Command("split-window", side.split, "-t", pane, "-c", "#{pane_current_path}")
         case .select(let side): Command("select-pane", side.flag, "-t", pane)
         case .resize(let side, let points):
             Command(
@@ -46,7 +46,7 @@ enum PaneCommand {
         case .zoom: Command("resize-pane", "-Z", "-t", pane)
         case .equalize: Command("select-layout", "-E", "-t", pane)
         case .close: Command("kill-pane", "-t", pane)
-        case .newWindow: Command("new-window")
+        case .newWindow: model.window.map { Command("new-window", "-a", "-t", $0, "-c", "#{pane_current_path}") }
         }
     }
 
@@ -63,13 +63,17 @@ enum PaneCommand {
         add("New Window", .newWindow, "t")
         add("Close Pane", .close, "w")
         menu.addItem(.separator())
-        add("Clear", .clear, "k")
+        add("Clear", .clear, "k", [.command, .option])
         add("Zoom Pane", .zoom, "\r", [.command, .shift])
         menu.addItem(.separator())
         add("Select Pane Left", .select(.left), arrow(NSLeftArrowFunctionKey), [.command, .option])
         add("Select Pane Above", .select(.up), arrow(NSUpArrowFunctionKey), [.command, .option])
         add("Select Pane Right", .select(.right), arrow(NSRightArrowFunctionKey), [.command, .option])
         add("Select Pane Below", .select(.down), arrow(NSDownArrowFunctionKey), [.command, .option])
+        add("Select Pane Left", .select(.left), "h")
+        add("Select Pane Below", .select(.down), "j")
+        add("Select Pane Above", .select(.up), "k")
+        add("Select Pane Right", .select(.right), "l")
         add("Next Pane", .next, "]")
         add("Previous Pane", .previous, "[")
         let item = NSMenuItem(title: "Shell", action: nil, keyEquivalent: "")
