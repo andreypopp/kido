@@ -91,7 +91,9 @@ def app_children(pid):
 
 
 env = {k: v for k, v in os.environ.items() if not k.startswith('KIDO_AGENT_') and k not in ('TMUX', 'TMUX_PANE')}
-env.update(KIDO_APP_BACKGROUND='1', KIDO_APP_SOCKET=sock, KIDO_APP_TMUX=args.tmux,
+os.makedirs(out + '/home', exist_ok=True)
+os.makedirs(out + '/tmp', exist_ok=True)
+env.update(HOME=out + '/home', XDG_STATE_HOME=out + '/state', TMUX_TMPDIR=out + '/tmp', KIDO_APP_BACKGROUND='1', KIDO_APP_SOCKET=sock, KIDO_APP_TMUX=args.tmux,
            KIDO_APP_FEED=root + '/app/scripts/fake-sidebar-feed.sh', XDG_CONFIG_HOME=out + '/config',
            STRESS_SEED=str(args.seed), STRESS_DURATION=str(args.duration))
 if not args.find:

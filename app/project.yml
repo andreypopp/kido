@@ -44,6 +44,10 @@ targets:
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
         INFOPLIST_KEY_CFBundleDisplayName: Kido
         OTHER_LDFLAGS: [-lc++]
+    postBuildScripts:
+      - name: Bundle kido
+        script: python3 "$SRCROOT/scripts/bundle-kido.py"
+        basedOnDependencyAnalysis: false
     dependencies:
       - package: TmuxControl
       - package: SidebarFeed
@@ -88,6 +92,9 @@ schemes:
         KIDO_APP_BACKGROUND: "1"
         KIDO_APP_SOCKET: /tmp/kido-visual-unconnected
         KIDO_APP_TMUX: /usr/bin/false
-        XDG_CONFIG_HOME: "$(SRCROOT)/build/visual/config"
+        HOME: "$(SRCROOT)/build/bundle/visual/home"
+        XDG_STATE_HOME: "$(SRCROOT)/build/bundle/visual/state"
+        TMUX_TMPDIR: "$(SRCROOT)/build/bundle/visual/tmp"
+        XDG_CONFIG_HOME: "$(SRCROOT)/build/bundle/visual/config"
         KIDO_VISUAL_RECORD: "$(KIDO_VISUAL_RECORD)"
         KIDO_VISUAL_TMUX: "$(KIDO_VISUAL_TMUX)"
