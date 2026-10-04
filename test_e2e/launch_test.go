@@ -78,10 +78,17 @@ func newKidoRun(t *testing.T) *kidoRun {
 	watchSocketIn(r.tmpdir, "kido")
 
 	t.Cleanup(func() {
+		started := descendants(r.kidoSock)
 		// The kido server first: killing the outer one only takes away the
 		// terminals its clients sit in.
 		r.kido("kill-server")
 		killServer(r.outer)
+		deadline := time.Now().Add(settle)
+		for _, p := range started {
+			if !processGone(p.pid, time.Until(deadline)) {
+				t.Errorf("pid %s (%s), started under %s, outlived its server by %v", p.pid, p.command, r.kidoSock, settle)
+			}
+		}
 		os.RemoveAll(r.tmpdir)
 	})
 
@@ -553,6 +560,43 @@ func TestKidoAtAPathWithASpace(t *testing.T) {
 	r.waitFor(func() bool {
 		return reportedPrompt(r.mustKido("display-message", "-p", "-t", pane, "#{pane_last_prompt_time}"))
 	}, "the pane's shell, started by `kido shell`, to report its first prompt")
+}
+
+func TestLauncherWaitsForShellExit(t *testing.T) {
+	requireTmux(t)
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("no zsh for the shell exit hook")
+	}
+	done := filepath.Join(t.TempDir(), "shell-exited")
+	var pid string
+	t.Run("exit-hook", func(t *testing.T) {
+		r := newKidoRun(t)
+		rc := fmt.Sprintf(`PS1='kido$ '
+TRAPEXIT() {
+  local i
+  for ((i = 0; i < 2000; i++)); do
+    print -r -- "$i" > "$HOME/.exit-progress"
+  done
+  print -r -- done > %q
+}
+`, done)
+		if err := os.WriteFile(filepath.Join(r.home, ".zshrc"), []byte(rc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		r.launch("first")
+		r.waitUp()
+		pane := r.firstPane()
+		r.waitFor(func() bool {
+			return reportedPrompt(r.mustKido("display-message", "-p", "-t", pane, "#{pane_last_prompt_time}"))
+		}, "the shell with an exit hook to report its first prompt")
+		pid = r.mustKido("display-message", "-p", "-t", pane, "#{pane_pid}")
+	})
+	if _, err := os.Stat(done); err != nil {
+		t.Error("launcher teardown returned before the shell's HOME writes finished")
+	}
+	if pid != "" && !processGone(pid, settle) {
+		t.Errorf("shell pid %s outlived launcher teardown", pid)
+	}
 }
 
 func launcherEnv(t *testing.T, extra ...string) []string {

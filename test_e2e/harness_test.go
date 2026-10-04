@@ -438,7 +438,7 @@ set -g side-status-command "%s%s"
 		if len(pids) > 1 {
 			t.Errorf("more than one control client attached to %s: %v", h.inner, pids)
 		}
-		started := descendants(h.inner)
+		started := descendants(socketPath("", h.inner))
 		killServer(h.inner)
 		killServer(h.outer)
 		for _, pid := range pids {
@@ -499,7 +499,7 @@ type process struct{ pid, command string }
 // jobs' and theirs, including a killed pane's that has not exited yet.
 // Asked before the server is killed, after which they are init's.
 func descendants(socket string) []process {
-	root, err := exec.Command(tmuxBin, "-L", socket, "display-message", "-p", "#{pid}").Output()
+	root, err := exec.Command(tmuxBin, "-S", socket, "display-message", "-p", "#{pid}").Output()
 	if err != nil {
 		return nil
 	}
