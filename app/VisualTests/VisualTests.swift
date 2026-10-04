@@ -299,6 +299,43 @@ import XCTest
         sidebarSnapshot(list, "no-matches-light")
     }
 
+    func testFoldedFilteredEnterSendsOnce() async throws {
+        for reply: Reply in [.success([]), .failure(["delayed failure"])] {
+            window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 260),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+            let list = SidebarView()
+            window.contentView = list
+            list.update(.running(try sidebarFixture { $0["filter"] = "main" }))
+            list.visualFold(SessionID(number: 0))
+            list.visualSearch.stringValue = "main"
+            var commands: [[Command]] = []
+            var pending: [@MainActor @Sendable ([Reply]?) -> Void] = []
+            list.send = { batch, done in commands.append(batch); pending.append(done) }
+            _ = list.control(list.visualSearch, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:)))
+            XCTAssertEqual(commands.count, 1, "one Enter must send one switch-client before delayed reply")
+            let completed = expectation(description: "delayed reply")
+            DispatchQueue.main.async {
+                for done in pending { done([reply]) }
+                completed.fulfill()
+            }
+            await fulfillment(of: [completed], timeout: 5)
+            XCTAssertEqual(commands.count, 1, "delayed reply must not send another switch-client")
+            XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
+        }
+    }
+
+    func testNoOpNavigationConsumesReveal() throws {
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 260),
+                          styleMask: [.titled], backing: .buffered, defer: false)
+        let list = SidebarView()
+        window.contentView = list
+        list.update(.running(try sidebarFixture()))
+        list.visualFold(SessionID(number: 0))
+        list.completedNavigation(to: try sidebarFixture().client, from: list.position)
+        list.update(.running(try sidebarFixture { $0["client"] = ["session": "$0", "window": "@458", "pane": "%502"] }))
+        XCTAssertFalse(list.visualRows.contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 502)) }, "unrelated client change must not consume a completed no-op navigation")
+    }
+
     func testSidebarNavigationAndAnchoring() async throws {
         try await start()
         let list = SidebarView()
@@ -337,8 +374,9 @@ import XCTest
         list.visualFold(SessionID(number: 0))
         list.update(.running(fixture))
         XCTAssertFalse(list.visualRows.contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 502)) })
-        list.revealWindowOnNavigation()
-        list.update(.running(try sidebarFixture { $0["client"] = ["session": "$0", "window": "@458", "pane": "%502"] }))
+        let navigated = try sidebarFixture { $0["client"] = ["session": "$0", "window": "@458", "pane": "%502"] }
+        list.completedNavigation(to: navigated.client, from: list.position)
+        list.update(.running(navigated))
         XCTAssertTrue(list.visualRows.contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 502)) })
         let row = try XCTUnwrap(list.visualRows.first { $0.target != nil })
         var commands: [[Command]] = []

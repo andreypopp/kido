@@ -8,10 +8,9 @@ public struct SidebarRow: Equatable, Sendable {
             switch self { case .header(let s), .pane(let s, _), .divider(let s, _), .gap(let s): s }
         }
     }
-    public enum PaneKind: Equatable, Sendable { case agent, run(Item.Run), shell, ssh }
     public enum Status: Equatable, Sendable { case quiet, running, attention, error }
     public enum Kind: Equatable, Sendable {
-        case header(String), pane(PaneKind, Snapshot.Position), divider, gap
+        case header, pane(Snapshot.Position), divider, gap
     }
     public struct Segment: Equatable, Sendable {
         public enum Kind: Equatable, Sendable { case card, window(active: Bool) }
@@ -34,8 +33,39 @@ public struct SidebarRow: Equatable, Sendable {
     public let focused: Bool
     public var segments: [Segment] = []
     public var target: Snapshot.Position? {
-        if case .pane(_, let target) = kind { return target }; return nil
+        if case .pane(let target) = kind { return target }; return nil
     }
+}
+
+private func walkNodes(_ nodes: [Node], depth: Int, before: (Node, Int, Int) -> Void,
+                       pane: (Item, Int) -> Void, after: (Node, Int) -> Void) {
+    for (index, node) in nodes.enumerated() {
+        before(node, depth, index)
+        let panes: [Item] = switch node { case .window(let group): group.children; case .item(let item): [item] }
+        for item in panes {
+            pane(item, depth)
+            walkNodes(item.children, depth: depth + 1, before: before, pane: pane, after: after)
+        }
+        after(node, depth)
+    }
+}
+
+public func sidebarTarget(_ snapshot: Snapshot?, selected: Snapshot.Position? = nil, attention delta: Int? = nil) -> Snapshot.Position? {
+    guard let snapshot else { return nil }
+    var targets: [(Snapshot.Position, Bool)] = []
+    for session in snapshot.sessions {
+        walkNodes(session.nodes, depth: 0, before: { _, _, _ in }, pane: { item, _ in
+            targets.append((.init(session: session.id, window: item.window, pane: item.pane), item.attention))
+        }, after: { _, _ in })
+    }
+    guard let delta else { return targets.first?.0 }
+    guard !targets.isEmpty else { return nil }
+    var index = targets.firstIndex { $0.0 == selected } ?? (delta > 0 ? -1 : 0)
+    for _ in targets {
+        index = (index + delta + targets.count) % targets.count
+        if targets[index].1 { return targets[index].0 }
+    }
+    return nil
 }
 
 public func sidebarRows(_ snapshot: Snapshot?, folded: Set<SessionID>) -> [SidebarRow] {
@@ -43,23 +73,17 @@ public func sidebarRows(_ snapshot: Snapshot?, folded: Set<SessionID>) -> [Sideb
     var rows: [SidebarRow] = []
     for session in snapshot.sessions {
         let start = rows.count
-        rows.append(SidebarRow(id: .header(session.id), kind: .header(session.name), indent: 0, height: 31,
+        rows.append(SidebarRow(id: .header(session.id), kind: .header, indent: 0, height: 31,
                                title: session.name, tail: "", status: .quiet, attention: false, started: nil, focused: false))
-        func windows(_ nodes: [Node], depth: Int) {
-            for (index, node) in nodes.enumerated() {
+        var begins: [Int] = []
+        if !folded.contains(session.id) {
+            walkNodes(session.nodes, depth: 0, before: { node, depth, index in
                 if index > 0 {
                     rows.append(SidebarRow(id: .divider(session.id, node.id), kind: .divider, indent: depth, height: 9,
                                            title: "", tail: "", status: .quiet, attention: false, started: nil, focused: false))
                 }
-                let begin = rows.count
-                let window: WindowID
-                let panes: [Item]
-                switch node {
-                case .window(let group): window = group.window; panes = group.children
-                case .item(let item): window = item.window; panes = [item]
-                }
-                for item in panes {
-                    let kind: SidebarRow.PaneKind = item.run.map { .run($0) } ?? (item.kind == .ssh ? .ssh : item.kind == .shell ? .shell : .agent)
+                begins.append(rows.count)
+            }, pane: { item, depth in
                     let status: SidebarRow.Status
                     switch item.indicator {
                     case .failed, .gone(.failed), .gone(.died): status = .error
@@ -70,12 +94,13 @@ public func sidebarRows(_ snapshot: Snapshot?, folded: Set<SessionID>) -> [Sideb
                     let target = Snapshot.Position(session: session.id, window: item.window, pane: item.pane)
                     let tail = item.tail.map(\.text).joined()
                     let started = item.run == nil ? nil : item.started
-                    rows.append(SidebarRow(id: .pane(session.id, item.id), kind: .pane(kind, target), indent: depth,
+                    rows.append(SidebarRow(id: .pane(session.id, item.id), kind: .pane(target), indent: depth,
                                            height: (depth == 0 ? 32 : 29) + (tail.isEmpty ? 0 : 16),
                                            title: item.title.map(\.text).joined(), tail: tail, status: status,
                                            attention: item.attention, started: started, focused: target == snapshot.client))
-                    windows(item.children, depth: depth + 1)
-                }
+            }, after: { node, depth in
+                let begin = begins.removeLast()
+                let window: WindowID = switch node { case .window(let group): group.window; case .item(let item): item.window }
                 let height = rows[begin...].reduce(0) { $0 + $1.height }
                 var y = 0.0
                 for i in begin..<rows.count {
@@ -84,9 +109,8 @@ public func sidebarRows(_ snapshot: Snapshot?, folded: Set<SessionID>) -> [Sideb
                                                   topLeft: depth == 0 ? 0 : 6, bottomLeft: depth == 0 ? 0 : 6), at: 0)
                     y += rows[i].height
                 }
-            }
+            })
         }
-        if !folded.contains(session.id) { windows(session.nodes, depth: 0) }
         let height = rows[start...].reduce(0) { $0 + $1.height }
         var y = 0.0
         for i in start..<rows.count {
