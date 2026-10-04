@@ -91,7 +91,10 @@ const keyGroups = [
 
       <section class="feature keys" id="keys">
         <div class="keys-content">
-          <h2>Keys.<br /><span>Driven from the keyboard.</span></h2>
+          <div class="section-copy reveal">
+            <h2>Keyboard bindings.<br /><span>Default ones.</span></h2>
+            <p class="subhead">These are the keyboard bindings set by default, you can override them in the ~/.config/kido/kido.conf configuration file.</p>
+          </div>
           {keyGroups.map(({ caption, rows }) => (
             <table>
               <caption>{caption}</caption>
