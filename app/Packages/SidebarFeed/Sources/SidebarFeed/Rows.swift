@@ -28,6 +28,7 @@ public struct SidebarRow: Equatable, Sendable {
     public let title: String
     public let tail: String
     public let status: Status
+    public var indicatorDescription = ""
     public let attention: Bool
     public let started: Date?
     public let focused: Bool
@@ -91,12 +92,17 @@ public func sidebarRows(_ snapshot: Snapshot?, folded: Set<SessionID>) -> [Sideb
                         status = item.attention || item.indicator == .waiting || item.indicator == .stalled ? .attention
                             : item.indicator == .running || item.indicator == .compacting ? .running : .quiet
                     }
+                    let description: String = switch item.indicator {
+                    case .gone(let outcome): "gone" + (outcome.map { ", " + $0.rawValue } ?? "")
+                    case .some(let indicator): String(describing: indicator)
+                    case nil: ""
+                    }
                     let target = Snapshot.Position(session: session.id, window: item.window, pane: item.pane)
                     let tail = item.tail.map(\.text).joined()
                     let started = item.run == nil ? nil : item.started
                     rows.append(SidebarRow(id: .pane(session.id, item.id), kind: .pane(target), indent: depth,
                                            height: (depth == 0 ? 32 : 29) + (tail.isEmpty ? 0 : 16),
-                                           title: item.title.map(\.text).joined(), tail: tail, status: status,
+                                           title: item.title.map(\.text).joined(), tail: tail, status: status, indicatorDescription: description,
                                            attention: item.attention, started: started, focused: target == snapshot.client))
             }, after: { node, depth in
                 let begin = begins.removeLast()
