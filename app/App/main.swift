@@ -16,6 +16,8 @@ import TmuxControl
     private enum Link {
         case down
         case locating
+        case mismatch(Server)
+        case changed
         case connected(Connection)
         case redialing(DispatchWorkItem)
     }
@@ -107,7 +109,16 @@ import TmuxControl
 
     @objc private func start() {
         switch link {
-        case .locating, .connected: return
+        case .locating, .connected, .changed: return
+        case .mismatch(let server):
+            let alert = NSAlert()
+            alert.messageText = "This server was started by a different kido. Restarting ends all its sessions and panes."
+            alert.addButton(withTitle: "Restart")
+            alert.addButton(withTitle: "Cancel")
+            alert.beginSheetModal(for: window) { [weak self] response in
+                self?.confirmedRestart(server, response)
+            }
+            return
         case .redialing(let item): item.cancel()
         case .down: break
         }
@@ -115,7 +126,14 @@ import TmuxControl
         down("Connecting to the kido server…", "", button: nil)
         Task {
             do throws(Failure) {
-                dial(try await Server.locate(), backoff: 0.1)
+                let server = try await Server.locate()
+                if Server.fixed == nil, server.build != tools.build {
+                    link = .mismatch(server)
+                    note("server build mismatch: \(server.build ?? "missing")")
+                    down("This app server was started by a different kido", "Restart the kido-app server to use this bundle.", button: "Restart")
+                    return
+                }
+                dial(server, backoff: 0.1)
             } catch {
                 note("could not locate the kido server: \(error.message)")
                 link = .down
@@ -124,9 +142,40 @@ import TmuxControl
         }
     }
 
-    private var action: String { Server.fixed == nil ? "Start kido server" : "Reconnect" }
+    private func confirmedRestart(_ server: Server, _ response: NSApplication.ModalResponse) {
+        guard response == .alertFirstButtonReturn else { return }
+        link = .locating
+        Task {
+            do throws(Failure) {
+                try await server.restart()
+                link = .down
+                start()
+            } catch {
+                link = .down
+                down("Could not restart the app server", error.message, button: "Reconnect")
+            }
+        }
+    }
+
+    private var action: String { Server.fixed == nil ? "Start app server" : "Reconnect" }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        do throws(Failure) { try tools.validate() } catch { bundleChanged(error) }
+    }
+
+    private func bundleChanged(_ error: Failure) {
+        if case .redialing(let item) = link { item.cancel() }
+        let connection: Connection?
+        if case .connected(let current) = link { connection = current } else { connection = nil }
+        link = .changed
+        feed?.stop()
+        feed = nil
+        connection?.gridFailed()
+        down("Relaunch Kido.app", error.message, button: nil)
+    }
 
     private func dial(_ server: Server, backoff: TimeInterval) {
+        do throws(Failure) { try tools.validate() } catch { return bundleChanged(error) }
         note("dialing \(server.socket)")
         let view = SessionView(runtime: runtime)
         view.frame = sidebar.content.bounds
@@ -140,7 +189,10 @@ import TmuxControl
             link = .connected(connection)
             feed = Feed(
                 socket: server.socket, locate: connection.locateFeed, query: { [weak self] in self?.sidebar.list.query ?? "" },
-                onChange: { [weak self] in self?.sidebar.list.update($0) })
+                onChange: { [weak self] status in
+                    if case .invalidBundle(let error) = status { return self?.bundleChanged(error) ?? () }
+                    self?.sidebar.list.update(status)
+                })
         } catch {
             note("could not run \(server.tmux): \(error.localizedDescription)")
             link = .down
@@ -162,6 +214,7 @@ import TmuxControl
     }
 
     private func closed(_ server: Server, _ view: SessionView, _ exit: Exit, backoff: TimeInterval) {
+        guard case .connected = link else { return }
         view.subviews.compactMap { $0 as? WindowView }.forEach { $0.cancelDrag() }
         menus.update(SessionModel())
         feed?.stop()
@@ -298,8 +351,14 @@ import TmuxControl
     }
 }
 
+let tools = BundledTools(resources: Bundle.main.resourceURL!, environment: ProcessInfo.processInfo.environment)
+#if KIDO_VISUAL || KIDO_STRESS
 let background = ProcessInfo.processInfo.environment["KIDO_APP_BACKGROUND"] == "1"
 let debugging = ProcessInfo.processInfo.environment["KIDO_APP_DEBUG"] == "1"
+#else
+let background = false
+let debugging = false
+#endif
 
 func note(_ line: String) {
     FileHandle.standardError.write(Data("kido-app \(line)\n".utf8))
