@@ -63,12 +63,20 @@ struct TranscriptTable: NSViewRepresentable {
             let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSHostingView<AnyView> ?? NSHostingView(rootView: AnyView(EmptyView()))
             cell.identifier = id; configure(cell, row: row); return cell
         }
+        func expansionChanged(_ id: String, open: Bool) {
+            if open { expansions.insert(id) } else { expansions.remove(id) }
+            readAnchor = nil
+            guard !parent.following, let table, let scroll = table.enclosingScrollView, let row = positions[id] else { return }
+            if table.rect(ofRow: row).minY >= scroll.contentView.bounds.minY {
+                readAnchor = (id, scroll.contentView.bounds.minY - table.rect(ofRow: row).minY)
+            } else { captureAnchor() }
+        }
         private func configure(_ cell: NSHostingView<AnyView>, row: Int) {
             guard let table else { return }
             let item = rows[row], width = table.bounds.width
             cell.sizingOptions = []; cell.autoresizingMask = [.width, .height]
             cell.rootView = AnyView(MessageView(row: item, expanded: expansions.contains(item.id) || parent.expanded, loadHistory: parent.loadHistory, expansionChanged: { [weak self] open in
-                if open { self?.expansions.insert(item.id) } else { self?.expansions.remove(item.id) }
+                self?.expansionChanged(item.id, open: open)
             }).id(item.id).disclosureGroupStyle(InlineDisclosureStyle())
                 .frame(width: max(1, width - 24), alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true).padding(.vertical, 12).padding(.horizontal, 12).frame(maxWidth: .infinity, alignment: .leading)
@@ -79,7 +87,8 @@ struct TranscriptTable: NSViewRepresentable {
         }
         func measured(_ item: DisplayRow, width: CGFloat, height: CGFloat) {
             guard let index = positions[item.id], rows[index] == item, heights[item.id]?[width] != height else { return }
-            if heights[item.id]?.count ?? 0 >= 2 { heights[item.id] = [:] }
+            captureAnchor()
+            if heights[item.id]?[width] == nil, heights[item.id]?.count ?? 0 >= 2 { heights[item.id] = [:] }
             heights[item.id, default: [:]][width] = height
             let scheduled = !pending.isEmpty; pending.insert(item.id)
             guard !scheduled else { return }
@@ -128,7 +137,10 @@ struct TranscriptTable: NSViewRepresentable {
                 heights = heights.filter { positions[$0.key] != nil }; expansions.formIntersection(newIDs)
             }
             let changed = oldExpanded != value.expanded ? IndexSet(rows.indices) : IndexSet(value.changed.compactMap { positions[$0] })
-            for row in changed { heights[rows[row].id] = nil }
+            for row in changed {
+                let id = rows[row].id
+                heights[id] = heights[id].map { $0.filter { $0.key == table.bounds.width } }
+            }
             if !changed.isEmpty { table.reloadData(forRowIndexes: changed, columnIndexes: IndexSet(integer: 0)) }
             restore(follow: follow); value.applied(value.changed)
         }
@@ -140,6 +152,7 @@ struct TranscriptTable: NSViewRepresentable {
         }
         func restore(follow: Bool? = nil) {
             guard let table, let scroll = table.enclosingScrollView else { return }
+            if follow ?? parent.following { readAnchor = nil }
             let y = readAnchor.flatMap { id, offset in positions[id].map { table.rect(ofRow: $0).minY + offset } }
             guard let y = y ?? ((follow ?? parent.following) ? max(0, table.bounds.height - scroll.contentView.bounds.height) : nil) else { return }
             let target = max(0, min(y, max(0, table.bounds.height - scroll.contentView.bounds.height)))

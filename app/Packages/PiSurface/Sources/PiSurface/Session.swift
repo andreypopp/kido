@@ -172,7 +172,7 @@ public struct Model: Identifiable, Equatable {
             let record = event["record"]
             rows = transcript(record["entries"].array)
             bash = record["bash"]; retry = record["retry"]; compaction = record["compaction"]
-            historyBefore = record["entries"].array.first?["id"] ?? .null
+            historyBefore = event["before"]
             partial = record["partialAssistant"] == .null ? nil : Row(id: record["partialAssistant"]["uiId"].string, message: record["partialAssistant"]); tools = record["tools"].object
             dialogs = record["dialogs"].orderedValues
             queues = record["queues"]; state = record["state"]; models = record["models"].array.map { value in Model(value, ambiguous: record["models"].array.filter { $0["name"] == value["name"] }.count > 1) }

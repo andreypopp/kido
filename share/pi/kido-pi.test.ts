@@ -62,6 +62,7 @@ test("overlapping first-turn entries retain live identities in events, snapshot 
   assert.deepEqual(unreconciled.entries.map((entry: any) => entry.message), entries.map(entry => entry.message));
   assert.deepEqual(unreconciled.entries.map((entry: any) => entry.uiId), messages.filter(value => value.type === "message_end").map(value => value.uiId));
   assert.equal(unreconciled.partialAssistant, null);
+  assert.equal(messages.find(value => value.id === "unreconciled").before, null);
   for (let index = 0; index < 2; index++) bridge.event({ type: "response", command: "get_entries", success: true, data: structuredClone({ entries, leafId: "entry-1" }) });
   bridge.command({ type: "snapshot" });
   bridge.command({ type: "history", generation: 0, before: "entry-1", limit: 2 });
@@ -82,6 +83,13 @@ test("overlapping first-turn entries retain live identities in events, snapshot 
   const reconciled = messages.find(value => value.id === "reconciled-assistant").record.entries;
   assert.deepEqual(reconciled.map((entry: any) => entry.uiId), completed.entries.map((entry: any) => entry.uiId));
   assert.deepEqual(reconciled.map((entry: any) => entry.id), [...entries, assistant].map(entry => entry.id));
+  const older = Array.from({ length: 201 }, (_, index) => ({ type: "message", id: `older-${index}`, parentId: index ? `older-${index - 1}` : assistant.id, message: { role: "user", content: "Older", timestamp: 200 + index } }));
+  bridge.event({ type: "response", command: "get_entries", success: true, data: { entries: older, leafId: older.at(-1)!.id } });
+  bridge.command({ type: "snapshot", id: "long-session" });
+  const snapshot = messages.find(value => value.id === "long-session");
+  assert.equal(snapshot.record.entries.length, 200);
+  assert.equal(snapshot.before, "older-1");
+  assert.equal(snapshot.before, snapshot.record.entries[0].id);
 });
 
 test("pty bridge streams fake pi, snapshots, dialogs, history and restores its tty", { timeout: 15000 }, async () => {

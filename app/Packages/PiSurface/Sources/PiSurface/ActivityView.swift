@@ -26,7 +26,7 @@ struct ActivityView: View {
             else { runs.append((value.0, 1)) }
         }.map { $0.0 + ($0.1 > 1 ? " ×\($0.1)" : "") }.joined(separator: ", ")
         VStack(alignment: .leading, spacing: 8) {
-            Button { open.toggle() } label: {
+            Button { expansionChanged(!open); open.toggle() } label: {
                 HStack(spacing: 7) {
                     Image(systemName: open ? "chevron.down" : "chevron.right").font(.caption)
                     if open { Text("Activity · \(items.count) steps") }
@@ -42,7 +42,7 @@ struct ActivityView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         let value = values[index]
-                        Button { detail = detail == item.id ? nil : item.id } label: {
+                        Button { expansionChanged(open); detail = detail == item.id ? nil : item.id } label: {
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
                                 Text(value.0).frame(minWidth: 65, alignment: .leading)
                                 Text(value.1).monospaced().lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
@@ -58,6 +58,5 @@ struct ActivityView: View {
             }
         }.font(.callout).foregroundStyle(.secondary).padding(.vertical, 5)
             .onAppear { open = expanded }.onChange(of: expanded) { _, value in open = value }
-            .onChange(of: open) { _, value in expansionChanged(value) }
     }
 }

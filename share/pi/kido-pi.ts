@@ -40,7 +40,10 @@ function branch() {
   return result.reverse().concat(record.entries.filter((entry: any) => entry.id === entry.uiId));
 }
 function command(value: Record<string, any>) {
-  if (value.type === "snapshot") { send({ type: "snapshot", id: value.id ?? null, hello: hello(), seq, generation, record: { ...record, entries: branch().slice(-200) } }); return; }
+  if (value.type === "snapshot") {
+    const active = branch(), entries = active.slice(-200);
+    send({ type: "snapshot", id: value.id ?? null, hello: hello(), seq, generation, before: active.length > entries.length ? entries[0].id : null, record: { ...record, entries } }); return;
+  }
   if (value.type === "history") {
     const active = branch(); const end = active.findIndex(entry => entry.id === value.before);
     const entries = value.generation === generation && end >= 0 ? active.slice(Math.max(0, end - Math.min(200, Math.max(1, value.limit))), end) : [];

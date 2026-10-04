@@ -96,7 +96,7 @@ responses; a dialog answer keeps pi's dialog id. kido-pi's own messages:
 
     hello         {type, instance, sessionId, sessionFile, cwd}
     bye           {type, instance}
-    snapshot      in {type, id}; out {type, id|null, hello, seq, generation, record}
+    snapshot      in {type, id}; out {type, id|null, hello, seq, generation, before|null, record}
     history       in {type, id, generation, before, limit};
                   out {type, id, generation, entries, before|null}
     ack           {type, client, msg, index}

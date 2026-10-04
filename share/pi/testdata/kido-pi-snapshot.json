@@ -11,6 +11,7 @@
     },
     "seq": 0,
     "generation": 0,
+    "before": null,
     "record": {
       "entries": [
         {
@@ -491,6 +492,7 @@
     },
     "seq": 0,
     "generation": 1,
+    "before": null,
     "record": {
       "entries": [],
       "leafId": null,
@@ -644,6 +646,7 @@
     },
     "seq": 0,
     "generation": 1,
+    "before": null,
     "record": {
       "entries": [],
       "leafId": null,
