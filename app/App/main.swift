@@ -67,7 +67,7 @@ import TmuxControl
         sidebar.changed = { [weak self] in self?.updateSidebarMenu() }
         sidebar.list.send = { [weak self] in self?.send($0, then: $1) }
         sidebar.list.newSession = { [weak self] in self?.newSession() }
-        sidebar.list.newWindow = { [weak self] in self?.create(Command("new-window", "-d", "-P", "-F", "#{session_id}:#{window_id}.#{pane_id}", "-t", $0)) }
+        sidebar.list.newWindow = { [weak self] in self?.create(Command("new-window", "-d", "-P", "-F", "#{session_id}:#{window_id}.#{pane_id}", "-t", $0, "-c", "#{pane_current_path}")) }
         menus.send = { [weak self] in self?.send($0) }
         sidebar.list.filter = { [weak self] in self?.feed?.filter($0) }
         sidebar.list.leave = { [weak self] in self?.session?.focusActive() }
@@ -244,7 +244,7 @@ import TmuxControl
     private func mainMenu() -> NSMenu {
         let app = NSMenu(title: "Kido")
         app.items = [
-            NSMenuItem(title: "Hide Kido", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
+            NSMenuItem(title: "Hide Kido", action: #selector(NSApplication.hide(_:)), keyEquivalent: ""),
             .separator(),
             NSMenuItem(title: "Quit Kido", action: #selector(quitItem), keyEquivalent: "q"),
         ]
@@ -282,7 +282,14 @@ import TmuxControl
     }
 
     @objc private func newSession() {
-        create(Command("new-session", "-d", "-P", "-F", "#{session_id}:#{window_id}.#{pane_id}"))
+        let home = tools.environment["HOME"] ?? NSHomeDirectory()
+        guard case .connected(let connection) = link, let window = connection.model.window else {
+            return create(Command("new-session", "-d", "-P", "-F", "#{session_id}:#{window_id}.#{pane_id}", "-c", home))
+        }
+        send([Command("display-message", "-p", "-t", window, "#{pane_current_path}")]) { [weak self] replies in
+            guard case .success(let lines)? = replies?.first, let cwd = lines.first, !cwd.isEmpty else { return }
+            self?.create(Command("new-session", "-d", "-P", "-F", "#{session_id}:#{window_id}.#{pane_id}", "-c", cwd))
+        }
     }
 
     private func create(_ command: Command) {
