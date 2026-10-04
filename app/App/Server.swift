@@ -13,6 +13,12 @@ struct BundledTools: Sendable {
         var env = environment.filter { key, _ in
             key != "TMUX" && key != "TMUX_PANE" && key != "KIDO_TMUX" && !key.hasPrefix("KIDO_AGENT_")
         }
+        // tmux's CLIENT_UTF8 preserves the control-mode format delimiters.
+        if !["LC_ALL", "LC_CTYPE", "LANG"].contains(where: { env[$0]?.uppercased().contains("UTF-8") == true || env[$0]?.uppercased().contains("UTF8") == true }) {
+            let locale = Locale.current
+            let name = "\(locale.language.languageCode?.identifier ?? "en")_\(locale.region?.identifier ?? "US").UTF-8"
+            env["LANG"] = FileManager.default.fileExists(atPath: "/usr/share/locale/" + name) ? name : "en_US.UTF-8"
+        }
         let home = environment["HOME"] ?? NSHomeDirectory()
         let state = environment["XDG_STATE_HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? home + "/.local/state"
         env["KIDO_STATE_DIR"] = URL(fileURLWithPath: state).appendingPathComponent("kido-app").standardizedFileURL.path
