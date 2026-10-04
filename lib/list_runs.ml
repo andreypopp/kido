@@ -218,7 +218,7 @@ let row_to_yojson row =
               (fun o -> [ ("outcome", Subrun.outcome_to_yojson o) ])
               r.outcome
         in
-        (fields, (match m.kind with Agent -> "subagent" | Bash -> "bash"), "own", extra)
+        (fields, (match m.kind with Agent -> "subagent" | Bash | Stream -> "bash"), "own", extra)
   in
   `Assoc (fields @ [ ("kind", `String kind); ("relationship", `String relationship) ] @ extra)
 

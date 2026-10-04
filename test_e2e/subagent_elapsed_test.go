@@ -61,7 +61,7 @@ func TestSubagentRowShowsElapsedUnlessActivity(t *testing.T) {
 					if activity == "" {
 						return r.Started != nil && *r.Started == start && len(r.Tail) == 0
 					}
-					return r.Started == nil && len(r.Tail) == 1 && r.Tail[0].Text == activity
+					return r.Started != nil && *r.Started == start && len(r.Tail) == 1 && r.Tail[0].Text == activity
 				}
 			}
 			return false

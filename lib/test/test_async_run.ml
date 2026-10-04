@@ -4,8 +4,8 @@ open Fixture
 let knobs : Async_stream.knobs = { batch = 0.02; backoff_floor = 0.02; backoff_cap = 0.1 }
 let warn = Printf.printf "\nwarning: %s"
 
-let async_run ?(stream = false) ~dir run_id =
-  match Async_run.async_run ~dir ~knobs ~warn ~run_id ~stream with
+let async_run ~dir run_id =
+  match Async_run.async_run ~dir ~knobs ~warn ~run_id with
   | Ok code -> Printf.printf "\n-> %d\n" code
   | Error m -> Printf.printf "\nrefused: %s\n" m
 
@@ -61,7 +61,7 @@ let%expect_test "the run comes from its record: a missing id or meta is refused"
   [%expect
     {|
     refused: --run-id is required (or $KIDO_AGENT_RUN_ID)
-    usage: kido async-run [--run-id ID] [--stream]
+    usage: kido async-run [--run-id ID]
 
     refused: run no-such-run has no meta
     |}]
@@ -88,12 +88,14 @@ let%expect_test "a wrapper that loses the outcome race says nothing" =
     |}]
 
 (* The stream closes before the notice goes, so the notice follows the final chunk. *)
-let%expect_test "--stream sends the output as it runs, then the ending" =
+let%expect_test "Stream meta sends the output as it runs, then the ending" =
   let dir = Filename.temp_dir "kido-state" "" in
   let inbox, received = start_inbox ~reply:"ok\n" in
   Result.get_exn (State.record ~dir "root-sess" (session ~pane:"%2" ~inbox Idle));
-  let _ = bash ~dir ~parent:"root-sess" "chatty" [ "printf"; "one\\ntwo\\nthree" ] in
-  async_run ~stream:true ~dir "chatty";
+  let _ =
+    run ~dir ~kind:Stream ~parent:"root-sess" ~command:[ "printf"; "one\\ntwo\\nthree" ] "chatty"
+  in
+  async_run ~dir "chatty";
   (* However the lines were batched, every one is streamed before the notice. *)
   List.filter_map Fixture.envelope (received ())
   |> List.fold_left

@@ -372,7 +372,8 @@ let%expect_test "order_windows_by_tree: child after parent, anchored to the pare
 
 let%expect_test "order_windows_by_tree: the lingering fallback, and a record beating a stale mark" =
   let lingering parent =
-    State.String_map.singleton "run-1" { Sidebar.name = ""; parent; outcome = None; run = `Agent test_at }
+    State.String_map.singleton "run-1"
+      { Sidebar.name = ""; parent; outcome = None; kind = Agent; started = test_at }
   in
   placements
     [ w "root"; w ~run:"run-1" "kid" ]
@@ -1325,6 +1326,7 @@ let%expect_test "a snapshot as the feed sends it" =
                   "indicator": { "kind": "running" },
                   "title": [ { "text": "orchestrator", "role": "plain" } ],
                   "tail": [ { "text": "reading the contract", "role": "dim" } ],
+                  "run": null,
                   "started": null,
                   "attention": false,
                   "children": []
@@ -1337,6 +1339,7 @@ let%expect_test "a snapshot as the feed sends it" =
                   "indicator": { "kind": "idle" },
                   "title": [ { "text": "bash", "role": "proc" } ],
                   "tail": [],
+                  "run": null,
                   "started": null,
                   "attention": false,
                   "children": []
@@ -1349,6 +1352,7 @@ let%expect_test "a snapshot as the feed sends it" =
                   "indicator": null,
                   "title": [ { "text": "vim", "role": "proc" } ],
                   "tail": [],
+                  "run": null,
                   "started": null,
                   "attention": false,
                   "children": []
@@ -1363,6 +1367,7 @@ let%expect_test "a snapshot as the feed sends it" =
               "indicator": { "kind": "gone", "outcome": "failed" },
               "title": [ { "text": "helper", "role": "dim" } ],
               "tail": [ { "text": "failed", "role": "dim" } ],
+              "run": "agent",
               "started": null,
               "attention": false,
               "children": []
@@ -1375,6 +1380,7 @@ let%expect_test "a snapshot as the feed sends it" =
               "indicator": { "kind": "running" },
               "title": [ { "text": "build", "role": "plain" } ],
               "tail": [],
+              "run": "bash",
               "started": 1700000000.0,
               "attention": false,
               "children": []
@@ -1394,6 +1400,7 @@ let%expect_test "a snapshot as the feed sends it" =
               "indicator": { "kind": "waiting" },
               "title": [ { "text": "asker", "role": "plain" } ],
               "tail": [],
+              "run": null,
               "started": null,
               "attention": true,
               "children": []
@@ -1456,6 +1463,7 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
               "indicator": { "kind": "running" },
               "title": [ { "text": "root", "role": "plain" } ],
               "tail": [],
+              "run": null,
               "started": null,
               "attention": false,
               "children": [
@@ -1473,6 +1481,7 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
                       "indicator": { "kind": "running" },
                       "title": [ { "text": "kid", "role": "plain" } ],
                       "tail": [],
+                      "run": null,
                       "started": null,
                       "attention": false,
                       "children": []
@@ -1485,6 +1494,7 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
                       "indicator": null,
                       "title": [ { "text": "bash", "role": "proc" } ],
                       "tail": [],
+                      "run": null,
                       "started": null,
                       "attention": false,
                       "children": []
@@ -1499,6 +1509,7 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
                   "indicator": { "kind": "running" },
                   "title": [ { "text": "build", "role": "plain" } ],
                   "tail": [],
+                  "run": "bash",
                   "started": 1700000000.0,
                   "attention": false,
                   "children": []

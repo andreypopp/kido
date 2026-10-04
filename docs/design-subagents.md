@@ -570,8 +570,9 @@ detached window of its own and tells the caller once it has ended. It is
 structurally a spawn whose child is a command rather than a pi session:
 the same `Spawn_subagent.create_run_window`, the same `run_env`, the same `@kido_run`
 mark, the same run record and the same sweep. `meta.json` carries a
-`kind` - `agent` or `bash`, always written - and that is the whole of
-what distinguishes the two records.
+`kind` - `agent`, `bash` or `stream`, always written. `agent` names a
+subagent run; `bash` and `stream` name plain and streamed async_bash runs.
+This field is the source of truth for whether the wrapper streams.
 
 One word after `--` is a shell command line and is run under `bash -c`,
 which is the shape a model writes ("make -j8 && ./run"); several words
@@ -580,7 +581,7 @@ to the run's `command` file before the window exists, and so is the
 run's `meta.json`, which gives the wrapper the run's name and parent; the
 window's pane and pid are added to it, atomically, once tmux has
 answered. The window's own command line is only ever `kido async-run
---run-id ID [--stream]` - model-authored text never reaches tmux's
+--run-id ID` - model-authored text never reaches tmux's
 parser. `--name` is optional;
 without one the window is named after the first word of the command.
 
@@ -752,8 +753,8 @@ forwarding `turn_end` with `await`, `agent-loop.js` polling after it), so
 a message enqueued from inside that handler is drained by the very next
 poll, riding a call the agent was already going to make.
 
-**The wrapper's side.** With `--stream`, `kido async-run` tees into a
-third writer that batches whole lines and sends one `stream` envelope
+**The wrapper's side.** For a run whose meta kind is `stream`,
+`kido async-run` tees into a third writer that batches whole lines and sends one `stream` envelope
 per 250ms or 4KB, whichever comes first, with ANSI escapes and control
 bytes stripped from what travels (the output file keeps the bytes as
 written). A line the command has not finished writing waits for the next

@@ -16,7 +16,8 @@ type lingering = {
   name : string;
   parent : string;
   outcome : Subrun.result option;
-  run : [ `Agent of Timestamp.t | `Bash of Timestamp.t ];
+  kind : Subrun.kind;
+  started : Timestamp.t;
 }
 
 type probe = { reported : float; read : float; dismissed : bool }

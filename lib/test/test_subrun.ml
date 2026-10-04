@@ -59,9 +59,11 @@ let%expect_test "Kind round-trips" =
   in
   show "run-bash" Subrun.Bash;
   show "run-agent" Subrun.Agent;
+  show "run-stream" Subrun.Stream;
   [%expect {|
     run-bash bash
     run-agent agent
+    run-stream stream
     |}]
 
 let%expect_test "Command round-trips exactly, and an empty command is refused" =

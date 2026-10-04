@@ -263,13 +263,14 @@ let create_run_window ?resume ~dir (meta : Subrun.meta) ~session ~env command =
     | Ok () -> Ok ()
     | Error e -> (
         match meta.kind with
-        | Bash when not (Tmux.Exec.window_exists w.window_id) -> Ok ()
-        | Bash | Agent ->
+        | (Bash | Stream) when not (Tmux.Exec.window_exists w.window_id) -> Ok ()
+        | Bash | Stream | Agent ->
             ignore (Tmux.Exec.kill_window w.window_id);
             fail e)
   in
   match meta.kind with
-  | Bash -> String.concat " " [ w.window_id; w.pane_id; id; Subrun.output_path ~dir meta.id ]
+  | Bash | Stream ->
+      String.concat " " [ w.window_id; w.pane_id; id; Subrun.output_path ~dir meta.id ]
   | Agent -> String.concat " " [ w.window_id; w.pane_id; id ]
 
 let insert_after_head extra = function head :: rest -> (head :: extra) @ rest | [] -> extra

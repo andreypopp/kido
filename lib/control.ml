@@ -89,7 +89,7 @@ let stop ~dir ~self ~escalation ~warn ~force to_ =
   let live = State.load_live ~dir in
   let* panes = Exec.list_panes () in
   match meta.kind with
-  | Bash -> (
+  | Bash | Stream -> (
       let* reached =
         Message_agent.reaches (List_runs.per_pane live) panes ~self meta.parent_session
       in

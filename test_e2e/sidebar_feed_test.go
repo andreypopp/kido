@@ -34,6 +34,7 @@ type feedRow struct {
 	Title     []feedSpan `json:"title"`
 	Tail      []feedSpan `json:"tail"`
 	Started   *float64   `json:"started"`
+	Run       *string    `json:"run"`
 	Attention bool       `json:"attention"`
 }
 
@@ -378,6 +379,87 @@ func TestSidebarFeedMatchesTheTUI(t *testing.T) {
 	if g := s.Sessions[1].Nodes; len(g) != 1 || g[0].Kind != "window" || g[0].Name != name || len(g[0].Children) != 2 ||
 		g[0].Children[0].Kind != "shell" || g[0].Children[0].Title[0].Role != "proc" {
 		t.Errorf("beta's two-pane window, named %q: %s", name, s.raw)
+	}
+}
+
+func TestSidebarFeedRunStartedWithActivity(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	agentRun, agentWindow := h.recordedRun("feed-agent", "--title", "feed-agent")
+	agentPane := h.in("list-panes", "-t", agentWindow, "-F", "#{pane_id}")
+	if out, rc := h.kidoAs(agentPane, "", nil, "tool", "set_status", "--", "checking tests"); rc != 0 {
+		t.Fatalf("set_status: rc=%d: %s", rc, out)
+	}
+	_, bashPane, bashRun := h.asyncBashIDs(nil, "feed-bash", "sleep", "300")
+	_, streamPane, streamRun := h.asyncBashIDs([]string{"--stream"}, "feed-stream", "sleep", "300")
+	f := h.startFeed("alpha")
+	for _, c := range []struct {
+		pane, id, kind, run string
+	}{
+		{agentPane, agentRun, "agent", "agent"},
+		{bashPane, bashRun, "run", "bash"},
+		{streamPane, streamRun, "run", "stream"},
+	} {
+		metaBytes, err := os.ReadFile(filepath.Join(h.stateDir, "runs", c.id, "meta.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var meta struct {
+			Kind      string `json:"kind"`
+			StartedAt string `json:"startedAt"`
+		}
+		if err := json.Unmarshal(metaBytes, &meta); err != nil {
+			t.Fatal(err)
+		}
+		at, err := time.Parse(time.RFC3339Nano, meta.StartedAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if meta.Kind != c.run {
+			t.Fatalf("meta kind = %q, want %q", meta.Kind, c.run)
+		}
+		want := float64(at.Unix()) + float64(at.Nanosecond())/1e9
+		f.waitLast(func(s feedSnapshot) bool {
+			for _, session := range s.Sessions {
+				for _, r := range feedItems(session.Nodes) {
+					if r.Pane != nil && *r.Pane == c.pane {
+						return r.Kind == c.kind && r.Run != nil && *r.Run == c.run &&
+							r.Started != nil && *r.Started == want &&
+							(c.run != "agent" || len(r.Tail) == 1 && r.Tail[0].Text == "checking tests")
+					}
+				}
+			}
+			return false
+		}, "live "+c.run+" run's kind and meta start time")
+
+		h.runKido("alpha", "end-"+c.run+".out", "run-outcome", "--result", "completed", "--", c.id)
+		f.waitLast(func(s feedSnapshot) bool {
+			for _, session := range s.Sessions {
+				for _, r := range feedItems(session.Nodes) {
+					if r.Pane != nil && *r.Pane == c.pane {
+						return r.Run != nil && *r.Run == c.run && r.Started == nil
+					}
+				}
+			}
+			return false
+		}, "ended "+c.run+" retains run kind but clears started")
+	}
+	rootPane := h.in("display-message", "-p", "-t", "alpha:0", "#{pane_id}")
+	for _, agent := range []string{"pi", "claude"} {
+		for _, status := range []string{"running", "idle"} {
+			h.agentStatus("root-e2e", rootPane, agent, status, "--title", "feed-root", "--activity", status)
+			f.waitLast(func(s feedSnapshot) bool {
+				for _, session := range s.Sessions {
+					for _, r := range feedItems(session.Nodes) {
+						if r.Pane != nil && *r.Pane == rootPane {
+							return r.Kind == "agent" && r.Run == nil && r.Started == nil &&
+								len(r.Tail) == 1 && r.Tail[0].Text == status
+						}
+					}
+				}
+				return false
+			}, agent+" "+status+" top-level agent has no run or start time")
+		}
 	}
 }
 

@@ -117,15 +117,14 @@ let async_run =
   cmd "async-run" "Run an async run's command, recording and reporting how it ended."
   @@ let+ run_id =
        str "run-id" "ID" "The run this window is running; defaults to $(b,KIDO_AGENT_RUN_ID)."
-     and+ stream = flag "stream" "Send the command's output to the parent in batches as it runs." in
+     in
      fun () ->
        ok
          (Async_run.async_run ~dir:(State.dir ())
             ~knobs:(Async_stream.knobs Sys.getenv_opt)
             ~warn:(Cli.error "async-run")
             ~run_id:
-              (if String.is_empty run_id then Tmux.Exec.getenv "KIDO_AGENT_RUN_ID" else run_id)
-            ~stream)
+              (if String.is_empty run_id then Tmux.Exec.getenv "KIDO_AGENT_RUN_ID" else run_id))
 
 let notify_parent =
   cmd ~group:"tool " "notify_parent" "Send this subagent's report, read from stdin, to its parent."

@@ -271,9 +271,9 @@ func TestAsyncBashRecordsItsRunAndItsCommand(t *testing.T) {
 		t.Errorf("run window's command = %q, want `kido async-run --run-id %s` and no --stream", started, runID)
 	}
 
-	streamWindow, _, _ := h.asyncBashIDs([]string{"--stream"}, "streamed", "sleep", "300")
-	if started := h.startCommand(streamWindow); !strings.HasSuffix(started, " --stream") {
-		t.Errorf("--stream run window's command = %q, want the wrapper told to stream", started)
+	streamWindow, _, streamRun := h.asyncBashIDs([]string{"--stream"}, "streamed", "sleep", "300")
+	if started := h.startCommand(streamWindow); !strings.HasSuffix(started, "async-run --run-id "+streamRun) {
+		t.Errorf("--stream run window's command = %q, want the wrapper reading stream mode from meta", started)
 	}
 
 	argvRun := h.asyncBashWith(nil, "argv", "sh", "-c", "exit 3", "ignored")

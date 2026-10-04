@@ -17,7 +17,8 @@ type lingering = {
   name : string;
   parent : string;
   outcome : Subrun.result option;
-  run : [ `Agent of Timestamp.t | `Bash of Timestamp.t ];
+  kind : Subrun.kind;
+  started : Timestamp.t;
 }
 
 type probe = { reported : float; read : float; dismissed : bool }
@@ -78,10 +79,8 @@ let lingering_subagents ~dir panes prev =
                       name = meta.name;
                       parent = meta.parent_session;
                       outcome = outcome ();
-                      run =
-                        (match meta.kind with
-                        | Agent -> `Agent meta.started_at
-                        | Bash -> `Bash meta.started_at);
+                      kind = meta.kind;
+                      started = meta.started_at;
                     }
                     out))
       | _ -> out)
@@ -402,7 +401,7 @@ let plain = span `Plain
 
 let lingering_label (p : P.t) (l : lingering) =
   let kind, caption =
-    match l.run with `Agent at -> (Agent, Elapsed at) | `Bash at -> (Run, Elapsed at)
+    ((match l.kind with Agent -> Agent | Bash | Stream -> Run), Elapsed l.started)
   in
   let base =
     {
@@ -479,7 +478,8 @@ let pane_label m (p : P.t) =
         if not (String.is_empty activity) then Text [ span `Dim activity ]
         else
           match Option.flat_map (fun run -> String_map.find_opt run m.snap.lingering) p.run with
-          | Some { run = `Agent at; outcome = None; _ } when Option.is_none p.dead_at -> Elapsed at
+          | Some { kind = Agent; started; outcome = None; _ } when Option.is_none p.dead_at ->
+              Elapsed started
           | _ -> Text []
       in
       row Agent (Some (if done_ m p.pane_id then Done else ind)) [ plain title ] caption
@@ -731,6 +731,17 @@ let to_json m =
     | Item i -> item i
   and item i =
     let r = i.row in
+    let run, started =
+      match List.find_opt (fun (p : P.t) -> String.equal p.pane_id r.pane) m.snap.panes with
+      | Some p -> (
+          match Option.flat_map (fun run -> String_map.find_opt run m.snap.lingering) p.run with
+          | Some l ->
+              ( `String (Subrun.string_of_kind l.kind),
+                if Option.is_none p.dead_at && Option.is_none l.outcome then `Float l.started
+                else `Null )
+          | None -> (`Null, `Null))
+      | None -> (`Null, `Null)
+    in
     `Assoc
       [
         ( "kind",
@@ -742,7 +753,8 @@ let to_json m =
         ("indicator", indicator_json r.indicator);
         ("title", spans r.title);
         ("tail", spans (match r.caption with Text tail -> tail | Elapsed _ -> []));
-        ("started", match r.caption with Elapsed s -> `Float s | Text _ -> `Null);
+        ("run", run);
+        ("started", started);
         ("attention", `Bool (attention m r.pane));
         ("children", `List (List.map node i.children));
       ]

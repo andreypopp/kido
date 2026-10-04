@@ -1790,8 +1790,19 @@ Both the TUI cursor and attention navigation walk the tree depth-first.
 It runs the model's tick for the named client and writes a whole snapshot as one JSON line at start, then
 whenever `step` rebuilt the rows and the line differs from the last one
 sent: a rebuild the debounce forces with nothing visible changed sends
-nothing. A running bash run's row carries `started`, its start time; the
-app counts the seconds, so a running run sends no line per second. The texts go out uncut; the app truncates. Besides drawing, it
+nothing. Every item carries `run`: `"agent"` for a subagent run,
+`"bash"` for plain async_bash, `"stream"` for async_bash with streaming,
+and null otherwise. This classification remains on ended or lingering
+run panes; `kind` stays `"agent"` for subagents and `"run"` for both bash
+modes. Run meta's `kind` records the three cases at launch; the async-run
+wrapper reads streaming mode from that record, not a separate flag.
+A live run whose pane is not dead and whose outcome is not recorded carries
+`started` = meta.started_at as unix seconds, regardless of its caption or
+agent status (even an idle subagent). Ended, lingering and gone runs,
+top-level agents of every status, shells and ssh carry `started: null`.
+The TUI's Elapsed caption still appears only without activity text.
+The app counts the seconds, so a running run sends no line per second.
+The texts go out uncut; the app truncates. Besides drawing, it
 does what the TUI's tick does, the reap sweep and the Claude screen
 probe, and both are idempotent with a TUI sidebar running beside it. The
 client's ids come from its session's active pane, and the last known ones

@@ -118,13 +118,12 @@ let record_ending ~dir (meta : Subrun.meta) outcome =
   if not (Subrun.record_outcome ~dir meta.id outcome) then None
   else
     let detail =
-      match meta.kind with Subrun.Bash -> Bash | Agent -> Agent { unreported = false }
+      match meta.kind with Subrun.Bash | Stream -> Bash | Agent -> Agent { unreported = false }
     in
     Some { meta; outcome; detail }
 
 let sweep ?socket ~dir ~grace panes sessions ~now =
-  let mark ?(text = "ended without its wrapper reporting") ((closing, endings) as acc)
-      (p : P.t) =
+  let mark ?(text = "ended without its wrapper reporting") ((closing, endings) as acc) (p : P.t) =
     let window = p.window_id in
     let closes = function Window w | Pane { window = w; _ } -> String.equal w window in
     match P.run_pane panes window with
@@ -140,12 +139,7 @@ let sweep ?socket ~dir ~grace panes sessions ~now =
                     ignore (Subrun.save_screen ?socket ~dir run_id p.pane_id);
                     record_ending ~dir m
                       (match m.kind with
-                      | Bash ->
-                          {
-                            result = Failed;
-                            text;
-                            at = Some now;
-                          }
+                      | Bash | Stream -> { result = Failed; text; at = Some now }
                       | Agent -> { result = Died; text = ""; at = Some now })
                   end)
                 (Subrun.read_meta ~dir run_id)
@@ -180,12 +174,13 @@ let sweep ?socket ~dir ~grace panes sessions ~now =
     (fun acc (p : P.t) ->
       match
         Option.flat_map
-          (fun run -> Result.to_opt (Subrun.parse_id run) |> Option.flat_map (Subrun.read_meta ~dir))
+          (fun run ->
+            Result.to_opt (Subrun.parse_id run) |> Option.flat_map (Subrun.read_meta ~dir))
           p.run
       with
-      | Some { kind = Bash; parent_session; pane; _ }
+      | Some { kind = Bash | Stream; parent_session; pane; _ }
         when String.equal pane p.pane_id
-             && not (String.is_empty parent_session)
+             && (not (String.is_empty parent_session))
              && not (List.mem_assoc ~eq:String.equal parent_session sessions) ->
           mark ~text:"its parent ended" acc p
       | _ -> acc)

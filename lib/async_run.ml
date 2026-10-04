@@ -1,4 +1,4 @@
-let usage = "usage: kido async-run [--run-id ID] [--stream]"
+let usage = "usage: kido async-run [--run-id ID]"
 let signal_grace = 2.
 
 let signal_name s =
@@ -61,7 +61,7 @@ let status_of = function
   | WEXITED n -> (Failed, Printf.sprintf "exit status %d" n, n)
   | WSIGNALED s | WSTOPPED s -> (Failed, "signal: " ^ signal_name s, 1)
 
-let async_run ~dir ~knobs ~warn ~run_id ~stream =
+let async_run ~dir ~knobs ~warn ~run_id =
   let open Result.Infix in
   let* id =
     Result.map_err
@@ -91,7 +91,11 @@ let async_run ~dir ~knobs ~warn ~run_id ~stream =
   let file =
     Unix.openfile (Subrun.output_path ~dir id) [ O_WRONLY; O_CREAT; O_TRUNC; O_CLOEXEC ] 0o644
   in
-  let stream = if stream then Some (Async_stream.start ~dir knobs meta) else None in
+  let stream =
+    match meta.kind with
+    | Stream -> Some (Async_stream.start ~dir knobs meta)
+    | Agent | Bash -> None
+  in
   let report result text =
     let detail =
       match stream with

@@ -8,7 +8,7 @@ val output_path : dir:string -> id -> string
 val report_path : dir:string -> id -> string
 val meta_path : dir:string -> id -> string
 
-type kind = Agent | Bash
+type kind = Agent | Bash | Stream
 
 val string_of_kind : kind -> string
 

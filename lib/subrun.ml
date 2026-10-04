@@ -19,10 +19,10 @@ let meta_path ~dir id = Filename.concat (dir_for ~dir id) "meta.json"
 let outcome_path ~dir id = Filename.concat (dir_for ~dir id) "outcome"
 let screen_path ~dir id = Filename.concat (dir_for ~dir id) "screen"
 
-type kind = Agent | Bash
+type kind = Agent | Bash | Stream
 
-let string_of_kind = function Agent -> "agent" | Bash -> "bash"
-let kinds = [ ("agent", Agent); ("bash", Bash) ]
+let string_of_kind = function Agent -> "agent" | Bash -> "bash" | Stream -> "stream"
+let kinds = [ ("agent", Agent); ("bash", Bash); ("stream", Stream) ]
 let kind_to_yojson k = `String (string_of_kind k)
 
 let kind_of_yojson = function

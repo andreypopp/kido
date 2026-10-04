@@ -25,7 +25,7 @@ let async_bash ~dir ~self ~exe ~name ~stream args =
     {
       id;
       name;
-      kind = Bash;
+      kind = (if stream then Stream else Bash);
       parent_session = Option.map_or ~default:"" (fun (p : State.parent) -> p.session) parent;
       depth;
       pane = "";
@@ -42,5 +42,4 @@ let async_bash ~dir ~self ~exe ~name ~stream args =
     Spawn_subagent.run_env ~dir id parent depth ~keep_alive:false @ [ "KIDO_STATE_DIR=" ^ dir ]
   in
   Spawn_subagent.create_run_window ~dir meta ~session:pane.session_id ~env
-    ([ exe; "async-run"; "--run-id"; Subrun.string_of_id id ]
-    @ if stream then [ "--stream" ] else [])
+    [ exe; "async-run"; "--run-id"; Subrun.string_of_id id ]
