@@ -388,6 +388,9 @@ import XCTest
         list.focus()
         list.layoutSubtreeIfNeeded()
         let header = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? SidebarCell)
+        XCTAssertEqual(list.visualTable.focusRingType, .none)
+        XCTAssertEqual(list.visualTable.selectionHighlightStyle, .none)
+        XCTAssertTrue((list.visualTable as? Table)?.keyboardSelection == true)
         XCTAssertEqual(header.accessibilityRole(), .button)
         XCTAssertEqual(header.accessibilityValue() as? String, "expanded")
         func key(_ code: UInt16) throws {
@@ -414,7 +417,12 @@ import XCTest
         for row in list.visualRows where row.target != nil {
             let cell = SidebarCell(SidebarFonts())
             cell.configure(row, expanded: true)
-            XCTAssertTrue(cell.toolTip?.contains(row.indicatorDescription) == true)
+            XCTAssertNil(cell.toolTip)
+            XCTAssertNil(cell.addWindow.toolTip)
+            XCTAssertTrue(cell.accessibilityLabel()?.contains(row.indicatorDescription) == true)
+            XCTAssertEqual(cell.focusRingType, .none)
+            XCTAssertEqual(cell.addWindow.focusRingType, .none)
+            XCTAssertEqual((cell.addWindow.cell as? NSButtonCell)?.highlightsBy, [])
         }
         XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
     }
