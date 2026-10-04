@@ -32,6 +32,9 @@ server is started only by `kido server`, from the banner's button. A
 other ending is. A reconnect is a full reset, since ids mean something
 only to the server that issued them. Every connection close, redial
 and quit is one line on stderr, with its reason or trigger.
+Build identity is checked only at discovery and confirmed restart; automatic
+redial only re-attaches, so a different kido manually started on `kido-app`
+is rejected at the next discovery.
 
 ## Panes
 
@@ -386,10 +389,9 @@ reader queue.
 
 ## Sidebar
 
-The sidebar runs `kido sidebar-feed --socket --client` with the kido
-the server names in `side-status-command`, so the feed matches the
-server, and the app's own client name, so kido's rules follow what the
-app shows. The app decodes v2 only: sessions are source-list sections,
+The sidebar runs the bundled `kido sidebar-feed --socket --client` with
+the app's own client name, so kido's rules follow what the app shows. The app
+decodes v2 only: sessions are source-list sections,
 window groups contain panes, and pane items can contain arbitrarily deep
 hoisted child windows. A node's identity is scoped to its session; linked
 windows may appear in several sections.
