@@ -408,11 +408,12 @@ let view m =
         [
           line
             (truncate m.width
-               [
-                 span `Dim
-                   ((if c.active then "☕ ● " else "☕ ")
-                   ^ match c.mode with Off -> "off" | On -> "on" | Agents -> "when agents running");
-               ]);
+               ([ span `Dim "☕ " ]
+               @ (if c.active then [ span `Running "●"; span `Dim " " ] else [])
+               @ [
+                   span `Dim
+                     (match c.mode with Off -> "off" | On -> "on" | Agents -> "when agents running");
+                 ]));
         ])
 
 let subscriptions _ =

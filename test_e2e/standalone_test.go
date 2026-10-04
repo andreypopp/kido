@@ -221,7 +221,7 @@ func TestStandaloneErrorClearsOnNextKey(t *testing.T) {
 	p.keys("/")
 	p.h.waitFor(func() bool {
 		rows := p.rows()
-		return len(rows) > 0 && rows[len(rows)-1] == "/" && !hasLine(rows, "no-such-client")
+		return hasLine(rows, "/") && !hasLine(rows, "no-such-client")
 	}, settle, func() string { return fmt.Sprintf("the search prompt in place of the error (shows %q)", p.rows()) })
 
 	// An Escape the picker has not yet taken reads as Alt with the key after
@@ -230,7 +230,7 @@ func TestStandaloneErrorClearsOnNextKey(t *testing.T) {
 	p.keys("Escape")
 	p.h.waitFor(func() bool {
 		rows := p.rows()
-		return len(rows) > 0 && rows[len(rows)-1] != "/"
+		return len(rows) > 0 && !hasLine(rows, "/")
 	}, settle, func() string { return fmt.Sprintf("the search prompt closed (shows %q)", p.rows()) })
 	p.keys("q")
 	p.waitExit()
