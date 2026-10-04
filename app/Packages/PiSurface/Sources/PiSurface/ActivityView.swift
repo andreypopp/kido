@@ -32,8 +32,10 @@ struct ActivityView: View {
                     Image(systemName: open ? "chevron.down" : "chevron.right").font(.caption)
                     if open { Text("Activity · \(items.count) steps") }
                     else {
-                        Text(summary).lineLimit(1).truncationMode(.tail)
-                        if active { Text((prefix.isEmpty ? "" : ", ") + (values.last?.0 ?? "")).fixedSize() }
+                        HStack(spacing: 0) {
+                            Text(summary).lineLimit(1).truncationMode(.tail)
+                            if active { Text((prefix.isEmpty ? "" : ", ") + (values.last?.0 ?? "")).fixedSize() }
+                        }
                     }
                     if values.contains(where: { $0.4 }) { Label("Failed", systemImage: "exclamationmark.circle").foregroundStyle(.red).fixedSize() }
                     Spacer(minLength: 0)
