@@ -50,10 +50,10 @@ cask "kido-app" do
   homepage "https://github.com/andreypopp/kido"
   depends_on arch: :arm64
   depends_on macos: :tahoe
-  depends_on formula: "andreypopp/tap/kido"
   app "Kido.app"
   caveats <<~EOS
-    Kido.app is not signed or notarized. If macOS refuses to open it, run:
+    Kido.app is ad-hoc signed, not notarized. Upgrades require relaunching the app
+    and confirming a restart of its separate app server. If macOS refuses to open it, run:
       xattr -dr com.apple.quarantine "#{appdir}/Kido.app"
   EOS
 end
