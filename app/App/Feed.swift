@@ -3,15 +3,20 @@ import SidebarFeed
 import TmuxControl
 
 final class Feed: @unchecked Sendable {
-    typealias Location = (kido: String, client: String)
+    typealias Location = String
     typealias Locate = (@escaping @Sendable (Result<Location, Failure>) -> Void) -> Void
 
     enum Status {
         case starting
+        case invalidBundle(Failure)
         case running(Snapshot)
         case unreadable
         case restarting(String)
     }
+
+    #if KIDO_VISUAL || KIDO_STRESS
+    @MainActor var testKido: String?
+    #endif
 
     private let socket: String
     private let locate: Locate
@@ -54,12 +59,21 @@ final class Feed: @unchecked Sendable {
     }
 
     @MainActor func switchWindow(next: Bool, completed: @escaping @MainActor ((session: SessionID, window: WindowID)?, String?) -> Void) {
-        guard let (kido, client) = located else { return completed(nil, "the sidebar feed has not found kido yet") }
+        guard let client = located else { return completed(nil, "the sidebar feed has not found its client yet") }
         let args = ["switch-window", next ? "next" : "prev", "--client", client, "--socket", socket]
+        do throws(Failure) { try tools.validate() } catch {
+            onChange(.invalidBundle(error))
+            return completed(nil, error.message)
+        }
         let generation = generation
         Task {
             do throws(Failure) {
-                let (status, out, err) = try await Child.run(kido, args, env: Self.environment)
+                #if KIDO_VISUAL || KIDO_STRESS
+                let kido = testKido ?? tools.kido
+                #else
+                let kido = tools.kido
+                #endif
+                let (status, out, err) = try await Child.run(kido, args, env: tools.environment)
                 guard self.generation == generation else { return }
                 guard status == 0 else { return completed(nil, err.isEmpty ? "kido switch-window exited \(status)" : err) }
                 if out.isEmpty { return completed(nil, nil) }
@@ -72,12 +86,6 @@ final class Feed: @unchecked Sendable {
                 guard self.generation == generation else { return }
                 completed(nil, error.message)
             }
-        }
-    }
-
-    private static var environment: [String: String] {
-        ProcessInfo.processInfo.environment.filter { key, _ in
-            key != "TMUX" && key != "TMUX_PANE" && !key.hasPrefix("KIDO_AGENT_")
         }
     }
 
@@ -98,16 +106,19 @@ final class Feed: @unchecked Sendable {
 
     @MainActor private func launch(_ location: Location, _ generation: Int) {
         located = location
-        let (kido, client) = location
-        let fake = ProcessInfo.processInfo.environment["KIDO_APP_FEED"]
-        let path = fake ?? kido
-        guard !path.isEmpty else { return restart("the server's side-status-command is empty") }
-        guard path.hasPrefix("/") else { return restart("the server's side-status-command \(path) is not an absolute path") }
+        let client = location
+        #if KIDO_VISUAL || KIDO_STRESS
+        let fake = testKido ?? ProcessInfo.processInfo.environment["KIDO_APP_FEED"]
+        #else
+        let fake: String? = nil
+        #endif
+        let path = fake ?? tools.kido
+        do throws(Failure) { try tools.validate() } catch { return onChange(.invalidBundle(error)) }
         let stdin = Pipe(), stdout = Pipe()
         let child: Child
         do throws(Failure) {
             child = try Child(
-                path, fake == nil ? ["sidebar-feed", "--socket", socket, "--client", client] : [], env: Self.environment,
+                path, fake == nil ? ["sidebar-feed", "--socket", socket, "--client", client] : [], env: tools.environment,
                 stdin: stdin, stdout: stdout)
         } catch {
             return restart(error.message)
