@@ -203,7 +203,7 @@ import SidebarFeed
             connection.navigationModel = { [weak self] in self?.navigationModel ?? SessionModel() }
             link = .connected(connection)
             feed = Feed(
-                socket: server.socket, locate: connection.locateFeed, query: { [weak self] in self?.sidebar.list.query ?? "" },
+                serverDir: tools.serverDir, locate: connection.locateFeed, query: { [weak self] in self?.sidebar.list.query ?? "" },
                 onChange: { [weak self] status in
                     if case .invalidBundle(let error) = status { return self?.bundleChanged(error) ?? () }
                     self?.sidebar.list.update(status)
