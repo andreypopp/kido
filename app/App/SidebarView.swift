@@ -57,6 +57,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         table.action = #selector(clicked)
         table.focusRingType = .none
         table.selectionHighlightStyle = .none
+        scroll.focusRingType = .none
+        search.focusRingType = .none
         scroll.documentView = table
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
@@ -207,6 +209,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     }
 
     func focus() {
+        table.keyboardSelection = true
         if let session = snapshot?.client.session, folded.remove(session) != nil { show(snapshot) }
         if table.selectedRow < 0, let current = snapshot?.client,
             let index = items.firstIndex(where: { $0.target == current })
@@ -373,9 +376,17 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     #endif
 }
 
-private final class Table: NSTableView {
+final class Table: NSTableView {
+    var keyboardSelection = false {
+        didSet { enumerateAvailableRowViews { row, _ in row.subviews.forEach { $0.needsDisplay = true } } }
+    }
+    override func mouseDown(with event: NSEvent) {
+        keyboardSelection = false
+        super.mouseDown(with: event)
+    }
     override func frameOfCell(atColumn column: Int, row: Int) -> NSRect { rect(ofRow: row) }
     override func keyDown(with event: NSEvent) {
+        keyboardSelection = true
         if (delegate as? SidebarView)?.key(event) != true { super.keyDown(with: event) }
     }
 }
