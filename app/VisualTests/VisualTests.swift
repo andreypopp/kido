@@ -1,6 +1,7 @@
 import AppKit
 import GhosttyKit
 import SnapshotTesting
+import SidebarFeed
 import TmuxControl
 import XCTest
 @testable import Kido
@@ -30,7 +31,7 @@ import XCTest
         connection = nil
         session = nil
         runtime = nil
-        if !socket.isEmpty { _ = try? await command(["kill-session", "-t", "visual"]) }
+        if FileManager.default.fileExists(atPath: socket) { _ = try? await command(["kill-session", "-t", "visual"]) }
         PaneView.renderOffscreen = false
         NSApp.appearance = nil
     }
@@ -240,5 +241,147 @@ import XCTest
         pane.requestScroll(historyChunkSize)
         try await wait("Load more visible") { pane.visualPill }
         try await snapshot("history-top", pill: true)
+    }
+
+    private func sidebarFixture(_ edit: (inout [String: Any]) -> Void = { _ in }) throws -> Snapshot {
+        let url = app.appendingPathComponent("VisualTests/Fixtures/live-feed.json")
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        edit(&object)
+        return try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+
+    private func sidebarSnapshot(_ list: SidebarView, _ name: String, testName: String = #function) {
+        list.layoutSubtreeIfNeeded()
+        list.visualTable.layoutSubtreeIfNeeded()
+        list.displayIfNeeded()
+        CATransaction.flush()
+        XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
+        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+        if let failure = verifySnapshot(of: list, as: .image, named: name, record: record, testName: testName),
+           !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+    }
+
+    func testSidebarCards() throws {
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 680),
+                          styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        let list = SidebarView()
+        window.contentView = list
+        SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
+        defer { SidebarView.visualNow = nil }
+        let live = try sidebarFixture()
+        for dark in [false, true] {
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            list.update(.running(live))
+            sidebarSnapshot(list, dark ? "live-dark" : "live-light")
+        }
+        list.visualFold(SessionID(number: 0))
+        sidebarSnapshot(list, "folded-dark")
+        list.visualFold(SessionID(number: 0))
+        let nested = try sidebarFixture { object in
+            object["client"] = ["session": "$0", "window": "@458", "pane": "%502"]
+            var sessions = object["sessions"] as! [[String: Any]]
+            var nodes = sessions[0]["nodes"] as! [[String: Any]]
+            var children = nodes[1]["children"] as! [[String: Any]]
+            children[0]["tail"] = [["text": "Rebuilding the sidebar cards and testing nested window corners", "role": "dim"]]
+            nodes[1]["children"] = children
+            sessions[0]["nodes"] = nodes
+            object["sessions"] = sessions
+        }
+        list.update(.running(nested))
+        sidebarSnapshot(list, "active-parent-dark")
+        window.appearance = NSAppearance(named: .aqua)
+        sidebarSnapshot(list, "active-parent-light")
+        window.setContentSize(NSSize(width: 236, height: 680))
+        sidebarSnapshot(list, "narrow-light")
+        list.visualSearch.stringValue = "no-such-session"
+        list.visualSearch.isHidden = false
+        list.update(.running(try sidebarFixture { $0["filter"] = "no-such-session"; $0["sessions"] = [] }))
+        sidebarSnapshot(list, "no-matches-light")
+    }
+
+    func testSidebarNavigationAndAnchoring() async throws {
+        try await start()
+        let list = SidebarView()
+        list.frame = NSRect(x: 0, y: 0, width: 292, height: 260)
+        window.contentView = list
+        let fixture = try sidebarFixture { object in
+            let original = (object["sessions"] as! [[String: Any]])[0]
+            object["sessions"] = (0..<20).map { i -> [String: Any] in
+                var session = original
+                session["id"] = "$\(i)"
+                session["name"] = "session-\(i)"
+                return session
+            }
+        }
+        list.update(.running(fixture))
+        list.layoutSubtreeIfNeeded()
+        let anchorIndex = 12
+        let anchorID = list.visualRows[anchorIndex].id
+        list.visualScroll.contentView.scroll(to: NSPoint(x: 0, y: list.visualTable.rect(ofRow: anchorIndex).minY + 7.25))
+        let before = list.visualScroll.contentView.bounds.minY - list.visualTable.rect(ofRow: anchorIndex).minY
+        let stable = try sidebarFixture { object in
+            let original = (object["sessions"] as! [[String: Any]])[0]
+            object["sessions"] = ([99] + Array(0..<20)).map { i -> [String: Any] in
+                var session = original
+                session["id"] = "$\(i)"
+                session["name"] = "session-\(i)"
+                return session
+            }
+        }
+        list.update(.running(stable))
+        list.layoutSubtreeIfNeeded()
+        let newIndex = try XCTUnwrap(list.visualRows.firstIndex { $0.id == anchorID })
+        XCTAssertGreaterThan(before, 0)
+        XCTAssertGreaterThan(newIndex, anchorIndex)
+        XCTAssertEqual(list.visualScroll.contentView.bounds.minY - list.visualTable.rect(ofRow: newIndex).minY, before, accuracy: 1)
+        list.visualFold(SessionID(number: 0))
+        list.update(.running(fixture))
+        XCTAssertFalse(list.visualRows.contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 502)) })
+        list.revealWindowOnNavigation()
+        list.update(.running(try sidebarFixture { $0["client"] = ["session": "$0", "window": "@458", "pane": "%502"] }))
+        XCTAssertTrue(list.visualRows.contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 502)) })
+        let row = try XCTUnwrap(list.visualRows.first { $0.target != nil })
+        var commands: [[Command]] = []
+        var left = 0
+        var filters: [String] = []
+        list.leave = { left += 1 }
+        list.filter = { filters.append($0) }
+        list.visualSearch.stringValue = "main"
+        list.focus()
+        list.send = { batch, done in commands.append(batch); done([.failure(["no such pane"])]) }
+        list.visualJump(row)
+        XCTAssertEqual(commands, [[Command("switch-client", "-t", "\(row.target!.session):\(row.target!.window).\(row.target!.pane)")]])
+        XCTAssertEqual(list.query, "main")
+        XCTAssertEqual(left, 0)
+        XCTAssertEqual(list.visualDiagnostic, "no such pane")
+        XCTAssertTrue(list.containsFocus)
+        list.send = { batch, done in commands.append(batch); XCTAssertTrue(Thread.isMainThread); done([.success([])]) }
+        list.visualJump(row)
+        XCTAssertEqual(commands.count, 2)
+        XCTAssertEqual(left, 1)
+        XCTAssertEqual(list.query, "")
+        XCTAssertEqual(filters, [""])
+        list.visualSearch.stringValue = "keep-me"
+        list.update(.running(try sidebarFixture()))
+        XCTAssertEqual(list.query, "keep-me")
+        _ = list.control(list.visualSearch, textView: NSTextView(), doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+        XCTAssertEqual(list.query, "")
+        XCTAssertTrue(list.visualSearch.isHidden)
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                                  windowNumber: window.windowNumber, context: nil, characters: "j", charactersIgnoringModifiers: "j", isARepeat: false, keyCode: 38))
+        list.visualTable.keyDown(with: event)
+        XCTAssertNotEqual(list.visualTable.selectedRow, -1)
+        let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                                   windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+        list.visualTable.keyDown(with: escape)
+        XCTAssertEqual(left, 2)
+        let target = try XCTUnwrap(list.visualRows.first { $0.target != nil })
+        let failed = expectation(description: "real private tmux jump reply")
+        list.send = { [weak self] batch, done in
+            self?.connection.send(batch) { replies in XCTAssertTrue(Thread.isMainThread); done(replies); failed.fulfill() }
+        }
+        list.visualJump(target)
+        await fulfillment(of: [failed], timeout: 5)
+        XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
     }
 }
