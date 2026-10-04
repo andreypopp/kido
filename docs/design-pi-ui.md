@@ -53,9 +53,10 @@ tmux's OSC dispatch ignores an unknown number (`input.c`,
 than printing it (`input.c:1288`). A sequence left unfinished for five
 seconds is cut by tmux's timer and its rest would print, so kido-pi writes
 each frame whole, small (4 KB), in one write, and an unfinished frame is a
-bug. APC is not used: tmux reads APC as a title. Ghostty's handling of an
-unknown OSC is unverified; the spike checks the Ghostty surface under the
-native view shows nothing.
+bug. APC is not used: tmux reads APC as a title. Ghostty discards an
+unknown OSC to its terminator (`osc.zig`: after `6` only `66` is known),
+so the surface under the native view shows nothing; 5522, the first
+choice, is kitty's clipboard protocol, which Ghostty implements.
 
 kido-pi's terminal is raw: no ICANON, ECHO, ISIG, IXON, ISTRIP, ICRNL or
 output translation, restored on exit. macOS's tty input queue is small
@@ -68,7 +69,7 @@ real tmux to a control client and through ssh to localhost.
 
 ## Wire format
 
-A frame is `ESC ] 5522 ; <header> ; <base64> BEL`, the base64 of a slice
+A frame is `ESC ] 6767 ; <header> ; <base64> BEL`, the base64 of a slice
 of one JSON message. Out, `<header>` is `<seq>,<last>`: `seq` counts
 frames from kido-pi's start, so a gap is detected, and `last` ends a
 message. Out frames are written one at a time, so a message's frames are
@@ -82,7 +83,7 @@ acks every assembled message by `client,msg` on the out channel, and a
 client has one message unacked at a time: that is the flow control, and a
 resent message after a lost ack is dropped as a duplicate. Assembly is
 bounded in size and time. A malformed frame is dropped whole; bytes
-inside an `ESC ] 5522` sequence never reach the plain view as keys, and a
+inside an `ESC ] 6767` sequence never reach the plain view as keys, and a
 lone ESC is a key after a short timeout.
 
 Messages are pi's RPC JSON unchanged (commands with `id`, `response`,
