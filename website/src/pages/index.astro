@@ -6,6 +6,24 @@ import InstallCommand from '../components/InstallCommand.astro';
 import { description, github, mediaLabels, socialImage, title, url } from '../lib/site';
 import '../styles/landing.css';
 const canonical = new URL(url(), Astro.site);
+const keyGroups = [
+  { caption: 'By default the following keys are bound:', rows: [
+    ['`prefix` `K`', 'show the sidebar with keyboard focus, or hide it'],
+    ['`prefix` `k`', 'toggle keyboard focus between the sidebar and the pane'],
+    ['`C-s`', 'with the sidebar hidden, open the picker in a popup; with it shown, toggle keyboard focus'],
+    ["drag the sidebar's edge", 'resize it'],
+    ['`S-Up` / `S-Down`', 'switch the client to the previous / next window (works with the sidebar unfocused too)'],
+  ] },
+  { caption: 'While the sidebar is focused:', rows: [
+    ['`j` / `k`, `C-j` / `C-k`, `C-n` / `C-p`', 'move between panes'],
+    ['`n` / `N`', 'next / previous session that wants you (waiting, or done since you last looked)'],
+    ['`gg` / `G`', 'first / last pane'],
+    ['`/`', 'fuzzy-filter by session name, agent title, or ssh destination; `Esc` cancels'],
+    ['`Esc` / `C-c`', 'clear the filter, or close the picker'],
+    ['`Enter` / click', 'jump to the pane, then close the picker'],
+    ['`q`', 'close the picker'],
+  ] },
+];
 ---
 <!doctype html>
 <html lang="en">
@@ -69,6 +87,23 @@ const canonical = new URL(url(), Astro.site);
           <p class="subhead">An extension to pi to spawn async bash processes and monitors. Follow execution status and react in real time.</p>
         </div>
         <Demo name="async" label={mediaLabels.async} />
+      </section>
+
+      <section class="feature keys" id="keys">
+        <div class="keys-content">
+          <h2>Keys.<br /><span>Driven from the keyboard.</span></h2>
+          {keyGroups.map(({ caption, rows }) => (
+            <table>
+              <caption>{caption}</caption>
+              <thead><tr><th scope="col">key</th><th scope="col">action</th></tr></thead>
+              <tbody>{rows.map((row) => (
+                <tr>{row.map((cell) => (
+                  <td>{cell.split(/(`[^`]+`)/g).map((part) => part.startsWith('`') ? <kbd>{part.slice(1, -1)}</kbd> : part)}</td>
+                ))}</tr>
+              ))}</tbody>
+            </table>
+          ))}
+        </div>
       </section>
 
       <section class="get-started" id="install">
@@ -159,3 +194,18 @@ const canonical = new URL(url(), Astro.site);
     </script>
   </body>
 </html>
+
+<style>
+  .keys-content { max-width: 960px; margin: auto; }
+  .keys table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  .keys caption { text-align: left; color: var(--mint); margin: 32px 0 12px; }
+  .keys th { text-align: left; color: var(--muted); font-weight: 400; }
+  .keys th, .keys td { padding: 12px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .keys th:first-child, .keys td:first-child { width: 36%; padding-right: 24px; }
+  .keys kbd { display: inline-block; font: 13px var(--font-mono); color: var(--mint); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 2px 5px; }
+  @media (max-width: 700px) {
+    .keys thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+    .keys tr { display: grid; border-bottom: 1px solid var(--border); padding: 12px 0; gap: 8px; }
+    .keys td, .keys td:first-child { width: auto; padding: 0; border: 0; }
+  }
+</style>
