@@ -1730,7 +1730,9 @@ own window order: a subagent's window can sit above a lower-numbered one,
 and a parent's later panes sit below a whole foreign window. That is the
 trade, not a bug - the spawn tree is what the sidebar is for. `kido
 switch-window` (S-Up/S-Down) walks the sidebar's order, not tmux's, so
-cycling from a hoisted window moves to the row below it on screen. It
+cycling from a hoisted window moves to the row below it on screen.
+The command prints `<session_id> <window_id>` followed by a newline when
+it switches the client, and nothing when there is no target to switch to. It
 skips a subagent's window on purpose - the user asked to cycle top-level
 windows, keyed off the same run pane (`@kido_run`) `Reap.sweep` uses and
 for the same reason - so a hoisted window is reachable through the

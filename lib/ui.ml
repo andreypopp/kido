@@ -256,7 +256,7 @@ let key m (k : Mosaic.Event.key) =
       Tmux.Exec.switch_window ~client:m.side.opts.client ~next
         (S.windows_in_order m.side.snap.panes m.side.snap.states m.side.snap.lingering)
     with
-    | Ok () -> m
+    | Ok _ -> m
     | Error e -> { m with status = e }
   in
   match m.side.search with

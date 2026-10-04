@@ -222,24 +222,26 @@ let switch_window ?socket ~client ~next windows =
         Array.find_idx (fun w -> String.equal (first w).window_id a.window_id) windows)
       active
   with
-  | None -> Ok ()
+  | None -> Ok None
   | Some (i, _) -> (
       match find (step ~next i n) n with
       | Some j when j <> i ->
           let target = first windows.(j) in
-          run ?socket
-            [
-              "switch-client";
-              "-c";
-              client;
-              "-t";
-              target.session_id;
-              ";";
-              "select-window";
-              "-t";
-              target.window_id;
-            ]
-      | _ -> Ok ())
+          Result.map
+            (fun () -> Some (target.session_id, target.window_id))
+            (run ?socket
+               [
+                 "switch-client";
+                 "-c";
+                 client;
+                 "-t";
+                 target.session_id;
+                 ";";
+                 "select-window";
+                 "-t";
+                 target.window_id;
+               ])
+      | _ -> Ok None)
 
 let release_args client = [ "refresh-client"; "-t"; client; "-f"; "!" ^ side_focus_flag ]
 

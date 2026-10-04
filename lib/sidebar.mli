@@ -124,7 +124,11 @@ val windows_in_order :
   Tmux.Pane.t list list
 
 val switch_window :
-  socket:string option -> dir:string -> client:string -> next:bool -> (unit, string) result
+  socket:string option ->
+  dir:string ->
+  client:string ->
+  next:bool ->
+  ((string * string) option, string) result
 
 val rebuild : model -> model
 val poll : ?wait:float -> opts:options -> Tmux.Conn.t -> snapshot -> snapshot

@@ -344,7 +344,10 @@ let switch_session =
 
 let switch_window =
   switch "switch-window" "Switch the client to the next or previous window."
-    (fun ~socket ~client ~next -> Sidebar.switch_window ~socket ~dir:(State.dir ()) ~client ~next)
+    (fun ~socket ~client ~next ->
+      Result.map
+        (Option.iter (fun (session, window) -> Printf.printf "%s %s\n" session window))
+        (Sidebar.switch_window ~socket ~dir:(State.dir ()) ~client ~next))
 
 let created name f = Cli.run name (fun () -> print (f ()))
 

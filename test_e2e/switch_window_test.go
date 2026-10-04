@@ -65,13 +65,23 @@ func (h *harness) selectWindow(session, window string) {
 
 func (h *harness) runSwitchWindow(dir string) {
 	h.t.Helper()
+	before := h.in("display-message", "-p", "-t", h.client, "#{session_id} #{window_id}")
 	tmuxEnv := h.in("display-message", "-p", "#{socket_path},#{pid},0")
 	cmd := exec.Command(kidoBin, "switch-window", dir, "--client", h.client)
 	cmd.Env = cleanEnv("TMUX=" + tmuxEnv)
-	var errb bytes.Buffer
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
 	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {
 		h.t.Fatalf("kido switch-window %s: %v\n%s", dir, err, errb.String())
+	}
+	after := h.in("display-message", "-p", "-t", h.client, "#{session_id} #{window_id}")
+	want := after + "\n"
+	if before == after {
+		want = ""
+	}
+	if out.String() != want {
+		h.t.Fatalf("kido switch-window %s stdout = %q, want %q", dir, out.String(), want)
 	}
 }
 
