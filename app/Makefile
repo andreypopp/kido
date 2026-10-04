@@ -4,13 +4,16 @@ DERIVED := build/derived
 CONFIG ?= Debug
 APP = $(DERIVED)/Build/Products/$(CONFIG)/Kido.app
 
-.PHONY: visual all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-stop
+.PHONY: visual all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-stop release
+
+release:
+	scripts/release.sh $(if $(filter 1,$(DRY)),--dry-run) $(VERSION)
 
 all:
 	ln -sfn "$$(GHOSTTY_OPTIMIZE=$(GHOSTTY_OPTIMIZE) scripts/build-ghosttykit.sh)" build/GhosttyKit.xcframework
 	xcodegen --quiet --spec project.yml
 	xcodebuild -quiet -project Kido.xcodeproj -scheme Kido -configuration $(CONFIG) \
-		-destination platform=macOS -derivedDataPath $(DERIVED) $(SANITIZE) build
+		-destination platform=macOS -derivedDataPath $(DERIVED) $(SANITIZE) $(XCODE_SETTINGS) build
 
 tsan: SANITIZER = Thread
 asan: SANITIZER = Address
