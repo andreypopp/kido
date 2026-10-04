@@ -89,6 +89,18 @@ const keyGroups = [
         <Demo name="async" label={mediaLabels.async} />
       </section>
 
+      <section class="feature usage" id="usage">
+        <div class="section-copy reveal">
+          <h2>How to use.<br /><span>It's just tmux!</span></h2>
+        </div>
+        <div class="usage-body">
+          <p>Install kido with Homebrew:</p>
+          <InstallCommand id="usage-install" />
+          <p>This puts the <code>kido</code> command on your PATH. Run it to start the kido server, or to attach to it if it is already running. kido runs its own tmux server, separate from your regular one, so you can use both side by side.</p>
+          <p>The configuration file is <code>~/.config/kido/kido.conf</code>. To keep your existing tmux configuration, source it from there by adding <code>source-file ~/.tmux.conf</code> to <code>kido.conf</code>.</p>
+        </div>
+      </section>
+
       <section class="feature keys" id="keys">
         <div class="keys-content">
           <div class="section-copy reveal">
@@ -206,7 +218,10 @@ const keyGroups = [
   .keys th, .keys td { padding: 10px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
   .keys th:first-child, .keys td:first-child { width: 36%; padding-right: 24px; }
   .keys kbd { display: inline-block; font: 12px/1.5 var(--font-mono); color: var(--mint); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; }
-  .keys code { font: .875em var(--font-mono); color: #dfe8e3; background: #101714; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
+  .usage-body { width: min(960px, 100%); margin: 28px auto 0; }
+  .usage-body p { max-width: 640px; }
+  .usage-body .install-box { margin: 16px 0 24px; }
+  .feature p code { font: .875em var(--font-mono); color: #dfe8e3; background: #101714; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
   @media (max-width: 700px) {
     .keys thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
     .keys tr { display: grid; border-bottom: 1px solid var(--border); padding: 10px 0; gap: 6px; }
