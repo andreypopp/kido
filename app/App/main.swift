@@ -270,8 +270,18 @@ import TmuxControl
 
     private func switchWindow(next: Bool) {
         sidebar.list.failed(nil)
-        sidebar.list.revealWindowOnNavigation()
-        feed?.switchWindow(next: next) { [weak self] in self?.sidebar.list.failed($0) }
+        let origin = sidebar.list.position
+        feed?.switchWindow(next: next) { [weak self] error in
+            guard let self else { return }
+            if let error { return sidebar.list.failed(error) }
+            send([Command("display-message", "-p", "#{session_id} #{window_id} #{pane_id}")]) { [weak self] replies in
+                guard case .success(let lines)? = replies?.first,
+                      let line = lines.first else { return }
+                let ids = line.split(separator: " ").map(String.init)
+                guard ids.count == 3, let session = SessionID(ids[0]), let window = WindowID(ids[1]), let pane = PaneID(ids[2]) else { return }
+                self?.sidebar.list.completedNavigation(to: .init(session: session, window: window, pane: pane), from: origin)
+            }
+        }
     }
 
     @objc private func quitItem() { quit("the Quit menu item") }
