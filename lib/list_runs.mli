@@ -35,6 +35,7 @@ val agents :
   self:string ->
   session:string ->
   panes:Tmux.Pane.t list ->
+  states:(string * State.session) list ->
   (agent_info list, string) result
 
 type row

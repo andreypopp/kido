@@ -80,9 +80,8 @@ let can_reply ~dir id =
   | Some m -> List.is_empty m.tools || List.mem ~eq:String.equal "message_agent" m.tools
   | None -> true
 
-let agents ~dir ~threshold ~self ~session ~panes =
+let agents ~dir ~threshold ~self ~session ~panes ~states =
   let open Result.Infix in
-  let states = per_pane (State.load_live ~dir) in
   let+ session =
     if not (String.is_empty session) then Ok session
     else
@@ -134,7 +133,9 @@ type row =
 let list_runs ~dir ~threshold ~self ~session =
   let open Result.Infix in
   let* panes = Exec.list_panes () in
-  let+ agents = agents ~dir ~threshold ~self ~session ~panes in
+  let+ agents =
+    agents ~dir ~threshold ~self ~session ~panes ~states:(per_pane (State.load_live ~dir))
+  in
   let caller = List.find_opt (fun a -> a.self) agents in
   let own = Option.map_or ~default:"" (fun a -> a.id) caller in
   let parent = Option.map_or ~default:"" (fun a -> a.parent) caller in
@@ -195,7 +196,7 @@ let row_to_yojson row =
         let m = r.meta in
         let fields =
           match a with
-          | Some a -> agent_fields { a with name = m.name }
+          | Some a -> agent_fields a
           | None ->
               [
                 ("id", `String (Subrun.string_of_id m.id));

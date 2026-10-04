@@ -409,6 +409,39 @@ func jsonKeys(t *testing.T, out string) []string {
 	return keys
 }
 
+func TestContextKeepsLiveRecordsSharingAPane(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	caller := h.firstPane("alpha")
+	h.agentStatus("context-self", caller, "pi", "idle")
+	pane := h.piPane("alpha", "π - shared")
+	at := time.Now().Add(-time.Minute)
+	h.writeRecord("hidden-sender", pane, at, map[string]any{"title": "hidden-sender"})
+	h.writeRecord("visible-sender", pane, at.Add(time.Second), map[string]any{"title": "visible-sender"})
+	h.newSession("beta")
+	h.writeRecord("outside-context", h.firstPane("beta"), at, nil)
+
+	out, rc := h.kidoAs(caller, "", nil, "get-agent", "--context")
+	if rc != 0 {
+		t.Fatalf("get-agent --context: rc=%d %s", rc, out)
+	}
+	seen := map[string]listedAgent{}
+	for _, a := range parseAgents(t, out) {
+		seen[a.ID] = a
+	}
+	if len(seen) != 3 || !seen["context-self"].Self || seen["hidden-sender"].Pane != pane || seen["visible-sender"].Pane != pane {
+		t.Fatalf("context = %+v, want both live senders and self, scoped to alpha", seen)
+	}
+	rows := h.listedRuns(caller)
+	if len(rows) != 1 || rows[0].ID != "visible-sender" {
+		t.Fatalf("display rows = %+v, want only the pane winner", rows)
+	}
+	h.waitGlyph("visible-sender", "")
+	if strings.Contains(strings.Join(h.rows(), "\n"), "hidden-sender") {
+		t.Fatalf("sidebar shows the hidden record: %q", h.rows())
+	}
+}
+
 func TestListRunsScopesOrdersAndDecorates(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

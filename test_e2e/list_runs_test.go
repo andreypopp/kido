@@ -119,6 +119,30 @@ func TestListRunsPeersParentSiblingsAndOwnRuns(t *testing.T) {
 	}
 }
 
+func TestListRunsRenamedSubagentNameResolves(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	caller := h.firstPane("alpha")
+	h.agentStatus("rename-root", caller, "pi", "idle")
+	in, pane := h.agentWithInbox("alpha", "rename-child")
+	h.agentRunMeta("rename-child", pane, "launch-name", "rename-root")
+	h.agentStatus("rename-child", pane, "pi", "idle", "--parent-session", "rename-root", "--inbox", in.Path, "--title", "launch-name")
+	h.agentStatus("rename-child", pane, "pi", "idle", "--parent-session", "rename-root", "--inbox", in.Path, "--title", "current-name")
+	rows := h.listedRuns(caller)
+	if len(rows) != 1 || rows[0].Name != "current-name" {
+		t.Fatalf("renamed child rows = %+v", rows)
+	}
+	out, rc := h.kidoAs(caller, "hello renamed child", nil, "tool", "message_agent", rows[0].Name)
+	if rc != 0 || len(in.Received()) != 1 || field(envelopes(in)[0], "text") != "hello renamed child" {
+		t.Fatalf("message to listed name = rc %d %q, envelopes %v", rc, out, envelopes(in))
+	}
+	h.agentStatus("rename-child", pane, "pi", "", "--remove")
+	rows = h.listedRuns(caller)
+	if len(rows) != 1 || rows[0].Name != "launch-name" {
+		t.Fatalf("child without live record rows = %+v, want launch name", rows)
+	}
+}
+
 func TestStopRunTerminatesWrapperAndCommandWithoutPane(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

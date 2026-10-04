@@ -195,7 +195,7 @@ let get_agent =
            ok
              (List_runs.agents ~dir ~threshold:(State.stall_threshold ())
                 ~self:(Tmux.Exec.getenv "TMUX_PANE") ~session:""
-                ~panes:(ok (Tmux.Exec.list_panes ())))
+                ~panes:(ok (Tmux.Exec.list_panes ())) ~states:(State.load_live ~dir))
          in
          print_endline
            (Yojson.Safe.to_string (`List (List.map List_runs.agent_info_to_yojson agents)));

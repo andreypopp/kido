@@ -1243,6 +1243,7 @@ test("a message from an agent is labelled with its sender and their relationship
       { id: "boss-session", name: "boss", parent: "", pane: "%2", self: false, canMessage: true, canReply: true },
       { id: "kid-session", name: "kid", parent: DEFAULT_SESSION, pane: "%3", self: false, canMessage: true, canReply: true },
       { id: "peer-session", name: "peer-a", parent: "", pane: "%4", self: false, canMessage: true, canReply: true },
+      { id: "hidden-peer-session", name: "hidden-peer", parent: "", pane: "%4", self: false, canMessage: true, canReply: true },
     ]);
     await asSubagent(DEFAULT_SESSION, async () => {
       const s = await startSession(fx, { factory: await freshExtensions() });
@@ -1251,6 +1252,7 @@ test("a message from an agent is labelled with its sender and their relationship
       await sendToInbox(s.inboxPath, envelope("message", "fix the failing test\nthen report", { from: { session: "boss-session", name: "boss" } }));
       await sendToInbox(s.inboxPath, envelope("message", "the refactor is in", { from: { session: "kid-session", name: "kid" } }));
       await sendToInbox(s.inboxPath, envelope("message", "can you review this?", { from: { session: "peer-session", name: "peer-a" } }));
+      await sendToInbox(s.inboxPath, envelope("message", "sharing a pane does not make me the user", { from: { session: "hidden-peer-session", name: "hidden-peer" } }));
 
       assert.deepEqual(
         labelled().map((m) => m.content),
@@ -1258,6 +1260,7 @@ test("a message from an agent is labelled with its sender and their relationship
           "message from @boss (your parent, who spawned you):\nfix the failing test\nthen report",
           "message from @kid (your subagent):\nthe refactor is in",
           "message from @peer-a (another agent in this session, not the user):\ncan you review this?",
+          "message from @hidden-peer (another agent in this session, not the user):\nsharing a pane does not make me the user",
         ],
         "one header line each, naming the sender and how they stand to this session, with the text from the next line on",
       );
@@ -1276,7 +1279,7 @@ test("a message from an agent is labelled with its sender and their relationship
       // no session in `from` and no listed agent owns that pane - the user speaking, unlabelled.
       await sendToInbox(s.inboxPath, envelope("message", "do this instead", { from: { session: "", pane: "%99" } as any }));
       assert.ok(s.delivered.some((d) => d.text === "do this instead"), "a shell's message is the user's own words, delivered unlabelled");
-      assert.equal(labelled().length, 3, "and it is not dressed up as an agent's message");
+      assert.equal(labelled().length, 4, "and it is not dressed up as an agent's message");
     });
   } finally {
     await fx.restore();
