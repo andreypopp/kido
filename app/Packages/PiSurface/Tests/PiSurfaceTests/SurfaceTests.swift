@@ -38,7 +38,7 @@ private let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().d
     #expect(sent[0] == sent[1])
     try event(#"{"type":"ack","client":"test","msg":1,"index":0}"#)
     receive(fixture["completed"])
-    #expect(session.rows.count == 5)
+    #expect(session.rows.count == 18)
     #expect(session.models.count == 1)
     #expect(session.thinkingLevels == ["off", "low", "medium", "high"])
     #expect(session.title == "Fake pi")
@@ -84,7 +84,18 @@ private let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().d
     guard FileManager.default.fileExists(atPath: path.path) else { return }
     let session = Session { _ in }
     let bytes = try Data(contentsOf: path)
-    for offset in stride(from: 0, to: bytes.count, by: 16384) { session.receive(bytes.subdata(in: offset..<min(offset + 16384, bytes.count))) }
+    var codec = Codec(), assembly = Data(), sequence = 1
+    for frame in codec.receive(bytes) {
+        assembly.append(frame.bytes)
+        guard frame.header.last == "1" else { continue }
+        var value = try JSONDecoder().decode(JSON.self, from: assembly).object
+        assembly.removeAll()
+        if value["type"] == .string("history") {
+            session.command("history", fields: ["generation": session.generation, "before": session.historyBefore, "limit": .number(200)])
+            value["id"] = .string(try #require(session.requests.first { $0.value == "history" }?.key))
+        }
+        for wire in Codec.encode(JSON.object(value).text, number: sequence) { session.receive(wire); sequence += 1 }
+    }
     let report = try JSONDecoder().decode(JSON.self, from: Data(contentsOf: repo.appendingPathComponent("build/pi-real-report.json")))
     guard case .number(let count) = report["rows"] else { Issue.record("Missing real-session row count"); return }
     #expect(session.rows.count == Int(count))

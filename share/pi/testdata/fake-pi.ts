@@ -29,15 +29,22 @@ function command(value: Record<string, any>) {
     case "set_model": state.model = { ...model, id: value.modelId, provider: value.provider }; data = state.model; break;
     case "set_thinking_level": state.thinkingLevel = value.level; data = { level: value.level }; break;
     case "abort": clearInterval(replay); replay = undefined; state.isStreaming = false; emit({ type: "agent_end", messages: [] }); break;
-    case "clear_queue": emit({ type: "queue_update", steering: [], followUp: [] }); break;
+    case "clear_queue": data = { steering: ["Check tests too"], followUp: ["Summarize the changes"] }; emit({ type: "queue_update", steering: [], followUp: [] }); break;
     case "new_session": case "switch_session": case "fork": case "clone": entries = []; leafId = null; data = { cancelled: false }; break;
     case "prompt":
       if (replay) { emit({ type: "queue_update", steering: value.streamingBehavior === "steer" ? [value.message] : [], followUp: value.streamingBehavior === "followUp" ? [value.message] : [] }); break; }
       append({ role: "user", content: value.message, timestamp: 1700000000000 });
+      emit({ type: "message_end", message: entries.at(-1)!.message });
       state.isStreaming = true; index = 0;
       replay = setInterval(() => {
         const event = fixture[index++];
+        if (event.type === "fixture_entry") {
+          const id = `entry-${entries.length + 1}`;
+          entries.push({ ...event.entry, id, parentId: leafId }); leafId = id;
+          emit({ type: "compaction_end" }); return;
+        }
         if (event.type === "message_end") append(event.message);
+        if (event.type === "response" && event.command === "bash") append({ role: "bashExecution", command: "printf 'first\\nsecond\\n'", ...event.data, timestamp: 1700000000125 });
         if (event.type === "agent_end") { state.isStreaming = false; clearInterval(replay); replay = undefined; }
         emit(event);
       }, 35);

@@ -8,21 +8,21 @@ import Testing
     override var canBecomeMain: Bool { false }
 }
 
-@MainActor @Test func screenshots() throws {
+@MainActor @Test func screenshots() async throws {
     guard let directory = ProcessInfo.processInfo.environment["PI_SURFACE_SHOTS"] else { return }
     _ = NSApplication.shared
     let output = URL(fileURLWithPath: directory)
     try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
     for source in ["session", "real-session"] {
     let path = output.appendingPathComponent("\(source).bytes")
-    if !FileManager.default.fileExists(atPath: path.path) { continue }
+    #expect(FileManager.default.fileExists(atPath: path.path))
     let bytes = try Data(contentsOf: path)
     var codec = Codec()
     let frames = codec.receive(bytes)
     #expect(!frames.isEmpty)
     for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
         let session = Session { _ in }
-        let host = NSHostingView(rootView: Surface(session: session)
+        let host = NSHostingView(rootView: Surface(session: session, expanded: source == "session")
             .environment(\.colorScheme, name == "dark" ? .dark : .light)
             .background(name == "dark" ? Color(nsColor: .windowBackgroundColor) : Color.white))
         let window = ScreenshotWindow(contentRect: NSRect(x: -20000, y: -20000, width: 1100, height: 800), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -34,7 +34,7 @@ import Testing
         defer { window.close() }
         window.orderBack(nil)
         CATransaction.flush()
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+        try await Task.sleep(for: .milliseconds(200))
         let windows = try #require(CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]])
         let info = try #require(windows.first { ($0[kCGWindowNumber as String] as? Int) == window.windowNumber })
         let bounds = try #require(info[kCGWindowBounds as String] as? [String: Any])
@@ -47,27 +47,29 @@ import Testing
             }
         }
         #expect(!window.isKeyWindow && !window.isMainWindow)
-        var assembly = Data()
+        var assembly = Data(), lastSequence = 0
+        var historical: [JSON] = []
+        func tables(_ view: NSView) -> [NSTableView] { (view as? NSTableView).map { [$0] } ?? view.subviews.flatMap(tables) }
         var captured = Set<String>()
-        func capture(_ state: String) throws {
+        func capture(_ state: String) async throws {
             guard captured.insert(state).inserted else { return }
             host.layoutSubtreeIfNeeded()
-            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.15))
-            if state == "tools" || state == "mid-stream" {
-                for y in state == "tools" ? [413.0, 360.0] : [190.0] {
-                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-                        if let event = NSEvent.mouseEvent(with: type, location: NSPoint(x: 35, y: y), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { window.sendEvent(event) }
-                    }
-                }
-            }
-            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.6))
+            try await Task.sleep(for: .milliseconds(150))
+            try await Task.sleep(for: .milliseconds(600))
             host.layoutSubtreeIfNeeded()
             host.display()
+            let table = try #require(tables(host).first)
+            let visible = table.rows(in: table.visibleRect)
+            #expect(visible.length > 0)
+            for index in visible.location..<NSMaxRange(visible) {
+                let cell = try #require(table.view(atColumn: 0, row: index, makeIfNecessary: false))
+                #expect(table.rect(ofRow: index).height + 2 >= cell.fittingSize.height)
+            }
             CATransaction.flush()
             let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
             host.cacheDisplay(in: host.bounds, to: bitmap)
-            let context = try #require(CGContext(data: nil, width: 1100, height: 800, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-            context.draw(try #require(bitmap.cgImage), in: CGRect(x: 0, y: 0, width: 1100, height: 800))
+            let context = try #require(CGContext(data: nil, width: Int(host.bounds.width), height: Int(host.bounds.height), bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(try #require(bitmap.cgImage), in: host.bounds)
             let image = try #require(context.makeImage())
             let png = try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
             try png.write(to: output.appendingPathComponent("\(state)-\(name).png"))
@@ -77,34 +79,89 @@ import Testing
                 content.cacheDisplay(in: content.bounds, to: dialog)
                 if let context = NSGraphicsContext(bitmapImageRep: dialog)?.cgContext {
                     context.setBlendMode(.destinationOver)
-                    context.setFillColor((name == "dark" ? NSColor.windowBackgroundColor : NSColor.white).cgColor)
-                    context.fill(CGRect(x: 0, y: 0, width: dialog.pixelsWide, height: dialog.pixelsHigh))
+                    window.appearance?.performAsCurrentDrawingAppearance {
+                        context.setFillColor(NSColor.windowBackgroundColor.cgColor)
+                        context.fill(CGRect(x: 0, y: 0, width: dialog.pixelsWide, height: dialog.pixelsHigh))
+                    }
                 }
                 try #require(dialog.representation(using: .png, properties: [:])).write(to: output.appendingPathComponent("\(state)-dialog-\(name).png"))
             }
         }
         for frame in frames {
             let wire = Data("\u{1b}]6767;\(frame.header.joined(separator: ","));\(frame.bytes.base64EncodedString())\u{7}".utf8)
-            session.receive(wire)
+            session.receive(wire); lastSequence = Int(frame.header[0]) ?? lastSequence
             assembly.append(frame.bytes)
             guard frame.header.last == "1" else { continue }
             let event = try JSONDecoder().decode(JSON.self, from: assembly)
             assembly.removeAll()
+            if source == "real-session", event["type"].string == "response", event["command"].string == "get_entries" { historical = event["data"]["entries"].array }
             if source == "real-session", event["type"].string == "snapshot", !session.rows.isEmpty { break }
-            if event["type"].string == "message_update", event["assistantMessageEvent"]["delta"].string == "Hello! " { try capture("mid-stream") }
-            if event["type"].string == "message_end", event["message"]["toolName"].string == "edit" { try capture("tools") }
-            if event["type"].string == "queue_update" { try capture("confirm") }
-            if event["type"].string == "agent_end" { try capture("final") }
+            if event["type"].string == "message_update", event["assistantMessageEvent"]["delta"].string == "Hello! " { try await capture("mid-stream") }
+            if event["type"].string == "message_end", event["message"]["toolName"].string == "edit" { try await capture("tools") }
+            if event["type"].string == "queue_update" { try await capture("confirm") }
+            if event["type"].string == "agent_end" { try await capture("final") }
         }
         if source == "real-session" {
             host.rootView = Surface(session: session)
                 .environment(\.colorScheme, name == "dark" ? .dark : .light)
                 .background(name == "dark" ? Color(nsColor: .windowBackgroundColor) : Color.white)
-            RunLoop.main.run(until: Date(timeIntervalSinceNow: 1))
-            try capture("long-session")
+            try await Task.sleep(for: .seconds(1))
+            try await capture("long-session")
             #expect(!session.rows.isEmpty)
+            let table = try #require(tables(host).first), scroll = try #require(table.enclosingScrollView)
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: table.rect(ofRow: table.numberOfRows / 2).minY + 7)); scroll.reflectScrolledClipView(scroll.contentView)
+            try await capture("long-session-middle")
+            scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView)
+            try await capture("long-session-top")
+            let coordinator = try #require(table.dataSource as? TranscriptTable.Coordinator)
+            let anchor = coordinator.rows[1].id, offset = scroll.contentView.bounds.origin.y - table.rect(ofRow: 1).minY
+            let entries = Dictionary(uniqueKeysWithValues: historical.map { ($0["id"].string, $0) })
+            var older: [JSON] = [], cursor = entries[session.historyBefore.string]?["parentId"].string ?? ""
+            for _ in 0..<200 { guard let entry = entries[cursor] else { break }; older.append(entry); cursor = entry["parentId"].string }
+            #expect(!older.isEmpty)
+            session.command("history", fields: ["generation": session.generation, "before": session.historyBefore, "limit": .number(200)])
+            let request = try #require(session.requests.first { $0.value == "history" }?.key)
+            let reply = JSON.object(["type": .string("history"), "id": .string(request), "generation": session.generation, "entries": .array(older.reversed()), "before": older.last?["id"] ?? .null])
+            for frame in Codec.encode(reply.text, number: lastSequence + 1) { session.receive(frame) }
+            try await capture("long-session-after-prepend")
+            let restored = try #require(coordinator.rows.firstIndex { $0.id == anchor })
+            #expect(abs(scroll.contentView.bounds.origin.y - table.rect(ofRow: restored).minY - offset) <= 2)
+            window.setContentSize(NSSize(width: 480, height: 700)); host.frame.size = NSSize(width: 480, height: 700)
+            try await capture("long-session-narrow")
+            session.disconnect()
         } else {
             #expect(captured == Set(["mid-stream", "tools", "confirm", "final"]))
+            let fixtureURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("share/pi/testdata/kido-pi-snapshot.json")
+            let fixture = try JSONDecoder().decode(JSON.self, from: Data(contentsOf: fixtureURL))["completed"]
+            let entries = fixture["record"]["entries"].array
+            let galleries: [(String, [JSON], Bool)] = [
+                ("empty", [], false), ("one-message", Array(entries.prefix(1)), false),
+                ("markdown", entries.filter { [.number(1700000000040), .number(1700000000050), .number(1700000000060)].contains($0["message"]["timestamp"]) }, false),
+                ("cards", entries.filter { $0["message"]["role"].string == "custom" }, true),
+                ("images", entries.filter { $0["message"]["timestamp"] == .number(1700000000120) }, false),
+                ("tools-collapsed", Array(entries.prefix(4)), false), ("narrow", Array(entries.prefix(4)), false)
+            ]
+            for (index, gallery) in galleries.enumerated() {
+                let replay = Session { _ in }
+                var snapshot = fixture.object, record = fixture["record"].object
+                record["entries"] = .array(gallery.1); record["dialogs"] = .object([:]); record["queues"] = .object([:]); record["notifications"] = .array([]); record["widgets"] = .object([:])
+                snapshot["record"] = .object(record); snapshot["generation"] = .number(Double(index + 100))
+                for frame in Codec.encode(JSON.object(snapshot).text) { replay.receive(frame) }
+                host.rootView = Surface(session: replay, expanded: gallery.2).environment(\.colorScheme, name == "dark" ? .dark : .light).background(name == "dark" ? Color(nsColor: .windowBackgroundColor) : Color.white)
+                if gallery.0 == "narrow" { window.setContentSize(NSSize(width: 480, height: 700)); host.frame.size = NSSize(width: 480, height: 700) }
+                try await capture(gallery.0)
+            }
+            window.setContentSize(NSSize(width: 1100, height: 800)); host.frame.size = NSSize(width: 1100, height: 800)
+            for (index, method) in ["select", "input", "editor"].enumerated() {
+                let replay = Session { _ in }
+                var snapshot = fixture.object, record = fixture["record"].object
+                record["entries"] = .array([]); record["queues"] = .object([:]); record["notifications"] = .array([]); record["widgets"] = .object([:])
+                record["dialogs"] = .object([method: .object(["id": .string(method), "method": .string(method), "title": .string(method.capitalized), "message": .string("Choose an exact response."), "prefill": .string("Prefilled response"), "placeholder": .string("Your response"), "options": .array([.string("First option"), .string("Another option with a longer description"), .string("First option")])])])
+                snapshot["record"] = .object(record); snapshot["generation"] = .number(Double(index + 200))
+                for frame in Codec.encode(JSON.object(snapshot).text) { replay.receive(frame) }
+                host.rootView = Surface(session: replay).environment(\.colorScheme, name == "dark" ? .dark : .light).background(name == "dark" ? Color(nsColor: .windowBackgroundColor) : Color.white)
+                try await capture(method)
+            }
         }
     }
     }

@@ -115,6 +115,29 @@ The canonical snapshot `record` fields are `entries`, `leafId`,
 Clients render keyed values in key order. `message_update` carries deltas,
 not a cumulative message. There are no pending-message or stats fields.
 
+The bridge adds `uiId` to `message_start` and `message_end`, to
+`partialAssistant`, and to the corresponding entries returned by
+`get_entries`, history and snapshots. It assigns the identity once at
+message start (or end for messages without a start), scoped to instance
+and generation. Entry reconciliation consumes ended messages in order by
+role and timestamp, never by text. Historical entries without a live
+identity use their entry ID. Block identities add their content index;
+tools use their call ID. Partial thinking blocks carry `active: true`
+between `thinking_start` and `thinking_end` (`false` after end), so an
+assistant continuing to stream text does not imply it is still thinking.
+
+An ended tool remains in `tools` with `ended: true`, `result` and
+`isError` until its persisted result entry arrives; execution metadata and
+partial output remain available during this interval. `bash` is keyed by
+command ID, with `command`, literal accumulated `output`, and final
+response fields plus `ended: true`. The bridge broadcasts `bash_execution_start {type, id, command}` before
+forwarding a direct bash command. Finished direct executions remain until
+`get_entries` supplies their `bashExecution` entry; the bridge gives that
+entry the command's `uiId` and removes its transient `bash` value. Entries
+are reconciled in completion order with the matching command. `clear_queue` responses carry the removed queues
+in `data.steering` and `data.followUp`; clients restore those returned
+values, not a queue captured before the request, before requesting abort.
+
 The first hello waits for all bootstrap queries. A generation change
 broadcasts an unsolicited snapshot (`id: null`) after those queries finish;
 clients replace their complete state, including when another client caused

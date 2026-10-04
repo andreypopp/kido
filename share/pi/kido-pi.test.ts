@@ -116,7 +116,14 @@ test("pty bridge streams fake pi, snapshots, dialogs, history and restores its t
     await wait(() => messages.some(value => value.id === "test-client:snapshot"));
     const snapshot = messages.find(value => value.id === "test-client:snapshot");
     assert.equal(snapshot?.generation, 0);
-    assert.equal(snapshot?.record.entries.length, 5);
+    assert.equal(snapshot?.record.entries.length, 18);
+    const start = messages.find(value => value.type === "message_start");
+    const end = messages.find(value => value.type === "message_end" && value.message.role === "assistant");
+    assert.equal(start?.uiId, end?.uiId);
+    assert.equal(snapshot?.record.entries[1].uiId, start?.uiId);
+    assert.ok(snapshot?.record.entries.some((entry: any) => entry.type === "compaction"));
+    assert.ok(snapshot?.record.entries.some((entry: any) => entry.message?.role === "bashExecution" && entry.uiId === "direct-1"));
+    assert.deepEqual(snapshot?.record.bash, {});
     assert.equal(snapshot?.record.partialAssistant, null);
     assert.deepEqual(snapshot?.record.queues.steering, ["Check tests too"]);
     assert.ok(snapshot?.record.entries.some((entry: any) => entry.message.details?.patch));
@@ -150,6 +157,10 @@ test("pty bridge streams fake pi, snapshots, dialogs, history and restores its t
     assert.equal(canonical?.record.compaction.type, "compaction_start");
     const normalize = (value: any) => ({ ...value, id: null, seq: 0, hello: { ...value.hello, instance: "fixture", cwd: "/fixture" } });
     const captured = { completed: normalize(snapshot), streaming: normalize(canonical), reset: normalize(reset) };
+    if (process.env.PI_SURFACE_SHOTS) {
+      let sequence = 1;
+      writeFileSync(join(process.env.PI_SURFACE_SHOTS, "session.bytes"), messages.flatMap(value => { const chunks = frames(JSON.stringify(value), "out", sequence); sequence += chunks.length; return chunks; }).join(""));
+    }
     const fixturePath = new URL("testdata/kido-pi-snapshot.json", import.meta.url);
     if (process.env.UPDATE_KIDO_PI_FIXTURES) writeFileSync(fixturePath, JSON.stringify(captured, null, 2) + "\n");
     assert.deepEqual(captured, JSON.parse(readFileSync(fixturePath, "utf8")));
