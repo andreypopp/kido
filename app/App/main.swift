@@ -352,11 +352,14 @@ import TmuxControl
 }
 
 let tools = BundledTools(resources: Bundle.main.resourceURL!, environment: ProcessInfo.processInfo.environment)
-#if KIDO_VISUAL || KIDO_STRESS
+#if DEBUG || KIDO_VISUAL || KIDO_STRESS
 let background = ProcessInfo.processInfo.environment["KIDO_APP_BACKGROUND"] == "1"
-let debugging = ProcessInfo.processInfo.environment["KIDO_APP_DEBUG"] == "1"
 #else
 let background = false
+#endif
+#if KIDO_VISUAL || KIDO_STRESS
+let debugging = ProcessInfo.processInfo.environment["KIDO_APP_DEBUG"] == "1"
+#else
 let debugging = false
 #endif
 
