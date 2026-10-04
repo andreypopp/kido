@@ -30,8 +30,11 @@ only meaningful on the server that issued it. Every command that needs
 to know which session an agent is in takes a fresh pane list and looks
 its pane up there. A state record names a pane and nothing above it.
 
-**State files, for what only an agent knows.** `$KIDO_STATE_DIR`, else
-`$XDG_STATE_HOME/kido`, else `~/.local/state/kido`, one JSON file per
+**State files, for what only an agent knows.** The server's state directory,
+resolved once at the command edge by `State.dir`: a convention-following
+`$TMUX` socket with `server.conf` beside it takes precedence, then
+`$KIDO_STATE_DIR`, `$XDG_STATE_HOME/kido`, and `~/.local/state/kido`.
+There is one JSON file per
 agent session named by session id, written temp-then-rename. A record
 carries the agent's status, its pane, its pid, its title, its inbox
 socket, its free-text activity, its model, and its place in the spawn
@@ -1782,7 +1785,7 @@ ended run shows its outcome. The
 attention predicate `n`/`N` walk is the model's, so the feed's
 `attention` and the TUI's jump cannot disagree.
 
-`kido sidebar-feed --socket <path> --client <name>` is the second view,
+`kido sidebar-feed --server <dir> --client <name>` is the second view,
 for Kido.app's native sidebar. Its wire format is a frozen contract,
 versioned by its `v` field and kept in the app's notes
 (`sidebar-feed-contract-v2.md`). Each session carries `nodes`: window
@@ -1812,10 +1815,11 @@ stand while it has none. A tick that fails is sent as `error` and the feed
 goes on, as the TUI shows the error and recovers; only an absent client,
 which is also how a vanished server shows, ends it with exit 1.
 
-The feed runs outside any tmux, so the socket is a value passed
-explicitly, not a faked `TMUX`: `Sidebar.options.socket` reaches
-`Tmux.Conn.connect ~socket` and the reap and probe calls as `-S`, and
-`kido switch-window --socket` does the same. Stdin is read by a thread
+The feed runs outside any tmux. `--server DIR` selects both the state
+and `DIR/socket`, with the same default as the launcher, not a faked
+`TMUX`: `Sidebar.options.socket` reaches `Tmux.Conn.connect ~socket`
+and the reap and probe calls as `-S`. `kido switch-window --server DIR`
+and `kido switch-session --server DIR` use the same resolution and checks. Stdin is read by a thread
 that only queues lines, EOF or a read error behind a mutex; the tick
 drains the queue, and a read error ends the feed with exit 1. The control
 connection stays on the one thread, since `Tmux.Conn` has no lock. A
@@ -1981,14 +1985,31 @@ second prefix and a second status line.
 The multiplexer it starts is kido's own: `kido-tmux`, the vendored fork,
 found beside the kido binary or named by `$KIDO_TMUX` (AGENTS.md, "The
 tmux fork", for the resolution order and what the fork adds). The server
-lives on its own socket, `kido` by default, under `TMUX_TMPDIR` as tmux
-places it. `kido --socket-name NAME` and `kido server --socket-name NAME`
-select another name explicitly; pane commands use the resulting `$TMUX`,
-and outside-pane helpers use `--socket PATH`. Each server uses its own
-`KIDO_STATE_DIR`: pane ids repeat across servers, and state is pane-keyed.
-The launcher exports the resolved state directory into the server's global
-environment, so panes, hooks, extensions and the sidebar inherit it.
-Servers with separate state directories have separate `server.conf` files.
+is identified solely by its state directory. Its socket is `<dir>/socket`,
+and the launcher starts and attaches with `-S`, never a socket name.
+`kido --server DIR`, `kido server --server DIR`, and outside-pane helpers
+select the directory explicitly; without the option they use `State.dir`.
+Inside a pane, that resolver takes the dirname of the socket in `$TMUX`
+when its basename is `socket` and `server.conf` exists beside it. Requiring
+the config marker avoids mistaking a plain tmux socket named `socket` for
+kido. This wins over the default environment precedence, so hooks, tools,
+extensions and the sidebar all read the same records even when an ambient
+`KIDO_STATE_DIR` points elsewhere. Extensions and shims call kido rather
+than resolving the directory themselves. The launcher removes
+`KIDO_STATE_DIR` from the starting server's environment; only the build
+stamp and PATH need exporting. Servers have separate `server.conf` files
+and records even though their pane ids repeat.
+
+The socket gives full shell access. A state directory kido creates has
+mode 0700. Starting or connecting refuses a non-directory (including a symlink), a directory
+not owned by the current user, or any group/other permissions; this is
+tmux's owner-and-mode check with group access forbidden too (the fork's
+default `TMUX_SOCK_PERM` forbids only other access). The socket path,
+including its terminating NUL, must fit the platform's
+`sizeof(sockaddr_un.sun_path)`: 104 bytes on macOS, 108 on Linux.
+An overlong path is refused before directory creation with the path and
+maximum length in the error. To debug the default server use
+`kido-tmux -S ~/.local/state/kido/socket`.
 It never shares a server with a stock tmux, whose protocol version differs. The launcher probes it with `list-sessions` and reads three outcomes off the answer:
 a server answers, so attach; tmux's own "protocol version mismatch" on
 stderr, which is an older kido-tmux still running after an upgrade and
@@ -1997,7 +2018,7 @@ anything else, which means start one and let tmux report its own socket
 problems.
 
 A started server reads a configuration kido writes at every launch to
-`$KIDO_STATE_DIR/server.conf`, in this order: kido's defaults, which are
+`<dir>/server.conf`, in this order: kido's defaults, which are
 `share/tmux/kido-tmux.conf` verbatim; `source-file -q` of the user's file,
 `$XDG_CONFIG_HOME/kido/kido.conf` or `~/.config/kido/kido.conf`; then
 the options kido owns, `side-status-command` and `default-command`,
@@ -2029,7 +2050,7 @@ server is down, the same start (`Launch.new_session`: server.conf, the
 environment and PATH, session `main`), detached. It never attaches, so it
 runs inside tmux too. It prints one JSON line,
 `{"tmux":...,"socket":...,"build":...}`: the resolved kido-tmux made
-absolute, the socket path the server reports as `#{socket_path}`, and the
+absolute, the convention's `<dir>/socket` path, and the
 server's global environment variable `KIDO_BUILD_ID` (or JSON null if
 absent). The launcher sets it to the creating binary's immutable build
 identity in the environment of the tmux process it starts. tmux copies

@@ -45,6 +45,7 @@ class Demo:
                         XDG_CONFIG_HOME=str(root / "config"), ZDOTDIR=str(root / "zsh"),
                         SHELL="/bin/zsh", PATH=f"{PREFIX}/share/kido/bin:{PREFIX}/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
                         KIDO_DEMO_PREFIX=str(PREFIX), KIDO_TMUX=TMUX,
+                        KIDO_DEMO_STATE_DIR=str(root / "state"),
                         KIDO_DEMO_CI_SIGNAL=str(root / ".ci-release"),
                         PI_OFFLINE="1", PI_TELEMETRY="0", KITTY_CONFIG_DIRECTORY=str(HERE))
         self.socket = root / "kitty.sock"
@@ -57,7 +58,7 @@ class Demo:
 
     def tmux(self, *args):
         self.assert_private()
-        return run([TMUX, "-L", "kido", *args], env=self.env)
+        return run([TMUX, "-S", str(self.root / "state/socket"), *args], env=self.env)
 
     def assert_private(self):
         assert self.root.name.startswith("kido-demo-") and self.root.parent == Path("/tmp")
@@ -146,7 +147,7 @@ class Demo:
         self.project.mkdir()
         self.owns_project = True
         for directory in ("tmux", "state", "config/kido", "zsh", "sessions", "bin"):
-            (self.root / directory).mkdir(parents=True, exist_ok=True)
+            (self.root / directory).mkdir(mode=0o700, parents=True, exist_ok=True)
         (self.root / "tmux").chmod(0o700)
         (self.root / "zsh/.zshrc").write_text('''PROMPT='$ '
 RPROMPT=''
@@ -155,7 +156,7 @@ unsetopt BEEP
 pi() {
   "$KIDO_DEMO_PREFIX/share/kido/bin/pi" --no-extensions \\
     --no-skills --no-prompt-templates --no-context-files --no-themes \\
-    --theme "$KIDO_DEMO_THEME" --use-theme demo --session-dir "$KIDO_STATE_DIR/sessions" \\
+    --theme "$KIDO_DEMO_THEME" --use-theme demo --session-dir "$KIDO_DEMO_STATE_DIR/sessions" \\
     --extension "$KIDO_DEMO_WORKING" --model "$KIDO_DEMO_MODEL" --thinking low \\
     --name "$KIDO_DEMO_TITLE" --tools "$KIDO_DEMO_TOOLS" \\
     --append-system-prompt "$KIDO_DEMO_INSTRUCTIONS" "$@"

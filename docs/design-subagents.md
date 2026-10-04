@@ -623,10 +623,15 @@ has always recorded, because nothing else will ever describe that run -
 a window tmux has lost carries no marked pane, so neither sweep rule can
 reach it, and a pi that vanished that fast never got to its task.
 
+The async wrapper and spawned agents inherit `$TMUX`, so their kido
+calls resolve the parent's server directory without `KIDO_STATE_DIR`.
+Watcher scripts derive their run directory from `KIDO_AGENT_TASK_FILE`,
+which kido already resolves, rather than copying the state resolver.
+
 What `kido tool async_bash` prints is the spawn line with a fourth field, the
 run's output file. Where kido keeps a run's output is kido's own to say,
 and a tool rebuilding the path would be a second copy of `State.dir`'s
-`KIDO_STATE_DIR`/XDG precedence - so the one call the tool makes answers
+pane socket derivation and default environment precedence - so the one call the tool makes answers
 it.
 
 The notice names the run itself:

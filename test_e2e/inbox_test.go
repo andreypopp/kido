@@ -144,7 +144,7 @@ func TestGetInboxCmd(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	dir := filepath.Join(socketDir(t), "state")
-	out := h.runScript("alpha", "get-inbox.out", fmt.Sprintf("KIDO_STATE_DIR=%s %s get-inbox 123", shellQuote(dir), kidoBin))
+	out := h.runScript("alpha", "get-inbox.out", fmt.Sprintf("TMUX= KIDO_STATE_DIR=%s %s get-inbox 123", shellQuote(dir), kidoBin))
 	var value map[string]string
 	if err := json.Unmarshal([]byte(firstLine(out)), &value); err != nil {
 		t.Fatalf("get-inbox: %s: %v", out, err)

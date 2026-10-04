@@ -28,7 +28,7 @@ type windowShape struct {
 
 func shapes(t *testing.T, socket string) []windowShape {
 	t.Helper()
-	cmd := exec.Command(tmuxBin, "-L", socket, "list-panes", "-a", "-F",
+	cmd := exec.Command(tmuxBin, "-S", socketPath("", socket), "list-panes", "-a", "-F",
 		"#{session_name}\t#{window_index}\t#{window_name}\t#{window_layout}")
 	cmd.Env = cleanEnv("TMUX=")
 	out, err := cmd.Output()
@@ -129,11 +129,11 @@ func TestSnapshotReplays(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	third := strings.Replace(h.inner, "kido-i-", "kido-3-", 1)
+	third := filepath.Join(serverDir(t), "socket")
 	t.Cleanup(func() { killServer(third) })
 
 	run := exec.Command("/bin/sh", path)
-	run.Env = cleanEnv("TMUX=", "TMUX_BIN="+tmuxBin+" -f /dev/null -L "+third)
+	run.Env = cleanEnv("TMUX=", "TMUX_BIN="+tmuxBin+" -f /dev/null -S "+third)
 	if b, err := run.CombinedOutput(); err != nil {
 		t.Fatalf("replay: %v\n%s\nscript:\n%s", err, b, replay)
 	}

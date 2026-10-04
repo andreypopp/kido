@@ -27,6 +27,8 @@ val string_of_status : status -> string
 val string_of_agent : agent -> string
 val agent_of_string : string -> agent
 val dir : unit -> string
+val check_dir : dir:string -> (unit, string) result
+val server_socket : create:bool -> dir:string -> (string, string) result
 val alive : int -> bool
 val get : dir:string -> string -> session option
 val get_live : dir:string -> string -> session option

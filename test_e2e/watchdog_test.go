@@ -70,6 +70,9 @@ var (
 // what tmux does with it and a path that resolves to nothing later must
 // stay wrong rather than become something else.
 func socketPath(tmpdir, name string) string {
+	if filepath.IsAbs(name) {
+		return name
+	}
 	if tmpdir == "" {
 		tmpdir = os.Getenv("TMUX_TMPDIR")
 	}
@@ -249,7 +252,7 @@ func TestWatchdogChildHangsWithAHarnessUp(t *testing.T) {
 
 // serverUp: display-message is a command that never starts a server.
 func serverUp(socket string) bool {
-	return exec.Command(tmuxBin, "-L", socket, "display-message", "-p", "up").Run() == nil
+	return exec.Command(tmuxBin, "-S", socketPath("", socket), "display-message", "-p", "up").Run() == nil
 }
 
 func serverUpAt(path string) bool {

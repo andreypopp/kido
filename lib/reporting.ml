@@ -30,7 +30,7 @@ let debug_log ~dir = Filename.concat dir "debug.log"
 
 let log_hook ~dir ~pane json (input : Hook.input) action =
   try
-    Fs.mkdir_p dir;
+    Fs.mkdir_p ~perm:0o700 dir;
     Out_channel.with_open_gen [ Open_append; Open_creat; Open_wronly ] 0o600 (debug_log ~dir)
       (fun oc ->
         Printf.fprintf oc "%s\t%s\t%s\t%s\n"

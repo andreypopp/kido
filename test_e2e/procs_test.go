@@ -42,7 +42,7 @@ func TestSnapshotFindsPiBehindItsShim(t *testing.T) {
 // first process past up to three of them.
 func TestHookRecordsTheProcessPastWrappingShells(t *testing.T) {
 	t.Parallel()
-	state := t.TempDir()
+	state := serverDir(t)
 	script := fmt.Sprintf("%q hook; :", kidoBin)
 	for depth := 1; depth <= 3; depth++ {
 		id := fmt.Sprintf("wrapped-%d", depth)

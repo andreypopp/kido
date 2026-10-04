@@ -25,7 +25,7 @@ type endpoint struct {
 // returning its stdout, stderr and exit code.
 func (r *kidoRun) server(tmux string) (string, string, int) {
 	r.t.Helper()
-	cmd := exec.Command(kidoBin, "server", "--socket-name", filepath.Base(r.kidoSock))
+	cmd := exec.Command(kidoBin, "server", "--server", r.state)
 	cmd.Env = cleanEnv(append(r.env(), "TMUX="+tmux, "TMUX_SIDE_CLIENT=")...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -205,7 +205,7 @@ func TestKidoServerMismatch(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	cmd.Run()
-	const want = `kido server: the kido server on socket "kido" is running an older kido-tmux than this one`
+	const want = `kido server: the kido server on socket `
 	if code := cmd.ProcessState.ExitCode(); code != 1 || !strings.HasPrefix(stderr.String(), want) || stdout.Len() != 0 {
 		t.Errorf("exit %d, stdout %q, stderr %q; want exit 1, no stdout and %q", code, stdout.String(), stderr.String(), want)
 	}

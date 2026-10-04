@@ -22,6 +22,20 @@ let cmd ?(group = "") name doc term =
 
 let ok = Result.get_or_failwith
 
+let server_dir =
+  Arg.(
+    value
+    & opt (some string) None
+    & info [ "server" ] ~docv:"DIR"
+        ~doc:"The kido server's state directory; its socket is DIR/socket.")
+
+let state_dir () =
+  let dir = State.dir () in
+  ok (State.check_dir ~dir);
+  dir
+
+let resolved_dir server = Tmux.Exec.abs (Option.get_lazy state_dir server)
+
 let print r =
   print_endline (ok r);
   0
@@ -40,7 +54,7 @@ let send name doc spec =
   @@ let+ recipient, spec = spec in
      fun () ->
        sent
-         (Message_agent.send ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE") recipient spec
+         (Message_agent.send ~dir:(state_dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE") recipient spec
             (stdin ()))
 
 let message_agent =
@@ -66,7 +80,7 @@ let interrupt_subagent =
   cmd ~group:"tool " "interrupt_subagent" "Abort a descendant agent's current turn."
   @@ let+ to_ = address "AGENT" in
      fun () ->
-       print (Control.interrupt ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE") to_)
+       print (Control.interrupt ~dir:(state_dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE") to_)
 
 let stop_run =
   cmd ~group:"tool " "stop_run" "Stop a descendant agent, or an async run."
@@ -75,14 +89,14 @@ let stop_run =
      and+ to_ = address "RUN" in
      fun () ->
        print
-         (Control.stop ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
+         (Control.stop ~dir:(state_dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
             ~escalation:(Control.stop_escalation ()) ~warn:(Cli.error "tool stop_run") ~force to_)
 
 let runs =
   cmd "runs" "List subagent and async runs, or show one."
   @@ let+ json = flag "json" "Print JSON instead of a table." and+ args = rest in
      fun () ->
-       let dir = State.dir () in
+       let dir = state_dir () in
        match args with
        | [] ->
            let infos = Runs.list ~dir () in
@@ -109,7 +123,7 @@ let run_outcome =
      and+ id = arg "RUN_ID" in
      fun () ->
        ok
-         (Runs.run_outcome ~dir:(State.dir ()) ~warn:(Cli.error "run-outcome") ~result ~text
+         (Runs.run_outcome ~dir:(state_dir ()) ~warn:(Cli.error "run-outcome") ~result ~text
             ~unreported id);
        0
 
@@ -120,7 +134,7 @@ let async_run =
      in
      fun () ->
        ok
-         (Async_run.async_run ~dir:(State.dir ())
+         (Async_run.async_run ~dir:(state_dir ())
             ~knobs:(Async_stream.knobs Sys.getenv_opt)
             ~warn:(Cli.error "async-run")
             ~run_id:
@@ -131,7 +145,7 @@ let notify_parent =
   @@ let+ () = Term.const () in
      fun () ->
        sent
-         (Message_agent.notify_parent ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
+         (Message_agent.notify_parent ~dir:(state_dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
             ~warn:(Cli.error "tool notify_parent")
             ~parent:(Tmux.Exec.getenv "KIDO_AGENT_PARENT_SESSION")
             ~run:(Tmux.Exec.getenv "KIDO_AGENT_RUN_ID")
@@ -145,7 +159,7 @@ let list_runs =
      fun () ->
        let agents =
          ok
-           (List_runs.list_runs ~dir:(State.dir ()) ~threshold:(State.stall_threshold ())
+           (List_runs.list_runs ~dir:(state_dir ()) ~threshold:(State.stall_threshold ())
               ~self:(Tmux.Exec.getenv "TMUX_PANE") ~session)
        in
        if json then
@@ -157,7 +171,7 @@ let set_status =
   cmd ~group:"tool " "set_status" "Set this agent's activity; an empty one clears it."
   @@ let+ activity = arg "ACTIVITY" in
      fun () ->
-       let dir = State.dir () and self = Tmux.Exec.getenv "TMUX_PANE" in
+       let dir = state_dir () and self = Tmux.Exec.getenv "TMUX_PANE" in
        match State.String_map.find_opt self (State.by_pane (State.load_live ~dir)) with
        | None ->
            Printf.ksprintf failwith
@@ -175,7 +189,7 @@ let get_agent =
      and+ context = flag "context" "Print the live agent graph for internal message validation."
      and+ children = Arg.(value & flag & info [ "children" ] ~doc:"Include child-run liveness.") in
      fun () ->
-       let dir = State.dir () in
+       let dir = state_dir () in
        if context then begin
          let agents =
            ok
@@ -221,7 +235,7 @@ let snapshot =
   cmd "snapshot" "Print a shell script that recreates the current tmux sessions."
   @@ let+ () = Term.const () in
      fun () ->
-       let states = State.by_pane (State.load_live ~dir:(State.dir ())) in
+       let states = State.by_pane (State.load_live ~dir:(state_dir ())) in
        let pi = (Procs.sweep ()).pi in
        let q = Filename.quote in
        let tm = Unix.localtime (Unix.time ()) in
@@ -288,7 +302,7 @@ let prompt =
          code
        in
        match
-         Prompt.prompt ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE") ~window (stdin ())
+         Prompt.prompt ~dir:(state_dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE") ~window (stdin ())
        with
        | Ok () -> 0
        | Error No_prompt -> refuse "no prompt given" 1
@@ -303,6 +317,7 @@ let get_window =
        if String.is_empty window then failwith "usage: kido get-window WINDOW_ID";
        if not (Tmux.Pane.is_window_id window) then
          Printf.ksprintf failwith "%S is not a window id (@N)" window;
+       ignore (state_dir ());
        print_endline
          (Yojson.Safe.to_string
             (`Assoc
@@ -312,7 +327,7 @@ let get_window =
                ]));
        0
 
-let switch name doc f =
+let switch name doc kind =
   cmd name doc
   @@ let+ next =
        Arg.(
@@ -320,34 +335,29 @@ let switch name doc f =
          & pos 0 (some (enum [ ("next", true); ("prev", false) ])) None
          & info [] ~docv:"next|prev")
      and+ client = str "client" "NAME" "tmux client to switch; defaults to $(b,TMUX_SIDE_CLIENT)."
-     and+ socket =
-       Arg.(
-         value
-         & opt (some string) None
-         & info [ "socket" ] ~docv:"PATH"
-             ~doc:"The tmux server's socket, for a caller outside tmux.")
-     in
+     and+ server = server_dir in
      fun () ->
-       ok
-         (f ~socket
-            ~client:
-              (List.find_opt
-                 (fun c -> not (String.is_empty c))
-                 [ client; Tmux.Exec.getenv "TMUX_SIDE_CLIENT" ]
-              |> Option.get_lazy Tmux.Exec.current_client)
-            ~next);
+       let dir = resolved_dir server in
+       let socket = Some (ok (State.server_socket ~create:false ~dir)) in
+       let client =
+         List.find_opt
+           (fun c -> not (String.is_empty c))
+           [ client; Tmux.Exec.getenv "TMUX_SIDE_CLIENT" ]
+         |> Option.get_lazy Tmux.Exec.current_client
+       in
+       (match kind with
+       | `Session -> ok (Tmux.Exec.switch_session ~socket ~client ~next)
+       | `Window ->
+           Option.iter
+             (fun (session, window) -> Printf.printf "%s %s\n" session window)
+             (ok (Sidebar.switch_window ~socket ~dir ~client ~next)));
        0
 
 let switch_session =
-  switch "switch-session" "Switch the client to the next or previous session."
-    Tmux.Exec.switch_session
+  switch "switch-session" "Switch the client to the next or previous session." `Session
 
 let switch_window =
-  switch "switch-window" "Switch the client to the next or previous window."
-    (fun ~socket ~client ~next ->
-      Result.map
-        (Option.iter (fun (session, window) -> Printf.printf "%s %s\n" session window))
-        (Sidebar.switch_window ~socket ~dir:(State.dir ()) ~client ~next))
+  switch "switch-window" "Switch the client to the next or previous window." `Window
 
 let created name f = Cli.run name (fun () -> print (f ()))
 
@@ -380,7 +390,7 @@ let spawn_subagent =
      and+ command = rest in
      created "tool spawn_subagent" (fun () ->
          Result.flat_map
-           (Spawn_subagent.spawn ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
+           (Spawn_subagent.spawn ~dir:(state_dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
               ~pi:
                 {
                   path = Tmux.Exec.getenv "PATH";
@@ -409,7 +419,7 @@ let async_bash =
      and+ stream = flag "stream" "Send the command's output to this caller in batches as it runs."
      and+ args = rest in
      created "tool async_bash" (fun () ->
-         Async_bash.async_bash ~dir:(State.dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
+         Async_bash.async_bash ~dir:(state_dir ()) ~self:(Tmux.Exec.getenv "TMUX_PANE")
            ~exe:(Lazy.force Tmux.Exec.self) ~name ~stream args)
 
 let hook =
@@ -422,7 +432,7 @@ let hook =
              0
          | [] ->
              ok
-               (Reporting.hook ~dir:(State.dir ()) ~pane:(Tmux.Exec.getenv "TMUX_PANE")
+               (Reporting.hook ~dir:(state_dir ()) ~pane:(Tmux.Exec.getenv "TMUX_PANE")
                   ~debug:(not (String.is_empty (Tmux.Exec.getenv "KIDO_HOOK_DEBUG")))
                   (stdin ()));
              0)
@@ -463,7 +473,7 @@ let agent_status =
      and+ ended = flag "ended" "A turn just finished."
      and+ remove = flag "remove" "Delete the session's record." in
      Cli.run "agent-status" (fun () ->
-         let dir = State.dir () in
+         let dir = state_dir () in
          match
            match (remove, status) with
            | true, _ -> State.remove ~dir session ~pid:(Unix.getppid ())
@@ -480,41 +490,32 @@ let agent_status =
 let debug_log =
   Cmd.v (Cmd.info "debug-log" ~doc:"Print the path of the hook debug log.")
   @@ let+ () = Term.const () in
-     print_endline (Reporting.debug_log ~dir:(State.dir ()));
+     print_endline (Reporting.debug_log ~dir:(state_dir ()));
      0
-
-let socket_name =
-  Arg.(
-    value
-    & opt (some string) None
-    & info [ "socket-name" ] ~docv:"NAME"
-        ~doc:"The tmux socket name for the launcher and server command (default: kido).")
 
 let server =
   cmd "server" "Start the kido server detached unless it is running, and print its tmux and socket."
-  @@ let+ socket_name = socket_name in
+  @@ let+ server = server_dir in
      fun () ->
        print_endline
          (Yojson.Safe.to_string
-            (Launch.endpoint_to_yojson
-               (ok
-                  (Launch.ensure
-                     ~socket_name:(Option.value ~default:"kido" socket_name)
-                     ~dir:(Tmux.Exec.abs (State.dir ()))))));
+            (Launch.endpoint_to_yojson (ok (Launch.ensure ~dir:(resolved_dir server)))));
        0
 
 let get_inbox =
   cmd "get-inbox" "Print an agent process's inbox socket path as JSON."
   @@ let+ pid = Arg.(required & pos 0 (some int) None & info [] ~docv:"PID") in
      fun () ->
-       let path = ok (Msg.inbox_path ~dir:(State.dir ()) (Int.to_string pid)) in
+       let path = ok (Msg.inbox_path ~dir:(state_dir ()) (Int.to_string pid)) in
        print_endline (Yojson.Safe.to_string (`Assoc [ ("path", `String path) ]));
        0
 
 let shell =
   Cmd.v (Cmd.info "shell" ~doc:"Exec the pane's login shell, primed with kido's shell integration.")
   @@ let+ () = Term.const () in
-     Cli.run "shell" Shell.run
+     Cli.run "shell" (fun () ->
+         ignore (state_dir ());
+         Shell.run ())
 
 let ssh =
   Cmd.v (Cmd.info "ssh" ~doc:"Run ssh, priming the remote login shell when it can.")
@@ -579,7 +580,7 @@ let reap =
   @@ let+ args = rest in
      Cli.run "reap" (fun () ->
          if not (List.is_empty args) then failwith "usage: kido reap";
-         let dir = State.dir () in
+         let dir = state_dir () in
          Reap.collect ~dir ~grace:(Reap.grace ())
            (ok (Tmux.Exec.list_panes ()))
            (State.load_live ~dir) ~now:(Unix.gettimeofday ());
@@ -598,6 +599,7 @@ let close_run =
          in
          if not (Tmux.Pane.is_window_id window_id) then
            Printf.ksprintf failwith "%S is not a window id (@N)" window_id;
+         ignore (state_dir ());
          (match Reap.decide (ok (Tmux.Exec.list_panes ())) window_id with
          | Ok c -> ok (Reap.release c)
          | Error refusal -> Cli.error "close-run" refusal);
@@ -606,7 +608,7 @@ let close_run =
 (* The fork sets TMUX_SIDE_CLIENT only for the side-status-command job, so its absence is exactly
    "not started as a side column". *)
 let sidebar =
-  let+ socket_name = socket_name
+  let+ server = server_dir
   and+ interval =
     Arg.(
       value
@@ -623,58 +625,58 @@ let sidebar =
   in
   let side = Tmux.Exec.getenv "TMUX_SIDE_CLIENT" in
   match (Sys.argv, side, Sys.getenv_opt "TMUX") with
-  | _, "", _ when Array.length Sys.argv = 1 || Option.is_some socket_name ->
+  | _, "", _ when Array.length Sys.argv = 1 || Option.is_some server ->
       Cli.run "" (fun () ->
-          match
-            Launch.run
-              ~socket_name:(Option.value ~default:"kido" socket_name)
-              ~dir:(Tmux.Exec.abs (State.dir ())) ~tmux:(Tmux.Exec.getenv "TMUX")
-          with
+          match Launch.run ~dir:(resolved_dir server) ~tmux:(Tmux.Exec.getenv "TMUX") with
           | Ok _ -> 0
           | Error m -> failwith m)
   | _, _, None ->
       Cli.error "" "must run inside tmux";
       1
-  | _, _, Some tmux_env -> (
-      let client =
-        match client with
-        | Some c when not (String.is_empty c) -> Some c
-        | _ when not (String.is_empty side) -> Some side
-        | _ -> Tmux.Exec.resolve_client ~pane:(Tmux.Exec.getenv "TMUX_PANE") ~tmux_env
-      in
-      match client with
-      | None ->
-          Cli.error "" "no tmux client; pass --client '#{client_name}'";
-          1
-      | Some client ->
-          Ui.run ~standalone:(String.is_empty side)
-            {
-              interval;
-              client;
-              socket = None;
-              dir = State.dir ();
-              threshold = State.stall_threshold ();
-              grace = Reap.grace ();
-              caffeinate_grace = Caffeinate.grace ();
-            };
-          0)
+  | _, _, Some tmux_env ->
+      Cli.run "" (fun () ->
+          let dir = state_dir () in
+          let client =
+            match client with
+            | Some c when not (String.is_empty c) -> Some c
+            | _ when not (String.is_empty side) -> Some side
+            | _ -> Tmux.Exec.resolve_client ~pane:(Tmux.Exec.getenv "TMUX_PANE") ~tmux_env
+          in
+          match client with
+          | None ->
+              Cli.error "" "no tmux client; pass --client '#{client_name}'";
+              1
+          | Some client ->
+              Ui.run ~standalone:(String.is_empty side)
+                {
+                  interval;
+                  client;
+                  socket = None;
+                  dir;
+                  threshold = State.stall_threshold ();
+                  grace = Reap.grace ();
+                  caffeinate_grace = Caffeinate.grace ();
+                };
+              0)
 
 type input = Line of string | Eof | Read_error of string
 
 let sidebar_feed =
   cmd "sidebar-feed" "Stream the sidebar's rows to a native sidebar, as one JSON line per change."
-  @@ let+ socket = str "socket" "PATH" "The kido server's tmux socket."
+  @@ let+ server = server_dir
      and+ client = str "client" "NAME" "The tmux client the rows are drawn for." in
      fun () ->
-       if String.is_empty socket || String.is_empty client then
-         failwith "usage: kido sidebar-feed --socket PATH --client NAME";
+       if String.is_empty client then
+         failwith "usage: kido sidebar-feed [--server DIR] --client NAME";
+       let dir = resolved_dir server in
+       let socket = ok (State.server_socket ~create:false ~dir) in
        if not (Sys.file_exists socket) then Printf.ksprintf failwith "no tmux server at %s" socket;
        let opts =
          {
            Sidebar.interval = Sidebar.default_interval;
            client;
            socket = Some socket;
-           dir = State.dir ();
+           dir;
            threshold = State.stall_threshold ();
            grace = Reap.grace ();
            caffeinate_grace = Caffeinate.grace ();

@@ -354,10 +354,7 @@ func TestSwitchWindowFromHoistedSubagent(t *testing.T) {
 	h.waitWindow("a", "a0")
 }
 
-// Kido.app runs switch-window outside tmux, so --socket is the only way
-// to name the server. The control runs the same command without it, with
-// TMUX unset and a private TMUX_TMPDIR, so no ambient server can answer
-// (nor the developer's own be switched): it must fail and move nothing.
+// An explicit server wins over a private default with no running server.
 func TestSwitchWindowSocket(t *testing.T) {
 	t.Parallel()
 	h := start(t, "a")
@@ -367,17 +364,17 @@ func TestSwitchWindowSocket(t *testing.T) {
 
 	run := func(args ...string) error {
 		cmd := exec.Command(kidoBin, append([]string{"switch-window", "next", "--client", h.client}, args...)...)
-		cmd.Env = cleanEnv("TMUX=", "TMUX_PANE=", "TMUX_TMPDIR="+t.TempDir())
+		cmd.Env = cleanEnv("TMUX=", "TMUX_PANE=", "KIDO_STATE_DIR="+serverDir(t))
 		return cmd.Run()
 	}
 	if err := run(); err == nil {
-		t.Errorf("switch-window without --socket succeeded outside tmux")
+		t.Errorf("switch-window without --server succeeded against an empty default")
 	}
 	if _, w := h.clientWindow(); w != "a0" {
-		t.Fatalf("switch-window without --socket moved the client to %s", w)
+		t.Fatalf("switch-window without --server moved the client to %s", w)
 	}
-	if err := run("--socket", socketPath("", h.inner)); err != nil {
-		t.Fatalf("switch-window --socket: %v", err)
+	if err := run("--server", h.stateDir); err != nil {
+		t.Fatalf("switch-window --server: %v", err)
 	}
 	h.waitWindow("a", "a1")
 }

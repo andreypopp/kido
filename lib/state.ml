@@ -43,10 +43,47 @@ type session = {
 module String_map = Map.Make (String)
 
 let dir () =
-  match (Sys.getenv_opt "KIDO_STATE_DIR", Sys.getenv_opt "XDG_STATE_HOME") with
-  | Some d, _ when not (String.is_empty d) -> d
-  | _, Some x when not (String.is_empty x) -> Filename.concat x "kido"
-  | _ -> Filename.concat (Sys.getenv "HOME") ".local/state/kido"
+  let socket =
+    Sys.getenv_opt "TMUX"
+    |> Option.map (fun s -> List.hd (String.split_on_char ',' s))
+    |> Option.filter (fun s ->
+        String.equal (Filename.basename s) "socket"
+        && Sys.file_exists (Filename.concat (Filename.dirname s) "server.conf"))
+  in
+  match socket with
+  | Some socket -> Filename.dirname socket
+  | None -> (
+      match (Sys.getenv_opt "KIDO_STATE_DIR", Sys.getenv_opt "XDG_STATE_HOME") with
+      | Some d, _ when not (String.is_empty d) -> d
+      | _, Some x when not (String.is_empty x) -> Filename.concat x "kido"
+      | _ -> Filename.concat (Sys.getenv "HOME") ".local/state/kido")
+
+external sun_path_size : unit -> int = "kido_sun_path_size"
+
+let check_dir ~dir =
+  match Unix.lstat dir with
+  | st
+    when Stdlib.(st.st_kind <> Unix.S_DIR)
+         || st.st_uid <> Unix.getuid ()
+         || st.st_perm land 0o077 <> 0 ->
+      Error
+        (Printf.sprintf
+           "unsafe server directory %S: must be a directory owned by the user and inaccessible to \
+            group and others (mode 0700)"
+           dir)
+  | _ -> Ok ()
+  | exception Unix.Unix_error (ENOENT, _, _) -> Ok ()
+
+let server_socket ~create ~dir =
+  let socket = Filename.concat dir "socket" in
+  if String.length socket >= sun_path_size () then
+    Error
+      (Printf.sprintf "server socket path %S is too long (maximum %d bytes)" socket
+         (sun_path_size () - 1))
+  else begin
+    if create then Fs.mkdir_p ~perm:0o700 dir;
+    Result.map (fun () -> socket) (check_dir ~dir)
+  end
 
 let path ~dir id = Filename.concat dir (id ^ ".json")
 
@@ -114,7 +151,7 @@ let held ~dir id pid =
   | _ -> Ok ()
 
 let record ~dir id s =
-  Fs.mkdir_p dir;
+  Fs.mkdir_p ~perm:0o700 dir;
   let path = path ~dir id in
   let tmp = Printf.sprintf "%s.tmp.%d" path (Unix.getpid ()) in
   Fs.write tmp (Yojson.Safe.to_string (session_to_yojson s));
@@ -147,6 +184,6 @@ let wake ~dir = Option.flat_map Timestamp.of_string (Fs.read (wake_file ~dir))
 
 let record_pause ~dir at =
   if not (Option.exists (fun prev -> Float.(at <= prev)) (wake ~dir)) then begin
-    Fs.mkdir_p dir;
+    Fs.mkdir_p ~perm:0o700 dir;
     Fs.write_atomic (wake_file ~dir) (Timestamp.to_string at)
   end

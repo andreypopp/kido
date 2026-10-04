@@ -14,7 +14,7 @@ import (
 // result.
 func TestCommandLineRefusals(t *testing.T) {
 	t.Parallel()
-	state := t.TempDir()
+	state := serverDir(t)
 	for _, c := range []struct {
 		args   []string
 		stdin  string
@@ -52,7 +52,7 @@ func TestCommandLineRefusals(t *testing.T) {
 // so only the line naming the fault is pinned, with the exit code.
 func TestCmdlinerRefusals(t *testing.T) {
 	t.Parallel()
-	state := t.TempDir()
+	state := serverDir(t)
 	for _, c := range []struct {
 		args   []string
 		stderr string
@@ -88,7 +88,7 @@ func TestClosedStdoutEndsQuietly(t *testing.T) {
 	}
 	r.Close()
 	cmd := exec.Command(kidoBin, "runs")
-	cmd.Env = cleanEnv("KIDO_STATE_DIR=" + t.TempDir())
+	cmd.Env = cleanEnv("KIDO_STATE_DIR=" + serverDir(t))
 	cmd.Stdout = w
 	var stderr strings.Builder
 	cmd.Stderr = &stderr

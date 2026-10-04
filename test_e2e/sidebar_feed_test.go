@@ -221,7 +221,7 @@ func (h *harness) appClient(session string) string {
 func feedCmd(h *harness, args ...string) *exec.Cmd {
 	cmd := exec.Command(kidoBin, append([]string{"sidebar-feed"}, args...)...)
 	// The knobs the inner server gives its own sidebar, so both agree.
-	cmd.Env = cleanEnv("TMUX=", "TMUX_PANE=", "KIDO_STATE_DIR="+h.stateDir,
+	cmd.Env = cleanEnv("TMUX=", "TMUX_PANE=", "KIDO_STATE_DIR="+serverDir(h.t),
 		"KIDO_LINGER_SECONDS=1", "KIDO_STALL_THRESHOLD_MS=3000")
 	return cmd
 }
@@ -230,7 +230,7 @@ func feedCmd(h *harness, args ...string) *exec.Cmd {
 func (h *harness) startFeed(session string, env ...string) *feed {
 	h.t.Helper()
 	f := &feed{h: h, client: h.appClient(session), stderr: &bytes.Buffer{}, done: make(chan struct{})}
-	f.cmd = feedCmd(h, "--socket", socketPath("", h.inner), "--client", f.client)
+	f.cmd = feedCmd(h, "--server", h.stateDir, "--client", f.client)
 	f.cmd.Env = append(f.cmd.Env, env...)
 	f.cmd.Stderr = f.stderr
 	var err error
@@ -588,9 +588,9 @@ func TestSidebarFeedFailures(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"--socket", h.dir + "/no-such-socket", "--client", h.client}, "no tmux server at "},
-		{[]string{"--socket", socketPath("", h.inner), "--client", "no-such-client"}, `no tmux client "no-such-client"`},
-		{[]string{"--socket", socketPath("", h.inner)}, "usage: kido sidebar-feed"},
+		{[]string{"--server", filepath.Join(serverDir(t), "absent"), "--client", h.client}, "no tmux server at "},
+		{[]string{"--server", h.stateDir, "--client", "no-such-client"}, `no tmux client "no-such-client"`},
+		{[]string{"--server", h.stateDir}, "usage: kido sidebar-feed"},
 	} {
 		cmd := feedCmd(h, c.args...)
 		var stderr bytes.Buffer
@@ -620,9 +620,10 @@ func TestSidebarFeedRecoversFromAnError(t *testing.T) {
 	}
 	t.Parallel()
 	h := start(t, "alpha")
-	dir := t.TempDir()
-	t.Cleanup(func() { os.Chmod(dir, 0o755) })
-	f := h.startFeed("alpha", "KIDO_STATE_DIR="+dir)
+	h.in("set-option", "-g", "side-status-command", "false")
+	dir := h.stateDir
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	f := h.startFeed("alpha")
 	f.waitLast(func(s feedSnapshot) bool { return len(s.Sessions) == 1 }, "the first line")
 
 	holder := exec.Command("sleep", "300")
@@ -634,14 +635,14 @@ func TestSidebarFeedRecoversFromAnError(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "held.json"), []byte(rec), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(dir, 0o555); err != nil {
+	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
 	}
 	holder.Process.Kill()
 	holder.Wait()
 
 	f.waitLast(func(s feedSnapshot) bool { return s.Error != nil }, "the error line")
-	if err := os.Chmod(dir, 0o755); err != nil {
+	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	f.waitLast(func(s feedSnapshot) bool { return s.Error == nil && len(s.Sessions) == 1 }, "the recovery")
@@ -652,7 +653,7 @@ func TestSidebarFeedRecoversFromAnError(t *testing.T) {
 func TestSidebarFeedStdinError(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	cmd := feedCmd(h, "--socket", socketPath("", h.inner), "--client", h.appClient("alpha"))
+	cmd := feedCmd(h, "--server", h.stateDir, "--client", h.appClient("alpha"))
 	d, err := os.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

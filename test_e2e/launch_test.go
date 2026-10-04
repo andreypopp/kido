@@ -14,30 +14,18 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// The launcher is `kido` with no arguments: it starts or attaches to
-// kido's own tmux server, on the socket named "kido". These tests run it
-// the way a user does - typed at a terminal with no tmux around it, which
-// here is a pty in the outer server - and read back the server it
-// produced.
-//
-// Every one of them gets a TMUX_TMPDIR of its own, so the socket called
-// "kido" is this test's and never the developer's own running one. That
-// is the only reason it is safe to name a fixed socket at all, and the
-// same reason the cleanup below may kill a server by that name.
-
-// kidoRun is one launcher test's world: a temporary HOME and
-// XDG_CONFIG_HOME for the configuration layering, a TMUX_TMPDIR holding
-// the kido socket, and an outer tmux server providing ptys to type into.
+// Launcher tests type kido into a pty with TMUX unset. Each server's
+// socket is in its own short, private state directory, and every cleanup
+// addresses that exact path, never a socket name.
 type kidoRun struct {
-	t      *testing.T
-	dir    string
-	home   string
-	config string
-	tmpdir string
-	state  string
-	outer  string
-	shell  string
-	// kidoSock is the full path of the socket called "kido" under tmpdir.
+	t        *testing.T
+	dir      string
+	home     string
+	config   string
+	tmpdir   string
+	state    string
+	outer    string
+	shell    string
 	kidoSock string
 }
 
@@ -50,10 +38,8 @@ func newKidoRun(t *testing.T) *kidoRun {
 	r := &kidoRun{t: t, dir: t.TempDir()}
 	r.home = filepath.Join(r.dir, "home")
 	r.config = filepath.Join(r.dir, "config")
-	r.state = filepath.Join(r.dir, "state")
-	// The socket directory is tmux's own: it insists on 0700 and on
-	// owning it, and it must be short enough for a unix socket path.
-	tmpdir, err := os.MkdirTemp("", "kido-sock")
+	r.state = serverDir(t)
+	tmpdir, err := os.MkdirTemp("/tmp", "server-dir-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,16 +52,9 @@ func newKidoRun(t *testing.T) *kidoRun {
 	r.shell = primableShell(t, r.home)
 	r.outer = fmt.Sprintf("kido-l-%s-%d-%d", sanitize.ReplaceAllString(t.Name(), "-"),
 		os.Getpid(), rand.Int32N(1<<20))
-	// Where the launcher's server will put its socket: this test's own
-	// TMUX_TMPDIR decides it, and every tmux command below addresses that
-	// path rather than the name "kido". The name would be resolved against
-	// a list of directories that ends in /tmp, so the moment this
-	// directory stops resolving - the cleanup below deletes it - the name
-	// means the developer's own live server instead. That is not
-	// hypothetical: it happened.
-	r.kidoSock = socketPath(r.tmpdir, "kido")
+	r.kidoSock = filepath.Join(r.state, "socket")
 	watchSockets(r.outer)
-	watchSocketIn(r.tmpdir, "kido")
+	watchSocketPath(r.kidoSock)
 
 	t.Cleanup(func() {
 		started := descendants(r.kidoSock)
@@ -181,15 +160,10 @@ func (r *kidoRun) mustKido(args ...string) string {
 	return out
 }
 
-// launch types a bare `kido` into a new pty of the outer server, named
-// window, which is exactly how a user starts one: no arguments, and no
-// TMUX around it.
+// launch types kido --server DIR into a pty with no TMUX around it.
 func (r *kidoRun) launch(window string) {
 	r.t.Helper()
-	args := ""
-	if name := filepath.Base(r.kidoSock); name != "kido" {
-		args = fmt.Sprintf(" --socket-name %q", name)
-	}
+	args := fmt.Sprintf(" --server %q", r.state)
 	r.mustOuter("new-window", "-d", "-t", "host", "-n", window,
 		fmt.Sprintf("unset TMUX; exec env %s %q%s", r.envAssign(), kidoBin, args))
 }
@@ -276,7 +250,7 @@ func (r *kidoRun) firstPane() string {
 	return strings.Split(r.mustKido("list-panes", "-a", "-F", "#{pane_id}"), "\n")[0]
 }
 
-// A bare `kido` at a plain terminal leaves a server on the kido socket,
+// A launcher at a plain terminal leaves a server on its directory's socket,
 // with the side column drawn and running this kido, not whatever else on
 // the machine is called kido.
 func TestKidoStartsAServerWithASidebar(t *testing.T) {
@@ -600,13 +574,9 @@ TRAPEXIT() {
 
 func launcherEnv(t *testing.T, extra ...string) []string {
 	t.Helper()
-	sock, err := os.MkdirTemp("", "kido-sock")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(sock) })
+	sock := serverDir(t)
 	return cleanEnv(append([]string{"TMUX=", "TMUX_SIDE_CLIENT=", "TMUX_TMPDIR=" + sock,
-		"KIDO_STATE_DIR=" + t.TempDir(), "HOME=" + t.TempDir(), "XDG_CONFIG_HOME="}, extra...)...)
+		"KIDO_STATE_DIR=" + sock, "HOME=" + t.TempDir(), "XDG_CONFIG_HOME="}, extra...)...)
 }
 
 func writeScript(t *testing.T, path, body string) string {
@@ -643,7 +613,7 @@ func TestLauncherRefusals(t *testing.T) {
 		{kidoBin, []string{"HOME="}, "kido: $HOME is not defined"},
 		{quoted, nil, fmt.Sprintf(`kido: cannot start a kido server: refusing path %q: it contains "'"`, quoted)},
 		{kidoBin, []string{"KIDO_TMUX=" + mismatch},
-			`kido: the kido server on socket "kido" is running an older kido-tmux than this one`},
+			`kido: the kido server on socket `},
 	} {
 		env := launcherEnv(t, c.env...)
 		cmd := exec.Command(c.bin)
@@ -653,8 +623,8 @@ func TestLauncherRefusals(t *testing.T) {
 			t.Errorf("%s: exit %d (%v), output %q; want exit 1 and %q", c.bin, code, err, out, c.stderr)
 		}
 		for _, kv := range env {
-			if sock, ok := strings.CutPrefix(kv, "TMUX_TMPDIR="); ok {
-				if _, err := os.Stat(socketPath(sock, "kido")); err == nil {
+			if sock, ok := strings.CutPrefix(kv, "KIDO_STATE_DIR="); ok {
+				if _, err := os.Stat(filepath.Join(sock, "socket")); err == nil {
 					t.Errorf("%s: a server started on %s", c.bin, sock)
 				}
 			}
@@ -690,7 +660,7 @@ echo "$0 $*" >"$OUT"
 	alone := writeScript(t, filepath.Join(dir, "alone", "kido"), string(body))
 	onPath := writeScript(t, filepath.Join(dir, "path", "tmux"), fake)
 
-	attach, start := "-u -L kido attach-session", "-u -L kido -f STATE/server.conf new-session -s main"
+	attach, start := "-u -S STATE/socket attach-session", "-u -S STATE/socket -f STATE/server.conf new-session -s main"
 	for i, c := range []struct {
 		bin, env, rc, stderr, tmux, args string
 	}{
@@ -701,7 +671,7 @@ echo "$0 $*" >"$OUT"
 		{alone, "PATH=" + filepath.Dir(onPath) + ":/usr/bin:/bin", "0", "", onPath, attach},
 	} {
 		out := filepath.Join(dir, fmt.Sprintf("exec-%d", i))
-		state := t.TempDir()
+		state := serverDir(t)
 		cmd := exec.Command(c.bin)
 		cmd.Env = launcherEnv(t, c.env, "PROBE_RC="+c.rc, "PROBE_ERR="+c.stderr, "OUT="+out,
 			"KIDO_STATE_DIR="+state)

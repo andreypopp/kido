@@ -13,9 +13,9 @@ func TestKidoSeparateServerAndState(t *testing.T) {
 	pane := r.primedPane()
 	first := r.mustServer("")
 	app := *r
-	app.state = filepath.Join(r.dir, "app-state")
-	app.kidoSock = socketPath(r.tmpdir, "kido-app")
-	watchSocketIn(r.tmpdir, "kido-app")
+	app.state = serverDir(t)
+	app.kidoSock = filepath.Join(app.state, "socket")
+	watchSocketPath(app.kidoSock)
 	t.Cleanup(func() { app.kido("kill-session", "-t", "main") })
 	app.launch("app")
 	app.waitUp()
@@ -31,8 +31,8 @@ func TestKidoSeparateServerAndState(t *testing.T) {
 		t.Fatalf("pane ids = %s and %s, want a collision to test state isolation", pane, appPane)
 	}
 	for _, server := range []*kidoRun{r, &app} {
-		if got := server.mustKido("show-environment", "-g", "KIDO_STATE_DIR"); got != "KIDO_STATE_DIR="+server.state {
-			t.Errorf("global state environment = %q", got)
+		if got := server.shellIn(pane, "printf '%s' \"$KIDO_STATE_DIR\""); got != "" {
+			t.Errorf("pane state environment = %q, want absent", got)
 		}
 		if _, err := os.Stat(filepath.Join(server.state, "server.conf")); err != nil {
 			t.Fatal(err)
@@ -40,7 +40,7 @@ func TestKidoSeparateServerAndState(t *testing.T) {
 		if got := server.shellIn(pane, "tmux display-message -p '#{socket_path}'"); got != server.mustServer("").Socket {
 			t.Errorf("pane reaches %q, want %s", got, server.kidoSock)
 		}
-		if got := server.shellIn(pane, "kido agent-status --agent pi --session isolated --status running; echo $?"); got != "0" {
+		if got := server.shellIn(pane, "KIDO_STATE_DIR=/must-not-use kido agent-status --agent pi --session isolated --status running; echo $?"); got != "0" {
 			t.Fatalf("agent-status: %q", got)
 		}
 		body, err := os.ReadFile(filepath.Join(server.state, "isolated.json"))

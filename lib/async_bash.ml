@@ -38,8 +38,6 @@ let async_bash ~dir ~self ~exe ~name ~stream args =
     }
   in
   Subrun.write_meta ~dir meta;
-  let env =
-    Spawn_subagent.run_env ~dir id parent depth ~keep_alive:false @ [ "KIDO_STATE_DIR=" ^ dir ]
-  in
+  let env = Spawn_subagent.run_env ~dir id parent depth ~keep_alive:false in
   Spawn_subagent.create_run_window ~dir meta ~session:pane.session_id ~env
     [ exe; "async-run"; "--run-id"; Subrun.string_of_id id ]

@@ -375,7 +375,7 @@ export default function (pi: ExtensionAPI) {
     if (!inbox || typeof inbox !== "object" || !("path" in inbox) || typeof inbox.path !== "string" || !isAbsolute(inbox.path)) return;
     const path = inbox.path;
     try {
-      mkdirSync(dirname(dirname(path)), { recursive: true, mode: 0o755 });
+      mkdirSync(dirname(dirname(path)), { recursive: true, mode: 0o700 });
       mkdirSync(dirname(path), { mode: 0o700 });
     } catch (err) {
       if (!(err instanceof Error && "code" in err && err.code === "EEXIST")) return;

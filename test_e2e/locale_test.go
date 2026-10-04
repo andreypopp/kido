@@ -22,15 +22,15 @@ func withoutLocale(env []string) []string {
 func TestServerWithoutLocale(t *testing.T) {
 	requireTmux(t)
 	env := withoutLocale(launcherEnv(t))
+	var first string
 	t.Cleanup(func() {
-		cmd := exec.Command(tmuxBin, "-u", "-L", "locale", "kill-session", "-t", "main")
+		cmd := exec.Command(tmuxBin, "-u", "-S", first, "kill-session", "-t", "main")
 		cmd.Env = env
 		cmd.Run()
 	})
-	var first string
 	for i := 0; i < 2; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), settle)
-		cmd := exec.CommandContext(ctx, kidoBin, "server", "--socket-name", "locale")
+		cmd := exec.CommandContext(ctx, kidoBin, "server")
 		cmd.Env = env
 		out, err := cmd.CombinedOutput()
 		cancel()
@@ -56,7 +56,7 @@ func TestSidebarFeedWithoutLocale(t *testing.T) {
 	const name = "日本語 café"
 	h.in("rename-window", "-t", "alpha:", name)
 	h.in("split-window", "-d", "-t", "alpha:")
-	cmd := feedCmd(h, "--socket", socketPath("", h.inner), "--client", h.appClient("alpha"))
+	cmd := feedCmd(h, "--server", h.stateDir, "--client", h.appClient("alpha"))
 	cmd.Env = withoutLocale(cmd.Env)
 	cmd.Stdin = strings.NewReader("")
 	var stderr bytes.Buffer

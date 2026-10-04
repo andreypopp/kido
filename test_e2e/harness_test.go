@@ -262,7 +262,7 @@ func main() {
 func cleanEnv(extra ...string) []string {
 	env := make([]string, 0, len(os.Environ())+len(extra))
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "KIDO_TMUX=") && !strings.HasPrefix(kv, "KIDO_AGENT_") && !strings.HasPrefix(kv, "TMUX=") && !strings.HasPrefix(kv, "TMUX_PANE=") {
+		if !strings.HasPrefix(kv, "KIDO_STATE_DIR=") && !strings.HasPrefix(kv, "KIDO_TMUX=") && !strings.HasPrefix(kv, "KIDO_AGENT_") && !strings.HasPrefix(kv, "TMUX=") && !strings.HasPrefix(kv, "TMUX_PANE=") {
 			env = append(env, kv)
 		}
 	}
@@ -297,15 +297,20 @@ func findTmux() (bin, why string) {
 	if !strings.Contains(string(ver), "next-3.9") {
 		return "", fmt.Sprintf("%s is %q, want the andreypopp/tmux fork (next-3.9)", path, strings.TrimSpace(string(ver)))
 	}
-	probe := fmt.Sprintf("kido-e2e-probe-%d-%d", os.Getpid(), rand.Int32N(1<<20))
-	out, err := exec.Command(path, "-f", "/dev/null", "-L", probe, "start-server", ";",
+	dir, err := os.MkdirTemp("/tmp", "server-dir-")
+	if err != nil {
+		return "", err.Error()
+	}
+	defer os.RemoveAll(dir)
+	probe := filepath.Join(dir, "socket")
+	out, err := exec.Command(path, "-f", "/dev/null", "-S", probe, "start-server", ";",
 		"show-options", "-g", "side-status-command", ";",
 		"display-message", "-p", "#{socket_path}").CombinedOutput()
 	sock := ""
 	if lines := strings.Fields(string(out)); len(lines) > 0 {
 		sock = lines[len(lines)-1]
 	}
-	exec.Command(path, "-L", probe, "kill-server").Run()
+	exec.Command(path, "-S", probe, "kill-server").Run()
 	if sock != "" {
 		os.Remove(sock)
 	}
@@ -336,7 +341,7 @@ type harness struct {
 	dir      string // scratch: config, state, session working directory
 	stateDir string
 	outer    string // outer socket name
-	inner    string // inner socket name
+	inner    string // inner socket path
 	client   string // the inner client's name, e.g. /dev/ttys012
 	proxy    string // ssh ProxyCommand script, written on demand
 }
@@ -373,24 +378,16 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 	name := fmt.Sprintf("%s-%d-%d", sanitize.ReplaceAllString(t.Name(), "-"),
 		os.Getpid(), rand.Int32N(1<<20))
 	h.outer = "kido-o-" + name
-	h.inner = "kido-i-" + name
-	// Registered before either server exists: a server this process has
-	// asked for but not yet seen must still die with it.
-	watchSockets(h.outer, h.inner)
-	h.stateDir = filepath.Join(h.dir, "state")
-	if err := os.MkdirAll(h.stateDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	h.stateDir = serverDir(t)
+	h.inner = filepath.Join(h.stateDir, "socket")
+	watchSockets(h.outer)
+	watchSocketPath(h.inner)
 
 	args := ""
 	if len(kidoArgs) > 0 {
 		args = " " + strings.Join(kidoArgs, " ")
 	}
-	conf := filepath.Join(h.dir, "inner.conf")
-	// KIDO_STATE_DIR is set in the inner server's global environment before
-	// any session exists, so every pane and the side-status-command job
-	// itself inherit it rather than touching the developer's real state
-	// dir; h.hook and h.agentStatus set their own copies out of band.
+	conf := filepath.Join(h.stateDir, "server.conf")
 	// KIDO_LINGER_SECONDS/KIDO_STALL_THRESHOLD_MS/KIDO_STREAM_* shorten the
 	// window-lifecycle grace, State.stall_threshold and the streaming
 	// wrapper's batch/backoff the same way for everything the inner server
@@ -412,7 +409,6 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 	var body bytes.Buffer
 	body.Write(defaults)
 	fmt.Fprintf(&body, `
-set-environment -g KIDO_STATE_DIR "%s"
 set-environment -g KIDO_LINGER_SECONDS 1
 set-environment -g KIDO_CAFFEINATE_GRACE_MS 2000
 set-environment -g KIDO_STOP_ESCALATION_MS 300
@@ -427,7 +423,7 @@ set -g default-command ""
 set -g side-status-width %d
 set -g side-status-style "fg=default,bg=default"
 set -g side-status-command "%s%s"
-`, h.stateDir, sideWidth, kidoBin, args)
+`, sideWidth, kidoBin, args)
 	if err := os.WriteFile(conf, body.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +457,7 @@ set -g side-status-command "%s%s"
 	// screen-256color: the only terminfo CI's Ubuntu (no ncurses-term) has.
 	h.must(h.tmux(h.outer, "set-option", "-g", "default-terminal", "screen-256color"))
 	h.must(h.tmux(h.outer, "set-option", "-g", "remain-on-exit", "on")) // keep a dead client's error on screen
-	inner := fmt.Sprintf("PATH=%q:$PATH; export PATH; unset TMUX; exec %q -L %s -f %q new-session -s %s -c %q",
+	inner := fmt.Sprintf("PATH=%q:$PATH; export PATH; unset TMUX; exec %q -S %q -f %q new-session -s %s -c %q",
 		prefix, tmuxBin, h.inner, conf, session, h.dir)
 	h.must(h.tmux(h.outer, "new-window", "-d", "-t", "host", "-n", "side", inner))
 
@@ -478,7 +474,7 @@ set -g side-status-command "%s%s"
 // returns nothing once the server is gone, which is why callers must ask
 // before killing it.
 func controlClientPIDs(socket string) []string {
-	out, err := exec.Command(tmuxBin, "-L", socket, "list-clients", "-F",
+	out, err := exec.Command(tmuxBin, "-S", socketPath("", socket), "list-clients", "-F",
 		"#{client_pid}\t#{client_control_mode}").Output()
 	if err != nil {
 		return nil
@@ -564,13 +560,13 @@ func killServer(socket string) {
 }
 
 func (h *harness) tmux(socket string, args ...string) (string, error) {
-	full := append([]string{"-L", socket}, args...)
+	full := append([]string{"-S", socketPath("", socket)}, args...)
 	cmd := exec.Command(tmuxBin, full...)
 	cmd.Env = cleanEnv("TMUX=")
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
-		return out.String(), fmt.Errorf("tmux -L %s %s: %v: %s",
+		return out.String(), fmt.Errorf("tmux -S %s %s: %v: %s",
 			socket, strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
 	}
 	return strings.TrimRight(out.String(), "\n"), nil
@@ -1017,7 +1013,7 @@ func (h *harness) sshProxy() string {
 
 // hook runs `kido hook` out of band from the test binary (whose pid it
 // records, so the state file stays valid for the whole run), and so
-// carries KIDO_STATE_DIR itself instead of inheriting it as a pane does.
+// carries TMUX itself instead of inheriting it as a pane does.
 func (h *harness) hook(sessionID, pane, event string, kv ...string) {
 	h.t.Helper()
 	payload := map[string]any{}
@@ -1039,7 +1035,7 @@ func (h *harness) hookPayload(sessionID, pane, event string, payload map[string]
 	}
 	cmd := exec.Command(kidoBin, "hook")
 	cmd.Stdin = bytes.NewReader(body)
-	cmd.Env = cleanEnv("TMUX_PANE="+pane, "KIDO_STATE_DIR="+h.stateDir)
+	cmd.Env = cleanEnv("TMUX="+h.inner+",0,0", "TMUX_PANE="+pane)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		h.t.Fatalf("kido hook %s: %v\n%s", event, err, out)
 	}
@@ -1054,7 +1050,7 @@ func (h *harness) agentStatus(sessionID, pane, agent, status string, extra ...st
 		args = append(args, "--status", status)
 	}
 	cmd := exec.Command(kidoBin, append(args, extra...)...)
-	cmd.Env = cleanEnv("TMUX_PANE="+pane, "KIDO_STATE_DIR="+h.stateDir)
+	cmd.Env = cleanEnv("TMUX="+h.inner+",0,0", "TMUX_PANE="+pane)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		h.t.Fatalf("kido agent-status %s: %v\n%s", status, err, out)
 	}

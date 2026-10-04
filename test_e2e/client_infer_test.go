@@ -68,7 +68,7 @@ func (h *harness) realClientCount() int {
 
 func (h *harness) attachSecondClient(session string) string {
 	h.t.Helper()
-	cmd := fmt.Sprintf("unset TMUX; exec %q -L %s attach-session -t %s",
+	cmd := fmt.Sprintf("unset TMUX; exec %q -S %q attach-session -t %s",
 		tmuxBin, h.inner, session)
 	return h.must(h.tmux(h.outer, "new-window", "-d", "-P", "-F", "#{window_id}",
 		"-t", "host", "-n", "second", cmd))

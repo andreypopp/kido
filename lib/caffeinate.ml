@@ -71,7 +71,7 @@ let tick ~dir ~grace ~now ~busy conn =
   | Some (server, state, _, since, _) ->
       if Stdlib.(action ~grace ~now ~busy state since = `None) then Some state
       else (
-        Fs.mkdir_p dir;
+        Fs.mkdir_p ~perm:0o700 dir;
         let fd =
           Unix.openfile
             (Filename.concat dir (Printf.sprintf "caffeinate-%d.lock" server))

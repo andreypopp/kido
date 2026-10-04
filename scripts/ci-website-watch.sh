@@ -21,9 +21,9 @@ for c in "$@"; do
 done
 peer=$(python3 - <<'PY'
 import json, os, pathlib, re
-runs = pathlib.Path(os.environ.get('KIDO_STATE_DIR') or (os.environ.get('XDG_STATE_HOME') or os.path.expanduser('~/.local/state')) + '/kido') / 'runs'
 try:
-    own = runs / os.environ['KIDO_AGENT_RUN_ID']
+    own = pathlib.Path(os.environ['KIDO_AGENT_TASK_FILE']).parent
+    runs = own.parent
     meta = json.loads((own / 'meta.json').read_text())
     parent = meta['parentSession'] if meta['kind'] == 'bash' else ''
 except (KeyError, OSError, ValueError):

@@ -58,7 +58,7 @@ func TestLeakCheckCatchesAccumulation(t *testing.T) {
 	requireTmux(t)
 	h := start(t, "leak-b")
 
-	client := exec.Command(tmuxBin, "-L", h.inner, "-C", "attach-session")
+	client := exec.Command(tmuxBin, "-S", h.inner, "-C", "attach-session")
 	stdin, err := client.StdinPipe()
 	if err != nil {
 		t.Fatal(err)

@@ -118,7 +118,7 @@ Conventions:
                        sidebar-feed
     bin/cli.ml         failure printing and tables
     lib/               the library kido:
-      launch.ml        the launcher and `kido server`: --socket-name, the
+      launch.ml        the launcher and `kido server`: --server, the
                        server.conf in its state dir, KIDO_BUILD_ID
       build_id.ml      the immutable dune-build-info version, or unknown
       shell.ml, prime.ml  kido shell: the login shell and its priming files
@@ -172,8 +172,17 @@ through dune-build-info during promotion. `build/main.exe` is the stamped
 executable copied by `make install` and e2e; `_build/default/bin/main.exe`
 reports `unknown`. `kido --version` prints that id; `kido server` reports the
 creating server's global `KIDO_BUILD_ID` as its JSON `build` field (null if unset).
-The launcher and `kido server` accept `--socket-name NAME` (default `kido`);
-separate servers require separate `KIDO_STATE_DIR` values.
+The launcher, `kido server`, `sidebar-feed` and `switch-session/window`
+accept `--server DIR`. A server is its state directory; its socket is
+`<dir>/socket`. The default is resolved by `State.dir`: inside a pane,
+`$TMUX` wins when its socket is named `socket` and `server.conf` exists
+beside it; otherwise `$KIDO_STATE_DIR`, `$XDG_STATE_HOME/kido`, then
+`~/.local/state/kido`. The launcher does not export `KIDO_STATE_DIR`.
+It creates its state directory with mode 0700 and refuses a directory
+not owned by the user or accessible to group or others, and a socket
+path that cannot fit the platform's `sun_path` including its terminator.
+For debugging the default server, use
+`kido-tmux -S ~/.local/state/kido/socket`.
 
 **Tool name == `kido tool` subcommand name.** Every subagent tool in `share/pi/` invokes
 the `kido tool` subcommand of its own name (table in docs/design-subagents.md). A new
@@ -297,8 +306,7 @@ from real screens in lib/test/test_screen.ml). That probe runs for a
 
 ## Agent state, and delivering a prompt
 
-State lives in `$KIDO_STATE_DIR`, else `$XDG_STATE_HOME/kido`, else
-`~/.local/state/kido` — one JSON file per agent session, named by session
+State lives in the server directory resolved above — one JSON file per agent session, named by session
 id, written temp-file-then-rename. There is **no locking**; races are
 resolved by policy:
 
@@ -444,7 +452,7 @@ builds kido with `dune build` (so it needs that dune on PATH), and fake
   `kido`/`tmux` resolved by `run-shell` against the server's PATH. An
   installed kido masks a missing entry locally; CI gets exit 127.
 - `cleanEnv` strips installed `share/kido/bin` PATH entries, `TMUX`,
-  `TMUX_PANE`, `KIDO_AGENT_*` and `KIDO_TMUX`: the suite is often
+  `TMUX_PANE`, `KIDO_STATE_DIR`, `KIDO_AGENT_*` and `KIDO_TMUX`: the suite is often
   run from a tracked agent's pane, and the inner server's environment is
   what `new-window` gives a spawned child, so the developer's own parent
   edge would leak into tests.
@@ -520,7 +528,8 @@ repeat them.
   or fix anything outside them - report it instead.
 - **You are inside the user's live tmux server.** `kill-server` without
   `-L` or `-S` naming your own socket kills it. Start every test server
-  on its own socket (`tmux -L t-$$`), end it with `kill-session`, and
+  on its own explicit socket (`tmux -S "$scratch/socket"`), end it with
+  `kill-session`, and
   never touch `~/bin/tmux`, `/opt/homebrew/bin/tmux` or the running
   server.
 - **Every wait has a deadline.** No open-ended polling in code or in

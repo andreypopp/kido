@@ -71,7 +71,7 @@ type outcome = {
 [@@deriving yojson { strict = false }]
 
 let create ~dir id task =
-  Fs.mkdir_p (dir_for ~dir id);
+  Fs.mkdir_p ~perm:0o700 (dir_for ~dir id);
   Fs.write ~perm:0o600 (task_path ~dir id) task
 
 type command = string list [@@deriving yojson]
@@ -91,7 +91,7 @@ let read_command ~dir id =
   match read_json (command_path ~dir id) command_of_yojson with Some [] | None -> None | c -> c
 
 let write_meta ~dir m =
-  Fs.mkdir_p (dir_for ~dir m.id);
+  Fs.mkdir_p ~perm:0o700 (dir_for ~dir m.id);
   Fs.write_atomic (meta_path ~dir m.id) (Yojson.Safe.to_string (meta_to_yojson m))
 
 let read_meta ~dir id = read_json (meta_path ~dir id) meta_of_yojson
