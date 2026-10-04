@@ -106,9 +106,9 @@ final class SidebarCell: NSTableCellView {
             }
             let leading = (row.target == nil ? 10 : 12) + CGFloat(row.indent) * 17
             if row.focused {
-                NSColor.labelColor.withAlphaComponent(0.10).setFill(); bounds.fill()
-                NSColor.labelColor.withAlphaComponent(0.45).setFill()
-                NSRect(x: CGFloat(row.indent) * 17 + 1, y: 8, width: 2, height: bounds.height - 16).fill()
+                let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                (dark ? NSColor.white.withAlphaComponent(0.85) : NSColor.black.withAlphaComponent(0.75)).setFill()
+                NSRect(x: CGFloat(row.indent) * 17, y: 4, width: 3, height: bounds.height - 8).fill()
             }
             if row.target != nil, (superview as? NSTableRowView)?.isSelected == true,
                let table = enclosingScrollView?.documentView as? Table, table.keyboardSelection,
