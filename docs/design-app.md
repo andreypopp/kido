@@ -1,5 +1,7 @@
 # Kido.app
 
+Open gaps and accepted limits are tracked in [Known issues](known-issues-app.md).
+
 Kido.app (`app/`) is a native macOS view of the kido server: a tmux
 control-mode client that renders every pane with libghostty, beside a
 native sidebar fed by `kido sidebar-feed`. Sessions, windows and panes
