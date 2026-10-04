@@ -44,7 +44,7 @@ private func fixture(filter: String = "", client: Int = 0, sessions: [Int] = [0]
     let snapshot = try fixture(sessions: [0, 1])
     let folded: Set<SessionID> = [.init(number: 0)]
     let rows = sidebarRows(snapshot, folded: folded)
-    #expect(rows.filter { $0.id.session == SessionID(number: 0) }.map(\.kind) == [.header("session-0"), .gap])
+    #expect(rows.filter { $0.id.session == SessionID(number: 0) }.map(\.kind) == [.header, .gap])
     #expect(sidebarRows(try fixture(filter: "session", sessions: [0]), folded: folded).count == 2)
     #expect(sidebarRows(try fixture(filter: "absent", sessions: []), folded: folded).isEmpty)
     let expanded = sidebarRows(snapshot, folded: [])
@@ -52,10 +52,10 @@ private func fixture(filter: String = "", client: Int = 0, sessions: [Int] = [0]
     #expect(expanded.filter { $0.focused }.count == 1)
 }
 
-@Test func runKindsAndTimePolicy() throws {
+@Test func paneTargetsAndTimePolicy() throws {
     let panes = sidebarRows(try fixture(), folded: []).filter { $0.target != nil }
     #expect(panes.map(\.started) == [nil, nil, Date(timeIntervalSince1970: 100), Date(timeIntervalSince1970: 100), Date(timeIntervalSince1970: 100), nil])
-    #expect(panes.map(\.kind).contains { if case .pane(.run(.stream), _) = $0 { return true }; return false })
+    #expect(panes.allSatisfy { if case .pane = $0.kind { return true }; return false })
     #expect(panes.first { $0.title == "pane-1" }?.tail == "working")
     #expect(panes.first { $0.title == "pane-1" }?.height == 45)
 }
@@ -63,4 +63,19 @@ private func fixture(filter: String = "", client: Int = 0, sessions: [Int] = [0]
 @Test(arguments: [(0, "0s"), (59, "59s"), (60, "1m00s"), (3599, "59m59s"), (3600, "1h00m"), (7260, "2h01m"), (-1, "0s")])
 func elapsed(_ seconds: Int, _ expected: String) {
     #expect(sidebarElapsed(started: Date(timeIntervalSince1970: 100), now: Date(timeIntervalSince1970: Double(100 + seconds))) == expected)
+}
+
+@Test func navigationOrderWrappingAndFallback() throws {
+    let snapshot = try fixture(sessions: [0, 1])
+    let panes = sidebarRows(snapshot, folded: []).compactMap(\.target)
+    #expect(panes.map(\.pane) == [0, 5, 1, 2, 3, 4, 0, 5, 1, 2, 3, 4].map { PaneID(number: UInt32($0)) })
+    #expect(sidebarTarget(snapshot) == panes.first)
+    #expect(sidebarTarget(snapshot, attention: 1) == panes[3])
+    #expect(sidebarTarget(snapshot, attention: -1) == panes[9])
+    #expect(sidebarTarget(snapshot, selected: panes[9], attention: 1) == panes[3])
+    #expect(sidebarTarget(snapshot, selected: panes[3], attention: -1) == panes[9])
+    #expect(sidebarRows(snapshot, folded: [.init(number: 0), .init(number: 1)]).allSatisfy { $0.target == nil })
+    #expect(sidebarTarget(snapshot, selected: panes[0], attention: 1) == panes[3])
+    #expect(sidebarTarget(try fixture(sessions: [])) == nil)
+    #expect(sidebarTarget(try fixture(sessions: []), attention: 1) == nil)
 }
