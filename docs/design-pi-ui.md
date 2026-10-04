@@ -75,21 +75,36 @@ frames from kido-pi's start, so a gap is detected, and `last` ends a
 message. Out frames are written one at a time, so a message's frames are
 consecutive.
 
-In, `<header>` is `<client>,<msg>,<index>,<last>`. `client` is random per
-GUI connection and `msg` counts that client's messages, so frames of
-different clients interleaving on one tty reassemble apart; each frame is
-one `send-keys -H`, which tmux writes to the pty contiguously. kido-pi
-acks every assembled message by `client,msg` on the out channel, and a
-client has one message unacked at a time: that is the flow control, and a
-resent message after a lost ack is dropped as a duplicate. Assembly is
-bounded in size and time. A malformed frame is dropped whole; bytes
-inside an `ESC ] 6767` sequence never reach the plain view as keys, and a
-lone ESC is a key after a short timeout.
+In, `<header>` is `<client>,<msg>,<index>,<last>`: `client` a random
+UUID per GUI connection, `msg` counting that client's messages from 1,
+`index` the frame within the message from 0, so frames of different
+clients interleaving on one tty reassemble apart. An in frame is at most
+512 bytes and is one `send-keys -H`, which tmux writes to the pty
+contiguously. kido-pi acks every frame,
+`{"type":"ack","client":...,"msg":...,"index":...}`, and a client has one
+frame unacked at a time: that is the flow control against the tty's small
+input queue. A frame at or below the last one accepted from its client is
+re-acked and dropped, so a resend after a lost ack is harmless. A
+malformed frame is dropped whole; bytes inside an `ESC ] 6767` sequence
+never reach the plain view as keys, and a lone ESC is a key after a short
+timeout.
 
 Messages are pi's RPC JSON unchanged (commands with `id`, `response`,
-session events, `extension_ui_request` / `extension_ui_response`), with
-RPC ids prefixed by the client, plus kido-pi's own: `hello`, `bye`,
-`snapshot`, `history`, `ack`, `dialog_closed`.
+session events, `extension_ui_request` / `extension_ui_response`), with a
+command's `id` prefixed `<client>:` so each client picks out its own
+responses; a dialog answer keeps pi's dialog id. kido-pi's own messages:
+
+    hello         {type, instance, sessionId, sessionFile, cwd}
+    bye           {type, instance}
+    snapshot      in {type, id}; out {type, id|null, hello, seq, generation, record}
+    history       in {type, id, generation, before, limit};
+                  out {type, id, generation, entries, before|null}
+    ack           {type, client, msg, index}
+    dialog_closed {type, generation, id}
+
+`seq` in a snapshot is the last frame sent before it; the GUI applies
+frames after the snapshot's own. `history` pages the active branch
+backwards from the entry id `before`, oldest first.
 
 ## Source of truth
 
