@@ -89,6 +89,8 @@ public indirect enum Node: Decodable, Equatable, Sendable {
 
 public struct Item: Decodable, Equatable, Sendable {
     public enum Kind: String, Decodable, Sendable { case agent, run, ssh, shell }
+    public enum Run: String, Decodable, Sendable { case agent, bash, stream }
+    public let run: Run?
     public let kind: Kind
     public let id: PaneID
     public var pane: PaneID { id }
@@ -99,10 +101,11 @@ public struct Item: Decodable, Equatable, Sendable {
     public let started: Date?
     public let attention: Bool
     public let children: [Node]
-    private enum CodingKeys: String, CodingKey { case kind, id, pane, window, indicator, title, tail, started, attention, children }
+    private enum CodingKeys: String, CodingKey { case kind, id, pane, window, indicator, title, tail, run, started, attention, children }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         kind = try c.decode(Kind.self, forKey: .kind)
+        run = try c.decodeIfPresent(Run.self, forKey: .run)
         id = try c.decode(PaneID.self, forKey: .id)
         let pane = try c.decode(PaneID.self, forKey: .pane)
         guard id == pane else { throw DecodingError.dataCorruptedError(forKey: .id, in: c, debugDescription: "id must equal pane") }

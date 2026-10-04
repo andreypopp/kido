@@ -67,6 +67,7 @@ targets:
       - sdk: Carbon.framework
       - package: SnapshotTesting
       - package: TmuxControl
+      - package: SidebarFeed
       - framework: build/GhosttyKit.xcframework
         embed: false
 schemes:
