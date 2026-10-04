@@ -27,13 +27,16 @@ the client to another session where `detach-on-destroy` would detach
 it, and the app follows as it follows any switch.
 
 `-N` keeps a redial from starting a server behind the user's back: a
-server is started only by `kido server`, from the banner's button. A
+server is started only by `kido server --server DIR`, from the banner's button.
+The directory is `$XDG_STATE_HOME/kido-app`, else `~/.local/state/kido-app`;
+the JSON endpoint supplies its `DIR/socket` path. Helpers never set
+`KIDO_STATE_DIR`: panes resolve the server directory from `$TMUX`. A
 `%exit detached ...` is a deliberate detach and is not redialed; any
 other ending is. A reconnect is a full reset, since ids mean something
 only to the server that issued them. Every connection close, redial
 and quit is one line on stderr, with its reason or trigger.
 Build identity is checked only at discovery and confirmed restart; automatic
-redial only re-attaches, so a different kido manually started on `kido-app`
+redial only re-attaches, so a different kido manually started in that directory
 is rejected at the next discovery.
 
 ## Panes
@@ -389,7 +392,7 @@ reader queue.
 
 ## Sidebar
 
-The sidebar runs the bundled `kido sidebar-feed --socket --client` with
+The sidebar runs the bundled `kido sidebar-feed --server DIR --client NAME` with
 the app's own client name, so kido's rules follow what the app shows. The app
 decodes v2 only: sessions are source-list sections,
 window groups contain panes, and pane items can contain arbitrarily deep
@@ -461,7 +464,7 @@ tmux. Leaks are checked with `MallocStackLogging=1` and `leaks`,
 `footprint` and `heap` on the pid, compared after attaching, after
 switching past the surface budget, and after closing all but one window.
 
-`KIDO_APP_SOCKET` and `KIDO_APP_TMUX` point the app at a private
+`KIDO_APP_SERVER` (a private 0700 directory) and `KIDO_APP_TMUX` point the app at a private
 server; `KIDO_APP_FEED` names a stand-in feed. `KIDO_APP_BACKGROUND=1`
 keeps a test launch off screen: it never activates, never takes focus
 and keeps no preferences. `KIDO_APP_DEBUG=1` logs each switch, eviction
