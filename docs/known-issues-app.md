@@ -132,13 +132,13 @@ medium work where a decision needs it. Status: accepted.
 
 ## History metadata is sampled
 
-History-limit trimming can leave metadata briefly stale. Shown panes refresh
-about once a second (`app/App/Connection.swift:523-544`), and restore/load/search
-also refresh it; it does not depend on the next scroll. The scroller thumb
-uses loaded Ghostty geometry, not the tmux total.
+History-limit trimming can leave metadata stale until restore, Load more,
+find or the next wheel/scroller request reaching the loaded top. There is
+no history poll. A sampled shrink or clear repairs content through restore.
+The scroller thumb uses loaded Ghostty geometry, not the tmux total.
 The visible effect is chiefly stale Load more availability until refresh;
-hidden panes refresh on show. Faster sampling is small, an exact content
-invalidation protocol is fork-level work. Status: accepted.
+hidden panes refresh on show. An exact content invalidation protocol is
+fork-level work. Status: accepted.
 
 ## Tmux prefix bindings do not fire
 
