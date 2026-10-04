@@ -12,6 +12,7 @@ import XCTest
     private var socket = ""
     private var directory: URL!
     private var window: NSWindow!
+    private static var processRuntime: GhosttyRuntime?
     private var runtime: GhosttyRuntime!
     private var session: SessionView!
     private var connection: Connection!
@@ -37,6 +38,8 @@ import XCTest
         window?.close()
         connection = nil
         session = nil
+        runtime?.onConfigChange = {}
+        runtime?.onColorSchemeChange = {}
         runtime = nil
         if FileManager.default.fileExists(atPath: socket) { _ = try? await command(["kill-session", "-t", "visual"]) }
         PaneView.renderOffscreen = false
@@ -64,12 +67,15 @@ import XCTest
     private var terminal: WindowView? { session?.windows.values.first { !$0.isHidden } }
 
     private func start(height: CGFloat = 560, dark: Bool = false, history: Int = 1000) async throws {
-        let config = directory.appendingPathComponent("ghostty.conf")
         NSApp.appearance = NSAppearance(named: .aqua)
-        let themes = app.appendingPathComponent("Resources/themes").path
-        let theme = "light:\(themes)/kido-light,dark:\(themes)/kido-dark"
-        try "theme = \(theme)\nfont-family = Menlo\nfont-size = 13\n".write(to: config, atomically: true, encoding: .utf8)
-        runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path))
+        if Self.processRuntime == nil {
+            let config = directory.appendingPathComponent("ghostty.conf")
+            let themes = app.appendingPathComponent("Resources/themes").path
+            let theme = "light:\(themes)/kido-light,dark:\(themes)/kido-dark"
+            try "theme = \(theme)\nfont-family = Menlo\nfont-size = 13\n".write(to: config, atomically: true, encoding: .utf8)
+            Self.processRuntime = try XCTUnwrap(GhosttyRuntime(configFile: config.path))
+        }
+        runtime = try XCTUnwrap(Self.processRuntime)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: height),
                           styleMask: [.titled, .fullSizeContentView, .resizable], backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: .aqua)
