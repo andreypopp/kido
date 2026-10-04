@@ -17,15 +17,14 @@ struct MessageView: View {
                 else { Button("Load older messages", action: loadHistory) }
             case .user(let message):
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("You").font(.caption).foregroundStyle(.secondary)
+                    Text("You").font(.caption.weight(.medium)).foregroundStyle(.secondary)
                     if case .string(let text) = message["content"] { Text(text).textSelection(.enabled) }
                     ForEach(Array(message["content"].array.enumerated()), id: \.offset) { index, block in
                         if block["type"].string == "image" { MessageView(row: .init(id: row.id + ":\(index)", content: .image(block))) }
                         else { Text(block["text"].string).textSelection(.enabled) }
                     }
-                }.fixedSize(horizontal: false, vertical: true).padding(12).frame(maxWidth: 680, alignment: .leading)
+                }.padding(12).frame(maxWidth: 680, alignment: .leading).fixedSize(horizontal: false, vertical: true)
                     .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor)))
             case .markdown(let text): MarkdownBody(text: text)
             case .responding: HStack { ProgressView().controlSize(.small); Text("Responding…").foregroundStyle(.secondary) }
             case .thinkingUnavailable: Text("Thinking unavailable").font(.callout).foregroundStyle(.secondary)
@@ -73,6 +72,7 @@ struct MessageView: View {
             }
         }.multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
             .onAppear { if expanded { open = true } }
+            .onChange(of: expanded) { _, value in open = value }
             .onChange(of: open) { _, value in expansionChanged(value) }
     }
     @ViewBuilder private func tool(_ call: JSON, _ result: JSON, _ execution: JSON) -> some View {
@@ -81,23 +81,29 @@ struct MessageView: View {
         let final = result == .null ? execution["result"] == .null ? execution["partialResult"] : execution["result"] : result
         let running = execution != .null && execution["ended"] != .bool(true)
         let failed = final["isError"] == .bool(true) || execution["isError"] == .bool(true)
-        let output = final["content"].array.filter { $0["type"].string == "text" }.map { $0["text"].string }.joined(separator: "\n")
+        let builtin = args != .null && ["read", "edit", "write"].contains(name)
+        let title = if args == .null { name + " · Receiving arguments…" }
+            else if name == "bash" { args["command"].string.replacingOccurrences(of: "\n", with: " ") }
+            else if builtin { name.capitalized + " " + args["path"].string }
+            else { name + " " + String(args.object.keys.sorted().map { key in
+                let value = args[key]
+                return key + "=" + (value.string.isEmpty ? value.array.isEmpty ? value.object.isEmpty ? value.text : "\(value.object.count) fields" : "\(value.array.count) items" : value.string)
+            }.joined(separator: " ").prefix(100)) }
+        let output = open || failed ? final["content"].array.filter { $0["type"].string == "text" }.map { $0["text"].string }.joined(separator: "\n") : ""
         VStack(alignment: .leading, spacing: 6) {
             DisclosureGroup(isExpanded: $open) {
                 VStack(alignment: .leading, spacing: 8) {
-                    if args == .null { Text("Arguments not loaded").font(.caption).foregroundStyle(.secondary) }
-                    else if name == "bash" { OutputView(text: args["command"].string) }
-                    else {
-                        ForEach(args.object.keys.sorted { lhs, rhs in
-                            let order = name == "edit" ? ["path", "oldText", "newText"] : name == "read" ? ["path", "offset", "limit"] : ["path", "content"]
-                            return (order.firstIndex(of: lhs) ?? 100, lhs) < (order.firstIndex(of: rhs) ?? 100, rhs)
-                        }, id: \.self) { key in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(key).font(.caption).foregroundStyle(.secondary)
-                                if ["oldText", "newText", "content"].contains(key) { OutputView(text: args[key].string) }
-                                else { Text(args[key].string.isEmpty ? args[key].text : args[key].string).textSelection(.enabled) }
-                            }.frame(maxWidth: .infinity, alignment: .leading)
-                        }
+                    if name == "bash" { OutputView(text: args["command"].string) }
+                    else if args != .null {
+                        DisclosureGroup("Details") {
+                            ForEach(args.object.keys.sorted(), id: \.self) { key in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(key).font(.caption).foregroundStyle(.secondary)
+                                    if ["oldText", "newText", "content"].contains(key) { OutputView(text: args[key].string) }
+                                    else { Text(args[key].string.isEmpty ? args[key].text : args[key].string).textSelection(.enabled) }
+                                }
+                            }
+                        }.font(.callout)
                     }
                     if !output.isEmpty { OutputView(text: output, running: running) }
                     else { Text(final == .null ? "Output unavailable" : "Completed (no output)").foregroundStyle(.secondary) }
@@ -108,10 +114,9 @@ struct MessageView: View {
                     DisclosureGroup("Raw arguments") { OutputView(text: args.text) }.font(.caption)
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
             } label: {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Image(systemName: name == "bash" ? "terminal" : name == "read" ? "doc.text" : name == "edit" ? "pencil" : name == "write" ? "doc.badge.plus" : "wrench.and.screwdriver").frame(width: 16)
-                    Text(summary(name, args)).font(.system(.callout, design: .monospaced)).lineLimit(1).truncationMode(.middle).help(summary(name, args))
-                    Spacer(minLength: 8)
+                    (builtin ? Text("\(name.capitalized) \(Text(args["path"].string).monospaced())") : Text(title).monospaced()).font(.callout).lineLimit(1).truncationMode(.middle).help(title)
                     if running { ProgressView().controlSize(.small).accessibilityLabel("Running") }
                     else if failed { Label("Failed", systemImage: "exclamationmark.circle").foregroundStyle(Color(nsColor: .systemRed)) }
                     else if final == .null { Text("Pending").font(.caption).foregroundStyle(.secondary) }
@@ -120,15 +125,6 @@ struct MessageView: View {
             }
             if failed { Text(output.components(separatedBy: "\n").first ?? "Failed").font(.caption).foregroundStyle(.secondary).lineLimit(1) }
         }
-    }
-    private func summary(_ name: String, _ args: JSON) -> String {
-        if args == .null { return name + " · Receiving arguments…" }
-        if name == "bash" { return args["command"].string.replacingOccurrences(of: "\n", with: " ") }
-        if ["read", "edit", "write"].contains(name) { return name.capitalized + " " + args["path"].string }
-        return name + " " + String(args.object.keys.sorted().map { key in
-            let value = args[key]
-            return key + "=" + (value.string.isEmpty ? value.array.isEmpty ? value.object.isEmpty ? value.text : "\(value.object.count) fields" : "\(value.array.count) items" : value.string)
-        }.joined(separator: " ").prefix(100))
     }
     @ViewBuilder private func custom(_ message: JSON) -> some View {
         let kind = message["role"].string
@@ -151,6 +147,5 @@ struct MessageView: View {
                 }
             } else { MarkdownBody(text: text) }
         }.padding(12).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor)))
     }
 }

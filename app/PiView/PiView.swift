@@ -20,6 +20,7 @@ import Darwin
         self.session = session
         master.readabilityHandler = { [weak session] handle in
             let data = handle.availableData
+            if data.isEmpty { handle.readabilityHandler = nil }
             Task { @MainActor in if data.isEmpty { session?.disconnect() } else { session?.receive(data) } }
         }
         let process = Process()
@@ -87,18 +88,6 @@ final class Delegate: NSObject, NSApplicationDelegate {
                         TextField("Directory", text: $cwd)
                         Text("Environment (KEY=value per line)")
                         TextEditor(text: $environment).frame(height: 90)
-                        Button("Fake pi") {
-                            let root = URL(fileURLWithPath: cwd)
-                            command = "node"
-                            args = root.appendingPathComponent("share/pi/kido-pi.ts").path
-                            let rpc = ["node", root.appendingPathComponent("share/pi/testdata/fake-pi.ts").path]
-                            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("pi-view-\(UUID().uuidString)")
-                            do {
-                                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                                let json = String(data: try JSONEncoder().encode(rpc), encoding: .utf8)!
-                                environment = "KIDO_PI_RPC=\(json)\nKIDO_STATE_DIR=\(directory.path)"
-                            } catch { host.error = error.localizedDescription }
-                        }
                         Button("Launch") { host.launch(command: command, args: args, cwd: cwd, environment: environment) }
                         Text(host.error)
                     }.padding()

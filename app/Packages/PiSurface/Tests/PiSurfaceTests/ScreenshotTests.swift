@@ -109,11 +109,15 @@ import Testing
             try await capture("long-session")
             #expect(!session.rows.isEmpty)
             let table = try #require(tables(host).first), scroll = try #require(table.enclosingScrollView)
+            let coordinator = try #require(table.dataSource as? TranscriptTable.Coordinator)
+            coordinator.parent.following = false; coordinator.readAnchor = nil
             scroll.contentView.scroll(to: NSPoint(x: 0, y: table.rect(ofRow: table.numberOfRows / 2).minY + 7)); scroll.reflectScrolledClipView(scroll.contentView)
             try await capture("long-session-middle")
+            #expect(scroll.contentView.bounds.minY > 300)
+            coordinator.parent.following = false; coordinator.readAnchor = nil
             scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView)
             try await capture("long-session-top")
-            let coordinator = try #require(table.dataSource as? TranscriptTable.Coordinator)
+            #expect(abs(scroll.contentView.bounds.minY) < 1)
             let anchor = coordinator.rows[1].id, offset = scroll.contentView.bounds.origin.y - table.rect(ofRow: 1).minY
             let entries = Dictionary(uniqueKeysWithValues: historical.map { ($0["id"].string, $0) })
             var older: [JSON] = [], cursor = entries[session.historyBefore.string]?["parentId"].string ?? ""
@@ -139,7 +143,8 @@ import Testing
                 ("markdown", entries.filter { [.number(1700000000040), .number(1700000000050), .number(1700000000060)].contains($0["message"]["timestamp"]) }, false),
                 ("cards", entries.filter { $0["message"]["role"].string == "custom" }, true),
                 ("images", entries.filter { $0["message"]["timestamp"] == .number(1700000000120) }, false),
-                ("tools-collapsed", Array(entries.prefix(4)), false), ("narrow", Array(entries.prefix(4)), false)
+                ("tools-collapsed", Array(entries.prefix(4)), false), ("narrow", Array(entries.prefix(4)), false),
+                ("long-user-narrow", [.object(["id": .string("long-user"), "message": .object(["role": .string("user"), "content": .string(String(repeating: "A long user prompt should wrap without clipping at narrow widths.\n", count: 8))])])], false)
             ]
             for (index, gallery) in galleries.enumerated() {
                 let replay = Session { _ in }
@@ -148,7 +153,7 @@ import Testing
                 snapshot["record"] = .object(record); snapshot["generation"] = .number(Double(index + 100))
                 for frame in Codec.encode(JSON.object(snapshot).text) { replay.receive(frame) }
                 host.rootView = Surface(session: replay, expanded: gallery.2).environment(\.colorScheme, name == "dark" ? .dark : .light).background(name == "dark" ? Color(nsColor: .windowBackgroundColor) : Color.white)
-                if gallery.0 == "narrow" { window.setContentSize(NSSize(width: 480, height: 700)); host.frame.size = NSSize(width: 480, height: 700) }
+                if gallery.0.hasSuffix("narrow") { window.setContentSize(NSSize(width: 480, height: 700)); host.frame.size = NSSize(width: 480, height: 700) }
                 try await capture(gallery.0)
             }
             window.setContentSize(NSSize(width: 1100, height: 800)); host.frame.size = NSSize(width: 1100, height: 800)

@@ -36,29 +36,37 @@ public struct Row: Identifiable, Equatable {
     public var message: JSON
 }
 
+public struct Model: Identifiable, Equatable {
+    public let id: String, provider: String, modelID: String, name: String
+    init(_ value: JSON, ambiguous: Bool) {
+        provider = value["provider"].string; modelID = value["id"].string; id = provider + "/" + modelID
+        name = value["name"].string + (ambiguous ? " · " + provider : "")
+    }
+}
+
 @MainActor @Observable public final class Session {
     public let client: String
     public private(set) var rows: [Row] = []
-    private(set) var displayRows: [DisplayRow] = []
-    private(set) var partialID = ""
-    @ObservationIgnored public private(set) var partial: JSON = .null
+    @ObservationIgnored var transcriptRows = Transcript()
+    var displayRows: [DisplayRow] { transcriptRows.rows }
+    @ObservationIgnored public private(set) var partial: Row?
     public private(set) var visualRevision = 0
     private var redraw: Task<Void, Never>?
-    public private(set) var bash: JSON = .null
+    @ObservationIgnored public private(set) var bash: JSON = .null
     public private(set) var retry: JSON = .null
     public private(set) var compaction: JSON = .null
-    public private(set) var historyLoading = false
+    public var historyLoading: Bool { requests.values.contains("history") }
     public private(set) var requests: [String: String] = [:]
     public private(set) var acceptedPrompt: JSON = .null
     public private(set) var restoredQueue: JSON = .null
     private var submitted: [String: String] = [:]
     var synchronized: Bool { connected && ready }
     var scope: String { instance + ":" + generation.text }
-    @ObservationIgnored public private(set) var tools: [JSON] = []
+    @ObservationIgnored public private(set) var tools: [String: JSON] = [:]
     public private(set) var dialogs: [JSON] = []
     public private(set) var queues: JSON = .null
     public private(set) var state: JSON = .null
-    public private(set) var models: [JSON] = []
+    public private(set) var models: [Model] = []
     public private(set) var thinkingLevels: [String] = []
     public private(set) var status: JSON = .null
     public private(set) var widgets: JSON = .null
@@ -79,10 +87,10 @@ public struct Row: Identifiable, Equatable {
     private var writer: Task<Void, Never>?
     private let sendBytes: @MainActor (Data) async throws -> Void
     public init(client: String = UUID().uuidString.lowercased(), send: @escaping @MainActor (Data) async throws -> Void) { self.client = client; sendBytes = send }
-    public func disconnect() { requests.removeAll(); submitted.removeAll(); historyLoading = false; connected = false; ready = false; pending.removeAll(); writer?.cancel(); writer = nil; assembly.removeAll(); seq = nil; generation = .null }
+    public func disconnect() { requests.removeAll(); submitted.removeAll(); connected = false; ready = false; pending.removeAll(); writer?.cancel(); writer = nil; assembly.removeAll(); seq = nil; generation = .null }
     public func command(_ type: String, fields: [String: JSON] = [:]) {
         guard connected else { return }
-        if type == "history" { guard !historyLoading else { return }; historyLoading = true }
+        if type == "history", historyLoading { return }
         if ["prompt", "set_model", "set_thinking_level", "clear_queue"].contains(type), requests.values.contains(type) { return }
         counter += 1
         let id = "\(client):\(counter)"
@@ -133,11 +141,17 @@ public struct Row: Identifiable, Equatable {
             return message == .null || entry["display"] == .bool(false) ? nil : Row(id: entry["uiId"].string.isEmpty ? entry["id"].string : entry["uiId"].string, message: message)
         }
     }
+    private func reproject() { transcriptRows.reconcile(project(rows, scope: scope, tools: tools)) }
+    private func publish() {
+        transcriptRows.live(partial, scope: scope, tools: tools, bash: bash, streaming: streaming)
+        if historyBefore != .null { transcriptRows.changed.insert(scope + ":history") }
+        visualRevision += 1
+    }
     private func apply(_ event: JSON) {
         let type = event["type"].string
         if type == "hello" {
             if !connected || instance != event["instance"].string {
-                disconnect(); rows.removeAll(); partial = .null; tools.removeAll(); dialogs.removeAll(); state = .null
+                disconnect(); rows.removeAll(); partial = nil; tools.removeAll(); dialogs.removeAll(); state = .null
                 instance = event["instance"].string; connected = true; command("snapshot")
             }
             return
@@ -157,31 +171,35 @@ public struct Row: Identifiable, Equatable {
             connected = true; ready = true; instance = event["hello"]["instance"].string
             let record = event["record"]
             rows = transcript(record["entries"].array)
-            displayRows = project(rows, scope: scope)
-            partialID = record["partialAssistant"]["uiId"].string
             bash = record["bash"]; retry = record["retry"]; compaction = record["compaction"]
-            historyLoading = false
             historyBefore = record["entries"].array.first?["id"] ?? .null
-            partial = record["partialAssistant"]; tools = record["tools"].orderedValues; visualRevision += 1
+            partial = record["partialAssistant"] == .null ? nil : Row(id: record["partialAssistant"]["uiId"].string, message: record["partialAssistant"]); tools = record["tools"].object
             dialogs = record["dialogs"].orderedValues
-            queues = record["queues"]; state = record["state"]; models = record["models"].array
+            queues = record["queues"]; state = record["state"]; models = record["models"].array.map { value in Model(value, ambiguous: record["models"].array.filter { $0["name"] == value["name"] }.count > 1) }
             thinkingLevels = record["thinkingLevels"].array.map(\.string)
             status = record["status"]; widgets = record["widgets"]; notifications = record["notifications"].array; title = record["title"].string
-            return
+            reproject(); publish(); return
         }
         guard ready else { return }
+        if redraw == nil {
+            redraw = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(34))
+                guard let self else { return }
+                publish(); redraw = nil
+            }
+        }
         switch type {
         case "history":
             guard event["generation"] == generation, requests[event["id"].string] == "history" else { return }
             requests[event["id"].string] = nil
             let known = Set(rows.map(\.id))
             rows.insert(contentsOf: transcript(event["entries"].array).filter { !known.contains($0.id) }, at: 0)
-            historyBefore = event["before"]; historyLoading = false
-            displayRows = project(rows, scope: scope)
+            historyBefore = event["before"]
+            reproject()
         case "message_start":
-            if event["message"]["role"].string == "assistant" { partial = event["message"]; partialID = event["uiId"].string.isEmpty ? UUID().uuidString : event["uiId"].string }
+            if event["message"]["role"].string == "assistant" { partial = Row(id: event["uiId"].string.isEmpty ? UUID().uuidString : event["uiId"].string, message: event["message"]) }
         case "message_update":
-            if case .object(var message) = partial {
+            if var row = partial, case .object(var message) = row.message {
                 let delta = event["assistantMessageEvent"]
                 if case .number(let n) = delta["contentIndex"], n >= 0, n < 10000 {
                     var blocks = message["content"]?.array ?? []
@@ -200,26 +218,23 @@ public struct Row: Identifiable, Equatable {
                     }
                     message["content"] = .array(blocks)
                     if event["usage"] != .null { message["usage"] = event["usage"] }
-                    partial = .object(message)
+                    row.message = .object(message); partial = row
                 }
             }
         case "message_end":
-            let id = event["uiId"].string.isEmpty ? event["message"]["role"].string == "assistant" ? partialID : UUID().uuidString : event["uiId"].string
+            let id = event["uiId"].string.isEmpty ? event["message"]["role"].string == "assistant" ? partial?.id ?? UUID().uuidString : UUID().uuidString : event["uiId"].string
             let message = event["message"]
             let value = message["role"].string == "custom" ? JSON.object(["role": message["customType"], "content": message["content"], "details": message["details"]]) : message
-            if message["display"] != .bool(false) { rows.append(Row(id: id, message: value)) }
-            displayRows = project(rows, scope: scope)
-            if event["message"]["role"].string == "assistant" { partial = .null }
+            if message["display"] != .bool(false), !rows.contains(where: { $0.id == id }) { rows.append(Row(id: id, message: value)) }
+            if message["role"].string == "toolResult" { tools[message["toolCallId"].string] = nil }
+            reproject()
+            if event["message"]["role"].string == "assistant" { partial = nil }
         case "tool_execution_start", "tool_execution_update", "tool_execution_end":
-            let id = event["toolCallId"]
-            if type == "tool_execution_update", let index = tools.firstIndex(where: { $0["toolCallId"] == id }) {
-                var tool = tools[index].object; tool["partialResult"] = event["partialResult"]; tools[index] = .object(tool)
-            } else if type == "tool_execution_end", let index = tools.firstIndex(where: { $0["toolCallId"] == id }) {
-                var tool = tools[index].object; tool["result"] = event["result"]; tool["isError"] = event["isError"]; tool["ended"] = .bool(true); tools[index] = .object(tool)
-            } else if type == "tool_execution_start" {
-                tools.removeAll { $0["toolCallId"] == id }; tools.append(event)
-            }
-            tools.sort { $0["toolCallId"].string < $1["toolCallId"].string }
+            let id = event["toolCallId"].string
+            var tool = type == "tool_execution_start" ? event.object : tools[id]?.object ?? [:]
+            if type == "tool_execution_update" { tool["partialResult"] = event["partialResult"] }
+            if type == "tool_execution_end" { tool["result"] = event["result"]; tool["isError"] = event["isError"]; tool["ended"] = .bool(true) }
+            tools[id] = .object(tool); transcriptRows.execution(scope + ":tool:" + id, value: .object(tool))
         case "bash_execution_start":
             var values = bash.object; values[event["id"].string] = .object(["command": event["command"], "output": .string(""), "ended": .bool(false)]); bash = .object(values)
         case "bash_execution_update":
@@ -259,13 +274,15 @@ public struct Row: Identifiable, Equatable {
                 var executions = bash.object
                 for entry in event["data"]["entries"].array where entry["message"]["role"] == .string("bashExecution") { executions[entry["uiId"].string] = nil }
                 bash = .object(executions)
-                var known = Set(rows.map(\.id))
+                let resultIDs = Set(incoming.filter { $0.message["role"].string == "toolResult" }.map { $0.message["toolCallId"].string })
+                for id in resultIDs { tools[id] = nil }
+                var changed = false, known = Set(rows.map(\.id))
                 for (index, row) in incoming.enumerated() where known.insert(row.id).inserted {
                     let next = incoming.dropFirst(index + 1).first { known.contains($0.id) }
                     let position = next.flatMap { next in rows.firstIndex { $0.id == next.id } } ?? rows.count
-                    rows.insert(row, at: position)
+                    rows.insert(row, at: position); changed = true
                 }
-                displayRows = project(rows, scope: scope)
+                if changed { reproject() }
             }
             guard event["id"].string.hasPrefix(client + ":") else { return }
             let id = event["id"].string
@@ -283,11 +300,6 @@ public struct Row: Identifiable, Equatable {
             if event["command"].string == "set_thinking_level" { command("snapshot") }
         default: break
         }
-        if redraw == nil {
-            redraw = Task { [weak self] in
-                try? await Task.sleep(for: .milliseconds(34))
-                self?.visualRevision += 1; self?.redraw = nil
-            }
-        }
+
     }
 }

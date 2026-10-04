@@ -2,7 +2,6 @@ import SwiftUI
 
 public struct Surface: View {
     @Bindable var session: Session
-    @State private var draft = ""
     @State private var tailRequest = 0
     private let expanded: Bool
     public init(session: Session, expanded: Bool = false) { self.session = session; self.expanded = expanded }
@@ -14,12 +13,12 @@ public struct Surface: View {
         VStack(spacing: 0) {
             TranscriptView(session: session, expanded: expanded, tailRequest: tailRequest)
             Divider()
-            ComposerView(session: session, draft: $draft, tailRequest: $tailRequest)
-                .padding(.horizontal, 16).frame(maxWidth: .infinity)
+            ComposerView(session: session, tailRequest: $tailRequest)
+                .padding(.horizontal, 16).frame(maxWidth: .infinity, alignment: .leading)
         }.background(Color(nsColor: .windowBackgroundColor))
             .sheet(item: Binding<DialogIdentity?>(get: {
                 guard session.synchronized, let dialog = session.dialogs.first else { return nil }
                 return DialogIdentity(id: session.scope + ":" + dialog["id"].string, value: dialog)
-            }, set: { _ in })) { item in DialogView(session: session, dialog: item.value).id(item.id) }
+            }, set: { _ in })) { item in DialogView(session: session, dialog: item.value).id(item.id).interactiveDismissDisabled() }
     }
 }
