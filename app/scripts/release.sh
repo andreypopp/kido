@@ -49,7 +49,7 @@ cask "kido-app" do
   desc "Native macOS client for the kido tmux agent multiplexer"
   homepage "https://github.com/andreypopp/kido"
   depends_on arch: :arm64
-  depends_on macos: ">= :tahoe"
+  depends_on macos: :tahoe
   depends_on formula: "andreypopp/tap/kido"
   app "Kido.app"
   caveats <<~EOS
