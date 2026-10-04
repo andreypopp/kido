@@ -2,8 +2,8 @@
 
 Status: proposal, not built. Research behind it: pi 0.99.1's installed docs
 (`docs/rpc.md`, `rpc-commands.md`, `rpc-extension-ui.md`, `json.md`,
-`session-format.md`) and source, and the tmux fork's `window.c` and
-`input.c`.
+`session-format.md`) and source, and the tmux fork's `window.c`,
+`control.c` and `input.c`.
 
 The goal is a native surface for the pi coding agent: transcript, tool
 calls, diffs, thinking, prompt editor, model and thinking controls,
@@ -14,100 +14,131 @@ serves a Mac app showing a local or a remote pi, and later an iOS app.
 
 `kido-pi` is the command a pane runs instead of `pi`. It starts
 `pi --mode rpc` as its child and uses its own terminal as a two-way
-channel: RPC traffic goes out as private OSC sequences in its output, and
-comes in as framed sequences in its input. Whatever displays the terminal
-can render the native UI from those sequences; anything else sees a
-minimal plain-text view kido-pi draws.
+channel: messages go out as private OSC sequences in its output and come
+in as framed sequences in its input. Whatever displays the terminal can
+render the native UI from them; anything else sees a minimal plain-text
+view kido-pi draws.
 
     GUI ⇄ tmux control mode (%output / send-keys -H) ⇄ pane pty [⇄ ssh] ⇄ kido-pi ⇄ pi --mode rpc
 
-That one channel covers every case:
+One channel covers every case:
 
-- **A local pane:** Kido.app reads `%output` and writes with
-  `send-keys -H`, as it does for typing.
-- **A remote pi:** `ssh host kido-pi` in a local pane. ssh carries the
-  bytes unchanged both ways; the GUI renders locally. A remote tmux is
-  attached over ssh in control mode, the same as the iOS plan.
-- **iOS:** tmux control mode over SSH, the iOS app's plan, with the same
-  protocol and client model and its own views.
-- **The standalone debug app:** runs kido-pi in a pty of its own, no tmux;
-  its command can be `ssh host kido-pi` for a remote one.
+- **A local pane:** Kido.app reads the pane's output from control mode
+  and writes with `send-keys -H`, as it does for typing.
+- **A remote pi:** `ssh -tt -e none host kido-pi` in a local pane: `-tt`
+  because ssh allocates no remote tty for a command, `-e none` so a
+  newline-`~` in the stream is not ssh's escape. The GUI renders locally.
+  A remote tmux is attached over ssh in control mode, as in the iOS plan.
+- **iOS:** tmux control mode over SSH, with the same protocol and session
+  model and its own views.
+- **The standalone debug app:** kido-pi in a pty of its own, no tmux; its
+  command can be the ssh line above.
 
 Nothing new is installed on a remote beyond kido-pi and pi. kido-pi is a
-Node TypeScript program, because every host that runs pi has Node and not
+Node TypeScript program: every host that runs pi has Node, not
 necessarily kido's binary.
 
-## Why the terminal works as a channel
+## The terminal as a channel
 
-tmux hands every control client a pane's bytes raw, before its own parser
-sees them (`window.c`, `window_pane_read_callback`: `control_write_output`
-runs before `input_parse_pane`). tmux's OSC dispatch ignores a number it
-does not know (`input.c`, `input_exit_osc`), as does Ghostty, so a plain
-client attached to the same session and the Ghostty surface under the
-native view show nothing. APC is not used: tmux reads APC as a title.
+tmux queues a pane's bytes for each control client before its own parser
+sees them (`window.c:1661`), as `%output`, or `%extended-output` under
+`pause-after` (`control.c:823`), octal-escaping control bytes and
+backslash: the GUI unescapes once, then deframes. tmux sends nothing for a
+paused pane, one outside the client's session, or with output off
+(`control.c:603`); the GUI resumes a paused pane before asking for a
+snapshot.
+
+tmux's OSC dispatch ignores an unknown number (`input.c`,
+`input_exit_osc`), and discards an OSC over its 1 MB input buffer rather
+than printing it (`input.c:1288`). A sequence left unfinished for five
+seconds is cut by tmux's timer and its rest would print, so kido-pi writes
+each frame whole, small (4 KB), in one write, and an unfinished frame is a
+bug. APC is not used: tmux reads APC as a title. Ghostty's handling of an
+unknown OSC is unverified; the spike checks the Ghostty surface under the
+native view shows nothing.
+
+kido-pi's terminal is raw: no ICANON, ECHO, ISIG, IXON, ISTRIP, ICRNL or
+output translation, restored on exit. macOS's tty input queue is small
+(`MAX_INPUT` 1024), so inbound frames are at most 512 bytes and flow
+controlled (below). Outbound writes wait on the pty's backpressure.
 
 Throughput is not the limit: streaming is a few KB/s, a large tool output
-a few MB, and tmux forwards `%output` on read. The pty's small buffer is,
-so kido-pi writes with backpressure. The spike measures 10 MB through a
+a few MB, and tmux forwards on read. The spike measures 10 MB through a
 real tmux to a control client and through ssh to localhost.
 
 ## Wire format
 
-Out, kido-pi to GUI: `ESC ] 5522 ; <seq> ; <more> ; <base64> BEL`. A
-message is one JSON object, base64'd and split into chunks of at most
-32 KB, so a cut sequence never exceeds tmux's 1 MB input buffer and spills
-onto the screen. `<more>` is 1 on every chunk but the last; `<seq>` counts
-chunks, so a gap is detected.
+A frame is `ESC ] 5522 ; <header> ; <base64> BEL`, the base64 of a slice
+of one JSON message. Out, `<header>` is `<seq>,<last>`: `seq` counts
+frames from kido-pi's start, so a gap is detected, and `last` ends a
+message. Out frames are written one at a time, so a message's frames are
+consecutive.
 
-In, GUI to kido-pi: the same framing, `ESC ] 5522 ; ...` as pane input.
-kido-pi's terminal is raw; it parses framed messages out of its input and
-treats every other byte as a key for its plain view.
+In, `<header>` is `<client>,<msg>,<index>,<last>`. `client` is random per
+GUI connection and `msg` counts that client's messages, so frames of
+different clients interleaving on one tty reassemble apart; each frame is
+one `send-keys -H`, which tmux writes to the pty contiguously. kido-pi
+acks every assembled message by `client,msg` on the out channel, and a
+client has one message unacked at a time: that is the flow control, and a
+resent message after a lost ack is dropped as a duplicate. Assembly is
+bounded in size and time. A malformed frame is dropped whole; bytes
+inside an `ESC ] 5522` sequence never reach the plain view as keys, and a
+lone ESC is a key after a short timeout.
 
 Messages are pi's RPC JSON unchanged (commands with `id`, `response`,
-session events, `extension_ui_request` / `extension_ui_response`) plus a
-few kido-pi kinds: `hello` (version, pi session id and file, cwd),
-`snapshot`, and `history` (an older page).
-
-Ids are unique per GUI client, so two clients reading the same output
-pick out their own responses. A dialog is answered once; kido-pi forwards
-the first answer and drops the rest.
+session events, `extension_ui_request` / `extension_ui_response`), with
+RPC ids prefixed by the client, plus kido-pi's own: `hello`, `bye`,
+`snapshot`, `history`, `ack`, `dialog_closed`.
 
 ## Source of truth
 
 The pi process is the truth while it runs, its session JSONL after it
-exits. kido-pi is the one RPC client of its pi and holds what RPC does not
-replay: the current partial assistant message and open dialogs. The GUI
-holds nothing a snapshot cannot rebuild.
+exits. kido-pi is pi's one RPC client and sees every event, so it keeps
+what RPC cannot replay, all in one session record: the entries (from
+`get_entries` at start, then appended from events and `get_entries` with
+`since`), the leaf, the partial assistant message, running tools and
+direct bash with their latest output, the queues (`queue_update` carries
+them whole), retry and compaction state, extension status and widgets,
+and open dialogs. The GUI holds nothing a snapshot cannot rebuild.
 
-A snapshot is `get_state`, the newest entries of the active branch from
-`get_entries` (followed from `leafId`), the partial message, open dialogs
-and the current `seq`. Older entries load on demand by entry id, like the
-terminal's newest-10k restore and Load more; a whole long history is
-never resent.
+A snapshot is that record's current value with the `seq` it was taken at,
+built in one turn of kido-pi's event loop, so it is consistent with the
+frames that follow. It carries the newest entries of the active branch;
+older ones are sliced from kido-pi's record on request (`history`), the
+way the terminal restores its newest 10k rows and loads more. A
+`generation` in the snapshot changes on `new_session`, `switch_session`,
+`fork` and `clone`, and the GUI resets on a new one.
 
-The GUI asks for a snapshot on connect, on reconnect, when a pane is shown
-again, and on a `seq` gap. Gaps are expected: Kido.app's `pause-after`
-drops a paused pane's output, and tmux sends no `%output` for panes outside
-the client's session.
+The GUI asks for a snapshot on connect, reconnect, when a pane is shown
+again, and on a `seq` gap. The JSONL is never tailed: pi persists no
+deltas and moves the leaf in memory without writing.
 
-The JSONL is never tailed: pi writes it at `message_end`, persists no
-deltas, and moves the tree's leaf in memory without writing.
+## Finding kido-pi panes, and trust
 
-## Finding kido-pi panes
+Terminal output is untrusted: any program in any pane can print these
+sequences (`cat` of a hostile file). The GUI never sends to a pane it has
+not seen a `hello` from in the current instance, and a message only
+affects that pane's own surface. Input is as trusted as typing into the
+pane.
 
-The GUI must never probe a pane blindly: a probe sent to a shell is typed
-into it. Locally, the pane's command and kido's state record name kido-pi.
-Over ssh the command is `ssh`, and a `hello` printed at start is missed by
-a client not attached then. The robust marker is a tmux fork change: an
-OSC sequence that sets a pane option, which tmux keeps and the GUI reads on
-attach. Until it lands, kido-pi repeats `hello` periodically while idle.
+`hello` carries a random instance id, the pi session id and file, and
+cwd. kido-pi prints one at start, in every snapshot, and every few seconds
+whether busy or idle, so a client that attaches later finds it within one
+period without sending anything. A pane leaves kido-pi on `bye`, on a new
+instance id, and on any shell prompt marker (OSC 133 `A`, which tmux
+records as `last_prompt`): a crashed kido-pi or a dropped ssh leaves the
+local or remote shell to print its prompt. Until then the GUI only shows
+the pane natively; what reaches a shell by mistake has no Enter in it.
 
-## Trust
+## Dialogs
 
-Any program in any pane can print these sequences (`cat` of a hostile
-file). The GUI accepts them only from panes it has identified as kido-pi,
-and a message only affects that pane's surface. Input is as trusted as
-typing into the pane.
+`select`, `confirm`, `input` and `editor` are sheets. The first answer
+wins; kido-pi forwards it, broadcasts `dialog_closed`, and drops later
+answers. pi removes a dialog on its timeout or its abort signal without
+saying so (`dist/modes/rpc/rpc-mode.js:52`), so kido-pi closes it itself on
+the request's `timeout`, on an `abort`, and on a new generation. A dialog
+closed by a signal alone stays up until answered; pi ignores an answer to
+a removed id (`rpc-mode.js:618`).
 
 ## Input
 
@@ -119,16 +150,24 @@ typing into the pane.
 | model, thinking | `set_model`, `set_thinking_level`; lists from `get_available_models`, `get_available_thinking_levels` |
 | extension slash commands | `prompt("/cmd ...")`, which works in RPC; completion from `get_commands` |
 | built-in TUI commands | native controls over RPC methods: `new_session`, `switch_session`, `fork`, `compact`, `get_session_stats`, `export_html` |
-| select, confirm, input, editor | `extension_ui_request` as a sheet, answered by `extension_ui_response` |
 | notify, setStatus, setTitle, string widgets | status text; `custom()` components resolve undefined in RPC and are not drawn |
 
-A large paste or image is chunked; `send-keys -H` costs three bytes per
-byte.
+Two clients may both prompt, as two people at one keyboard would. A
+session change from one resets the other through `generation`.
 
 Lost against pi's TUI: extensions' custom terminal components, overlays
 and shortcuts, and kido-agents' pending-notice widget and `@agent`
-completion, which need native replacements from kido's data. kido's two
-extensions keep working inside the RPC pi, in the pane's process tree.
+completion, which need native replacements from kido's data.
+
+## kido inside kido-pi
+
+kido's two extensions run inside the RPC pi, which is the session's one
+holder in kido's state; kido-pi claims nothing and reports nothing.
+Resuming a session another live pi holds makes two writers of one JSONL,
+the same as two plain pis today. Subagents `spawn_subagent` starts stay
+plain pi with its TUI in this proposal; making them kido-pi is a change
+to the shim and kido-agents.ts, for working-on-kido, once the surface
+exists.
 
 ## What it shows
 
@@ -144,14 +183,14 @@ sidebar, from the feed.
 
 - `share/kido-pi/`: kido-pi, the bridge and its plain view.
 - `app/Packages/PiSurface`: the Swift package, platform-neutral below the
-  views: the framing parser and writer, the message types (only what is
+  views: deframing and framing, the message types (only what is
   rendered), one `@Observable` session model, and the views. It knows
   nothing of tmux or Ghostty; the host hands it bytes and takes bytes.
 - `PiView`: the standalone app target in `app/project.yml`, a pty host
   around the surface, with a launch form (command, cwd, arguments) and a
   replay mode that feeds a recorded byte stream, so UI work costs no model
   tokens.
-- Kido.app later: the surface in a pane, fed from the pane's `%output`,
+- Kido.app later: the surface in a pane, fed from the pane's output,
   writing through `send-keys -H`, with the terminal one toggle away.
 
 Views use standard macOS components with minimal code: SwiftUI by default
@@ -164,15 +203,16 @@ selection across a message, a large tool output, the editor's keys.
 ## Ownership
 
 Everything in this document is pi-ui's. pi itself, kido's pi extensions
-and shim, and the tmux fork's pane-marker change go through
-working-on-kido; Kido.app-wide refactors through kido-app.
+and shim go through working-on-kido; Kido.app-wide refactors through
+kido-app.
 
 ## First spike
 
-kido-pi and PiView over a pty: the framing both ways, `hello` and
-snapshot, transcript with streaming text, thinking, tool calls and edit
-diffs, prompt/steer/abort, model and thinking pickers, dialog sheets; a
-recorded fixture and a long one to measure the SwiftUI transcript; the
-throughput check through tmux and ssh to localhost. Low to medium risk
-(the framing through a raw pty and ssh is the unknown), about a day of
-agent time. Kido.app hosting follows: medium risk, about a day.
+kido-pi and PiView over a pty: the framing both ways with acks, `hello`
+and snapshot, transcript with streaming text, thinking, tool calls and
+edit diffs, prompt/steer/abort, model and thinking pickers, dialog
+sheets; a recorded fixture and a long one to measure the SwiftUI
+transcript; the throughput and fragmentation checks through tmux, ssh to
+localhost, a stalled reader and two competing writers, on macOS and
+Linux. Medium risk (the raw pty and ssh path is the unknown), about a day
+of agent time. Kido.app hosting follows: medium risk, about a day.
