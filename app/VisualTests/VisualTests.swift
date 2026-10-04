@@ -24,9 +24,9 @@ import XCTest
     }
 
     override func setUp() async throws {
-        directory = app.appendingPathComponent("build/visual/\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        socket = directory.appendingPathComponent("tmux.sock").path
+        directory = URL(fileURLWithPath: "/tmp/kido-visual-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        socket = directory.appendingPathComponent("socket").path
         tmux = try XCTUnwrap(ProcessInfo.processInfo.environment["KIDO_VISUAL_TMUX"])
         PaneView.renderOffscreen = true
     }
@@ -679,6 +679,7 @@ import XCTest
         try """
         #!/bin/sh
         if [ "$1" = switch-window ]; then
+            [ "$3" = --client ] && [ "$4" = private-client ] && [ "$5" = --server ] && [ "$6" = '\(scratch.path)' ] || exit 2
             sleep 0.2
             [ "$2" = next ] && printf '$3 @12\\n'
             exit 0
@@ -692,7 +693,7 @@ import XCTest
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
         var starts = 0
         var snapshots = 0
-        let feed = Feed(socket: scratch.appendingPathComponent("tmux.sock").path, locate: { done in
+        let feed = Feed(serverDir: scratch.path, locate: { done in
             done(.success("private-client"))
         }, query: { "" }, onChange: { status in
             if case .starting = status { starts += 1 }

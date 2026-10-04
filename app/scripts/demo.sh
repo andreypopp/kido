@@ -4,14 +4,15 @@
 #   demo.sh stop           kill the demo server
 set -e
 D=${KIDO_DEMO_DIR:?}
-export TMUX_TMPDIR=$D XDG_STATE_HOME=$D/state
-export KIDO_STATE_DIR=$XDG_STATE_HOME/kido-app
+export XDG_STATE_HOME=$D/state
+unset KIDO_STATE_DIR
 unset KIDO_TMUX
 unset TMUX TMUX_PANE KIDO_AGENT_PARENT_SESSION KIDO_AGENT_DEPTH KIDO_AGENT_TASK_FILE KIDO_AGENT_PARENT_PID KIDO_AGENT_RUN_ID
 APP=${2:-$1}
 PREFIX=$(cd "$(dirname "$APP")/../Resources/kido" && pwd)
 K=$PREFIX/bin/kido
-S=$D/tmux-$(id -u)/kido-app
+SERVER=$XDG_STATE_HOME/kido-app
+S=$SERVER/socket
 t() { "$PREFIX/bin/kido-tmux" -S "$S" "$@"; }
 
 case $1 in
@@ -21,7 +22,7 @@ esac
 mkdir -p "$D/state" && chmod 700 "$D"
 if ! t has-session -t main:kido 2>/dev/null; then
   t kill-server 2>/dev/null || true
-  "$K" server --socket-name kido-app
+  "$K" server --server "$SERVER"
   t rename-window -t main: kido
   t split-window -d -h -t main:kido
   t new-window -d -t main -n review
