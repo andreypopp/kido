@@ -22,9 +22,10 @@ struct TranscriptView: View {
 }
 
 struct InlineDisclosureStyle: DisclosureGroupStyle {
+    var willToggle: () -> Void = {}
     func makeBody(configuration: Configuration) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Button { configuration.isExpanded.toggle() } label: {
+            Button { willToggle(); configuration.isExpanded.toggle() } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right").font(.caption).foregroundStyle(.secondary)
                     configuration.label

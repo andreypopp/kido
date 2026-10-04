@@ -4,6 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import { decoder, frames } from "./kido-pi-wire.ts";
 
 const tty = process.stdin.isTTY;
+let terminalGone = false;
 const saved = tty ? spawnSync("stty", ["-g"], { stdio: [0, "pipe", 2], timeout: 1000 }).stdout.toString().trim() : "";
 if (tty) spawnSync("stty", ["raw", "-echo"], { stdio: [0, 1, 2], timeout: 1000 });
 const argv: string[] = process.env.KIDO_PI_RPC ? JSON.parse(process.env.KIDO_PI_RPC) : ["pi"];
@@ -18,8 +19,11 @@ function send(value: Record<string, any>) {
   const chunks = frames(JSON.stringify(value), "out", seq + 1);
   seq += chunks.length;
   output = output.then(async () => {
-    for (const chunk of chunks) await new Promise<void>((resolve, reject) => process.stdout.write(chunk, error => error ? reject(error) : resolve()));
-  });
+    for (const chunk of chunks) {
+      if (terminalGone) return;
+      await new Promise<void>((resolve, reject) => process.stdout.write(chunk, error => error ? reject(error) : resolve()));
+    }
+  }).catch(() => { void finish(1, true); });
 }
 function hello() { return { type: "hello", instance, sessionId: record.state.sessionId ?? null, sessionFile: record.state.sessionFile ?? null, cwd: process.cwd() }; }
 function request(type: string) {
@@ -153,22 +157,26 @@ const input = decoder("in", command, send, bytes => {
 });
 process.stdin.on("data", bytes => { clearTimeout(escape); input(bytes); escape = setTimeout(() => input(Buffer.alloc(0)), 40); });
 const heartbeat = setInterval(() => { if (!bootstrap.size) send(hello()); }, 2000);
-async function finish(code: number) {
+async function finish(code: number, gone = false) {
+  terminalGone ||= gone;
   if (exiting) return; exiting = true;
   clearInterval(heartbeat); clearTimeout(escape); for (const timer of timers.values()) clearTimeout(timer);
   const stopped = child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : new Promise<void>(resolve => {
     const kill = setTimeout(() => { child.kill("SIGKILL"); resolve(); }, 500);
     child.once("exit", () => { clearTimeout(kill); resolve(); }); child.kill();
   });
-  send({ type: "bye", instance });
-  if (saved) spawnSync("stty", [saved], { stdio: [0, 1, 2], timeout: 1000 });
+  if (!terminalGone) send({ type: "bye", instance });
+  if (saved && !terminalGone) spawnSync("stty", [saved], { stdio: [0, 1, 2], timeout: 1000 });
   await Promise.all([stopped, Promise.race([output, new Promise(resolve => setTimeout(resolve, 500))])]);
   process.exit(code);
 }
-process.on("exit", () => { child.kill("SIGKILL"); if (saved) spawnSync("stty", [saved], { stdio: [0, 1, 2], timeout: 1000 }); });
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => void finish(0));
+process.on("exit", () => { child.kill("SIGKILL"); if (saved && !terminalGone) spawnSync("stty", [saved], { stdio: [0, 1, 2], timeout: 1000 }); });
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => void finish(0, signal === "SIGHUP"));
 child.on("error", error => { process.stderr.write(`${error.message}\n`); void finish(1); });
 child.on("exit", code => void finish(code ?? 1));
 child.stdin.on("error", () => {});
-process.stdin.on("end", () => void finish(0));
+process.stdin.on("end", () => void finish(0, true));
+process.stdin.on("error", () => void finish(1, true));
+process.stdout.on("error", () => void finish(1, true));
+process.stderr.on("error", () => void finish(1, true));
 process.stdout.write("kido-pi ready\r\n> "); refresh();

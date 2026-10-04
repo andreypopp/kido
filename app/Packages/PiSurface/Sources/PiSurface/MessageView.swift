@@ -6,6 +6,7 @@ struct MessageView: View {
     var expanded = false
     var loadHistory: () -> Void = {}
     var expansionChanged: (Bool) -> Void = { _ in }
+    var willToggle: () -> Void = {}
     @State private var open = false
     @State private var image: NSImage?
     @State private var imageSheet = false
@@ -27,7 +28,7 @@ struct MessageView: View {
                 }.fontWeight(.medium).padding(.vertical, 9).padding(.horizontal, 10).frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
                     .background(Color(nsColor: NSColor.windowBackgroundColor.blended(withFraction: 0.06, of: .labelColor) ?? .controlBackgroundColor))
                     .overlay(alignment: .leading) { Rectangle().fill(Color.accentColor).frame(width: 3) }.clipShape(RoundedRectangle(cornerRadius: 8))
-            case .activity(let items): ActivityView(items: items, expanded: expanded, expansionChanged: expansionChanged)
+            case .activity(let items): ActivityView(items: items, expanded: expanded, expansionChanged: expansionChanged, willToggle: willToggle)
             case .markdown(let text): MarkdownBody(text: text)
             case .responding: HStack { ProgressView().controlSize(.small); Text("Responding…").foregroundStyle(.secondary) }
             case .thinkingUnavailable: Text("Thinking unavailable").font(.callout).foregroundStyle(.secondary)

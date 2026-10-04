@@ -92,6 +92,69 @@ test("overlapping first-turn entries retain live identities in events, snapshot 
   assert.equal(snapshot.before, snapshot.record.entries[0].id);
 });
 
+test("bridge and pi exit on stdin EOF", { timeout: 8000 }, async () => {
+  const bridge = spawn(process.execPath, [fileURLToPath(new URL("kido-pi.ts", import.meta.url))], { env: { ...process.env, KIDO_PI_RPC: JSON.stringify([process.execPath, fileURLToPath(new URL("testdata/fake-pi.ts", import.meta.url))]) } });
+  let child: number | undefined;
+  const exited = new Promise(resolve => bridge.once("exit", resolve));
+  bridge.stderr.resume();
+  let timer: NodeJS.Timeout;
+  try {
+    await Promise.race([(async () => {
+      await new Promise<void>(resolve => bridge.stdout.on("data", bytes => { if (bytes.toString().includes("kido-pi ready")) resolve(); }));
+      child = Number((await promisify(execFile)("pgrep", ["-P", String(bridge.pid)], { timeout: 2000 })).stdout.trim());
+      bridge.stdin.end();
+      await exited;
+      assert.throws(() => process.kill(child!, 0), { code: "ESRCH" });
+    })(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("stdin EOF timed out")), 5000); })]);
+  } finally {
+    clearTimeout(timer!);
+    bridge.kill("SIGKILL");
+    if (child) { try { process.kill(child, "SIGKILL"); } catch {} }
+  }
+});
+
+test("bridge and pi exit when the terminal closes", { timeout: 20000 }, async () => {
+  const script = `
+import os, pty, select, signal, subprocess, sys, time, json, fcntl, termios
+for controlling in [False, True]:
+    master, slave = pty.openpty()
+    def setup():
+        os.setsid()
+        if controlling: fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+    env = dict(os.environ, KIDO_PI_RPC=json.dumps([sys.argv[1], sys.argv[2]]))
+    bridge = subprocess.Popen([sys.argv[1], sys.argv[3]], stdin=slave, stdout=slave, stderr=slave, env=env, preexec_fn=setup)
+    os.close(slave)
+    child = None
+    try:
+        output = b''
+        deadline = time.monotonic() + 5
+        while b'kido-pi ready' not in output and time.monotonic() < deadline:
+            if select.select([master], [], [], .1)[0]: output += os.read(master, 65536)
+        assert b'kido-pi ready' in output, output
+        child = int(subprocess.check_output(['pgrep', '-P', str(bridge.pid)], timeout=2).strip())
+        os.close(master)
+        master = None
+        bridge.wait(timeout=3)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try: os.kill(child, 0)
+            except ProcessLookupError: break
+            time.sleep(.02)
+        else: raise AssertionError('pi child survived terminal close')
+        print('PASS controlling=' + str(controlling), flush=True)
+    finally:
+        if master is not None: os.close(master)
+        if bridge.poll() is None: bridge.kill()
+        bridge.wait(timeout=2)
+        if child:
+            try: os.kill(child, signal.SIGKILL)
+            except ProcessLookupError: pass
+`;
+  const { stdout } = await promisify(execFile)("python3", ["-c", script, process.execPath, fileURLToPath(new URL("testdata/fake-pi.ts", import.meta.url)), fileURLToPath(new URL("kido-pi.ts", import.meta.url))], { timeout: 18000 });
+  assert.match(stdout, /PASS controlling=False/);
+  assert.match(stdout, /PASS controlling=True/);
+});
+
 test("pty bridge streams fake pi, snapshots, dialogs, history and restores its tty", { timeout: 15000 }, async () => {
   const bridge = fileURLToPath(new URL("kido-pi.ts", import.meta.url));
   const fake = fileURLToPath(new URL("testdata/fake-pi.ts", import.meta.url));

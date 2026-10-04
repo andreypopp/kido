@@ -23,7 +23,7 @@ struct TranscriptTable: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = TranscriptScrollView(), table = NSTableView()
-        scroll.hasVerticalScroller = true; scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.verticalScrollElasticity = .none
         let column = NSTableColumn(identifier: .init("transcript")); column.resizingMask = .autoresizingMask; table.addTableColumn(column)
         table.headerView = nil; table.usesAutomaticRowHeights = false; table.autoresizingMask = [.width]
         table.backgroundColor = .clear; table.selectionHighlightStyle = .none; table.style = .plain
@@ -36,7 +36,7 @@ struct TranscriptTable: NSViewRepresentable {
             MainActor.assumeIsolated {
                 guard let coordinator else { return }
                 coordinator.readAnchor = nil
-                coordinator.parent.following = table.bounds.height - scroll.contentView.bounds.maxY < 48
+                coordinator.parent.following = table.bounds.height - scroll.contentView.bounds.maxY <= 1
             }
         }
         return scroll
@@ -65,8 +65,11 @@ struct TranscriptTable: NSViewRepresentable {
         }
         func expansionChanged(_ id: String, open: Bool) {
             if open { expansions.insert(id) } else { expansions.remove(id) }
+        }
+        func beginReading(_ id: String) {
+            parent.following = false
             readAnchor = nil
-            guard !parent.following, let table, let scroll = table.enclosingScrollView, let row = positions[id] else { return }
+            guard let table, let scroll = table.enclosingScrollView, let row = positions[id] else { return }
             if table.rect(ofRow: row).minY >= scroll.contentView.bounds.minY {
                 readAnchor = (id, scroll.contentView.bounds.minY - table.rect(ofRow: row).minY)
             } else { captureAnchor() }
@@ -77,7 +80,8 @@ struct TranscriptTable: NSViewRepresentable {
             cell.sizingOptions = []; cell.autoresizingMask = [.width, .height]
             cell.rootView = AnyView(MessageView(row: item, expanded: expansions.contains(item.id) || parent.expanded, loadHistory: parent.loadHistory, expansionChanged: { [weak self] open in
                 self?.expansionChanged(item.id, open: open)
-            }).id(item.id).disclosureGroupStyle(InlineDisclosureStyle())
+            }, willToggle: { [weak self] in self?.beginReading(item.id) }).id(item.id).disclosureGroupStyle(InlineDisclosureStyle(willToggle: { [weak self] in self?.beginReading(item.id) }))
+                .transaction { $0.animation = nil; $0.disablesAnimations = true }
                 .frame(width: max(1, width - 24), alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true).padding(.vertical, 12).padding(.horizontal, 12).frame(maxWidth: .infinity, alignment: .leading)
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { [weak self] size in
@@ -95,7 +99,10 @@ struct TranscriptTable: NSViewRepresentable {
             DispatchQueue.main.async { [weak self] in
                 guard let self, let table = self.table else { return }
                 self.captureAnchor()
-                table.noteHeightOfRows(withIndexesChanged: IndexSet(self.pending.compactMap { self.positions[$0] }))
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0; context.allowsImplicitAnimation = false
+                    table.noteHeightOfRows(withIndexesChanged: IndexSet(self.pending.compactMap { self.positions[$0] }))
+                }
                 for id in self.pending {
                     if let row = self.positions[id], let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) {
                         cell.frame.size.height = table.rect(ofRow: row).height
@@ -155,6 +162,8 @@ struct TranscriptTable: NSViewRepresentable {
             if follow ?? parent.following { readAnchor = nil }
             let y = readAnchor.flatMap { id, offset in positions[id].map { table.rect(ofRow: $0).minY + offset } }
             guard let y = y ?? ((follow ?? parent.following) ? max(0, table.bounds.height - scroll.contentView.bounds.height) : nil) else { return }
+            let contentHeight = rows.isEmpty ? 0 : table.rect(ofRow: rows.count - 1).maxY
+            table.frame.size.height = max(contentHeight, scroll.contentView.bounds.height, readAnchor == nil ? 0 : y + scroll.contentView.bounds.height)
             let target = max(0, min(y, max(0, table.bounds.height - scroll.contentView.bounds.height)))
             if target != y, let (id, _) = readAnchor, let row = positions[id] { readAnchor = (id, target - table.rect(ofRow: row).minY) }
             scroll.contentView.scroll(to: NSPoint(x: 0, y: target)); scroll.reflectScrolledClipView(scroll.contentView)
