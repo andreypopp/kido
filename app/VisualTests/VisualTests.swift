@@ -324,6 +324,122 @@ import XCTest
         }
     }
 
+    func testSwitchWindowOutputAndReconnect() async throws {
+        let scratch = app.appendingPathComponent("build/sbfix/\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        let script = scratch.appendingPathComponent("kido")
+        let fixture = scratch.appendingPathComponent("feed.json")
+        let object = try JSONSerialization.jsonObject(with: Data(contentsOf: app.appendingPathComponent("VisualTests/Fixtures/live-feed.json")))
+        try JSONSerialization.data(withJSONObject: object).write(to: fixture)
+        try """
+        #!/bin/sh
+        if [ "$1" = switch-window ]; then
+            sleep 0.2
+            [ "$2" = next ] && printf '$3 @12\\n'
+            exit 0
+        fi
+        cat '\(fixture.path)'
+        printf '\\n'
+        while IFS= read -r line; do
+            [ "$line" = 'filter exit' ] && exit 0
+        done
+        """.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        var starts = 0
+        var snapshots = 0
+        let feed = Feed(socket: scratch.appendingPathComponent("tmux.sock").path, locate: { done in
+            done(.success((kido: script.path, client: "private-client")))
+        }, query: { "" }, onChange: { status in
+            if case .starting = status { starts += 1 }
+            if case .running = status { snapshots += 1 }
+        })
+        defer { feed.stop() }
+        try await wait("fake feed ready") { snapshots == 1 }
+        let switched = expectation(description: "switch stdout")
+        feed.switchWindow(next: true) { target, error in
+            XCTAssertNil(error)
+            XCTAssertEqual(target?.session, SessionID(number: 3), "navigation must return its own stdout session")
+            XCTAssertEqual(target?.window, WindowID(number: 12), "navigation must return its own stdout window")
+            switched.fulfill()
+        }
+        await fulfillment(of: [switched], timeout: 5)
+        let noop = expectation(description: "empty stdout")
+        feed.switchWindow(next: false) { target, error in
+            XCTAssertNil(error)
+            XCTAssertNil(target, "empty stdout must be a no-op")
+            noop.fulfill()
+        }
+        await fulfillment(of: [noop], timeout: 5)
+        let stale = expectation(description: "old generation completion")
+        stale.isInverted = true
+        feed.switchWindow(next: true) { _, _ in stale.fulfill() }
+        feed.filter("exit")
+        try await wait("feed reconnected") { starts == 2 && snapshots == 2 }
+        await fulfillment(of: [stale], timeout: 0.5)
+    }
+
+    func testSidebarFoldingKeysAndAccessibility() throws {
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 260),
+                          styleMask: [.titled], backing: .buffered, defer: false)
+        let list = SidebarView()
+        window.contentView = list
+        let fixture = try sidebarFixture()
+        list.update(.running(fixture))
+        list.focus()
+        list.layoutSubtreeIfNeeded()
+        let header = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? SidebarCell)
+        XCTAssertEqual(header.accessibilityRole(), .button)
+        XCTAssertEqual(header.accessibilityValue() as? String, "expanded")
+        func key(_ code: UInt16) throws {
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code))
+            list.visualTable.keyDown(with: event)
+        }
+        try key(123)
+        XCTAssertFalse(list.visualRows.contains { $0.target?.session == fixture.client.session })
+        XCTAssertEqual(list.visualTable.selectedRow, -1)
+        try key(124)
+        XCTAssertTrue(list.visualRows.contains { $0.target == fixture.client })
+        XCTAssertEqual(list.visualTable.selectedRow, -1)
+        list.focus()
+        let selected = list.visualTable.selectedRow
+        try key(124)
+        XCTAssertEqual(list.visualTable.selectedRow, selected, "unfolding keeps selection")
+        let expanded = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? SidebarCell)
+        XCTAssertTrue(expanded.accessibilityPerformPress())
+        let collapsed = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? SidebarCell)
+        XCTAssertEqual(collapsed.accessibilityValue() as? String, "collapsed")
+        XCTAssertFalse(collapsed.addWindow.isHidden)
+        XCTAssertTrue(collapsed.accessibilityPerformPress())
+        for row in list.visualRows where row.target != nil {
+            let cell = SidebarCell(SidebarFonts())
+            cell.configure(row, expanded: true)
+            XCTAssertTrue(cell.toolTip?.contains(row.indicatorDescription) == true)
+        }
+        XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
+    }
+
+    func testNavigationFeedFirst() throws {
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 160),
+                          styleMask: [.titled], backing: .buffered, defer: false)
+        let list = SidebarView()
+        window.contentView = list
+        let initial = try sidebarFixture()
+        let destination = try sidebarFixture { $0["client"] = ["session": "$0", "window": "@458", "pane": "%502"] }
+        list.update(.running(initial))
+        list.layoutSubtreeIfNeeded()
+        list.visualFold(SessionID(number: 0))
+        list.update(.running(destination))
+        list.completedNavigation(to: (destination.client.session, destination.client.window))
+        let selected = list.visualTable.selectedRow
+        XCTAssertGreaterThanOrEqual(selected, 0, "feed-first completion must select the destination")
+        if selected >= 0 {
+            XCTAssertEqual(list.visualRows[selected].target, destination.client)
+            XCTAssertTrue(list.visualTable.visibleRect.intersects(list.visualTable.rect(ofRow: selected)), "destination must be visible")
+        }
+        XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
+    }
+
     func testNoOpNavigationConsumesReveal() throws {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 260),
                           styleMask: [.titled], backing: .buffered, defer: false)
@@ -331,7 +447,7 @@ import XCTest
         window.contentView = list
         list.update(.running(try sidebarFixture()))
         list.visualFold(SessionID(number: 0))
-        list.completedNavigation(to: try sidebarFixture().client, from: list.position)
+        list.completedNavigation(to: nil)
         list.update(.running(try sidebarFixture { $0["client"] = ["session": "$0", "window": "@458", "pane": "%502"] }))
         XCTAssertFalse(list.visualRows.contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 502)) }, "unrelated client change must not consume a completed no-op navigation")
     }
@@ -375,7 +491,8 @@ import XCTest
         list.update(.running(fixture))
         XCTAssertFalse(list.visualRows.contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 502)) })
         let navigated = try sidebarFixture { $0["client"] = ["session": "$0", "window": "@458", "pane": "%502"] }
-        list.completedNavigation(to: navigated.client, from: list.position)
+        list.completedNavigation(to: (navigated.client.session, navigated.client.window))
+        XCTAssertEqual(list.visualRows[list.visualTable.selectedRow].target?.window, navigated.client.window)
         list.update(.running(navigated))
         XCTAssertTrue(list.visualRows.contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 502)) })
         let row = try XCTUnwrap(list.visualRows.first { $0.target != nil })

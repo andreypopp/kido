@@ -19,6 +19,7 @@ final class SidebarCell: NSTableCellView {
     private let fonts: SidebarFonts
     private var row: SidebarRow?
     private var clock = ""
+    var fold: () -> Void = {}
     let addWindow = IconButton("plus", "New window", size: 13, hoverStyle: .iconOnly)
     override var isFlipped: Bool { true }
 
@@ -30,15 +31,24 @@ final class SidebarCell: NSTableCellView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    func configure(_ row: SidebarRow) {
+    func configure(_ row: SidebarRow, expanded: Bool) {
         self.row = row
         addWindow.isHidden = { if case .header = row.kind { return false }; return true }()
         addWindow.toolTip = "New window in " + row.title
-        toolTip = [row.title, row.tail, String(describing: row.status)].filter { !$0.isEmpty }.joined(separator: ", ")
+        toolTip = [row.title, row.tail, row.indicatorDescription].filter { !$0.isEmpty }.joined(separator: ", ")
+        setAccessibilityElement(true)
+        setAccessibilityRole(addWindow.isHidden ? .staticText : .button)
         setAccessibilityLabel(toolTip)
+        setAccessibilityValue(addWindow.isHidden ? nil : expanded ? "expanded" : "collapsed")
         updateClock()
         needsLayout = true
         needsDisplay = true
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        guard case .header? = row?.kind else { return false }
+        fold()
+        return true
     }
 
     func updateClock() {
