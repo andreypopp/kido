@@ -27,6 +27,7 @@ final class SidebarCell: NSTableCellView {
         self.fonts = fonts
         super.init(frame: .zero)
         identifier = Self.id
+        focusRingType = .none
         addSubview(addWindow)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -34,11 +35,11 @@ final class SidebarCell: NSTableCellView {
     func configure(_ row: SidebarRow, expanded: Bool) {
         self.row = row
         addWindow.isHidden = { if case .header = row.kind { return false }; return true }()
-        addWindow.toolTip = "New window in " + row.title
-        toolTip = [row.title, row.tail, row.indicatorDescription].filter { !$0.isEmpty }.joined(separator: ", ")
+        addWindow.toolTip = nil
+        addWindow.setAccessibilityLabel("New window in " + row.title)
         setAccessibilityElement(true)
         setAccessibilityRole(addWindow.isHidden ? .staticText : .button)
-        setAccessibilityLabel(toolTip)
+        setAccessibilityLabel([row.title, row.tail, row.indicatorDescription].filter { !$0.isEmpty }.joined(separator: ", "))
         setAccessibilityValue(addWindow.isHidden ? nil : expanded ? "expanded" : "collapsed")
         updateClock()
         needsLayout = true
@@ -62,7 +63,7 @@ final class SidebarCell: NSTableCellView {
         let oldWidth = (clock as NSString).size(withAttributes: [.font: fonts.clock]).width
         let width = (next as NSString).size(withAttributes: [.font: fonts.clock]).width
         clock = next
-        let y: CGFloat = row.indent == 0 ? 8 : 7
+        let y: CGFloat = row.indent == 0 ? 6 : 5
         let leading = oldWidth == width ? bounds.width - 26 - width : 12 + CGFloat(row.indent) * 17
         setNeedsDisplay(NSRect(x: leading, y: y - 1, width: max(0, bounds.width - 26 - leading), height: 17))
     }
@@ -109,18 +110,19 @@ final class SidebarCell: NSTableCellView {
                 NSColor.labelColor.withAlphaComponent(0.45).setFill()
                 NSRect(x: CGFloat(row.indent) * 17 + 1, y: 8, width: 2, height: bounds.height - 16).fill()
             }
-            if (superview as? NSTableRowView)?.isSelected == true, window?.firstResponder === enclosingScrollView?.documentView {
-                NSColor.keyboardFocusIndicatorColor.withAlphaComponent(0.6).setStroke()
-                NSBezierPath(rect: bounds.insetBy(dx: 0.5, dy: 0.5)).stroke()
+            if row.target != nil, (superview as? NSTableRowView)?.isSelected == true,
+               let table = enclosingScrollView?.documentView as? Table, table.keyboardSelection,
+               window?.firstResponder === table {
+                NSColor.labelColor.withAlphaComponent(0.10).setFill(); bounds.fill()
             }
             if case .divider = row.kind {
-                NSColor.labelColor.withAlphaComponent(0.08).setFill()
-                NSRect(x: CGFloat(row.indent) * 17, y: 4, width: bounds.width, height: 0.5).fill()
+                NSColor.separatorColor.setFill()
+                NSRect(x: CGFloat(row.indent) * 17, y: 4, width: bounds.width, height: 1).fill()
                 return
             }
             if case .gap = row.kind { return }
             let header = { if case .header = row.kind { return true }; return false }()
-            let y: CGFloat = header ? 8 : row.indent == 0 ? 7 : 6
+            let y: CGFloat = header ? 8 : row.indent == 0 ? 5 : 4
             let dotX = bounds.width - 14
             let clockWidth = (clock as NSString).size(withAttributes: [.font: fonts.clock]).width
             let end = header ? bounds.width - 30 : dotX - 12 - (clock.isEmpty ? 0 : clockWidth + 6)
