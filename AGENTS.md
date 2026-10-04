@@ -160,6 +160,7 @@ Conventions:
       pi/              the two pi extensions, which the pi shim loads with --extension
     .pi/prompts/       gh-watch.md, /gh-watch: starts scripts/main-watch.sh streamed
     scripts/           the fork build; main-watch.sh, which watches main and reports each new commit's CI;
+                       ci-website-watch.sh, the same for each commit's website deploy;
                        ci-like.sh; test-ts.sh; dump-prompts.ts, every prompt text pi registers
     third_party/tmux   the tmux fork, a git submodule built as kido-tmux
     test_e2e/          tests driving kido inside a real tmux server, in Go
