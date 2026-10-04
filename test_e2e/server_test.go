@@ -18,13 +18,14 @@ import (
 type endpoint struct {
 	Tmux   string `json:"tmux"`
 	Socket string `json:"socket"`
+	Build  string `json:"build"`
 }
 
 // server runs `kido server` in this test's world with TMUX set to tmux,
 // returning its stdout, stderr and exit code.
 func (r *kidoRun) server(tmux string) (string, string, int) {
 	r.t.Helper()
-	cmd := exec.Command(kidoBin, "server")
+	cmd := exec.Command(kidoBin, "server", "--socket-name", filepath.Base(r.kidoSock))
 	cmd.Env = cleanEnv(append(r.env(), "TMUX="+tmux, "TMUX_SIDE_CLIENT=")...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -82,6 +83,10 @@ func TestKidoServerStartsTheServerDetached(t *testing.T) {
 	}
 
 	first := r.mustServer("")
+	version, err := exec.Command(kidoBin, "--version").Output()
+	if err != nil || first.Build == "unknown" || first.Build != strings.TrimSpace(string(version)) {
+		t.Fatalf("server build = %q, binary version = %q (%v)", first.Build, version, err)
+	}
 	if got := r.mustKido("list-sessions", "-F", "#{session_name} #{session_attached}"); got != "main 0" {
 		t.Errorf("sessions = %q, want main, detached", got)
 	}
@@ -104,6 +109,15 @@ func TestKidoServerStartsTheServerDetached(t *testing.T) {
 	}
 	if got := r.mustKido("list-sessions", "-F", "#{session_name}"); got != "main" {
 		t.Errorf("sessions = %q, want only main", got)
+	}
+	r.mustKido("set-option", "-g", "@kido-build-id", "another-build")
+	if got := r.mustServer("").Build; got != "another-build" {
+		t.Errorf("existing server build = %q, want another-build", got)
+	}
+	r.mustKido("set-option", "-gu", "@kido-build-id")
+	out, _, code := r.server("")
+	if code != 0 || !strings.Contains(out, `"build":null`) {
+		t.Errorf("unstamped server: exit %d, JSON %q, want build:null", code, out)
 	}
 }
 

@@ -1,0 +1,3 @@
+#!/bin/sh
+. "${0%/*}/../shim.sh"
+exec "$kido_prefix_bin/kido" "$@"

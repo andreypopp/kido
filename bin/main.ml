@@ -483,11 +483,24 @@ let debug_log =
      print_endline (Reporting.debug_log ~dir:(State.dir ()));
      0
 
+let socket_name =
+  Arg.(
+    value
+    & opt (some string) None
+    & info [ "socket-name" ] ~docv:"NAME"
+        ~doc:"The tmux socket name for the launcher and server command (default: kido).")
+
 let server =
   cmd "server" "Start the kido server detached unless it is running, and print its tmux and socket."
-  @@ let+ () = Term.const () in
+  @@ let+ socket_name = socket_name in
      fun () ->
-       print_endline (Yojson.Safe.to_string (Launch.endpoint_to_yojson (ok (Launch.ensure ()))));
+       print_endline
+         (Yojson.Safe.to_string
+            (Launch.endpoint_to_yojson
+               (ok
+                  (Launch.ensure
+                     ~socket_name:(Option.value ~default:"kido" socket_name)
+                     ~dir:(Tmux.Exec.abs (State.dir ()))))));
        0
 
 let get_inbox =
@@ -593,7 +606,8 @@ let close_run =
 (* The fork sets TMUX_SIDE_CLIENT only for the side-status-command job, so its absence is exactly
    "not started as a side column". *)
 let sidebar =
-  let+ interval =
+  let+ socket_name = socket_name
+  and+ interval =
     Arg.(
       value
       & opt duration Sidebar.default_interval
@@ -609,9 +623,15 @@ let sidebar =
   in
   let side = Tmux.Exec.getenv "TMUX_SIDE_CLIENT" in
   match (Sys.argv, side, Sys.getenv_opt "TMUX") with
-  | [| _ |], "", _ ->
+  | _, "", _ when Array.length Sys.argv = 1 || Option.is_some socket_name ->
       Cli.run "" (fun () ->
-          match Launch.run ~tmux:(Tmux.Exec.getenv "TMUX") with Ok _ -> 0 | Error m -> failwith m)
+          match
+            Launch.run
+              ~socket_name:(Option.value ~default:"kido" socket_name)
+              ~dir:(Tmux.Exec.abs (State.dir ())) ~tmux:(Tmux.Exec.getenv "TMUX")
+          with
+          | Ok _ -> 0
+          | Error m -> failwith m)
   | _, _, None ->
       Cli.error "" "must run inside tmux";
       1
@@ -738,7 +758,8 @@ let tool =
 let () =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   let cmd =
-    Cmd.group ~default:sidebar (Cmd.info "kido")
+    Cmd.group ~default:sidebar
+      (Cmd.info "kido" ~version:Build_id.value)
       [
         hook;
         agent_status;

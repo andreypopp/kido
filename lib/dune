@@ -4,6 +4,7 @@
   (:standard -open Containers))
  (libraries
   containers
+  dune-build-info
   unix
   yojson
   mtime

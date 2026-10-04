@@ -192,6 +192,10 @@ func installKido(prefix string) error {
 	if b, err := cp.CombinedOutput(); err != nil {
 		return fmt.Errorf("copy the install tree: %v\n%s", err, b)
 	}
+	stamped := exec.Command("cp", "-f", "../build/main.exe", filepath.Join(prefix, "bin", "kido"))
+	if b, err := stamped.CombinedOutput(); err != nil {
+		return fmt.Errorf("copy the promoted binary: %v\n%s", err, b)
+	}
 	return nil
 }
 

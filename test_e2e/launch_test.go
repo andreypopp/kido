@@ -191,8 +191,12 @@ func (r *kidoRun) mustKido(args ...string) string {
 // TMUX around it.
 func (r *kidoRun) launch(window string) {
 	r.t.Helper()
+	args := ""
+	if name := filepath.Base(r.kidoSock); name != "kido" {
+		args = fmt.Sprintf(" --socket-name %q", name)
+	}
 	r.mustOuter("new-window", "-d", "-t", "host", "-n", window,
-		fmt.Sprintf("unset TMUX; exec env %s %q", r.envAssign(), kidoBin))
+		fmt.Sprintf("unset TMUX; exec env %s %q%s", r.envAssign(), kidoBin, args))
 }
 
 // waitUp waits until the launcher's initial session exists.

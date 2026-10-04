@@ -46,5 +46,6 @@
   (mtime
    (>= 2.2))
   mosaic
+  dune-build-info
   (ppx_expect :with-test)
   (ocamlformat :with-dev-setup)))

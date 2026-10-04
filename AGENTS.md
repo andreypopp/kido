@@ -118,8 +118,9 @@ Conventions:
                        sidebar-feed
     bin/cli.ml         failure printing and tables
     lib/               the library kido:
-      launch.ml        the launcher and `kido server`: the kido server, its
-                       server.conf
+      launch.ml        the launcher and `kido server`: --socket-name, the
+                       server.conf in its state dir, @kido-build-id
+      build_id.ml      the immutable dune-build-info version, or unknown
       shell.ml, prime.ml  kido shell: the login shell and its priming files
       bin_dir.ml       the shipped-file and bin-directory lookup
       sidebar.ml       the sidebar's model: the tick, tracking and the shell-status
@@ -151,7 +152,7 @@ Conventions:
                        pane, which lib/test's Fixture includes; tmux_server/
                        the Conn tests against a real tmux, run only with $KIDO_TMUX
     share/             the source of share/kido, installed by share/dune:
-      bin/             the bin directory's sh shims (tmux, ssh, pi, claude)
+      bin/             the bin directory's sh shims (kido, tmux, ssh, pi, claude)
       shim.sh          their shared helper
       bash/, zsh/      the OSC 133 integrations every primed shell sources
       tmux/            kido-tmux.conf, the defaults the launcher writes into
@@ -166,7 +167,13 @@ Conventions:
     test_e2e/          tests driving kido inside a real tmux server, in Go
 
 `dune build`; the binary is `bin/main.exe`, installed as `kido`. `lib/`
-embeds the shell integrations and `share/tmux/kido-tmux.conf` at build time.
+embeds the shell integrations, `share/tmux/kido-tmux.conf` and a build id
+through dune-build-info during promotion. `build/main.exe` is the stamped
+executable copied by `make install` and e2e; `_build/default/bin/main.exe`
+reports `unknown`. `kido --version` prints that id; `kido server` reports the
+creating server's `@kido-build-id` as its JSON `build` field (null if unset).
+The launcher and `kido server` accept `--socket-name NAME` (default `kido`);
+separate servers require separate `KIDO_STATE_DIR` values.
 
 **Tool name == `kido tool` subcommand name.** Every subagent tool in `share/pi/` invokes
 the `kido tool` subcommand of its own name (table in docs/design-subagents.md). A new
@@ -355,6 +362,12 @@ as its last resort:
   resolves, defeating the ordering.
 
 ## Building
+
+`make install PREFIX=<prefix>` installs `bin/kido`, `bin/kido-tmux` and
+`share/kido`, including the shim that routes bare `kido` to that prefix.
+It reuses the e2e revision-keyed fork cache under `build/tmux-fork/`.
+`SELF_CONTAINED=1` passes `--self-contained` to the fork installer and
+uses a separate `<revision>-self-contained` cache entry.
 
 kido is built by dune **3.24.2**, the binary distribution, with package
 management on (`dune-workspace`); the README's install line fetches it.

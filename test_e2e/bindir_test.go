@@ -68,10 +68,20 @@ func TestKidoPaneRunsTheShims(t *testing.T) {
 	pane := r.primedPane()
 	shims := filepath.Join(shareDir, "bin")
 
-	for _, name := range []string{"tmux", "ssh"} {
+	for _, name := range []string{"kido", "tmux", "ssh"} {
 		if got := r.shellIn(pane, "command -v "+name); !sameFile(got, filepath.Join(shims, name)) {
 			t.Errorf("command -v %s = %q in a kido pane, want the shim in %s", name, got, shims)
 		}
+	}
+	version, err := exec.Command(kidoBin, "--version").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.shellIn(pane, "kido --version"); got != strings.TrimSpace(string(version)) {
+		t.Errorf("shim kido version = %q, prefix binary = %q", got, version)
+	}
+	if got := r.mustKido("run-shell", "command -v kido"); !sameFile(got, filepath.Join(shims, "kido")) {
+		t.Errorf("server kido = %q, want its own shim", got)
 	}
 	want := r.mustKido("display-message", "-p", "#{socket_path}")
 	if got := r.shellIn(pane, "tmux display-message -p '#{socket_path}'"); got != want {

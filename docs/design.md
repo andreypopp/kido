@@ -1968,7 +1968,7 @@ those; a shell that only has to emit four escape sequences does not.
 ## The launcher
 
 `kido` with no arguments is the program the user runs; a first argument
-that is a word is a subcommand, and one that is a flag is the interactive
+that is a word is a subcommand, and UI flags select the interactive
 UI - `kido --client <name>`, the one-shot picker the `C-s` binding opens in
 a popup. The side column is the exception to the first rule: the fork
 starts it as a bare `kido`, and `TMUX_SIDE_CLIENT` in its environment is
@@ -1981,9 +1981,15 @@ second prefix and a second status line.
 The multiplexer it starts is kido's own: `kido-tmux`, the vendored fork,
 found beside the kido binary or named by `$KIDO_TMUX` (AGENTS.md, "The
 tmux fork", for the resolution order and what the fork adds). The server
-lives on its own socket, `kido`, under `TMUX_TMPDIR` as tmux places it,
-so it never shares a server with a stock tmux, whose protocol version
-differs. The launcher probes it with `list-sessions` and reads three outcomes off the answer:
+lives on its own socket, `kido` by default, under `TMUX_TMPDIR` as tmux
+places it. `kido --socket-name NAME` and `kido server --socket-name NAME`
+select another name explicitly; pane commands use the resulting `$TMUX`,
+and outside-pane helpers use `--socket PATH`. Each server uses its own
+`KIDO_STATE_DIR`: pane ids repeat across servers, and state is pane-keyed.
+The launcher exports the resolved state directory into the server's global
+environment, so panes, hooks, extensions and the sidebar inherit it.
+Servers with separate state directories have separate `server.conf` files.
+It never shares a server with a stock tmux, whose protocol version differs. The launcher probes it with `list-sessions` and reads three outcomes off the answer:
 a server answers, so attach; tmux's own "protocol version mismatch" on
 stderr, which is an older kido-tmux still running after an upgrade and
 gets kido's own message naming the socket and how to restart it; and
@@ -1994,9 +2000,10 @@ A started server reads a configuration kido writes at every launch to
 `$KIDO_STATE_DIR/server.conf`, in this order: kido's defaults, which are
 `share/tmux/kido-tmux.conf` verbatim; `source-file -q` of the user's file,
 `$XDG_CONFIG_HOME/kido/kido.conf` or `~/.config/kido/kido.conf`; then
-the two options kido owns, `side-status-command` and `default-command`,
-both naming the kido binary by absolute path. The user's file comes
-after the defaults so the user wins over kido, and kido's own two come
+the options kido owns, `side-status-command` and `default-command`,
+both naming the kido binary by absolute path, and `@kido-build-id`,
+which stamps the creating binary's immutable build identity. The user's file comes
+after the defaults so the user wins over kido, and kido's own options come
 last so the user cannot lose the side column by accident. A
 `default-command` the user did set is captured first with `set -gF
 @kido-user-command '#{default-command}'`, and `kido shell` runs it.
@@ -2021,9 +2028,29 @@ hold the name.
 Kido.app that attaches on its own: it runs the same probe and, when the
 server is down, the same start (`Launch.new_session`: server.conf, the
 environment and PATH, session `main`), detached. It never attaches, so it
-runs inside tmux too. It prints one JSON line, `{"tmux":...,"socket":...}`:
-the resolved kido-tmux made absolute, and the socket path the server
-reports as `#{socket_path}` in its answer to the probe. A start that fails
+runs inside tmux too. It prints one JSON line,
+`{"tmux":...,"socket":...,"build":...}`: the resolved kido-tmux made
+absolute, the socket path the server reports as `#{socket_path}`, and the
+server's `@kido-build-id` value (or JSON null if absent). Attaching or
+ensuring an existing server never changes its stamp.
+
+`kido --version` prints the binary's baked-in build id followed by a
+newline. `Build_info.V1.version` from `dune-build-info` supplies it:
+`git describe --always --dirty --abbrev=7`, normally `<commit>` or
+`<commit>-dirty` in this tag-less project. Two different dirty builds
+share an id. The commit identifies the tmux gitlink as part of its tree,
+so the id carries no separate fork pin. A build without git metadata
+reports `unknown`. The id lives in the executable, not a mutable manifest.
+
+Dune substitutes this version during promotion or installation, not in
+`_build/default/bin/main.exe` or the symlink to it under `_build/install`:
+those report `unknown`. The executable's promotion into `build/main.exe`
+substitutes it on `dune build @install`. `make install` and the e2e harness
+copy that promoted executable over the raw install-tree binary, so their
+prefixes carry the stamped build id even though `dune install` refuses
+under package management.
+
+ A start that fails
 is followed by a second probe, and a server that answers it is success:
 two clients starting at once race for `main`, and the loser's
 `new-session` fails against the winner's server. A mismatch is the
@@ -2058,11 +2085,14 @@ plain-mode local shell gets tmux's dashed argv[0] where the remote gets
 
 ### The bin directory
 
-kido ships a bin directory at `<prefix>/share/kido/bin` holding four
-`sh` shims, `tmux`, `ssh`, `pi` and `claude` (source `share/bin`, with
+kido ships a bin directory at `<prefix>/share/kido/bin` holding five
+`sh` shims, `kido`, `tmux`, `ssh`, `pi` and `claude` (source `share/bin`, with
 the shared helper `share/shim.sh` installed as `share/kido/shim.sh`).
 Inside a kido pane they are what those names resolve to:
 
+- `kido` execs `<prefix>/bin/kido` relative to its own shim, so pane
+  commands and server-side bindings run this prefix's binary rather than
+  another installation on PATH.
 - `tmux` runs `$KIDO_TMUX` when set, else the `kido-tmux` beside kido,
   else the first `tmux` on PATH past the shim: `Tmux.Exec.resolve_binary`'s order.
   A bare-name `KIDO_TMUX` is looked up past the shim too, because
@@ -2091,7 +2121,8 @@ those `..` physically, so under Homebrew, where share/kido is a symlink,
 they land in the Cellar version's own bin. Nothing needs quoting, and
 nothing goes stale when the package moves.
 
-The real program is the first executable of that name on PATH *after*
+For shims that find a user-installed program, the real program is the
+first executable of that name on PATH *after*
 the shim's own directory. A shim whose directory is not on PATH at all,
 one run by path, takes the first match that is not itself. The rule is
 "after", not "anything but me", because of a second kido install's bin
@@ -2150,7 +2181,11 @@ nothing reads it from disk. `dune build @install` lays the tree out in
 `_build/install/default`; `dune install` refuses under package
 management, so `make install` copies its `bin` and `share` into `PREFIX`
 (`~/.local` by default), the tree that holds `bin/kido`, `bin/kido-tmux`
-and `share/kido` together. The e2e harness copies the same tree into
+and `share/kido` together. The fork is copied from the revision-keyed
+cache under `build/tmux-fork/`, shared with e2e; repeated installs reuse
+it. `make install PREFIX=<prefix> SELF_CONTAINED=1` passes
+`--self-contained` to the fork installer and uses a separate
+`<revision>-self-contained` cache entry. The e2e harness copies the same tree into
 `<tmp>`. The Homebrew formula installs the same set into its own prefix.
 
 ## Keeping macOS awake

@@ -5,20 +5,22 @@ PREFIX ?= $(HOME)/.local
 build:
 	dune build
 
-# built straight into $(PREFIX) - the same tree the binary and the shared
-# files land in - keyed on the binary it produces, so a second `make
-# install` does not pay for the tmux fork's build again
-$(PREFIX)/bin/kido-tmux:
-	./scripts/install-tmux-fork.sh $(PREFIX)
+SELF_CONTAINED ?= 0
+INSTALL_FORK = build/tmux-fork/$(TMUX_FORK_REV)$(if $(filter 1,$(SELF_CONTAINED)),-self-contained,)
 
 # dune lays out bin/kido and share/kido (the root dune file) as symlinks
 # to read-only build outputs; `dune install` refuses under package
-# management, so they are copied, dereferenced and made writable again
+# management, so they are copied, dereferenced and made writable again.
+# Promotion substitutes dune-build-info in build/main.exe.
 DUNE_INSTALL := $(or $(DUNE_BUILD_DIR),_build)/install/default
-install: $(PREFIX)/bin/kido-tmux
+install:
+	@if ! test -x $(INSTALL_FORK)/bin/kido-tmux || ! test -f $(INSTALL_FORK)/share/kido-tmux/REVISION; then ./scripts/install-tmux-fork.sh $(if $(filter 1,$(SELF_CONTAINED)),--self-contained,) $(CURDIR)/$(INSTALL_FORK); fi
 	dune build @install
-	cp -RL $(DUNE_INSTALL)/bin $(DUNE_INSTALL)/share $(PREFIX)/
-	chmod -R u+w $(PREFIX)/bin/kido $(PREFIX)/share/kido
+	mkdir -p "$(PREFIX)/bin" "$(PREFIX)/share"
+	cp -RL $(DUNE_INSTALL)/bin $(DUNE_INSTALL)/share "$(PREFIX)/"
+	cp -f build/main.exe "$(PREFIX)/bin/kido"
+	cp -RL $(INSTALL_FORK)/bin $(INSTALL_FORK)/share "$(PREFIX)/"
+	chmod -R u+w "$(PREFIX)/bin/kido" "$(PREFIX)/share/kido"
 
 # unit tests; the end-to-end suite needs the patched tmux and is separate.
 # test-ts covers pi's two extensions under node and skips without one, so
