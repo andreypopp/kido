@@ -44,7 +44,7 @@ import TmuxControl
         window.title = SessionModel().title
         window.collectionBehavior = .fullScreenPrimary
         window.contentMinSize = Sidebar.minSize
-        let width = background ? 236 : UserDefaults.standard.object(forKey: "nativeSidebarWidth") as? Double ?? 236
+        let width = background ? 292 : UserDefaults.standard.object(forKey: "nativeSidebarWidth") as? Double ?? 292
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
@@ -270,6 +270,7 @@ import TmuxControl
 
     private func switchWindow(next: Bool) {
         sidebar.list.failed(nil)
+        sidebar.list.revealWindowOnNavigation()
         feed?.switchWindow(next: next) { [weak self] in self?.sidebar.list.failed($0) }
     }
 
