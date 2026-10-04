@@ -10,6 +10,7 @@ val self : string Lazy.t
 (** This executable as invoked ({!invoked_path} of [argv.(0)] on [$PATH]), unresolved. *)
 
 val binary : string Lazy.t
+val argv : string -> string list -> string array
 val write_all : Unix.file_descr -> string -> unit
 
 type process = { pid : int; stdin : Unix.file_descr; stdout : Unix.file_descr }

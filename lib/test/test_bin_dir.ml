@@ -94,7 +94,7 @@ let%expect_test "the shims run what they stand for, with the arguments as given"
   let prog, args = run_shim path "tmux" awkward in
   Printf.printf "tmux: kido-tmux %b, args %b\n"
     (same prog (bin // "kido-tmux"))
-    (List.equal String.equal args awkward);
+    (List.equal String.equal args ("-u" :: awkward));
   let prog, args = run_shim path "ssh" awkward in
   Printf.printf "ssh: kido %b, args %b\n"
     (same prog (bin // "kido"))

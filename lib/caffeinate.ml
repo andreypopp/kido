@@ -109,12 +109,11 @@ let tick ~dir ~grace ~now ~busy conn =
                         else
                           let script =
                             Printf.sprintf
-                              "caffeinate -i -w %d </dev/null >/dev/null 2>&1 & pid=$!; n=0; \
-                               while [ \"$n\" -lt 50 ]; do \
-                               case $(ps -o comm= -p \"$pid\") in caffeinate|*/caffeinate) \
-                               exec %s -S %s set-option -s @kido-caffeinate-pid \"$pid\" ;; esac; \
-                               n=$((n + 1)); sleep 0.01; done; \
-                               kill -KILL \"$pid\" 2>/dev/null; wait \"$pid\" 2>/dev/null"
+                              "caffeinate -i -w %d </dev/null >/dev/null 2>&1 & pid=$!; n=0; while \
+                               [ \"$n\" -lt 50 ]; do case $(ps -o comm= -p \"$pid\") in \
+                               caffeinate|*/caffeinate) exec %s -u -S %s set-option -s \
+                               @kido-caffeinate-pid \"$pid\" ;; esac; n=$((n + 1)); sleep 0.01; \
+                               done; kill -KILL \"$pid\" 2>/dev/null; wait \"$pid\" 2>/dev/null"
                               server
                               (Filename.quote (Lazy.force Tmux.Exec.binary))
                               (Filename.quote socket)

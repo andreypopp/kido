@@ -3,6 +3,7 @@
 # talk to, so every `tmux` a plugin, an editor or a run-shell line runs has
 # to land here.
 . "${0%/*}/../shim.sh"
+set -- -u "$@"
 case ${KIDO_TMUX-} in
 '') ;;
 */*) exec "$KIDO_TMUX" "$@" ;;

@@ -67,18 +67,18 @@ let server_conf ~exe ~user_conf =
 let probe_server ~socket_name bin =
   let ((out, _, err) as p) =
     Unix.open_process_args_full bin
-      [|
-        bin;
-        "-L";
-        socket_name;
-        "list-sessions";
-        "-F";
-        "#{socket_path}\x1f";
-        ";";
-        "show-environment";
-        "-g";
-        "KIDO_BUILD_ID";
-      |]
+      (Tmux.Exec.argv bin
+         [
+           "-L";
+           socket_name;
+           "list-sessions";
+           "-F";
+           "#{socket_path}\x1f";
+           ";";
+           "show-environment";
+           "-g";
+           "KIDO_BUILD_ID";
+         ])
       (Unix.environment ())
   in
   let stdout = In_channel.input_all out in
@@ -106,7 +106,7 @@ let mismatch ~socket_name bin =
      client; restart it once its windows are free (detach, then %s -L %s kill-server)"
     socket_name bin socket_name
 
-let argv ~socket_name bin args = Array.of_list (bin :: "-L" :: socket_name :: args)
+let argv ~socket_name bin args = Tmux.Exec.argv bin ("-L" :: socket_name :: args)
 
 let new_session ~dir ~detach =
   let open Result.Infix in

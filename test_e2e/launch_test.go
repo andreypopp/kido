@@ -670,7 +670,7 @@ func TestLauncherFindsItsTmuxAndReadsTheProbe(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	const fake = `#!/bin/sh
-if [ "$3" = list-sessions ]; then
+if [ "$4" = list-sessions ]; then
   [ -z "$PROBE_ERR" ] || echo "$PROBE_ERR" >&2
   [ "$PROBE_RC" != 0 ] || printf 'socket\037\nKIDO_BUILD_ID=build\n'
   exit "$PROBE_RC"
@@ -690,7 +690,7 @@ echo "$0 $*" >"$OUT"
 	alone := writeScript(t, filepath.Join(dir, "alone", "kido"), string(body))
 	onPath := writeScript(t, filepath.Join(dir, "path", "tmux"), fake)
 
-	attach, start := "-L kido attach-session", "-L kido -f STATE/server.conf new-session -s main"
+	attach, start := "-u -L kido attach-session", "-u -L kido -f STATE/server.conf new-session -s main"
 	for i, c := range []struct {
 		bin, env, rc, stderr, tmux, args string
 	}{

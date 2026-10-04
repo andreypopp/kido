@@ -230,7 +230,7 @@ let snapshot =
          (tm.tm_year + 1900) (tm.tm_mon + 1) tm.tm_mday tm.tm_hour tm.tm_min;
        print_endline
          "# Run outside tmux, then attach. Claude Code and pi panes resume their session.";
-       print_endline "set -e\nT=${TMUX_BIN:-tmux}";
+       print_endline "set -e\nT=\"${TMUX_BIN:-tmux} -u\"";
        let close = function
          | Some w when not (String.is_empty w.layout) ->
              Printf.printf "$T select-layout -t \"$p0\" %s\n" (q w.layout)

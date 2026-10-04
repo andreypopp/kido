@@ -44,6 +44,7 @@ let resolve_binary ~kido_tmux exe =
       |> List.find_opt is_file |> Option.get_or ~default:"tmux"
 
 let binary = lazy (resolve_binary ~kido_tmux:(Sys.getenv_opt "KIDO_TMUX") (Lazy.force self))
+let argv bin args = Array.of_list (bin :: "-u" :: args)
 
 let read_all fd =
   let buf = Buffer.create 4096 and chunk = Bytes.create 65536 in
@@ -76,8 +77,7 @@ let spawn ?socket args =
         {
           pid =
             Unix.create_process bin
-              (Array.of_list
-                 ((bin :: Option.map_or ~default:[] (fun s -> [ "-S"; s ]) socket) @ args))
+              (argv bin (Option.map_or ~default:[] (fun s -> [ "-S"; s ]) socket @ args))
               in_r out_w null;
           stdin = in_w;
           stdout = out_r;
