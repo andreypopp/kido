@@ -4,13 +4,15 @@
 #   demo.sh stop           kill the demo server
 set -e
 D=${KIDO_DEMO_DIR:?}
-export TMUX_TMPDIR=$D KIDO_STATE_DIR=$D/state KIDO_TMUX KIDO_APP_KIDO
-: "${KIDO_TMUX:?}" "${KIDO_APP_KIDO:?}"
+export TMUX_TMPDIR=$D XDG_STATE_HOME=$D/state
+export KIDO_STATE_DIR=$XDG_STATE_HOME/kido-app
+unset KIDO_TMUX
 unset TMUX TMUX_PANE KIDO_AGENT_PARENT_SESSION KIDO_AGENT_DEPTH KIDO_AGENT_TASK_FILE KIDO_AGENT_PARENT_PID KIDO_AGENT_RUN_ID
-APP=$1
-K=$KIDO_APP_KIDO
-S=$D/tmux-$(id -u)/kido
-t() { "$KIDO_TMUX" -S "$S" "$@"; }
+APP=${2:-$1}
+PREFIX=$(cd "$(dirname "$APP")/../Resources/kido" && pwd)
+K=$PREFIX/bin/kido
+S=$D/tmux-$(id -u)/kido-app
+t() { "$PREFIX/bin/kido-tmux" -S "$S" "$@"; }
 
 case $1 in
 stop) t kill-server; exit ;;
@@ -19,9 +21,8 @@ esac
 mkdir -p "$D/state" && chmod 700 "$D"
 if ! t has-session -t main:kido 2>/dev/null; then
   t kill-server 2>/dev/null || true
-  "$K" server
-  sleep 1
-  t rename-window -t main:1 kido
+  "$K" server --socket-name kido-app
+  t rename-window -t main: kido
   t split-window -d -h -t main:kido
   t new-window -d -t main -n review
   t new-window -d -t main -n tests
@@ -53,14 +54,13 @@ AWK
     t new-window -d -t ops -n "log-$size"
     t send-keys -t "ops:log-$size" "awk -v lines=$lines -f '$D/log.awk'" Enter
   done
-  t send-keys -t main:kido.0 "$K async_bash --name build -- sleep 3600" Enter
+  t send-keys -t main:kido.0 "'$K' async_bash --name build -- sleep 3600" Enter
 fi
 # Agents are status records only; they turn stalled without heartbeats, so rerun to refresh.
-t send-keys -t main:kido.0 "$K agent-status --agent pi --session demo-kido --status running --title kido --activity 'fixing sidebar tests'" Enter
-t send-keys -t main:review "$K agent-status --agent pi --session demo-review --parent-session demo-kido --depth 1 --status waiting --title review --activity 'needs your answer'" Enter
-t send-keys -t main:tests.0 "$K agent-status --agent pi --session demo-tests --parent-session demo-kido --depth 1 --status running --title tests --activity 'running e2e'" Enter
-t send-keys -t research:notes "$K agent-status --agent claude --session demo-notes --status idle --title notes --activity 'wrote summary'" Enter
-t send-keys -t research:deep "$K agent-status --agent pi --session demo-deep --status compacting --title deep-dive" Enter
+t send-keys -t main:kido.0 "'$K' agent-status --agent pi --session demo-kido --status running --title kido --activity 'fixing sidebar tests'" Enter
+t send-keys -t main:review "'$K' agent-status --agent pi --session demo-review --parent-session demo-kido --depth 1 --status waiting --title review --activity 'needs your answer'" Enter
+t send-keys -t main:tests.0 "'$K' agent-status --agent pi --session demo-tests --parent-session demo-kido --depth 1 --status running --title tests --activity 'running e2e'" Enter
+t send-keys -t research:notes "'$K' agent-status --agent claude --session demo-notes --status idle --title notes --activity 'wrote summary'" Enter
+t send-keys -t research:deep "'$K' agent-status --agent pi --session demo-deep --status compacting --title deep-dive" Enter
 t select-window -t main:kido
-sleep 1
 exec "$APP"
