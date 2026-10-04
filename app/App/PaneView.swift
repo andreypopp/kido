@@ -21,6 +21,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var onGridFailure: () -> Void = {}
     var onFindCoverage: (Int, UUID) -> Void = { _, _ in }
     var onLoadMore: () -> Void = {}
+    var onScrollTop: () -> Void = {}
     let scroller = PaneScroller()
     var find: PaneFind?
     private(set) var alternate = false
@@ -286,6 +287,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             let previous = $0 ?? position
             $0 = max(0, min(limit, move(previous)))
         }
+        if scrollDistance == limit { onScrollTop() }
         scrollRender = true
         queueScroll()
     }
