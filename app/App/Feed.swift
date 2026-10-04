@@ -1,5 +1,6 @@
 import Foundation
 import SidebarFeed
+import TmuxControl
 
 final class Feed: @unchecked Sendable {
     typealias Location = (kido: String, client: String)
@@ -52,15 +53,24 @@ final class Feed: @unchecked Sendable {
         writer.async { try? input.write(contentsOf: Data((text.isEmpty ? "filter\n" : "filter \(text)\n").utf8)) }
     }
 
-    @MainActor func switchWindow(next: Bool, completed: @escaping @MainActor (String?) -> Void) {
-        guard let (kido, client) = located else { return completed("the sidebar feed has not found kido yet") }
+    @MainActor func switchWindow(next: Bool, completed: @escaping @MainActor ((session: SessionID, window: WindowID)?, String?) -> Void) {
+        guard let (kido, client) = located else { return completed(nil, "the sidebar feed has not found kido yet") }
         let args = ["switch-window", next ? "next" : "prev", "--client", client, "--socket", socket]
+        let generation = generation
         Task {
             do throws(Failure) {
-                let (status, _, err) = try await Child.run(kido, args, env: Self.environment)
-                completed(status == 0 ? nil : err.isEmpty ? "kido switch-window exited \(status)" : err)
+                let (status, out, err) = try await Child.run(kido, args, env: Self.environment)
+                guard self.generation == generation else { return }
+                guard status == 0 else { return completed(nil, err.isEmpty ? "kido switch-window exited \(status)" : err) }
+                if out.isEmpty { return completed(nil, nil) }
+                let ids = out.split(separator: " ").map(String.init)
+                guard ids.count == 2, let session = SessionID(ids[0]), let window = WindowID(ids[1]) else {
+                    return completed(nil, "kido switch-window returned an invalid target: \(out)")
+                }
+                completed((session, window), nil)
             } catch {
-                completed(error.message)
+                guard self.generation == generation else { return }
+                completed(nil, error.message)
             }
         }
     }
@@ -138,6 +148,8 @@ final class Feed: @unchecked Sendable {
     }
 
     @MainActor private func restart(_ reason: String) {
+        generation += 1
+        located = nil
         closeInput()
         onChange(.restarting(reason))
         let item = DispatchWorkItem { [weak self] in self?.start() }
