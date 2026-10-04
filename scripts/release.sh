@@ -60,6 +60,8 @@ PY
 [[ -z $(git -C "$tap" status --porcelain) && -z $(git -C "$ssh_tap" status --porcelain) ]] || { echo 'Tap checkout is dirty' >&2; exit 1; }
 remote=$(git -C "$ssh_tap" remote get-url --push origin)
 [[ $remote == git@* || $remote == ssh://* ]] || { echo 'Workspace tap must push over SSH' >&2; exit 1; }
+action git -C "$ssh_tap" pull --ff-only origin main
+action git -C "$tap" pull --ff-only "$ssh_tap" HEAD
 if $dry; then
   echo "+ edit $formula: revision: $sha, version $version"
 else

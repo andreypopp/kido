@@ -531,7 +531,7 @@ repeat them.
 
 ## Releasing
 
-The repo carries **no version and no tags, deliberately**. Versioning
+kido carries **no version and no tags, deliberately**. Versioning
 lives in `andreypopp/homebrew-tap`'s `kido` formula: a git `revision:`
 with a hand-bumped `version`. The formula fetches the tmux fork as a
 resource at the revision `scripts/install-tmux-fork.sh --print-revision`
@@ -549,7 +549,10 @@ from that SSH checkout. It never runs `brew upgrade`.
 backing up originals once; `make unpreview-pi` restores them. Run `/reload`
 in the panes afterward. `KIDO_PREVIEW_PREFIX` selects a fake install for tests.
 
-Do not add a tag. `brew audit`/`brew style` vendor gems into the
+Only `kido-app/N.N.N` tags mark Kido.app releases, built from `kido-app`
+by `app/scripts/release.sh` and published as `Casks/kido-app.rb` in
+`andreypopp/homebrew-tap`; kido itself is never tagged.
+`brew audit`/`brew style` vendor gems into the
 Homebrew checkout itself, which can leave it dirty. Verify against a real
 tmux server before releasing — the ppx_expect tests do not need tmux, and e2e skips
 silently without the fork.
