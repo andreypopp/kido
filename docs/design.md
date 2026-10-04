@@ -41,11 +41,9 @@ socket, its free-text activity, its model, and its place in the spawn
 tree. There is no locking beyond the claim that keeps
 one session id to one live process ("Identity"). The
 one policy that stands in for it is that `State.load_live` removes any record whose
-pid is dead, rather than skipping it: pi's headless Claude Code bridge
-writes one such record per turn, and nothing else would ever clean them
-up. When two records name one pane the outer agent wins regardless of
-timestamp, because pi runs Claude Code inside its own pane and the inner
-one's hooks would otherwise fight pi's reports.
+pid is dead, rather than skipping it. When two records name one pane the
+outer agent wins regardless of timestamp, keeping inner Claude Code
+reports from competing with the outer agent's reports.
 
 That deletion has a consequence that shaped the rest of the design: with
 a sidebar running, `State.load_live` is called every 100ms, so the record of a dead
@@ -99,10 +97,7 @@ two parallel fields a caller could set one of and not the other.
 What this buys is the restart. A user who quits pi and resumes the same
 session (`pi --resume`) has a new process on the same session id, and
 every child keyed to that id is that session's child again the moment it
-reports. A per-process identity made every one of them an orphan for
-good: the tree dropped them, and the orphan rule treated them as
-ortherless. A `/reload`, which keeps both the process and the session
-id, was the same failure in a smaller shape.
+reports. A per-process identity would orphan children on a restart.
 
 The session id is read, never generated, so both extension halves read
 it from the one place pi hands it out (`ctx.sessionManager`), the status
@@ -115,10 +110,6 @@ it is whoever got there first. A second process opening a session
 another live one already has - two pi processes started from one session
 file, or `pi --session <file>` twice - would otherwise overwrite the
 running one's pane, pid and inbox, and delete its record on the way out.
-Both have happened, and the running session was left with a wrong inbox
-path, a "?" in the sidebar, and a child reaped for a parent that had
-vanished from `State.load_live`.
-
 The claim lives in the write path (`State.record`), needs no lock, and
 is three rules:
 
@@ -152,21 +143,20 @@ precisely because this one settled the question. A report refused later
 unobservable to the extension, and costs that session its row rather
 than anything else's.
 
-**The record must survive a reload.** `session_shutdown` fires for a reload exactly as it
-does for a real exit, so it removes this session's own state record for
-every reason except literally `"reload"`. Removing it unconditionally -
+**The record must survive a reload.** The extension's `session_shutdown`
+handler removes this session's own state record for every reason except
+literally `"reload"`. Removing it unconditionally -
 `send("idle", { remove: true })`, with `session_start` reporting a fresh
 one moments later - leaves a gap in which a live parent's poll lands on
 "no record" for a session id that never changed: a second, independent
-way to produce the symptom above. This is deliberately
+way to orphan a live parent's children. This is deliberately
 not the same gate as `endOwnRun` (used for the run outcome and the
 completion linger, below): those answer "did the run finish", and
 correctly treat `"new"`, `"resume"` and `"fork"` as not run-ending, since
 the run carries on. The record's removal answers a different question -
 does the *filename* (the session id) still refer to this session - and
-for those three reasons it does not: pi hands back a new session id in
-the same process (measured against pi 0.85.1), so the old record must
-still be removed or it is a live-pid file that `State.load_live` - which only ever
+for those three reasons the handler removes the old record. Otherwise it
+is a live-pid file that `State.load_live` - which only ever
 deletes a record whose pid is dead - leaves behind forever, claiming the
 same pane alongside the fresh record under the new id.
 
@@ -209,9 +199,8 @@ idle-exit timer, never against an orphan outliving its parent. The cost
 is a parent that goes away and comes back: a child polling across the
 gap between a quit and a `pi --resume` reads a definite "false" and ends
 itself, restart or no restart. And the
-answer is not scoped to the caller's tmux session, since a session id
-is unique and nothing about the file it was read from says which
-tmux session its pane is in. That matches lib/reap.ml's rule 2, the other
+answer is not scoped to the caller's tmux session: nothing about the file
+it was read from says which tmux session its pane is in. That matches lib/reap.ml's rule 2, the other
 reader of this same fact, which is server-wide as well; scoping the poll
 would put the two out of step, and a child whose window was moved to
 another tmux session would poll a list its parent is not in and shut
@@ -292,7 +281,7 @@ binding.
 the pid and the session id, and the path is keyed by the pid, so the
 listening server outlives the module that bound it: it is held on
 `globalThis.__kidoPiExtensionInbox`, the same mechanism the seam uses
-to survive jiti's re-evaluation. The server's own connection
+to survive a reload. The server's own connection
 listener is an indirection through that slot rather than a closure over
 one module's handler; `session_shutdown` with reason `"reload"` clears the
 handler and leaves the socket bound, and the reloaded module's
@@ -302,11 +291,9 @@ reason closes the server and unlinks the socket, and the next
 
 A connection accepted in the gap - after the old module's shutdown and
 before the new one's handler is installed - is parked, not dropped or
-refused. Nothing has attached a data listener to it, so the socket is
-still paused and loses no bytes; the new handler reads it whole and
-answers it. That gap is what made the case this is for: a notice never
-falls back to a paste and is sent exactly once, so an async run that
-finished while its parent was mid-reload was lost for good.
+refused. The new handler takes over the parked connections. A notice
+never falls back to a paste and is sent exactly once, so the reload gap
+must not discard it.
 
 The wire protocol is one message per connection: connect, write the
 payload as UTF-8 with no framing, half-close the write side so EOF ends
@@ -358,14 +345,8 @@ the transcript.
 
 ### Steer and followUp
 
-pi takes a delivered message two ways, and the difference is when it is
-drained (its `agent-loop.js`). `followUp` is drained only once the agent
-has decided to stop, so it revives a session that was about to finish.
-`steer` is drained inside the loop - at its start, after long-running
-preparation such as a compaction, and after each completed turn - so it
-joins the run already under way and changes what the session is doing.
-Neither interrupts a tool call; both are read between iterations. While
-the session is idle neither is consulted at all.
+kido selects `followUp` for work to queue and `steer` for work to
+interleave. An idle recipient uses the wake path below.
 
 The rule, one line:
 
@@ -375,11 +356,8 @@ That decides the incoming work and report kinds:
 
 - **`ask` queues.** This is the one that matters. An ask demands a
   correlated reply, so two of them must never be in flight inside one
-  turn: measured with four agents sharing one advisor, a second question
-  arriving while the advisor is composing an answer to the first risks
-  that answer going back against the wrong `replyTo`.
-  `followUp` serialises them - a consultant answers its askers one at a
-  time - and the cost is the wait recorded under "Known limits".
+  turn. kido chooses `followUp` to keep correlated questions ordered;
+  the cost is the wait recorded under "Known limits".
 - **`message` queues.** It has neither a correlation to confuse nor any
   authority over what the receiver is doing, so it waits for the turn in
   progress like anything else a user might type.
@@ -387,9 +365,7 @@ That decides the incoming work and report kinds:
   assigned the work, with nothing to correlate and no value at all once
   the work it was correcting is finished.
 - **`notice` steers.** It is information the parent needs in order to
-  dispatch the next thing, and a queued one waits out the parent's whole
-  turn - measured live, two children's notices sat invisible for minutes
-  behind one long turn ("Notifying the parent").
+  dispatch the next thing, so kido chooses interleaving over queueing.
 - **`stream` is held, then steers.** The wrapper resolves the parent's
   live record and inbox for each send (`Async_stream.send`), so a rebound
   socket is not a stale address held for the command's lifetime. A batch
@@ -407,66 +383,24 @@ re-wraps it rather than stacking wrappers.
 
 ### Waking an idle session
 
-While the session is idle neither queue is consulted, so an arrival has to
-start a turn of its own. It does that in two calls: the arrival is queued
-with `sendMessage(..., { deliverAs: "nextTurn" })`, which appends nothing
-and starts nothing, and then a short user-role **trigger** is sent with
-`sendUserMessage`. pi's `prompt()` runs the turn, injecting every pending
-`nextTurn` message immediately after the user message - so the arrival
-keeps its custom type, its header and its renderer, and reaches the model
-inside a turn `prompt()` prepared.
-
-That detour exists because of pi 0.87.1: `sendMessage` with `triggerTurn`
-on an idle session reaches the agent loop directly, skipping the
-`before_agent_start` emit and the system-prompt diff `prompt()` does
-first. The cost was two bugs - a subagent woken by a message never saw
-its own standing `notify_parent` instruction, and a resumed session whose
-extensions or tools had changed sent a stale prompt, which
-pi-claude-bridge refuses outright ("prompt-capture: no capture for this
-N-char system prompt"). Nothing changes while the session is streaming:
-pi prepares every later turn itself, so a steer or a followUp is handed
-the message exactly as before, and no trigger is sent.
+For an idle recipient, kido queues the arrival with
+`sendMessage(..., { deliverAs: "nextTurn" })`, then sends a short
+user-role **trigger** with `sendUserMessage`. While the session is
+streaming, kido sends no trigger and uses the kind's steer or follow-up mode.
 
 The trigger is one line, varying only in which kind is coming - `(kido: a
-message arrived; it follows)` and its three siblings. It only starts the
-turn: `prompt()` hands the messages it prepared to pi's private
-`_runAgentPrompt`, which records and sends them, and kido wraps that method
-to drop the trigger there. So it is never drawn, never in the transcript
-and never read by the model; the arrival leads the turn. When the drop
-cannot happen - the race below, where pi queues the trigger instead of
-prompting, or a pi that renamed the method - the trigger is in the
-transcript as typed and the model reads it as the user's own words, so it
-is short and says no more than what follows. `expandPromptTemplates` is
-off, so it is never dispatched as a command.
+message arrived; it follows)` and its three siblings. kido installs a
+wrapper to remove its triggers from outgoing messages. A trigger that
+remains says no more than what follows. kido sets
+`expandPromptTemplates` to false.
 
-**One trigger at a time.** Pending `nextTurn` messages are all injected
-into the one turn `prompt()` builds, so an arrival that lands while a
-trigger's turn has not begun is queued and sends no trigger of its own: it
-rides the turn already on its way, and a second trigger would only buy a
-second turn for a message the first one already carries. Two asks sharing
+**One trigger at a time.** An arrival that lands while a trigger is
+pending is queued and sends no trigger of its own. Two asks sharing
 one turn is accepted rather than serialised - each carries its own id and
 is answered with `replyTo`, so nothing is misattributed by them arriving
-together. The flag that says a trigger is out is cleared at pi's
-`turn_start`, and also if `sendUserMessage` fails: that call *is*
-`prompt()`, which can throw before any turn starts - a compaction in
-progress, an unconfigured model - and a flag cleared at `turn_start` alone
-would then hold every later arrival back for the life of the session.
-
-`turn_start` is later than the point `prompt()` drains those pending
-messages, which in 0.87.1 costs nothing: the drain is followed
-synchronously by the run going active, so an arrival that still reads the
-session as idle is always still ahead of it, and one that arrives after
-reads a streaming session and takes the ordinary steer or followUp path.
-
-One race is left, and it is pi's: `prompt()` decides whether it is
-streaming after the call returns, so a turn that starts in between queues
-the trigger instead of prompting. The trigger carries the kind's own mode
-for exactly that reason - otherwise pi throws "Agent is already
-processing" and the turn is lost - and the arrival waits in pi for the
-next `prompt()`, which is the next wake or the user typing. The cost is
-lateness for one message; nothing is dropped, duplicated or pasted. A
-user who types first is the same case from the other end: their turn
-carries the arrival, which is what a queued message is for.
+together. The pending-trigger flag is cleared in the `turn_start`
+handler and if `sendUserMessage` fails, so a failed wake does not hold
+later arrivals back. The trigger carries the kind's own delivery mode.
 
 The idle-exit clock is untouched by any of this. It is reset when the
 envelope arrives, not when the model is handed it, so an arrival waiting
@@ -587,10 +521,9 @@ In pi's prompt editor, `@` and a prefix completes the live agent rows in
 not bash or ended runs. Each row shows status, activity and a subagent's
 parent. Internal sender, ancestry and reply checks use
 `get-agent --context`, the live agent graph, so an unlisted sender is
-not mistaken for a human and addressing remains session-wide. `@` is also pi's file
-trigger, so the provider wraps pi's own: agent matches come first, the
-built-in's file matches follow under the same prefix, and a token that
-matches no agent (`@src/...`) is the built-in's answer untouched. The
+not mistaken for a human and addressing remains session-wide. kido wraps
+the completion provider to put agent matches before its other matches
+and delegates tokens that match no agent. The
 token matches the start of the name or of any word in it, whole-name
 matches first; a name with whitespace, which cannot be typed back as one
 `@` token, inserts the shortest unique prefix of the agent's id instead,
@@ -614,12 +547,7 @@ takes minutes and the two-second inbox timeout must not cover it.
 **A caller with no inbox is refused, rather than delivered.** Since the
 answer comes back on the asker's own inbox and no other way, a caller
 without one is asking a question nothing can answer, and delivering it is
-a one-way interrupt wearing a question's costume: measured from a bare
-shell, `echo hi | kido tool ask_agent --id t1 -- <agent>` reported "delivered"
-and was - the target spent a turn's attention on the question and then
-could not reply at all, the asker not even being addressable
-(`kido tool message_agent: no agent session matches "%47"`), and was left
-holding a pending ask it could never discharge. `kido tool ask_agent` refuses
+a one-way interrupt wearing a question's costume. `kido tool ask_agent` refuses
 before resolving the target, the way `kido tool notify_parent` refuses a root
 session, and the refusal names `message_agent` - the one-way send a shell actually
 wanted.
@@ -627,11 +555,8 @@ wanted.
 A target that cannot reply is refused too: a reply is a `message_agent`
 call, so a child spawned with a tools allowlist that excludes it has
 nothing to answer with, and the ask would only block. `kido tool list_runs
---json` reports this as `canReply`, read beside `canMessage`. Measured
-live: a parent asked four such reviewers for their reports seconds after
-spawning them; each said so through `notify_parent` and the asks waited
-until the user interrupted. A child's result arrives as a notice, and the
-spawn and ask descriptions now say so.
+--json` reports this as `canReply`, read beside `canMessage`. A child's
+result arrives as a notice, and the spawn and ask descriptions say so.
 
 The test is the one `send` already applies to the *recipient* of any
 non-message envelope, turned on the sender, because a reply is exactly
@@ -643,10 +568,9 @@ inbox is a Claude Code session, reachable only by paste, and a paste is
 not a reply. The extension's own `ask_agent` is unaffected - it binds an
 inbox before it can register a waiter at all.
 
-Expect one full turn of latency, not a round-trip. Delivery is
-`followUp`, so the question waits for the target's whole current turn,
-and the answer requires its model to decide to call `message_agent`. The
-default wait is five minutes. A timeout is therefore not a failure of
+The scheduling expectation is one full turn of latency, not a
+round-trip. kido selects `followUp` for questions and waits for an
+explicit `message_agent` reply. The default wait is five minutes. A timeout is therefore not a failure of
 the question: a reply arriving after its asker gave up is delivered to
 the model as an ordinary message rather than dropped, and the ask id
 stays a valid correlation for that.
@@ -728,11 +652,8 @@ case - the process is gone - so there is no second one to keep in step.
 
 ### When the human interrupts
 
-pi passes each tool's `execute` the turn's `AbortSignal`, and pressing
-Esc aborts it. An ask that ignored it could not be interrupted at all,
-because pi's own abort path waits for the running tool call to return:
-the wait it was told to abandon was the thing holding it. So the signal
-settles the waiter like any other outcome, dropping the pending entry
+The ask tool listens to its `AbortSignal`. The signal settles the waiter
+like any other outcome, dropping the pending entry
 and its cycle edge, and the ask id is reported the way a timeout's is -
 a reply that arrives afterwards is still delivered as a message.
 
@@ -809,14 +730,11 @@ understate it.
 ### The run id is the child's session id
 
 `kido tool spawn_subagent` mints the run id and, when the command is literally
-`pi`, inserts `--session-id <run-id>` after it, which pi documents as "use
-exact project session ID, creating it if missing". Restarting a finished run
-is `pi --session <run-id>` and forking it is `pi --fork <run-id>`, with no
-bookkeeping mapping one id to the other because there is only one id. pi
-sessions are project-scoped, so `kido runs <id>` prints those commands with
-`cd <cwd> &&` in front, the only way to make the printed line copy-pasteable
-from anywhere; run from the wrong directory, pi asks whether to fork into
-the current project instead of just working. The id also goes into
+`pi`, inserts `--session-id <run-id>` after it. kido prints
+`pi --session <run-id>` to restart a finished run and
+`pi --fork <run-id>` to fork it, with `cd <cwd> &&` in front.
+There is no bookkeeping mapping one id to the other because there is
+only one id. The id also goes into
 `KIDO_AGENT_RUN_ID` unconditionally, because a child that is not pi (every
 e2e fake) has no session of its own to learn it from and still needs it to
 report an outcome.
@@ -829,8 +747,8 @@ starts - a human's `pi` in that pane, a tool shelling out to `pi
 extension that takes the claim at face value acts on somebody else's run:
 a nested pi resolves itself by pane, finds the real agent's record, and on
 its way out schedules `kido close-run` on the real agent's window.
-Measured live, that killed live agents. The extension checks the
-claim against a fact about itself instead: it is a subagent only if
+The extension checks the claim against a fact about itself instead: it
+is a subagent only if
 `KIDO_AGENT_PARENT_SESSION` is set *and* its own pi session id equals
 `KIDO_AGENT_RUN_ID`, which the real child satisfies on both the
 `--session-id` and the `--session` path and a nested pi, minting its own
@@ -903,7 +821,7 @@ long before any sweep sees it. And a pane id is not an identity - pane
 ids restart at `%0` on every new tmux server while state files are global
 and outlive it, so a stale record names a pane somebody else holds now. A
 sweep with no mark to check closes a plain shell window that is nobody's
-subagent, which is measured rather than hypothetical.
+subagent.
 
 So there are two rules, and both may only act on a window carrying a run
 pane. First: the run's own pane is dead and has been for the linger
@@ -924,7 +842,7 @@ window; nothing is lost by waiting, since the sweep runs again next tick.
 **A split window is the user's window.** The unit of collection is the
 run's pane, not the window it was made in: a window finished only once
 every pane in it is dead leaves the run's corpse beside the user's own
-shell until they leave (measured live). So a sweep names either a pane
+shell until they leave. So a sweep names either a pane
 or a window (`Reap.close`), and the caller does the killing: the run's
 pane goes with `kill-pane`, or, when that pane is all the window has,
 the window goes with `kill-window`. The two are not spellings of one
@@ -954,9 +872,9 @@ for `kido reap`). The per-pane view (`State.by_pane`) cannot answer it, for a
 reason no amount of checking inside the sweep can recover: it keeps
 one record per pane, so a `pi --print` started inside an agent's pane
 inherits that pane, wins it for as long as it reports, and the real
-parent's record is simply not in what the sweep was handed. Measured live,
-that killed two working agents, and a debounce riding it out treats a bad
-answer as a slow one. Given the whole registry the collision stops
+parent's record is simply not in what the sweep was handed. A debounce
+riding it out treats a bad answer as a slow one. Given the whole registry
+the collision stops
 mattering: it decides who owns a pane, which is a question the reaper
 never asks. The sidebar still draws its rows from the per-pane view - a
 pane has one label - and takes both views from one read of the directory
@@ -1046,9 +964,7 @@ cancels and restarts it, so this is idle-for-30s, not
 other place it arms is the delivery of the task, which covers a child
 whose pi never reaches a first turn at all and would otherwise be on no
 clock (design-subagents.md, "Idle self-exit"); the clock also re-arms
-after every call to `shutdown`, because pi declines one made
-mid-compaction and re-checks only on its own next `agent_settled`, which
-a compaction never emits.
+after every call to `shutdown`, until the session ends.
 
 **Only a child arms it**, gated on the session-id identity test ("The run
 id is the child's session id") exactly as `notify_parent`'s own refusal
@@ -1138,10 +1054,8 @@ nothing has been recorded and the pid is live - resuming a live agent makes
 no sense). A run whose pi session file is gone is resumed with
 `--session-id`, minting a fresh session under the run's own id
 (design-subagents.md, "Resuming a run"); the check is `pi_session_file_exists`
-(lib/spawn_subagent.ml), mirroring pi 0.85.1's own
-`getDefaultSessionDirPath`: `PI_CODING_AGENT_SESSION_DIR` if set, else
-`<agentDir>/sessions/--<cwd, its slashes and colons dashed>--`; it does not
-walk pi's own per-project `sessionDir` setting, a known gap. The depth
+(lib/spawn_subagent.ml), using `PI_CODING_AGENT_SESSION_DIR` if set, else
+`<agentDir>/sessions/--<cwd, its slashes and colons dashed>--`. The depth
 ceiling still applies, derived from the *resumer's* own caller record
 exactly as a fresh spawn's is - resuming does not bypass it.
 `--parent-pid`/`--parent-session` are optional for `--resume` alone (a
@@ -1160,10 +1074,8 @@ a different, legitimate thing.
 
 A bare `pi` (no `-- pi --model ...` given) carries the run's own recorded
 `model` through as `--model`, unless the caller's own command already
-names one: measured live, a resumed run with no explicit model came up on
-pi's default provider, which may have no API key configured on the
-machine actually running it, and the run's meta already remembers what it
-ran under - there is no reason to make every resumer repeat it.
+names one. The run's meta remembers what it ran under, so a resumer
+need not repeat it.
 
 **`--parent-session` is refused, before the window exists, unless it names
 somebody currently alive.** lib/reap.ml's rule 2 closes any marked window
@@ -1175,10 +1087,8 @@ itself, so the session id it hands over is definitionally live at that
 moment. `--resume` is different by design - it is exactly the mechanism that
 lets a *different*, by-hand caller claim the parent edge (the paragraph
 above) - which makes an unverifiable value here a real, not hypothetical,
-failure mode: measured live, `kido tool spawn_subagent --resume <id> --parent-pid
-<pid> --parent-session <id>` naming a parent nobody holds leaves a window
-gone within about a second, the run recording a useless `died` outcome and
-nothing saying why. The read that would explain it (rule 2 firing) happens in a
+failure mode: a parent nobody holds makes the resumed run an orphan.
+The read that would explain it (rule 2 firing) happens in a
 completely different process on its next sidebar poll, by which point the
 resume command has long since exited successfully - there is no error
 message for a human to see at all. Checking liveness with the same
@@ -1240,9 +1150,8 @@ ancestor chain `ask_agent` walks in the other direction, and both refuse
 a self-edge outright rather than walking for it, so a corrupt record
 naming itself as its parent cannot let a session stop itself.
 
-**Escalation.** A wedged child will not answer; a real pi has sat alive
-and blocked for hours after a laptop slept and its provider connection
-died. So `stop` sends the request and then polls the target's own record
+**Escalation.** A wedged child will not answer. `stop` sends the request
+and then polls the target's own record
 for up to five seconds, and if it is still there, kills its pane. A
 request the target did not agree to (held the connection open, answered
 badly, or refused on its own scope check) is a reason to escalate, not to
@@ -1277,9 +1186,7 @@ on this session's inbox and being answered settles a turn exactly the same
 way a delegated task finishing does. Only the subagent's own model knows
 whether a given turn actually completed the work its parent cares about,
 so a "a turn settled, tell the parent" rule cannot tell a real answer from
-work done for someone else - measured live, a subagent answered a
-sibling's `ask_agent` question, which settled a turn, which notified the
-parent with the report meant for the sibling.
+work done for someone else.
 
 Content is exactly what the model chooses to say, not
 extracted from `agent_end`'s message data (there is no need to; the
@@ -1292,15 +1199,11 @@ fit: `kido tool notify_parent` keeps the whole of a longer one in the run's dire
 names it in the notice (design-subagents.md, "Reporting"). The cap is
 enforced there, in the command, and not in the tool, which would be
 throwing away what the command exists to keep; the tool's own schema does
-not repeat it as a `maxLength` either, because
-`maxLength` counts UTF-16 code units against a bound stated in bytes and
-rejects the whole call outright rather than truncating - measured live, a
-subagent with a genuinely long report got "summary must not have more
-than 4000 characters" back and had to redo the call. `set_status`'s
+not repeat it as a `maxLength` either: the command owns the byte bound
+and preserves the full report. `set_status`'s
 `activity` is left out of its schema for the same reason: it is sent to
 kido untouched, and `Reporting.one_line` is the one place that
-truncates it, so a bound in the schema would only reject calls the code
-already handles. Refused, before anything is
+truncates it; the schema leaves that handling to the command. Refused, before anything is
 sent, for a session that is not itself a spawned child ("The run id is
 the child's session id") - it was not spawned, so there is nobody of its
 own to tell, and the refusal says so rather than reading as a silent
@@ -1358,37 +1261,26 @@ turn - kept to two sentences for that reason.
 **The rendered side.** An inbound `notice` is sent as a custom message
 (`pi.sendMessage` with a `customType`, not `pi.sendUserMessage`) so it
 can render collapsed to one line - "@X notifies: <first line>..." - with the full text behind pi's own `registerMessageRenderer`
-`options.expanded`, which is driven by pi's built-in ctrl-o and is not a
-keybinding this extension registers; a second extension bound to the same
-key would conflict, riding the existing flag does not. The collapse is a
+`options.expanded`. kido registers no keybinding for it. The collapse is a
 transcript-display concern only - the model still receives the full text,
 under one header line, `notice from <from> (a subagent or background
 run's report, not the user):`, which the renderer strips again. A notice
 steered into a turn otherwise reads exactly like the user typing, and
-the header is what tells the two apart. The model gets the text since
-a custom message participates in LLM context exactly as a plain user
-message did. Every notice collapses the same way regardless of
+the header is what tells the two apart. kido marks the custom message
+for LLM context. Every notice collapses the same way regardless of
 whether its sender is actually a subagent: kind, not identity, is the
 sender's own choice (`kido tool notify_parent` versus `kido tool message_agent`),
 and `from` is advisory in exactly the way the rest of
 the inbox protocol already treats it, so nothing here does an identity
 lookup to decide how to render. A turn is always asked for: an idle parent
 must be woken by a notice exactly as a plain message wakes it, and
-`sendMessage`, unlike `sendUserMessage`, starts no turn of its own - which
-is why an idle parent gets the trigger described under "Waking an idle
+an idle parent gets the trigger described under "Waking an idle
 session".
 
 **Visual arrival is immediate; model delivery steers.** They are two
-events, because one - `deliverAs: "followUp"`, the mode a plain message
-uses - queues behind the running turn for the transcript entry and the
-model text alike: measured live, two subagents called `notify_parent`
-while their parent was mid-turn and both notices sat invisible for several
-minutes, then appeared together the instant the parent's turn happened to
-end. The row a human sees is a `ctx.ui.setWidget` line - the
+paths: the row a human sees is a `ctx.ui.setWidget` line - the
 collapsed "@X notifies: <first line>..." drawn entirely dim - set the moment the envelope is dispatched, before
-anything about the message is awaited; a pi widget sits in its own
-VStack beside the transcript's scroll view rather than inside it, so it
-renders regardless of what turn is in progress. Once the identical
+anything about the message is awaited. Once the identical
 message actually reaches the transcript - `message_start`, matched by a
 `noticeId` minted alongside it - pi's own `registerMessageRenderer` is
 showing the permanent collapsed row and the widget's entry for that
@@ -1402,15 +1294,8 @@ parent that does not know a child is done cannot act on that - the entire
 reason to run work in a subagent is to keep going in parallel, and a
 parent whose own turn runs long (its own tool calls, orchestrating other
 children) would otherwise sit on a finished child's report for however
-long that takes, which is the failure above in its other half. This does
-not knock the running turn off course the way an abort would: measured
-against pi 0.85.1's agent loop
-(`@earendil-works/pi-agent-core`'s `agent-loop.js`), a steered message is
-only ever drained between a completed turn's tool results and the next
-model call - `getSteeringMessages` is polled at `turn_end` and again at
-the top of the following iteration, never mid-tool-call - so it can never
-land between an assistant's tool call and that call's own result. The
-model decides whether to act on it now or keep going; that is the
+long that takes. kido sends a steer, not an abort. The model decides
+whether to act on it now or keep going; that is the
 judgement an orchestrator is meant to make, and it cannot make it about
 text it has not seen. Plain messages and asks are deliberately left on
 `followUp`: an ask is answered synchronously by a `message_agent` call
@@ -1454,10 +1339,9 @@ ordering everywhere else:
   running, and an outcome written before a refusal could never be
   corrected. On the escalation path it is written after the last-pane
   guard and before the kill, for the same two reasons.
-- A `/reload` must not record `completed`. pi fires `session_shutdown`
-  for a reload too, with the session carrying straight on in the same
-  process; an outcome written there reports a live run as finished, and
-  the run's real ending, an hour later, would then be silently discarded.
+- A `/reload` must not record `completed`. The shutdown handler excludes
+  reloads: an outcome written there reports a live run as finished, and
+  the run's real ending would then be silently discarded.
   The same gate keeps a reload from scheduling the child's own window to
   be closed out from under it.
 - `kido runs` guesses `died` for a run with no outcome and a dead pid,
@@ -1473,17 +1357,11 @@ The task file is never deleted; it is the record of what the run was
 asked to do. A sibling `delivered` marker, written only after the read
 has succeeded, is what stops a `/reload` from delivering the task twice;
 a task that failed to read stays eligible next time rather than being
-marked delivered and never shown. There is no retention: a run record is
-a pointer to a pi session file that pi itself never prunes, so deleting
-the pointer would not free the space a cleanup would be chasing. A run
+marked delivered and never shown. kido does not prune run records. A run
 whose outcome is never written just sits there, and `kido runs` still
 has something to say about it. The captured screen ("The screen
-capture", above) is the one exception to "a run record is a pointer": it
-is copied bytes, not a reference to something kept elsewhere. Its cap is
-chosen small enough that this does not matter - a few KB in the common
-case, 64KB at the ceiling - next to the pi session file the run already
-points to and that pi keeps forever regardless, which for any real
-conversation dwarfs it.
+capture", above) is copied bytes, not a reference to something kept
+elsewhere. Its cap is 64KB.
 
 ## Heartbeat and staleness
 
@@ -1515,24 +1393,16 @@ it leaves most of an ask's default timeout for a genuinely busy target.
 `ask_agent` reads the stalled flag off the live agent graph it already
 fetches and refuses a stalled target immediately.
 
-A session parked on background work is exempt. Claude Code's `Stop`
-fires with `background_tasks` outstanding, kido records `running` with
-`background` set, and then nothing is emitted at all while a background
-shell runs: the main loop has stopped, and the next event may be the
-user's next prompt. There is no heartbeat to miss, so the threshold
-would not be measuring a dropped report but the absence of any reporter,
-and it would fire three minutes after every backgrounded turn. The
-exemption is on the flag rather than on a longer clock, because the wait
-has no upper bound either. It costs the ability to notice background
+A session parked on background work is exempt. kido's `Stop` handler
+records `running` with `background` set when the payload carries
+outstanding background tasks. The exemption is on the flag rather than
+on a longer clock, because kido has no heartbeat for that work. It costs
+the ability to notice background
 work that has genuinely wedged, which this signal could never see
 anyway: that needs evidence of the work itself, not of the agent.
 
-A session inside a tool call is exempt for the same reason in a
-different shape. `PreToolUse` fires, and Claude Code says nothing more
-until the tool returns: a build, a test run, an ssh to a distant host.
-A tool call has no upper bound either, so the quiet is the work, and a
-slow one crossed the threshold while behaving exactly as intended. The
-effect of `PreToolUse` therefore carries `tool_pending`, and
+A session inside a tool call is exempt too. kido's `PreToolUse`
+handler sets `tool_pending`, and
 `PostToolUse` takes it back by not setting it - no carrying forward is
 needed, because every report writes a whole fresh record, so a `Stop`
 or an interrupted turn's idle clears it just as well. What remains
@@ -1562,11 +1432,9 @@ the only thing positioned to notice a gap. It compares two readings
 taken across one tick: the wall clock's account of the interval against
 the monotonic clock's account of the same interval. Each reading is a
 `Sidebar.reading`, a wall time and an `Mtime.t` taken together by
-`Sidebar.read_clock`; `Mtime_clock` reads `mach_absolute_time` on macOS
-and `CLOCK_MONOTONIC` on Linux, and neither advances across a suspend.
-A tick that was merely slow for an awake reason advances both readings
-together; only a suspend leaves the monotonic one behind. The wall
-account outrunning the monotonic one by more than five seconds is a
+`Sidebar.read_clock`. A tick that was merely slow for an awake reason
+advances both readings together; only a suspend leaves the monotonic one
+behind. The wall account outrunning the monotonic one by more than five seconds is a
 sleep (`Sidebar.detect_pause`). A wall time alone - a `Timestamp.t`, or
 anything read back from disk - has no monotonic half and cannot take
 part.
@@ -1626,33 +1494,19 @@ session id and status, whether the inbox is open, and the shared
 its hooks - only what someone actually calls, and nothing kept published
 for a reader that might turn up.
 
-**The slots are on `globalThis.__kidoPiExtensionSeam`, shared across
-extension evaluations.** The obvious argument, that ES
-modules are singletons per resolved path so an import of the neighbouring
-file is the module pi loaded, is false for pi: each extension is evaluated
-in a module registry of its own, so `kido-agents.ts` importing a runtime
-value from `kido-status.ts` produces a second evaluation of that file,
-under the identical URL, with its own module scope. Module-scope slots
-leave each half holding a copy of the
-other that no session ever started: measured, `list_runs` in a real pi
-answered `[]` while every unit test passed. `globalThis` is shared across
-those evaluations, also measured. `kido-status.ts` declares the global
-property's type; `kido-agents.ts` imports nothing but types from it, which
-type-stripping erases, and accesses the same property.
+**The slots are on `globalThis.__kidoPiExtensionSeam`.**
+`kido-status.ts` declares the global property's type; `kido-agents.ts`
+imports only types from it and accesses the same property. Neither half
+imports runtime values from the other.
 
-**There is no load-order assumption.** pi discovers extensions in a
-directory and the order is not kido's to choose, but every factory runs
-before any `session_start`. Neither slot is read at factory time: each
-half writes its own slot and reads the other only from inside an event,
-a tool call or a hook, by which point both factories have long since run.
-Tools register unconditionally at factory time and no-op at call time
-until a session has resolved kido and a session id, because pi may run
-the factory in invocations that never start a session; resource lookup
-belongs in `session_start`.
+**There is no load-order assumption.** Neither slot is read at factory
+time: each half writes its own slot and reads the other only from inside
+an event, a tool call or a hook. Tools register unconditionally at
+factory time and no-op at call time until a session has resolved kido
+and a session id; resource lookup belongs in `session_start`.
 
 **The hooks exist because ordering within one lifecycle event is
-load-bearing**, and nothing says pi runs two extensions' handlers in any
-particular order. The status half calls the agent half's hooks at exact
+load-bearing**. The status half calls the agent half's hooks at exact
 points in its own handlers: the session context - its UI included, which
 the notice widget and the `@name` completion live in - is captured first
 thing in `session_start` so a `/reload`'s fresh context replaces the old
@@ -1786,9 +1640,7 @@ and owns the cursor, the scroll and the keys.
 
 A live bash run's caption, or a live subagent run's caption without activity text, is its elapsed run time (`12s`, `1m05s`, `1h02m`),
 formatted by the view from the model's clock reading of the tick, so the
-rows and `same` never change by the second. Mosaic renders the view after
-every message and diffs the screen, so each tick's new reading reaches
-the screen without a rebuild; what the view adds is the wake: while a
+rows and `same` never change by the second. The view adds the wake: while a
 row on screen shows elapsed time, the next tick's wait is cut to that
 row's next second boundary, and otherwise it stays the interval. An
 ended run shows its outcome. The
@@ -1851,33 +1703,21 @@ life of the connection.
 A local pane gets its copy from `kido shell`, which primes every pane the
 kido server starts ("Priming a local shell"); nothing is written into the
 user's rc files. The bash half of the integration hangs its command-start
-marker off `PS0` and its prompt marker off `PROMPT_COMMAND`, which is how
-kitty does it and is what makes the start marker fire once per command
-line where a `DEBUG` trap fires once per simple command; it needs bash 4.4
-for `PS0`, and an older bash reports nothing rather than half of it. The
-integration is a no-op when sourced twice, which is what makes priming
-safe for a shell that reaches it from more than one direction.
+marker off `PS0` and its prompt marker off `PROMPT_COMMAND`. kido gates
+it on bash 4.4 and up. The integration is a no-op when sourced twice.
 
 `kido ssh` is that host's answer: it sends the integration along with the
-connection. The design is kitty's ssh kitten, cut down to the one thing
-kido needs.
+connection.
 
 **What is sent.** The integration is embedded in the binary (`kido/shell`)
 and base64'd into a POSIX sh bootstrap, which goes to ssh as the remote
-command. kitty does the opposite - a small bootstrap in argv that asks
-the terminal for the heavy payload over a DCS escape, gated by a one-time
-password - and that channel cannot work here: it needs a kitty-aware
-emulator at the local end, and kido's local end is tmux inside whatever
-terminal the user has. Argv is affordable because the payload is two
-small files, about 0.9KB for zsh and 2.4KB for bash, where kitty's is
-~127K plus terminfo - both ride along on every connection regardless of
-which one the remote's login shell needs. stdin is not an option at
-all: the interactive session needs it.
+command. Both integrations ride along on every connection regardless
+of which one the remote's login shell needs. kido leaves stdin for the
+interactive session.
 
-**What that costs, said plainly.** Anything in an ssh command line is
-visible in the remote's `ps`. The payload is a public shell script with
-no secrets in it, so argv is acceptable - a reason, not an oversight; a
-payload that ever carried a secret would need a different channel.
+**What that costs, said plainly.** The payload is a public shell script
+with no secrets in it, so kido permits it in argv; a payload that ever
+carried a secret would need a different channel.
 Separately, everything the sidebar then shows about that pane is the
 remote end's own report, which is a weaker claim than the local process
 table kido reads for everything else: a host can say whatever it likes
@@ -1885,36 +1725,20 @@ about what it is running.
 
 **The ZDOTDIR swap.** The bootstrap decodes the integration into a fresh
 `mktemp -d`, writes a `.zshenv` beside it, points `ZDOTDIR` at that
-directory and execs the login shell. zsh looks `$ZDOTDIR` up again for
-each startup file, so that `.zshenv` - which runs first - restores
-`ZDOTDIR` before anything else is read, and `.zprofile`, `.zshrc` and
-`.zlogin` come from the user's real dotfiles directory. A `ZDOTDIR` the
-user already had is carried across in `KIDO_ORIG_ZDOTDIR` and put back;
-otherwise `ZDOTDIR` is unset again. The remote `$HOME` is never written
+directory and execs the login shell. The generated `.zshenv` restores
+`ZDOTDIR`. A `ZDOTDIR` the user already had is carried across in
+`KIDO_ORIG_ZDOTDIR` and put back; otherwise `ZDOTDIR` is unset again. The remote `$HOME` is never written
 to, and nothing is installed there.
 
-The swap only happens when the user already has zsh dotfiles, which is
-kitty's care and worth keeping: a zsh with none is about to run
-`zsh-newuser-install`, and a `ZDOTDIR` pointing at kido's directory would
-quietly suppress it.
+The swap only happens when the user already has zsh dotfiles.
 
-**The bash branch.** bash has no `ZDOTDIR`, and a login bash ignores
-`--rcfile` - only a non-login bash reads it. `--posix` is the one lever
-that gets bash to read a file of its own choosing, `$ENV`, before a login
-shell's own files, which is exactly kitty's `exec_bash_with_integration`:
-`export ENV=...; exec "$login_shell" --login --posix`. The bootstrap does
-the same, pointing `ENV` at a file in the same throwaway directory as the
-decoded integration. That file turns posix mode back off first - so
-nothing about the rest of the session, interactive shell included, runs
-posix - then sources `/etc/profile` and the first of `~/.bash_profile`,
-`~/.bash_login` or `~/.profile` itself, exactly as a login bash with no
-kido in front of it would, then sources the integration, then removes
-the directory. There is no deferral to a first prompt here the way there
-is for zsh: nothing else runs after this file, so there is no later hook
-for the integration to land in front of.
+**The bash branch.** The bootstrap points `ENV` at a file in the same
+throwaway directory as the decoded integration and execs the login shell
+with `--login --posix`. That file turns posix mode back off, sources
+`/etc/profile` and the first of `~/.bash_profile`, `~/.bash_login` or
+`~/.profile`, then sources the integration and removes the directory.
 
-The integration's own `PS0` hook needs bash 4.4, and the bootstrap checks
-that floor itself, before it does anything else to a bash: it spawns the
+The bootstrap checks the bash 4.4 floor before priming a bash: it spawns the
 login shell once to ask, `"$kido_shell" -c 'echo
 "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"'`, and an answer under 4.4 -
 or one that is not a version at all, which is what a shell merely named
@@ -1922,53 +1746,32 @@ bash prints - goes to `kido_plain`. An older bash gets its login files
 and no markers, the same outcome an unsupported shell gets, by the same
 route.
 
-That is one process on the remote, and the alternative was measured and
-rejected. macOS ships 3.2 as `/bin/bash`, and Apple's build does not
-read `$ENV` under `--posix` at all: a floor checked inside the `$ENV`
-file is one that host never reads, so the session it leaves reports
-nothing - indistinguishable from the intended outcome - while spending
-its whole life in posix mode, with the throwaway directory holding the
-file nothing read still on the remote when the session ends. Asking
-first means such a bash never reaches `--posix`, and the two halves of
-that are what lib/test/test_prime.ml's "the bootstrap leaves a bash too old
-for PS0 alone" asserts.
+The floor check precedes the `--posix` invocation and is pinned by
+lib/test/test_prime.ml's "the bootstrap leaves a bash too old for PS0 alone".
 
-The bash branch has no dotfile guard, where the zsh one does. That is
-kitty's shape too: the guard in its `exec_zsh_with_integration` is there
-for `zsh-newuser-install` and `exec_bash_with_integration` has none.
-bash has no first-login installer to suppress, and a remote with no
-login files is one the `$ENV` file sources nothing from - which is what
-bash would have done anyway.
+The bash branch has no dotfile guard, where the zsh one does.
 
-**Nothing persists.** kido's payload is small enough to resend on every
-connection, so unlike kitty - which caches under
-`~/.local/share/kitty-ssh-kitten` - it leaves nothing behind. The
+**Nothing persists.** kido resends its payload on every connection. The
 `.zshenv` reads the integration into a parameter and removes the whole
-directory as it goes (unlinking a file zsh still has open is harmless),
-and the bootstrap's `trap ... EXIT` covers every path that returns
-instead of exec'ing - a trap cannot fire after an `exec`, which is why
-the cleanup cannot live there alone.
+directory as it goes. The bootstrap also installs a `trap ... EXIT`
+for cleanup on its returning paths.
 
 The integration itself is sourced at the first `precmd` rather than in
-the `.zshenv`, again as kitty does it: a `.zshrc` that replaces
-`precmd_functions` wholesale, or prints its own OSC 133, would otherwise
-land on top of hooks registered before it ran.
+the `.zshenv`, to place kido's hooks after the user's setup.
 
 **Degrade, never break.** `kido ssh host` may not be worse than
 `ssh host`. kido passes the command line through untouched - no `-t`, no
 remote command - unless it is the one shape it can prime: a destination,
 no remote command of the user's own, a local tty, and no option saying
 this connection has no login shell in it (`-N`, `-T`, `-W`, `-f`, `-n`,
-`-s`, `-O`, `-Q`, `-V`, `-G`). When it does prime it adds `-t`, because
-ssh allocates no tty for a command and the shell being asked for is an
-interactive one. On the remote side every failure ends in the same login
+`-s`, `-O`, `-Q`, `-V`, `-G`). When it does prime it adds `-t` for an
+interactive shell. On the remote side every failure ends in the same login
 shell unprimed: a login shell that is neither zsh nor bash, no `mktemp`
 or `base64`, a directory that cannot be made, a payload that will not
 decode. kido execs ssh rather than wrapping it, so signals, the exit
 status and the tty behave as they would with no kido in front of them.
 
-The remote login shell is read from `$SHELL`, which sshd sets from the
-password database, so detection costs no extra round trip. zsh and bash
+The bootstrap reads the remote login shell from `$SHELL`. zsh and bash
 are both primed; the command line carries both integrations base64'd
 and branches on the login shell's basename, so the size cost of adding
 bash is paid on every connection regardless of which shell answers -
@@ -1976,8 +1779,7 @@ a few KB for the two payloads together, well inside what an ssh
 command line can carry.
 
 Deliberately not built: terminfo shipping or compilation, a kido binary
-on the remote, ControlMaster sharing, askpass, fish. kitty needs
-those; a shell that only has to emit four escape sequences does not.
+on the remote, ControlMaster sharing, askpass, fish.
 
 ## The launcher
 
@@ -2014,9 +1816,7 @@ and records even though their pane ids repeat.
 
 The socket gives full shell access. A state directory kido creates has
 mode 0700. Starting or connecting refuses a non-directory (including a symlink), a directory
-not owned by the current user, or any group/other permissions; this is
-tmux's owner-and-mode check with group access forbidden too (the fork's
-default `TMUX_SOCK_PERM` forbids only other access). The socket path,
+not owned by the current user, or any group/other permissions. The socket path,
 including its terminating NUL, must fit the platform's
 `sizeof(sockaddr_un.sun_path)`: 104 bytes on macOS, 108 on Linux.
 A directory name containing a comma is refused, since `$TMUX` separates
@@ -2024,7 +1824,7 @@ the socket path from the pid and session with commas. An overlong path
 is refused before directory creation with the path and maximum length
 in the error. To debug the default server use
 `kido-tmux -S ~/.local/state/kido/socket`.
-It never shares a server with a stock tmux, whose protocol version differs. The launcher probes it with `list-sessions` and reads three outcomes off the answer:
+The launcher probes it with `list-sessions` and reads three outcomes off the answer:
 a server answers, so attach; tmux's own "protocol version mismatch" on
 stderr, which is an older kido-tmux still running after an upgrade and
 gets kido's own message naming the socket and how to restart it; and
@@ -2078,20 +1878,11 @@ show-environment -g KIDO_BUILD_ID`. A direct reader uses
 an existing server never changes its stamp.
 
 `kido --version` prints the binary's baked-in build id followed by a
-newline. `Build_info.V1.version` from `dune-build-info` supplies it:
-`git describe --always --dirty --abbrev=7`, normally `<commit>` or
-`<commit>-dirty` in this tag-less project. Two different dirty builds
-share an id. The commit identifies the tmux gitlink as part of its tree,
-so the id carries no separate fork pin. A build without git metadata
-reports `unknown`. The id lives in the executable, not a mutable manifest.
-
-Dune substitutes this version during promotion or installation, not in
-`_build/default/bin/main.exe` or the symlink to it under `_build/install`:
-those report `unknown`. The executable's promotion into `build/main.exe`
-substitutes it on `dune build @install`. `make install` and the e2e harness
-copy that promoted executable over the raw install-tree binary, so their
-prefixes carry the stamped build id even though `dune install` refuses
-under package management.
+newline. `Build_id` reads `Build_info.V1.version`, defaulting to
+`unknown`. This project is tag-less. The commit identifies the tmux
+gitlink as part of its tree, so the id carries no separate fork pin.
+The id lives in the executable, not a mutable manifest. `make install` and the e2e harness
+copy `build/main.exe` over the raw install-tree binary.
 
  A start that fails
 is followed by a second probe, and a server that answers it is success:
@@ -2102,12 +1893,8 @@ launcher's refusal, under `kido server:`.
 A captured command that is a single word naming zsh or bash, or the same
 executable as the login shell under another name, is primed as that shell
 instead of run as a command inside one (`Shell.command`).
-`default-command "zsh"` is a common line, written to skip the login shell;
-run as a command it becomes `zsh -l -c zsh`, a primed outer shell around a
-bare non-interactive inner one that never reports a prompt, for every
-pane, silently. kido still primes with `-l`, so what the user gets is a
-primed login zsh rather than the non-login shell tmux's own rule would
-start. A word with arguments, or naming a shell kido does not prime, still
+kido primes it with `-l` rather than nesting it as a command. A word with
+arguments, or naming a shell kido does not prime, still
 runs as a command.
 
 ### Priming a local shell
@@ -2140,29 +1927,24 @@ Inside a kido pane they are what those names resolve to:
   else the first `tmux` on PATH past the shim: `Tmux.Exec.resolve_binary`'s order.
   A bare-name `KIDO_TMUX` is looked up past the shim too, because
   `exec` would otherwise find the shim itself. This shim is required,
-  not a convenience: `$TMUX` in a kido pane names the kido socket, and a
-  stock client gets a protocol mismatch there.
+  not a convenience: `$TMUX` in a kido pane names the kido socket, and
+  the shim selects kido's client.
 - `ssh` runs `kido ssh "$@"`, and `kido ssh` finds the real ssh past the
   bin directory (`Bin_dir.look_path_past`), for the same reason.
 - `pi` runs the real pi with `--extension` for `share/kido/pi/kido-status.ts`
   and `kido-agents.ts`, so nothing is written into `~/.pi/agent/extensions`.
   A first argument that is one of pi's own subcommands (`install`,
   `remove`, `uninstall`, `update`, `list`, `config`, `auth`) is passed
-  through unchanged: pi reads those from `argv[1]`, and none starts a
-  session.
+  through unchanged.
 - `claude` runs the real Claude Code with `--settings` naming
   `share/kido/claude/settings.json`, which holds one `kido hook` entry per
   event `Hook.apply` maps (the list pinned by lib/test/test_bin_dir.ml's
-  "the shipped claude settings are kido's hooks"). `--settings` merges with the
-  user's own settings.json rather than replacing it, so nothing of theirs
-  is touched and a debugging session can add events of its own there.
+  "the shipped claude settings are kido's hooks").
 
 A shim never embeds a path. Every location is worked out from `$0`:
 `kido_share` is `$0/../..`, and the directory holding kido and kido-tmux
-is `$0/../../../bin`, the inverse of `Bin_dir.of_exe`. The kernel resolves
-those `..` physically, so under Homebrew, where share/kido is a symlink,
-they land in the Cellar version's own bin. No installed path is embedded
-in the shim source, and nothing goes stale when the package moves.
+is `$0/../../../bin`, the inverse of `Bin_dir.of_exe`. No installed path
+is embedded in the shim source.
 
 For shims that find a user-installed program, the real program is the
 first executable of that name on PATH *after*
@@ -2180,8 +1962,7 @@ command, and the `pi` of every `spawn_subagent` window. And the
 integration of every locally primed shell puts it first again at its
 very end (`Bin_dir.path_prepend_script`, appended by `Prime.files` when given a bin
 directory), which is after the user's login files, which may have
-rewritten PATH: macOS `path_helper` from `/etc/zprofile`, Debian's
-`/etc/profile`. The prepend removes every existing occurrence first, so a
+rewritten PATH. The prepend removes every existing occurrence first, so a
 nested shell or a second launch never grows PATH.
 
 `kido ssh` sends the integrations exactly as they ship. The far side has
@@ -2195,24 +1976,14 @@ with no share/kido beside it, a checkout build.
 
 Limits: a plain-mode shell (fish, a zsh with no dotfiles, bash below
 4.4) has no integration, and keeps the shims only if its login files
-leave the inherited PATH order alone; and a login shell nested inside a
-pane runs path_helper again with nothing after it.
+leave the inherited PATH order alone.
 
-**One copy of each pi extension.** pi dedupes the extensions it is given
-by real path and by nothing else (`resource-loader.js`'s `mergePaths`,
-pi 0.87.1), so the shipped copy passed with `--extension` and a copy or
-link in `~/.pi/agent/extensions` are two extensions to pi: both would
-bind an inbox and report, and the second copy's tools fail with
-"Tool X conflicts with ...". Each file therefore claims a `globalThis`
+**One copy of each pi extension.** Each file claims a `globalThis`
 property holding its own file path the first time its factory runs
-(`__kidoPiExtensionStatusCopy`, `__kidoPiExtensionAgentsCopy`), and
-a copy at any other path registers nothing. pi loads CLI extensions
-first, so the shipped copy wins; a `/reload` runs the same file again
-and finds the slot its own; the key is `fileURLToPath(import.meta.url)`,
-so the test suite's `?fresh=` imports count as the same copy. A copy
-installed into `~/.pi/agent/extensions` by an older kido has no guard,
-loads after the shipped copy and conflicts; the fix is to delete
-`~/.pi/agent/extensions/kido-*.ts`.
+(`__kidoPiExtensionStatusCopy`, `__kidoPiExtensionAgentsCopy`), and a copy
+at any other path registers nothing. The key is
+`fileURLToPath(import.meta.url)`, so the test suite's `?fresh=` imports
+count as the same copy.
 
 **Install layout.** The `install` stanza in `share/dune` is the one
 description of share/kido, which mirrors the repository's `share/`:
@@ -2220,16 +1991,15 @@ description of share/kido, which mirrors the repository's `share/`:
 under `pi/` (not its tests, testdata or package files), beside
 `bin/kido`. `kido-tmux.conf` is not among them - the launcher writes the
 embedded copy into the configuration it starts the server with, and
-nothing reads it from disk. `dune build @install` lays the tree out in
-`_build/install/default`; `dune install` refuses under package
-management, so `make install` copies its `bin` and `share` into `PREFIX`
+nothing reads it from disk. `make install` copies `bin` and `share`
+from `_build/install/default` into `PREFIX`
 (`~/.local` by default), the tree that holds `bin/kido`, `bin/kido-tmux`
 and `share/kido` together. The fork is copied from the revision-keyed
 cache under `build/tmux-fork/`, shared with e2e; repeated installs reuse
 it. `make install PREFIX=<prefix> SELF_CONTAINED=1` passes
 `--self-contained` to the fork installer and uses a separate
 `<revision>-self-contained` cache entry. The e2e harness copies the same tree into
-`<tmp>`. The Homebrew formula installs the same set into its own prefix.
+`<tmp>`.
 
 ## Knobs
 

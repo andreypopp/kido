@@ -47,7 +47,7 @@ A registered tool missing from the list fails pi's suite; a listed tool without
 a command fails the OCaml suite.
 
 A tool forwards what it was given and lets its command refuse.
-`spawn_subagent`'s schema cannot say that `resume` excludes `task`,
+`spawn_subagent`'s schema does not express that `resume` excludes `task`,
 `name` and `fork`, or that a spawn needs a task, and the tool does not
 check it either: every argument goes to `kido tool spawn_subagent`, which
 refuses those combinations and the nesting depth ceiling, so the rules
@@ -74,9 +74,8 @@ The rule buys a coherent vocabulary - you can tell from a tool's name
 whose work it can touch - and not protection.
 
 **What steers and what queues.** `steer_subagent` exists because
-`message_agent` waits: a message is drained only after the target has
-decided to stop, which is useless for a correction whose whole value is
-arriving before the work is finished. The dividing line is design.md's
+`message_agent` queues: kido reserves interleaving for a correction whose
+whole value is arriving before the work is finished. The dividing line is design.md's
 ("Steer and followUp"), and it is worth repeating here in one line:
 
 > Steer what is safe to interleave. Queue what must be answered in order.
@@ -86,9 +85,7 @@ assigned the work, nothing to correlate, worthless late) and
 `notify_parent` steers (information the parent needs to dispatch the next
 thing), while `message_agent` queues (no correlation, no authority) and
 `ask_agent` queues - which is the one to remember. An ask demands a
-correlated reply, so two must never interleave inside one turn, or an
-answer can go back against the wrong `replyTo`; queueing is what makes a
-consultant serving four agents answer them one at a time.
+correlated reply, so kido chooses `followUp` to keep questions ordered.
 
 There is no `--kind` flag anywhere on the surface: the command is the
 kind. `message_agent --reply-to ID` is a reply, `ask_agent` is an ask,
@@ -106,8 +103,7 @@ of `KIDO_AGENT_PARENT_SESSION` (design.md, "Notifying the parent").
 Tools register unconditionally and report kido as unavailable until a
 session has resolved it. `set_status` and `notify_parent` are bounded at
 256 and 4000 bytes, and their schemas do not repeat the bound as a
-`maxLength`: that counts UTF-16 code units and rejects the whole call,
-which cost a subagent a redo of its one report. An activity is a UI label
+`maxLength`: the commands own the byte bounds. An activity is a UI label
 and is truncated; a report is a work product and is kept whole, with only
 what the parent is *sent* bounded ("Reporting", below).
 
@@ -209,12 +205,11 @@ and is not to be waited on, asked for or predicted: a launch result is
 read at the one moment the model has a child and no result from it,
 which is when it invents one or blocks.
 
-`spawn_subagent` and `async_bash` also carry pi's `promptGuidelines`,
-rules pi merges into the system prompt while the tool is registered: a
+`spawn_subagent` and `async_bash` also register `promptGuidelines`: a
 notice arrives on its own, so neither ask nor poll for it; a child's
 report says what it intended, so check the diff; and, shared as one
-identical string so pi prints it once, a notice is information, not the
-user speaking, and a message's first line says who sent it. A parent's
+identical string, a notice is information, not the user speaking, and a
+message's first line says who sent it. A parent's
 message is not called "not the user": its instructions carry the user's
 weight. A guideline is scoped to
 its tool, so the rules are offered where the model can initiate background
@@ -232,28 +227,16 @@ whole transcript, so it can be given a judgement to make - a merge, a
 decision between two things the parent already weighed - without the
 parent having to restate what it decided and why.
 
-The two flags compose, which is what makes this possible at all: measured
-against pi 0.85.1, `createSessionManager` (`main.js`) forks the resolved
-source through `SessionManager.forkFrom(..., { id: sessionId })`, so the
-forked session is created *with* the id kido asked for, and it refuses up
-front if a session already holds that id. Verified by running it: a
-session told to say BANANA, forked with `--fork <id> --session-id <new
-id>`, answered BANANA when asked what it had said before, under the new
-id's own session file. That matters beyond convenience - the run id is
-the child's session id, and a child proves it is the run it claims to be
-by `sessionId() === KIDO_AGENT_RUN_ID` (design.md, "The run id is the
-child's session id"). A fork that could not be given an id would be a
-child with no identity proof, and would be no child at all.
+kido passes both flags to preserve its identity rule: a child proves it
+is the run it claims to be by `sessionId() === KIDO_AGENT_RUN_ID`
+(design.md, "The run id is the child's session id").
 
 The session forked is the **caller's own**, and the extension passes it
 (pi hands it the id) rather than kido guessing it from a pane. Nothing
 resolves a session a model named: there is exactly one right answer, and
 it is not the model's to give.
 
-**A fork replays the parent's whole context on every turn.** That is the
-cost, it is per-turn rather than once, and it is why this is for a short
-judgement step and not for a long worker: a child forked from a large
-conversation pays for it again with every tool call it makes. A worker
+**Forking is for a short judgement step, not a long worker.** A worker
 wants a task and a clean context.
 
 The flag reaches tmux's command line, so it is held to the window name's
@@ -364,10 +347,9 @@ that are not the task - most sharply, answering a sibling's `ask_agent`
 settles a turn, and the report that automatic notice sends the parent is
 the one meant for the sibling (design.md, "Notifying the parent").
 
-A turn that ends in a provider error is the one exception. pi fires
-`agent_end` once per attempt, retries included, and `agent_settled` once
-after them, so the last `agent_end` before a settle is the turn's
-outcome. When it stopped on `"error"`, the child sends its parent one
+A turn that ends in a provider error is the one exception. kido retains
+the last `agent_end` result and checks it in `agent_settled`. When it
+stopped on `"error"`, the child sends its parent one
 notice at once, through `notify_parent`'s path, naming the error and how
 to continue the run. An aborted turn, such as one interrupted by the
 parent, is not a failure and sends nothing. The notice does not count as
@@ -404,9 +386,7 @@ On the parent's side a notice is rendered the moment it lands, as a
 dimmed `│ @<name> notifies: <first line>` line above the editor, and separately
 enters the model's context at the next turn boundary as a collapsed
 message that a mouse click expands in fullscreen mode; outside fullscreen
-it is expanded. Delivered as one event the two would queue
-together behind the running turn: measured live, two children's notices
-sat invisible until the parent's long turn ended.
+it is expanded. kido keeps visual arrival separate from model delivery.
 A notice is steered rather than queued as a follow-up, so a parent
 mid-turn sees it between tool calls and decides for itself whether to
 act - as a `steer` envelope is, and for the same reason ("What steers
@@ -417,11 +397,8 @@ and what queues", above); a message and an ask still wait for the turn.
 own shutdown on itself, unless it was spawned with `keepAlive`. The
 same clock is armed once more, from the delivery of the task: a child
 handed its task has everything it needs, so if nothing has begun a turn
-by the time the clock runs out, nothing ever will. Nothing else covers
-that case - a pi that cannot start its model settles at startup without
-reaching a first turn, so a clock armed only from a settled turn never
-starts, and the child never shuts down, never records an outcome and tells
-its parent nothing, indistinguishable from a child at work. Arming from
+by the time the clock runs out, nothing ever will. The delivery timer
+covers a child that never reaches a first turn. Arming from
 delivery rather than from session start is what leaves a resumed run,
 which comes back idle waiting for a message, and a session with no task
 file at all, untouched; delivery is not itself work, and the first real
@@ -429,13 +406,7 @@ sign of it clears the clock. Any new
 work, or a message about to be delivered, restarts the clock. A window
 some client is looking at is not taken
 away; the timer re-arms and tries again later. Nor is one call to pi's
-shutdown trusted to end the session: pi's interactive-mode handler acts
-only when the session is not mid-compaction, and re-checks a request it
-declined only on its own next `agent_settled`, which a compaction never
-emits. Observational memory hangs its compaction trigger on the very
-event that arms this clock, so a compaction outliving the thirty seconds
-leaves a child holding a shutdown request nobody will ever read, idle with
-no outcome for as long as it is left. The clock therefore re-arms after
+shutdown trusted to end the session. The clock re-arms after
 every call to shutdown, exactly as in its other decline paths, until the
 session's own ending clears it. A root
 session, one with no parent in its environment, never arms it.
@@ -616,9 +587,8 @@ observed. Then, in this order and never concurrently:
 Everything is reported **before this process exits**, which is what makes
 the feature independent of the window surviving. tmux sets
 `remain-on-exit` in a second call after `new-window` and a fast command
-beats it every time, so a window running `true` is usually gone before
-kido can finish creating it; the run record and the notice are already
-written, and what the race costs is the corpse on screen. Finding the
+beats it every time. The run record and notice do not depend on retaining
+the pane; what the race costs is the corpse on screen. Finding the
 window gone is therefore not a creation failure: the mark is skipped, no
 outcome is recorded over the command's own, and the ids are printed as
 usual.
@@ -752,19 +722,9 @@ surface is one boolean because the capability is one flag deep; a second
 tool would be a second name for it, and every tool invokes the
 subcommand of its own name.
 
-The reason a line is not an envelope is pi's own delivery model.
-Measured against 0.85.1, the steering queue drains **one** message per
-poll by default (`PendingMessageQueue.drain`, `steeringMode` defaulting
-to `one-at-a-time`), and every drained message is one LLM call carrying
-the whole context. One envelope per line would therefore be one turn per
-line: a thousand-line build takes the agent hostage at a cost quadratic
-in its output. What makes streaming affordable is not rate limiting,
-which only lengthens that, but **coalescing** at both ends - and one
-fact about pi's loop: extension `turn_end` handlers are awaited before
-the loop polls the steering queue (`agent.js`'s emit, `agent-session.js`
-forwarding `turn_end` with `await`, `agent-loop.js` polling after it), so
-a message enqueued from inside that handler is drained by the very next
-poll, riding a call the agent was already going to make.
+kido **coalesces** at both ends rather than sending an envelope per
+line, to bound the number of messages. The receiver uses its
+`turn_end` handler as one opportunity to flush held output.
 
 **The wrapper's side.** For a run whose meta kind is `stream`,
 `kido async-run` tees into a third writer that batches whole lines and sends one `stream` envelope
@@ -927,21 +887,11 @@ window aged out.
   is nowhere for the answer to arrive. A human wanting a round trip has
   to be a long-lived process, or use `message_agent` and read the reply
   on screen.
-- A blocked `ask_agent` holds the asker's whole turn. The wait is not
-  one turn of the target's latency but however long the target takes to
-  reach the end of whatever it is already doing, plus a turn: an ask is
-  delivered as `followUp`, so a busy target does not see the question
-  until it would otherwise have stopped. That is deliberate, not an
-  accident of scheduling - it is what keeps two correlated replies from
-  interleaving (design.md, "Steer and followUp") - but it means a parent
-  asking three working children serially is idle a long time. A
-  correction that cannot wait that long is `steer_subagent`, which is
-  not correlated and so need not queue.
-- `--resume` does not honour pi's own `sessionDir` setting when looking
-  for the session file, and since that is exactly when it falls back to
-  minting a fresh session under the run's own id, it cannot rule out a
-  collision with a session pi placed there under a name kido does not
-  know to avoid.
+- The `ask_agent` tool waits for a reply. kido selects `followUp` to keep
+  correlated questions ordered (design.md, "Steer and followUp"), so the
+  scheduling expectation is the target's current work plus a reply turn,
+  not a round-trip. A correction that cannot wait is `steer_subagent`,
+  which is not correlated and so need not queue.
 - A child that exits before `remain-on-exit` is set loses its window
   and its last screen; only the run record remains. For a bash run that
   is only the screen: the wrapper has already recorded and reported. For
