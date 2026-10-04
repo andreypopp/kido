@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, pathlib, subprocess, sys, time
+import os, pathlib, subprocess, sys, tempfile, time
 root = pathlib.Path(__file__).resolve().parents[1]
 app, probe, name = sys.argv[1:]
 out = root / 'build/deadlock-impl' / name
@@ -7,7 +7,8 @@ out.mkdir(parents=True, exist_ok=True)
 helper_env = {k:v for k,v in os.environ.items() if k not in ('DYLD_INSERT_LIBRARIES', 'MTC_RESET_INSERT_LIBRARIES')}
 revision = subprocess.check_output([str(root.parent/'scripts/install-tmux-fork.sh'), '--print-revision'], env=helper_env, text=True, timeout=5).strip()
 tmux = root.parent / 'build/tmux-fork' / revision / 'bin/kido-tmux'
-sock = str(out / f'socket-{os.getpid()}')
+server = tempfile.mkdtemp(prefix='kido-probe-', dir='/tmp')
+sock = server + '/socket'
 def t(*args):
     return subprocess.run([str(tmux), '-S', sock, *args], env=helper_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
 p = None
@@ -18,8 +19,8 @@ try:
     config = out / 'config/kido'
     config.mkdir(parents=True, exist_ok=True)
     (config / 'kido-app.conf').write_text('scrollback-limit = 8388608\n')
-    env = {k:v for k,v in helper_env.items() if not k.startswith('KIDO_AGENT_') and k not in ('TMUX', 'TMUX_PANE')}
-    env.update(KIDO_APP_BACKGROUND='1', KIDO_APP_SOCKET=sock, KIDO_APP_TMUX=str(tmux), KIDO_APP_FEED=str(root/'scripts/fake-sidebar-feed.sh'), XDG_CONFIG_HOME=str(out/'config'), ASAN_OPTIONS='use_sigaltstack=0', **{probe:'1'})
+    env = {k:v for k,v in helper_env.items() if not k.startswith('KIDO_AGENT_') and k not in ('TMUX', 'TMUX_PANE', 'KIDO_STATE_DIR')}
+    env.update(KIDO_APP_BACKGROUND='1', KIDO_APP_SERVER=server, KIDO_APP_TMUX=str(tmux), KIDO_APP_FEED=str(root/'scripts/fake-sidebar-feed.sh'), XDG_CONFIG_HOME=str(out/'config'), ASAN_OPTIONS='use_sigaltstack=0', **{probe:'1'})
     mtc = os.environ.get('KIDO_MTC_VERIFY') == '1'
     if mtc:
         checker = pathlib.Path(os.environ['DEVELOPER_DIR']) / 'usr/lib/libMainThreadChecker.dylib'
