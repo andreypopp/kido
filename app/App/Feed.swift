@@ -52,15 +52,15 @@ final class Feed: @unchecked Sendable {
         writer.async { try? input.write(contentsOf: Data((text.isEmpty ? "filter\n" : "filter \(text)\n").utf8)) }
     }
 
-    @MainActor func switchWindow(next: Bool, failed: @escaping @MainActor (String) -> Void) {
-        guard let (kido, client) = located else { return failed("the sidebar feed has not found kido yet") }
+    @MainActor func switchWindow(next: Bool, completed: @escaping @MainActor (String?) -> Void) {
+        guard let (kido, client) = located else { return completed("the sidebar feed has not found kido yet") }
         let args = ["switch-window", next ? "next" : "prev", "--client", client, "--socket", socket]
         Task {
             do throws(Failure) {
                 let (status, _, err) = try await Child.run(kido, args, env: Self.environment)
-                if status != 0 { failed(err.isEmpty ? "kido switch-window exited \(status)" : err) }
+                completed(status == 0 ? nil : err.isEmpty ? "kido switch-window exited \(status)" : err)
             } catch {
-                failed(error.message)
+                completed(error.message)
             }
         }
     }
