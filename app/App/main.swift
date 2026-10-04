@@ -69,9 +69,14 @@ import TmuxControl
         sidebar.list.newSession = { [weak self] in self?.newSession() }
         sidebar.list.newWindow = { [weak self] in self?.create(Command("new-window", "-d", "-P", "-F", "#{session_id}:#{window_id}.#{pane_id}", "-t", $0, "-c", "#{pane_current_path}")) }
         menus.send = { [weak self] in self?.send($0) }
+        sidebar.tabs.send = { [weak self] in self?.send($0) }
+        sidebar.tabs.changed = { [weak self] in
+            guard let self else { return }
+            self.menus.update(self.sidebar.tabs.navigationModel)
+        }
         sidebar.list.filter = { [weak self] in self?.feed?.filter($0) }
-        sidebar.list.leave = { [weak self] in self?.session?.focusActive() }
-        banner = Banner(target: self, action: #selector(start))
+        sidebar.focusTerminal = { [weak self] in self?.session?.focusActive() }
+        banner = Banner(target: self, action: #selector(start), connectAction: #selector(connectAnyway))
         banner.frame = sidebar.content.bounds
         sidebar.content.addSubview(banner)
         window.center()
@@ -102,8 +107,8 @@ import TmuxControl
         connection.send(commands, then: done)
     }
 
-    private func down(_ title: String, _ detail: String, button: String?) {
-        banner.show(title, detail, button: button)
+    private func down(_ title: String, _ detail: String, button: String?, connect: Bool = false) {
+        banner.show(title, detail, button: button, connect: connect)
         sidebar.list.offline(title)
     }
 
@@ -130,7 +135,7 @@ import TmuxControl
                 if Server.fixed == nil, server.build != tools.build {
                     link = .mismatch(server)
                     note("server build mismatch: \(server.build ?? "missing")")
-                    down("This app server was started by a different kido", "Restart the kido-app server to use this bundle.", button: "Restart")
+                    down("This app server was started by a different kido", "Restart the kido-app server to use this bundle.", button: "Restart", connect: true)
                     return
                 }
                 dial(server, backoff: 0.1)
@@ -140,6 +145,11 @@ import TmuxControl
                 down("Kido could not reach the kido server", error.message, button: action)
             }
         }
+    }
+
+    @objc private func connectAnyway() {
+        guard case .mismatch(let server) = link else { return }
+        dial(server, backoff: 0.1)
     }
 
     private func confirmedRestart(_ server: Server, _ response: NSApplication.ModalResponse) {
@@ -186,12 +196,14 @@ import TmuxControl
                 onChange: { [weak self] in self?.changed(view, $0) },
                 onDiagnostic: { [weak self] in self?.banner.show($0, "", button: nil) },
                 onClose: { [weak self] in self?.closed(server, view, $0, backoff: backoff) })
+            connection.navigationModel = { [weak self] in self?.sidebar.tabs.navigationModel ?? SessionModel() }
             link = .connected(connection)
             feed = Feed(
                 socket: server.socket, locate: connection.locateFeed, query: { [weak self] in self?.sidebar.list.query ?? "" },
                 onChange: { [weak self] status in
                     if case .invalidBundle(let error) = status { return self?.bundleChanged(error) ?? () }
                     self?.sidebar.list.update(status)
+                    self?.sidebar.tabs.update(status, query: self?.sidebar.list.query ?? "")
                 })
         } catch {
             note("could not run \(server.tmux): \(error.localizedDescription)")
@@ -202,7 +214,7 @@ import TmuxControl
 
     private func changed(_ view: SessionView, _ model: SessionModel) {
         window.title = model.title
-        menus.update(model)
+        sidebar.tabs.update(model)
         if view.superview == nil {
             session?.removeFromSuperview()
             session = view
@@ -216,7 +228,7 @@ import TmuxControl
     private func closed(_ server: Server, _ view: SessionView, _ exit: Exit, backoff: TimeInterval) {
         guard case .connected = link else { return }
         view.subviews.compactMap { $0 as? WindowView }.forEach { $0.cancelDrag() }
-        menus.update(SessionModel())
+        sidebar.tabs.update(SessionModel())
         feed?.stop()
         feed = nil
         window.title = SessionModel().title
@@ -255,14 +267,15 @@ import TmuxControl
             return item
         }
         view.items = [
-            item("Hide Sidebar", #selector(toggleSidebar), "s", [.command, .control]),
-            item("Focus Sidebar", #selector(focusSidebar), "l", [.command, .control]),
+            item("Hide Sidebar", #selector(Sidebar.toggleSidebar(_:)), "S", [.command, .shift]),
+            item("Focus Sidebar", #selector(Sidebar.focusSidebar(_:)), "s", .command),
             .separator(),
             item("Next Needing Attention", #selector(nextAttention), "n", [.command, .control]),
             item("Previous Needing Attention", #selector(previousAttention), "N", [.command, .control]),
             item("Next Window in Sidebar", #selector(nextWindow), "j", [.command, .control]),
             item("Previous Window in Sidebar", #selector(previousWindow), "k", [.command, .control]),
         ]
+        for item in view.items.prefix(2) { item.target = sidebar }
         let file = NSMenu(title: "File")
         file.items = [item("New Session", #selector(newSession), "N", [.command, .shift])]
         let find = NSMenu(title: "Find")
@@ -312,15 +325,6 @@ import TmuxControl
 
     private func updateSidebarMenu() {
         NSApp.mainMenu?.items.first(where: { $0.title == "View" })?.submenu?.items.first?.title = sidebar.isCollapsed ? "Show Sidebar" : "Hide Sidebar"
-    }
-
-    @objc private func toggleSidebar() {
-        sidebar.toggleSidebar(nil)
-    }
-
-    @objc private func focusSidebar() {
-        if sidebar.isCollapsed { sidebar.toggleSidebar(nil) }
-        sidebar.list.focus()
     }
 
     @objc private func nextAttention() { sidebar.list.nextAttention(1) }
