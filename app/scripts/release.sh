@@ -15,8 +15,15 @@ action() {
 echo '+ git fetch origin kido-app'
 git fetch origin kido-app
 [[ $(git rev-parse HEAD) == $(git rev-parse origin/kido-app) ]] || { echo 'HEAD must equal origin/kido-app' >&2; exit 1; }
-if git show-ref --verify --quiet "refs/tags/$tag" || [[ -n $(git ls-remote --tags origin "refs/tags/$tag") ]]; then
-  echo "Tag $tag already exists" >&2; exit 1
+remote_tag=$(git ls-remote --tags origin "refs/tags/$tag")
+if [[ -n $remote_tag ]]; then
+  echo "Tag $tag already exists on origin" >&2; exit 1
+fi
+local_tag=$(git tag --list "$tag")
+if [[ -n $local_tag ]]; then
+  tag_commit=$(git rev-parse "refs/tags/$tag^{commit}")
+  head_commit=$(git rev-parse HEAD)
+  [[ $tag_commit == "$head_commit" ]] || { echo "Local tag $tag points to $tag_commit, but HEAD is $head_commit" >&2; exit 1; }
 fi
 [[ $(git -C "$tap" branch --show-current) == main && -z $(git -C "$tap" status --porcelain) ]] || { echo 'Tap must be clean and on main' >&2; exit 1; }
 brew_tap=$(brew --repo andreypopp/tap)
@@ -32,7 +39,7 @@ zip="build/release/Kido-$version.zip"
 ditto -c -k --keepParent "$app" "$zip"
 sha=$(shasum -a 256 "$zip" | awk '{print $1}')
 echo "SHA256: $sha"
-action git tag "$tag"
+if [[ -z $local_tag ]]; then action git tag "$tag"; fi
 action git push origin "refs/tags/$tag"
 action gh release create "$tag" "$zip" --repo andreypopp/kido --title "Kido.app $version" \
   --notes "Native macOS client for kido. Apple Silicon and macOS 26 or later required. Ad-hoc signed; not notarized. Install with brew install --cask andreypopp/tap/kido-app." --prerelease
