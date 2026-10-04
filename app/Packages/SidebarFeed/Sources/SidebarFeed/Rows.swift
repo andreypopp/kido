@@ -38,6 +38,16 @@ public struct SidebarRow: Equatable, Sendable {
     }
 }
 
+extension Item {
+    var status: SidebarRow.Status {
+        switch indicator {
+        case .failed, .gone(.failed), .gone(.died): .error
+        default: attention || indicator == .waiting || indicator == .stalled ? .attention
+            : indicator == .running || indicator == .compacting ? .running : .quiet
+        }
+    }
+}
+
 private func walkNodes(_ nodes: [Node], depth: Int, before: (Node, Int, Int) -> Void,
                        pane: (Item, Int) -> Void, after: (Node, Int) -> Void) {
     for (index, node) in nodes.enumerated() {
@@ -85,13 +95,6 @@ public func sidebarRows(_ snapshot: Snapshot?, folded: Set<SessionID>) -> [Sideb
                 }
                 begins.append(rows.count)
             }, pane: { item, depth in
-                    let status: SidebarRow.Status
-                    switch item.indicator {
-                    case .failed, .gone(.failed), .gone(.died): status = .error
-                    default:
-                        status = item.attention || item.indicator == .waiting || item.indicator == .stalled ? .attention
-                            : item.indicator == .running || item.indicator == .compacting ? .running : .quiet
-                    }
                     let description: String = switch item.indicator {
                     case .gone(let outcome): "gone" + (outcome.map { ", " + $0.rawValue } ?? "")
                     case .some(let indicator): String(describing: indicator)
@@ -102,7 +105,7 @@ public func sidebarRows(_ snapshot: Snapshot?, folded: Set<SessionID>) -> [Sideb
                     let started = item.run == nil ? nil : item.started
                     rows.append(SidebarRow(id: .pane(session.id, item.id), kind: .pane(target), indent: depth,
                                            height: (depth == 0 ? 28 : 25) + (tail.isEmpty ? 0 : 16),
-                                           title: item.title.map(\.text).joined(), tail: tail, status: status, indicatorDescription: description,
+                                           title: item.title.map(\.text).joined(), tail: tail, status: item.status, indicatorDescription: description,
                                            attention: item.attention, started: started, focused: target == snapshot.client))
             }, after: { node, depth in
                 let begin = begins.removeLast()
