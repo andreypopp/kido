@@ -65,6 +65,26 @@ func elapsed(_ seconds: Int, _ expected: String) {
     #expect(sidebarElapsed(started: Date(timeIntervalSince1970: 100), now: Date(timeIntervalSince1970: Double(100 + seconds))) == expected)
 }
 
+@Test func originalIndicatorDescriptions() throws {
+    let indicators: [(String, String?, SidebarRow.Status, String)] = [
+        ("waiting", nil, .attention, "waiting"), ("stalled", nil, .attention, "stalled"),
+        ("done", nil, .quiet, "done"), ("idle", nil, .quiet, "idle"),
+        ("gone", "completed", .quiet, "gone, completed")
+    ]
+    for (kind, outcome, status, description) in indicators {
+        let data = """
+        {"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},"filter":"","sessions":[
+          {"id":"$0","name":"main","current":true,"nodes":[
+            {"kind":"agent","id":"%0","pane":"%0","window":"@0","indicator":{"kind":"\(kind)","outcome":\(outcome.map { "\"\($0)\"" } ?? "null")},
+             "title":[],"tail":[],"attention":false,"children":[]}]}]}
+        """
+        let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(data.utf8))
+        let row = try #require(sidebarRows(snapshot, folded: []).first { $0.target != nil })
+        #expect(row.status == status)
+        #expect(row.indicatorDescription == description)
+    }
+}
+
 @Test func navigationOrderWrappingAndFallback() throws {
     let snapshot = try fixture(sessions: [0, 1])
     let panes = sidebarRows(snapshot, folded: []).compactMap(\.target)
