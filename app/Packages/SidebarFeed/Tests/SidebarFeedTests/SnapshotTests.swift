@@ -7,12 +7,12 @@ import TmuxControl
     let line = """
     {"v":2,"client":{"session":"$1","window":"@2","pane":"%3"},"filter":"","error":null,"sessions":[
       {"id":"$1","name":"main","current":true,"nodes":[
-        {"kind":"agent","id":"%3","pane":"%3","window":"@2","indicator":{"kind":"running"},"title":[{"text":"kido","role":"current"}],"tail":[{"text":"fixing tests","role":"dim"}],"started":null,"attention":false,"children":[
+        {"kind":"agent","id":"%3","pane":"%3","window":"@2","indicator":{"kind":"running"},"title":[{"text":"kido","role":"current"}],"tail":[{"text":"fixing tests","role":"dim"}],"run":null,"started":null,"attention":false,"children":[
           {"kind":"window","id":"@7","window":"@7","name":"build","children":[
-            {"kind":"run","id":"%9","pane":"%9","window":"@7","indicator":{"kind":"running"},"title":[],"tail":[],"started":1700000000.5,"attention":false,"children":[
-              {"kind":"ssh","id":"%11","pane":"%11","window":"@8","indicator":{"kind":"stalled"},"title":[],"tail":[],"started":null,"attention":true,"children":[
-                {"kind":"agent","id":"%12","pane":"%12","window":"@9","indicator":{"kind":"gone","outcome":"completed"},"title":[],"tail":[],"started":null,"attention":true,"children":[]}]}]},
-            {"kind":"shell","id":"%10","pane":"%10","window":"@7","indicator":null,"title":[],"tail":[],"started":null,"attention":false,"children":[]}]}]}]}]}
+            {"kind":"run","id":"%9","pane":"%9","window":"@7","indicator":{"kind":"running"},"title":[],"tail":[],"run":"bash","started":1700000000.5,"attention":false,"children":[
+              {"kind":"ssh","id":"%11","pane":"%11","window":"@8","indicator":{"kind":"stalled"},"title":[],"tail":[],"run":null,"started":null,"attention":true,"children":[
+                {"kind":"agent","id":"%12","pane":"%12","window":"@9","indicator":{"kind":"gone","outcome":"completed"},"title":[],"tail":[],"run":null,"started":null,"attention":true,"children":[]}]}]},
+            {"kind":"shell","id":"%10","pane":"%10","window":"@7","indicator":null,"title":[],"tail":[],"run":null,"started":null,"attention":false,"children":[]}]}]}]}]}
     """
     let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(line.utf8))
     #expect(snapshot.client.pane == PaneID(number: 3))
@@ -54,8 +54,8 @@ import TmuxControl
 @Test func windowGroupRequiresName() {
     let line = """
     {"kind":"window","id":"@1","window":"@1","children":[
-      {"kind":"shell","id":"%1","pane":"%1","window":"@1","indicator":null,"title":[],"tail":[],"started":null,"attention":false,"children":[]},
-      {"kind":"shell","id":"%2","pane":"%2","window":"@1","indicator":null,"title":[],"tail":[],"started":null,"attention":false,"children":[]}]}
+      {"kind":"shell","id":"%1","pane":"%1","window":"@1","indicator":null,"title":[],"tail":[],"run":null,"started":null,"attention":false,"children":[]},
+      {"kind":"shell","id":"%2","pane":"%2","window":"@1","indicator":null,"title":[],"tail":[],"run":null,"started":null,"attention":false,"children":[]}]}
     """
     #expect(throws: DecodingError.self) { try JSONDecoder().decode(SidebarFeed.Node.self, from: Data(line.utf8)) }
 }
@@ -71,7 +71,7 @@ import TmuxControl
 }
 
 @Test(arguments: [false, true]) func nodeIdentityIsScopedToSession(_ duplicate: Bool) throws {
-    let item = #"{"kind":"shell","id":"%1","pane":"%1","window":"@1","indicator":null,"title":[],"tail":[],"started":null,"attention":false,"children":[]}"#
+    let item = #"{"kind":"shell","id":"%1","pane":"%1","window":"@1","indicator":null,"title":[],"tail":[],"run":null,"started":null,"attention":false,"children":[]}"#
     let nodes = duplicate ? "\(item),\(item)" : item
     let line = """
     {"v":2,"client":{"session":"$0","window":"@1","pane":"%1"},"filter":"","error":null,"sessions":[

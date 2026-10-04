@@ -1,0 +1,66 @@
+import Foundation
+import Testing
+import TmuxControl
+@testable import SidebarFeed
+
+private func fixture(filter: String = "", client: Int = 0, sessions: [Int] = [0]) throws -> Snapshot {
+    func item(_ id: Int, _ window: Int, run: String? = nil, started: Double? = nil, tail: String = "", children: [[String: Any]] = []) -> [String: Any] {
+        ["kind": run == "bash" || run == "stream" ? "run" : "agent", "id": "%\(id)", "pane": "%\(id)", "window": "@\(window)",
+         "run": run as Any? ?? NSNull(), "started": started as Any? ?? NSNull(), "indicator": ["kind": "running"],
+         "title": [["text": "pane-\(id)", "role": "plain"]], "tail": tail.isEmpty ? [] : [["text": tail, "role": "dim"]],
+         "attention": id == 2, "children": children]
+    }
+    let children = [item(1, 1, run: "agent", started: 100, tail: "working", children: [item(2, 2, run: "stream", started: 100)]),
+                    item(3, 3, run: "bash", started: 100), item(4, 4, run: "bash")]
+    let nodes: [[String: Any]] = [item(0, 0, started: 100), item(5, 5, children: children)]
+    let object: [String: Any] = ["v": 2, "client": ["session": "$0", "window": "@\(client)", "pane": "%\(client)"],
+                               "filter": filter, "error": NSNull(), "sessions": sessions.map {
+                                   ["id": "$\($0)", "name": "session-\($0)", "current": $0 == 0, "nodes": nodes]
+                               }]
+    return try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
+}
+
+@Test func slicesAndLastCorners() throws {
+    let rows = sidebarRows(try fixture(client: 5), folded: [])
+    let panes = rows.filter { $0.target != nil }
+    #expect(panes.map(\.indent) == [0, 0, 1, 2, 1, 1])
+    #expect(rows.filter { $0.kind == .divider }.count == 3)
+    #expect(panes.map { $0.segments.filter { $0.kind == .window(active: true) }.count } == [0, 1, 1, 1, 1, 1])
+    let nested = try #require(panes.first { $0.title == "pane-1" })
+    #expect(nested.segments.last?.topLeft == 6)
+    #expect(nested.segments.last?.bottomLeft == 6)
+    let last = try #require(panes.last)
+    #expect(last.segments.dropFirst().allSatisfy { $0.bottomLeft == 0 })
+    #expect(last.segments.first?.bottomLeft == 10)
+    let parent = try #require(panes.first { $0.title == "pane-5" })
+    let child = try #require(panes.first { $0.title == "pane-2" })
+    #expect(child.segments[1].height == parent.segments[1].height)
+    #expect(child.segments[1].top < 0)
+    let activeChild = sidebarRows(try fixture(client: 2), folded: []).filter { $0.target != nil }
+    #expect(activeChild.filter { $0.segments.contains { $0.kind == .window(active: true) } }.map(\.title) == ["pane-2"])
+}
+
+@Test func foldsAndFilteredSessionsKeepIdentity() throws {
+    let snapshot = try fixture(sessions: [0, 1])
+    let folded: Set<SessionID> = [.init(number: 0)]
+    let rows = sidebarRows(snapshot, folded: folded)
+    #expect(rows.filter { $0.id.session == SessionID(number: 0) }.map(\.kind) == [.header("session-0"), .gap])
+    #expect(sidebarRows(try fixture(filter: "session", sessions: [0]), folded: folded).count == 2)
+    #expect(sidebarRows(try fixture(filter: "absent", sessions: []), folded: folded).isEmpty)
+    let expanded = sidebarRows(snapshot, folded: [])
+    #expect(Set(expanded.map(\.id)).count == expanded.count)
+    #expect(expanded.filter { $0.focused }.count == 1)
+}
+
+@Test func runKindsAndTimePolicy() throws {
+    let panes = sidebarRows(try fixture(), folded: []).filter { $0.target != nil }
+    #expect(panes.map(\.started) == [nil, nil, Date(timeIntervalSince1970: 100), Date(timeIntervalSince1970: 100), Date(timeIntervalSince1970: 100), nil])
+    #expect(panes.map(\.kind).contains { if case .pane(.run(.stream), _) = $0 { return true }; return false })
+    #expect(panes.first { $0.title == "pane-1" }?.tail == "working")
+    #expect(panes.first { $0.title == "pane-1" }?.height == 45)
+}
+
+@Test(arguments: [(0, "0s"), (59, "59s"), (60, "1m00s"), (3599, "59m59s"), (3600, "1h00m"), (7260, "2h01m"), (-1, "0s")])
+func elapsed(_ seconds: Int, _ expected: String) {
+    #expect(sidebarElapsed(started: Date(timeIntervalSince1970: 100), now: Date(timeIntervalSince1970: Double(100 + seconds))) == expected)
+}
