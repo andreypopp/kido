@@ -57,6 +57,11 @@ test("overlapping first-turn entries retain live identities in events, snapshot 
     bridge.event({ type: "message_start", message: entry.message });
     bridge.event({ type: "message_end", message: entry.message });
   }
+  bridge.command({ type: "snapshot", id: "unreconciled" });
+  const unreconciled = messages.find(value => value.id === "unreconciled").record;
+  assert.deepEqual(unreconciled.entries.map((entry: any) => entry.message), entries.map(entry => entry.message));
+  assert.deepEqual(unreconciled.entries.map((entry: any) => entry.uiId), messages.filter(value => value.type === "message_end").map(value => value.uiId));
+  assert.equal(unreconciled.partialAssistant, null);
   for (let index = 0; index < 2; index++) bridge.event({ type: "response", command: "get_entries", success: true, data: structuredClone({ entries, leafId: "entry-1" }) });
   bridge.command({ type: "snapshot" });
   bridge.command({ type: "history", generation: 0, before: "entry-1", limit: 2 });
@@ -65,6 +70,18 @@ test("overlapping first-turn entries retain live identities in events, snapshot 
   assert.deepEqual(messages.find(value => value.type === "snapshot").record.entries.map((entry: any) => entry.uiId), identities);
   assert.deepEqual(messages.find(value => value.type === "history").entries.map((entry: any) => entry.uiId), identities.slice(0, 1));
   assert.equal(new Set(messages.filter(value => value.command === "get_entries").flatMap(value => value.data.entries.filter((entry: any) => entry.message.role === "user").map((entry: any) => entry.uiId))).size, 1);
+  const assistant = { type: "message", id: "entry-2", parentId: "entry-1", message: { role: "assistant", content: [{ type: "text", text: "Completed answer" }], timestamp: 102 } };
+  bridge.event({ type: "message_start", message: assistant.message });
+  bridge.event({ type: "message_end", message: assistant.message });
+  bridge.command({ type: "snapshot", id: "ended-assistant" });
+  const completed = messages.find(value => value.id === "ended-assistant").record;
+  assert.equal(completed.partialAssistant, null);
+  assert.deepEqual(completed.entries.map((entry: any) => entry.message), [...entries, assistant].map(entry => entry.message));
+  bridge.event({ type: "response", command: "get_entries", success: true, data: structuredClone({ entries: [assistant], leafId: assistant.id }) });
+  bridge.command({ type: "snapshot", id: "reconciled-assistant" });
+  const reconciled = messages.find(value => value.id === "reconciled-assistant").record.entries;
+  assert.deepEqual(reconciled.map((entry: any) => entry.uiId), completed.entries.map((entry: any) => entry.uiId));
+  assert.deepEqual(reconciled.map((entry: any) => entry.id), [...entries, assistant].map(entry => entry.id));
 });
 
 test("pty bridge streams fake pi, snapshots, dialogs, history and restores its tty", { timeout: 15000 }, async () => {

@@ -13,7 +13,6 @@ let seq = 0, generation = 0, exiting = false, line = "", rpcLine = "";
 const record: Record<string, any> = { entries: [], leafId: null, partialAssistant: null, tools: {}, bash: {}, queues: { steering: [], followUp: [] }, dialogs: {}, status: {}, widgets: {}, notifications: [], title: "", state: {}, models: [], thinkingLevels: [], commands: [] };
 const timers = new Map<string, NodeJS.Timeout>();
 let liveId: string | null = null, liveCounter = 0;
-const ended: { uiId: string; role: string; timestamp: number }[] = [];
 let output = Promise.resolve();
 function send(value: Record<string, any>) {
   const chunks = frames(JSON.stringify(value), "out", seq + 1);
@@ -23,7 +22,10 @@ function send(value: Record<string, any>) {
   });
 }
 function hello() { return { type: "hello", instance, sessionId: record.state.sessionId ?? null, sessionFile: record.state.sessionFile ?? null, cwd: process.cwd() }; }
-function request(type: string) { child.stdin.write(JSON.stringify({ type, id: `bridge:${generation}:${type}`, ...(type === "get_entries" && record.entries.length ? { since: record.entries.at(-1).id } : {}) }) + "\n"); }
+function request(type: string) {
+  const last = record.entries.findLast((entry: any) => entry.id !== entry.uiId);
+  child.stdin.write(JSON.stringify({ type, id: `bridge:${generation}:${type}`, ...(type === "get_entries" && last ? { since: last.id } : {}) }) + "\n");
+}
 const bootstrap = new Set<string>();
 function refresh() { for (const type of ["get_state", "get_entries", "get_available_models", "get_available_thinking_levels", "get_commands"]) { bootstrap.add(type); request(type); } }
 function closeDialog(id: string) {
@@ -35,7 +37,7 @@ function branch() {
   const entries = new Map<string, any>(record.entries.map((entry: any) => [entry.id, entry]));
   const result = []; let id = record.leafId;
   while (id && entries.has(id)) { const entry = entries.get(id); result.push(entry); entries.delete(id); id = entry.parentId; }
-  return result.reverse();
+  return result.reverse().concat(record.entries.filter((entry: any) => entry.id === entry.uiId));
 }
 function command(value: Record<string, any>) {
   if (value.type === "snapshot") { send({ type: "snapshot", id: value.id ?? null, hello: hello(), seq, generation, record: { ...record, entries: branch().slice(-200) } }); return; }
@@ -57,8 +59,8 @@ function event(value: Record<string, any>) {
       const known = new Map(record.entries.map((entry: any) => [entry.id, entry]));
       data.entries = data.entries.map((entry: any) => {
         if (known.has(entry.id)) return known.get(entry.id);
-        const index = ended.findIndex(message => message.role === (entry.type === "custom_message" ? "custom" : entry.message?.role) && message.timestamp === (entry.type === "custom_message" ? Date.parse(entry.timestamp) : entry.message?.timestamp));
-        if (index >= 0) entry.uiId = ended.splice(index, 1)[0].uiId;
+        const index = record.entries.findIndex((pending: any) => pending.id === pending.uiId && pending.message.role === (entry.type === "custom_message" ? "custom" : entry.message?.role) && pending.message.timestamp === (entry.type === "custom_message" ? Date.parse(entry.timestamp) : entry.message?.timestamp));
+        if (index >= 0) entry.uiId = record.entries.splice(index, 1)[0].uiId;
         if (entry.message?.role === "bashExecution") {
           const id = Object.keys(record.bash).find(id => record.bash[id].ended && record.bash[id].command === entry.message.command);
           if (id) { entry.uiId = id; delete record.bash[id]; }
@@ -75,7 +77,7 @@ function event(value: Record<string, any>) {
     if (value.command === "get_commands") record.commands = data.commands;
     if (["new_session", "switch_session", "fork", "clone"].includes(value.command) && !data?.cancelled) {
       for (const id of Object.keys(record.dialogs)) closeDialog(id);
-      liveId = null; liveCounter = 0; ended.length = 0;
+      liveId = null; liveCounter = 0;
       generation++; record.entries = []; record.leafId = null; record.partialAssistant = null; record.tools = {}; record.bash = {}; record.queues = { steering: [], followUp: [] }; record.state = {}; record.status = {}; record.widgets = {}; record.notifications = []; record.title = ""; record.retry = null; record.compaction = null; refresh();
     } else if (["set_model", "set_thinking_level"].includes(value.command)) refresh();
   }
@@ -85,7 +87,7 @@ function event(value: Record<string, any>) {
   }
   if (value.type === "message_end") {
     value.uiId = liveId ?? `live-${++liveCounter}`;
-    ended.push({ uiId: value.uiId, role: value.message.role, timestamp: value.message.timestamp }); liveId = null;
+    record.entries.push({ type: "message", id: value.uiId, uiId: value.uiId, parentId: record.leafId, timestamp: new Date(value.message.timestamp).toISOString(), message: value.message }); liveId = null;
   }
   if (value.type === "message_update") {
     const delta = value.assistantMessageEvent;
