@@ -21,7 +21,20 @@ packages:
     path: Packages/TmuxControl
   SidebarFeed:
     path: Packages/SidebarFeed
+  PiSurface:
+    path: Packages/PiSurface
 targets:
+  PiView:
+    type: application
+    platform: macOS
+    sources: [PiView]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.andreypopp.pi-view
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+    dependencies:
+      - package: PiSurface
   Kido:
     type: application
     platform: macOS
@@ -77,6 +90,10 @@ targets:
       - framework: build/GhosttyKit.xcframework
         embed: false
 schemes:
+  PiView:
+    build:
+      targets:
+        PiView: all
   Kido:
     build:
       targets:

@@ -9,5 +9,5 @@
     "erasableSyntaxOnly": true,
     "skipLibCheck": true
   },
-  "include": ["kido-status.ts", "kido-agents.ts", "kido-status.test.ts"]
+  "include": ["kido-status.ts", "kido-agents.ts", "kido-status.test.ts", "kido-pi*.ts", "testdata/fake-pi.ts"]
 }

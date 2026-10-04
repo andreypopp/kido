@@ -3,4 +3,6 @@
  (source_trees bin bash zsh claude)
  (files
   shim.sh
-  (glob_files pi/kido-{status,agents}.ts)))
+  (glob_files pi/kido-{status,agents}.ts)
+  pi/kido-pi.ts
+  pi/kido-pi-wire.ts))

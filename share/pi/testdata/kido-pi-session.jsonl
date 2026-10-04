@@ -1,0 +1,31 @@
+{"type":"agent_start"}
+{"type":"message_start","message":{"role":"assistant","content":[],"timestamp":1700000000000}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"Check the files, then make a small edit."}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_end","contentIndex":0,"content":"Check the files, then make a small edit."}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":1}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":"Hello! "}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":"I’ll inspect the project."}}
+{"type":"message_update","assistantMessageEvent":{"type":"toolcall_start","contentIndex":2,"id":"bash-1","toolName":"bash"}}
+{"type":"message_update","assistantMessageEvent":{"type":"toolcall_delta","contentIndex":2,"delta":"{\"command\":\"ls\"}"}}
+{"type":"message_update","assistantMessageEvent":{"type":"toolcall_end","contentIndex":2,"toolCall":{"type":"toolCall","id":"bash-1","name":"bash","arguments":{"command":"ls"}}}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Check the files, then make a small edit."},{"type":"text","text":"Hello! I’ll inspect the project."},{"type":"toolCall","id":"bash-1","name":"bash","arguments":{"command":"ls"}}],"api":"fake","provider":"fake","model":"fixture","stopReason":"toolUse","timestamp":1700000000000}}
+{"type":"tool_execution_start","toolCallId":"bash-1","toolName":"bash","args":{"command":"ls"}}
+{"type":"tool_execution_update","toolCallId":"bash-1","toolName":"bash","args":{"command":"ls"},"partialResult":{"content":[{"type":"text","text":"README.md\n"}],"details":{}}}
+{"type":"tool_execution_update","toolCallId":"bash-1","toolName":"bash","args":{"command":"ls"},"partialResult":{"content":[{"type":"text","text":"README.md\nhello.ts\n"}],"details":{}}}
+{"type":"tool_execution_end","toolCallId":"bash-1","toolName":"bash","result":{"content":[{"type":"text","text":"README.md\nhello.ts\n"}],"details":{"exitCode":0}},"isError":false}
+{"type":"message_end","message":{"role":"toolResult","toolCallId":"bash-1","toolName":"bash","content":[{"type":"text","text":"README.md\nhello.ts\n"}],"details":{"exitCode":0},"isError":false,"timestamp":1700000000010}}
+{"type":"tool_execution_start","toolCallId":"edit-1","toolName":"edit","args":{"path":"hello.ts","oldText":"hello","newText":"Hello"}}
+{"type":"tool_execution_end","toolCallId":"edit-1","toolName":"edit","result":{"content":[{"type":"text","text":"Updated hello.ts"}],"details":{"patch":"--- hello.ts\n+++ hello.ts\n@@ -1 +1 @@\n-hello\n+Hello\n"}},"isError":false}
+{"type":"message_end","message":{"role":"toolResult","toolCallId":"edit-1","toolName":"edit","content":[{"type":"text","text":"Updated hello.ts"}],"details":{"patch":"--- hello.ts\n+++ hello.ts\n@@ -1 +1 @@\n-hello\n+Hello\n"},"isError":false,"timestamp":1700000000020}}
+{"type":"extension_ui_request","id":"fixture-confirm","method":"confirm","title":"Apply change?","message":"Keep the greeting change?","timeout":30000}
+{"type":"queue_update","steering":["Check tests too"],"followUp":["Summarize the changes"]}
+{"type":"extension_ui_request","id":"status-1","method":"setStatus","statusKey":"fixture","statusText":"Fixture replay"}
+{"type":"extension_ui_request","id":"widget-1","method":"setWidget","widgetKey":"fixture","widgetLines":["No model was called"],"widgetPlacement":"aboveEditor"}
+{"type":"extension_ui_request","id":"title-1","method":"setTitle","title":"Fake pi"}
+{"type":"extension_ui_request","id":"notify-1","method":"notify","message":"Replay complete","notifyType":"info"}
+{"type":"message_start","message":{"role":"assistant","content":[],"timestamp":1700000000030}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":0}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Done — one small edit."}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Done — one small edit."}],"api":"fake","provider":"fake","model":"fixture","stopReason":"stop","timestamp":1700000000030}}
+{"type":"agent_end","messages":[]}
