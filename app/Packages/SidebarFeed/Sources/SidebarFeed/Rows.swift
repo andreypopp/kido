@@ -101,7 +101,7 @@ public func sidebarRows(_ snapshot: Snapshot?, folded: Set<SessionID>) -> [Sideb
                     let tail = item.tail.map(\.text).joined()
                     let started = item.run == nil ? nil : item.started
                     rows.append(SidebarRow(id: .pane(session.id, item.id), kind: .pane(target), indent: depth,
-                                           height: (depth == 0 ? 32 : 29) + (tail.isEmpty ? 0 : 16),
+                                           height: (depth == 0 ? 28 : 25) + (tail.isEmpty ? 0 : 16),
                                            title: item.title.map(\.text).joined(), tail: tail, status: status, indicatorDescription: description,
                                            attention: item.attention, started: started, focused: target == snapshot.client))
             }, after: { node, depth in
