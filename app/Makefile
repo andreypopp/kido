@@ -30,35 +30,31 @@ asan-stress: SANITIZER = Address
 tsan-stress asan-stress: STRESS_OPTIMIZE = GHOSTTY_OPTIMIZE=ReleaseSafe
 tsan-stress asan-stress: STRESS_SANITIZE = -enable$(SANITIZER)Sanitizer YES
 stress tsan-stress asan-stress:
-	$(MAKE) -C .. $(FORK)
 	$(MAKE) all DERIVED=$(STRESS_DERIVED) $(STRESS_OPTIMIZE) SANITIZE="$(STRESS_SANITIZE) KIDO_STRESS_CONDITION=KIDO_STRESS"
-	KIDO_STRESS_TARGET=$@ scripts/stress.py --app $(STRESS_DERIVED)/Build/Products/Debug/Kido.app/Contents/MacOS/Kido --tmux $(abspath ../$(FORK)) \
-		--seed $(SEED) --duration $(DURATION) --find $(FIND) --out build/stress/$@-$(SEED)
+	KIDO_STRESS_TARGET=$@ scripts/stress.py --app $(STRESS_DERIVED)/Build/Products/Debug/Kido.app/Contents/MacOS/Kido --tmux $(abspath $(STRESS_DERIVED)/Build/Products/Debug/Kido.app/Contents/Resources/kido/bin/kido-tmux) \
+		--seed $(SEED) --duration $(DURATION) --find $(FIND) --out build/bundle/stress/$@-$(SEED)
 
 RECORD ?= 0
 visual: DERIVED = build/derived-visual
 visual:
-	mkdir -p build/visual/config
-	$(MAKE) -C .. $(FORK)
+	mkdir -p build/bundle/visual/{home,state,tmp,config}
 	$(MAKE) all DERIVED=$(DERIVED) SANITIZE="KIDO_VISUAL_CONDITION=KIDO_VISUAL"
 	xcodebuild -quiet -project Kido.xcodeproj -scheme Visual -configuration Debug \
 		-destination platform=macOS -derivedDataPath $(DERIVED) KIDO_VISUAL_CONDITION=KIDO_VISUAL \
-		KIDO_VISUAL_RECORD=$(RECORD) KIDO_VISUAL_TMUX=$(abspath ../$(FORK)) test
+		KIDO_VISUAL_RECORD=$(RECORD) KIDO_VISUAL_TMUX=$(abspath $(DERIVED)/Build/Products/Debug/Kido.app/Contents/Resources/kido/bin/kido-tmux) test
 
 run: all
 	open -W $(APP)
 
-FORK := build/tmux-fork/$(shell ../scripts/install-tmux-fork.sh --print-revision)/bin/kido-tmux
-DEMO := KIDO_DEMO_DIR=$(CURDIR)/build/demo KIDO_TMUX=$(abspath ../$(FORK)) KIDO_APP_KIDO=$(abspath ../_build/default/bin/main.exe)
+DEMO := KIDO_DEMO_DIR=$(CURDIR)/build/demo
 
 demo: CONFIG = Release
 demo-debug: CONFIG = Debug
 demo demo-debug: all
-	$(MAKE) -C .. build $(FORK)
 	$(DEMO) scripts/demo.sh $(APP)/Contents/MacOS/Kido
 
 demo-stop:
-	$(DEMO) scripts/demo.sh stop
+	$(DEMO) scripts/demo.sh stop $(DERIVED)/Build/Products/Release/Kido.app/Contents/MacOS/Kido
 
 test: all
 	cd Packages/TmuxControl && swift test
