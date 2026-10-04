@@ -19,7 +19,7 @@ final class SidebarCell: NSTableCellView {
     private let fonts: SidebarFonts
     private var row: SidebarRow?
     private var clock = ""
-    let addWindow = SidebarPlus()
+    let addWindow = IconButton("plus", "New window", size: 13, hoverStyle: .iconOnly)
     override var isFlipped: Bool { true }
 
     init(_ fonts: SidebarFonts) {
@@ -47,8 +47,14 @@ final class SidebarCell: NSTableCellView {
         #else
         let now = Date()
         #endif
-        clock = row?.started.map { sidebarElapsed(started: $0, now: now) } ?? ""
-        needsDisplay = true
+        let next = row?.started.map { sidebarElapsed(started: $0, now: now) } ?? ""
+        guard next != clock, let row else { return }
+        let oldWidth = (clock as NSString).size(withAttributes: [.font: fonts.clock]).width
+        let width = (next as NSString).size(withAttributes: [.font: fonts.clock]).width
+        clock = next
+        let y: CGFloat = row.indent == 0 ? 8 : 7
+        let leading = oldWidth == width ? bounds.width - 26 - width : 12 + CGFloat(row.indent) * 17
+        setNeedsDisplay(NSRect(x: leading, y: y - 1, width: max(0, bounds.width - 26 - leading), height: 17))
     }
 
     override func layout() {
@@ -124,23 +130,4 @@ final class SidebarCell: NSTableCellView {
             if let color { color.setFill(); NSBezierPath(ovalIn: NSRect(x: dotX - 3, y: y + 4, width: 6, height: 6)).fill() }
         }
     }
-}
-
-final class SidebarPlus: NSButton {
-    var invoke: () -> Void = {}
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New window")?
-            .withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
-        imagePosition = .imageOnly
-        isBordered = false
-        contentTintColor = .secondaryLabelColor
-        target = self
-        action = #selector(pressed)
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    @objc private func pressed() { invoke() }
-    override func mouseEntered(with event: NSEvent) { contentTintColor = .labelColor }
-    override func mouseExited(with event: NSEvent) { contentTintColor = .secondaryLabelColor }
 }
