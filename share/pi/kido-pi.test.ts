@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { stripTypeScriptTypes } from "node:module";
+import { runInNewContext } from "node:vm";
 import { decoder, frames } from "./kido-pi-wire.ts";
 
 const vectors = JSON.parse(readFileSync(new URL("testdata/kido-pi-frames.json", import.meta.url), "utf8"));
@@ -41,6 +43,28 @@ test("inbound frames are re-acked, deduplicated and interleaved by client; malfo
   assert.equal(Buffer.concat(keys).toString(), "plain");
   receive(Buffer.from("\x1b")); receive(Buffer.alloc(0));
   assert.equal(Buffer.concat(keys).toString(), "plain\x1b");
+});
+
+test("overlapping first-turn entries retain live identities in events, snapshot and history", () => {
+  const source = readFileSync(new URL("kido-pi.ts", import.meta.url), "utf8").split("const utf8 =")[0].replace(/^import .*\n/gm, "");
+  const messages: any[] = [];
+  const bridge = runInNewContext(stripTypeScriptTypes(source + '\nsend = value => capture(JSON.parse(JSON.stringify(value))); request = () => {}; ({ event, command });'), {
+    process: { stdin: {}, env: {}, argv: [], cwd: () => "/fixture", stdout: { write() {} } },
+    spawn: () => ({ stdin: { write() {} } }), randomUUID: () => "fixture", capture: (value: any) => messages.push(JSON.parse(JSON.stringify(value))),
+  });
+  const entries = ["system", "user"].map((role, index) => ({ type: "message", id: `entry-${index}`, parentId: index ? "entry-0" : null, message: { role, content: role, timestamp: 100 + index } }));
+  for (const entry of entries) {
+    bridge.event({ type: "message_start", message: entry.message });
+    bridge.event({ type: "message_end", message: entry.message });
+  }
+  for (let index = 0; index < 2; index++) bridge.event({ type: "response", command: "get_entries", success: true, data: structuredClone({ entries, leafId: "entry-1" }) });
+  bridge.command({ type: "snapshot" });
+  bridge.command({ type: "history", generation: 0, before: "entry-1", limit: 2 });
+  const identities = messages.filter(value => value.type === "message_end").map(value => value.uiId);
+  for (const response of messages.filter(value => value.command === "get_entries")) assert.deepEqual(response.data.entries.map((entry: any) => entry.uiId), identities);
+  assert.deepEqual(messages.find(value => value.type === "snapshot").record.entries.map((entry: any) => entry.uiId), identities);
+  assert.deepEqual(messages.find(value => value.type === "history").entries.map((entry: any) => entry.uiId), identities.slice(0, 1));
+  assert.equal(new Set(messages.filter(value => value.command === "get_entries").flatMap(value => value.data.entries.filter((entry: any) => entry.message.role === "user").map((entry: any) => entry.uiId))).size, 1);
 });
 
 test("pty bridge streams fake pi, snapshots, dialogs, history and restores its tty", { timeout: 15000 }, async () => {

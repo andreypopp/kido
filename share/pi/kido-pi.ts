@@ -44,10 +44,7 @@ function command(value: Record<string, any>) {
     const entries = value.generation === generation && end >= 0 ? active.slice(Math.max(0, end - Math.min(200, Math.max(1, value.limit))), end) : [];
     send({ type: "history", id: value.id, generation, entries, before: entries.length && active[0].id !== entries[0].id ? entries[0].id : null }); return;
   }
-  if (value.type === "bash") {
-    record.bash[value.id] = { command: value.command, output: "", ended: false };
-    send({ type: "bash_execution_start", id: value.id, command: value.command });
-  }
+  if (value.type === "bash") event({ type: "bash_execution_start", id: value.id, command: value.command });
   if (value.type === "extension_ui_response" && !closeDialog(value.id)) return;
   if (value.type === "abort") for (const id of Object.keys(record.dialogs)) closeDialog(id);
   child.stdin.write(JSON.stringify(value) + "\n");
@@ -57,17 +54,19 @@ function event(value: Record<string, any>) {
   if (value.type === "response" && value.success) {
     const data = value.data;
     if (value.command === "get_entries") {
-      const known = new Set(record.entries.map((e: any) => e.id));
-      for (const entry of data.entries.filter((e: any) => !known.has(e.id))) {
+      const known = new Map(record.entries.map((entry: any) => [entry.id, entry]));
+      data.entries = data.entries.map((entry: any) => {
+        if (known.has(entry.id)) return known.get(entry.id);
         const index = ended.findIndex(message => message.role === (entry.type === "custom_message" ? "custom" : entry.message?.role) && message.timestamp === (entry.type === "custom_message" ? Date.parse(entry.timestamp) : entry.message?.timestamp));
         if (index >= 0) entry.uiId = ended.splice(index, 1)[0].uiId;
         if (entry.message?.role === "bashExecution") {
           const id = Object.keys(record.bash).find(id => record.bash[id].ended && record.bash[id].command === entry.message.command);
           if (id) { entry.uiId = id; delete record.bash[id]; }
         }
-        record.entries.push(entry);
+        record.entries.push(entry); known.set(entry.id, entry);
         if (entry.message?.role === "toolResult") delete record.tools[entry.message.toolCallId];
-      }
+        return entry;
+      });
       record.leafId = data.leafId;
     }
     if (value.command === "get_state") record.state = data;
@@ -109,8 +108,8 @@ function event(value: Record<string, any>) {
   if (value.type === "bash_execution_start") record.bash[value.id] = { command: value.command, output: "", ended: false };
   if (value.type === "bash_execution_update") { const bash = record.bash[value.id ?? ""] ?? {}; record.bash[value.id ?? ""] = { ...bash, output: (bash.output ?? "") + value.delta }; }
   if (value.type === "response" && value.command === "bash") {
-    const id = value.id ?? "", bash = record.bash[id]; delete record.bash[id];
-    record.bash[id] = { ...bash, ...value.data, ended: true }; request("get_entries");
+    const id = value.id ?? "";
+    record.bash[id] = { ...record.bash[id], ...value.data, ended: true }; request("get_entries");
   }
   if (value.type === "queue_update") record.queues = { steering: value.steering, followUp: value.followUp };
   if (value.type === "agent_start") { record.state.isStreaming = true; process.stdout.write("\r\n[running]\r\n> "); }
