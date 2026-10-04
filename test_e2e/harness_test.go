@@ -18,7 +18,6 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
-	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -373,11 +372,7 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 	requireTmux(t)
 
 	h := &harness{t: t, dir: t.TempDir()}
-	// The socket names must not collide with a server another run left
-	// behind, so they carry the pid and a random tag.
-	name := fmt.Sprintf("%s-%d-%d", sanitize.ReplaceAllString(t.Name(), "-"),
-		os.Getpid(), rand.Int32N(1<<20))
-	h.outer = "kido-o-" + name
+	h.outer = filepath.Join(serverDir(t), "socket")
 	h.stateDir = serverDir(t)
 	h.inner = filepath.Join(h.stateDir, "socket")
 	watchSockets(h.outer)
@@ -410,7 +405,6 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 	body.Write(defaults)
 	fmt.Fprintf(&body, `
 set-environment -g KIDO_LINGER_SECONDS 1
-set-environment -g KIDO_CAFFEINATE_GRACE_MS 2000
 set-environment -g KIDO_STOP_ESCALATION_MS 300
 set-environment -g KIDO_STALL_THRESHOLD_MS 3000
 set-environment -g KIDO_STREAM_BATCH_MS 100
@@ -560,7 +554,11 @@ func killServer(socket string) {
 }
 
 func (h *harness) tmux(socket string, args ...string) (string, error) {
-	full := append([]string{"-S", socketPath("", socket)}, args...)
+	flag := "-L"
+	if filepath.IsAbs(socket) {
+		flag = "-S"
+	}
+	full := append([]string{flag, socket}, args...)
 	cmd := exec.Command(tmuxBin, full...)
 	cmd.Env = cleanEnv("TMUX=")
 	var out, errb bytes.Buffer
@@ -741,7 +739,7 @@ func (h *harness) sidebarVisible() bool { return h.separatorAt(sideWidth) }
 func rowsOf(lines []string) []string {
 	var out []string
 	for _, l := range sidebarOf(lines) {
-		if l != "" && !strings.HasPrefix(l, "☕") {
+		if l != "" {
 			out = append(out, l)
 		}
 	}

@@ -141,9 +141,7 @@ let index_of m pane =
 
 let selected m = Option.flat_map pane_of (CCArray.get_safe m.lines m.cursor)
 
-let view_rows m =
-  let footer = if Option.is_some m.side.snap.caffeinate then 2 else 1 in
-  if m.height > footer then m.height - footer else Array.length m.lines
+let view_rows m = if m.height > 1 then m.height - 1 else Array.length m.lines
 
 let shown m = List.init (max 0 (min (view_rows m) (Array.length m.lines - m.top))) (( + ) m.top)
 let clamp_top m = { m with top = max 0 (min m.top (Array.length m.lines - view_rows m)) }
@@ -330,17 +328,6 @@ let update msg m =
       (m, tick ~wait:(next_wait m) m)
   | Mouse ev -> (
       match Mosaic.Event.Mouse.kind ev with
-      | Down { button = Left }
-        when Mosaic.Event.Mouse.y ev = m.height - 1 && Option.is_some m.side.snap.caffeinate ->
-          let m =
-            match m.conn with
-            | None -> m
-            | Some _ -> (
-                match Caffeinate.toggle ?socket:m.side.opts.socket () with
-                | Ok () -> m
-                | Error status -> { m with status })
-          in
-          (m, Mosaic.Cmd.none)
       | Down { button = Left } -> (
           let i = m.top + Mosaic.Event.Mouse.y ev in
           match Option.flat_map pane_of (CCArray.get_safe m.lines i) with
@@ -397,24 +384,10 @@ let view m =
   in
   Mosaic.box ~flex_direction:Column
     ~size:(Mosaic.size_wh (Mosaic.pct 100) (Mosaic.pct 100))
-    ([
-       Mosaic.box ~flex_direction:Column ~flex_grow:1. ~flex_shrink:1. (List.map row (shown m));
-       footer;
-     ]
-    @
-    match m.side.snap.caffeinate with
-    | None -> []
-    | Some c ->
-        [
-          line
-            (truncate m.width
-               ([ span `Dim "☕ " ]
-               @ (if c.active then [ span `Running "●"; span `Dim " " ] else [])
-               @ [
-                   span `Dim
-                     (match c.mode with Off -> "off" | On -> "on" | Agents -> "when agents running");
-                 ]));
-        ])
+    [
+      Mosaic.box ~flex_direction:Column ~flex_grow:1. ~flex_shrink:1. (List.map row (shown m));
+      footer;
+    ]
 
 let subscriptions _ =
   Mosaic.Sub.batch
