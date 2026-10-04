@@ -274,7 +274,7 @@ Source
             self.caffeinate.wait(timeout=5)
 
 
-def encode(source, name, timeline, scenario, mobile=False):
+def encode(source, name, timeline, scenario, mobile=False, keep_poster=False):
     from camera import filters
     MEDIA.mkdir(parents=True, exist_ok=True)
     duration = next(item["seconds"] for item in timeline if item["event"] == "verified") + 3
@@ -284,12 +284,13 @@ def encode(source, name, timeline, scenario, mobile=False):
     video_filter = filters(timeline, duration, review, camera, scenario.CUTS, mobile=mobile)
     common = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
               "-an", "-vf", video_filter, "-r", "30"]
-    run(common + ["-c:v", "libx264", "-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+    run(common + ["-c:v", "libx264", "-preset", "veryslow", "-tune", "animation", "-crf", "28", "-g", "300", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                   str(MEDIA / f"{name}.mp4")], timeout=180)
-    run(common + ["-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-row-mt", "1", "-cpu-used", "4", "-pix_fmt", "yuv420p",
+    run(common + ["-c:v", "libvpx-vp9", "-crf", "40", "-b:v", "0", "-g", "300", "-row-mt", "1", "-cpu-used", "0", "-pix_fmt", "yuv420p",
                   str(MEDIA / f"{name}.webm")], timeout=300)
-    run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(MEDIA / f"{name}.mp4"),
-         "-frames:v", "1", "-q:v", "2", str(MEDIA / f"{name}.jpg")])
+    if not keep_poster:
+        run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(MEDIA / f"{name}.mp4"),
+             "-frames:v", "1", "-q:v", "2", str(MEDIA / f"{name}.jpg")])
     stills = HERE / "output/stills"
     stills.mkdir(exist_ok=True)
     for stale in stills.glob(f"{name}-*.jpg"):
@@ -304,9 +305,9 @@ def encode(source, name, timeline, scenario, mobile=False):
              "-frames:v", "1", str(stills / f"{name}-{second:02}.jpg")])
 
 
-def encode_variants(source, name, timeline, scenario):
+def encode_variants(source, name, timeline, scenario, keep_poster=False):
     for variant, mobile in ((name, False), (name + "-mobile", True)):
-        encode(source, variant, timeline, scenario, mobile=mobile)
+        encode(source, variant, timeline, scenario, mobile=mobile, keep_poster=keep_poster)
 
 
 def main():
@@ -322,7 +323,7 @@ def main():
     spec.loader.exec_module(module)
     if args.render_only:
         timeline = json.loads((output / f"{args.scenario}-timeline.json").read_text())
-        encode_variants(output / f"{args.scenario}-source.mov", args.scenario, timeline, module)
+        encode_variants(output / f"{args.scenario}-source.mov", args.scenario, timeline, module, keep_poster=True)
         return
     demo = Demo(Path(tempfile.mkdtemp(prefix="kido-demo-", dir="/tmp")))
     demo.env.update(KIDO_DEMO_TITLE=module.TITLE, KIDO_DEMO_TOOLS=module.TOOLS,

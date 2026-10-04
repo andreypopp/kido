@@ -13,12 +13,16 @@ export const media = Object.fromEntries(
   Object.keys(mediaLabels).map((name) => [
     name,
     {
-      mp4: url(`media/${name}.mp4`),
-      webm: url(`media/${name}.webm`),
+      sources: [
+        { src: url(`media/${name}.webm`), type: 'video/webm; codecs="vp9"' },
+        { src: url(`media/${name}.mp4`), type: 'video/mp4; codecs="avc1.640032"' },
+      ],
       poster: url(`media/${name}.jpg`),
       mobile: {
-        mp4: url(`media/${name}-mobile.mp4`),
-        webm: url(`media/${name}-mobile.webm`),
+        sources: [
+          { src: url(`media/${name}-mobile.webm`), type: 'video/webm; codecs="vp9"' },
+          { src: url(`media/${name}-mobile.mp4`), type: 'video/mp4; codecs="avc1.640032"' },
+        ],
         poster: url(`media/${name}-mobile.jpg`),
       },
     },

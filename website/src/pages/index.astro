@@ -138,15 +138,22 @@ const canonical = new URL(url(), Astro.site);
           toggle.hidden = false;
           update();
         });
-        const observer = new IntersectionObserver((entries) => {
+        let pausedByUser = false;
+        const loader = new IntersectionObserver((entries) => {
           if (entries.some((entry) => entry.isIntersecting) && !reducedMotion.matches) {
-            video.play().catch(fallback);
-            observer.disconnect();
+            video.preload = 'auto';
+            video.load();
+            loader.disconnect();
           }
+        }, { rootMargin: `${window.innerHeight}px 0px`, threshold: 0.05 });
+        loader.observe(video);
+        const observer = new IntersectionObserver(([entry]) => {
+          if (entry.isIntersecting && !reducedMotion.matches && !pausedByUser) video.play().catch(fallback);
+          else video.pause();
         });
         observer.observe(video);
         reducedMotion.addEventListener('change', () => { if (reducedMotion.matches) { video.pause(); update(); } });
-        toggle.addEventListener('click', () => { if (video.paused) video.play().catch(fallback); else video.pause(); update(); });
+        toggle.addEventListener('click', () => { pausedByUser = !video.paused; if (video.paused) video.play().catch(fallback); else video.pause(); update(); });
         update();
       });
     </script>
