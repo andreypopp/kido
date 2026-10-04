@@ -633,6 +633,7 @@ let sidebar =
               dir = State.dir ();
               threshold = State.stall_threshold ();
               grace = Reap.grace ();
+              caffeinate_grace = Caffeinate.grace ();
             };
           0)
 
@@ -654,6 +655,7 @@ let sidebar_feed =
            dir = State.dir ();
            threshold = State.stall_threshold ();
            grace = Reap.grace ();
+           caffeinate_grace = Caffeinate.grace ();
          }
        in
        let lock = Mutex.create () and input = Queue.create () in

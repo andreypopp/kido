@@ -410,6 +410,7 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 	fmt.Fprintf(&body, `
 set-environment -g KIDO_STATE_DIR "%s"
 set-environment -g KIDO_LINGER_SECONDS 1
+set-environment -g KIDO_CAFFEINATE_GRACE_MS 2000
 set-environment -g KIDO_STOP_ESCALATION_MS 300
 set-environment -g KIDO_STALL_THRESHOLD_MS 3000
 set-environment -g KIDO_STREAM_BATCH_MS 100
@@ -735,7 +736,7 @@ func (h *harness) sidebarVisible() bool { return h.separatorAt(sideWidth) }
 func rowsOf(lines []string) []string {
 	var out []string
 	for _, l := range sidebarOf(lines) {
-		if l != "" {
+		if l != "" && !strings.HasPrefix(l, "☕") {
 			out = append(out, l)
 		}
 	}

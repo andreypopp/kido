@@ -7,6 +7,7 @@ type options = {
   dir : string;
   threshold : float;
   grace : float;
+  caffeinate_grace : float option;
 }
 
 val default_interval : float
@@ -21,6 +22,7 @@ type lingering = {
 type probe = { reported : float; read : float; dismissed : bool }
 
 type snapshot = {
+  caffeinate : Caffeinate.t option;
   client : Tmux.Exec.client_state option;
   active : string;
   panes : Tmux.Pane.t list;

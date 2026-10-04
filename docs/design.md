@@ -2140,6 +2140,40 @@ management, so `make install` copies its `bin` and `share` into `PREFIX`
 and `share/kido` together. The e2e harness copies the same tree into
 `<tmp>`. The Homebrew formula installs the same set into its own prefix.
 
+## Keeping macOS awake
+
+The sidebar shows a mouse-only coffee toggle at its bottom on macOS when
+`caffeinate` is executable on PATH. Clicking cycles `off`, `on`, and
+`when agents running`. The server option `@kido-caffeinate` is the sole
+mode store (`off`, `on`, `agents`); an unset option means off. A default
+in kido.conf uses `set-option -s @kido-caffeinate agents` (or `on`). Every
+sidebar reads it on every tick. Availability and the idle grace are
+resolved once when the sidebar starts. A tick reads the server pid, mode,
+assertion pid, idle deadline and socket in one tmux display command; a
+steady assertion or off state requires no lock or writes. The sidebar-feed keeps its v:2 pane-tree
+contract and does not expose this TUI control.
+
+`on` holds an assertion unconditionally. `agents` starts it immediately
+when any record in `State.load_live` is not idle, including waiting and
+compacting agents and records hidden by a pane collision. All agents
+idle starts a shared deadline in `@kido-caffeinate-idle`; work clears it,
+and sixty seconds continuously idle stops the assertion. Switching from
+on to agents with no busy agent starts that same grace. Off stops it on
+the next tick, without the grace. `KIDO_CAFFEINATE_GRACE_MS` shortens
+the grace through the test server's environment.
+
+A nonblocking advisory lock on `<state>/caffeinate-<server-pid>.lock`
+serializes reconciliation across clients only when a tick needs to act.
+The tick re-reads under the lock before acting. Closing the descriptor releases
+it, including after a sidebar crash; losing a claim skips reconciliation
+for that tick. The file carries no state. While holding the lock, the
+sidebar asks tmux to run a short shell job which backgrounds
+`caffeinate -i -w <server-pid>` and publishes its pid in the server option
+`@kido-caffeinate-pid` before returning. This is the background-process
+equivalent of run-shell -b: publication completes before another client
+can start it. Liveness is a fresh kill(pid, 0), never a cached flag.
+The assertion exits with the tmux server even if no sidebar remains.
+
 ## Knobs
 
 Every duration a test has to shorten is a package variable, and the ones
@@ -2149,7 +2183,7 @@ reaches it: `KIDO_LINGER_SECONDS` (read by both the sweep and the
 extension's helper, so they agree), `KIDO_IDLE_EXIT_SECONDS` (the idle
 self-exit timer, a different figure that stacks with `KIDO_LINGER_SECONDS`
 rather than sharing it - see "Idle self-exit, and resuming a run"),
-`KIDO_STALL_THRESHOLD_MS`, `KIDO_STOP_ESCALATION_MS`,
+`KIDO_CAFFEINATE_GRACE_MS`, `KIDO_STALL_THRESHOLD_MS`, `KIDO_STOP_ESCALATION_MS`,
 `KIDO_HEARTBEAT_MS`, `KIDO_PARENT_POLL_MS`, `KIDO_ASK_POLL_MS`,
 `KIDO_SPAWN_TIMEOUT_MS`, `KIDO_STOP_TIMEOUT_MS`, `KIDO_AGENT_LIST_TTL_MS`,
 and streaming's three:

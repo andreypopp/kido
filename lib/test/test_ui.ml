@@ -11,6 +11,7 @@ let opts ?(dir = temp ()) () : Sidebar.options =
     dir;
     threshold = 180.;
     grace = 30.;
+    caffeinate_grace = None;
   }
 
 let pane ?(session = "sess") ?(window = "@1") ?(command = "") ?(title = "") ?(pid = 0) ?run ?dead_at

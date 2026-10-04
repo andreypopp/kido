@@ -15,6 +15,7 @@ val write_all : Unix.file_descr -> string -> unit
 type process = { pid : int; stdin : Unix.file_descr; stdout : Unix.file_descr }
 
 val spawn : ?socket:string -> string list -> (process, string) result
+val run : ?socket:string -> string list -> (unit, string) result
 val global_option : string -> string
 val list_panes : ?socket:string -> unit -> (Pane.t list, string) result
 val capture_pane : ?socket:string -> string -> (string list, string) result

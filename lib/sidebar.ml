@@ -8,6 +8,7 @@ type options = {
   dir : string;
   threshold : float;
   grace : float;
+  caffeinate_grace : float option;
 }
 
 let default_interval = 0.1
@@ -22,6 +23,7 @@ type lingering = {
 type probe = { reported : float; read : float; dismissed : bool }
 
 type snapshot = {
+  caffeinate : Caffeinate.t option;
   client : Tmux.Exec.client_state option;
   active : string;
   panes : P.t list;
@@ -37,6 +39,7 @@ type snapshot = {
 
 let empty =
   {
+    caffeinate = None;
     client = None;
     active = "";
     panes = [];
@@ -108,6 +111,14 @@ let take ~opts conn prev client =
   | Error e -> { empty with client; err = Some e }
   | Ok panes ->
       let live = State.load_live ~dir:opts.dir in
+      let caffeinate =
+        Option.flat_map
+          (fun grace ->
+            Caffeinate.tick ~dir:opts.dir ~grace ~now:(Unix.gettimeofday ())
+              ~busy:(List.exists (fun (_, (s : State.session)) -> Stdlib.(s.status <> Idle)) live)
+              conn)
+          opts.caffeinate_grace
+      in
       let states = State.by_pane live in
       let maybe_pi (p : P.t) =
         Procs.maybe_pi p.current_command && not (String_map.mem p.pane_id states)
@@ -151,6 +162,7 @@ let take ~opts conn prev client =
           probes states
       in
       {
+        caffeinate;
         client;
         active =
           Option.value ~default:""
@@ -180,7 +192,8 @@ let same a b =
     }
   in
   let session (_, (s : State.session)) = { s with ts = 0. } in
-  Option.equal Stdlib.( = ) a.client b.client
+  Option.equal Stdlib.( = ) a.caffeinate b.caffeinate
+  && Option.equal Stdlib.( = ) a.client b.client
   && String.equal a.active b.active && Option.is_none a.err && Option.is_none b.err
   && Option.equal Float.equal a.wake b.wake
   && List.equal (fun x y -> Stdlib.( = ) (drawn x) (drawn y)) a.panes b.panes
@@ -466,8 +479,7 @@ let pane_label m (p : P.t) =
         if not (String.is_empty activity) then Text [ span `Dim activity ]
         else
           match Option.flat_map (fun run -> String_map.find_opt run m.snap.lingering) p.run with
-          | Some { run = `Agent at; outcome = None; _ } when Option.is_none p.dead_at ->
-              Elapsed at
+          | Some { run = `Agent at; outcome = None; _ } when Option.is_none p.dead_at -> Elapsed at
           | _ -> Text []
       in
       row Agent (Some (if done_ m p.pane_id then Done else ind)) [ plain title ] caption
