@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -22,9 +21,7 @@ func withoutLocale(env []string) []string {
 
 func TestServerWithoutLocale(t *testing.T) {
 	requireTmux(t)
-	dir := t.TempDir()
-	env := withoutLocale(cleanEnv("TMUX=", "TMUX_TMPDIR="+dir,
-		"HOME="+dir, "XDG_CONFIG_HOME=", "KIDO_STATE_DIR="+filepath.Join(dir, "state")))
+	env := withoutLocale(launcherEnv(t))
 	t.Cleanup(func() {
 		cmd := exec.Command(tmuxBin, "-u", "-L", "locale", "kill-session", "-t", "main")
 		cmd.Env = env

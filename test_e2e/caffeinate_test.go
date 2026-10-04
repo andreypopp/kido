@@ -29,6 +29,24 @@ func TestCaffeinate(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := startPathPrefix(t, "alpha", dir)
+	stopped := func(pid int, timeout time.Duration, why string) {
+		t.Helper()
+		h.waitFor(func() bool { return syscall.Kill(pid, 0) != nil }, timeout, func() string {
+			ps, _ := exec.Command("ps", "-o", "pid=,ppid=,stat=,comm=,args=", "-p", strconv.Itoa(pid)).CombinedOutput()
+			return fmt.Sprintf("%s: pid=%d option=%q idle=%q ps=%q sidebar=%q", why, pid,
+				h.in("show-option", "-sqv", "@kido-caffeinate-pid"),
+				h.in("show-option", "-sqv", "@kido-caffeinate-idle"), ps, h.sidebar())
+		})
+	}
+	running := func() int {
+		t.Helper()
+		pid := 0
+		h.waitFor(func() bool {
+			pid, _ = strconv.Atoi(h.in("show-option", "-sv", "@kido-caffeinate-pid"))
+			return pid > 0 && syscall.Kill(pid, 0) == nil
+		}, settle, msgf("caffeinate pid published and running"))
+		return pid
+	}
 	hold := func(pid int) {
 		t.Helper()
 		until := time.Now().Add(300 * time.Millisecond)
@@ -42,11 +60,7 @@ func TestCaffeinate(t *testing.T) {
 	h.waitRow("☕ off")
 	h.click(5, outerRows)
 	h.waitRow("☕ ● on")
-	pid := 0
-	h.waitFor(func() bool {
-		pid, _ = strconv.Atoi(h.in("show-option", "-sv", "@kido-caffeinate-pid"))
-		return pid > 0 && syscall.Kill(pid, 0) == nil
-	}, settle, msgf("caffeinate running unconditionally"))
+	pid := running()
 	h.click(5, outerRows)
 	h.waitFor(func() bool { return hasLine(h.sidebar(), "when agents running") }, settle,
 		func() string {
@@ -54,21 +68,21 @@ func TestCaffeinate(t *testing.T) {
 		})
 	// Leaving on starts the idle grace, rather than interrupting the assertion immediately.
 	hold(pid)
-	h.waitFor(func() bool { return syscall.Kill(pid, 0) != nil }, settle, msgf("stops after idle grace"))
+	stopped(pid, settle, "stops after idle grace")
 	pane := h.newWindow("alpha", "", "sh", "-c", "exec sleep 300")
 	h.agentStatus("cafe", pane, "pi", "running")
+	pid = running()
 	h.waitRow("☕ ● when agents running")
-	pid, _ = strconv.Atoi(h.in("show-option", "-sv", "@kido-caffeinate-pid"))
 	h.agentStatus("cafe", pane, "pi", "idle")
 	hold(pid)
-	h.waitFor(func() bool { return syscall.Kill(pid, 0) != nil }, settle, msgf("idle agents stop after grace"))
+	stopped(pid, settle, "idle agents stop after grace")
 	h.agentStatus("cafe", pane, "pi", "waiting")
+	pid = running()
 	h.waitRow("☕ ● when agents running")
-	pid, _ = strconv.Atoi(h.in("show-option", "-sv", "@kido-caffeinate-pid"))
 	hold(pid)
 	h.click(5, outerRows)
 	h.waitRow("☕ off")
-	h.waitFor(func() bool { return syscall.Kill(pid, 0) != nil }, time.Second, msgf("off stops immediately"))
+	stopped(pid, time.Second, "off stops immediately")
 	b, err := os.ReadFile(log)
 	if err != nil {
 		t.Fatal(err)
