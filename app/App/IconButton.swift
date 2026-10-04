@@ -16,6 +16,10 @@ final class IconButton: NSButton {
         toolTip = label
         setAccessibilityLabel(label)
         isBordered = false
+        if hoverStyle == .iconOnly {
+            focusRingType = .none
+            (cell as? NSButtonCell)?.highlightsBy = []
+        }
         imagePosition = .imageOnly
         contentTintColor = .secondaryLabelColor
         wantsLayer = true
