@@ -15,6 +15,13 @@ import XCTest
     private var runtime: GhosttyRuntime!
     private var session: SessionView!
     private var connection: Connection!
+    private var model = SessionModel()
+    private var tabSnapshot: Snapshot?
+
+    private func updateTabs(_ status: Feed.Status? = nil, query: String = "") {
+        if case .running(let snapshot) = status, query.isEmpty, snapshot.filter.isEmpty { tabSnapshot = snapshot }
+        (window.contentViewController as? Sidebar)?.tabs.entries = model.navigation(tabSnapshot).tabs
+    }
 
     override func setUp() async throws {
         directory = app.appendingPathComponent("build/visual/\(UUID().uuidString)")
@@ -75,7 +82,8 @@ import XCTest
         connection = try Connection(server: Server(tmux: tmux, socket: socket, build: nil), view: session,
                                     onChange: { [weak self] model in
                                         self?.session.show(model.window)
-                                        (self?.window.contentViewController as? Sidebar)?.tabs.update(model)
+                                        self?.model = model
+                                        self?.updateTabs()
                                     },
                                     onDiagnostic: { XCTFail($0) }, onClose: { _ in })
         try await wait("initial layout") { self.terminal?.panes.isEmpty == false }
@@ -168,14 +176,17 @@ import XCTest
         let root = try XCTUnwrap(window.contentView?.superview)
         root.layoutSubtreeIfNeeded()
         sidebar.splitView.setPosition(236, ofDividerAt: 0)
-        sidebar.tabs.send = { [weak self] in self?.connection.send($0) }
+        sidebar.tabs.select = { [weak self] step in
+            guard let self, let command = model.navigation(tabSnapshot).model.select(step) else { return }
+            connection.send([command])
+        }
         _ = try await command(["rename-window", "-t", "visual:0", "Shell"])
         let middle = try await command(["new-window", "-d", "-P", "-F", "#{window_id}", "-t", "visual", "-n", "Editor", "exec /bin/cat"])
         let last = try await command(["new-window", "-d", "-P", "-F", "#{window_id}", "-t", "visual", "-n", "Logs", "exec /bin/cat"])
         let child = try await command(["new-window", "-d", "-P", "-F", "#{window_id}", "-t", "visual", "-n", "Child run", "exec /bin/cat"])
         let secondPane = try await command(["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", middle, "exec /bin/cat"])
         _ = try await command(["select-pane", "-t", secondPane])
-        try await wait("four tmux windows") { sidebar.tabs.model.windows.count == 4 }
+        try await wait("four tmux windows") { self.model.windows.count == 4 }
         let listing = try await command(["list-panes", "-s", "-t", "visual", "-F", "#{window_id} #{pane_id}"])
         let panes = listing.split(separator: "\n").map { $0.split(separator: " ").map(String.init) }
         let shell = try XCTUnwrap(panes.first { $0[0] != middle && $0[0] != last && $0[0] != child })
@@ -196,19 +207,19 @@ import XCTest
                     "nodes": filtered ? [nodes[1]] : nodes]]]
             return try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
         }
-        sidebar.tabs.update(.running(try fixture()), query: "")
+        updateTabs(.running(try fixture()), query: "")
         XCTAssertEqual(sidebar.tabs.entries.map(\.name), ["Shell", "Editor", "Logs"])
         XCTAssertEqual(sidebar.tabs.entries.map(\.status), [.quiet, .attention, .quiet])
-        sidebar.list.filter = { query in sidebar.tabs.update(.running(try! fixture(filtered: true)), query: query) }
+        sidebar.list.filter = { query in self.updateTabs(.running(try! fixture(filtered: true)), query: query) }
         sidebar.list.visualSearch.stringValue = "hidden"
         XCTAssertTrue(sidebar.list.visualSearch.sendAction(try XCTUnwrap(sidebar.list.visualSearch.action), to: sidebar.list.visualSearch.target))
         XCTAssertEqual(sidebar.tabs.entries.map(\.name), ["Shell", "Editor", "Logs"])
         sidebar.list.visualSearch.stringValue = ""
-        sidebar.tabs.update(.running(try fixture("failed")), query: "")
+        updateTabs(.running(try fixture("failed")), query: "")
         XCTAssertEqual(sidebar.tabs.entries[1].status, .error)
-        sidebar.tabs.update(.running(try fixture()), query: "")
+        updateTabs(.running(try fixture()), query: "")
         connection.send([Command("select-window", "-t", child)])
-        try await wait("descendant active") { sidebar.tabs.model.window?.description == child }
+        try await wait("descendant active") { self.model.window?.description == child }
         XCTAssertEqual(sidebar.tabs.entries.first { $0.active }?.id.description, middle)
         root.layoutSubtreeIfNeeded()
         sidebar.viewDidLayout()
@@ -217,21 +228,21 @@ import XCTest
         let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [],
             timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
         sidebar.tabs.mouseDown(with: event)
-        try await wait("middle tab selected") { sidebar.tabs.model.window?.description == middle }
+        try await wait("middle tab selected") { self.model.window?.description == middle }
         let current = try await command(["display-message", "-p", "-t", "visual", "#{window_id}"])
         XCTAssertEqual(current, middle)
         let restoredPane = try await command(["display-message", "-p", "-t", middle, "#{pane_id}"])
         XCTAssertEqual(restoredPane, secondPane)
         connection.send([Command("select-window", "-t", shell[0])])
-        try await wait("first window selected") { sidebar.tabs.model.window?.description == shell[0] }
+        try await wait("first window selected") { self.model.window?.description == shell[0] }
         let menus = SessionMenus()
         menus.send = { [weak self] in self?.connection.send($0) }
-        menus.update(sidebar.tabs.navigationModel)
+        menus.update(model.navigation(tabSnapshot).model)
         let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
             timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "2", charactersIgnoringModifiers: "2", isARepeat: false, keyCode: 19))
         XCTAssertTrue(menus.window.performKeyEquivalent(with: key))
-        try await wait("Cmd-2 selects second tab") { sidebar.tabs.model.window?.description == middle }
-        XCTAssertEqual(sidebar.tabs.navigationModel.select(.number(2)), Command("select-window", "-t", middle))
+        try await wait("Cmd-2 selects second tab") { self.model.window?.description == middle }
+        XCTAssertEqual(model.navigation(tabSnapshot).model.select(.number(2)), Command("switch-client", "-t", "$0:\(middle)"))
         XCTAssertEqual(session.windows.first { !$0.value.isHidden }?.key.description, middle)
         let area = sidebar.content.convert(sidebar.content.bounds, to: root)
         XCTAssertEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root).maxY, area.maxY)
@@ -254,16 +265,28 @@ import XCTest
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
         _ = try await command(["kill-window", "-t", child])
         _ = try await command(["rename-window", "-t", middle, "Renamed"])
-        try await wait("renamed tab") { sidebar.tabs.model.windows.map(\.name) == ["Shell", "Renamed", "Logs"] }
+        try await wait("renamed tab") { self.model.windows.map(\.name) == ["Shell", "Renamed", "Logs"] }
         _ = try await command(["swap-window", "-d", "-s", middle, "-t", last])
-        try await wait("reordered tabs") { sidebar.tabs.model.windows.map(\.name) == ["Shell", "Logs", "Renamed"] }
+        try await wait("reordered tabs") { self.model.windows.map(\.name) == ["Shell", "Logs", "Renamed"] }
         _ = try await command(["kill-window", "-t", last])
-        try await wait("closed tab") { sidebar.tabs.model.windows.map(\.name) == ["Shell", "Renamed"] }
+        try await wait("closed tab") { self.model.windows.map(\.name) == ["Shell", "Renamed"] }
         _ = try await command(["new-session", "-d", "-s", "other", "-n", "Other session", "exec /bin/cat"])
+        let pendingSelection = try XCTUnwrap(model.navigation(tabSnapshot).model.select(.number(2)))
+        connection.visualCommands.removeAll()
+        let selected = expectation(description: "pending selection completed")
+        connection.send([Command("switch-client", "-t", "other"), pendingSelection]) { replies in
+            XCTAssertNotNil(replies)
+            selected.fulfill()
+        }
+        await fulfillment(of: [selected], timeout: 20)
+        let selectedSession = try await command(["list-clients", "-F", "#{session_id}:#{window_id}"])
+        XCTAssertEqual(selectedSession, "$0:\(middle)")
+        try await wait("pending selection returns to its own session") { self.model.session == SessionID(number: 0) && self.model.window?.description == middle }
+        XCTAssertEqual(connection.visualCommands.filter { $0.line.hasPrefix("switch-client") }.count, 2)
         connection.send([Command("switch-client", "-t", "other")])
-        try await wait("current session tabs only") { sidebar.tabs.model.windows.map(\.name) == ["Other session"] }
+        try await wait("current session tabs only") { self.model.windows.map(\.name) == ["Other session"] }
         connection.send([Command("switch-client", "-t", "visual")])
-        try await wait("session switched back") { sidebar.tabs.model.windows.map(\.name) == ["Shell", "Renamed"] }
+        try await wait("session switched back") { self.model.windows.map(\.name) == ["Shell", "Renamed"] }
         _ = try await command(["kill-session", "-t", "other"])
         sidebar.tabs.removeFromSuperview()
     }
