@@ -1,6 +1,17 @@
 export DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
 
+.DEFAULT_GOAL := all
 DERIVED := build/derived
+pi-view: DERIVED = build/derived-pi-ui
+.PHONY: pi-view pi-test
+pi-view:
+	xcodegen --quiet --spec project.yml
+	xcodebuild -quiet -project Kido.xcodeproj -scheme PiView -configuration $(CONFIG) \
+		-destination platform=macOS -derivedDataPath $(DERIVED) build
+
+pi-test:
+	swift test --package-path Packages/PiSurface
+
 CONFIG ?= Debug
 APP = $(DERIVED)/Build/Products/$(CONFIG)/Kido.app
 

@@ -1,0 +1,3 @@
+#!/bin/sh
+. "${0%/*}/../shim.sh"
+exec node "$kido_share/pi/kido-pi.ts" "$@"

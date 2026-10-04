@@ -1,0 +1,46 @@
+{"type":"agent_start"}
+{"type":"message_start","message":{"role":"assistant","content":[],"timestamp":1700000000000}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"Check the files, then make a small edit."}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_end","contentIndex":0,"content":"Check the files, then make a small edit."}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":1}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":"Hello! "}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":"I’ll inspect the project."}}
+{"type":"message_update","assistantMessageEvent":{"type":"toolcall_start","contentIndex":2,"id":"bash-1","toolName":"bash"}}
+{"type":"message_update","assistantMessageEvent":{"type":"toolcall_delta","contentIndex":2,"delta":"{\"command\":\"ls\"}"}}
+{"type":"message_update","assistantMessageEvent":{"type":"toolcall_end","contentIndex":2,"toolCall":{"type":"toolCall","id":"bash-1","name":"bash","arguments":{"command":"ls"}}}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Check the files, then make a small edit."},{"type":"text","text":"Hello! I’ll inspect the project."},{"type":"toolCall","id":"bash-1","name":"bash","arguments":{"command":"ls"}},{"type":"toolCall","id":"edit-1","name":"edit","arguments":{"path":"hello.ts","oldText":"hello","newText":"Hello"}}],"api":"fake","provider":"fake","model":"fixture","stopReason":"toolUse","timestamp":1700000000000}}
+{"type":"tool_execution_start","toolCallId":"bash-1","toolName":"bash","args":{"command":"ls"}}
+{"type":"tool_execution_update","toolCallId":"bash-1","toolName":"bash","args":{"command":"ls"},"partialResult":{"content":[{"type":"text","text":"README.md\n"}],"details":{}}}
+{"type":"tool_execution_update","toolCallId":"bash-1","toolName":"bash","args":{"command":"ls"},"partialResult":{"content":[{"type":"text","text":"README.md\nhello.ts\n"}],"details":{}}}
+{"type":"tool_execution_end","toolCallId":"bash-1","toolName":"bash","result":{"content":[{"type":"text","text":"README.md\nhello.ts\n"}],"details":{"exitCode":0}},"isError":false}
+{"type":"message_end","message":{"role":"toolResult","toolCallId":"bash-1","toolName":"bash","content":[{"type":"text","text":"README.md\nhello.ts\n"}],"details":{"exitCode":0},"isError":false,"timestamp":1700000000010}}
+{"type":"tool_execution_start","toolCallId":"edit-1","toolName":"edit","args":{"path":"hello.ts","oldText":"hello","newText":"Hello"}}
+{"type":"tool_execution_end","toolCallId":"edit-1","toolName":"edit","result":{"content":[{"type":"text","text":"Updated hello.ts"}],"details":{"patch":"--- hello.ts\n+++ hello.ts\n@@ -1 +1 @@\n-hello\n+Hello\n"}},"isError":false}
+{"type":"message_end","message":{"role":"toolResult","toolCallId":"edit-1","toolName":"edit","content":[{"type":"text","text":"Updated hello.ts"}],"details":{"patch":"--- hello.ts\n+++ hello.ts\n@@ -1 +1 @@\n-hello\n+Hello\n"},"isError":false,"timestamp":1700000000020}}
+{"type":"extension_ui_request","id":"fixture-confirm","method":"confirm","title":"Apply change?","message":"Keep the greeting change?","timeout":30000}
+{"type":"queue_update","steering":["Check tests too"],"followUp":["Summarize the changes"]}
+{"type":"extension_ui_request","id":"status-1","method":"setStatus","statusKey":"fixture","statusText":"Fixture replay"}
+{"type":"extension_ui_request","id":"widget-1","method":"setWidget","widgetKey":"fixture","widgetLines":["No model was called"],"widgetPlacement":"aboveEditor"}
+{"type":"extension_ui_request","id":"title-1","method":"setTitle","title":"Fake pi"}
+{"type":"extension_ui_request","id":"notify-1","method":"notify","message":"Replay complete","notifyType":"info"}
+{"type":"message_start","message":{"role":"assistant","content":[],"timestamp":1700000000030}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":0}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Done — one small edit."}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Done — one small edit."}],"api":"fake","provider":"fake","model":"fixture","stopReason":"stop","timestamp":1700000000030}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"## Verification\n\n- Preserve **literal output**\n- Open [documentation](https://example.com)\n\n> Small, readable changes.\n\n```swift\nlet greeting = \"Hello\"\nprint(greeting)\n```"},{"type":"toolCall","id":"read-1","name":"read","arguments":{"path":"README.md","offset":1,"limit":12}},{"type":"toolCall","id":"failed-1","name":"bash","arguments":{"command":"false"}}],"timestamp":1700000000040}}
+{"type":"message_end","message":{"role":"toolResult","toolCallId":"read-1","toolName":"read","content":[{"type":"text","text":"# Project\n\nA small greeting.\n"}],"isError":false,"timestamp":1700000000050}}
+{"type":"message_end","message":{"role":"toolResult","toolCallId":"failed-1","toolName":"bash","content":[{"type":"text","text":"Command exited with code 1\nNo changes were made."}],"isError":true,"timestamp":1700000000060}}
+{"type":"message_end","message":{"role":"custom","customType":"kido-message","content":"The tests are ready.\n\n**All checks passed.**","details":{"from":"Reviewer"},"display":true,"timestamp":1700000000070}}
+{"type":"message_end","message":{"role":"custom","customType":"kido-ask","content":"Model-only reply instructions","details":{"from":"Reviewer","question":"Can you check the output?"},"display":true,"timestamp":1700000000080}}
+{"type":"message_end","message":{"role":"custom","customType":"kido-reply","content":"Yes, the output is correct.","details":{"from":"Reviewer","replyTo":"question-1"},"display":true,"timestamp":1700000000090}}
+{"type":"message_end","message":{"role":"custom","customType":"kido-notice","content":"The background check finished.\nNo errors were found.","details":{"from":"Checks"},"display":true,"timestamp":1700000000100}}
+{"type":"message_end","message":{"role":"custom","customType":"kido-stream","content":"First line\n\n\tIndented output\nLast line","details":{"from":"Checks"},"display":true,"timestamp":1700000000110}}
+{"type":"fixture_entry","entry":{"type":"compaction","summary":"Earlier context summarized for the next turn."}}
+{"type":"fixture_entry","entry":{"type":"branch_summary","summary":"A separate investigation was completed."}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"image","mimeType":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAACAAAAAQCAIAAAD4YuoOAAAAHUlEQVR4nGMI6NlHU8QwasGoBaMWjFowasFQsAAAW6s0LsdSee4AAAAASUVORK5CYII=","filename":"pixel.png"},{"type":"image","mimeType":"image/png","data":"invalid"}],"stopReason":"aborted","timestamp":1700000000120}}
+{"type":"bash_execution_start","id":"direct-1","command":"printf 'first\\nsecond\\n'"}
+{"type":"bash_execution_update","id":"direct-1","delta":"first\nsecond\n"}
+{"type":"response","id":"direct-1","command":"bash","success":true,"data":{"output":"first\nsecond\n","exitCode":null,"cancelled":true,"truncated":false}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Done — one small edit.\n\nThe checks are complete."}],"stopReason":"stop","timestamp":1700000000130}}
+{"type":"agent_end","messages":[]}
