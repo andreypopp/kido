@@ -396,9 +396,8 @@ and what queues", above); a message and an ask still wait for the turn.
 - that has settled a turn and stayed idle for thirty seconds calls pi's
 own shutdown on itself, unless it was spawned with `keepAlive`. The
 same clock is armed once more, from the delivery of the task: a child
-handed its task has everything it needs, so if nothing has begun a turn
-by the time the clock runs out, nothing ever will. The delivery timer
-covers a child that never reaches a first turn. Arming from
+handed its task has everything it needs; after thirty seconds kido gives
+up waiting. The delivery timer covers a child that never reaches a first turn. Arming from
 delivery rather than from session start is what leaves a resumed run,
 which comes back idle waiting for a message, and a session with no task
 file at all, untouched; delivery is not itself work, and the first real
@@ -418,8 +417,6 @@ apart shuts a parent down thirty seconds after it spawns, whereupon the
 orphan rule closes the child it was waiting for, mid-work. So the
 timer asks `kido get-agent --children <session>` first and re-arms if the
 answer is yes or inconclusive, exactly as it does for a focused window.
-The last child ending resumes the clock, as does that child's notice,
-which is new work like any other.
 
 The reading is of the **run records**, not of anything the session
 remembers: a run whose meta names this session as its parent and which
@@ -453,10 +450,8 @@ unless it is the session's last. The sidebar's sweep is the backstop: a
 marked run's pane dead for the same thirty seconds is collected, its
 screen captured and `died` recorded if nothing else was. A window the
 user has split something of their own into keeps that split and is
-unmarked, becoming an ordinary window of theirs. Two thirty-second
-clocks stack, so up to a minute can pass between a child's last turn
-and its window going (design.md, "Window lifecycle" and "Idle
-self-exit, and resuming a run").
+unmarked, becoming an ordinary window of theirs (design.md, "Window
+lifecycle" and "Idle self-exit, and resuming a run").
 
 ## Redirecting one, and ending one from outside
 
@@ -587,8 +582,8 @@ observed. Then, in this order and never concurrently:
 Everything is reported **before this process exits**, which is what makes
 the feature independent of the window surviving. tmux sets
 `remain-on-exit` in a second call after `new-window` and a fast command
-beats it every time. The run record and notice do not depend on retaining
-the pane; what the race costs is the corpse on screen. Finding the
+can finish before it is marked. The run record and notice do not depend
+on retaining the pane; what the race costs is the corpse on screen. Finding the
 window gone is therefore not a creation failure: the mark is skipped, no
 outcome is recorded over the command's own, and the ids are printed as
 usual.
@@ -636,18 +631,11 @@ run's wrapper notice carries no tail - the parent already received its output as
 it ran - only the "N lines not streamed" count above, when it is
 nonzero.
 
-**Exactly one ending.** Every async run produces exactly one terminal
-notice, from whichever observer discovers the ending - including the
-ones that discover it by finding a corpse. Never zero, or a model waits
-forever on a build that has already stopped existing; never two, or it
-acts twice.
-
+**Exactly one ending.** The outcome is recorded once, first write wins.
 The winner of the outcome write is the sender of the notice.
-`Subrun.record_outcome` is already a once-only, crash-safe arbiter of exactly
-this question (linking a completed temporary file with `Unix.link`), so
-nothing else is introduced to decide it: not
-a flag, not a "notified" marker, the same write read the same way. Three
-observers can win it:
+`Subrun.record_outcome` links a completed temporary file with `Unix.link`,
+so nothing else is introduced to decide it: not a flag, not a "notified"
+marker, the same write read the same way. Three observers can win it:
 
 | Observer | Discovers the ending | Records | Notifies |
 |---|---|---|---|
@@ -736,8 +724,8 @@ every send, a state-directory read and no tmux pane listing, so a parent's
 current inbox receives the next batch. A quit-then-resume gap ends the run
 if the orphan sweep observes it; resuming the parent does not revive it.
 
-Nothing about it may cost the command anything. The tee to the output
-file is unconditional and is the source of truth; the stream is
+Sending output must never block the command's output. The tee to the
+output file is unconditional and is the source of truth; the stream is
 best-effort from a buffer of whole lines, written to by the wrapper's
 output pump under a mutex and sent by one thread of its own. A failed or
 stalled send drops its chunk rather than retrying it - a build's output
@@ -785,9 +773,7 @@ the reason the completion notice carries one. The run's name is on the
 row and in the batch's first line, because a bash run has no state
 record and the label would otherwise fall through to a pane id.
 
-What this costs, stated plainly: while the agent is working, the stream
-costs it context bytes and no turns at all; while it is idle, each pause of a second
-in the output wakes it. `stream` defaults to off.
+`stream` defaults to off.
 
 ## A human at a shell
 

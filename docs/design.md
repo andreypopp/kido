@@ -274,8 +274,8 @@ not have to reimplement the state-directory precedence or guess the
 length budget; a refusal means the session runs without an inbox rather
 than listening where kido cannot dial. The name is the pi process's pid,
 which is unique among live processes, so a leftover file at that path
-cannot belong to a running listener and is always safe to unlink before
-binding.
+cannot belong to a running listener, and kido's own convention makes it
+safe to unlink before binding.
 
 **A `/reload` does not take the inbox down.** A reload keeps the process,
 the pid and the session id, and the path is keyed by the pid, so the
@@ -302,7 +302,7 @@ deadline of two seconds bounds the whole exchange, connect included,
 because a listener whose owner is wedged with a full accept backlog
 blocks in `connect()` before there is a connection to put a deadline on.
 The agent answers as soon as it has read the message, so anything slower
-is a wedged peer, not a busy one.
+is treated as wedged.
 
 `ok` means the agent has the message and will see it at its next turn
 boundary. That is the only acknowledgement level: `message_agent`
@@ -779,7 +779,7 @@ made (`set-option -p`, not a window option), so that pane survives its
 own command exiting: both for the read window the linger gives the user and
 so a sweep has something to find if the linger never ran. The option is
 set by a second tmux call after `new-window`, and a command that exits
-fast enough beats it every time, so a child that fails immediately loses
+fast enough can beat it, so a child that fails immediately loses
 its window and its last screen. The run record survives and still reads
 as `died` from the pid; every fix costs more than the gap.
 
@@ -890,9 +890,7 @@ The cost of having no grace is that a child already shutting down on
 its own notice can have its window closed mid-exit and be stamped
 `died` rather than recording its own outcome. `Subrun.record_outcome`'s atomic link
 keeps whatever the child managed to write first, so what is at risk is
-the outcome of a child that has not written one yet - and a parent that
-is genuinely gone is the case where that outcome is least worth waiting
-fifteen seconds for.
+the outcome of a child that has not written one yet.
 
 **The screen capture.** The sweep is the only thing that ever sees a marked
 window's dead pane before closing it destroys that screen for good, so it is
@@ -904,9 +902,7 @@ writes `<run-dir>/screen` temp-then-rename, the way `State.record` writes a
 state file, and last writer wins. This is deliberately not `record_outcome`'s
 first-write-wins discipline: an outcome has precedence to defend (`stopped` written
 before `completed` must not lose to it), but two screen captures of one
-window do not - rule 1's panes are already dead and frozen, so both captures
-read the same thing, and rule 2's pane is still live, so a later capture is
-only ever more complete, never a worse answer competing with a better one.
+window do not.
 First-write-wins here would also permanently strand
 `kido tool spawn_subagent --resume`: nothing besides a sweep ever writes this
 file, so a first attempt's screen would outlive every subsequent attempt
@@ -1003,8 +999,7 @@ quit, except a child still awaiting its first turn records `failed`.
 is entirely inside the child's own pi process; only once it actually
 shuts down does the window even become eligible for the linger helper's
 own, entirely separate 30 seconds ("Window lifecycle", above) before a
-sweep may close it. A child can therefore sit for up to a minute, total,
-between its last turn and its window disappearing. Nobody may fold these
+sweep may close it. Nobody may fold these
 two into one knob: they run in different processes, guard different
 things (a live child deciding to leave, versus a dead child's corpse
 waiting to be swept), and read from different environment variables.
@@ -1082,9 +1077,9 @@ somebody currently alive.** lib/reap.ml's rule 2 closes any marked window
 whose child reports a `parent` session no live record holds - it keeps no
 history, so "never heard of that session" and
 "that session's process has since died" read identically to it. The tool
-can never hit this: its caller is always the live pi process asking for
-itself, so the session id it hands over is definitionally live at that
-moment. `--resume` is different by design - it is exactly the mechanism that
+has a live caller when it calls, but the command still checks, since
+the caller can end in between. `--resume` is different by design - it is
+exactly the mechanism that
 lets a *different*, by-hand caller claim the parent edge (the paragraph
 above) - which makes an unverifiable value here a real, not hypothetical,
 failure mode: a parent nobody holds makes the resumed run an orphan.
@@ -1100,9 +1095,7 @@ no state record, or one who omits the flags, is unaffected - an empty
 **`spawn_subagent(resume)`.** The tool mirrors the CLI: an optional `resume`
 parameter runs `kido tool spawn_subagent --resume <resume>` instead of a fresh
 spawn, passing this session's own `--parent-pid`/`--parent-session` exactly
-as a fresh spawn does - which is always safe, since a live pi session
-calling its own tool is definitionally the live agent the refusal above is
-guarding against not having. `resume` combined with `task` or `name` is
+as a fresh spawn does. `resume` combined with `task` or `name` is
 refused before anything is sent to kido, not silently resolved in either
 direction: a resumed run keeps its own original task and window name, so a
 call naming a new one is ambiguous about which the model actually wants, not
@@ -1328,9 +1321,8 @@ is written by `kido tool stop_run`.
 **Written once.** `Subrun.record_outcome` links a completed temporary file
 into place with `Unix.link`, atomically refusing to overwrite. Several
 exit paths race to describe the same run, and the
-first to observe it ending is definitionally the true story; a later,
-cruder guess must never clobber it. That single rule decides the
-ordering everywhere else:
+first recorded ending wins; a later, cruder guess never overwrites it.
+That single rule decides the ordering everywhere else:
 
 - `stopped` is written the moment the stop request is away, before the
   wait, so it wins deterministically against the child's own `completed`
@@ -1432,18 +1424,14 @@ the only thing positioned to notice a gap. It compares two readings
 taken across one tick: the wall clock's account of the interval against
 the monotonic clock's account of the same interval. Each reading is a
 `Sidebar.reading`, a wall time and an `Mtime.t` taken together by
-`Sidebar.read_clock`. A tick that was merely slow for an awake reason
-advances both readings together; only a suspend leaves the monotonic one
-behind. The wall account outrunning the monotonic one by more than five seconds is a
-sleep (`Sidebar.detect_pause`). A wall time alone - a `Timestamp.t`, or
-anything read back from disk - has no monotonic half and cannot take
-part.
+`Sidebar.read_clock`. kido detects a pause from the difference between
+these intervals (`Sidebar.detect_pause`). A wall time alone - a
+`Timestamp.t`, or anything read back from disk - has no monotonic half
+and cannot take part.
 
 On detection the sidebar records the wake moment in the `wake` file in
-the state directory, only if newer than what is already there, since two
-sidebars racing to record roughly the same wake must not let the one that
-writes second clobber the other with an older value. The staleness
-verdict then measures its threshold from the later of the report time
+the state directory, only if newer than what is already there. The
+staleness verdict then measures its threshold from the later of the report time
 and the recorded wake. That is not weaker, just later: an agent that
 really is wedged is still caught, one threshold after the machine woke
 instead of the instant it did, and an agent that reports again after
@@ -2040,8 +2028,7 @@ up through `globalThis` and serve a session neither started.
 - A `kido ssh` session killed between the `exec` and the remote zsh
   reading the `.zshenv` leaves its temporary directory behind: the trap
   is gone with the exec and the cleanup has not run yet. It is one
-  empty-ish directory under the remote's `$TMPDIR`, and the window is a
-  few milliseconds wide.
+  empty-ish directory under the remote's `$TMPDIR`.
 - Everything assumes one machine: a shared filesystem for the state
   directory, the sockets and the task file; a shared pid namespace; and
   a kido binary beside every agent. Remote subagents would invert
