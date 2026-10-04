@@ -57,7 +57,7 @@ private func fixture(filter: String = "", client: Int = 0, sessions: [Int] = [0]
     #expect(panes.map(\.started) == [nil, nil, Date(timeIntervalSince1970: 100), Date(timeIntervalSince1970: 100), Date(timeIntervalSince1970: 100), nil])
     #expect(panes.allSatisfy { if case .pane = $0.kind { return true }; return false })
     #expect(panes.first { $0.title == "pane-1" }?.tail == "working")
-    #expect(panes.first { $0.title == "pane-1" }?.height == 45)
+    #expect(panes.map(\.height) == [28, 28, 41, 25, 25, 25])
 }
 
 @Test(arguments: [(0, "0s"), (59, "59s"), (60, "1m00s"), (3599, "59m59s"), (3600, "1h00m"), (7260, "2h01m"), (-1, "0s")])
