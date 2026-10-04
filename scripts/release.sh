@@ -18,6 +18,11 @@ sha=$(git rev-parse origin/main)
 echo "+ gh run list --commit $sha --json conclusion,status --limit 100"
 ci=$(gh run list --commit "$sha" --json conclusion,status --limit 100)
 python3 -c 'import json,sys; runs=json.loads(sys.argv[1]); assert runs and all(r["status"]=="completed" and r["conclusion"]=="success" for r in runs), "origin/main CI is not all green"' "$ci"
+[[ -z $(git -C "$tap" status --porcelain) && -z $(git -C "$ssh_tap" status --porcelain) ]] || { echo 'Tap checkout is dirty' >&2; exit 1; }
+remote=$(git -C "$ssh_tap" remote get-url --push origin)
+[[ $remote == git@* || $remote == ssh://* ]] || { echo 'Workspace tap must push over SSH' >&2; exit 1; }
+action git -C "$ssh_tap" pull --ff-only origin main
+action git -C "$tap" pull --ff-only "$ssh_tap" HEAD
 read -r old previous < <(python3 - "$formula" <<'PY'
 import re,sys
 s=open(sys.argv[1]).read()
@@ -57,11 +62,6 @@ if removed:
     if after[:2]<=before[:2]: sys.exit('Removed or renamed commands/tools require a minor version bump')
 else: print('Patch release is sufficient')
 PY
-[[ -z $(git -C "$tap" status --porcelain) && -z $(git -C "$ssh_tap" status --porcelain) ]] || { echo 'Tap checkout is dirty' >&2; exit 1; }
-remote=$(git -C "$ssh_tap" remote get-url --push origin)
-[[ $remote == git@* || $remote == ssh://* ]] || { echo 'Workspace tap must push over SSH' >&2; exit 1; }
-action git -C "$ssh_tap" pull --ff-only origin main
-action git -C "$tap" pull --ff-only "$ssh_tap" HEAD
 if $dry; then
   echo "+ edit $formula: revision: $sha, version $version"
 else

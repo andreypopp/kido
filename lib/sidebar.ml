@@ -400,17 +400,14 @@ let span role text = { text; role }
 let plain = span `Plain
 
 let lingering_label (p : P.t) (l : lingering) =
-  let kind, caption =
-    ((match l.kind with Agent -> Agent | Bash | Stream -> Run), Elapsed l.started)
-  in
   let base =
     {
       pane = p.pane_id;
       window = p.window_id;
-      kind;
+      kind = (match l.kind with Agent -> Agent | Bash | Stream -> Run);
       indicator = Some (Status Running);
       title = [ plain l.name ];
-      caption;
+      caption = Elapsed l.started;
     }
   in
   match (p.dead_at, l.outcome) with
@@ -712,6 +709,12 @@ let indicator_json = function
         | Status _ | Unknown | Done | Failed | Stalled -> []))
 
 let to_json m =
+  let panes =
+    List.fold_left
+      (fun panes (p : P.t) ->
+        if String_map.mem p.pane_id panes then panes else String_map.add p.pane_id p panes)
+      String_map.empty m.snap.panes
+  in
   let spans l =
     `List
       (List.map
@@ -732,7 +735,7 @@ let to_json m =
   and item i =
     let r = i.row in
     let run, started =
-      match List.find_opt (fun (p : P.t) -> String.equal p.pane_id r.pane) m.snap.panes with
+      match String_map.find_opt r.pane panes with
       | Some p -> (
           match Option.flat_map (fun run -> String_map.find_opt run m.snap.lingering) p.run with
           | Some l ->

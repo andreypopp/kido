@@ -1,4 +1,4 @@
-type server = Down | Up of string | Mismatch
+type server = Down | Up of (string * string option) | Mismatch
 type endpoint = { tmux : string; socket : string; build : string option } [@@deriving to_yojson]
 
 let tmux_safe what s =
@@ -68,13 +68,17 @@ let server_conf ~exe ~user_conf =
 let probe_server ~socket_name bin =
   let ((out, _, err) as p) =
     Unix.open_process_args_full bin
-      [| bin; "-L"; socket_name; "list-sessions"; "-F"; "#{socket_path}" |]
+      [| bin; "-L"; socket_name; "list-sessions"; "-F"; "#{socket_path}\x1f#{@kido-build-id}" |]
       (Unix.environment ())
   in
   let stdout = In_channel.input_all out in
   let stderr = In_channel.input_all err in
   match Unix.close_process_full p with
-  | WEXITED 0 -> Up (List.hd (String.split_on_char '\n' stdout))
+  | WEXITED 0 -> (
+      let line = List.hd (String.split_on_char '\n' stdout) in
+      match String.split_on_char '\x1f' line with
+      | [ socket; build ] -> Up (socket, if String.is_empty build then None else Some build)
+      | _ -> Down)
   | _ when String.mem ~sub:"protocol version mismatch" stderr -> Mismatch
   | _ -> Down
 
@@ -122,23 +126,13 @@ let run ~socket_name ~dir ~tmux =
 let ensure ~socket_name ~dir =
   let open Result.Infix in
   let bin = Lazy.force Tmux.Exec.binary in
-  let resolve socket =
+  let resolve (socket, build) =
     let tmux =
       if String.contains bin '/' then Some (Tmux.Exec.abs bin)
       else Tmux.Exec.look_path ~path:(Tmux.Exec.getenv "PATH") bin
     in
     match tmux with
-    | Some tmux ->
-        let ((out, _, err) as p) =
-          Unix.open_process_args_full bin
-            (argv ~socket_name bin [ "show-options"; "-gqv"; "@kido-build-id" ])
-            (Unix.environment ())
-        in
-        let value = String.trim (In_channel.input_all out) in
-        ignore (In_channel.input_all err);
-        ignore (Unix.close_process_full p);
-        let build = if String.is_empty value then None else Some value in
-        Ok { tmux; socket; build }
+    | Some tmux -> Ok { tmux; socket; build }
     | None -> Error (Printf.sprintf "no %s on PATH" bin)
   in
   match probe_server ~socket_name bin with

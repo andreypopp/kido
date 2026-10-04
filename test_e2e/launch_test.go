@@ -83,12 +83,7 @@ func newKidoRun(t *testing.T) *kidoRun {
 		// terminals its clients sit in.
 		r.kido("kill-server")
 		killServer(r.outer)
-		deadline := time.Now().Add(settle)
-		for _, p := range started {
-			if !processGone(p.pid, time.Until(deadline)) {
-				t.Errorf("pid %s (%s), started under %s, outlived its server by %v", p.pid, p.command, r.kidoSock, settle)
-			}
-		}
+		waitDescendantsGone(t, r.kidoSock, started)
 		os.RemoveAll(r.tmpdir)
 	})
 
@@ -677,6 +672,7 @@ func TestLauncherFindsItsTmuxAndReadsTheProbe(t *testing.T) {
 	const fake = `#!/bin/sh
 if [ "$3" = list-sessions ]; then
   [ -z "$PROBE_ERR" ] || echo "$PROBE_ERR" >&2
+  printf 'socket\037build\n'
   exit "$PROBE_RC"
 fi
 echo "$0 $*" >"$OUT"

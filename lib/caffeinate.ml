@@ -17,6 +17,15 @@ let toggle ?socket () =
       "#{?#{==:#{@kido-caffeinate},on},agents,#{?#{==:#{@kido-caffeinate},agents},off,on}}";
     ]
 
+let is_caffeinate pid =
+  if not (State.alive pid) then false
+  else
+    let ic = Unix.open_process_args_in "ps" [| "ps"; "-o"; "comm="; "-p"; Int.to_string pid |] in
+    let comm = String.trim (In_channel.input_all ic) in
+    match Unix.close_process_in ic with
+    | Unix.WEXITED 0 -> String.equal (Filename.basename comm) "caffeinate"
+    | _ -> false
+
 let read conn =
   let format =
     String.concat "\x1f"
@@ -46,11 +55,10 @@ let read conn =
   | _ -> None
 
 let action ~grace ~now ~busy state since =
-  match state.mode with
-  | Off -> if state.active then `Stop else `None
-  | (On | Agents) when Stdlib.(state.mode = On) || busy ->
-      if (not state.active) || Option.is_some since then `Wake else `None
-  | On | Agents -> (
+  match (state.mode, busy) with
+  | Off, _ -> if state.active then `Stop else `None
+  | On, _ | Agents, true -> if (not state.active) || Option.is_some since then `Wake else `None
+  | Agents, false -> (
       if not state.active then `None
       else
         match since with
@@ -90,7 +98,7 @@ let tick ~dir ~grace ~now ~busy conn =
                     | `Stop ->
                         Option.iter
                           (fun pid ->
-                            try Unix.kill pid Sys.sigterm
+                            try if is_caffeinate pid then Unix.kill pid Sys.sigterm
                             with Unix.Unix_error (Unix.ESRCH, _, _) -> ())
                           pid;
                         [ set "@kido-caffeinate-pid" ""; set "@kido-caffeinate-idle" "" ]
@@ -101,8 +109,12 @@ let tick ~dir ~grace ~now ~busy conn =
                         else
                           let script =
                             Printf.sprintf
-                              "caffeinate -i -w %d </dev/null >/dev/null 2>&1 & %s -S %s \
-                               set-option -s @kido-caffeinate-pid $!"
+                              "caffeinate -i -w %d </dev/null >/dev/null 2>&1 & pid=$!; n=0; \
+                               while [ \"$n\" -lt 50 ]; do \
+                               case $(ps -o comm= -p \"$pid\") in caffeinate|*/caffeinate) \
+                               exec %s -S %s set-option -s @kido-caffeinate-pid \"$pid\" ;; esac; \
+                               n=$((n + 1)); sleep 0.01; done; \
+                               kill -KILL \"$pid\" 2>/dev/null; wait \"$pid\" 2>/dev/null"
                               server
                               (Filename.quote (Lazy.force Tmux.Exec.binary))
                               (Filename.quote socket)

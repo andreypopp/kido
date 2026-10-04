@@ -6,7 +6,11 @@ build:
 	dune build
 
 SELF_CONTAINED ?= 0
-INSTALL_FORK = build/tmux-fork/$(TMUX_FORK_REV)$(if $(filter 1,$(SELF_CONTAINED)),-self-contained,)
+INSTALL_FORK = $(TMUX_FORK)$(if $(filter 1,$(SELF_CONTAINED)),-self-contained,)
+
+define ensure-fork
+@if ! test -x $(1)/bin/kido-tmux || ! test -f $(1)/share/kido-tmux/REVISION; then ./scripts/install-tmux-fork.sh $(2) $(CURDIR)/$(1); fi
+endef
 
 # dune lays out bin/kido and share/kido (the root dune file) as symlinks
 # to read-only build outputs; `dune install` refuses under package
@@ -14,7 +18,7 @@ INSTALL_FORK = build/tmux-fork/$(TMUX_FORK_REV)$(if $(filter 1,$(SELF_CONTAINED)
 # Promotion substitutes dune-build-info in build/main.exe.
 DUNE_INSTALL := $(or $(DUNE_BUILD_DIR),_build)/install/default
 install:
-	@if ! test -x $(INSTALL_FORK)/bin/kido-tmux || ! test -f $(INSTALL_FORK)/share/kido-tmux/REVISION; then ./scripts/install-tmux-fork.sh $(if $(filter 1,$(SELF_CONTAINED)),--self-contained,) $(CURDIR)/$(INSTALL_FORK); fi
+	$(call ensure-fork,$(INSTALL_FORK),$(if $(filter 1,$(SELF_CONTAINED)),--self-contained,))
 	dune build @install
 	mkdir -p "$(PREFIX)/bin" "$(PREFIX)/share"
 	cp -RL $(DUNE_INSTALL)/bin $(DUNE_INSTALL)/share "$(PREFIX)/"
@@ -38,7 +42,7 @@ TMUX_FORK := build/tmux-fork/$(TMUX_FORK_REV)
 prompts:
 	./scripts/lint.sh --update-prompts
 pinned-fork:
-	@if ! test -x $(TMUX_FORK)/bin/kido-tmux || ! test -f $(TMUX_FORK)/share/kido-tmux/REVISION; then ./scripts/install-tmux-fork.sh $(CURDIR)/$(TMUX_FORK); fi
+	$(call ensure-fork,$(TMUX_FORK))
 
 verify:
 	E2E='$(E2E)' STAGES='$(STAGES)' bash scripts/verify.sh

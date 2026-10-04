@@ -453,12 +453,7 @@ set -g side-status-command "%s%s"
 		// An async-run wrapper answers the server's hangup by writing its
 		// outcome into the state dir, after kill-server has returned; TempDir's
 		// removal runs next and must not race it.
-		deadline := time.Now().Add(settle)
-		for _, p := range started {
-			if !processGone(p.pid, time.Until(deadline)) {
-				t.Errorf("pid %s (%s), started under %s, outlived its server by %v", p.pid, p.command, h.inner, settle)
-			}
-		}
+		waitDescendantsGone(t, h.inner, started)
 	})
 
 	h.must(h.tmux(h.outer, "-f", "/dev/null", "new-session", "-d", "-s", "host",
@@ -498,6 +493,16 @@ func controlClientPIDs(socket string) []string {
 }
 
 type process struct{ pid, command string }
+
+func waitDescendantsGone(t *testing.T, socket string, started []process) {
+	t.Helper()
+	deadline := time.Now().Add(settle)
+	for _, p := range started {
+		if !processGone(p.pid, time.Until(deadline)) {
+			t.Errorf("pid %s (%s), started under %s, outlived its server by %v", p.pid, p.command, socket, settle)
+		}
+	}
+}
 
 // descendants lists every process below a tmux server: its panes' and its
 // jobs' and theirs, including a killed pane's that has not exited yet.
