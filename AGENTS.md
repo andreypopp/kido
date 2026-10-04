@@ -193,7 +193,10 @@ upstream or the PR already carries is dropped. Force-pushing `fork`
 leaves older submodule pins unreachable, so the previous head is pushed
 first as a dated branch (`fork-YYYY-MM-DD`).
 `scripts/install-tmux-fork.sh <prefix>` builds it
-into `<prefix>/bin/kido-tmux`; `--print-revision` reads the pin with
+into `<prefix>/bin/kido-tmux`; `--self-contained <prefix>` is macOS-only,
+linking Homebrew's static libevent, source-built utf8proc and system ncurses
+so the binary needs no Homebrew at runtime (licenses in `share/kido-tmux`).
+`--print-revision` reads the pin with
 `git ls-files -s`, so it works with the submodule unchecked-out or the
 pin only staged.
 
