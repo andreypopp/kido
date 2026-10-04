@@ -1,8 +1,46 @@
 import AppKit
 import XCTest
+import SidebarFeed
+import TmuxControl
 @testable import Kido
 
 @MainActor final class ToolbarTests: XCTestCase {
+    func testOrphanedTab() throws {
+        let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data("""
+        {"v":2,"filter":"","client":{"session":"$0","window":"@1","pane":"%1"},"sessions":[{"id":"$0","name":"s","current":true,"nodes":[{"kind":"shell","id":"%0","pane":"%0","window":"@0","title":[],"tail":[],"attention":false,"children":[{"kind":"run","id":"%1","pane":"%1","window":"@1","title":[],"tail":[],"attention":false,"children":[]}]}]}]}
+        """.utf8))
+        let model = SessionModel(session: SessionID(number: 0), windows: [.init(id: WindowID(number: 1), name: "Child")], window: WindowID(number: 1))
+        XCTAssertEqual(model.navigation(snapshot).tabs.map(\.id), [WindowID(number: 1)], "orphan child must retain a tab")
+    }
+
+    func testWindowSelectionTargetsSession() {
+        let model = SessionModel(session: SessionID(number: 3), windows: [.init(id: WindowID(number: 7), name: "w")], window: WindowID(number: 7))
+        XCTAssertEqual(model.select(.number(1)), Command("switch-client", "-t", "$3:@7"), "selection must target the tab's session")
+        XCTAssertEqual(PaneCommand.window(.number(1)).command(PaneID(number: 0), cell: .zero, model: model), model.select(.number(1)))
+        for step in [WindowStep.next, .previous, .last] {
+            XCTAssertEqual(model.select(step), model.select(.number(1)))
+        }
+        let menus = SessionMenus()
+        var commands: [Command] = []
+        menus.send = { commands = $0 }
+        menus.update(model)
+        let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+            windowNumber: 0, context: nil, characters: "1", charactersIgnoringModifiers: "1", isARepeat: false, keyCode: 18)!
+        XCTAssertTrue(menus.window.performKeyEquivalent(with: key))
+        XCTAssertEqual(commands, [model.select(.number(1))!])
+    }
+
+    func testOfflineDismissesFloatingSidebar() throws {
+        let sidebar = delegate.sidebar
+        sidebar.isCollapsed = true
+        sidebar.focusSidebar(nil)
+        XCTAssertTrue(sidebar.isFloating)
+        delegate.down("Disconnected", "", button: "Reconnect")
+        XCTAssertFalse(sidebar.isFloating, "offline must remove floating Outside blocker")
+        XCTAssertTrue(sidebar.isCollapsed)
+        sidebar.dismissFloating()
+    }
+
     func testToolbarHitRegions() throws {
         let sidebar = Sidebar()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
