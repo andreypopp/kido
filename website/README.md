@@ -1,6 +1,8 @@
 # kido website
 
 Astro, built as static files. Requires Node 22.12+ (Node 24 recommended).
+`make website` from the repository root installs dependencies and starts
+the dev server.
 
 ```sh
 cd website

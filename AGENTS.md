@@ -379,6 +379,7 @@ one.
     make flake RUN=TestFoo COUNT=20  repeat one e2e test in the scrubbed environment
     make clean-forks  remove fork builds other than the pin
     make install binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
+    make website the website's dev server at http://localhost:4321 (website/README.md)
 
 `make verify E2E=TestFoo` limits e2e; `STAGES=e2e` selects only that stage.
 Every selected stage runs even after a failure and prints PASS/FAIL.

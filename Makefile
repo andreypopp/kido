@@ -32,7 +32,7 @@ test:
 # new one and a second run of the same pin builds nothing
 TMUX_FORK_REV := $(shell ./scripts/install-tmux-fork.sh --print-revision)
 TMUX_FORK := build/tmux-fork/$(TMUX_FORK_REV)
-.PHONY: pinned-fork verify flake clean-forks preview-pi unpreview-pi release prompts
+.PHONY: pinned-fork verify flake clean-forks preview-pi unpreview-pi release prompts website
 prompts:
 	./scripts/lint.sh --update-prompts
 pinned-fork:
@@ -58,6 +58,9 @@ preview-pi unpreview-pi:
 
 release:
 	bash scripts/release.sh '$(VERSION)' $(ARGS)
+
+website:
+	cd website && npm ci && npm run dev
 
 # drives kido inside a real tmux fork: the one above, unless KIDO_TMUX
 # names another (CI, with its cached build); it never skips
