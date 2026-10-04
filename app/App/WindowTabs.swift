@@ -1,68 +1,16 @@
 import AppKit
-import SidebarFeed
-import TmuxControl
 
 final class WindowTabs: NSView {
-    private(set) var model = SessionModel()
-    private(set) var snapshot: Snapshot? { didSet { needsDisplay = true; changed() } }
-
-    func update(_ status: Feed.Status, query: String) {
-        if case .running(let next) = status, query.isEmpty, next.filter.isEmpty { snapshot = next }
-    }
-    var changed: () -> Void = {}
-    var send: ([Command]) -> Void = { _ in }
+    var entries: [SessionModel.Tab] = [] { didSet { needsDisplay = true } }
+    var select: (WindowStep) -> Void = { _ in }
     private var offset: CGFloat = 0
     override var mouseDownCanMoveWindow: Bool { false }
 
-    var entries: [(id: WindowID, name: String, active: Bool, status: SidebarRow.Status)] {
-        let session = snapshot?.sessions.first(where: { $0.id == model.session })
-        let rows = sidebarRows(snapshot, folded: [])
-        var known: Set<WindowID> = []
-        func remember(_ node: SidebarFeed.Node) {
-            switch node { case .window(let group): known.insert(group.window); case .item(let item): known.insert(item.window) }
-            node.children.forEach(remember)
-        }
-        session?.nodes.forEach(remember)
-        let projected = (session?.nodes ?? []).map { node in
-            var panes: [Item] = []
-            func collect(_ node: SidebarFeed.Node) {
-                if case .item(let item) = node { panes.append(item) }
-                node.children.forEach(collect)
-            }
-            collect(node)
-            let id: WindowID = switch node { case .window(let group): group.window; case .item(let item): item.window }
-            let fallback: String = switch node { case .window(let group): group.name; case .item(let item): item.title.map(\.text).joined() }
-            let statuses = rows.filter { row in
-                row.target?.session == session?.id && panes.contains { $0.pane == row.target?.pane }
-            }.map(\.status)
-            return (id: id, name: model.windows.first { $0.id == id }?.name ?? fallback, active:
-                    panes.contains { $0.window == model.window },
-                    status: statuses.contains(.error) ? SidebarRow.Status.error : statuses.contains(.attention) ? .attention : .quiet)
-        }
-        return model.windows.compactMap { window in
-            if let tab = projected.first(where: { $0.id == window.id }) { return tab }
-            return known.contains(window.id) ? nil : (window.id, window.name, window.id == model.window, .quiet)
-        }
-    }
-
-    var navigationModel: SessionModel {
-        var next = model
-        next.windows = entries.map { .init(id: $0.id, name: $0.name) }
-        next.window = entries.first { $0.active }?.id
-        return next
-    }
-
-    func update(_ model: SessionModel) {
-        self.model = model
-        if model.session == nil { snapshot = nil }
-        needsDisplay = true
-        changed()
-    }
-
-    private var tabWidth: CGFloat { max(85, min(220, bounds.width / CGFloat(max(1, entries.count)))) }
+    private func tabWidth(_ count: Int) -> CGFloat { max(85, min(220, bounds.width / CGFloat(max(1, count)))) }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
+        let tabWidth = tabWidth(entries.count)
         guard !isHidden, bounds.contains(local), local.x + offset < tabWidth * CGFloat(entries.count) else { return nil }
         return self
     }
@@ -70,12 +18,14 @@ final class WindowTabs: NSView {
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         guard bounds.contains(point) else { return }
+        let tabWidth = tabWidth(entries.count)
         let index = Int((point.x + offset) / tabWidth)
         guard entries.indices.contains(index) else { return }
-        send([Command("select-window", "-t", entries[index].id)])
+        select(.number(index + 1))
     }
 
     override func scrollWheel(with event: NSEvent) {
+        let tabWidth = tabWidth(entries.count)
         offset = max(0, min(max(0, tabWidth * CGFloat(entries.count) - bounds.width),
                             offset + (event.scrollingDeltaX == 0 ? event.scrollingDeltaY : event.scrollingDeltaX)))
         needsDisplay = true
@@ -88,6 +38,8 @@ final class WindowTabs: NSView {
             let paragraph = NSMutableParagraphStyle()
             paragraph.alignment = .center
             paragraph.lineBreakMode = .byTruncatingTail
+            let entries = entries
+            let tabWidth = tabWidth(entries.count)
             offset = min(offset, max(0, tabWidth * CGFloat(entries.count) - bounds.width))
             for (index, tab) in entries.enumerated() {
                 let rect = NSRect(x: CGFloat(index) * tabWidth - offset + 2, y: 8, width: tabWidth - 3, height: bounds.height - 16)
@@ -113,7 +65,9 @@ final class WindowTabs: NSView {
     }
 
     override func accessibilityChildren() -> [Any]? {
-        entries.enumerated().map { index, tab in
+        let entries = entries
+        let tabWidth = tabWidth(entries.count)
+        return entries.enumerated().map { index, tab in
             let element = NSAccessibilityElement()
             element.setAccessibilityRole(.button)
             element.setAccessibilityParent(self)
