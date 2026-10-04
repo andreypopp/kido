@@ -119,7 +119,7 @@ Conventions:
     bin/cli.ml         failure printing and tables
     lib/               the library kido:
       launch.ml        the launcher and `kido server`: --socket-name, the
-                       server.conf in its state dir, @kido-build-id
+                       server.conf in its state dir, KIDO_BUILD_ID
       build_id.ml      the immutable dune-build-info version, or unknown
       shell.ml, prime.ml  kido shell: the login shell and its priming files
       bin_dir.ml       the shipped-file and bin-directory lookup
@@ -171,7 +171,7 @@ embeds the shell integrations, `share/tmux/kido-tmux.conf` and a build id
 through dune-build-info during promotion. `build/main.exe` is the stamped
 executable copied by `make install` and e2e; `_build/default/bin/main.exe`
 reports `unknown`. `kido --version` prints that id; `kido server` reports the
-creating server's `@kido-build-id` as its JSON `build` field (null if unset).
+creating server's global `KIDO_BUILD_ID` as its JSON `build` field (null if unset).
 The launcher and `kido server` accept `--socket-name NAME` (default `kido`);
 separate servers require separate `KIDO_STATE_DIR` values.
 

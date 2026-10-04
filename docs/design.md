@@ -2001,8 +2001,7 @@ A started server reads a configuration kido writes at every launch to
 `share/tmux/kido-tmux.conf` verbatim; `source-file -q` of the user's file,
 `$XDG_CONFIG_HOME/kido/kido.conf` or `~/.config/kido/kido.conf`; then
 the options kido owns, `side-status-command` and `default-command`,
-both naming the kido binary by absolute path, and `@kido-build-id`,
-which stamps the creating binary's immutable build identity. The user's file comes
+both naming the kido binary by absolute path. The user's file comes
 after the defaults so the user wins over kido, and kido's own options come
 last so the user cannot lose the side column by accident. A
 `default-command` the user did set is captured first with `set -gF
@@ -2031,8 +2030,17 @@ environment and PATH, session `main`), detached. It never attaches, so it
 runs inside tmux too. It prints one JSON line,
 `{"tmux":...,"socket":...,"build":...}`: the resolved kido-tmux made
 absolute, the socket path the server reports as `#{socket_path}`, and the
-server's `@kido-build-id` value (or JSON null if absent). Attaching or
-ensuring an existing server never changes its stamp.
+server's global environment variable `KIDO_BUILD_ID` (or JSON null if
+absent). The launcher sets it to the creating binary's immutable build
+identity in the environment of the tmux process it starts. tmux copies
+that environment before forking the server and accepting clients, so the
+stamp is readable even while server.conf is still running; config options
+would not be, because tmux blocks only the initial client during config.
+The probe uses one invocation: `list-sessions -F '#{socket_path}' ;
+show-environment -g KIDO_BUILD_ID`. A direct reader uses
+`kido-tmux -S SOCKET show-environment -g KIDO_BUILD_ID`, which prints
+`KIDO_BUILD_ID=VALUE`; a missing variable exits 1. Attaching or ensuring
+an existing server never changes its stamp.
 
 `kido --version` prints the binary's baked-in build id followed by a
 newline. `Build_info.V1.version` from `dune-build-info` supplies it:

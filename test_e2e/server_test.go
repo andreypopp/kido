@@ -110,11 +110,11 @@ func TestKidoServerStartsTheServerDetached(t *testing.T) {
 	if got := r.mustKido("list-sessions", "-F", "#{session_name}"); got != "main" {
 		t.Errorf("sessions = %q, want only main", got)
 	}
-	r.mustKido("set-option", "-g", "@kido-build-id", "another-build")
+	r.mustKido("set-environment", "-g", "KIDO_BUILD_ID", "another-build")
 	if got := r.mustServer("").Build; got != "another-build" {
 		t.Errorf("existing server build = %q, want another-build", got)
 	}
-	r.mustKido("set-option", "-gu", "@kido-build-id")
+	r.mustKido("set-environment", "-gu", "KIDO_BUILD_ID")
 	out, _, code := r.server("")
 	if code != 0 || !strings.Contains(out, `"build":null`) {
 		t.Errorf("unstamped server: exit %d, JSON %q, want build:null", code, out)
@@ -155,6 +155,40 @@ func TestKidoServerRacesSucceed(t *testing.T) {
 	}
 	if got := r.mustKido("list-sessions", "-F", "#{session_name}"); got != "main" {
 		t.Errorf("sessions = %q, want only main", got)
+	}
+}
+
+// tmux blocks only the starting client while reading config. A second
+// client must see the startup build even before the owned options run.
+func TestKidoServerBuildDuringConfig(t *testing.T) {
+	t.Parallel()
+	r := newKidoRun(t)
+	confDir := filepath.Join(r.config, "kido")
+	if err := os.MkdirAll(confDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(confDir, "kido.conf"),
+		[]byte("new-session -d -s bootstrap\nrun-shell 'sleep 1'\nset -g @config-finished yes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan string, 1)
+	go func() {
+		out, errOut, code := r.server("")
+		started <- fmt.Sprintf("exit %d: %s%s", code, out, errOut)
+	}()
+	r.waitUp()
+	if got := r.mustKido("display-message", "-p", "#{@config-finished}"); got != "" {
+		t.Fatal("configuration finished before the racing probe")
+	}
+	out, errOut, code := r.server("")
+	finished := r.mustKido("display-message", "-p", "#{@config-finished}")
+	first := <-started
+	if finished != "" {
+		t.Fatal("configuration finished before the racing probe returned")
+	}
+	second := fmt.Sprintf("exit %d: %s%s", code, out, errOut)
+	if second != first || !strings.HasPrefix(first, "exit 0: ") {
+		t.Fatalf("during config: %q; starting client: %q", second, first)
 	}
 }
 

@@ -57,9 +57,8 @@ let server_conf ~exe ~user_conf =
               # kept for `kido shell` to run, primed, in place of a bare shell.\n\
               set -gF %s '#{default-command}'\n\
               set -g side-status-command %s\n\
-              set -g @kido-build-id %s\n\
               set -g default-command %s\n"
-             Shell.user_command_option kido Build_id.value kido_shell;
+             Shell.user_command_option kido kido_shell;
          ])
 
 (* tmux's own wording, from client.c, is "protocol version mismatch (client N, server M)": what
@@ -68,18 +67,37 @@ let server_conf ~exe ~user_conf =
 let probe_server ~socket_name bin =
   let ((out, _, err) as p) =
     Unix.open_process_args_full bin
-      [| bin; "-L"; socket_name; "list-sessions"; "-F"; "#{socket_path}\x1f#{@kido-build-id}" |]
+      [|
+        bin;
+        "-L";
+        socket_name;
+        "list-sessions";
+        "-F";
+        "#{socket_path}\x1f";
+        ";";
+        "show-environment";
+        "-g";
+        "KIDO_BUILD_ID";
+      |]
       (Unix.environment ())
   in
   let stdout = In_channel.input_all out in
   let stderr = In_channel.input_all err in
   match Unix.close_process_full p with
-  | WEXITED 0 -> (
-      let line = List.hd (String.split_on_char '\n' stdout) in
-      match String.split_on_char '\x1f' line with
-      | [ socket; build ] -> Up (socket, if String.is_empty build then None else Some build)
-      | _ -> Down)
   | _ when String.mem ~sub:"protocol version mismatch" stderr -> Mismatch
+  | WEXITED (0 | 1) -> (
+      let lines = String.split_on_char '\n' stdout in
+      match String.split_on_char '\x1f' (List.hd lines) with
+      | [ socket; "" ] when not (String.is_empty socket) ->
+          let build =
+            List.find_map
+              (fun line ->
+                String.chop_prefix ~pre:"KIDO_BUILD_ID=" line
+                |> Option.filter (fun value -> not (String.is_empty value)))
+              lines
+          in
+          Up (socket, build)
+      | _ -> Down)
   | _ -> Down
 
 let mismatch ~socket_name bin =
@@ -99,7 +117,10 @@ let new_session ~dir ~detach =
   Fs.mkdir_p dir;
   let* conf_text = server_conf ~exe:(Lazy.force Tmux.Exec.self) ~user_conf in
   Fs.write conf conf_text;
-  let env = Shell.with_env (Unix.environment ()) [ ("KIDO_STATE_DIR", dir) ] in
+  let env =
+    Shell.with_env (Unix.environment ())
+      [ ("KIDO_STATE_DIR", dir); ("KIDO_BUILD_ID", Build_id.value) ]
+  in
   let env =
     match Bin_dir.own () with
     | Some dir ->
