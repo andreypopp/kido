@@ -13,7 +13,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
     let tabs = WindowTabs()
     private let terminalHost = NSView()
     private let dock = NSView()
-    private var floating = false
+    private(set) var isFloating = false
     private var leading: NSLayoutConstraint!
     private var dockedGlass: NSGlassEffectView? {
         var parent = dock.superview
@@ -31,7 +31,6 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
     }
     private var outside: Outside?
     private var resignKey: NSObjectProtocol?
-    var isFloating: Bool { floating }
     var focusTerminal: () -> Void = {}
     private var sidebarItem: NSSplitViewItem!
     private var collapseObservation: NSKeyValueObservation?
@@ -114,7 +113,9 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
             tabs.frame = splitView.convert(NSRect(x: start, y: area.maxY - 44, width: max(0, area.maxX - start - 16), height: 44), from: root)
             if var cover = dockedGlass as NSView? {
                 while let parent = cover.superview, parent !== splitView { cover = parent }
-                if cover.superview === splitView {
+                if cover.superview === splitView,
+                   let tabIndex = splitView.subviews.firstIndex(of: tabs),
+                   let coverIndex = splitView.subviews.firstIndex(of: cover), tabIndex > coverIndex {
                     splitView.addSubview(tabs, positioned: .below, relativeTo: cover)
                 }
             }
@@ -159,7 +160,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
 
     override func toggleSidebar(_ sender: Any?) {
         if isFloating {
-            floating = false
+            isFloating = false
             isCollapsed = true
             endFloating()
             isCollapsed = false
@@ -167,31 +168,30 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
     }
 
     @objc func focusSidebar(_ sender: Any?) {
-        if isFloating { dismissFloating(); focusTerminal(); return }
+        if isFloating { list.leave(); return }
         if isCollapsed, let root = view.window?.contentView?.superview {
             viewDidLayout()
             root.layoutSubtreeIfNeeded()
             viewDidLayout()
-            floating = true
+            isFloating = true
             leading.isActive = false
             leading = content.leadingAnchor.constraint(equalTo: terminalHost.leadingAnchor)
             leading.isActive = true
             let outside = Outside()
-            outside.dismiss = { [weak self] in self?.dismissFloating(); self?.focusTerminal() }
+            outside.dismiss = { [weak self] in self?.list.leave() }
             self.outside = outside
             splitView.addSubview(outside, positioned: .above, relativeTo: tabs)
             if background || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { sidebarItem.isCollapsed = false }
             else { sidebarItem.animator().isCollapsed = false }
             view.needsLayout = true
             resignKey = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: view.window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.dismissFloating(); self?.focusTerminal() }
+                MainActor.assumeIsolated { self?.list.leave() }
             }
         }
         list.focus()
     }
 
     private func endFloating() {
-        floating = false
         outside?.removeFromSuperview()
         outside = nil
         if let resignKey { NotificationCenter.default.removeObserver(resignKey) }
@@ -203,7 +203,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
 
     func dismissFloating() {
         guard isFloating else { return }
-        floating = false
+        isFloating = false
         sidebarItem.isCollapsed = true
         endFloating()
         view.needsLayout = true
