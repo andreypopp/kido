@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-public enum JSON: Codable, Equatable, Sendable {
+public enum JSON: Codable, Hashable, Sendable {
     case object([String: JSON]), array([JSON]), string(String), number(Double), bool(Bool), null
     public init(from decoder: any Decoder) throws {
         let c = try decoder.singleValueContainer()
@@ -48,18 +48,16 @@ public struct Model: Identifiable, Equatable {
     public let client: String
     public private(set) var rows: [Row] = []
     @ObservationIgnored var transcriptRows = Transcript()
-    var displayRows: [DisplayRow] { transcriptRows.rows }
     @ObservationIgnored public private(set) var partial: Row?
     public private(set) var visualRevision = 0
     private var redraw: Task<Void, Never>?
     @ObservationIgnored public private(set) var bash: JSON = .null
     public private(set) var retry: JSON = .null
     public private(set) var compaction: JSON = .null
-    public var historyLoading: Bool { requests.values.contains("history") }
-    public private(set) var requests: [String: String] = [:]
+    public var historyLoading: Bool { requests.values.contains { $0.command == "history" } }
+    public private(set) var requests: [String: (command: String, submission: String?)] = [:]
     public private(set) var acceptedPrompt: JSON = .null
     public private(set) var restoredQueue: JSON = .null
-    private var submitted: [String: String] = [:]
     var synchronized: Bool { connected && ready }
     var scope: String { instance + ":" + generation.text }
     @ObservationIgnored public private(set) var tools: [String: JSON] = [:]
@@ -87,16 +85,15 @@ public struct Model: Identifiable, Equatable {
     private var writer: Task<Void, Never>?
     private let sendBytes: @MainActor (Data) async throws -> Void
     public init(client: String = UUID().uuidString.lowercased(), send: @escaping @MainActor (Data) async throws -> Void) { self.client = client; sendBytes = send }
-    public func disconnect() { requests.removeAll(); submitted.removeAll(); connected = false; ready = false; pending.removeAll(); writer?.cancel(); writer = nil; assembly.removeAll(); seq = nil; generation = .null }
+    public func disconnect() { requests.removeAll(); connected = false; ready = false; pending.removeAll(); writer?.cancel(); writer = nil; assembly.removeAll(); seq = nil; generation = .null }
     public func command(_ type: String, fields: [String: JSON] = [:]) {
         guard connected else { return }
         if type == "history", historyLoading { return }
-        if ["prompt", "set_model", "set_thinking_level", "clear_queue"].contains(type), requests.values.contains(type) { return }
+        if ["prompt", "set_model", "set_thinking_level", "clear_queue"].contains(type), requests.values.contains(where: { $0.command == type }) { return }
         counter += 1
         let id = "\(client):\(counter)"
-        requests[id] = type
+        requests[id] = (type, type == "prompt" ? fields["message"]?.string : nil)
         if type == "bash" { var values = bash.object; values[id] = .object(["command": fields["command"] ?? .null, "output": .string(""), "ended": .bool(false)]); bash = .object(values) }
-        if type == "prompt" { submitted[id] = fields["message"]?.string }
         var object = fields
         object["type"] = .string(type)
         if type != "extension_ui_response" { object["id"] = .string("\(client):\(counter)") }
@@ -166,7 +163,7 @@ public struct Model: Identifiable, Equatable {
         }
         if type == "snapshot" {
             if instance != event["hello"]["instance"].string { disconnect() }
-            if generation != event["generation"] { pending.removeAll(); requests.removeAll(); submitted.removeAll(); writer?.cancel(); writer = nil }
+            if generation != event["generation"] { pending.removeAll(); requests.removeAll(); writer?.cancel(); writer = nil }
             generation = event["generation"]
             connected = true; ready = true; instance = event["hello"]["instance"].string
             let record = event["record"]
@@ -175,7 +172,9 @@ public struct Model: Identifiable, Equatable {
             historyBefore = event["before"]
             partial = record["partialAssistant"] == .null ? nil : Row(id: record["partialAssistant"]["uiId"].string, message: record["partialAssistant"]); tools = record["tools"].object
             dialogs = record["dialogs"].orderedValues
-            queues = record["queues"]; state = record["state"]; models = record["models"].array.map { value in Model(value, ambiguous: record["models"].array.filter { $0["name"] == value["name"] }.count > 1) }
+            queues = record["queues"]; state = record["state"]
+            let names = record["models"].array.reduce(into: [JSON: Int]()) { $0[$1["name"], default: 0] += 1 }
+            models = record["models"].array.map { Model($0, ambiguous: names[$0["name"], default: 0] > 1) }
             thinkingLevels = record["thinkingLevels"].array.map(\.string)
             status = record["status"]; widgets = record["widgets"]; notifications = record["notifications"].array; title = record["title"].string
             reproject(); publish(); return
@@ -190,7 +189,7 @@ public struct Model: Identifiable, Equatable {
         }
         switch type {
         case "history":
-            guard event["generation"] == generation, requests[event["id"].string] == "history" else { return }
+            guard event["generation"] == generation, requests[event["id"].string]?.command == "history" else { return }
             requests[event["id"].string] = nil
             let known = Set(rows.map(\.id))
             rows.insert(contentsOf: transcript(event["entries"].array).filter { !known.contains($0.id) }, at: 0)
@@ -224,8 +223,9 @@ public struct Model: Identifiable, Equatable {
         case "message_end":
             let id = event["uiId"].string.isEmpty ? event["message"]["role"].string == "assistant" ? partial?.id ?? UUID().uuidString : UUID().uuidString : event["uiId"].string
             let message = event["message"]
-            let value = message["role"].string == "custom" ? JSON.object(["role": message["customType"], "content": message["content"], "details": message["details"]]) : message
-            if message["display"] != .bool(false), !rows.contains(where: { $0.id == id }) { rows.append(Row(id: id, message: value)) }
+            if message["display"] != .bool(false), !rows.contains(where: { $0.id == id }) {
+                rows.append(transcript([.object(["type": .string("message"), "uiId": .string(id), "message": message])]).first ?? Row(id: id, message: message))
+            }
             if message["role"].string == "toolResult" { tools[message["toolCallId"].string] = nil }
             reproject()
             if event["message"]["role"].string == "assistant" { partial = nil }
@@ -286,16 +286,15 @@ public struct Model: Identifiable, Equatable {
             }
             guard event["id"].string.hasPrefix(client + ":") else { return }
             let id = event["id"].string
-            requests[id] = nil
+            let request = requests.removeValue(forKey: id)
             if event["success"] == .bool(false) { error = event["error"].string }
             else {
-                if let text = submitted[id] { acceptedPrompt = .object(["id": .string(id), "text": .string(text)]) }
+                if let text = request?.submission { acceptedPrompt = .object(["id": .string(id), "text": .string(text)]) }
                 if event["command"].string == "clear_queue" {
                     restoredQueue = .object(["id": .string(id), "text": .string((event["data"]["steering"].array + event["data"]["followUp"].array).map(\.string).joined(separator: "\n\n"))])
                     command("abort")
                 }
             }
-            submitted[id] = nil
             if event["command"].string == "set_model", event["success"] == .bool(true), case .object(var value) = state { value["model"] = event["data"]; state = .object(value) }
             if event["command"].string == "set_thinking_level" { command("snapshot") }
         default: break

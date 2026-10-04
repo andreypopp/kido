@@ -124,7 +124,7 @@ import Testing
             for _ in 0..<200 { guard let entry = entries[cursor] else { break }; older.append(entry); cursor = entry["parentId"].string }
             #expect(!older.isEmpty)
             session.command("history", fields: ["generation": session.generation, "before": session.historyBefore, "limit": .number(200)])
-            let request = try #require(session.requests.first { $0.value == "history" }?.key)
+            let request = try #require(session.requests.first { $0.value.command == "history" }?.key)
             let reply = JSON.object(["type": .string("history"), "id": .string(request), "generation": session.generation, "entries": .array(older.reversed()), "before": older.last?["id"] ?? .null])
             for frame in Codec.encode(reply.text, number: lastSequence + 1) { session.receive(frame) }
             try await capture("long-session-after-prepend")

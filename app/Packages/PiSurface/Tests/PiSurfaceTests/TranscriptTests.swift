@@ -42,7 +42,7 @@ import Testing
     session.command("clear_queue")
     event(#"{"type":"response","id":"test:2","command":"clear_queue","success":true,"data":{"steering":["new steer"],"followUp":["new follow-up"]}}"#)
     #expect(session.restoredQueue["text"].string == "new steer\n\nnew follow-up")
-    #expect(session.requests.values.contains("abort"))
+    #expect(session.requests.values.contains { $0.command == "abort" })
     session.command("history", fields: ["before": .string("old"), "generation": .number(1)])
     event(#"{"type":"history","id":"wrong","generation":1,"entries":[],"before":null}"#)
     #expect(session.historyLoading)

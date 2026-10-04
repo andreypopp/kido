@@ -18,6 +18,15 @@ import Testing
     #expect(String(parser.blocks("Replacement")[0].inline.characters) == "Replacement")
 }
 
+@Test func previewsPreserveLineSeparators() {
+    for text in ["", "\n", "\n\nfirst\nlast", "first\r\nlast", "\r\nfirst", "\u{0085}first\u{2028}last", "\u{000B}\u{000C}first", "👩‍💻\nlast"] {
+        #expect(firstLine(text) == text.components(separatedBy: "\n").first)
+        #expect(firstLine(text, skippingEmpty: true) == (text.components(separatedBy: "\n").first { !$0.isEmpty } ?? ""))
+        #expect(firstLine(text, separators: .newlines) == text.components(separatedBy: .newlines).first)
+        #expect(firstLine(text, skippingEmpty: true, separators: .newlines) == (text.components(separatedBy: .newlines).first { !$0.isEmpty } ?? ""))
+    }
+}
+
 @Test func reorderedProjectionChangesStructureOnly() {
     let rows = [DisplayRow(id: "a", content: .markdown("A")), DisplayRow(id: "b", content: .markdown("B"))]
     var transcript = Transcript()
@@ -42,11 +51,36 @@ import Testing
     event(#"{"type":"tool_execution_start","toolCallId":"tool","toolName":"bash","args":{"command":"ls"}}"#)
     event(#"{"type":"response","command":"get_entries","success":true,"data":{"entries":[{"uiId":"result","id":"persisted","message":{"role":"toolResult","toolCallId":"tool","toolName":"bash","isError":true,"content":[{"type":"text","text":"failed"}]}}]}}"#)
     #expect(session.tools.isEmpty)
-    #expect(session.displayRows.count == 2)
-    if case .tool(_, let result, _) = session.displayRows[1].content { #expect(result["isError"] == .bool(true)) }
+    #expect(session.transcriptRows.rows.count == 2)
+    if case .tool(_, let result, _) = session.transcriptRows.rows[1].content { #expect(result["isError"] == .bool(true)) }
     else { Issue.record("Final tool result missing") }
     try? await Task.sleep(for: .milliseconds(50))
     #expect(session.transcriptRows.changed.contains(session.scope + ":responding"))
+    session.disconnect()
+}
+
+@MainActor @Test func pendingPromptsAndEndedMessageConversion() {
+    let session = Session(client: "test") { _ in }
+    var seq = 0
+    func event(_ text: String) {
+        for frame in Codec.encode(text, number: seq + 1) { session.receive(frame); seq += 1 }
+    }
+    event(#"{"type":"snapshot","hello":{"instance":"test"},"generation":1,"record":{"entries":[]}}"#)
+    session.command("prompt")
+    event(#"{"type":"response","id":"test:1","command":"prompt","success":true}"#)
+    #expect(session.acceptedPrompt == .null)
+    session.command("prompt", fields: ["message": .string("draft")])
+    event(#"{"type":"response","id":"test:2","command":"prompt","success":true}"#)
+    #expect(session.acceptedPrompt == .object(["id": .string("test:2"), "text": .string("draft")]))
+    #expect(session.requests.isEmpty)
+    event(#"{"type":"message_end","uiId":"custom","message":{"role":"custom","customType":"kido-ask","content":"Question","details":{"from":"parent"}}}"#)
+    let ended = session.rows
+    event(#"{"type":"snapshot","hello":{"instance":"test"},"generation":1,"record":{"entries":[{"type":"message","uiId":"custom","message":{"role":"custom","customType":"kido-ask","content":"Question","details":{"from":"parent"}}}]}}"#)
+    #expect(session.rows == ended)
+    event(#"{"type":"message_end","uiId":"hidden","message":{"role":"custom","display":false}}"#)
+    #expect(session.rows == ended)
+    event(#"{"type":"message_end","uiId":"absent"}"#)
+    #expect(session.rows.last == Row(id: "absent", message: .null))
     session.disconnect()
 }
 
@@ -59,7 +93,7 @@ import Testing
     var rows = [thought]
     let binding = Binding(get: { following }, set: { following = $0 })
     func root(_ revision: Int, expanded: Bool = false) -> TranscriptTable {
-        TranscriptTable(scope: "test", rows: rows, revision: revision, structure: revision, changed: Set(rows.map(\.id)), applied: { _ in }, expanded: expanded, tailRequest: 0, following: binding, loadHistory: {})
+        TranscriptTable(scope: "test", rows: rows, revision: revision, structure: revision, changed: Set(rows.map(\.id)), applied: {}, expanded: expanded, tailRequest: 0, following: binding, loadHistory: {})
     }
     let host = NSHostingView(rootView: root(1)); host.frame = NSRect(x: 0, y: 0, width: 480, height: 700); window.contentView = host; window.orderBack(nil)
     defer { window.close() }

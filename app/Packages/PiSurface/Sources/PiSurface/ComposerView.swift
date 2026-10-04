@@ -12,7 +12,7 @@ struct ComposerView: View {
     @State private var attaching = false
     @State private var dismissed = Set<Int>()
     private var enabled: Bool { session.synchronized && session.dialogs.isEmpty }
-    private var pending: Bool { session.requests.values.contains("prompt") }
+    private var pending: Bool { session.requests.values.contains { $0.command == "prompt" } }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             let notifications = session.notifications.enumerated().filter { !dismissed.contains($0.offset) }
@@ -62,7 +62,7 @@ struct ComposerView: View {
             HStack(spacing: 6) {
                 MenuPicker(options: session.models.map { ($0.id, $0.name) }, selection: Binding(get: { session.state["model"]["provider"].string + "/" + session.state["model"]["id"].string }, set: { key in
                     if let model = session.models.first(where: { $0.id == key }) { session.command("set_model", fields: ["provider": .string(model.provider), "modelId": .string(model.modelID)]) }
-                }), label: "Model").fixedSize().disabled(!enabled || session.requests.values.contains("set_model"))
+                }), label: "Model").fixedSize().disabled(!enabled || session.requests.values.contains { $0.command == "set_model" })
                 if let usage = session.rows.last(where: { $0.message["usage"] != .null })?.message["usage"], case .number(let maximum) = session.state["model"]["contextWindow"] {
                     let used = ["input", "output", "cacheRead", "cacheWrite"].reduce(0.0) { sum, key in if case .number(let value) = usage[key] { return sum + value }; return sum }
                     Text("· " + (used / 1000).formatted(.number.precision(.fractionLength(1))) + "k / " + (maximum / 1000).formatted(.number.precision(.fractionLength(0))) + "k context").lineLimit(1)
@@ -79,12 +79,16 @@ struct ComposerView: View {
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
             .fileImporter(isPresented: $attaching, allowedContentTypes: [.png, .jpeg, .gif, .webP], allowsMultipleSelection: true) { result in
                 guard case .success(let urls) = result else { return }
-                for url in urls {
-                    let access = url.startAccessingSecurityScopedResource()
-                    defer { if access { url.stopAccessingSecurityScopedResource() } }
-                    if let data = try? Data(contentsOf: url), let type = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType {
-                        draft.images.append(.object(["type": .string("image"), "data": .string(data.base64EncodedString()), "mimeType": .string(type)]))
-                    }
+                Task {
+                    let images = await Task.detached {
+                        urls.compactMap { url -> JSON? in
+                            let access = url.startAccessingSecurityScopedResource()
+                            defer { if access { url.stopAccessingSecurityScopedResource() } }
+                            guard let data = try? Data(contentsOf: url), let type = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType else { return nil }
+                            return .object(["type": .string("image"), "data": .string(data.base64EncodedString()), "mimeType": .string(type)])
+                        }
+                    }.value
+                    draft.images.append(contentsOf: images)
                 }
             }
             .onChange(of: session.scope) { _, _ in dismissed.removeAll() }

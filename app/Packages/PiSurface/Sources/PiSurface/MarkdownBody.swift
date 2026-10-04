@@ -7,7 +7,9 @@ final class ParsedMarkdown {
         let inline: AttributedString
         let children: [Block]
         init(_ markup: any Markup) {
-            self.markup = markup; inline = attributed(markup); children = markup.children.map(Block.init)
+            self.markup = markup
+            inline = markup is Paragraph || markup is Heading ? attributed(markup) : AttributedString()
+            children = markup is UnorderedList || markup is OrderedList || markup is ListItem || markup is BlockQuote ? markup.children.map(Block.init) : []
         }
     }
     private var text = ""

@@ -6,8 +6,6 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { stripTypeScriptTypes } from "node:module";
-import { runInNewContext } from "node:vm";
 import { decoder, frames } from "./kido-pi-wire.ts";
 
 const vectors = JSON.parse(readFileSync(new URL("testdata/kido-pi-frames.json", import.meta.url), "utf8"));
@@ -45,51 +43,63 @@ test("inbound frames are re-acked, deduplicated and interleaved by client; malfo
   assert.equal(Buffer.concat(keys).toString(), "plain\x1b");
 });
 
-test("overlapping first-turn entries retain live identities in events, snapshot and history", () => {
-  const source = readFileSync(new URL("kido-pi.ts", import.meta.url), "utf8").split("const utf8 =")[0].replace(/^import .*\n/gm, "");
-  const messages: any[] = [];
-  const bridge = runInNewContext(stripTypeScriptTypes(source + '\nsend = value => capture(JSON.parse(JSON.stringify(value))); request = () => {}; ({ event, command });'), {
-    process: { stdin: {}, env: {}, argv: [], cwd: () => "/fixture", stdout: { write() {} } },
-    spawn: () => ({ stdin: { write() {} } }), randomUUID: () => "fixture", capture: (value: any) => messages.push(JSON.parse(JSON.stringify(value))),
-  });
-  const entries = ["system", "user"].map((role, index) => ({ type: "message", id: `entry-${index}`, parentId: index ? "entry-0" : null, message: { role, content: role, timestamp: 100 + index } }));
-  for (const entry of entries) {
-    bridge.event({ type: "message_start", message: entry.message });
-    bridge.event({ type: "message_end", message: entry.message });
+test("overlapping first-turn entries retain live identities in events, snapshot and history", { timeout: 15000 }, async () => {
+  const bridge = spawn(process.execPath, [fileURLToPath(new URL("kido-pi.ts", import.meta.url))], { env: { ...process.env, KIDO_PI_RPC: JSON.stringify([process.execPath, fileURLToPath(new URL("testdata/fake-pi.ts", import.meta.url))]) } });
+  const messages: any[] = [], waits = new Set<() => void>();
+  bridge.stdout.on("data", decoder("out", value => { messages.push(value); for (const check of waits) check(); }));
+  bridge.stderr.resume();
+  let number = 0;
+  function wait(predicate: () => boolean) {
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => { waits.delete(check); reject(new Error("identity scenario timed out")); }, 5000);
+      const check = () => { if (predicate()) { clearTimeout(timer); waits.delete(check); resolve(); } };
+      waits.add(check); check();
+    });
   }
-  bridge.command({ type: "snapshot", id: "unreconciled" });
-  const unreconciled = messages.find(value => value.id === "unreconciled").record;
-  assert.deepEqual(unreconciled.entries.map((entry: any) => entry.message), entries.map(entry => entry.message));
-  assert.deepEqual(unreconciled.entries.map((entry: any) => entry.uiId), messages.filter(value => value.type === "message_end").map(value => value.uiId));
-  assert.equal(unreconciled.partialAssistant, null);
-  assert.equal(messages.find(value => value.id === "unreconciled").before, null);
-  for (let index = 0; index < 2; index++) bridge.event({ type: "response", command: "get_entries", success: true, data: structuredClone({ entries, leafId: "entry-1" }) });
-  bridge.command({ type: "snapshot" });
-  bridge.command({ type: "history", generation: 0, before: "entry-1", limit: 2 });
-  const identities = messages.filter(value => value.type === "message_end").map(value => value.uiId);
-  for (const response of messages.filter(value => value.command === "get_entries")) assert.deepEqual(response.data.entries.map((entry: any) => entry.uiId), identities);
-  assert.deepEqual(messages.find(value => value.type === "snapshot").record.entries.map((entry: any) => entry.uiId), identities);
-  assert.deepEqual(messages.find(value => value.type === "history").entries.map((entry: any) => entry.uiId), identities.slice(0, 1));
-  assert.equal(new Set(messages.filter(value => value.command === "get_entries").flatMap(value => value.data.entries.filter((entry: any) => entry.message.role === "user").map((entry: any) => entry.uiId))).size, 1);
-  const assistant = { type: "message", id: "entry-2", parentId: "entry-1", message: { role: "assistant", content: [{ type: "text", text: "Completed answer" }], timestamp: 102 } };
-  bridge.event({ type: "message_start", message: assistant.message });
-  bridge.event({ type: "message_end", message: assistant.message });
-  bridge.command({ type: "snapshot", id: "ended-assistant" });
-  const completed = messages.find(value => value.id === "ended-assistant").record;
-  assert.equal(completed.partialAssistant, null);
-  assert.deepEqual(completed.entries.map((entry: any) => entry.message), [...entries, assistant].map(entry => entry.message));
-  bridge.event({ type: "response", command: "get_entries", success: true, data: structuredClone({ entries: [assistant], leafId: assistant.id }) });
-  bridge.command({ type: "snapshot", id: "reconciled-assistant" });
-  const reconciled = messages.find(value => value.id === "reconciled-assistant").record.entries;
-  assert.deepEqual(reconciled.map((entry: any) => entry.uiId), completed.entries.map((entry: any) => entry.uiId));
-  assert.deepEqual(reconciled.map((entry: any) => entry.id), [...entries, assistant].map(entry => entry.id));
-  const older = Array.from({ length: 201 }, (_, index) => ({ type: "message", id: `older-${index}`, parentId: index ? `older-${index - 1}` : assistant.id, message: { role: "user", content: "Older", timestamp: 200 + index } }));
-  bridge.event({ type: "response", command: "get_entries", success: true, data: { entries: older, leafId: older.at(-1)!.id } });
-  bridge.command({ type: "snapshot", id: "long-session" });
-  const snapshot = messages.find(value => value.id === "long-session");
-  assert.equal(snapshot.record.entries.length, 200);
-  assert.equal(snapshot.before, "older-1");
-  assert.equal(snapshot.before, snapshot.record.entries[0].id);
+  async function command(value: Record<string, any>) {
+    const id = value.id ?? `identity:${++number}`;
+    bridge.stdin.write(frames(JSON.stringify({ ...value, id }), "in", 1, "identity", ++number).join(""));
+    await wait(() => messages.some(message => message.id === id));
+  }
+  try {
+    await wait(() => messages.some(value => value.type === "hello"));
+    messages.length = 0;
+    const entries = ["system", "user"].map((role, index) => ({ type: "message", id: `entry-${index}`, parentId: index ? "entry-0" : null, message: { role, content: role, timestamp: 100 + index } }));
+    await command({ type: "fixture_identity" });
+    await command({ type: "snapshot", id: "unreconciled" });
+    const unreconciled = messages.find(value => value.id === "unreconciled").record;
+    assert.deepEqual(unreconciled.entries.map((entry: any) => entry.message), entries.map(entry => entry.message));
+    assert.deepEqual(unreconciled.entries.map((entry: any) => entry.uiId), messages.filter(value => value.type === "message_end").map(value => value.uiId));
+    assert.equal(unreconciled.partialAssistant, null);
+    assert.equal(messages.find(value => value.id === "unreconciled").before, null);
+    assert.equal(messages.filter(value => value.command === "get_entries").length, 0);
+    await command({ type: "fixture_identity_release" });
+    assert.equal(messages.filter(value => value.command === "get_entries").length, 2);
+    await command({ type: "snapshot", id: "reconciled" });
+    await command({ type: "history", generation: 0, before: "entry-1", limit: 2 });
+    const identities = messages.filter(value => value.type === "message_end").map(value => value.uiId);
+    for (const response of messages.filter(value => value.command === "get_entries")) assert.deepEqual(response.data.entries.map((entry: any) => entry.uiId), identities);
+    assert.deepEqual(messages.find(value => value.id === "reconciled").record.entries.map((entry: any) => entry.uiId), identities);
+    assert.deepEqual(messages.find(value => value.type === "history").entries.map((entry: any) => entry.uiId), identities.slice(0, 1));
+    assert.equal(new Set(messages.filter(value => value.command === "get_entries").flatMap(value => value.data.entries.filter((entry: any) => entry.message.role === "user").map((entry: any) => entry.uiId))).size, 1);
+    const assistant = { type: "message", id: "entry-2", parentId: "entry-1", message: { role: "assistant", content: [{ type: "text", text: "Completed answer" }], timestamp: 102 } };
+    await command({ type: "fixture_identity_assistant" });
+    await command({ type: "snapshot", id: "ended-assistant" });
+    const completed = messages.find(value => value.id === "ended-assistant").record;
+    assert.equal(completed.partialAssistant, null);
+    assert.deepEqual(completed.entries.map((entry: any) => entry.message), [...entries, assistant].map(entry => entry.message));
+    await command({ type: "fixture_identity_release" });
+    await command({ type: "snapshot", id: "reconciled-assistant" });
+    const reconciled = messages.find(value => value.id === "reconciled-assistant").record.entries;
+    assert.deepEqual(reconciled.map((entry: any) => entry.uiId), completed.entries.map((entry: any) => entry.uiId));
+    assert.deepEqual(reconciled.map((entry: any) => entry.id), [...entries, assistant].map(entry => entry.id));
+    await command({ type: "fixture_identity_older" });
+    await command({ type: "snapshot", id: "long-session" });
+    const snapshot = messages.find(value => value.id === "long-session");
+    assert.equal(snapshot.record.entries.length, 200);
+    assert.equal(snapshot.before, "older-1");
+    assert.equal(snapshot.before, snapshot.record.entries[0].id);
+  } finally { bridge.stdin.end(); bridge.kill("SIGTERM"); }
 });
 
 test("bridge and pi exit on stdin EOF", { timeout: 8000 }, async () => {

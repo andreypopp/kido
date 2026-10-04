@@ -16,7 +16,7 @@ import Testing
     }
     for cursor in [JSON.string("oldest"), .null] {
         session.command("history")
-        let id = try #require(session.requests.first { $0.value == "history" }?.key)
+        let id = try #require(session.requests.first { $0.value.command == "history" }?.key)
         receive(.object(["type": .string("history"), "generation": .number(1), "id": .string(id), "entries": .array([]), "before": cursor]))
         #expect(session.historyBefore == cursor)
     }
@@ -34,7 +34,7 @@ import Testing
         let rows = (0..<30).map { index in
             [10, 28].contains(index) ? DisplayRow(id: "activity-\(index)", content: .activity((0..<6).map { .init(id: "thought-\($0)", content: .thinking("Thought \($0)", false)) })) : [11, 29].contains(index) ? DisplayRow(id: "thought-\(index)", content: .thinking((0..<6).map { "Thought paragraph \($0)." }.joined(separator: "\n\n"), false)) : DisplayRow(id: "row-\(index)", content: .markdown("Prose row \(index)\n\nAnother paragraph."))
         }
-        let host = NSHostingView(rootView: TranscriptTable(scope: "test", rows: rows, revision: 1, structure: 1, changed: Set(rows.map(\.id)), applied: { _ in }, expanded: false, tailRequest: 0, following: Binding(get: { following }, set: { following = $0 }), loadHistory: {}))
+        let host = NSHostingView(rootView: TranscriptTable(scope: "test", rows: rows, revision: 1, structure: 1, changed: Set(rows.map(\.id)), applied: {}, expanded: false, tailRequest: 0, following: Binding(get: { following }, set: { following = $0 }), loadHistory: {}))
         host.frame = NSRect(x: 0, y: 0, width: width, height: 360); window.contentView = host; window.orderBack(nil)
         try await Task.sleep(for: .milliseconds(300)); host.layoutSubtreeIfNeeded()
         let table = try #require(table(host)), scroll = try #require(table.enclosingScrollView)

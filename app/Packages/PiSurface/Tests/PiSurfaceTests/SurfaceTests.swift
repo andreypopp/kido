@@ -92,7 +92,7 @@ private let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().d
         assembly.removeAll()
         if value["type"] == .string("history") {
             session.command("history", fields: ["generation": session.generation, "before": session.historyBefore, "limit": .number(200)])
-            value["id"] = .string(try #require(session.requests.first { $0.value == "history" }?.key))
+            value["id"] = .string(try #require(session.requests.first { $0.value.command == "history" }?.key))
         }
         for wire in Codec.encode(JSON.object(value).text, number: sequence) { session.receive(wire); sequence += 1 }
     }

@@ -15,7 +15,7 @@ struct TranscriptTable: NSViewRepresentable {
     let rows: [DisplayRow]
     let revision: Int, structure: Int
     let changed: Set<String>
-    var applied: (Set<String>) -> Void
+    var applied: () -> Void
     let expanded: Bool
     let tailRequest: Int
     @Binding var following: Bool
@@ -149,7 +149,7 @@ struct TranscriptTable: NSViewRepresentable {
                 heights[id] = heights[id].map { $0.filter { $0.key == table.bounds.width } }
             }
             if !changed.isEmpty { table.reloadData(forRowIndexes: changed, columnIndexes: IndexSet(integer: 0)) }
-            restore(follow: follow); value.applied(value.changed)
+            restore(follow: follow); value.applied()
         }
         func captureAnchor() {
             guard !parent.following, readAnchor == nil, let table, let scroll = table.enclosingScrollView else { return }

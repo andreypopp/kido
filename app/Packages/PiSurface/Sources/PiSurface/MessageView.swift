@@ -1,6 +1,18 @@
 import SwiftUI
 import ImageIO
 
+func firstLine(_ text: String, skippingEmpty: Bool = false, separators: CharacterSet = CharacterSet(charactersIn: "\n")) -> String {
+    let value = text as NSString
+    var start = 0
+    while start < value.length {
+        let end = value.rangeOfCharacter(from: separators, range: NSRange(location: start, length: value.length - start))
+        if end.location == NSNotFound { return value.substring(from: start) }
+        if !skippingEmpty || end.location > start { return value.substring(with: NSRange(location: start, length: end.location - start)) }
+        start = NSMaxRange(end)
+    }
+    return ""
+}
+
 struct MessageView: View {
     let row: DisplayRow
     var expanded = false
@@ -38,7 +50,7 @@ struct MessageView: View {
                     DisclosureGroup(isExpanded: $open) { MarkdownBody(text: text).foregroundStyle(.secondary).padding(.top, 8) } label: {
                         HStack(spacing: 6) {
                             if active { ProgressView().controlSize(.small) }
-                            Text(active ? "Thinking…" : "Thoughts · " + (text.components(separatedBy: "\n").first(where: { !$0.isEmpty }) ?? ""))
+                            Text(active ? "Thinking…" : "Thoughts · " + (firstLine(text, skippingEmpty: true)))
                                 .font(.callout).foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
@@ -51,7 +63,28 @@ struct MessageView: View {
                     else if value["exitCode"] != .null { Text("Exited \(value["exitCode"].text)").font(.caption).foregroundStyle(.secondary) }
                     if !value["fullOutputPath"].string.isEmpty { Text(value["fullOutputPath"].string).font(.caption).textSelection(.enabled) }
                 }
-            case .custom(let message): custom(message)
+            case .custom(let message):
+                let kind = message["role"].string
+                let details = message["details"]
+                let text: String = {
+                    if kind == "kido-ask", details["question"] != .null { return details["question"].string }
+                    let raw = message["content"].string, from = details["from"].string
+                    guard details != .null else { return raw }
+                    let headers = kind == "kido-message" ? ["your parent, who spawned you", "your subagent", "another agent in this session, not the user"].map { "message from @\(from) (\($0)):\n" } : kind == "kido-reply" ? ["\(from) replied (to ask \(details["replyTo"].string)): "] : kind == "kido-notice" ? ["notice from \(from) (a subagent or background run's report, not the user):\n"] : []
+                    if let header = headers.first(where: { raw.hasPrefix($0) }) { return String(raw.dropFirst(header.count)) }
+                    let first = firstLine(raw)
+                    if kind == "kido-stream", first.range(of: "^async run \\\".*\\\" output \\(run .+\\)$", options: .regularExpression) != nil { return String(raw.dropFirst(first.count + 1)) }
+                    return raw
+                }()
+                VStack(alignment: .leading, spacing: 8) {
+                    Text((details["from"].string.isEmpty ? "Another agent" : details["from"].string) + " · " + (["kido-ask": "Question", "kido-reply": "Reply", "kido-notice": "Notice", "kido-stream": "Run output"][kind] ?? "Message")).font(.caption.weight(.semibold))
+                    if details["replyTo"] != .null { Text(details["replyTo"].string).font(.caption).foregroundStyle(.secondary) }
+                    if ["kido-notice", "kido-stream"].contains(kind) {
+                        DisclosureGroup(firstLine(text), isExpanded: $open) {
+                            if kind == "kido-stream" { OutputView(text: text) } else { MarkdownBody(text: text) }
+                        }
+                    } else { MarkdownBody(text: text) }
+                }.padding(12).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
             case .marker(let title, let summary):
                 DisclosureGroup(isExpanded: $open) { MarkdownBody(text: summary) } label: {
                     HStack(spacing: 8) { Rectangle().fill(Color(nsColor: .separatorColor)).frame(height: 1); Text(title).fixedSize(); Rectangle().fill(Color(nsColor: .separatorColor)).frame(height: 1) }
@@ -127,29 +160,7 @@ struct MessageView: View {
                     else { Image(systemName: "checkmark").foregroundStyle(.secondary).accessibilityLabel("Completed") }
                 }
             }
-            if failed { Text(output.components(separatedBy: "\n").first ?? "Failed").font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+            if failed { Text(firstLine(output)).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
         }
-    }
-    @ViewBuilder private func custom(_ message: JSON) -> some View {
-        let kind = message["role"].string
-        let details = message["details"]
-        let text: String = {
-            if kind == "kido-ask", details["question"] != .null { return details["question"].string }
-            let raw = message["content"].string, from = details["from"].string
-            guard details != .null else { return raw }
-            let headers = kind == "kido-message" ? ["your parent, who spawned you", "your subagent", "another agent in this session, not the user"].map { "message from @\(from) (\($0)):\n" } : kind == "kido-reply" ? ["\(from) replied (to ask \(details["replyTo"].string)): "] : kind == "kido-notice" ? ["notice from \(from) (a subagent or background run's report, not the user):\n"] : []
-            if let header = headers.first(where: { raw.hasPrefix($0) }) { return String(raw.dropFirst(header.count)) }
-            if kind == "kido-stream", let first = raw.components(separatedBy: "\n").first, first.range(of: "^async run \\\".*\\\" output \\(run .+\\)$", options: .regularExpression) != nil { return String(raw.dropFirst(first.count + 1)) }
-            return raw
-        }()
-        VStack(alignment: .leading, spacing: 8) {
-            Text((details["from"].string.isEmpty ? "Another agent" : details["from"].string) + " · " + (["kido-ask": "Question", "kido-reply": "Reply", "kido-notice": "Notice", "kido-stream": "Run output"][kind] ?? "Message")).font(.caption.weight(.semibold))
-            if details["replyTo"] != .null { Text(details["replyTo"].string).font(.caption).foregroundStyle(.secondary) }
-            if ["kido-notice", "kido-stream"].contains(kind) {
-                DisclosureGroup(text.components(separatedBy: "\n").first ?? "", isExpanded: $open) {
-                    if kind == "kido-stream" { OutputView(text: text) } else { MarkdownBody(text: text) }
-                }
-            } else { MarkdownBody(text: text) }
-        }.padding(12).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
     }
 }

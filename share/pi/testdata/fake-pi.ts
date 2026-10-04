@@ -6,6 +6,7 @@ const model = { id: "fixture", name: "Fixture (no model)", provider: "fake", rea
 const state = { sessionId: "fake-session", sessionFile: "/tmp/kido-pi-fake.jsonl", model, thinkingLevel: "medium", isStreaming: false, isCompacting: false, steeringMode: "all", followUpMode: "all", messageCount: 0, pendingMessageCount: 0 };
 let entries: Record<string, any>[] = [], leafId: string | null = null, pending = "", replay: NodeJS.Timeout | undefined, index = 0;
 const utf8 = new StringDecoder("utf8");
+let identityPending: Record<string, any>[] | undefined;
 function emit(value: Record<string, any>) { process.stdout.write(JSON.stringify(value) + "\n"); }
 function append(message: Record<string, any>) {
   const id = `entry-${entries.length + 1}`;
@@ -16,6 +17,27 @@ function command(value: Record<string, any>) {
   let data: unknown = {};
   if (value.type === "extension_ui_response") { emit({ type: "extension_ui_request", id: "answer-notify", method: "notify", message: `Dialog answered: ${value.confirmed ?? value.cancelled}`, notifyType: "info" }); return; }
   switch (value.type) {
+    case "fixture_identity":
+      identityPending = [];
+      entries = ["system", "user"].map((role, index) => ({ type: "message", id: `entry-${index}`, parentId: index ? "entry-0" : null, message: { role, content: role, timestamp: 100 + index } }));
+      leafId = "entry-1";
+      for (const entry of entries) { emit({ type: "message_start", message: entry.message }); emit({ type: "message_end", message: entry.message }); }
+      break;
+    case "fixture_identity_release":
+      for (const pending of identityPending ?? []) emit(pending);
+      identityPending = [];
+      break;
+    case "fixture_identity_assistant":
+      entries.push({ type: "message", id: "entry-2", parentId: "entry-1", message: { role: "assistant", content: [{ type: "text", text: "Completed answer" }], timestamp: 102 } });
+      leafId = "entry-2";
+      emit({ type: "message_start", message: entries.at(-1)!.message });
+      emit({ type: "message_end", message: entries.at(-1)!.message });
+      break;
+    case "fixture_identity_older":
+      entries = Array.from({ length: 201 }, (_, index) => ({ type: "message", id: `older-${index}`, parentId: index ? `older-${index - 1}` : "entry-2", message: { role: "user", content: "Older", timestamp: 200 + index } }));
+      leafId = entries.at(-1)!.id;
+      emit({ type: "response", command: "get_entries", success: true, data: { entries, leafId } });
+      break;
     case "fixture_snapshot":
       for (const event of fixture.filter(event => ["message_start", "message_update", "tool_execution_start", "tool_execution_update", "extension_ui_request"].includes(event.type)).slice(0, 15)) emit(event);
       emit({ type: "extension_ui_request", id: "fixture-confirm", method: "confirm", title: "Apply change?", message: "Keep the greeting change?" });
@@ -51,7 +73,9 @@ function command(value: Record<string, any>) {
       break;
     default: emit({ type: "response", id: value.id, command: value.type, success: false, error: "Unsupported fake command" }); return;
   }
-  emit({ type: "response", id: value.id, command: value.type, success: true, data });
+  const response = { type: "response", id: value.id, command: value.type, success: true, data };
+  if (value.type === "get_entries" && identityPending) identityPending.push(response);
+  else emit(response);
 }
 process.stdin.on("data", bytes => {
   pending += utf8.write(bytes);
