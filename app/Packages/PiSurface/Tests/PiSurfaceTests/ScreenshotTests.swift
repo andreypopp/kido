@@ -22,15 +22,15 @@ import Testing
     #expect(!frames.isEmpty)
     for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
         let session = Session { _ in }
-        let host = NSHostingView(rootView: Surface(session: session, expanded: source == "session")
+        let host = NSHostingView(rootView: AnyView(Surface(session: session, expanded: source == "session")
             .environment(\.colorScheme, name == "dark" ? .dark : .light)
-            .background(name == "dark" ? Color(nsColor: .windowBackgroundColor) : Color.white))
-        let window = ScreenshotWindow(contentRect: NSRect(x: -20000, y: -20000, width: 1100, height: 800), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            .background(name == "dark" ? Color(nsColor: .windowBackgroundColor) : Color.white)))
+        let window = ScreenshotWindow(contentRect: NSRect(x: -20000, y: -20000, width: 920, height: 800), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         window.ignoresMouseEvents = true
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: appearance)
         window.contentView = host
-        host.frame = NSRect(x: 0, y: 0, width: 1100, height: 800)
+        host.frame = NSRect(x: 0, y: 0, width: 920, height: 800)
         defer { window.close() }
         window.orderBack(nil)
         CATransaction.flush()
@@ -102,9 +102,9 @@ import Testing
             if event["type"].string == "agent_end" { try await capture("final") }
         }
         if source == "real-session" {
-            host.rootView = Surface(session: session)
+            host.rootView = AnyView(Surface(session: session)
                 .environment(\.colorScheme, name == "dark" ? .dark : .light)
-                .background(name == "dark" ? Color(nsColor: .windowBackgroundColor) : Color.white)
+                .background(name == "dark" ? Color(nsColor: .windowBackgroundColor) : Color.white))
             try await Task.sleep(for: .seconds(1))
             try await capture("long-session")
             #expect(!session.rows.isEmpty)
@@ -130,7 +130,7 @@ import Testing
             try await capture("long-session-after-prepend")
             let restored = try #require(coordinator.rows.firstIndex { $0.id == anchor })
             #expect(abs(scroll.contentView.bounds.origin.y - table.rect(ofRow: restored).minY - offset) <= 2)
-            window.setContentSize(NSSize(width: 480, height: 700)); host.frame.size = NSSize(width: 480, height: 700)
+            window.setContentSize(NSSize(width: 440, height: 700)); host.frame.size = NSSize(width: 440, height: 700)
             try await capture("long-session-narrow")
             session.disconnect()
         } else {
@@ -138,25 +138,42 @@ import Testing
             let fixtureURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("share/pi/testdata/kido-pi-snapshot.json")
             let fixture = try JSONDecoder().decode(JSON.self, from: Data(contentsOf: fixtureURL))["completed"]
             let entries = fixture["record"]["entries"].array
+            let journal = try JSONDecoder().decode([JSON].self, from: Data("""
+            [{"id":"prompt","message":{"role":"user","content":"The transcript jumps when new tool output arrives. Keep the viewport stable while I’m reading older messages.\\n\\nStart with `TranscriptView.swift`, and add a regression test."}},
+             {"id":"answer","message":{"role":"assistant","content":[{"type":"text","text":"I’ll check how the transcript follows live output, then separate that from the scroll position you’ve chosen."},{"type":"thinking","thinking":"Check the existing anchor before changing follow-tail."},{"type":"toolCall","id":"read1","name":"read","arguments":{"path":"app/TranscriptView.swift"}},{"type":"toolCall","id":"read2","name":"read","arguments":{"path":"app/Tests/TranscriptTests.swift"}},{"type":"toolCall","id":"test","name":"bash","arguments":{"command":"swift test --filter ScrollAnchorTests"}}]}}]
+            """.utf8))
             let galleries: [(String, [JSON], Bool)] = [
+                ("journal-wide", journal, false), ("journal-expanded-wide", journal, true), ("journal-narrow", journal, false), ("journal-expanded-narrow", journal, true),
                 ("empty", [], false), ("one-message", Array(entries.prefix(1)), false),
                 ("markdown", entries.filter { [.number(1700000000040), .number(1700000000050), .number(1700000000060)].contains($0["message"]["timestamp"]) }, false),
                 ("cards", entries.filter { $0["message"]["role"].string == "custom" }, true),
                 ("images", entries.filter { $0["message"]["timestamp"] == .number(1700000000120) }, false),
-                ("tools-collapsed", Array(entries.prefix(4)), false), ("narrow", Array(entries.prefix(4)), false),
+                ("activity-expanded", Array(entries.prefix(4)), true), ("tools-collapsed", Array(entries.prefix(4)), false), ("narrow", Array(entries.prefix(4)), false),
                 ("long-user-narrow", [.object(["id": .string("long-user"), "message": .object(["role": .string("user"), "content": .string(String(repeating: "A long user prompt should wrap without clipping at narrow widths.\n", count: 8))])])], false)
             ]
             for (index, gallery) in galleries.enumerated() {
                 let replay = Session { _ in }
                 var snapshot = fixture.object, record = fixture["record"].object
                 record["entries"] = .array(gallery.1); record["dialogs"] = .object([:]); record["queues"] = .object([:]); record["notifications"] = .array([]); record["widgets"] = .object([:])
+                if gallery.0.hasPrefix("journal") {
+                    record["tools"] = .object(["test": .object(["toolName": .string("bash"), "ended": .bool(false), "partialResult": .object(["content": .array([.object(["type": .string("text"), "text": .string("Earlier output\nTest preservesVisibleAnchor passed\nTest doesNotFollowWhileReading passed\nTesting restoresFollowTailOnSend…")])])])])])
+                }
                 snapshot["record"] = .object(record); snapshot["generation"] = .number(Double(index + 100))
                 for frame in Codec.encode(JSON.object(snapshot).text) { replay.receive(frame) }
-                host.rootView = Surface(session: replay, expanded: gallery.2).environment(\.colorScheme, name == "dark" ? .dark : .light).background(name == "dark" ? Color(nsColor: .windowBackgroundColor) : Color.white)
-                if gallery.0.hasSuffix("narrow") { window.setContentSize(NSSize(width: 480, height: 700)); host.frame.size = NSSize(width: 480, height: 700) }
+                host.rootView = AnyView(Surface(session: replay, expanded: gallery.2).environment(\.colorScheme, name == "dark" ? .dark : .light).background(name == "dark" ? Color(nsColor: .windowBackgroundColor) : Color.white))
+                window.setContentSize(NSSize(width: 920, height: 800)); host.frame.size = NSSize(width: 920, height: 800)
+                if gallery.0.hasSuffix("narrow") { window.setContentSize(NSSize(width: 440, height: 700)); host.frame.size = NSSize(width: 440, height: 700) }
                 try await capture(gallery.0)
             }
-            window.setContentSize(NSSize(width: 1100, height: 800)); host.frame.size = NSSize(width: 1100, height: 800)
+            for width in [440, 920] {
+                window.setContentSize(NSSize(width: width, height: 700)); host.frame.size = NSSize(width: width, height: 700)
+                for (label, text) in [("short", "Check the narrow pane."), ("grown", String(repeating: "Keep the viewport stable while reading older messages. ", count: 5))] {
+                    let draft = ComposerDraft(); draft.text = text
+                    host.rootView = AnyView(Surface(session: session, draft: draft).environment(\.colorScheme, name == "dark" ? .dark : .light).background(name == "dark" ? Color(nsColor: .windowBackgroundColor) : Color.white).id("composer-\(label)-\(width)"))
+                    try await capture("composer-\(label)-\(width)")
+                }
+            }
+            window.setContentSize(NSSize(width: 920, height: 800)); host.frame.size = NSSize(width: 920, height: 800)
             for (index, method) in ["select", "input", "editor"].enumerated() {
                 let replay = Session { _ in }
                 var snapshot = fixture.object, record = fixture["record"].object
@@ -164,7 +181,7 @@ import Testing
                 record["dialogs"] = .object([method: .object(["id": .string(method), "method": .string(method), "title": .string(method.capitalized), "message": .string("Choose an exact response."), "prefill": .string("Prefilled response"), "placeholder": .string("Your response"), "options": .array([.string("First option"), .string("Another option with a longer description"), .string("First option")])])])
                 snapshot["record"] = .object(record); snapshot["generation"] = .number(Double(index + 200))
                 for frame in Codec.encode(JSON.object(snapshot).text) { replay.receive(frame) }
-                host.rootView = Surface(session: replay).environment(\.colorScheme, name == "dark" ? .dark : .light).background(name == "dark" ? Color(nsColor: .windowBackgroundColor) : Color.white)
+                host.rootView = AnyView(Surface(session: replay).environment(\.colorScheme, name == "dark" ? .dark : .light).background(name == "dark" ? Color(nsColor: .windowBackgroundColor) : Color.white))
                 try await capture(method)
             }
         }

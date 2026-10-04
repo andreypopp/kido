@@ -8,10 +8,15 @@ struct TranscriptView: View {
     @State private var jump = 0
     var body: some View {
         let history: [DisplayRow] = session.historyBefore == .null ? [] : [.init(id: session.scope + ":history", content: .history(session.historyLoading))]
-        TranscriptTable(scope: session.scope, rows: history + session.displayRows + session.transcriptRows.tail, revision: session.visualRevision, structure: session.transcriptRows.structure, changed: session.transcriptRows.changed, applied: { session.transcriptRows.changed.subtract($0) }, expanded: expanded, tailRequest: tailRequest + jump, following: $following) {
+        let rows = groupedActivity(history + session.displayRows + session.transcriptRows.tail)
+        let changed = Set(rows.filter { row in
+            if case .activity(let items) = row.content { return items.contains { session.transcriptRows.changed.contains($0.id) } }
+            return session.transcriptRows.changed.contains(row.id)
+        }.map(\.id))
+        TranscriptTable(scope: session.scope, rows: rows, revision: session.visualRevision, structure: session.transcriptRows.structure, changed: changed, applied: { _ in session.transcriptRows.changed.removeAll() }, expanded: expanded, tailRequest: tailRequest + jump, following: $following) {
             session.command("history", fields: ["generation": session.generation, "before": session.historyBefore, "limit": .number(200)])
-        }.overlay(alignment: .bottomTrailing) {
-            if !following { Button("Jump to latest", systemImage: "arrow.down") { following = true; jump += 1 }.padding(12) }
+        }.overlay(alignment: .bottom) {
+            if !following { Button("to recent messages") { following = true; jump += 1 }.font(.caption).buttonStyle(.bordered).buttonBorderShape(.capsule).padding(.bottom, 12) }
         }
     }
 }

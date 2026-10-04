@@ -13,18 +13,21 @@ struct MessageView: View {
         Group {
             switch row.content {
             case .history(let loading):
-                if loading { ProgressView().controlSize(.small) }
-                else { Button("Load older messages", action: loadHistory) }
+                Group {
+                    if loading { ProgressView().controlSize(.small) }
+                    else { Button("Load older messages", action: loadHistory) }
+                }.frame(height: 20)
             case .user(let message):
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("You").font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                    if case .string(let text) = message["content"] { Text(text).textSelection(.enabled) }
+                    if case .string(let text) = message["content"] { MarkdownBody(text: text) }
                     ForEach(Array(message["content"].array.enumerated()), id: \.offset) { index, block in
                         if block["type"].string == "image" { MessageView(row: .init(id: row.id + ":\(index)", content: .image(block))) }
-                        else { Text(block["text"].string).textSelection(.enabled) }
+                        else { MarkdownBody(text: block["text"].string) }
                     }
-                }.padding(12).frame(maxWidth: 680, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                }.fontWeight(.medium).padding(.vertical, 9).padding(.horizontal, 10).frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+                    .background(Color(nsColor: NSColor.windowBackgroundColor.blended(withFraction: 0.06, of: .labelColor) ?? .controlBackgroundColor))
+                    .overlay(alignment: .leading) { Rectangle().fill(Color.accentColor).frame(width: 3) }.clipShape(RoundedRectangle(cornerRadius: 8))
+            case .activity(let items): ActivityView(items: items, expanded: expanded, expansionChanged: expansionChanged)
             case .markdown(let text): MarkdownBody(text: text)
             case .responding: HStack { ProgressView().controlSize(.small); Text("Responding…").foregroundStyle(.secondary) }
             case .thinkingUnavailable: Text("Thinking unavailable").font(.callout).foregroundStyle(.secondary)

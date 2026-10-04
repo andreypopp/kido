@@ -7,7 +7,7 @@ struct MenuPicker: NSViewRepresentable {
     @Environment(\.isEnabled) private var enabled
     func makeCoordinator() -> Coordinator { Coordinator($selection) }
     func makeNSView(context: Context) -> NSPopUpButton {
-        let picker = NSPopUpButton(); picker.controlSize = .small; picker.setAccessibilityLabel(label); picker.toolTip = label
+        let picker = NSPopUpButton(); picker.controlSize = .small; picker.isBordered = false; picker.font = .systemFont(ofSize: NSFont.smallSystemFontSize); picker.setAccessibilityLabel(label); picker.toolTip = label
         picker.target = context.coordinator; picker.action = #selector(Coordinator.select(_:)); return picker
     }
     func updateNSView(_ picker: NSPopUpButton, context: Context) {

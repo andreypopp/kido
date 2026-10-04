@@ -2,6 +2,7 @@ import Foundation
 
 struct DisplayRow: Identifiable, Equatable {
     enum Content: Equatable {
+        case activity([DisplayRow])
         case user(JSON), markdown(String), thinking(String, Bool), tool(JSON, JSON, JSON)
         case custom(JSON), marker(String, String), image(JSON), stopped, error(String), history(Bool), thinkingUnavailable, responding, bash(JSON)
     }
@@ -70,4 +71,18 @@ func project(_ rows: [Row], scope: String, active: Bool = false, tools: [String:
         if !message["errorMessage"].string.isEmpty { output.append(.init(id: id + ":error", content: .error(message["errorMessage"].string))) }
     }
     return output
+}
+
+func groupedActivity(_ rows: [DisplayRow]) -> [DisplayRow] {
+    var result: [DisplayRow] = []
+    for row in rows {
+        switch row.content {
+        case .thinking, .thinkingUnavailable, .tool:
+            if let last = result.last, case .activity(var items) = last.content {
+                items.append(row); result[result.count - 1].content = .activity(items)
+            } else { result.append(.init(id: row.id, content: .activity([row]))) }
+        default: result.append(row)
+        }
+    }
+    return result
 }

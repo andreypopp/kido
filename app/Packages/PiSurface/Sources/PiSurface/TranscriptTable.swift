@@ -66,12 +66,12 @@ struct TranscriptTable: NSViewRepresentable {
         private func configure(_ cell: NSHostingView<AnyView>, row: Int) {
             guard let table else { return }
             let item = rows[row], width = table.bounds.width
-            cell.sizingOptions = []
+            cell.sizingOptions = []; cell.autoresizingMask = [.width, .height]
             cell.rootView = AnyView(MessageView(row: item, expanded: expansions.contains(item.id) || parent.expanded, loadHistory: parent.loadHistory, expansionChanged: { [weak self] open in
                 if open { self?.expansions.insert(item.id) } else { self?.expansions.remove(item.id) }
             }).id(item.id).disclosureGroupStyle(InlineDisclosureStyle())
-                .frame(width: max(1, min(width - 32, 760)), alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true).padding(.vertical, 8).padding(.horizontal, 16).frame(maxWidth: .infinity, alignment: .leading)
+                .frame(width: max(1, width - 24), alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true).padding(.vertical, 12).padding(.horizontal, 12).frame(maxWidth: .infinity, alignment: .leading)
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { [weak self] size in
                     self?.measured(item, width: width, height: ceil(max(32, size.height)))
                 })
@@ -87,6 +87,11 @@ struct TranscriptTable: NSViewRepresentable {
                 guard let self, let table = self.table else { return }
                 self.captureAnchor()
                 table.noteHeightOfRows(withIndexesChanged: IndexSet(self.pending.compactMap { self.positions[$0] }))
+                for id in self.pending {
+                    if let row = self.positions[id], let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) {
+                        cell.frame.size.height = table.rect(ofRow: row).height
+                    }
+                }
                 self.pending.removeAll(); self.restore()
             }
         }
