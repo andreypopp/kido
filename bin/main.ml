@@ -34,7 +34,7 @@ let state_dir () =
   ok (State.check_dir ~dir);
   dir
 
-let resolved_dir server = Tmux.Exec.abs (Option.get_lazy state_dir server)
+let resolved_dir server = Tmux.Exec.abs (Option.get_lazy State.dir server)
 
 let print r =
   print_endline (ok r);

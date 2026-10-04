@@ -1,8 +1,5 @@
 (library
  (name kido)
- (foreign_stubs
-  (language c)
-  (names socket_stubs))
  (flags
   (:standard -open Containers))
  (libraries

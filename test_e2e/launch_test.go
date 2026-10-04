@@ -39,11 +39,7 @@ func newKidoRun(t *testing.T) *kidoRun {
 	r.home = filepath.Join(r.dir, "home")
 	r.config = filepath.Join(r.dir, "config")
 	r.state = serverDir(t)
-	tmpdir, err := os.MkdirTemp("/tmp", "server-dir-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.tmpdir = tmpdir
+	r.tmpdir = serverDir(t)
 	for _, d := range []string{r.home, r.config, r.state} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
@@ -63,7 +59,6 @@ func newKidoRun(t *testing.T) *kidoRun {
 		r.kido("kill-server")
 		killServer(r.outer)
 		waitDescendantsGone(t, r.kidoSock, started)
-		os.RemoveAll(r.tmpdir)
 	})
 
 	r.mustOuter("-f", "/dev/null", "new-session", "-d", "-s", "host",

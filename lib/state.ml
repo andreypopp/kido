@@ -58,7 +58,8 @@ let dir () =
       | _, Some x when not (String.is_empty x) -> Filename.concat x "kido"
       | _ -> Filename.concat (Sys.getenv "HOME") ".local/state/kido")
 
-external sun_path_size : unit -> int = "kido_sun_path_size"
+let sun_path_size =
+  if Sys.file_exists "/System/Library/CoreServices/SystemVersion.plist" then 104 else 108
 
 let check_dir ~dir =
   match Unix.lstat dir with
@@ -76,10 +77,12 @@ let check_dir ~dir =
 
 let server_socket ~create ~dir =
   let socket = Filename.concat dir "socket" in
-  if String.length socket >= sun_path_size () then
+  if String.contains dir ',' then
+    Error (Printf.sprintf "server directory %S must not contain a comma" dir)
+  else if String.length socket >= sun_path_size then
     Error
       (Printf.sprintf "server socket path %S is too long (maximum %d bytes)" socket
-         (sun_path_size () - 1))
+         (sun_path_size - 1))
   else begin
     if create then Fs.mkdir_p ~perm:0o700 dir;
     Result.map (fun () -> socket) (check_dir ~dir)
