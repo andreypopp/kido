@@ -620,7 +620,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private var visualFrames: [UInt64: (Bool) -> Void] = [:]
     var visualReady: Bool { !resizeDirty && finalEpoch == nil && restoreRequested == nil && scrollPending == nil && rendering == nil }
     var visualState: String {
-        "insets=\(renderInsets.top),\(renderInsets.bottom) pill=\(!historyLimit.isHidden) find=\(find != nil) alternate=\(alternate) scroll=\(scrollDistance)"
+        "insets=\(renderInsets.top),\(renderInsets.bottom) pill=\(!historyLimit.isHidden) find=\(find != nil) alternate=\(alternate) scroll=\(String(describing: scrollDistance))"
     }
     var visualPill: Bool { !historyLimit.isHidden }
     func visualScroll(_ distance: Double) { requestScrollDistance { _ in distance } }
