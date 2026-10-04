@@ -51,7 +51,7 @@ struct Server: Decodable, Sendable {
     static func locate() async throws(Failure) -> Server {
         try tools.validate()
         if let fixed { return fixed }
-        let (status, out, err) = try await Child.run(tools.kido, ["server", "--socket-name", "kido-app"], env: tools.environment)
+        let (status, out, err) = try await Child.run(tools.kido, ["server", "--socket-name", "kido-app"], env: tools.environment, cwd: tools.environment["HOME"] ?? NSHomeDirectory())
         guard status == 0 else { throw Failure(message: err.isEmpty ? "kido server exited \(status)" : err) }
         guard let server = try? JSONDecoder().decode(Server.self, from: Data(out.utf8)), server.tmux == tools.tmux else {
             throw Failure(message: "kido server returned an invalid bundled server: \(out)")
