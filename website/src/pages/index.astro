@@ -93,7 +93,7 @@ const keyGroups = [
         <div class="keys-content">
           <div class="section-copy reveal">
             <h2>Keyboard bindings.<br /><span>Default ones.</span></h2>
-            <p class="subhead">These are the keyboard bindings set by default, you can override them in the ~/.config/kido/kido.conf configuration file.</p>
+            <p class="subhead">These are the keyboard bindings set by default, you can override them in the <code>~/.config/kido/kido.conf</code> configuration file.</p>
           </div>
           {keyGroups.map(({ caption, rows }) => (
             <table>
@@ -200,15 +200,16 @@ const keyGroups = [
 
 <style>
   .keys-content { max-width: 960px; margin: auto; }
-  .keys table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  .keys table { width: 100%; border-collapse: collapse; font-size: 14px; }
   .keys caption { text-align: left; font-weight: 600; margin: 32px 0 12px; }
-  .keys th { text-align: left; color: var(--muted); font-weight: 400; }
-  .keys th, .keys td { padding: 12px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .keys th { text-align: left; color: var(--muted); font-weight: 400; font-size: 13px; }
+  .keys th, .keys td { padding: 10px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
   .keys th:first-child, .keys td:first-child { width: 36%; padding-right: 24px; }
-  .keys kbd { display: inline-block; font: 13px var(--font-mono); color: var(--mint); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 2px 5px; }
+  .keys kbd { display: inline-block; font: 12px/1.5 var(--font-mono); color: var(--mint); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; }
+  .keys code { font: .875em var(--font-mono); color: #dfe8e3; background: #101714; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
   @media (max-width: 700px) {
     .keys thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-    .keys tr { display: grid; border-bottom: 1px solid var(--border); padding: 12px 0; gap: 8px; }
+    .keys tr { display: grid; border-bottom: 1px solid var(--border); padding: 10px 0; gap: 6px; }
     .keys td, .keys td:first-child { width: auto; padding: 0; border: 0; }
   }
 </style>
