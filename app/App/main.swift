@@ -1,5 +1,6 @@
 import AppKit
 import TmuxControl
+import SidebarFeed
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     private var runtime: GhosttyRuntime!
@@ -8,8 +9,11 @@ import TmuxControl
     private var session: SessionView?
     private var link = Link.down
     private let menus = SessionMenus()
-    private let sidebar = Sidebar()
+    let sidebar = Sidebar()
     private var feed: Feed?
+    private var model = SessionModel()
+    private var snapshot: Snapshot?
+    private var navigationModel = SessionModel()
     private var trigger: String?
     private var signals: [DispatchSourceSignal] = []
 
@@ -69,10 +73,9 @@ import TmuxControl
         sidebar.list.newSession = { [weak self] in self?.newSession() }
         sidebar.list.newWindow = { [weak self] in self?.create(Command("new-window", "-d", "-P", "-F", "#{session_id}:#{window_id}.#{pane_id}", "-t", $0, "-c", "#{pane_current_path}")) }
         menus.send = { [weak self] in self?.send($0) }
-        sidebar.tabs.send = { [weak self] in self?.send($0) }
-        sidebar.tabs.changed = { [weak self] in
-            guard let self else { return }
-            self.menus.update(self.sidebar.tabs.navigationModel)
+        sidebar.tabs.select = { [weak self] step in
+            guard let self, let command = navigationModel.select(step) else { return }
+            send([command])
         }
         sidebar.list.filter = { [weak self] in self?.feed?.filter($0) }
         sidebar.focusTerminal = { [weak self] in self?.session?.focusActive() }
@@ -107,7 +110,8 @@ import TmuxControl
         connection.send(commands, then: done)
     }
 
-    private func down(_ title: String, _ detail: String, button: String?, connect: Bool = false) {
+    func down(_ title: String, _ detail: String, button: String?, connect: Bool = false) {
+        sidebar.list.leave()
         banner.show(title, detail, button: button, connect: connect)
         sidebar.list.offline(title)
     }
@@ -196,14 +200,17 @@ import TmuxControl
                 onChange: { [weak self] in self?.changed(view, $0) },
                 onDiagnostic: { [weak self] in self?.banner.show($0, "", button: nil) },
                 onClose: { [weak self] in self?.closed(server, view, $0, backoff: backoff) })
-            connection.navigationModel = { [weak self] in self?.sidebar.tabs.navigationModel ?? SessionModel() }
+            connection.navigationModel = { [weak self] in self?.navigationModel ?? SessionModel() }
             link = .connected(connection)
             feed = Feed(
                 socket: server.socket, locate: connection.locateFeed, query: { [weak self] in self?.sidebar.list.query ?? "" },
                 onChange: { [weak self] status in
                     if case .invalidBundle(let error) = status { return self?.bundleChanged(error) ?? () }
                     self?.sidebar.list.update(status)
-                    self?.sidebar.tabs.update(status, query: self?.sidebar.list.query ?? "")
+                    if case .running(let snapshot) = status, self?.sidebar.list.query.isEmpty == true, snapshot.filter.isEmpty {
+                        self?.snapshot = snapshot
+                        self?.updateTabs()
+                    }
                 })
         } catch {
             note("could not run \(server.tmux): \(error.localizedDescription)")
@@ -212,9 +219,20 @@ import TmuxControl
         }
     }
 
+    private func updateTabs() {
+        let next = model.navigation(snapshot)
+        sidebar.tabs.entries = next.tabs
+        if navigationModel != next.model {
+            navigationModel = next.model
+            menus.update(navigationModel)
+        }
+    }
+
     private func changed(_ view: SessionView, _ model: SessionModel) {
         window.title = model.title
-        sidebar.tabs.update(model)
+        self.model = model
+        if model.session == nil { snapshot = nil }
+        updateTabs()
         if view.superview == nil {
             session?.removeFromSuperview()
             session = view
@@ -228,7 +246,9 @@ import TmuxControl
     private func closed(_ server: Server, _ view: SessionView, _ exit: Exit, backoff: TimeInterval) {
         guard case .connected = link else { return }
         view.subviews.compactMap { $0 as? WindowView }.forEach { $0.cancelDrag() }
-        sidebar.tabs.update(SessionModel())
+        model = SessionModel()
+        snapshot = nil
+        updateTabs()
         feed?.stop()
         feed = nil
         window.title = SessionModel().title
