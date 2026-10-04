@@ -129,15 +129,11 @@ final class Connection: @unchecked Sendable {
     }
 
     func locateFeed(_ done: @escaping @Sendable (Result<Feed.Location, Failure>) -> Void) {
-        client.send([Command("show-options", "-gv", "side-status-command"), Command("display-message", "-p", "#{client_name}")]) {
-            replies in
-            guard let replies, replies.count == 2, case .success(let command) = replies[0], let raw = command.first,
-                case .success(let name) = replies[1], let client = name.first
-            else { return done(.failure(Failure(message: "could not read side-status-command or the client name"))) }
-            // `Launch.conf_command` double-quotes a path that contains a space
-            // or a tab, and show-options prints the quotes back (lib/launch.ml).
-            let quoted = raw.count >= 2 && raw.hasPrefix("\"") && raw.hasSuffix("\"")
-            done(.success((kido: quoted ? String(raw.dropFirst().dropLast()) : raw, client: client)))
+        client.send([Command("display-message", "-p", "#{client_name}")]) { replies in
+            guard case .success(let names)? = replies?.first, let client = names.first else {
+                return done(.failure(Failure(message: "could not read the client name")))
+            }
+            done(.success(client))
         }
     }
 
