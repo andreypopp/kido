@@ -4,9 +4,12 @@ final class IconButton: NSButton {
     static let sidebarSymbols = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular, scale: .small)
     var invoke: () -> Void = {}
     var press: ((NSEvent) -> Void)?
+    enum HoverStyle { case iconOnly, background }
+    private let hoverStyle: HoverStyle
     private var hovered = false
 
-    init(_ symbol: String, _ label: String, size: CGFloat? = nil) {
+    init(_ symbol: String, _ label: String, size: CGFloat? = nil, hoverStyle: HoverStyle = .background) {
+        self.hoverStyle = hoverStyle
         super.init(frame: .zero)
         image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?
             .withSymbolConfiguration(size.map { .init(pointSize: $0, weight: .regular, scale: .medium) } ?? Self.sidebarSymbols)
@@ -44,7 +47,7 @@ final class IconButton: NSButton {
     private func updateHover() {
         contentTintColor = hovered ? .labelColor : .secondaryLabelColor
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = hovered ? NSColor.labelColor.withAlphaComponent(0.12).cgColor : nil
+            layer?.backgroundColor = hovered && hoverStyle == .background ? NSColor.labelColor.withAlphaComponent(0.12).cgColor : nil
         }
     }
 }
