@@ -22,7 +22,8 @@ function send(value: Record<string, any>) {
 }
 function hello() { return { type: "hello", instance, sessionId: record.state.sessionId ?? null, sessionFile: record.state.sessionFile ?? null, cwd: process.cwd() }; }
 function request(type: string) { child.stdin.write(JSON.stringify({ type, id: `bridge:${generation}:${type}`, ...(type === "get_entries" && record.entries.length ? { since: record.entries.at(-1).id } : {}) }) + "\n"); }
-function refresh() { for (const type of ["get_state", "get_entries", "get_available_models", "get_available_thinking_levels", "get_commands"]) request(type); }
+const bootstrap = new Set<string>();
+function refresh() { for (const type of ["get_state", "get_entries", "get_available_models", "get_available_thinking_levels", "get_commands"]) { bootstrap.add(type); request(type); } }
 function closeDialog(id: string) {
   if (!record.dialogs[id]) return false;
   delete record.dialogs[id]; clearTimeout(timers.get(id)); timers.delete(id);
@@ -82,7 +83,7 @@ function event(value: Record<string, any>) {
   if (value.type === "agent_start") { record.state.isStreaming = true; process.stdout.write("\r\n[running]\r\n> "); }
   if (value.type === "agent_end") { record.state.isStreaming = false; process.stdout.write("\r\n[idle]\r\n> "); request("get_state"); }
   if (value.type.startsWith("auto_retry_")) record.retry = value.type.endsWith("start") ? value : null;
-  if (value.type.startsWith("auto_compaction_")) record.compaction = value.type.endsWith("start") ? value : null;
+  if (["compaction_start", "compaction_end"].includes(value.type)) record.compaction = value.type.endsWith("start") ? value : null;
   if (value.type === "extension_ui_request") {
     if (["confirm", "select", "input", "editor"].includes(value.method)) { record.dialogs[value.id] = value; if (value.timeout) timers.set(value.id, setTimeout(() => closeDialog(value.id), value.timeout)); }
     if (value.method === "setStatus") { if (value.statusText === undefined) delete record.status[value.statusKey]; else record.status[value.statusKey] = value.statusText; }
@@ -91,6 +92,10 @@ function event(value: Record<string, any>) {
     if (value.method === "notify") record.notifications.push(value);
   }
   send(value);
+  if (value.type === "response" && value.id === `bridge:${generation}:${value.command}` && bootstrap.delete(value.command) && !bootstrap.size) {
+    send(hello());
+    command({ type: "snapshot" });
+  }
 }
 const utf8 = new StringDecoder("utf8");
 child.stdout.on("data", bytes => {
@@ -110,7 +115,7 @@ const input = decoder("in", command, send, bytes => {
   }
 });
 process.stdin.on("data", bytes => { clearTimeout(escape); input(bytes); escape = setTimeout(() => input(Buffer.alloc(0)), 40); });
-const heartbeat = setInterval(() => send(hello()), 2000);
+const heartbeat = setInterval(() => { if (!bootstrap.size) send(hello()); }, 2000);
 async function finish(code: number) {
   if (exiting) return; exiting = true;
   clearInterval(heartbeat); clearTimeout(escape); for (const timer of timers.values()) clearTimeout(timer);
@@ -129,4 +134,4 @@ child.on("error", error => { process.stderr.write(`${error.message}\n`); void fi
 child.on("exit", code => void finish(code ?? 1));
 child.stdin.on("error", () => {});
 process.stdin.on("end", () => void finish(0));
-send(hello()); process.stdout.write("kido-pi ready\r\n> "); refresh();
+process.stdout.write("kido-pi ready\r\n> "); refresh();

@@ -1,0 +1,475 @@
+{
+  "completed": {
+    "type": "snapshot",
+    "id": null,
+    "hello": {
+      "type": "hello",
+      "instance": "fixture",
+      "sessionId": "fake-session",
+      "sessionFile": "/tmp/kido-pi-fake.jsonl",
+      "cwd": "/fixture"
+    },
+    "seq": 0,
+    "generation": 0,
+    "record": {
+      "entries": [
+        {
+          "type": "message",
+          "id": "entry-1",
+          "parentId": null,
+          "timestamp": "2023-11-14T22:13:20.000Z",
+          "message": {
+            "role": "user",
+            "content": "Replay please",
+            "timestamp": 1700000000000
+          }
+        },
+        {
+          "type": "message",
+          "id": "entry-2",
+          "parentId": "entry-1",
+          "timestamp": "2023-11-14T22:13:20.000Z",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "thinking",
+                "thinking": "Check the files, then make a small edit."
+              },
+              {
+                "type": "text",
+                "text": "Hello! I’ll inspect the project."
+              },
+              {
+                "type": "toolCall",
+                "id": "bash-1",
+                "name": "bash",
+                "arguments": {
+                  "command": "ls"
+                }
+              }
+            ],
+            "api": "fake",
+            "provider": "fake",
+            "model": "fixture",
+            "stopReason": "toolUse",
+            "timestamp": 1700000000000
+          }
+        },
+        {
+          "type": "message",
+          "id": "entry-3",
+          "parentId": "entry-2",
+          "timestamp": "2023-11-14T22:13:20.010Z",
+          "message": {
+            "role": "toolResult",
+            "toolCallId": "bash-1",
+            "toolName": "bash",
+            "content": [
+              {
+                "type": "text",
+                "text": "README.md\nhello.ts\n"
+              }
+            ],
+            "details": {
+              "exitCode": 0
+            },
+            "isError": false,
+            "timestamp": 1700000000010
+          }
+        },
+        {
+          "type": "message",
+          "id": "entry-4",
+          "parentId": "entry-3",
+          "timestamp": "2023-11-14T22:13:20.020Z",
+          "message": {
+            "role": "toolResult",
+            "toolCallId": "edit-1",
+            "toolName": "edit",
+            "content": [
+              {
+                "type": "text",
+                "text": "Updated hello.ts"
+              }
+            ],
+            "details": {
+              "patch": "--- hello.ts\n+++ hello.ts\n@@ -1 +1 @@\n-hello\n+Hello\n"
+            },
+            "isError": false,
+            "timestamp": 1700000000020
+          }
+        },
+        {
+          "type": "message",
+          "id": "entry-5",
+          "parentId": "entry-4",
+          "timestamp": "2023-11-14T22:13:20.030Z",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Done — one small edit."
+              }
+            ],
+            "api": "fake",
+            "provider": "fake",
+            "model": "fixture",
+            "stopReason": "stop",
+            "timestamp": 1700000000030
+          }
+        }
+      ],
+      "leafId": "entry-5",
+      "partialAssistant": null,
+      "tools": {},
+      "bash": {},
+      "queues": {
+        "steering": [
+          "Check tests too"
+        ],
+        "followUp": [
+          "Summarize the changes"
+        ]
+      },
+      "dialogs": {
+        "fixture-confirm": {
+          "type": "extension_ui_request",
+          "id": "fixture-confirm",
+          "method": "confirm",
+          "title": "Apply change?",
+          "message": "Keep the greeting change?",
+          "timeout": 30000
+        }
+      },
+      "status": {
+        "fixture": "Fixture replay"
+      },
+      "widgets": {
+        "fixture": {
+          "type": "extension_ui_request",
+          "id": "widget-1",
+          "method": "setWidget",
+          "widgetKey": "fixture",
+          "widgetLines": [
+            "No model was called"
+          ],
+          "widgetPlacement": "aboveEditor"
+        }
+      },
+      "notifications": [
+        {
+          "type": "extension_ui_request",
+          "id": "notify-1",
+          "method": "notify",
+          "message": "Replay complete",
+          "notifyType": "info"
+        }
+      ],
+      "title": "Fake pi",
+      "state": {
+        "sessionId": "fake-session",
+        "sessionFile": "/tmp/kido-pi-fake.jsonl",
+        "model": {
+          "id": "fixture",
+          "name": "Fixture (no model)",
+          "provider": "fake",
+          "reasoning": true,
+          "contextWindow": 200000,
+          "maxTokens": 8192,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        "thinkingLevel": "medium",
+        "isStreaming": false,
+        "isCompacting": false,
+        "steeringMode": "all",
+        "followUpMode": "all",
+        "messageCount": 5,
+        "pendingMessageCount": 0
+      },
+      "models": [
+        {
+          "id": "fixture",
+          "name": "Fixture (no model)",
+          "provider": "fake",
+          "reasoning": true,
+          "contextWindow": 200000,
+          "maxTokens": 8192,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ],
+      "thinkingLevels": [
+        "off",
+        "low",
+        "medium",
+        "high"
+      ],
+      "commands": [
+        {
+          "name": "fixture",
+          "description": "Replay the fixture",
+          "source": "extension"
+        }
+      ]
+    }
+  },
+  "streaming": {
+    "type": "snapshot",
+    "id": null,
+    "hello": {
+      "type": "hello",
+      "instance": "fixture",
+      "sessionId": "fake-session",
+      "sessionFile": "/tmp/kido-pi-fake.jsonl",
+      "cwd": "/fixture"
+    },
+    "seq": 0,
+    "generation": 1,
+    "record": {
+      "entries": [],
+      "leafId": null,
+      "partialAssistant": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "Check the files, then make a small edit."
+          },
+          {
+            "type": "text",
+            "text": "Hello! I’ll inspect the project."
+          },
+          {
+            "type": "toolCall",
+            "id": "bash-1",
+            "name": "bash",
+            "arguments": {
+              "command": "ls"
+            }
+          }
+        ],
+        "timestamp": 1700000000000
+      },
+      "tools": {
+        "bash-1": {
+          "type": "tool_execution_start",
+          "toolCallId": "bash-1",
+          "toolName": "bash",
+          "args": {
+            "command": "ls"
+          },
+          "partialResult": {
+            "content": [
+              {
+                "type": "text",
+                "text": "README.md\nhello.ts\n"
+              }
+            ],
+            "details": {}
+          }
+        },
+        "edit-1": {
+          "type": "tool_execution_start",
+          "toolCallId": "edit-1",
+          "toolName": "edit",
+          "args": {
+            "path": "hello.ts",
+            "oldText": "hello",
+            "newText": "Hello"
+          }
+        }
+      },
+      "bash": {},
+      "queues": {
+        "steering": [],
+        "followUp": []
+      },
+      "dialogs": {
+        "fixture-confirm": {
+          "type": "extension_ui_request",
+          "id": "fixture-confirm",
+          "method": "confirm",
+          "title": "Apply change?",
+          "message": "Keep the greeting change?"
+        }
+      },
+      "status": {},
+      "widgets": {},
+      "notifications": [],
+      "title": "",
+      "state": {
+        "sessionId": "fake-session",
+        "sessionFile": "/tmp/kido-pi-fake.jsonl",
+        "model": {
+          "id": "fixture",
+          "name": "Fixture (no model)",
+          "provider": "fake",
+          "reasoning": true,
+          "contextWindow": 200000,
+          "maxTokens": 8192,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        "thinkingLevel": "medium",
+        "isStreaming": false,
+        "isCompacting": false,
+        "steeringMode": "all",
+        "followUpMode": "all",
+        "messageCount": 5,
+        "pendingMessageCount": 0
+      },
+      "models": [
+        {
+          "id": "fixture",
+          "name": "Fixture (no model)",
+          "provider": "fake",
+          "reasoning": true,
+          "contextWindow": 200000,
+          "maxTokens": 8192,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ],
+      "thinkingLevels": [
+        "off",
+        "low",
+        "medium",
+        "high"
+      ],
+      "commands": [
+        {
+          "name": "fixture",
+          "description": "Replay the fixture",
+          "source": "extension"
+        }
+      ],
+      "retry": null,
+      "compaction": {
+        "type": "compaction_start",
+        "reason": "threshold"
+      }
+    }
+  },
+  "reset": {
+    "type": "snapshot",
+    "id": null,
+    "hello": {
+      "type": "hello",
+      "instance": "fixture",
+      "sessionId": "fake-session",
+      "sessionFile": "/tmp/kido-pi-fake.jsonl",
+      "cwd": "/fixture"
+    },
+    "seq": 0,
+    "generation": 1,
+    "record": {
+      "entries": [],
+      "leafId": null,
+      "partialAssistant": null,
+      "tools": {},
+      "bash": {},
+      "queues": {
+        "steering": [],
+        "followUp": []
+      },
+      "dialogs": {},
+      "status": {},
+      "widgets": {},
+      "notifications": [],
+      "title": "",
+      "state": {
+        "sessionId": "fake-session",
+        "sessionFile": "/tmp/kido-pi-fake.jsonl",
+        "model": {
+          "id": "fixture",
+          "name": "Fixture (no model)",
+          "provider": "fake",
+          "reasoning": true,
+          "contextWindow": 200000,
+          "maxTokens": 8192,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        "thinkingLevel": "medium",
+        "isStreaming": false,
+        "isCompacting": false,
+        "steeringMode": "all",
+        "followUpMode": "all",
+        "messageCount": 5,
+        "pendingMessageCount": 0
+      },
+      "models": [
+        {
+          "id": "fixture",
+          "name": "Fixture (no model)",
+          "provider": "fake",
+          "reasoning": true,
+          "contextWindow": 200000,
+          "maxTokens": 8192,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ],
+      "thinkingLevels": [
+        "off",
+        "low",
+        "medium",
+        "high"
+      ],
+      "commands": [
+        {
+          "name": "fixture",
+          "description": "Replay the fixture",
+          "source": "extension"
+        }
+      ],
+      "retry": null,
+      "compaction": null
+    }
+  }
+}

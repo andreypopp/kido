@@ -9,12 +9,15 @@ public struct Surface: View {
         VStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
+                    if session.historyBefore != .null {
+                        Button("Load older") { session.command("history", fields: ["generation": session.generation, "before": session.historyBefore, "limit": .number(200)]) }
+                    }
                     ForEach(session.rows) { row in message(row.message) }
                     if session.partial != .null { message(session.partial) }
                     ForEach(Array(session.tools.enumerated()), id: \.offset) { _, tool in
                         DisclosureGroup(tool["toolName"].string) {
                             Text(tool["args"].text).font(.system(.body, design: .monospaced))
-                            message(tool["latestResult"] == .null ? tool["partialResult"] : tool["latestResult"])
+                            message(tool["partialResult"])
                         }
                     }
                 }.padding().textSelection(.enabled)
@@ -31,7 +34,8 @@ public struct Surface: View {
             HStack {
                 Text(session.connected ? (session.streaming ? "Streaming" : "Idle") : "Disconnected")
                 Text("Queue: \(session.queues["steering"].array.count + session.queues["followUp"].array.count)")
-                Text(session.partial["usage"] != .null ? session.partial["usage"].text : session.stats == .null ? "" : session.stats.text)
+                Text(session.partial["usage"] == .null ? "" : session.partial["usage"].text)
+                Text(([session.title] + session.status.orderedValues.map(\.string) + session.widgets.orderedValues.flatMap { $0["widgetLines"].array.map(\.string) } + session.notifications.map { $0["message"].string }).joined(separator: " · "))
                 Text(session.error).foregroundStyle(.red)
             }.font(.caption).textSelection(.enabled)
         }.padding()

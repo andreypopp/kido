@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -95,7 +95,9 @@ test("pty bridge streams fake pi, snapshots, dialogs, history and restores its t
   try {
     await wait(() => attached);
     await run("send-keys", "-t", "test:0.0", "Enter");
-    await wait(() => messages.some(value => value.type === "response" && value.command === "get_entries"));
+    await wait(() => messages.some(value => value.type === "hello"));
+    const firstHello = messages.findIndex(value => value.type === "hello");
+    assert.equal(messages.slice(0, firstHello).filter(value => value.id?.startsWith("bridge:0:")).length, 5);
     await send({ type: "prompt", id: "test-client:prompt", message: "Replay please" });
     await wait(() => messages.some(value => value.assistantMessageEvent?.type === "text_delta"));
     await send({ type: "snapshot", id: "test-client:partial" });
@@ -139,6 +141,18 @@ test("pty bridge streams fake pi, snapshots, dialogs, history and restores its t
     const reset = messages.find(value => value.id === "test-client:reset");
     assert.equal(reset?.generation, 1);
     assert.deepEqual(reset?.record.entries, []);
+    assert.ok(messages.some(value => value.type === "snapshot" && value.id === null && value.generation === 1));
+    await send({ type: "fixture_snapshot", id: "test-client:fixture" });
+    await wait(() => messages.some(value => value.id === "test-client:fixture"));
+    await send({ type: "snapshot", id: "test-client:canonical" });
+    await wait(() => messages.some(value => value.id === "test-client:canonical"));
+    const canonical = messages.find(value => value.id === "test-client:canonical");
+    assert.equal(canonical?.record.compaction.type, "compaction_start");
+    const normalize = (value: any) => ({ ...value, id: null, seq: 0, hello: { ...value.hello, instance: "fixture", cwd: "/fixture" } });
+    const captured = { completed: normalize(snapshot), streaming: normalize(canonical), reset: normalize(reset) };
+    const fixturePath = new URL("testdata/kido-pi-snapshot.json", import.meta.url);
+    if (process.env.UPDATE_KIDO_PI_FIXTURES) writeFileSync(fixturePath, JSON.stringify(captured, null, 2) + "\n");
+    assert.deepEqual(captured, JSON.parse(readFileSync(fixturePath, "utf8")));
     await run("send-keys", "-t", "test:0.0", "-H", "04");
     await wait(() => text.includes("TTY_RESTORED"));
     assert.ok(messages.some(value => value.type === "bye"));

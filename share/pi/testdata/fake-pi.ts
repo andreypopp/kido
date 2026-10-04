@@ -16,6 +16,11 @@ function command(value: Record<string, any>) {
   let data: unknown = {};
   if (value.type === "extension_ui_response") { emit({ type: "extension_ui_request", id: "answer-notify", method: "notify", message: `Dialog answered: ${value.confirmed ?? value.cancelled}`, notifyType: "info" }); return; }
   switch (value.type) {
+    case "fixture_snapshot":
+      for (const event of fixture.filter(event => ["message_start", "message_update", "tool_execution_start", "tool_execution_update", "extension_ui_request"].includes(event.type)).slice(0, 15)) emit(event);
+      emit({ type: "extension_ui_request", id: "fixture-confirm", method: "confirm", title: "Apply change?", message: "Keep the greeting change?" });
+      emit({ type: "compaction_start", reason: "threshold" });
+      break;
     case "get_state": data = state; break;
     case "get_entries": data = { entries: value.since ? entries.slice(entries.findIndex(entry => entry.id === value.since) + 1) : entries, leafId }; break;
     case "get_available_models": data = { models: [model] }; break;

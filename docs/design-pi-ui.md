@@ -106,6 +106,21 @@ responses; a dialog answer keeps pi's dialog id. kido-pi's own messages:
 frames after the snapshot's own. `history` pages the active branch
 backwards from the entry id `before`, oldest first.
 
+The canonical snapshot `record` fields are `entries`, `leafId`,
+`partialAssistant`, `tools`, `bash`, `queues`, `dialogs`, `status`,
+`widgets`, `notifications`, `title`, `state`, `models`, `thinkingLevels`,
+`commands`, and optional `retry` and `compaction`. `tools` is keyed by
+`toolCallId`: each value is the `tool_execution_start` event with its latest
+`partialResult`. `dialogs` is keyed by id and holds the requests themselves.
+Clients render keyed values in key order. `message_update` carries deltas,
+not a cumulative message. There are no pending-message or stats fields.
+
+The first hello waits for all bootstrap queries. A generation change
+broadcasts an unsolicited snapshot (`id: null`) after those queries finish;
+clients replace their complete state, including when another client caused
+it. Clients resend the identical inbound frame after a bounded ack timeout
+and discard in-flight frames on disconnect or instance change.
+
 ## Source of truth
 
 The pi process is the truth while it runs, its session JSONL after it
