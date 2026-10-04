@@ -386,7 +386,7 @@ final class WindowView: NSView {
         }
         view.onCommand = { [weak self] command in
             guard let connection = self?.connection,
-                let tmux = command.command(id, cell: self?.session?.cell ?? .zero, model: connection.model)
+                let tmux = command.command(id, cell: self?.session?.cell ?? .zero, model: connection.navigationModel())
             else { return }
             if case .clear = command {
                 connection.sync(id, first: [tmux, Command("clear-history", "-t", id)])
