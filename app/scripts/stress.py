@@ -3,7 +3,7 @@
 
 The window stays off screen (KIDO_APP_BACKGROUND=1); see docs/design-app.md, "Stress harness".
 """
-import argparse, collections, glob, json, os, random, signal, subprocess, sys, time
+import argparse, collections, glob, json, os, random, signal, subprocess, sys, tempfile, time
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--app', required=True)
@@ -17,7 +17,8 @@ args = ap.parse_args()
 root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 out = os.path.abspath(args.out)
 os.makedirs(out + '/config/kido', exist_ok=True)
-sock = '/tmp/kido-stress-%d-%d.sock' % (os.getuid(), os.getpid())
+server = tempfile.mkdtemp(prefix='kido-stress-', dir='/tmp')
+sock = server + '/socket'
 rng = random.Random(args.seed)
 counts = collections.Counter()
 open(out + '/config/kido/kido-app.conf', 'w').write('scrollback-limit = 8388608\n')
@@ -90,10 +91,10 @@ def app_children(pid):
             yield int(bits[0])
 
 
-env = {k: v for k, v in os.environ.items() if not k.startswith('KIDO_AGENT_') and k not in ('TMUX', 'TMUX_PANE')}
+env = {k: v for k, v in os.environ.items() if not k.startswith('KIDO_AGENT_') and k not in ('TMUX', 'TMUX_PANE', 'KIDO_STATE_DIR')}
 os.makedirs(out + '/home', exist_ok=True)
 os.makedirs(out + '/tmp', exist_ok=True)
-env.update(HOME=out + '/home', XDG_STATE_HOME=out + '/state', TMUX_TMPDIR=out + '/tmp', KIDO_APP_BACKGROUND='1', KIDO_APP_SOCKET=sock, KIDO_APP_TMUX=args.tmux,
+env.update(HOME=out + '/home', XDG_STATE_HOME=out + '/state', TMUX_TMPDIR=out + '/tmp', KIDO_APP_BACKGROUND='1', KIDO_APP_SERVER=server, KIDO_APP_TMUX=args.tmux,
            KIDO_APP_FEED=root + '/app/scripts/fake-sidebar-feed.sh', XDG_CONFIG_HOME=out + '/config',
            STRESS_SEED=str(args.seed), STRESS_DURATION=str(args.duration))
 if not args.find:

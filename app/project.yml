@@ -11,6 +11,8 @@ settings:
     CODE_SIGN_IDENTITY: "-"
     CODE_SIGN_STYLE: Manual
   configs:
+    Debug:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: ["$(inherited)", DEBUG]
     Release:
       DEBUG_INFORMATION_FORMAT: dwarf
 packages:
@@ -90,7 +92,7 @@ schemes:
       targets: [VisualTests]
       environmentVariables:
         KIDO_APP_BACKGROUND: "1"
-        KIDO_APP_SOCKET: /tmp/kido-visual-unconnected
+        KIDO_APP_SERVER: /tmp/kido-visual-unconnected
         KIDO_APP_TMUX: /usr/bin/false
         HOME: "$(SRCROOT)/build/bundle/visual/home"
         XDG_STATE_HOME: "$(SRCROOT)/build/bundle/visual/state"

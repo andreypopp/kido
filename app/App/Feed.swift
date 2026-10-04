@@ -18,7 +18,7 @@ final class Feed: @unchecked Sendable {
     @MainActor var testKido: String?
     #endif
 
-    private let socket: String
+    private let serverDir: String
     private let locate: Locate
     @MainActor private let query: () -> String
     private let reader = DispatchQueue(label: "Feed.reader")
@@ -31,9 +31,9 @@ final class Feed: @unchecked Sendable {
     @MainActor private let onChange: (Status) -> Void
 
     @MainActor init(
-        socket: String, locate: @escaping Locate, query: @escaping () -> String, onChange: @escaping (Status) -> Void
+        serverDir: String, locate: @escaping Locate, query: @escaping () -> String, onChange: @escaping (Status) -> Void
     ) {
-        self.socket = socket
+        self.serverDir = serverDir
         self.locate = locate
         self.query = query
         self.onChange = onChange
@@ -60,7 +60,7 @@ final class Feed: @unchecked Sendable {
 
     @MainActor func switchWindow(next: Bool, completed: @escaping @MainActor ((session: SessionID, window: WindowID)?, String?) -> Void) {
         guard let client = located else { return completed(nil, "the sidebar feed has not found its client yet") }
-        let args = ["switch-window", next ? "next" : "prev", "--client", client, "--socket", socket]
+        let args = ["switch-window", next ? "next" : "prev", "--client", client, "--server", serverDir]
         do throws(Failure) { try tools.validate() } catch {
             onChange(.invalidBundle(error))
             return completed(nil, error.message)
@@ -118,7 +118,7 @@ final class Feed: @unchecked Sendable {
         let child: Child
         do throws(Failure) {
             child = try Child(
-                path, fake == nil ? ["sidebar-feed", "--socket", socket, "--client", client] : [], env: tools.environment,
+                path, fake == nil ? ["sidebar-feed", "--server", serverDir, "--client", client] : [], env: tools.environment,
                 stdin: stdin, stdout: stdout)
         } catch {
             return restart(error.message)
