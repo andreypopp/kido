@@ -73,7 +73,10 @@ import XCTest
         try "set -g history-limit \(history)\n".write(to: tmuxConfig, atomically: true, encoding: .utf8)
         _ = try await command(["-f", tmuxConfig.path, "new-session", "-d", "-s", "visual", "-x", "80", "-y", "30", "exec /bin/cat"])
         connection = try Connection(server: Server(tmux: tmux, socket: socket, build: nil), view: session,
-                                    onChange: { [weak self] model in self?.session.show(model.window) },
+                                    onChange: { [weak self] model in
+                                        self?.session.show(model.window)
+                                        (self?.window.contentViewController as? Sidebar)?.tabs.update(model)
+                                    },
                                     onDiagnostic: { XCTFail($0) }, onClose: { _ in })
         try await wait("initial layout") { self.terminal?.panes.isEmpty == false }
         try await settle()
@@ -144,6 +147,325 @@ import XCTest
         ].compactMap({ $0 }) {
             if !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
         }
+    }
+
+    func testWindowTabs() async throws {
+        try await start()
+        let sidebar = Sidebar()
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.backgroundColor = runtime.background
+        window.contentViewController = sidebar
+        session.frame = sidebar.content.bounds
+        session.autoresizingMask = [.width, .height]
+        sidebar.content.addSubview(session)
+        let toolbar = NSToolbar(identifier: "WindowTabs")
+        toolbar.delegate = sidebar
+        toolbar.displayMode = .iconOnly
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
+        window.setContentSize(NSSize(width: 900, height: 560))
+        let root = try XCTUnwrap(window.contentView?.superview)
+        root.layoutSubtreeIfNeeded()
+        sidebar.splitView.setPosition(236, ofDividerAt: 0)
+        sidebar.tabs.send = { [weak self] in self?.connection.send($0) }
+        _ = try await command(["rename-window", "-t", "visual:0", "Shell"])
+        let middle = try await command(["new-window", "-d", "-P", "-F", "#{window_id}", "-t", "visual", "-n", "Editor", "exec /bin/cat"])
+        let last = try await command(["new-window", "-d", "-P", "-F", "#{window_id}", "-t", "visual", "-n", "Logs", "exec /bin/cat"])
+        let child = try await command(["new-window", "-d", "-P", "-F", "#{window_id}", "-t", "visual", "-n", "Child run", "exec /bin/cat"])
+        let secondPane = try await command(["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", middle, "exec /bin/cat"])
+        _ = try await command(["select-pane", "-t", secondPane])
+        try await wait("four tmux windows") { sidebar.tabs.model.windows.count == 4 }
+        let listing = try await command(["list-panes", "-s", "-t", "visual", "-F", "#{window_id} #{pane_id}"])
+        let panes = listing.split(separator: "\n").map { $0.split(separator: " ").map(String.init) }
+        let shell = try XCTUnwrap(panes.first { $0[0] != middle && $0[0] != last && $0[0] != child })
+        let childPane = try XCTUnwrap(panes.first { $0[0] == child })[1]
+        func fixture(_ status: String = "waiting", filtered: Bool = false) throws -> Snapshot {
+            func item(_ pane: [String], children: [[String: Any]] = [], status: String = "idle") -> [String: Any] {
+                ["kind": pane[0] == child ? "run" : "shell", "id": pane[1], "pane": pane[1], "window": pane[0],
+                 "title": [["text": "Pane", "role": "plain"]], "tail": [], "indicator": ["kind": status],
+                 "attention": false, "children": children]
+            }
+            let nodes: [[String: Any]] = [item(shell),
+                ["kind": "window", "id": middle, "window": middle, "name": "Editor",
+                 "children": panes.filter { $0[0] == middle }.enumerated().map { i, pane in
+                     item(pane, children: i == 0 ? [item([child, childPane], status: status)] : [])
+                 }], item(try XCTUnwrap(panes.first { $0[0] == last }))]
+            let object: [String: Any] = ["v": 2, "client": ["session": "$0", "window": child, "pane": childPane],
+                "filter": filtered ? "hidden" : "", "sessions": [["id": "$0", "name": "visual", "current": true,
+                    "nodes": filtered ? [nodes[1]] : nodes]]]
+            return try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+        sidebar.tabs.update(.running(try fixture()), query: "")
+        XCTAssertEqual(sidebar.tabs.entries.map(\.name), ["Shell", "Editor", "Logs"])
+        XCTAssertEqual(sidebar.tabs.entries.map(\.status), [.quiet, .attention, .quiet])
+        sidebar.list.filter = { query in sidebar.tabs.update(.running(try! fixture(filtered: true)), query: query) }
+        sidebar.list.visualSearch.stringValue = "hidden"
+        XCTAssertTrue(sidebar.list.visualSearch.sendAction(try XCTUnwrap(sidebar.list.visualSearch.action), to: sidebar.list.visualSearch.target))
+        XCTAssertEqual(sidebar.tabs.entries.map(\.name), ["Shell", "Editor", "Logs"])
+        sidebar.list.visualSearch.stringValue = ""
+        sidebar.tabs.update(.running(try fixture("failed")), query: "")
+        XCTAssertEqual(sidebar.tabs.entries[1].status, .error)
+        sidebar.tabs.update(.running(try fixture()), query: "")
+        connection.send([Command("select-window", "-t", child)])
+        try await wait("descendant active") { sidebar.tabs.model.window?.description == child }
+        XCTAssertEqual(sidebar.tabs.entries.first { $0.active }?.id.description, middle)
+        root.layoutSubtreeIfNeeded()
+        sidebar.viewDidLayout()
+        let point = sidebar.tabs.convert(NSPoint(x: 240, y: 22), to: nil)
+        XCTAssertTrue(root.hitTest(root.convert(point, from: nil)) === sidebar.tabs)
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [],
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        sidebar.tabs.mouseDown(with: event)
+        try await wait("middle tab selected") { sidebar.tabs.model.window?.description == middle }
+        let current = try await command(["display-message", "-p", "-t", "visual", "#{window_id}"])
+        XCTAssertEqual(current, middle)
+        let restoredPane = try await command(["display-message", "-p", "-t", middle, "#{pane_id}"])
+        XCTAssertEqual(restoredPane, secondPane)
+        connection.send([Command("select-window", "-t", shell[0])])
+        try await wait("first window selected") { sidebar.tabs.model.window?.description == shell[0] }
+        let menus = SessionMenus()
+        menus.send = { [weak self] in self?.connection.send($0) }
+        menus.update(sidebar.tabs.navigationModel)
+        let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "2", charactersIgnoringModifiers: "2", isARepeat: false, keyCode: 19))
+        XCTAssertTrue(menus.window.performKeyEquivalent(with: key))
+        try await wait("Cmd-2 selects second tab") { sidebar.tabs.model.window?.description == middle }
+        XCTAssertEqual(sidebar.tabs.navigationModel.select(.number(2)), Command("select-window", "-t", middle))
+        XCTAssertEqual(session.windows.first { !$0.value.isHidden }?.key.description, middle)
+        let area = sidebar.content.convert(sidebar.content.bounds, to: root)
+        XCTAssertEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root).maxY, area.maxY)
+        XCTAssertTrue(sidebar.tabs.superview === sidebar.splitView)
+        XCTAssertEqual(sidebar.tabs.frame.height, 44)
+        let empty = root.hitTest(NSPoint(x: area.maxX - 4, y: area.maxY - 22))
+        XCTAssertFalse(empty === sidebar.tabs)
+        XCTAssertTrue(empty?.mouseDownCanMoveWindow == true)
+        XCTAssertFalse(window.isVisible)
+        XCTAssertFalse(window.isKeyWindow)
+        XCTAssertFalse(NSApp.isActive)
+        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+        if let failure = verifySnapshot(of: sidebar.tabs, as: .image, named: "middle", record: record),
+           !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+        sidebar.isCollapsed = true
+        root.layoutSubtreeIfNeeded()
+        sidebar.viewDidLayout()
+        XCTAssertGreaterThanOrEqual(sidebar.tabs.frame.minX, 116)
+        if let failure = verifySnapshot(of: sidebar.tabs, as: .image, named: "collapsed", record: record),
+           !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+        _ = try await command(["kill-window", "-t", child])
+        _ = try await command(["rename-window", "-t", middle, "Renamed"])
+        try await wait("renamed tab") { sidebar.tabs.model.windows.map(\.name) == ["Shell", "Renamed", "Logs"] }
+        _ = try await command(["swap-window", "-d", "-s", middle, "-t", last])
+        try await wait("reordered tabs") { sidebar.tabs.model.windows.map(\.name) == ["Shell", "Logs", "Renamed"] }
+        _ = try await command(["kill-window", "-t", last])
+        try await wait("closed tab") { sidebar.tabs.model.windows.map(\.name) == ["Shell", "Renamed"] }
+        _ = try await command(["new-session", "-d", "-s", "other", "-n", "Other session", "exec /bin/cat"])
+        connection.send([Command("switch-client", "-t", "other")])
+        try await wait("current session tabs only") { sidebar.tabs.model.windows.map(\.name) == ["Other session"] }
+        connection.send([Command("switch-client", "-t", "visual")])
+        try await wait("session switched back") { sidebar.tabs.model.windows.map(\.name) == ["Shell", "Renamed"] }
+        _ = try await command(["kill-session", "-t", "other"])
+        sidebar.tabs.removeFromSuperview()
+    }
+
+    func testFloatingSidebar() async throws {
+        try await start()
+        window.styleMask.insert([.closable, .miniaturizable])
+        let sidebar = Sidebar()
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.backgroundColor = runtime.background
+        window.contentViewController = sidebar
+        session.frame = sidebar.content.bounds
+        session.autoresizingMask = [.width, .height]
+        sidebar.content.addSubview(session)
+        sidebar.focusTerminal = { [weak self] in self?.session.focusActive() }
+        sidebar.list.send = { [weak self] in self?.connection.send($0, then: $1) }
+        let toolbar = NSToolbar(identifier: "FloatingSidebar")
+        toolbar.delegate = sidebar
+        toolbar.displayMode = .iconOnly
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
+        window.setContentSize(NSSize(width: 900, height: 560))
+        let root = try XCTUnwrap(window.contentView?.superview)
+        root.layoutSubtreeIfNeeded()
+        sidebar.splitView.setPosition(292, ofDividerAt: 0)
+        sidebar.viewDidLayout()
+        let row = try XCTUnwrap(self.terminal?.panes.first)
+        let object: [String: Any] = ["v": 2, "filter": "", "client": ["session": "$0", "window": connection.model.window!.description, "pane": row.pane.description],
+            "sessions": [["id": "$0", "name": "visual", "current": true, "nodes": [["kind": "shell", "id": row.pane.description,
+                "pane": row.pane.description, "window": connection.model.window!.description, "title": [["text": "Terminal", "role": "plain"]], "tail": [], "indicator": ["kind": "idle"], "attention": false, "children": []]]]]]
+        sidebar.list.update(.running(try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))))
+        let menu = try XCTUnwrap(NSApp.mainMenu?.items.first { $0.title == "View" }?.submenu)
+        let entries = Array(menu.items.prefix(2))
+        let targets = entries.map(\.target)
+        defer {
+            for (item, target) in zip(entries, targets) { item.target = target }
+            sidebar.dismissFloating()
+            sidebar.tabs.removeFromSuperview()
+        }
+        for item in entries { item.target = sidebar }
+        try await settle()
+        let buttons = try [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].map { try XCTUnwrap(window.standardWindowButton($0)) }
+        let parents = buttons.map(\.superview)
+        let buttonFrames = buttons.map { $0.convert($0.bounds, to: root) }
+        let tools = toolbar.items.filter { ["newSession", "toggleSidebar"].contains($0.itemIdentifier.rawValue) }
+        let toolViews = try tools.map { try XCTUnwrap($0.view) }
+        let toolParents = toolViews.map(\.superview)
+        let toolFrames = toolViews.map { $0.convert($0.bounds, to: root) }
+        func chrome(_ phase: String) {
+            XCTAssertEqual(window.titleVisibility, .hidden)
+            for (index, button) in buttons.enumerated() {
+                XCTAssertFalse(button.isHiddenOrHasHiddenAncestor)
+                XCTAssertTrue(button.superview === parents[index])
+                XCTAssertEqual(button.convert(button.bounds, to: root), buttonFrames[index])
+            }
+            for (index, item) in tools.enumerated() {
+                XCTAssertFalse(item.isHidden)
+                XCTAssertFalse(toolViews[index].isHiddenOrHasHiddenAncestor)
+                XCTAssertTrue(toolViews[index].superview === toolParents[index])
+                XCTAssertEqual(toolViews[index].convert(toolViews[index].bounds, to: root), toolFrames[index])
+            }
+            print("native chrome \(phase): buttons=\(buttons.map { $0.convert($0.bounds, to: root) }) toolbar=\(toolViews.map { $0.convert($0.bounds, to: root) }) title=\(window.titleVisibility.rawValue)")
+        }
+        chrome("initial dock")
+        XCTAssertEqual(entries.map(\.keyEquivalent), ["S", "s"])
+        XCTAssertEqual(entries.map(\.keyEquivalentModifierMask), [[.command, .shift], .command])
+        XCTAssertFalse(menu.items.contains { $0.keyEquivalent == "l" && $0.keyEquivalentModifierMask == [.command, .control] })
+        func key(_ modifiers: NSEvent.ModifierFlags = .command) throws {
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+                timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: modifiers.contains(.shift) ? "S" : "s",
+                charactersIgnoringModifiers: modifiers.contains(.shift) ? "S" : "s", isARepeat: false, keyCode: 1))
+            if let pane = window.firstResponder as? PaneView {
+                var input = ghostty_input_key_s()
+                input.action = GHOSTTY_ACTION_PRESS
+                input.keycode = 1
+                input.mods = ghostty_input_mods_e(GHOSTTY_MODS_SUPER.rawValue | (modifiers.contains(.shift) ? GHOSTTY_MODS_SHIFT.rawValue : 0))
+                var flags = ghostty_binding_flags_e(0)
+                XCTAssertFalse(ghostty_surface_key_is_binding(pane.surface, input, &flags))
+            }
+            XCTAssertTrue(menu.performKeyEquivalent(with: event))
+            root.layoutSubtreeIfNeeded()
+            sidebar.viewDidLayout()
+        }
+        try key()
+        XCTAssertTrue(sidebar.list.containsFocus)
+        XCTAssertFalse(sidebar.isFloating)
+        try key([.command, .shift])
+        XCTAssertTrue(sidebar.isCollapsed)
+        try key([.command, .shift])
+        try await settle()
+        XCTAssertFalse(sidebar.isCollapsed)
+        chrome("plain undock/dock")
+        try key([.command, .shift])
+        try await settle()
+        let terminal = try XCTUnwrap(terminal)
+        let frame = terminal.frame
+        let tabFrame = sidebar.tabs.convert(sidebar.tabs.bounds, to: root)
+        let grids = terminal.panes.map { ghostty_surface_size($0.surface) }
+        let clientSize = try await command(["list-clients", "-F", "#{client_width}x#{client_height}"])
+        connection.visualCommands.removeAll()
+        let list = sidebar.list
+        let listParent = try XCTUnwrap(list.superview)
+        var native: NSView = listParent
+        while !(native is NSGlassEffectView), let parent = native.superview { native = parent }
+        XCTAssertTrue(native is NSGlassEffectView)
+        let nativeFrame = native.convert(native.bounds, to: root)
+        sidebar.list.visualSearch.stringValue = "preserved"
+        try key()
+        XCTAssertTrue(sidebar.isFloating)
+        XCTAssertFalse(sidebar.isCollapsed)
+        XCTAssertTrue(sidebar.list === list)
+        XCTAssertTrue(sidebar.tabs.superview === sidebar.splitView)
+        XCTAssertTrue(sidebar.list.superview === listParent)
+        XCTAssertEqual(native.convert(native.bounds, to: root), nativeFrame)
+        XCTAssertTrue(sidebar.list.containsFocus)
+        XCTAssertEqual(terminal.frame, frame)
+        XCTAssertEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root), tabFrame)
+        XCTAssertEqual(terminal.panes.map { ghostty_surface_size($0.surface).columns }, grids.map(\.columns))
+        XCTAssertEqual(terminal.panes.map { ghostty_surface_size($0.surface).rows }, grids.map(\.rows))
+        let floatingSize = try await command(["list-clients", "-F", "#{client_width}x#{client_height}"])
+        XCTAssertEqual(floatingSize, clientSize)
+        XCTAssertFalse(connection.visualCommands.contains { $0.line.hasPrefix("refresh-client -C") })
+        try key()
+        XCTAssertFalse(sidebar.isFloating)
+        XCTAssertEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root), tabFrame)
+        XCTAssertTrue(window.firstResponder is PaneView)
+        try key()
+        let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+        window.sendEvent(escape)
+        XCTAssertFalse(sidebar.isFloating)
+        XCTAssertTrue(window.firstResponder is PaneView)
+        try key()
+        let searchKey = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "/", charactersIgnoringModifiers: "/", isARepeat: false, keyCode: 44))
+        window.sendEvent(searchKey)
+        XCTAssertNotNil(sidebar.list.visualSearch.currentEditor())
+        window.sendEvent(escape)
+        XCTAssertTrue(sidebar.isFloating)
+        XCTAssertEqual(sidebar.list.query, "")
+        XCTAssertTrue(sidebar.list.containsFocus)
+        sidebar.list.visualSearch.stringValue = "preserved"
+        connection.visualCommands.removeAll()
+        try key([.command, .shift])
+        try await settle()
+        XCTAssertFalse(sidebar.isFloating)
+        XCTAssertFalse(sidebar.isCollapsed)
+        XCTAssertTrue(sidebar.list.superview === listParent)
+        XCTAssertEqual(native.convert(native.bounds, to: root), nativeFrame)
+        XCTAssertNotEqual(terminal.frame, frame)
+        XCTAssertNotEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root), tabFrame)
+        XCTAssertEqual(connection.visualCommands.filter { $0.line.hasPrefix("refresh-client -C") }.count, 1)
+        chrome("shortcut float to dock")
+        XCTAssertEqual(sidebar.list.query, "preserved")
+        try key([.command, .shift])
+        try key()
+        let toggleButton = try XCTUnwrap(toolViews.last as? NSButton)
+        toggleButton.performClick(nil)
+        root.layoutSubtreeIfNeeded()
+        sidebar.viewDidLayout()
+        try await settle()
+        XCTAssertFalse(sidebar.isFloating)
+        XCTAssertFalse(sidebar.isCollapsed)
+        chrome("toolbar float to dock")
+        try key([.command, .shift])
+        try await settle()
+        try key()
+        XCTAssertEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root), tabFrame)
+        XCTAssertEqual(terminal.frame, frame)
+        XCTAssertEqual(sidebar.list.query, "preserved")
+        let outside = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown,
+            location: sidebar.content.convert(NSPoint(x: sidebar.content.bounds.maxX - 30, y: 100), to: nil), modifierFlags: [],
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        let hit = try XCTUnwrap(root.hitTest(root.convert(outside.locationInWindow, from: nil)))
+        XCTAssertFalse(hit.isDescendant(of: sidebar.list))
+        hit.mouseDown(with: outside)
+        XCTAssertFalse(sidebar.isFloating)
+        XCTAssertTrue(window.firstResponder is PaneView)
+        try key()
+        sidebar.list.focus()
+        connection.visualCommands.removeAll()
+        let enter = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        window.sendEvent(enter)
+        try await wait("jump dismisses sidebar") { !sidebar.isFloating }
+        XCTAssertTrue(window.firstResponder is PaneView)
+        XCTAssertEqual(connection.visualCommands.filter { $0.line.hasPrefix("switch-client") }.count, 1)
+        try key()
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+        XCTAssertFalse(sidebar.isFloating)
+        XCTAssertTrue(window.firstResponder is PaneView)
+        try key()
+        try await paint()
+        sidebar.list.layoutSubtreeIfNeeded()
+        XCTAssertFalse(window.isVisible)
+        XCTAssertFalse(window.isKeyWindow)
+        XCTAssertFalse(NSApp.isActive)
+        CATransaction.flush()
+        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+        if let failure = verifySnapshot(of: root, as: .image, named: "collapsed-floating", record: record),
+           !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
     }
 
     func testSingle() async throws {
