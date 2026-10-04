@@ -217,8 +217,14 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         table.scrollRowToVisible(table.selectedRow)
     }
 
-    func completedNavigation(to target: Snapshot.Position, from origin: Snapshot.Position?) {
-        if target != origin { revealWindow(target) }
+    func completedNavigation(to target: (session: SessionID, window: WindowID)?) {
+        guard let target else { return }
+        if folded.remove(target.session) != nil { show(snapshot) }
+        let matches = items.indices.filter { items[$0].target?.session == target.session && items[$0].target?.window == target.window }
+        if let index = matches.first(where: { items[$0].target == snapshot?.client }) ?? matches.first {
+            table.selectRowIndexes([index], byExtendingSelection: false)
+            table.scrollRowToVisible(index)
+        }
     }
 
     private func revealWindow(_ target: Snapshot.Position) {
@@ -294,6 +300,9 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         switch (Int(event.keyCode), event.charactersIgnoringModifiers ?? "", mods) {
         case (125, _, []), (_, "j", []), (_, "n", .control): move(1)
         case (126, _, []), (_, "k", []), (_, "p", .control): move(-1)
+        case (123, _, []), (124, _, []):
+            if let session = entry(table.selectedRow)?.id.session ?? snapshot?.client.session,
+               folded.contains(session) == (event.keyCode == 124) { fold(session) }
         case (36, _, []), (76, _, []): jump(table.selectedRow)
         case (53, _, []): leave()
         case (_, "n", []): nextAttention(1)
@@ -342,7 +351,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let item = items[row]
         let cell = tableView.makeView(withIdentifier: SidebarCell.id, owner: nil) as? SidebarCell ?? SidebarCell(fonts)
-        cell.configure(item)
+        cell.configure(item, expanded: !folded.contains(item.id.session))
+        cell.fold = { [weak self] in self?.fold(item.id.session) }
         cell.addWindow.invoke = { [weak self] in self?.newWindow(item.id.session) }
         return cell
     }
