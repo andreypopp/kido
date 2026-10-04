@@ -87,10 +87,10 @@ Ghostty's normal byte-budget eviction and the app's surface LRU remain.
 
 Connection keeps tmux's sampled history total separate from retained
 Ghostty rows. Output invalidates metadata/exhaustion but never loads
-older history. Restore/load/search requests read metadata, and one
-batched, low-rate query refreshes shown panes each second; hidden panes
-refresh on show. Neither wheel packets nor renderer notifications query
-tmux. A fresh shrink/clear invalidates navigation and repairs content
+older history. Restore/load/search requests read metadata; wheel and
+scroller requests reaching the loaded top also refresh it without loading
+history. Hidden panes refresh on show. There is no history timer, and
+renderer notifications do not query tmux. A fresh shrink/clear invalidates navigation and repairs content
 through the common restore, joining an active gesture's final repair.
 tmux has no universal history-content generation: arbitrary same-sized
 external replacement between samples is not immediately observable.

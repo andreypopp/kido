@@ -68,7 +68,6 @@ final class Connection: @unchecked Sendable {
         try client.start(
             onEvent: { [weak self] in self?.handle($0) },
             onClose: { [weak self] status, stderr in self?.closed(status, stderr) })
-        refreshHistory()
     }
 
     @MainActor func attach(_ pane: PaneView, synced: (@Sendable () -> Void)? = nil) {
@@ -83,6 +82,7 @@ final class Connection: @unchecked Sendable {
                 self.sync(id)
             }
         }
+        pane.onScrollTop = { [weak self, id = pane.pane] in self?.load(id, metadataOnly: true) }
         pane.onLoadMore = { [weak self, id = pane.pane] in self?.load(id) }
         pane.onFindCoverage = { [weak self, id = pane.pane] distance, token in
             self?.load(id, goal: (distance, token))
@@ -401,7 +401,7 @@ final class Connection: @unchecked Sendable {
         }
     }
 
-    private func load(_ pane: PaneID, goal: (Int, UUID)? = nil) {
+    private func load(_ pane: PaneID, goal: (Int, UUID)? = nil, metadataOnly: Bool = false) {
         client.queue.async { [self] in
             guard let feed = panes?[pane], !feed.view.resizeDirty else { return }
             if let goal {
@@ -410,7 +410,7 @@ final class Connection: @unchecked Sendable {
                 if feed.goal == nil { return }
             }
             guard case .settled(let availability) = feed.history else { return }
-            if case .refused = availability { ghostty_surface_raise_scrollback_limit(feed.view.surface) }
+            if !metadataOnly, case .refused = availability { ghostty_surface_raise_scrollback_limit(feed.view.surface) }
             let token = UUID(), epoch = feed.view.historyEpoch
             feed.history = .fetching(token)
             client.send([Command("display-message", "-p", "-t", pane, "#{history_size} #{alternate_on}")]) {
@@ -428,7 +428,7 @@ final class Connection: @unchecked Sendable {
                     return
                 }
                 let position = feed.view.scrollPosition()
-                if metadata.alternate || metadata.history <= position.history {
+                if metadataOnly || metadata.alternate || metadata.history <= position.history {
                     self.publish(feed, history: metadata.history, alternate: metadata.alternate)
                     feed.goal = nil
                     return
@@ -518,30 +518,6 @@ final class Connection: @unchecked Sendable {
         if !feed.view.resizeDirty { feed.view.markContentDirty() }
         DispatchQueue.main.async { [weak view = feed.view] in view?.syncResize() }
         return true
-    }
-
-    @MainActor private func refreshHistory() {
-        let shown = view?.windows.values.filter { !$0.isHidden }.flatMap(\.panes).filter { !$0.isHidden }.map(\.pane) ?? []
-        client.queue.async { [weak self] in
-            guard let self, self.panes != nil else { return }
-            let samples = shown.compactMap { id -> (PaneID, PaneFeed, Int)? in
-                guard let feed = self.panes?[id], case .settled = feed.history else { return nil }
-                return (id, feed, feed.outputEpoch)
-            }
-            if !samples.isEmpty {
-                self.client.send(samples.map { Command("display-message", "-p", "-t", $0.0, "#{history_size} #{alternate_on}") }) { [weak self] replies in
-                    guard let self, let replies, replies.count == samples.count else { return }
-                    for ((id, feed, epoch), reply) in zip(samples, replies) {
-                        guard self.panes?[id] === feed, epoch == feed.outputEpoch,
-                              case .settled = feed.history, let metadata = HistoryMetadata(reply) else { continue }
-                        if !self.repair(feed, metadata: metadata) {
-                            self.publish(feed, history: metadata.history, alternate: metadata.alternate)
-                        }
-                    }
-                }
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.refreshHistory() }
-        }
     }
 
     private func closed(_ status: Int32, _ stderr: String) {
