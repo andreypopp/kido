@@ -72,7 +72,7 @@ import XCTest
         let tmuxConfig = directory.appendingPathComponent("tmux.conf")
         try "set -g history-limit \(history)\n".write(to: tmuxConfig, atomically: true, encoding: .utf8)
         _ = try await command(["-f", tmuxConfig.path, "new-session", "-d", "-s", "visual", "-x", "80", "-y", "30", "exec /bin/cat"])
-        connection = try Connection(server: Server(tmux: tmux, socket: socket), view: session,
+        connection = try Connection(server: Server(tmux: tmux, socket: socket, build: nil), view: session,
                                     onChange: { [weak self] model in self?.session.show(model.window) },
                                     onDiagnostic: { XCTFail($0) }, onClose: { _ in })
         try await wait("initial layout") { self.terminal?.panes.isEmpty == false }
@@ -348,11 +348,12 @@ import XCTest
         var starts = 0
         var snapshots = 0
         let feed = Feed(socket: scratch.appendingPathComponent("tmux.sock").path, locate: { done in
-            done(.success((kido: script.path, client: "private-client")))
+            done(.success("private-client"))
         }, query: { "" }, onChange: { status in
             if case .starting = status { starts += 1 }
             if case .running = status { snapshots += 1 }
         })
+        feed.testKido = script.path
         defer { feed.stop() }
         try await wait("fake feed ready") { snapshots == 1 }
         let switched = expectation(description: "switch stdout")
