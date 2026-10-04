@@ -9,10 +9,11 @@ final class Child: @unchecked Sendable {
     let ended = DispatchGroup()
     private(set) var stderr = ""
 
-    init(_ path: String, _ args: [String], env: [String: String]? = nil, stdin: Pipe? = nil, stdout: Pipe) throws(Failure) {
+    init(_ path: String, _ args: [String], env: [String: String]? = nil, cwd: String? = nil, stdin: Pipe? = nil, stdout: Pipe) throws(Failure) {
         let err = Pipe()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = args
+        if let cwd { process.currentDirectoryURL = URL(fileURLWithPath: cwd) }
         if let env { process.environment = env }
         if let stdin { process.standardInput = stdin }
         process.standardOutput = stdout
@@ -24,10 +25,10 @@ final class Child: @unchecked Sendable {
     }
 
     static func run(
-        _ path: String, _ args: [String], env: [String: String]? = nil, deadline: TimeInterval = 10
+        _ path: String, _ args: [String], env: [String: String]? = nil, cwd: String? = nil, deadline: TimeInterval = 10
     ) async throws(Failure) -> (status: Int32, out: String, err: String) {
         let out = Pipe()
-        let child = try Child(path, args, env: env, stdout: out)
+        let child = try Child(path, args, env: env, cwd: cwd, stdout: out)
         nonisolated(unsafe) var stdout = Data()
         DispatchQueue.global().async(group: child.ended) { stdout = out.fileHandleForReading.readDataToEndOfFile() }
         let finished = await withCheckedContinuation { finished in
