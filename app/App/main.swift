@@ -219,6 +219,13 @@ import SidebarFeed
         }
     }
 
+    #if KIDO_STRESS
+    var stressState: (SessionModel, SessionModel, SessionView?, Connection?, Snapshot?) {
+        if case .connected(let connection) = link { return (model, navigationModel, session, connection, snapshot) }
+        return (model, navigationModel, session, nil, snapshot)
+    }
+    #endif
+
     private func updateTabs() {
         let next = model.navigation(snapshot)
         sidebar.tabs.entries = next.tabs
