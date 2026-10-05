@@ -5,7 +5,7 @@ public struct Command: Equatable, Sendable {
         self.init(words: [name] + args.map(\.description))
     }
 
-    init(words: [String]) {
+    public init(words: [String]) {
         line = words.map(quote).joined(separator: " ")
     }
 
