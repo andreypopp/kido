@@ -20,7 +20,11 @@ Arrow keys/j/k move keyboard selection; Enter focuses a pane; mouse clears keybo
 
 ## Approved spacing changes
 
-Every window divider, top-level and nested, is a 3pt row: 1pt gap, 1pt tertiaryLabelColor line, 1pt gap. Nested lines start at the window's indent (depth × 21pt) and extend to the right edge. Resolve the native color at draw time and pixel-snap the line; CSS approximates tertiaryLabelColor with a separate `--divider` color. This supersedes the previous top-level-only divider/no-nested-divider variants. No sidebar row may be 0pt: NSTableView aborts on one, which crashed `make demo`. Pane heights and text padding are unchanged. Nesting uses indentation only: 21pt per level (up from 17pt), with no guides. Both elbowed and vertical-only guides were tried and rejected as too busy. The user approved these changes and requested implementation handoff. They are reflected in the mockup, not yet claimed as shipped-code changes.
+Every window divider, top-level and nested, is a 3pt row: 1pt gap, 1pt line, 1pt gap. The line uses the same color as the outer sidebar border (labelColor at 12% alpha; `--guide` in the preview), not tertiaryLabelColor. Nested lines start at the window's indent (depth × 21pt) and extend to the right edge. Resolve the native color at draw time and pixel-snap the line. This supersedes the previous top-level-only divider/no-nested-divider variants. No sidebar row may be 0pt: NSTableView aborts on one, which crashed `make demo`. Pane heights and text padding are unchanged. Nesting uses indentation only: 21pt per level (up from 17pt), with no guides. Both elbowed and vertical-only guides were tried and rejected as too busy. The user approved these changes and requested implementation handoff. They are reflected in the mockup, not yet claimed as shipped-code changes.
+
+## Approved divider placement
+
+Render a divider before every window's first pane, including the first window in a session and the first nested child window. Do not add dividers between panes of the same window. Color and 3pt geometry remain unchanged. The user approved this placement and requested handoff to kido-app.
 
 ## Approved completion, request, and stalled states
 
