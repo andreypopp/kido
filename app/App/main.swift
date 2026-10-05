@@ -9,9 +9,16 @@ import SidebarFeed
     private var signals: [DispatchSourceSignal] = []
     private var trigger: String?
     let routes = WindowRoutes()
+    private var ordinaryLaunchEvent: Bool?
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        ordinaryLaunchEvent = event.map { $0.eventClass == AEEventClass(kCoreEventClass) && $0.eventID == AEEventID(kAEOpenApplication) }
+    }
     var current: WindowOwner? { owners.first { $0.alive && $0.window === NSApp.keyWindow } ?? (background ? owners.first(where: \.alive) : nil) }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let isDefaultLaunch = notification.userInfo?[NSApplication.launchIsDefaultUserInfoKey] as? Bool
         NSApp.applicationIconImage = NSImage(named: "AppIcon")
         for signal in [SIGTERM, SIGINT, SIGHUP] {
             Darwin.signal(signal, SIG_IGN)
@@ -26,7 +33,7 @@ import SidebarFeed
         menus.send = { [weak self] in self?.current?.send($0) }
         runtime.onConfigChange = { [weak self] in self?.owners.filter(\.alive).forEach { $0.updateAppearance() } }
         runtime.onColorSchemeChange = { [weak self] in self?.owners.filter(\.alive).forEach { $0.updateColorScheme() } }
-        routes.ready { [weak self] in _ = self?.open($0) }
+        routes.ready(isDefaultLaunch: isDefaultLaunch == true && ordinaryLaunchEvent != false) { [weak self] in _ = self?.open($0) }
         #if KIDO_VISUAL
         if ProcessInfo.processInfo.environment["KIDO_APP_QUIT_VERIFY"] == "1", let owner = owners.first ?? open(.local) {
             let deadline = Date().addingTimeInterval(15)
