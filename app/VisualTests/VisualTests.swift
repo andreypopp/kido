@@ -772,12 +772,15 @@ import XCTest
             (remote, nil, nil, "Update kido on dev@buildbox", "The host is running an older kido server that this app cannot connect to. Upgrade kido on the host and restart its server, then reconnect."),
             (remote, "0.9", "0.9", "Update kido on dev@buildbox", "The host is running an older kido server that this app cannot connect to. Upgrade kido on the host and restart its server, then reconnect."),
             (remote, "2.0", "2.0", "Update Kido.app to connect", "The server on dev@buildbox is newer than this app supports. Update Kido.app, then reconnect."),
+            (remote, "1.0", "2.0", "Update Kido.app to connect", "kido on dev@buildbox is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."),
+            (remote, nil, "2.0", "Update Kido.app to connect", "kido on dev@buildbox is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."),
+            (remote, "0.9", "2.0", "Update Kido.app to connect", "kido on dev@buildbox is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."),
             (remote, "0.9", "1.0", "Restart kido on dev@buildbox", "kido was updated on the host, but its running server still uses the older version. Restart that server, then reconnect.")
         ] as [(Kido.Host, String?, String?, String, String)] {
             let alert = WindowOwner.mismatchAlert(host: host, server: stamp.flatMap(RPCVersion.init), binary: binary.flatMap(RPCVersion.init))
             XCTAssertEqual(alert.messageText, title)
-            let upgraded = host != .local && binary == "1.0"
-            XCTAssertEqual(alert.informativeText, body + "\n\nCompatibility: this app needs protocol 1.0 or later within major 1. Server: \(stamp ?? "unstamped (older kido)")." + (upgraded ? " Host binary: 1.0." : "") + " Protocol numbers are not Kido.app release numbers.")
+            let showBinary = host != .local && (binary == "1.0" || binary == "2.0" && binary != stamp)
+            XCTAssertEqual(alert.informativeText, body + "\n\nCompatibility: this app needs protocol 1.0 or later within major 1. Server: \(stamp ?? "unstamped (older kido)")." + (showBinary ? " Host binary: \(binary!)." : "") + " Protocol numbers are not Kido.app release numbers.")
             XCTAssertEqual(alert.buttons.map(\.title), [host == .local ? "Restart…" : "Reconnect", "Close"])
             XCTAssertEqual(alert.buttons[1].keyEquivalent, "\u{1b}")
         }
