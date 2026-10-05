@@ -101,11 +101,32 @@ Conventions:
   failure as `kido <name>: <message>` and returns 1; a string error
   reaches it through `Result.get_or_failwith`. A special code is
   returned after `Cli.error`. cmdliner's own parse errors exit 1.
+  Library errors do not repeat the command name: `Cli.run` supplies it.
+  Warnings during a command go through a `~warn` callback so stderr stays
+  in order.
 - **Environment.** Read it at the edge and pass the value: functions
   take `~dir`, `~threshold`, `~now`. Tests pass a temp dir; nothing in a
   test sets an env var or swaps a global.
 - **Time** is `Timestamp.t`, unix seconds as a float, on disk as RFC 3339
-  UTC.
+  UTC. Timeouts are optional arguments, not mutable refs.
+- **Containers** shadows polymorphic `=` and `compare`: use
+  `String.equal`, `Float.(>)`, etc. ppx_deriving_yojson encodes variants
+  as `["Tag"]`; string enums need hand-written codecs.
+- **Cmdliner docs.** A bare `$` is markup and produces "unescaped $"
+  on `--help`; write environment variables as `$(b,NAME)`.
+  `test_e2e/help_test.go` rejects any help stderr.
+- **Quoting.** `Reap.quote` in `lib/reap.ml` deliberately uses Go-style
+  `%q` quoting: OCaml `%S` escapes non-ASCII agent names.
+- **Inbox JSON.** `from.session` must be written even when empty.
+  It has no default annotation; `Msg.envelope_to_yojson` adds `v` to the
+  derived encoding. `lib/test/test_msg.ml` pins the field set.
+- **Tmux I/O.** No injected tmux/ops records whose only other
+  implementation is a test fake: call `Tmux.Exec` directly and test
+  through e2e. `Tmux.Conn` has no mutex; only the sidebar's single tick
+  may touch it.
+- **Mosaic.** The grid's default foreground is truecolor white, so
+  every style sets `fg` explicitly. A lone Escape arrives about 0.5s
+  late.
 - `dune build`, `dune test`, `dune fmt`, with no opam: dune's package
   management builds the compiler and every dependency of `dune.lock`
   into `_build` (README.md, "Building" below).
@@ -173,6 +194,10 @@ Conventions:
     third_party/tmux   the tmux fork, a git submodule built as kido-tmux
     test_e2e/          tests driving kido inside a real tmux server, in Go
 
+`snapshot`, `prompt`, `switch-session`, `reap` and `runs` stay even
+without production callers: e2e calls `reap` for a deterministic sweep,
+and `runs` is the CLI reader of run history.
+
 `dune build`; the executable stanza is `bin/main.exe`, installed as `kido`.
 `lib/` embeds the shell integrations and `share/tmux/kido-tmux.conf`.
 Promotion substitutes the build id through dune-build-info.
@@ -220,6 +245,13 @@ onto master, should the PR land), not by cherry-picking it, and a commit
 upstream or the PR already carries is dropped. Force-pushing `fork`
 leaves older submodule pins unreachable, so the previous head is pushed
 first as a dated branch (`fork-YYYY-MM-DD`).
+
+In `andreypopp/tmux`, `fork` is kido's pin and `side-pane` is the team's
+working branch. `master` only mirrors upstream; a PR into it is
+mistargeted. A kido fork change lands on both `fork` and `side-pane`,
+cherry-picked between them. Push over SSH
+(`git@github.com:andreypopp/tmux.git`).
+
 `scripts/install-tmux-fork.sh <prefix>` builds it
 into `<prefix>/bin/kido-tmux`; `--self-contained <prefix>` is macOS-only,
 linking Homebrew's static libevent, source-built utf8proc and system ncurses
@@ -277,6 +309,38 @@ which confuses an interactive shell with a batch `zsh -c`.
 `#{alternate_on}` reports whether the alternate screen is active, so it
 sees `less` under `git` or `nvim` under `sudo`, and is what
 `Sidebar.interactive_pane` uses to decide a program has taken the terminal.
+
+## tmux gotchas
+
+- `set-environment` after `new-session` cannot reach the pane it
+  started. Use `new-session -e VAR=value` or the command line.
+- A window linked into two sessions has one pane id in several sessions.
+  `Sidebar.step` finds the client's pane by active pane id **and**
+  `Tmux.Exec.client_state.session_id`.
+- `-S` takes a socket path as supplied; a bare name is relative to the
+  working directory, not `/tmp/tmux-<uid>/`. `-L` creates its socket
+  directory. An unset `TMUX_TMPDIR` selects `/tmp`; a nonexistent
+  directory named by it is an error. Programmatic tmux, cleanup above
+  all, uses `-S` with an absolute path.
+- An empty `TMUX=` still forces tmux's UTF-8 detection. Unset `TMUX`
+  entirely for locale tests (`test_e2e/locale_test.go`).
+- `list-sessions` can succeed with an empty list while the server reads
+  its config; only the launching client blocks. Readiness waits poll
+  for a non-empty list. `test_e2e/launch_test.go` covers a slow
+  `kido.conf`.
+- `kill-server` returns before the processes it SIGHUP'd exit. Teardown
+  collects the server's descendants first, then waits for each to exit;
+  a survivor is an error (`test_e2e/harness_test.go`).
+- `display-popup` opens a floating pane in the fork's upstream base.
+  `popup-style` and `popup-border-style` are invalid options.
+- The side column's edge is a pane border, following `pane-border-lines`
+  and `pane-border-style`. `share/tmux/kido-tmux.conf` deliberately sets
+  no `pane-border-style`, which would also restyle real split borders.
+- `share/tmux/kido-tmux.conf` applies to every kido user; personal
+  settings belong in `~/.config/kido/kido.conf`.
+- Never assert on automatic `#{window_name}`: `automatic-rename` can
+  read a transient process name. Rename the window to a fixed name,
+  which turns `automatic-rename` off.
 
 ## Format-string invariants (`lib_tmux/pane.ml`)
 
@@ -405,7 +469,10 @@ of a checkout compiles OCaml and every package in `dune.lock` (a few
 minutes); dune's shared cache (see `dune-workspace`) restores them in
 seconds after a clean `_build`, and `dune cache trim --size 5GB` bounds
 it. ocamlformat is a dev tool, not a dependency:
-`dune tools install ocamlformat` once, then `dune fmt`. `dune show
+`dune tools install ocamlformat`, then `dune fmt`. Dev tools are per
+checkout under `_build`: `dune clean` deletes them, and they are not on
+PATH by default. Use `dune tools which`, `dune tools exec` or
+`eval "$(dune tools env)"`. `dune show
 depexts` prints nothing; there are none.
 
 Dune 3.24.2 with package management dies on an absolute
@@ -485,6 +552,25 @@ builds kido with `dune build @install` (so it needs that dune on PATH), and fake
 - Never put a fake on a shared PATH: it shadows that name for every
   startup file too. Tests needing a fake `pi` get their own PATH through
   `startPathPrefix`.
+- After sending Escape to the sidebar, wait for its effect before the
+  next key: on a loaded runner Mosaic joins a buffered ESC with the next
+  byte into an Alt-key.
+- macOS limits unix socket paths to 104 bytes including the terminator;
+  `t.TempDir`'s suffix can exceed it. Use the harness's short socket
+  directories (`serverDir` / `launcherEnv`). A pid-0 liveness check tests
+  a process group, not the child; wait for a real published pid.
+- Tests executing `zsh -i` detach from the terminal (no TTY, `setsid`),
+  or the run hangs. Prefer timing ratios against a baseline measured in
+  the same run to fixed wall-clock bounds.
+- Ubuntu CI does not install zsh: compinit's insecure-directories prompt
+  blocks e2e shells. Unit probes of host shells silently skip a missing
+  shell and print only mismatches.
+- `dune test --force` can reuse a cached `.exe.output` target
+  (`lib_tmux/test/tmux_server` does not declare `KIDO_TMUX` as a rule
+  dependency). A flake loop over it needs the cache off.
+- On macOS CI, `split-window` reporting "fork failed: Device not
+  configured" is a runner pty flake. Rerun only the failed job
+  (`gh run rerun --failed`), rather than capping parallelism.
 
 Many tests carry a comment saying what they pin or which assertion
 carries them; read it before weakening or "cleaning up" such a test.
@@ -492,6 +578,10 @@ Negative controls are load-bearing: never delete one half of a pair.
 
 ### Other traps
 
+- **`kido ssh` keeps `Bin_dir.look_path_past`.** Kido's bin directory
+  precedes PATH in a primed pane; removing the lookup breaks
+  `TestKidoSSHOpensAnOrdinarySession` and
+  `TestKidoSSHPrimesARemoteShell` in `test_e2e/ssh_prime_test.go`.
 - **`Sidebar.same` compares panes by exclusion.** A new `Tmux.Pane.t` field
   participates in equality unless blanked in its local `drawn`. It fails
   toward extra redraws, the safe direction.
@@ -550,13 +640,19 @@ repeat them.
   parallel; the brief says which files are yours. Do not revert, clean
   or fix anything outside them - report it instead.
 - **You are inside the user's live tmux server.** `kill-server` without
-  `-L` or `-S` naming your own socket kills it. Start every test server
-  on its own explicit socket (`tmux -S "$scratch/socket"`), end it with
-  `kill-session`, and
-  never touch `~/bin/tmux`, `/opt/homebrew/bin/tmux` or the running
-  server.
+  `-S` and your own absolute socket path risks killing it. Start every
+  test server on its own explicit socket (`tmux -S "$scratch/socket"`),
+  end it with `kill-session`, and never touch `~/bin/tmux`,
+  `/opt/homebrew/bin/tmux` or the running server.
+- **Scratch worktrees.** Use `mktemp -d /tmp/<name>-XXXXXX`.
+  A bare `mktemp -d` on macOS resolves under `/var/folders`, where
+  `.pi/extensions/no-git-writes/policy.ts` refuses
+  `git worktree add --detach`; it permits detached worktrees only under
+  `/tmp`. The submodule makes `git worktree remove` refuse here: remove
+  the scratch directory with `rm -rf`, then `git worktree prune`.
 - **Every wait has a deadline.** No open-ended polling in code or in
-  your own shell.
+  your own shell. macOS has no `timeout` command; give the wait its
+  deadline another way.
 - **Verify what you touched; CI runs the whole.** For a bug whose cause
   is not plain from the code (a race, a flake, a wrong guess about tmux,
   pi or Claude Code), write the test first, watch it fail, and quote that
