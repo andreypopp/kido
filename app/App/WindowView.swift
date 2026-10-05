@@ -21,7 +21,11 @@ final class WindowView: NSView {
     private weak var connection: Connection?
     private let runtime: GhosttyRuntime
     private var shown: (layout: Layout, visible: Layout)?
-    private var active: PaneID?
+    private(set) var active: PaneID? {
+        didSet {
+            if active != oldValue, let session, !session.updating { session.onPaneChange() }
+        }
+    }
     var stale = false
     private var needsReconcile = true
     private var dividers: [NSBox] = []
