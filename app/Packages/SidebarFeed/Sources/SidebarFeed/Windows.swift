@@ -16,7 +16,7 @@ public func sidebarWindows(_ snapshot: Snapshot?, session: SessionID?, surviving
         let root = ancestor ?? (surviving.contains(window) ? window : nil)
         if let root {
             result.ancestors[window] = root
-            let status: SidebarRow.Status = if case .item(let item) = node { item.status } else { .quiet }
+            let status: SidebarRow.Status = if case .item(let item) = node { item.status.tabStatus } else { .quiet }
             let previous = result.statuses[root] ?? .quiet
             result.statuses[root] = previous == .error || status == .error ? .error
                 : previous == .attention || status == .attention ? .attention : .quiet
