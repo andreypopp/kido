@@ -23,16 +23,16 @@ public struct RPCVersion: Decodable, Equatable, Sendable, CustomStringConvertibl
 }
 
 public enum RPCEvent: Decodable, Sendable {
-    public struct Hello: Decodable, Sendable {
-        public let version: RPCVersion
-        public let server: RPCVersion?
-        public let mismatch: Bool
+    public enum Hello: Decodable, Sendable {
+        case accepted(RPCVersion)
+        case rejected(server: RPCVersion?)
         private enum CodingKeys: String, CodingKey { case `protocol`, server }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
-            version = try c.decode(RPCVersion.self, forKey: .protocol)
-            mismatch = c.contains(.server)
-            server = try c.decodeIfPresent(String.self, forKey: .server).flatMap(RPCVersion.init)
+            let version = try c.decode(RPCVersion.self, forKey: .protocol)
+            self = c.contains(.server)
+                ? .rejected(server: try c.decodeIfPresent(String.self, forKey: .server).flatMap(RPCVersion.init))
+                : .accepted(version)
         }
     }
     public struct Reply: Decodable, Sendable {
