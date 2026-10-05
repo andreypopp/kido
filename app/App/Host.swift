@@ -1,5 +1,28 @@
 import Foundation
 
+@MainActor final class ClipboardConsent {
+    private let grants: UserDefaults?
+    private var allowedHosts: Set<String> = []
+    var askingHosts: Set<String> = []
+
+    init(grants: UserDefaults? = nil) { self.grants = grants }
+
+    func allows(_ host: Host) -> Bool {
+        grants?.stringArray(forKey: "clipboardReadHosts")?.contains(host.clipboardKey) ?? allowedHosts.contains(host.clipboardKey)
+    }
+
+    func allowAlways(_ host: Host) {
+        if let grants {
+            grants.set(Array(Set(grants.stringArray(forKey: "clipboardReadHosts") ?? []).union([host.clipboardKey])), forKey: "clipboardReadHosts")
+        } else { allowedHosts.insert(host.clipboardKey) }
+    }
+
+    func reset() {
+        grants?.removeObject(forKey: "clipboardReadHosts")
+        allowedHosts.removeAll()
+    }
+}
+
 enum Host: Equatable, Sendable {
     case local
     case remote(String)
