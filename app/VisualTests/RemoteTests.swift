@@ -258,16 +258,18 @@ import TmuxControl
         let quoted = try await Child.run(transport.launch(["/usr/bin/printf", "%s", "space $literal ' quote ☃"]))
         XCTAssertEqual(quoted.out, "space $literal ' quote ☃")
         let socket = state + "/kido-app/socket"
-        _ = try await Child.run(transport.launch([tools.tmux, "-u", "-S", socket, "set-environment", "-g", "KIDO_BUILD_ID", "different-build"]))
+        _ = try await Child.run(transport.launch([tools.tmux, "-u", "-S", socket, "set-environment", "-g", "KIDO_PROTOCOL", "9.9"]))
         let mismatch = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
         mismatch.testRemoteEnvironment = env
         owners.append(mismatch)
         mismatch.start()
-        try await until("remote mismatch banner") { labels(mismatch.testBanner).contains { $0.contains("different kido") } }
-        XCTAssertTrue(buttons(mismatch.testBanner).contains { $0.title == "Connect Anyway" && !$0.isHidden })
+        try await until("remote mismatch banner") { labels(mismatch.testBanner).contains { $0.contains("kido protocol 9.9") } }
+        XCTAssertTrue(buttons(mismatch.testBanner).contains { $0.title == "Reconnect" && !$0.isHidden })
         XCTAssertFalse(buttons(mismatch.testBanner).contains { $0.title == "Restart" && !$0.isHidden })
-        mismatch.connectAnyway()
-        try await until("Connect Anyway attaches") { mismatch.testBanner.isHidden }
+        XCTAssertNil(mismatch.testConnection)
+        _ = try await Child.run(transport.launch([tools.tmux, "-u", "-S", socket, "set-environment", "-g", "KIDO_PROTOCOL", "1.0"]))
+        mismatch.start()
+        try await until("Reconnect rediscovers compatible protocol") { mismatch.testBanner.isHidden }
         transports += owners.compactMap(\.ssh)
         let missing = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
         missing.testRemoteEnvironment = env.merging(["PATH": "/usr/bin:/bin"]) { _, new in new }
