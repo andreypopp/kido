@@ -34,6 +34,12 @@ targets:
       - path: Resources/themes
         type: folder
         buildPhase: resources
+    info:
+      path: build/Info.plist
+      properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: com.andreypopp.kido.connect
+            CFBundleURLSchemes: [kido-app]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.andreypopp.kido
