@@ -20,7 +20,7 @@ try:
     config.mkdir(parents=True, exist_ok=True)
     (config / 'kido-app.conf').write_text('scrollback-limit = 8388608\n')
     env = {k:v for k,v in helper_env.items() if not k.startswith('KIDO_AGENT_') and k not in ('TMUX', 'TMUX_PANE', 'KIDO_STATE_DIR')}
-    env.update(KIDO_APP_BACKGROUND='1', KIDO_APP_SERVER=server, KIDO_APP_TMUX=str(tmux), KIDO_APP_FEED=str(root/'scripts/fake-sidebar-feed.sh'), XDG_CONFIG_HOME=str(out/'config'), ASAN_OPTIONS='use_sigaltstack=0', **{probe:'1'})
+    env.update(KIDO_APP_BACKGROUND='1', KIDO_APP_SERVER=server, KIDO_APP_TMUX=str(tmux), KIDO_APP_FEED=str(root/'scripts/fake-rpc.sh'), XDG_CONFIG_HOME=str(out/'config'), ASAN_OPTIONS='use_sigaltstack=0', **{probe:'1'})
     mtc = os.environ.get('KIDO_MTC_VERIFY') == '1'
     if mtc:
         checker = pathlib.Path(os.environ['DEVELOPER_DIR']) / 'usr/lib/libMainThreadChecker.dylib'
