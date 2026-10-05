@@ -29,6 +29,11 @@ import XCTest
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         socket = directory.appendingPathComponent("socket").path
         tmux = try XCTUnwrap(ProcessInfo.processInfo.environment["KIDO_VISUAL_TMUX"])
+        addTeardownBlock { @MainActor [self] in
+            if FileManager.default.fileExists(atPath: socket) {
+                _ = try? await Child.run(tmux, ["-S", socket, "kill-server"])
+            }
+        }
         PaneView.renderOffscreen = true
     }
 
@@ -41,7 +46,6 @@ import XCTest
         runtime?.onConfigChange = {}
         runtime?.onColorSchemeChange = {}
         runtime = nil
-        if FileManager.default.fileExists(atPath: socket) { _ = try? await command(["kill-session", "-t", "visual"]) }
         PaneView.renderOffscreen = false
         NSApp.appearance = nil
     }

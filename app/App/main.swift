@@ -15,6 +15,13 @@ import SidebarFeed
         let event = NSAppleEventManager.shared().currentAppleEvent
         ordinaryLaunchEvent = event.map { $0.eventClass == AEEventClass(kCoreEventClass) && $0.eventID == AEEventID(kAEOpenApplication) }
     }
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            do throws(Failure) { routes.connect(try Host(url: url)) }
+            catch { note(error.message) }
+        }
+    }
+
     var current: WindowOwner? { owners.first { $0.alive && $0.window === NSApp.keyWindow } ?? (background ? owners.first(where: \.alive) : nil) }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
