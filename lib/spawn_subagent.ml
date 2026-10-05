@@ -348,7 +348,7 @@ let spawn ~dir ~self ~pi req =
             (Subrun.read_meta ~dir run)
         in
         let* () =
-          if Option.is_none (Subrun.effective_outcome ~dir meta.id ~pid:meta.pid) then
+          if State.alive meta.pid then
             Error
               (Printf.sprintf
                  "run %S is still running (pid %d); resuming a live agent makes no sense"

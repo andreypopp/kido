@@ -32,8 +32,6 @@ val deliver :
   State.session ->
   string ->
   ([ `Inbox | `Pasted ], failure) result
-(** A plain message falls back to a paste; any other kind needs the inbox, and its failure is the
-    whole sentence to print. [Unavailable] is nothing listening there. *)
 
 val send : dir:string -> self:string -> recipient -> spec -> string -> (string, send_error) result
 (** The line naming how it was delivered. *)

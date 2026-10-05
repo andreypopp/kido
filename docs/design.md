@@ -454,30 +454,27 @@ no record sends only its pane.
 
 ## Delivery, and when a paste is allowed
 
-Two errors come out of a delivery attempt, and they mean different
-things. `Msg.Unavailable` says nothing was sent: the path is empty or
-unusable, the socket file is missing, or it is a stale socket a dead
-process left behind. Every failure from the moment the connection is up
-is reported as itself (`Msg.Failed`), because the message may already
-have arrived and a retry would deliver it twice.
+`Msg.Unavailable` says nothing was sent: the path is empty or unusable,
+the socket file is missing, or it is a stale socket with no listener.
+Every failure from the moment the connection is up is reported as itself
+(`Msg.Failed`), because the message may already have arrived
+and a retry would deliver it twice.
 
-The paste fallback, which types the text into the pane with a bracketed
-paste and a separate Enter, fires only on `Msg.Unavailable`. That is
-what makes an agent with no inbox at all (Claude Code, or a pi whose bind
-failed) reachable by `kido prompt` and by a plain `kido tool message_agent`, and
-it is the only reason the v0 path survives. A refusal (`Msg.Refused`) is
-not a delivery failure either: the question was read and deliberately
-declined, and pasting it again would hand the target the same cycle it just
-refused.
+A bracketed paste and a separate Enter are allowed only when the record
+names no inbox. That makes an agent with no inbox at all (Claude Code,
+or a pi whose bind fails) reachable by `kido prompt` and by a plain
+`kido tool message_agent`, and is the only reason the v0 path survives.
+An advertised but unavailable inbox is an error: the target is not
+accepting messages. For a subagent run, the error says to wait for it to
+exit, resume it with `spawn_subagent(resume: RUN)`, and resend. Shutdown
+closes the inbox before removing the state record or exiting the process;
+a live pid does not mean the inbox accepts messages.
 
-Non-message kinds never paste. A dead target that had an inbox while it
-was alive still passes the inbox check, because that check reads a
-record written when it was alive; only the dial finds the socket gone,
-and the fallback's answer to that would be to type model-authored text
-at whatever shell the pane fell back to and press Enter. For a
-subagent's `notify_parent` summary that is a command line the model
-wrote, run in its parent's pane. The rule for a dead parent is that
-there is nobody to tell.
+A refusal (`Msg.Refused`) is not a delivery failure either: the target
+reads the question and deliberately declines it; a paste would bypass
+that refusal. Non-message kinds never paste: model-authored text must not
+run as a command line in a target's pane.
+The rule for a dead parent is that there is nobody to tell.
 
 Two more refusals happen before anything is sent. A message to the
 sender's own pane is refused: even though `list_runs` excludes the caller,
@@ -561,12 +558,12 @@ result arrives as a notice, and the spawn and ask descriptions say so.
 The test is the one `send` already applies to the *recipient* of any
 non-message envelope, turned on the sender, because a reply is exactly
 such an envelope: the caller's pane must have a live state record (so
-`kido tool message_agent -- <asker>` can resolve it at all) whose `inbox` is
-bound (so a `reply`, which never falls back to a paste, has somewhere to
-land). Nothing weaker would do: a record with no
-inbox is a Claude Code session, reachable only by paste, and a paste is
-not a reply. The extension's own `ask_agent` is unaffected - it binds an
-inbox before it can register a waiter at all.
+`kido tool message_agent -- <asker>` can resolve it at all) that names an
+inbox (so a `reply`, which never falls back to a paste, has an address).
+An unavailable inbox makes delivery fail. Nothing weaker would do: an
+agent with no inbox is reachable only by paste, and a paste is not a reply.
+The extension's own `ask_agent` binds an inbox before it can register a
+waiter at all.
 
 The scheduling expectation is one full turn of latency, not a
 round-trip. kido selects `followUp` for questions and waits for an
@@ -1044,10 +1041,10 @@ fresh spawn uses, but:
   say about this new attempt.
 
 It refuses an unknown run id (`Subrun.read_meta` answers `None`) and a run
-that is still alive (`Subrun.effective_outcome` answers `None` exactly when
-nothing has been recorded and the pid is live - resuming a live agent makes
-no sense). A run whose pi session file is gone is resumed with
-`--session-id`, minting a fresh session under the run's own id
+whose recorded pid is still alive (`State.alive`), even when an outcome
+is recorded. An outcome can be written during shutdown before the process
+exits; resuming a live agent makes no sense. A run whose pi session file is
+gone is resumed with `--session-id`, minting a fresh session under the run's own id
 (design-subagents.md, "Resuming a run"); the check is `pi_session_file_exists`
 (lib/spawn_subagent.ml), using `PI_CODING_AGENT_SESSION_DIR` if set, else
 `<agentDir>/sessions/--<cwd, its slashes and colons dashed>--`. The depth
@@ -1162,11 +1159,9 @@ reading it, while a stop was asked for by name.
 
 **No inbox means no quiet stop.** An agent with no inbox cannot be asked
 anything, so stopping one degrades straight to killing its pane, which is
-destructive and irreversible. That is the opposite of the paste fallback,
-where degrading silently is the point because there is always a gentler
-way. Here there is none, so it requires `--force`. A recorded socket
-nobody answers (`Msg.Unavailable`) is functionally no inbox at all
-and carries the same requirement.
+destructive and irreversible, so it requires `--force`. An advertised
+but unavailable inbox (`Msg.Unavailable`) also requires `--force` for a
+stop; it does not permit a paste for message delivery.
 
 ## Notifying the parent
 

@@ -285,17 +285,17 @@ func TestPromptInboxNative(t *testing.T) {
 	}
 }
 
-// A recorded socket nobody is listening on is not an error: kido falls
-// back to send-keys and still exits 0.
-func TestPromptInboxStaleFallsBack(t *testing.T) {
+func TestPromptInboxUnavailable(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	pane := h.piPane("alpha", "π - alpha")
 	h.agentStatus("pi-1", pane, "pi", "idle", "--inbox", staleSocket(t))
 
-	h.runPrompt("fall back to keys")
-	h.waitMain("rc=0")
-	h.waitPaneText(pane, "got: fall back to keys")
+	h.runPrompt("not pasted")
+	h.waitMain("rc=1")
+	h.waitMain("alpha is not accepting messages")
+	h.stays(func() bool { return !strings.Contains(h.paneText(pane), "got: not pasted") },
+		"a prompt to a closed inbox was pasted")
 }
 
 func TestPromptWindowFlagOne(t *testing.T) {

@@ -1,7 +1,13 @@
+val not_accepting : name:string -> run:string option -> string
+
 val deliver_or_paste :
-  inbox:string -> payload:string -> pane:string -> string -> ([ `Inbox | `Pasted ], string) result
-(** Pastes [text] into [pane] only when the inbox is [Unavailable]: any other failure may have
-    delivered already. *)
+  inbox:string ->
+  payload:string ->
+  pane:string ->
+  name:string ->
+  run:string option ->
+  string ->
+  ([ `Inbox | `Pasted ], string) result
 
 type error = No_prompt | Not_found | Several | Failed of string
 

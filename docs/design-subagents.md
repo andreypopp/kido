@@ -502,9 +502,10 @@ a window: `pi --session <run-id>` at the run's own directory, under the
 run's original name, with the model its meta recorded unless the command
 after `--` names one, through the same window creation and mark as a fresh
 spawn. The run record continues rather than doubling; its old outcome and
-screen are cleared. It refuses a run still alive. A run with no pi session file is
-not refused: the run id is the child's own session id, so with no file
-on disk the id is free rather than stale, and the resume mints a fresh
+screen are cleared. It refuses a run while its recorded pid is alive,
+even when an outcome is recorded during shutdown. A run with no pi session
+file is not refused: the run id is the child's own session id, so with no
+file on disk the id is free rather than stale, and the resume mints a fresh
 session under it with `--session-id`, clearing the run's delivered
 marker so the stored task is delivered again rather than skipped as
 already delivered.
@@ -786,10 +787,11 @@ fact.
 What works:
 
 - `kido tool message_agent` - the one-way send, which needs nothing of the
-  sender. An agent with an inbox gets a real user message; one without
-  gets a paste. It arrives unlabelled, where an agent's own message
-  carries a header naming the sender: a caller with no record is the user
-  speaking (design.md, "The inbox").
+  sender. An agent whose record names an inbox gets a real user message;
+  an advertised but unavailable inbox is an error. Only an agent whose
+  record names no inbox gets a paste. It arrives unlabelled, where an
+  agent's own message carries a header naming the sender: a caller with
+  no record is the user speaking (design.md, "The inbox").
 - `kido tool spawn_subagent --no-parent` - a standalone agent in a window,
   owned by nobody (design.md, "A parentless spawn, and a parent that
   must exist"). Naming a live agent with `--parent-pid`/`--parent-session`

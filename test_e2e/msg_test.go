@@ -172,10 +172,7 @@ func TestMessageAgentSendsEnvelopesFromTheCaller(t *testing.T) {
 	}
 }
 
-// A target with no inbox, or a dead one, has a plain message pasted into
-// its pane; an inbox that answers wrongly may have taken it already, so
-// that is an error and never a paste.
-func TestPlainMessageFallsBackToAPasteOnlyWhenNobodyListens(t *testing.T) {
+func TestMessagePastesOnlyWithoutAnInbox(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	caller := h.firstPane("alpha")
@@ -185,9 +182,24 @@ func TestPlainMessageFallsBackToAPasteOnlyWhenNobodyListens(t *testing.T) {
 	h.expectKido(caller, "hi claude", nil, "pasted into pastee's pane", "tool", "message_agent", "--", "target")
 	h.waitPaneText(pane, "got: hi claude")
 
-	h.agentStatus("target", pane, "pi", "idle", "--inbox", staleSocket(t))
-	h.expectKido(caller, "hello", nil, "pasted into pastee's pane", "tool", "message_agent", "--", "target")
-	h.waitPaneText(pane, "got: hello")
+	stale := staleSocket(t)
+	h.agentStatus("target", pane, "pi", "idle", "--inbox", stale)
+	h.expectKido(caller, "hello", nil, "kido tool message_agent: pastee is not accepting messages", "tool", "message_agent", "--", "target")
+
+	if err := os.Remove(stale); err != nil {
+		t.Fatal(err)
+	}
+	run := "1234567890abcdef1234567890abcdef"
+	h.in("set-option", "-p", "-t", pane, "@kido_run", run)
+	h.expectKido(caller, "hello", nil,
+		"kido tool message_agent: pastee is not accepting messages; after it exits, resume it with spawn_subagent(resume: "+run+") and resend",
+		"tool", "message_agent", "--", "target")
+	h.agentStatus("caller", caller, "pi", "idle", "--inbox", startInbox(t, "ok\n").Path)
+	h.expectKido(caller, "hello", nil,
+		"kido tool ask_agent: pastee is not accepting messages; after it exits, resume it with spawn_subagent(resume: "+run+") and resend",
+		"tool", "ask_agent", "--", "target")
+	h.stays(func() bool { return !strings.Contains(h.paneText(pane), "got: hello") },
+		"a message to a closed inbox was pasted")
 
 	nope := startInbox(t, "nope\n")
 	h.agentStatus("target", pane, "pi", "idle", "--inbox", nope.Path)
@@ -215,19 +227,15 @@ func TestAskReplyAndNoticeNeverPaste(t *testing.T) {
 
 	h.agentStatus("target", pane, "pi", "idle", "--inbox", staleSocket(t))
 	for _, c := range []struct {
-		kind string
 		env  []string
 		args []string
 	}{
-		{"ask", nil, []string{"tool", "ask_agent", "--", "target"}},
-		{"reply", nil, []string{"tool", "message_agent", "--reply-to", "ask-1", "--", "target"}},
-		{"notice", []string{"KIDO_AGENT_PARENT_SESSION=target"}, []string{"tool", "notify_parent"}},
+		{nil, []string{"tool", "ask_agent", "--", "target"}},
+		{nil, []string{"tool", "message_agent", "--reply-to", "ask-1", "--", "target"}},
+		{[]string{"KIDO_AGENT_PARENT_SESSION=target"}, []string{"tool", "notify_parent"}},
 	} {
-		want := fmt.Sprintf("kido %s: victim is not listening on its inbox; a %s cannot fall back to a paste: no agent listening on the inbox: ",
-			strings.Join(c.args[:2], " "), c.kind)
-		if got, rc := h.kidoAs(caller, "touch /tmp/pwned", c.env, c.args...); !strings.HasPrefix(got, want) || rc != 1 {
-			t.Errorf("kido %v: got (rc=%d) %q, want rc=1 and a line starting %q", c.args, rc, got, want)
-		}
+		want := fmt.Sprintf("kido %s: victim is not accepting messages", strings.Join(c.args[:2], " "))
+		h.expectKido(caller, "touch /tmp/pwned", c.env, want, c.args...)
 	}
 
 	h.agentStatus("target", pane, "pi", "idle", "--inbox", startInbox(t, "refused\n").Path)

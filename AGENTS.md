@@ -426,10 +426,11 @@ resolved by policy:
   a parentless bash run is exempt.
 
 `kido prompt` prefers the recorded inbox socket (`kido-status.ts` binds
-one) and falls back to a tmux paste **only** on `Msg.Unavailable`
-(`Prompt.deliver_or_paste`).
-Any other socket error returns without a fallback: the message may
-already have been delivered, and re-sending would double-send.
+one) and uses a tmux paste **only** when the record names no inbox
+(`Prompt.deliver_or_paste`). An advertised but unavailable inbox is an
+error, not permission to paste. Other socket errors also return without
+a fallback: the message may already have been delivered, and re-sending
+would double-send.
 
 `Tmux.Exec.send_prompt` **pastes rather than types**: `send-keys -l` writes raw
 bytes, and under bracketed paste a bare newline submits, splitting a

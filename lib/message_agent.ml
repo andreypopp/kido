@@ -117,20 +117,16 @@ let deliver ~states ~panes ~self spec (target : State.session) text =
                output = "";
              })
     in
+    let run = Option.flat_map (fun (p : Tmux.Pane.t) -> p.run) (Tmux.Pane.find panes target.pane) in
     if is_message then
       Result.map_err
         (fun m -> Failed m)
-        (Prompt.deliver_or_paste ~inbox:target.inbox ~payload ~pane:target.pane text)
+        (Prompt.deliver_or_paste ~inbox:target.inbox ~payload ~pane:target.pane ~name ~run text)
     else
       match Msg.deliver ~path:target.inbox payload with
       | Ok () -> Ok `Inbox
       | Error (Msg.Refused _) -> Error (Failed (Printf.sprintf "%s refused the %s" name kind))
-      | Error (Msg.Unavailable _ as e) ->
-          Error
-            (Unavailable
-               (Printf.sprintf
-                  "%s is not listening on its inbox; a %s cannot fall back to a paste: %s" name kind
-                  (Msg.string_of_error e)))
+      | Error (Msg.Unavailable _) -> Error (Unavailable (Prompt.not_accepting ~name ~run))
       | Error (Msg.Failed m) -> Error (Failed m)
 
 let send ~dir ~self recipient spec text =

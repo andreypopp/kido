@@ -1,12 +1,18 @@
 open Tmux
 
-let deliver_or_paste ~inbox ~payload ~pane text =
-  let pasted () = Result.map (fun () -> `Pasted) (Exec.send_prompt pane text) in
-  if String.is_empty inbox then pasted ()
+let not_accepting ~name ~run =
+  name ^ " is not accepting messages"
+  ^ Option.map_or ~default:""
+      (fun run ->
+        Printf.sprintf "; after it exits, resume it with spawn_subagent(resume: %s) and resend" run)
+      run
+
+let deliver_or_paste ~inbox ~payload ~pane ~name ~run text =
+  if String.is_empty inbox then Result.map (fun () -> `Pasted) (Exec.send_prompt pane text)
   else
     match Msg.deliver ~path:inbox payload with
     | Ok () -> Ok `Inbox
-    | Error (Unavailable _) -> pasted ()
+    | Error (Unavailable _) -> Error (not_accepting ~name ~run)
     | Error (Refused m | Failed m) -> Error m
 
 let in_scope (self : Pane.t) ~whole_session (p : Pane.t) =
@@ -47,10 +53,12 @@ let prompt ~dir ~self ~window text =
     match match candidates false with [] when not window -> candidates true | found -> found with
     | [] -> Error Not_found
     | [ p ] ->
-        let inbox =
-          Option.map_or ~default:""
-            (fun (_, (s : State.session)) -> s.inbox)
+        let inbox, name =
+          Option.map_or ~default:("", p.title)
+            (fun (_, (s : State.session)) -> (s.inbox, List_runs.display_name panes s))
             (State.String_map.find_opt p.pane_id states)
         in
-        failed (Result.map ignore (deliver_or_paste ~inbox ~payload:text ~pane:p.pane_id text))
+        failed
+          (Result.map ignore
+             (deliver_or_paste ~inbox ~payload:text ~pane:p.pane_id ~name ~run:p.run text))
     | _ -> Error Several

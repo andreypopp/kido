@@ -263,6 +263,11 @@ func TestSpawnResumeRefusesLiveRun(t *testing.T) {
 	if !strings.Contains(out, "still running") {
 		t.Errorf("kido tool spawn_subagent --resume on a live run = %q, want a refusal naming it still running", out)
 	}
+	h.expectKido(h.firstPane("alpha"), "", nil, "", "run-outcome", "--result", "completed", "--", runID)
+	out, rc := h.kidoAs(h.firstPane("alpha"), "", nil, "tool", "spawn_subagent", "--resume", runID)
+	if rc != 1 || !strings.Contains(out, "still running") {
+		t.Errorf("resume a live run with an outcome: got (rc=%d) %q, want rc=1 and still running", rc, out)
+	}
 	want := fmt.Sprintf("kido tool spawn_subagent: run \"no-such-run\": no readable %s\nrc=1\n",
 		filepath.Join(h.stateDir, "runs", "no-such-run", "meta.json"))
 	if got := h.runKido("alpha", "resume-unknown.out", "tool", "spawn_subagent", "--resume", "no-such-run"); got != want {
