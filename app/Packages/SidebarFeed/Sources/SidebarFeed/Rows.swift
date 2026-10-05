@@ -8,7 +8,10 @@ public struct SidebarRow: Equatable, Sendable {
             switch self { case .header(let s), .pane(let s, _), .divider(let s, _), .gap(let s): s }
         }
     }
-    public enum Status: Equatable, Sendable { case quiet, running, attention, error }
+    public enum Status: Equatable, Sendable {
+        case quiet, running, attention, error, done, stalled
+        public var tabStatus: Self { self == .error || self == .attention ? self : .quiet }
+    }
     public enum Kind: Equatable, Sendable {
         case header, pane(Snapshot.Position), divider, gap
     }
@@ -44,8 +47,11 @@ extension Item {
     var status: SidebarRow.Status {
         switch indicator {
         case .failed, .gone(.failed), .gone(.died): .error
-        default: attention || indicator == .waiting || indicator == .stalled ? .attention
-            : indicator == .running || indicator == .compacting ? .running : .quiet
+        case .waiting: kind == .agent || run == .agent ? .attention : .quiet
+        case .stalled: .stalled
+        case .done, .gone(.completed): .done
+        case .running, .compacting: .running
+        default: .quiet
         }
     }
 }
@@ -92,7 +98,7 @@ public func sidebarRows(_ snapshot: Snapshot?, folded: Set<SessionID>) -> [Sideb
         if !folded.contains(session.id) {
             walkNodes(session.nodes, depth: 0, before: { node, depth, index in
                 if index > 0 {
-                    rows.append(SidebarRow(id: .divider(session.id, node.id), kind: .divider, indent: depth, height: 9,
+                    rows.append(SidebarRow(id: .divider(session.id, node.id), kind: .divider, indent: depth, height: 3,
                                            title: "", tail: "", status: .quiet, attention: false, started: nil, focused: false))
                 }
                 begins.append(rows.count)
