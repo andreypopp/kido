@@ -25,13 +25,20 @@ struct RemoteShortcuts: AppShortcutsProvider {
 @MainActor final class WindowRoutes {
     private var queued: [Host] = []
     private var open: ((Host) -> Void)?
+    private var ordinaryAllowed = true
     func connect(_ host: Host) {
-        if let open { open(host) } else { queued.append(host) }
+        if let open {
+            ordinaryAllowed = true
+            open(host)
+        } else { queued.append(host) }
     }
-    func ordinaryOpen() { if queued.isEmpty { connect(.local) } }
-    func ready(_ open: @escaping (Host) -> Void) {
+    func ordinaryOpen() {
+        if ordinaryAllowed && queued.isEmpty { connect(.local) }
+    }
+    func ready(isDefaultLaunch: Bool, _ open: @escaping (Host) -> Void) {
         self.open = open
-        let requests = queued
+        let requests = queued.filter { isDefaultLaunch || $0 != .local }
+        ordinaryAllowed = isDefaultLaunch || !requests.isEmpty
         queued = []
         requests.forEach(open)
     }
