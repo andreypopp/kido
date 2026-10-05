@@ -23,7 +23,7 @@ import XCTest
 
     private func updateTabs(_ status: Feed.Status? = nil, query: String = "") {
         if case .running(let snapshot) = status, query.isEmpty, snapshot.filter.isEmpty { tabSnapshot = snapshot }
-        (window.contentViewController as? Sidebar)?.tabs.entries = model.navigation(tabSnapshot).tabs
+        (window.contentViewController as? Sidebar)?.tabs.entries = model.navigation(tabSnapshot, activePanes: session.windows.compactMapValues(\.active)).tabs
     }
 
     override func setUp() async throws {
@@ -87,6 +87,7 @@ import XCTest
         window.appearance = NSAppearance(named: .aqua)
         window.colorSpace = .displayP3
         session = SessionView(runtime: runtime)
+        session.onPaneChange = { [weak self] in self?.updateTabs() }
         session.frame = NSRect(x: 0, y: 0, width: 700, height: height)
         window.contentView = session
         let tmuxConfig = directory.appendingPathComponent("tmux.conf")
@@ -204,10 +205,10 @@ import XCTest
         let panes = listing.split(separator: "\n").map { $0.split(separator: " ").map(String.init) }
         let shell = try XCTUnwrap(panes.first { $0[0] != middle && $0[0] != last && $0[0] != child })
         let childPane = try XCTUnwrap(panes.first { $0[0] == child })[1]
-        func fixture(_ status: String = "waiting", filtered: Bool = false) throws -> Snapshot {
+        func fixture(_ status: String = "waiting", filtered: Bool = false, review: String = "Review changes") throws -> Snapshot {
             func item(_ pane: [String], children: [[String: Any]] = [], status: String = "idle") -> [String: Any] {
                 ["kind": pane[0] == child ? "run" : "shell", "id": pane[1], "pane": pane[1], "window": pane[0],
-                 "title": [["text": "Pane", "role": "plain"]], "tail": [], "indicator": ["kind": status],
+                 "title": [["text": pane[0] == middle ? (pane[1] == secondPane ? review : "Agent caption") : pane[0] == last ? "Build output" : "Shell prompt", "role": "plain"]], "tail": [], "indicator": ["kind": status],
                  "attention": false, "children": children]
             }
             let nodes: [[String: Any]] = [item(shell),
@@ -221,12 +222,23 @@ import XCTest
             return try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
         }
         updateTabs(.running(try fixture()), query: "")
-        XCTAssertEqual(sidebar.tabs.entries.map(\.name), ["Shell", "Editor", "Logs"])
+        XCTAssertEqual(sidebar.tabs.entries.map(\.name), ["Shell prompt", "Review changes", "Build output"])
+        let firstPane = try XCTUnwrap(panes.first { $0[0] == middle && $0[1] != secondPane })[1]
+        let beforePaneChange = model
+        _ = try await command(["select-pane", "-t", firstPane])
+        try await wait("inactive window pane title") { sidebar.tabs.entries[1].name == "Agent caption" }
+        XCTAssertEqual(model, beforePaneChange)
+        _ = try await command(["select-pane", "-t", secondPane])
+        try await wait("inactive window pane restored") { sidebar.tabs.entries[1].name == "Review changes" }
+        updateTabs(.running(try fixture(review: "Review updated")), query: "")
+        XCTAssertEqual(sidebar.tabs.entries[1].name, "Review updated")
+        XCTAssertEqual((sidebar.tabs.accessibilityChildren()?[1] as? NSAccessibilityElement)?.accessibilityLabel(), "Window: Review updated — attention")
+        updateTabs(.running(try fixture()), query: "")
         XCTAssertEqual(sidebar.tabs.entries.map(\.status), [.quiet, .attention, .quiet])
         sidebar.list.filter = { query in self.updateTabs(.running(try! fixture(filtered: true)), query: query) }
         sidebar.list.visualSearch.stringValue = "hidden"
         XCTAssertTrue(sidebar.list.visualSearch.sendAction(try XCTUnwrap(sidebar.list.visualSearch.action), to: sidebar.list.visualSearch.target))
-        XCTAssertEqual(sidebar.tabs.entries.map(\.name), ["Shell", "Editor", "Logs"])
+        XCTAssertEqual(sidebar.tabs.entries.map(\.name), ["Shell prompt", "Review changes", "Build output"])
         sidebar.list.visualSearch.stringValue = ""
         updateTabs(.running(try fixture("failed")), query: "")
         XCTAssertEqual(sidebar.tabs.entries[1].status, .error)

@@ -315,6 +315,10 @@ import SidebarFeed
         do throws(Failure) { try tools.validate() } catch { return bundleChanged(error) }
         note("dialing \(server.socket)")
         let view = SessionView(runtime: runtime)
+        view.onPaneChange = { [weak self] in
+            guard let self, accepts(generation) else { return }
+            updateTabs()
+        }
         view.frame = sidebar.content.bounds
         view.autoresizingMask = [.width, .height]
         do {
@@ -378,7 +382,7 @@ import SidebarFeed
     #endif
 
     private func updateTabs() {
-        let next = model.navigation(snapshot)
+        let next = model.navigation(snapshot, activePanes: session?.windows.compactMapValues(\.active) ?? [:])
         sidebar.tabs.entries = next.tabs
         if navigationModel != next.model {
             navigationModel = next.model
