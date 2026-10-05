@@ -12,6 +12,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     let pane: PaneID
     let born = DispatchTime.now()
     private let onInput: @MainActor @Sendable (Data) -> Void
+    nonisolated let host: Host
+    var onURL: (String) -> Void = { _ in }
     var onSelect: () -> Void = {}
     var onCellChange: () -> Void = {}
     var onFontChange: (Float) -> Void = { _ in }
@@ -636,6 +638,20 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private var presented = (visible: true, realized: true)
     private var keyUpMonitor: Any?
     private var paste: (alert: NSAlert, state: UnsafeMutableRawPointer?)?
+    private(set) var disposed = false
+
+    func dispose() {
+        guard !disposed else { return }
+        disposed = true
+        grid.withLock { $0.ready = false; $0.epoch += 1 }
+        find?.close()
+        if let paste {
+            self.paste = nil
+            complete(paste.state, "")
+            paste.alert.window.sheetParent?.endSheet(paste.alert.window)
+        }
+        if let keyUpMonitor { NSEvent.removeMonitor(keyUpMonitor); self.keyUpMonitor = nil }
+    }
 
     private var markedText = NSMutableAttributedString()
     private var keyTextAccumulator: [String]?
@@ -649,12 +665,13 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     nonisolated static func onMain(_ userdata: UnsafeMutableRawPointer?, _ body: @escaping @MainActor (PaneView) -> Void) {
         Unmanaged<PaneView>.fromOpaque(userdata!)._withUnsafeGuaranteedRef { view in
-            DispatchQueue.main.async { [weak view] in view.map(body) }
+            DispatchQueue.main.async { [weak view] in guard let view, !view.disposed else { return }; body(view) }
         }
     }
 
-    init?(runtime: GhosttyRuntime, pane: PaneID, font: Float, onInput: @escaping @MainActor @Sendable (Data) -> Void) {
+    init?(runtime: GhosttyRuntime, pane: PaneID, font: Float, host: Host = .local, onInput: @escaping @MainActor @Sendable (Data) -> Void) {
         self.pane = pane
+        self.host = host
         self.onInput = onInput
         super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         wantsLayer = true
@@ -674,9 +691,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         // taken there could be the view's last.
         config.io_write_cb = { userdata, bytes, count in
             guard let bytes, count > 0 else { return }
-            let input = Unmanaged<PaneView>.fromOpaque(userdata!)._withUnsafeGuaranteedRef(\.onInput)
             let data = Data(bytes: bytes, count: Int(count))
-            DispatchQueue.main.async { input(data) }
+            PaneView.onMain(userdata) { $0.onInput(data) }
         }
         guard let surface = ghostty_surface_new(runtime.app, &config) else { return nil }
         self.surface = surface
@@ -926,7 +942,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     func confirmPaste(_ text: String, _ state: UnsafeMutableRawPointer?) {
-        guard paste == nil, let window else { return deny(state) }
+        guard !disposed, paste == nil, let window else { return deny(state) }
         let alert = NSAlert()
         alert.messageText = "Paste this text?"
         alert.informativeText = "It may run commands when pasted into the terminal."
