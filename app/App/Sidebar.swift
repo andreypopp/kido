@@ -122,6 +122,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
             #if KIDO_VISUAL
             dockedGlass?.wantsLayer = true
             dockedGlass?.layer?.backgroundColor = isFloating ? NSColor.windowBackgroundColor.cgColor : nil
+            dockedGlass?.layer?.cornerRadius = isFloating ? list.layer?.cornerRadius ?? 0 : 0
             #endif
         }
     }
