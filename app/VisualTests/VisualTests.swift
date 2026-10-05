@@ -6,6 +6,8 @@ import TmuxControl
 import XCTest
 @testable import Kido
 
+@MainActor class VisualTestCase: XCTestCase {}
+
 @MainActor final class VisualTests: XCTestCase {
     private let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
     private var tmux = ""
@@ -77,7 +79,7 @@ import XCTest
             let themes = app.appendingPathComponent("Resources/themes").path
             let theme = "light:\(themes)/kido-light,dark:\(themes)/kido-dark"
             try "theme = \(theme)\nfont-family = Menlo\nfont-size = 13\n".write(to: config, atomically: true, encoding: .utf8)
-            Self.processRuntime = try XCTUnwrap(GhosttyRuntime(configFile: config.path))
+            Self.processRuntime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)")), grants: nil))
         }
         runtime = try XCTUnwrap(Self.processRuntime)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: height),
@@ -752,6 +754,79 @@ import XCTest
         feed.filter("exit")
         try await wait("feed reconnected") { starts == 2 && snapshots == 3 }
         await fulfillment(of: [stale], timeout: 5)
+    }
+
+    func testOSC52ClipboardConsentAndPrivatePaneTransport() async throws {
+        try await start()
+        XCTAssertNotEqual(runtime.pasteboard.name.rawValue, "NSGeneralPboard")
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        window.contentView = nil
+        window.isReleasedWhenClosed = false
+        window.close()
+        window = owner.window
+        window.contentView = session
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        window.orderFront(nil)
+        defer { owner.close() }
+        let pane = try XCTUnwrap(terminal?.panes.first)
+        let board = runtime.pasteboard
+        board.clearContents()
+        board.setString("before", forType: .string)
+        let copy = Data("copied ✓".utf8).base64EncodedString()
+        let replay = Data("\u{1b}]52;c;\(copy)\u{7}\u{1b}]52;c;?\u{1b}\\".utf8)
+        pane.feed(replay, kind: .snapshot)
+        try await settle()
+        XCTAssertEqual(board.string(forType: .string), "before")
+        XCTAssertNil(owner.preparedAlert)
+        pane.feed(Data("\u{1b}]52;c;\(copy)".utf8), kind: .snapshot)
+        pane.feed(Data([7]))
+        try await wait("partial captured OSC completed live") { board.string(forType: .string) == "copied ✓" }
+        pane.feed(replay, kind: .snapshot)
+        try await settle()
+        XCTAssertNil(owner.preparedAlert)
+        _ = try await command(["set-option", "-s", "set-clipboard", "on"])
+        _ = try await command(["set-option", "-s", "get-clipboard", "request"])
+        _ = try await command(["set-buffer", "stale-tmux-buffer"])
+        let script = directory.appendingPathComponent("clipboard.py")
+        let result = directory.appendingPathComponent("clipboard-reply")
+        let ready = directory.appendingPathComponent("clipboard-ready")
+        board.clearContents()
+        board.setString("before-live", forType: .string)
+        let program = """
+        import os, select, time, tty
+        tty.setraw(0)
+        deadline = time.monotonic() + 5
+        while not os.path.exists('\(ready.path)') and time.monotonic() < deadline: time.sleep(0.02)
+        os.write(1, bytes.fromhex('1b5d35323b703b3f1b5c'))
+        deadline = time.monotonic() + 12
+        reply = b''
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([0], [], [], 0.4 if reply else 0.1)
+            if ready: reply += os.read(0, 65536)
+            elif reply: break
+        open('\(result.path)', 'wb').write(reply)
+        time.sleep(3)
+        """
+        try program.write(to: script, atomically: true, encoding: .utf8)
+        _ = try await command(["respawn-pane", "-k", "-t", pane.pane.description, "printf '\\033]52;c;\(copy)\\007'; exec /usr/bin/python3 " + script.path])
+        try await wait("OSC52 private pane printf live copy") { board.string(forType: .string) == "copied ✓" }
+        _ = try await command(["set-buffer", "stale-tmux-buffer"])
+        try Data().write(to: ready)
+        try await wait("OSC52 private pane consent sheet") { owner.preparedAlert != nil }
+        let alert = try XCTUnwrap(owner.preparedAlert?.alert)
+        XCTAssertEqual(alert.messageText, "Allow applications on “Local” to read your Mac clipboard?")
+        XCTAssertEqual(alert.informativeText, "This also permits applications reached through SSH inside its panes.")
+        XCTAssertEqual(alert.buttons.map(\.title), ["Allow for this connection", "Always allow", "Deny"])
+        let text = "named ✓\nclipboard"
+        board.clearContents()
+        board.setString(text, forType: .string)
+        owner.respondToAlert(.alertFirstButtonReturn)
+        try await wait("OSC52 reply received in original private pane") { FileManager.default.fileExists(atPath: result.path) }
+        let expected = Data("\u{1b}]52;p;\(Data(text.utf8).base64EncodedString())\u{1b}\\".utf8)
+        XCTAssertEqual(try Data(contentsOf: result), expected)
+        let buffer = try await command(["show-buffer"])
+        XCTAssertEqual(buffer, "stale-tmux-buffer")
+        print("OSC52 E2E private pane: live write changed named board; consented p read returned exactly one named-board reply, not seeded tmux buffer")
     }
 
     func testServerProtocolFields() throws {
