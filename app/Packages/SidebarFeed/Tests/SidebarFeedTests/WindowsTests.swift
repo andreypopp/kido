@@ -5,7 +5,7 @@ import TmuxControl
 
 private func windowsFixture(_ indicator: String = "waiting", attention: Bool = false, group: Bool = false) throws -> Snapshot {
     func item(_ n: Int, children: [[String: Any]] = [], indicator: String = "idle") -> [String: Any] {
-        ["kind": "shell", "id": "%\(n)", "pane": "%\(n)", "window": "@\(n)", "title": [["text": "Pane ", "role": "plain"], ["text": "\(n)", "role": "current"]], "tail": [],
+        ["kind": "agent", "id": "%\(n)", "pane": "%\(n)", "window": "@\(n)", "title": [["text": "Pane ", "role": "plain"], ["text": "\(n)", "role": "current"]], "tail": [],
          "indicator": ["kind": indicator], "attention": n == 2 && attention, "children": children]
     }
     let parent = item(0, children: [item(1, children: [item(2, indicator: indicator)])])
@@ -38,13 +38,13 @@ private func windowsFixture(_ indicator: String = "waiting", attention: Bool = f
     #expect(lone.statuses[WindowID(number: 2)] == .error)
 }
 
-@Test(arguments: ["failed", "waiting", "stalled", "running", "compacting", "idle"])
+@Test(arguments: ["failed", "waiting", "stalled", "done", "running", "compacting", "idle"])
 func projectionSharesRowStatus(indicator: String) throws {
     let snapshot = try windowsFixture(indicator)
     let projection = sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)])
     let status = try #require(sidebarRows(snapshot, folded: []).first { $0.target?.window == WindowID(number: 2) }?.status)
-    #expect(projection.statuses[WindowID(number: 0)] == (status == .running ? .quiet : status))
-    #expect(sidebarWindows(try windowsFixture(indicator, attention: true), session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == (indicator == "failed" ? .error : .attention))
+    #expect(projection.statuses[WindowID(number: 0)] == status.tabStatus)
+    #expect(sidebarWindows(try windowsFixture(indicator, attention: true), session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == status.tabStatus)
 }
 
 @Test func projectedTitlesUseActivePane() throws {
