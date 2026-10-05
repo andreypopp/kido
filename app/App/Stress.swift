@@ -21,10 +21,12 @@ typealias AppWindow = StressWindow
         case resizeBurst = "resize-burst", loadMore = "load-more", gripDrag = "grip-drag"
         case gripDragKill = "grip-drag-kill", appearance, edgeResize = "edge-resize", detachReconnect = "detach-reconnect"
         case hiddenResize = "hidden-resize", clearHistory = "clear-history"
+        case tabs, sidebarJump = "sidebar-jump", sidebarSearch = "sidebar-search", sidebarFold = "sidebar-fold", sidebarMode = "sidebar-mode"
     }
     private static let actions: [Action] = [
         .wheel, .wheel, .stripPress, .stripWheel, .alternate, .scrollerDrag, .scrollerDrag, .scrollRequest, .find, .findNext, .findCloseResync,
         .resizeBurst, .loadMore, .gripDrag, .gripDragKill, .appearance, .edgeResize, .detachReconnect, .hiddenResize, .clearHistory,
+        .tabs, .sidebarJump, .sidebarSearch, .sidebarFold, .sidebarMode,
     ]
     private let window: NSWindow
     private let send: ([Command]) -> Void
@@ -35,6 +37,7 @@ typealias AppWindow = StressWindow
     private var step = 0
     private var counts: [String: Int] = [:]
     private var resizeCompleted = Set<ObjectIdentifier>()
+    private var childWindows = Set<String>()
 
     init(window: NSWindow, send: @escaping ([Command]) -> Void, reconnect: @escaping () -> Void) {
         self.window = window
@@ -46,6 +49,7 @@ typealias AppWindow = StressWindow
     }
 
     func run() {
+        log(["input-delivery": "Off-screen: view event methods and menu performKeyEquivalent called directly; toolbar toggle invokes its entry point, not an NSToolbar click"])
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             if self.env["KIDO_FIND_CLEAR_VERIFY"] == "1" || self.env["KIDO_FIND_INVALIDATE_VERIFY"] == "1" {
                 guard let pane = (self.window.contentView.map(self.views) ?? []).compactMap({ $0 as? PaneView }).first else { exit(1) }
@@ -529,6 +533,19 @@ typealias AppWindow = StressWindow
             NSApp.terminate(nil)
             return
         }
+        if let app = NSApp.delegate as? AppDelegate {
+            var nodes = app.stressState.4?.sessions.flatMap(\.nodes) ?? []
+            while let node = nodes.popLast() {
+                nodes += node.children
+                if case .item(let item) = node, item.run == .bash {
+                    let identity = "\(item.window):\(item.started?.timeIntervalSince1970 ?? 0)"
+                    if childWindows.insert(identity).inserted {
+                        counts["child-window-seen", default: 0] += 1
+                        log(["event": "child-window-seen", "window": item.window.description, "pane": item.pane.description])
+                    }
+                }
+            }
+        }
         let all = window.contentView.map(views) ?? []
         let panes = visible(all, PaneView.self)
         var action = Self.actions[random(Self.actions.count)]
@@ -552,13 +569,16 @@ typealias AppWindow = StressWindow
         log(["step": step, "action": action.rawValue, "pane": pane?.pane.description ?? "", "panes": panes.count,
              "visible": window.isVisible, "key": window.isKeyWindow, "main": window.isMainWindow,
              "active": NSApp.isActive, "onScreenWindows": onScreen()])
-        if let pane { perform(action, pane, all) }
+        if [.tabs, .sidebarJump, .sidebarSearch, .sidebarFold, .sidebarMode].contains(action) { performUI(action) }
+        else if let pane { perform(action, pane, all) }
+        if step % 5 == 0 { verifyUI() }
         log(["tick": step, "counts": counts])
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.tick() }
     }
 
     private func perform(_ action: Action, _ pane: PaneView, _ all: [NSView]) {
         switch action {
+        case .tabs, .sidebarJump, .sidebarSearch, .sidebarFold, .sidebarMode: break
         case .stripPress:
             let point = pane.convert(NSPoint(x: pane.bounds.midX, y: pane.bounds.height - pane.renderInsets.top / 2), to: nil)
             pane.mouseDown(with: event(.leftMouseDown, point))
@@ -651,6 +671,139 @@ typealias AppWindow = StressWindow
             send([Command("clear-history", "-t", pane.pane)])
         case .appearance:
             NSApp.appearance = NSAppearance(named: random(2) == 0 ? .aqua : .darkAqua)
+        }
+    }
+
+    private func key(_ text: String, _ code: UInt16 = 0, _ modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime,
+                        windowNumber: window.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text,
+                        isARepeat: false, keyCode: code)!
+    }
+
+    private func check(_ kind: String, _ passed: Bool) {
+        counts[kind + "-verified", default: 0] += 1
+        log(["verification": kind, "passed": passed])
+        if !passed { exit(1) }
+    }
+
+    private func verifyUI(_ attempt: Int = 0) {
+        guard let app = NSApp.delegate as? AppDelegate, let connection = app.stressState.3 else { return }
+        let before = app.stressState.0
+        connection.send([Command("display-message", "-p", "#{window_id}")]) { replies in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                let (model, navigation, session, current, _) = app.stressState
+                guard current === connection, model == before else { return }
+                guard case .success(let lines)? = replies?.first else { return }
+                let shown = session?.windows.filter { !$0.value.isHidden }.keys.map(\.description) ?? []
+                let matched = lines.first == model.window?.description && shown == [model.window?.description ?? ""]
+                if !matched, attempt < 10 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { self.verifyUI(attempt + 1) }
+                    return
+                }
+                self.check("displayed-window", matched)
+                self.check("tab-order", app.sidebar.tabs.entries.map(\.id) == navigation.windows.map(\.id))
+                let menu = NSApp.mainMenu?.items.first { $0.title == "Window" }?.submenu
+                self.check("shortcut-order", menu?.items.dropFirst(3).enumerated().allSatisfy { index, item in
+                    (item.representedObject as? Command) == navigation.select(.number(index + 1))
+                        && item.keyEquivalent == (index < 9 ? "\(index + 1)" : "")
+                } == true && menu?.items.count == navigation.windows.count + 3)
+            }
+        }
+    }
+
+    private func performUI(_ action: Action) {
+        guard let app = NSApp.delegate as? AppDelegate, app.stressState.3 != nil else { return }
+        let sidebar = app.sidebar, list = sidebar.list
+        let all = views(list)
+        guard let table = all.compactMap({ $0 as? Table }).first else { return }
+        counts[action.rawValue + "-delivered", default: 0] += 1
+        switch action {
+        case .tabs:
+            let tabs = sidebar.tabs
+            guard !tabs.entries.isEmpty else { return }
+            switch random(3) {
+            case 0:
+                let children = tabs.accessibilityChildren()?.compactMap { $0 as? NSAccessibilityElement } ?? []
+                let rects = children.map { $0.accessibilityFrameInParentSpace() }.filter { tabs.bounds.contains(NSPoint(x: $0.midX, y: $0.midY)) }
+                guard !rects.isEmpty else { return }
+                let rect = rects[random(rects.count)]
+                tabs.mouseDown(with: event(.leftMouseDown, tabs.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)))
+                counts["tab-mouse-down", default: 0] += 1
+            case 1:
+                _ = NSApp.mainMenu?.performKeyEquivalent(with: key("\(random(9) + 1)", 0, .command))
+                counts["tab-cmd-number", default: 0] += 1
+            default:
+                _ = NSApp.mainMenu?.performKeyEquivalent(with: key(random(2) == 0 ? "j" : "k", 0, [.command, .control]))
+                counts["tab-ctrl-cmd-jk", default: 0] += 1
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.verifyUI() }
+        case .sidebarJump:
+            let rows = (0..<table.numberOfRows).filter { list.tableView(table, shouldSelectRow: $0) }
+            guard !rows.isEmpty else { return }
+            let row = rows[random(rows.count)]
+            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            let original = list.send
+            var switches = 0
+            list.send = { commands, done in
+                switches += commands.filter { $0.line.hasPrefix("switch-client ") }.count
+                original(commands, done)
+            }
+            table.keyDown(with: key("\r", 36))
+            list.send = original
+            check("one-switch-client", switches == 1)
+        case .sidebarSearch:
+            table.keyDown(with: key("/"))
+            guard let field = all.compactMap({ $0 as? NSSearchField }).first else { return }
+            window.makeFirstResponder(field)
+            if let editor = field.currentEditor() as? NSTextView {
+                editor.selectAll(nil)
+                editor.insertText(["s1", "log", "missing"][random(3)], replacementRange: editor.selectedRange())
+            } else { field.stringValue = "s1" }
+            field.sendAction(field.action, to: field.target)
+            _ = list.control(field, textView: NSTextView(), doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+            check("search-escape", list.query.isEmpty)
+        case .sidebarFold:
+            table.keyDown(with: key("", random(2) == 0 ? 123 : 124))
+        case .sidebarMode:
+            let lock = env["STRESS_UI_LOCK"] ?? ""
+            _ = FileManager.default.createFile(atPath: lock, contents: Data())
+            sidebar.dismissFloating()
+            sidebar.isCollapsed = true
+            window.contentView?.layoutSubtreeIfNeeded()
+            sidebar.viewDidLayout()
+            let frame = sidebar.content.convert(sidebar.content.bounds, to: nil)
+            let cell = app.stressState.2?.cell
+            let pixel = 1 / window.backingScaleFactor
+            let size = cell.map {
+                "\(max(1, Int(floor((frame.width - 8 - $0.width + pixel) / $0.width))))x\(max(1, Int(floor((floor((frame.height - 12) / pixel) * pixel - ceil(44 / pixel) * pixel - pixel) / $0.height))))"
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                self.log(["floating-probe": "begin", "collapsed-size": size ?? "unknown"])
+                _ = NSApp.mainMenu?.performKeyEquivalent(with: self.key("s", 1, .command))
+                self.window.contentView?.layoutSubtreeIfNeeded()
+                sidebar.viewDidLayout()
+                self.check("floating-frame", sidebar.isFloating && sidebar.content.convert(sidebar.content.bounds, to: nil) == frame)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    self.check("floating-frame", sidebar.isFloating && sidebar.content.convert(sidebar.content.bounds, to: nil) == frame)
+                    self.log(["floating-probe": "end"])
+                    switch self.random(3) {
+                    case 0: table.keyDown(with: self.key("\u{1b}", 53)); self.counts["floating-escape", default: 0] += 1
+                    case 1:
+                        let point = sidebar.content.convert(NSPoint(x: sidebar.content.bounds.maxX - 10, y: 20), to: nil)
+                        self.views(sidebar.splitView).first { String(describing: type(of: $0)) == "Outside" }?
+                            .mouseDown(with: self.event(.leftMouseDown, point))
+                        self.counts["floating-outside-click", default: 0] += 1
+                    default: _ = NSApp.mainMenu?.performKeyEquivalent(with: self.key("s", 1, .command))
+                    }
+                    self.check("floating-dismiss", !sidebar.isFloating)
+                    for _ in 0..<3 {
+                        if self.random(2) == 0 { sidebar.toggleSidebar(nil); self.counts["toolbar-toggle-equivalent", default: 0] += 1 }
+                        else { _ = NSApp.mainMenu?.performKeyEquivalent(with: self.key("S", 1, [.command, .shift])); self.counts["sidebar-cmd-shift-s", default: 0] += 1 }
+                    }
+                    try? FileManager.default.removeItem(atPath: lock)
+                }
+            }
+        default: break
         }
     }
 
