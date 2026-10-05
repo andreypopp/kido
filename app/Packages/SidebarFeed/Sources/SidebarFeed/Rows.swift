@@ -39,6 +39,8 @@ public struct SidebarRow: Equatable, Sendable {
 }
 
 extension Item {
+    var label: String { title.map(\.text).joined() }
+
     var status: SidebarRow.Status {
         switch indicator {
         case .failed, .gone(.failed), .gone(.died): .error
@@ -105,7 +107,7 @@ public func sidebarRows(_ snapshot: Snapshot?, folded: Set<SessionID>) -> [Sideb
                     let started = item.run == nil ? nil : item.started
                     rows.append(SidebarRow(id: .pane(session.id, item.id), kind: .pane(target), indent: depth,
                                            height: (depth == 0 ? 28 : 25) + (tail.isEmpty ? 0 : 16),
-                                           title: item.title.map(\.text).joined(), tail: tail, status: item.status, indicatorDescription: description,
+                                           title: item.label, tail: tail, status: item.status, indicatorDescription: description,
                                            attention: item.attention, started: started, focused: target == snapshot.client))
             }, after: { node, depth in
                 let begin = begins.removeLast()
