@@ -44,6 +44,9 @@ final class Connection: @unchecked Sendable {
     @MainActor private var retiring: [ObjectIdentifier: PaneView] = [:]
     @MainActor private var freeing: [PaneView] = []
     @MainActor private weak var view: SessionView?
+    @MainActor private(set) var active = true
+    let host: Host
+    @MainActor var onURL: (String) -> Void = { _ in }
     @MainActor private var sizing: DispatchWorkItem?
     @MainActor private var desiredSize: String?
     @MainActor private var sentSize: String?
@@ -57,22 +60,50 @@ final class Connection: @unchecked Sendable {
     @MainActor private let onDiagnostic: (String) -> Void
 
     @MainActor init(
-        server: Server, view: SessionView, onChange: @escaping (SessionModel) -> Void,
+        server: Server, view: SessionView, launch: Launch? = nil, host: Host = .local, drain: Drain? = nil, onChange: @escaping (SessionModel) -> Void,
         onDiagnostic: @escaping (String) -> Void, onClose: @escaping (Exit) -> Void
     ) throws {
         self.view = view
+        self.host = host
         self.onChange = onChange
         self.onClose = onClose
         self.onDiagnostic = onDiagnostic
-        client = Client(tmux: URL(fileURLWithPath: server.tmux), socket: server.socket, session: nil, pauseAfter: 5)
+        client = Client(launch: launch ?? .attach(server.tmux, socket: server.socket))
         view.connection = self
-        try client.start(
-            onEvent: { [weak self] in self?.handle($0) },
-            onClose: { [weak self] status, stderr in self?.closed(status, stderr) })
+        try drain?.enter()
+        do {
+            try client.start(
+                onEvent: { [weak self] in self?.handle($0) },
+                onClose: { [weak self] status, stderr in self?.closed(status, stderr) },
+                onExit: { drain?.ended.leave() })
+        } catch {
+            drain?.ended.leave()
+            throw error
+        }
         client.send([Command("refresh-client", "-B", "windows::#{W:#{window_id}=#{window_index},}")]) { _ in }
     }
 
+    @MainActor func openURL(_ text: String) {
+        guard active else { return }
+        onURL(text)
+    }
+
+    @MainActor func close() {
+        guard active else { return }
+        active = false
+        sizing?.cancel()
+        sizing = nil
+        view?.close()
+        view = nil
+        client.close()
+        client.queue.async {
+            let gone = self.teardown()
+            DispatchQueue.main.async { withExtendedLifetime(gone) {} }
+        }
+    }
+
     @MainActor func attach(_ pane: PaneView, synced: (@Sendable () -> Void)? = nil) {
+        guard active else { return }
         client.queue.async {
             guard self.panes != nil else { return DispatchQueue.main.async { _ = pane } }
             self.panes?[pane.pane] = PaneFeed(pane)
@@ -132,8 +163,8 @@ final class Connection: @unchecked Sendable {
         #if KIDO_VISUAL
         visualCommands += commands
         #endif
-        client.send(commands) { replies in
-            if let done { DispatchQueue.main.async { done(replies) } }
+        client.send(commands) { [weak self] replies in
+            if let done { DispatchQueue.main.async { [weak self] in guard self?.active == true else { return }; done(replies) } }
         }
     }
 
@@ -241,7 +272,7 @@ final class Connection: @unchecked Sendable {
             else { return self?.report("could not list the session's windows: \(replies)") ?? () }
             let listing = windows.compactMap(WindowListing.init)
             DispatchQueue.main.sync {
-                guard let self else { return }
+                guard let self, self.active else { return }
                 self.view?.update(listing, alive: Set(all.compactMap(WindowID.init)))
                 self.model = SessionModel(
                     sessions: sessions.compactMap(SessionListing.init), session: session,
@@ -527,16 +558,21 @@ final class Connection: @unchecked Sendable {
         return true
     }
 
+    private func teardown() -> [PaneID: PaneFeed]? {
+        let gone = panes
+        panes = nil
+        gone?.values.forEach { invalidateSearch($0, restart: false); $0.completePendingRestore() }
+        return gone
+    }
+
     private func closed(_ status: Int32, _ stderr: String) {
-        let gone = panes, reason = (reasons + [stderr]).filter { !$0.isEmpty }.joined(separator: "\n")
+        let gone = teardown(), reason = (reasons + [stderr]).filter { !$0.isEmpty }.joined(separator: "\n")
         let exit = detached.map(Exit.detached) ?? .ended(reason.isEmpty ? nil : reason)
         let why = switch exit {
         case .detached(let reason): "detached: \(reason)"
         case .ended(let reason): "ended: \(reason ?? "no reason given")"
         }
         note("connection closed, tmux exited \(status), \(why.replacingOccurrences(of: "\n", with: "; "))")
-        panes = nil
-        gone?.values.forEach { $0.completePendingRestore() }
         DispatchQueue.main.async { withExtendedLifetime(gone) { self.onClose(exit) } }
     }
 
