@@ -5,7 +5,7 @@ import TmuxControl
 
 @MainActor final class RemoteTests: XCTestCase {
     func testHostAndRouting() throws {
-        XCTAssertEqual(try Host("  user@my-alias \n"), .remote("user@my-alias"))
+        XCTAssertEqual(try Host("user@my-alias"), .remote("user@my-alias"))
         for invalid in ["", "-option", "a b", "a;id", "a$(id)", "a\u{0}", "a\nb", "a/../b"] { XCTAssertThrowsError(try Host(invalid)) }
         XCTAssertTrue(Server.validPath("/tmp/state space $literal/socket"))
         XCTAssertFalse(Server.validPath("relative/socket"))
@@ -23,6 +23,42 @@ import TmuxControl
         warm.ready(isDefaultLaunch: true) { requests.append($0) }
         warm.connect(.remote("localhost"))
         XCTAssertEqual(requests, [.local, .remote("localhost")])
+    }
+
+    func testConnectURLs() throws {
+        for (url, host) in [("kido-app://localhost", "localhost"),
+                            ("kido-app://localhost/", "localhost"),
+                            ("kido-app://user@my-alias", "user@my-alias"),
+                            ("kido-app://%75ser@%6Dy-alias", "user@my-alias")] {
+            XCTAssertEqual(try Host(url: XCTUnwrap(URL(string: url))), .remote(host))
+        }
+        for url in ["kido-app://", "https://localhost", "kido-app://-option",
+                    "kido-app://%20localhost", "kido-app://localhost%20", "kido-app://a%09b",
+                    "kido-app://a%00b", "kido-app://a%0Ab", "kido-app://a%20b",
+                    "kido-app://localhost/session", "kido-app://localhost//", "kido-app://connect/localhost",
+                    "kido-app://localhost?", "kido-app://localhost#", "kido-app://localhost:22",
+                    "kido-app://user:password@localhost", "kido-app://user%20name@localhost"] {
+            let parsed = try XCTUnwrap(URL(string: url))
+            XCTAssertThrowsError(try Host(url: parsed), url)
+        }
+    }
+
+    func testURLLaunchOrdering() throws {
+        let host = try Host(url: XCTUnwrap(URL(string: "kido-app://localhost")))
+        for beforeReady in [false, true] {
+            let routes = WindowRoutes()
+            var requests: [Kido.Host] = []
+            routes.ordinaryOpen()
+            if beforeReady { routes.connect(host) }
+            routes.ready(isDefaultLaunch: false) { requests.append($0) }
+            if !beforeReady {
+                routes.ordinaryOpen()
+                XCTAssertTrue(requests.isEmpty)
+                routes.connect(host)
+            }
+            routes.connect(host)
+            XCTAssertEqual(requests, [host, host])
+        }
     }
 
     func testIntentLaunchBeforePerform() {
