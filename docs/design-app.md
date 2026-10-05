@@ -42,8 +42,21 @@ is rejected at the next discovery.
 
 ## Remote hosts
 
-On macOS Tahoe, the Spotlight/Shortcuts action **Connect to Remote Host in
-Kido** has a required Host string in its parameter summary. Each request
+On macOS Tahoe, the Shortcuts action **Connect to Remote Host in Kido**
+has a required Host string in its parameter summary. It works only in
+team-signed builds: Linkd rejects ad-hoc bundles with `requiresValidatedBundle`.
+Spotlight does not list the action directly. The cold-launch gate passed on
+screen through Shortcuts with a team-signed build.
+
+The unsigned alternative is `kido-app://<host>`: in Shortcuts use
+**Ask for Input** with prompt **Host**, then **Open URLs** with
+`kido-app://<Provided Input>`. It needs no signing. The percent-decoded
+authority is the SSH destination: `kido-app://localhost` or
+`kido-app://user@myhost`. An empty path or `/` connects to the default
+session; non-empty paths are reserved for future session selection and rejected
+for now. Ports, passwords, queries, fragments, empty hosts, whitespace,
+controls, SSH options and shell syntax are rejected with one stderr line.
+URL delivery and the App Intent share Host validation and window routing. Each request
 creates a new native window, including repeated requests for one alias.
 Host is trimmed and accepts an SSH alias or user@hostname, not options,
 whitespace, controls or shell syntax. Ports and jump hosts belong in SSH
@@ -73,10 +86,17 @@ Launch bootstrap initializes shared resources and drains queued Host requests;
 it does not open Local. Ordinary AppKit untitled/reopen delivery opens Local
 only when no live window exists; reopening with a live window focuses it.
 There is no timer, debounce or compensating close of a Local window. Off-screen
-routing tests prove queued cold and warm behavior, **not** OS classification.
-The real Spotlight/Shortcuts cold-launch check below remains a shipping gate.
-If macOS sends an indistinguishable ordinary-open before an intent, this route
-is unsolved; do not ship a guessed timing discriminator.
+routing tests prove queued cold and warm behavior. The launch gate requires
+`launchIsDefaultUserInfoKey == true` and an initial `oapp` (if available);
+non-default launches discard queued Local requests and suppress ordinary-open
+until the requested remote arrives. Apple's
+[launch key](https://developer.apple.com/documentation/appkit/nsapplication/launchisdefaultuserinfokey)
+defines non-default launches as false. URL launch is a non-default `GURL`
+request, handled by
+[application(_:open:)](https://developer.apple.com/documentation/appkit/nsapplicationdelegate/application(_:open:)).
+This uses the same gate without timers, whether URL delivery precedes or
+follows launch completion. Actual URL-launch notification/event ordering is
+not measured by off-screen routing tests; the user retests it on screen.
 
 ### Transport and discovery
 
@@ -140,7 +160,7 @@ stdout); it does not shadow Homebrew kido in ordinary terminals or interactive S
 
 ```zsh
 if [[ -n ${SSH_CONNECTION-} && ! -o interactive ]]; then
-  path=("$HOME/Workspace/kido-app/app/build/derived-remote/Build/Products/Debug/Kido.app/Contents/Resources/kido/bin" $path)
+  path=("$HOME/Workspace/kido-app/app/build/xcode.noindex/derived-remote/Build/Products/Debug/Kido.app/Contents/Resources/kido/bin" $path)
 fi
 ```
 
@@ -155,11 +175,14 @@ Before shipping, the user/parent must prepare a **distinct app identity**, not
 register the default derived Kido.app over the running installed app:
 
 ```sh
-make -C app all DERIVED=build/derived-remote XCODE_SETTINGS='PRODUCT_BUNDLE_IDENTIFIER=com.andreypopp.kido.remote-test PRODUCT_NAME=KidoRemoteTest INFOPLIST_KEY_CFBundleDisplayName=KidoRemoteTest'
+make -C app all DERIVED=build/xcode.noindex/derived-remote XCODE_SETTINGS='PRODUCT_BUNDLE_IDENTIFIER=com.andreypopp.kido.remote-test INFOPLIST_KEY_CFBundleDisplayName=KidoRemoteTest CODE_SIGN_IDENTITY="Apple Development" DEVELOPMENT_TEAM=LC2633WWXE'
 ```
 
-The output is `app/build/derived-remote/Build/Products/Debug/KidoRemoteTest.app`;
-Makefile run/test helpers still hardcode Kido.app and are not this smoke check.
+The output is `app/build/xcode.noindex/derived-remote/Build/Products/Debug/Kido.app`,
+displayed as KidoRemoteTest. Xcode defaults live under `app/build/xcode.noindex/`
+to keep built apps out of Spotlight; private builds should use
+`DERIVED=build/xcode.noindex/derived-<name>`. Explicit DERIVED paths are honored.
+Non-app caches such as GhosttyKit remain outside that directory.
 Check its Metadata.appintents and `codesign --verify --deep --strict` before
 registration; use a clean build if an incremental metadata addition invalidates
 the signature. Register only that absolute bundle path with
@@ -170,20 +193,20 @@ approval for that attachment, must never Restart/kill it, and are not agent-run
 private-state tests. Shell-exported HOME/XDG around lsregister does not prove
 Spotlight inherits them.
 
-Quit only KidoRemoteTest, then press Command-Space, choose **Connect to Remote
-Host in Kido** with the **KidoRemoteTest** app subtitle, enter **localhost**, and
-submit. Stop if the action's identity is ambiguous. Verify exactly one remote
-native window and **no Local window** on cold launch. Repeat while running:
-another remote window must appear, not replace the first. Repeat with a saved
-Shortcuts workflow containing that test app's action and Host=localhost.
+Quit only KidoRemoteTest, then run a saved Shortcuts workflow containing that
+team-signed test app's **Connect to Remote Host in Kido** action and Host=localhost.
+Stop if the action's identity is ambiguous. Verify exactly one remote native
+window and **no Local window** on cold launch. Repeat while running: another
+remote window must appear, not replace the first. This cold-launch check passed
+on screen; Spotlight does not list the action directly. Also retest the URL
+recipe above cold and warm; it works with ad-hoc builds too.
 Separately quit only the test app and plain-open it with
 `open -b com.andreypopp.kido.remote-test`: one Local window must appear. Warm
 intent delivery then adds remote without replacing Local; reopening with a live
 remote window must not create Local. Finally quit only the test app, unregister
 only its absolute bundle path with lsregister `-u`, and remove only the user's
-test workflow. If action discovery or ordering fails, record the lifecycle and
-block shipping that route. These OS-delivery steps were not performed by the
-off-screen implementation checks.
+test workflow. If URL ordering fails, record the lifecycle. OS-delivery steps
+are user-run, never part of the off-screen implementation checks.
 
 ## Panes
 
@@ -606,7 +629,7 @@ and layout diffs. References live in `app/VisualTests/__Snapshots__`.
 
 
 `make tsan` and `make asan` build Debug with ReleaseSafe GhosttyKit into
-`build/derived-{tsan,asan}`. ASan defaults to `use_sigaltstack=0` because Zig
+`build/xcode.noindex/derived-{tsan,asan}`. ASan defaults to `use_sigaltstack=0` because Zig
 threads replace its alternate signal stack with thread-local storage.
 
 The Main Thread Checker needs no rebuild: launch a Debug build with
@@ -625,7 +648,7 @@ and free to stderr with its timing.
 ### Stress harness
 
 `make stress SEED=N DURATION=S [FIND=0]` builds the app with the
-`KIDO_STRESS` compilation condition into `build/derived-stress` and runs it
+`KIDO_STRESS` compilation condition into `build/xcode.noindex/derived-stress` and runs it
 for S seconds against a private tmux server; `make tsan-stress` and
 `make asan-stress` do the same with the sanitizers (own derived dirs). The
 condition is set only by these targets: `App/Stress.swift` holds only a typealias in every
