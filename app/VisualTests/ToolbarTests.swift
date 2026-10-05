@@ -5,7 +5,7 @@ import SidebarFeed
 import TmuxControl
 @testable import Kido
 
-@MainActor final class ToolbarTests: XCTestCase {
+@MainActor final class ToolbarTests: VisualTestCase {
     func testHostLabel() throws {
         let owner = try XCTUnwrap(delegate.open(.remote("buildbox"), start: false))
         defer { owner.close() }

@@ -3,7 +3,7 @@ import XCTest
 import TmuxControl
 @testable import Kido
 
-@MainActor final class RemoteTests: XCTestCase {
+@MainActor final class RemoteTests: VisualTestCase {
     func testHostAndRouting() throws {
         XCTAssertEqual(try Host("user@my-alias"), .remote("user@my-alias"))
         for invalid in ["", "-option", "a b", "a;id", "a$(id)", "a\u{0}", "a\nb", "a/../b"] { XCTAssertThrowsError(try Host(invalid)) }
