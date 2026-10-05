@@ -263,12 +263,30 @@ import TmuxControl
         mismatch.testRemoteEnvironment = env
         owners.append(mismatch)
         mismatch.start()
-        try await until("remote mismatch banner") { labels(mismatch.testBanner).contains { $0.contains("kido protocol 9.9") } }
+        try await until("remote mismatch alert") { mismatch.preparedAlert != nil }
+        XCTAssertNil(mismatch.window.attachedSheet)
+        let mismatchAlert = try XCTUnwrap(mismatch.preparedAlert?.alert)
+        let mismatchContent = try XCTUnwrap(mismatchAlert.window.contentView)
+        XCTAssertTrue(mismatchAlert.window.defaultButtonCell === mismatchAlert.buttons[0].cell)
+        XCTAssertTrue(labels(mismatchContent).contains { $0 == "Update Kido.app to connect" })
+        XCTAssertTrue(labels(mismatchContent).contains { $0.contains("Server: 9.9.") })
+        XCTAssertTrue(buttons(mismatchContent).contains { $0.title == "Reconnect" })
+        XCTAssertFalse(buttons(mismatchContent).contains { $0.title == "Restart…" })
+        XCTAssertNil(mismatch.testConnection)
+        mismatch.respondToAlert(.alertSecondButtonReturn)
+        XCTAssertNil(mismatch.preparedAlert)
+        XCTAssertNil(mismatch.testConnection)
         XCTAssertTrue(buttons(mismatch.testBanner).contains { $0.title == "Reconnect" && !$0.isHidden })
-        XCTAssertFalse(buttons(mismatch.testBanner).contains { $0.title == "Restart" && !$0.isHidden })
+        _ = try await Child.run(transport.launch([tools.tmux, "-u", "-S", socket, "set-environment", "-g", "KIDO_PROTOCOL", "0.9"]))
+        mismatch.start()
+        try await until("upgraded binary mismatch alert") { mismatch.preparedAlert != nil }
+        let upgradedAlert = try XCTUnwrap(mismatch.preparedAlert?.alert)
+        let upgradedContent = try XCTUnwrap(upgradedAlert.window.contentView)
+        XCTAssertTrue(labels(upgradedContent).contains { $0 == "Restart kido on localhost" })
+        XCTAssertTrue(labels(upgradedContent).contains { $0.contains("Server: 0.9. Host binary: 1.0.") })
         XCTAssertNil(mismatch.testConnection)
         _ = try await Child.run(transport.launch([tools.tmux, "-u", "-S", socket, "set-environment", "-g", "KIDO_PROTOCOL", "1.0"]))
-        mismatch.start()
+        mismatch.respondToAlert(.alertFirstButtonReturn)
         try await until("Reconnect rediscovers compatible protocol") { mismatch.testBanner.isHidden }
         transports += owners.compactMap(\.ssh)
         let missing = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
