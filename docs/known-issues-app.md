@@ -163,12 +163,9 @@ completed OSC operations from captures. Hidden unapproved reads are denied,
 not deferred until the pane becomes visible.
 
 Only one clipboard-enabled app may consume a pane. Two attached apps can both
-answer raw OSC reads; there is no responder election. A competing tty client
-with tmux `get-clipboard request` can also answer. Do not configure tmux to
-answer from its buffer when using the app's clipboard.
+answer raw OSC reads; there is no responder election. Kido.app sets the server's `get-clipboard off` on attach to prevent competing tty replies. A terminal attached directly to that server cannot paste through itself.
 
-Always allow is per exact configured host key, including Local. There is no
-revocation UI yet. Retargeting an SSH alias does not revoke its stored grant;
+Always allow is per exact configured host key, including Local. Edit → Reset Clipboard Permissions revokes all grants and connection answers. Retargeting an SSH alias does not revoke its stored grant;
 SSH host-key policy remains OpenSSH's. Local grants also cover applications
 reached through SSH inside its panes because OSC carries no authenticated
 remote identity. Use a remote window for a separate host grant.
@@ -179,7 +176,7 @@ request fail and retry after granting. Empty replies may time out through
 versions that discard them. The app's 8s deadline cannot detect an application's
 earlier cancellation; a reply granted before that deadline may still be late
 for a nested application. Arbitrary nested versions/providers remain untested.
-Status: accepted scope; revocation UI deferred.
+Status: accepted scope.
 
 ## Reflow row counts can disagree
 
