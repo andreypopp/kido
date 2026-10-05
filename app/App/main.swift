@@ -39,7 +39,7 @@ import SidebarFeed
         #else
         let pasteboard = NSPasteboard.general
         #endif
-        guard let runtime = GhosttyRuntime(pasteboard: pasteboard, grants: background ? nil : .standard) else { fatalError("libghostty failed to initialise") }
+        guard let runtime = GhosttyRuntime(pasteboard: pasteboard) else { fatalError("libghostty failed to initialise") }
         self.runtime = runtime
         NSApp.mainMenu = mainMenu()
         menus.send = { [weak self] in self?.current?.send($0) }
@@ -138,6 +138,7 @@ import SidebarFeed
         ]
         let edit = NSMenu(title: "Edit")
         edit.addItem(withTitle: "Find", action: nil, keyEquivalent: "").submenu = find
+        edit.addItem(item("Reset Clipboard Permissions", #selector(resetClipboardPermissions), "", []))
         let bar = NSMenu()
         for menu in [app, file, edit, view, menus.window, menus.session] {
             bar.addItem(withTitle: menu.title, action: nil, keyEquivalent: "").submenu = menu
@@ -146,6 +147,10 @@ import SidebarFeed
         return bar
     }
 
+
+    @objc private func resetClipboardPermissions() {
+        WindowOwner.resetClipboardPermissions(owners)
+    }
 
     @objc private func newSession() { current?.newSession() }
     @objc private func nextAttention() { current?.nextAttention() }
