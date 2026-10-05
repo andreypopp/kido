@@ -1,4 +1,5 @@
 let value = "1.0"
+let matches server = Option.equal String.equal server (Some value)
 
 let hello server =
   `Assoc
@@ -7,7 +8,7 @@ let hello server =
         `Assoc
           ([ ("protocol", `String value) ]
           @
-          if Option.equal String.equal server (Some value) then []
+          if matches server then []
           else [ ("server", Option.map_or ~default:`Null (fun s -> `String s) server) ]) );
     ]
 

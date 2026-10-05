@@ -670,8 +670,8 @@ let rpc =
        let dir = resolved_dir server in
        let socket = ok (State.server_socket ~create:false ~dir) in
        if not (Sys.file_exists socket) then Printf.ksprintf failwith "no tmux server at %s" socket;
-       let write json =
-         print_endline (Yojson.Safe.to_string json);
+       let write line =
+         print_endline line;
          flush stdout
        in
        let stamp =
@@ -679,9 +679,11 @@ let rpc =
          | Up stamp -> stamp
          | Down | Mismatch -> None
        in
-       write (Protocol.hello stamp);
-       if not (Option.equal String.equal stamp (Some Protocol.value)) then (
-         write (`Assoc [ ("error", `String "server protocol does not match binary protocol") ]);
+       write (Yojson.Safe.to_string (Protocol.hello stamp));
+       if not (Protocol.matches stamp) then (
+         write
+           (Yojson.Safe.to_string
+              (`Assoc [ ("error", `String "server protocol does not match binary protocol") ]));
          2)
        else
          let opts =
@@ -725,11 +727,12 @@ let rpc =
                      | Filter f -> f
                      | Switch_window (id, next) ->
                          write
-                           (Protocol.reply id
-                              (Sidebar.switch_window ~socket:(Some socket) ~dir ~client ~next));
+                           (Yojson.Safe.to_string
+                              (Protocol.reply id
+                                 (Sidebar.switch_window ~socket:(Some socket) ~dir ~client ~next)));
                          search
                      | Invalid (id, error) ->
-                         write (Protocol.reply id (Error error));
+                         write (Yojson.Safe.to_string (Protocol.reply id (Error error)));
                          search
                      | Ignored -> search)
                  | Eof | Read_error _ -> search)
@@ -745,7 +748,7 @@ let rpc =
                match Sidebar.to_json m with
                | Some json ->
                    let line = Yojson.Safe.to_string json in
-                   if not (String.equal line last) then write json;
+                   if not (String.equal line last) then write line;
                    line
                | None -> last
            in
