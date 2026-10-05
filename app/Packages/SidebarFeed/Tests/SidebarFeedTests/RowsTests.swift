@@ -24,17 +24,24 @@ private func fixture(filter: String = "", client: Int = 0, sessions: [Int] = [0]
     let rows = sidebarRows(try fixture(client: 5), folded: [])
     let panes = rows.filter { $0.target != nil }
     #expect(panes.map(\.indent) == [0, 0, 1, 2, 1, 1])
-    #expect(rows.filter { $0.kind == .divider }.count == 3)
+    #expect(rows.count == 11)
+    #expect(rows.filter { $0.kind == .divider }.map(\.indent) == [0, 1, 1])
+    #expect(rows.filter { $0.kind == .divider }.map(\.height) == [3, 3, 3])
+    #expect(rows.allSatisfy { $0.height > 0 })
+    #expect(rows.map(\.height).reduce(0, +) == 221)
+    #expect(rows.dropLast().allSatisfy { $0.segments.first?.height == 212 })
     #expect(panes.map { $0.segments.filter { $0.kind == .window(active: true) }.count } == [0, 1, 1, 1, 1, 1])
     let nested = try #require(panes.first { $0.title == "pane-1" })
     #expect(nested.segments.last?.topLeft == 6)
     #expect(nested.segments.last?.bottomLeft == 6)
+    #expect(nested.segments.last?.height == 66)
     let last = try #require(panes.last)
     #expect(last.segments.dropFirst().allSatisfy { $0.bottomLeft == 0 })
     #expect(last.segments.first?.bottomLeft == 10)
     let parent = try #require(panes.first { $0.title == "pane-5" })
     let child = try #require(panes.first { $0.title == "pane-2" })
     #expect(child.segments[1].height == parent.segments[1].height)
+    #expect(parent.segments[1].height == 150)
     #expect(child.segments[1].top < 0)
     let activeChild = sidebarRows(try fixture(client: 2), folded: []).filter { $0.target != nil }
     #expect(activeChild.filter { $0.segments.contains { $0.kind == .window(active: true) } }.map(\.title) == ["pane-2"])
@@ -67,21 +74,23 @@ func elapsed(_ seconds: Int, _ expected: String) {
 
 @Test func originalIndicatorDescriptions() throws {
     let indicators: [(String, String?, SidebarRow.Status, String)] = [
-        ("waiting", nil, .attention, "waiting"), ("stalled", nil, .attention, "stalled"),
-        ("done", nil, .quiet, "done"), ("idle", nil, .quiet, "idle"),
-        ("gone", "completed", .quiet, "gone, completed")
+        ("waiting", nil, .attention, "waiting"), ("stalled", nil, .stalled, "stalled"),
+        ("done", nil, .done, "done"), ("idle", nil, .quiet, "idle"),
+        ("gone", "completed", .done, "gone, completed")
     ]
     for (kind, outcome, status, description) in indicators {
         let data = """
         {"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},"filter":"","sessions":[
           {"id":"$0","name":"main","current":true,"nodes":[
             {"kind":"agent","id":"%0","pane":"%0","window":"@0","indicator":{"kind":"\(kind)","outcome":\(outcome.map { "\"\($0)\"" } ?? "null")},
-             "title":[],"tail":[],"attention":false,"children":[]}]}]}
+             "title":[],"tail":[],"attention":true,"children":[]}]}]}
         """
         let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(data.utf8))
         let row = try #require(sidebarRows(snapshot, folded: []).first { $0.target != nil })
         #expect(row.status == status)
         #expect(row.indicatorDescription == description)
+        #expect(row.attention)
+        #expect(sidebarTarget(snapshot, attention: 1) == row.target)
     }
 }
 
