@@ -9,6 +9,7 @@ final class Feed: @unchecked Sendable {
     enum Status {
         case starting
         case invalidBundle(Failure)
+        case protocolMismatch(RPCVersion?)
         case running(Snapshot)
         case unreadable
         case restarting(String)
@@ -23,7 +24,8 @@ final class Feed: @unchecked Sendable {
     private let locate: Locate
     @MainActor private let prepare: ([String]) -> Launch
     @MainActor private var child: Child?
-    @MainActor private var commands: [UUID: Task<Void, Never>] = [:]
+    private var pending: [Int: @MainActor @Sendable ((session: SessionID, window: WindowID)?, String?) -> Void] = [:]
+    private var requestID = 0
     @MainActor private let query: () -> String
     private let reader = DispatchQueue(label: "Feed.reader")
     private let writer = DispatchQueue(label: "Feed.writer")
@@ -57,8 +59,7 @@ final class Feed: @unchecked Sendable {
         closeInput()
         child?.stop()
         child = nil
-        commands.values.forEach { $0.cancel() }
-        commands = [:]
+        failPending()
     }
 
     @MainActor private func closeInput() {
@@ -69,39 +70,37 @@ final class Feed: @unchecked Sendable {
 
     @MainActor func filter(_ text: String) {
         guard let input else { return }
-        writer.async { try? input.write(contentsOf: Data((text.isEmpty ? "filter\n" : "filter \(text)\n").utf8)) }
+        writer.async { try? input.write(contentsOf: try JSONSerialization.data(withJSONObject: ["filter": text]) + Data([10])) }
     }
 
-    @MainActor func switchWindow(next: Bool, completed: @escaping @MainActor ((session: SessionID, window: WindowID)?, String?) -> Void) {
-        guard let client = located else { return completed(nil, "the sidebar feed has not found its client yet") }
-        let args = ["switch-window", next ? "next" : "prev", "--client", client, "--server", serverDir]
+    @MainActor func switchWindow(next: Bool, completed: @escaping @MainActor @Sendable ((session: SessionID, window: WindowID)?, String?) -> Void) {
+        guard located != nil, let input, case .running = status else { return completed(nil, "the RPC feed is not ready") }
         do throws(Failure) { try tools.validate() } catch {
             publish(.invalidBundle(error))
             return completed(nil, error.message)
         }
-        let generation = generation, id = UUID()
-        commands[id] = Task {
-            defer { commands[id] = nil }
-            do throws(Failure) {
-                #if KIDO_VISUAL || KIDO_STRESS
-                let kido = testKido ?? tools.kido
-                #else
-                let kido = tools.kido
-                #endif
-                let launch = kido == tools.kido ? prepare(args) : Launch(kido, args, environment: tools.environment)
-                let (status, out, err) = try await Child.run(launch, drain: drain)
-                guard self.generation == generation else { return }
-                guard status == 0 else { return completed(nil, err.isEmpty ? "kido switch-window exited \(status)" : err) }
-                if out.isEmpty { return completed(nil, nil) }
-                let ids = out.split(separator: " ").map(String.init)
-                guard ids.count == 2, let session = SessionID(ids[0]), let window = WindowID(ids[1]) else {
-                    return completed(nil, "kido switch-window returned an invalid target: \(out)")
+        reader.async { [self] in
+            requestID += 1
+            let id = requestID
+            pending[id] = completed
+            writer.async {
+                do {
+                    try input.write(contentsOf: try JSONSerialization.data(withJSONObject: ["id": id, "switch-window": ["direction": next ? "next" : "prev"]]) + Data([10]))
+                } catch {
+                    self.reader.async {
+                        let callback = self.pending.removeValue(forKey: id)
+                        DispatchQueue.main.async { callback?(nil, "Could not write RPC request") }
+                    }
                 }
-                completed((session, window), nil)
-            } catch {
-                guard self.generation == generation else { return }
-                completed(nil, error.message)
             }
+        }
+    }
+
+    private func failPending() {
+        reader.async { [self] in
+            let callbacks = Array(pending.values)
+            pending.removeAll()
+            DispatchQueue.main.async { callbacks.forEach { $0(nil, "RPC connection ended before the request completed") } }
         }
     }
 
@@ -133,7 +132,7 @@ final class Feed: @unchecked Sendable {
         let stdin = Pipe(), stdout = Pipe()
         let child: Child
         do throws(Failure) {
-            let launch = fake == nil ? prepare(["sidebar-feed", "--server", serverDir, "--client", client]) : Launch(path, [], environment: tools.environment)
+            let launch = fake == nil ? prepare(["rpc", "--server", serverDir, "--client", client]) : Launch(path, [], environment: tools.environment)
             child = try Child(launch.path, launch.arguments, env: launch.environment, stdin: stdin, stdout: stdout, drain: drain)
             self.child = child
         } catch {
@@ -145,6 +144,7 @@ final class Feed: @unchecked Sendable {
         let output = stdout.fileHandleForReading.fileDescriptor
         let source = DispatchSource.makeReadSource(fileDescriptor: output, queue: reader)
         nonisolated(unsafe) var buffer = Data()
+        nonisolated(unsafe) var greeted = false
         nonisolated(unsafe) var chunk = [UInt8](repeating: 0, count: 1 << 16)
         let decoder = JSONDecoder()
         child.ended.enter()
@@ -157,25 +157,51 @@ final class Feed: @unchecked Sendable {
             }
             buffer.append(contentsOf: chunk[..<n])
             while let newline = buffer.firstIndex(of: 0x0A) {
-                let last = try? decoder.decode(Snapshot.self, from: buffer[..<newline])
+                let event = try? decoder.decode(RPCEvent.self, from: buffer[..<newline])
                 buffer.removeSubrange(...newline)
+                let first = !greeted
+                greeted = true
+                if case .reply(let reply) = event, !first {
+                    let callback = self?.pending.removeValue(forKey: reply.id)
+                    DispatchQueue.main.async {
+                        guard let self, self.generation == generation else {
+                            return callback?(nil, "RPC connection changed before the reply arrived") ?? ()
+                        }
+                        callback?(reply.switched.map { ($0.session, $0.window) }, reply.error)
+                    }
+                    continue
+                }
                 DispatchQueue.main.async {
                     guard let self, self.generation == generation else { return }
-                    guard let last else { return self.publish(.unreadable) }
-                    self.backoff = 0.1
-                    self.publish(.running(last))
+                    guard let event else { return self.restart("Unreadable RPC event") }
+                    if first {
+                        guard case .hello(let hello) = event else { return self.restart("RPC did not send a hello first") }
+                        if hello.mismatch || !hello.version.compatible {
+                            self.stop()
+                            self.publish(.protocolMismatch(hello.mismatch ? hello.server : hello.version))
+                        }
+                        return
+                    }
+                    switch event {
+                    case .snapshot(let snapshot):
+                        self.backoff = 0.1
+                        self.publish(.running(snapshot))
+                    case .error: self.stop(); self.publish(.protocolMismatch(nil))
+                    case .hello, .reply: self.restart("Unexpected RPC event")
+                    }
                 }
             }
         }
         source.resume()
         child.ended.notify(queue: .main) { [weak self] in
             guard let self, self.generation == generation else { return }
-            restart(child.stderr.isEmpty ? "kido sidebar-feed exited" : child.stderr)
+            restart(child.stderr.isEmpty ? "kido rpc exited" : child.stderr)
         }
     }
 
     @MainActor private func restart(_ reason: String) {
         generation += 1
+        failPending()
         located = nil
         closeInput()
         child?.stop()
