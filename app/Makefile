@@ -42,6 +42,7 @@ visual:
 	xcodebuild -quiet -project Kido.xcodeproj -scheme Visual -configuration Debug \
 		-destination platform=macOS -derivedDataPath $(DERIVED) KIDO_VISUAL_CONDITION=KIDO_VISUAL \
 		KIDO_VISUAL_RECORD=$(RECORD) KIDO_VISUAL_TMUX=$(abspath $(DERIVED)/Build/Products/Debug/Kido.app/Contents/Resources/kido/bin/kido-tmux) test
+	python3 scripts/quit-check.py $(abspath $(APP))
 
 run: all
 	open -W $(APP)

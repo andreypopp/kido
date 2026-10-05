@@ -31,11 +31,13 @@ import TmuxControl
     }
 
     func testOfflineDismissesFloatingSidebar() throws {
-        let sidebar = delegate.sidebar
+        let owner = try XCTUnwrap(delegate.open(.local, start: false))
+        defer { owner.close() }
+        let sidebar = owner.sidebar
         sidebar.isCollapsed = true
         sidebar.focusSidebar(nil)
         XCTAssertTrue(sidebar.isFloating)
-        delegate.down("Disconnected", "", button: "Reconnect")
+        owner.down("Disconnected", "", button: "Reconnect")
         XCTAssertFalse(sidebar.isFloating, "offline must remove floating Outside blocker")
         XCTAssertTrue(sidebar.isCollapsed)
         sidebar.dismissFloating()
