@@ -1,6 +1,6 @@
 export DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
 
-DERIVED := build/derived
+DERIVED := build/xcode.noindex/derived
 CONFIG ?= Debug
 APP = $(DERIVED)/Build/Products/$(CONFIG)/Kido.app
 
@@ -17,14 +17,15 @@ release:
 
 tsan: SANITIZER = Thread
 asan: SANITIZER = Address
+tsan asan: DERIVED = build/xcode.noindex/derived-$@
 tsan asan:
-	$(MAKE) all DERIVED=build/derived-$@ GHOSTTY_OPTIMIZE=ReleaseSafe SANITIZE="-enable$(SANITIZER)Sanitizer YES"
+	$(MAKE) all DERIVED=$(DERIVED) GHOSTTY_OPTIMIZE=ReleaseSafe SANITIZE="-enable$(SANITIZER)Sanitizer YES"
 
 SEED ?= 1
 DURATION ?= 60
 FIND ?= 1
 
-STRESS_DERIVED = build/derived-$@
+STRESS_DERIVED = build/xcode.noindex/derived-$@
 tsan-stress: SANITIZER = Thread
 asan-stress: SANITIZER = Address
 tsan-stress asan-stress: STRESS_OPTIMIZE = GHOSTTY_OPTIMIZE=ReleaseSafe
@@ -35,7 +36,7 @@ stress tsan-stress asan-stress:
 		--seed $(SEED) --duration $(DURATION) --find $(FIND) --out build/bundle/stress/$@-$(SEED)
 
 RECORD ?= 0
-visual: DERIVED = build/derived-visual
+visual: DERIVED = build/xcode.noindex/derived-visual
 visual:
 	mkdir -p build/bundle/visual/{home,state,tmp,config}
 	$(MAKE) all DERIVED=$(DERIVED) SANITIZE="KIDO_VISUAL_CONDITION=KIDO_VISUAL"
@@ -62,4 +63,4 @@ test: all
 	cd Packages/SidebarFeed && swift test
 
 clean:
-	rm -rf build/derived build/derived-tsan build/derived-asan build/derived-stress build/derived-tsan-stress build/derived-asan-stress Kido.xcodeproj
+	rm -rf build/xcode.noindex/derived build/xcode.noindex/derived-tsan build/xcode.noindex/derived-asan build/xcode.noindex/derived-stress build/xcode.noindex/derived-tsan-stress build/xcode.noindex/derived-asan-stress Kido.xcodeproj
