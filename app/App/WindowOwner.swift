@@ -272,7 +272,16 @@ import SidebarFeed
         }
     }
 
-    private func prepareAlert(_ alert: NSAlert, respond: @escaping (NSApplication.ModalResponse) -> Void) {
+    enum ClipboardPermission { case ask, allow, deny }
+    var clipboardPermission = ClipboardPermission.ask
+
+    func cancelClipboardAlert(_ alert: NSAlert) {
+        guard preparedAlert?.alert === alert else { return }
+        preparedAlert = nil
+        if window.attachedSheet === alert.window { window.endSheet(alert.window, returnCode: .abort) }
+    }
+
+    func prepareAlert(_ alert: NSAlert, respond: @escaping (NSApplication.ModalResponse) -> Void) {
         preparedAlert = (alert, respond)
         banner.isHidden = true
         presentAlert()
@@ -288,9 +297,10 @@ import SidebarFeed
     }
 
     func respondToAlert(_ response: NSApplication.ModalResponse) {
-        let respond = preparedAlert?.respond
+        let pending = preparedAlert
         preparedAlert = nil
-        respond?(response)
+        if let alert = pending?.alert, window.attachedSheet === alert.window { window.endSheet(alert.window, returnCode: response) }
+        pending?.respond(response)
     }
 
     func bundleChanged(_ error: Failure) {
@@ -481,6 +491,7 @@ import SidebarFeed
 
     private func invalidate(keepingSnapshot: Bool = false) {
         generation += 1
+        clipboardPermission = .ask
         preparedAlert = nil
         if let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .abort) }
         task?.cancel()
