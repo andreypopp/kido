@@ -36,7 +36,7 @@ for key in CFBundleShortVersionString CFBundleVersion; do
 done
 mkdir -p build/release
 zip="build/release/Kido-$version.zip"
-ditto -c -k --keepParent "$app" "$zip"
+ditto -c -k --norsrc --noextattr --keepParent "$app" "$zip"
 sha=$(shasum -a 256 "$zip" | awk '{print $1}')
 echo "SHA256: $sha"
 if [[ -z $local_tag ]]; then action git tag "$tag"; fi
