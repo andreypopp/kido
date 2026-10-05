@@ -1,5 +1,5 @@
 type server = Down | Up of string option | Mismatch
-type endpoint = { tmux : string; socket : string; build : string option } [@@deriving to_yojson]
+type endpoint = { tmux : string; socket : string; protocol : string option } [@@deriving to_yojson]
 
 let tmux_safe what s =
   match Seq.find (String.contains "'\"$#\\`\n\r") (String.to_seq s) with
@@ -77,7 +77,7 @@ let probe_server ~socket bin =
            ";";
            "show-environment";
            "-g";
-           "KIDO_BUILD_ID";
+           "KIDO_PROTOCOL";
          ])
       (Unix.environment ())
   in
@@ -89,14 +89,14 @@ let probe_server ~socket bin =
       let lines = String.split_on_char '\n' stdout in
       match String.split_on_char '\x1f' (List.hd lines) with
       | [ socket; "" ] when not (String.is_empty socket) ->
-          let build =
+          let protocol =
             List.find_map
               (fun line ->
-                String.chop_prefix ~pre:"KIDO_BUILD_ID=" line
+                String.chop_prefix ~pre:"KIDO_PROTOCOL=" line
                 |> Option.filter (fun value -> not (String.is_empty value)))
               lines
           in
-          Up build
+          Up protocol
       | _ -> Down)
   | _ -> Down
 
@@ -119,7 +119,7 @@ let new_session ~dir ~detach =
   let env =
     Shell.with_env
       (Array.filter (fun s -> not (String.prefix ~pre:"KIDO_STATE_DIR=" s)) (Unix.environment ()))
-      [ ("KIDO_BUILD_ID", Build_id.value) ]
+      [ ("KIDO_PROTOCOL", Protocol.value) ]
   in
   let env =
     match Bin_dir.own () with
@@ -149,17 +149,17 @@ let ensure ~dir =
   let open Result.Infix in
   let* socket = State.server_socket ~create:true ~dir in
   let bin = Lazy.force Tmux.Exec.binary in
-  let resolve build =
+  let resolve protocol =
     let tmux =
       if String.contains bin '/' then Some (Tmux.Exec.abs bin)
       else Tmux.Exec.look_path ~path:(Tmux.Exec.getenv "PATH") bin
     in
     match tmux with
-    | Some tmux -> Ok { tmux; socket; build }
+    | Some tmux -> Ok { tmux; socket; protocol }
     | None -> Error (Printf.sprintf "no %s on PATH" bin)
   in
   match probe_server ~socket bin with
-  | Up build -> resolve build
+  | Up protocol -> resolve protocol
   | Mismatch -> Error (mismatch ~socket bin)
   | Down -> (
       let* env, args = new_session ~dir ~detach:true in
@@ -168,7 +168,7 @@ let ensure ~dir =
       let stderr = String.trim (In_channel.input_all err) in
       ignore (Unix.close_process_full p);
       match probe_server ~socket bin with
-      | Up build -> resolve build
+      | Up protocol -> resolve protocol
       | Mismatch -> Error (mismatch ~socket bin)
       | Down ->
           Error ("cannot start a kido server" ^ if String.is_empty stderr then "" else ": " ^ stderr)

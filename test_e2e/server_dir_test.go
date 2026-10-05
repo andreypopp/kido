@@ -30,7 +30,7 @@ func TestServerDirectorySafety(t *testing.T) {
 		for _, args := range [][]string{
 			{"server", "--server", dir},
 			{"--server", dir},
-			{"sidebar-feed", "--server", dir, "--client", "missing"},
+			{"rpc", "--server", dir, "--client", "missing"},
 			{"switch-window", "next", "--server", dir, "--client", "missing"},
 			{"switch-session", "next", "--server", dir, "--client", "missing"},
 		} {
@@ -54,7 +54,7 @@ func TestServerDirectoryComma(t *testing.T) {
 	for _, args := range [][]string{
 		{"server", "--server", dir},
 		{"--server", dir},
-		{"sidebar-feed", "--server", dir, "--client", "missing"},
+		{"rpc", "--server", dir, "--client", "missing"},
 		{"switch-window", "next", "--server", dir, "--client", "missing"},
 		{"switch-session", "next", "--server", dir, "--client", "missing"},
 	} {
@@ -76,7 +76,7 @@ func TestServerSocketPathTooLong(t *testing.T) {
 	dir := filepath.Join(serverDir(t), strings.Repeat("x", 110))
 	for _, args := range [][]string{
 		{"server", "--server", dir},
-		{"sidebar-feed", "--server", dir, "--client", "missing"},
+		{"rpc", "--server", dir, "--client", "missing"},
 		{"switch-window", "next", "--server", dir, "--client", "missing"},
 	} {
 		cmd := exec.Command(kidoBin, args...)

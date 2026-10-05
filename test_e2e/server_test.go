@@ -16,9 +16,9 @@ import (
 // endpoint is the one line `kido server` prints, the contract Kido.app
 // reads.
 type endpoint struct {
-	Tmux   string `json:"tmux"`
-	Socket string `json:"socket"`
-	Build  string `json:"build"`
+	Tmux     string `json:"tmux"`
+	Socket   string `json:"socket"`
+	Protocol string `json:"protocol"`
 }
 
 // server runs `kido server` in this test's world with TMUX set to tmux,
@@ -83,9 +83,8 @@ func TestKidoServerStartsTheServerDetached(t *testing.T) {
 	}
 
 	first := r.mustServer("")
-	version, err := exec.Command(kidoBin, "--version").Output()
-	if err != nil || first.Build == "unknown" || first.Build != strings.TrimSpace(string(version)) {
-		t.Fatalf("server build = %q, binary version = %q (%v)", first.Build, version, err)
+	if first.Protocol != "1.0" {
+		t.Fatalf("server protocol = %q, want 1.0", first.Protocol)
 	}
 	if got := r.mustKido("list-sessions", "-F", "#{session_name} #{session_attached}"); got != "main 0" {
 		t.Errorf("sessions = %q, want main, detached", got)
@@ -110,14 +109,14 @@ func TestKidoServerStartsTheServerDetached(t *testing.T) {
 	if got := r.mustKido("list-sessions", "-F", "#{session_name}"); got != "main" {
 		t.Errorf("sessions = %q, want only main", got)
 	}
-	r.mustKido("set-environment", "-g", "KIDO_BUILD_ID", "another-build")
-	if got := r.mustServer("").Build; got != "another-build" {
-		t.Errorf("existing server build = %q, want another-build", got)
+	r.mustKido("set-environment", "-g", "KIDO_PROTOCOL", "another-protocol")
+	if got := r.mustServer("").Protocol; got != "another-protocol" {
+		t.Errorf("existing server protocol = %q, want another-protocol", got)
 	}
-	r.mustKido("set-environment", "-gu", "KIDO_BUILD_ID")
+	r.mustKido("set-environment", "-gu", "KIDO_PROTOCOL")
 	out, _, code := r.server("")
-	if code != 0 || !strings.Contains(out, `"build":null`) {
-		t.Errorf("unstamped server: exit %d, JSON %q, want build:null", code, out)
+	if code != 0 || !strings.Contains(out, `"protocol":null`) {
+		t.Errorf("unstamped server: exit %d, JSON %q, want protocol:null", code, out)
 	}
 }
 
@@ -159,8 +158,8 @@ func TestKidoServerRacesSucceed(t *testing.T) {
 }
 
 // tmux blocks only the starting client while reading config. A second
-// client must see the startup build even before the owned options run.
-func TestKidoServerBuildDuringConfig(t *testing.T) {
+// client must see the startup protocol even before the owned options run.
+func TestKidoServerProtocolDuringConfig(t *testing.T) {
 	t.Parallel()
 	r := newKidoRun(t)
 	confDir := filepath.Join(r.config, "kido")

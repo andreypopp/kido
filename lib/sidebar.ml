@@ -652,14 +652,33 @@ let step m (snap : snapshot) =
   let m = track { m with at = m.now (); clock; snap; client } in
   if (not (same snap was)) || pending then (rebuild m, true) else (m, false)
 
-type command = Filter of string option | Ignored
+type command =
+  | Filter of string option
+  | Switch_window of int * bool
+  | Invalid of int * string
+  | Ignored
 
 let command line =
-  if String.equal line "filter" then Filter None
-  else
-    match String.chop_prefix ~pre:"filter " line with
-    | Some text -> Filter (Some text)
-    | None -> Ignored
+  match Yojson.Safe.from_string line with
+  | `Assoc fields -> (
+      let id =
+        match List.assoc_opt ~eq:String.equal "id" fields with
+        | Some (`Int id) -> Some id
+        | _ -> None
+      in
+      let invalid () =
+        match id with Some id -> Invalid (id, "invalid or unknown request") | None -> Ignored
+      in
+      match fields with
+      | [ ("filter", `String text) ] -> Filter (if String.is_empty text then None else Some text)
+      | _ -> (
+          match (id, List.assoc_opt ~eq:String.equal "switch-window" fields) with
+          | Some id, Some (`Assoc [ ("direction", `String direction) ])
+            when String.equal direction "next" || String.equal direction "prev" ->
+              Switch_window (id, String.equal direction "next")
+          | _ -> invalid ()))
+  | _ -> Ignored
+  | exception Yojson.Json_error _ -> Ignored
 
 let role_name : role -> string = function
   | `Plain -> "plain"

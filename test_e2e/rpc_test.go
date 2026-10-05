@@ -174,7 +174,7 @@ func feedItems(nodes []feedRow) []feedRow {
 	return out
 }
 
-// feed is a running `kido sidebar-feed` for an app-like control client
+// feed is a running `kido rpc` for an app-like control client
 // of the inner server: its own `tmux -C` attached to session, the way
 // Kido.app attaches one.
 type feed struct {
@@ -219,7 +219,7 @@ func (h *harness) appClient(session string) string {
 }
 
 func feedCmd(h *harness, args ...string) *exec.Cmd {
-	cmd := exec.Command(kidoBin, append([]string{"sidebar-feed"}, args...)...)
+	cmd := exec.Command(kidoBin, append([]string{"rpc"}, args...)...)
 	// The knobs the inner server gives its own sidebar, so both agree.
 	cmd.Env = cleanEnv("TMUX=", "TMUX_PANE=", "KIDO_STATE_DIR="+serverDir(h.t),
 		"KIDO_LINGER_SECONDS=1", "KIDO_STALL_THRESHOLD_MS=3000")
@@ -301,7 +301,7 @@ func (f *feed) send(line string) {
 // row, with the client's own ids. The comparison carries the ordering; the
 // field checks pin what drawing alone cannot tell apart (a null indicator
 // and an idle one both draw a blank).
-func TestSidebarFeedMatchesTheTUI(t *testing.T) {
+func TestRpcMatchesTheTUI(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	_, childWindow := h.recordedRun("kid-e2e")
@@ -382,7 +382,7 @@ func TestSidebarFeedMatchesTheTUI(t *testing.T) {
 	}
 }
 
-func TestSidebarFeedRunStartedWithActivity(t *testing.T) {
+func TestRpcRunStartedWithActivity(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	agentRun, agentWindow := h.recordedRun("feed-agent", "--title", "feed-agent")
@@ -467,7 +467,7 @@ func TestSidebarFeedRunStartedWithActivity(t *testing.T) {
 // session; the snapshot's client must name the session the client is
 // actually switched to, not whichever copy list-panes happens to return
 // first.
-func TestSidebarFeedLinkedWindowClientSession(t *testing.T) {
+func TestRpcLinkedWindowClientSession(t *testing.T) {
 	t.Parallel()
 	h := start(t, "one")
 	h.newSession("two")
@@ -500,7 +500,7 @@ func TestSidebarFeedLinkedWindowClientSession(t *testing.T) {
 // A change is one new line; a quiet server is no line at all; the filter
 // narrows the next line and a bare "filter" clears it; an unknown command
 // is ignored; EOF on stdin is exit 0.
-func TestSidebarFeedStream(t *testing.T) {
+func TestRpcStream(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	h.newSession("beta")
@@ -556,14 +556,14 @@ func TestSidebarFeedStream(t *testing.T) {
 	}
 	quiet("after the new window")
 
-	f.send("filter bet")
+	f.send(`{"filter":"bet"}`)
 	s := f.waitLast(func(s feedSnapshot) bool { return s.Filter == "bet" }, "the filter")
 	if len(s.Sessions) != 1 || s.Sessions[0].Name != "beta" {
 		t.Errorf("filtered sessions: %s", s.raw)
 	}
 	f.send("frobnicate")
 	quiet("an unknown command")
-	f.send("filter")
+	f.send(`{"filter":""}`)
 	s = f.waitLast(func(s feedSnapshot) bool { return s.Filter == "" }, "the filter cleared")
 	if len(s.Sessions) != 2 {
 		t.Errorf("unfiltered sessions: %s", s.raw)
@@ -580,8 +580,8 @@ func TestSidebarFeedStream(t *testing.T) {
 	}
 }
 
-// Every failure is one "kido sidebar-feed: " line and exit 1.
-func TestSidebarFeedFailures(t *testing.T) {
+// Every failure is one "kido rpc: " line and exit 1.
+func TestRpcFailures(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	for _, c := range []struct {
@@ -590,7 +590,7 @@ func TestSidebarFeedFailures(t *testing.T) {
 	}{
 		{[]string{"--server", filepath.Join(serverDir(t), "absent"), "--client", h.client}, "no tmux server at "},
 		{[]string{"--server", h.stateDir, "--client", "no-such-client"}, `no tmux client "no-such-client"`},
-		{[]string{"--server", h.stateDir}, "usage: kido sidebar-feed"},
+		{[]string{"--server", h.stateDir}, "usage: kido rpc"},
 	} {
 		cmd := feedCmd(h, c.args...)
 		var stderr bytes.Buffer
@@ -601,11 +601,11 @@ func TestSidebarFeedFailures(t *testing.T) {
 		if !ok || ee.ExitCode() != 1 {
 			t.Errorf("%q: exit %v, want 1", c.args, err)
 		}
-		if msg := stderr.String(); !strings.HasPrefix(msg, "kido sidebar-feed: "+c.want) {
-			t.Errorf("%q: stderr %q, want kido sidebar-feed: %s...", c.args, msg, c.want)
+		if msg := stderr.String(); !strings.HasPrefix(msg, "kido rpc: "+c.want) {
+			t.Errorf("%q: stderr %q, want kido rpc: %s...", c.args, msg, c.want)
 		}
-		if len(out) != 0 {
-			t.Errorf("%q: stdout %q, want nothing", c.args, out)
+		if len(out) != 0 && string(out) != "{\"hello\":{\"protocol\":\"1.0\"}}\n" {
+			t.Errorf("%q: unexpected stdout %q", c.args, out)
 		}
 	}
 }
@@ -614,7 +614,7 @@ func TestSidebarFeedFailures(t *testing.T) {
 // poll clears it. The failure is load_live removing a dead record from a
 // read-only state directory, which it cannot swallow; the feed has that
 // directory to itself, so nothing else removes the record first.
-func TestSidebarFeedRecoversFromAnError(t *testing.T) {
+func TestRpcRecoversFromAnError(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root removes a file from a read-only directory")
 	}
@@ -650,7 +650,7 @@ func TestSidebarFeedRecoversFromAnError(t *testing.T) {
 
 // A stdin that cannot be read ends the feed with exit 1, as EOF ends it
 // with 0: a directory's descriptor fails every read.
-func TestSidebarFeedStdinError(t *testing.T) {
+func TestRpcStdinError(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	cmd := feedCmd(h, "--server", h.stateDir, "--client", h.appClient("alpha"))
@@ -672,8 +672,8 @@ func TestSidebarFeedStdinError(t *testing.T) {
 		if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 1 {
 			t.Errorf("exit %v, want 1", err)
 		}
-		if msg := stderr.String(); !strings.HasPrefix(msg, "kido sidebar-feed: ") {
-			t.Errorf("stderr %q, want kido sidebar-feed: ...", msg)
+		if msg := stderr.String(); !strings.HasPrefix(msg, "kido rpc: ") {
+			t.Errorf("stderr %q, want kido rpc: ...", msg)
 		}
 	case <-time.After(settle):
 		cmd.Process.Kill()

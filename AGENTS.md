@@ -137,11 +137,11 @@ Conventions:
                        set_status, get-agent, get-inbox, snapshot,
                        ssh, get-window, switch-session/window, server,
                        debug-log, runs, run-outcome, reap, close-run,
-                       sidebar-feed
+                       rpc
     bin/cli.ml         failure printing and tables
     lib/               the library kido:
       launch.ml        the launcher and `kido server`: --server, the
-                       server.conf in its state dir, KIDO_BUILD_ID
+                       server.conf in its state dir, KIDO_PROTOCOL
       build_id.ml      the immutable dune-build-info version, or unknown
       shell.ml, prime.ml  kido shell: the login shell and its priming files
       bin_dir.ml       the shipped-file and bin-directory lookup
@@ -204,8 +204,8 @@ Promotion substitutes the build id through dune-build-info.
 `build/main.exe` is the stamped executable copied by `make install` and
 e2e; `_build/default/bin/main.exe`
 reports `unknown`. `kido --version` prints that id; `kido server` reports the
-creating server's global `KIDO_BUILD_ID` as its JSON `build` field (null if unset).
-The launcher, `kido server`, `sidebar-feed` and `switch-session/window`
+creating server's global `KIDO_PROTOCOL` as its JSON `protocol` field (null if unset).
+The launcher, `kido server`, `rpc` and `switch-session/window`
 accept `--server DIR`. `switch-window` prints `SESSION_ID WINDOW_ID` when
 it switches and prints nothing when there is no target. A server is its
 state directory; its socket is `<dir>/socket`. The default is resolved by `State.dir`: inside a pane,

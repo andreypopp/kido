@@ -1,5 +1,7 @@
-type endpoint = { tmux : string; socket : string; build : string option } [@@deriving to_yojson]
+type endpoint = { tmux : string; socket : string; protocol : string option } [@@deriving to_yojson]
+type server = Down | Up of string option | Mismatch
 
+val probe_server : socket:string -> string -> server
 val tmux_safe : string -> string -> (unit, string) result
 
 val run : dir:string -> tmux:string -> ('a, string) result

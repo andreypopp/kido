@@ -195,7 +195,8 @@ let get_agent =
            ok
              (List_runs.agents ~dir ~threshold:(State.stall_threshold ())
                 ~self:(Tmux.Exec.getenv "TMUX_PANE") ~session:""
-                ~panes:(ok (Tmux.Exec.list_panes ())) ~states:(State.load_live ~dir))
+                ~panes:(ok (Tmux.Exec.list_panes ()))
+                ~states:(State.load_live ~dir))
          in
          print_endline
            (Yojson.Safe.to_string (`List (List.map List_runs.agent_info_to_yojson agents)));
@@ -660,84 +661,106 @@ let sidebar =
 
 type input = Line of string | Eof | Read_error of string
 
-let sidebar_feed =
-  cmd "sidebar-feed" "Stream the sidebar's rows to a native sidebar, as one JSON line per change."
+let rpc =
+  cmd "rpc" "Stream the sidebar's rows to a native sidebar, as one JSON line per change."
   @@ let+ server = server_dir
      and+ client = str "client" "NAME" "The tmux client the rows are drawn for." in
      fun () ->
-       if String.is_empty client then
-         failwith "usage: kido sidebar-feed [--server DIR] --client NAME";
+       if String.is_empty client then failwith "usage: kido rpc [--server DIR] --client NAME";
        let dir = resolved_dir server in
        let socket = ok (State.server_socket ~create:false ~dir) in
        if not (Sys.file_exists socket) then Printf.ksprintf failwith "no tmux server at %s" socket;
-       let opts =
-         {
-           Sidebar.interval = Sidebar.default_interval;
-           client;
-           socket = Some socket;
-           dir;
-           threshold = State.stall_threshold ();
-           grace = Reap.grace ();
-         }
+       let write json =
+         print_endline (Yojson.Safe.to_string json);
+         flush stdout
        in
-       let lock = Mutex.create () and input = Queue.create () in
-       let push i = Mutex.protect lock (fun () -> Queue.push i input) in
-       let rec read () =
-         match In_channel.input_line Stdlib.stdin with
-         | Some line ->
-             push (Line line);
-             read ()
-         | None -> push Eof
-         | exception Sys_error e -> push (Read_error e)
+       let stamp =
+         match Launch.probe_server ~socket (Lazy.force Tmux.Exec.binary) with
+         | Up stamp -> stamp
+         | Down | Mismatch -> None
        in
-       ignore (Thread.create read ());
-       let conn = Tmux.Conn.connect ~socket client in
-       let rec loop ?wait (m : Sidebar.model) last =
-         let snap = Sidebar.poll ?wait ~opts conn m.snap in
-         if Option.is_none snap.client then
-           Printf.ksprintf failwith "no tmux client %S on %s" client socket;
-         let m, changed = Sidebar.step m snap in
-         let inputs =
-           Mutex.protect lock (fun () ->
-               let l = List.of_seq (Queue.to_seq input) in
-               Queue.clear input;
-               l)
+       write (Protocol.hello stamp);
+       if not (Option.equal String.equal stamp (Some Protocol.value)) then (
+         write (`Assoc [ ("error", `String "server protocol does not match binary protocol") ]);
+         2)
+       else
+         let opts =
+           {
+             Sidebar.interval = Sidebar.default_interval;
+             client;
+             socket = Some socket;
+             dir;
+             threshold = State.stall_threshold ();
+             grace = Reap.grace ();
+           }
          in
-         let search =
-           List.fold_left
-             (fun search -> function
-               | Line l -> ( match Sidebar.command l with Filter f -> f | Ignored -> search)
-               | Eof | Read_error _ -> search)
-             m.search inputs
+         let lock = Mutex.create () and input = Queue.create () in
+         let push i = Mutex.protect lock (fun () -> Queue.push i input) in
+         let rec read () =
+           match In_channel.input_line Stdlib.stdin with
+           | Some line ->
+               push (Line line);
+               read ()
+           | None -> push Eof
+           | exception Sys_error e -> push (Read_error e)
          in
-         let m, changed =
-           if Option.equal String.equal search m.search then (m, changed)
-           else (Sidebar.rebuild { m with search }, true)
+         ignore (Thread.create read ());
+         let conn = Tmux.Conn.connect ~socket client in
+         let rec loop ?wait (m : Sidebar.model) last =
+           let snap = Sidebar.poll ?wait ~opts conn m.snap in
+           if Option.is_none snap.client then
+             Printf.ksprintf failwith "no tmux client %S on %s" client socket;
+           let m, changed = Sidebar.step m snap in
+           let inputs =
+             Mutex.protect lock (fun () ->
+                 let l = List.of_seq (Queue.to_seq input) in
+                 Queue.clear input;
+                 l)
+           in
+           let search =
+             List.fold_left
+               (fun search -> function
+                 | Line l -> (
+                     match Sidebar.command l with
+                     | Filter f -> f
+                     | Switch_window (id, next) ->
+                         write
+                           (Protocol.reply id
+                              (Sidebar.switch_window ~socket:(Some socket) ~dir ~client ~next));
+                         search
+                     | Invalid (id, error) ->
+                         write (Protocol.reply id (Error error));
+                         search
+                     | Ignored -> search)
+                 | Eof | Read_error _ -> search)
+               m.search inputs
+           in
+           let m, changed =
+             if Option.equal String.equal search m.search then (m, changed)
+             else (Sidebar.rebuild { m with search }, true)
+           in
+           let last =
+             if not changed then last
+             else
+               match Sidebar.to_json m with
+               | Some json ->
+                   let line = Yojson.Safe.to_string json in
+                   if not (String.equal line last) then write json;
+                   line
+               | None -> last
+           in
+           match
+             List.find_map
+               (function Eof -> Some None | Read_error e -> Some (Some e) | Line _ -> None)
+               inputs
+           with
+           | Some None -> 0
+           | Some (Some e) -> failwith e
+           | None -> loop ~wait:opts.interval m last
          in
-         let last =
-           if not changed then last
-           else
-             match Sidebar.to_json m with
-             | Some json ->
-                 let line = Yojson.Safe.to_string json in
-                 if not (String.equal line last) then (
-                   print_endline line;
-                   flush stdout);
-                 line
-             | None -> last
-         in
-         match
-           List.find_map
-             (function Eof -> Some None | Read_error e -> Some (Some e) | Line _ -> None)
-             inputs
-         with
-         | Some None -> 0
-         | Some (Some e) -> failwith e
-         | None -> loop ~wait:opts.interval m last
-       in
-       Fun.protect
-         ~finally:(fun () -> Tmux.Conn.close conn)
-         (fun () -> loop (Sidebar.make ~now:Unix.gettimeofday opts) "")
+         Fun.protect
+           ~finally:(fun () -> Tmux.Conn.close conn)
+           (fun () -> loop (Sidebar.make ~now:Unix.gettimeofday opts) "")
 
 let tool =
   Cmd.group
@@ -780,7 +803,7 @@ let () =
         ssh;
         reap;
         close_run;
-        sidebar_feed;
+        rpc;
       ]
   in
   (* ssh's arguments are ssh's own, options included. *)

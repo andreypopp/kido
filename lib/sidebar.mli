@@ -132,7 +132,11 @@ val rebuild : model -> model
 val poll : ?wait:float -> opts:options -> Tmux.Conn.t -> snapshot -> snapshot
 val step : model -> snapshot -> model * bool
 
-type command = Filter of string option | Ignored
+type command =
+  | Filter of string option
+  | Switch_window of int * bool
+  | Invalid of int * string
+  | Ignored
 
 val command : string -> command
 val to_json : model -> Yojson.Safe.t option

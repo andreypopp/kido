@@ -14,6 +14,12 @@ import pathlib
 import re
 import subprocess
 
+revision = subprocess.check_output(['git', 'ls-files', '-s', 'third_party/tmux'], text=True).split()[1]
+contract = pathlib.Path('share/rpc/contract.md').read_text()
+if f'fork revision: {revision}\n' not in contract:
+    print('share/rpc/contract.md: fork revision differs from third_party/tmux gitlink')
+    raise SystemExit(1)
+
 errors = 0
 def report(path, text, offset, message):
     global errors
@@ -92,7 +98,7 @@ sleeps = {
     'test_e2e/leak_check_test.go': {'time.Sleep(50 * time.Millisecond)': 2},
     'test_e2e/reap_test.go': {'time.Sleep(100 * time.Millisecond)': 1, 'time.Sleep(1200 * time.Millisecond)': 1},
     'test_e2e/render_test.go': {'time.Sleep(1200 * time.Millisecond)': 2},
-    'test_e2e/sidebar_feed_test.go': {'time.Sleep(100 * time.Millisecond)': 1},
+    'test_e2e/rpc_test.go': {'time.Sleep(100 * time.Millisecond)': 1},
     'test_e2e/snapshot_test.go': {'time.Sleep(200 * time.Millisecond)': 1},
     'test_e2e/ssh_prime_test.go': {'time.Sleep(100 * time.Millisecond)': 1},
     'test_e2e/stall_test.go': {'time.Sleep(6 * time.Second)': 1},

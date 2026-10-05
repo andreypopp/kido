@@ -51,7 +51,7 @@ func TestServerWithoutLocale(t *testing.T) {
 	}
 }
 
-func TestSidebarFeedWithoutLocale(t *testing.T) {
+func TestRpcWithoutLocale(t *testing.T) {
 	h := start(t, "alpha")
 	const name = "日本語 café"
 	h.in("rename-window", "-t", "alpha:", name)
@@ -63,10 +63,10 @@ func TestSidebarFeedWithoutLocale(t *testing.T) {
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("sidebar-feed without locale: %v: %s", err, &stderr)
+		t.Fatalf("rpc without locale: %v: %s", err, &stderr)
 	}
 	var snapshot feedSnapshot
-	if err := json.Unmarshal(bytes.TrimSpace(out), &snapshot); err != nil {
+	if err := json.Unmarshal(bytes.TrimSpace(bytes.SplitN(out, []byte("\n"), 2)[1]), &snapshot); err != nil {
 		t.Fatalf("invalid feed: %s (%v)", out, err)
 	}
 	if snapshot.Error != nil || len(snapshot.Sessions) != 1 || len(snapshot.Sessions[0].Nodes) != 1 || snapshot.Sessions[0].Nodes[0].Name != name || len(snapshot.Sessions[0].Nodes[0].Children) != 2 {

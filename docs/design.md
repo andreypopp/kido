@@ -1635,10 +1635,12 @@ ended run shows its outcome. The
 attention predicate `n`/`N` walk is the model's, so the feed's
 `attention` and the TUI's jump cannot disagree.
 
-`kido sidebar-feed --server <dir> --client <name>` is the second view,
+`kido rpc --server <dir> --client <name>` is the second view,
 for Kido.app's native sidebar. Its wire format is a frozen contract,
-versioned by its `v` field and kept in the app's notes
-(`sidebar-feed-contract-v2.md`). Each session carries `nodes`: window
+versioned by `Protocol.value` and kept in `share/rpc/contract.md`.
+The first line is a hello carrying the binary protocol; a differing or absent
+server stamp adds `server` to the hello and sends an error event before exit 2.
+Exact major and minor equality is required. Snapshots retain `v:2`. Each session carries `nodes`: window
 groups have their window id and item children; items have their pane id,
 row fields and hoisted child nodes. The feed carries no glyph strings.
 Both the TUI cursor and attention navigation walk the tree depth-first.
@@ -1673,7 +1675,11 @@ and `kido switch-session --server DIR` use the same resolution and checks. Stdin
 that only queues lines, EOF or a read error behind a mutex; the tick
 drains the queue, and a read error ends the feed with exit 1. The control
 connection stays on the one thread, since `Tmux.Conn` has no lock. A
-`filter` line therefore shows on the next tick, and EOF ends the feed
+`{"filter":"text"}` request therefore shows on the next tick (empty clears it).
+`{"id":N,"switch-window":{"direction":"next"|"prev"}}` uses the CLI's
+fresh-state ordering through one-shot tmux calls and returns a correlated reply.
+Invalid requests with integer ids return error replies; others are ignored.
+All replies, snapshots and errors share the tick's stdout writer. EOF ends the feed
 there with exit 0.
 
 ## Priming a remote shell
@@ -1851,18 +1857,17 @@ Kido.app that attaches on its own: it runs the same probe and, when the
 server is down, the same start (`Launch.new_session`: server.conf, the
 environment and PATH, session `main`), detached. It never attaches, so it
 runs inside tmux too. It prints one JSON line,
-`{"tmux":...,"socket":...,"build":...}`: the resolved kido-tmux made
+`{"tmux":...,"socket":...,"protocol":...}`: the resolved kido-tmux made
 absolute, the convention's `<dir>/socket` path, and the
-server's global environment variable `KIDO_BUILD_ID` (or JSON null if
-absent). The launcher sets it to the creating binary's immutable build
-identity in the environment of the tmux process it starts. tmux copies
+server's global environment variable `KIDO_PROTOCOL` (or JSON null if
+absent). The launcher sets it to `Protocol.value` in the environment of the tmux process it starts. tmux copies
 that environment before forking the server and accepting clients, so the
 stamp is readable even while server.conf is still running; config options
 would not be, because tmux blocks only the initial client during config.
 The probe uses one invocation: `list-sessions -F '#{socket_path}' ;
-show-environment -g KIDO_BUILD_ID`. A direct reader uses
-`kido-tmux -S SOCKET show-environment -g KIDO_BUILD_ID`, which prints
-`KIDO_BUILD_ID=VALUE`; a missing variable exits 1. Attaching or ensuring
+show-environment -g KIDO_PROTOCOL`. A direct reader uses
+`kido-tmux -S SOCKET show-environment -g KIDO_PROTOCOL`, which prints
+`KIDO_PROTOCOL=VALUE`; a missing variable exits 1. Attaching or ensuring
 an existing server never changes its stamp.
 
 `kido --version` prints the binary's baked-in build id followed by a
