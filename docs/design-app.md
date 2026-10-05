@@ -4,7 +4,7 @@ Open gaps and accepted limits are tracked in [Known issues](known-issues-app.md)
 
 Kido.app (`app/`) is a native macOS view of the kido server: a tmux
 control-mode client that renders every pane with libghostty, beside a
-native sidebar fed by `kido sidebar-feed`. Sessions, windows and panes
+native sidebar fed by `kido rpc`. Sessions, windows and panes
 live in tmux; the app holds none of them. tmux is always the source of
 truth for pane content, including history and its line wrapping, and
 for geometry. Ghostty's reflow during a resize is provisional, replaced
@@ -119,10 +119,16 @@ Relative/control-containing paths or noisy/malformed stdout are errors. Explicit
 Connect may call that kido's `server --server DIR`; JSON tmux/socket paths are
 opaque remote values, not local files. The returned socket must end in `/socket`;
 its parent is retained for feed/navigation. Local retains bundled-tmux validation.
-The existing build mismatch banner is unchanged in policy: remote offers
-**Connect Anyway**, never Restart. Remote upgrade/restart is manual.
+Discovery decodes the server's protocol stamp, not its build ID. The required
+protocol is 1.0: the major must match and the minor must be at least 0.
+Local mismatches, including unstamped servers, offer Restart with confirmation
+that all sessions and panes will end. Remote mismatches offer only Reconnect,
+which repeats discovery after the user upgrades kido and restarts its server.
+There is no compatibility waiver or remote restart. The bundle's captured
+BUILD-ID detects an app replaced on disk and requires relaunch independently
+of the server protocol.
 
-Control attach, duplex sidebar-feed and switch-window share the owned master,
+Control attach and duplex RPC (including switch-window) share the owned master,
 with `ControlMaster=no`. One audited POSIX single-quote function quotes every
 remote argv element after `exec`; Host is never interpolated into shell text.
 Remote HOME/PATH/XDG are resolved there, not forwarded from the Mac. Only
@@ -561,9 +567,16 @@ reader queue.
 
 ## Sidebar
 
-The sidebar runs the bundled `kido sidebar-feed --server DIR --client NAME` with
-the app's own client name, so kido's rules follow what the app shows. The app
-decodes v2 only: sessions are source-list sections,
+The sidebar runs the bundled `kido rpc --server DIR --client NAME` with
+the app's own client name, so kido's rules follow what the app shows. The
+in-repo [RPC contract](../share/rpc/contract.md) is authoritative. The first line
+must be a compatible hello; a server mismatch stops the feed and uses the same
+banner as discovery, without automatic retry. Filters are JSON requests and
+window navigation uses numbered RPC requests. Replies can interleave with
+snapshots and arrive out of order; pending callbacks live on the feed reader
+queue and complete once, including failure when the connection ends or restarts.
+The app decodes unknown enum values as unknown and v2 snapshots only:
+sessions are source-list sections,
 window groups contain panes, and pane items can contain arbitrarily deep
 hoisted child windows. A node's identity is scoped to its session; linked
 windows may appear in several sections.

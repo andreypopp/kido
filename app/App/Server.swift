@@ -1,5 +1,6 @@
 import Foundation
 import TmuxControl
+import SidebarFeed
 
 struct BundledTools: Sendable {
     let prefix: String
@@ -48,7 +49,8 @@ struct Endpoint: Sendable {
 struct Server: Decodable, Sendable {
     let tmux: String
     let socket: String
-    let build: String?
+    let protocolVersion: RPCVersion?
+    private enum CodingKeys: String, CodingKey { case tmux, socket; case protocolVersion = "protocol" }
 
     static func validPath(_ path: String) -> Bool {
         path.hasPrefix("/") && !path.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
@@ -58,7 +60,7 @@ struct Server: Decodable, Sendable {
         #if KIDO_VISUAL || KIDO_STRESS
         let env = ProcessInfo.processInfo.environment
         guard let dir = env["KIDO_APP_SERVER"], let tmux = env["KIDO_APP_TMUX"] else { return nil }
-        return Server(tmux: tmux, socket: URL(fileURLWithPath: dir).appendingPathComponent("socket").path, build: nil)
+        return Server(tmux: tmux, socket: URL(fileURLWithPath: dir).appendingPathComponent("socket").path, protocolVersion: .required)
         #else
         return nil
         #endif
@@ -102,7 +104,7 @@ struct Server: Decodable, Sendable {
     func restart(drain: Drain? = nil) async throws(Failure) {
         try tools.validate()
         let current = try await Self.locate(drain: drain).server
-        guard current.socket == socket, current.build == build else {
+        guard current.socket == socket, current.protocolVersion == protocolVersion else {
             throw Failure(message: "The server changed. Reconnect before restarting it.")
         }
         let (killed, _, err) = try await Child.run(tools.tmux, ["-S", socket, "kill-server"], env: tools.environment, drain: drain)
