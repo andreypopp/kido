@@ -1,6 +1,6 @@
 # Sidebar reference
 
-Self-contained HTML reference for **shipped Kido.app 0.1.5 pane focus and window tabs**. Remote-host work remains on hold; its agreed entry point and window-title rules are recorded below.
+Self-contained HTML reference for **shipped Kido.app 0.1.5 pane focus and window tabs**. Remote support is being finished; the new remote-only host label below is a design proposal for user review.
 
 ```sh
 open design/sidebar/mockup.html
@@ -30,9 +30,19 @@ The shipped tabs are custom AppKit `WindowTabs` drawing, not native macOS NSWind
 
 The preview fixtures include captured working-session structure, illustrative activity/states, nested multi-pane windows, long titles, ssh/shell panes, and historical clocks. Captured timestamps are not a live feed connection. Session/window creation and terminal content are placeholders.
 
-## Remote entry point and window titles — on hold
+## Remote host label — draft for review
 
-The agreed Spotlight/Shortcuts action is **Connect to Remote Host in Kido**, taking a required Host string (`user@hostname` or SSH alias). Each request opens a new native window, including repeated requests for the same host. Remote connections use that host's kido-app server. There are no in-app connection controls or saved-host history.
+A fixed, noninteractive host label sits at the start of the existing 44pt title-bar strip, before the scrolling tabs. Local windows allocate no label space. Remote windows show the resolved `user@host`; only the original SSH alias is in the tooltip (e.g. `buildbox`). No menu, hover treatment, press feedback, icon, or connection-status dot.
+
+Draft geometry/style: 11pt medium system font in secondaryLabelColor (active tab titles remain 11pt regular labelColor). Text has a 16pt line box centered vertically at y=14; 2pt leading inset; up to 166pt text width, further constrained by a label container at most 35% of the full strip. Long text truncates at the tail. After the text, 12pt spacing, a 1pt separatorColor rule 16pt tall, and 10pt gap before the tabs (the first tab keeps its own 2pt inset). Label does not scroll; remaining width goes to tabs, preserving their 85–220pt widths and 8pt/28pt surface geometry.
+
+Connected uses the normal secondary label color. Reconnecting/offline dims the whole label to 45% opacity; no spinner or extra warning glyph. A window banner explains the connection state. The host/alias stays visible offline, never a stale session title. This is implementable as a noneditable NSTextField label plus a separator; native window dragging should continue through the label, without treating it as a tab hit target.
+
+Preview controls select Local/dev@buildbox/long host, Connected/Reconnecting/Offline, and Docked/Collapsed/Floating sidebar. In floating mode, the strip retains its previous horizontal origin while the sidebar overlays the terminal. The same fixed label remains beside the tabs in all modes.
+
+## Remote entry point and window titles
+
+The agreed Spotlight/Shortcuts action is **Connect to Remote Host in Kido**, taking a required Host string (`user@hostname` or SSH alias). Each request opens a new native window, including repeated requests for the same host. Remote connections use that host's kido-app server. There are no in-app connection controls or saved-host history. The new host label is informational, not a connection control.
 
 Session-aware window titles are **Session** for Local (e.g. `main`) and **user@host / Session** for remote windows. They track that window's current session; offline, omit a stale session name. The preview does not show a separate title-bar window title: its title bar contains the shipped window tabs. The terminal heading remains illustrative pane content, not a window title.
 
