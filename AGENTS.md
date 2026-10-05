@@ -237,22 +237,30 @@ once something calls it is the harder half.
 
 kido only runs under [andreypopp/tmux](https://github.com/andreypopp/tmux),
 vendored as the submodule `third_party/tmux` (`tmux -V` prints
-`next-3.9`): [PR tmux/tmux#5468](https://github.com/tmux/tmux/pull/5468)
-(side status) plus a `side-status-command` patch and the OSC 133
-command-line capture, the pause flush for control clients. The fork is
-kept rebased, never merged: `fork` is a linear branch of kido's commits on
-top of the PR's current head, which the PR keeps rebased on upstream
-master. An upstream fix therefore arrives by rebasing onto the PR (or
-onto master, should the PR land), not by cherry-picking it, and a commit
-upstream or the PR already carries is dropped. Force-pushing `fork`
-leaves older submodule pins unreachable, so the previous head is pushed
-first as a dated branch (`fork-YYYY-MM-DD`).
+`next-3.9`). `fork` is the branch kido pins. It carries kido's commits
+linearly on top of
+[PR tmux/tmux#5468](https://github.com/tmux/tmux/pull/5468) (side status),
+whose commits are rebased onto current upstream tmux master. When master
+moves, the PR's commits and kido's are rebased onto it. If the PR lands,
+kido's commits sit directly on master. Maintenance is by rebase only,
+never merges or cherry-picks from upstream.
 
-In `andreypopp/tmux`, `fork` is kido's pin and `side-pane` is the team's
-working branch. `master` only mirrors upstream; a PR into it is
-mistargeted. A kido fork change lands on both `fork` and `side-pane`,
-cherry-picked between them. Push over SSH
-(`git@github.com:andreypopp/tmux.git`).
+Kido's commit order on top of the PR is:
+
+- Side status first: `side-status-command`, its conventions, the drag
+  fixes, the pane-border edge.
+- Then OSC 133 command-line capture; the control-client fixes (pause
+  flush, `%exit` reason, control-state guard, hanging up a pane's child);
+  terminal query-reply routing to the query's owner.
+
+Before force-pushing `fork`, push its previous head as a dated branch
+`fork-YYYY-MM-DD`, so older submodule pins stay reachable. `master` on
+`andreypopp/tmux` only mirrors upstream; a PR into it is mistargeted.
+Push over SSH (`git@github.com:andreypopp/tmux.git`).
+
+A fork change bumps kido's submodule pin and the `fork revision:` line
+in `share/rpc/contract.md`; lint enforces their agreement. Bump the
+protocol version only if a behaviour listed in the contract changes.
 
 `scripts/install-tmux-fork.sh <prefix>` builds it
 into `<prefix>/bin/kido-tmux`; `--self-contained <prefix>` is macOS-only,
