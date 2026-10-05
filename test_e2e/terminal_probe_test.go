@@ -10,16 +10,12 @@ import (
 
 func TestSidebarDoesNotLeakTerminalReplies(t *testing.T) {
 	h := start(t, "alpha")
-	conf := filepath.Join(h.dir, "passthrough.conf")
-	if err := os.WriteFile(conf, []byte("set -g allow-passthrough on\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	h.in("source-file", conf)
+	h.in("set-option", "-g", "allow-passthrough", "on")
 	h.in("set-option", "-g", "status-interval", "1")
 	h.in("set-option", "-g", "side-status-command", "")
 	h.waitFor(func() bool { return len(controlClientPIDs(h.inner)) == 0 }, settle, msgf("old sidebar exits"))
 	queries := filepath.Join(h.dir, "queries")
-	h.must(h.tmux(h.outer, "pipe-pane", "-t", "host:side", "cat > "+shellQuote(queries)))
+	h.out("pipe-pane", "-t", "host:side", "cat > "+shellQuote(queries))
 	ready := filepath.Join(h.dir, "ready")
 	stop := filepath.Join(h.dir, "stop")
 	done := filepath.Join(h.dir, "done")
@@ -29,10 +25,7 @@ func TestSidebarDoesNotLeakTerminalReplies(t *testing.T) {
 	h.sendKeys("Enter")
 	h.waitFor(func() bool { _, err := os.Stat(ready); return err == nil }, settle, msgf("shell reads terminal replies"))
 	h.in("set-option", "-g", "side-status-command", kidoBin)
-	h.waitFor(func() bool {
-		got, _ := os.ReadFile(queries)
-		return strings.Contains(string(got), "\033[?1016$p")
-	}, settle, msgf("sidebar passthrough query reaches the outer terminal"))
+	h.waitFileContains(queries, "\033[?1016$p")
 	h.waitFor(func() bool { return hasLine(h.sidebar(), "alpha") }, settle, msgf("sidebar renders after probing"))
 	if _, err := os.Stat(done); err == nil {
 		t.Fatal("active shell stopped listening before the sidebar finished probing")
@@ -87,10 +80,7 @@ func TestTerminalProbeReceivesFragmentedReplies(t *testing.T) {
 	h.in("refresh-client", "-t", h.client, "-f", "side-status-focus")
 	h.sendLiteral("x")
 	h.in("refresh-client", "-t", h.client, "-f", "!side-status-focus")
-	h.waitFor(func() bool {
-		got, _ := os.ReadFile(queries)
-		return strings.Contains(string(got), "\033_Gi=31338,a=q;")
-	}, settle, msgf("side job graphics query reaches the terminal"))
+	h.waitFileContains(queries, "\033_Gi=31338,a=q;")
 	h.sendLiteral("\033")
 	h.sendLiteral("_Gi=31338;O")
 	h.sendLiteral("K\033\\")
