@@ -7,20 +7,6 @@ import GhosttyKit
     private(set) var config: ghostty_config_t
     private var appearance: NSKeyValueObservation?
     let pasteboard: NSPasteboard
-    private let grants: UserDefaults?
-    private var allowedHosts: Set<String> = []
-    var askingHosts: Set<String> = []
-
-    func allows(_ host: Host) -> Bool {
-        grants?.stringArray(forKey: "clipboardReadHosts")?.contains(host.clipboardKey) ?? allowedHosts.contains(host.clipboardKey)
-    }
-    func allowAlways(_ host: Host) {
-        if let grants {
-            let hosts = Set(grants.stringArray(forKey: "clipboardReadHosts") ?? []).union([host.clipboardKey])
-            grants.set(Array(hosts), forKey: "clipboardReadHosts")
-        } else { allowedHosts.insert(host.clipboardKey) }
-    }
-
     nonisolated private static func protectClipboard(_ config: ghostty_config_t) {
         var access: UnsafePointer<CChar>?
         let key = "clipboard-read"
@@ -48,9 +34,8 @@ import GhosttyKit
     }
     #endif
 
-    init?(configFile: String? = nil, pasteboard: NSPasteboard, grants: UserDefaults?) {
+    init?(configFile: String? = nil, pasteboard: NSPasteboard) {
         self.pasteboard = pasteboard
-        self.grants = grants
         guard ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS,
               let config = ghostty_config_new() else { return nil }
         let themes = Bundle.main.resourceURL!.appendingPathComponent("themes").path
