@@ -3,30 +3,46 @@ import AppKit
 final class WindowTabs: NSView {
     var entries: [SessionModel.Tab] = [] { didSet { needsDisplay = true } }
     var select: (WindowStep) -> Void = { _ in }
+    var hostLabel: () -> (text: String, alias: String, connected: Bool)? = { nil }
     private var offset: CGFloat = 0
+    private var hostWidth: CGFloat {
+        guard let host = hostLabel() else { return 0 }
+        let width = (host.text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .medium)]).width
+        return min(bounds.width * 0.35, min(166, ceil(width)) + 25)
+    }
+
+    override func layout() {
+        super.layout()
+        removeAllToolTips()
+        if hostLabel() != nil { addToolTip(NSRect(x: 0, y: 0, width: hostWidth, height: bounds.height), owner: self, userData: nil) }
+    }
+
+    @objc func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
+        hostLabel()?.alias ?? ""
+    }
     override var mouseDownCanMoveWindow: Bool { false }
 
-    private func tabWidth(_ count: Int) -> CGFloat { max(85, min(220, bounds.width / CGFloat(max(1, count)))) }
+    private func tabWidth(_ count: Int) -> CGFloat { max(85, min(220, max(0, bounds.width - hostWidth) / CGFloat(max(1, count)))) }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         let tabWidth = tabWidth(entries.count)
-        guard !isHidden, bounds.contains(local), local.x + offset < tabWidth * CGFloat(entries.count) else { return nil }
+        guard !isHidden, bounds.contains(local), local.x >= hostWidth, local.x - hostWidth + offset < tabWidth * CGFloat(entries.count) else { return nil }
         return self
     }
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        guard bounds.contains(point) else { return }
+        guard bounds.contains(point), point.x >= hostWidth else { return }
         let tabWidth = tabWidth(entries.count)
-        let index = Int((point.x + offset) / tabWidth)
+        let index = Int((point.x - hostWidth + offset) / tabWidth)
         guard entries.indices.contains(index) else { return }
         select(.number(index + 1))
     }
 
     override func scrollWheel(with event: NSEvent) {
         let tabWidth = tabWidth(entries.count)
-        offset = max(0, min(max(0, tabWidth * CGFloat(entries.count) - bounds.width),
+        offset = max(0, min(max(0, tabWidth * CGFloat(entries.count) - (bounds.width - hostWidth)),
                             offset + (event.scrollingDeltaX == 0 ? event.scrollingDeltaY : event.scrollingDeltaX)))
         needsDisplay = true
     }
@@ -38,11 +54,26 @@ final class WindowTabs: NSView {
             let paragraph = NSMutableParagraphStyle()
             paragraph.alignment = .center
             paragraph.lineBreakMode = .byTruncatingTail
+            let hostWidth = hostWidth
+            if let host = hostLabel(), hostWidth > 25 {
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current?.cgContext.setAlpha(host.connected ? 1 : 0.45)
+                let style = NSMutableParagraphStyle()
+                style.lineBreakMode = .byTruncatingTail
+                (host.text as NSString).draw(in: NSRect(x: 2, y: bounds.midY - 8, width: hostWidth - 25, height: 16),
+                    withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: style])
+                NSColor.separatorColor.setFill()
+                NSRect(x: hostWidth - 11, y: bounds.midY - 8, width: 1, height: 16).fill()
+                NSGraphicsContext.restoreGraphicsState()
+            }
+            NSGraphicsContext.saveGraphicsState()
+            NSRect(x: hostWidth, y: 0, width: bounds.width - hostWidth, height: bounds.height).clip()
+            defer { NSGraphicsContext.restoreGraphicsState() }
             let entries = entries
             let tabWidth = tabWidth(entries.count)
-            offset = min(offset, max(0, tabWidth * CGFloat(entries.count) - bounds.width))
+            offset = min(offset, max(0, tabWidth * CGFloat(entries.count) - (bounds.width - hostWidth)))
             for (index, tab) in entries.enumerated() {
-                let rect = NSRect(x: CGFloat(index) * tabWidth - offset + 2, y: 8, width: tabWidth - 3, height: bounds.height - 16)
+                let rect = NSRect(x: hostWidth + CGFloat(index) * tabWidth - offset + 2, y: 8, width: tabWidth - 3, height: bounds.height - 16)
                 guard rect.intersects(bounds) else { continue }
                 if tab.active {
                     NSColor.labelColor.withAlphaComponent(0.075).setFill()
@@ -71,7 +102,7 @@ final class WindowTabs: NSView {
             let element = NSAccessibilityElement()
             element.setAccessibilityRole(.button)
             element.setAccessibilityParent(self)
-            element.setAccessibilityFrameInParentSpace(NSRect(x: CGFloat(index) * tabWidth - offset, y: 8, width: tabWidth, height: 28))
+            element.setAccessibilityFrameInParentSpace(NSRect(x: hostWidth + CGFloat(index) * tabWidth - offset, y: 8, width: tabWidth, height: 28))
             element.setAccessibilityLabel("Window: " + tab.name + (tab.status == .error ? " — error" : tab.status == .attention ? " — attention" : ""))
             element.setAccessibilityValue(tab.active ? "selected" : "")
             return element
