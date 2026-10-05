@@ -5,7 +5,7 @@ import TmuxControl
 
 private func windowsFixture(_ indicator: String = "waiting", attention: Bool = false, group: Bool = false) throws -> Snapshot {
     func item(_ n: Int, children: [[String: Any]] = [], indicator: String = "idle") -> [String: Any] {
-        ["kind": "shell", "id": "%\(n)", "pane": "%\(n)", "window": "@\(n)", "title": [], "tail": [],
+        ["kind": "shell", "id": "%\(n)", "pane": "%\(n)", "window": "@\(n)", "title": [["text": "Pane ", "role": "plain"], ["text": "\(n)", "role": "current"]], "tail": [],
          "indicator": ["kind": indicator], "attention": n == 2 && attention, "children": children]
     }
     let parent = item(0, children: [item(1, children: [item(2, indicator: indicator)])])
@@ -45,4 +45,23 @@ func projectionSharesRowStatus(indicator: String) throws {
     let status = try #require(sidebarRows(snapshot, folded: []).first { $0.target?.window == WindowID(number: 2) }?.status)
     #expect(projection.statuses[WindowID(number: 0)] == (status == .running ? .quiet : status))
     #expect(sidebarWindows(try windowsFixture(indicator, attention: true), session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == (indicator == "failed" ? .error : .attention))
+}
+
+@Test func projectedTitlesUseActivePane() throws {
+    let snapshot = try windowsFixture(group: true)
+    let window = WindowID(number: 0), session = SessionID(number: 0)
+    let rows = sidebarRows(snapshot, folded: [])
+    for pane in [PaneID(number: 0), PaneID(number: 3)] {
+        let projection = sidebarWindows(snapshot, session: session, surviving: [window], activePanes: [window: pane])
+        #expect(projection.titles[window] == rows.first { $0.id == .pane(session, pane) }?.title)
+        #expect(projection.titles.count == 1)
+    }
+    #expect(sidebarWindows(snapshot, session: session, surviving: [window], activePanes: [window: PaneID(number: 99)]).titles.isEmpty)
+    #expect(sidebarWindows(nil, session: session, surviving: [window], activePanes: [window: PaneID(number: 0)]).titles.isEmpty)
+    #expect(sidebarWindows(snapshot, session: SessionID(number: 9), surviving: [window], activePanes: [window: PaneID(number: 0)]).titles.isEmpty)
+    let child = WindowID(number: 2)
+    let projection = sidebarWindows(snapshot, session: session, surviving: [window, child], activePanes: [window: PaneID(number: 3), child: PaneID(number: 2)])
+    #expect(projection.titles[window] == "Pane 3")
+    #expect(projection.titles[child] == "Pane 2")
+    #expect(projection.ancestors[child] == window)
 }
