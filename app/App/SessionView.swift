@@ -17,10 +17,21 @@ final class SessionView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = runtime.background.cgColor
+        clipsToBounds = true
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
+    }
+
+    func close() {
+        for view in windows.values { view.close() }
+        for view in others.values { view.close() }
+        windows = [:]
+        others = [:]
+        recent = []
+        connection = nil
+        removeFromSuperview()
     }
 
     func updateBackground() {

@@ -1,4 +1,5 @@
 import Foundation
+import TmuxControl
 
 struct BundledTools: Sendable {
     let prefix: String
@@ -38,10 +39,20 @@ struct BundledTools: Sendable {
     }
 }
 
+struct Endpoint: Sendable {
+    let server: Server
+    let kido: String
+    var directory: String { String(server.socket.dropLast("/socket".count)) }
+}
+
 struct Server: Decodable, Sendable {
     let tmux: String
     let socket: String
     let build: String?
+
+    static func validPath(_ path: String) -> Bool {
+        path.hasPrefix("/") && !path.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
+    }
 
     static var fixed: Server? {
         #if KIDO_VISUAL || KIDO_STRESS
@@ -53,24 +64,48 @@ struct Server: Decodable, Sendable {
         #endif
     }
 
-    static func locate() async throws(Failure) -> Server {
+    @MainActor static func locate(prepare: (([String]) -> Launch)? = nil, drain: Drain? = nil) async throws(Failure) -> Endpoint {
         try tools.validate()
-        if let fixed { return fixed }
-        let (status, out, err) = try await Child.run(tools.kido, ["server", "--server", tools.serverDir], env: tools.environment, cwd: tools.environment["HOME"] ?? NSHomeDirectory())
-        guard status == 0 else { throw Failure(message: err.isEmpty ? "kido server exited \(status)" : err) }
-        guard let server = try? JSONDecoder().decode(Server.self, from: Data(out.utf8)), server.tmux == tools.tmux else {
-            throw Failure(message: "kido server returned an invalid bundled server: \(out)")
+        if prepare == nil, let fixed { return Endpoint(server: fixed, kido: tools.kido) }
+        let kido: String, directory: String
+        if let prepare {
+            let script = "kido=$(command -v kido) || { printf '%s\\n' 'Remote kido is missing from the noninteractive SSH PATH. Install kido, or add its bin directory to PATH for noninteractive SSH in ~/.zshenv (zsh); do not print startup text.' >&2; exit 127; }; printf '%s\\n' \"$kido\" \"${XDG_STATE_HOME:-$HOME/.local/state}/kido-app\""
+            let probe = try await Child.run(prepare(["/bin/sh", "-c", script]), drain: drain)
+            guard probe.status == 0 else {
+                let message = probe.err.isEmpty ? "Remote discovery exited \(probe.status)" : probe.err
+                throw probe.status == 255 ? Failure.ssh(message) : Failure(message: message)
+            }
+            let paths = probe.out.components(separatedBy: "\n")
+            guard paths.count == 2, paths.allSatisfy(validPath) else { throw Failure(message: "Remote discovery returned invalid absolute paths: \(probe.out)") }
+            kido = paths[0]
+            directory = paths[1]
+        } else {
+            kido = tools.kido
+            directory = tools.serverDir
         }
-        return server
+        let args = [kido, "server", "--server", directory]
+        let launch = prepare?(args) ?? Launch(kido, Array(args.dropFirst()), environment: tools.environment)
+        let result = try await Child.run(launch.path, launch.arguments, env: launch.environment,
+            cwd: prepare == nil ? tools.environment["HOME"] ?? NSHomeDirectory() : nil, deadline: prepare == nil ? 10 : 20, drain: drain)
+        guard result.status == 0 else {
+            let message = result.err.isEmpty ? "kido server exited \(result.status)" : result.err
+            throw prepare != nil && result.status == 255 ? Failure.ssh(message) : Failure(message: message)
+        }
+        guard let server = try? JSONDecoder().decode(Server.self, from: Data(result.out.utf8)),
+              validPath(server.tmux), validPath(server.socket), server.socket.hasSuffix("/socket"),
+              validPath(String(server.socket.dropLast("/socket".count))), prepare != nil || server.tmux == tools.tmux else {
+            throw Failure(message: "kido server returned an invalid endpoint: \(result.out)")
+        }
+        return Endpoint(server: server, kido: kido)
     }
 
-    func restart() async throws(Failure) {
+    func restart(drain: Drain? = nil) async throws(Failure) {
         try tools.validate()
-        let current = try await Self.locate()
+        let current = try await Self.locate(drain: drain).server
         guard current.socket == socket, current.build == build else {
             throw Failure(message: "The server changed. Reconnect before restarting it.")
         }
-        let (killed, _, err) = try await Child.run(tools.tmux, ["-S", socket, "kill-server"], env: tools.environment)
+        let (killed, _, err) = try await Child.run(tools.tmux, ["-S", socket, "kill-server"], env: tools.environment, drain: drain)
         guard killed == 0 else { throw Failure(message: err.isEmpty ? "Could not stop the app server" : err) }
     }
 }
