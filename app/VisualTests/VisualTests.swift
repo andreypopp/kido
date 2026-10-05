@@ -6,9 +6,17 @@ import TmuxControl
 import XCTest
 @testable import Kido
 
-@MainActor class VisualTestCase: XCTestCase {}
+@MainActor class VisualTestCase: XCTestCase {
+    override func invokeTest() {
+        NSAppearance(named: .aqua)!.performAsCurrentDrawingAppearance { super.invokeTest() }
+    }
 
-@MainActor final class VisualTests: XCTestCase {
+    override func setUp() async throws {
+        NSApp.appearance = NSAppearance(named: .aqua)
+    }
+}
+
+@MainActor final class VisualTests: VisualTestCase {
     private let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
     private var tmux = ""
     private var socket = ""
@@ -27,6 +35,7 @@ import XCTest
     }
 
     override func setUp() async throws {
+        try await super.setUp()
         directory = URL(fileURLWithPath: "/tmp/kido-visual-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         socket = directory.appendingPathComponent("socket").path
@@ -207,9 +216,9 @@ import XCTest
         let childPane = try XCTUnwrap(panes.first { $0[0] == child })[1]
         func fixture(_ status: String = "waiting", filtered: Bool = false, review: String = "Review changes") throws -> Snapshot {
             func item(_ pane: [String], children: [[String: Any]] = [], status: String = "idle") -> [String: Any] {
-                ["kind": pane[0] == child ? "run" : "shell", "id": pane[1], "pane": pane[1], "window": pane[0],
+                ["kind": pane[0] == child ? "run" : "shell", "run": pane[0] == child ? "agent" as Any : NSNull(), "id": pane[1], "pane": pane[1], "window": pane[0],
                  "title": [["text": pane[0] == middle ? (pane[1] == secondPane ? review : "Agent caption") : pane[0] == last ? "Build output" : "Shell prompt", "role": "plain"]], "tail": [], "indicator": ["kind": status],
-                 "attention": false, "children": children]
+                 "attention": status == "done", "children": children]
             }
             let nodes: [[String: Any]] = [item(shell),
                 ["kind": "window", "id": middle, "window": middle, "name": "Editor",
@@ -279,6 +288,10 @@ import XCTest
         XCTAssertFalse(window.isVisible)
         XCTAssertFalse(window.isKeyWindow)
         XCTAssertFalse(NSApp.isActive)
+        updateTabs(.running(try fixture("stalled")), query: "")
+        XCTAssertEqual(sidebar.tabs.entries[1].status, .quiet)
+        updateTabs(.running(try fixture("done")), query: "")
+        XCTAssertEqual(sidebar.tabs.entries[1].status, .quiet)
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
         if let failure = verifySnapshot(of: sidebar.tabs, as: .image, named: "middle", record: record),
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
@@ -392,9 +405,20 @@ import XCTest
                 var flags = ghostty_binding_flags_e(0)
                 XCTAssertFalse(ghostty_surface_key_is_binding(pane.surface, input, &flags))
             }
+            let wasFloating = sidebar.isFloating
             XCTAssertTrue(menu.performKeyEquivalent(with: event))
+            let immediateContent = sidebar.content.frame, immediateTabs = sidebar.tabs.frame
             root.layoutSubtreeIfNeeded()
             sidebar.viewDidLayout()
+            if !modifiers.contains(.shift), wasFloating || sidebar.isFloating {
+                XCTAssertEqual(sidebar.content.frame, immediateContent)
+                XCTAssertEqual(sidebar.tabs.frame, immediateTabs)
+                var view: NSView? = sidebar.list
+                while let current = view {
+                    XCTAssertTrue(current.layer?.animationKeys()?.isEmpty ?? true)
+                    view = current.superview
+                }
+            }
         }
         try key()
         XCTAssertTrue(sidebar.list.containsFocus)
@@ -638,6 +662,59 @@ import XCTest
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
     }
 
+    func testNestedSidebarRowHeightsAndNavigation() throws {
+        var fixture: [String: Any] = [:]
+        let live = try sidebarFixture { object in
+            var sessions = object["sessions"] as! [[String: Any]]
+            var nodes = sessions[0]["nodes"] as! [[String: Any]]
+            var children = nodes[0]["children"] as! [[String: Any]]
+            var sibling = children[0]
+            sibling["id"] = "%999"
+            sibling["pane"] = "%999"
+            sibling["window"] = "@999"
+            children.append(sibling)
+            nodes[0]["children"] = children
+            sessions[0]["nodes"] = nodes
+            object["sessions"] = sessions
+            fixture = object
+        }
+        let rows = sidebarRows(live, folded: [])
+        XCTAssertTrue(rows.contains { $0.indent > 0 && $0.target != nil })
+        let invalid = rows.filter { $0.height <= 0 }
+        XCTAssertTrue(invalid.isEmpty, "NSTableView requires positive row heights: \(invalid.map(\.id))")
+        guard invalid.isEmpty else { return }
+        window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 292, height: 180),
+                          styleMask: [.titled], backing: .buffered, defer: false)
+        let list = SidebarView()
+        window.contentView = list
+        list.layoutSubtreeIfNeeded()
+        list.update(.running(live))
+        let table = list.visualTable
+        XCTAssertEqual(table.numberOfRows, rows.count)
+        for index in rows.indices {
+            XCTAssertGreaterThan(list.tableView(table, heightOfRow: index), 0)
+            table.scrollRowToVisible(index)
+        }
+        let nested = try XCTUnwrap(rows.lastIndex { $0.indent > 0 && $0.target != nil })
+        let target = try XCTUnwrap(rows[nested].target)
+        var object = fixture
+        object["client"] = ["session": target.session.description, "window": target.window.description, "pane": target.pane.description]
+        let changed = try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
+        list.update(.running(changed))
+        XCTAssertEqual(table.selectedRow, nested)
+        let origin = list.visualScroll.contentView.bounds.origin
+        object["error"] = "same shape"
+        list.update(.running(try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))))
+        XCTAssertEqual(table.selectedRow, nested)
+        XCTAssertEqual(list.visualScroll.contentView.bounds.origin, origin)
+        let previous = try XCTUnwrap(rows[..<nested].lastIndex { $0.target != nil })
+        let up = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "\u{f700}", charactersIgnoringModifiers: "\u{f700}", isARepeat: false, keyCode: 126))
+        table.keyDown(with: up)
+        XCTAssertEqual(table.selectedRow, previous)
+        XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
+    }
+
     func testSidebarCards() throws {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 680),
                           styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
@@ -660,7 +737,19 @@ import XCTest
             var sessions = object["sessions"] as! [[String: Any]]
             var nodes = sessions[0]["nodes"] as! [[String: Any]]
             var children = nodes[1]["children"] as! [[String: Any]]
+            nodes[0]["indicator"] = ["kind": "done"]
+            nodes[0]["attention"] = true
+            var runs = nodes[0]["children"] as! [[String: Any]]
+            runs[0]["indicator"] = ["kind": "gone", "outcome": "completed"]
+            runs[0]["started"] = NSNull()
+            nodes[0]["children"] = runs
+            children[0]["indicator"] = ["kind": "waiting"]
+            children[0]["attention"] = true
             children[0]["tail"] = [["text": "Rebuilding the sidebar cards and testing nested window corners", "role": "dim"]]
+            var agents = children[0]["children"] as! [[String: Any]]
+            agents[0]["indicator"] = ["kind": "stalled"]
+            children[0]["children"] = agents
+            children[1]["indicator"] = ["kind": "done"]
             nodes[1]["children"] = children
             sessions[0]["nodes"] = nodes
             object["sessions"] = sessions
