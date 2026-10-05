@@ -5,12 +5,15 @@ final class Banner: NSView {
     private let detail = NSTextField(wrappingLabelWithString: "")
     private let button: NSButton
 
-    init(target: AnyObject, action: Selector) {
+    var background: NSColor { didSet { layer?.backgroundColor = background.withAlphaComponent(0.85).cgColor } }
+
+    init(background: NSColor, target: AnyObject, action: Selector) {
+        self.background = background
         button = NSButton(title: "", target: target, action: action)
         super.init(frame: .zero)
         autoresizingMask = [.width, .height]
         wantsLayer = true
-        updateBackground()
+        layer?.backgroundColor = background.withAlphaComponent(0.85).cgColor
         title.font = .boldSystemFont(ofSize: 15)
         for label in [title, detail] {
             label.textColor = .labelColor
@@ -29,17 +32,6 @@ final class Banner: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        updateBackground()
-    }
-
-    private func updateBackground() {
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.85).cgColor
-        }
     }
 
     func show(_ title: String, _ detail: String, button: String?) {
