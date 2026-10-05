@@ -4,12 +4,9 @@ final class Banner: NSView {
     private let title = NSTextField(labelWithString: "")
     private let detail = NSTextField(wrappingLabelWithString: "")
     private let button: NSButton
-    private let connect: NSButton
 
-    init(target: AnyObject, action: Selector, connectAction: Selector) {
+    init(target: AnyObject, action: Selector) {
         button = NSButton(title: "", target: target, action: action)
-        connect = NSButton(title: "Connect Anyway", target: target, action: connectAction)
-        connect.isHidden = true
         super.init(frame: .zero)
         autoresizingMask = [.width, .height]
         wantsLayer = true
@@ -19,8 +16,7 @@ final class Banner: NSView {
             label.textColor = .labelColor
             label.alignment = .center
         }
-        let buttons = NSStackView(views: [button, connect])
-        let stack = NSStackView(views: [title, detail, buttons])
+        let stack = NSStackView(views: [title, detail, button])
         stack.orientation = .vertical
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
@@ -46,12 +42,11 @@ final class Banner: NSView {
         }
     }
 
-    func show(_ title: String, _ detail: String, button: String?, connect: Bool = false) {
+    func show(_ title: String, _ detail: String, button: String?) {
         self.title.stringValue = title
         self.detail.stringValue = detail
         self.button.title = button ?? ""
         self.button.isHidden = button == nil
-        self.connect.isHidden = !connect
         isHidden = false
         window?.makeFirstResponder(nil)
     }

@@ -43,7 +43,6 @@ import TmuxControl
     "{\"kind\":\"window\",\"id\":\"@1\",\"window\":\"@1\",\"name\":\"panes\",\"children\":[{\"kind\":\"window\",\"id\":\"@2\",\"window\":\"@2\",\"name\":\"panes\",\"children\":[]}]}",
     "{\"kind\":\"window\",\"id\":\"@1\",\"window\":\"@2\",\"name\":\"panes\",\"children\":[]}",
     "{\"kind\":\"window\",\"id\":\"@1\",\"window\":\"@1\",\"name\":\"panes\",\"children\":[]}",
-    "{\"kind\":\"other\",\"id\":\"%1\",\"pane\":\"%1\",\"window\":\"@1\",\"title\":[],\"tail\":[],\"attention\":false,\"children\":[]}",
     "{\"kind\":\"agent\",\"id\":\"%2\",\"pane\":\"%1\",\"window\":\"@1\",\"title\":[],\"tail\":[],\"attention\":false,\"children\":[]}",
     "{\"kind\":\"shell\",\"id\":\"%1\",\"pane\":\"%1\",\"window\":null,\"title\":[],\"tail\":[],\"attention\":false,\"children\":[]}",
     "{\"kind\":\"run\",\"id\":\"%1\",\"pane\":\"%1\",\"window\":\"@1\",\"title\":[],\"tail\":[],\"attention\":false}"
