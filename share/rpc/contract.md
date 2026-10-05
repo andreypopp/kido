@@ -160,8 +160,10 @@ structure. Hoisting stays per session.
 ## Server endpoint
 
 kido server --server <dir> ensures a detached server and prints one line:
-{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"1.0"}.
-protocol is the server's KIDO_PROTOCOL stamp, or null when absent.
+{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"1.0","server":"1.0"}.
+protocol is the binary's Protocol.value, always a string. server is always present:
+the server's KIDO_PROTOCOL stamp, or null when absent, even when it matches protocol.
+The app compares them to detect a kido upgrade with an old server.
 The stamp does not change when ensuring or attaching an existing server.
 kido --version independently prints the binary build id.
 

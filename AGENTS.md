@@ -204,7 +204,9 @@ Promotion substitutes the build id through dune-build-info.
 `build/main.exe` is the stamped executable copied by `make install` and
 e2e; `_build/default/bin/main.exe`
 reports `unknown`. `kido --version` prints that id; `kido server` reports the
-creating server's global `KIDO_PROTOCOL` as its JSON `protocol` field (null if unset).
+binary's `Protocol.value` as its JSON `protocol` field (always a string), and the
+creating server's global `KIDO_PROTOCOL` as its `server` field (always present,
+null if unset, the stamp string otherwise even when it matches `protocol`).
 The launcher, `kido server`, `rpc` and `switch-session/window`
 accept `--server DIR`. `switch-window` prints `SESSION_ID WINDOW_ID` when
 it switches and prints nothing when there is no target. A server is its

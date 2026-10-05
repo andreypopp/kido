@@ -24,7 +24,7 @@ func TestKidoSeparateServerAndState(t *testing.T) {
 		return reportedPrompt(app.mustKido("display-message", "-p", "-t", appPane, "#{pane_last_prompt_time}"))
 	}, "the app pane's prompt")
 	second := app.mustServer("")
-	if first.Socket == second.Socket || first.Protocol != second.Protocol {
+	if first.Socket == second.Socket || first.Protocol != second.Protocol || first.Server != second.Server {
 		t.Fatalf("endpoints: %+v, %+v", first, second)
 	}
 	if pane != appPane {

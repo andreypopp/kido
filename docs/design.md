@@ -1857,11 +1857,13 @@ Kido.app that attaches on its own: it runs the same probe and, when the
 server is down, the same start (`Launch.new_session`: server.conf, the
 environment and PATH, session `main`), detached. It never attaches, so it
 runs inside tmux too. It prints one JSON line,
-`{"tmux":...,"socket":...,"protocol":...}`: the resolved kido-tmux made
-absolute, the convention's `<dir>/socket` path, and the
-server's global environment variable `KIDO_PROTOCOL` (or JSON null if
-absent). The launcher sets it to `Protocol.value` in the environment of the tmux process it starts. tmux copies
-that environment before forking the server and accepting clients, so the
+`{"tmux":...,"socket":...,"protocol":...,"server":...}`: the resolved kido-tmux made
+absolute, the convention's `<dir>/socket` path, the binary's `Protocol.value`
+(always a string), and the server's global environment variable `KIDO_PROTOCOL`
+(or JSON null if absent). `server` is always present, even when it matches
+`protocol`; the app compares them to detect a kido upgrade with an old server.
+The launcher sets the stamp to `Protocol.value` in the environment of the tmux
+process it starts. tmux copies that environment before forking the server and accepting clients, so the
 stamp is readable even while server.conf is still running; config options
 would not be, because tmux blocks only the initial client during config.
 The probe uses one invocation: `list-sessions -F '#{socket_path}' ;

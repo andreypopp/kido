@@ -1,5 +1,6 @@
 type server = Down | Up of string option | Mismatch
-type endpoint = { tmux : string; socket : string; protocol : string option } [@@deriving to_yojson]
+type endpoint = { tmux : string; socket : string; protocol : string; server : string option }
+[@@deriving to_yojson]
 
 let tmux_safe what s =
   match Seq.find (String.contains "'\"$#\\`\n\r") (String.to_seq s) with
@@ -149,13 +150,13 @@ let ensure ~dir =
   let open Result.Infix in
   let* socket = State.server_socket ~create:true ~dir in
   let bin = Lazy.force Tmux.Exec.binary in
-  let resolve protocol =
+  let resolve server =
     let tmux =
       if String.contains bin '/' then Some (Tmux.Exec.abs bin)
       else Tmux.Exec.look_path ~path:(Tmux.Exec.getenv "PATH") bin
     in
     match tmux with
-    | Some tmux -> Ok { tmux; socket; protocol }
+    | Some tmux -> Ok { tmux; socket; protocol = Protocol.value; server }
     | None -> Error (Printf.sprintf "no %s on PATH" bin)
   in
   match probe_server ~socket bin with
