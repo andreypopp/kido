@@ -72,7 +72,7 @@ func nestedTranscript() async throws {
         """.write(to: script, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
     let seen = Recorder<Event>()
-    let client = Client(tmux: script, socket: dir.appendingPathComponent("unused").path, session: nil, pauseAfter: 5)
+    let client = Client(launch: .attach(script.path, socket: dir.appendingPathComponent("unused").path))
     try client.start(onEvent: seen.add, onClose: seen.close)
     #expect(try await client.run([
         Command("if-shell", "-F", "1", "resize-pane -t %1 -x 25 -y 12"),
@@ -97,7 +97,7 @@ func liveClient() async throws {
         try? FileManager.default.removeItem(atPath: socket)
     }
     let seen = Recorder<Event>()
-    let client = Client(tmux: tmux, socket: socket, session: "t", pauseAfter: 5)
+    let client = Client(launch: .attach(tmux.path, socket: socket, session: "t"))
     try client.start(onEvent: seen.add, onClose: seen.close)
     _ = try await seen.wait("attach") { e, _ in e.contains(.sessionChanged(SessionID(number: 0), "t")) ? () : nil }
 
@@ -153,14 +153,14 @@ func liveClient() async throws {
     guard case .success(let lines) = pending, lines.count == 1 else { Issue.record("pending: \(pending)"); return }
     #expect(decodeOctal(ArraySlice(lines[0].utf8)).starts(with: Array("\u{1B}]0;x".utf8)))
 
-    var dropped: Client? = Client(tmux: tmux, socket: socket, session: "t", pauseAfter: 5)
+    var dropped: Client? = Client(launch: .attach(tmux.path, socket: socket, session: "t"))
     let gone = Recorder<Event>()
     try dropped?.start(onEvent: gone.add, onClose: gone.close)
     _ = try await gone.wait("second attach") { e, _ in e.isEmpty ? nil : () }
     dropped = nil
     #expect(try await gone.wait("dropped client exits") { _, s in s } == 0)
 
-    let closing = Client(tmux: tmux, socket: socket, session: "t", pauseAfter: 5)
+    let closing = Client(launch: .attach(tmux.path, socket: socket, session: "t"))
     let orphans = Recorder<[Reply]?>()
     try closing.start(onEvent: { _ in }, onClose: orphans.close)
     closing.send([Command("list-sessions")], then: orphans.add)
@@ -191,7 +191,7 @@ func liveLayout() async throws {
     #expect(try server(tmux, socket, "split-window", "-v", "/bin/sh") == 0)
     #expect(try server(tmux, socket, "new-pane", "-x", "30", "-y", "10", "-X", "5", "-Y", "3", "/bin/sh") == 0)
     let seen = Recorder<Event>()
-    let client = Client(tmux: tmux, socket: socket, session: "t", pauseAfter: 5)
+    let client = Client(launch: .attach(tmux.path, socket: socket, session: "t"))
     try client.start(
         onEvent: { [queue = client.queue] in
             dispatchPrecondition(condition: .onQueue(queue))
@@ -258,7 +258,7 @@ func liveDetach() async throws {
         try? FileManager.default.removeItem(atPath: socket)
     }
     let seen = Recorder<Event>()
-    let client = Client(tmux: tmux, socket: socket, session: "t", pauseAfter: 5)
+    let client = Client(launch: .attach(tmux.path, socket: socket, session: "t"))
     try client.start(onEvent: seen.add, onClose: seen.close)
     _ = try await seen.wait("attach") { e, _ in e.contains(.sessionChanged(SessionID(number: 0), "t")) ? () : nil }
     guard case .success(let name) = try await client.run(Command("display-message", "-p", "#{client_name}")), let name = name.first
@@ -275,7 +275,7 @@ func liveDetach() async throws {
 func missingServer() async throws {
     let socket = "/tmp/tm-\(getpid()).sock"
     let seen = Recorder<Event>()
-    let client = Client(tmux: try #require(tmux), socket: socket, session: nil, pauseAfter: 5)
+    let client = Client(launch: .attach(try #require(tmux).path, socket: socket))
     try client.start(onEvent: seen.add, onClose: seen.close)
     #expect(try await seen.wait("close") { _, s in s } == 1)
     #expect(seen.stderr == "error connecting to \(socket) (No such file or directory)")
