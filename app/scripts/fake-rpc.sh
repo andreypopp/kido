@@ -3,6 +3,7 @@ exec python3 -u -c '
 import json, select, sys, time
 started = time.time() - 5
 query = ""
+print(json.dumps(dict(hello=dict(protocol="1.0"))))
 def item(kind, pane, window, title, status=None, children=None, attention=False, started=None, tail="", run=None):
     return dict(kind=kind, id="%"+str(pane), pane="%"+str(pane), window="@"+str(window), indicator=status,
         title=[dict(text=title, role="proc" if kind in ["run", "ssh", "shell"] else "plain")], tail=[dict(text=tail, role="dim")] if tail else [],
@@ -29,6 +30,7 @@ while True:
     if select.select([sys.stdin], [], [], .5)[0]:
         line = sys.stdin.readline()
         if not line: break
-        if line.rstrip("\n") == "filter": query = ""
-        elif line.startswith("filter "): query = line[7:].rstrip("\n")
+        request = json.loads(line)
+        if "filter" in request: query = request["filter"]
+        elif "switch-window" in request: print(json.dumps(dict(reply=dict(id=request["id"], switched=None))))
 '

@@ -90,7 +90,7 @@ import XCTest
         let tmuxConfig = directory.appendingPathComponent("tmux.conf")
         try "set -g history-limit \(history)\n".write(to: tmuxConfig, atomically: true, encoding: .utf8)
         _ = try await command(["-f", tmuxConfig.path, "new-session", "-d", "-s", "visual", "-x", "80", "-y", "30", "exec /bin/cat"])
-        connection = try Connection(server: Server(tmux: tmux, socket: socket, build: nil), view: session,
+        connection = try Connection(server: Server(tmux: tmux, socket: socket, protocolVersion: .required), view: session,
                                     onChange: { [weak self] model in
                                         self?.session.show(model.window)
                                         self?.model = model
@@ -697,17 +697,24 @@ import XCTest
         try JSONSerialization.data(withJSONObject: object).write(to: fixture)
         try """
         #!/bin/sh
-        if [ "$1" = switch-window ]; then
-            [ "$3" = --client ] && [ "$4" = private-client ] && [ "$5" = --server ] && [ "$6" = '\(scratch.path)' ] || exit 2
-            sleep 0.2
-            [ "$2" = next ] && printf '$3 @12\\n'
-            exit 0
-        fi
-        cat '\(fixture.path)'
-        printf '\\n'
-        while IFS= read -r line; do
-            [ "$line" = 'filter exit' ] && exit 0
-        done
+        exec python3 -u -c '
+        import json, sys
+        print(json.dumps(dict(hello=dict(protocol="1.0"))))
+        snapshot = json.load(open("\(fixture.path)"))
+        print(json.dumps(snapshot))
+        held = None
+        for line in sys.stdin:
+            request = json.loads(line)
+            if request.get("filter") == "exit": break
+            if "switch-window" not in request: continue
+            reply = dict(id=request["id"], switched=dict(session="$3", window="@12") if request["switch-window"]["direction"] == "next" else None)
+            if request["id"] <= 2:
+                if held is None: held = reply
+                else:
+                    print(json.dumps(dict(reply=reply)))
+                    print(json.dumps(snapshot))
+                    print(json.dumps(dict(reply=held)))
+            '
         """.write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
         var starts = 0
@@ -728,20 +735,67 @@ import XCTest
             XCTAssertEqual(target?.window, WindowID(number: 12), "navigation must return its own stdout window")
             switched.fulfill()
         }
-        await fulfillment(of: [switched], timeout: 5)
         let noop = expectation(description: "empty stdout")
         feed.switchWindow(next: false) { target, error in
             XCTAssertNil(error)
             XCTAssertNil(target, "empty stdout must be a no-op")
             noop.fulfill()
         }
-        await fulfillment(of: [noop], timeout: 5)
-        let stale = expectation(description: "old generation completion")
-        stale.isInverted = true
-        feed.switchWindow(next: true) { _, _ in stale.fulfill() }
+        await fulfillment(of: [switched, noop], timeout: 5)
+        let stale = expectation(description: "pending request fails once")
+        stale.assertForOverFulfill = true
+        feed.switchWindow(next: true) { target, error in
+            XCTAssertNil(target)
+            XCTAssertNotNil(error)
+            stale.fulfill()
+        }
         feed.filter("exit")
-        try await wait("feed reconnected") { starts == 2 && snapshots == 2 }
-        await fulfillment(of: [stale], timeout: 0.5)
+        try await wait("feed reconnected") { starts == 2 && snapshots == 3 }
+        await fulfillment(of: [stale], timeout: 5)
+    }
+
+    func testPrivateServerRPCAndProtocolBanner() async throws {
+        let endpointOutput = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
+        XCTAssertEqual(endpointOutput.status, 0, endpointOutput.err)
+        let endpoint = try JSONDecoder().decode(Server.self, from: Data(endpointOutput.out.utf8))
+        XCTAssertEqual(endpoint.protocolVersion, .required)
+        try await start()
+        _ = try await command(["new-window", "-d", "-t", "visual", "-n", "second", "exec /bin/cat"])
+        var snapshots = 0
+        let feed = Feed(serverDir: directory.path, locate: connection.locateFeed, query: { "" }, onChange: { status in
+            if case .running = status { snapshots += 1 }
+        })
+        defer { feed.stop() }
+        try await wait("private RPC hello and snapshot") { snapshots > 0 }
+        let switched = expectation(description: "private RPC switch reply")
+        feed.switchWindow(next: true) { target, error in
+            XCTAssertNil(error)
+            XCTAssertNotNil(target)
+            print("RPC E2E switched: \(target?.session.description ?? "nil") \(target?.window.description ?? "nil")")
+            switched.fulfill()
+        }
+        await fulfillment(of: [switched], timeout: 5)
+        feed.stop()
+        _ = try await command(["set-environment", "-gu", "KIDO_PROTOCOL"])
+        var refused = false
+        let unstamped = Feed(serverDir: directory.path, locate: connection.locateFeed, query: { "" }, onChange: { status in
+            if case .protocolMismatch(let version) = status { XCTAssertNil(version); refused = true }
+        })
+        defer { unstamped.stop() }
+        try await wait("unstamped RPC refusal") { refused }
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let unstampedOutput = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
+        owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(unstampedOutput.out.utf8)), kido: tools.kido)
+        defer { owner.close() }
+        owner.start()
+        try await wait("unstamped local Restart banner") {
+            owner.testBanner.subviews.flatMap { $0.subviews }.contains {
+                ($0 as? NSTextField)?.stringValue.contains("older kido") == true
+            }
+        }
+        XCTAssertNil(owner.testConnection)
+        XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || owner.window.isMainWindow || NSApp.isActive)
+        print("RPC E2E hello 1.0; unstamped server refused; local mismatch banner off-screen")
     }
 
     func testSidebarFoldingKeysAndAccessibility() throws {
