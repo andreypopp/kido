@@ -72,6 +72,39 @@ The suspected glitch is local to a resize transition and should end with the
 current layout. Add a forced-stale pixel fixture and inspect a real window
 (small-to-medium work). Status: unverified.
 
+## Spotlight discovery and cold-launch classification
+
+App Intents metadata includes the required Host and discoverable shortcut;
+internal queued-cold/warm routing is off-screen tested. Actual Spotlight action
+appearance, parameter entry and OS ordering relative to AppKit untitled/reopen
+callbacks remain unverified. `applicationDidFinishLaunching` creates no Local
+window and uses no timeout guess. If ordinary-open is delivered before a cold
+intent indistinguishably, an extra Local is still possible: this is a **shipping
+gate**, not a solved classification contract. Follow the exact manual checks in
+[Remote hosts](design-app.md#remote-hosts); direct perform calls or executable
+arguments do not prove OS delivery. Status: unverified; user hand-check required.
+
+## Remote clipboard, URL and authentication matrix
+
+Private real localhost SSH tests cover control/feed/navigation, two remote plus
+Local windows, quoting, missing kido, mismatch waiver, master SIGKILL/recovery,
+detach, generation rejection and cancellation. They use the existing prepared
+account and trusted host keys, not an isolated sshd or changed account settings.
+
+| Behavior | Current evidence / remaining check |
+|---|---|
+| Mac copy/paste and unsafe paste | Existing surface path retained; disposal denies pending confirmation once. Real remote unsafe-paste/clipboard end-to-end remains untested. |
+| OSC52 write/query | Writes are source-surface/liveness routed; non-paste confirmations refused. Actual tmux control parsing and MANUAL_MIRROR suppressed query replies are unverified. |
+| HTTP/HTTPS | Remote action routes to the Mac opener, without forwarding. User-clicked browser launch/localhost-port semantics unverified off screen. |
+| file: / other schemes | Remote opener refuses them with a diagnostic instead of selecting same-named Mac files. Real Ghostty click/action delivery remains unverified. |
+| Unknown/changed host keys | StrictHostKeyChecking=yes, UpdateHostKeys=no; isolated-key refusal matrix not run. |
+| Locked keys/password/challenge | BatchMode and actionable Terminal instructions; locked/unavailable key and keyboard-interactive cases not run. |
+| Aliases/ProxyJump/inherited config | OpenSSH settings preserved with transport overrides; config matrix and other login-shell families not certified. |
+| WAN interruption/latency | Local master loss covered; 50/150/300ms RTT, throttled bandwidth and WAN smoothness not measured. |
+
+These are phase-2 checks, not evidence that SSH transparency fixes clipboard or
+URL semantics. Status: unverified; prepared-host MVP only.
+
 # Test coverage gaps
 
 ## Liquid Glass is absent from visual coverage
@@ -200,12 +233,24 @@ for the CLI-side ownership.
 Persisting that transient tracking is medium cross-component work.
 Status: accepted.
 
-## Only one native window
+## Shared remote-session selection and geometry
 
-`app/App/main.swift:6` owns one native window and one control-client view.
-Users cannot open independent native views; this does not heal itself.
-Multi-window support is phase-3 scope, not implemented (large architectural
-work). Status: accepted.
+Each native window owns its own transport/client/feed/surfaces, but tmux has one
+current window per session and one grid per pane. Two viewers of the same
+server/session are coupled: navigation affects both, and size follows tmux's
+latest elected client. Smaller viewers clip authoritative external layouts;
+there are no grouped sessions or independent per-view terminal grids. Client-local
+find, scroll and surface budgets remain independent. Status: accepted.
+
+## Remote build policy and installation are manual
+
+The existing discovery-time build mismatch banner offers Connect Anyway;
+remote Restart is deliberately absent. Automatic redial attaches with `-N`
+and does not re-run a start-capable build check. A manually replaced remote
+server is checked on the next explicit discovery, not every redial. Exact-build
+enforcement, managed install/upload/upgrade and remote restart confirmation are
+deferred product work. Prepared hosts need kido and the exercised fork/protocol
+features; Connect Anyway cannot repair an invalid protocol. Status: deferred.
 
 ## Restore latency
 

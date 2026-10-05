@@ -15,7 +15,7 @@ belongs to Kido.app, not tmux.
 
 ## One control client
 
-The app attaches one control client per server (`kido-tmux -S <socket>
+Each native window attaches one control client (`kido-tmux -u -S <socket>
 -N -C attach-session -f pause-after=N,new-layouts,no-detach-on-destroy`)
 and behaves like a normal client: showing a window or session is
 `select-window` or `switch-client`, and the app then follows tmux's
@@ -27,7 +27,8 @@ the client to another session where `detach-on-destroy` would detach
 it, and the app follows as it follows any switch.
 
 `-N` keeps a redial from starting a server behind the user's back: a
-server is started only by `kido server --server DIR`, from the banner's button.
+server is started only by `kido server --server DIR`, on explicit connection
+or the banner's Start button.
 The directory is `$XDG_STATE_HOME/kido-app`, else `~/.local/state/kido-app`;
 the JSON endpoint supplies its `DIR/socket` path. Helpers never set
 `KIDO_STATE_DIR`: panes resolve the server directory from `$TMUX`. A
@@ -38,6 +39,151 @@ and quit is one line on stderr, with its reason or trigger.
 Build identity is checked only at discovery and confirmed restart; automatic
 redial only re-attaches, so a different kido manually started in that directory
 is rejected at the next discovery.
+
+## Remote hosts
+
+On macOS Tahoe, the Spotlight/Shortcuts action **Connect to Remote Host in
+Kido** has a required Host string in its parameter summary. Each request
+creates a new native window, including repeated requests for one alias.
+Host is trimmed and accepts an SSH alias or user@hostname, not options,
+whitespace, controls or shell syntax. Ports and jump hosts belong in SSH
+config. There is no host picker, recent-connections store or remote restore.
+Local keeps `SessionModel.title` (session and current window); remote prefixes
+it with resolved `user@host / `. The original dialing alias is the window
+content's tooltip. Offline titles drop the session/window name.
+
+`AppDelegate` owns shared Ghostty configuration, app lifecycle and menus.
+Each `WindowOwner` owns its immutable Host, generation, transport, Connection,
+Feed, model and SessionView/surface cache. Main menu actions target the key
+owner; source-pane actions stay with that pane's owner. Configuration changes
+broadcast to live owners. Late discovery, command, feed and control callbacks
+check liveness/generation; dead-master callbacks cannot publish channel results.
+Surface disposal cancels find/gestures, denies pending paste exactly once,
+rejects deferred actions/input, and retains parser-quiescent main-thread freeing.
+Closing a window stops only its channels/master, never remote sessions. Closed
+owners stay retained until their transport cleanup completes; quit replies
+after asynchronous process-reaping completion, including retiring transports.
+The terminate-later reply is a common-mode main RunLoop block, not a main
+DispatchQueue block: AppKit's nested termination event loop cannot re-enter a
+main-dispatch callback that called terminate. A bounded off-screen quit probe
+reproduced that wait in `NSApplication._shouldTerminate` before the reply fix.
+Closing the last window leaves the app available for another intent.
+
+Launch bootstrap initializes shared resources and drains queued Host requests;
+it does not open Local. Ordinary AppKit untitled/reopen delivery opens Local
+only when no live window exists; reopening with a live window focuses it.
+There is no timer, debounce or compensating close of a Local window. Off-screen
+routing tests prove queued cold and warm behavior, **not** OS classification.
+The real Spotlight/Shortcuts cold-launch check below remains a shipping gate.
+If macOS sends an indistinguishable ordinary-open before an intent, this route
+is unsolved; do not ship a guessed timing discriminator.
+
+### Transport and discovery
+
+System `/usr/bin/ssh` supplies one retained foreground `-M -N -T` master per
+native remote window. Its unique `/tmp/ka-…/c` ControlPath directory is 0700.
+Bounded `-O check` readiness precedes discovery. BatchMode, strict pretrusted
+host keys, ConnectTimeout=10, one attempt and keepalive=15×3 apply to all
+channels. Agent/X11/inherited forwarding, tty, RemoteCommand, ControlPersist,
+fork-after-authentication, null stdin, LocalCommand, SendEnv and host-key
+updates are disabled. User/account/port/identity/ProxyJump and configured
+known_hosts remain OpenSSH's responsibility; local SSH_AUTH_SOCK can authenticate
+but is not forwarded. Authentication/trust failures stop automatic setup and
+ask the user to establish trust/unlock keys with ordinary ssh in Terminal.
+No passwords, credentials, interactive shell sourcing or automatic installation.
+
+Discovery runs a fixed `/bin/sh` probe remotely: absolute `command -v kido`
+and `${XDG_STATE_HOME:-$HOME/.local/state}/kido-app`. Missing kido gives an
+install/noninteractive-PATH banner; there are no guessed installation locations.
+Relative/control-containing paths or noisy/malformed stdout are errors. Explicit
+Connect may call that kido's `server --server DIR`; JSON tmux/socket paths are
+opaque remote values, not local files. The returned socket must end in `/socket`;
+its parent is retained for feed/navigation. Local retains bundled-tmux validation.
+The existing build mismatch banner is unchanged in policy: remote offers
+**Connect Anyway**, never Restart. Remote upgrade/restart is manual.
+
+Control attach, duplex sidebar-feed and switch-window share the owned master,
+with `ControlMaster=no`. One audited POSIX single-quote function quotes every
+remote argv element after `exec`; Host is never interpolated into shell text.
+Remote HOME/PATH/XDG are resolved there, not forwarded from the Mac. Only
+VISUAL/STRESS test injection supplies private remote HOME/XDG/PATH. The tested
+login shell is zsh; the fixed probe uses /bin/sh. Protocol stdout and bounded
+16KiB stderr are separate. One-shots have deadlines and cancellation; channels
+terminate then escalate to SIGKILL rather than relying on stdin EOF. Channels
+are stopped before the master (1.5s grace), which is reaped before removing
+its private directory. Initial topology plus a valid v2 feed snapshot must
+arrive within 20s of attach to dismiss the connection banner.
+
+Unexpected control loss redials with capped backoff and a full surface/model
+reset. It recreates the master and attaches the **remembered** socket using
+`-N`, never running start-capable discovery. A missing server leaves the explicit
+**Start remote server** action. Deliberate `%exit detached` stays down. Feed-only
+failure restarts the feed on healthy control; master loss invalidates both and
+cancels commands together. OpenSSH can fall back to a direct connection after
+a master dies: launches refuse a known-dead/stopped master, and the owner rejects
+old-generation/dead-master completions rather than accepting fallback as recovery.
+
+Two native windows on the same server/session share tmux's current window and
+pane grid, sized by its latest elected client. This coupling is accepted; there
+are no grouped sessions. Models, client names, feeds, surface caches, find and
+scroll state remain disjoint even when both endpoints issue `$0/@0/%0`.
+Authoritative external layouts are clipped, not resized into independent grids.
+HTTP/HTTPS links from remote panes open on the Mac; remote file paths and other
+schemes are refused with a diagnostic. No implicit port forwarding/file transfer.
+Mac clipboard/paste and unsafe-paste sheets remain local; the full OSC52/auth/URL
+matrix is still unverified (see known issues).
+
+### Prepared localhost and manual entry-point check
+
+The user may add this **only for noninteractive SSH** to `~/.zshenv` (no startup
+stdout); it does not shadow Homebrew kido in ordinary terminals or interactive SSH:
+
+```zsh
+if [[ -n ${SSH_CONNECTION-} && ! -o interactive ]]; then
+  path=("$HOME/Workspace/kido-app/app/build/derived-remote/Build/Products/Debug/Kido.app/Contents/Resources/kido/bin" $path)
+fi
+```
+
+Check `ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes localhost
+'command -v kido; kido --version'`. Keep the bundle's bin directory together so
+its kido finds its matching sibling fork/resources. The app connects to the
+account's kido-app server, not the normal Homebrew kido server. Tests do not
+change startup/SSH files and always inject private `/tmp` HOME/XDG and explicit
+server/socket paths over localhost.
+
+Before shipping, the user/parent must prepare a **distinct app identity**, not
+register the default derived Kido.app over the running installed app:
+
+```sh
+make -C app all DERIVED=build/derived-remote XCODE_SETTINGS='PRODUCT_BUNDLE_IDENTIFIER=com.andreypopp.kido.remote-test PRODUCT_NAME=KidoRemoteTest INFOPLIST_KEY_CFBundleDisplayName=KidoRemoteTest'
+```
+
+The output is `app/build/derived-remote/Build/Products/Debug/KidoRemoteTest.app`;
+Makefile run/test helpers still hardcode Kido.app and are not this smoke check.
+Check its Metadata.appintents and `codesign --verify --deep --strict` before
+registration; use a clean build if an incremental metadata addition invalidates
+the signature. Register only that absolute bundle path with
+`/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f`.
+A distinct bundle ID isolates **app routing, not server state**: these user-driven
+checks attach the account's real kido-app server. They require deliberate user
+approval for that attachment, must never Restart/kill it, and are not agent-run
+private-state tests. Shell-exported HOME/XDG around lsregister does not prove
+Spotlight inherits them.
+
+Quit only KidoRemoteTest, then press Command-Space, choose **Connect to Remote
+Host in Kido** with the **KidoRemoteTest** app subtitle, enter **localhost**, and
+submit. Stop if the action's identity is ambiguous. Verify exactly one remote
+native window and **no Local window** on cold launch. Repeat while running:
+another remote window must appear, not replace the first. Repeat with a saved
+Shortcuts workflow containing that test app's action and Host=localhost.
+Separately quit only the test app and plain-open it with
+`open -b com.andreypopp.kido.remote-test`: one Local window must appear. Warm
+intent delivery then adds remote without replacing Local; reopening with a live
+remote window must not create Local. Finally quit only the test app, unregister
+only its absolute bundle path with lsregister `-u`, and remove only the user's
+test workflow. If action discovery or ordering fails, record the lifecycle and
+block shipping that route. These OS-delivery steps were not performed by the
+off-screen implementation checks.
 
 ## Panes
 
@@ -446,7 +592,13 @@ single panes at three heights, splits, floats, zoom, fractional history,
 alternate screen, settled resize and the Load more pill. A test-only
 `KIDO_VISUAL` build condition exposes an occlusion bypass through
 `@testable`; normal builds retain their occlusion policy. Each image waits
-for a tokened Ghostty presented-frame callback, not a timed delay.
+for a tokened Ghostty presented-frame callback, not a timed delay. Native fixture
+windows use Display P3, matching the references rather than the attached
+monitor's calibrated profile. The off-screen floating-sidebar fill takes its
+rounded corners from the sidebar layer; the transparent corners show the
+underlying window/terminal, not a cached opaque material rectangle.
+`make visual` also launches a private, background copy and sends SIGTERM to its
+main-dispatch handler, checking natural exit after asynchronous quit completion.
 Liquid Glass (sidebar and pane toolbar) and animation/scroll smoothness are
 not covered. Re-record with `make visual RECORD=1` after intentional visual
 changes, a macOS update or a different backing scale, and review the images

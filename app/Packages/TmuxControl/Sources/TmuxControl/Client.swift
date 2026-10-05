@@ -16,11 +16,11 @@ public final class Client: @unchecked Sendable {
     private var closed = false
     private var parser = Parser()
 
-    public init(tmux: URL, socket: String, session: String?, pauseAfter: Int) {
+    public init(launch: Launch) {
         let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
-        process.executableURL = tmux
-        process.arguments = ["-u", "-S", socket, "-N", "-C", "attach-session"] + (session.map { ["-t", $0] } ?? [])
-            + ["-f", "pause-after=\(pauseAfter),new-layouts,no-detach-on-destroy"]
+        process.executableURL = URL(fileURLWithPath: launch.path)
+        process.arguments = launch.arguments
+        process.environment = launch.environment
         process.standardInput = stdin
         process.standardOutput = stdout
         process.standardError = stderr
@@ -35,7 +35,8 @@ public final class Client: @unchecked Sendable {
     }
 
     public func start(
-        onEvent: @escaping @Sendable (Event) -> Void, onClose: @escaping @Sendable (Int32, String) -> Void
+        onEvent: @escaping @Sendable (Event) -> Void, onClose: @escaping @Sendable (Int32, String) -> Void,
+        onExit: @escaping @Sendable () -> Void = {}
     ) throws {
         // waitUntilExit spins the calling thread's run loop and can miss the
         // exit when called from a dispatch queue, blocking forever.
@@ -43,11 +44,23 @@ public final class Client: @unchecked Sendable {
         ended.enter()
         ended.enter()
         ended.enter()
-        process.terminationHandler = { _ in ended.leave() }
-        try process.run()
+        process.terminationHandler = { _ in onExit(); ended.leave() }
+        do {
+            try lock.withLock {
+                guard !closed else { throw CocoaError(.userCancelled) }
+                try process.run()
+            }
+        } catch {
+            process.terminationHandler = nil
+            for _ in 0..<3 { ended.leave() }
+            throw error
+        }
         nonisolated(unsafe) var stderr = Data()
         DispatchQueue.global().async { [errors] in
-            stderr = errors.readDataToEndOfFile()
+            while let chunk = try? errors.read(upToCount: 4096), !chunk.isEmpty {
+                stderr.append(chunk)
+                if stderr.count > 16384 { stderr.removeFirst(stderr.count - 16384) }
+            }
             ended.leave()
         }
         ended.notify(queue: queue) { [process] in
@@ -73,6 +86,13 @@ public final class Client: @unchecked Sendable {
             guard !closed else { return [Pending]() }
             closed = true
             writer.async { [input] in try? input.close() }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { [process] in
+                guard process.isRunning else { return }
+                process.terminate()
+                DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
+                    if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                }
+            }
             defer { pending = [] }
             return pending
         }
