@@ -8,7 +8,7 @@ struct ConnectRemoteHost: AppIntent {
     static var parameterSummary: some ParameterSummary { Summary("Connect to \(\.$host)") }
 
     @MainActor func perform() async throws -> some IntentResult {
-        let destination = try Host(host)
+        let destination = try Host(host.trimmingCharacters(in: .whitespacesAndNewlines))
         guard let app = NSApp.delegate as? AppDelegate else { throw Failure(message: "Kido is not ready") }
         app.routes.connect(destination)
         return .result()

@@ -72,17 +72,18 @@ The suspected glitch is local to a resize transition and should end with the
 current layout. Add a forced-stale pixel fixture and inspect a real window
 (small-to-medium work). Status: unverified.
 
-## Spotlight discovery and cold-launch classification
+## App Intent signing and URL-launch ordering
 
-App Intents metadata includes the required Host and discoverable shortcut;
-internal queued-cold/warm routing is off-screen tested. Actual Spotlight action
-appearance, parameter entry and OS ordering relative to AppKit untitled/reopen
-callbacks remain unverified. `applicationDidFinishLaunching` creates no Local
-window and uses no timeout guess. If ordinary-open is delivered before a cold
-intent indistinguishably, an extra Local is still possible: this is a **shipping
-gate**, not a solved classification contract. Follow the exact manual checks in
-[Remote hosts](design-app.md#remote-hosts); direct perform calls or executable
-arguments do not prove OS delivery. Status: unverified; user hand-check required.
+The cold-launch gate passed on screen through Shortcuts with a team-signed
+build: one remote window, no Local. Spotlight does not list the action directly.
+The action fails in ad-hoc releases because Linkd requires a validated bundle
+(`requiresValidatedBundle`). Use the unsigned
+`kido-app://<host>` Shortcuts recipe in
+[Remote hosts](design-app.md#remote-hosts) instead.
+Internal URL parsing and queued-cold/warm routing are off-screen tested;
+actual URL-launch notification/event ordering still needs the user's on-screen
+retest. No timer guesses are used. Status: App Intent signing limitation;
+URL OS-delivery unverified.
 
 ## Remote clipboard, URL and authentication matrix
 
