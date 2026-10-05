@@ -88,12 +88,13 @@ final class Connection: @unchecked Sendable {
         onURL(text)
     }
 
-    @MainActor func close() {
+    @MainActor func close(keepingView: Bool = false) {
         guard active else { return }
         active = false
         sizing?.cancel()
         sizing = nil
-        view?.close()
+        if !keepingView { view?.close() }
+        view?.connection = nil
         view = nil
         client.close()
         client.queue.async {

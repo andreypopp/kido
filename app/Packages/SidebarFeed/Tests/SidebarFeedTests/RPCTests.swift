@@ -40,6 +40,7 @@ import Testing
 }
 
 @Test(arguments: [(#"{"hello":{"protocol":"1.0","server":null}}"#, nil), (#"{"hello":{"protocol":"1.0","server":"9.9"}}"#, "9.9"), (#"{"hello":{"protocol":"1.0","server":"invalid"}}"#, nil)]) func rejectedHello(_ line: String, _ expected: String?) throws {
-    guard case .hello(.rejected(let server)) = try JSONDecoder().decode(RPCEvent.self, from: Data(line.utf8)) else { Issue.record("not rejected"); return }
+    guard case .hello(.rejected(let binary, let server)) = try JSONDecoder().decode(RPCEvent.self, from: Data(line.utf8)) else { Issue.record("not rejected"); return }
+    #expect(binary == .required)
     #expect(server?.description == expected)
 }
