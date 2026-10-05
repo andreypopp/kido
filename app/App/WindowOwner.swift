@@ -98,13 +98,14 @@ import SidebarFeed
     }
 
     func updateAppearance() {
-        window.backgroundColor = runtime.background
+        let background = runtime.background
+        window.backgroundColor = background
         for view in [sidebar.view, sidebar.content] {
             view.wantsLayer = true
-            view.layer?.backgroundColor = runtime.background.cgColor
+            view.layer?.backgroundColor = background.cgColor
         }
-        banner?.background = runtime.background
-        let rgb = runtime.background.usingColorSpace(.deviceRGB) ?? .black
+        banner?.background = background
+        let rgb = background.usingColorSpace(.deviceRGB) ?? .black
         let channels = [rgb.redComponent, rgb.greenComponent, rgb.blueComponent].map {
             $0 <= 0.04045 ? $0 / 12.92 : pow(($0 + 0.055) / 1.055, 2.4)
         }
@@ -201,13 +202,16 @@ import SidebarFeed
 
     static func mismatchAlert(host: Host, server: RPCVersion?, binary: RPCVersion?) -> NSAlert {
         let alert = NSAlert()
-        let local = host == .local, newer = (server?.major ?? 0) > RPCVersion.required.major
+        let local = host == .local, newer = max(server?.major ?? 0, binary?.major ?? 0) > RPCVersion.required.major
         let upgraded = !newer && binary?.compatible == true
         if newer {
             alert.messageText = local ? "This server needs a newer Kido.app" : "Update Kido.app to connect"
             alert.informativeText = local
                 ? "This local server was started by a newer Kido.app. Update the app, or restart the server using this bundle. Restarting ends all its sessions and panes."
                 : "The server on \(host.label) is newer than this app supports. Update Kido.app, then reconnect."
+            if !local, let binary, binary.major > (server?.major ?? 0) {
+                alert.informativeText = "kido on \(host.label) is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."
+            }
         } else if !local && upgraded {
             alert.messageText = "Restart kido on \(host.label)"
             alert.informativeText = "kido was updated on the host, but its running server still uses the older version. Restart that server, then reconnect."
@@ -218,7 +222,7 @@ import SidebarFeed
                 : "The host is running an older kido server that this app cannot connect to. Upgrade kido on the host and restart its server, then reconnect."
         }
         alert.informativeText += "\n\nCompatibility: this app needs protocol \(RPCVersion.required) or later within major \(RPCVersion.required.major). Server: \(server.map(String.init(describing:)) ?? "unstamped (older kido)")."
-        if !local && upgraded, let binary { alert.informativeText += " Host binary: \(binary)." }
+        if !local && (upgraded || newer && binary != server), let binary { alert.informativeText += " Host binary: \(binary)." }
         alert.informativeText += " Protocol numbers are not Kido.app release numbers."
         alert.addButton(withTitle: local ? "Restart…" : "Reconnect")
         alert.addButton(withTitle: "Close").keyEquivalent = "\u{1b}"
@@ -249,8 +253,21 @@ import SidebarFeed
             confirmation.window.initialFirstResponder = confirmation.buttons[0]
             prepareAlert(confirmation) { [weak self] response in
                 guard let self, accepts(generation) else { return }
-                if response == .alertSecondButtonReturn { confirmedRestart(endpoint.server, response) }
-                else { mismatchSheet(endpoint) }
+                guard response == .alertSecondButtonReturn else { return mismatchSheet(endpoint) }
+                link = .locating(.confirm(Endpoint(server: endpoint.server, kido: tools.kido)), 0.1)
+                task = Task {
+                    guard accepts(generation) else { return }
+                    do throws(Failure) {
+                        try await endpoint.server.restart(drain: drain)
+                        guard accepts(generation) else { return }
+                        link = .down
+                        start()
+                    } catch {
+                        guard accepts(generation) else { return }
+                        link = .down
+                        down("Could not restart the app server", error.message, button: "Reconnect")
+                    }
+                }
             }
         }
     }
@@ -274,25 +291,6 @@ import SidebarFeed
         let respond = preparedAlert?.respond
         preparedAlert = nil
         respond?(response)
-    }
-
-    private func confirmedRestart(_ server: Server, _ response: NSApplication.ModalResponse) {
-        guard response == .alertSecondButtonReturn else { return }
-        link = .locating(.confirm(Endpoint(server: server, kido: tools.kido)), 0.1)
-        let generation = generation
-        task = Task {
-            guard accepts(generation) else { return }
-            do throws(Failure) {
-                try await server.restart(drain: drain)
-                guard accepts(generation) else { return }
-                link = .down
-                start()
-            } catch {
-                guard accepts(generation) else { return }
-                link = .down
-                down("Could not restart the app server", error.message, button: "Reconnect")
-            }
-        }
     }
 
     func bundleChanged(_ error: Failure) {
