@@ -80,7 +80,7 @@ final class Connection: @unchecked Sendable {
             drain?.ended.leave()
             throw error
         }
-        client.send([Command("refresh-client", "-B", "windows::#{W:#{window_id}=#{window_index},}")]) { _ in }
+        client.send([Command("set", "-s", "get-clipboard", "off"), Command("refresh-client", "-B", "windows::#{W:#{window_id}=#{window_index},}")]) { _ in }
     }
 
     @MainActor func openURL(_ text: String) {
