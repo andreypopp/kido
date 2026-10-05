@@ -56,10 +56,10 @@ extension Item {
     }
 }
 
-private func walkNodes(_ nodes: [Node], depth: Int, before: (Node, Int, Int) -> Void,
+private func walkNodes(_ nodes: [Node], depth: Int, before: (Node, Int) -> Void,
                        pane: (Item, Int) -> Void, after: (Node, Int) -> Void) {
-    for (index, node) in nodes.enumerated() {
-        before(node, depth, index)
+    for node in nodes {
+        before(node, depth)
         let panes: [Item] = switch node { case .window(let group): group.children; case .item(let item): [item] }
         for item in panes {
             pane(item, depth)
@@ -73,7 +73,7 @@ public func sidebarTarget(_ snapshot: Snapshot?, selected: Snapshot.Position? = 
     guard let snapshot else { return nil }
     var targets: [(Snapshot.Position, Bool)] = []
     for session in snapshot.sessions {
-        walkNodes(session.nodes, depth: 0, before: { _, _, _ in }, pane: { item, _ in
+        walkNodes(session.nodes, depth: 0, before: { _, _ in }, pane: { item, _ in
             targets.append((.init(session: session.id, window: item.window, pane: item.pane), item.attention))
         }, after: { _, _ in })
     }
@@ -96,11 +96,9 @@ public func sidebarRows(_ snapshot: Snapshot?, folded: Set<SessionID>) -> [Sideb
                                title: session.name, tail: "", status: .quiet, attention: false, started: nil, focused: false))
         var begins: [Int] = []
         if !folded.contains(session.id) {
-            walkNodes(session.nodes, depth: 0, before: { node, depth, index in
-                if index > 0 {
-                    rows.append(SidebarRow(id: .divider(session.id, node.id), kind: .divider, indent: depth, height: 3,
-                                           title: "", tail: "", status: .quiet, attention: false, started: nil, focused: false))
-                }
+            walkNodes(session.nodes, depth: 0, before: { node, depth in
+                rows.append(SidebarRow(id: .divider(session.id, node.id), kind: .divider, indent: depth, height: 3,
+                                       title: "", tail: "", status: .quiet, attention: false, started: nil, focused: false))
                 begins.append(rows.count)
             }, pane: { item, depth in
                     let description: String = switch item.indicator {
