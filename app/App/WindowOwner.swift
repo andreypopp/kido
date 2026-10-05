@@ -12,13 +12,13 @@ import SidebarFeed
     private var drain: Drain?
     private var initial: DispatchWorkItem?
     private(set) var ssh: SSH?
-    private var identity: String?
+    private var identity: String? { didSet { sidebar.tabs.needsLayout = true; sidebar.tabs.needsDisplay = true } }
     var menuChanged: () -> Void = {}
     var onClose: () -> Void = {}
     private(set) var window: NSWindow!
     private var banner: Banner!
     private var session: SessionView?
-    private var link = Link.down
+    private var link = Link.down { didSet { sidebar.tabs.needsDisplay = true } }
     let sidebar = Sidebar()
     private var feed: Feed?
     private var model = SessionModel()
@@ -60,7 +60,10 @@ import SidebarFeed
         window.titlebarSeparatorStyle = .none
         updateAppearance()
         window.contentViewController = sidebar
-        sidebar.view.toolTip = host == .local ? nil : host.label
+        sidebar.tabs.hostLabel = { [weak self] in
+            guard let self, case .remote(let alias) = self.host else { return nil }
+            return (self.identity ?? alias, alias, { if case .connected = self.link { return true }; return false }())
+        }
         let toolbar = NSToolbar(identifier: "KidoSidebar")
         toolbar.delegate = sidebar
         toolbar.displayMode = .iconOnly
