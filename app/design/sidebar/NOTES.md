@@ -18,6 +18,18 @@ Geometry: 292pt sidebar; 31pt headers; 28/44pt pane rows and 25/41pt nested rows
 
 Arrow keys/j/k move keyboard selection; Enter focuses a pane; mouse clears keyboard fill. Left/right and session names fold/unfold sessions. / opens the session-name filter, including zero-match state. Toolbar/plus icons brighten on hover, but pane/header rows have no hover/press feedback or tooltips.
 
+## Approved spacing changes
+
+Every window divider, top-level and nested, is a 3pt row: 1pt gap, 1pt tertiaryLabelColor line, 1pt gap. Nested lines start at the window's indent (depth × 21pt) and extend to the right edge. Resolve the native color at draw time and pixel-snap the line; CSS approximates tertiaryLabelColor with a separate `--divider` color. This supersedes the previous top-level-only divider/no-nested-divider variants. No sidebar row may be 0pt: NSTableView aborts on one, which crashed `make demo`. Pane heights and text padding are unchanged. Nesting uses indentation only: 21pt per level (up from 17pt), with no guides. Both elbowed and vertical-only guides were tried and rejected as too busy. The user approved these changes and requested implementation handoff. They are reflected in the mockup, not yet claimed as shipped-code changes.
+
+## Approved completion, request, and stalled states
+
+Completed agent turns (`done`) and successful shell commands (`done`) show a green checkmark in the existing trailing status slot, not an orange dot. Completed retained runs (`gone/completed`) use the same bright green checkmark. The user chose one completion appearance for simplicity, with no dim/fresh distinction. Idle remains empty; running/compacting remain green dots; failures stay red.
+
+Orange means an agent actually awaits input (`waiting`, agent or agent-run). The feed's `attention` flag also includes completed turns, so it must not directly select an orange dot. Keep the feed's existing navigation/acknowledgement semantics separate from the visual state. Tab aggregation uses actual errors/input requests, not completion; completed turns don't produce orange tab dots. The stress fixture includes agent `done` with `attention: true` as a regression example and successful shell/run completion.
+
+Stalled uses a bold red exclamation mark in the trailing status slot, distinct from failure's red dot and input requests' orange dot, matching kido's TUI. It produces neither an orange request dot nor a failure dot on tabs under the existing error/request-only aggregation. The user approved this stalled treatment and then simplified all successful completion to the same green checkmark. A checkmark does not invent a completion duration; completed run fixtures have no ticking `started` timestamp. Native implementation can use SF Symbols `checkmark` and `exclamationmark` without circles; preview uses simple CSS strokes/text.
+
 ## Shipped title-bar tabs
 
 The shipped tabs are custom AppKit `WindowTabs` drawing, not native macOS NSWindow tabbing. The preview follows that code: a 44pt titlebar strip, equal tab widths clamped to 85–220pt, a tab surface inset 2pt left/1pt right and 8pt vertically, 7pt corner radius, 11pt centered/truncating labels. Active surfaces have 7.5% fill/stroke. There is no hover background or keyboard focus ring. Status dots are 6pt, 12pt from the surface's right edge. Overflow scrolls horizontally (including vertical-wheel input). Tabs remain visible with the sidebar collapsed, after the traffic lights and Show Sidebar button.
