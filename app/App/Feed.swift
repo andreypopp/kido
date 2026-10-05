@@ -19,7 +19,11 @@ final class Feed: @unchecked Sendable {
     #endif
 
     private let serverDir: String
+    private let drain: Drain?
     private let locate: Locate
+    @MainActor private let prepare: ([String]) -> Launch
+    @MainActor private var child: Child?
+    @MainActor private var commands: [UUID: Task<Void, Never>] = [:]
     @MainActor private let query: () -> String
     private let reader = DispatchQueue(label: "Feed.reader")
     private let writer = DispatchQueue(label: "Feed.writer")
@@ -29,12 +33,18 @@ final class Feed: @unchecked Sendable {
     @MainActor private var restartWork: DispatchWorkItem?
     @MainActor private var backoff: TimeInterval = 0.1
     @MainActor private let onChange: (Status) -> Void
+    @MainActor private(set) var status: Status = .starting
+
+    @MainActor private func publish(_ status: Status) { self.status = status; onChange(status) }
 
     @MainActor init(
-        serverDir: String, locate: @escaping Locate, query: @escaping () -> String, onChange: @escaping (Status) -> Void
+        serverDir: String, locate: @escaping Locate, query: @escaping () -> String, drain: Drain? = nil,
+        prepare: @escaping ([String]) -> Launch = { Launch(tools.kido, $0, environment: tools.environment) }, onChange: @escaping (Status) -> Void
     ) {
         self.serverDir = serverDir
+        self.drain = drain
         self.locate = locate
+        self.prepare = prepare
         self.query = query
         self.onChange = onChange
         start()
@@ -45,6 +55,10 @@ final class Feed: @unchecked Sendable {
         restartWork = nil
         generation += 1
         closeInput()
+        child?.stop()
+        child = nil
+        commands.values.forEach { $0.cancel() }
+        commands = [:]
     }
 
     @MainActor private func closeInput() {
@@ -62,18 +76,20 @@ final class Feed: @unchecked Sendable {
         guard let client = located else { return completed(nil, "the sidebar feed has not found its client yet") }
         let args = ["switch-window", next ? "next" : "prev", "--client", client, "--server", serverDir]
         do throws(Failure) { try tools.validate() } catch {
-            onChange(.invalidBundle(error))
+            publish(.invalidBundle(error))
             return completed(nil, error.message)
         }
-        let generation = generation
-        Task {
+        let generation = generation, id = UUID()
+        commands[id] = Task {
+            defer { commands[id] = nil }
             do throws(Failure) {
                 #if KIDO_VISUAL || KIDO_STRESS
                 let kido = testKido ?? tools.kido
                 #else
                 let kido = tools.kido
                 #endif
-                let (status, out, err) = try await Child.run(kido, args, env: tools.environment)
+                let launch = kido == tools.kido ? prepare(args) : Launch(kido, args, environment: tools.environment)
+                let (status, out, err) = try await Child.run(launch, drain: drain)
                 guard self.generation == generation else { return }
                 guard status == 0 else { return completed(nil, err.isEmpty ? "kido switch-window exited \(status)" : err) }
                 if out.isEmpty { return completed(nil, nil) }
@@ -90,7 +106,7 @@ final class Feed: @unchecked Sendable {
     }
 
     @MainActor private func start() {
-        onChange(.starting)
+        publish(.starting)
         generation += 1
         let generation = generation
         locate { [weak self] result in
@@ -113,13 +129,13 @@ final class Feed: @unchecked Sendable {
         let fake: String? = nil
         #endif
         let path = fake ?? tools.kido
-        do throws(Failure) { try tools.validate() } catch { return onChange(.invalidBundle(error)) }
+        do throws(Failure) { try tools.validate() } catch { return publish(.invalidBundle(error)) }
         let stdin = Pipe(), stdout = Pipe()
         let child: Child
         do throws(Failure) {
-            child = try Child(
-                path, fake == nil ? ["sidebar-feed", "--server", serverDir, "--client", client] : [], env: tools.environment,
-                stdin: stdin, stdout: stdout)
+            let launch = fake == nil ? prepare(["sidebar-feed", "--server", serverDir, "--client", client]) : Launch(path, [], environment: tools.environment)
+            child = try Child(launch.path, launch.arguments, env: launch.environment, stdin: stdin, stdout: stdout, drain: drain)
+            self.child = child
         } catch {
             return restart(error.message)
         }
@@ -145,9 +161,9 @@ final class Feed: @unchecked Sendable {
                 buffer.removeSubrange(...newline)
                 DispatchQueue.main.async {
                     guard let self, self.generation == generation else { return }
-                    guard let last else { return self.onChange(.unreadable) }
+                    guard let last else { return self.publish(.unreadable) }
                     self.backoff = 0.1
-                    self.onChange(.running(last))
+                    self.publish(.running(last))
                 }
             }
         }
@@ -162,7 +178,9 @@ final class Feed: @unchecked Sendable {
         generation += 1
         located = nil
         closeInput()
-        onChange(.restarting(reason))
+        child?.stop()
+        child = nil
+        publish(.restarting(reason))
         let item = DispatchWorkItem { [weak self] in self?.start() }
         restartWork = item
         DispatchQueue.main.asyncAfter(deadline: .now() + backoff, execute: item)
