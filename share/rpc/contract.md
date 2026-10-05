@@ -1,6 +1,6 @@
 # kido rpc protocol 1.0
 
-fork revision: a0ca2d7d7740672f41d504bb634cbc8ac9bdb99f
+fork revision: 2b2cfd64d3a71b8bf7e2aee79ef782bf45d5aa0e
 
 Protocol.value is the binary's protocol constant. The launcher stamps it into
 the server's global KIDO_PROTOCOL environment at creation. Exact MAJOR.MINOR
