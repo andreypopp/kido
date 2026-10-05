@@ -272,6 +272,48 @@ import SidebarFeed
         }
     }
 
+    #if KIDO_VISUAL || KIDO_STRESS
+    static let clipboardConsent = ClipboardConsent()
+    #else
+    static let clipboardConsent = ClipboardConsent(grants: background ? nil : .standard)
+    #endif
+    static func resetClipboardPermissions(_ owners: [WindowOwner]) {
+        clipboardConsent.reset()
+        owners.forEach { $0.clipboardPermission = .ask }
+    }
+
+    private var clipboardPrompt: (pane: PaneView, alert: NSAlert)?
+
+    func requestClipboard(_ pane: PaneView) {
+        if clipboardPermission == .deny { return pane.finishClipboard(false) }
+        if clipboardPermission == .allow || Self.clipboardConsent.allows(host) { return pane.finishClipboard(true) }
+        guard !pane.isHiddenOrHasHiddenAncestor, window.isVisible,
+              preparedAlert == nil, window.attachedSheet == nil,
+              Self.clipboardConsent.askingHosts.insert(host.clipboardKey).inserted else { return pane.finishClipboard(false) }
+        let alert = NSAlert()
+        alert.messageText = "Allow applications on “\(host.label)” to read your Mac clipboard?"
+        alert.informativeText = "This also permits applications reached through SSH inside its panes."
+        for title in ["Allow for this connection", "Always allow", "Deny"] { alert.addButton(withTitle: title) }
+        clipboardPrompt = (pane, alert)
+        pane.expireClipboard()
+        prepareAlert(alert) { [weak self, weak pane] response in
+            guard let self, let pane, clipboardPrompt?.pane === pane, clipboardPrompt?.alert === alert else { return }
+            guard pane.clipboardOnTime else { return pane.finishClipboard(false) }
+            let granted = response == .alertFirstButtonReturn || response == .alertSecondButtonReturn
+            if granted { clipboardPermission = .allow }
+            if response == .alertThirdButtonReturn { clipboardPermission = .deny }
+            if response == .alertSecondButtonReturn { Self.clipboardConsent.allowAlways(host) }
+            pane.finishClipboard(granted)
+        }
+    }
+
+    func releaseClipboard(_ pane: PaneView) {
+        guard let prompt = clipboardPrompt, prompt.pane === pane else { return }
+        clipboardPrompt = nil
+        Self.clipboardConsent.askingHosts.remove(host.clipboardKey)
+        cancelClipboardAlert(prompt.alert)
+    }
+
     enum ClipboardPermission { case ask, allow, deny }
     var clipboardPermission = ClipboardPermission.ask
 
