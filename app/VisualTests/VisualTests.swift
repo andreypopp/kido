@@ -79,6 +79,7 @@ import XCTest
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: height),
                           styleMask: [.titled, .fullSizeContentView, .resizable], backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: .aqua)
+        window.colorSpace = .displayP3
         session = SessionView(runtime: runtime)
         session.frame = NSRect(x: 0, y: 0, width: 700, height: height)
         window.contentView = session
@@ -491,6 +492,13 @@ import XCTest
         XCTAssertFalse(window.isVisible)
         XCTAssertFalse(window.isKeyWindow)
         XCTAssertFalse(NSApp.isActive)
+        var views = [root]
+        while let view = views.popLast() {
+            if let glass = view as? NSGlassEffectView, sidebar.list.isDescendant(of: glass) {
+                XCTAssertEqual(glass.layer?.cornerRadius, sidebar.list.layer?.cornerRadius, "offscreen glass fill must match its sidebar corner radius")
+            }
+            views += view.subviews
+        }
         CATransaction.flush()
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
         if let failure = verifySnapshot(of: root, as: .image, named: "collapsed-floating", record: record),
@@ -615,6 +623,7 @@ import XCTest
     func testSidebarCards() throws {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 680),
                           styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        window.colorSpace = .displayP3
         let list = SidebarView()
         window.contentView = list
         SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
