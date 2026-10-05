@@ -28,9 +28,9 @@ fi
 [[ $(git -C "$tap" branch --show-current) == main && -z $(git -C "$tap" status --porcelain) ]] || { echo 'Tap must be clean and on main' >&2; exit 1; }
 brew_tap=$(brew --repo andreypopp/tap)
 [[ -z $(git -C "$brew_tap" status --porcelain) ]] || { echo 'Homebrew tap checkout is dirty; refusing to update it' >&2; exit 1; }
-make all CONFIG=Release DERIVED=build/derived-release GHOSTTY_OPTIMIZE=ReleaseFast \
+make all CONFIG=Release DERIVED=build/xcode.noindex/derived-release GHOSTTY_OPTIMIZE=ReleaseFast \
   XCODE_SETTINGS="MARKETING_VERSION=$version CURRENT_PROJECT_VERSION=$version"
-app=build/derived-release/Build/Products/Release/Kido.app
+app=build/xcode.noindex/derived-release/Build/Products/Release/Kido.app
 for key in CFBundleShortVersionString CFBundleVersion; do
   [[ $(/usr/libexec/PlistBuddy -c "Print :$key" "$app/Contents/Info.plist") == "$version" ]] || { echo "$key must equal $version" >&2; exit 1; }
 done
