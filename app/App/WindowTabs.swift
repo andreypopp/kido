@@ -22,26 +22,29 @@ final class WindowTabs: NSView {
     }
     override var mouseDownCanMoveWindow: Bool { false }
 
-    private func tabWidth(_ count: Int) -> CGFloat { max(85, min(220, max(0, bounds.width - hostWidth) / CGFloat(max(1, count)))) }
+    private func tabWidth(_ count: Int, hostWidth: CGFloat) -> CGFloat { max(85, min(220, max(0, bounds.width - hostWidth) / CGFloat(max(1, count)))) }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
-        let tabWidth = tabWidth(entries.count)
+        let hostWidth = hostWidth
+        let tabWidth = tabWidth(entries.count, hostWidth: hostWidth)
         guard !isHidden, bounds.contains(local), local.x >= hostWidth, local.x - hostWidth + offset < tabWidth * CGFloat(entries.count) else { return nil }
         return self
     }
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        let hostWidth = hostWidth
         guard bounds.contains(point), point.x >= hostWidth else { return }
-        let tabWidth = tabWidth(entries.count)
+        let tabWidth = tabWidth(entries.count, hostWidth: hostWidth)
         let index = Int((point.x - hostWidth + offset) / tabWidth)
         guard entries.indices.contains(index) else { return }
         select(.number(index + 1))
     }
 
     override func scrollWheel(with event: NSEvent) {
-        let tabWidth = tabWidth(entries.count)
+        let hostWidth = hostWidth
+        let tabWidth = tabWidth(entries.count, hostWidth: hostWidth)
         offset = max(0, min(max(0, tabWidth * CGFloat(entries.count) - (bounds.width - hostWidth)),
                             offset + (event.scrollingDeltaX == 0 ? event.scrollingDeltaY : event.scrollingDeltaX)))
         needsDisplay = true
@@ -70,7 +73,7 @@ final class WindowTabs: NSView {
             NSRect(x: hostWidth, y: 0, width: bounds.width - hostWidth, height: bounds.height).clip()
             defer { NSGraphicsContext.restoreGraphicsState() }
             let entries = entries
-            let tabWidth = tabWidth(entries.count)
+            let tabWidth = tabWidth(entries.count, hostWidth: hostWidth)
             offset = min(offset, max(0, tabWidth * CGFloat(entries.count) - (bounds.width - hostWidth)))
             for (index, tab) in entries.enumerated() {
                 let rect = NSRect(x: hostWidth + CGFloat(index) * tabWidth - offset + 2, y: 8, width: tabWidth - 3, height: bounds.height - 16)
@@ -97,7 +100,8 @@ final class WindowTabs: NSView {
 
     override func accessibilityChildren() -> [Any]? {
         let entries = entries
-        let tabWidth = tabWidth(entries.count)
+        let hostWidth = hostWidth
+        let tabWidth = tabWidth(entries.count, hostWidth: hostWidth)
         return entries.enumerated().map { index, tab in
             let element = NSAccessibilityElement()
             element.setAccessibilityRole(.button)
