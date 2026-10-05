@@ -19,7 +19,7 @@ public final class Client: @unchecked Sendable {
     public init(tmux: URL, socket: String, session: String?, pauseAfter: Int) {
         let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
         process.executableURL = tmux
-        process.arguments = ["-S", socket, "-N", "-C", "attach-session"] + (session.map { ["-t", $0] } ?? [])
+        process.arguments = ["-u", "-S", socket, "-N", "-C", "attach-session"] + (session.map { ["-t", $0] } ?? [])
             + ["-f", "pause-after=\(pauseAfter),new-layouts,no-detach-on-destroy"]
         process.standardInput = stdin
         process.standardOutput = stdout
