@@ -24,6 +24,7 @@ import SidebarFeed
     private var model = SessionModel()
     private var snapshot: Snapshot?
     private var navigationModel = SessionModel()
+    private(set) var preparedAlert: (alert: NSAlert, respond: (NSApplication.ModalResponse) -> Void)?
 
     private enum Attempt {
         case discover
@@ -84,7 +85,7 @@ import SidebarFeed
         }
         sidebar.list.filter = { [weak self] in self?.feed?.filter($0) }
         sidebar.focusTerminal = { [weak self] in self?.session?.focusActive() }
-        banner = Banner(target: self, action: #selector(WindowOwner.start))
+        banner = Banner(background: runtime.background, target: self, action: #selector(WindowOwner.start))
         banner.frame = sidebar.content.bounds
         sidebar.content.addSubview(banner)
         window.center()
@@ -98,6 +99,11 @@ import SidebarFeed
 
     func updateAppearance() {
         window.backgroundColor = runtime.background
+        for view in [sidebar.view, sidebar.content] {
+            view.wantsLayer = true
+            view.layer?.backgroundColor = runtime.background.cgColor
+        }
+        banner?.background = runtime.background
         let rgb = runtime.background.usingColorSpace(.deviceRGB) ?? .black
         let channels = [rgb.redComponent, rgb.greenComponent, rgb.blueComponent].map {
             $0 <= 0.04045 ? $0 / 12.92 : pow(($0 + 0.055) / 1.055, 2.4)
@@ -127,22 +133,12 @@ import SidebarFeed
         guard alive else { return }
         switch link {
         case .locating, .connected, .changed: return
-        case .mismatch(let endpoint):
-            if host != .local { break }
-            let alert = NSAlert()
-            alert.messageText = "This server uses \(endpoint.server.protocolVersion.map { "kido protocol \($0)" } ?? "an older kido"). Kido needs protocol \(RPCVersion.required) or later within the same major version. Restarting ends all its sessions and panes."
-            alert.addButton(withTitle: "Restart")
-            alert.addButton(withTitle: "Cancel")
-            let generation = generation
-            alert.beginSheetModal(for: window) { [weak self] response in
-                guard let self, accepts(generation) else { return }
-                confirmedRestart(endpoint.server, response)
-            }
-            return
+        case .mismatch: break
         case .redialing(let item, _, _): item.cancel()
         case .down: break
         }
-        invalidate()
+        if case .mismatch = link { invalidate(keepingSnapshot: true) }
+        else { invalidate() }
         connect(.discover, backoff: 0.1)
     }
 
@@ -203,18 +199,85 @@ import SidebarFeed
         }
     }
 
+    static func mismatchAlert(host: Host, server: RPCVersion?, binary: RPCVersion?) -> NSAlert {
+        let alert = NSAlert()
+        let local = host == .local, newer = (server?.major ?? 0) > RPCVersion.required.major
+        let upgraded = !newer && binary?.compatible == true
+        if newer {
+            alert.messageText = local ? "This server needs a newer Kido.app" : "Update Kido.app to connect"
+            alert.informativeText = local
+                ? "This local server was started by a newer Kido.app. Update the app, or restart the server using this bundle. Restarting ends all its sessions and panes."
+                : "The server on \(host.label) is newer than this app supports. Update Kido.app, then reconnect."
+        } else if !local && upgraded {
+            alert.messageText = "Restart kido on \(host.label)"
+            alert.informativeText = "kido was updated on the host, but its running server still uses the older version. Restart that server, then reconnect."
+        } else {
+            alert.messageText = local ? "Restart the local kido server" : "Update kido on \(host.label)"
+            alert.informativeText = local
+                ? "This server was started by an older kido. Restart it to use the kido bundled with this app."
+                : "The host is running an older kido server that this app cannot connect to. Upgrade kido on the host and restart its server, then reconnect."
+        }
+        alert.informativeText += "\n\nCompatibility: this app needs protocol \(RPCVersion.required) or later within major \(RPCVersion.required.major). Server: \(server.map(String.init(describing:)) ?? "unstamped (older kido)")."
+        if !local && upgraded, let binary { alert.informativeText += " Host binary: \(binary)." }
+        alert.informativeText += " Protocol numbers are not Kido.app release numbers."
+        alert.addButton(withTitle: local ? "Restart…" : "Reconnect")
+        alert.addButton(withTitle: "Close").keyEquivalent = "\u{1b}"
+        return alert
+    }
+
     private func protocolMismatch(_ endpoint: Endpoint) {
-        invalidate()
+        invalidate(keepingSnapshot: true)
         link = .mismatch(endpoint)
-        let version = endpoint.server.protocolVersion.map { "kido protocol \($0)" } ?? "an older kido"
-        down("\(host.label) runs \(version)",
-             "Kido needs protocol \(RPCVersion.required) or later within the same major version. " +
-             (host == .local ? "Restart the kido-app server to use this bundle." : "Upgrade kido there and restart its server."),
-             button: host == .local ? "Restart" : "Reconnect")
+        down("Disconnected from \(host.label)", "", button: "Reconnect")
+        mismatchSheet(endpoint)
+    }
+
+    private func mismatchSheet(_ endpoint: Endpoint) {
+        let alert = Self.mismatchAlert(host: host, server: endpoint.server.protocolVersion, binary: endpoint.server.binaryProtocol)
+        let generation = generation
+        prepareAlert(alert) { [weak self] response in
+            guard let self, accepts(generation) else { return }
+            guard response == .alertFirstButtonReturn else { banner.isHidden = false; return }
+            if host != .local { return start() }
+            let confirmation = NSAlert()
+            confirmation.messageText = "Restart the local server?"
+            confirmation.informativeText = "Restarting ends all sessions and panes on this local kido-app server. Running commands and agents will stop. Other clients attached to this server will disconnect."
+            confirmation.addButton(withTitle: "Cancel")
+            confirmation.addButton(withTitle: "Restart").hasDestructiveAction = true
+            confirmation.buttons[0].keyEquivalent = "\u{1b}"
+            confirmation.window.defaultButtonCell = confirmation.buttons[0].cell as? NSButtonCell
+            confirmation.window.initialFirstResponder = confirmation.buttons[0]
+            prepareAlert(confirmation) { [weak self] response in
+                guard let self, accepts(generation) else { return }
+                if response == .alertSecondButtonReturn { confirmedRestart(endpoint.server, response) }
+                else { mismatchSheet(endpoint) }
+            }
+        }
+    }
+
+    private func prepareAlert(_ alert: NSAlert, respond: @escaping (NSApplication.ModalResponse) -> Void) {
+        preparedAlert = (alert, respond)
+        banner.isHidden = true
+        presentAlert()
+    }
+
+    private func presentAlert() {
+        guard alive, window.isVisible, window.attachedSheet == nil, let preparedAlert else { return }
+        let alert = preparedAlert.alert
+        alert.beginSheetModal(for: window) { [weak self, weak alert] response in
+            guard let self, self.preparedAlert?.alert === alert else { return }
+            respondToAlert(response)
+        }
+    }
+
+    func respondToAlert(_ response: NSApplication.ModalResponse) {
+        let respond = preparedAlert?.respond
+        preparedAlert = nil
+        respond?(response)
     }
 
     private func confirmedRestart(_ server: Server, _ response: NSApplication.ModalResponse) {
-        guard response == .alertFirstButtonReturn else { return }
+        guard response == .alertSecondButtonReturn else { return }
         link = .locating(.confirm(Endpoint(server: server, kido: tools.kido)), 0.1)
         let generation = generation
         task = Task {
@@ -269,6 +332,7 @@ import SidebarFeed
                 if !background { NSWorkspace.shared.open(url) }
             }
             link = .connected(connection, endpoint, backoff)
+            session?.close()
             session = view
             feed = Feed(
                 serverDir: endpoint.directory, locate: connection.locateFeed, query: { [weak self] in self?.sidebar.list.query ?? "" }, drain: drain,
@@ -276,8 +340,8 @@ import SidebarFeed
                 onChange: { [weak self] status in
                     guard let self, accepts(generation) else { return }
                     if case .invalidBundle(let error) = status { return self.bundleChanged(error) }
-                    if case .protocolMismatch(let version) = status {
-                        return self.protocolMismatch(Endpoint(server: Server(tmux: server.tmux, socket: server.socket, protocolVersion: version), kido: endpoint.kido))
+                    if case .protocolMismatch(let version, let binary) = status {
+                        return self.protocolMismatch(Endpoint(server: Server(tmux: server.tmux, socket: server.socket, protocolVersion: version, binaryProtocol: binary ?? server.binaryProtocol), kido: endpoint.kido))
                     }
                     self.sidebar.list.update(status)
                     if case .running(let snapshot) = status, self.sidebar.list.query.isEmpty, snapshot.filter.isEmpty {
@@ -411,14 +475,16 @@ import SidebarFeed
     func accepts(_ token: Int) -> Bool {
         guard alive, generation == token else { return false }
         switch link {
-        case .connected, .mismatch:
+        case .connected:
             return host == .local || ssh?.master?.process.isRunning == true
         default: return true
         }
     }
 
-    private func invalidate() {
+    private func invalidate(keepingSnapshot: Bool = false) {
         generation += 1
+        preparedAlert = nil
+        if let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .abort) }
         task?.cancel()
         task = nil
         initial?.cancel()
@@ -426,17 +492,21 @@ import SidebarFeed
         if case .redialing(let work, _, _) = link { work.cancel() }
         feed?.stop()
         feed = nil
-        if case .connected(let connection, _, _) = link { connection.close() }
-        session?.close()
-        session = nil
+        if case .connected(let connection, _, _) = link { connection.close(keepingView: keepingSnapshot) }
+        if !keepingSnapshot {
+            session?.close()
+            session = nil
+        }
         let closing = drain
         drain = nil
         closing?.close()
         ssh?.stop(after: closing)
         ssh = nil
-        model = SessionModel()
-        snapshot = nil
-        updateTabs()
+        if !keepingSnapshot {
+            model = SessionModel()
+            snapshot = nil
+            updateTabs()
+        }
         window.title = host == .local ? "Local" : identity ?? host.label
     }
 
@@ -454,6 +524,7 @@ import SidebarFeed
         onClose()
     }
     func windowDidBecomeKey(_ notification: Notification) { menuChanged() }
+    func windowDidChangeOcclusionState(_ notification: Notification) { presentAlert() }
     func updateColorScheme() { session?.updateColorScheme() }
     var navigation: SessionModel { navigationModel }
 
