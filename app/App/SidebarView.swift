@@ -116,8 +116,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
             feedNote = ("Starting…", .secondaryLabelColor)
         case .restarting(let message):
             feedNote = ("The sidebar feed is not running, retrying…\n\(message)", .secondaryLabelColor)
-        case .unreadable:
-            feedNote = ("The sidebar feed sent a snapshot this app cannot read.", .systemRed)
         case .running(let snapshot):
             feedNote = nil
             if snapshot != self.snapshot { show(snapshot) }
