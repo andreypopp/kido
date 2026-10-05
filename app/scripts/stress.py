@@ -14,11 +14,15 @@ ap.add_argument('--find', type=int, default=1)
 ap.add_argument('--out', required=True)
 args = ap.parse_args()
 
-root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 out = os.path.abspath(args.out)
 os.makedirs(out + '/config/kido', exist_ok=True)
 server = tempfile.mkdtemp(prefix='kido-stress-', dir='/tmp')
 sock = server + '/socket'
+open(server + '/server.conf', 'w').close()
+try:
+    os.unlink(out + '/ui.lock')
+except FileNotFoundError:
+    pass
 rng = random.Random(args.seed)
 counts = collections.Counter()
 open(out + '/config/kido/kido-app.conf', 'w').write('scrollback-limit = 8388608\n')
@@ -37,7 +41,7 @@ def t(*a):
             victims = rows('list-panes', '-a', '-F', '#{pane_id}')
         log.write(json.dumps(dict(event='panes-killed', panes=victims, command=a)) + '\n')
     try:
-        p = subprocess.run([args.tmux, '-S', sock, *a], capture_output=True, text=True, timeout=8)
+        p = subprocess.run([args.tmux, '-S', sock, *a], capture_output=True, text=True, timeout=8, env=helper_env)
         if p.returncode:
             log.write(json.dumps(dict(command=a, error=p.stderr.strip())) + '\n')
         return p.stdout.strip()
@@ -85,9 +89,9 @@ def report_matches(text, pid):
 
 
 def app_children(pid):
-    for line in subprocess.check_output(['ps', '-axo', 'pid=,ppid=,comm='], text=True).splitlines():
+    for line in subprocess.check_output(['ps', '-axo', 'pid=,ppid=,args='], text=True).splitlines():
         bits = line.split(None, 2)
-        if len(bits) == 3 and int(bits[1]) == pid and 'python' in bits[2]:
+        if len(bits) == 3 and int(bits[1]) == pid and 'sidebar-feed' in bits[2]:
             yield int(bits[0])
 
 
@@ -95,24 +99,55 @@ env = {k: v for k, v in os.environ.items() if not k.startswith('KIDO_AGENT_') an
 os.makedirs(out + '/home', exist_ok=True)
 os.makedirs(out + '/tmp', exist_ok=True)
 env.update(HOME=out + '/home', XDG_STATE_HOME=out + '/state', TMUX_TMPDIR=out + '/tmp', KIDO_APP_BACKGROUND='1', KIDO_APP_SERVER=server, KIDO_APP_TMUX=args.tmux,
-           KIDO_APP_FEED=root + '/app/scripts/fake-sidebar-feed.sh', XDG_CONFIG_HOME=out + '/config',
+           KIDO_APP_DEBUG='1', STRESS_UI_LOCK=out + '/ui.lock', XDG_CONFIG_HOME=out + '/config',
            STRESS_SEED=str(args.seed), STRESS_DURATION=str(args.duration))
 if not args.find:
     env['STRESS_NO_FIND'] = '1'
 if 'ASAN_OPTIONS' not in env:
     env['ASAN_OPTIONS'] = 'use_sigaltstack=0'
 
+checker = None
+if env.get('KIDO_MTC_VERIFY') == '1':
+    checker = os.path.join(env.get('DEVELOPER_DIR', '/Applications/Xcode.app/Contents/Developer'),
+                           'usr/lib/libMainThreadChecker.dylib')
+    if not os.path.isfile(checker):
+        raise RuntimeError('Main Thread Checker not found: ' + checker)
+    env.update(DYLD_INSERT_LIBRARIES=checker, MTC_RESET_INSERT_LIBRARIES='1')
+
+helper_env = {k: v for k, v in env.items() if k not in ('DYLD_INSERT_LIBRARIES', 'MTC_RESET_INSERT_LIBRARIES')}
 before = reports()
 setup(True)
 errlog = open(out + '/stderr.log', 'w')
 start = time.time()
 p = subprocess.Popen([args.app], env=env, stdout=errlog, stderr=errlog)
+mtc_mapped = not checker
+if checker:
+    helper_env = {k: v for k, v in os.environ.items() if k not in ('DYLD_INSERT_LIBRARIES', 'MTC_RESET_INSERT_LIBRARIES')}
+    deadline = time.monotonic() + 15
+    with open(out + '/mapped-images.log', 'w') as images:
+        while time.monotonic() < deadline and p.poll() is None:
+            result = subprocess.run(['/usr/bin/vmmap', '-w', str(p.pid)], env=helper_env, capture_output=True, text=True, timeout=5)
+            images.write(f'PID {p.pid} vmmap exit={result.returncode}\n{result.stdout}{result.stderr}\n')
+            if 'libMainThreadChecker.dylib' in result.stdout:
+                mtc_mapped = True
+                break
+            time.sleep(0.1)
 steps = int(args.duration / 0.4)
 previous = set()
+feed_pending = None
+feed_restart_failed = False
 try:
     for i in range(steps):
         if p.poll() is not None:
             break
+        if feed_pending:
+            killed, deadline = feed_pending
+            if any(pid != killed for pid in app_children(p.pid)):
+                counts['feed-restarted'] += 1
+                feed_pending = None
+            elif time.monotonic() > deadline:
+                feed_restart_failed = True
+                feed_pending = None
         c = rng.choice(rows('list-clients', '-F', '#{client_name}') or [None])
         ws = rows('list-windows', '-a', '-F', '#{session_name}:#{window_index}')
         panes = rows('list-panes', '-a', '-F', '#{pane_id}')
@@ -121,7 +156,10 @@ try:
             log.write(json.dumps(dict(event='panes-gone', panes=sorted(previous - current))) + '\n')
         previous = current
         target = rng.choice(panes or [None])
-        a = 0 if i % 100 < 35 else rng.randrange(22)
+        if os.path.exists(out + '/ui.lock'):
+            time.sleep(0.1)
+            continue
+        a = 0 if i % 100 < 35 else rng.randrange(25)
         counts[a] += 1
         log.write(json.dumps(dict(i=i, elapsed=time.time() - start, action=a, pane=target, client=c)) + '\n')
         if i in (steps * 2 // 5, steps * 4 // 5):
@@ -151,10 +189,13 @@ try:
             t('resize-pane', '-t', target, '-x', str(rng.randrange(10, 80)), '-y', str(rng.randrange(5, 40)))
         elif a == 14 and c:
             t('refresh-client', '-c', c, '-C', f'{rng.randrange(90, 190)},{rng.randrange(30, 70)}')
-        elif a == 15:
+        elif a == 15 and feed_pending is None:
             for pid in app_children(p.pid):
                 try:
+                    log.write(json.dumps(dict(event='feed-killed', pid=pid, app_pid=p.pid)) + '\n')
                     os.kill(pid, signal.SIGTERM)
+                    counts['feed-killed'] += 1
+                    feed_pending = (pid, time.monotonic() + 10)
                 except ProcessLookupError:
                     pass
         elif a == 17 and c and i > 200:
@@ -171,6 +212,18 @@ try:
             t('select-pane', '-t', target)
         elif a == 21 and ws:
             t('new-window', '-d', '-t', rng.choice(ws).split(':')[0])
+        elif a == 22 and ws:
+            t('rename-window', '-t', rng.choice(ws), f'renamed-{i}')
+            counts['rename-window'] += 1
+        elif a == 23 and len(ws) > 1:
+            source, dest = rng.sample(ws, 2)
+            t('swap-window', '-d', '-s', source, '-t', dest)
+            counts['swap-window'] += 1
+        elif a == 24 and target:
+            kido = os.path.join(os.path.dirname(args.tmux), 'kido')
+            t('send-keys', '-t', target, 'C-c')
+            t('send-keys', '-t', target, f'{kido} tool async_bash --name stress-child-{i} -- sleep 8', 'Enter')
+            counts['child-window-attempted'] += 1
         due = start + (i + 1) * 0.4
         time.sleep(max(0, due - time.time()))
     try:
@@ -197,11 +250,52 @@ for l in lines:
         pass
 done = next((l for l in app if l.get('done')), None)
 steps_logged = [l for l in app if 'step' in l]
-bad = [l for l in lines if any(w in l for w in ('Sanitizer', 'SUMMARY:', 'panic', 'Fatal error', 'Assertion failed'))]
+bad = [l for l in lines if any(w in l for w in ('Sanitizer', 'SUMMARY:', 'panic', 'Fatal error', 'Assertion failed', 'Main Thread Checker:', 'UI API called on a background thread'))]
 shown = [l for l in steps_logged if l['visible'] or l['key'] or l['main'] or l['active'] or l['onScreenWindows']]
 new = sorted(path for path in reports() - before
              if report_matches(open(path).read(), p.pid))
 problems = []
+if feed_restart_failed:
+    problems.append('sidebar-feed did not restart within 10 seconds')
+if not mtc_mapped:
+    problems.append('Main Thread Checker not mapped in app pid ' + str(p.pid))
+floating = False
+collapsed_size = None
+last_size = None
+floating_probes = 0
+floating_deferred = 0
+for line in lines:
+    try:
+        event = json.loads(line)
+    except ValueError:
+        event = {}
+    if event.get('floating-probe') == 'begin':
+        floating = True
+        collapsed_size = event.get('collapsed-size')
+    elif event.get('floating-probe') == 'end':
+        floating = False
+        floating_probes += 1
+    elif 'client-size-send ' in line:
+        size = line.rsplit('client-size-send ', 1)[1].strip()
+        if floating and size not in (last_size, collapsed_size):
+            problems.append('floating changed terminal size via refresh-client -C: ' + line)
+        elif floating:
+            floating_deferred += 1
+        last_size = size
+    if event.get('verification') and not event.get('passed'):
+        problems.append('UI verification failed: ' + line)
+if done:
+    done['counts']['floating-no-refresh-verified'] = floating_probes
+    done['counts']['floating-deferred-or-redundant-refresh'] = floating_deferred
+    counts['child-window'] = done['counts'].get('child-window-seen', 0)
+    if counts['child-window-attempted'] and not counts['child-window']:
+        problems.append('async child windows were sent but never observed in the feed')
+    for action in ('tabs', 'sidebar-jump', 'sidebar-search', 'sidebar-fold', 'sidebar-mode'):
+        if not done['counts'].get(action + '-delivered'):
+            problems.append('UI action never delivered: ' + action)
+    for kind in ('displayed-window', 'tab-order', 'shortcut-order', 'one-switch-client', 'search-escape', 'floating-frame', 'floating-dismiss', 'floating-no-refresh'):
+        if not done['counts'].get(kind + '-verified'):
+            problems.append('UI verification never ran: ' + kind)
 gone = {event['detail'] for event in app if event.get('event') == 'drag-killed'}
 for line in open(out + '/actions.jsonl'):
     event = json.loads(line)
