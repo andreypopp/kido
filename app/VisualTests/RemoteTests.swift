@@ -85,7 +85,7 @@ import TmuxControl
     }
 
     func testCloseBeforeDiscoveryTaskRuns() async throws {
-        let runtime = try XCTUnwrap(GhosttyRuntime())
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)")), grants: nil))
         let owner = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
         owner.testRemoteEnvironment = ["HOME": "/tmp/kr-queued-unused/home", "XDG_STATE_HOME": "/tmp/kr-queued-unused/state", "PATH": "/usr/bin:/bin"]
         defer { owner.ssh?.stop() }
@@ -139,6 +139,63 @@ import TmuxControl
         XCTAssertEqual(child.process.terminationStatus, SIGKILL)
     }
 
+    func testOSC52LocalhostRemoteWindow() async throws {
+        let trust = try await Child.run("/usr/bin/ssh", SSH.options + ["-o", "ControlMaster=no", "-S", "none", "-T", "--", "localhost", "exec /usr/bin/true"])
+        guard trust.status == 0 else { throw XCTSkip("Prepared BatchMode localhost unavailable: \(trust.err)") }
+        let root = "/tmp/kr-osc52-" + UUID().uuidString.prefix(8)
+        let fm = FileManager.default
+        for path in [root, root + "/home", root + "/state", root + "/bin"] {
+            try fm.createDirectory(atPath: path, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        }
+        try ("#!/bin/sh\nexec " + SSH.quote(tools.kido) + " \"$@\"\n").write(toFile: root + "/bin/kido", atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root + "/bin/kido")
+        let env = ["HOME": root + "/home", "XDG_STATE_HOME": root + "/state", "PATH": root + "/bin:/usr/bin:/bin:/usr/sbin:/sbin"]
+        let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board, grants: nil))
+        let owner = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
+        owner.testRemoteEnvironment = env
+        addTeardownBlock { @MainActor in
+            owner.close()
+            _ = try? await Child.run(tools.tmux, ["-S", root + "/state/kido-app/socket", "kill-server"])
+            try? fm.removeItem(atPath: root)
+            board.releaseGlobally()
+        }
+        owner.start()
+        try await until("OSC52 private SSH window connected") { owner.testConnection != nil && owner.testBanner.isHidden }
+        let pane = try XCTUnwrap(owner.testSession?.windows.values.first?.panes.first)
+        runtime.allowAlways(owner.host)
+        board.clearContents()
+        board.setString("before remote copy", forType: .string)
+        let copy = Data("remote copy ✓".utf8).base64EncodedString()
+        let ready = root + "/ready", result = root + "/reply", script = root + "/clipboard.py"
+        try """
+        import os, select, time, tty
+        tty.setraw(0)
+        deadline = time.monotonic() + 5
+        while not os.path.exists('\(ready)') and time.monotonic() < deadline: time.sleep(0.02)
+        os.write(1, bytes.fromhex('1b5d35323b733b3f1b5c'))
+        deadline = time.monotonic() + 8
+        reply = b''
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([0], [], [], 0.4 if reply else 0.1)
+            if ready: reply += os.read(0, 65536)
+            elif reply: break
+        open('\(result)', 'wb').write(reply)
+        time.sleep(3)
+        """.write(toFile: script, atomically: true, encoding: .utf8)
+        _ = await replies(owner, [Command("set-option", "-s", "set-clipboard", "on"), Command("set-option", "-s", "get-clipboard", "request"), Command("respawn-pane", "-k", "-t", pane.pane, "printf '\\033]52;c;\(copy)\\007'; exec /usr/bin/python3 " + script)])
+        try await until("OSC52 SSH live write changed named board") { board.string(forType: .string) == "remote copy ✓" }
+        _ = await replies(owner, [Command("set-buffer", "remote stale tmux buffer")])
+        let text = "SSH named board ✓\ntext"
+        board.clearContents()
+        board.setString(text, forType: .string)
+        try Data().write(to: URL(fileURLWithPath: ready))
+        try await until("OSC52 SSH pane received reply") { fm.fileExists(atPath: result) }
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: result)), Data("\u{1b}]52;s;\(Data(text.utf8).base64EncodedString())\u{1b}\\".utf8))
+        XCTAssertNil(owner.preparedAlert)
+        print("OSC52 SSH localhost private remote window: named-board copy and exactly one preauthorized s read reply")
+    }
+
     func testLocalhostWindowsAndRecovery() async throws {
         let trust = try await Child.run("/usr/bin/ssh", SSH.options + ["-o", "ControlMaster=no", "-S", "none", "-T", "--", "localhost", "exec /usr/bin/true"])
         guard trust.status == 0 else { throw XCTSkip("Prepared BatchMode localhost unavailable: \(trust.err)") }
@@ -175,7 +232,7 @@ import TmuxControl
         let config = root + "/ssh.conf"
         let normal = "Host localhost\n  HostName localhost\n"
         try normal.write(toFile: config, atomically: true, encoding: .utf8)
-        let runtime = try XCTUnwrap(GhosttyRuntime())
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)")), grants: nil))
         let routes = WindowRoutes()
         routes.connect(.remote("localhost"))
         routes.ready(isDefaultLaunch: false) { host in
