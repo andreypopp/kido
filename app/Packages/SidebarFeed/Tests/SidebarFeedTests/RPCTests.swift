@@ -31,15 +31,15 @@ import Testing
         #"{"reply":{"id":3,"error":"invalid or unknown request"}}"#,
     ]
     let events = try lines.map { try JSONDecoder().decode(RPCEvent.self, from: Data($0.utf8)) }
-    guard case .hello(let hello) = events[0], case .reply(let second) = events[1], case .snapshot = events[2],
+    guard case .hello(.accepted(let version)) = events[0], case .reply(let second) = events[1], case .snapshot = events[2],
           case .reply(let first) = events[3], case .reply(let failed) = events[4] else { Issue.record("wrong event shapes"); return }
-    #expect(!hello.mismatch && hello.version.compatible)
+    #expect(version.compatible)
     #expect(second.id == 2 && second.switched == nil && second.error == nil)
     #expect(first.id == 1 && first.switched?.window.description == "@12")
     #expect(failed.error == "invalid or unknown request")
 }
 
-@Test(arguments: [#"{"hello":{"protocol":"1.0","server":null}}"#, #"{"hello":{"protocol":"1.0","server":"9.9"}}"#]) func mismatchHello(_ line: String) throws {
-    guard case .hello(let hello) = try JSONDecoder().decode(RPCEvent.self, from: Data(line.utf8)) else { Issue.record("not hello"); return }
-    #expect(hello.mismatch)
+@Test(arguments: [(#"{"hello":{"protocol":"1.0","server":null}}"#, nil), (#"{"hello":{"protocol":"1.0","server":"9.9"}}"#, "9.9"), (#"{"hello":{"protocol":"1.0","server":"invalid"}}"#, nil)]) func rejectedHello(_ line: String, _ expected: String?) throws {
+    guard case .hello(.rejected(let server)) = try JSONDecoder().decode(RPCEvent.self, from: Data(line.utf8)) else { Issue.record("not rejected"); return }
+    #expect(server?.description == expected)
 }
