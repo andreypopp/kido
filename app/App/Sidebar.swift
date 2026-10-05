@@ -37,7 +37,16 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
     static let minSize = NSSize(width: 800, height: 500)
     var isCollapsed: Bool {
         get { sidebarItem.isCollapsed }
-        set { sidebarItem.isCollapsed = newValue }
+        set {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                context.allowsImplicitAnimation = false
+                sidebarItem.isCollapsed = newValue
+                view.needsLayout = true
+                view.window?.contentView?.superview?.layoutSubtreeIfNeeded()
+                viewDidLayout()
+            }
+        }
     }
     var changed: () -> Void = {}
 
@@ -182,9 +191,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
             outside.dismiss = { [weak self] in self?.list.leave() }
             self.outside = outside
             splitView.addSubview(outside, positioned: .above, relativeTo: tabs)
-            if background || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { sidebarItem.isCollapsed = false }
-            else { sidebarItem.animator().isCollapsed = false }
-            view.needsLayout = true
+            isCollapsed = false
             resignKey = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: view.window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.list.leave() }
             }
@@ -205,9 +212,8 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
     func dismissFloating() {
         guard isFloating else { return }
         isFloating = false
-        sidebarItem.isCollapsed = true
         endFloating()
-        view.needsLayout = true
+        isCollapsed = true
     }
 
     override func splitViewDidResizeSubviews(_ notification: Notification) {
