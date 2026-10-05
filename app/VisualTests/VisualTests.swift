@@ -754,11 +754,41 @@ import XCTest
         await fulfillment(of: [stale], timeout: 5)
     }
 
-    func testPrivateServerRPCAndProtocolBanner() async throws {
+    func testServerProtocolFields() throws {
+        for stamp in ["null", "\"0.9\"", "\"2.0\""] {
+            let server = try JSONDecoder().decode(Server.self, from: Data("{\"tmux\":\"/bin/kido-tmux\",\"socket\":\"/tmp/private/socket\",\"protocol\":\"1.0\",\"server\":\(stamp)}".utf8))
+            XCTAssertEqual(server.binaryProtocol, .required)
+            XCTAssertFalse(server.protocolVersion?.compatible == true)
+            XCTAssertEqual(server.protocolVersion?.description, stamp == "null" ? nil : String(stamp.dropFirst().dropLast()))
+        }
+    }
+
+    func testMismatchAlertCases() throws {
+        let remote = Kido.Host.remote("dev@buildbox")
+        for (host, stamp, binary, title, body) in [
+            (Kido.Host.local, nil, nil, "Restart the local kido server", "This server was started by an older kido. Restart it to use the kido bundled with this app."),
+            (.local, "0.9", nil, "Restart the local kido server", "This server was started by an older kido. Restart it to use the kido bundled with this app."),
+            (.local, "2.0", nil, "This server needs a newer Kido.app", "This local server was started by a newer Kido.app. Update the app, or restart the server using this bundle. Restarting ends all its sessions and panes."),
+            (remote, nil, nil, "Update kido on dev@buildbox", "The host is running an older kido server that this app cannot connect to. Upgrade kido on the host and restart its server, then reconnect."),
+            (remote, "0.9", "0.9", "Update kido on dev@buildbox", "The host is running an older kido server that this app cannot connect to. Upgrade kido on the host and restart its server, then reconnect."),
+            (remote, "2.0", "2.0", "Update Kido.app to connect", "The server on dev@buildbox is newer than this app supports. Update Kido.app, then reconnect."),
+            (remote, "0.9", "1.0", "Restart kido on dev@buildbox", "kido was updated on the host, but its running server still uses the older version. Restart that server, then reconnect.")
+        ] as [(Kido.Host, String?, String?, String, String)] {
+            let alert = WindowOwner.mismatchAlert(host: host, server: stamp.flatMap(RPCVersion.init), binary: binary.flatMap(RPCVersion.init))
+            XCTAssertEqual(alert.messageText, title)
+            let upgraded = host != .local && binary == "1.0"
+            XCTAssertEqual(alert.informativeText, body + "\n\nCompatibility: this app needs protocol 1.0 or later within major 1. Server: \(stamp ?? "unstamped (older kido)")." + (upgraded ? " Host binary: 1.0." : "") + " Protocol numbers are not Kido.app release numbers.")
+            XCTAssertEqual(alert.buttons.map(\.title), [host == .local ? "Restart…" : "Reconnect", "Close"])
+            XCTAssertEqual(alert.buttons[1].keyEquivalent, "\u{1b}")
+        }
+    }
+
+    func testPrivateServerRPCAndProtocolSheet() async throws {
         let endpointOutput = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
         XCTAssertEqual(endpointOutput.status, 0, endpointOutput.err)
         let endpoint = try JSONDecoder().decode(Server.self, from: Data(endpointOutput.out.utf8))
         XCTAssertEqual(endpoint.protocolVersion, .required)
+        XCTAssertEqual(endpoint.binaryProtocol, .required)
         try await start()
         _ = try await command(["new-window", "-d", "-t", "visual", "-n", "second", "exec /bin/cat"])
         var snapshots = 0
@@ -779,7 +809,7 @@ import XCTest
         _ = try await command(["set-environment", "-gu", "KIDO_PROTOCOL"])
         var refused = false
         let unstamped = Feed(serverDir: directory.path, locate: connection.locateFeed, query: { "" }, onChange: { status in
-            if case .protocolMismatch(let version) = status { XCTAssertNil(version); refused = true }
+            if case .protocolMismatch(let version, let binary) = status { XCTAssertNil(version); XCTAssertEqual(binary, .required); refused = true }
         })
         defer { unstamped.stop() }
         try await wait("unstamped RPC refusal") { refused }
@@ -788,14 +818,38 @@ import XCTest
         owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(unstampedOutput.out.utf8)), kido: tools.kido)
         defer { owner.close() }
         owner.start()
-        try await wait("unstamped local Restart banner") {
-            owner.testBanner.subviews.flatMap { $0.subviews }.contains {
-                ($0 as? NSTextField)?.stringValue.contains("older kido") == true
-            }
-        }
+        try await wait("unstamped local Restart alert") { owner.preparedAlert != nil }
+        XCTAssertNil(owner.window.attachedSheet)
+        XCTAssertTrue(owner.testBanner.isHidden)
+        XCTAssertEqual(owner.sidebar.content.layer?.backgroundColor, runtime.background.cgColor)
+        XCTAssertEqual(owner.sidebar.view.layer?.backgroundColor, runtime.background.cgColor)
+        XCTAssertEqual(owner.window.backgroundColor, runtime.background)
+        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "msheet"
+        if let failure = verifySnapshot(of: owner.sidebar.content, as: .image, named: "no-terminal", record: record),
+           !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+        let mismatch = try XCTUnwrap(owner.preparedAlert?.alert)
+        XCTAssertEqual(mismatch.messageText, "Restart the local kido server")
+        XCTAssertEqual(mismatch.buttons.map(\.title), ["Restart…", "Close"])
+        XCTAssertTrue(mismatch.window.defaultButtonCell === mismatch.buttons[0].cell)
+        owner.respondToAlert(.alertFirstButtonReturn)
+        let confirmation = try XCTUnwrap(owner.preparedAlert?.alert)
+        XCTAssertEqual(confirmation.messageText, "Restart the local server?")
+        XCTAssertEqual(confirmation.buttons.map(\.title), ["Cancel", "Restart"])
+        XCTAssertTrue(confirmation.buttons[1].hasDestructiveAction)
+        XCTAssertTrue(confirmation.window.defaultButtonCell === confirmation.buttons[0].cell)
+        XCTAssertTrue(confirmation.window.initialFirstResponder === confirmation.buttons[0])
+        owner.respondToAlert(.alertFirstButtonReturn)
+        XCTAssertEqual(owner.preparedAlert?.alert.messageText, mismatch.messageText)
+        owner.respondToAlert(.alertSecondButtonReturn)
+        XCTAssertNil(owner.preparedAlert)
+        XCTAssertFalse(owner.testBanner.isHidden)
+        XCTAssertNil(owner.testConnection)
+        owner.start()
+        try await wait("Reconnect repeats incompatible check") { owner.preparedAlert != nil }
+        XCTAssertNil(owner.window.attachedSheet)
         XCTAssertNil(owner.testConnection)
         XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || owner.window.isMainWindow || NSApp.isActive)
-        print("RPC E2E hello 1.0; unstamped server refused; local mismatch banner off-screen")
+        print("RPC E2E hello 1.0; unstamped server refused; local mismatch alert prepared off-screen")
     }
 
     func testSidebarFoldingKeysAndAccessibility() throws {
