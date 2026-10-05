@@ -84,7 +84,7 @@ import SidebarFeed
         }
         sidebar.list.filter = { [weak self] in self?.feed?.filter($0) }
         sidebar.focusTerminal = { [weak self] in self?.session?.focusActive() }
-        banner = Banner(target: self, action: #selector(WindowOwner.start), connectAction: #selector(connectAnyway))
+        banner = Banner(target: self, action: #selector(WindowOwner.start))
         banner.frame = sidebar.content.bounds
         sidebar.content.addSubview(banner)
         window.center()
@@ -116,10 +116,10 @@ import SidebarFeed
         }
     }
 
-    func down(_ title: String, _ detail: String, button: String?, connect: Bool = false) {
+    func down(_ title: String, _ detail: String, button: String?) {
         guard alive else { return }
         sidebar.list.leave()
-        banner.show(title, detail, button: button, connect: connect)
+        banner.show(title, detail, button: button)
         sidebar.list.offline(title)
     }
 
@@ -128,9 +128,9 @@ import SidebarFeed
         switch link {
         case .locating, .connected, .changed: return
         case .mismatch(let endpoint):
-            guard host == .local else { return }
+            if host != .local { break }
             let alert = NSAlert()
-            alert.messageText = "This server was started by a different kido. Restarting ends all its sessions and panes."
+            alert.messageText = "This server uses \(endpoint.server.protocolVersion.map { "kido protocol \($0)" } ?? "an older kido"). Kido needs protocol \(RPCVersion.required) or later within the same major version. Restarting ends all its sessions and panes."
             alert.addButton(withTitle: "Restart")
             alert.addButton(withTitle: "Cancel")
             let generation = generation
@@ -171,13 +171,7 @@ import SidebarFeed
                     #endif
                 }
                 guard accepts(generation) else { return }
-                if !(host == .local && Server.fixed != nil), endpoint.server.build != tools.build {
-                    link = .mismatch(endpoint)
-                    down("This app server was started by a different kido",
-                         host == .local ? "Restart the kido-app server to use this bundle." : "Remote restart is manual. Connect Anyway to use the running server.",
-                         button: host == .local ? "Restart" : nil, connect: true)
-                    return
-                }
+                if endpoint.server.protocolVersion?.compatible != true { return protocolMismatch(endpoint) }
                 dial(endpoint, backoff: backoff)
             } catch { failed(generation, error) }
         }
@@ -209,9 +203,14 @@ import SidebarFeed
         }
     }
 
-    @objc func connectAnyway() {
-        guard alive, case .mismatch(let endpoint) = link else { return }
-        dial(endpoint, backoff: 0.1)
+    private func protocolMismatch(_ endpoint: Endpoint) {
+        invalidate()
+        link = .mismatch(endpoint)
+        let version = endpoint.server.protocolVersion.map { "kido protocol \($0)" } ?? "an older kido"
+        down("\(host.label) runs \(version)",
+             "Kido needs protocol \(RPCVersion.required) or later within the same major version. " +
+             (host == .local ? "Restart the kido-app server to use this bundle." : "Upgrade kido there and restart its server."),
+             button: host == .local ? "Restart" : "Reconnect")
     }
 
     private func confirmedRestart(_ server: Server, _ response: NSApplication.ModalResponse) {
@@ -277,6 +276,9 @@ import SidebarFeed
                 onChange: { [weak self] status in
                     guard let self, accepts(generation) else { return }
                     if case .invalidBundle(let error) = status { return self.bundleChanged(error) }
+                    if case .protocolMismatch(let version) = status {
+                        return self.protocolMismatch(Endpoint(server: Server(tmux: server.tmux, socket: server.socket, protocolVersion: version), kido: endpoint.kido))
+                    }
                     self.sidebar.list.update(status)
                     if case .running(let snapshot) = status, self.sidebar.list.query.isEmpty, snapshot.filter.isEmpty {
                         self.snapshot = snapshot
