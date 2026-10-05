@@ -91,6 +91,7 @@ final class Connection: @unchecked Sendable {
     @MainActor func close(keepingView: Bool = false) {
         guard active else { return }
         active = false
+        view?.invalidateClipboard()
         sizing?.cancel()
         sizing = nil
         if !keepingView { view?.close() }
@@ -178,7 +179,8 @@ final class Connection: @unchecked Sendable {
         }
     }
 
-    func sendKeys(_ pane: PaneID, _ bytes: Data) {
+    @MainActor func sendKeys(_ pane: PaneID, _ bytes: Data) {
+        guard active else { return }
         for keys in Command.sendKeys(pane, bytes) { send([keys]) }
     }
 
@@ -574,7 +576,11 @@ final class Connection: @unchecked Sendable {
         case .ended(let reason): "ended: \(reason ?? "no reason given")"
         }
         note("connection closed, tmux exited \(status), \(why.replacingOccurrences(of: "\n", with: "; "))")
-        DispatchQueue.main.async { withExtendedLifetime(gone) { self.onClose(exit) } }
+        DispatchQueue.main.async {
+            self.active = false
+            self.view?.invalidateClipboard()
+            withExtendedLifetime(gone) { self.onClose(exit) }
+        }
     }
 
     private func report(_ message: String) {
