@@ -64,7 +64,7 @@ final class SidebarCell: NSTableCellView {
         let width = (next as NSString).size(withAttributes: [.font: fonts.clock]).width
         clock = next
         let y: CGFloat = row.indent == 0 ? 6 : 5
-        let leading = oldWidth == width ? bounds.width - 26 - width : 12 + CGFloat(row.indent) * 17
+        let leading = oldWidth == width ? bounds.width - 26 - width : 12 + CGFloat(row.indent) * 21
         setNeedsDisplay(NSRect(x: leading, y: y - 1, width: max(0, bounds.width - 26 - leading), height: 17))
     }
 
@@ -79,7 +79,7 @@ final class SidebarCell: NSTableCellView {
             NSGraphicsContext.saveGraphicsState()
             defer { NSGraphicsContext.restoreGraphicsState() }
             for segment in row.segments {
-                let x = segment.kind == .card ? 0 : CGFloat(segment.indent) * 17
+                let x = segment.kind == .card ? 0 : CGFloat(segment.indent) * 21
                 let rect = NSRect(x: x, y: segment.top, width: bounds.width - x, height: segment.height)
                 let path = NSBezierPath()
                 let tl = CGFloat(segment.topLeft), bl = CGFloat(segment.bottomLeft)
@@ -104,11 +104,11 @@ final class SidebarCell: NSTableCellView {
                 }
                 path.addClip()
             }
-            let leading = (row.target == nil ? 10 : 12) + CGFloat(row.indent) * 17
+            let leading = (row.target == nil ? 10 : 12) + CGFloat(row.indent) * 21
             if row.focused {
                 let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
                 (dark ? NSColor.white.withAlphaComponent(0.85) : NSColor.black.withAlphaComponent(0.75)).setFill()
-                NSRect(x: CGFloat(row.indent) * 17, y: 4, width: 3, height: bounds.height - 8).fill()
+                NSRect(x: CGFloat(row.indent) * 21, y: 4, width: 3, height: bounds.height - 8).fill()
             }
             if row.target != nil, (superview as? NSTableRowView)?.isSelected == true,
                let table = enclosingScrollView?.documentView as? Table, table.keyboardSelection,
@@ -116,8 +116,12 @@ final class SidebarCell: NSTableCellView {
                 NSColor.labelColor.withAlphaComponent(0.10).setFill(); bounds.fill()
             }
             if case .divider = row.kind {
-                NSColor.separatorColor.setFill()
-                NSRect(x: CGFloat(row.indent) * 17, y: 4, width: bounds.width, height: 1).fill()
+                NSColor.tertiaryLabelColor.setFill()
+                let x = CGFloat(row.indent) * 21
+                let line = NSRect(x: x, y: 1, width: max(0, bounds.width - x), height: 1)
+                let pixels = convertToBacking(line)
+                convertFromBacking(NSRect(x: pixels.minX.rounded(), y: pixels.minY.rounded(),
+                                          width: pixels.width.rounded(), height: pixels.height.rounded())).fill()
                 return
             }
             if case .gap = row.kind { return }
@@ -137,9 +141,19 @@ final class SidebarCell: NSTableCellView {
             (clock as NSString).draw(at: NSPoint(x: dotX - 12 - clockWidth, y: y + 1),
                                      withAttributes: [.font: fonts.clock, .foregroundColor: NSColor.secondaryLabelColor])
             let color: NSColor? = switch row.status {
-            case .quiet: nil; case .running: .systemGreen; case .attention: .systemOrange; case .error: .systemRed
+            case .quiet: nil; case .running, .done: .systemGreen; case .attention: .systemOrange; case .error, .stalled: .systemRed
             }
-            if let color { color.setFill(); NSBezierPath(ovalIn: NSRect(x: dotX - 3, y: y + 4, width: 6, height: 6)).fill() }
+            if let color {
+                if row.status == .done || row.status == .stalled {
+                    let image = NSImage(systemSymbolName: row.status == .done ? "checkmark" : "exclamationmark", accessibilityDescription: nil)?
+                        .withSymbolConfiguration(.init(pointSize: 10, weight: .bold))?
+                        .withSymbolConfiguration(.init(paletteColors: [color]))
+                    image?.draw(in: NSRect(x: dotX - 6, y: y + 1, width: 12, height: 12),
+                                from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+                } else {
+                    color.setFill(); NSBezierPath(ovalIn: NSRect(x: dotX - 3, y: y + 4, width: 6, height: 6)).fill()
+                }
+            }
         }
     }
 }
