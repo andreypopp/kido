@@ -345,7 +345,7 @@ resolved by policy:
   `State.load_live` then `State.by_pane`; anything asking "is this
   session running *anywhere*" takes `load_live`'s list, which drops
   nothing. A pane-keyed view makes the flip
-  above close a parent's children — the bug that killed two live agents.
+  above close a parent's children.
 - **The orphan rule includes `async_bash`.** `Reap.sweep` reads the parent
   session from run metadata for plain and streamed bash runs. If it has no
   live record, the unfocused run is collected even while its command runs;
@@ -437,6 +437,8 @@ subcommand's output, exit code, side effects on tmux or state) is
 tested in `test_e2e/`, through the binary. Unit tests in `lib/test/` and `lib_tmux/test/` are for pure
 library logic that e2e cannot reach or cannot pin precisely (parsers,
 formats, ordering); do not write a unit test that execs the binary.
+The one exception is `lib/test/test_tool_parity.ml`, which runs each tool
+as a `kido tool` subcommand.
 
 `make e2e` builds the fork into `build/tmux-fork/<revision>/` (rebuilt
 only on a submodule bump) and runs with `KIDO_E2E_REQUIRED=1`. A
@@ -453,8 +455,10 @@ built at the pinned revision (`make ci-like ARGS="--cpus 0.25 -- go test
 ./test_e2e/ -run TestFoo"`). A CPU quota alone rarely reproduces timing
 failures; `--contend N` starts N busy sibling containers, and with a low
 `--cpu-shares` desyncs a wrapper's timer from its command the way a
-loaded runner does. `--budget` (default 2) caps the host cores a run
-takes, siblings included; contention is for one named failure, not a
+loaded runner does. With `--contend N` greater than zero, `--budget`
+(default 2) minus the run's `--cpus` is split equally among the siblings
+as their CPU quotas; a nonpositive sibling quota is rejected. It does
+not cap a plain `--cpus`. Contention is for one named failure, not a
 whole suite. Never saturate the host's own cores to chase a runner
 failure: other agents are working in parallel.
 
@@ -577,9 +581,9 @@ repeat them.
 
 kido carries **no release version and no tags, deliberately**. Versioning
 lives in `andreypopp/homebrew-tap`'s `kido` formula: a git `revision:`
-with a hand-bumped `version`. The formula fetches the tmux fork as a
-resource at the revision `scripts/install-tmux-fork.sh --print-revision`
-prints (the separate `tmux` formula is retired).
+with a hand-bumped `version`. The formula pins only the kido git revision;
+`make install` builds the fork from the `third_party/tmux` submodule that
+revision pins, via `scripts/install-tmux-fork.sh`.
 
 After landing on `main`, run `scripts/release.sh VERSION` (or
 `make release VERSION=x.y.z`); use `--dry-run` to inspect its actions.
