@@ -4,6 +4,8 @@ import TmuxControl
 
 final class SessionView: NSView {
     weak var connection: Connection?
+    var onPaneChange: () -> Void = {}
+    private(set) var updating = false
     private let runtime: GhosttyRuntime
     // The client's session's windows, and the hot windows of other sessions,
     // which tmux sends no output for.
@@ -45,6 +47,8 @@ final class SessionView: NSView {
     }
 
     func update(_ listing: [WindowListing], alive: Set<WindowID>) {
+        updating = true
+        defer { updating = false }
         let old = windows.merging(others) { $1 }
         windows = [:]
         for w in listing {
