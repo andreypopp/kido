@@ -95,7 +95,7 @@ account and trusted host keys, not an isolated sshd or changed account settings.
 | Behavior | Current evidence / remaining check |
 |---|---|
 | Mac copy/paste and unsafe paste | Existing surface path retained; disposal denies pending confirmation once. Real remote unsafe-paste/clipboard end-to-end remains untested. |
-| OSC52 write/query | Writes are source-surface/liveness routed; non-paste confirmations refused. Actual tmux control parsing and MANUAL_MIRROR suppressed query replies are unverified. |
+| OSC52 write/query | Named-pasteboard tests cover raw control transport, consent, selector replies and restore suppression locally. The complete remote/provider matrix remains unverified. |
 | HTTP/HTTPS | Remote action routes to the Mac opener, without forwarding. User-clicked browser launch/localhost-port semantics unverified off screen. |
 | file: / other schemes | Remote opener refuses them with a diagnostic instead of selecting same-named Mac files. Real Ghostty click/action delivery remains unverified. |
 | Unknown/changed host keys | StrictHostKeyChecking=yes, UpdateHostKeys=no; isolated-key refusal matrix not run. |
@@ -154,6 +154,32 @@ references repairs the mismatch. Re-record after OS/scale changes (small), or
 pin the runner environment (medium). Status: accepted coverage limitation.
 
 # Accepted limitations
+
+## OSC 52 clipboard scope and permission
+
+Clipboard guarantees cover displayed panes only. Hidden hot panes are best
+effort; evicted panes and output discarded by tmux pause-after cannot recover
+completed OSC operations from captures. Hidden unapproved reads are denied,
+not deferred until the pane becomes visible.
+
+Only one clipboard-enabled app may consume a pane. Two attached apps can both
+answer raw OSC reads; there is no responder election. A competing tty client
+with tmux `get-clipboard request` can also answer. Do not configure tmux to
+answer from its buffer when using the app's clipboard.
+
+Always allow is per exact configured host key, including Local. There is no
+revocation UI yet. Retargeting an SSH alias does not revoke its stored grant;
+SSH host-key policy remains OpenSSH's. Local grants also cover applications
+reached through SSH inside its panes because OSC carries no authenticated
+remote identity. Use a remote window for a separate host grant.
+
+Nested tty-mode tmux can expire clipboard requests after 500ms: first-time
+human consent is too slow. Grant Always allow beforehand, or let the first
+request fail and retry after granting. Empty replies may time out through
+versions that discard them. The app's 8s deadline cannot detect an application's
+earlier cancellation; a reply granted before that deadline may still be late
+for a nested application. Arbitrary nested versions/providers remain untested.
+Status: accepted scope; revocation UI deferred.
 
 ## Reflow row counts can disagree
 
