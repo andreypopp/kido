@@ -3,281 +3,87 @@ import TmuxControl
 import SidebarFeed
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var runtime: GhosttyRuntime!
-    private var window: NSWindow!
-    private var banner: Banner!
-    private var session: SessionView?
-    private var link = Link.down
+    private var runtime: GhosttyRuntime?
+    private(set) var owners: [WindowOwner] = []
     private let menus = SessionMenus()
-    let sidebar = Sidebar()
-    private var feed: Feed?
-    private var model = SessionModel()
-    private var snapshot: Snapshot?
-    private var navigationModel = SessionModel()
-    private var trigger: String?
     private var signals: [DispatchSourceSignal] = []
-
-    private enum Link {
-        case down
-        case locating
-        case mismatch(Server)
-        case changed
-        case connected(Connection)
-        case redialing(DispatchWorkItem)
-    }
+    private var trigger: String?
+    let routes = WindowRoutes()
+    var current: WindowOwner? { owners.first { $0.alive && $0.window === NSApp.keyWindow } ?? (background ? owners.first(where: \.alive) : nil) }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.applicationIconImage = NSImage(named: "AppIcon")
         for signal in [SIGTERM, SIGINT, SIGHUP] {
             Darwin.signal(signal, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: signal, queue: .main)
-            source.setEventHandler {
-                note("quitting: \(String(cString: strsignal(signal)))")
-                Darwin.signal(signal, SIG_DFL)
-                raise(signal)
-            }
+            source.setEventHandler { [weak self] in self?.quit(String(cString: strsignal(signal))) }
             source.resume()
             signals.append(source)
         }
         guard let runtime = GhosttyRuntime() else { fatalError("libghostty failed to initialise") }
         self.runtime = runtime
         NSApp.mainMenu = mainMenu()
-        window = AppWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false)
-        window.title = SessionModel().title
-        window.collectionBehavior = .fullScreenPrimary
-        window.contentMinSize = Sidebar.minSize
-        let width = background ? 292 : UserDefaults.standard.object(forKey: "nativeSidebarWidth") as? Double ?? 292
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.titlebarSeparatorStyle = .none
-        updateAppearance()
-        runtime.onConfigChange = { [weak self] in self?.updateAppearance() }
-        runtime.onColorSchemeChange = { [weak self] in self?.session?.updateColorScheme() }
-        window.contentViewController = sidebar
-        let toolbar = NSToolbar(identifier: "KidoSidebar")
-        toolbar.delegate = sidebar
-        toolbar.displayMode = .iconOnly
-        toolbar.allowsUserCustomization = false
-        window.toolbar = toolbar
-        window.toolbarStyle = .unified
-        window.setContentSize(NSSize(width: 900, height: 560))
-        window.contentView?.layoutSubtreeIfNeeded()
-        sidebar.splitView.setPosition(max(200, min(360, width)), ofDividerAt: 0)
-        if !background { sidebar.isCollapsed = UserDefaults.standard.bool(forKey: "sidebarCollapsed") }
-        sidebar.changed = { [weak self] in self?.updateSidebarMenu() }
-        sidebar.list.send = { [weak self] in self?.send($0, then: $1) }
-        sidebar.list.newSession = { [weak self] in self?.newSession() }
-        sidebar.list.newWindow = { [weak self] in self?.create(Command("new-window", "-d", "-P", "-F", "#{session_id}:#{window_id}.#{pane_id}", "-t", $0, "-c", "#{pane_current_path}")) }
-        menus.send = { [weak self] in self?.send($0) }
-        sidebar.tabs.select = { [weak self] step in
-            guard let self, let command = navigationModel.select(step) else { return }
-            send([command])
+        menus.send = { [weak self] in self?.current?.send($0) }
+        runtime.onConfigChange = { [weak self] in self?.owners.filter(\.alive).forEach { $0.updateAppearance() } }
+        runtime.onColorSchemeChange = { [weak self] in self?.owners.filter(\.alive).forEach { $0.updateColorScheme() } }
+        routes.ready { [weak self] in _ = self?.open($0) }
+        #if KIDO_VISUAL
+        if ProcessInfo.processInfo.environment["KIDO_APP_QUIT_VERIFY"] == "1", let owner = owners.first ?? open(.local) {
+            let deadline = Date().addingTimeInterval(15)
+            @MainActor func ready() {
+                if owner.testBanner.isHidden {
+                    note("quit verification ready, offscreen=\(!NSApp.isActive && NSApp.windows.allSatisfy { !$0.isVisible && !$0.isKeyWindow && !$0.isMainWindow })")
+                } else if Date() < deadline {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { ready() }
+                }
+            }
+            ready()
         }
-        sidebar.list.filter = { [weak self] in self?.feed?.filter($0) }
-        sidebar.focusTerminal = { [weak self] in self?.session?.focusActive() }
-        banner = Banner(target: self, action: #selector(start), connectAction: #selector(connectAnyway))
-        banner.frame = sidebar.content.bounds
-        sidebar.content.addSubview(banner)
-        window.center()
-        if !background {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-        }
-        updateSidebarMenu()
-        start()
+        #endif
         #if KIDO_STRESS
-        Stress(window: window, send: { [weak self] in self?.send($0) }, reconnect: { [weak self] in self?.start() }).run()
+        if owners.isEmpty { routes.ordinaryOpen() }
+        if let owner = owners.first {
+            Stress(window: owner.window, send: { [weak owner] in owner?.send($0) }, reconnect: { [weak owner] in owner?.start() }).run()
+        }
         #endif
     }
 
-    private func updateAppearance() {
-        window.backgroundColor = runtime.background
-        let rgb = runtime.background.usingColorSpace(.deviceRGB) ?? .black
-        let channels = [rgb.redComponent, rgb.greenComponent, rgb.blueComponent].map {
-            $0 <= 0.04045 ? $0 / 12.92 : pow(($0 + 0.055) / 1.055, 2.4)
+    @discardableResult func open(_ host: Host, start: Bool = true) -> WindowOwner? {
+        guard let runtime else { return nil }
+        let owner = WindowOwner(host: host, runtime: runtime, start: start)
+        owners.append(owner)
+        owner.onClose = { [weak self, weak owner] in
+            self?.updateMenu()
+            owner?.ended.notify(queue: .main) { [weak self, weak owner] in self?.owners.removeAll { $0 === owner } }
         }
-        let luminance = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
-        window.appearance = NSAppearance(named: luminance < 0.5 ? .darkAqua : .aqua)
-        session?.updateBackground()
-    }
-
-    private func send(_ commands: [Command], then done: (@MainActor @Sendable ([Reply]?) -> Void)? = nil) {
-        guard case .connected(let connection) = link else { return done?(nil) ?? () }
-        connection.send(commands, then: done)
-    }
-
-    func down(_ title: String, _ detail: String, button: String?, connect: Bool = false) {
-        sidebar.list.leave()
-        banner.show(title, detail, button: button, connect: connect)
-        sidebar.list.offline(title)
-    }
-
-    @objc private func start() {
-        switch link {
-        case .locating, .connected, .changed: return
-        case .mismatch(let server):
-            let alert = NSAlert()
-            alert.messageText = "This server was started by a different kido. Restarting ends all its sessions and panes."
-            alert.addButton(withTitle: "Restart")
-            alert.addButton(withTitle: "Cancel")
-            alert.beginSheetModal(for: window) { [weak self] response in
-                self?.confirmedRestart(server, response)
-            }
-            return
-        case .redialing(let item): item.cancel()
-        case .down: break
+        owner.menuChanged = { [weak self, weak owner] in
+            guard let self, current === owner else { return }
+            updateMenu()
         }
-        link = .locating
-        down("Connecting to the kido server…", "", button: nil)
-        Task {
-            do throws(Failure) {
-                let server = try await Server.locate()
-                if Server.fixed == nil, server.build != tools.build {
-                    link = .mismatch(server)
-                    note("server build mismatch: \(server.build ?? "missing")")
-                    down("This app server was started by a different kido", "Restart the kido-app server to use this bundle.", button: "Restart", connect: true)
-                    return
-                }
-                dial(server, backoff: 0.1)
-            } catch {
-                note("could not locate the kido server: \(error.message)")
-                link = .down
-                down("Kido could not reach the kido server", error.message, button: action)
-            }
-        }
+        updateMenu()
+        return owner
     }
 
-    @objc private func connectAnyway() {
-        guard case .mismatch(let server) = link else { return }
-        dial(server, backoff: 0.1)
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { true }
+    func applicationOpenUntitledFile(_ sender: NSApplication) -> Bool {
+        if !owners.contains(where: \.alive) { routes.ordinaryOpen() }
+        return true
+    }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !owners.contains(where: \.alive) { routes.ordinaryOpen() }
+        else if !background { owners.first(where: \.alive)?.window.makeKeyAndOrderFront(nil) }
+        return false
     }
 
-    private func confirmedRestart(_ server: Server, _ response: NSApplication.ModalResponse) {
-        guard response == .alertFirstButtonReturn else { return }
-        link = .locating
-        Task {
-            do throws(Failure) {
-                try await server.restart()
-                link = .down
-                start()
-            } catch {
-                link = .down
-                down("Could not restart the app server", error.message, button: "Reconnect")
-            }
-        }
+    private func updateMenu() {
+        menus.update(current?.navigation ?? SessionModel())
+        let view = NSApp.mainMenu?.items.first { $0.title == "View" }?.submenu
+        for item in view?.items.prefix(2) ?? [].prefix(2) { item.target = current?.sidebar }
+        view?.items.first?.title = current?.sidebar.isCollapsed == true ? "Show Sidebar" : "Hide Sidebar"
     }
-
-    private var action: String { Server.fixed == nil ? "Start app server" : "Reconnect" }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        do throws(Failure) { try tools.validate() } catch { bundleChanged(error) }
-    }
-
-    private func bundleChanged(_ error: Failure) {
-        if case .redialing(let item) = link { item.cancel() }
-        let connection: Connection?
-        if case .connected(let current) = link { connection = current } else { connection = nil }
-        link = .changed
-        feed?.stop()
-        feed = nil
-        connection?.gridFailed()
-        down("Relaunch Kido.app", error.message, button: nil)
-    }
-
-    private func dial(_ server: Server, backoff: TimeInterval) {
-        do throws(Failure) { try tools.validate() } catch { return bundleChanged(error) }
-        note("dialing \(server.socket)")
-        let view = SessionView(runtime: runtime)
-        view.frame = sidebar.content.bounds
-        view.autoresizingMask = [.width, .height]
-        do {
-            let connection = try Connection(
-                server: server, view: view,
-                onChange: { [weak self] in self?.changed(view, $0) },
-                onDiagnostic: { [weak self] in self?.banner.show($0, "", button: nil) },
-                onClose: { [weak self] in self?.closed(server, view, $0, backoff: backoff) })
-            connection.navigationModel = { [weak self] in self?.navigationModel ?? SessionModel() }
-            link = .connected(connection)
-            feed = Feed(
-                serverDir: tools.serverDir, locate: connection.locateFeed, query: { [weak self] in self?.sidebar.list.query ?? "" },
-                onChange: { [weak self] status in
-                    if case .invalidBundle(let error) = status { return self?.bundleChanged(error) ?? () }
-                    self?.sidebar.list.update(status)
-                    if case .running(let snapshot) = status, self?.sidebar.list.query.isEmpty == true, snapshot.filter.isEmpty {
-                        self?.snapshot = snapshot
-                        self?.updateTabs()
-                    }
-                })
-        } catch {
-            note("could not run \(server.tmux): \(error.localizedDescription)")
-            link = .down
-            down("Kido could not run \(server.tmux)", error.localizedDescription, button: action)
-        }
-    }
-
-    #if KIDO_STRESS
-    var stressState: (SessionModel, SessionModel, SessionView?, Connection?, Snapshot?) {
-        if case .connected(let connection) = link { return (model, navigationModel, session, connection, snapshot) }
-        return (model, navigationModel, session, nil, snapshot)
-    }
-    #endif
-
-    private func updateTabs() {
-        let next = model.navigation(snapshot)
-        sidebar.tabs.entries = next.tabs
-        if navigationModel != next.model {
-            navigationModel = next.model
-            menus.update(navigationModel)
-        }
-    }
-
-    private func changed(_ view: SessionView, _ model: SessionModel) {
-        window.title = model.title
-        self.model = model
-        if model.session == nil { snapshot = nil }
-        updateTabs()
-        if view.superview == nil {
-            session?.removeFromSuperview()
-            session = view
-            view.frame = sidebar.content.bounds
-            sidebar.content.addSubview(view, positioned: .below, relativeTo: banner)
-            banner.isHidden = true
-        }
-        view.show(model.window)
-    }
-
-    private func closed(_ server: Server, _ view: SessionView, _ exit: Exit, backoff: TimeInterval) {
-        guard case .connected = link else { return }
-        view.subviews.compactMap { $0 as? WindowView }.forEach { $0.cancelDrag() }
-        model = SessionModel()
-        snapshot = nil
-        updateTabs()
-        feed?.stop()
-        feed = nil
-        window.title = SessionModel().title
-        let reason: String?
-        switch exit {
-        case .detached(let detached):
-            note("staying detached")
-            link = .down
-            return down("Detached from the kido server", detached, button: "Reconnect")
-        case .ended(let ended):
-            reason = ended
-        }
-        let dropped = view === session
-        let detail = reason ?? (dropped ? nil : "No kido server at \(server.socket).")
-        down(
-            session == nil ? "Kido could not reach the kido server" : "Disconnected from the kido server",
-            (detail.map { "\($0)\n" } ?? "") + "Reconnecting…", button: action)
-        let next = dropped ? 0.1 : min(backoff * 2, 2)
-        note("redialing in \(next)s")
-        let item = DispatchWorkItem { [weak self] in self?.dial(server, backoff: next) }
-        link = .redialing(item)
-        DispatchQueue.main.asyncAfter(deadline: .now() + next, execute: item)
+        do throws(Failure) { try tools.validate() } catch { owners.forEach { $0.bundleChanged(error) } }
     }
 
     private func mainMenu() -> NSMenu {
@@ -302,7 +108,7 @@ import SidebarFeed
             item("Next Window in Sidebar", #selector(nextWindow), "j", [.command, .control]),
             item("Previous Window in Sidebar", #selector(previousWindow), "k", [.command, .control]),
         ]
-        for item in view.items.prefix(2) { item.target = sidebar }
+        for item in view.items.prefix(2) { item.target = current?.sidebar }
         let file = NSMenu(title: "File")
         file.items = [item("New Session", #selector(newSession), "N", [.command, .shift])]
         let find = NSMenu(title: "Find")
@@ -321,72 +127,44 @@ import SidebarFeed
         return bar
     }
 
-    @objc private func newSession() {
-        let home = tools.environment["HOME"] ?? NSHomeDirectory()
-        guard case .connected(let connection) = link, let window = connection.model.window else {
-            return create(Command("new-session", "-d", "-P", "-F", "#{session_id}:#{window_id}.#{pane_id}", "-c", home))
-        }
-        send([Command("display-message", "-p", "-t", window, "#{pane_current_path}")]) { [weak self] replies in
-            guard case .success(let lines)? = replies?.first, let cwd = lines.first, !cwd.isEmpty else { return }
-            self?.create(Command("new-session", "-d", "-P", "-F", "#{session_id}:#{window_id}.#{pane_id}", "-c", cwd))
-        }
-    }
 
-    private func create(_ command: Command) {
-        sidebar.list.failed(nil)
-        send([command]) { [weak self] replies in
-            guard let self else { return }
-            guard case .success(let lines)? = replies?.first, let target = lines.first else {
-                if case .failure(let lines)? = replies?.first { sidebar.list.failed(lines.joined(separator: "\n")) }
-                else { sidebar.list.failed("The connection closed before creation completed") }
-                return
-            }
-            send([Command("switch-client", "-t", target)]) { [weak self] replies in
-                guard let self else { return }
-                if case .success? = replies?.first { session?.focusActive() }
-                else if case .failure(let lines)? = replies?.first { sidebar.list.failed(lines.joined(separator: "\n")) }
-                else { sidebar.list.failed("The connection closed before selection completed") }
-            }
-        }
-    }
-
-    private func updateSidebarMenu() {
-        NSApp.mainMenu?.items.first(where: { $0.title == "View" })?.submenu?.items.first?.title = sidebar.isCollapsed ? "Show Sidebar" : "Hide Sidebar"
-    }
-
-    @objc private func nextAttention() { sidebar.list.nextAttention(1) }
-    @objc private func previousAttention() { sidebar.list.nextAttention(-1) }
-    @objc private func nextWindow() { switchWindow(next: true) }
-    @objc private func previousWindow() { switchWindow(next: false) }
-
-    private func switchWindow(next: Bool) {
-        sidebar.list.failed(nil)
-        guard case .connected(let connection) = link else { return }
-        feed?.switchWindow(next: next) { [weak self] target, error in
-            guard let self, case .connected(let current) = link, current === connection else { return }
-            if let error { return sidebar.list.failed(error) }
-            sidebar.list.completedNavigation(to: target)
-        }
-    }
-
+    @objc private func newSession() { current?.newSession() }
+    @objc private func nextAttention() { current?.nextAttention() }
+    @objc private func previousAttention() { current?.previousAttention() }
+    @objc private func nextWindow() { current?.nextWindow() }
+    @objc private func previousWindow() { current?.previousWindow() }
     @objc private func quitItem() { quit("the Quit menu item") }
-
-    func quit(_ trigger: String) {
-        self.trigger = trigger
-        NSApp.terminate(nil)
-    }
-
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        trigger = "the last window closed"
-        return true
-    }
-
+    func quit(_ reason: String) { trigger = reason; NSApp.terminate(nil) }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let event = NSAppleEventManager.shared().currentAppleEvent
-        let pid = event?.attributeDescriptor(forKeyword: keySenderPIDAttr)?.int32Value
-        note("quitting: \(trigger ?? pid.map { "a quit Apple Event from pid \($0)" } ?? "NSApp.terminate")")
-        return .terminateNow
+        note("quitting: \(trigger ?? "NSApp.terminate")")
+        let stopped = DispatchGroup()
+        for owner in owners {
+            stopped.enter()
+            owner.ended.notify(queue: .global()) { @Sendable in stopped.leave() }
+        }
+        owners.forEach { $0.close() }
+        owners = []
+        stopped.notify(queue: .global()) { @Sendable in
+            RunLoop.main.perform(inModes: [.common]) {
+                MainActor.assumeIsolated {
+                    #if KIDO_VISUAL
+                    if let files = ProcessInfo.processInfo.environment["KIDO_APP_QUIT_CHILDREN"] {
+                        let pids = files.split(separator: "|").compactMap { try? String(contentsOfFile: String($0), encoding: .utf8) }.compactMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                        note("quit drain completed, unreaped=\(pids.filter { kill($0, 0) == 0 })")
+                    }
+                    #endif
+                    NSApp.reply(toApplicationShouldTerminate: true)
+                }
+            }
+        }
+        return .terminateLater
     }
+
+    #if KIDO_STRESS
+    var stressState: (SessionModel, SessionModel, SessionView?, Connection?, SidebarFeed.Snapshot?) { owners.first!.stressState }
+    var sidebar: Sidebar { owners.first!.sidebar }
+    #endif
 }
 
 let tools = BundledTools(resources: Bundle.main.resourceURL!, environment: ProcessInfo.processInfo.environment)

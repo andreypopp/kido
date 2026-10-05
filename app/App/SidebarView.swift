@@ -72,12 +72,17 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         noMatches.textColor = .secondaryLabelColor
         search.isHidden = true
         for view in [search, scroll, statusLine, noMatches] { addSubview(view) }
+        updateAppearance()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
+        updateAppearance()
+    }
+
+    private func updateAppearance() {
         wantsLayer = true
         layer?.cornerRadius = 18
         layer?.borderWidth = 1 / (window?.backingScaleFactor ?? 2)
