@@ -11,7 +11,6 @@ final class Feed: @unchecked Sendable {
         case invalidBundle(Failure)
         case protocolMismatch(RPCVersion?)
         case running(Snapshot)
-        case unreadable
         case restarting(String)
     }
 
@@ -29,7 +28,6 @@ final class Feed: @unchecked Sendable {
     @MainActor private let query: () -> String
     private let reader = DispatchQueue(label: "Feed.reader")
     private let writer = DispatchQueue(label: "Feed.writer")
-    @MainActor private var located: Location?
     @MainActor private var input: FileHandle?
     @MainActor private var generation = 0
     @MainActor private var restartWork: DispatchWorkItem?
@@ -74,7 +72,7 @@ final class Feed: @unchecked Sendable {
     }
 
     @MainActor func switchWindow(next: Bool, completed: @escaping @MainActor @Sendable ((session: SessionID, window: WindowID)?, String?) -> Void) {
-        guard located != nil, let input, case .running = status else { return completed(nil, "the RPC feed is not ready") }
+        guard let input, case .running = status else { return completed(nil, "the RPC feed is not ready") }
         do throws(Failure) { try tools.validate() } catch {
             publish(.invalidBundle(error))
             return completed(nil, error.message)
@@ -120,7 +118,6 @@ final class Feed: @unchecked Sendable {
     }
 
     @MainActor private func launch(_ location: Location, _ generation: Int) {
-        located = location
         let client = location
         #if KIDO_VISUAL || KIDO_STRESS
         let fake = testKido ?? ProcessInfo.processInfo.environment["KIDO_APP_FEED"]
@@ -176,11 +173,15 @@ final class Feed: @unchecked Sendable {
                     guard let event else { return self.restart("Unreadable RPC event") }
                     if first {
                         guard case .hello(let hello) = event else { return self.restart("RPC did not send a hello first") }
-                        if hello.mismatch || !hello.version.compatible {
-                            self.stop()
-                            self.publish(.protocolMismatch(hello.mismatch ? hello.server : hello.version))
+                        let version: RPCVersion?
+                        switch hello {
+                        case .accepted(let protocolVersion):
+                            guard !protocolVersion.compatible else { return }
+                            version = protocolVersion
+                        case .rejected(let server): version = server
                         }
-                        return
+                        self.stop()
+                        return self.publish(.protocolMismatch(version))
                     }
                     switch event {
                     case .snapshot(let snapshot):
@@ -202,7 +203,6 @@ final class Feed: @unchecked Sendable {
     @MainActor private func restart(_ reason: String) {
         generation += 1
         failPending()
-        located = nil
         closeInput()
         child?.stop()
         child = nil
