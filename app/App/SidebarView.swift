@@ -110,7 +110,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
 
     func update(_ status: Feed.Status) {
         switch status {
-        case .invalidBundle: break
+        case .invalidBundle, .protocolMismatch: break
         case .starting:
             show(nil)
             feedNote = ("Starting…", .secondaryLabelColor)
