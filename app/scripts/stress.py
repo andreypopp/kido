@@ -18,7 +18,6 @@ out = os.path.abspath(args.out)
 os.makedirs(out + '/config/kido', exist_ok=True)
 server = tempfile.mkdtemp(prefix='kido-stress-', dir='/tmp')
 sock = server + '/socket'
-open(server + '/server.conf', 'w').close()
 try:
     os.unlink(out + '/ui.lock')
 except FileNotFoundError:
@@ -30,6 +29,7 @@ log = open(out + '/actions.jsonl', 'w', buffering=1)
 
 
 def t(*a):
+    server_pid = t('display-message', '-p', '#{pid}') if a[0] == 'kill-server' else ''
     if a[0] in ('kill-pane', 'kill-window', 'kill-session', 'kill-server'):
         if a[0] == 'kill-pane':
             victims = [a[-1]]
@@ -44,6 +44,16 @@ def t(*a):
         p = subprocess.run([args.tmux, '-S', sock, *a], capture_output=True, text=True, timeout=8, env=helper_env)
         if p.returncode:
             log.write(json.dumps(dict(command=a, error=p.stderr.strip())) + '\n')
+        if a[0] == 'kill-server' and server_pid.isdecimal():
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(int(server_pid), 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.01)
+            else:
+                raise RuntimeError('private tmux server did not exit after kill-server')
         return p.stdout.strip()
     except subprocess.TimeoutExpired:
         return ''
@@ -54,7 +64,15 @@ def rows(*a):
 
 
 def setup(full):
+    kido = os.path.join(os.path.dirname(args.tmux), 'kido')
+    endpoint = subprocess.run([kido, 'server', '--server', server], capture_output=True, text=True, timeout=20, env=helper_env)
+    if endpoint.returncode:
+        raise RuntimeError('private server launch failed: ' + endpoint.stdout + endpoint.stderr)
+    log.write(json.dumps(dict(event='server-started', endpoint=json.loads(endpoint.stdout))) + '\n')
+    initial = rows('list-sessions', '-F', '#{session_id}')
     t('new-session', '-d', '-s', 's1', '-x', '120', '-y', '40')
+    for session in initial:
+        t('kill-session', '-t', session)
     t('set-option', '-g', 'history-limit', '1100000')
     t('set-option', '-g', 'remain-on-exit', 'on')
     for s in range(1, 5):
@@ -91,11 +109,11 @@ def report_matches(text, pid):
 def app_children(pid):
     for line in subprocess.check_output(['ps', '-axo', 'pid=,ppid=,args='], text=True).splitlines():
         bits = line.split(None, 2)
-        if len(bits) == 3 and int(bits[1]) == pid and 'sidebar-feed' in bits[2]:
+        if len(bits) == 3 and int(bits[1]) == pid and 'rpc' in bits[2].split():
             yield int(bits[0])
 
 
-env = {k: v for k, v in os.environ.items() if not k.startswith('KIDO_AGENT_') and k not in ('TMUX', 'TMUX_PANE', 'KIDO_STATE_DIR')}
+env = {k: v for k, v in os.environ.items() if not k.startswith('KIDO_AGENT_') and k not in ('TMUX', 'TMUX_PANE', 'KIDO_STATE_DIR', 'KIDO_TMUX')}
 os.makedirs(out + '/home', exist_ok=True)
 os.makedirs(out + '/tmp', exist_ok=True)
 env.update(HOME=out + '/home', XDG_STATE_HOME=out + '/state', TMUX_TMPDIR=out + '/tmp', KIDO_APP_BACKGROUND='1', KIDO_APP_SERVER=server, KIDO_APP_TMUX=args.tmux,
@@ -256,7 +274,7 @@ new = sorted(path for path in reports() - before
              if report_matches(open(path).read(), p.pid))
 problems = []
 if feed_restart_failed:
-    problems.append('sidebar-feed did not restart within 10 seconds')
+    problems.append('rpc did not restart within 10 seconds')
 if not mtc_mapped:
     problems.append('Main Thread Checker not mapped in app pid ' + str(p.pid))
 floating = False
