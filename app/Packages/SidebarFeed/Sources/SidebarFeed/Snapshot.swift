@@ -88,8 +88,8 @@ public indirect enum Node: Decodable, Equatable, Sendable {
 }
 
 public struct Item: Decodable, Equatable, Sendable {
-    public enum Kind: String, Decodable, Sendable { case agent, run, ssh, shell }
-    public enum Run: String, Decodable, Sendable { case agent, bash, stream }
+    public enum Kind: String, UnknownString, Sendable { case agent, run, ssh, shell, unknown }
+    public enum Run: String, UnknownString, Sendable { case agent, bash, stream, unknown }
     public let run: Run?
     public let kind: Kind
     public let id: PaneID
@@ -120,8 +120,8 @@ public struct Item: Decodable, Equatable, Sendable {
 }
 
 public enum Indicator: Decodable, Equatable, Sendable {
-    public enum Outcome: String, Decodable, Equatable, Sendable {
-        case completed, failed, died, stopped
+    public enum Outcome: String, UnknownString, Equatable, Sendable {
+        case completed, failed, died, stopped, unknown
     }
 
     case running, waiting, compacting, idle, done, failed, unknown, stalled
@@ -142,14 +142,14 @@ public enum Indicator: Decodable, Equatable, Sendable {
             case "unknown": .unknown
             case "stalled": .stalled
             case "gone": .gone(try c.decodeIfPresent(Outcome.self, forKey: .outcome))
-            case let kind: throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "unknown kind \(kind)")
+            default: .unknown
             }
     }
 }
 
 public struct Span: Decodable, Equatable, Sendable {
-    public enum Role: String, Decodable, Equatable, Sendable {
-        case plain, current, proc, dim, err, running, waiting, compacting, done, stalled
+    public enum Role: String, UnknownString, Equatable, Sendable {
+        case plain, current, proc, dim, err, running, waiting, compacting, done, stalled, unknown
     }
 
     public let text: String
