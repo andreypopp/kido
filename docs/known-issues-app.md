@@ -88,7 +88,7 @@ URL OS-delivery unverified.
 ## Remote clipboard, URL and authentication matrix
 
 Private real localhost SSH tests cover control/feed/navigation, two remote plus
-Local windows, quoting, missing kido, mismatch waiver, master SIGKILL/recovery,
+Local windows, quoting, missing kido, protocol refusal and rediscovery, master SIGKILL/recovery,
 detach, generation rejection and cancellation. They use the existing prepared
 account and trusted host keys, not an isolated sshd or changed account settings.
 
@@ -242,16 +242,6 @@ server/session are coupled: navigation affects both, and size follows tmux's
 latest elected client. Smaller viewers clip authoritative external layouts;
 there are no grouped sessions or independent per-view terminal grids. Client-local
 find, scroll and surface budgets remain independent. Status: accepted.
-
-## Remote build policy and installation are manual
-
-The existing discovery-time build mismatch banner offers Connect Anyway;
-remote Restart is deliberately absent. Automatic redial attaches with `-N`
-and does not re-run a start-capable build check. A manually replaced remote
-server is checked on the next explicit discovery, not every redial. Exact-build
-enforcement, managed install/upload/upgrade and remote restart confirmation are
-deferred product work. Prepared hosts need kido and the exercised fork/protocol
-features; Connect Anyway cannot repair an invalid protocol. Status: deferred.
 
 ## Restore latency
 
