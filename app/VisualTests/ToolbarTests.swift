@@ -1,10 +1,48 @@
 import AppKit
 import XCTest
+import SnapshotTesting
 import SidebarFeed
 import TmuxControl
 @testable import Kido
 
 @MainActor final class ToolbarTests: XCTestCase {
+    func testHostLabel() throws {
+        let owner = try XCTUnwrap(delegate.open(.remote("buildbox"), start: false))
+        defer { owner.close() }
+        let tabs = owner.sidebar.tabs
+        XCTAssertEqual(tabs.hostLabel()?.alias, "buildbox")
+        XCTAssertFalse(try XCTUnwrap(tabs.hostLabel()).connected)
+        tabs.entries = SessionModel(session: SessionID(number: 0), windows: [.init(id: WindowID(number: 0), name: "Shell"), .init(id: WindowID(number: 1), name: "Editor")], window: WindowID(number: 0)).navigation(nil).tabs
+        let root = try XCTUnwrap(owner.window.contentView?.superview)
+        var selections = 0
+        tabs.select = { _ in selections += 1 }
+        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+        for (name, text, connected) in [("connected", "dev@buildbox", true), ("offline", "dev@buildbox", false), ("long", "developer@buildbox.production.eu-west.example.net", true), ("local", "", true)] {
+            tabs.hostLabel = { text.isEmpty ? nil : (text, "buildbox", connected) }
+            for mode in ["docked", "collapsed", "floating"] {
+                owner.sidebar.dismissFloating()
+                owner.sidebar.isCollapsed = mode != "docked"
+                root.layoutSubtreeIfNeeded()
+                owner.sidebar.viewDidLayout()
+                if mode == "floating" { owner.sidebar.focusSidebar(nil) }
+                root.layoutSubtreeIfNeeded()
+                tabs.needsLayout = true
+                tabs.layoutSubtreeIfNeeded()
+                tabs.needsDisplay = true
+                if !text.isEmpty {
+                    let point = tabs.convert(NSPoint(x: 4, y: 22), to: nil)
+                    XCTAssertFalse(root.hitTest(root.convert(point, from: nil)) === tabs)
+                    let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0, windowNumber: owner.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+                    tabs.mouseDown(with: event)
+                    XCTAssertEqual(selections, 0)
+                    XCTAssertEqual(tabs.view(tabs, stringForToolTip: 0, point: .zero, userData: nil), "buildbox")
+                }
+                if let failure = verifySnapshot(of: tabs, as: .image, named: "\(name)-\(mode)", record: record),
+                   !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+            }
+        }
+    }
+
     func testOrphanedTab() throws {
         let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data("""
         {"v":2,"filter":"","client":{"session":"$0","window":"@1","pane":"%1"},"sessions":[{"id":"$0","name":"s","current":true,"nodes":[{"kind":"shell","id":"%0","pane":"%0","window":"@0","title":[],"tail":[],"attention":false,"children":[{"kind":"run","id":"%1","pane":"%1","window":"@1","title":[],"tail":[],"attention":false,"children":[]}]}]}]}
