@@ -401,7 +401,7 @@ updates; explicit `deny` wins. Before accessing the pasteboard, the first read
 asks: “Allow applications on “HOST” to read your Mac clipboard?” The sheet notes
 that this also permits applications reached through SSH inside its panes.
 **Allow for this connection**, **Always allow** and **Deny** grant or deny that
-window's connection. Always allow is shared between windows and persisted in
+window's connection. A connection's Deny wins over its Allow, then persisted host grants; otherwise the read asks. Edit → Reset Clipboard Permissions clears all persisted grants and every open window's connection answer, without confirmation. Always allow is shared between windows and persisted in
 UserDefaults by exact configured destination, with Local separately keyed.
 SSH aliases are not merged with resolved hostnames; retargeting an allowed alias
 retains its grant. Local is not implicitly trusted and includes SSH launched
@@ -412,7 +412,7 @@ The guarded WindowOwner presenter shows consent only in a visible window.
 An unapproved hidden pane/window read is denied immediately, never deferred.
 There is one pending read per pane and at most one consent sheet per host;
 additional reads receive empty replies. Eight seconds without a decision
-cancels without a reply. Pane removal, window close, eviction and connection
+completes with an empty reply; an overdue sheet answer does the same. Pane removal, window close, eviction and connection
 retirement cancel the opaque Ghostty state without input, before freeing its
 surface. Late sheet responses and retired-surface input are ignored.
 
@@ -425,11 +425,7 @@ ending in ESC is historical, and the live backslash does not re-fire it. Already
 queued live operations remain live across ordinary resync. MANUAL_MIRROR still suppresses every other parser reply.
 
 Guarantees cover displayed panes only, with one clipboard-enabled app per pane.
-Hidden/evicted output and pause-after losses are best effort. Configure the
-server so tmux is not a second clipboard responder: the normal `set-clipboard
-external` suffices; with `set-clipboard on`, use `get-clipboard request` without
-a competing clipboard-capable tty client. Do not use `get-clipboard buffer`:
-that answers from tmux's stale buffer. Kido.app does not rewrite server options.
+Hidden/evicted output and pause-after losses are best effort. Each local or remote control-client attach sends `set -s get-clipboard off` with its existing command sequence, preventing tmux from also forwarding reads to attached terminal clients or answering from stale buffers. A directly attached terminal cannot paste through itself on that server.
 Nested tty-mode tmux needs OSC forwarding and preauthorization; see known issues.
 
 Cmd-V and unsafe paste are separate from application reads. An unsafe paste is

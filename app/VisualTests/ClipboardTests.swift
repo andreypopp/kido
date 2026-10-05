@@ -11,7 +11,7 @@ import XCTest
         let config = URL(fileURLWithPath: "/tmp/kido-clipboard-\(UUID().uuidString).conf")
         try "clipboard-read = allow\n".write(to: config, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: config) }
-        let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board, grants: nil))
+        let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
         var access: UnsafePointer<CChar>?
         XCTAssertTrue(ghostty_config_get(runtime.config, &access, "clipboard-read", 14))
         XCTAssertEqual(access.map { String(cString: $0) }, "ask")
@@ -65,9 +65,9 @@ import XCTest
         owner.respondToAlert(.alertSecondButtonReturn)
         try await drain()
         XCTAssertEqual(replies.last, expected("c", "fresh ✓\ntext"))
-        XCTAssertTrue(runtime.allows(.local))
-        XCTAssertFalse(runtime.allows(.remote("Local")))
-        XCTAssertFalse(runtime.allows(.remote("other")))
+        XCTAssertTrue(WindowOwner.clipboardConsent.allows(.local))
+        XCTAssertFalse(WindowOwner.clipboardConsent.allows(.remote("Local")))
+        XCTAssertFalse(WindowOwner.clipboardConsent.allows(.remote("other")))
         owner.window.orderOut(nil)
         for selector in ["c", "p", "s"] {
             query(selector)
@@ -115,23 +115,70 @@ import XCTest
         XCTAssertEqual(replies.count, finalCount, "retired surface requests cannot inject late replies")
     }
 
+    func testDenySurvivesAnotherConnectionsAlwaysAllowAndReset() async throws {
+        let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
+        let host = Host.remote("precedence-host")
+        let a = WindowOwner(host: host, runtime: runtime, start: false)
+        let b = WindowOwner(host: host, runtime: runtime, start: false)
+        var replies: [Data] = []
+        let pa = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13, host: host) { replies.append($0) })
+        let pb = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 1), font: 13, host: host) { _ in })
+        a.window.contentView = pa
+        b.window.contentView = pb
+        for owner in [a, b] {
+            owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+            owner.window.orderFront(nil)
+        }
+        for pane in [pa, pb] {
+            pane.resize(cols: 80, rows: 24)
+            XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
+        }
+        defer { pa.dispose(); pb.dispose(); a.close(); b.close(); board.releaseGlobally() }
+        func query(_ pane: PaneView) async throws {
+            XCTAssertTrue(pane.feed(Data("\u{1b}]52;c;?\u{7}".utf8)))
+            for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
+        }
+        board.clearContents()
+        board.setString("secret", forType: .string)
+        try await query(pa)
+        XCTAssertNotNil(a.preparedAlert)
+        a.respondToAlert(.alertThirdButtonReturn)
+        try await query(pb)
+        XCTAssertNotNil(b.preparedAlert)
+        b.respondToAlert(.alertSecondButtonReturn)
+        XCTAssertTrue(WindowOwner.clipboardConsent.allows(host))
+        try await query(pa)
+        XCTAssertNil(a.preparedAlert)
+        XCTAssertEqual(replies.last, Data("\u{1b}]52;c;\u{1b}\\".utf8))
+        WindowOwner.resetClipboardPermissions([a, b])
+        XCTAssertFalse(WindowOwner.clipboardConsent.allows(host))
+        XCTAssertEqual(a.clipboardPermission, .ask)
+        XCTAssertEqual(b.clipboardPermission, .ask)
+        try await query(pa)
+        XCTAssertNotNil(a.preparedAlert)
+        a.respondToAlert(.alertThirdButtonReturn)
+    }
+
     func testPersistedExactHostGrantsAndExplicitDeny() throws {
         let suite = "kido-clipboard-test-\(UUID().uuidString)"
         let store = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { store.removePersistentDomain(forName: suite) }
         let board = NSPasteboard(name: .init(suite))
         defer { board.releaseGlobally() }
-        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board, grants: store))
-        runtime.allowAlways(.remote("user@alias"))
-        let next = try XCTUnwrap(GhosttyRuntime(pasteboard: board, grants: store))
+        let consent = ClipboardConsent(grants: store)
+        consent.allowAlways(.remote("user@alias"))
+        let next = ClipboardConsent(grants: store)
         XCTAssertTrue(next.allows(.remote("user@alias")))
         XCTAssertFalse(next.allows(.remote("user@Alias")))
         XCTAssertFalse(next.allows(.remote("alias")))
         XCTAssertFalse(next.allows(.local))
+        consent.reset()
+        XCTAssertFalse(next.allows(.remote("user@alias")))
         let config = URL(fileURLWithPath: "/tmp/\(suite).conf")
         try "clipboard-read = deny\n".write(to: config, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: config) }
-        let denied = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board, grants: nil))
+        let denied = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
         var access: UnsafePointer<CChar>?
         XCTAssertTrue(ghostty_config_get(denied.config, &access, "clipboard-read", 14))
         XCTAssertEqual(access.map { String(cString: $0) }, "deny")
@@ -139,7 +186,7 @@ import XCTest
 
     func testHiddenUnapprovedReadAndEightSecondDeadline() async throws {
         let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
-        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board, grants: nil))
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
         let owner = WindowOwner(host: .remote("deadline-host"), runtime: runtime, start: false)
         var replies: [Data] = []
         let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13, host: owner.host) { replies.append($0) })
@@ -160,16 +207,16 @@ import XCTest
         try await Task.sleep(for: .seconds(8.1))
         XCTAssertNil(owner.preparedAlert)
         respond(.alertSecondButtonReturn)
-        XCTAssertFalse(runtime.allows(owner.host))
+        XCTAssertFalse(WindowOwner.clipboardConsent.allows(owner.host))
         for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(replies.count, 1, "expiry and late grant emit no reply")
+        XCTAssertEqual(replies, Array(repeating: Data("\u{1b}]52;c;\u{1b}\\".utf8), count: 2), "expiry replies empty; late grant adds no reply")
         pane.feed(Data("\u{1b}]52;c;?\u{7}".utf8))
         for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
         let retiredResponse = try XCTUnwrap(owner.preparedAlert?.respond)
         pane.dispose()
         retiredResponse(.alertSecondButtonReturn)
         XCTAssertNil(owner.preparedAlert)
-        XCTAssertFalse(runtime.allows(owner.host))
+        XCTAssertFalse(WindowOwner.clipboardConsent.allows(owner.host))
         let reused = try XCTUnwrap(PaneView(runtime: runtime, pane: pane.pane, font: 13, host: owner.host) { replies.append($0) })
         owner.window.contentView = reused
         reused.resize(cols: 80, rows: 24)
@@ -180,7 +227,7 @@ import XCTest
         XCTAssertNotNil(owner.preparedAlert)
         owner.respondToAlert(.alertThirdButtonReturn)
         for _ in 0..<20 { ghostty_app_tick(runtime.app); try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(replies.count, 2)
+        XCTAssertEqual(replies.count, 3)
         XCTAssertEqual(replies.last, Data("\u{1b}]52;p;\u{1b}\\".utf8))
     }
 }

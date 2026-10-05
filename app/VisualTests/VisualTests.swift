@@ -6,12 +6,31 @@ import TmuxControl
 import XCTest
 @testable import Kido
 
+func clipboardQueryScript(ready: String, result: String, selector: String, deadline: Int) -> String {
+    """
+    import os, select, time, tty
+    tty.setraw(0)
+    deadline = time.monotonic() + 5
+    while not os.path.exists('\(ready)') and time.monotonic() < deadline: time.sleep(0.02)
+    os.write(1, b'\\x1b]52;\(selector);?\\x1b\\\\')
+    deadline = time.monotonic() + \(deadline)
+    reply = b''
+    while time.monotonic() < deadline:
+        readable, _, _ = select.select([0], [], [], 0.4 if reply else 0.1)
+        if readable: reply += os.read(0, 65536)
+        elif reply: break
+    open('\(result)', 'wb').write(reply)
+    time.sleep(3)
+    """
+}
+
 @MainActor class VisualTestCase: XCTestCase {
     override func invokeTest() {
         NSAppearance(named: .aqua)!.performAsCurrentDrawingAppearance { super.invokeTest() }
     }
 
     override func setUp() async throws {
+        WindowOwner.clipboardConsent.reset()
         NSApp.appearance = NSAppearance(named: .aqua)
     }
 }
@@ -88,7 +107,7 @@ import XCTest
             let themes = app.appendingPathComponent("Resources/themes").path
             let theme = "light:\(themes)/kido-light,dark:\(themes)/kido-dark"
             try "theme = \(theme)\nfont-family = Menlo\nfont-size = 13\n".write(to: config, atomically: true, encoding: .utf8)
-            Self.processRuntime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)")), grants: nil))
+            Self.processRuntime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))))
         }
         runtime = try XCTUnwrap(Self.processRuntime)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: height),
@@ -886,28 +905,15 @@ import XCTest
         try await settle()
         XCTAssertNil(owner.preparedAlert)
         _ = try await command(["set-option", "-s", "set-clipboard", "on"])
-        _ = try await command(["set-option", "-s", "get-clipboard", "request"])
+        let clipboardMode = try await command(["show", "-sv", "get-clipboard"])
+        XCTAssertEqual(clipboardMode, "off")
         _ = try await command(["set-buffer", "stale-tmux-buffer"])
         let script = directory.appendingPathComponent("clipboard.py")
         let result = directory.appendingPathComponent("clipboard-reply")
         let ready = directory.appendingPathComponent("clipboard-ready")
         board.clearContents()
         board.setString("before-live", forType: .string)
-        let program = """
-        import os, select, time, tty
-        tty.setraw(0)
-        deadline = time.monotonic() + 5
-        while not os.path.exists('\(ready.path)') and time.monotonic() < deadline: time.sleep(0.02)
-        os.write(1, bytes.fromhex('1b5d35323b703b3f1b5c'))
-        deadline = time.monotonic() + 12
-        reply = b''
-        while time.monotonic() < deadline:
-            ready, _, _ = select.select([0], [], [], 0.4 if reply else 0.1)
-            if ready: reply += os.read(0, 65536)
-            elif reply: break
-        open('\(result.path)', 'wb').write(reply)
-        time.sleep(3)
-        """
+        let program = clipboardQueryScript(ready: ready.path, result: result.path, selector: "p", deadline: 12)
         try program.write(to: script, atomically: true, encoding: .utf8)
         _ = try await command(["respawn-pane", "-k", "-t", pane.pane.description, "printf '\\033]52;c;\(copy)\\007'; exec /usr/bin/python3 " + script.path])
         try await wait("OSC52 private pane printf live copy") { board.string(forType: .string) == "copied ✓" }
