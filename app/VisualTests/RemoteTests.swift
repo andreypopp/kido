@@ -15,14 +15,37 @@ import TmuxControl
         var requests: [Kido.Host] = []
         cold.connect(.remote("localhost"))
         cold.ordinaryOpen()
-        cold.ready { requests.append($0) }
+        cold.ready(isDefaultLaunch: false) { requests.append($0) }
         cold.connect(.remote("localhost"))
         XCTAssertEqual(requests, [.remote("localhost"), .remote("localhost")])
         requests = []
         warm.ordinaryOpen()
-        warm.ready { requests.append($0) }
+        warm.ready(isDefaultLaunch: true) { requests.append($0) }
         warm.connect(.remote("localhost"))
         XCTAssertEqual(requests, [.local, .remote("localhost")])
+    }
+
+    func testIntentLaunchBeforePerform() {
+        for earlyOrdinaryOpen in [false, true] {
+            let routes = WindowRoutes()
+            var requests: [Kido.Host] = []
+            if earlyOrdinaryOpen { routes.ordinaryOpen() }
+            routes.ready(isDefaultLaunch: false) { requests.append($0) }
+            routes.ordinaryOpen()
+            routes.ordinaryOpen()
+            XCTAssertTrue(requests.isEmpty, "untitled/reopen before perform must not open Local")
+            routes.connect(.remote("localhost"))
+            routes.connect(.remote("localhost"))
+            XCTAssertEqual(requests, [.remote("localhost"), .remote("localhost")])
+            requests.removeAll()
+            routes.ordinaryOpen()
+            XCTAssertEqual(requests, [.local], "Dock reopen after all windows close opens Local")
+        }
+        let routes = WindowRoutes()
+        var requests: [Kido.Host] = []
+        routes.ready(isDefaultLaunch: true) { requests.append($0) }
+        routes.ordinaryOpen()
+        XCTAssertEqual(requests, [.local], "plain launch with untitled after ready opens Local")
     }
 
     func testCloseBeforeDiscoveryTaskRuns() async throws {
@@ -119,7 +142,7 @@ import TmuxControl
         let runtime = try XCTUnwrap(GhosttyRuntime())
         let routes = WindowRoutes()
         routes.connect(.remote("localhost"))
-        routes.ready { host in
+        routes.ready(isDefaultLaunch: false) { host in
             let owner = WindowOwner(host: host, runtime: runtime, start: false)
             owner.testRemoteEnvironment = env
             owner.testSSHConfiguration = config
