@@ -3,7 +3,7 @@ import Testing
 import TmuxControl
 @testable import SidebarFeed
 
-private func fixture(filter: String = "", client: Int = 0, sessions: [Int] = [0]) throws -> Snapshot {
+private func fixture(filter: String = "", client: Int = 0, sessions: [Int] = [0], grouped: Bool = false) throws -> Snapshot {
     func item(_ id: Int, _ window: Int, run: String? = nil, started: Double? = nil, tail: String = "", children: [[String: Any]] = []) -> [String: Any] {
         ["kind": run == "bash" || run == "stream" ? "run" : "agent", "id": "%\(id)", "pane": "%\(id)", "window": "@\(window)",
          "run": run as Any? ?? NSNull(), "started": started as Any? ?? NSNull(), "indicator": ["kind": "running"],
@@ -12,7 +12,9 @@ private func fixture(filter: String = "", client: Int = 0, sessions: [Int] = [0]
     }
     let children = [item(1, 1, run: "agent", started: 100, tail: "working", children: [item(2, 2, run: "stream", started: 100)]),
                     item(3, 3, run: "bash", started: 100), item(4, 4, run: "bash")]
-    let nodes: [[String: Any]] = [item(0, 0, started: 100), item(5, 5, children: children)]
+    let nodes: [[String: Any]] = grouped
+        ? [["kind": "window", "id": "@0", "window": "@0", "name": "group", "children": [item(0, 0), item(5, 0)]]]
+        : [item(0, 0, started: 100), item(5, 5, children: children)]
     let object: [String: Any] = ["v": 2, "client": ["session": "$0", "window": "@\(client)", "pane": "%\(client)"],
                                "filter": filter, "error": NSNull(), "sessions": sessions.map {
                                    ["id": "$\($0)", "name": "session-\($0)", "current": $0 == 0, "nodes": nodes]
@@ -24,27 +26,34 @@ private func fixture(filter: String = "", client: Int = 0, sessions: [Int] = [0]
     let rows = sidebarRows(try fixture(client: 5), folded: [])
     let panes = rows.filter { $0.target != nil }
     #expect(panes.map(\.indent) == [0, 0, 1, 2, 1, 1])
-    #expect(rows.count == 11)
-    #expect(rows.filter { $0.kind == .divider }.map(\.indent) == [0, 1, 1])
-    #expect(rows.filter { $0.kind == .divider }.map(\.height) == [3, 3, 3])
+    #expect(rows.count == 14)
+    #expect(rows.filter { $0.kind == .divider }.map(\.indent) == [0, 0, 1, 2, 1, 1])
+    #expect(rows.filter { $0.kind == .divider }.map(\.height) == [3, 3, 3, 3, 3, 3])
     #expect(rows.allSatisfy { $0.height > 0 })
-    #expect(rows.map(\.height).reduce(0, +) == 221)
-    #expect(rows.dropLast().allSatisfy { $0.segments.first?.height == 212 })
+    #expect(rows.map(\.height).reduce(0, +) == 230)
+    #expect(rows.dropLast().allSatisfy { $0.segments.first?.height == 221 })
     #expect(panes.map { $0.segments.filter { $0.kind == .window(active: true) }.count } == [0, 1, 1, 1, 1, 1])
     let nested = try #require(panes.first { $0.title == "pane-1" })
     #expect(nested.segments.last?.topLeft == 6)
     #expect(nested.segments.last?.bottomLeft == 6)
-    #expect(nested.segments.last?.height == 66)
+    #expect(nested.segments.last?.height == 69)
     let last = try #require(panes.last)
     #expect(last.segments.dropFirst().allSatisfy { $0.bottomLeft == 0 })
     #expect(last.segments.first?.bottomLeft == 10)
     let parent = try #require(panes.first { $0.title == "pane-5" })
     let child = try #require(panes.first { $0.title == "pane-2" })
     #expect(child.segments[1].height == parent.segments[1].height)
-    #expect(parent.segments[1].height == 150)
+    #expect(parent.segments[1].height == 156)
     #expect(child.segments[1].top < 0)
     let activeChild = sidebarRows(try fixture(client: 2), folded: []).filter { $0.target != nil }
     #expect(activeChild.filter { $0.segments.contains { $0.kind == .window(active: true) } }.map(\.title) == ["pane-2"])
+}
+
+@Test func groupedPanesHaveOneDivider() throws {
+    let rows = sidebarRows(try fixture(grouped: true), folded: [])
+    #expect(rows.map(\.height) == [31, 3, 28, 28, 9])
+    #expect(rows.filter { $0.kind == .divider }.map(\.indent) == [0])
+    #expect(rows.allSatisfy { $0.height > 0 })
 }
 
 @Test func foldsAndFilteredSessionsKeepIdentity() throws {
