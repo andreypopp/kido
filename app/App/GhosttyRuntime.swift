@@ -66,7 +66,9 @@ import GhosttyKit
                 GhosttyRuntime.action(app!, target, action)
             },
             read_clipboard_cb: { @Sendable userdata, location, state in
-                GhosttyRuntime.readClipboard(PaneView.surface(userdata), location, state)
+                let view = Unmanaged<PaneView>.fromOpaque(userdata!)
+                let disposed = MainActor.assumeIsolated { view.takeUnretainedValue().disposed }
+                return !disposed && GhosttyRuntime.readClipboard(PaneView.surface(userdata), location, state)
             },
             // Ghostty asks from the main thread: from a paste binding, or from
             // its app tick for an OSC 52 read.
@@ -79,8 +81,8 @@ import GhosttyKit
                     view.confirmPaste(text, state)
                 }
             },
-            write_clipboard_cb: { @Sendable _, location, content, count, confirm in
-                GhosttyRuntime.writeClipboard(location, content, count, confirm)
+            write_clipboard_cb: { @Sendable userdata, location, content, count, confirm in
+                GhosttyRuntime.writeClipboard(userdata, location, content, count, confirm)
             },
             close_surface_cb: { @Sendable userdata, _ in PaneView.onMain(userdata) { $0.onCommand(.close) } },
             tmux_control_cb: nil)
@@ -150,6 +152,13 @@ import GhosttyKit
         guard target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface else { return false }
         let userdata = ghostty_surface_userdata(surface)
         switch action.tag {
+        case GHOSTTY_ACTION_OPEN_URL:
+            guard Unmanaged<PaneView>.fromOpaque(userdata!)._withUnsafeGuaranteedRef(\.host) != .local else { return false }
+            let link = action.action.open_url
+            guard let bytes = link.url else { return true }
+            let text = String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(link.len)), as: UTF8.self)
+            PaneView.onMain(userdata) { $0.onURL(text) }
+            return true
         case GHOSTTY_ACTION_START_SEARCH:
             let needle = action.action.start_search.needle.map { String(cString: $0) }
             PaneView.onMain(userdata) {
@@ -268,7 +277,7 @@ import GhosttyKit
     }
 
     nonisolated private static func writeClipboard(
-        _ location: ghostty_clipboard_e,
+        _ userdata: UnsafeMutableRawPointer?, _ location: ghostty_clipboard_e,
         _ content: UnsafePointer<ghostty_clipboard_content_s>?,
         _ count: Int,
         _ confirm: Bool
@@ -277,7 +286,9 @@ import GhosttyKit
         let text = (0..<count).first { String(cString: content[$0].mime) == "text/plain" }
             .map { String(cString: content[$0].data) }
         guard let text else { return }
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        PaneView.onMain(userdata) { _ in
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+        }
     }
 }
