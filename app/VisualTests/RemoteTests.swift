@@ -85,7 +85,7 @@ import TmuxControl
     }
 
     func testCloseBeforeDiscoveryTaskRuns() async throws {
-        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)")), grants: nil))
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))))
         let owner = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
         owner.testRemoteEnvironment = ["HOME": "/tmp/kr-queued-unused/home", "XDG_STATE_HOME": "/tmp/kr-queued-unused/state", "PATH": "/usr/bin:/bin"]
         defer { owner.ssh?.stop() }
@@ -94,7 +94,11 @@ import TmuxControl
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertNil(owner.ssh, "a cancelled queued discovery must not allocate a transport after window close")
         XCTAssertNil(owner.testConnection)
-        XCTAssertFalse(owner.window.isVisible || NSApp.isActive)
+        let visible = owner.window.isVisible, active = NSApp.isActive
+        let state = "\(Date().ISO8601Format()) visible=\(visible) active=\(active)"
+        print("queued discovery closed: \(state)")
+        XCTAssertFalse(visible, state)
+        XCTAssertFalse(active, state)
     }
 
     func testSealedDrainRejectsLateLaunch() throws {
@@ -151,7 +155,7 @@ import TmuxControl
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root + "/bin/kido")
         let env = ["HOME": root + "/home", "XDG_STATE_HOME": root + "/state", "PATH": root + "/bin:/usr/bin:/bin:/usr/sbin:/sbin"]
         let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
-        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board, grants: nil))
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
         let owner = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
         owner.testRemoteEnvironment = env
         addTeardownBlock { @MainActor in
@@ -163,27 +167,15 @@ import TmuxControl
         owner.start()
         try await until("OSC52 private SSH window connected") { owner.testConnection != nil && owner.testBanner.isHidden }
         let pane = try XCTUnwrap(owner.testSession?.windows.values.first?.panes.first)
-        runtime.allowAlways(owner.host)
+        let clipboardMode = await replies(owner, [Command("show", "-sv", "get-clipboard")])
+        XCTAssertEqual(clipboardMode, [.success(["off"])])
+        WindowOwner.clipboardConsent.allowAlways(owner.host)
         board.clearContents()
         board.setString("before remote copy", forType: .string)
         let copy = Data("remote copy ✓".utf8).base64EncodedString()
         let ready = root + "/ready", result = root + "/reply", script = root + "/clipboard.py"
-        try """
-        import os, select, time, tty
-        tty.setraw(0)
-        deadline = time.monotonic() + 5
-        while not os.path.exists('\(ready)') and time.monotonic() < deadline: time.sleep(0.02)
-        os.write(1, bytes.fromhex('1b5d35323b733b3f1b5c'))
-        deadline = time.monotonic() + 8
-        reply = b''
-        while time.monotonic() < deadline:
-            ready, _, _ = select.select([0], [], [], 0.4 if reply else 0.1)
-            if ready: reply += os.read(0, 65536)
-            elif reply: break
-        open('\(result)', 'wb').write(reply)
-        time.sleep(3)
-        """.write(toFile: script, atomically: true, encoding: .utf8)
-        _ = await replies(owner, [Command("set-option", "-s", "set-clipboard", "on"), Command("set-option", "-s", "get-clipboard", "request"), Command("respawn-pane", "-k", "-t", pane.pane, "printf '\\033]52;c;\(copy)\\007'; exec /usr/bin/python3 " + script)])
+        try clipboardQueryScript(ready: ready, result: result, selector: "s", deadline: 8).write(toFile: script, atomically: true, encoding: .utf8)
+        _ = await replies(owner, [Command("set-option", "-s", "set-clipboard", "on"), Command("respawn-pane", "-k", "-t", pane.pane, "printf '\\033]52;c;\(copy)\\007'; exec /usr/bin/python3 " + script)])
         try await until("OSC52 SSH live write changed named board") { board.string(forType: .string) == "remote copy ✓" }
         _ = await replies(owner, [Command("set-buffer", "remote stale tmux buffer")])
         let text = "SSH named board ✓\ntext"
@@ -232,7 +224,7 @@ import TmuxControl
         let config = root + "/ssh.conf"
         let normal = "Host localhost\n  HostName localhost\n"
         try normal.write(toFile: config, atomically: true, encoding: .utf8)
-        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)")), grants: nil))
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))))
         let routes = WindowRoutes()
         routes.connect(.remote("localhost"))
         routes.ready(isDefaultLaunch: false) { host in
