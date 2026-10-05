@@ -642,6 +642,13 @@ terminal share the Ghostty theme background. New Session is a standard
 image toolbar item, as is the sidebar toggle, targeting the split view
 controller. Both are borderless and the toolbar is not customizable.
 
+Titlebar tabs project the current session's top-level windows from the
+unfiltered feed; descendant windows activate their ancestor tab. Each title
+is the sidebar row title of that window's active pane, falling back to the
+tmux window name until its feed label arrives. WindowView's active pane,
+read from tmux layouts and `%window-pane-changed`, is shared with terminal
+focus. Status dots summarize the window and its descendants.
+
 `SidebarView` is a flat `NSOutlineView`: session headers with a
 new-window button, then one bracket per tmux window at every depth drawn as a guide
 line, with no window label. A top-level node is a window; an item's
