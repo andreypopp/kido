@@ -156,7 +156,7 @@ final class WindowView: NSView {
 
     func evict() {
         endDrag()
-        panes.forEach { connection?.detach($0) }
+        panes.forEach { $0.dispose(); connection?.detach($0) }
         toolbar?.removeFromSuperview()
         toolbar = nil
         dividers = []
@@ -197,7 +197,7 @@ final class WindowView: NSView {
         for pane in layoutPanes {
             views[pane.id] = existing[pane.id] ?? makePane(pane.id)
         }
-        for (id, gone) in existing where views[id] == nil { connection?.detach(gone) }
+        for (id, gone) in existing where views[id] == nil { gone.dispose(); connection?.detach(gone) }
         let cell = session?.cell ?? views.values.lazy.map(\.cell).first { $0.width > 0 && $0.height > 0 } ?? .zero
         guard cell.width > 0, cell.height > 0 else { return }
         let placement = PaneLayout(root: shown.visible.root, bounds: bounds, cell: cell, pixel: pixel)
@@ -373,9 +373,10 @@ final class WindowView: NSView {
 
     private func makePane(_ id: PaneID) -> PaneView? {
         guard let view = PaneView(
-            runtime: runtime, pane: id, font: session?.font ?? 0,
+            runtime: runtime, pane: id, font: session?.font ?? 0, host: connection?.host ?? .local,
             onInput: { [weak connection] in connection?.sendKeys(id, $0) })
         else { return nil }
+        view.onURL = { [weak connection] in connection?.openURL($0) }
         view.onSelect = { [weak self] in
             guard let self else { return }
             var commands = [Command("select-pane", "-t", id)]
