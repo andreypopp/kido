@@ -116,7 +116,7 @@ final class SidebarCell: NSTableCellView {
                 NSColor.labelColor.withAlphaComponent(0.10).setFill(); bounds.fill()
             }
             if case .divider = row.kind {
-                NSColor.tertiaryLabelColor.setFill()
+                NSColor.labelColor.withAlphaComponent(0.12).setFill()
                 let x = CGFloat(row.indent) * 21
                 let line = NSRect(x: x, y: 1, width: max(0, bounds.width - x), height: 1)
                 let pixels = convertToBacking(line)
