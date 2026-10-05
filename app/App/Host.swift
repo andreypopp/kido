@@ -23,6 +23,10 @@ enum Host: Equatable, Sendable {
         try self.init(parts.user.map { $0 + "@" + host } ?? host)
     }
 
+    var clipboardKey: String {
+        switch self { case .local: "local"; case .remote(let destination): "ssh:\(destination)" }
+    }
+
     var label: String {
         switch self { case .local: "Local"; case .remote(let destination): destination }
     }

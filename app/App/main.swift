@@ -34,7 +34,12 @@ import SidebarFeed
             source.resume()
             signals.append(source)
         }
-        guard let runtime = GhosttyRuntime() else { fatalError("libghostty failed to initialise") }
+        #if KIDO_VISUAL || KIDO_STRESS
+        let pasteboard = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
+        #else
+        let pasteboard = NSPasteboard.general
+        #endif
+        guard let runtime = GhosttyRuntime(pasteboard: pasteboard, grants: background ? nil : .standard) else { fatalError("libghostty failed to initialise") }
         self.runtime = runtime
         NSApp.mainMenu = mainMenu()
         menus.send = { [weak self] in self?.current?.send($0) }

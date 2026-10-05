@@ -99,6 +99,10 @@ final class SessionView: NSView {
         recent.removeAll { windows[$0]?.hot != true && others[$0] == nil }
     }
 
+    func invalidateClipboard() {
+        forEachPane { $0.invalidateClipboard() }
+    }
+
     func focusActive() {
         shown?.focusActive(force: true)
     }
