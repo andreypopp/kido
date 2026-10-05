@@ -71,6 +71,7 @@ public struct PaneLayout: Equatable {
         chrome.size.width = right - left
         chrome.origin.y = max(topLine.maxY, g.y == rootTop ? topLine.maxY : chrome.minY)
         chrome.size.height = (grid.maxY == bottom ? bounds.maxY : min(grid.maxY + after.height, bounds.maxY)) - chrome.minY
+        chrome = clip(chrome)
         let insets = alternate ? RenderInsets() : RenderInsets(
             top: max(0, grid.minY - chrome.minY),
             bottom: grid.maxY == bottom ? bounds.maxY - grid.maxY : after.height)
@@ -108,13 +109,20 @@ public struct PaneLayout: Equatable {
         return r
     }
 
+    private func clip(_ rect: CGRect) -> CGRect {
+        guard rect.size.width > 0, rect.size.height > 0 else { return .zero }
+        let area = CGRect(x: bounds.minX, y: topLine.maxY, width: bounds.width, height: max(0, bounds.maxY - topLine.maxY))
+        let clipped = rect.intersection(area)
+        return clipped.isNull ? .zero : clipped
+    }
+
     public func line(_ divider: Divider, pixel: CGFloat) -> CGRect {
         let rect = grid(divider.geometry)
         if divider.direction == .leftRight {
             let top = divider.geometry.y == rootTop ? topLine.maxY : rect.minY - before.height
-            return CGRect(x: rect.minX + after.width, y: top, width: pixel,
-                          height: min(rect.maxY + after.height, bottom) - top)
+            return clip(CGRect(x: rect.minX + after.width, y: top, width: pixel,
+                               height: min(rect.maxY + after.height, bottom) - top))
         }
-        return CGRect(x: rect.minX - before.width, y: rect.minY + after.height, width: rect.width + before.width + after.width, height: pixel)
+        return clip(CGRect(x: rect.minX - before.width, y: rect.minY + after.height, width: rect.width + before.width + after.width, height: pixel))
     }
 }
