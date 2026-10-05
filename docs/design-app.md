@@ -121,9 +121,15 @@ opaque remote values, not local files. The returned socket must end in `/socket`
 its parent is retained for feed/navigation. Local retains bundled-tmux validation.
 Discovery decodes the server's protocol stamp, not its build ID. The required
 protocol is 1.0: the major must match and the minor must be at least 0.
-Local mismatches, including unstamped servers, offer Restart with confirmation
-that all sessions and panes will end. Remote mismatches offer only Reconnect,
-which repeats discovery after the user upgrades kido and restarts its server.
+Mismatches block the affected window with a native alert sheet; Close leaves
+a disconnected, read-only view with Reconnect to check again. Local sheets
+offer Restart… with a Cancel-first confirmation that sessions, panes, commands
+and agents end and other clients disconnect; Cancel returns to the mismatch.
+Remote sheets offer Reconnect, advise updating the app for a newer major,
+and read discovery's binary protocol before recommending an upgrade: an
+already-compatible binary only needs its server restarted. Discovery gates
+on the server stamp; RPC hello retains both versions for later mismatches.
+Reconnect repeats discovery after the user fixes the mismatch.
 There is no compatibility waiver or remote restart. The bundle's captured
 BUILD-ID detects an app replaced on disk and requires relaunch independently
 of the server protocol.
