@@ -9,7 +9,7 @@ final class Feed: @unchecked Sendable {
     enum Status {
         case starting
         case invalidBundle(Failure)
-        case protocolMismatch(RPCVersion?)
+        case protocolMismatch(server: RPCVersion?, binary: RPCVersion?)
         case running(Snapshot)
         case restarting(String)
     }
@@ -173,21 +173,22 @@ final class Feed: @unchecked Sendable {
                     guard let event else { return self.restart("Unreadable RPC event") }
                     if first {
                         guard case .hello(let hello) = event else { return self.restart("RPC did not send a hello first") }
-                        let version: RPCVersion?
+                        let version: RPCVersion?, binary: RPCVersion?
                         switch hello {
                         case .accepted(let protocolVersion):
                             guard !protocolVersion.compatible else { return }
                             version = protocolVersion
-                        case .rejected(let server): version = server
+                            binary = protocolVersion
+                        case .rejected(let executable, let server): version = server; binary = executable
                         }
                         self.stop()
-                        return self.publish(.protocolMismatch(version))
+                        return self.publish(.protocolMismatch(server: version, binary: binary))
                     }
                     switch event {
                     case .snapshot(let snapshot):
                         self.backoff = 0.1
                         self.publish(.running(snapshot))
-                    case .error: self.stop(); self.publish(.protocolMismatch(nil))
+                    case .error: self.stop(); self.publish(.protocolMismatch(server: nil, binary: nil))
                     case .hello, .reply: self.restart("Unexpected RPC event")
                     }
                 }

@@ -50,7 +50,8 @@ struct Server: Decodable, Sendable {
     let tmux: String
     let socket: String
     let protocolVersion: RPCVersion?
-    private enum CodingKeys: String, CodingKey { case tmux, socket; case protocolVersion = "protocol" }
+    var binaryProtocol: RPCVersion = .required
+    private enum CodingKeys: String, CodingKey { case tmux, socket; case protocolVersion = "server"; case binaryProtocol = "protocol" }
 
     static func validPath(_ path: String) -> Bool {
         path.hasPrefix("/") && !path.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
