@@ -638,11 +638,15 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private var presented = (visible: true, realized: true)
     private var keyUpMonitor: Any?
     private var paste: (alert: NSAlert, state: UnsafeMutableRawPointer?)?
+    let runtime: GhosttyRuntime
+    private var clipboard: (state: UnsafeMutableRawPointer, timeout: DispatchWorkItem, deadline: DispatchTime, alert: NSAlert?)?
+    private(set) var acceptingInput = true
     private(set) var disposed = false
 
     func dispose() {
         guard !disposed else { return }
         disposed = true
+        invalidateClipboard()
         grid.withLock { $0.ready = false; $0.epoch += 1 }
         find?.close()
         if let paste {
@@ -659,10 +663,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
 
     // Ghostty calls back on its renderer and IO threads too, where a strong
     // reference to the view could be its last.
-    nonisolated static func surface(_ userdata: UnsafeMutableRawPointer?) -> ghostty_surface_t? {
-        Unmanaged<PaneView>.fromOpaque(userdata!)._withUnsafeGuaranteedRef(\.surface)
-    }
-
     nonisolated static func onMain(_ userdata: UnsafeMutableRawPointer?, _ body: @escaping @MainActor (PaneView) -> Void) {
         Unmanaged<PaneView>.fromOpaque(userdata!)._withUnsafeGuaranteedRef { view in
             DispatchQueue.main.async { [weak view] in guard let view, !view.disposed else { return }; body(view) }
@@ -670,6 +670,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     }
 
     init?(runtime: GhosttyRuntime, pane: PaneID, font: Float, host: Host = .local, onInput: @escaping @MainActor @Sendable (Data) -> Void) {
+        self.runtime = runtime
         self.pane = pane
         self.host = host
         self.onInput = onInput
@@ -692,7 +693,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         config.io_write_cb = { userdata, bytes, count in
             guard let bytes, count > 0 else { return }
             let data = Data(bytes: bytes, count: Int(count))
-            PaneView.onMain(userdata) { $0.onInput(data) }
+            PaneView.onMain(userdata) { pane in
+                guard pane.acceptingInput else { return }
+                pane.onInput(data)
+            }
         }
         guard let surface = ghostty_surface_new(runtime.app, &config) else { return nil }
         self.surface = surface
@@ -792,7 +796,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             #endif
             bytes.withUnsafeBytes { buffer in
                 guard let base = buffer.baseAddress else { return }
-                ghostty_surface_process_output(surface, base.assumingMemoryBound(to: CChar.self), UInt(buffer.count))
+                if kind == .snapshot {
+                    ghostty_surface_restore_output(surface, base.assumingMemoryBound(to: CChar.self), UInt(buffer.count))
+                } else {
+                    ghostty_surface_process_output(surface, base.assumingMemoryBound(to: CChar.self), UInt(buffer.count))
+                }
             }
             #if KIDO_STRESS
             probes?.after()
@@ -935,6 +943,67 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         resizeAnchor = nil
         snapScroll()
         ghostty_surface_complete_clipboard_request(surface, text, state, true)
+    }
+
+    func requestClipboard(_ state: UnsafeMutableRawPointer?) {
+        guard let state else { return }
+        guard acceptingInput else { return ghostty_surface_cancel_clipboard_request(surface, state) }
+        guard clipboard == nil else { return deny(state) }
+        let deadline: DispatchTime = .now() + 8
+        let timeout = DispatchWorkItem { [weak self] in self?.cancelClipboard() }
+        clipboard = (state, timeout, deadline, nil)
+        DispatchQueue.main.asyncAfter(deadline: deadline, execute: timeout)
+        let owner = window?.delegate as? WindowOwner
+        if runtime.allows(host) || owner?.clipboardPermission == .allow { return finishClipboard(true) }
+        if owner?.clipboardPermission == .deny { return finishClipboard(false) }
+        guard !isHiddenOrHasHiddenAncestor, let owner,
+              owner.window.isVisible, owner.preparedAlert == nil, owner.window.attachedSheet == nil,
+              runtime.askingHosts.insert(host.clipboardKey).inserted else { return finishClipboard(false) }
+        let alert = NSAlert()
+        alert.messageText = "Allow applications on “\(host.label)” to read your Mac clipboard?"
+        alert.informativeText = "This also permits applications reached through SSH inside its panes."
+        for title in ["Allow for this connection", "Always allow", "Deny"] { alert.addButton(withTitle: title) }
+        clipboard?.alert = alert
+        owner.prepareAlert(alert) { [weak self, weak owner] response in
+            guard let self, let clipboard, clipboard.alert === alert else { return }
+            guard DispatchTime.now() < clipboard.deadline else { return cancelClipboard() }
+            if response == .alertFirstButtonReturn || response == .alertSecondButtonReturn { owner?.clipboardPermission = .allow }
+            if response == .alertThirdButtonReturn { owner?.clipboardPermission = .deny }
+            if response == .alertSecondButtonReturn { runtime.allowAlways(host) }
+            finishClipboard(response == .alertFirstButtonReturn || response == .alertSecondButtonReturn)
+        }
+    }
+
+    private func finishClipboard(_ granted: Bool) {
+        guard let pending = clipboard else { return }
+        clipboard = nil
+        pending.timeout.cancel()
+        if let alert = pending.alert {
+            runtime.askingHosts.remove(host.clipboardKey)
+            (window?.delegate as? WindowOwner)?.cancelClipboardAlert(alert)
+        }
+        let text = granted ? runtime.pasteboard.string(forType: .string) ?? "" : ""
+        if text.utf8.count > 1_048_576 || text.utf8.contains(0) {
+            ghostty_surface_complete_clipboard_request(surface, "", pending.state, true)
+        } else {
+            ghostty_surface_complete_clipboard_request(surface, text, pending.state, true)
+        }
+    }
+
+    func cancelClipboard() {
+        guard let pending = clipboard else { return }
+        clipboard = nil
+        pending.timeout.cancel()
+        if let alert = pending.alert {
+            runtime.askingHosts.remove(host.clipboardKey)
+            (window?.delegate as? WindowOwner)?.cancelClipboardAlert(alert)
+        }
+        ghostty_surface_cancel_clipboard_request(surface, pending.state)
+    }
+
+    func invalidateClipboard() {
+        acceptingInput = false
+        cancelClipboard()
     }
 
     func deny(_ state: UnsafeMutableRawPointer?) {
