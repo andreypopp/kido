@@ -355,11 +355,11 @@ final class WindowView: NSView {
             toolbar.update(command: { view.onSelect(); view.onCommand($0) }, zoomed: zoomed, drag: { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0) })
         }
         guard let toolbar, toolbar.superview === chrome else { return }
-        invalidateCursorRects()
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.15
             toolbar.animator().alphaValue = show ? 1 : 0
         }
+        invalidateCursorRects()
     }
 
     private var pixel: CGFloat { 1 / (window?.backingScaleFactor ?? 2) }
@@ -580,7 +580,7 @@ final class WindowView: NSView {
         place(); endDrag(); focusActive(force: true)
     }
 
-    private func invalidateCursorRects() {
+    func invalidateCursorRects() {
         if paneDrag == nil { window?.invalidateCursorRects(for: self) }
     }
 
@@ -805,10 +805,25 @@ final class WindowView: NSView {
     }
 
     override func resetCursorRects() {
-        guard let placement else { return }
-        var covered: [CGRect] = []
+        for (rect, cursor) in paneCursorRects { addCursorRect(rect, cursor: cursor) }
+    }
+
+    var paneCursorRects: [(CGRect, NSCursor)] {
+        guard let placement else { return [] }
+        var result: [(CGRect, NSCursor)] = []
+        var covered: [CGRect] = [placement.topLine]
         func add(_ rect: CGRect, _ cursor: NSCursor) {
-            for rect in rect.intersection(bounds).subtracting(covered) { addCursorRect(rect, cursor: cursor) }
+            result += rect.intersection(bounds).subtracting(covered).map { ($0, cursor) }
+        }
+        func terminal(_ id: PaneID, excluding edges: [CGRect] = []) {
+            guard let view = panes.first(where: { $0.pane == id && !$0.isHidden }) else { return }
+            let chrome = subviews.compactMap { $0 as? PaneChrome }.first { $0.pane == id }
+            let cuts = edges + (chrome?.subviews.filter {
+                !$0.isHidden && ($0 is PaneScroller || $0.alphaValue > 0)
+            }.map { convert($0.bounds, from: $0) } ?? [])
+            for rect in view.terminalCursorRects {
+                for rect in convert(rect, from: view).subtracting(cuts) { add(rect, view.mouseCursor) }
+            }
         }
         if !zoomed {
             for pane in (shown?.visible.root.panes ?? []).filter({ $0.layer != .tiled }).sorted(by: {
@@ -824,14 +839,22 @@ final class WindowView: NSView {
                 if let chrome = subviews.compactMap({ $0 as? PaneChrome }).first(where: { $0.pane == pane.id }) {
                     for rect in chrome.padding { add(convert(rect, from: chrome), .openHand) }
                 }
-                for (position, rect) in floatEdges(r) {
+                let edges = floatEdges(r)
+                for (position, rect) in edges {
                     add(rect, .frameResize(position: position, directions: .all))
                 }
+                terminal(pane.id, excluding: edges.map { $0.1 })
             }
         }
-        for d in shown?.visible.root.dividers ?? [] {
+        let dividers = shown?.visible.root.dividers ?? []
+        for d in dividers {
             add(hitArea(d, placement), d.direction == .leftRight ? .resizeLeftRight : .resizeUpDown)
         }
+        covered += dividers.map { hitArea($0, placement) }
+        for pane in shown?.visible.root.panes ?? [] where zoomed || pane.layer == .tiled {
+            terminal(pane.id)
+        }
+        return result
     }
 
     func debugResize(_ reason: @autoclosure () -> String, pane: PaneID? = nil) {
