@@ -38,6 +38,39 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             }
         }
     }
+    private(set) var mouseShape = GHOSTTY_MOUSE_SHAPE_TEXT
+    var mouseCursor: NSCursor {
+        switch mouseShape {
+        case GHOSTTY_MOUSE_SHAPE_POINTER: .pointingHand
+        case GHOSTTY_MOUSE_SHAPE_TEXT: .iBeam
+        case GHOSTTY_MOUSE_SHAPE_VERTICAL_TEXT: .iBeamCursorForVerticalLayout
+        case GHOSTTY_MOUSE_SHAPE_GRAB: .openHand
+        case GHOSTTY_MOUSE_SHAPE_GRABBING, GHOSTTY_MOUSE_SHAPE_MOVE, GHOSTTY_MOUSE_SHAPE_ALL_SCROLL: .closedHand
+        case GHOSTTY_MOUSE_SHAPE_N_RESIZE, GHOSTTY_MOUSE_SHAPE_S_RESIZE, GHOSTTY_MOUSE_SHAPE_NS_RESIZE, GHOSTTY_MOUSE_SHAPE_ROW_RESIZE: .resizeUpDown
+        case GHOSTTY_MOUSE_SHAPE_W_RESIZE, GHOSTTY_MOUSE_SHAPE_E_RESIZE, GHOSTTY_MOUSE_SHAPE_EW_RESIZE, GHOSTTY_MOUSE_SHAPE_COL_RESIZE: .resizeLeftRight
+        case GHOSTTY_MOUSE_SHAPE_NE_RESIZE, GHOSTTY_MOUSE_SHAPE_SW_RESIZE, GHOSTTY_MOUSE_SHAPE_NESW_RESIZE: .frameResize(position: .topRight, directions: .all)
+        case GHOSTTY_MOUSE_SHAPE_NW_RESIZE, GHOSTTY_MOUSE_SHAPE_SE_RESIZE, GHOSTTY_MOUSE_SHAPE_NWSE_RESIZE: .frameResize(position: .topLeft, directions: .all)
+        case GHOSTTY_MOUSE_SHAPE_CROSSHAIR, GHOSTTY_MOUSE_SHAPE_CELL: .crosshair
+        case GHOSTTY_MOUSE_SHAPE_NOT_ALLOWED, GHOSTTY_MOUSE_SHAPE_NO_DROP: .operationNotAllowed
+        case GHOSTTY_MOUSE_SHAPE_COPY: .dragCopy
+        case GHOSTTY_MOUSE_SHAPE_ALIAS: .dragLink
+        case GHOSTTY_MOUSE_SHAPE_CONTEXT_MENU: .contextualMenu
+        default: .arrow
+        }
+    }
+
+    func setMouseShape(_ shape: ghostty_action_mouse_shape_e) {
+        guard mouseShape != shape else { return }
+        mouseShape = shape
+        (superview as? WindowView)?.invalidateCursorRects()
+    }
+
+    var terminalCursorRects: [CGRect] {
+        CGRect(x: 0, y: renderInsets.bottom, width: bounds.width,
+               height: max(0, bounds.height - renderInsets.top - renderInsets.bottom))
+            .subtracting(subviews.filter { $0 !== terminal && !$0.isHidden && $0.alphaValue > 0 }.map(\.frame))
+    }
+
     private let terminal = TerminalView()
     private let historyLimit = NSBox()
     @objc private func loadMoreHistory() { onLoadMore() }

@@ -578,6 +578,48 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         }
     }
 
+    func testTerminalMouseShape() async throws {
+        try await start()
+        try await paint(lines: 100)
+        let terminal = try XCTUnwrap(terminal)
+        let pane = try XCTUnwrap(terminal.panes.first)
+        for (name, shape, cursor) in [("pointer", GHOSTTY_MOUSE_SHAPE_POINTER, NSCursor.pointingHand),
+                                      ("text", GHOSTTY_MOUSE_SHAPE_TEXT, NSCursor.iBeam),
+                                      ("default", GHOSTTY_MOUSE_SHAPE_DEFAULT, NSCursor.arrow)] {
+            XCTAssertTrue(pane.feed(Data("\u{1b}]22;\(name)\u{7}".utf8)))
+            try await wait("mouse shape \(name)") { pane.mouseShape == shape }
+            XCTAssertTrue(pane.mouseCursor === cursor)
+        }
+        pane.setMouseShape(GHOSTTY_MOUSE_SHAPE_POINTER)
+        let grid = terminal.convert(try XCTUnwrap(pane.terminalCursorRects.first), from: pane)
+        XCTAssertTrue(terminal.paneCursorRects.contains { $0.0.contains(CGPoint(x: grid.midX, y: grid.midY)) && $0.1 === NSCursor.pointingHand })
+        XCTAssertFalse(pane.scroller.isHidden)
+        let strip = terminal.convert(pane.scroller.bounds, from: pane.scroller)
+        XCTAssertFalse(terminal.paneCursorRects.contains { $0.1 === NSCursor.pointingHand && $0.0.intersects(strip) })
+        pane.showFind()
+        pane.layoutSubtreeIfNeeded()
+        let find = try XCTUnwrap(pane.find)
+        let findRect = terminal.convert(find.bounds, from: find)
+        XCTAssertFalse(terminal.paneCursorRects.contains { $0.1 === NSCursor.pointingHand && $0.0.intersects(findRect) })
+        find.close()
+        _ = try await command(["split-window", "-h", "-t", "visual", "exec /bin/cat"])
+        try await wait("split for cursor priority") { terminal.panes.count == 2 }
+        for view in terminal.panes { view.setMouseShape(GHOSTTY_MOUSE_SHAPE_POINTER) }
+        let dividers = terminal.paneCursorRects.filter { $0.1 === NSCursor.resizeLeftRight }
+        XCTAssertFalse(dividers.isEmpty)
+        for (rect, _) in dividers {
+            XCTAssertFalse(terminal.paneCursorRects.contains { $0.1 === NSCursor.pointingHand && $0.0.intersects(rect) })
+        }
+        _ = try await command(["break-pane", "-W", "-s", "visual:0.1", "-X", "5", "-Y", "2", "-x", "35", "-y", "10"])
+        try await wait("float for cursor priority") { terminal.visualLayout.contains("float %") }
+        try await settle()
+        XCTAssertTrue(terminal.paneCursorRects.contains { $0.1 === NSCursor.openHand })
+        let linkRects = terminal.paneCursorRects.filter { $0.1 === NSCursor.pointingHand }.map { $0.0 }
+        for (rect, cursor) in terminal.paneCursorRects where cursor !== NSCursor.pointingHand {
+            XCTAssertFalse(linkRects.contains { $0.intersects(rect) }, "chrome cursor must win")
+        }
+    }
+
     func testSplitZoomFloat() async throws {
         try await start()
         _ = try await command(["split-window", "-h", "-t", "visual", "exec /bin/cat"])
