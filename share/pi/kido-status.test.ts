@@ -509,7 +509,7 @@ function createFakePi() {
   const messages: Array<{ message: any; opts: unknown; seq: number }> = [];
   const renderers = new Map<string, (message: any, options: any, theme: any) => { render(width: number): string[]; handleMouse(event: any): unknown }>();
   // Keyed the same way the real UI keys a widget: content undefined means "cleared".
-  const widgets = new Map<string, { content: ((tui: unknown, theme: any) => { render(width: number): string[] }) | undefined; options?: unknown }>();
+  const widgets = new Map<string, { content: ((tui: unknown, theme: any) => { render(width: number): string[]; handleMouse?(event: any): unknown }) | undefined; options?: unknown }>();
   // What the host does with a user message: in pi, start a turn for it when the
   // session is idle. Wired by startSessionCore; a case wanting the gap between the
   // two held open replaces it.
@@ -543,8 +543,11 @@ function createFakePi() {
   }
   const autocompleteFactories: Array<(current: any) => any> = [];
   const notifications: Array<{ message: string; type?: string }> = [];
+  let editorText = "";
   const ui = {
-    setWidget(key: string, content: ((tui: unknown, theme: any) => { render(width: number): string[] }) | undefined, options?: unknown) {
+    setEditorText(text: string) { editorText = text; },
+    getEditorText() { return editorText; },
+    setWidget(key: string, content: ((tui: unknown, theme: any) => { render(width: number): string[]; handleMouse?(event: any): unknown }) | undefined, options?: unknown) {
       widgets.set(key, { content, options });
     },
     notify(message: string, type?: string) {
@@ -1198,6 +1201,66 @@ test("user asks register only for top-level sessions, including inherited child 
       assert.equal(nested.tools.has("ask_user"), true);
       assert.equal(nested.tools.has("remove_ask"), true);
     });
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("user ask widgets collapse, expand one ask, insert ids and preserve only live expansion", async () => {
+  const fx = makeFixture();
+  try {
+    mkdirSync(dirname(fx.runsDir), { recursive: true });
+    const file = join(dirname(fx.runsDir), "asks.json");
+    const asks = [
+      { id: "A1", session: "self-session", text: "Ship now?\nOr wait for review?" },
+      { id: "A2", session: "self-session", text: "A very long question about what to do next\nSecond decision" },
+    ];
+    writeFileSync(file, JSON.stringify(asks));
+    const s = await startSession(fx, { factory: await freshExtensions() });
+    s.pi.getSettings = () => ({});
+    await pollUntil(() => !!s.widgets.get("kido-asks")?.content, 2000, "the initial ask widget");
+    const draw = () => s.widgets.get("kido-asks")!.content!(null, fakeTheme);
+    const click = { type: "click", button: "left", x: 12, y: 0 };
+    let widget = draw();
+    assert.deepEqual(widget.render(25).map(stripTerminalSequences), ["│ A1: Ship now?...", "│ A2: A very long ques..."]);
+    for (const width of [0, 1, 2, 10]) {
+      assert.ok(widget.render(width).every((line) => visibleWidth(line) <= width));
+    }
+    widget.render(80);
+    assert.deepEqual(widget.handleMouse!({ ...click, type: "press" }), { handled: true, render: false });
+    assert.equal(widget.handleMouse!({ ...click, button: "right" }), undefined);
+    assert.equal(widget.handleMouse!({ ...click, type: "release" }), undefined);
+    assert.deepEqual(widget.handleMouse!(click), { handled: true, render: true });
+    assert.deepEqual(widget.render(80), ["│ A1: Ship now?", "│ Or wait for review?", "│ A2: A very long question about what to do next..."]);
+    widget.handleMouse!({ ...click, y: 2 });
+    assert.deepEqual(widget.render(80), ["│ A1: Ship now?...", "│ A2: A very long question about what to do next", "│ Second decision"]);
+    widget.handleMouse!({ ...click, y: 1 });
+    const collapsed = widget.render(80);
+    assert.equal(collapsed.length, 2);
+    assert.deepEqual(widget.handleMouse!({ ...click, x: 2 }), { handled: true, render: true });
+    assert.equal(s.ui.getEditorText(), "A1: ");
+    assert.deepEqual(widget.render(80), collapsed);
+    s.ui.setEditorText("Existing text");
+    widget.handleMouse!({ ...click, x: 3, y: 1 });
+    assert.equal(s.ui.getEditorText(), "A2: Existing text");
+    assert.deepEqual(widget.render(80), collapsed);
+    widget.handleMouse!({ ...click, y: 1 });
+    assert.match(widget.render(80).join("\n"), /Second decision/);
+    const refresh = async (items: typeof asks) => {
+      const previous = s.widgets.get("kido-asks")!.content;
+      writeFileSync(file, JSON.stringify(items));
+      assert.equal(await sendToInbox(s.inboxPath, envelope("asks", "")), "ok");
+      await pollUntil(() => s.widgets.get("kido-asks")!.content !== previous, 2000, "the ask widget refresh");
+      widget = draw();
+    };
+    await refresh(asks);
+    assert.match(widget.render(80).join("\n"), /Second decision/);
+    await refresh([asks[0]]);
+    assert.deepEqual(widget.render(80), ["│ A1: Ship now?..."]);
+    await refresh(asks);
+    assert.deepEqual(widget.render(80), collapsed);
+    s.pi.getSettings = () => ({ tuiMode: "regular" });
+    assert.deepEqual(widget.render(80), ["│ A1 asks you: Ship now?", "│ Or wait for review?", "│ A2 asks you: A very long question about what to do next", "│ Second decision"]);
   } finally {
     await fx.restore();
   }

@@ -225,7 +225,7 @@ parameters:
 description:
 
 ```
-Put a question needing the user's decision into kido's tracked asks and return its short id. Call this whenever your reply ends with a decision the user must make. replaces rewords an existing ask, keeping its id; an unknown id is an error. Top-level agents only.
+Put a question needing the user's decision into kido's tracked asks and return its short id. Call this whenever your reply ends with a decision the user must make. Never announce in your reply that you created, reworded or removed an ask: the user sees asks in the UI. replaces rewords an existing ask, keeping its id; an unknown id is an error. Top-level agents only.
 ```
 
 promptSnippet:
@@ -239,7 +239,7 @@ promptGuidelines (merged into the system prompt's rules while the tool is regist
 ```
 Use ask_user for each decision that needs the user, one decision per ask, so each can be answered and removed on its own. Status updates, FYIs and 'should I continue?' are not asks.
 Write an ask to be read on its own, away from this conversation: name the project or thread, what is being decided, the options, and your recommendation if you have one.
-An ask is tracked in addition to your reply, not instead of it: still put the question in your reply text.
+An ask is tracked in addition to your reply, not instead of it: still put the question in your reply text, but never announce that you created, reworded or removed an ask, nor list ask ids; the user sees asks in the UI.
 When the user has answered an ask, or it is moot, call remove_ask. Use replaces to reword an existing ask, keeping its id.
 ```
 
@@ -253,7 +253,7 @@ parameters:
 description:
 
 ```
-Remove a tracked user ask when it has been answered or is moot. Top-level agents only.
+Remove a tracked user ask when it has been answered or is moot. Never announce the removal in your reply. Top-level agents only.
 ```
 
 promptSnippet:

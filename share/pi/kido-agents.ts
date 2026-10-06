@@ -130,6 +130,14 @@ const replyHeader = (from: string, replyTo: string): string => `${from} replied 
 const inboundHeader = (sender: string | undefined, verb: string | undefined): string =>
   `${sender && sender !== "another agent" ? `@${sender}` : "another agent"}${verb ? ` ${verb}` : ""}:`;
 
+const handleClick = (event: TuiMouseEvent, click: () => void) => {
+  if (event.button !== "left") return;
+  if (event.type === "press") return { handled: true, render: false };
+  if (event.type !== "click") return;
+  click();
+  return { handled: true, render: true };
+};
+
 type Paint = (color: "border" | "dim" | undefined, text: string) => string;
 
 const collapsedInbound = (width: number, header: string, body: string, paint: Paint): string => {
@@ -358,6 +366,7 @@ export default function (pi: ExtensionAPI) {
     wrapTextWithAnsi(theme.fg("warning", prefix) + text, Math.max(1, width - 2))
       .map((line) => truncateToWidth(theme.fg("border", "│ ") + line, width));
 
+  let expandedAsk: string | undefined;
   let asksRefresh = 0;
   const refreshAsks = async (): Promise<void> => {
     const refresh = ++asksRefresh;
@@ -367,12 +376,36 @@ export default function (pi: ExtensionAPI) {
     const res = await runKido(["get-asks", "--session", id], { timeoutMs: 3000 });
     if (!res.ok || ctx !== session || refresh !== asksRefresh) return;
     const asks: { id: string; text: string }[] = JSON.parse(res.out);
-    ctx.ui.setWidget("kido-asks", asks.length ? (_tui, theme) => ({
-      render(width: number) {
-        return asks.flatMap((a) => renderAsk(theme, `${a.id} asks you: `, a.text, width));
-      },
-      invalidate() {},
-    }) : undefined, { placement: "aboveEditor" });
+    if (!asks.some((a) => a.id === expandedAsk)) expandedAsk = undefined;
+    const ui = ctx.ui;
+    ui.setWidget("kido-asks", asks.length ? (_tui, theme) => {
+      let rows: { id: string; first: boolean }[] = [];
+      return {
+        handleMouse: (event: TuiMouseEvent) => {
+          const row = rows[event.y];
+          if (!row) return;
+          return handleClick(event, () => {
+            if (row.first && event.x >= 2 && event.x < 2 + row.id.length) {
+              ui.setEditorText(`${row.id}: ${ui.getEditorText()}`);
+            } else {
+              expandedAsk = expandedAsk === row.id ? undefined : row.id;
+            }
+          });
+        },
+        render(width: number) {
+          rows = [];
+          const regular = pi.getSettings().tuiMode === "regular";
+          return asks.flatMap((a) => {
+            const lines = regular || expandedAsk === a.id
+              ? renderAsk(theme, `${a.id}${regular ? " asks you" : ""}: `, a.text, width)
+              : [collapsedInbound(width, `${a.id}:`, a.text, (color, text) => color ? theme.fg(color === "dim" ? "warning" : color, text) : text)];
+            rows.push(...lines.map((_, i) => ({ id: a.id, first: i === 0 })));
+            return lines;
+          });
+        },
+        invalidate() {},
+      };
+    } : undefined, { placement: "aboveEditor" });
   };
 
   const NOTICE_WIDGET_KEY = "kido-notice-pending";
@@ -1294,13 +1327,7 @@ export default function (pi: ExtensionAPI) {
     const expanded = () => pi.getSettings().tuiMode === "regular" || (inboundExpanded.get(key) ?? false);
     const paint: Paint = (color, text) => (color ? theme.fg(color, text) : text);
     return {
-      handleMouse: (event: TuiMouseEvent) => {
-        if (event.button !== "left") return;
-        if (event.type === "press") return { handled: true, render: false };
-        if (event.type !== "click") return;
-        inboundExpanded.set(key, !expanded());
-        return { handled: true, render: true };
-      },
+      handleMouse: (event: TuiMouseEvent) => handleClick(event, () => inboundExpanded.set(key, !expanded())),
       render: (width: number): string[] => {
         const header = inboundHeader(sender, verb);
         if (!expanded() || width <= 2) return [collapsedInbound(width, header, body, paint)];
@@ -1479,12 +1506,12 @@ export default function (pi: ExtensionAPI) {
           name: "ask_user",
           exposure: isSubagent() ? "hidden" : "direct",
           label: "Ask User",
-          description: "Put a question needing the user's decision into kido's tracked asks and return its short id. Call this whenever your reply ends with a decision the user must make. replaces rewords an existing ask, keeping its id; an unknown id is an error. Top-level agents only.",
+          description: "Put a question needing the user's decision into kido's tracked asks and return its short id. Call this whenever your reply ends with a decision the user must make. Never announce in your reply that you created, reworded or removed an ask: the user sees asks in the UI. replaces rewords an existing ask, keeping its id; an unknown id is an error. Top-level agents only.",
           promptSnippet: "ask_user(text, replaces?) - track a question that needs the user's decision",
           promptGuidelines: [
             "Use ask_user for each decision that needs the user, one decision per ask, so each can be answered and removed on its own. Status updates, FYIs and 'should I continue?' are not asks.",
             "Write an ask to be read on its own, away from this conversation: name the project or thread, what is being decided, the options, and your recommendation if you have one.",
-            "An ask is tracked in addition to your reply, not instead of it: still put the question in your reply text.",
+            "An ask is tracked in addition to your reply, not instead of it: still put the question in your reply text, but never announce that you created, reworded or removed an ask, nor list ask ids; the user sees asks in the UI.",
             "When the user has answered an ask, or it is moot, call remove_ask. Use replaces to reword an existing ask, keeping its id.",
           ],
           parameters: Type.Object({
@@ -1515,7 +1542,7 @@ export default function (pi: ExtensionAPI) {
           name: "remove_ask",
           exposure: isSubagent() ? "hidden" : "direct",
           label: "Remove Ask",
-          description: "Remove a tracked user ask when it has been answered or is moot. Top-level agents only.",
+          description: "Remove a tracked user ask when it has been answered or is moot. Never announce the removal in your reply. Top-level agents only.",
           promptSnippet: "remove_ask(id) - remove an answered or moot user ask",
           parameters: Type.Object({ id: Type.String({ description: "The ask id to remove." }) }, { additionalProperties: false }),
           async execute(_toolCallId, params) {

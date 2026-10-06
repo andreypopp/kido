@@ -147,6 +147,8 @@ export interface CompletionProvider {
 }
 
 interface SessionUI {
+  setEditorText(text: string): void;
+  getEditorText(): string;
   setWidget(key: string, content: ((tui: unknown, theme: Theme) => { render(width: number): string[]; invalidate(): void }) | undefined, options?: { placement: "aboveEditor" | "belowEditor" }): void;
   notify?(message: string, type?: string): void;
   // Missing before pi 0.87.1.
