@@ -404,7 +404,7 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 	var body bytes.Buffer
 	body.Write(defaults)
 	fmt.Fprintf(&body, `
-set-environment -g KIDO_PROTOCOL 1.1
+set-environment -g KIDO_PROTOCOL 1.2
 set-environment -g KIDO_LINGER_SECONDS 1
 set-environment -g KIDO_STOP_ESCALATION_MS 300
 set-environment -g KIDO_STALL_THRESHOLD_MS 3000
@@ -669,6 +669,7 @@ var leadingEscRE = regexp.MustCompile(`^(?:\x1b\[[0-9;]*m)+`)
 // that turns that attribute on. Built once so it is safe to share between
 // parallel tests.
 var sgrOn = map[string]*regexp.Regexp{
+	"90": regexp.MustCompile(`\x1b\[(?:\d+;)*90(?:;\d+)*m`),
 	"7":  reverseRE,                                         // reverse video: the selected row
 	"1":  regexp.MustCompile(`\x1b\[(?:\d+;)*1(?:;\d+)*m`),  // bold: the client's session
 	"31": regexp.MustCompile(`\x1b\[(?:\d+;)*31(?:;\d+)*m`), // red: a failed command's indicator

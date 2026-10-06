@@ -21,7 +21,7 @@ let%expect_test "every pi tool has a kido subcommand of its name" =
         Printf.printf "%s: no subcommand of its name\n" tool)
     tools;
   Printf.printf "%d tools\n" (List.length tools);
-  [%expect {| 10 tools |}]
+  [%expect {| 12 tools |}]
 
 (* pi passes "--" before a model-authored target; the stdin being empty proves kido got past
    argument parsing with the target as a positional. *)

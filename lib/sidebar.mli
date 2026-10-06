@@ -33,6 +33,7 @@ type snapshot = {
   err : string option;
   probes : probe String_map.t;
   lingering : lingering String_map.t;
+  asks : (Ask.t * string option) list;
 }
 
 val empty : snapshot
@@ -61,6 +62,7 @@ type indicator =
   | Done
   | Failed
   | Stalled
+  | Asking
   | Gone of Subrun.result option
 
 type caption = Text of span list | Elapsed of float

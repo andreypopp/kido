@@ -529,6 +529,30 @@ keystroke never waits on `kido tool list_runs`: it is served the last list,
 and a refresh runs behind it once that is older than
 `KIDO_AGENT_LIST_TTL_MS` (1s). Nothing is fetched until the first `@`.
 
+## User asks
+
+Top-level pi agents record questions needing the user's decision with
+`ask_user` and remove answered or moot questions with `remove_ask`.
+Kido owns `<state>/asks/<id>.json`: each ask holds its id, session,
+pi session file path, cwd, display name, text and creation time. A fresh id is claimed with
+an atomic link. `replaces` rewords an existing ask, keeping its id, by
+an atomic temp-file rename; its session, cwd, name and time are refreshed.
+Asks persist after the asking session ends. Ended means no live state
+record holds that session, derived from the full registry, never stored.
+`get-asks` returns the asks, optionally filtered by session.
+
+Pi shows this session's open asks in full above the editor, refreshing
+on startup, reload and tool actions. Changes made elsewhere invalidate a
+live session's widget through an `asks` inbox envelope, without waking
+the model or adding transcript entries. The sidebar's asking indicator
+outranks waiting. `a` toggles the all-asks list, including dimmed ended
+sessions; `d` removes the selected ask and Escape returns to windows.
+Enter checks the full live registry afresh and jumps to a live session's
+pane. For an ended session it opens a window in the ask's cwd running
+`pi --session <session-file>` through the same pi launch path as a spawn,
+without a parent edge or run record. A missing cwd or session file is an
+error. The resumed session's widget reads its asks from the same store.
+
 ## Ask and reply
 
 An ask blocks the calling tool until the answer arrives on the asker's
@@ -1484,9 +1508,11 @@ imports runtime values from the other.
 
 **There is no load-order assumption.** Neither slot is read at factory
 time: each half writes its own slot and reads the other only from inside
-an event, a tool call or a hook. Tools register unconditionally at
-factory time and no-op at call time until a session has resolved kido
-and a session id; resource lookup belongs in `session_start`.
+an event, a tool call or a hook. Agent tools register at factory time and no-op at call time until a
+session has resolved kido and a session id; resource lookup belongs in
+`session_start`. The user-ask tools register after that resolution so
+only a top-level session gets them. A session switching into a subagent
+identity hides any user-ask tools it already registered.
 
 **The hooks exist because ordering within one lifecycle event is
 load-bearing**. The status half calls the agent half's hooks at exact

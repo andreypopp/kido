@@ -183,6 +183,59 @@ let set_status =
            | Ok () -> 0
            | Error holder -> failwith (State.held_message id holder))
 
+let ask_user =
+  cmd ~group:"tool " "ask_user" "Record a question for the user, read from stdin."
+  @@ let+ replaces =
+       Arg.(
+         value
+         & opt (some string) None
+         & info [ "replaces" ] ~docv:"ID" ~doc:"Reword an existing ask, keeping its id.")
+     and+ session = str "session" "ID" "The asking agent's session."
+     and+ session_file = str "session-file" "PATH" "The pi session file to revive." in
+     fun () ->
+       let dir = state_dir () in
+       let id, s, p =
+         ok (Ask.caller ~dir ~self:(Tmux.Exec.getenv "TMUX_PANE") ~session)
+         |> Option.to_result "no agent session has reported this pane"
+         |> ok
+       in
+       let replaces = Option.map (fun id -> ok (Ask.parse_id id)) replaces in
+       let name = if String.is_empty s.title then List_runs.agent_title p.title else s.title in
+       print
+         (Result.map Ask.string_of_id
+            (Ask.record ~dir ~self:session ~replaces ~session:id
+               ~session_file:
+                 (if String.is_empty session_file then "" else Tmux.Exec.abs session_file)
+               ~cwd:p.current_path ~name ~text:(stdin ()) ~now:(Timestamp.now ())))
+
+let remove_ask =
+  cmd ~group:"tool " "remove_ask" "Remove an open user ask."
+  @@ let+ id = arg "ID" and+ session = str "session" "ID" "The calling agent's session." in
+     fun () ->
+       let dir = state_dir () in
+       ignore (ok (Ask.caller ~dir ~self:(Tmux.Exec.getenv "TMUX_PANE") ~session));
+       ok (Ask.remove ~dir ~self:session (ok (Ask.parse_id id)));
+       0
+
+let get_asks =
+  cmd "get-asks" "Print open user asks as JSON."
+  @@ let+ session =
+       Arg.(
+         value
+         & opt (some string) None
+         & info [ "session" ] ~docv:"ID" ~doc:"Only asks from this session.")
+     in
+     fun () ->
+       let dir = state_dir () in
+       let live = State.load_live ~dir in
+       let asks =
+         Ask.list ~dir
+         |> List.filter (fun (a : Ask.t) ->
+             Option.map_or ~default:true (String.equal a.session) session)
+       in
+       print_endline (Yojson.Safe.to_string (`List (List.map (Ask.to_json ~live) asks)));
+       0
+
 let get_agent =
   cmd "get-agent" "Print an agent session's liveness as JSON."
   @@ let+ session = Arg.(value & pos 0 string "" & info [] ~docv:"SESSION")
@@ -775,6 +828,8 @@ let tool =
     [
       message_agent;
       ask_agent;
+      ask_user;
+      remove_ask;
       notify_parent;
       steer_subagent;
       interrupt_subagent;
@@ -801,6 +856,7 @@ let () =
         run_outcome;
         async_run;
         get_agent;
+        get_asks;
         snapshot;
         prompt;
         get_window;

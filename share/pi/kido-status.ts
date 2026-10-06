@@ -33,7 +33,7 @@ export type Sender =
   | { kind: "human"; pane: string };
 
 export type Envelope = { id: string; from: Sender; text: string } & (
-  | { kind: "message" | "ask" | "notice" | "steer" | "interrupt" | "stop" }
+  | { kind: "message" | "ask" | "notice" | "steer" | "interrupt" | "stop" | "asks" }
   | { kind: "reply"; replyTo: string }
   | { kind: "stream"; run: string; output: string }
   | { kind: "unrecognised"; claimed: string }
@@ -72,6 +72,7 @@ export function parseEnvelope(text: string): Envelope | null {
     case "steer":
     case "interrupt":
     case "stop":
+    case "asks":
       return { ...base, kind };
     case "reply":
       return { ...base, kind, replyTo: str(obj.replyTo) };
@@ -146,7 +147,7 @@ export interface CompletionProvider {
 }
 
 interface SessionUI {
-  setWidget(key: string, content: ((tui: unknown, theme: Theme) => { render(width: number): string[]; invalidate(): void }) | undefined): void;
+  setWidget(key: string, content: ((tui: unknown, theme: Theme) => { render(width: number): string[]; invalidate(): void }) | undefined, options?: { placement: "aboveEditor" | "belowEditor" }): void;
   notify?(message: string, type?: string): void;
   // Missing before pi 0.87.1.
   addAutocompleteProvider?(factory: (current: CompletionProvider) => CompletionProvider): void;
@@ -290,7 +291,7 @@ export default function (pi: ExtensionAPI) {
     }
     const agents = seam().agents;
     if (agents) return agents.handleEnvelope(env);
-    if (env.text) deliver(env.text);
+    if (env.kind !== "asks" && env.text) deliver(env.text);
     return "ok";
   };
 

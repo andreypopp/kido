@@ -34,6 +34,7 @@ type snapshot = {
   err : string option;
   probes : probe String_map.t;
   lingering : lingering String_map.t;
+  asks : (Ask.t * string option) list;
 }
 
 let empty =
@@ -49,6 +50,7 @@ let empty =
     err = None;
     probes = String_map.empty;
     lingering = String_map.empty;
+    asks = [];
   }
 
 let shell_run_delay = 0.2
@@ -165,6 +167,14 @@ let take ~opts conn prev client =
         err = None;
         probes;
         lingering = lingering_subagents ~dir:opts.dir panes prev.lingering;
+        asks =
+          List.map
+            (fun (a : Ask.t) ->
+              ( a,
+                Option.map
+                  (fun (s : State.session) -> s.pane)
+                  (List.assoc_opt ~eq:String.equal a.session live) ))
+            (Ask.list ~dir:opts.dir);
       }
 
 let same a b =
@@ -187,6 +197,7 @@ let same a b =
   && Procs.Int_map.equal Stdlib.( = ) a.ssh b.ssh
   && Procs.Int_set.equal a.pi b.pi
   && String_map.equal Stdlib.( = ) a.lingering b.lingering
+  && List.equal Stdlib.( = ) a.asks b.asks
 
 type reading = { wall : Timestamp.t; mono : Mtime.t }
 
@@ -209,6 +220,7 @@ type indicator =
   | Done
   | Failed
   | Stalled
+  | Asking
   | Gone of Subrun.result option
 
 type caption = Text of span list | Elapsed of float
@@ -363,8 +375,14 @@ let done_ m pane =
   | Some (_, { status = Idle; ended = Some ended; _ }) -> Float.(ended > seen_at m pane)
   | _ -> false
 
+let asking m pane =
+  match String_map.find_opt pane m.snap.states with
+  | None -> false
+  | Some (id, _) -> List.exists (fun ((a : Ask.t), _) -> String.equal a.session id) m.snap.asks
+
 let attention m pane =
-  (match String_map.find_opt pane m.snap.states with
+  asking m pane
+  || (match String_map.find_opt pane m.snap.states with
     | Some (_, { status = Waiting; _ }) -> true
     | _ -> false)
   || done_ m pane
@@ -466,7 +484,10 @@ let pane_label m (p : P.t) =
               Elapsed started
           | _ -> Text []
       in
-      row Agent (Some (if done_ m p.pane_id then Done else ind)) [ plain title ] caption
+      row Agent
+        (Some (if asking m p.pane_id then Asking else if done_ m p.pane_id then Done else ind))
+        [ plain title ]
+        caption
 
 type placement = { panes : P.t list; anchor : string option }
 
@@ -697,6 +718,7 @@ let kind = function
   | Done -> "done"
   | Failed -> "failed"
   | Stalled -> "stalled"
+  | Asking -> "asking"
   | Gone _ -> "gone"
 
 let indicator_json = function
@@ -711,7 +733,7 @@ let indicator_json = function
               ( "outcome",
                 Option.map_or ~default:`Null (fun o -> `String (Subrun.string_of_result o)) o );
             ]
-        | Status _ | Unknown | Done | Failed | Stalled -> []))
+        | Status _ | Unknown | Done | Failed | Stalled | Asking -> []))
 
 let to_json m =
   let panes =

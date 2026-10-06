@@ -220,6 +220,49 @@ parameters:
 
 - `summary` (string, required): A short summary of the finished work to send to your parent. Your parent reads the first 4000 bytes; anything longer is kept in full in this run's directory and the notice says where, so nothing is lost.
 
+### ask_user
+
+description:
+
+```
+Put a question needing the user's decision into kido's tracked asks and return its short id. replaces rewords an existing ask, keeping its id; an unknown id is an error. Top-level agents only.
+```
+
+promptSnippet:
+
+```
+ask_user(text, replaces?) - track a question that needs the user's decision
+```
+
+promptGuidelines (merged into the system prompt's rules while the tool is registered):
+
+```
+Use ask_user for anything that needs the user's decision. When the user has answered an ask, or it is moot, call remove_ask. Use replaces to reword an existing ask, keeping its id.
+```
+
+parameters:
+
+- `text` (string, required): The question needing the user's decision.
+- `replaces` (string): An existing ask id to reword, keeping its id.
+
+### remove_ask
+
+description:
+
+```
+Remove a tracked user ask when it has been answered or is moot. Top-level agents only.
+```
+
+promptSnippet:
+
+```
+remove_ask(id) - remove an answered or moot user ask
+```
+
+parameters:
+
+- `id` (string, required): The ask id to remove.
+
 ## Messages the extension injects at runtime
 
 Built inside share/pi/kido-agents.ts's closures; quoted here with their source line. `<from>` is the sender's name, else its session id, else its pane, else "another agent".

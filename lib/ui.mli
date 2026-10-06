@@ -6,8 +6,11 @@ type line =
   | Header of { name : string; current : bool }
   | Row of string * Sidebar.row
   | Message of string
+  | Ask of Ask.t * string option
 
 val lines : Sidebar.model -> line array
+
+type mode = Windows | Asks
 
 type model = {
   side : Sidebar.model;
@@ -20,6 +23,7 @@ type model = {
   height : int;
   status : string;
   g_pend : bool;
+  mode : mode;
 }
 
 val make : ?conn:Tmux.Conn.t -> standalone:bool -> Sidebar.model -> model

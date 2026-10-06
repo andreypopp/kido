@@ -38,10 +38,35 @@ const argv = process.argv.slice(2);
 const args = argv[0] === "tool" ? argv.slice(1) : argv;
 if ([
   "list_runs", "message_agent", "ask_agent", "notify_parent", "steer_subagent",
-  "interrupt_subagent", "stop_run", "set_status", "spawn_subagent", "async_bash",
+  "interrupt_subagent", "stop_run", "set_status", "spawn_subagent", "async_bash", "ask_user", "remove_ask",
 ].includes(args[0]) && argv[0] !== "tool") process.exit(1);
 if (args[0] === "get-agent" && args.includes("--context")) args[0] = "list_runs";
 switch (args[0]) {
+  case "get-asks":
+  case "ask_user":
+  case "remove_ask": {
+    const file = path.join(process.env.KIDO_FAKE_STATE_DIR, "asks.json");
+    let asks = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : [];
+    const session = args[args.indexOf("--session") + 1];
+    if (args[0] === "get-asks") {
+      const snapshot = JSON.stringify(asks.filter((a) => a.session === session));
+      if (fs.existsSync(path.dirname(file))) fs.appendFileSync(file + ".read", snapshot + "\\n");
+      const delay = Number(process.env.KIDO_FAKE_ASKS_DELAY_MS || 0);
+      setTimeout(() => { process.stdout.write(snapshot); process.exit(0); }, delay);
+      break;
+    } else if (args[0] === "ask_user") {
+      const id = args.includes("--replaces") ? args[args.indexOf("--replaces") + 1] : "A7";
+      asks = asks.filter((a) => a.id !== id);
+      asks.push({ id, session, sessionFile: args[args.indexOf("--session-file") + 1], text: readStdin() });
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(asks));
+      process.stdout.write(id);
+    } else {
+      asks = asks.filter((a) => a.id !== args[args.length - 1]);
+      fs.writeFileSync(file, JSON.stringify(asks));
+    }
+    process.exit(0);
+  }
   case "get-inbox": {
     if (process.env.KIDO_FAKE_INBOX_FAIL === "1") process.exit(1);
     const dir = process.env.KIDO_FAKE_INBOX_DIR;
@@ -491,6 +516,7 @@ function createFakePi() {
   let onUserMessage: (() => unknown) | null = null;
   const pi = {
     getSettings: () => ({ tuiMode: "regular" }),
+    getAllTools: () => [...tools.values()],
     registerTool(tool: any) {
       tools.set(tool.name, tool);
     },
@@ -557,7 +583,7 @@ const fakeTheme = {
 
 function fakeCtx(sessionId = "self-session", ui?: unknown, idle: () => boolean = () => true) {
   return {
-    sessionManager: { getSessionId: () => sessionId, getSessionName: () => undefined },
+    sessionManager: { getSessionId: () => sessionId, getSessionName: () => undefined, getSessionFile: () => "/tmp/" + sessionId + ".json" },
     model: undefined,
     isIdle: idle,
     hasPendingMessages: () => false,
@@ -1161,6 +1187,143 @@ test("the registered tools are exactly the shared list both suites check subcomm
 
 // Driven from the same fixture lib/test/test_msg.ml's own discriminator table test
 // drives, so the two suites cannot drift apart by someone editing only one list.
+test("user asks register only for top-level sessions, including inherited child environments", async () => {
+  const fx = makeFixture();
+  try {
+    await asSubagent(DEFAULT_SESSION, async () => {
+      const child = await startSession(fx, { factory: await freshExtensions() });
+      assert.equal(child.tools.has("ask_user"), false);
+      assert.equal(child.tools.has("remove_ask"), false);
+      const nested = await startSession(fx, { factory: await freshExtensions(), sessionId: "nested-root" });
+      assert.equal(nested.tools.has("ask_user"), true);
+      assert.equal(nested.tools.has("remove_ask"), true);
+    });
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("user ask widgets refresh from kido on actions, session startup and reload", async () => {
+  const fx = makeFixture();
+  try {
+    mkdirSync(dirname(fx.runsDir), { recursive: true });
+    writeFileSync(join(dirname(fx.runsDir), "asks.json"), JSON.stringify([{ id: "A8", session: "other", text: "Other session's question" }]));
+    const s = await startSession(fx, { factory: await freshExtensions() });
+    const render = (host: typeof s) => host.widgets.get("kido-asks")?.content?.(null, fakeTheme).render(35).join("\n") ?? "";
+    assert.equal(render(s), "");
+    const ask = s.tools.get("ask_user");
+    const result = await ask.execute("ask1", { text: "Ship now?\nOr wait for review?" }, undefined, undefined, fakeCtx());
+    assert.equal(result.content[0].text, "A7");
+    assert.match(render(s), /A7 asks you: Ship now\?/);
+    assert.match(render(s), /Or wait for review\?/);
+    assert.deepEqual(s.widgets.get("kido-asks")?.options, { placement: "aboveEditor" });
+    for (const width of [0, 1, 2, 35]) {
+      const lines = s.widgets.get("kido-asks")!.content!(null, fakeTheme).render(width);
+      assert.ok(lines.every((line) => visibleWidth(line) <= width), `ask widget overflowed width ${width}`);
+    }
+    assert.match(ask.renderCall({ text: "Ship now?" }, fakeTheme).render(80).join("\n"), /│ asks you: Ship now\?/);
+    await ask.execute("ask2", { text: "Wait until Monday?", replaces: "A7" }, undefined, undefined, fakeCtx());
+    assert.match(render(s), /Monday/);
+    assert.doesNotMatch(render(s), /Ship/);
+    await s.emit("session_shutdown", { reason: "reload" });
+    const reloaded = await startSession(fx, { factory: await freshExtensions() });
+    assert.match(render(reloaded), /A7 asks you: Wait until/);
+    const file = join(dirname(fx.runsDir), "asks.json");
+    const persisted = JSON.parse(readFileSync(file, "utf8"));
+    assert.equal(persisted.find((a: any) => a.id === "A7").sessionFile, "/tmp/self-session.json");
+    const delivered = reloaded.delivered.length;
+    const messages = reloaded.messages.length;
+    writeFileSync(file, JSON.stringify(persisted.map((a: any) => a.id === "A7" ? { ...a, text: "Changed by the sidebar" } : a)));
+    assert.equal(await sendToInbox(reloaded.inboxPath, envelope("asks", "")), "ok");
+    assert.match(render(reloaded), /Changed by the\n│ sidebar/);
+    assert.equal(reloaded.delivered.length, delivered);
+    assert.equal(reloaded.messages.length, messages);
+    writeFileSync(file, JSON.stringify(persisted.filter((a: any) => a.id !== "A7")));
+    assert.equal(await sendToInbox(reloaded.inboxPath, envelope("asks", "")), "ok");
+    assert.equal(render(reloaded), "");
+    await reloaded.tools.get("ask_user").execute("ask3", { text: "Another question" }, undefined, undefined, fakeCtx());
+    await reloaded.tools.get("remove_ask").execute("remove", { id: "A7" });
+    assert.equal(render(reloaded), "");
+    const other = await startSession(fx, { factory: await freshExtensions(), sessionId: "other" });
+    assert.match(render(other), /Other session's\n│ question/);
+    assert.doesNotMatch(render(other), /A7/);
+    assert.deepEqual(s.notifications, []);
+    assert.deepEqual(reloaded.notifications, []);
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("user ask widgets discard an old instance's pending refresh across reload", async () => {
+  const fx = makeFixture();
+  try {
+    mkdirSync(dirname(fx.runsDir), { recursive: true });
+    const old = await startSession(fx, { factory: await freshExtensions() });
+    const file = join(dirname(fx.runsDir), "asks.json");
+    await withEnv({ KIDO_FAKE_ASKS_DELAY_MS: "600" }, async () => {
+      writeFileSync(file, JSON.stringify([{ id: "A7", session: DEFAULT_SESSION, text: "Old question" }]));
+      const pending = sendToInbox(old.inboxPath, envelope("asks", ""));
+      await pollUntil(() => readFileSync(file + ".read", "utf8").includes("Old question"), 2000, "the old instance's snapshot to be read");
+      await old.emit("session_shutdown", { reason: "reload" });
+      process.env.KIDO_FAKE_ASKS_DELAY_MS = "0";
+      writeFileSync(file, JSON.stringify([{ id: "A7", session: DEFAULT_SESSION, text: "New question" }]));
+      await startSessionCore(fx, await freshExtensions(), () => fakeCtx(DEFAULT_SESSION, old.ui));
+      assert.match(old.widgets.get("kido-asks")?.content?.(null, fakeTheme).render(80).join("\n") ?? "", /New question/);
+      assert.equal(await pending, "ok");
+      assert.match(old.widgets.get("kido-asks")?.content?.(null, fakeTheme).render(80).join("\n") ?? "", /New question/);
+    });
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("user ask tools follow root child root identity changes in one runtime", async () => {
+  const fx = makeFixture();
+  try {
+    await asSubagent(DEFAULT_SESSION, async () => {
+      const s = await startSession(fx, { factory: await freshExtensions(), sessionId: "nested-root" });
+      for (const name of ["ask_user", "remove_ask"]) assert.equal(s.tools.get(name).exposure, "direct");
+      const rootAsk = s.tools.get("ask_user");
+      const rootRemove = s.tools.get("remove_ask");
+      await s.emit("session_start", {}, fakeCtx(DEFAULT_SESSION, s.ui));
+      for (const name of ["ask_user", "remove_ask"]) assert.equal(s.tools.get(name).exposure, "hidden");
+      await assert.rejects(rootAsk.execute("ask", { text: "Question" }, undefined, undefined, fakeCtx()), /top-level agents only/);
+      await assert.rejects(rootRemove.execute("remove", { id: "A7" }), /top-level agents only/);
+      await s.emit("session_start", {}, fakeCtx("nested-root", s.ui));
+      for (const name of ["ask_user", "remove_ask"]) assert.equal(s.tools.get(name).exposure, "direct");
+      const result = await s.tools.get("ask_user").execute("ask", { text: "Root question" }, undefined, undefined, fakeCtx("nested-root"));
+      assert.equal(result.content[0].text, "A7");
+      await s.tools.get("remove_ask").execute("remove", { id: "A7" });
+    });
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("user ask widget keeps the latest refresh when inbox invalidations overlap", async () => {
+  const fx = makeFixture();
+  try {
+    mkdirSync(dirname(fx.runsDir), { recursive: true });
+    const s = await startSession(fx, { factory: await freshExtensions() });
+    const file = join(dirname(fx.runsDir), "asks.json");
+    await withEnv({ KIDO_FAKE_ASKS_DELAY_MS: "300" }, async () => {
+      writeFileSync(file, JSON.stringify([{ id: "A7", session: DEFAULT_SESSION, text: "Old question" }]));
+      const first = sendToInbox(s.inboxPath, envelope("asks", ""));
+      await pollUntil(() => readFileSync(file + ".read", "utf8").includes("Old question"), 2000, "the older snapshot to be read");
+      process.env.KIDO_FAKE_ASKS_DELAY_MS = "0";
+      writeFileSync(file, JSON.stringify([{ id: "A7", session: DEFAULT_SESSION, text: "New question" }]));
+      assert.equal(await sendToInbox(s.inboxPath, envelope("asks", "")), "ok");
+      assert.match(s.widgets.get("kido-asks")?.content?.(null, fakeTheme).render(80).join("\n") ?? "", /New question/);
+      assert.equal(await first, "ok");
+      assert.match(s.widgets.get("kido-asks")?.content?.(null, fakeTheme).render(80).join("\n") ?? "", /New question/);
+    });
+    assert.equal(s.messages.length, 0);
+    assert.equal(s.delivered.length, 0);
+  } finally {
+    await fx.restore();
+  }
+});
+
 test("parseEnvelope agrees with Msg.parse's v0/v1 discriminator table", () => {
   const fixturePath = join(dirname(fileURLToPath(import.meta.url)), "testdata", "discriminator.json");
   const cases: { name: string; raw: string; ok: boolean }[] = JSON.parse(readFileSync(fixturePath, "utf8"));

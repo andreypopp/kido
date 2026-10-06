@@ -312,7 +312,7 @@ let window_exists window_id =
 
 type window = { window_id : string; pane_id : string; pane_pid : int }
 
-let new_window ~session ~name ~cwd ~env command =
+let new_window ?(remain_on_exit = true) ~session ~name ~cwd ~env command =
   let open Result.Infix in
   let* out =
     exec
@@ -342,9 +342,11 @@ let new_window ~session ~name ~cwd ~env command =
   in
   (* A command that exits fast enough always beats remain-on-exit; losing that
      race is not a failure to create the window. *)
-  match exec [ "set-option"; "-p"; "-t"; w.pane_id; "remain-on-exit"; "on" ] with
-  | Error e when window_exists w.window_id -> Error e
-  | Ok _ | Error _ -> Ok w
+  if not remain_on_exit then Ok w
+  else
+    match exec [ "set-option"; "-p"; "-t"; w.pane_id; "remain-on-exit"; "on" ] with
+    | Error e when window_exists w.window_id -> Error e
+    | Ok _ | Error _ -> Ok w
 
 let kill_window ?socket window_id = run ?socket [ "kill-window"; "-t"; window_id ]
 let kill_pane ?socket pane_id = run ?socket [ "kill-pane"; "-t"; pane_id ]

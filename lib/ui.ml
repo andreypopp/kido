@@ -8,6 +8,7 @@ type line =
   | Header of { name : string; current : bool }
   | Row of string * S.row
   | Message of string
+  | Ask of Ask.t * string option
 
 let lines (side : S.model) =
   let glyph i n = if n = 1 then "╶" else if i = 0 then "┌" else if i = n - 1 then "└" else "├" in
@@ -49,6 +50,8 @@ let lines (side : S.model) =
         side.sessions;
       Array.of_list (List.rev !out)
 
+type mode = Windows | Asks
+
 type model = {
   side : S.model;
   lines : line array;
@@ -60,6 +63,7 @@ type model = {
   height : int;
   status : string;
   g_pend : bool;
+  mode : mode;
 }
 
 let make ?conn ~standalone side =
@@ -74,6 +78,7 @@ let make ?conn ~standalone side =
     height = 0;
     status = "";
     g_pend = false;
+    mode = Windows;
   }
 
 (* Every style names its foreground: Mosaic's grid paints an explicit white on any cell left
@@ -103,6 +108,7 @@ let glyph : S.indicator -> span option = function
   | Done -> Some (span `Done "✓")
   | Failed -> Some (span `Err "◼")
   | Stalled -> Some (span `Stalled "!")
+  | Asking -> Some (span `Waiting "?")
   | Gone (Some Completed) -> Some (span `Dim "✓")
   | Gone _ -> Some (span `Dim "×")
 
@@ -115,6 +121,11 @@ let elapsed secs =
 let parts ~now : line -> span list * span list * span list = function
   | Header h -> ([], [ span (if h.current then `Current else `Plain) h.name ], [])
   | Message e -> ([], [ span `Err e ], [])
+  | Ask (a, pane) ->
+      let role = if Option.is_none pane then `Dim else `Plain in
+      ( [],
+        [ span role (a.name ^ " " ^ Ask.string_of_id a.id) ],
+        [ span role (" " ^ List.hd (String.split_on_char '\n' a.text)) ] )
   | Row (prefix, r) -> (
       let tree = if String.is_empty prefix then [] else [ span `Dim prefix ] in
       ( (tree
@@ -133,6 +144,7 @@ let row_text ~now line = String.concat "" (List.map (fun s -> s.text) (spans ~no
 
 let pane_of : line -> string option = function
   | Row (_, r) -> Some r.pane
+  | Ask (_, pane) -> pane
   | Header _ | Message _ -> None
 
 let index_of m pane =
@@ -159,7 +171,8 @@ let ensure_visible m =
 let move m delta =
   let rec go i =
     if i < 0 || i >= Array.length m.lines then m
-    else if Option.is_some (pane_of m.lines.(i)) then ensure_visible { m with cursor = i }
+    else if match m.lines.(i) with Row _ | Ask _ -> true | _ -> false then
+      ensure_visible { m with cursor = i }
     else go (i + delta)
   in
   go (m.cursor + delta)
@@ -168,13 +181,30 @@ let focus m pane =
   match index_of m pane with Some cursor -> ensure_visible { m with cursor } | None -> m
 
 let redraw m side =
-  let prev = selected m in
-  let m = { m with side; lines = lines side } in
+  let key = function Ask (a, _) -> Some (Ask.string_of_id a.id) | line -> pane_of line in
+  let prev = Option.flat_map key (CCArray.get_safe m.lines m.cursor) in
+  let drawn =
+    match m.mode with
+    | Windows -> lines side
+    | Asks ->
+        Array.of_list
+          (Header { name = "asks"; current = true }
+          :: List.map (fun (a, p) -> Ask (a, p)) side.snap.asks)
+  in
+  let m = { m with side; lines = drawn } in
   match side.snap.err with
   | Some _ -> { m with cursor = -1 }
   | None ->
       let m =
-        match Option.flat_map (index_of m) prev with
+        match
+          Option.flat_map
+            (fun prev ->
+              Option.map fst
+                (CCArray.find_idx
+                   (fun line -> Option.equal String.equal (key line) (Some prev))
+                   m.lines))
+            prev
+        with
         | Some cursor -> { m with cursor }
         | None -> move { m with cursor = -1 } 1
       in
@@ -205,9 +235,18 @@ type msg =
   | Resize of int * int
 
 let jump m =
-  match selected m with
-  | None -> (m, Mosaic.Cmd.none)
-  | Some pane -> (
+  let target =
+    match CCArray.get_safe m.lines m.cursor with
+    | Some (Ask (a, _)) -> (
+        match m.side.client with
+        | None -> Error "no current tmux session"
+        | Some c -> Result.map Option.some (Ask.target ~dir:m.side.opts.dir ~session:c.session a))
+    | _ -> Ok (selected m)
+  in
+  match target with
+  | Error e -> ({ m with status = e }, Mosaic.Cmd.none)
+  | Ok None -> (m, Mosaic.Cmd.none)
+  | Ok (Some pane) -> (
       match Tmux.Exec.jump ~client:m.side.opts.client pane with
       | Error e -> ({ m with status = e }, Mosaic.Cmd.none)
       | Ok () ->
@@ -245,9 +284,14 @@ let key m (k : Mosaic.Event.key) =
   let top m = move { m with cursor = -1 } 1
   and bottom m = move { m with cursor = Array.length m.lines } (-1) in
   let leave m =
-    match m.side.search with
-    | Some _ -> none (set_search m None)
-    | None -> if m.standalone then (m, Mosaic.Cmd.quit) else none (release_focus m)
+    match (m.mode, m.side.search) with
+    | Asks, _ when not m.standalone ->
+        none (redraw { m with mode = Windows; cursor = -1; top = 0 } m.side)
+    | Asks, _ -> (m, Mosaic.Cmd.quit)
+    | Windows, search -> (
+        match search with
+        | Some _ -> none (set_search m None)
+        | None -> if m.standalone then (m, Mosaic.Cmd.quit) else none (release_focus m))
   in
   let cycle next =
     match
@@ -281,7 +325,25 @@ let key m (k : Mosaic.Event.key) =
                 if i > 0 && Char.code filter.[i] land 0xc0 = 0x80 then last (i - 1) else i
               in
               none (set_search m (Some (String.sub filter 0 (last (String.length filter - 1))))))
-      | _ when is '/' -> none (set_search m (Some ""))
+      | _ when is 'a' && Option.is_none m.side.search ->
+          none
+            (redraw
+               {
+                 m with
+                 mode = (match m.mode with Windows -> Asks | Asks -> Windows);
+                 cursor = -1;
+                 top = 0;
+               }
+               m.side)
+      | _ when is 'd' && match m.mode with Asks -> true | Windows -> false -> (
+          match CCArray.get_safe m.lines m.cursor with
+          | Some (Ask (a, _)) -> (
+              match Ask.remove ~dir:m.side.opts.dir ~self:"" a.id with
+              | Ok () -> none m
+              | Error e -> none { m with status = e })
+          | _ -> none m)
+      | _ when is '/' && match m.mode with Windows -> true | Asks -> false ->
+          none (set_search m (Some ""))
       | _ when is 'n' -> none (next_attention m 1)
       | _ when is 'N' -> none (next_attention m (-1))
       | _ when is 'g' && not pend -> none { m with g_pend = true }
@@ -297,7 +359,7 @@ let next_wait m =
     (fun wait i ->
       match m.lines.(i) with
       | Row (_, { caption = Elapsed s; _ }) -> Float.min wait (1. -. Float.rem (now -. s) 1.)
-      | Row _ | Header _ | Message _ -> wait)
+      | Row _ | Header _ | Message _ | Ask _ -> wait)
     m.side.opts.interval (shown m)
 
 let tick ?wait m =
@@ -322,7 +384,7 @@ let update msg m =
         if
           ((not (String.equal snap.active was.active)) || (focused was && not (focused snap)))
           && not (String.is_empty snap.active)
-        then focus m snap.active
+        then match m.mode with Windows -> focus m snap.active | Asks -> m
         else m
       in
       (m, tick ~wait:(next_wait m) m)
@@ -330,9 +392,9 @@ let update msg m =
       match Mosaic.Event.Mouse.kind ev with
       | Down { button = Left } -> (
           let i = m.top + Mosaic.Event.Mouse.y ev in
-          match Option.flat_map pane_of (CCArray.get_safe m.lines i) with
-          | Some _ -> jump { m with cursor = i }
-          | None -> (m, Mosaic.Cmd.none))
+          match CCArray.get_safe m.lines i with
+          | Some (Row _ | Ask _) -> jump { m with cursor = i }
+          | _ -> (m, Mosaic.Cmd.none))
       | Scroll { direction = Scroll_up; _ } ->
           (clamp_top { m with top = m.top - 3 }, Mosaic.Cmd.none)
       | Scroll { direction = Scroll_down; _ } ->

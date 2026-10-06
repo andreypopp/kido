@@ -50,6 +50,7 @@ val window_exists : string -> bool
 type window = { window_id : string; pane_id : string; pane_pid : int }
 
 val new_window :
+  ?remain_on_exit:bool ->
   session:string ->
   name:string ->
   cwd:string ->

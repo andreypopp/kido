@@ -354,6 +354,24 @@ export default function (pi: ExtensionAPI) {
   // removed - the widget is a stand-in for the wait, not a second copy.
   const pendingNotices = new Map<string, { from: string; text: string }>();
 
+  let asksRefresh = 0;
+  const refreshAsks = async (): Promise<void> => {
+    const refresh = ++asksRefresh;
+    const ctx = session;
+    const id = seam().host?.sessionId();
+    if (!ctx?.ui || !id || isSubagent()) return;
+    const res = await runKido(["get-asks", "--session", id], { timeoutMs: 3000 });
+    if (!res.ok || ctx !== session || refresh !== asksRefresh) return;
+    const asks: { id: string; text: string }[] = JSON.parse(res.out);
+    ctx.ui.setWidget("kido-asks", asks.length ? (_tui, theme) => ({
+      render(width: number) {
+        return asks.flatMap((a) => wrapTextWithAnsi(theme.fg("warning", `${a.id} asks you: `) + a.text, Math.max(1, width - 2))
+          .map((line) => truncateToWidth(theme.fg("border", "│ ") + line, width)));
+      },
+      invalidate() {},
+    }) : undefined, { placement: "aboveEditor" });
+  };
+
   const NOTICE_WIDGET_KEY = "kido-notice-pending";
 
   const renderNoticeWidget = (): void => {
@@ -626,6 +644,9 @@ export default function (pi: ExtensionAPI) {
 
   const handleEnvelope = async (env: Envelope): Promise<"ok" | "refused"> => {
     switch (env.kind) {
+      case "asks":
+        await refreshAsks();
+        return "ok";
       case "message":
         await handleInboundMessage(env);
         return "ok";
@@ -1444,11 +1465,63 @@ export default function (pi: ExtensionAPI) {
       }));
     },
     async sessionStarted() {
+      if (!isSubagent() || pi.getAllTools().some((t) => t.name === "ask_user")) {
+        pi.registerTool({
+          name: "ask_user",
+          exposure: isSubagent() ? "hidden" : "direct",
+          label: "Ask User",
+          description: "Put a question needing the user's decision into kido's tracked asks and return its short id. replaces rewords an existing ask, keeping its id; an unknown id is an error. Top-level agents only.",
+          promptSnippet: "ask_user(text, replaces?) - track a question that needs the user's decision",
+          promptGuidelines: ["Use ask_user for anything that needs the user's decision. When the user has answered an ask, or it is moot, call remove_ask. Use replaces to reword an existing ask, keeping its id."],
+          parameters: Type.Object({
+            text: Type.String({ description: "The question needing the user's decision." }),
+            replaces: Type.Optional(Type.String({ description: "An existing ask id to reword, keeping its id." })),
+          }, { additionalProperties: false }),
+          renderCall(params, theme) {
+            return {
+              render(width) {
+                return wrapTextWithAnsi(theme.fg("warning", `asks you${params.replaces ? ` (${params.replaces})` : ""}: `) + (params.text ?? ""), Math.max(1, width - 2))
+                  .map((line) => truncateToWidth(theme.fg("border", "│ ") + line, width));
+              },
+              invalidate() {},
+            };
+          },
+          async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+            if (isSubagent()) throw new Error("user asks are for top-level agents only");
+            const file = ctx.sessionManager.getSessionFile();
+            if (!file) throw new Error("this pi session has no session file");
+            const args = ["tool", "ask_user", "--session", seam().host?.sessionId() ?? "", "--session-file", file];
+            if (params.replaces) args.push("--replaces", params.replaces);
+            const res = await runKido(args, { input: params.text, timeoutMs: 3000 });
+            if (!res.ok) throw new Error(res.error);
+            await refreshAsks();
+            return reply(res.out.trim());
+          },
+        });
+        pi.registerTool({
+          name: "remove_ask",
+          exposure: isSubagent() ? "hidden" : "direct",
+          label: "Remove Ask",
+          description: "Remove a tracked user ask when it has been answered or is moot. Top-level agents only.",
+          promptSnippet: "remove_ask(id) - remove an answered or moot user ask",
+          parameters: Type.Object({ id: Type.String({ description: "The ask id to remove." }) }, { additionalProperties: false }),
+          async execute(_toolCallId, params) {
+            if (isSubagent()) throw new Error("user asks are for top-level agents only");
+            const res = await runKido(["tool", "remove_ask", "--session", seam().host?.sessionId() ?? "", "--", params.id], { timeoutMs: 3000 });
+            if (!res.ok) throw new Error(res.error);
+            await refreshAsks();
+            return reply("removed " + params.id);
+          },
+        });
+      }
+      await refreshAsks();
       startParentLivenessPoll();
       deliverTask();
     },
     inboxLost: abandonPending,
     async sessionEnding(reason?: ShutdownReason) {
+      ++asksRefresh;
+      session = null;
       // abandonPending runs on every reason, reload included: a reload still tears the inbox down.
       stopParentLivenessPoll();
       clearIdleExit();
