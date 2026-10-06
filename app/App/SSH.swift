@@ -20,7 +20,7 @@ import TmuxControl
     }
     static let options = [
         "BatchMode=yes", "StrictHostKeyChecking=yes", "ConnectTimeout=10", "ConnectionAttempts=1",
-        "ServerAliveInterval=15", "ServerAliveCountMax=3", "ForwardAgent=no", "ForwardX11=no",
+        "ServerAliveInterval=15", "ServerAliveCountMax=3", "ForwardX11=no",
         "ClearAllForwardings=yes", "RequestTTY=no", "RemoteCommand=none", "ControlPersist=no",
         "ForkAfterAuthentication=no", "StdinNull=no", "PermitLocalCommand=no", "SendEnv=-*", "UpdateHostKeys=no",
     ].flatMap { ["-o", $0] }
@@ -44,13 +44,50 @@ import TmuxControl
         "'" + argument.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
     }
 
-    func launch(_ arguments: [String]) -> Launch {
+    static let attachScript = """
+    dir=$1; socket=$2; tmux=$3; shift 3
+    stable=$dir/agent.sock
+    refuse() { printf '%s\\n' 'Kido agent setup refused' >&2; exit 1; }
+    platform=$(uname -s)
+    case $platform in
+      Darwin) metadata=$(stat -f '%u:%Lp' "$dir" 2>/dev/null) || refuse; limit=104 ;;
+      Linux) metadata=$(stat -c '%u:%a' "$dir" 2>/dev/null) || refuse; limit=108 ;;
+      *) refuse ;;
+    esac
+    [ -d "$dir" ] && [ ! -L "$dir" ] && [ "$metadata" = "$(id -u):700" ] || refuse
+    length=$(printf '%s' "$stable" | LC_ALL=C wc -c)
+    [ "$length" -lt "$limit" ] || refuse
+    if [ -S "${SSH_AUTH_SOCK-}" ]; then
+      [ -L "$stable" ] || [ ! -e "$stable" ] || refuse
+      umask 077
+      temporary=$(mktemp -d "$dir/.agent.XXXXXXXX") || refuse
+      trap 'rm -f "$temporary/link"; rmdir "$temporary"' 0
+      trap 'exit 1' 1 2 3 15
+      ln -s "$SSH_AUTH_SOCK" "$temporary/link" || refuse
+      case $platform in
+        Darwin) mv -fh "$temporary/link" "$stable" || refuse ;;
+        Linux) mv -fT "$temporary/link" "$stable" || refuse ;;
+      esac
+      rmdir "$temporary" || refuse
+      trap - 0 1 2 3 15
+    fi
+    SSH_AUTH_SOCK=$stable; export SSH_AUTH_SOCK
+    "$tmux" -u -N -S "$socket" set-environment -g SSH_AUTH_SOCK "$stable" || exit 1
+    exec "$tmux" "$@"
+    """
+
+    func launch(_ arguments: [String], control: Endpoint? = nil) -> Launch {
         guard !stopped, master?.process.isRunning == true else { return Launch("/usr/bin/false", []) }
+        return passenger(arguments, control: control)
+    }
+
+    func passenger(_ arguments: [String], control: Endpoint? = nil) -> Launch {
+        var arguments = control.map { ["/bin/sh", "-c", Self.attachScript, "kido-agent", $0.directory, $0.server.socket] + arguments } ?? ["/usr/bin/env", "-u", "SSH_AUTH_SOCK"] + arguments
         #if KIDO_VISUAL || KIDO_STRESS
-        let arguments = remoteEnvironment.isEmpty ? arguments : ["/usr/bin/env"] + remoteEnvironment + arguments
+        if !remoteEnvironment.isEmpty { arguments = ["/usr/bin/env"] + remoteEnvironment + arguments }
         #endif
         let command = arguments.map(Self.quote).joined(separator: " ")
-        return Launch("/usr/bin/ssh", options + ["-S", directory + "/c", "-o", "ControlMaster=no", "-T", "--", destination, "exec " + command], environment: tools.environment)
+        return Launch("/usr/bin/ssh", options + (control == nil ? ["-o", "ForwardAgent=no"] : []) + ["-S", directory + "/c", "-o", "ControlMaster=no", "-T", "--", destination, "exec " + command], environment: tools.environment)
     }
 
     @discardableResult func start(drain: Drain? = nil, onLoss: @escaping (Failure) -> Void) async throws(Failure) -> String {
@@ -69,7 +106,7 @@ import TmuxControl
         }
         let deadline = Date().addingTimeInterval(10)
         while Date() < deadline, !stopped, !Task.isCancelled, child.process.isRunning {
-            let check = try await Child.run("/usr/bin/ssh", options + ["-S", directory + "/c", "-O", "check", "--", destination], env: tools.environment, deadline: 2, drain: drain)
+            let check = try await Child.run("/usr/bin/ssh", options + ["-o", "ForwardAgent=no", "-S", directory + "/c", "-O", "check", "--", destination], env: tools.environment, deadline: 2, drain: drain)
             if check.status == 0 { return identity }
             do { try await Task.sleep(for: .milliseconds(100)) } catch { break }
         }
