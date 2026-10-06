@@ -220,6 +220,10 @@ import GhosttyKit
             PaneView.onMain(userdata) { $0.onCellChange() }
             return true
         }
+        if action.tag == GHOSTTY_ACTION_NEW_WINDOW {
+            PaneView.onMain(userdata) { ($0.window?.delegate as? WindowOwner)?.newSession() }
+            return true
+        }
         guard let command = command(action) else { return false }
         PaneView.onMain(userdata) { $0.onCommand(command) }
         return true
@@ -277,7 +281,7 @@ import GhosttyKit
             }
         case GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM: return .zoom
         case GHOSTTY_ACTION_EQUALIZE_SPLITS: return .equalize
-        case GHOSTTY_ACTION_NEW_TAB, GHOSTTY_ACTION_NEW_WINDOW: return .newWindow
+        case GHOSTTY_ACTION_NEW_TAB: return .newWindow
         default: return nil
         }
     }
