@@ -1,4 +1,4 @@
-let value = "1.2"
+let value = "1.1"
 let matches server = Option.equal String.equal server (Some value)
 
 let hello server =

@@ -57,7 +57,7 @@ let caller ~dir ~self ~session =
       | _ -> Error "no calling agent session has reported this pane"
   in
   let* panes = if String.is_empty self then Ok [] else Tmux.Exec.list_panes () in
-  let pane = List.find_opt (fun (p : Tmux.Pane.t) -> String.equal p.pane_id self) panes in
+  let pane = Tmux.Pane.find panes self in
   let id =
     match caller with
     | Some (id, _) -> Some id

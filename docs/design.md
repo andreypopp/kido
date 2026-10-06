@@ -544,8 +544,8 @@ record holds that session, derived from the full registry, never stored.
 Pi shows this session's open asks in full above the editor, refreshing
 on startup, reload and tool actions. Changes made elsewhere invalidate a
 live session's widget through an `asks` inbox envelope, without waking
-the model or adding transcript entries. The sidebar's asking indicator
-outranks waiting. `a` toggles the all-asks list, including dimmed ended
+the model or adding transcript entries. Open asks give a live agent the existing waiting indicator and attention,
+outranking Done and ordinary state and remaining attention after a visit. `a` toggles the all-asks list, including dimmed ended
 sessions; `d` removes the selected ask and Escape returns to windows.
 Enter checks the full live registry afresh and jumps to a live session's
 pane. For an ended session it opens a window in the ask's cwd running

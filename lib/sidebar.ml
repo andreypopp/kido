@@ -220,7 +220,6 @@ type indicator =
   | Done
   | Failed
   | Stalled
-  | Asking
   | Gone of Subrun.result option
 
 type caption = Text of span list | Elapsed of float
@@ -485,7 +484,8 @@ let pane_label m (p : P.t) =
           | _ -> Text []
       in
       row Agent
-        (Some (if asking m p.pane_id then Asking else if done_ m p.pane_id then Done else ind))
+        (Some
+           (if asking m p.pane_id then Status Waiting else if done_ m p.pane_id then Done else ind))
         [ plain title ]
         caption
 
@@ -718,7 +718,6 @@ let kind = function
   | Done -> "done"
   | Failed -> "failed"
   | Stalled -> "stalled"
-  | Asking -> "asking"
   | Gone _ -> "gone"
 
 let indicator_json = function
@@ -733,7 +732,7 @@ let indicator_json = function
               ( "outcome",
                 Option.map_or ~default:`Null (fun o -> `String (Subrun.string_of_result o)) o );
             ]
-        | Status _ | Unknown | Done | Failed | Stalled | Asking -> []))
+        | Status _ | Unknown | Done | Failed | Stalled -> []))
 
 let to_json m =
   let panes =

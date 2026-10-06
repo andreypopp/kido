@@ -354,6 +354,10 @@ export default function (pi: ExtensionAPI) {
   // removed - the widget is a stand-in for the wait, not a second copy.
   const pendingNotices = new Map<string, { from: string; text: string }>();
 
+  const renderAsk = (theme: Pick<Theme, "fg">, prefix: string, text: string, width: number) =>
+    wrapTextWithAnsi(theme.fg("warning", prefix) + text, Math.max(1, width - 2))
+      .map((line) => truncateToWidth(theme.fg("border", "│ ") + line, width));
+
   let asksRefresh = 0;
   const refreshAsks = async (): Promise<void> => {
     const refresh = ++asksRefresh;
@@ -365,8 +369,7 @@ export default function (pi: ExtensionAPI) {
     const asks: { id: string; text: string }[] = JSON.parse(res.out);
     ctx.ui.setWidget("kido-asks", asks.length ? (_tui, theme) => ({
       render(width: number) {
-        return asks.flatMap((a) => wrapTextWithAnsi(theme.fg("warning", `${a.id} asks you: `) + a.text, Math.max(1, width - 2))
-          .map((line) => truncateToWidth(theme.fg("border", "│ ") + line, width)));
+        return asks.flatMap((a) => renderAsk(theme, `${a.id} asks you: `, a.text, width));
       },
       invalidate() {},
     }) : undefined, { placement: "aboveEditor" });
@@ -645,7 +648,7 @@ export default function (pi: ExtensionAPI) {
   const handleEnvelope = async (env: Envelope): Promise<"ok" | "refused"> => {
     switch (env.kind) {
       case "asks":
-        await refreshAsks();
+        void refreshAsks().catch(() => {});
         return "ok";
       case "message":
         await handleInboundMessage(env);
@@ -1480,8 +1483,7 @@ export default function (pi: ExtensionAPI) {
           renderCall(params, theme) {
             return {
               render(width) {
-                return wrapTextWithAnsi(theme.fg("warning", `asks you${params.replaces ? ` (${params.replaces})` : ""}: `) + (params.text ?? ""), Math.max(1, width - 2))
-                  .map((line) => truncateToWidth(theme.fg("border", "│ ") + line, width));
+                return renderAsk(theme, `asks you${params.replaces ? ` (${params.replaces})` : ""}: `, params.text ?? "", width);
               },
               invalidate() {},
             };
@@ -1514,7 +1516,7 @@ export default function (pi: ExtensionAPI) {
           },
         });
       }
-      await refreshAsks();
+      void refreshAsks().catch(() => {});
       startParentLivenessPoll();
       deliverTask();
     },

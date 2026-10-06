@@ -1227,7 +1227,7 @@ test("user ask widgets refresh from kido on actions, session startup and reload"
     assert.doesNotMatch(render(s), /Ship/);
     await s.emit("session_shutdown", { reason: "reload" });
     const reloaded = await startSession(fx, { factory: await freshExtensions() });
-    assert.match(render(reloaded), /A7 asks you: Wait until/);
+    await pollUntil(() => /A7 asks you: Wait until/.test(render(reloaded)), 2000, "the ask widget refresh");
     const file = join(dirname(fx.runsDir), "asks.json");
     const persisted = JSON.parse(readFileSync(file, "utf8"));
     assert.equal(persisted.find((a: any) => a.id === "A7").sessionFile, "/tmp/self-session.json");
@@ -1235,20 +1235,41 @@ test("user ask widgets refresh from kido on actions, session startup and reload"
     const messages = reloaded.messages.length;
     writeFileSync(file, JSON.stringify(persisted.map((a: any) => a.id === "A7" ? { ...a, text: "Changed by the sidebar" } : a)));
     assert.equal(await sendToInbox(reloaded.inboxPath, envelope("asks", "")), "ok");
-    assert.match(render(reloaded), /Changed by the\n│ sidebar/);
+    await pollUntil(() => /Changed by the\n│ sidebar/.test(render(reloaded)), 2000, "the ask widget refresh");
     assert.equal(reloaded.delivered.length, delivered);
     assert.equal(reloaded.messages.length, messages);
     writeFileSync(file, JSON.stringify(persisted.filter((a: any) => a.id !== "A7")));
     assert.equal(await sendToInbox(reloaded.inboxPath, envelope("asks", "")), "ok");
-    assert.equal(render(reloaded), "");
+    await pollUntil(() => render(reloaded) === "", 2000, "the removed ask widget");
     await reloaded.tools.get("ask_user").execute("ask3", { text: "Another question" }, undefined, undefined, fakeCtx());
     await reloaded.tools.get("remove_ask").execute("remove", { id: "A7" });
     assert.equal(render(reloaded), "");
     const other = await startSession(fx, { factory: await freshExtensions(), sessionId: "other" });
-    assert.match(render(other), /Other session's\n│ question/);
+    await pollUntil(() => /Other session's\n│ question/.test(render(other)), 2000, "the ask widget refresh");
     assert.doesNotMatch(render(other), /A7/);
     assert.deepEqual(s.notifications, []);
     assert.deepEqual(reloaded.notifications, []);
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("user ask refreshes do not delay startup or inbox acknowledgement", async () => {
+  const fx = makeFixture();
+  try {
+    mkdirSync(dirname(fx.runsDir), { recursive: true });
+    const file = join(dirname(fx.runsDir), "asks.json");
+    writeFileSync(file, JSON.stringify([{ id: "A7", session: DEFAULT_SESSION, text: "Question" }]));
+    await withEnv({ KIDO_FAKE_ASKS_DELAY_MS: "1500" }, async () => {
+      const s = await settlesWithin(startSession(fx, { factory: await freshExtensions() }), 1000);
+      const render = () => s.widgets.get("kido-asks")?.content?.(null, fakeTheme).render(80).join("\n") ?? "";
+      assert.equal(render(), "");
+      await pollUntil(() => render().includes("Question"), 3000, "the initial ask widget");
+      writeFileSync(file, JSON.stringify([{ id: "A7", session: DEFAULT_SESSION, text: "Changed" }]));
+      assert.equal(await settlesWithin(sendToInbox(s.inboxPath, envelope("asks", "")), 1000), "ok");
+      assert.doesNotMatch(render(), /Changed/);
+      await pollUntil(() => render().includes("Changed"), 3000, "the invalidated ask widget");
+    });
   } finally {
     await fx.restore();
   }
@@ -1259,6 +1280,7 @@ test("user ask widgets discard an old instance's pending refresh across reload",
   try {
     mkdirSync(dirname(fx.runsDir), { recursive: true });
     const old = await startSession(fx, { factory: await freshExtensions() });
+    await pollUntil(() => old.widgets.has("kido-asks"), 2000, "the initial refresh to finish");
     const file = join(dirname(fx.runsDir), "asks.json");
     await withEnv({ KIDO_FAKE_ASKS_DELAY_MS: "600" }, async () => {
       writeFileSync(file, JSON.stringify([{ id: "A7", session: DEFAULT_SESSION, text: "Old question" }]));
@@ -1268,8 +1290,9 @@ test("user ask widgets discard an old instance's pending refresh across reload",
       process.env.KIDO_FAKE_ASKS_DELAY_MS = "0";
       writeFileSync(file, JSON.stringify([{ id: "A7", session: DEFAULT_SESSION, text: "New question" }]));
       await startSessionCore(fx, await freshExtensions(), () => fakeCtx(DEFAULT_SESSION, old.ui));
-      assert.match(old.widgets.get("kido-asks")?.content?.(null, fakeTheme).render(80).join("\n") ?? "", /New question/);
+      await pollUntil(() => /New question/.test(old.widgets.get("kido-asks")?.content?.(null, fakeTheme).render(80).join("\n") ?? ""), 2000, "the ask widget refresh");
       assert.equal(await pending, "ok");
+      await new Promise((r) => setTimeout(r, 650));
       assert.match(old.widgets.get("kido-asks")?.content?.(null, fakeTheme).render(80).join("\n") ?? "", /New question/);
     });
   } finally {
@@ -1305,6 +1328,7 @@ test("user ask widget keeps the latest refresh when inbox invalidations overlap"
   try {
     mkdirSync(dirname(fx.runsDir), { recursive: true });
     const s = await startSession(fx, { factory: await freshExtensions() });
+    await pollUntil(() => s.widgets.has("kido-asks"), 2000, "the initial refresh to finish");
     const file = join(dirname(fx.runsDir), "asks.json");
     await withEnv({ KIDO_FAKE_ASKS_DELAY_MS: "300" }, async () => {
       writeFileSync(file, JSON.stringify([{ id: "A7", session: DEFAULT_SESSION, text: "Old question" }]));
@@ -1313,8 +1337,9 @@ test("user ask widget keeps the latest refresh when inbox invalidations overlap"
       process.env.KIDO_FAKE_ASKS_DELAY_MS = "0";
       writeFileSync(file, JSON.stringify([{ id: "A7", session: DEFAULT_SESSION, text: "New question" }]));
       assert.equal(await sendToInbox(s.inboxPath, envelope("asks", "")), "ok");
-      assert.match(s.widgets.get("kido-asks")?.content?.(null, fakeTheme).render(80).join("\n") ?? "", /New question/);
+      await pollUntil(() => /New question/.test(s.widgets.get("kido-asks")?.content?.(null, fakeTheme).render(80).join("\n") ?? ""), 2000, "the ask widget refresh");
       assert.equal(await first, "ok");
+      await new Promise((r) => setTimeout(r, 650));
       assert.match(s.widgets.get("kido-asks")?.content?.(null, fakeTheme).render(80).join("\n") ?? "", /New question/);
     });
     assert.equal(s.messages.length, 0);

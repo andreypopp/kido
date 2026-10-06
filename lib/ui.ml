@@ -108,7 +108,6 @@ let glyph : S.indicator -> span option = function
   | Done -> Some (span `Done "✓")
   | Failed -> Some (span `Err "◼")
   | Stalled -> Some (span `Stalled "!")
-  | Asking -> Some (span `Waiting "?")
   | Gone (Some Completed) -> Some (span `Dim "✓")
   | Gone _ -> Some (span `Dim "×")
 
@@ -147,14 +146,11 @@ let pane_of : line -> string option = function
   | Ask (_, pane) -> pane
   | Header _ | Message _ -> None
 
-let index_of m pane =
-  Option.map fst
-    (CCArray.find_idx (fun l -> Option.equal String.equal (pane_of l) (Some pane)) m.lines)
+let index_of ?(key = pane_of) m pane =
+  Option.map fst (CCArray.find_idx (fun l -> Option.equal String.equal (key l) (Some pane)) m.lines)
 
 let selected m = Option.flat_map pane_of (CCArray.get_safe m.lines m.cursor)
-
 let view_rows m = if m.height > 1 then m.height - 1 else Array.length m.lines
-
 let shown m = List.init (max 0 (min (view_rows m) (Array.length m.lines - m.top))) (( + ) m.top)
 let clamp_top m = { m with top = max 0 (min m.top (Array.length m.lines - view_rows m)) }
 
@@ -196,15 +192,7 @@ let redraw m side =
   | Some _ -> { m with cursor = -1 }
   | None ->
       let m =
-        match
-          Option.flat_map
-            (fun prev ->
-              Option.map fst
-                (CCArray.find_idx
-                   (fun line -> Option.equal String.equal (key line) (Some prev))
-                   m.lines))
-            prev
-        with
+        match Option.flat_map (index_of ~key m) prev with
         | Some cursor -> { m with cursor }
         | None -> move { m with cursor = -1 } 1
       in

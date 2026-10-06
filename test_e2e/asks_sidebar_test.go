@@ -16,7 +16,7 @@ func TestSidebarAsksIndicatorAndMode(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("ask: exit %d, %s", code, id)
 	}
-	h.waitRow("?Decider")
+	h.waitRow("◆Decider")
 	if len(in.Received()) != 0 {
 		t.Fatal("own tool action sent a widget invalidation")
 	}
@@ -25,15 +25,15 @@ func TestSidebarAsksIndicatorAndMode(t *testing.T) {
 		for _, session := range s.Sessions {
 			for _, row := range feedItems(session.Nodes) {
 				if row.Pane != nil && *row.Pane == pane {
-					return row.Indicator != nil && row.Indicator.Kind == "asking" && row.Attention
+					return row.Indicator != nil && row.Indicator.Kind == "waiting" && row.Attention
 				}
 			}
 		}
 		return false
 	}
-	f.waitLast(asking, "asking indicator and attention in rpc")
+	f.waitLast(asking, "waiting indicator and attention in rpc")
 	h.agentStatus("asking-session", pane, "pi", "idle", "--title", "Decider", "--inbox", in.Path, "--ended")
-	h.waitRow("?Decider")
+	h.waitRow("◆Decider")
 	focusSidebar(h)
 	h.sendKeys("/")
 	h.sendKeys("a")
@@ -54,7 +54,7 @@ func TestSidebarAsksIndicatorAndMode(t *testing.T) {
 	f.waitLast(func(s feedSnapshot) bool { return s.Client.Pane == pane && asking(s) }, "visited asks remain attention")
 	focusSidebar(h)
 	h.sendKeys("Escape")
-	h.waitRow("?Decider")
+	h.waitRow("◆Decider")
 	h.waitFocused(true)
 	h.sendKeys("a")
 	h.waitSelected(id)
@@ -65,7 +65,7 @@ func TestSidebarAsksIndicatorAndMode(t *testing.T) {
 		t.Fatalf("invalidation: %+v", in.Received())
 	}
 	h.sendKeys("Escape")
-	h.waitFor(func() bool { return !hasLine(h.sidebar(), "?Decider") }, settle, msgf("asking indicator cleared"))
+	h.waitFor(func() bool { return !hasLine(h.sidebar(), "◆Decider") }, settle, msgf("waiting indicator cleared"))
 }
 
 func TestSidebarAsksStandaloneEscape(t *testing.T) {

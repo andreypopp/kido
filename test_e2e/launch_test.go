@@ -637,7 +637,7 @@ func TestLauncherFindsItsTmuxAndReadsTheProbe(t *testing.T) {
 	const fake = `#!/bin/sh
 if [ "$4" = list-sessions ]; then
   [ -z "$PROBE_ERR" ] || echo "$PROBE_ERR" >&2
-  [ "$PROBE_RC" != 0 ] || printf 'socket\037\nKIDO_PROTOCOL=1.2\n'
+  [ "$PROBE_RC" != 0 ] || printf 'socket\037\nKIDO_PROTOCOL=1.1\n'
   exit "$PROBE_RC"
 fi
 echo "$0 $*" >"$OUT"

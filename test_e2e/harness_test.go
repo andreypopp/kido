@@ -404,7 +404,7 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 	var body bytes.Buffer
 	body.Write(defaults)
 	fmt.Fprintf(&body, `
-set-environment -g KIDO_PROTOCOL 1.2
+set-environment -g KIDO_PROTOCOL 1.1
 set-environment -g KIDO_LINGER_SECONDS 1
 set-environment -g KIDO_STOP_ESCALATION_MS 300
 set-environment -g KIDO_STALL_THRESHOLD_MS 3000

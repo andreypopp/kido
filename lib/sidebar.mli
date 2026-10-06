@@ -62,7 +62,6 @@ type indicator =
   | Done
   | Failed
   | Stalled
-  | Asking
   | Gone of Subrun.result option
 
 type caption = Text of span list | Elapsed of float

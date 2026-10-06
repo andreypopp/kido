@@ -1,4 +1,4 @@
-# kido rpc protocol 1.2
+# kido rpc protocol 1.1
 
 fork revision: a409a94ae748a30604fae94ad59a2949a0ef7a32
 
@@ -20,9 +20,9 @@ XDG_STATE_HOME/kido, then ~/.local/state/kido. --client names the app's
 control client. Socket paths fit the platform's sun_path including NUL.
 Run outside tmux with no KIDO_AGENT_* environment.
 
-The first stdout line is {"hello":{"protocol":"1.2"}}. A differing or absent
-server stamp produces {"hello":{"protocol":"1.2","server":"other"}} or
-{"hello":{"protocol":"1.2","server":null}}, followed by
+The first stdout line is {"hello":{"protocol":"1.1"}}. A differing or absent
+server stamp produces {"hello":{"protocol":"1.1","server":"other"}} or
+{"hello":{"protocol":"1.1","server":null}}, followed by
 {"error":"server protocol does not match binary protocol"}, then exit 2.
 Exit 0 means stdin EOF. Exit 1 means a missing argument, absent server/client,
 or stdin read error; diagnostics use stderr. Option errors use cmdliner.
@@ -131,7 +131,7 @@ Fields:
 - `id` = `pane` = the pane id `%N`, stable for the pane's life, including
   a dead lingering pane. `window` is its window id. Both are always
   present, and both are the jump target.
-- `indicator`: null or an object with `kind`: running, waiting, asking, compacting,
+- `indicator`: null or an object with `kind`: running, waiting, compacting,
   idle, unknown, done, failed, stalled or gone. Gone also carries `outcome`:
   completed, failed, died, stopped or null.
 - `title` and `tail`: arrays of spans with `text` and `role`: plain, current,
@@ -166,7 +166,7 @@ structure. Hoisting stays per session.
 ## Server endpoint
 
 kido server --server <dir> ensures a detached server and prints one line:
-{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"1.2","server":"1.2"}.
+{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"1.1","server":"1.1"}.
 protocol is the binary's Protocol.value, always a string. server is always present:
 the server's KIDO_PROTOCOL stamp, or null when absent, even when it matches protocol.
 The app compares them to detect a kido upgrade with an old server.

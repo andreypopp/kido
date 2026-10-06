@@ -200,7 +200,7 @@ let ask_user =
          |> ok
        in
        let replaces = Option.map (fun id -> ok (Ask.parse_id id)) replaces in
-       let name = if String.is_empty s.title then List_runs.agent_title p.title else s.title in
+       let name = List_runs.display_name [ p ] s in
        print
          (Result.map Ask.string_of_id
             (Ask.record ~dir ~self:session ~replaces ~session:id
