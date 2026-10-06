@@ -87,7 +87,7 @@ struct Server: Decodable, Sendable {
             directory = tools.serverDir
         }
         let args = [kido, "server", "--server", directory]
-        let launch = prepare?(args) ?? Launch(kido, Array(args.dropFirst()), environment: tools.environment)
+        let launch = prepare?(["/usr/bin/env", "SSH_AUTH_SOCK=" + directory + "/agent.sock"] + args) ?? Launch(kido, Array(args.dropFirst()), environment: tools.environment)
         let result = try await Child.run(launch.path, launch.arguments, env: launch.environment,
             cwd: prepare == nil ? tools.environment["HOME"] ?? NSHomeDirectory() : nil, deadline: prepare == nil ? 10 : 20, drain: drain)
         guard result.status == 0 else {
