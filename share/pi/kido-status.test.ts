@@ -1244,11 +1244,37 @@ test("user ask widgets refresh from kido on actions, session startup and reload"
     await reloaded.tools.get("ask_user").execute("ask3", { text: "Another question" }, undefined, undefined, fakeCtx());
     await reloaded.tools.get("remove_ask").execute("remove", { id: "A7" });
     assert.equal(render(reloaded), "");
+    assert.equal(reloaded.messages.length, messages, "own removal produces no note");
     const other = await startSession(fx, { factory: await freshExtensions(), sessionId: "other" });
     await pollUntil(() => /Other session's\n│ question/.test(render(other)), 2000, "the ask widget refresh");
     assert.doesNotMatch(render(other), /A7/);
     assert.deepEqual(s.notifications, []);
     assert.deepEqual(reloaded.notifications, []);
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("external ask removals queue a notice for the next turn without waking or interrupting", async () => {
+  const fx = makeFixture();
+  try {
+    for (const idle of [true, false]) {
+      const s = await startSession(fx, { idle: () => idle, factory: await freshExtensions() });
+      const delivered = s.delivered.length;
+      const messages = s.messages.length;
+      assert.equal(await sendToInbox(s.inboxPath, envelope("asks", "The user removed ask A99b9ccb7: Ship?")), "ok");
+      assert.equal(s.messages.length, messages + 1);
+      const sent = s.messages.at(-1)!;
+      assert.equal(sent.message.customType, "kido-notice");
+      assert.equal(sent.message.content, "The user removed ask A99b9ccb7: Ship?");
+      assert.equal(sent.message.display, true);
+      assert.deepEqual(sent.opts, { deliverAs: "nextTurn" });
+      assert.equal(s.delivered.length, delivered, "no turn trigger");
+      const drawn = s.renderers.get("kido-notice")!(sent.message, { expanded: true }, fakeTheme).render(100).join("\n");
+      assert.match(drawn, /│ @kido notifies:/);
+      assert.match(drawn, /The user removed ask/);
+      await s.emit("session_shutdown", { reason: "reload" });
+    }
   } finally {
     await fx.restore();
   }

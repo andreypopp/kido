@@ -76,7 +76,7 @@ let caller ~dir ~self ~session =
     | Some (id, s), Some p -> Ok (Some (id, s, p))
     | Some _, None -> Error "calling pane not found"
 
-let invalidate ~dir ~self ask =
+let invalidate ?(removed = false) ~dir ~self ask =
   if not (String.equal self ask.session) then
     Option.iter
       (fun (s : State.session) ->
@@ -90,7 +90,11 @@ let invalidate ~dir ~self ask =
                        id = Msg.new_id ();
                        from = { session = ""; name = "kido"; pane = "" };
                        reply_to = "";
-                       text = "";
+                       text =
+                         (if removed then
+                            Printf.sprintf "The user removed ask %s: %s" ask.id
+                              (List.hd (String.split_on_char '\n' ask.text))
+                          else "");
                        run = "";
                        output = "";
                      }))))
@@ -131,7 +135,7 @@ let remove ~dir ~self id =
   | Some ask -> (
       match Unix.unlink (path ~dir id) with
       | () ->
-          invalidate ~dir ~self ask;
+          invalidate ~removed:true ~dir ~self ask;
           Ok ()
       | exception Unix.Unix_error (ENOENT, _, _) -> Error ("no ask " ^ id))
 

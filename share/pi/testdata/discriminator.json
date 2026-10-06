@@ -9,6 +9,7 @@
   {"name": "object missing v", "raw": "{\"kind\":\"message\",\"text\":\"hi\"}", "ok": false},
   {"name": "object with neither", "raw": "{\"text\":\"hi\",\"title\":\"a plan\"}", "ok": false},
   {"name": "ask widget invalidation", "raw": "{\"v\":1,\"kind\":\"asks\",\"id\":\"refresh\",\"from\":{\"session\":\"\"},\"text\":\"\"}", "ok": true},
+  {"name": "external ask removal", "raw": "{\"v\":1,\"kind\":\"asks\",\"id\":\"refresh\",\"from\":{\"session\":\"\",\"name\":\"kido\"},\"text\":\"The user removed ask A99b9ccb7: Ship?\"}", "ok": true},
   {"name": "full envelope", "raw": "{\"v\":1,\"kind\":\"message\",\"id\":\"x\",\"from\":{\"session\":\"s1\"},\"text\":\"hi\"}", "ok": true},
   {"name": "v and kind only", "raw": "{\"v\":1,\"kind\":\"message\"}", "ok": true}
 ]

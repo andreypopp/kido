@@ -648,6 +648,12 @@ export default function (pi: ExtensionAPI) {
   const handleEnvelope = async (env: Envelope): Promise<"ok" | "refused"> => {
     switch (env.kind) {
       case "asks":
+        if (env.text) pi.sendMessage({
+          customType: NOTICE_CUSTOM_TYPE,
+          content: env.text,
+          display: true,
+          details: { from: "kido" },
+        }, { deliverAs: "nextTurn" });
         void refreshAsks().catch(() => {});
         return "ok";
       case "message":
@@ -1475,7 +1481,12 @@ export default function (pi: ExtensionAPI) {
           label: "Ask User",
           description: "Put a question needing the user's decision into kido's tracked asks and return its short id. replaces rewords an existing ask, keeping its id; an unknown id is an error. Top-level agents only.",
           promptSnippet: "ask_user(text, replaces?) - track a question that needs the user's decision",
-          promptGuidelines: ["Use ask_user for anything that needs the user's decision. When the user has answered an ask, or it is moot, call remove_ask. Use replaces to reword an existing ask, keeping its id."],
+          promptGuidelines: [
+            "Use ask_user for each decision that needs the user, one decision per ask, so each can be answered and removed on its own. Status updates, FYIs and 'should I continue?' are not asks.",
+            "Write an ask to be read on its own, away from this conversation: name the project or thread, what is being decided, the options, and your recommendation if you have one.",
+            "An ask is tracked in addition to your reply, not instead of it: still put the question in your reply text.",
+            "When the user has answered an ask, or it is moot, call remove_ask. Use replaces to reword an existing ask, keeping its id.",
+          ],
           parameters: Type.Object({
             text: Type.String({ description: "The question needing the user's decision." }),
             replaces: Type.Optional(Type.String({ description: "An existing ask id to reword, keeping its id." })),

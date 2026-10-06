@@ -61,7 +61,7 @@ func TestSidebarAsksIndicatorAndMode(t *testing.T) {
 	h.sendKeys("d")
 	h.waitFor(func() bool { return len(openAsks(h, "")) == 0 }, settle, msgf("sidebar removes the selected ask"))
 	h.waitFor(func() bool { return len(in.Received()) == 1 }, settle, msgf("widget invalidation sent"))
-	if env, ok := parseEnvelope(in.Received()[0]); !ok || env.Kind != "asks" || env.Text != "" {
+	if env, ok := parseEnvelope(in.Received()[0]); !ok || env.Kind != "asks" || env.Text != "The user removed ask "+id+": Ship?" {
 		t.Fatalf("invalidation: %+v", in.Received())
 	}
 	h.sendKeys("Escape")
@@ -106,8 +106,13 @@ func TestAskUserExternalReplacementInvalidatesWidget(t *testing.T) {
 	if code != 0 || len(in.Received()) != 2 {
 		t.Fatalf("external removal: exit %d, %s, messages %q", code, out, in.Received())
 	}
-	for _, raw := range in.Received() {
-		if env, ok := parseEnvelope(raw); !ok || env.Kind != "asks" || env.Text != "" {
+	for i, raw := range in.Received() {
+		env, ok := parseEnvelope(raw)
+		text := ""
+		if i == 1 {
+			text = "The user removed ask " + id + ": Reworded"
+		}
+		if !ok || env.Kind != "asks" || env.Text != text {
 			t.Fatalf("invalidation: %s", raw)
 		}
 	}
