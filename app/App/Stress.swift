@@ -37,6 +37,7 @@ typealias AppWindow = StressWindow
     private var step = 0
     private var counts: [String: Int] = [:]
     private var resizeCompleted = Set<ObjectIdentifier>()
+    private var resizeAcknowledged: [String: Double] = [:]
     private var childWindows = Set<String>()
 
     init(window: NSWindow, send: @escaping ([Command]) -> Void, reconnect: @escaping () -> Void) {
@@ -121,18 +122,34 @@ typealias AppWindow = StressWindow
                         let replayed: @MainActor @Sendable (Bool) -> Void = { rejected in
                             guard rejected else { self.log(["replay-fence-app-validation": "failed"]); exit(1) }
                             pane.updateScroller(history: position.history, position: position, alternate: false)
-                            for surface in surfaces { surface.restored(epoch: surface.historyEpoch) }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                let after = pane.scrollPosition()
-                                let acknowledged = self.resizeCompleted.count == 2
-                                let pixels = reference.renderedPixels != nil && pane.renderedPixels == reference.renderedPixels
-                                let passed = pane.scrollTarget == 21 && after.history - after.offset == 21 && pixels && acknowledged
-                                self.log(["replay-verify": passed ? "passed" : "failed", "target": pane.scrollTarget ?? -1,
-                                          "before-distance": before.history - before.offset, "after-distance": after.history - after.offset,
-                                          "pixels": pixels, "acknowledged": acknowledged])
-                                if !passed { exit(1) }
-                                (NSApp.delegate as? AppDelegate)?.quit("replay verification complete")
+                            self.resizeAcknowledged.removeAll()
+                            let started = ProcessInfo.processInfo.systemUptime
+                            for (name, surface) in zip(["pane", "reference"], surfaces) {
+                                surface.onFinalRender = {
+                                    self.resizeAcknowledged[name] = ProcessInfo.processInfo.systemUptime - started
+                                    guard self.resizeAcknowledged.count == 2 else { return }
+                                    for surface in surfaces { surface.onFinalRender = nil }
+                                    let after = pane.scrollPosition()
+                                    let pixels = reference.renderedPixels != nil && pane.renderedPixels == reference.renderedPixels
+                                    let passed = pane.scrollTarget == 21 && after.history - after.offset == 21 && pixels
+                                    self.log(["replay-verify": passed ? "passed" : "failed", "target": pane.scrollTarget ?? -1,
+                                              "before-distance": before.history - before.offset, "after-distance": after.history - after.offset,
+                                              "pixels": pixels, "acknowledged": true,
+                                              "acknowledgement-seconds": self.resizeAcknowledged])
+                                    if !passed { exit(1) }
+                                    (NSApp.delegate as? AppDelegate)?.quit("replay verification complete")
+                                }
                             }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                                guard self.resizeAcknowledged.count != 2 else { return }
+                                let pending = Dictionary(uniqueKeysWithValues: zip(["pane", "reference"], surfaces)
+                                    .filter { self.resizeAcknowledged[$0.0] == nil }
+                                    .map { ($0.0, $0.1.finalRenderDiagnostics) })
+                                self.log(["replay-verify": "failed", "reason": "acknowledgement deadline 5s",
+                                          "acknowledgement-seconds": self.resizeAcknowledged, "pending-surfaces": pending])
+                                exit(1)
+                            }
+                            for surface in surfaces { surface.restored(epoch: surface.historyEpoch) }
                         }
                         if self.env["KIDO_REPLAY_FENCE_VERIFY"] == "1" {
                             for surface in surfaces { surface.restored(epoch: surface.historyEpoch) }
