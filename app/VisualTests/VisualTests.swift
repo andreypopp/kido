@@ -100,7 +100,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
 
     private var terminal: WindowView? { session?.windows.values.first { !$0.isHidden } }
 
-    private func start(height: CGFloat = 560, dark: Bool = false, history: Int = 1000) async throws {
+    @discardableResult private func start(height: CGFloat = 560, dark: Bool = false, history: Int = 1000) async throws -> String {
         NSApp.appearance = NSAppearance(named: .aqua)
         if Self.processRuntime == nil {
             let config = directory.appendingPathComponent("ghostty.conf")
@@ -119,8 +119,9 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         session.frame = NSRect(x: 0, y: 0, width: 700, height: height)
         window.contentView = session
         let tmuxConfig = directory.appendingPathComponent("tmux.conf")
-        try "set -g history-limit \(history)\n".write(to: tmuxConfig, atomically: true, encoding: .utf8)
+        try "set -g history-limit \(history)\nset -s get-clipboard request\n".write(to: tmuxConfig, atomically: true, encoding: .utf8)
         _ = try await command(["-f", tmuxConfig.path, "new-session", "-d", "-s", "visual", "-x", "80", "-y", "30", "exec /bin/cat"])
+        let clipboardMode = try await command(["show", "-sv", "get-clipboard"])
         connection = try Connection(server: Server(tmux: tmux, socket: socket, protocolVersion: .required), view: session,
                                     onChange: { [weak self] model in
                                         self?.session.show(model.window)
@@ -139,6 +140,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
             await fulfillment(of: [changed], timeout: 20)
             try await settle()
         }
+        return clipboardMode
     }
 
     private func settle() async throws {
@@ -997,7 +999,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
     }
 
     func testOSC52ClipboardConsentAndPrivatePaneTransport() async throws {
-        try await start()
+        let clipboardModeBeforeAttach = try await start()
         XCTAssertNotEqual(runtime.pasteboard.name.rawValue, "NSGeneralPboard")
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
         window.contentView = nil
@@ -1026,7 +1028,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         XCTAssertNil(owner.preparedAlert)
         _ = try await command(["set-option", "-s", "set-clipboard", "on"])
         let clipboardMode = try await command(["show", "-sv", "get-clipboard"])
-        XCTAssertEqual(clipboardMode, "off")
+        XCTAssertEqual(clipboardMode, clipboardModeBeforeAttach)
         _ = try await command(["set-buffer", "stale-tmux-buffer"])
         let script = directory.appendingPathComponent("clipboard.py")
         let result = directory.appendingPathComponent("clipboard-reply")

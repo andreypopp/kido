@@ -435,7 +435,7 @@ ending in ESC is historical, and the live backslash does not re-fire it. Already
 queued live operations remain live across ordinary resync. MANUAL_MIRROR still suppresses every other parser reply.
 
 Guarantees cover displayed panes only, with one clipboard-enabled app per pane.
-Hidden/evicted output and pause-after losses are best effort. Each local or remote control-client attach sends `set -s get-clipboard off` with its existing command sequence, preventing tmux from also forwarding reads to attached terminal clients or answering from stale buffers. A directly attached terminal cannot paste through itself on that server.
+Hidden/evicted output and pause-after losses are best effort. The app leaves the server's `get-clipboard` setting alone.
 Nested tty-mode tmux needs OSC forwarding and preauthorization; see known issues.
 
 Cmd-V and unsafe paste are separate from application reads. An unsafe paste is
