@@ -515,7 +515,7 @@ function createFakePi() {
   // two held open replaces it.
   let onUserMessage: (() => unknown) | null = null;
   const pi = {
-    getSettings: () => ({ tuiMode: "regular" }),
+    getSettings: (): { tuiMode?: "regular" | "fullscreen" } => ({ tuiMode: "regular" }),
     getAllTools: () => [...tools.values()],
     registerTool(tool: any) {
       tools.set(tool.name, tool);
@@ -1641,9 +1641,11 @@ test("all four inbound renderers dim headers, wrap normal text behind a border, 
         details: { from: "boss", question: body, noticeId: "notice-1" },
       };
       const draw = (expanded: boolean) => renderer(JSON.parse(JSON.stringify(message)), { expanded, outputPad: 1 }, theme);
-      s.pi.getSettings = () => ({ tuiMode: "fullscreen" });
+      s.pi.getSettings = () => ({});
       const component = draw(true);
       const collapsedLines = [`\x1b[34m│ \x1b[0m\x1b[2m${header}\x1b[0m ${body.split("\n", 1)[0]}...`];
+      assert.deepEqual(component.render(80), collapsedLines, `${kind}: unset tuiMode defaults to fullscreen and starts collapsed`);
+      s.pi.getSettings = () => ({ tuiMode: "fullscreen" });
       assert.deepEqual(component.render(80), collapsedLines, `${kind}: fullscreen ignores ctrl-o and starts collapsed`);
       assert.deepEqual(component.handleMouse({ ...click, type: "press" }), { handled: true, render: false });
       assert.deepEqual(component.render(80), collapsedLines, "press does not toggle");
@@ -2014,6 +2016,7 @@ test("pi's run drops a wake trigger and keeps the rest of the turn", async () =>
   const prompted: unknown[] = [];
   const noop = async () => false;
   const session = {
+    _pendingToolNames: new Set(),
     _recordSelection() {},
     _handlePostAgentRun: noop,
     _runBeforeSettleBoundary: noop,

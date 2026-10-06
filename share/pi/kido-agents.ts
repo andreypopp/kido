@@ -1291,7 +1291,7 @@ export default function (pi: ExtensionAPI) {
   const inboundExpanded = new Map<string, boolean>();
   const renderInbound = (message: Parameters<MessageRenderer>[0], theme: Pick<Theme, "fg">, sender: string | undefined, verb: string | undefined, body: string) => {
     const key = JSON.stringify([message.customType, message.timestamp, message.details]);
-    const expanded = () => pi.getSettings().tuiMode !== "fullscreen" || (inboundExpanded.get(key) ?? false);
+    const expanded = () => pi.getSettings().tuiMode === "regular" || (inboundExpanded.get(key) ?? false);
     const paint: Paint = (color, text) => (color ? theme.fg(color, text) : text);
     return {
       handleMouse: (event: TuiMouseEvent) => {
