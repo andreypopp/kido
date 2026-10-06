@@ -491,13 +491,13 @@ import SidebarFeed
 
     @objc func nextAttention() { sidebar.list.nextAttention(1) }
     @objc func previousAttention() { sidebar.list.nextAttention(-1) }
-    @objc func nextWindow() { switchWindow(next: true) }
-    @objc func previousWindow() { switchWindow(next: false) }
+    @objc func nextWindow() { switchTarget(.window, next: true) }
+    @objc func previousWindow() { switchTarget(.window, next: false) }
 
-    private func switchWindow(next: Bool) {
+    func switchTarget(_ navigation: Feed.Navigation, next: Bool) {
         sidebar.list.failed(nil)
         guard case .connected(let connection, _, _) = link else { return }
-        feed?.switchWindow(next: next) { [weak self] target, error in
+        feed?.switchTarget(navigation, next: next) { [weak self] target, error in
             guard let self, case .connected(let current, _, _) = link, current === connection else { return }
             if let error { return sidebar.list.failed(error) }
             sidebar.list.completedNavigation(to: target)
