@@ -99,14 +99,14 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
         count.stringValue = "\(index + 1) of \(matches.count)"
         target = index
         pane.onFindCoverage(matches[index], token)
-        if matches[index] <= pane.scrollPosition().history { navigate() }
+        if matches[index] <= pane.scrollPosition().retainedHistoryRows { navigate() }
     }
 
     func loaded(_ position: PaneView.ScrollPosition) {
         guard matches.indices.contains(index) else { return }
-        if position.history != searchedHistory && matches[index] <= position.history { restartGhostty() }
+        if position.retainedHistoryRows != searchedHistory && matches[index] <= position.retainedHistoryRows { restartGhostty() }
         guard target != nil else { return }
-        if matches[index] <= position.history { pane?.resetScroll(); navigate() }
+        if matches[index] <= position.retainedHistoryRows { pane?.resetScroll(); navigate() }
 
     }
 
@@ -119,10 +119,10 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
 
     private func navigate() {
         guard !navigating, let target, total > target, let pane, matches.indices.contains(index),
-              matches[index] <= pane.scrollPosition().history else { return }
+              matches[index] <= pane.scrollPosition().retainedHistoryRows else { return }
         if selected == target {
             self.target = nil
-            let position = pane.scrollPosition(), row = position.history - matches[index]
+            let position = pane.scrollPosition(), row = position.retainedHistoryRows - matches[index]
             if row < position.offset + 2 { pane.scroll(to: max(0, position.offset - 2)) }
             return
         }
@@ -137,7 +137,7 @@ final class PaneFind: NSView, NSSearchFieldDelegate {
         selected = nil
         total = 0
         navigating = false
-        searchedHistory = pane?.scrollPosition().history ?? 0
+        searchedHistory = pane?.scrollPosition().retainedHistoryRows ?? 0
         action("search:")
         action("search:\(field.stringValue)")
     }

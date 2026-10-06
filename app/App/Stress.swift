@@ -112,16 +112,16 @@ typealias AppWindow = StressWindow
                 }
                 if self.env["KIDO_REPLAY_VERIFY"] == "1" || self.env["KIDO_REPLAY_FENCE_VERIFY"] == "1" {
                     let position = pane.scrollPosition()
-                    pane.updateScroller(history: position.history, position: position, alternate: false)
+                    pane.updateScroller(sampledTmuxHistoryRows: position.retainedHistoryRows, position: position, alternate: false)
                     pane.requestScroll(21)
-                    reference.updateScroller(history: position.history, position: position, alternate: false)
+                    reference.updateScroller(sampledTmuxHistoryRows: position.retainedHistoryRows, position: position, alternate: false)
                     reference.requestScroll(21)
                     pane.afterScroll {
                         let before = pane.scrollPosition()
-                        guard before.history - before.offset == 21 else { exit(1) }
+                        guard before.retainedHistoryRows - before.offset == 21 else { exit(1) }
                         let replayed: @MainActor @Sendable (Bool) -> Void = { rejected in
                             guard rejected else { self.log(["replay-fence-app-validation": "failed"]); exit(1) }
-                            pane.updateScroller(history: position.history, position: position, alternate: false)
+                            pane.updateScroller(sampledTmuxHistoryRows: position.retainedHistoryRows, position: position, alternate: false)
                             self.resizeAcknowledged.removeAll()
                             let started = ProcessInfo.processInfo.systemUptime
                             for (name, surface) in zip(["pane", "reference"], surfaces) {
@@ -131,9 +131,9 @@ typealias AppWindow = StressWindow
                                     for surface in surfaces { surface.onFinalRender = nil }
                                     let after = pane.scrollPosition()
                                     let pixels = reference.renderedPixels != nil && pane.renderedPixels == reference.renderedPixels
-                                    let passed = pane.scrollTarget == 21 && after.history - after.offset == 21 && pixels
+                                    let passed = pane.scrollTarget == 21 && after.retainedHistoryRows - after.offset == 21 && pixels
                                     self.log(["replay-verify": passed ? "passed" : "failed", "target": pane.scrollTarget ?? -1,
-                                              "before-distance": before.history - before.offset, "after-distance": after.history - after.offset,
+                                              "before-distance": before.retainedHistoryRows - before.offset, "after-distance": after.retainedHistoryRows - after.offset,
                                               "pixels": pixels, "acknowledged": true,
                                               "acknowledgement-seconds": self.resizeAcknowledged])
                                     if !passed { exit(1) }
@@ -220,7 +220,7 @@ typealias AppWindow = StressWindow
                                 DispatchQueue.global().async {
                                     pane.feed(Data("MUST NOT FEED\r\n".utf8))
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                        guard pane.scrollPosition().history == position.history, pane.renderedPixels == expected else {
+                                        guard pane.scrollPosition().retainedHistoryRows == position.retainedHistoryRows, pane.renderedPixels == expected else {
                                             self.log(["resize-verify": "failed", "reason": "failed grid feed or late stale frame"]); exit(1)
                                         }
                                         self.log(["resize-verify": "passed", "snapshot-bytes": expected.count, "grid-failure-rejected": true])
@@ -245,37 +245,150 @@ typealias AppWindow = StressWindow
     }
 
     private var snapFixture: PaneView?
+    private var wheelInputs = Data()
+
+    private func wheel(_ pane: PaneView, y: Int32, x: Int32 = 0, precise: Bool = true, shift: Bool = false, band: Int = 0, momentum: Int64 = 0) {
+        guard let event = pane.wheelEvent(y: y, x: x, precise: precise, shift: shift, band: band, momentum: momentum) else { exit(1) }
+        pane.mouseMoved(with: event)
+        pane.scrollWheel(with: event)
+    }
+
+    private func verifyWheelOwnership(_ pane: PaneView, completion: @escaping @MainActor () -> Void) {
+        pane.updateScroller(sampledTmuxHistoryRows: 0, position: pane.scrollPosition(), alternate: false)
+        guard pane.scrollPosition().retainedHistoryRows == 0 else { exit(1) }
+        guard pane.wheelRowHeight > 1 else {
+            self.log(["wheel-setup": "failed", "row-height": pane.wheelRowHeight]); exit(1)
+        }
+        for precise in [true, false] {
+            for y: Int32 in [-1, 1] {
+                for momentum: Int64 in [0, 1, 2, 3] {
+                    for band in [0, 1, -1] { wheel(pane, y: y, precise: precise, band: band, momentum: momentum) }
+                }
+            }
+        }
+        guard pane.scrollTarget == nil else { exit(1) }
+        pane.resetScroll()
+        pane.updateScroller(sampledTmuxHistoryRows: 10, position: pane.scrollPosition(), alternate: false, mayHaveOlderHistory: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            guard pane.visualPill else { self.log(["wheel-empty-pill": "failed"]); exit(1) }
+            pane.updateScroller(sampledTmuxHistoryRows: 0, position: pane.scrollPosition(), alternate: false, mayHaveOlderHistory: false)
+            DispatchQueue.global().async {
+                let text = (0..<200).map { "live\($0)\r\n" }.joined()
+                guard pane.feed(Data(text.utf8), kind: .live, epoch: pane.historyEpoch) else { exit(1) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    guard pane.scrollPosition().retainedHistoryRows > 0 else { exit(1) }
+                    let before = pane.renderedPixels
+                    self.wheel(pane, y: 1)
+                    guard let target = pane.wheelDistance, target > 0, target < 1 else {
+                        self.log(["wheel-new-pane": "failed", "reason": "sample 0 live history first sub-row wheel has no fractional target", "target": pane.wheelDistance ?? -1])
+                        exit(1)
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        let diagnostics = pane.finalRenderDiagnostics
+                        guard diagnostics["revision"] as? Int == diagnostics["applied-revision"] as? Int,
+                              self.wheelInputs.isEmpty, pane.renderedPixels != nil, pane.renderedPixels != before else {
+                            self.log(["wheel-new-pane": "failed", "reason": "missing applied revision, fractional rendered frame or unwanted input", "diagnostics": diagnostics]); exit(1)
+                        }
+                        self.log(["wheel-new-pane": "passed", "target": target, "rendered-fraction": "passed", "input": "empty"])
+                        pane.resetScroll()
+                        self.verifyWheelPrograms(pane, index: 0, completion: completion)
+                    }
+                }
+            }
+        }
+    }
+
+    private func verifyWheelPrograms(_ pane: PaneView, index: Int, completion: @escaping @MainActor () -> Void) {
+        let size = ghostty_surface_size(pane.surface)
+        let cases: [(String, String, Int32, Int32, Bool, Int, Bool)] = [
+            ("\u{1b}[?1049h\u{1b}[?1007h\u{1b}[?1l", "\u{1b}[A", Int32(size.cell_height_px), 0, false, 0, false),
+            ("", "\u{1b}[B", -Int32(size.cell_height_px), 0, false, 0, false),
+            ("\u{1b}[?1h", "\u{1b}OB", -Int32(size.cell_height_px), 0, false, 0, false),
+            ("", "\u{1b}OA", Int32(size.cell_height_px), 0, false, 0, false),
+            ("\u{1b}[?1007l", "", Int32(size.cell_height_px), 0, false, 0, false),
+            ("", "", Int32(size.cell_height_px), 0, false, 1, false),
+            ("\u{1b}[?1007h", "", Int32(size.cell_height_px), 0, false, -1, false),
+            ("\u{1b}[?1049l\u{1b}[?1000h\u{1b}[?1006h", "\u{1b}[<68;1;1M", Int32(size.cell_height_px), 0, true, 0, false),
+            ("", "\u{1b}[<66;1;1M", 0, Int32(size.cell_width_px), false, 0, false),
+            ("\u{1b}[?1049h", "\u{1b}[<64;1;1M", Int32(size.cell_height_px), 0, false, 0, false),
+            ("", "", Int32(size.cell_height_px), 0, true, 1, false),
+            ("", "", Int32(size.cell_height_px), 0, false, -1, false),
+            ("\u{1b}[?1049l", "", 1, 0, false, 1, true),
+            ("", "", 1, 0, false, -1, true),
+            ("", "", 1, 0, false, 0, true)
+        ]
+        guard index < cases.count else {
+            pane.resetScroll()
+            self.log(["wheel-programs": "passed", "shift-report": "passed", "horizontal-report": "passed", "bands": "passed", "reporting-disabled": "passed", "empty-pane": "passed"])
+            completion()
+            return
+        }
+        let (output, expected, y, x, shift, band, viewport) = cases[index]
+        if index == 0 || index == cases.count - 1 {
+            guard let config = ghostty_config_new() else { exit(1) }
+            let text = "mouse-reporting = \(index == cases.count - 1 ? "false" : "true")\nmouse-scroll-multiplier = 1\nmouse-shift-capture = never\n"
+            text.withCString { ghostty_config_load_string(config, $0, UInt(text.utf8.count), "wheel-test") }
+            ghostty_config_finalize(config)
+            ghostty_surface_update_config(pane.surface, config)
+            ghostty_config_free(config)
+        }
+        pane.resetScroll()
+        wheelInputs.removeAll()
+        guard pane.commitSnapshot(epoch: pane.historyEpoch),
+              output.isEmpty || pane.feed(Data(output.utf8), kind: .live, epoch: pane.historyEpoch) else {
+            self.log(["wheel-programs": "failed", "case": index, "reason": "fixture feed admission"]); exit(1)
+        }
+        DispatchQueue.main.async {
+            let before = pane.scrollPosition()
+            self.wheel(pane, y: y, x: x, shift: shift, band: band)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                let after = pane.scrollPosition()
+                let state = viewport ? (pane.scrollTarget ?? 0) > 0 : (pane.scrollTarget ?? 0) == 0 && before.offset == after.offset
+                guard self.wheelInputs == Data(expected.utf8), state else {
+                    self.log(["wheel-programs": "failed", "case": index, "input": self.wheelInputs.base64EncodedString(), "expected": Data(expected.utf8).base64EncodedString(), "target": pane.scrollTarget ?? -1]); exit(1)
+                }
+                self.log(["wheel-case": index, "result": "passed"])
+                self.verifyWheelPrograms(pane, index: index + 1, completion: completion)
+            }
+        }
+    }
 
     private func verifySnap(_ index: Int) {
         if snapFixture == nil {
             guard let original = (window.contentView.map(views) ?? []).compactMap({ $0 as? PaneView }).first else { exit(1) }
+            guard original.wheelRowHeight > 1 else {
+                self.log(["wheel-production-layout": "failed", "row-height": original.wheelRowHeight]); exit(1)
+            }
             let runtime = Unmanaged<GhosttyRuntime>.fromOpaque(ghostty_app_userdata(ghostty_surface_app(original.surface)!)!).takeUnretainedValue()
-            guard let fixture = PaneView(runtime: runtime, pane: original.pane, font: original.font, onInput: { _ in }) else { exit(1) }
+            guard let fixture = PaneView(runtime: runtime, pane: original.pane, font: original.font,
+                                         onInput: { [weak self] in self?.wheelInputs.append($0) }) else { exit(1) }
             window.contentView?.addSubview(fixture)
-            fixture.frame = NSRect(x: -10000, y: -10000, width: fixture.cell.width * 80, height: fixture.cell.height * 24)
+            fixture.renderInsets = PaneLayout.RenderInsets(top: 8, bottom: 8)
+            fixture.frame = NSRect(x: -10000, y: -10000, width: fixture.cell.width * 80, height: fixture.cell.height * 24 + 16)
             fixture.resize(cols: 80, rows: 24)
+            fixture.needsLayout = true
+            fixture.layout()
+            ghostty_surface_set_occlusion(fixture.surface, true)
             snapFixture = fixture
             DispatchQueue.global().async {
                 let epoch = fixture.historyEpoch
                 guard fixture.feed(Data("\u{1b}c".utf8), kind: .snapshot, epoch: epoch), fixture.commitSnapshot(epoch: epoch) else { exit(1) }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.verifySnap(index) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.verifyWheelOwnership(fixture) { self.verifySnap(index) } }
             }
             return
         }
         if index == 0 {
             for pane in (window.contentView.map(views) ?? []).compactMap({ $0 as? PaneView }).filter({ $0 !== snapFixture }) {
-                let position = pane.scrollPosition(), loaded = position.history
+                let position = pane.scrollPosition(), loaded = position.retainedHistoryRows
                 guard loaded > 0 else { exit(1) }
                 for total in [loaded + 10000, loaded, max(1, loaded - 100)] {
-                    pane.updateScroller(history: total, position: position, alternate: false)
+                    pane.updateScroller(sampledTmuxHistoryRows: total, position: position, alternate: false)
                     pane.requestScroll(loaded + 9000)
                     guard pane.scrollTarget == loaded else { exit(1) }
                     pane.requestScroll(loaded)
                     for precise in [true, false] {
                         for _ in 0..<30 {
-                            guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: precise ? .pixel : .line,
-                                                   wheelCount: 1, wheel1: 7, wheel2: 0, wheel3: 0),
-                                  let event = NSEvent(cgEvent: cg) else { exit(1) }
+                            guard let event = pane.wheelEvent(y: 7, precise: precise) else { exit(1) }
                             pane.scrollWheel(with: event)
                             guard pane.scrollTarget == loaded else { exit(1) }
                         }
@@ -402,7 +515,7 @@ typealias AppWindow = StressWindow
             pane.feed(Data(("\u{1b}c" + (0..<500).map { "row\($0)\r\n" }.joined()).utf8))
             DispatchQueue.main.async {
                 let position = pane.scrollPosition()
-                pane.updateScroller(history: position.history, position: position, alternate: false)
+                pane.updateScroller(sampledTmuxHistoryRows: position.retainedHistoryRows, position: position, alternate: false)
                 guard pane.verifyFractionalClick() else {
                     self.log(["fractional-click": "failed"])
                     exit(1)
@@ -646,7 +759,7 @@ typealias AppWindow = StressWindow
             }
         case .scrollRequest:
             pane.requestScroll(random(3) == 0 ? 1000000 : random(1000000))
-            guard (pane.scrollTarget ?? 0) <= pane.scrollPosition().history else { exit(1) }
+            guard (pane.scrollTarget ?? 0) <= pane.scrollPosition().retainedHistoryRows else { exit(1) }
         case .find, .findNext:
             pane.showFind()
             pane.find?.field.stringValue = ["ERROR", "999", "INFO", "DEMO-MARKER", "missing"][random(5)]
