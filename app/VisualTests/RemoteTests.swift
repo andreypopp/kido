@@ -283,11 +283,15 @@ import TmuxControl
             try? fm.removeItem(atPath: root)
             board.releaseGlobally()
         }
+        let launched = try await Child.run(tools.kido, ["server", "--server", root + "/state/kido-app"], env: tools.environment.merging(env) { _, new in new })
+        XCTAssertEqual(launched.status, 0, launched.err)
+        let clipboardModeBeforeAttach = try await Child.run(tools.tmux, ["-S", root + "/state/kido-app/socket", "show", "-sv", "get-clipboard"])
+        XCTAssertEqual(clipboardModeBeforeAttach.status, 0, clipboardModeBeforeAttach.err)
         owner.start()
         try await until("OSC52 private SSH window connected") { owner.testConnection != nil && owner.testBanner.isHidden }
         let pane = try XCTUnwrap(owner.testSession?.windows.values.first?.panes.first)
         let clipboardMode = await replies(owner, [Command("show", "-sv", "get-clipboard")])
-        XCTAssertEqual(clipboardMode, [.success(["off"])])
+        XCTAssertEqual(clipboardMode, [.success([clipboardModeBeforeAttach.out.trimmingCharacters(in: .whitespacesAndNewlines)])])
         WindowOwner.clipboardConsent.allowAlways(owner.host)
         board.clearContents()
         board.setString("before remote copy", forType: .string)
