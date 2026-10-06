@@ -104,13 +104,23 @@ System `/usr/bin/ssh` supplies one retained foreground `-M -N -T` master per
 native remote window. Its unique `/tmp/ka-…/c` ControlPath directory is 0700.
 Bounded `-O check` readiness precedes discovery. BatchMode, strict pretrusted
 host keys, ConnectTimeout=10, one attempt and keepalive=15×3 apply to all
-channels. Agent/X11/inherited forwarding, tty, RemoteCommand, ControlPersist,
+channels. X11/inherited port forwarding, tty, RemoteCommand, ControlPersist,
 fork-after-authentication, null stdin, LocalCommand, SendEnv and host-key
 updates are disabled. User/account/port/identity/ProxyJump and configured
-known_hosts remain OpenSSH's responsibility; local SSH_AUTH_SOCK can authenticate
-but is not forwarded. Authentication/trust failures stop automatic setup and
+known_hosts remain OpenSSH's responsibility. The master and control session
+honor per-host ForwardAgent from the user's SSH config, including socket paths
+and IdentityAgent selection; helpers force forwarding off and scrub incoming
+remote SSH_AUTH_SOCK. Authentication/trust failures stop automatic setup and
 ask the user to establish trust/unlock keys with ordinary ssh in Terminal.
 No passwords, credentials, interactive shell sourcing or automatic installation.
+
+Remote servers start with SSH_AUTH_SOCK pointing to their state directory's
+stable `agent.sock`. Before attaching, the control session validates that directory
+as user-owned and 0700, atomically publishes a symlink to its forwarded socket
+when available, and supplies the stable path to both tmux's global environment
+and the attaching client. Across windows and Macs, the last successful publication
+wins; an attach without forwarding leaves the link alone, and a dead winner
+leaves a dangling link with no fallback.
 
 Discovery runs a fixed `/bin/sh` probe remotely: absolute `command -v kido`
 and `${XDG_STATE_HOME:-$HOME/.local/state}/kido-app`. Missing kido gives an
