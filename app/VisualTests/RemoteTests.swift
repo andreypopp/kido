@@ -25,6 +25,122 @@ import TmuxControl
         XCTAssertEqual(requests, [.local, .remote("localhost")])
     }
 
+    func testAgentLaunchPolicy() async throws {
+        let root = "/tmp/kr-policy-" + UUID().uuidString.prefix(8)
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let configuration = root + "/config"
+        let policies = [("omitted", "", "no"), ("off", "ForwardAgent no", "no"), ("on", "ForwardAgent yes", "yes"),
+                        ("path", "ForwardAgent /tmp/private-agent.sock", "/tmp/private-agent.sock"),
+                        ("variable", "ForwardAgent $PRIVATE_AGENT", "$PRIVATE_AGENT"),
+                        ("identity", "ForwardAgent yes\n IdentityAgent /tmp/identity.sock", "yes"),
+                        ("none", "ForwardAgent yes\n IdentityAgent none", "yes")]
+        try policies.map { "Host \($0.0)\n HostName example.invalid\n \($0.1)\n" }.joined().write(toFile: configuration, atomically: true, encoding: .utf8)
+        let options = SSH.options + ["-F", configuration]
+        XCTAssertFalse(SSH.options.contains("ForwardAgent=no"))
+        for (host, _, policy) in policies {
+            let result = try await Child.run("/usr/bin/ssh", options + ["-G", "--", host], env: tools.environment.merging(["PRIVATE_AGENT": "/tmp/private-agent.sock"]) { _, new in new })
+            XCTAssertEqual(result.status, 0, result.err)
+            XCTAssertTrue(result.out.components(separatedBy: "\n").contains("forwardagent " + policy), result.out)
+            XCTAssertTrue(result.out.contains("clearallforwardings yes"))
+            let ssh = try SSH(host)
+            ssh.testConfiguration = configuration
+            addTeardownBlock { @MainActor in ssh.stop() }
+            let helper = ssh.passenger(["/usr/bin/printf", "%s", "a'b $c"])
+            XCTAssertTrue(helper.arguments.contains("ForwardAgent=no"))
+            XCTAssertEqual(helper.arguments.last, "exec '/usr/bin/env' '-u' 'SSH_AUTH_SOCK' '/usr/bin/printf' '%s' 'a'\"'\"'b $c'")
+            let endpoint = Endpoint(server: Server(tmux: "/tmp/tmux ' $tool", socket: "/tmp/state ' $dir/socket", protocolVersion: .required), kido: "/tmp/kido")
+            let attach = [endpoint.server.tmux] + Launch.attach(endpoint.server.tmux, socket: endpoint.server.socket).arguments
+            let control = ssh.passenger(attach, control: endpoint)
+            XCTAssertFalse(control.arguments.contains("ForwardAgent=no"))
+            XCTAssertEqual(control.arguments.last, "exec " + (["/bin/sh", "-c", SSH.attachScript, "kido-agent", endpoint.directory, endpoint.server.socket] + attach).map(SSH.quote).joined(separator: " "))
+            XCTAssertTrue(control.arguments.contains("ClearAllForwardings=yes"))
+        }
+        var launches: [[String]] = []
+        let endpoint = try await Server.locate(prepare: { arguments in
+            launches.append(arguments)
+            let output = arguments.first == "/bin/sh" ? "/tmp/kido\n/tmp/state ' $dir/kido-app\n" : "{\"tmux\":\"/tmp/tmux\",\"socket\":\"/tmp/state ' $dir/kido-app/socket\",\"server\":\"1.0\",\"protocol\":\"1.0\"}\n"
+            return Launch("/usr/bin/printf", ["%s", output])
+        })
+        XCTAssertEqual(launches.last, ["/usr/bin/env", "SSH_AUTH_SOCK=" + endpoint.directory + "/agent.sock", "/tmp/kido", "server", "--server", endpoint.directory])
+    }
+
+    func testPrivateAgentPublication() async throws {
+        let root = "/tmp/kr-agent-" + UUID().uuidString.prefix(8)
+        let fm = FileManager.default
+        try fm.createDirectory(atPath: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let dir = root + "/state ' $d", socket = dir + "/socket", stable = dir + "/agent.sock"
+        try fm.createDirectory(atPath: dir, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let environment = tools.environment.filter { $0.key != "SSH_AUTH_SOCK" && $0.key != "SSH_AGENT_PID" }
+        var agents: [Child] = []
+        var controls: [Child] = []
+        addTeardownBlock { @MainActor in
+            controls.forEach { $0.stop() }
+            _ = try? await Child.run(tools.tmux, ["-u", "-S", socket, "kill-session", "-t", "main"], env: environment)
+            agents.forEach { $0.stop() }
+            defer { try? fm.removeItem(atPath: root) }
+            try await self.until("private agents and controls exit", seconds: 5) { !(agents + controls).contains { $0.process.isRunning } }
+            XCTAssertFalse((agents + controls).contains { $0.process.isRunning })
+        }
+        for name in ["a", "b"] {
+            let agent = try Child("/usr/bin/ssh-agent", ["-D", "-a", root + "/" + name + ".sock"], env: environment, stdout: Pipe())
+            agents.append(agent)
+            try await until("private agent socket", seconds: 5) { fm.fileExists(atPath: root + "/" + name + ".sock") }
+            let key = root + "/key-" + name
+            let generated = try await Child.run("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "private-test-" + name, "-f", key], env: environment)
+            XCTAssertEqual(generated.status, 0, generated.err)
+            let added = try await Child.run("/usr/bin/ssh-add", [key], env: environment.merging(["SSH_AUTH_SOCK": root + "/" + name + ".sock"]) { _, new in new })
+            XCTAssertEqual(added.status, 0, added.err)
+        }
+        let initial = root + "/initial"
+        let initialCommand = "printf '%s' \"$SSH_AUTH_SOCK\" > " + SSH.quote(initial) + "; exec /bin/sleep 60"
+        let started = try await Child.run(tools.tmux, ["-u", "-S", socket, "-f", "/dev/null", "new-session", "-d", "-s", "main", initialCommand], env: environment.merging(["SSH_AUTH_SOCK": stable]) { _, new in new })
+        XCTAssertEqual(started.status, 0, started.err)
+        try await until("first shell has stable path", seconds: 5) { fm.fileExists(atPath: initial) }
+        XCTAssertEqual(try String(contentsOfFile: initial, encoding: .utf8), stable)
+        XCTAssertFalse(fm.fileExists(atPath: stable))
+        for (index, forwarded) in [root + "/a.sock", root + "/b.sock", ""].enumerated() {
+            let input = Pipe()
+            let args = ["-c", SSH.attachScript, "kido-agent", dir, socket, tools.tmux] + Launch.attach(tools.tmux, socket: socket, session: "main").arguments
+            let env = forwarded.isEmpty ? environment : environment.merging(["SSH_AUTH_SOCK": forwarded]) { _, new in new }
+            let control = try Child("/bin/sh", args, env: env, stdin: input, stdout: Pipe())
+            controls.append(control)
+            let windowFile = root + "/window-\(index)", paneFile = root + "/pane-\(index)"
+            let windowCommand = "printf '%s' \"$SSH_AUTH_SOCK\" > " + SSH.quote(windowFile) + "; exec /bin/sleep 60"
+            let paneCommand = "printf '%s' \"$SSH_AUTH_SOCK\" > " + SSH.quote(paneFile) + "; exec /bin/sleep 60"
+            let commands = [Command("new-window", "-d", "-t", "main", windowCommand),
+                            Command("split-window", "-d", "-t", "main:0", paneCommand),
+                            Command("detach-client")].map(\.line).joined(separator: "\n") + "\n"
+            try input.fileHandleForWriting.write(contentsOf: Data(commands.utf8))
+            try await until("private attach exits", seconds: 5) { !control.process.isRunning }
+            XCTAssertEqual(control.process.terminationStatus, 0, control.stderr)
+            try await until("new pane and window inherited stable path", seconds: 5) { fm.fileExists(atPath: paneFile) && fm.fileExists(atPath: windowFile) }
+            XCTAssertEqual(try String(contentsOfFile: windowFile, encoding: .utf8), stable)
+            XCTAssertEqual(try String(contentsOfFile: paneFile, encoding: .utf8), stable)
+            XCTAssertEqual(try fm.destinationOfSymbolicLink(atPath: stable), index == 0 ? root + "/a.sock" : root + "/b.sock")
+            let listed = try await Child.run("/usr/bin/ssh-add", ["-l"], env: environment.merging(["SSH_AUTH_SOCK": stable]) { _, new in new })
+            XCTAssertEqual(listed.status, 0, listed.err)
+            XCTAssertTrue(listed.out.contains(index == 0 ? "private-test-a" : "private-test-b"))
+            XCTAssertFalse(listed.out.contains(index == 0 ? "private-test-b" : "private-test-a"))
+        }
+        agents[1].stop()
+        try await until("winning private agent exits", seconds: 5) { !agents[1].process.isRunning }
+        let dangling = try await Child.run("/usr/bin/ssh-add", ["-l"], env: environment.merging(["SSH_AUTH_SOCK": stable]) { _, new in new })
+        XCTAssertEqual(dangling.status, 2, dangling.err)
+        XCTAssertTrue(agents[0].process.isRunning, "the previous agent is live but never a fallback")
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir)
+        let refused = try await Child.run("/bin/sh", ["-c", SSH.attachScript, "kido-agent", dir, socket, tools.tmux, "-V"], env: environment.merging(["SSH_AUTH_SOCK": root + "/a.sock"]) { _, new in new })
+        XCTAssertEqual(refused.status, 1)
+        XCTAssertEqual(refused.err, "Kido agent setup refused")
+        XCTAssertEqual(try fm.destinationOfSymbolicLink(atPath: stable), root + "/b.sock")
+        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir)
+        try fm.removeItem(atPath: stable)
+        try "unrelated".write(toFile: stable, atomically: true, encoding: .utf8)
+        let unrelated = try await Child.run("/bin/sh", ["-c", SSH.attachScript, "kido-agent", dir, socket, tools.tmux, "-V"], env: environment.merging(["SSH_AUTH_SOCK": root + "/a.sock"]) { _, new in new })
+        XCTAssertEqual(unrelated.status, 1)
+        XCTAssertEqual(try String(contentsOfFile: stable, encoding: .utf8), "unrelated")
+    }
+
     func testConnectURLs() throws {
         for (url, host) in [("kido-app://localhost", "localhost"),
                             ("kido-app://localhost/", "localhost"),
@@ -144,7 +260,7 @@ import TmuxControl
     }
 
     func testOSC52LocalhostRemoteWindow() async throws {
-        let trust = try await Child.run("/usr/bin/ssh", SSH.options + ["-o", "ControlMaster=no", "-S", "none", "-T", "--", "localhost", "exec /usr/bin/true"])
+        let trust = try await Child.run("/usr/bin/ssh", SSH.options + ["-o", "ForwardAgent=no","-o", "ControlMaster=no", "-S", "none", "-T", "--", "localhost", "exec /usr/bin/true"])
         guard trust.status == 0 else { throw XCTSkip("Prepared BatchMode localhost unavailable: \(trust.err)") }
         let root = "/tmp/kr-osc52-" + UUID().uuidString.prefix(8)
         let fm = FileManager.default
@@ -158,6 +274,9 @@ import TmuxControl
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
         let owner = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
         owner.testRemoteEnvironment = env
+        let config = root + "/ssh.conf"
+        try "Host localhost\n  ForwardAgent no\n".write(toFile: config, atomically: true, encoding: .utf8)
+        owner.testSSHConfiguration = config
         addTeardownBlock { @MainActor in
             owner.close()
             _ = try? await Child.run(tools.tmux, ["-S", root + "/state/kido-app/socket", "kill-server"])
@@ -189,7 +308,7 @@ import TmuxControl
     }
 
     func testLocalhostWindowsAndRecovery() async throws {
-        let trust = try await Child.run("/usr/bin/ssh", SSH.options + ["-o", "ControlMaster=no", "-S", "none", "-T", "--", "localhost", "exec /usr/bin/true"])
+        let trust = try await Child.run("/usr/bin/ssh", SSH.options + ["-o", "ForwardAgent=no","-o", "ControlMaster=no", "-S", "none", "-T", "--", "localhost", "exec /usr/bin/true"])
         guard trust.status == 0 else { throw XCTSkip("Prepared BatchMode localhost unavailable: \(trust.err)") }
         let root = "/tmp/kr-" + UUID().uuidString.prefix(8)
         let fm = FileManager.default
@@ -203,7 +322,7 @@ import TmuxControl
         let env = ["HOME": root + "/home", "XDG_STATE_HOME": state, "PATH": root + "/bin:/usr/bin:/bin:/usr/sbin:/sbin"]
         var owners: [WindowOwner] = []
         var transports: [SSH] = []
-        let cleanup = SSH.options + ["-S", "none", "-o", "ControlMaster=no", "-T", "--", "localhost"]
+        let cleanup = SSH.options + ["-o", "ForwardAgent=no", "-S", "none", "-o", "ControlMaster=no", "-T", "--", "localhost"]
         addTeardownBlock { @MainActor in
             owners.forEach { $0.close() }
             for socket in [state + "/kido-app/socket", root + "/local/socket"] {
@@ -222,7 +341,7 @@ import TmuxControl
         try ("#!/bin/sh\necho attempt >> " + SSH.quote(root + "/attempts") + "\nexit 1\n").write(toFile: refusal, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: refusal)
         let config = root + "/ssh.conf"
-        let normal = "Host localhost\n  HostName localhost\n"
+        let normal = "Host localhost\n  HostName localhost\n  ForwardAgent no\n"
         try normal.write(toFile: config, atomically: true, encoding: .utf8)
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))))
         let routes = WindowRoutes()
@@ -303,6 +422,7 @@ import TmuxControl
         let transport = try SSH("localhost")
         transports.append(transport)
         transport.testEnvironment(env)
+        transport.testConfiguration = config
         try await transport.start { _ in }
         let quoted = try await Child.run(transport.launch(["/usr/bin/printf", "%s", "space $literal ' quote ☃"]))
         XCTAssertEqual(quoted.out, "space $literal ' quote ☃")
@@ -310,6 +430,7 @@ import TmuxControl
         _ = try await Child.run(transport.launch([tools.tmux, "-u", "-S", socket, "set-environment", "-g", "KIDO_PROTOCOL", "9.9"]))
         let mismatch = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
         mismatch.testRemoteEnvironment = env
+        mismatch.testSSHConfiguration = config
         owners.append(mismatch)
         mismatch.start()
         try await until("remote mismatch alert") { mismatch.preparedAlert != nil }
@@ -339,6 +460,7 @@ import TmuxControl
         try await until("Reconnect rediscovers compatible protocol") { mismatch.testBanner.isHidden }
         transports += owners.compactMap(\.ssh)
         let missing = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
+        missing.testSSHConfiguration = config
         missing.testRemoteEnvironment = env.merging(["PATH": "/usr/bin:/bin"]) { _, new in new }
         owners.append(missing)
         missing.start()
@@ -347,7 +469,7 @@ import TmuxControl
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertEqual(missing.generation, terminalGeneration, "missing kido is terminal, not an automatic retry")
         let untrustedConfig = root + "/untrusted.conf"
-        try "Host localhost\n  UserKnownHostsFile /dev/null\n  GlobalKnownHostsFile /dev/null\n".write(toFile: untrustedConfig, atomically: true, encoding: .utf8)
+        try "Host localhost\n  ForwardAgent no\n  UserKnownHostsFile /dev/null\n  GlobalKnownHostsFile /dev/null\n".write(toFile: untrustedConfig, atomically: true, encoding: .utf8)
         let untrusted = WindowOwner(host: .remote("localhost"), runtime: runtime, start: false)
         untrusted.testSSHConfiguration = untrustedConfig
         untrusted.testRemoteEnvironment = env
