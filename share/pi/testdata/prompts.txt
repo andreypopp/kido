@@ -225,7 +225,7 @@ parameters:
 description:
 
 ```
-Put a question needing the user's decision into kido's tracked asks and return its short id. replaces rewords an existing ask, keeping its id; an unknown id is an error. Top-level agents only.
+Put a question needing the user's decision into kido's tracked asks and return its short id. Call this whenever your reply ends with a decision the user must make. replaces rewords an existing ask, keeping its id; an unknown id is an error. Top-level agents only.
 ```
 
 promptSnippet:

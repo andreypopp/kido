@@ -1479,7 +1479,7 @@ export default function (pi: ExtensionAPI) {
           name: "ask_user",
           exposure: isSubagent() ? "hidden" : "direct",
           label: "Ask User",
-          description: "Put a question needing the user's decision into kido's tracked asks and return its short id. replaces rewords an existing ask, keeping its id; an unknown id is an error. Top-level agents only.",
+          description: "Put a question needing the user's decision into kido's tracked asks and return its short id. Call this whenever your reply ends with a decision the user must make. replaces rewords an existing ask, keeping its id; an unknown id is an error. Top-level agents only.",
           promptSnippet: "ask_user(text, replaces?) - track a question that needs the user's decision",
           promptGuidelines: [
             "Use ask_user for each decision that needs the user, one decision per ask, so each can be answered and removed on its own. Status updates, FYIs and 'should I continue?' are not asks.",
