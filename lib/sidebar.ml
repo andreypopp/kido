@@ -524,7 +524,7 @@ let order_windows_by_tree windows states lingering =
 let windows_in_order panes states lingering =
   List.concat_map
     (fun (s : P.session) ->
-      List.map (fun p -> p.panes) (order_windows_by_tree s.windows states lingering))
+      List.map (fun p -> (p.panes, p.anchor)) (order_windows_by_tree s.windows states lingering))
     (P.order_sessions panes)
 
 let switch_window ~socket ~dir ~client ~next =

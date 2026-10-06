@@ -35,6 +35,9 @@ Stdin is one JSON object per line. {"filter":"text"} sets the filter;
 {"filter":""} clears it. Neither replies.
 {"id":7,"switch-window":{"direction":"next"}} or direction "prev" uses the
 same fresh-state flat tree ordering and eligible windows as the CLI.
+Prev from a hoisted window targets its direct parent window, including a
+hoisted parent. Otherwise both directions skip run-marked windows and wrap
+across sessions; next from a hoisted window follows that same walk.
 A successful switch replies
 {"reply":{"id":7,"switched":{"session":"$3","window":"@12"}}}.
 {"id":7,"switch-session":{"direction":"next"}} or direction "prev" uses the

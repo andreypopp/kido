@@ -354,6 +354,21 @@ func TestSwitchWindowFromHoistedSubagent(t *testing.T) {
 	h.waitWindow("a", "a0")
 }
 
+func TestSwitchWindowPrevFromNestedRun(t *testing.T) {
+	t.Parallel()
+	h := start(t, "a")
+	h.renameWindow("a", 0, "root")
+	h.liveParent("a", "root-session")
+	h.subagentWindow("a", "child", "child-session", "root-session")
+	h.subagentWindow("a", "grandchild", "grandchild-session", "child-session")
+
+	h.selectWindow("a", "grandchild")
+	h.runSwitchWindow("prev")
+	h.waitWindow("a", "child")
+	h.runSwitchWindow("prev")
+	h.waitWindow("a", "root")
+}
+
 // An explicit server wins over a private default with no running server.
 func TestSwitchWindowSocket(t *testing.T) {
 	t.Parallel()

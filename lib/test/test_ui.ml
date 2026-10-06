@@ -412,6 +412,52 @@ let%expect_test "order_windows_by_tree: the lingering fallback, and a record bea
     @kid2 anchor=%101
     |}]
 
+let%expect_test "window targets: prev follows the direct anchor, next skips marked windows" =
+  let windows =
+    Sidebar.windows_in_order
+      (List.concat
+         [
+           w "root";
+           w "other";
+           w ~run:"child1" "child1";
+           w ~run:"child2" "child2";
+           w ~run:"grandchild" "grandchild";
+         ])
+      (states
+         [
+           ("%root", ("root-session", session ""));
+           ("%child1", ("child1-session", session ~parent:"root-session" ""));
+           ("%child2", ("child2-session", session ~parent:"root-session" ""));
+           ("%grandchild", ("grandchild-session", session ~parent:"child2-session" ""));
+         ])
+      State.String_map.empty
+  in
+  List.iter
+    (fun (next, window) ->
+      Printf.printf "%s %s -> %s\n"
+        (if next then "next" else "prev")
+        window
+        (Option.map_or ~default:"-"
+           (fun (p : Tmux.Pane.t) -> p.window_id)
+           (Tmux.Exec.window_target ~next ~window:("@" ^ window) windows)))
+    [
+      (false, "other");
+      (false, "root");
+      (false, "child2");
+      (false, "grandchild");
+      (true, "child2");
+      (true, "root");
+    ];
+  [%expect
+    {|
+    prev other -> @root
+    prev root -> @other
+    prev child2 -> @root
+    prev grandchild -> @child2
+    next child2 -> @other
+    next root -> @other
+    |}]
+
 let new_run ~dir ?(parent = "") ?(kind = Subrun.Agent) ?result name =
   let id = Subrun.new_id () in
   Subrun.create ~dir id "task";

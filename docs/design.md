@@ -850,7 +850,7 @@ last-window refusal.
 `@kido_run` being pane-scoped is what hands the window back with no
 separate unmark step: kill the run's pane and the option is gone with
 it, since it never lived anywhere else. Every other reader keys on it:
-the tree nests the window under its parent, `switch-window` skips it,
+the tree nests the window under its parent, top-level window cycling skips it,
 the sidebar draws the run's label on it, and a later sweep would
 consider it again. With the pane gone the window is drawn as the plain
 window it is, with whatever the user left in it. The same holds for a
@@ -1579,13 +1579,14 @@ own window order: a subagent's window can sit above a lower-numbered one,
 and a parent's later panes sit below a whole foreign window. That is the
 trade, not a bug - the spawn tree is what the sidebar is for. `kido
 switch-window` (S-Up/S-Down) walks the sidebar's order, not tmux's, so
-cycling from a hoisted window moves to the row below it on screen.
+next from a hoisted window moves to the following unmarked window, while
+prev returns to its direct parent window, even when that parent is hoisted.
 The command prints `<session_id> <window_id>` followed by a newline when
 it switches the client, and nothing when there is no target to switch to. It
 skips a subagent's window on purpose - the user asked to cycle top-level
 windows, keyed off the same run pane (`@kido_run`) `Reap.sweep` uses and
 for the same reason - so a hoisted window is reachable through the
-sidebar and not by cycling. The walk also draws as a root
+sidebar and by prev from its own child, not by top-level cycling. The walk also draws as a root
 anything whose anchor row never appeared, for the same reason the
 ordering emits what it missed: a dropped row is an agent nobody can see.
 

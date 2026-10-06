@@ -209,47 +209,59 @@ let switch_session ~socket ~client ~next =
         | None -> Ok None)
     (list_panes ?socket ())
 
-let switch_window ?socket ~client ~next windows =
-  let panes = List.concat windows in
+let window_target ~next ~window windows =
+  let panes = List.concat_map fst windows in
   let windows = Array.of_list windows in
-  let first (w : Pane.t list) = List.hd w in
+  let first ((w : Pane.t list), _) = List.hd w in
   let n = Array.length windows in
-  let active =
-    Option.flat_map
-      (fun c ->
-        List.find_opt (fun (p : Pane.t) -> String.equal p.session_name c.session && p.active) panes)
-      (client_state ?socket client)
-  in
-  let unmarked j = List.for_all (fun (p : Pane.t) -> Option.is_none p.run) windows.(j) in
+  let unmarked j = List.for_all (fun (p : Pane.t) -> Option.is_none p.run) (fst windows.(j)) in
   let rec find j k =
     if k = 0 then None else if unmarked j then Some j else find (step ~next j n) (k - 1)
   in
-  match
+  match Array.find_idx (fun w -> String.equal (first w).window_id window) windows with
+  | None -> None
+  | Some (i, (_, anchor)) -> (
+      match
+        if next then None
+        else
+          Option.flat_map
+            (fun anchor -> List.find_opt (fun (p : Pane.t) -> String.equal p.pane_id anchor) panes)
+            anchor
+      with
+      | Some parent -> Some parent
+      | None -> (
+          match find (step ~next i n) n with
+          | Some j when j <> i -> Some (first windows.(j))
+          | _ -> None))
+
+let switch_window ?socket ~client ~next windows =
+  let active =
     Option.flat_map
-      (fun (a : Pane.t) ->
-        Array.find_idx (fun w -> String.equal (first w).window_id a.window_id) windows)
-      active
+      (fun c ->
+        List.find_opt
+          (fun (p : Pane.t) -> String.equal p.session_name c.session && p.active)
+          (List.concat_map fst windows))
+      (client_state ?socket client)
+  in
+  match
+    Option.flat_map (fun (a : Pane.t) -> window_target ~next ~window:a.window_id windows) active
   with
+  | Some target ->
+      Result.map
+        (fun () -> Some (target.session_id, target.window_id))
+        (run ?socket
+           [
+             "switch-client";
+             "-c";
+             client;
+             "-t";
+             target.session_id;
+             ";";
+             "select-window";
+             "-t";
+             target.window_id;
+           ])
   | None -> Ok None
-  | Some (i, _) -> (
-      match find (step ~next i n) n with
-      | Some j when j <> i ->
-          let target = first windows.(j) in
-          Result.map
-            (fun () -> Some (target.session_id, target.window_id))
-            (run ?socket
-               [
-                 "switch-client";
-                 "-c";
-                 client;
-                 "-t";
-                 target.session_id;
-                 ";";
-                 "select-window";
-                 "-t";
-                 target.window_id;
-               ])
-      | _ -> Ok None)
 
 let release_args client = [ "refresh-client"; "-t"; client; "-f"; "!" ^ side_focus_flag ]
 

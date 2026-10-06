@@ -32,11 +32,14 @@ val resolve_client : pane:string -> tmux_env:string -> string option
 val switch_session :
   socket:string option -> client:string -> next:bool -> ((string * string) option, string) result
 
+val window_target :
+  next:bool -> window:string -> (Pane.t list * string option) list -> Pane.t option
+
 val switch_window :
   ?socket:string ->
   client:string ->
   next:bool ->
-  Pane.t list list ->
+  (Pane.t list * string option) list ->
   ((string * string) option, string) result
 
 val jump : client:string -> string -> (unit, string) result

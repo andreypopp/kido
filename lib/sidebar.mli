@@ -119,7 +119,7 @@ val windows_in_order :
   Tmux.Pane.t list ->
   (string * State.session) String_map.t ->
   lingering String_map.t ->
-  Tmux.Pane.t list list
+  (Tmux.Pane.t list * string option) list
 
 val switch_window :
   socket:string option ->
