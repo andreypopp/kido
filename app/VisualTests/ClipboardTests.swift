@@ -105,9 +105,10 @@ import XCTest
         owner.window.makeFirstResponder(pane)
         let paste = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
                                                   windowNumber: owner.window.windowNumber, context: nil, characters: "v", charactersIgnoringModifiers: "v", isARepeat: false, keyCode: 9))
+        let pasteStart = replies.count
         XCTAssertTrue(pane.performKeyEquivalent(with: paste))
         try await drain()
-        XCTAssertEqual(replies.last, Data("\u{1b}[200~Cmd-V ✓\ntext\u{1b}[201~".utf8))
+        XCTAssertEqual(Data(replies.dropFirst(pasteStart).joined()), Data("\u{1b}[200~Cmd-V ✓\ntext\u{1b}[201~".utf8))
         let finalCount = replies.count
         pane.invalidateClipboard()
         query()
