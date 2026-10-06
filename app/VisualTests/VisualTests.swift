@@ -641,6 +641,63 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         try await snapshot("float-top")
     }
 
+    func testEmptyPaneWheelDoesNotFloodMetadata() async throws {
+        try await start()
+        let pane = try XCTUnwrap(terminal?.panes.first)
+        XCTAssertEqual(pane.scrollPosition().retainedHistoryRows, 0)
+        XCTAssertFalse(window.isKeyWindow)
+        XCTAssertFalse(NSApp.isActive)
+        let queries = connection.visualMetadataQueries
+        let revision = pane.scrollRevision
+        for _ in 0..<30 {
+            pane.scrollWheel(with: try XCTUnwrap(pane.wheelEvent(y: 1)))
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        try await settle()
+        XCTAssertEqual(connection.visualMetadataQueries - queries, 0, "idle empty wheel gesture must not query tmux metadata")
+        XCTAssertEqual(pane.scrollRevision, revision, "clamped wheel packets must not invalidate an already-applied viewport")
+    }
+
+    func testFirstWheelWithZeroSampleRendersFractionalFrame() async throws {
+        try await start()
+        let original = try XCTUnwrap(terminal?.panes.first)
+        var input = Data()
+        var pane: PaneView? = try XCTUnwrap(PaneView(runtime: runtime, pane: original.pane, font: original.font,
+                                         onInput: { input.append($0) }))
+        window.contentView?.addSubview(pane!)
+        defer { pane?.dispose(); pane?.removeFromSuperview() }
+        pane!.frame = NSRect(x: -10000, y: -10000, width: pane!.cell.width * 80, height: pane!.cell.height * 24)
+        pane!.resize(cols: 80, rows: 24)
+        pane!.needsLayout = true
+        pane!.layout()
+        XCTAssertGreaterThan(pane!.wheelRowHeight, 1)
+        XCTAssertTrue(pane!.feed(Data("\u{1b}c".utf8), kind: .snapshot, epoch: pane!.historyEpoch))
+        XCTAssertTrue(pane!.commitSnapshot(epoch: pane!.historyEpoch))
+        try await settle()
+        pane!.updateScroller(sampledTmuxHistoryRows: 0, position: pane!.scrollPosition(), alternate: false)
+        XCTAssertEqual(pane!.scrollPosition().retainedHistoryRows, 0)
+        XCTAssertTrue(pane!.feed(Data((0..<200).map { "live\($0)\r\n" }.joined().utf8), kind: .live, epoch: pane!.historyEpoch))
+        try await wait("live retained rows and frame") { pane!.scrollPosition().retainedHistoryRows > 0 && pane!.renderedPixels != nil }
+        try await settle()
+        let before = pane!.renderedPixels
+        let event = try XCTUnwrap(pane!.wheelEvent(y: 1))
+        XCTAssertTrue(event.hasPreciseScrollingDeltas)
+        pane!.scrollWheel(with: event)
+        let target = try XCTUnwrap(pane!.wheelDistance)
+        XCTAssertGreaterThan(target, 0)
+        XCTAssertLessThan(target, 1)
+        try await wait("fractional wheel frame applied") {
+            let state = pane!.finalRenderDiagnostics
+            return state["revision"] as? Int == state["applied-revision"] as? Int && pane!.renderedPixels != before
+        }
+        XCTAssertTrue(input.isEmpty)
+        weak let released = pane
+        pane?.dispose()
+        pane?.removeFromSuperview()
+        pane = nil
+        try await wait("wheel fixture surface freed") { released == nil }
+    }
+
     func testFractionalAlternateResizeDark() async throws {
         try await start(dark: true)
         try await paint(lines: 200)
@@ -667,18 +724,18 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         connection.sync(pane.pane) { restored.fulfill() }
         await fulfillment(of: [restored], timeout: 20)
         try await settle()
-        XCTAssertEqual(pane.scrollPosition().history, historyChunkSize)
+        XCTAssertEqual(pane.scrollPosition().retainedHistoryRows, historyChunkSize)
         pane.requestScroll(historyChunkSize)
         try await wait("100k pill visible") { pane.visualPill }
         pane.onLoadMore()
-        try await wait("pill adds one chunk") { pane.scrollPosition().history == 2 * historyChunkSize }
+        try await wait("pill adds one chunk") { pane.scrollPosition().retainedHistoryRows == 2 * historyChunkSize }
         pane.showFind()
         pane.find?.field.stringValue = "row-12345"
         pane.find?.search()
-        try await wait("find loads deep match") { pane.scrollPosition().history > 80000 }
+        try await wait("find loads deep match") { pane.scrollPosition().retainedHistoryRows > 80000 }
         try await wait("find navigates to deep match") {
             let position = pane.scrollPosition()
-            return position.history - position.offset > 80000
+            return position.retainedHistoryRows - position.offset > 80000
         }
         pane.find?.close()
         pane.requestScroll(5000)
@@ -687,7 +744,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         try await settle()
         XCTAssertEqual(pane.scrollTarget ?? 0, 5000, accuracy: 4)
         pane.onLoadMore()
-        try await wait("older chunk reloaded") { pane.scrollPosition().history == 2 * historyChunkSize }
+        try await wait("older chunk reloaded") { pane.scrollPosition().retainedHistoryRows == 2 * historyChunkSize }
         pane.requestScroll(15000)
         try await settle()
         window.setContentSize(NSSize(width: 700, height: 560))

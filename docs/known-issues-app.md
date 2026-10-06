@@ -197,6 +197,14 @@ The visible effect is chiefly stale Load more availability until refresh;
 hidden panes refresh on show. An exact content invalidation protocol is
 fork-level work. Status: accepted.
 
+## Sub-row wheel remainder can cross program changes
+
+Ghostty resets pending sub-row wheel remainder only when a wheel packet sees
+a different owner. If mouse reporting toggles or one alternate-screen program
+replaces another without a wheel packet between them, a carried half-row can
+make the next small scroll emit one report or key early. This matches upstream.
+Status: accepted.
+
 ## Tmux prefix bindings do not fire
 
 App input is pane input, not tmux client key-table input;
