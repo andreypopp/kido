@@ -75,23 +75,32 @@ import GhosttyKit
             action_cb: { @Sendable app, target, action in
                 GhosttyRuntime.action(app!, target, action)
             },
-            read_clipboard_cb: { @Sendable userdata, _, state in
+            read_clipboard_cb: { @Sendable userdata, _, state, _, _, list in
                 nonisolated(unsafe) let (userdata, state) = (userdata, state)
                 return MainActor.assumeIsolated {
                     let view = Unmanaged<PaneView>.fromOpaque(userdata!).takeUnretainedValue()
-                    guard view.acceptingInput, let state else { return false }
-                    if ghostty_clipboard_request_kind(state) == GHOSTTY_CLIPBOARD_REQUEST_PASTE {
+                    guard view.acceptingInput, let state else { return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE }
+                    switch ghostty_clipboard_request_kind(state) {
+                    case GHOSTTY_CLIPBOARD_REQUEST_PASTE:
                         let text = view.runtime.pasteboard.string(forType: .string) ?? ""
-                        ghostty_surface_complete_clipboard_request(view.surface, text, state, false)
-                    } else { view.requestClipboard(state) }
-                    return true
+                        GhosttyRuntime.completeClipboard(view.surface, text, state, confirmed: false, list: list)
+                    case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ:
+                        view.requestClipboard(state)
+                    default: return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE
+                    }
+                    return GHOSTTY_CLIPBOARD_READ_STARTED
                 }
             },
             // Ghostty asks from the main thread: from a paste binding, or from
             // its app tick for an OSC 52 read.
-            confirm_read_clipboard_cb: { @Sendable userdata, string, state, request in
+            confirm_read_clipboard_cb: { @Sendable userdata, payload, state, request in
                 nonisolated(unsafe) let (userdata, state) = (userdata, state)
-                let text = request == GHOSTTY_CLIPBOARD_REQUEST_PASTE ? string.map { String(cString: $0) } : nil
+                var text: String?
+                if request == GHOSTTY_CLIPBOARD_REQUEST_PASTE, let payload = payload?.pointee, let contents = payload.contents,
+                   let index = (0..<payload.contents_len).first(where: { String(cString: contents[$0].mime) == "text/plain" }) {
+                    let content = contents[index]
+                    text = String(decoding: UnsafeRawBufferPointer(start: content.data, count: content.len), as: UTF8.self)
+                }
                 MainActor.assumeIsolated {
                     let view = Unmanaged<PaneView>.fromOpaque(userdata!).takeUnretainedValue()
                     if let text { view.confirmPaste(text, state) }
@@ -102,8 +111,7 @@ import GhosttyKit
             write_clipboard_cb: { @Sendable userdata, _, content, count, confirm in
                 GhosttyRuntime.writeClipboard(userdata, content, count, confirm)
             },
-            close_surface_cb: { @Sendable userdata, _ in PaneView.onMain(userdata) { $0.onCommand(.close) } },
-            tmux_control_cb: nil)
+            close_surface_cb: { @Sendable userdata, _ in PaneView.onMain(userdata) { $0.onCommand(.close) } })
         guard let new = ghostty_app_new(&runtime, config) else { return nil }
         nonisolated(unsafe) let app = new
         self.app = app
@@ -290,6 +298,22 @@ import GhosttyKit
         }
     }
 
+    static func completeClipboard(_ surface: ghostty_surface_t?, _ text: String, _ state: UnsafeMutableRawPointer?, confirmed: Bool, list: Bool = false) {
+        "text/plain".withCString { mime in
+            text.withCString { bytes in
+                var content = ghostty_clipboard_content_s(mime: mime, data: bytes, len: text.utf8.count)
+                withUnsafePointer(to: &content) { contents in
+                    var available: UnsafePointer<CChar>? = mime
+                    withUnsafePointer(to: &available) { available in
+                        var payload = ghostty_clipboard_complete_s(contents: contents, contents_len: 1,
+                            available: list ? available : nil, available_len: list ? 1 : 0, confirmed: confirmed, remember: false)
+                        ghostty_surface_complete_clipboard_request(surface, &payload, state)
+                    }
+                }
+            }
+        }
+    }
+
     nonisolated private static func writeClipboard(
         _ userdata: UnsafeMutableRawPointer?,
         _ content: UnsafePointer<ghostty_clipboard_content_s>?,
@@ -297,9 +321,12 @@ import GhosttyKit
         _ confirm: Bool
     ) {
         guard !confirm, let content else { return }
-        let text = (0..<count).first { String(cString: content[$0].mime) == "text/plain" }
-            .map { String(cString: content[$0].data) }
-        guard let text, text.utf8.count <= 1_048_576 else { return }
+        guard let index = (0..<count).first(where: { String(cString: content[$0].mime) == "text/plain" }),
+              content[index].len <= 1_048_576 else { return }
+        let bytes = UnsafeRawBufferPointer(start: content[index].data, count: content[index].len)
+        guard !bytes.contains(0) else { return }
+        let text = String(decoding: bytes, as: UTF8.self)
+        guard text.utf8.count <= 1_048_576 else { return }
         PaneView.onMain(userdata) { view in
             guard view.acceptingInput else { return }
             let pasteboard = view.runtime.pasteboard
