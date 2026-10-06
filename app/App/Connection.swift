@@ -1,9 +1,16 @@
 import AppKit
 import GhosttyKit
 import TmuxControl
+#if KIDO_VISUAL
+import os
+#endif
 
 final class Connection: @unchecked Sendable {
     private let client: Client
+    #if KIDO_VISUAL
+    private let metadataQueries = OSAllocatedUnfairLock(initialState: 0)
+    var visualMetadataQueries: Int { metadataQueries.withLock { $0 } }
+    #endif
     private final class PaneFeed: @unchecked Sendable {
         enum Boundary { case older, exhausted(epoch: Int), refused }
         final class RestoreRequest: @unchecked Sendable {
@@ -26,7 +33,7 @@ final class Connection: @unchecked Sendable {
             case stale(since: DispatchTime, restart: DispatchWorkItem?)
         }
         var search: Search?
-        var total = 0
+        var sampledTmuxHistoryRows = 0
         var outputEpoch = 0
         var goal: (distance: Int, token: UUID)?
         var preparingRestore = false
@@ -362,7 +369,7 @@ final class Connection: @unchecked Sendable {
                     return
                 }
                 let position = feed.view.scrollPosition()
-                let distance = feed.view.resizeAnchor?.locate(snapshot.anchorRows).flatMap { $0 <= position.history ? $0 : nil } ?? 0
+                let distance = feed.view.resizeAnchor?.locate(snapshot.anchorRows).flatMap { $0 <= position.retainedHistoryRows ? $0 : nil } ?? 0
                 self.publish(feed, history: history, alternate: ghostty_surface_is_alternate_screen(feed.view.surface), insertionRefused: false)
                 DispatchQueue.main.async { [weak view = feed.view] in
                     guard let view, view.historyEpoch == epoch else { return }
@@ -447,13 +454,16 @@ final class Connection: @unchecked Sendable {
             guard let feed = panes?[pane], !feed.view.resizeDirty else { return }
             if let goal {
                 guard case .scanning(let token, _) = feed.search, token == goal.1 else { return }
-                feed.goal = goal.0 > feed.view.scrollPosition().history ? goal : nil
+                feed.goal = goal.0 > feed.view.scrollPosition().retainedHistoryRows ? goal : nil
                 if feed.goal == nil { return }
             }
             guard case .settled(let availability) = feed.history else { return }
             if !metadataOnly, case .refused = availability { ghostty_surface_raise_scrollback_limit(feed.view.surface) }
             let token = UUID(), epoch = feed.view.historyEpoch
             feed.history = .fetching(token)
+            #if KIDO_VISUAL
+            metadataQueries.withLock { $0 += 1 }
+            #endif
             client.send([Command("display-message", "-p", "-t", pane, "#{history_size} #{alternate_on}")]) {
                 [weak self, weak feed] replies in
                 guard let self, let feed, self.panes?[pane] === feed,
@@ -461,7 +471,7 @@ final class Connection: @unchecked Sendable {
                 defer { if case .settled = feed.history { self.drain(pane, feed) } }
                 guard feed.view.historyEpoch == epoch, !feed.view.resizeDirty,
                       let metadata = HistoryMetadata(replies?.first) else {
-                    self.publish(feed, history: feed.total)
+                    self.publish(feed, history: feed.sampledTmuxHistoryRows)
                     return
                 }
                 if self.repair(feed, metadata: metadata) {
@@ -469,31 +479,31 @@ final class Connection: @unchecked Sendable {
                     return
                 }
                 let position = feed.view.scrollPosition()
-                if metadataOnly || metadata.alternate || metadata.history <= position.history {
+                if metadataOnly || metadata.alternate || metadata.history <= position.retainedHistoryRows {
                     self.publish(feed, history: metadata.history, alternate: metadata.alternate)
                     feed.goal = nil
                     return
                 }
-                feed.total = metadata.history
-                self.fetch(pane, feed, token: token, chunk: min(historyChunkSize, metadata.history - position.history))
+                feed.sampledTmuxHistoryRows = metadata.history
+                self.fetch(pane, feed, token: token, chunk: min(historyChunkSize, metadata.history - position.retainedHistoryRows))
             }
         }
     }
 
     private func fetch(_ pane: PaneID, _ feed: PaneFeed, token: UUID, chunk: Int = historyChunkSize, retries: Int = 0) {
         let position = feed.view.scrollPosition(), epoch = feed.view.historyEpoch
-        debug("resize t=\(ProcessInfo.processInfo.systemUptime) history-page-send pane=\(pane) loaded=\(position.history) chunk=\(chunk)")
-        client.send(HistoryCapture.commands(pane, loaded: position.history, chunk: chunk)) { [weak self, weak feed] replies in
+        debug("resize t=\(ProcessInfo.processInfo.systemUptime) history-page-send pane=\(pane) loaded=\(position.retainedHistoryRows) chunk=\(chunk)")
+        client.send(HistoryCapture.commands(pane, loaded: position.retainedHistoryRows, chunk: chunk)) { [weak self, weak feed] replies in
             guard let self, let feed, self.panes?[pane] === feed,
                   case .fetching(let current) = feed.history, current == token else { return }
             defer { if case .settled = feed.history { self.drain(pane, feed) } }
             guard feed.view.historyEpoch == epoch, !feed.view.resizeDirty, let replies else {
-                self.publish(feed, history: feed.total)
+                self.publish(feed, history: feed.sampledTmuxHistoryRows)
                 return
             }
             let position = feed.view.scrollPosition()
-            guard let capture = HistoryCapture(replies, loaded: position.history) else {
-                self.publish(feed, history: feed.total)
+            guard let capture = HistoryCapture(replies, loaded: position.retainedHistoryRows) else {
+                self.publish(feed, history: feed.sampledTmuxHistoryRows)
                 self.failGoal(feed)
                 self.report("could not load older history for \(pane)")
                 return
@@ -503,12 +513,12 @@ final class Connection: @unchecked Sendable {
                 return
             }
             if capture.alternate { self.publish(feed, history: capture.history, alternate: true); return }
-            if capture.rows == 0 && capture.history > position.history && chunk < capture.history - position.history {
-                return self.fetch(pane, feed, token: token, chunk: min(capture.history - position.history, chunk * 2))
+            if capture.rows == 0 && capture.history > position.retainedHistoryRows && chunk < capture.history - position.retainedHistoryRows {
+                return self.fetch(pane, feed, token: token, chunk: min(capture.history - position.retainedHistoryRows, chunk * 2))
             }
             let added = capture.rows == 0 ? 0 : feed.view.prepend(Data(capture.text.utf8), epoch: epoch)
             guard feed.view.historyEpoch == epoch, !feed.view.resizeDirty else {
-                self.publish(feed, history: feed.total)
+                self.publish(feed, history: feed.sampledTmuxHistoryRows)
                 return
             }
             if capture.rows > 0 && added == 0, feed.goal != nil, retries < 16,
@@ -517,7 +527,7 @@ final class Connection: @unchecked Sendable {
                 return self.fetch(pane, feed, token: token, chunk: chunk, retries: retries + 1)
             }
             let loaded = self.publish(feed, history: capture.history, insertionRefused: capture.rows > 0 && added == 0,
-                                      emptyCaptureChunk: capture.rows == 0 ? chunk : nil).history
+                                      emptyCaptureChunk: capture.rows == 0 ? chunk : nil).retainedHistoryRows
             if let goal = feed.goal, loaded < goal.distance {
                 guard added > 0 else { self.failGoal(feed); return }
                 feed.history = .fetching(token)
@@ -536,25 +546,25 @@ final class Connection: @unchecked Sendable {
                                            insertionRefused: Bool? = nil, emptyCaptureChunk: Int? = nil) -> PaneView.ScrollPosition {
         let position = feed.view.scrollPosition()
         let refused = insertionRefused ?? { if case .settled(.refused) = feed.history { return true }; return false }()
-        let unchangedExhaustion = insertionRefused == nil && history == feed.total && {
+        let unchangedExhaustion = insertionRefused == nil && history == feed.sampledTmuxHistoryRows && {
             if case .settled(.exhausted(let epoch)) = feed.history { return epoch == feed.outputEpoch }
             return false
         }()
-        feed.total = history
-        let exhausted = unchangedExhaustion || alternate || history <= position.history || emptyCaptureChunk.map { $0 >= history - position.history } == true
+        feed.sampledTmuxHistoryRows = history
+        let exhausted = unchangedExhaustion || alternate || history <= position.retainedHistoryRows || emptyCaptureChunk.map { $0 >= history - position.retainedHistoryRows } == true
         feed.history = .settled(exhausted ? .exhausted(epoch: feed.outputEpoch) : refused ? .refused : .older)
         let epoch = feed.view.historyEpoch
         DispatchQueue.main.async { [weak view = feed.view] in
             guard let view, view.historyEpoch == epoch else { return }
-            view.updateScroller(history: history, position: position, alternate: alternate, older: !exhausted)
+            view.updateScroller(sampledTmuxHistoryRows: history, position: position, alternate: alternate, mayHaveOlderHistory: !exhausted)
             view.find?.loaded(position)
         }
         return position
     }
 
     private func repair(_ feed: PaneFeed, metadata: HistoryMetadata) -> Bool {
-        guard metadata.history < feed.total || (!metadata.alternate && metadata.history < feed.view.scrollPosition().history) else { return false }
-        feed.total = metadata.history
+        guard metadata.history < feed.sampledTmuxHistoryRows || (!metadata.alternate && metadata.history < feed.view.scrollPosition().retainedHistoryRows) else { return false }
+        feed.sampledTmuxHistoryRows = metadata.history
         invalidateSearch(feed, restart: false)
         if !feed.view.resizeDirty { feed.view.markContentDirty() }
         DispatchQueue.main.async { [weak view = feed.view] in view?.syncResize() }
