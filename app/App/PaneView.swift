@@ -176,7 +176,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         defer { finishMutation() }
         return bytes.withUnsafeBytes {
             guard let base = $0.baseAddress else { return 0 }
-            return Int(ghostty_surface_prepend_history(surface, base.assumingMemoryBound(to: CChar.self), UInt($0.count)))
+            return Int(ghostty_surface_prepend_history(surface, base.assumingMemoryBound(to: CChar.self), $0.count))
         }
     }
 
@@ -204,7 +204,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
         var value = ghostty_surface_scrollbar_s()
         clearScrollTarget()
         guard ghostty_surface_scrollbar(surface, &value) else { return }
-        _ = ghostty_surface_scroll_to_row_if_revision(surface, UInt64(row), value.row_space_revision, &value)
+        var delta: Int64 = 0
+        _ = ghostty_surface_scroll_to_row_pixel_if_revision(surface, UInt64(row), 0, value.row_space_revision, &value, &delta)
     }
 
     func refreshScroller() {
@@ -283,6 +284,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             if completed { MainActor.assumeIsolated { finalEpoch = nil } }
             return (current, completed)
         }
+        #if KIDO_STRESS
+        finalRenderDisposition = ["token": token, "status": status.rawValue, "geometry": geometry,
+                                  "current": current, "applied": applied, "pixels": pixels, "completed": completed]
+        #endif
         if completed {
             #if KIDO_STRESS
             onFinalRender?()
@@ -420,6 +425,17 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     var failGridInstall = false
     var onFinalRender: (@MainActor @Sendable () -> Void)?
     private var finalRenderCount = 0
+    private var finalRenderDisposition: [String: Any] = [:]
+    var finalRenderDiagnostics: [String: Any] {
+        ["token": rendering?.token ?? renderSequence, "last-disposition": finalRenderDisposition,
+         "status": rendering == nil ? "not-pending" : "awaiting-callback",
+         "epoch": historyEpoch, "final-epoch": String(describing: finalEpoch),
+         "visible": presented.visible, "anchor": resizeAnchor != nil,
+         "distance": String(describing: scrollDistance), "applied-distance": String(describing: scrollPresentation.distance),
+         "revision": scrollRevision, "applied-revision": scrollPresentation.revision,
+         "pending-scroll": String(describing: scrollPending),
+         "replay": scrollIntent.withLock { String(describing: $0.replay) }]
+    }
     var gridReady: Bool { grid.withLock { $0.ready } }
     var renderedPixels: Data? {
         guard let io = installedSurface else { return nil }
@@ -830,7 +846,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
             bytes.withUnsafeBytes { buffer in
                 guard let base = buffer.baseAddress else { return }
                 if kind == .snapshot {
-                    ghostty_surface_restore_output(surface, base.assumingMemoryBound(to: CChar.self), UInt(buffer.count))
+                    ghostty_surface_restore_output(surface, base.assumingMemoryBound(to: CChar.self), buffer.count)
                 } else {
                     ghostty_surface_process_output(surface, base.assumingMemoryBound(to: CChar.self), UInt(buffer.count))
                 }
@@ -975,7 +991,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     private func complete(_ state: UnsafeMutableRawPointer?, _ text: String) {
         resizeAnchor = nil
         snapScroll()
-        ghostty_surface_complete_clipboard_request(surface, text, state, true)
+        GhosttyRuntime.completeClipboard(surface, text, state, confirmed: true)
     }
 
     func requestClipboard(_ state: UnsafeMutableRawPointer?) {
@@ -1007,7 +1023,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient {
     func finishClipboard(_ granted: Bool) {
         guard let state = takeClipboard() else { return }
         let text = granted ? runtime.pasteboard.string(forType: .string) ?? "" : ""
-        ghostty_surface_complete_clipboard_request(surface, text.utf8.count > 1_048_576 || text.utf8.contains(0) ? "" : text, state, true)
+        GhosttyRuntime.completeClipboard(surface, text.utf8.count > 1_048_576 || text.utf8.contains(0) ? "" : text, state, confirmed: true)
     }
 
     func cancelClipboard() {
