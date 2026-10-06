@@ -347,7 +347,7 @@ let switch name doc kind =
          |> Option.get_lazy Tmux.Exec.current_client
        in
        (match kind with
-       | `Session -> ok (Tmux.Exec.switch_session ~socket ~client ~next)
+       | `Session -> ignore (ok (Tmux.Exec.switch_session ~socket ~client ~next))
        | `Window ->
            Option.iter
              (fun (session, window) -> Printf.printf "%s %s\n" session window)
@@ -725,11 +725,15 @@ let rpc =
                  | Line l -> (
                      match Sidebar.command l with
                      | Filter f -> f
-                     | Switch_window (id, next) ->
-                         write
-                           (Yojson.Safe.to_string
-                              (Protocol.reply id
-                                 (Sidebar.switch_window ~socket:(Some socket) ~dir ~client ~next)));
+                     | Switch (id, kind, next) ->
+                         let result =
+                           match kind with
+                           | `Window ->
+                               Sidebar.switch_window ~socket:(Some socket) ~dir ~client ~next
+                           | `Session ->
+                               Tmux.Exec.switch_session ~socket:(Some socket) ~client ~next
+                         in
+                         write (Yojson.Safe.to_string (Protocol.reply id result));
                          search
                      | Invalid (id, error) ->
                          write (Yojson.Safe.to_string (Protocol.reply id (Error error)));

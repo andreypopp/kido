@@ -1,4 +1,4 @@
-# kido rpc protocol 1.0
+# kido rpc protocol 1.1
 
 fork revision: a409a94ae748a30604fae94ad59a2949a0ef7a32
 
@@ -20,9 +20,9 @@ XDG_STATE_HOME/kido, then ~/.local/state/kido. --client names the app's
 control client. Socket paths fit the platform's sun_path including NUL.
 Run outside tmux with no KIDO_AGENT_* environment.
 
-The first stdout line is {"hello":{"protocol":"1.0"}}. A differing or absent
-server stamp produces {"hello":{"protocol":"1.0","server":"other"}} or
-{"hello":{"protocol":"1.0","server":null}}, followed by
+The first stdout line is {"hello":{"protocol":"1.1"}}. A differing or absent
+server stamp produces {"hello":{"protocol":"1.1","server":"other"}} or
+{"hello":{"protocol":"1.1","server":null}}, followed by
 {"error":"server protocol does not match binary protocol"}, then exit 2.
 Exit 0 means stdin EOF. Exit 1 means a missing argument, absent server/client,
 or stdin read error; diagnostics use stderr. Option errors use cmdliner.
@@ -37,11 +37,14 @@ Stdin is one JSON object per line. {"filter":"text"} sets the filter;
 same fresh-state flat tree ordering and eligible windows as the CLI.
 A successful switch replies
 {"reply":{"id":7,"switched":{"session":"$3","window":"@12"}}}.
-No eligible target replies {"reply":{"id":7,"switched":null}}.
+{"id":7,"switch-session":{"direction":"next"}} or direction "prev" uses the
+same session ordering as the sidebar and CLI, wrapping at either end. Its
+reply has the same switched session and window shape.
+No eligible target (including a single session) replies
+{"reply":{"id":7,"switched":null}}.
 An invalid or unknown request carrying an integer id replies
 {"reply":{"id":7,"error":"invalid or unknown request"}}; requests without an
 integer id and invalid JSON are ignored. Errors do not stop the stream.
-There is no switch-session request. The CLI navigation commands remain.
 All stdout events are NDJSON from one writer; replies and snapshots can
 alternate, but bytes from separate lines do not interleave.
 
@@ -160,7 +163,7 @@ structure. Hoisting stays per session.
 ## Server endpoint
 
 kido server --server <dir> ensures a detached server and prints one line:
-{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"1.0","server":"1.0"}.
+{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"1.1","server":"1.1"}.
 protocol is the binary's Protocol.value, always a string. server is always present:
 the server's KIDO_PROTOCOL stamp, or null when absent, even when it matches protocol.
 The app compares them to detect a kido upgrade with an old server.

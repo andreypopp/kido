@@ -26,11 +26,11 @@ func TestRpcHelloAndRequests(t *testing.T) {
 			return false
 		}, settle, msgf("RPC line %s", want))
 	}
-	waitLine(`{"hello":{"protocol":"1.0"}}`)
+	waitLine(`{"hello":{"protocol":"1.1"}}`)
 	f.mu.Lock()
 	first := f.lines[0].raw
 	f.mu.Unlock()
-	if first != `{"hello":{"protocol":"1.0"}}` {
+	if first != `{"hello":{"protocol":"1.1"}}` {
 		t.Fatalf("first line: %s", first)
 	}
 	f.send(`{"id":1,"switch-window":{"direction":"next"}}`)
@@ -47,10 +47,35 @@ func TestRpcHelloAndRequests(t *testing.T) {
 	if got := h.in("display-message", "-p", "-c", f.client, "#{window_id}"); got != window {
 		t.Fatalf("switched to %s, want %s", got, window)
 	}
+	f.send(`{"id":5,"switch-session":{"direction":"next"}}`)
+	waitLine(`{"reply":{"id":5,"switched":null}}`)
+	f.send(`{"id":6,"switch-session":{"direction":"prev"}}`)
+	waitLine(`{"reply":{"id":6,"switched":null}}`)
+	f.send(`{"id":7,"switch-session":{"direction":"sideways"}}`)
+	waitLine(`{"reply":{"id":7,"error":"invalid or unknown request"}}`)
 	f.send(`{"filter":"nothing-matches"}`)
 	f.waitLast(func(s feedSnapshot) bool { return s.Filter == "nothing-matches" }, "filter set")
 	f.send(`{"filter":""}`)
 	f.waitLast(func(s feedSnapshot) bool { return s.Filter == "" && len(s.Sessions) == 1 }, "filter cleared")
+	h.newSessionSpaced("aardvark")
+	otherSession := h.in("display-message", "-p", "-t", "aardvark:", "#{session_id}")
+	otherWindow := h.in("display-message", "-p", "-t", "aardvark:", "#{window_id}")
+	f.waitLast(func(s feedSnapshot) bool {
+		return len(s.Sessions) == 2 && s.Sessions[0].ID == session && s.Sessions[1].ID == otherSession
+	}, "sessions in sidebar order")
+	for i, step := range []struct{ direction, session, window string }{
+		{"next", otherSession, otherWindow},
+		{"next", session, window},
+		{"prev", otherSession, otherWindow},
+		{"prev", session, window},
+	} {
+		id := 8 + i
+		f.send(fmt.Sprintf(`{"id":%d,"switch-session":{"direction":%q}}`, id, step.direction))
+		waitLine(fmt.Sprintf(`{"reply":{"id":%d,"switched":{"session":%q,"window":%q}}}`, id, step.session, step.window))
+		if got := h.in("display-message", "-p", "-c", f.client, "#{session_id} #{window_id}"); got != step.session+" "+step.window {
+			t.Fatalf("switch-session %s: got %s, want %s %s", step.direction, got, step.session, step.window)
+		}
+	}
 }
 
 func TestRpcProtocolRefusal(t *testing.T) {
@@ -84,7 +109,7 @@ func TestRpcProtocolRefusal(t *testing.T) {
 		if stamp != "" {
 			server = `"9.9"`
 		}
-		want := "{\"hello\":{\"protocol\":\"1.0\",\"server\":" + server + "}}\n{\"error\":\"server protocol does not match binary protocol\"}\n"
+		want := "{\"hello\":{\"protocol\":\"1.1\",\"server\":" + server + "}}\n{\"error\":\"server protocol does not match binary protocol\"}\n"
 		if out.String() != want {
 			t.Fatalf("refusal %q, want %q", out.String(), want)
 		}

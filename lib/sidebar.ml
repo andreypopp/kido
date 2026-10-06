@@ -654,23 +654,27 @@ let step m (snap : snapshot) =
 
 type command =
   | Filter of string option
-  | Switch_window of int * bool
+  | Switch of int * [ `Window | `Session ] * bool
   | Invalid of int * string
   | Ignored
 
 let command line =
   match Yojson.Safe.from_string line with
-  | `Assoc [ ("filter", `String text) ] ->
-      Filter (if String.is_empty text then None else Some text)
+  | `Assoc [ ("filter", `String text) ] -> Filter (if String.is_empty text then None else Some text)
   | `Assoc fields -> (
       match
         ( List.assoc_opt ~eq:String.equal "id" fields,
-          List.assoc_opt ~eq:String.equal "switch-window" fields )
+          List.assoc_opt ~eq:String.equal "switch-window" fields,
+          List.assoc_opt ~eq:String.equal "switch-session" fields )
       with
-      | Some (`Int id), Some (`Assoc [ ("direction", `String direction) ])
+      | Some (`Int id), Some (`Assoc [ ("direction", `String direction) ]), None
+      | Some (`Int id), None, Some (`Assoc [ ("direction", `String direction) ])
         when String.equal direction "next" || String.equal direction "prev" ->
-          Switch_window (id, String.equal direction "next")
-      | Some (`Int id), _ -> Invalid (id, "invalid or unknown request")
+          Switch
+            ( id,
+              (if List.mem_assoc ~eq:String.equal "switch-window" fields then `Window else `Session),
+              String.equal direction "next" )
+      | Some (`Int id), _, _ -> Invalid (id, "invalid or unknown request")
       | _ -> Ignored)
   | _ -> Ignored
   | exception Yojson.Json_error _ -> Ignored

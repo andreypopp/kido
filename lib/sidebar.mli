@@ -134,7 +134,7 @@ val step : model -> snapshot -> model * bool
 
 type command =
   | Filter of string option
-  | Switch_window of int * bool
+  | Switch of int * [ `Window | `Session ] * bool
   | Invalid of int * string
   | Ignored
 

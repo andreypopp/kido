@@ -28,7 +28,9 @@ val client_format : string
 val parse_client_state : string list -> string -> client_state option
 val client_state : ?socket:string -> string -> client_state option
 val resolve_client : pane:string -> tmux_env:string -> string option
-val switch_session : socket:string option -> client:string -> next:bool -> (unit, string) result
+
+val switch_session :
+  socket:string option -> client:string -> next:bool -> ((string * string) option, string) result
 
 val switch_window :
   ?socket:string ->

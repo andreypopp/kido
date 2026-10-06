@@ -186,7 +186,7 @@ let switch_session ~socket ~client ~next =
   Result.flat_map
     (fun panes ->
       let sessions = Array.of_list (Pane.order_sessions panes) in
-      if Array.length sessions < 2 then Ok ()
+      if Array.length sessions < 2 then Ok None
       else
         let current = client_state ?socket client in
         match
@@ -195,10 +195,18 @@ let switch_session ~socket ~client ~next =
               Option.exists (fun c -> String.equal c.session s.name) current)
             sessions
         with
-        | Some (i, _) ->
+        | Some (i, _) -> (
             let target = sessions.(step ~next i (Array.length sessions)) in
-            run ?socket [ "switch-client"; "-c"; client; "-t"; target.id ]
-        | None -> Ok ())
+            let active =
+              List.find_opt (fun (p : Pane.t) -> p.active) (List.concat target.windows)
+            in
+            match active with
+            | Some p ->
+                Result.map
+                  (fun () -> Some (target.id, p.window_id))
+                  (run ?socket [ "switch-client"; "-c"; client; "-t"; target.id ])
+            | None -> Ok None)
+        | None -> Ok None)
     (list_panes ?socket ())
 
 let switch_window ?socket ~client ~next windows =
