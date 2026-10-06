@@ -401,10 +401,7 @@ let switch name doc kind =
        in
        (match kind with
        | `Session -> ignore (ok (Tmux.Exec.switch_session ~socket ~client ~next))
-       | `Window ->
-           Option.iter
-             (fun (session, window) -> Printf.printf "%s %s\n" session window)
-             (ok (Sidebar.switch_window ~socket ~dir ~client ~next)));
+       | `Window -> ignore (ok (Sidebar.switch_window ~socket ~dir ~client ~next)));
        0
 
 let switch_session =

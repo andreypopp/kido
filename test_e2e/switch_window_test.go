@@ -65,7 +65,6 @@ func (h *harness) selectWindow(session, window string) {
 
 func (h *harness) runSwitchWindow(dir string) {
 	h.t.Helper()
-	before := h.in("display-message", "-p", "-t", h.client, "#{session_id} #{window_id}")
 	tmuxEnv := h.in("display-message", "-p", "#{socket_path},#{pid},0")
 	cmd := exec.Command(kidoBin, "switch-window", dir, "--client", h.client)
 	cmd.Env = cleanEnv("TMUX=" + tmuxEnv)
@@ -75,13 +74,8 @@ func (h *harness) runSwitchWindow(dir string) {
 	if err := cmd.Run(); err != nil {
 		h.t.Fatalf("kido switch-window %s: %v\n%s", dir, err, errb.String())
 	}
-	after := h.in("display-message", "-p", "-t", h.client, "#{session_id} #{window_id}")
-	want := after + "\n"
-	if before == after {
-		want = ""
-	}
-	if out.String() != want {
-		h.t.Fatalf("kido switch-window %s stdout = %q, want %q", dir, out.String(), want)
+	if out.Len() != 0 {
+		h.t.Fatalf("kido switch-window %s stdout = %q, want empty", dir, out.String())
 	}
 }
 
@@ -185,6 +179,24 @@ func TestSwitchWindowBinding(t *testing.T) {
 
 	h.sendKeys("S-Up") // c0 -> a1
 	h.waitWindow("a", "a1")
+}
+
+func TestSwitchWindowBindingIsSilent(t *testing.T) {
+	t.Parallel()
+	h := start(t, "a")
+	h.renameWindow("a", 0, "a0")
+	h.addWindow("a", "a1")
+	windowID := h.in("display-message", "-p", "-t", "a:a1", "#{window_id}")
+
+	h.sendKeys("S-Down")
+	h.waitWindow("a", "a1")
+	for _, target := range []string{"a:a0", "a:a1"} {
+		mode := h.in("display-message", "-p", "-t", target, "#{pane_in_mode}")
+		capture := h.in("capture-pane", "-p", "-t", target)
+		if mode != "0" || strings.Contains(capture, windowID) {
+			t.Fatalf("S-Down left run-shell output in %s: pane_in_mode=%s, capture=%q", target, mode, capture)
+		}
+	}
 }
 
 func TestSwitchWindowSingleWindow(t *testing.T) {

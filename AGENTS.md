@@ -208,8 +208,7 @@ binary's `Protocol.value` as its JSON `protocol` field (always a string), and th
 creating server's global `KIDO_PROTOCOL` as its `server` field (always present,
 null if unset, the stamp string otherwise even when it matches `protocol`).
 The launcher, `kido server`, `rpc` and `switch-session/window`
-accept `--server DIR`. `switch-window` prints `SESSION_ID WINDOW_ID` when
-it switches and prints nothing when there is no target. A server is its
+accept `--server DIR`. `switch-window` prints nothing. A server is its
 state directory; its socket is `<dir>/socket`. The default is resolved by `State.dir`: inside a pane,
 `$TMUX` wins when its socket is named `socket` and `server.conf` exists
 beside it; otherwise `$KIDO_STATE_DIR`, `$XDG_STATE_HOME/kido`, then

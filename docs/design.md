@@ -1608,9 +1608,8 @@ trade, not a bug - the spawn tree is what the sidebar is for. `kido
 switch-window` (S-Up/S-Down) walks the sidebar's order, not tmux's, so
 next from a hoisted window moves to the following unmarked window, while
 prev returns to its direct parent window, even when that parent is hoisted.
-The command prints `<session_id> <window_id>` followed by a newline when
-it switches the client, and nothing when there is no target to switch to. It
-skips a subagent's window on purpose - the user asked to cycle top-level
+The command prints nothing: its key bindings run it through `run-shell`,
+which would show any output in the pane. It skips a subagent's window on purpose - the user asked to cycle top-level
 windows, keyed off the same run pane (`@kido_run`) `Reap.sweep` uses and
 for the same reason - so a hoisted window is reachable through the
 sidebar and by prev from its own child, not by top-level cycling. The walk also draws as a root
