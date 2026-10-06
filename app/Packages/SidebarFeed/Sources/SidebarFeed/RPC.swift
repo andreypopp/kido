@@ -2,7 +2,7 @@ import Foundation
 import TmuxControl
 
 public struct RPCVersion: Decodable, Equatable, Sendable, CustomStringConvertible {
-    public static let required = RPCVersion(major: 1, minor: 0)
+    public static let required = RPCVersion(major: 1, minor: 1)
     public let major: Int
     public let minor: Int
     private init(major: Int, minor: Int) { self.major = major; self.minor = minor }

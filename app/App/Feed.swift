@@ -6,6 +6,8 @@ final class Feed: @unchecked Sendable {
     typealias Location = String
     typealias Locate = (@escaping @Sendable (Result<Location, Failure>) -> Void) -> Void
 
+    enum Navigation: String { case window = "switch-window", session = "switch-session" }
+
     enum Status {
         case starting
         case invalidBundle(Failure)
@@ -71,7 +73,7 @@ final class Feed: @unchecked Sendable {
         writer.async { try? input.write(contentsOf: try JSONSerialization.data(withJSONObject: ["filter": text]) + Data([10])) }
     }
 
-    @MainActor func switchWindow(next: Bool, completed: @escaping @MainActor @Sendable ((session: SessionID, window: WindowID)?, String?) -> Void) {
+    @MainActor func switchTarget(_ navigation: Navigation, next: Bool, completed: @escaping @MainActor @Sendable ((session: SessionID, window: WindowID)?, String?) -> Void) {
         guard let input, case .running = status else { return completed(nil, "the RPC feed is not ready") }
         do throws(Failure) { try tools.validate() } catch {
             publish(.invalidBundle(error))
@@ -83,7 +85,7 @@ final class Feed: @unchecked Sendable {
             pending[id] = completed
             writer.async {
                 do {
-                    try input.write(contentsOf: try JSONSerialization.data(withJSONObject: ["id": id, "switch-window": ["direction": next ? "next" : "prev"]]) + Data([10]))
+                    try input.write(contentsOf: try JSONSerialization.data(withJSONObject: ["id": id, navigation.rawValue: ["direction": next ? "next" : "prev"]]) + Data([10]))
                 } catch {
                     self.reader.async {
                         let callback = self.pending.removeValue(forKey: id)
