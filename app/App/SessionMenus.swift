@@ -3,6 +3,7 @@ import TmuxControl
 
 final class SessionMenus: NSObject {
     var send: ([Command]) -> Void = { _ in }
+    var selectSession: (Bool) -> Void = { _ in }
     let window = NSMenu(title: "Window")
     let session = NSMenu(title: "Session")
 
@@ -16,11 +17,13 @@ final class SessionMenus: NSObject {
             entry.state = w.id == model.window ? .on : .off
             return entry
         }
-        session.items = [
-            item("Next Session", "]", Command("switch-client", "-n"), [.command, .option]),
-            item("Previous Session", "[", Command("switch-client", "-p"), [.command, .option]),
-            .separator(),
-        ] + model.sessions.map { s in
+        session.items = [("Next Session", "]", true), ("Previous Session", "[", false)].map { title, key, next in
+            let item = NSMenuItem(title: title, action: #selector(stepSession(_:)), keyEquivalent: key)
+            item.keyEquivalentModifierMask = [.command, .option]
+            item.target = self
+            item.representedObject = next
+            return item
+        } + [.separator()] + model.sessions.map { s in
             let entry = item(s.name, "", Command("switch-client", "-t", s.id))
             entry.state = s.id == model.session ? .on : .off
             return entry
@@ -35,6 +38,10 @@ final class SessionMenus: NSObject {
         item.target = self
         item.representedObject = command
         return item
+    }
+
+    @objc private func stepSession(_ sender: NSMenuItem) {
+        if let next = sender.representedObject as? Bool { selectSession(next) }
     }
 
     @objc private func run(_ sender: NSMenuItem) {

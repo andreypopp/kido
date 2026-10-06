@@ -60,7 +60,6 @@ enum PaneCommand {
         func arrow(_ key: Int) -> String { String(UnicodeScalar(key)!) }
         add("Split Right", .split(.right), "d")
         add("Split Down", .split(.down), "D")
-        add("New Window", .newWindow, "t")
         add("Close Pane", .close, "w")
         menu.addItem(.separator())
         add("Clear", .clear, "k", [.command, .option])

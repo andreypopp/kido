@@ -120,7 +120,7 @@ Connect may call that kido's `server --server DIR`; JSON tmux/socket paths are
 opaque remote values, not local files. The returned socket must end in `/socket`;
 its parent is retained for feed/navigation. Local retains bundled-tmux validation.
 Discovery decodes the server's protocol stamp, not its build ID. The required
-protocol is 1.0: the major must match and the minor must be at least 0.
+protocol is 1.1: the major must match and the minor must be at least 1.
 Mismatches block the affected window with a native alert sheet; Close leaves
 a disconnected, read-only view with Reconnect to check again. Local sheets
 offer Restart… with a Cancel-first confirmation that sessions, panes, commands
@@ -134,7 +134,7 @@ There is no compatibility waiver or remote restart. The bundle's captured
 BUILD-ID detects an app replaced on disk and requires relaunch independently
 of the server protocol.
 
-Control attach and duplex RPC (including switch-window) share the owned master,
+Control attach and duplex RPC (including switch-window and switch-session) share the owned master,
 with `ControlMaster=no`. One audited POSIX single-quote function quotes every
 remote argv element after `exec`; Host is never interpolated into shell text.
 Remote HOME/PATH/XDG are resolved there, not forwarded from the Mac. Only
@@ -619,7 +619,7 @@ the app's own client name, so kido's rules follow what the app shows. The
 in-repo [RPC contract](../share/rpc/contract.md) is authoritative. The first line
 must be a compatible hello; a server mismatch stops the feed and uses the same
 banner as discovery, without automatic retry. Filters are JSON requests and
-window navigation uses numbered RPC requests. Replies can interleave with
+window and session navigation use numbered RPC requests. Replies can interleave with
 snapshots and arrive out of order; pending callbacks live on the feed reader
 queue and complete once, including failure when the connection ends or restarts.
 The app decodes unknown enum values as unknown and v2 snapshots only:
@@ -668,7 +668,10 @@ switches update selection without taking keyboard focus.
 The toolbar and Control-Command-S toggle the sidebar; the View menu's
 Show/Hide title follows its collapsed state. Focus Sidebar uses
 Control-Command-L. Control-Command-F enters full screen. Control-Command-N (Shift for previous) walks attention;
-Control-Command-J/K switches windows; Command-Shift-N creates a session. In the outline, j/k move, n/N jump
+Control-Command-J/K switches windows; Option-Command-]/[ switches sessions in the unfiltered
+sidebar card order, including folded sessions, with wraparound and a single-session no-op.
+Session navigation uses RPC switch-session and selects and unfolds the returned current window.
+Command-N creates a session and Command-T creates a window. In the outline, j/k move, n/N jump
 to attention, Return jumps, Escape returns to the pane and / searches.
 The sidebar is visible by default; it does not automatically collapse
 at narrow widths.
