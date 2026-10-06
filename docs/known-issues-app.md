@@ -163,7 +163,7 @@ completed OSC operations from captures. Hidden unapproved reads are denied,
 not deferred until the pane becomes visible.
 
 Only one clipboard-enabled app may consume a pane. Two attached apps can both
-answer raw OSC reads; there is no responder election. Kido.app sets the server's `get-clipboard off` on attach to prevent competing tty replies. A terminal attached directly to that server cannot paste through itself.
+answer raw OSC reads; there is no responder election. While Kido.app is attached, tmux can forward an OSC 52 read to a terminal showing the window while the app also answers, or replies empty for a pane it is not showing. Terminal paste can return empty, or a second reply can arrive as input. The fix is deferred: tmux skips forwarding while a self-answering control client is attached, and the app stops replying empty for panes it does not show.
 
 Always allow is per exact configured host key, including Local. Edit → Reset Clipboard Permissions revokes all grants and connection answers. Retargeting an SSH alias does not revoke its stored grant;
 SSH host-key policy remains OpenSSH's. Local grants also cover applications
