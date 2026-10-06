@@ -255,6 +255,9 @@ func TestKidoStartsAServerWithASidebar(t *testing.T) {
 	r.waitUp()
 
 	r.waitFor(func() bool { return r.sidebarUp("first") }, "the side column to be drawn")
+	if got := r.mustKido("show", "-sv", "get-clipboard"); got != "request" {
+		t.Errorf("get-clipboard = %q, want request", got)
+	}
 	if got := r.mustKido("show-options", "-gv", "side-status-command"); !strings.Contains(got, kidoBin) {
 		t.Errorf("side-status-command = %q, want the kido under test (%s)", got, kidoBin)
 	}
