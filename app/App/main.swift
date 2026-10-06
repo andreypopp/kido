@@ -43,6 +43,7 @@ import SidebarFeed
         self.runtime = runtime
         NSApp.mainMenu = mainMenu()
         menus.send = { [weak self] in self?.current?.send($0) }
+        menus.selectSession = { [weak self] in self?.current?.switchTarget(.session, next: $0) }
         runtime.onConfigChange = { [weak self] in self?.owners.filter(\.alive).forEach { $0.updateAppearance() } }
         runtime.onColorSchemeChange = { [weak self] in self?.owners.filter(\.alive).forEach { $0.updateColorScheme() } }
         routes.ready(isDefaultLaunch: isDefaultLaunch == true && ordinaryLaunchEvent) { [weak self] in _ = self?.open($0) }
@@ -129,7 +130,9 @@ import SidebarFeed
         ]
         for item in view.items.prefix(2) { item.target = current?.sidebar }
         let file = NSMenu(title: "File")
-        file.items = [item("New Session", #selector(newSession), "N", [.command, .shift])]
+        let newWindow = item("New Window", #selector(PaneView.runCommand(_:)), "t", .command)
+        newWindow.representedObject = PaneCommand.newWindow
+        file.items = [item("New Session", #selector(newSession), "n", .command), newWindow]
         let find = NSMenu(title: "Find")
         find.items = [
             item("Find…", #selector(PaneView.showFind(_:)), "f", .command),
