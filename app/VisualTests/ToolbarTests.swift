@@ -68,6 +68,23 @@ import TmuxControl
         XCTAssertEqual(commands, [model.select(.number(1))!])
     }
 
+    func testSessionShortcutsUseRPCNavigationOnce() {
+        let menus = SessionMenus()
+        var directions: [Bool] = []
+        var commands: [Command] = []
+        menus.selectSession = { directions.append($0) }
+        menus.send = { commands += $0 }
+        menus.update(SessionModel())
+        for (key, code, next) in [("]", UInt16(30), true), ("[", UInt16(33), false)] {
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .option], timestamp: 0,
+                windowNumber: 0, context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: code)!
+            XCTAssertTrue(menus.session.performKeyEquivalent(with: event))
+            XCTAssertEqual(directions.last, next)
+        }
+        XCTAssertEqual(directions, [true, false])
+        XCTAssertTrue(commands.isEmpty)
+    }
+
     func testOfflineDismissesFloatingSidebar() throws {
         let owner = try XCTUnwrap(delegate.open(.local, start: false))
         defer { owner.close() }
