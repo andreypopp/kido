@@ -810,70 +810,91 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         }
     }
 
-    func testSwitchWindowOutputAndReconnect() async throws {
-        let scratch = app.appendingPathComponent("build/sbfix/\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
-        let script = scratch.appendingPathComponent("kido")
-        let fixture = scratch.appendingPathComponent("feed.json")
-        let object = try JSONSerialization.jsonObject(with: Data(contentsOf: app.appendingPathComponent("VisualTests/Fixtures/live-feed.json")))
-        try JSONSerialization.data(withJSONObject: object).write(to: fixture)
-        try """
-        #!/bin/sh
-        exec python3 -u -c '
-        import json, sys
-        print(json.dumps(dict(hello=dict(protocol="1.0"))))
-        snapshot = json.load(open("\(fixture.path)"))
-        print(json.dumps(snapshot))
-        held = None
-        for line in sys.stdin:
-            request = json.loads(line)
-            if request.get("filter") == "exit": break
-            if "switch-window" not in request: continue
-            reply = dict(id=request["id"], switched=dict(session="$3", window="@12") if request["switch-window"]["direction"] == "next" else None)
-            if request["id"] <= 2:
-                if held is None: held = reply
-                else:
-                    print(json.dumps(dict(reply=reply)))
-                    print(json.dumps(snapshot))
-                    print(json.dumps(dict(reply=held)))
-            '
-        """.write(to: script, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
-        var starts = 0
-        var snapshots = 0
-        let feed = Feed(serverDir: scratch.path, locate: { done in
-            done(.success("private-client"))
-        }, query: { "" }, onChange: { status in
-            if case .starting = status { starts += 1 }
-            if case .running = status { snapshots += 1 }
-        })
-        feed.testKido = script.path
-        defer { feed.stop() }
-        try await wait("fake feed ready") { snapshots == 1 }
-        let switched = expectation(description: "switch stdout")
-        feed.switchWindow(next: true) { target, error in
-            XCTAssertNil(error)
-            XCTAssertEqual(target?.session, SessionID(number: 3), "navigation must return its own stdout session")
-            XCTAssertEqual(target?.window, WindowID(number: 12), "navigation must return its own stdout window")
-            switched.fulfill()
+    func testSwitchWindowAndSessionOutputAndReconnect() async throws {
+        for navigation in [Feed.Navigation.window, .session] {
+            let scratch = app.appendingPathComponent("build/sbfix/\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+            let script = scratch.appendingPathComponent("kido")
+            let fixture = scratch.appendingPathComponent("feed.json")
+            let object = try JSONSerialization.jsonObject(with: Data(contentsOf: app.appendingPathComponent("VisualTests/Fixtures/live-feed.json")))
+            try JSONSerialization.data(withJSONObject: object).write(to: fixture)
+            try """
+            #!/bin/sh
+            exec python3 -u -c '
+            import json, sys
+            print(json.dumps(dict(hello=dict(protocol="1.1"))))
+            snapshot = json.load(open("\(fixture.path)"))
+            print(json.dumps(snapshot))
+            held = None
+            for line in sys.stdin:
+                request = json.loads(line)
+                if request.get("filter") == "exit": break
+                if "\(navigation.rawValue)" not in request: continue
+                direction = request["\(navigation.rawValue)"]["direction"]
+                reply = dict(id=request["id"], switched=dict(session="$3", window="@12") if direction == "next" else dict(session="$1", window="@5"))
+                if request["id"] == 3:
+                    print(json.dumps(dict(reply=dict(id=request["id"], switched=None))))
+                elif request["id"] == 4:
+                    print(json.dumps(dict(reply=dict(id=request["id"], error="navigation failed"))))
+                elif request["id"] <= 2:
+                    if held is None: held = reply
+                    else:
+                        print(json.dumps(dict(reply=reply)))
+                        print(json.dumps(snapshot))
+                        print(json.dumps(dict(reply=held)))
+                '
+            """.write(to: script, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+            var starts = 0
+            var snapshots = 0
+            let feed = Feed(serverDir: scratch.path, locate: { done in
+                done(.success("private-client"))
+            }, query: { "" }, onChange: { status in
+                if case .starting = status { starts += 1 }
+                if case .running = status { snapshots += 1 }
+            })
+            feed.testKido = script.path
+            defer { feed.stop() }
+            try await wait("fake feed ready") { snapshots == 1 }
+            let switched = expectation(description: "switch stdout")
+            feed.switchTarget(navigation, next: true) { target, error in
+                XCTAssertNil(error)
+                XCTAssertEqual(target?.session, SessionID(number: 3), "navigation must return its own stdout session")
+                XCTAssertEqual(target?.window, WindowID(number: 12), "navigation must return its own stdout window")
+                switched.fulfill()
+            }
+            let previous = expectation(description: "previous target")
+            feed.switchTarget(navigation, next: false) { target, error in
+                XCTAssertNil(error)
+                XCTAssertEqual(target?.session, SessionID(number: 1))
+                XCTAssertEqual(target?.window, WindowID(number: 5))
+                previous.fulfill()
+            }
+            await fulfillment(of: [switched, previous], timeout: 5)
+            let noop = expectation(description: "null target")
+            feed.switchTarget(navigation, next: true) { target, error in
+                XCTAssertNil(error)
+                XCTAssertNil(target)
+                noop.fulfill()
+            }
+            let failed = expectation(description: "RPC error")
+            feed.switchTarget(navigation, next: false) { target, error in
+                XCTAssertNil(target)
+                XCTAssertEqual(error, "navigation failed")
+                failed.fulfill()
+            }
+            await fulfillment(of: [noop, failed], timeout: 5)
+            let stale = expectation(description: "pending request fails once")
+            stale.assertForOverFulfill = true
+            feed.switchTarget(navigation, next: true) { target, error in
+                XCTAssertNil(target)
+                XCTAssertNotNil(error)
+                stale.fulfill()
+            }
+            feed.filter("exit")
+            try await wait("feed reconnected") { starts == 2 && snapshots == 3 }
+            await fulfillment(of: [stale], timeout: 5)
         }
-        let noop = expectation(description: "empty stdout")
-        feed.switchWindow(next: false) { target, error in
-            XCTAssertNil(error)
-            XCTAssertNil(target, "empty stdout must be a no-op")
-            noop.fulfill()
-        }
-        await fulfillment(of: [switched, noop], timeout: 5)
-        let stale = expectation(description: "pending request fails once")
-        stale.assertForOverFulfill = true
-        feed.switchWindow(next: true) { target, error in
-            XCTAssertNil(target)
-            XCTAssertNotNil(error)
-            stale.fulfill()
-        }
-        feed.filter("exit")
-        try await wait("feed reconnected") { starts == 2 && snapshots == 3 }
-        await fulfillment(of: [stale], timeout: 5)
     }
 
     func testOSC52ClipboardConsentAndPrivatePaneTransport() async throws {
@@ -937,8 +958,8 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
     }
 
     func testServerProtocolFields() throws {
-        for stamp in ["null", "\"0.9\"", "\"2.0\""] {
-            let server = try JSONDecoder().decode(Server.self, from: Data("{\"tmux\":\"/bin/kido-tmux\",\"socket\":\"/tmp/private/socket\",\"protocol\":\"1.0\",\"server\":\(stamp)}".utf8))
+        for stamp in ["null", "\"0.9\"", "\"1.0\"", "\"2.0\""] {
+            let server = try JSONDecoder().decode(Server.self, from: Data("{\"tmux\":\"/bin/kido-tmux\",\"socket\":\"/tmp/private/socket\",\"protocol\":\"1.1\",\"server\":\(stamp)}".utf8))
             XCTAssertEqual(server.binaryProtocol, .required)
             XCTAssertFalse(server.protocolVersion?.compatible == true)
             XCTAssertEqual(server.protocolVersion?.description, stamp == "null" ? nil : String(stamp.dropFirst().dropLast()))
@@ -957,12 +978,12 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
             (remote, "1.0", "2.0", "Update Kido.app to connect", "kido on dev@buildbox is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."),
             (remote, nil, "2.0", "Update Kido.app to connect", "kido on dev@buildbox is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."),
             (remote, "0.9", "2.0", "Update Kido.app to connect", "kido on dev@buildbox is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."),
-            (remote, "0.9", "1.0", "Restart kido on dev@buildbox", "kido was updated on the host, but its running server still uses the older version. Restart that server, then reconnect.")
+            (remote, "0.9", "1.1", "Restart kido on dev@buildbox", "kido was updated on the host, but its running server still uses the older version. Restart that server, then reconnect.")
         ] as [(Kido.Host, String?, String?, String, String)] {
             let alert = WindowOwner.mismatchAlert(host: host, server: stamp.flatMap(RPCVersion.init), binary: binary.flatMap(RPCVersion.init))
             XCTAssertEqual(alert.messageText, title)
-            let showBinary = host != .local && (binary == "1.0" || binary == "2.0" && binary != stamp)
-            XCTAssertEqual(alert.informativeText, body + "\n\nCompatibility: this app needs protocol 1.0 or later within major 1. Server: \(stamp ?? "unstamped (older kido)")." + (showBinary ? " Host binary: \(binary!)." : "") + " Protocol numbers are not Kido.app release numbers.")
+            let showBinary = host != .local && (binary == "1.1" || binary == "2.0" && binary != stamp)
+            XCTAssertEqual(alert.informativeText, body + "\n\nCompatibility: this app needs protocol 1.1 or later within major 1. Server: \(stamp ?? "unstamped (older kido)")." + (showBinary ? " Host binary: \(binary!)." : "") + " Protocol numbers are not Kido.app release numbers.")
             XCTAssertEqual(alert.buttons.map(\.title), [host == .local ? "Restart…" : "Reconnect", "Close"])
             XCTAssertEqual(alert.buttons[1].keyEquivalent, "\u{1b}")
         }
@@ -983,7 +1004,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         defer { feed.stop() }
         try await wait("private RPC hello and snapshot") { snapshots > 0 }
         let switched = expectation(description: "private RPC switch reply")
-        feed.switchWindow(next: true) { target, error in
+        feed.switchTarget(.window, next: true) { target, error in
             XCTAssertNil(error)
             XCTAssertNotNil(target)
             print("RPC E2E switched: \(target?.session.description ?? "nil") \(target?.window.description ?? "nil")")
@@ -1034,7 +1055,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         XCTAssertNil(owner.window.attachedSheet)
         XCTAssertNil(owner.testConnection)
         XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || owner.window.isMainWindow || NSApp.isActive)
-        print("RPC E2E hello 1.0; unstamped server refused; local mismatch alert prepared off-screen")
+        print("RPC E2E hello 1.1; unstamped server refused; local mismatch alert prepared off-screen")
     }
 
     func testSidebarFoldingKeysAndAccessibility() throws {
