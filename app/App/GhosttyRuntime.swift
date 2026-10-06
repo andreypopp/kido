@@ -171,6 +171,10 @@ import GhosttyKit
         guard target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface else { return false }
         let userdata = ghostty_surface_userdata(surface)
         switch action.tag {
+        case GHOSTTY_ACTION_MOUSE_SHAPE:
+            let shape = action.action.mouse_shape
+            PaneView.onMain(userdata) { $0.setMouseShape(shape) }
+            return true
         case GHOSTTY_ACTION_OPEN_URL:
             guard Unmanaged<PaneView>.fromOpaque(userdata!)._withUnsafeGuaranteedRef(\.host) != .local else { return false }
             let link = action.action.open_url
