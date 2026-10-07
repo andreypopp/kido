@@ -1,10 +1,45 @@
 import AppKit
 
 final class WindowTabs: NSView {
+    private final class HeaderBackground: NSView {
+        var color = NSColor.windowBackgroundColor
+        override var isOpaque: Bool { true }
+        override func draw(_ rect: NSRect) { color.setFill(); bounds.fill() }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+    private let headerBackground = HeaderBackground()
+
     var entries: [SessionModel.Tab] = [] { didSet { needsDisplay = true } }
     var select: (WindowStep) -> Void = { _ in }
     var hostLabel: () -> (text: String, alias: String, connected: Bool)? = { nil }
+    var theme: (background: NSColor, appearance: NSAppearance?) = (.windowBackgroundColor, nil) {
+        didSet {
+            if !headerBackground.color.isEqual(theme.background) {
+                headerBackground.color = theme.background
+                headerBackground.needsDisplay = true
+            }
+            synchronizeHost()
+            needsDisplay = true
+        }
+    }
     private var offset: CGFloat = 0
+
+    private func synchronizeHost() {
+        guard let window, let content = window.contentView else { headerBackground.removeFromSuperview(); return }
+        window.backgroundColor = theme.background
+        window.appearance = theme.appearance
+        window.titlebarAppearsTransparent = true
+        if headerBackground.superview !== content {
+            headerBackground.autoresizingMask = [.width, .height]
+            headerBackground.frame = content.bounds
+            content.addSubview(headerBackground, positioned: .below, relativeTo: nil)
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        synchronizeHost()
+    }
     private var hostWidth: CGFloat {
         guard let host = hostLabel() else { return 0 }
         let width = (host.text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .medium)]).width
@@ -52,8 +87,6 @@ final class WindowTabs: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            (window?.backgroundColor ?? .windowBackgroundColor).setFill()
-            bounds.fill()
             let paragraph = NSMutableParagraphStyle()
             paragraph.alignment = .center
             paragraph.lineBreakMode = .byTruncatingTail
@@ -76,7 +109,7 @@ final class WindowTabs: NSView {
             let tabWidth = tabWidth(entries.count, hostWidth: hostWidth)
             offset = min(offset, max(0, tabWidth * CGFloat(entries.count) - (bounds.width - hostWidth)))
             for (index, tab) in entries.enumerated() {
-                let rect = NSRect(x: hostWidth + CGFloat(index) * tabWidth - offset + 2, y: 8, width: tabWidth - 3, height: bounds.height - 16)
+                let rect = NSRect(x: hostWidth + CGFloat(index) * tabWidth - offset + 2, y: bounds.midY - 14, width: tabWidth - 3, height: 28)
                 guard rect.intersects(bounds) else { continue }
                 if tab.active {
                     NSColor.labelColor.withAlphaComponent(0.075).setFill()
@@ -106,7 +139,7 @@ final class WindowTabs: NSView {
             let element = NSAccessibilityElement()
             element.setAccessibilityRole(.button)
             element.setAccessibilityParent(self)
-            element.setAccessibilityFrameInParentSpace(NSRect(x: hostWidth + CGFloat(index) * tabWidth - offset, y: 8, width: tabWidth, height: 28))
+            element.setAccessibilityFrameInParentSpace(NSRect(x: hostWidth + CGFloat(index) * tabWidth - offset, y: bounds.midY - 14, width: tabWidth, height: 28))
             element.setAccessibilityLabel("Window: " + tab.name + (tab.status == .error ? " — error" : tab.status == .attention ? " — attention" : ""))
             element.setAccessibilityValue(tab.active ? "selected" : "")
             return element
