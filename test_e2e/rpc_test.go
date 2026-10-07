@@ -546,10 +546,11 @@ func TestRpcStream(t *testing.T) {
 	quiet := func(why string) {
 		t.Helper()
 		n := f.count()
+		before := f.last().raw
 		deadline := time.Now().Add(1500 * time.Millisecond)
 		for time.Now().Before(deadline) {
 			if f.count() != n {
-				t.Fatalf("%s: a line with nothing changed: %s", why, f.last().raw)
+				t.Fatalf("%s: a line with nothing changed:\nbefore: %s\nafter: %s", why, before, f.last().raw)
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
@@ -558,13 +559,16 @@ func TestRpcStream(t *testing.T) {
 
 	// Its elapsed time ticks in the TUI; the feed sends only the start.
 	caller := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
+	callerTitle := fmt.Sprint(f.last().Sessions[0].Nodes[0].Title)
 	h.asyncBash("tick-e2e", "sleep", "300")
 	f.waitLast(func(s feedSnapshot) bool {
 		var shellSettled, bashRunning bool
 		for _, session := range s.Sessions {
 			for _, r := range feedItems(session.Nodes) {
 				if r.Pane != nil && *r.Pane == caller {
-					shellSettled = r.Kind == "shell" && r.Indicator == nil && r.Started == nil
+					// An unintegrated shell has no indicator while kido is still its foreground command.
+					shellSettled = r.Kind == "shell" && r.Indicator == nil && r.Started == nil &&
+						fmt.Sprint(r.Title) == callerTitle
 				}
 				if r.Kind == "run" && len(r.Title) == 1 && r.Title[0].Text == "tick-e2e" {
 					bashRunning = r.Indicator != nil && r.Indicator.Kind == "running"
