@@ -2,7 +2,7 @@ val derived_name : string list -> string
 
 val async_bash :
   dir:string ->
-  self:string ->
+  self:Tmux.Pane.id option ->
   exe:string ->
   name:string ->
   stream:bool ->

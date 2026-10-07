@@ -5,7 +5,7 @@ let grace () =
   | Some n when n > 0 -> Float.of_int n
   | _ -> 30.
 
-type close = Window of string | Pane of { window : string; pane : string }
+type close = Window of Tmux.Window.id | Pane of { window : Tmux.Window.id; pane : Tmux.Pane.id }
 
 let release ?socket = function
   | Window w -> Tmux.Exec.kill_window ?socket w
@@ -19,16 +19,19 @@ let close_of panes window pane =
 let decide panes window_id =
   if P.window_focused panes window_id then
     Error
-      (Printf.sprintf "%s is a client's current window; leaving it for the user to read" window_id)
+      (Printf.sprintf "%s is a client's current window; leaving it for the user to read"
+         (Tmux.Window.to_string window_id))
   else
     match P.run_pane panes window_id with
-    | None -> Error (Printf.sprintf "%s has no run pane; leaving it" window_id)
+    | None ->
+        Error (Printf.sprintf "%s has no run pane; leaving it" (Tmux.Window.to_string window_id))
     | Some { dead_at = None; _ } ->
-        Error (Printf.sprintf "%s's run is still going; leaving it" window_id)
+        Error
+          (Printf.sprintf "%s's run is still going; leaving it" (Tmux.Window.to_string window_id))
     | Some run ->
         Option.to_result
           (Printf.sprintf "%s is its session's only window; closing it would destroy the session"
-             window_id)
+             (Tmux.Window.to_string window_id))
           (close_of panes window_id run.pane_id)
 
 type detail = Bash | Streamed of { unstreamed : int } | Agent of { unreported : bool }
@@ -111,7 +114,7 @@ let send ~dir e =
   if String.is_empty e.meta.parent_session then Ok ()
   else
     Msg.notify ~dir ~parent_session:e.meta.parent_session
-      ~from:{ session = ""; name = Subrun.label e.meta; pane = "" }
+      ~from:{ session = ""; name = Subrun.label e.meta; pane = None }
       (body ~dir e)
 
 let record_ending ~dir (meta : Subrun.meta) outcome =
@@ -125,7 +128,7 @@ let record_ending ~dir (meta : Subrun.meta) outcome =
 let sweep ?socket ~dir ~grace panes sessions ~now =
   let mark ?(text = "ended without its wrapper reporting") ((closing, endings) as acc) (p : P.t) =
     let window = p.window_id in
-    let closes = function Window w | Pane { window = w; _ } -> String.equal w window in
+    let closes = function Window w | Pane { window = w; _ } -> Tmux.Window.equal w window in
     match P.run_pane panes window with
     | Some { run = Some run; _ }
       when not (P.window_focused panes window || List.exists closes closing) -> (
@@ -134,9 +137,9 @@ let sweep ?socket ~dir ~grace panes sessions ~now =
             let ending =
               Option.flat_map
                 (fun (m : Subrun.meta) ->
-                  if not (String.equal m.pane p.pane_id) then None
+                  if not (Option.equal P.equal m.pane (Some p.pane_id)) then None
                   else begin
-                    ignore (Subrun.save_screen ?socket ~dir run_id p.pane_id);
+                    ignore (Subrun.save_screen ?socket ~dir run_id (Some p.pane_id));
                     record_ending ~dir m
                       (match m.kind with
                       | Bash | Stream -> { result = Failed; text; at = Some now }
@@ -155,7 +158,7 @@ let sweep ?socket ~dir ~grace panes sessions ~now =
         | { run = Some _; dead_at = Some d; _ }
           when Float.(now - d >= grace)
                && Option.exists
-                    (fun (r : P.t) -> String.equal r.pane_id p.pane_id)
+                    (fun (r : P.t) -> P.equal r.pane_id p.pane_id)
                     (P.run_pane panes p.window_id) ->
             mark acc p
         | _ -> acc)
@@ -166,7 +169,7 @@ let sweep ?socket ~dir ~grace panes sessions ~now =
       (fun acc (_, (s : State.session)) ->
         match s.parent with
         | Some parent when not (List.mem_assoc ~eq:String.equal parent.session sessions) ->
-            Option.map_or ~default:acc (mark acc) (P.find panes s.pane)
+            Option.map_or ~default:acc (mark acc) (Option.flat_map (P.find panes) s.pane)
         | _ -> acc)
       acc sessions
   in
@@ -179,7 +182,7 @@ let sweep ?socket ~dir ~grace panes sessions ~now =
           p.run
       with
       | Some { kind = Bash | Stream; parent_session; pane; _ }
-        when String.equal pane p.pane_id
+        when Option.equal P.equal pane (Some p.pane_id)
              && (not (String.is_empty parent_session))
              && not (List.mem_assoc ~eq:String.equal parent_session sessions) ->
           mark ~text:"its parent ended" acc p

@@ -16,7 +16,7 @@ let%expect_test "Create writes meta and task, round-tripping what was written" =
       kind = Agent;
       parent_session = "";
       depth = 1;
-      pane = "%1";
+      pane = Tmux.Pane.of_string "%1";
       pid = 0;
       cwd = "/tmp";
       model = "";
@@ -25,7 +25,8 @@ let%expect_test "Create writes meta and task, round-tripping what was written" =
       started_at = Timestamp.now ();
     };
   let got = Option.get_exn_or "ReadMeta" (Subrun.read_meta ~dir i) in
-  Printf.printf "%s %d %s\n" got.name got.depth got.pane;
+  Printf.printf "%s %d %s\n" got.name got.depth
+    (Option.map_or ~default:"" Tmux.Pane.to_string got.pane);
   print_endline (Option.get_exn_or "ReadTask" (Subrun.read_task ~dir i));
   Printf.printf "run dir exists: %b\n" (Sys.file_exists (Filename.concat dir "runs/run-1"));
   [%expect {|
@@ -46,7 +47,7 @@ let%expect_test "Kind round-trips" =
         kind = k;
         parent_session = "";
         depth = 0;
-        pane = "";
+        pane = Tmux.Pane.of_string "";
         pid = 0;
         cwd = "";
         model = "";

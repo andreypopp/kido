@@ -67,7 +67,12 @@ let%expect_test "rpc surface" =
   List.iter
     (fun result -> emit (Protocol.reply 7 (Sidebar.Switch_window Next) result))
     [
-      Ok (Some { Sidebar.session = "$3"; window = "@12" });
+      Ok
+        (Some
+           {
+             Sidebar.session = Option.get_exn_or "id" (Tmux.Session.of_string "$3");
+             window = Option.get_exn_or "id" (Tmux.Window.of_string "@12");
+           });
       Ok None;
       Error "invalid or unknown request";
     ];
@@ -115,8 +120,8 @@ let%expect_test "rpc surface" =
         {
           Sidebar.row =
             {
-              pane = "%" ^ string_of_int i;
-              window = "@1";
+              pane = Option.get_exn_or "id" (Tmux.Pane.of_string ("%" ^ string_of_int i));
+              window = Option.get_exn_or "id" (Tmux.Window.of_string "@1");
               kind = (match i mod 4 with 0 -> Agent | 1 -> Run | 2 -> Ssh | _ -> Shell);
               indicator;
               title = (if i = 0 then title else []);
@@ -145,13 +150,30 @@ let%expect_test "rpc surface" =
   let m =
     {
       m with
-      client = Some { session = "$0"; window = "@1"; pane = "%0" };
+      client =
+        Some
+          {
+            session = Option.get_exn_or "id" (Tmux.Session.of_string "$0");
+            window = Option.get_exn_or "id" (Tmux.Window.of_string "@1");
+            pane = Option.get_exn_or "id" (Tmux.Pane.of_string "%0");
+          };
       snap =
         {
           Sidebar.empty with
-          states = Sidebar.String_map.singleton "%0" ("agent", Fixture.session State.Waiting);
+          states =
+            Tmux.Pane.Map.singleton
+              (Option.get_exn_or "id" (Tmux.Pane.of_string "%0"))
+              ("agent", Fixture.session State.Waiting);
         };
-      sessions = [ { id = "$0"; name = "session"; current = true; nodes } ];
+      sessions =
+        [
+          {
+            id = Option.get_exn_or "id" (Tmux.Session.of_string "$0");
+            name = "session";
+            current = true;
+            nodes;
+          };
+        ];
     }
   in
   emit (Option.get_exn_or "snapshot" (Protocol.snapshot m));

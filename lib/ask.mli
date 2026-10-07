@@ -19,7 +19,7 @@ val revival_error : t -> string option
 
 val caller :
   dir:string ->
-  self:string ->
+  self:Tmux.Pane.id option ->
   session:string ->
   ((string * State.session * Tmux.Pane.t) option, string) result
 
@@ -35,6 +35,12 @@ val record :
   now:Timestamp.t ->
   (id, string) result
 
-val target : socket:string option -> dir:string -> session:string -> t -> (string, string) result
+val target :
+  socket:string option ->
+  dir:string ->
+  session:Tmux.Session.id ->
+  t ->
+  (Tmux.Pane.id, string) result
+
 val remove : dir:string -> self:string -> id -> (unit, string) result
 val to_json : live:(string * State.session) list -> t -> Yojson.Safe.t

@@ -32,7 +32,14 @@ let string_of_kind = function
 
 let kind_to_yojson k = `String (string_of_kind k)
 
-type from = { session : string; name : string; [@default ""] pane : string [@default ""] }
+type from = {
+  session : string;
+  name : string; [@default ""]
+  pane :
+    (Tmux.Pane.id option
+    [@to_yojson Tmux.Pane.optional_id_to_yojson] [@of_yojson Tmux.Pane.optional_id_of_yojson]);
+      [@default None]
+}
 [@@deriving to_yojson]
 
 type envelope = {

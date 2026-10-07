@@ -2,11 +2,11 @@ val grace : unit -> float
 (** Seconds a finished subagent's window is left alone before a sweep may close it, from
     [KIDO_LINGER_SECONDS] (default 30), the same knob share/pi/kido-agents.ts reads. *)
 
-type close = Window of string | Pane of { window : string; pane : string }
+type close = Window of Tmux.Window.id | Pane of { window : Tmux.Window.id; pane : Tmux.Pane.id }
 
 val release : ?socket:string -> close -> (unit, string) result
 
-val decide : Tmux.Pane.t list -> string -> (close, string) result
+val decide : Tmux.Pane.t list -> Tmux.Window.id -> (close, string) result
 (** [kido close-run]'s decision for a window: the close to release, or the refusal to print. *)
 
 val quote : string -> string

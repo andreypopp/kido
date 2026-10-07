@@ -17,7 +17,7 @@ let wait_for within cond =
 let kill_run_pane ?(before = ignore) pane_id =
   let open Result.Infix in
   let* panes = Exec.list_panes () in
-  match Pane.find panes pane_id with
+  match Option.flat_map (Pane.find panes) pane_id with
   | None -> Ok `Gone
   | Some p when Pane.last_window panes p.window_id && Pane.last_pane panes p.window_id ->
       Error "it is its session's only pane; killing it would destroy the session"

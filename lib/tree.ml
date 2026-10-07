@@ -7,7 +7,11 @@ let order ~id ~parent items =
   let children = Hashtbl.create n in
   Array.iteri
     (fun i it ->
-      let p = match Hashtbl.find_opt index (parent it) with Some j when j <> i -> j | _ -> root in
+      let p =
+        match Option.flat_map (Hashtbl.find_opt index) (parent it) with
+        | Some j when j <> i -> j
+        | _ -> root
+      in
       Hashtbl.replace children p (i :: Option.get_or ~default:[] (Hashtbl.find_opt children p)))
     items;
   let child_list p = List.rev (Option.get_or ~default:[] (Hashtbl.find_opt children p)) in

@@ -4,9 +4,9 @@ type span = Mosaic.span = { text : string; style : Style.t }
 
 type line =
   | Header of { name : string; current : bool }
-  | Row of string * string * Sidebar.row
+  | Row of string * Tmux.Session.id * Sidebar.row
   | Message of string
-  | Ask of Ask.t * string option
+  | Ask of Ask.t * Tmux.Pane.id option
 
 val lines : ?search:string -> Sidebar.model -> line array
 

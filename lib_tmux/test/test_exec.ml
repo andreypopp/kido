@@ -41,7 +41,7 @@ let%expect_test "client state" =
       Printf.printf "%s: %s\n" c
         (Option.map_or ~default:"-"
            (fun (s : Exec.client_state) ->
-             Printf.sprintf "%s %s focused=%b" s.session s.session_id s.focused)
+             Printf.sprintf "%s %s focused=%b" s.session (Session.to_string s.session_id) s.focused)
            (Exec.parse_client_state clients c)))
     [ "/dev/ttys012"; "/dev/ttys001"; "/dev/ttys999" ];
   [%expect

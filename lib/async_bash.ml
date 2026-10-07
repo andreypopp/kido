@@ -28,7 +28,7 @@ let async_bash ~dir ~self ~exe ~name ~stream args =
       kind = (if stream then Stream else Bash);
       parent_session = Option.map_or ~default:"" (fun (p : State.parent) -> p.session) parent;
       depth;
-      pane = "";
+      pane = None;
       pid = 0;
       cwd = pane.current_path;
       model = "";

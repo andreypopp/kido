@@ -254,7 +254,7 @@ let create_run_window ?resume ~dir (meta : Subrun.meta) ~session ~env command =
     | Ok w -> Ok w
     | Error e -> fail e
   in
-  let meta = { meta with pane = w.pane_id; pid = w.pane_pid } in
+  let meta = { meta with pane = Some w.pane_id; pid = w.pane_pid } in
   Subrun.write_meta ~dir meta;
   Option.iter (fun delivered -> Subrun.reset_for_resume ~dir meta.id ~delivered) resume;
   let id = Subrun.string_of_id meta.id in
@@ -270,8 +270,15 @@ let create_run_window ?resume ~dir (meta : Subrun.meta) ~session ~env command =
   in
   match meta.kind with
   | Bash | Stream ->
-      String.concat " " [ w.window_id; w.pane_id; id; Subrun.output_path ~dir meta.id ]
-  | Agent -> String.concat " " [ w.window_id; w.pane_id; id ]
+      String.concat " "
+        [
+          Tmux.Window.to_string w.window_id;
+          Tmux.Pane.to_string w.pane_id;
+          id;
+          Subrun.output_path ~dir meta.id;
+        ]
+  | Agent ->
+      String.concat " " [ Tmux.Window.to_string w.window_id; Tmux.Pane.to_string w.pane_id; id ]
 
 let insert_after_head extra = function head :: rest -> (head :: extra) @ rest | [] -> extra
 
@@ -279,7 +286,7 @@ let caller ~dir ~self owner =
   let open Result.Infix in
   let* panes = Tmux.Exec.list_panes () in
   let+ pane = List_runs.caller_pane panes self in
-  let own = State.String_map.find_opt pane.pane_id (State.by_pane (State.load_live ~dir)) in
+  let own = Tmux.Pane.Map.find_opt pane.pane_id (State.by_pane (State.load_live ~dir)) in
   let parent =
     match (owner, own) with
     | Given p, _ -> Some p
@@ -324,7 +331,7 @@ let spawn ~dir ~self ~pi req =
             kind = Agent;
             parent_session = "";
             depth = 0;
-            pane = "";
+            pane = None;
             pid = 0;
             cwd = pane.current_path;
             model = f.model;

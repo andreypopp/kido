@@ -35,7 +35,8 @@ let log_hook ~dir ~pane json (input : Hook.input) action =
       (fun oc ->
         Printf.fprintf oc "%s\t%s\t%s\t%s\n"
           (Timestamp.to_string (Timestamp.now ()))
-          pane (Yojson.Safe.to_string json) (Hook.describe input action))
+          (Option.map_or ~default:"" Tmux.Pane.to_string pane)
+          (Yojson.Safe.to_string json) (Hook.describe input action))
   with Sys_error _ | Unix.Unix_error _ -> ()
 
 let hook ~dir ~pane ~debug text =

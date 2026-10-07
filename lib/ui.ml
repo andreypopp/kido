@@ -6,9 +6,9 @@ type span = Mosaic.span = { text : string; style : Style.t }
 
 type line =
   | Header of { name : string; current : bool }
-  | Row of string * string * S.row
+  | Row of string * Tmux.Session.id * S.row
   | Message of string
-  | Ask of Ask.t * string option
+  | Ask of Ask.t * Tmux.Pane.id option
 
 let lines ?(search = "") (side : S.model) =
   let glyph i n = if n = 1 then "╶" else if i = 0 then "┌" else if i = n - 1 then "└" else "├" in
@@ -144,13 +144,13 @@ let spans ~now line =
 
 let row_text ~now line = String.concat "" (List.map (fun s -> s.text) (spans ~now line))
 
-let pane_of : line -> string option = function
+let pane_of : line -> Tmux.Pane.id option = function
   | Row (_, _, r) -> Some r.pane
   | Ask (_, pane) -> pane
   | Header _ | Message _ -> None
 
-let index_of ?(key = pane_of) m pane =
-  Option.map fst (CCArray.find_idx (fun l -> Option.equal String.equal (key l) (Some pane)) m.lines)
+let index_of ~key m pane =
+  Option.map fst (CCArray.find_idx (fun l -> Option.equal Stdlib.( = ) (key l) (Some pane)) m.lines)
 
 let view_rows m = if m.height > 1 then m.height - 1 else Array.length m.lines
 let shown m = List.init (max 0 (min (view_rows m) (Array.length m.lines - m.top))) (( + ) m.top)
@@ -176,10 +176,15 @@ let move m delta =
   go (m.cursor + delta)
 
 let focus m pane =
-  match index_of m pane with Some cursor -> ensure_visible { m with cursor } | None -> m
+  match index_of ~key:pane_of m pane with
+  | Some cursor -> ensure_visible { m with cursor }
+  | None -> m
 
 let redraw m side =
-  let key = function Ask (a, _) -> Some (Ask.string_of_id a.id) | line -> pane_of line in
+  let key = function
+    | Ask (a, _) -> Some (`Ask a.id)
+    | line -> Option.map (fun p -> `Pane p) (pane_of line)
+  in
   let prev = Option.flat_map key (CCArray.get_safe m.lines m.cursor) in
   let drawn =
     match m.mode with
@@ -228,7 +233,9 @@ let request m req =
 
 let release_focus m =
   let m, response = request m S.Release_side_focus in
-  match response with Ok () -> focus m m.side.snap.active | Error e -> { m with status = e }
+  match response with
+  | Ok () -> Option.map_or ~default:m (focus m) m.side.snap.active
+  | Error e -> { m with status = e }
 
 type msg =
   | Snapshot of S.snapshot
@@ -375,9 +382,11 @@ let update msg m =
           Option.exists (fun (c : Tmux.Exec.client_state) -> c.focused) s.client
         in
         if
-          ((not (String.equal snap.active was.active)) || (focused was && not (focused snap)))
-          && not (String.is_empty snap.active)
-        then match m.mode with Windows -> focus m snap.active | Asks -> m
+          ((not (Option.equal Tmux.Pane.equal snap.active was.active))
+          || (focused was && not (focused snap)))
+          && Option.is_some snap.active
+        then
+          match m.mode with Windows -> Option.map_or ~default:m (focus m) snap.active | Asks -> m
         else m
       in
       (m, tick ~wait:(next_wait m) m)

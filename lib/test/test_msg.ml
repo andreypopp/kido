@@ -5,7 +5,7 @@ let%expect_test "an envelope serializes with Go's field set: from.session always
     {
       kind = Message;
       id = "x";
-      from = { session = ""; name = ""; pane = "%3" };
+      from = { session = ""; name = ""; pane = Tmux.Pane.of_string "%3" };
       reply_to = "";
       text = "";
       run = "";
@@ -19,7 +19,7 @@ let%expect_test "an envelope serializes with Go's field set: from.session always
           {
             env with
             kind = Stream;
-            from = { session = "s"; name = "n"; pane = "" };
+            from = { session = "s"; name = "n"; pane = Tmux.Pane.of_string "" };
             reply_to = "a";
             text = "t";
             run = "r";

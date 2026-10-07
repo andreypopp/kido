@@ -8,13 +8,47 @@ let show (p : Pane.t) =
   Printf.printf
     "%s %s created=%.0f win=%d %s %s %s %s active=%b pid=%d cmd=%s cwd=%s alt=%b running=%b \
      start=%s prompt=%s exit=%s line=%S dead=%s run=%s attached=%b title=%S\n"
-    p.session_name p.session_id p.session_created p.window_index p.window_id p.window_name
-    p.window_layout p.pane_id p.active p.pane_pid p.current_command p.current_path p.alternate_on
-    p.command_running (time p.command_start) (time p.last_prompt)
+    p.session_name (Session.to_string p.session_id) p.session_created p.window_index
+    (Window.to_string p.window_id) p.window_name p.window_layout (Pane.to_string p.pane_id) p.active
+    p.pane_pid p.current_command p.current_path p.alternate_on p.command_running
+    (time p.command_start) (time p.last_prompt)
     (opt (fun (e : Pane.exit) -> Printf.sprintf "%d@%.0f" e.code e.at) p.last_exit)
     p.command_line (time p.dead_at) (opt Fun.id p.run) p.session_attached p.title
 
 let line = String.concat Pane.sep
+
+let%expect_test "tmux ids validate their sigil and digits" =
+  List.iter
+    (fun (parse, values) -> List.iter (fun s -> Printf.printf "%S %b\n" s (parse s)) values)
+    [
+      ((fun s -> Option.is_some (Pane.of_string s)), [ "%0"; "%123"; "@1"; ""; "%"; "%x"; "%1x" ]);
+      ((fun s -> Option.is_some (Window.of_string s)), [ "@0"; "@123"; "$1"; ""; "@"; "@x"; "@1x" ]);
+      ((fun s -> Option.is_some (Session.of_string s)), [ "$0"; "$123"; "%1"; ""; "$"; "$x"; "$1x" ]);
+    ];
+  [%expect
+    {|
+    "%0" true
+    "%123" true
+    "@1" false
+    "" false
+    "%" false
+    "%x" false
+    "%1x" false
+    "@0" true
+    "@123" true
+    "$1" false
+    "" false
+    "@" false
+    "@x" false
+    "@1x" false
+    "$0" true
+    "$123" true
+    "%1" false
+    "" false
+    "$" false
+    "$x" false
+    "$1x" false
+    |}]
 
 let%expect_test "the format: title last, no ticking duration, field count pinned" =
   let tokens = String.split ~by:Pane.sep Pane.format in
@@ -29,6 +63,9 @@ let%expect_test "a fixture generated from the format parses into every field" =
     List.mapi
       (fun i _ ->
         match i with
+        | 1 -> "$1"
+        | 4 -> "@4"
+        | 7 -> "%7"
         | 8 | 12 | 13 | 19 | 21 -> "1"
         | 16 -> "16"
         | 2 | 3 | 9 | 14 | 15 | 17 | 20 -> string_of_int (1_000_000 + i)
@@ -37,7 +74,7 @@ let%expect_test "a fixture generated from the format parses into every field" =
   in
   List.iter show (Pane.parse [ line values ]);
   [%expect
-    {| str0 str1 created=1000002 win=1000003 str4 str5 str6 str7 active=true pid=1000009 cmd=str10 cwd=str11 alt=true running=true start=1000014 prompt=1000015 exit=16@1000017 line="str18" dead=1000020 run=str22 attached=true title="str23" |}]
+    {| str0 $1 created=1000002 win=1000003 @4 str5 str6 %7 active=true pid=1000009 cmd=str10 cwd=str11 alt=true running=true start=1000014 prompt=1000015 exit=16@1000017 line="str18" dead=1000020 run=str22 attached=true title="str23" |}]
 
 let%expect_test
     "parse: a live pane, a junk line, an empty status, a dead run, a title holding the separator" =
@@ -161,11 +198,12 @@ let%expect_test "shell: integration, idle, running, the stuck flag healed, a tie
 let show_sessions panes =
   List.iter
     (fun (s : Pane.session) ->
-      Printf.printf "%s %s:" s.name s.id;
+      Printf.printf "%s %s:" s.name (Session.to_string s.id);
       List.iter
         (fun w ->
-          Printf.printf " %s[%s]" (List.hd w).Pane.window_id
-            (String.concat " " (List.map (fun (p : Pane.t) -> p.pane_id) w)))
+          Printf.printf " %s[%s]"
+            (Window.to_string (List.hd w).Pane.window_id)
+            (String.concat " " (List.map (fun (p : Pane.t) -> Pane.to_string p.pane_id) w)))
         s.windows;
       print_newline ())
     (Pane.order_sessions panes)
@@ -199,14 +237,17 @@ let%expect_test "focus, last window, last pane, run pane" =
   List.iter
     (fun w ->
       Printf.printf "%s: focused=%b last_window=%b last_pane=%b run_pane=%s\n" w
-        (Pane.window_focused focus_panes w)
-        (Pane.last_window focus_panes w) (Pane.last_pane focus_panes w)
-        (Option.map_or ~default:"-" (fun (p : Pane.t) -> p.pane_id) (Pane.run_pane focus_panes w)))
-    [ "@1"; "@2"; "@3"; "@nonexistent" ];
+        (Pane.window_focused focus_panes (Option.get_exn_or "id" (Window.of_string w)))
+        (Pane.last_window focus_panes (Option.get_exn_or "id" (Window.of_string w)))
+        (Pane.last_pane focus_panes (Option.get_exn_or "id" (Window.of_string w)))
+        (Option.map_or ~default:"-"
+           (fun (p : Pane.t) -> Pane.to_string p.pane_id)
+           (Pane.run_pane focus_panes (Option.get_exn_or "id" (Window.of_string w)))))
+    [ "@1"; "@2"; "@3"; "@999" ];
   [%expect
     {|
     @1: focused=true last_window=false last_pane=true run_pane=-
     @2: focused=false last_window=false last_pane=true run_pane=-
     @3: focused=false last_window=true last_pane=false run_pane=%4
-    @nonexistent: focused=false last_window=false last_pane=true run_pane=-
+    @999: focused=false last_window=false last_pane=true run_pane=-
     |}]

@@ -7,11 +7,15 @@ let write ~dir id s =
 let temp () = Filename.temp_dir "kido-state" ""
 
 let show_panes live =
-  State.String_map.iter (fun pane (id, _) -> Printf.printf "%s: %s\n" pane id) (State.by_pane live)
+  Tmux.Pane.Map.iter
+    (fun pane (id, _) -> Printf.printf "%s: %s\n" (Tmux.Pane.to_string pane) id)
+    (State.by_pane live)
 
 let outcome = function
   | Ok () -> print_endline "ok"
-  | Error (h : State.session) -> Printf.printf "held by pid %d in %s\n" h.pid h.pane
+  | Error (h : State.session) ->
+      Printf.printf "held by pid %d in %s\n" h.pid
+        (Option.map_or ~default:"" Tmux.Pane.to_string h.pane)
 
 let%expect_test "a record is written compactly, without its empty fields" =
   let s = { (session Running ~ts:1_700_000_000.25) with ended = Some 1_700_000_000. } in
@@ -113,7 +117,13 @@ let%expect_test "get_live reads one session without deleting dead records" =
   let dir = temp () in
   write ~dir "live" (session Idle ~pane:"%1");
   write ~dir "dead" (session Idle ~pane:"%2" ~pid:(dead_pid ()));
-  write ~dir "no-pane" (session Idle ~pane:"");
+  Fs.write
+    (Filename.concat dir "no-pane.json")
+    (Yojson.Safe.to_string
+       (`Assoc
+          (("pane", `String "")
+          :: List.remove_assoc ~eq:String.equal "pane"
+               (Yojson.Safe.Util.to_assoc (State.session_to_yojson (session Idle))))));
   List.iter
     (fun id -> Printf.printf "%s %b\n" id (Option.is_some (State.get_live ~dir id)))
     [ "live"; "dead"; "no-pane"; "missing" ];
@@ -122,7 +132,7 @@ let%expect_test "get_live reads one session without deleting dead records" =
     {|
     live true
     dead false
-    no-pane false
+    no-pane true
     missing false
     dead record kept true
     |}]
@@ -134,12 +144,16 @@ let%expect_test "one live holder per session id" =
   outcome (State.record ~dir "s" (session Idle ~pane:"%2" ~pid:me));
   outcome (State.remove ~dir "s" ~pid:me);
   Option.iter
-    (fun (s : State.session) -> Printf.printf "kept %s %d %s\n" s.pane s.pid s.inbox)
+    (fun (s : State.session) ->
+      Printf.printf "kept %s %d %s\n"
+        (Option.map_or ~default:"" Tmux.Pane.to_string s.pane)
+        s.pid s.inbox)
     (State.get ~dir "s");
   outcome (State.record ~dir "d" (session Idle ~pane:"%1" ~pid:(dead_pid ())));
   outcome (State.record ~dir "d" (session Running ~pane:"%2" ~pid:me));
   Option.iter
-    (fun (s : State.session) -> Printf.printf "taken over by %s\n" s.pane)
+    (fun (s : State.session) ->
+      Printf.printf "taken over by %s\n" (Option.map_or ~default:"" Tmux.Pane.to_string s.pane))
     (State.get ~dir "d");
   outcome (State.record ~dir "d" (session Idle ~pane:"%2" ~pid:me));
   outcome (State.remove ~dir "d" ~pid:me);
@@ -179,13 +193,13 @@ let%expect_test "is_agent_pane: reported, running claude, a pi in the tree, a pl
   let pane id pid cmd : Tmux.Pane.t =
     {
       session_name = "";
-      session_id = "";
+      session_id = Option.get_exn_or "id" (Tmux.Session.of_string "$0");
       session_created = 0.;
       window_index = 0;
-      window_id = "";
+      window_id = Option.get_exn_or "id" (Tmux.Window.of_string "@0");
       window_name = "";
       window_layout = "";
-      pane_id = id;
+      pane_id = Option.get_exn_or "id" (Tmux.Pane.of_string id);
       active = false;
       pane_pid = pid;
       current_command = cmd;

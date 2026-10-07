@@ -11,7 +11,7 @@ type send_error = No_text | Not_sent of string
 val reaches :
   (string * State.session) list ->
   Tmux.Pane.t list ->
-  self:string ->
+  self:Tmux.Pane.id option ->
   string ->
   (bool, string) result
 (** Whether session [id] is the caller's own or its descendant, over a per-pane list; a caller that
@@ -20,25 +20,31 @@ val reaches :
 val resolve :
   live:(string * State.session) list ->
   panes:Tmux.Pane.t list ->
-  self:string ->
+  self:Tmux.Pane.id option ->
   recipient ->
   (string * State.session, string) result
 
 val deliver :
-  states:(string * State.session) State.String_map.t ->
+  states:(string * State.session) Tmux.Pane.Map.t ->
   panes:Tmux.Pane.t list ->
-  self:string ->
+  self:Tmux.Pane.id option ->
   spec ->
   State.session ->
   string ->
   ([ `Inbox | `Pasted ], failure) result
 
-val send : dir:string -> self:string -> recipient -> spec -> string -> (string, send_error) result
+val send :
+  dir:string ->
+  self:Tmux.Pane.id option ->
+  recipient ->
+  spec ->
+  string ->
+  (string, send_error) result
 (** The line naming how it was delivered. *)
 
 val notify_parent :
   dir:string ->
-  self:string ->
+  self:Tmux.Pane.id option ->
   warn:(string -> unit) ->
   parent:string ->
   run:string ->

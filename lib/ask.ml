@@ -50,14 +50,15 @@ let caller ~dir ~self ~session =
   let open Result.Infix in
   let live = State.load_live ~dir in
   let* caller =
-    if String.is_empty session then Ok (State.String_map.find_opt self (State.by_pane live))
+    if String.is_empty session then
+      Ok (Option.flat_map (fun self -> Tmux.Pane.Map.find_opt self (State.by_pane live)) self)
     else
       match List.assoc_opt ~eq:String.equal session live with
-      | Some s when String.equal s.pane self -> Ok (Some (session, s))
+      | Some s when Option.equal Tmux.Pane.equal s.pane self -> Ok (Some (session, s))
       | _ -> Error "no calling agent session has reported this pane"
   in
-  let* panes = if String.is_empty self then Ok [] else Tmux.Exec.list_panes () in
-  let pane = Tmux.Pane.find panes self in
+  let* panes = if Option.is_none self then Ok [] else Tmux.Exec.list_panes () in
+  let pane = Option.flat_map (Tmux.Pane.find panes) self in
   let id =
     match caller with
     | Some (id, _) -> Some id
@@ -88,7 +89,7 @@ let invalidate ?(removed = false) ~dir ~self ask =
                      {
                        kind = Asks;
                        id = Msg.new_id ();
-                       from = { session = ""; name = "kido"; pane = "" };
+                       from = { session = ""; name = "kido"; pane = None };
                        reply_to = "";
                        text =
                          (if removed then
@@ -157,8 +158,8 @@ let revival_error ask =
 
 let target ~socket ~dir ~session ask =
   match List.assoc_opt ~eq:String.equal ask.session (State.load_live ~dir) with
-  | Some s -> Ok s.pane
-  | None -> (
+  | Some { pane = Some pane; _ } -> Ok pane
+  | _ -> (
       match revival_error ask with
       | Some e -> Error e
       | None ->

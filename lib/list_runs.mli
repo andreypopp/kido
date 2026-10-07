@@ -2,8 +2,8 @@ type agent_info = {
   id : string;
   name : string;
   agent : State.agent;
-  pane : string;
-  window : string;
+  pane : Tmux.Pane.id;
+  window : Tmux.Window.id;
   status : State.status;
   activity : string;
   parent : string;
@@ -18,13 +18,16 @@ type agent_info = {
 }
 [@@deriving to_yojson]
 
-val caller_pane : Tmux.Pane.t list -> string -> (Tmux.Pane.t, string) result
+val caller_pane : Tmux.Pane.t list -> Tmux.Pane.id option -> (Tmux.Pane.t, string) result
 val agent_title : string -> string
 val display_name : Tmux.Pane.t list -> State.session -> string
 val per_pane : (string * State.session) list -> (string * State.session) list
 
 val in_session :
-  Tmux.Pane.t list -> (string * State.session) list -> string -> (string * State.session) list
+  Tmux.Pane.t list ->
+  (string * State.session) list ->
+  Tmux.Session.id ->
+  (string * State.session) list
 
 val parent_edge : string * State.session -> string option
 val is_ancestor : (string * string) list -> ancestor:string -> string -> bool
@@ -32,8 +35,8 @@ val is_ancestor : (string * string) list -> ancestor:string -> string -> bool
 val agents :
   dir:string ->
   threshold:float ->
-  self:string ->
-  session:string ->
+  self:Tmux.Pane.id option ->
+  session:Tmux.Session.id option ->
   panes:Tmux.Pane.t list ->
   states:(string * State.session) list ->
   (agent_info list, string) result
@@ -41,7 +44,11 @@ val agents :
 type row
 
 val list_runs :
-  dir:string -> threshold:float -> self:string -> session:string -> (row list, string) result
+  dir:string ->
+  threshold:float ->
+  self:Tmux.Pane.id option ->
+  session:Tmux.Session.id option ->
+  (row list, string) result
 
 val row_to_yojson : row -> Yojson.Safe.t
 val table : row list -> string list list

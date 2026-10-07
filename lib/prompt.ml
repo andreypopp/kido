@@ -8,7 +8,10 @@ let not_accepting ~name ~run =
       run
 
 let deliver_or_paste ~inbox ~payload ~pane ~name ~run text =
-  if String.is_empty inbox then Result.map (fun () -> `Pasted) (Exec.send_prompt pane text)
+  if String.is_empty inbox then
+    match pane with
+    | None -> Error "pane \"\" not found"
+    | Some pane -> Result.map (fun () -> `Pasted) (Exec.send_prompt pane text)
   else
     match Msg.deliver ~path:inbox payload with
     | Ok () -> Ok `Inbox
@@ -23,7 +26,7 @@ let needs_sweep panes states self ~whole_session =
   List.exists
     (fun (p : Pane.t) ->
       in_scope self ~whole_session p
-      && (not (State.String_map.mem p.pane_id states))
+      && (not (Tmux.Pane.Map.mem p.pane_id states))
       && Procs.maybe_pi p.current_command)
     panes
 
@@ -56,9 +59,9 @@ let prompt ~dir ~self ~window text =
         let inbox, name =
           Option.map_or ~default:("", p.title)
             (fun (_, (s : State.session)) -> (s.inbox, List_runs.display_name panes s))
-            (State.String_map.find_opt p.pane_id states)
+            (Tmux.Pane.Map.find_opt p.pane_id states)
         in
         failed
           (Result.map ignore
-             (deliver_or_paste ~inbox ~payload:text ~pane:p.pane_id ~name ~run:p.run text))
+             (deliver_or_paste ~inbox ~payload:text ~pane:(Some p.pane_id) ~name ~run:p.run text))
     | _ -> Error Several

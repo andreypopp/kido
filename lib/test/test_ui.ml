@@ -18,13 +18,13 @@ let pane ?(session = "sess") ?(window = "@1") ?(command = "") ?(title = "") ?(pi
     ?(active = false) pane_id : Tmux.Pane.t =
   {
     session_name = session;
-    session_id = "$0";
+    session_id = Option.get_exn_or "id" (Tmux.Session.of_string "$0");
     session_created = 0.;
     window_index = 0;
-    window_id = window;
+    window_id = Option.get_exn_or "id" (Tmux.Window.of_string window);
     window_name = "";
     window_layout = "";
-    pane_id;
+    pane_id = Option.get_exn_or "id" (Tmux.Pane.of_string pane_id);
     active;
     pane_pid = pid;
     current_command = command;
@@ -48,7 +48,7 @@ let session ?(agent = State.Pi) ?(status = State.Running) ?(title = "") ?(parent
     ?(ts = test_at) ?ended ?(activity = "") pane : State.session =
   {
     agent;
-    pane;
+    pane = Tmux.Pane.of_string pane;
     pid = Unix.getpid ();
     status;
     ts;
@@ -67,14 +67,23 @@ let agent_state id parent title = (id, session ~title ~parent "")
 
 let states l =
   List.fold_left
-    (fun m (pane, (id, s)) -> State.String_map.add pane (id, { s with State.pane }) m)
-    State.String_map.empty l
+    (fun m (pane, (id, s)) ->
+      let pane = Option.get_exn_or "id" (Tmux.Pane.of_string pane) in
+      Tmux.Pane.Map.add pane (id, { s with State.pane = Some pane }) m)
+    Tmux.Pane.Map.empty l
 
 let model ?(dir = temp ()) ?(clock = ref test_at) ?(started = test_at -. 3600.) () =
   let m = Sidebar.make ~now:(fun () -> !clock) (opts ~dir ()) in
   { m with started; at = !clock }
 
-let client session = Some { Tmux.Exec.session; session_id = "$0"; focused = false }
+let client session =
+  Some
+    {
+      Tmux.Exec.session;
+      session_id = Option.get_exn_or "id" (Tmux.Session.of_string "$0");
+      focused = false;
+    }
+
 let lines m = Array.to_list (Ui.lines (Sidebar.rebuild m))
 
 let render ?dir ?(current = "sess") ?(at = test_at) panes st =
@@ -86,7 +95,7 @@ let render ?dir ?(current = "sess") ?(at = test_at) panes st =
       client = client current;
       panes;
       states;
-      lingering = Sidebar.lingering_subagents ~dir:m.opts.dir panes State.String_map.empty;
+      lingering = Sidebar.lingering_subagents ~dir:m.opts.dir panes Sidebar.String_map.empty;
     }
   in
   List.iter (fun r -> print_endline (Ui.row_text ~now:m.at r)) (lines { m with snap })
@@ -262,8 +271,8 @@ let%expect_test
       ("%2", ("orphan-sess", session ~title:"orphan" ~parent:"elsewhere-sess" ~depth:1 ""));
     ];
   render
-    [ agent_pane "@1" "%a" "a"; agent_pane "@2" "%b" "b" ]
-    [ ("%a", agent_state "a-sess" "b-sess" "a"); ("%b", agent_state "b-sess" "a-sess" "b") ];
+    [ agent_pane "@1" "%207" "a"; agent_pane "@2" "%208" "b" ]
+    [ ("%207", agent_state "a-sess" "b-sess" "a"); ("%208", agent_state "b-sess" "a-sess" "b") ];
   [%expect
     {|
     sess
@@ -320,96 +329,97 @@ let%expect_test "the same state renders the same rows every time" =
 let placements windows st lingering =
   List.iter
     (fun (pl : Sidebar.placement) ->
-      Printf.printf "%s anchor=%s\n" (List.hd pl.panes).window_id
-        (Option.value ~default:"-" pl.anchor))
+      Printf.printf "%s anchor=%s\n"
+        (Tmux.Window.to_string (List.hd pl.panes).window_id)
+        (Option.map_or ~default:"-" Tmux.Pane.to_string pl.anchor))
     (Sidebar.order_windows_by_tree windows (states st) lingering)
 
 let w ?run id = [ pane ~window:("@" ^ id) ?run ("%" ^ id) ]
 
 let%expect_test "order_windows_by_tree: child after parent, anchored to the parent's pane" =
   placements
-    [ w "shell"; w "root"; w "child2"; w "child1" ]
+    [ w "200"; w "201"; w "203"; w "202" ]
     [
-      ("%root", ("root-sess", session ""));
-      ("%child2", ("", session ~parent:"root-sess" ~depth:1 ""));
-      ("%child1", ("", session ~parent:"root-sess" ~depth:1 ""));
+      ("%201", ("root-sess", session ""));
+      ("%203", ("", session ~parent:"root-sess" ~depth:1 ""));
+      ("%202", ("", session ~parent:"root-sess" ~depth:1 ""));
     ]
-    State.String_map.empty;
+    Sidebar.String_map.empty;
   placements
-    [ w "shell"; w "orphan" ]
-    [ ("%orphan", ("orphan-sess", session ~parent:"elsewhere-sess" ~depth:1 "")) ]
-    State.String_map.empty;
+    [ w "200"; w "204" ]
+    [ ("%204", ("orphan-sess", session ~parent:"elsewhere-sess" ~depth:1 "")) ]
+    Sidebar.String_map.empty;
   placements
-    [ w "root"; w "kid"; w "grandkid" ]
+    [ w "201"; w "205"; w "206" ]
     [
-      ("%root", ("root-sess", session ""));
-      ("%kid", ("kid-sess", session ~parent:"root-sess" ~depth:1 ""));
-      ("%grandkid", ("gk-sess", session ~parent:"kid-sess" ~depth:1 ""));
+      ("%201", ("root-sess", session ""));
+      ("%205", ("kid-sess", session ~parent:"root-sess" ~depth:1 ""));
+      ("%206", ("gk-sess", session ~parent:"kid-sess" ~depth:1 ""));
     ]
-    State.String_map.empty;
+    Sidebar.String_map.empty;
   placements
-    [ w "a"; w "b" ]
+    [ w "207"; w "208" ]
     [
-      ("%a", ("a-sess", session ~parent:"b-sess" ""));
-      ("%b", ("b-sess", session ~parent:"a-sess" ""));
+      ("%207", ("a-sess", session ~parent:"b-sess" ""));
+      ("%208", ("b-sess", session ~parent:"a-sess" ""));
     ]
-    State.String_map.empty;
+    Sidebar.String_map.empty;
   [%expect
     {|
-    @shell anchor=-
-    @root anchor=-
-    @child2 anchor=%root
-    @child1 anchor=%root
-    @shell anchor=-
-    @orphan anchor=-
-    @root anchor=-
-    @kid anchor=%root
-    @grandkid anchor=%kid
-    @a anchor=-
-    @b anchor=%a
+    @200 anchor=-
+    @201 anchor=-
+    @203 anchor=%201
+    @202 anchor=%201
+    @200 anchor=-
+    @204 anchor=-
+    @201 anchor=-
+    @205 anchor=%201
+    @206 anchor=%205
+    @207 anchor=-
+    @208 anchor=%207
     |}]
 
 let%expect_test "order_windows_by_tree: the lingering fallback, and a record beating a stale mark" =
   let lingering parent =
-    State.String_map.singleton "run-1"
+    Sidebar.String_map.singleton "run-1"
       { Sidebar.name = ""; parent; outcome = None; kind = Agent; started = test_at }
   in
   placements
-    [ w "root"; w ~run:"run-1" "kid" ]
-    [ ("%root", ("root-sess", session "")) ]
+    [ w "201"; w ~run:"run-1" "205" ]
+    [ ("%201", ("root-sess", session "")) ]
     (lingering "root-sess");
   placements
-    [ w "root"; w "other"; w ~run:"run-1" "kid" ]
+    [ w "201"; w "209"; w ~run:"run-1" "205" ]
     [
-      ("%root", ("root-sess", session ""));
-      ("%other", ("other-sess", session ""));
-      ("%kid", ("kid-sess", session ~parent:"root-sess" ""));
+      ("%201", ("root-sess", session ""));
+      ("%209", ("other-sess", session ""));
+      ("%205", ("kid-sess", session ~parent:"root-sess" ""));
     ]
     (lingering "other-sess");
-  placements [ w "shell"; w ~run:"run-1" "kid" ] [] (lingering "elsewhere-sess");
-  placements [ w ~run:"run-1" "kid" ] [] (lingering "nonexistent-sess");
+  placements [ w "200"; w ~run:"run-1" "205" ] [] (lingering "elsewhere-sess");
+  placements [ w ~run:"run-1" "205" ] [] (lingering "nonexistent-sess");
   placements
-    [ [ pane ~window:"@13" "%21"; pane ~window:"@13" "%101" ]; w "kid1"; w "kid2" ]
+    [ [ pane ~window:"@13" "%21"; pane ~window:"@13" "%101" ]; w "210"; w "211" ]
     [
       ("%21", ("top-sess", session ""));
       ("%101", ("second-sess", session ""));
-      ("%kid1", ("kid1-sess", session ~parent:"top-sess" ~depth:1 ""));
-      ("%kid2", ("kid2-sess", session ~parent:"second-sess" ~depth:1 ""));
+      ("%210", ("kid1-sess", session ~parent:"top-sess" ~depth:1 ""));
+      ("%211", ("kid2-sess", session ~parent:"second-sess" ~depth:1 ""));
     ]
-    State.String_map.empty;
+    Sidebar.String_map.empty;
   [%expect
     {|
-    @root anchor=-
-    @kid anchor=%root
-    @root anchor=-
-    @kid anchor=%root
-    @other anchor=-
-    @shell anchor=-
-    @kid anchor=-
-    @kid anchor=-
+    @201 anchor=-
+    @205 anchor=%201
+    @201 anchor=-
+    @205 anchor=%201
+    @209 anchor=-
+    @200 anchor=-
+    @205 anchor=-
+    @205 anchor=-
     @13 anchor=-
-    @kid1 anchor=%21
-    @kid2 anchor=%101
+    @210 anchor=%21
+    @211 anchor=%101
     |}]
 
 let%expect_test "window targets: prev follows the direct anchor, next skips marked windows" =
@@ -417,20 +427,16 @@ let%expect_test "window targets: prev follows the direct anchor, next skips mark
     Sidebar.windows_in_order
       (List.concat
          [
-           w "root";
-           w "other";
-           w ~run:"child1" "child1";
-           w ~run:"child2" "child2";
-           w ~run:"grandchild" "grandchild";
+           w "201"; w "209"; w ~run:"child1" "202"; w ~run:"child2" "203"; w ~run:"grandchild" "212";
          ])
       (states
          [
-           ("%root", ("root-session", session ""));
-           ("%child1", ("child1-session", session ~parent:"root-session" ""));
-           ("%child2", ("child2-session", session ~parent:"root-session" ""));
-           ("%grandchild", ("grandchild-session", session ~parent:"child2-session" ""));
+           ("%201", ("root-session", session ""));
+           ("%202", ("child1-session", session ~parent:"root-session" ""));
+           ("%203", ("child2-session", session ~parent:"root-session" ""));
+           ("%212", ("grandchild-session", session ~parent:"child2-session" ""));
          ])
-      State.String_map.empty
+      Sidebar.String_map.empty
   in
   List.iter
     (fun (next, window) ->
@@ -438,8 +444,20 @@ let%expect_test "window targets: prev follows the direct anchor, next skips mark
         (if next then "next" else "prev")
         window
         (Option.map_or ~default:"-"
-           (fun (p : Tmux.Pane.t) -> p.window_id)
-           (Tmux.Exec.window_target ~next ~window:("@" ^ window) windows)))
+           (fun (p : Tmux.Pane.t) -> Tmux.Window.to_string p.window_id)
+           (Tmux.Exec.window_target ~next
+              ~window:
+                (Option.get_exn_or "id"
+                   (Tmux.Window.of_string
+                      ("@"
+                      ^ List.assoc ~eq:String.equal window
+                          [
+                            ("other", "209");
+                            ("root", "201");
+                            ("child2", "203");
+                            ("grandchild", "212");
+                          ])))
+              windows)))
     [
       (false, "other");
       (false, "root");
@@ -450,12 +468,12 @@ let%expect_test "window targets: prev follows the direct anchor, next skips mark
     ];
   [%expect
     {|
-    prev other -> @root
-    prev root -> @other
-    prev child2 -> @root
-    prev grandchild -> @child2
-    next child2 -> @other
-    next root -> @other
+    prev other -> @201
+    prev root -> @209
+    prev child2 -> @201
+    prev grandchild -> @203
+    next child2 -> @209
+    next root -> @209
     |}]
 
 let new_run ~dir ?(parent = "") ?(kind = Subrun.Agent) ?result name =
@@ -468,7 +486,7 @@ let new_run ~dir ?(parent = "") ?(kind = Subrun.Agent) ?result name =
       kind;
       parent_session = parent;
       depth = 0;
-      pane = "";
+      pane = None;
       pid = 0;
       cwd = "";
       model = "";
@@ -564,7 +582,7 @@ let%expect_test "run metadata survives activity text and clears its clock on dea
           Sidebar.empty with
           states = states [ ("%30", ("run", session ~activity:"checking tests" "")) ];
           lingering =
-            State.String_map.singleton "run"
+            Sidebar.String_map.singleton "run"
               {
                 Sidebar.name = "helper";
                 parent = "";
@@ -578,7 +596,7 @@ let%expect_test "run metadata survives activity text and clears its clock on dea
   List.iter
     (fun (p, outcome) ->
       let lingering =
-        State.String_map.map (fun (l : Sidebar.lingering) -> { l with outcome }) m.snap.lingering
+        Sidebar.String_map.map (fun (l : Sidebar.lingering) -> { l with outcome }) m.snap.lingering
       in
       let row = Sidebar.pane_label { m with snap = { m.snap with lingering } } p in
       match row.run with
@@ -586,7 +604,8 @@ let%expect_test "run metadata survives activity text and clears its clock on dea
       | Some run ->
           Printf.printf "%s %s %s\n" (Subrun.string_of_kind run.kind)
             (Option.map_or ~default:"-" (fun _ -> "started") run.started)
-            (Ui.row_text ~now:test_at (Ui.Row ("", "$0", row))))
+            (Ui.row_text ~now:test_at
+               (Ui.Row ("", Option.get_exn_or "id" (Tmux.Session.of_string "$0"), row))))
     [ (p, None); ({ p with dead_at = Some 1. }, None); (p, Some Completed) ];
   [%expect
     {|
@@ -626,7 +645,7 @@ let%expect_test "a live run wakes the tick at its next second boundary" =
           Sidebar.empty with
           client = client "sess";
           panes;
-          lingering = Sidebar.lingering_subagents ~dir panes State.String_map.empty;
+          lingering = Sidebar.lingering_subagents ~dir panes Sidebar.String_map.empty;
         }
     in
     Printf.printf "%.3f\n" (Ui.next_wait (Ui.make ~standalone:false side))
@@ -691,9 +710,9 @@ let%expect_test "lingering entries carry forward; only a missing outcome is re-r
   let dir = temp () in
   let id = new_run ~dir "subagent" in
   let panes = [ pane ~window:"@20" ~dead_at:1. ~run:id "%30" ] in
-  let first = Sidebar.lingering_subagents ~dir panes State.String_map.empty in
+  let first = Sidebar.lingering_subagents ~dir panes Sidebar.String_map.empty in
   let show l =
-    let (l : Sidebar.lingering) = State.String_map.find id l in
+    let (l : Sidebar.lingering) = Sidebar.String_map.find id l in
     Printf.printf "%s %s\n" l.name (Option.map_or ~default:"-" Subrun.string_of_result l.outcome)
   in
   show first;
@@ -763,17 +782,17 @@ let%expect_test "shell_outcome: the last command's exit since the pane was last 
          (fun (e : Tmux.Pane.exit) -> Printf.sprintf "exit %d at %.0f" e.code e.at)
          (Sidebar.shell_outcome m p))
   in
-  show "no integration" (m State.String_map.empty) (pane ~exit:(1, ended) "%1");
-  show "running" (m State.String_map.empty)
+  show "no integration" (m Tmux.Pane.Map.empty) (pane ~exit:(1, ended) "%1");
+  show "running" (m Tmux.Pane.Map.empty)
     (integrated ~running:true ~start:(ended +. 1.) ~exit:(1, ended) ());
-  show "clean exit, not yet visited" (m State.String_map.empty) (integrated ~exit:(0, ended) ());
-  show "nonzero exit, not yet visited" (m State.String_map.empty) (integrated ~exit:(1, ended) ());
+  show "clean exit, not yet visited" (m Tmux.Pane.Map.empty) (integrated ~exit:(0, ended) ());
+  show "nonzero exit, not yet visited" (m Tmux.Pane.Map.empty) (integrated ~exit:(1, ended) ());
   show "nonzero exit, pane visited since"
-    (m (State.String_map.singleton "%1" visited))
+    (m (Tmux.Pane.Map.singleton (Option.get_exn_or "id" (Tmux.Pane.of_string "%1")) visited))
     (integrated ~exit:(1, ended) ());
-  show "no status on record" (m State.String_map.empty) (integrated ());
-  show "no command has run" (m State.String_map.empty) (pane ~prompt:ended ~exit:(0, ended) "%1");
-  show "no end time" (m State.String_map.empty) (integrated ~exit:(1, 0.) ());
+  show "no status on record" (m Tmux.Pane.Map.empty) (integrated ());
+  show "no command has run" (m Tmux.Pane.Map.empty) (pane ~prompt:ended ~exit:(0, ended) "%1");
+  show "no end time" (m Tmux.Pane.Map.empty) (integrated ~exit:(1, 0.) ());
   [%expect
     {|
     no integration: none
@@ -866,10 +885,17 @@ let%expect_test "shell_indicator debounce on a controlled clock" =
               {
                 !m with
                 at = !clock;
-                snap = { Sidebar.empty with panes = [ p ]; active = (if on_pane then "%1" else "") };
+                snap =
+                  {
+                    Sidebar.empty with
+                    panes = [ p ];
+                    active = (if on_pane then Tmux.Pane.of_string "%1" else None);
+                  };
               };
           Printf.printf "  +%dms: %s%s\n" adv
-            (indicator_name (Sidebar.shell_indicator !m (State.String_map.find "%1" !m.phases)))
+            (indicator_name
+               (Sidebar.shell_indicator !m
+                  (Tmux.Pane.Map.find (Option.get_exn_or "id" (Tmux.Pane.of_string "%1")) !m.phases)))
             (if Sidebar.shell_pending !m then " pending" else ""))
         steps)
     cases;
@@ -939,14 +965,15 @@ let%expect_test "phases and latches are forgotten with their panes" =
         snap =
           {
             Sidebar.empty with
-            active = "%1";
+            active = Tmux.Pane.of_string "%1";
             panes = [ pane ~prompt:test_at ~running:true ~start:test_at "%1" ];
           };
       }
   in
-  Printf.printf "phase recorded: %b\n" (State.String_map.mem "%1" m.phases);
+  Printf.printf "phase recorded: %b\n"
+    (Tmux.Pane.Map.mem (Option.get_exn_or "id" (Tmux.Pane.of_string "%1")) m.phases);
   let m = Sidebar.track { m with snap = Sidebar.empty } in
-  Printf.printf "phases after the pane is gone: %d\n" (State.String_map.cardinal m.phases);
+  Printf.printf "phases after the pane is gone: %d\n" (Tmux.Pane.Map.cardinal m.phases);
   [%expect {|
     phase recorded: true
     phases after the pane is gone: 0
@@ -962,7 +989,8 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
     Array.exists
       (fun (l : Ui.line) ->
         match l with
-        | Row (_, _, { pane = "%1"; _ }) ->
+        | Row (_, _, { pane; _ })
+          when Tmux.Pane.equal pane (Option.get_exn_or "id" (Tmux.Pane.of_string "%1")) ->
             List.exists (fun (s : Ui.span) -> String.equal s.text "◼") (Ui.spans ~now:!clock l)
         | _ -> false)
       !m.lines
@@ -973,7 +1001,7 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
         ?exit:(if running then None else Some (0, test_at))
         "%1"
     in
-    { Sidebar.empty with client = client "alpha"; active = "%1"; panes = [ p ] }
+    { Sidebar.empty with client = client "alpha"; active = Tmux.Pane.of_string "%1"; panes = [ p ] }
   in
   let tick d running =
     clock := !clock +. d;
@@ -995,7 +1023,7 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
     {
       Sidebar.empty with
       client = client "alpha";
-      active = "%1";
+      active = Tmux.Pane.of_string "%1";
       panes = [ pane ~session:"alpha" ~title:"wedged" "%1" ];
       states = states [ ("%1", ("i", session ~ts:!clock "")) ];
     }
@@ -1122,7 +1150,8 @@ let%expect_test
     m := ssh_tick clock !m p;
     Printf.printf "interactive=%b %s: %s\n" (Sidebar.interactive_pane !m p)
       (indicator_name
-         (Option.flat_map (Sidebar.shell_indicator !m) (State.String_map.find_opt "%1" !m.phases)))
+         (Option.flat_map (Sidebar.shell_indicator !m)
+            (Tmux.Pane.Map.find_opt (Option.get_exn_or "id" (Tmux.Pane.of_string "%1")) !m.phases)))
       (label !m p)
   in
   step 0. (ssh_pane ~command_line:("ssh " ^ ssh_host) (test_at -. 1.) test_at true (-1));
@@ -1142,7 +1171,9 @@ let%expect_test
         Sidebar.interactive_pane !m p
         && Option.is_none
              (Option.flat_map (Sidebar.shell_indicator !m)
-                (State.String_map.find_opt "%1" !m.phases)))
+                (Tmux.Pane.Map.find_opt
+                   (Option.get_exn_or "id" (Tmux.Pane.of_string "%1"))
+                   !m.phases)))
       (List.range 1 10)
   in
   Printf.printf "quiet for ten ticks: %b\n" quiet;
@@ -1192,7 +1223,7 @@ let%expect_test
   m2 := ssh_tick clock !m2 next;
   Printf.printf "a second ssh is judged afresh: %b\n" (Sidebar.interactive_pane !m2 next);
   m2 := Sidebar.track { !m2 with snap = Sidebar.empty };
-  Printf.printf "forgotten with the pane: %b\n" (State.String_map.is_empty !m2.ssh_remote);
+  Printf.printf "forgotten with the pane: %b\n" (Tmux.Pane.Map.is_empty !m2.ssh_remote);
   [%expect
     {|
     prompt in the ssh's own second stays suppressed: true
@@ -1209,7 +1240,7 @@ let%expect_test
   let m = ref (model ~clock ()) in
   let warm p ssh =
     clock := test_at;
-    m := { (model ~clock ()) with phases = State.String_map.empty };
+    m := { (model ~clock ()) with phases = Tmux.Pane.Map.empty };
     let tick () =
       m := Sidebar.track { !m with at = !clock; snap = { Sidebar.empty with panes = [ p ]; ssh } }
     in
@@ -1363,7 +1394,12 @@ let%expect_test "a snapshot as the feed sends it" =
       pane ~session:"alpha" ~window:"@4" ~dead_at:1. ~run:id "%4";
       pane ~session:"alpha" ~window:"@6" ~run:(new_run ~dir ~kind:Bash "build") "%6";
     ]
-    @ [ { (pane ~session:"beta" ~window:"@5" ~title:"asker" "%5") with session_id = "$1" } ]
+    @ [
+        {
+          (pane ~session:"beta" ~window:"@5" ~title:"asker" "%5") with
+          session_id = Option.get_exn_or "id" (Tmux.Session.of_string "$1");
+        };
+      ]
   in
   let states =
     states
@@ -1377,10 +1413,10 @@ let%expect_test "a snapshot as the feed sends it" =
       {
         Sidebar.empty with
         client = client "alpha";
-        active = "%1";
+        active = Tmux.Pane.of_string "%1";
         panes;
         states;
-        lingering = Sidebar.lingering_subagents ~dir panes State.String_map.empty;
+        lingering = Sidebar.lingering_subagents ~dir panes Sidebar.String_map.empty;
       }
   in
   let json m = Option.get_exn_or "client" (Protocol.snapshot m) in
@@ -1526,10 +1562,10 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
       {
         Sidebar.empty with
         client = client "alpha";
-        active = "%1";
+        active = Tmux.Pane.of_string "%1";
         panes;
         states;
-        lingering = Sidebar.lingering_subagents ~dir panes State.String_map.empty;
+        lingering = Sidebar.lingering_subagents ~dir panes Sidebar.String_map.empty;
       }
   in
   print_endline (Yojson.Safe.pretty_to_string (Option.get_exn_or "client" (Protocol.snapshot m)));

@@ -16,16 +16,7 @@ type any = Any : 'a Sidebar.request -> any
 type input = Request of int * any | Invalid of int * string | Ignored
 
 let decode line =
-  let identifier prefix = function
-    | Some (`String s)
-      when String.length s > 1
-           && Char.equal s.[0] prefix
-           && String.for_all
-                (fun c -> Char.compare c '0' >= 0 && Char.compare c '9' <= 0)
-                (String.sub s 1 (String.length s - 1)) ->
-        Some s
-    | _ -> None
-  in
+  let identifier parse = function Some (`String s) -> parse s | _ -> None in
   match Yojson.Safe.from_string line with
   | `Assoc fields -> (
       match List.assoc_opt ~eq:String.equal "id" fields with
@@ -60,9 +51,12 @@ let decode line =
                    else Any (Sidebar.Switch_session direction))
             | [ ("jump", `Assoc location) ] when List.length location = 3 -> (
                 match
-                  ( identifier '$' (List.assoc_opt ~eq:String.equal "session" location),
-                    identifier '@' (List.assoc_opt ~eq:String.equal "window" location),
-                    identifier '%' (List.assoc_opt ~eq:String.equal "pane" location) )
+                  ( identifier Tmux.Session.of_string
+                      (List.assoc_opt ~eq:String.equal "session" location),
+                    identifier Tmux.Window.of_string
+                      (List.assoc_opt ~eq:String.equal "window" location),
+                    identifier Tmux.Pane.of_string (List.assoc_opt ~eq:String.equal "pane" location)
+                  )
                 with
                 | Some session, Some window, Some pane ->
                     Some (Any (Sidebar.Jump { session; window; pane }))
@@ -81,12 +75,14 @@ let decode line =
                   (fun session ->
                     if String.equal key "new-window" then Any (Sidebar.New_window session)
                     else Any (Sidebar.Select_session session))
-                  (identifier '$' (Some value))
+                  (identifier Tmux.Session.of_string (Some value))
             | [ ("new-session", `Bool true) ] -> Some (Any Sidebar.New_session)
             | [ ("select-window", `Assoc target) ] when List.length target = 2 -> (
                 match
-                  ( identifier '$' (List.assoc_opt ~eq:String.equal "session" target),
-                    identifier '@' (List.assoc_opt ~eq:String.equal "window" target) )
+                  ( identifier Tmux.Session.of_string
+                      (List.assoc_opt ~eq:String.equal "session" target),
+                    identifier Tmux.Window.of_string
+                      (List.assoc_opt ~eq:String.equal "window" target) )
                 with
                 | Some session, Some window ->
                     Some (Any (Sidebar.Select_window { session; window }))
@@ -104,7 +100,12 @@ let decode line =
 let error id message = `Assoc [ ("reply", `Assoc [ ("id", `Int id); ("error", `String message) ]) ]
 
 let location (c : Sidebar.client) =
-  `Assoc [ ("session", `String c.session); ("window", `String c.window); ("pane", `String c.pane) ]
+  `Assoc
+    [
+      ("session", Tmux.Session.id_to_yojson c.session);
+      ("window", Tmux.Window.id_to_yojson c.window);
+      ("pane", Tmux.Pane.id_to_yojson c.pane);
+    ]
 
 let result_reply id key encode = function
   | Error e -> error id e
@@ -112,7 +113,11 @@ let result_reply id key encode = function
 
 let switched =
   Option.map_or ~default:`Null (fun (target : Sidebar.switched) ->
-      `Assoc [ ("session", `String target.session); ("window", `String target.window) ])
+      `Assoc
+        [
+          ("session", Tmux.Session.id_to_yojson target.session);
+          ("window", Tmux.Window.id_to_yojson target.window);
+        ])
 
 let reply : type a. int -> a Sidebar.request -> a -> Yojson.Safe.t =
  fun id request response ->
@@ -176,8 +181,8 @@ let snapshot (m : model) =
         `Assoc
           [
             ("kind", `String "window");
-            ("id", `String g.first.row.window);
-            ("window", `String g.first.row.window);
+            ("id", Tmux.Window.id_to_yojson g.first.row.window);
+            ("window", Tmux.Window.id_to_yojson g.first.row.window);
             ("name", `String g.name);
             ("children", `List (List.map item (g.first :: g.rest)));
           ]
@@ -189,9 +194,9 @@ let snapshot (m : model) =
         ( "kind",
           `String
             (match r.kind with Agent -> "agent" | Run -> "run" | Ssh -> "ssh" | Shell -> "shell") );
-        ("id", `String r.pane);
-        ("pane", `String r.pane);
-        ("window", `String r.window);
+        ("id", Tmux.Pane.id_to_yojson r.pane);
+        ("pane", Tmux.Pane.id_to_yojson r.pane);
+        ("window", Tmux.Window.id_to_yojson r.window);
         ("indicator", indicator_json r.indicator);
         ("title", spans r.title);
         ("tail", spans (match r.caption with Text tail -> tail | Elapsed _ -> []));
@@ -230,7 +235,7 @@ let snapshot (m : model) =
                        ("name", `String a.name);
                        ("text", `String a.text);
                        ("created", Timestamp.to_yojson a.created);
-                       ("pane", Option.map_or ~default:`Null (fun p -> `String p) pane);
+                       ("pane", Option.map_or ~default:`Null Tmux.Pane.id_to_yojson pane);
                        ("ended", `Bool (Option.is_none pane));
                        ( "revivable",
                          `Bool
@@ -246,7 +251,7 @@ let snapshot (m : model) =
                  (fun s ->
                    `Assoc
                      [
-                       ("id", `String s.id);
+                       ("id", Tmux.Session.id_to_yojson s.id);
                        ("name", `String s.name);
                        ("current", `Bool s.current);
                        ("nodes", `List (List.map node s.nodes));

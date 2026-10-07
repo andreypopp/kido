@@ -1,14 +1,46 @@
+type id = string
+
+let of_string s =
+  if
+    String.length s > 1
+    && Char.equal s.[0] '%'
+    && String.for_all Char.Ascii.is_digit (String.drop 1 s)
+  then Some s
+  else None
+
+let to_string id = id
+let equal = String.equal
+
+let compare a b =
+  Int.compare
+    (Option.get_or ~default:0 (int_of_string_opt (String.drop 1 a)))
+    (Option.get_or ~default:0 (int_of_string_opt (String.drop 1 b)))
+
+module Map = Map.Make (struct
+  type t = id
+
+  let compare = String.compare
+end)
+
+let id_to_yojson id = `String (to_string id)
+let id_of_yojson = function `String s -> Option.to_result "pane" (of_string s) | _ -> Error "pane"
+let optional_id_to_yojson = function None -> `String "" | Some id -> id_to_yojson id
+
+let optional_id_of_yojson = function
+  | `String "" -> Ok None
+  | json -> Result.map Option.some (id_of_yojson json)
+
 type exit = { code : int; at : float }
 
 type t = {
   session_name : string;
-  session_id : string;
+  session_id : Session.id;
   session_created : float;
   window_index : int;
-  window_id : string;
+  window_id : Window.id;
   window_name : string;
   window_layout : string;
-  pane_id : string;
+  pane_id : id;
   active : bool;
   pane_pid : int;
   current_command : string;
@@ -83,16 +115,20 @@ let parse_line line =
   match Array.of_list (split_n fields line) with
   | f when Array.length f < fields -> None
   | f ->
+      let open Option.Infix in
+      let* session_id = Session.of_string f.(1) in
+      let* window_id = Window.of_string f.(4) in
+      let* pane_id = of_string f.(7) in
       Some
         {
           session_name = f.(0);
-          session_id = f.(1);
+          session_id;
           session_created = Float.of_int (int f.(2));
           window_index = int f.(3);
-          window_id = f.(4);
+          window_id;
           window_name = f.(5);
           window_layout = f.(6);
-          pane_id = f.(7);
+          pane_id;
           active = String.equal f.(8) "1";
           pane_pid = int f.(9);
           current_command = f.(10);
@@ -113,16 +149,9 @@ let parse_line line =
         }
 
 let parse lines = List.filter_map parse_line lines
-let find panes id = List.find_opt (fun p -> String.equal p.pane_id id) panes
+let find panes id = List.find_opt (fun p -> equal p.pane_id id) panes
 
-let is_window_id s =
-  String.length s > 1
-  && Char.equal s.[0] '@'
-  && String.for_all Char.Ascii.is_digit (String.drop 1 s)
-
-type session = { name : string; id : string; windows : t list list }
-
-let pane_num p = int (String.drop 1 p.pane_id)
+type session = { name : string; id : Session.id; windows : t list list }
 
 let order_sessions panes =
   let add groups p =
@@ -131,7 +160,7 @@ let order_sessions panes =
     in
     let first, windows = match mine with [ g ] -> g | _ -> (p, []) in
     match windows with
-    | (q :: _ as w) :: ws when String.equal q.window_id p.window_id ->
+    | (q :: _ as w) :: ws when Window.equal q.window_id p.window_id ->
         (first, (p :: w) :: ws) :: others
     | ws -> (first, [ p ] :: ws) :: others
   in
@@ -141,21 +170,20 @@ let order_sessions panes =
       | 0 -> String.compare a.session_name b.session_name
       | c -> c)
   |> List.map (fun (first, windows) ->
-      let by_age = List.sort (fun a b -> Int.compare (pane_num a) (pane_num b)) in
+      let by_age = List.sort (fun a b -> compare a.pane_id b.pane_id) in
       { name = first.session_name; id = first.session_id; windows = List.rev_map by_age windows })
 
 let watched p = p.active && p.session_attached
-let in_window window_id p = String.equal p.window_id window_id
+let in_window window_id p = Window.equal p.window_id window_id
 let window_focused panes window_id = List.exists (fun p -> in_window window_id p && watched p) panes
 
 let last_window panes window_id =
   match List.find_opt (in_window window_id) panes with
   | None -> false
   | Some { session_id; _ } ->
-      List.filter (fun p -> String.equal p.session_id session_id) panes
+      List.filter (fun p -> Session.equal p.session_id session_id) panes
       |> List.map (fun p -> p.window_id)
-      |> List.sort_uniq ~cmp:String.compare
-      |> List.length <= 1
+      |> List.uniq ~eq:Window.equal |> List.length <= 1
 
 let last_pane panes window_id = List.count (in_window window_id) panes <= 1
 

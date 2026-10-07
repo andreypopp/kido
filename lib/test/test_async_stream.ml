@@ -14,7 +14,7 @@ let run ?(parent = "root-sess") inbox =
       kind = Bash;
       parent_session = parent;
       depth = 1;
-      pane = "";
+      pane = Tmux.Pane.of_string "";
       pid = 0;
       cwd = "";
       model = "";

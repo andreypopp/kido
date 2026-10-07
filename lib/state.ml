@@ -24,7 +24,8 @@ type parent = { session : string; pid : int [@default 0] } [@@deriving yojson]
 
 type session = {
   agent : agent;
-  pane : string;
+  pane : Tmux.Pane.id option;
+      [@to_yojson Tmux.Pane.optional_id_to_yojson] [@of_yojson Tmux.Pane.optional_id_of_yojson]
   pid : int;
   status : status;
   ts : Timestamp.t;
@@ -39,8 +40,6 @@ type session = {
   model : string; [@default ""]
 }
 [@@deriving yojson]
-
-module String_map = Map.Make (String)
 
 let dir () =
   let socket =
@@ -104,9 +103,7 @@ let parse b =
   | exception Yojson.Json_error _ -> None
 
 let get ~dir id = Option.flat_map parse (Fs.read (path ~dir id))
-
-let get_live ~dir id =
-  Option.filter (fun s -> (not (String.is_empty s.pane)) && alive s.pid) (get ~dir id)
+let get_live ~dir id = Option.filter (fun s -> alive s.pid) (get ~dir id)
 
 let read_all ~dir =
   match if Sys.file_exists dir then Sys.readdir dir else [||] with
@@ -116,9 +113,7 @@ let read_all ~dir =
           let full = Filename.concat dir name in
           match Filename.chop_suffix_opt ~suffix:".json" name with
           | Some id when not (Sys.is_directory full) -> (
-              match Option.flat_map parse (Fs.read full) with
-              | Some s when not (String.is_empty s.pane) -> Some (id, s)
-              | _ -> None)
+              match Option.flat_map parse (Fs.read full) with Some s -> Some (id, s) | _ -> None)
           | _ -> None)
 
 let load_live ~dir =
@@ -138,13 +133,16 @@ let by_pane sessions =
   in
   List.fold_left
     (fun m ((_, s) as e) ->
-      String_map.update s.pane
-        (function Some (_, prev) as kept when not (beats s prev) -> kept | _ -> Some e)
-        m)
-    String_map.empty sessions
+      Option.map_or ~default:m
+        (fun pane ->
+          Tmux.Pane.Map.update pane
+            (function Some (_, prev) as kept when not (beats s prev) -> kept | _ -> Some e)
+            m)
+        s.pane)
+    Tmux.Pane.Map.empty sessions
 
 let is_agent_pane states ~pi (p : Tmux.Pane.t) =
-  String_map.mem p.pane_id states
+  Tmux.Pane.Map.mem p.pane_id states
   || String.equal p.current_command "claude"
   || Procs.Int_set.mem p.pane_pid pi
 
@@ -172,7 +170,8 @@ let remove ~dir id ~pid = Result.map (fun () -> Fs.remove (path ~dir id)) (held 
 
 let held_message id s =
   Printf.sprintf "session %s is already open in pane %s (pid %d); this process is not tracked" id
-    s.pane s.pid
+    (Option.map_or ~default:"" Tmux.Pane.to_string s.pane)
+    s.pid
 
 let stall_threshold () = Timestamp.ms_env Sys.getenv_opt "KIDO_STALL_THRESHOLD_MS" 180.
 

@@ -30,7 +30,9 @@ let probe () =
   show (Conn.run conn ("display-message -p " ^ Filename.quote "it's #{session_name}"));
   show (Conn.run conn "bogus");
   List.iter
-    (fun (p : Pane.t) -> Printf.printf "pane %s %s %s\n" p.session_name p.window_id p.pane_id)
+    (fun (p : Pane.t) ->
+      Printf.printf "pane %s %s %s\n" p.session_name (Window.to_string p.window_id)
+        (Pane.to_string p.pane_id))
     (Result.get_exn (Conn.list_panes conn));
   Printf.printf "a fresh connection notifies: %b\n"
     Float.(elapsed (fun () -> Conn.wait conn 5.) < 1.);

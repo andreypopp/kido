@@ -4,8 +4,8 @@ type agent_info = {
   id : string;
   name : string;
   agent : State.agent;
-  pane : string;
-  window : string;
+  pane : Tmux.Pane.id;
+  window : Tmux.Window.id;
   status : State.status;
   activity : string;
   parent : string;
@@ -21,7 +21,9 @@ type agent_info = {
 [@@deriving to_yojson]
 
 let caller_pane panes self =
-  Option.to_result (Printf.sprintf "pane %S not found" self) (Pane.find panes self)
+  Option.to_result
+    (Printf.sprintf "pane %S not found" (Option.map_or ~default:"" Pane.to_string self))
+    (Option.flat_map (Pane.find panes) self)
 
 let agent_title title =
   match String.chop_prefix ~pre:"π - " title with
@@ -50,15 +52,19 @@ let agent_title title =
 
 let display_name panes (s : State.session) =
   if not (String.is_empty s.title) then s.title
-  else Option.map_or ~default:"" (fun (p : Pane.t) -> agent_title p.title) (Pane.find panes s.pane)
+  else
+    Option.map_or ~default:""
+      (fun (p : Pane.t) -> agent_title p.title)
+      (Option.flat_map (Pane.find panes) s.pane)
 
-let per_pane live = List.map snd (State.String_map.bindings (State.by_pane live))
+let per_pane live = List.map snd (Tmux.Pane.Map.bindings (State.by_pane live))
 
 let in_session panes states session =
   List.filter
     (fun (_, (s : State.session)) ->
-      String.equal session
-        (Option.map_or ~default:"" (fun (p : Pane.t) -> p.session_id) (Pane.find panes s.pane)))
+      Option.exists
+        (fun (p : Pane.t) -> Session.equal session p.session_id)
+        (Option.flat_map (Pane.find panes) s.pane))
     states
 
 let parent_edge (id, (s : State.session)) =
@@ -83,52 +89,57 @@ let can_reply ~dir id =
 let agents ~dir ~threshold ~self ~session ~panes ~states =
   let open Result.Infix in
   let+ session =
-    if not (String.is_empty session) then Ok session
-    else
-      match Pane.find panes self with
-      | Some p -> Ok p.session_id
-      | None ->
-          Error
-            (Printf.sprintf
-               "no tmux session for pane %S; pass --session\n\
-                usage: kido tool list_runs [--session ID] [--json]"
-               self)
+    match session with
+    | Some session -> Ok session
+    | None -> (
+        match Option.flat_map (Pane.find panes) self with
+        | Some p -> Ok p.session_id
+        | None ->
+            Error
+              (Printf.sprintf
+                 "no tmux session for pane %S; pass --session\n\
+                  usage: kido tool list_runs [--session ID] [--json]"
+                 (Option.map_or ~default:"" Pane.to_string self)))
   in
   let wake = State.wake ~dir and now = Timestamp.now () in
   let scoped = in_session panes states session in
   let parent e =
-    match parent_edge e with Some p when List.mem_assoc ~eq:String.equal p scoped -> p | _ -> ""
+    match parent_edge e with
+    | Some p when List.mem_assoc ~eq:String.equal p scoped -> Some p
+    | _ -> None
   in
   List.sort
     (fun (a, (sa : State.session)) (b, (sb : State.session)) ->
       match Float.compare sa.ts sb.ts with 0 -> String.compare a b | c -> c)
     scoped
   |> Tree.order ~id:fst ~parent
-  |> List.map (fun (id, (s : State.session)) ->
-      let p = Pane.find panes s.pane in
-      {
-        id;
-        name = display_name panes s;
-        agent = s.agent;
-        pane = s.pane;
-        window = Option.map_or ~default:"" (fun (p : Pane.t) -> p.window_id) p;
-        status = s.status;
-        activity = s.activity;
-        parent = Option.map_or ~default:"" (fun (p : State.parent) -> p.session) s.parent;
-        depth = s.depth;
-        self = String.equal s.pane self;
-        cwd = Option.map_or ~default:"" (fun (p : Pane.t) -> p.current_path) p;
-        can_message = not (String.is_empty s.inbox);
-        can_reply = (not (String.is_empty s.inbox)) && can_reply ~dir id;
-        model = s.model;
-        since_report = Float.to_int (now -. s.ts);
-        stalled = State.stalled_since ~threshold ~wake ~now s;
-      })
+  |> List.filter_map (fun (id, (s : State.session)) ->
+      Option.map
+        (fun (p : Pane.t) ->
+          {
+            id;
+            name = display_name panes s;
+            agent = s.agent;
+            pane = p.pane_id;
+            window = p.window_id;
+            status = s.status;
+            activity = s.activity;
+            parent = Option.map_or ~default:"" (fun (p : State.parent) -> p.session) s.parent;
+            depth = s.depth;
+            self = Option.equal Pane.equal s.pane self;
+            cwd = p.current_path;
+            can_message = not (String.is_empty s.inbox);
+            can_reply = (not (String.is_empty s.inbox)) && can_reply ~dir id;
+            model = s.model;
+            since_report = Float.to_int (now -. s.ts);
+            stalled = State.stalled_since ~threshold ~wake ~now s;
+          })
+        (Option.flat_map (Pane.find panes) s.pane))
 
 type row =
   | Peer of agent_info
   | Parent of agent_info
-  | Own of { run : Runs.info; agent : agent_info option; window : string }
+  | Own of { run : Runs.info; agent : agent_info option; window : Tmux.Window.id option }
 
 let list_runs ~dir ~threshold ~self ~session =
   let open Result.Infix in
@@ -177,9 +188,9 @@ let list_runs ~dir ~threshold ~self ~session =
                  else
                    List.find_opt (fun a -> String.equal a.id (Subrun.string_of_id r.meta.id)) agents);
               window =
-                Option.map_or ~default:""
+                Option.map
                   (fun (p : Pane.t) -> p.window_id)
-                  (Pane.find panes r.meta.pane);
+                  (Option.flat_map (Pane.find panes) r.meta.pane);
             })
   in
   visible @ runs
@@ -201,8 +212,8 @@ let row_to_yojson row =
               [
                 ("id", `String (Subrun.string_of_id m.id));
                 ("name", `String m.name);
-                ("pane", `String m.pane);
-                ("window", `String window);
+                ("pane", Pane.optional_id_to_yojson m.pane);
+                ("window", `String (Option.map_or ~default:"" Window.to_string window));
                 ("parent", `String m.parent_session);
                 ("cwd", `String m.cwd);
                 ("canMessage", `Bool false);
@@ -244,7 +255,8 @@ let table rows =
            | _ -> ""
          in
          List.map (value json) columns
-         @ (match member "outcome" json with
-           | `Null -> [ ""; "" ]
-           | o -> List.map (value o) [ "result"; "text" ]))
+         @
+         match member "outcome" json with
+         | `Null -> [ ""; "" ]
+         | o -> List.map (value o) [ "result"; "text" ])
        rows

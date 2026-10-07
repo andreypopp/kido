@@ -113,13 +113,16 @@ let list_panes ?socket () =
     (fun out -> Pane.parse (lines out))
     (exec ?socket [ "list-panes"; "-a"; "-F"; Pane.format ])
 
-let capture_pane ?socket pane = Result.map lines (exec ?socket [ "capture-pane"; "-p"; "-t"; pane ])
-let capture_screen ?socket pane = exec ?socket [ "capture-pane"; "-p"; "-t"; pane; "-S"; "-1000" ]
+let capture_pane ?socket pane =
+  Result.map lines (exec ?socket [ "capture-pane"; "-p"; "-t"; Pane.to_string pane ])
+
+let capture_screen ?socket pane =
+  exec ?socket [ "capture-pane"; "-p"; "-t"; Pane.to_string pane; "-S"; "-1000" ]
 
 let current_client () =
   Result.get_or ~default:"" (exec [ "display-message"; "-p"; "#{client_name}" ])
 
-type client_state = { session : string; session_id : string; focused : bool }
+type client_state = { session : string; session_id : Session.id; focused : bool }
 
 let side_focus_flag = "side-status-focus"
 
@@ -136,7 +139,9 @@ let client_format =
 let client_fields line =
   match String.split ~by:Pane.sep line with
   | name :: session :: session_id :: flags :: control :: _ ->
-      Some (name, session, session_id, flags, control)
+      Option.map
+        (fun session_id -> (name, session, session_id, flags, control))
+        (Session.of_string session_id)
   | _ -> None
 
 let parse_client_state lines client =
@@ -164,19 +169,24 @@ let real_clients lines =
 
 let resolve_client ~pane ~tmux_env =
   let live =
-    if String.is_empty pane then None
-    else
-      match exec [ "display-message"; "-p"; "-t"; pane; "#{session_id}" ] with
-      | Ok id when not (String.is_empty id) -> Some id
-      | _ -> None
+    match pane with
+    | None -> None
+    | Some pane -> (
+        match exec [ "display-message"; "-p"; "-t"; Pane.to_string pane; "#{session_id}" ] with
+        | Ok id -> Session.of_string id
+        | _ -> None)
   in
   let target =
     match (live, String.split_on_char ',' tmux_env) with
     | Some id, _ -> Some id
-    | None, _ :: _ :: id :: _ when not (String.is_empty id) -> Some ("$" ^ id)
+    | None, _ :: _ :: id :: _ when not (String.is_empty id) -> Session.of_string ("$" ^ id)
     | None, _ -> None
   in
-  match Option.map (fun t -> exec [ "list-clients"; "-t"; t; "-F"; client_format ]) target with
+  match
+    Option.map
+      (fun t -> exec [ "list-clients"; "-t"; Session.to_string t; "-F"; client_format ])
+      target
+  with
   | Some (Ok out) -> ( match real_clients (lines out) with [ c ] -> Some c | _ -> None)
   | _ -> None
 
@@ -204,7 +214,7 @@ let switch_session ~socket ~client ~next =
             | Some p ->
                 Result.map
                   (fun () -> Some (target.id, p.window_id))
-                  (run ?socket [ "switch-client"; "-c"; client; "-t"; target.id ])
+                  (run ?socket [ "switch-client"; "-c"; client; "-t"; Session.to_string target.id ])
             | None -> Ok None)
         | None -> Ok None)
     (list_panes ?socket ())
@@ -218,14 +228,14 @@ let window_target ~next ~window windows =
   let rec find j k =
     if k = 0 then None else if unmarked j then Some j else find (step ~next j n) (k - 1)
   in
-  match Array.find_idx (fun w -> String.equal (first w).window_id window) windows with
+  match Array.find_idx (fun w -> Window.equal (first w).window_id window) windows with
   | None -> None
   | Some (i, (_, anchor)) -> (
       match
         if next then None
         else
           Option.flat_map
-            (fun anchor -> List.find_opt (fun (p : Pane.t) -> String.equal p.pane_id anchor) panes)
+            (fun anchor -> List.find_opt (fun (p : Pane.t) -> Pane.equal p.pane_id anchor) panes)
             anchor
       with
       | Some parent -> Some parent
@@ -255,11 +265,11 @@ let switch_window ?socket ~client ~next windows =
              "-c";
              client;
              "-t";
-             target.session_id;
+             Session.to_string target.session_id;
              ";";
              "select-window";
              "-t";
-             target.window_id;
+             Window.to_string target.window_id;
            ])
   | None -> Ok None
 
@@ -272,15 +282,15 @@ let jump ?socket ~client ~session ~window pane =
        "-c";
        client;
        "-t";
-       session ^ ":" ^ window ^ "." ^ pane;
+       Session.to_string session ^ ":" ^ Window.to_string window ^ "." ^ Pane.to_string pane;
        ";";
        "select-window";
        "-t";
-       session ^ ":" ^ window;
+       Session.to_string session ^ ":" ^ Window.to_string window;
        ";";
        "select-pane";
        "-t";
-       pane;
+       Pane.to_string pane;
        ";";
      ]
     @ release_args client)
@@ -296,21 +306,23 @@ let send_prompt pane text =
       (fun e ->
         ignore (exec [ "delete-buffer"; "-b"; buf ]);
         e)
-      (run [ "paste-buffer"; "-b"; buf; "-d"; "-t"; pane; "-p" ])
+      (run [ "paste-buffer"; "-b"; buf; "-d"; "-t"; Pane.to_string pane; "-p" ])
   in
   (* A paste-sensitive reader, Claude Code included, takes an Enter sent with
      the paste as part of the pasted text. *)
   Unix.sleepf 0.1;
-  run [ "send-keys"; "-t"; pane; "Enter" ]
+  run [ "send-keys"; "-t"; Pane.to_string pane; "Enter" ]
 
 (* On a closed window the fork's display-message exits 0 and prints an empty
    line, so only the echoed id answers. *)
 let window_exists ?socket window_id =
-  match exec ?socket [ "display-message"; "-p"; "-t"; window_id; "#{window_id}" ] with
-  | Ok out -> String.equal out window_id
+  match
+    exec ?socket [ "display-message"; "-p"; "-t"; Window.to_string window_id; "#{window_id}" ]
+  with
+  | Ok out -> Option.equal Window.equal (Window.of_string out) (Some window_id)
   | Error _ -> false
 
-type window = { window_id : string; pane_id : string; pane_pid : int }
+type window = { window_id : Window.id; pane_id : Pane.id; pane_pid : int }
 
 let new_window ?socket ?(remain_on_exit = true) ~session ~name ~cwd ~env command =
   let open Result.Infix in
@@ -323,7 +335,7 @@ let new_window ?socket ?(remain_on_exit = true) ~session ~name ~cwd ~env command
          "-F";
          "#{window_id}:#{pane_id}:#{pane_pid}";
          "-t";
-         session ^ ":";
+         Session.to_string session ^ ":";
          "-n";
          name;
          "-c";
@@ -335,16 +347,19 @@ let new_window ?socket ?(remain_on_exit = true) ~session ~name ~cwd ~env command
   let* w =
     match String.split ~by:":" out with
     | [ window_id; pane_id; pid ] -> (
-        match int_of_string_opt pid with
-        | Some pane_pid -> Ok { window_id; pane_id; pane_pid }
-        | None -> Error (Printf.sprintf "new-window: unexpected pane_pid %S" pid))
+        match (Window.of_string window_id, Pane.of_string pane_id, int_of_string_opt pid) with
+        | Some window_id, Some pane_id, Some pane_pid -> Ok { window_id; pane_id; pane_pid }
+        | _, _, None -> Error (Printf.sprintf "new-window: unexpected pane_pid %S" pid)
+        | _ -> Error (Printf.sprintf "new-window: unexpected output %S" out))
     | _ -> Error (Printf.sprintf "new-window: unexpected output %S" out)
   in
   (* A command that exits fast enough always beats remain-on-exit; losing that
      race is not a failure to create the window. *)
   if not remain_on_exit then Ok w
   else
-    match exec ?socket [ "set-option"; "-p"; "-t"; w.pane_id; "remain-on-exit"; "on" ] with
+    match
+      exec ?socket [ "set-option"; "-p"; "-t"; Pane.to_string w.pane_id; "remain-on-exit"; "on" ]
+    with
     | Error e when window_exists ?socket w.window_id -> Error e
     | Ok _ | Error _ -> Ok w
 
@@ -355,14 +370,19 @@ let new_shell ~socket ~session ~cwd =
     let* out =
       exec ?socket
         ((match session with
-           | Some session -> [ "new-window"; "-t"; session ^ ":" ]
+           | Some session -> [ "new-window"; "-t"; Session.to_string session ^ ":" ]
            | None -> [ "new-session" ])
         @ [ "-d"; "-P"; "-F"; "#{session_id}:#{window_id}:#{pane_id}"; "-c"; cwd ])
     in
     match String.split ~by:":" out with
-    | [ session; window; pane ] -> Ok (session, window, pane)
+    | [ session; window; pane ] -> (
+        match (Session.of_string session, Window.of_string window, Pane.of_string pane) with
+        | Some session, Some window, Some pane -> Ok (session, window, pane)
+        | _ -> Error (Printf.sprintf "created shell but could not read its location: %S" out))
     | _ -> Error (Printf.sprintf "created shell but could not read its location: %S" out)
 
-let kill_window ?socket window_id = run ?socket [ "kill-window"; "-t"; window_id ]
-let kill_pane ?socket pane_id = run ?socket [ "kill-pane"; "-t"; pane_id ]
-let mark_run pane_id run_id = run [ "set-option"; "-p"; "-t"; pane_id; Pane.run_option; run_id ]
+let kill_window ?socket window_id = run ?socket [ "kill-window"; "-t"; Window.to_string window_id ]
+let kill_pane ?socket pane_id = run ?socket [ "kill-pane"; "-t"; Pane.to_string pane_id ]
+
+let mark_run pane_id run_id =
+  run [ "set-option"; "-p"; "-t"; Pane.to_string pane_id; Pane.run_option; run_id ]

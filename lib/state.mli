@@ -4,7 +4,8 @@ type parent = { session : string; pid : int }
 
 type session = {
   agent : agent;
-  pane : string;
+  pane : Tmux.Pane.id option;
+      [@to_yojson Tmux.Pane.optional_id_to_yojson] [@of_yojson Tmux.Pane.optional_id_of_yojson]
   pid : int;
   status : status;
   ts : Timestamp.t;
@@ -20,8 +21,6 @@ type session = {
 }
 [@@deriving to_yojson]
 
-module String_map : Map.S with type key = string
-
 val statuses : (string * status) list
 val string_of_status : status -> string
 val string_of_agent : agent -> string
@@ -33,8 +32,8 @@ val alive : int -> bool
 val get : dir:string -> string -> session option
 val get_live : dir:string -> string -> session option
 val load_live : dir:string -> (string * session) list
-val by_pane : (string * session) list -> (string * session) String_map.t
-val is_agent_pane : (string * session) String_map.t -> pi:Procs.Int_set.t -> Tmux.Pane.t -> bool
+val by_pane : (string * session) list -> (string * session) Tmux.Pane.Map.t
+val is_agent_pane : (string * session) Tmux.Pane.Map.t -> pi:Procs.Int_set.t -> Tmux.Pane.t -> bool
 val record : dir:string -> string -> session -> (unit, session) result
 val remove : dir:string -> string -> pid:int -> (unit, session) result
 val held_message : string -> session -> string

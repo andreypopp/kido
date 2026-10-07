@@ -6,13 +6,13 @@ let temp () = Filename.temp_dir "kido-reap" ""
 let pane ?run ?dead ?(watched = false) pane_id window_id : Tmux.Pane.t =
   {
     session_name = "s";
-    session_id = "$0";
+    session_id = Option.get_exn_or "id" (Tmux.Session.of_string "$0");
     session_created = 0.;
     window_index = 0;
-    window_id;
+    window_id = Option.get_exn_or "id" (Tmux.Window.of_string window_id);
     window_name = "";
     window_layout = "";
-    pane_id;
+    pane_id = Option.get_exn_or "id" (Tmux.Pane.of_string pane_id);
     active = watched;
     pane_pid = 0;
     current_command = "";
@@ -41,7 +41,7 @@ let run ~dir ?(kind = Subrun.Agent) ?(parent = "") name id_s =
       kind;
       parent_session = parent;
       depth = 0;
-      pane = "";
+      pane = Tmux.Pane.of_string "";
       pid = 0;
       cwd = "";
       model = "";
@@ -53,9 +53,10 @@ let run ~dir ?(kind = Subrun.Agent) ?(parent = "") name id_s =
 
 let%expect_test "decide: close-run's refusals and closes" =
   let show w panes =
-    match Reap.decide panes w with
-    | Ok (Window w) -> Printf.printf "close %s\n" w
-    | Ok (Pane { window; pane }) -> Printf.printf "close %s pane %s\n" window pane
+    match Reap.decide panes (Option.get_exn_or "id" (Tmux.Window.of_string w)) with
+    | Ok (Window w) -> Printf.printf "close %s\n" (Tmux.Window.to_string w)
+    | Ok (Pane { window; pane }) ->
+        Printf.printf "close %s pane %s\n" (Tmux.Window.to_string window) (Tmux.Pane.to_string pane)
     | Error why -> print_endline why
   in
   let focused = pane ~watched:true "%1" "@1" in

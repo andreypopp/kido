@@ -136,7 +136,7 @@ let send t text =
         {
           kind = Stream;
           id = Msg.new_id ();
-          from = { session = ""; name = t.meta.name; pane = "" };
+          from = { session = ""; name = t.meta.name; pane = None };
           reply_to = "";
           text;
           run = Subrun.string_of_id t.meta.id;

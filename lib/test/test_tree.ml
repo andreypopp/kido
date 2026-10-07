@@ -1,6 +1,8 @@
 open Kido
 
-let order items = List.map fst (Tree.order ~id:fst ~parent:snd items)
+let order items =
+  List.map fst
+    (Tree.order ~id:fst ~parent:(fun (_, p) -> if String.is_empty p then None else Some p) items)
 
 let%expect_test "Order keeps every item, whatever the parent edges say" =
   let cases =

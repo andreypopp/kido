@@ -167,7 +167,7 @@ func TestStopRunTerminatesWrapperAndCommandWithoutPane(t *testing.T) {
 	if err := json.Unmarshal(metaBytes, &record); err != nil {
 		t.Fatal(err)
 	}
-	record["pane"] = "%absent"
+	record["pane"] = "%999999"
 	metaBytes, _ = json.Marshal(record)
 	if err := os.WriteFile(filepath.Join(h.stateDir, "runs", run, "meta.json"), metaBytes, 0o644); err != nil {
 		t.Fatal(err)

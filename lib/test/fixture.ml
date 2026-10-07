@@ -26,7 +26,7 @@ let session ?(agent = State.Pi) ?(pane = "%1") ?(pid = Unix.getpid ()) ?(ts = 1_
     status : State.session =
   {
     agent;
-    pane;
+    pane = Tmux.Pane.of_string pane;
     pid;
     status;
     ts;
@@ -103,7 +103,7 @@ let run ~dir ?(name = "") ?(kind = Subrun.Agent) ?(parent = "") ?(pane = "") ?(p
       kind;
       parent_session = parent;
       depth = 1;
-      pane;
+      pane = Tmux.Pane.of_string pane;
       pid;
       cwd;
       model = "";

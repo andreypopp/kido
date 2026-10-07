@@ -35,7 +35,9 @@ type meta = {
   kind : kind;
   parent_session : string; [@key "parentSession"] [@default ""]
   depth : int;
-  pane : string;
+  pane :
+    (Tmux.Pane.id option
+    [@to_yojson Tmux.Pane.optional_id_to_yojson] [@of_yojson Tmux.Pane.optional_id_of_yojson]);
   pid : int;
   cwd : string;
   model : string; [@default ""]
@@ -135,13 +137,14 @@ let truncate_screen data =
   if n > max_screen_bytes then String.sub data (n - max_screen_bytes) max_screen_bytes else data
 
 let save_screen ?socket ~dir id pane =
-  if String.is_empty pane then None
-  else
-    Option.map
-      (fun text ->
-        let data = truncate_screen text in
-        (if not (String.is_empty data) then
-           try Fs.write_atomic (screen_path ~dir id) data
-           with Unix.Unix_error _ | Sys_error _ -> ());
-        data)
-      (Result.to_opt (Tmux.Exec.capture_screen ?socket pane))
+  Option.flat_map
+    (fun pane ->
+      Option.map
+        (fun text ->
+          let data = truncate_screen text in
+          (if not (String.is_empty data) then
+             try Fs.write_atomic (screen_path ~dir id) data
+             with Unix.Unix_error _ | Sys_error _ -> ());
+          data)
+        (Result.to_opt (Tmux.Exec.capture_screen ?socket pane)))
+    pane

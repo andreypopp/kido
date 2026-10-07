@@ -225,7 +225,7 @@ let list_panes t =
   | Error _ -> Exec.list_panes ?socket:t.socket ()
 
 let capture_pane t pane =
-  match run t ("capture-pane -p -t " ^ Filename.quote pane) with
+  match run t ("capture-pane -p -t " ^ Filename.quote (Pane.to_string pane)) with
   | Ok lines -> Ok lines
   | Error _ -> Exec.capture_pane ?socket:t.socket pane
 
