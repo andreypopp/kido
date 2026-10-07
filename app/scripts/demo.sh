@@ -1,5 +1,5 @@
 #!/bin/bash
-# Kido.app on a private kido server in $KIDO_DEMO_DIR, with a fixed layout and fake agents.
+# KidoDev.app on a private kido server in $KIDO_DEMO_DIR, with a fixed layout and fake agents.
 #   demo.sh <app binary>   start the server if needed, populate it, launch the app
 #   demo.sh stop           kill the demo server
 set -e
