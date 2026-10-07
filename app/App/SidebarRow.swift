@@ -2,10 +2,9 @@ import AppKit
 import SidebarFeed
 
 struct SidebarFonts {
-    let regular = NSFont.systemFont(ofSize: 12)
-    let small = NSFont.systemFont(ofSize: 11)
+    let regular = NSFont.systemFont(ofSize: 13)
     let section = NSFont.systemFont(ofSize: 11, weight: .semibold)
-    let tail = NSFont.systemFont(ofSize: 10)
+    let tail = NSFont.systemFont(ofSize: 11)
     let clock = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
 }
 
@@ -16,10 +15,19 @@ final class SidebarSelectionRow: NSTableRowView {
 
 final class SidebarCell: NSTableCellView {
     static let id = NSUserInterfaceItemIdentifier("cell")
+    private static let icons: [SidebarRow.Icon: NSImage] = Dictionary(uniqueKeysWithValues:
+        [SidebarRow.Icon.agent, .terminal].compactMap { icon in
+            (NSImage(systemSymbolName: icon.rawValue, accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: 16, weight: .regular))?
+                .withSymbolConfiguration(.init(paletteColors: [.labelColor])))
+                .map { (icon, $0) }
+        })
     private let fonts: SidebarFonts
     private var row: SidebarRow?
     private var clock = ""
-    var fold: () -> Void = {}
+    #if KIDO_VISUAL
+    private(set) var visualClockDirtyRect = NSRect.zero
+    #endif
     let addWindow = IconButton("plus", "New window", size: 13, hoverStyle: .iconOnly)
     override var isFlipped: Bool { true }
 
@@ -32,24 +40,18 @@ final class SidebarCell: NSTableCellView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    func configure(_ row: SidebarRow, expanded: Bool) {
+    func configure(_ row: SidebarRow) {
         self.row = row
         addWindow.isHidden = { if case .header = row.kind { return false }; return true }()
         addWindow.toolTip = nil
         addWindow.setAccessibilityLabel("New window in " + row.title)
         setAccessibilityElement(true)
-        setAccessibilityRole(addWindow.isHidden ? .staticText : .button)
+        setAccessibilityRole(.staticText)
         setAccessibilityLabel([row.title, row.tail, row.indicatorDescription].filter { !$0.isEmpty }.joined(separator: ", "))
-        setAccessibilityValue(addWindow.isHidden ? nil : expanded ? "expanded" : "collapsed")
+        setAccessibilityValue(nil)
         updateClock()
         needsLayout = true
         needsDisplay = true
-    }
-
-    override func accessibilityPerformPress() -> Bool {
-        guard case .header? = row?.kind else { return false }
-        fold()
-        return true
     }
 
     func updateClock() {
@@ -59,18 +61,22 @@ final class SidebarCell: NSTableCellView {
         let now = Date()
         #endif
         let next = row?.started.map { sidebarElapsed(started: $0, now: now) } ?? ""
-        guard next != clock, let row else { return }
+        guard next != clock else { return }
         let oldWidth = (clock as NSString).size(withAttributes: [.font: fonts.clock]).width
         let width = (next as NSString).size(withAttributes: [.font: fonts.clock]).width
         clock = next
-        let y: CGFloat = row.indent == 0 ? 6 : 5
-        let leading = oldWidth == width ? bounds.width - 26 - width : 12 + CGFloat(row.indent) * 21
-        setNeedsDisplay(NSRect(x: leading, y: y - 1, width: max(0, bounds.width - 26 - leading), height: 17))
+        let leading = 36 + CGFloat(row?.indent ?? 0) * 21
+        let x = oldWidth == width ? bounds.width - 27 - width : leading
+        let dirtyRect = NSRect(x: x, y: 7, width: max(0, bounds.width - 27 - x), height: 18)
+        #if KIDO_VISUAL
+        visualClockDirtyRect = dirtyRect
+        #endif
+        setNeedsDisplay(dirtyRect)
     }
 
     override func layout() {
         super.layout()
-        addWindow.frame = NSRect(x: bounds.width - 28, y: 1.5, width: 28, height: 28)
+        addWindow.frame = NSRect(x: bounds.width - 29, y: 0.5, width: 28, height: 28)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -78,37 +84,21 @@ final class SidebarCell: NSTableCellView {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             NSGraphicsContext.saveGraphicsState()
             defer { NSGraphicsContext.restoreGraphicsState() }
-            for segment in row.segments {
-                let x = segment.kind == .card ? 0 : CGFloat(segment.indent) * 21
-                let rect = NSRect(x: x, y: segment.top, width: bounds.width - x, height: segment.height)
-                let path = NSBezierPath()
-                let tl = CGFloat(segment.topLeft), bl = CGFloat(segment.bottomLeft)
-                let tr = segment.kind == .card ? tl : 0, br = segment.kind == .card ? bl : 0
-                path.move(to: NSPoint(x: rect.minX + tl, y: rect.minY))
-                path.line(to: NSPoint(x: rect.maxX - tr, y: rect.minY))
-                path.curve(to: NSPoint(x: rect.maxX, y: rect.minY + tr), controlPoint1: NSPoint(x: rect.maxX, y: rect.minY), controlPoint2: NSPoint(x: rect.maxX, y: rect.minY))
-                path.line(to: NSPoint(x: rect.maxX, y: rect.maxY - br))
-                path.curve(to: NSPoint(x: rect.maxX - br, y: rect.maxY), controlPoint1: NSPoint(x: rect.maxX, y: rect.maxY), controlPoint2: NSPoint(x: rect.maxX, y: rect.maxY))
-                path.line(to: NSPoint(x: rect.minX + bl, y: rect.maxY))
-                path.curve(to: NSPoint(x: rect.minX, y: rect.maxY - bl), controlPoint1: NSPoint(x: rect.minX, y: rect.maxY), controlPoint2: NSPoint(x: rect.minX, y: rect.maxY))
-                path.line(to: NSPoint(x: rect.minX, y: rect.minY + tl))
-                path.curve(to: NSPoint(x: rect.minX + tl, y: rect.minY), controlPoint1: NSPoint(x: rect.minX, y: rect.minY), controlPoint2: NSPoint(x: rect.minX, y: rect.minY))
-                path.close()
-                switch segment.kind {
-                case .card:
-                    NSColor.labelColor.withAlphaComponent(0.025).setFill(); path.fill()
-                    NSColor.labelColor.withAlphaComponent(0.075).setStroke()
-                    path.lineWidth = 1; path.stroke()
-                case .window(let active):
-                    if active { NSColor.labelColor.withAlphaComponent(0.075).setFill(); path.fill() }
-                }
+            if row.target != nil {
+                let x = CGFloat(row.indent) * 21
+                let above: CGFloat = row.position == .middle || row.position == .bottom ? 7 : 0
+                let below: CGFloat = row.position == .middle || row.position == .top ? 7 : 0
+                let rect = NSRect(x: x, y: -above, width: max(0, bounds.width - x), height: bounds.height + above + below)
+                let path = NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7)
+                NSBezierPath(rect: bounds).addClip()
+                if row.active { NSColor.labelColor.withAlphaComponent(0.10).setFill(); path.fill() }
                 path.addClip()
             }
-            let leading = (row.target == nil ? 10 : 12) + CGFloat(row.indent) * 21
-            if row.focused {
+            let leading = (row.target == nil ? 12 : 36) + CGFloat(row.indent) * 21
+            if row.focused && row.position != .single {
                 let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
                 (dark ? NSColor.white.withAlphaComponent(0.85) : NSColor.black.withAlphaComponent(0.75)).setFill()
-                NSRect(x: CGFloat(row.indent) * 21, y: 4, width: 3, height: bounds.height - 8).fill()
+                NSRect(x: CGFloat(row.indent) * 21, y: 7, width: 2, height: bounds.height - 14).fill()
             }
             if row.target != nil, (superview as? NSTableRowView)?.isSelected == true,
                let table = enclosingScrollView?.documentView as? Table, table.keyboardSelection,
@@ -116,9 +106,9 @@ final class SidebarCell: NSTableCellView {
                 NSColor.labelColor.withAlphaComponent(0.10).setFill(); bounds.fill()
             }
             if case .divider = row.kind {
-                NSColor.labelColor.withAlphaComponent(0.12).setFill()
-                let x = CGFloat(row.indent) * 21
-                let line = NSRect(x: x, y: 1, width: max(0, bounds.width - x), height: 1)
+                NSColor.labelColor.withAlphaComponent(0.075).setFill()
+                let x = CGFloat(row.indent) * 21 + 12
+                let line = NSRect(x: x, y: 3, width: max(0, bounds.width - x - 12), height: 1)
                 let pixels = convertToBacking(line)
                 convertFromBacking(NSRect(x: pixels.minX.rounded(), y: pixels.minY.rounded(),
                                           width: pixels.width.rounded(), height: pixels.height.rounded())).fill()
@@ -126,19 +116,30 @@ final class SidebarCell: NSTableCellView {
             }
             if case .gap = row.kind { return }
             let header = { if case .header = row.kind { return true }; return false }()
-            let y: CGFloat = header ? 8 : row.indent == 0 ? 5 : 4
-            let dotX = bounds.width - 14
+            let y: CGFloat = header ? 6.5 : 7
+            let dotX = bounds.width - 15
+            let iconRect = NSRect(x: leading - 24, y: 8, width: 16, height: 16)
+            if !header && dirtyRect.intersects(iconRect) {
+                Self.icons[row.icon]?.draw(in: iconRect,
+                          from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            }
             let clockWidth = (clock as NSString).size(withAttributes: [.font: fonts.clock]).width
             let end = header ? bounds.width - 30 : dotX - 12 - (clock.isEmpty ? 0 : clockWidth + 6)
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineBreakMode = .byTruncatingTail
-            (row.title as NSString).draw(in: NSRect(x: leading, y: y, width: max(0, end - leading), height: 16),
-                                       withAttributes: [.font: header ? fonts.section : row.indent == 0 ? fonts.regular : fonts.small,
+            let titleRect = NSRect(x: leading, y: y, width: max(0, end - leading), height: 18)
+            if dirtyRect.intersects(titleRect) {
+                (row.title as NSString).draw(in: titleRect,
+                                       withAttributes: [.font: header ? fonts.section : fonts.regular,
                                                         .foregroundColor: header ? NSColor.secondaryLabelColor : NSColor.labelColor,
                                                         .paragraphStyle: paragraph])
-            (row.tail as NSString).draw(in: NSRect(x: leading, y: y + 18, width: max(0, dotX - leading - 10), height: 14),
-                                      withAttributes: [.font: fonts.tail, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph])
-            (clock as NSString).draw(at: NSPoint(x: dotX - 12 - clockWidth, y: y + 1),
+            }
+            let tailRect = NSRect(x: leading, y: 26, width: max(0, bounds.width - leading - 24), height: 15)
+            if dirtyRect.intersects(tailRect) {
+                (row.tail as NSString).draw(in: tailRect,
+                                          withAttributes: [.font: fonts.tail, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph])
+            }
+            (clock as NSString).draw(at: NSPoint(x: dotX - 12 - clockWidth, y: y + 2),
                                      withAttributes: [.font: fonts.clock, .foregroundColor: NSColor.secondaryLabelColor])
             let color: NSColor? = switch row.status {
             case .quiet: nil; case .running, .done: .systemGreen; case .attention: .systemOrange; case .error, .stalled: .systemRed
@@ -151,7 +152,7 @@ final class SidebarCell: NSTableCellView {
                     image?.draw(in: NSRect(x: dotX - 6, y: y + 1, width: 12, height: 12),
                                 from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
                 } else {
-                    color.setFill(); NSBezierPath(ovalIn: NSRect(x: dotX - 3, y: y + 4, width: 6, height: 6)).fill()
+                    color.setFill(); NSBezierPath(ovalIn: NSRect(x: dotX - 3, y: y + 6, width: 6, height: 6)).fill()
                 }
             }
         }
