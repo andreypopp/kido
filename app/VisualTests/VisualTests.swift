@@ -29,6 +29,16 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         NSAppearance(named: .aqua)!.performAsCurrentDrawingAppearance { super.invokeTest() }
     }
 
+    func headerImage(_ tabs: WindowTabs) throws -> NSImage {
+        let root = try XCTUnwrap(tabs.window?.contentView?.superview)
+        let rect = tabs.convert(tabs.bounds, to: root)
+        let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: rect))
+        root.cacheDisplay(in: rect, to: bitmap)
+        let image = NSImage(size: tabs.bounds.size)
+        image.addRepresentation(bitmap)
+        return image
+    }
+
     override func setUp() async throws {
         WindowOwner.clipboardConsent.reset()
         NSApp.appearance = NSAppearance(named: .aqua)
@@ -217,6 +227,8 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         window.toolbar = toolbar
         window.toolbarStyle = .unified
         window.setContentSize(NSSize(width: 900, height: 560))
+        sidebar.tabs.theme = (runtime.background, window.appearance)
+        window.display()
         let root = try XCTUnwrap(window.contentView?.superview)
         root.layoutSubtreeIfNeeded()
         sidebar.splitView.setPosition(236, ofDividerAt: 0)
@@ -278,7 +290,8 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         XCTAssertEqual(sidebar.tabs.entries.first { $0.active }?.id.description, middle)
         root.layoutSubtreeIfNeeded()
         sidebar.viewDidLayout()
-        let point = sidebar.tabs.convert(NSPoint(x: 240, y: 22), to: nil)
+        try await wait("native tabs layout") { sidebar.tabs.frame.width > 300 && sidebar.tabs.frame.height == 36 }
+        let point = sidebar.tabs.convert(NSPoint(x: 240, y: 18), to: nil)
         XCTAssertTrue(root.hitTest(root.convert(point, from: nil)) === sidebar.tabs)
         let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [],
             timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
@@ -300,12 +313,15 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         XCTAssertEqual(model.navigation(tabSnapshot).model.select(.number(2)), Command("switch-client", "-t", "$0:\(middle)"))
         XCTAssertEqual(session.windows.first { !$0.value.isHidden }?.key.description, middle)
         let area = sidebar.content.convert(sidebar.content.bounds, to: root)
-        XCTAssertEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root).maxY, area.maxY)
-        XCTAssertTrue(sidebar.tabs.superview === sidebar.splitView)
-        XCTAssertEqual(sidebar.tabs.frame.height, 44)
-        let empty = root.hitTest(NSPoint(x: area.maxX - 4, y: area.maxY - 22))
+        XCTAssertGreaterThan(sidebar.tabs.convert(sidebar.tabs.bounds, to: root).minY, area.maxY)
+        XCTAssertTrue(window.toolbar?.items.first { $0.itemIdentifier.rawValue == "windowTabs" }?.view === sidebar.tabs.superview)
+        XCTAssertEqual(sidebar.tabs.frame.height, 36)
+        let tabs = sidebar.tabs.entries
+        sidebar.tabs.entries = []
+        let empty = root.hitTest(sidebar.tabs.convert(NSPoint(x: sidebar.tabs.bounds.midX, y: 18), to: root))
         XCTAssertFalse(empty === sidebar.tabs)
         XCTAssertTrue(empty?.mouseDownCanMoveWindow == true)
+        sidebar.tabs.entries = tabs
         XCTAssertFalse(window.isVisible)
         XCTAssertFalse(window.isKeyWindow)
         XCTAssertFalse(NSApp.isActive)
@@ -314,13 +330,14 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         updateTabs(.running(try fixture("done")), query: "")
         XCTAssertEqual(sidebar.tabs.entries[1].status, .quiet)
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-        if let failure = verifySnapshot(of: sidebar.tabs, as: .image, named: "middle", record: record),
+        if let failure = verifySnapshot(of: try headerImage(sidebar.tabs), as: .image, named: "middle", record: record),
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
         sidebar.isCollapsed = true
         root.layoutSubtreeIfNeeded()
         sidebar.viewDidLayout()
-        XCTAssertGreaterThanOrEqual(sidebar.tabs.frame.minX, 116)
-        if let failure = verifySnapshot(of: sidebar.tabs, as: .image, named: "collapsed", record: record),
+        XCTAssertGreaterThanOrEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root).minX, 116)
+        try await Task.sleep(for: .milliseconds(200))
+        if let failure = verifySnapshot(of: try headerImage(sidebar.tabs), as: .image, named: "collapsed", record: record),
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
         _ = try await command(["kill-window", "-t", child])
         _ = try await command(["rename-window", "-t", middle, "Renamed"])
@@ -369,6 +386,8 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         window.toolbar = toolbar
         window.toolbarStyle = .unified
         window.setContentSize(NSSize(width: 900, height: 560))
+        sidebar.tabs.theme = (runtime.background, window.appearance)
+        window.display()
         let root = try XCTUnwrap(window.contentView?.superview)
         root.layoutSubtreeIfNeeded()
         sidebar.splitView.setPosition(292, ofDividerAt: 0)
@@ -469,12 +488,16 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         XCTAssertTrue(sidebar.isFloating)
         XCTAssertFalse(sidebar.isCollapsed)
         XCTAssertTrue(sidebar.list === list)
-        XCTAssertTrue(sidebar.tabs.superview === sidebar.splitView)
+        XCTAssertTrue(toolbar.items.first { $0.itemIdentifier.rawValue == "windowTabs" }?.view === sidebar.tabs.superview)
         XCTAssertTrue(sidebar.list.superview === listParent)
         XCTAssertEqual(native.convert(native.bounds, to: root), nativeFrame)
         XCTAssertTrue(sidebar.list.containsFocus)
         XCTAssertEqual(terminal.frame, frame)
-        XCTAssertEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root), tabFrame)
+        try await Task.sleep(for: .milliseconds(200))
+        let floatingTabFrame = sidebar.tabs.convert(sidebar.tabs.bounds, to: root)
+        XCTAssertGreaterThan(floatingTabFrame.minX, tabFrame.minX)
+        XCTAssertGreaterThanOrEqual(floatingTabFrame.minX, nativeFrame.maxX)
+        XCTAssertEqual(floatingTabFrame.maxX, tabFrame.maxX)
         XCTAssertEqual(terminal.panes.map { ghostty_surface_size($0.surface).columns }, grids.map(\.columns))
         XCTAssertEqual(terminal.panes.map { ghostty_surface_size($0.surface).rows }, grids.map(\.rows))
         let floatingSize = try await command(["list-clients", "-F", "#{client_width}x#{client_height}"])
@@ -525,7 +548,10 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         try key([.command, .shift])
         try await settle()
         try key()
-        XCTAssertEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root), tabFrame)
+        try await settle()
+        XCTAssertEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root), floatingTabFrame)
+        XCTAssertEqual(terminal.panes.map { ghostty_surface_size($0.surface).columns }, grids.map(\.columns))
+        XCTAssertEqual(terminal.panes.map { ghostty_surface_size($0.surface).rows }, grids.map(\.rows))
         XCTAssertEqual(terminal.frame, frame)
         XCTAssertEqual(sidebar.list.query, "preserved")
         let outside = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown,
@@ -1131,7 +1157,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         XCTAssertEqual(owner.sidebar.content.layer?.backgroundColor, runtime.background.cgColor)
         XCTAssertEqual(owner.sidebar.view.layer?.backgroundColor, runtime.background.cgColor)
         XCTAssertEqual(owner.window.backgroundColor, runtime.background)
-        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "msheet"
+        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
         if let failure = verifySnapshot(of: owner.sidebar.content, as: .image, named: "no-terminal", record: record),
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
         let mismatch = try XCTUnwrap(owner.preparedAlert?.alert)
