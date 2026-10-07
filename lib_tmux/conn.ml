@@ -12,8 +12,7 @@ let step parser line =
   | Outside -> (
       match String.chop_prefix ~pre:"%begin " line with
       | Some rest -> (Inside { id = guard_id rest; lines = [] }, None)
-      | None when String.prefix ~pre:"%" line ->
-          (Outside, Some (Notification (List.hd (String.split_on_char ' ' line))))
+      | None when String.prefix ~pre:"%" line -> (Outside, Some (Notification line))
       | None -> (Outside, None))
   | Inside { id; lines } ->
       let closes guard =
@@ -67,6 +66,8 @@ type t = {
   mutable link : link;
   mutable backoff : float;
   mutable changed : bool;
+  mutable generation : int;
+  mutable pending_programs : Program_status.t Pane.Map.t;
 }
 
 let kill ch =
@@ -92,9 +93,27 @@ let feed t ch line =
   ch.parser <- parser;
   match event with
   | Some (Block b) -> Queue.push b ch.replies
-  | Some (Notification "%exit") -> drop t
-  | Some (Notification n) when List.mem ~eq:String.equal n notifications -> t.changed <- true
-  | Some (Notification _) | None -> ()
+  | Some (Notification n) ->
+      let name = List.hd (String.split_on_char ' ' n) in
+      if String.equal name "%exit" then drop t
+      else if String.equal name "%program-status" then (
+        t.changed <- true;
+        match String.split_on_char ' ' n with
+        | _ :: pane :: serial :: json -> (
+            match
+              ( Pane.of_string pane,
+                int_of_string_opt serial,
+                Program_status.parse (String.concat " " json) )
+            with
+            | Some pane, Some serial, Ok status when serial = status.serial ->
+                t.pending_programs <-
+                  Pane.Map.update pane
+                    (fun old -> Some (Program_status.merge status old))
+                    t.pending_programs
+            | _ -> ())
+        | _ -> ())
+      else if List.mem ~eq:String.equal name notifications then t.changed <- true
+  | None -> ()
 
 let pump t ch ~deadline =
   let left = deadline -. Unix.gettimeofday () in
@@ -124,6 +143,8 @@ let rec reply t ch ~deadline =
       reply t ch ~deadline
 
 let dial t =
+  t.generation <- t.generation + 1;
+  t.pending_programs <- Pane.Map.empty;
   let session =
     Option.map
       (fun (c : Exec.client_state) -> c.session)
@@ -155,7 +176,15 @@ let dial t =
       | `Dead -> ())
 
 let connect ?socket client =
-  { client; socket; link = Down { next_dial = 0. }; backoff = min_backoff; changed = false }
+  {
+    client;
+    socket;
+    link = Down { next_dial = 0. };
+    backoff = min_backoff;
+    changed = false;
+    generation = 0;
+    pending_programs = Pane.Map.empty;
+  }
 
 let live t =
   match t.link with
@@ -223,6 +252,20 @@ let list_panes t =
   match run t ("list-panes -a -F " ^ Filename.quote Pane.format) with
   | Ok lines -> Ok (Pane.parse lines)
   | Error _ -> Exec.list_panes ?socket:t.socket ()
+
+let generation t = t.generation
+
+let program_status t ~full =
+  let open Result.Infix in
+  let+ programs =
+    if not full then Ok Pane.Map.empty
+    else
+      Result.map Program_status.parse_lines
+        (run t ("list-panes -a -F " ^ Filename.quote Program_status.format))
+  in
+  let programs = Program_status.merge_panes t.pending_programs programs in
+  t.pending_programs <- Pane.Map.empty;
+  programs
 
 let capture_pane t pane =
   match run t ("capture-pane -p -t " ^ Filename.quote (Pane.to_string pane)) with

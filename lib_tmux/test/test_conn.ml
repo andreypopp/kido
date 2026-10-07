@@ -15,7 +15,7 @@ let feed stream =
       | Block (Error e) -> Printf.printf "error %s\n" e
       | Notification n ->
           Printf.printf "notification %s refresh=%b\n" n
-            (List.mem ~eq:String.equal n Conn.notifications))
+            (List.mem ~eq:String.equal (List.hd (String.split_on_char ' ' n)) Conn.notifications))
     (List.rev events)
 
 let%expect_test "a control-mode session: blocks, data lines starting with %, notifications, errors"
@@ -37,10 +37,10 @@ let%expect_test "a control-mode session: blocks, data lines starting with %, not
   [%expect
     {|
     block []
-    notification %session-changed refresh=true
+    notification %session-changed $1 work refresh=true
     block [%0	zsh | %1	claude]
-    notification %window-add refresh=true
-    notification %output refresh=false
+    notification %window-add @7 refresh=true
+    notification %output %3 junk refresh=false
     error parse error: unknown command: bogus
     notification %exit refresh=false
     |}]

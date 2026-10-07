@@ -198,6 +198,11 @@ let snapshot (m : model) =
         ("pane", Tmux.Pane.id_to_yojson r.pane);
         ("window", Tmux.Window.id_to_yojson r.window);
         ("indicator", indicator_json r.indicator);
+        ( "program_status",
+          Option.map_or
+            ~default:(`Assoc [ ("serial", `Int 0); ("records", `List []) ])
+            Tmux.Program_status.to_yojson
+            (Tmux.Pane.Map.find_opt r.pane m.snap.programs) );
         ("title", spans r.title);
         ("tail", spans (match r.caption with Text tail -> tail | Elapsed _ -> []));
         ( "run",

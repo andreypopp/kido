@@ -132,6 +132,33 @@ rebuild with no wire-visible change produces nothing. This is a stream
 of full current views, not a delta log or a record of every intermediate
 transition.
 
+Each pane item also carries `program_status`: the pane emission serial
+and every OSC 7501 record, ordered by id. Title and message are decoded
+UTF-8; optional app is the record's own app, inherited by consumers from
+the nearest ancestor with one, including root across missing parents.
+The snapshot is the only persistent record store. The control connection
+coalesces pending notifications and drains them into it; merges accept only
+increasing serials. Notifications wake the tick. A connection generation
+change forces a full read through `pane_program_status`; this also
+initializes one-shot views without resetting visit acknowledgements.
+Each topology read prunes records from the previous snapshot before
+merging pending notifications. A new pane's notification may arrive after
+that read, so it survives until the next read; if the pane is still absent,
+its records are dropped even if it never appeared in topology.
+
+For panes without a State record, program records override shell/ssh
+status, but not a gone run. The representative is chosen by blocked,
+error, working, done, idle priority, then bytewise id, excluding
+acknowledged done/error records so they cannot hide ongoing work. If all
+records are acknowledged completions, the first record supplies an idle
+label. Its title (or inherited app or foreground command) names the row;
+message and optional progress percentage form the caption. Indicators map
+to waiting, failed, running, done and idle. Visiting acknowledges done/error
+only in that view; only a newer pane serial re-arms them, not a reconnect.
+State-backed agent display remains unchanged in step 2, although its
+program records are still exposed in RPC. Step 4 moves pi display status
+from State to these terminal records.
+
 ## Requests and navigation
 
 Search is client-side. The model always contains all sessions; the TUI
@@ -171,8 +198,9 @@ rollback or automatic replay. Concurrent views can still revive one
 ended ask twice before a live holder reports. pi resolution retains
 tmux's command-client PATH semantics.
 
-The new requests and asks list retain protocol 1.1 for this development
-phase; the version bump will be batched with OSC 7501.
+The new requests, asks list and OSC 7501 records retain protocol 1.1 for
+this development phase; the 2.0 bump accompanies moving agent status out
+of State.
 
 Sessions are ordered oldest first, with name breaking creation-time ties.
 Windows use the sidebar's parent-first tree ordering within each session,

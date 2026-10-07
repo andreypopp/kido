@@ -1451,6 +1451,7 @@ let%expect_test "a snapshot as the feed sends it" =
                   "pane": "%1",
                   "window": "@1",
                   "indicator": { "kind": "running" },
+                  "program_status": { "serial": 0, "records": [] },
                   "title": [ { "text": "orchestrator", "role": "plain" } ],
                   "tail": [ { "text": "reading the contract", "role": "dim" } ],
                   "run": null,
@@ -1464,6 +1465,7 @@ let%expect_test "a snapshot as the feed sends it" =
                   "pane": "%2",
                   "window": "@1",
                   "indicator": { "kind": "idle" },
+                  "program_status": { "serial": 0, "records": [] },
                   "title": [ { "text": "bash", "role": "proc" } ],
                   "tail": [],
                   "run": null,
@@ -1477,6 +1479,7 @@ let%expect_test "a snapshot as the feed sends it" =
                   "pane": "%3",
                   "window": "@1",
                   "indicator": null,
+                  "program_status": { "serial": 0, "records": [] },
                   "title": [ { "text": "vim", "role": "proc" } ],
                   "tail": [],
                   "run": null,
@@ -1492,6 +1495,7 @@ let%expect_test "a snapshot as the feed sends it" =
               "pane": "%4",
               "window": "@4",
               "indicator": { "kind": "gone", "outcome": "failed" },
+              "program_status": { "serial": 0, "records": [] },
               "title": [ { "text": "helper", "role": "dim" } ],
               "tail": [ { "text": "failed", "role": "dim" } ],
               "run": "agent",
@@ -1505,6 +1509,7 @@ let%expect_test "a snapshot as the feed sends it" =
               "pane": "%6",
               "window": "@6",
               "indicator": { "kind": "running" },
+              "program_status": { "serial": 0, "records": [] },
               "title": [ { "text": "build", "role": "plain" } ],
               "tail": [],
               "run": "bash",
@@ -1525,6 +1530,7 @@ let%expect_test "a snapshot as the feed sends it" =
               "pane": "%5",
               "window": "@5",
               "indicator": { "kind": "waiting" },
+              "program_status": { "serial": 0, "records": [] },
               "title": [ { "text": "asker", "role": "plain" } ],
               "tail": [],
               "run": null,
@@ -1588,6 +1594,7 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
               "pane": "%1",
               "window": "@1",
               "indicator": { "kind": "running" },
+              "program_status": { "serial": 0, "records": [] },
               "title": [ { "text": "root", "role": "plain" } ],
               "tail": [],
               "run": null,
@@ -1606,6 +1613,7 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
                       "pane": "%2",
                       "window": "@2",
                       "indicator": { "kind": "running" },
+                      "program_status": { "serial": 0, "records": [] },
                       "title": [ { "text": "kid", "role": "plain" } ],
                       "tail": [],
                       "run": null,
@@ -1619,6 +1627,7 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
                       "pane": "%3",
                       "window": "@2",
                       "indicator": null,
+                      "program_status": { "serial": 0, "records": [] },
                       "title": [ { "text": "bash", "role": "proc" } ],
                       "tail": [],
                       "run": null,
@@ -1634,6 +1643,7 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
                   "pane": "%4",
                   "window": "@3",
                   "indicator": { "kind": "running" },
+                  "program_status": { "serial": 0, "records": [] },
                   "title": [ { "text": "build", "role": "plain" } ],
                   "tail": [],
                   "run": "bash",
@@ -1647,6 +1657,57 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
         }
       ]
     }
+    |}]
+
+let%expect_test "program acknowledgement survives failed snapshots and reconnects" =
+  let p = pane ~command:"sh" "%7" in
+  let status =
+    Tmux.Program_status.parse {|{"serial":1,"records":[{"id":"","state":"done","title":"QQ"}]}|}
+    |> Result.get_or_failwith
+  in
+  let snap =
+    {
+      Sidebar.empty with
+      panes = [ p ];
+      generation = 1;
+      programs = Tmux.Pane.Map.singleton p.pane_id status;
+    }
+  in
+  ignore
+    (List.fold_left
+       (fun m (label, snap) ->
+         let m, _ = Sidebar.step m snap in
+         let indicator =
+           match (Sidebar.pane_label m p).indicator with
+           | Some Sidebar.Done -> "done"
+           | Some (Status Idle) -> "idle"
+           | _ -> "none"
+         in
+         Printf.printf "%s: %s acknowledged=%b\n" label indicator
+           (Tmux.Pane.Map.mem p.pane_id m.program_seen);
+         m)
+       (model ())
+       [
+         ("initial", snap);
+         ("visit", { snap with active = Some p.pane_id });
+         ("leave", snap);
+         ("failure", { Sidebar.empty with err = Some "disconnected" });
+         ("reconnect", { snap with generation = 2 });
+         ( "new serial",
+           {
+             snap with
+             generation = 2;
+             programs = Tmux.Pane.Map.singleton p.pane_id { status with serial = 2 };
+           } );
+       ]);
+  [%expect
+    {|
+    initial: done acknowledged=false
+    visit: idle acknowledged=true
+    leave: idle acknowledged=true
+    failure: none acknowledged=true
+    reconnect: idle acknowledged=true
+    new serial: done acknowledged=true
     |}]
 
 let%expect_test "every role names its foreground" =

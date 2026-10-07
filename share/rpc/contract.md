@@ -106,8 +106,8 @@ digits), new-session only true, and select-window exactly session and
 window identifier fields ($N and @N). Multiple recognized operations are
 invalid. All requests use the existing error envelope and explicit socket.
 
-These additions retain protocol 1.1 during implementation; its next bump
-is batched with OSC 7501, not performed by this phase.
+These additions and OSC 7501 records retain protocol 1.1 during
+implementation; the 2.0 bump accompanies moving agent status out of State.
 
 All stdout events are NDJSON from one writer; replies and snapshots can
 alternate, but bytes from separate lines do not interleave.
@@ -134,6 +134,7 @@ After hello, a full snapshot is emitted when visible model data changes:
           "pane": "%3",
           "window": "@2",
           "indicator": { "kind": "running" },
+          "program_status": { "serial": 0, "records": [] },
           "title": [ { "text": "kido", "role": "plain" } ],
           "tail": [ { "text": "fixing tests", "role": "dim" } ],
           "run": null,
@@ -202,6 +203,27 @@ Fields:
 - `indicator`: null or an object with `kind`: running, waiting, compacting,
   idle, unknown, done, failed, stalled or gone. Gone also carries `outcome`:
   completed, failed, died, stopped or null.
+- `program_status`: an object with integer `serial` and `records` array,
+  always present (serial 0 and an empty array before any emission).
+  Records are ordered bytewise by `id`; root has id "". Each has string
+  `id` and `state` (idle, working, done, blocked, error), and optional own
+  `app`, `kind` (permission, question, auth), integer `progress` (0..100),
+  `title` and `msg`. Title and msg are decoded, validated UTF-8 strings,
+  not base64; the tmux input accepts padded or unpadded base64. Kind is
+  meaningful only on blocked, progress only on working/blocked. App is
+  inherited from the nearest ancestor that has one,
+  including root across missing parents; inheritance is not materialized
+  into these records. All records are included, even on State-backed
+  panes where the agent's State display takes precedence during step 2;
+  step 4 moves pi display status from State to terminal records.
+  For other panes, records override shell/ssh display but not gone runs.
+  Representative priority is blocked > error > working > done > idle,
+  then id order, excluding acknowledged done/error records. If only
+  acknowledged completions remain, the first record supplies an idle label.
+  Message and optional progress percentage form the caption. Indicators
+  are waiting, failed, running, done and idle. Visiting acknowledges
+  done/error in that view only, until a newer serial (not a reconnect);
+  it never removes records from this field.
 - `title` and `tail`: arrays of spans with `text` and `role`: plain, current,
   proc, dim, err, running, waiting, compacting, done or stalled.
 - `attention`: boolean, whether attention navigation visits this pane.
@@ -255,6 +277,17 @@ app's view contains the last screen before pausing.
 The no-detach-on-destroy client flag keeps the control client connected
 when its last session is destroyed.
 tmux -N attach does not start a server when the target server is absent.
+OSC 7501 records are delivered server-wide to every control client as
+`%program-status %N <serial> <JSON>`, throttled to 100ms per pane. The
+payload is a full record set, identical to `#{pane_program_status}`.
+The snapshot holds records; the control connection only coalesces and
+drains pending notifications. Kido merges only newer serials, fully
+rereads on every control dial and for one-shot views, and prunes the
+previous snapshot's absent panes before merging pending notifications.
+A notification merged after topology survives until the next read; if
+that read still lacks the pane, its records are dropped. This field is not part of the
+100ms topology format. OSC 133 A clears the applicable records; process
+exit, RIS and respawn also follow the fork's program-status clear rules.
 These behaviours come from the pinned fork, not stock tmux.
 
 share/dune installs only its named source trees and files; this contract

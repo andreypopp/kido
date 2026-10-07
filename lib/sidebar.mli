@@ -27,6 +27,8 @@ type snapshot = {
   client : Tmux.Exec.client_state option;
   active : Tmux.Pane.id option;
   panes : Tmux.Pane.t list;
+  generation : int;
+  programs : Tmux.Program_status.t Tmux.Pane.Map.t;
   states : (string * State.session) Tmux.Pane.Map.t;
   ssh : Procs.ssh_session Procs.Int_map.t;
   pi : Procs.Int_set.t;
@@ -93,6 +95,7 @@ type model = {
   client : client option;
   started : float;
   seen : float Tmux.Pane.Map.t;
+  program_seen : int Tmux.Pane.Map.t;
   phases : phase Tmux.Pane.Map.t;
   ssh_remote : unit Tmux.Pane.Map.t;
   now : unit -> float;

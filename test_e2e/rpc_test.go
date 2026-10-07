@@ -31,11 +31,18 @@ type feedRow struct {
 		Kind    string  `json:"kind"`
 		Outcome *string `json:"outcome"`
 	} `json:"indicator"`
-	Title     []feedSpan `json:"title"`
-	Tail      []feedSpan `json:"tail"`
-	Started   *float64   `json:"started"`
-	Run       *string    `json:"run"`
-	Attention bool       `json:"attention"`
+	Title         []feedSpan `json:"title"`
+	Tail          []feedSpan `json:"tail"`
+	Started       *float64   `json:"started"`
+	Run           *string    `json:"run"`
+	Attention     bool       `json:"attention"`
+	ProgramStatus struct {
+		Serial  int `json:"serial"`
+		Records []struct {
+			ID, State, App, Kind, Title, Msg string
+			Progress                         *int
+		} `json:"records"`
+	} `json:"program_status"`
 }
 
 type feedSnapshot struct {
