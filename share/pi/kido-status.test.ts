@@ -1222,7 +1222,7 @@ test("user ask widgets collapse, expand one ask, insert ids and preserve only li
     const draw = () => s.widgets.get("kido-asks")!.content!(null, fakeTheme);
     const click = { type: "click", button: "left", x: 12, y: 0 };
     let widget = draw();
-    assert.deepEqual(widget.render(25).map(stripTerminalSequences), ["│ A1: Ship now?...", "│ A2: A very long ques..."]);
+    assert.deepEqual(widget.render(25).map(stripTerminalSequences), ["│ x A1: Ship now?...", "│ x A2: A very long qu..."]);
     for (const width of [0, 1, 2, 10]) {
       assert.ok(widget.render(width).every((line) => visibleWidth(line) <= width));
     }
@@ -1231,17 +1231,17 @@ test("user ask widgets collapse, expand one ask, insert ids and preserve only li
     assert.equal(widget.handleMouse!({ ...click, button: "right" }), undefined);
     assert.equal(widget.handleMouse!({ ...click, type: "release" }), undefined);
     assert.deepEqual(widget.handleMouse!(click), { handled: true, render: true });
-    assert.deepEqual(widget.render(80), ["│ A1: Ship now?", "│ Or wait for review?", "│ A2: A very long question about what to do next..."]);
+    assert.deepEqual(widget.render(80), ["│ x A1: Ship now?", "│ Or wait for review?", "│ x A2: A very long question about what to do next..."]);
     widget.handleMouse!({ ...click, y: 2 });
-    assert.deepEqual(widget.render(80), ["│ A1: Ship now?...", "│ A2: A very long question about what to do next", "│ Second decision"]);
+    assert.deepEqual(widget.render(80), ["│ x A1: Ship now?...", "│ x A2: A very long question about what to do next", "│ Second decision"]);
     widget.handleMouse!({ ...click, y: 1 });
     const collapsed = widget.render(80);
     assert.equal(collapsed.length, 2);
-    assert.deepEqual(widget.handleMouse!({ ...click, x: 2 }), { handled: true, render: true });
+    assert.deepEqual(widget.handleMouse!({ ...click, x: 4 }), { handled: true, render: true });
     assert.equal(s.ui.getEditorText(), "A1: ");
     assert.deepEqual(widget.render(80), collapsed);
     s.ui.setEditorText("Existing text");
-    widget.handleMouse!({ ...click, x: 3, y: 1 });
+    widget.handleMouse!({ ...click, x: 5, y: 1 });
     assert.equal(s.ui.getEditorText(), "A2: Existing text");
     assert.deepEqual(widget.render(80), collapsed);
     widget.handleMouse!({ ...click, y: 1 });
@@ -1256,11 +1256,44 @@ test("user ask widgets collapse, expand one ask, insert ids and preserve only li
     await refresh(asks);
     assert.match(widget.render(80).join("\n"), /Second decision/);
     await refresh([asks[0]]);
-    assert.deepEqual(widget.render(80), ["│ A1: Ship now?..."]);
+    assert.deepEqual(widget.render(80), ["│ x A1: Ship now?..."]);
     await refresh(asks);
     assert.deepEqual(widget.render(80), collapsed);
     s.pi.getSettings = () => ({ tuiMode: "regular" });
     assert.deepEqual(widget.render(80), ["│ A1 asks you: Ship now?", "│ Or wait for review?", "│ A2 asks you: A very long question about what to do next", "│ Second decision"]);
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("clicking an ask's x removes it and queues the sidebar note without editing or expanding", async () => {
+  const fx = makeFixture();
+  try {
+    mkdirSync(dirname(fx.runsDir), { recursive: true });
+    const file = join(dirname(fx.runsDir), "asks.json");
+    writeFileSync(file, JSON.stringify([
+      { id: "A1", session: "self-session", text: "Ship now?\nOr wait for review?" },
+      { id: "A2", session: "self-session", text: "Keep this ask\nStill collapsed" },
+    ]));
+    const s = await startSession(fx, { factory: await freshExtensions() });
+    s.pi.getSettings = () => ({});
+    await pollUntil(() => !!s.widgets.get("kido-asks")?.content, 2000, "the ask widget");
+    const widget = s.widgets.get("kido-asks")!.content!(null, fakeTheme);
+    const collapsed = widget.render(80);
+    s.ui.setEditorText("Existing text");
+    const messages = s.messages.length;
+    const delivered = s.delivered.length;
+    assert.deepEqual(widget.handleMouse!({ type: "click", button: "left", x: 2, y: 0 }), { handled: true, render: true });
+    assert.deepEqual(widget.render(80), collapsed);
+    await pollUntil(() => s.messages.length === messages + 1 && !s.widgets.get("kido-asks")!.content!(null, fakeTheme).render(80).join("\n").includes("A1"), 2000, "the dismissed ask refresh");
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).map((a: any) => a.id), ["A2"]);
+    assert.equal(s.ui.getEditorText(), "Existing text");
+    assert.deepEqual(s.widgets.get("kido-asks")!.content!(null, fakeTheme).render(80), ["│ x A2: Keep this ask..."]);
+    assert.deepEqual(s.messages.at(-1)!.message, {
+      customType: "kido-notice", content: "The user removed ask A1: Ship now?", display: true, details: { from: "kido" },
+    });
+    assert.deepEqual(s.messages.at(-1)!.opts, { deliverAs: "nextTurn" });
+    assert.equal(s.delivered.length, delivered);
   } finally {
     await fx.restore();
   }

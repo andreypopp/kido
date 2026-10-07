@@ -366,6 +366,15 @@ export default function (pi: ExtensionAPI) {
     wrapTextWithAnsi(theme.fg("warning", prefix) + text, Math.max(1, width - 2))
       .map((line) => truncateToWidth(theme.fg("border", "│ ") + line, width));
 
+  const queueAskNotice = (text: string): void => {
+    pi.sendMessage({
+      customType: NOTICE_CUSTOM_TYPE,
+      content: text,
+      display: true,
+      details: { from: "kido" },
+    }, { deliverAs: "nextTurn" });
+  };
+
   let expandedAsk: string | undefined;
   let asksRefresh = 0;
   const refreshAsks = async (): Promise<void> => {
@@ -383,9 +392,16 @@ export default function (pi: ExtensionAPI) {
       return {
         handleMouse: (event: TuiMouseEvent) => {
           const row = rows[event.y];
-          if (!row) return;
+          if (!row || pi.getSettings().tuiMode === "regular") return;
           return handleClick(event, () => {
-            if (row.first && event.x >= 2 && event.x < 2 + row.id.length) {
+            if (row.first && event.x === 2) {
+              void runKido(["tool", "remove_ask", "--session", id, "--", row.id], { timeoutMs: 3000 }).then(async (res) => {
+                if (ctx !== session) return;
+                if (!res.ok) { ui.notify?.(res.error, "error"); return; }
+                queueAskNotice(`The user removed ask ${row.id}: ${asks.find((a) => a.id === row.id)!.text.split("\n", 1)[0]}`);
+                await refreshAsks();
+              }).catch((err) => ui.notify?.(String(err), "error"));
+            } else if (row.first && event.x >= 4 && event.x < 4 + row.id.length) {
               ui.setEditorText(`${row.id}: ${ui.getEditorText()}`);
             } else {
               expandedAsk = expandedAsk === row.id ? undefined : row.id;
@@ -396,9 +412,10 @@ export default function (pi: ExtensionAPI) {
           rows = [];
           const regular = pi.getSettings().tuiMode === "regular";
           return asks.flatMap((a) => {
+            const prefix = regular ? "" : theme.fg("dim", "x ");
             const lines = regular || expandedAsk === a.id
-              ? renderAsk(theme, `${a.id}${regular ? " asks you" : ""}: `, a.text, width)
-              : [collapsedInbound(width, `${a.id}:`, a.text, (color, text) => color ? theme.fg(color === "dim" ? "warning" : color, text) : text)];
+              ? renderAsk(theme, `${prefix}${a.id}${regular ? " asks you" : ""}: `, a.text, width)
+              : [collapsedInbound(width, `${prefix}${a.id}:`, a.text, (color, text) => color ? theme.fg(color === "dim" ? "warning" : color, text) : text)];
             rows.push(...lines.map((_, i) => ({ id: a.id, first: i === 0 })));
             return lines;
           });
@@ -681,12 +698,7 @@ export default function (pi: ExtensionAPI) {
   const handleEnvelope = async (env: Envelope): Promise<"ok" | "refused"> => {
     switch (env.kind) {
       case "asks":
-        if (env.text) pi.sendMessage({
-          customType: NOTICE_CUSTOM_TYPE,
-          content: env.text,
-          display: true,
-          details: { from: "kido" },
-        }, { deliverAs: "nextTurn" });
+        if (env.text) queueAskNotice(env.text);
         void refreshAsks().catch(() => {});
         return "ok";
       case "message":
