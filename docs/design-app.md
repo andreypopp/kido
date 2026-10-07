@@ -466,15 +466,17 @@ grid. tmux's border cell between two panes is then exactly their
 paddings plus the one-pixel divider, so any tree, however asymmetric,
 lines up with no surplus. Around the whole terminal area only, the
 horizontal remainder is balanced over a 4pt minimum. Client rows are
-floor((height - 40pt - 12pt) / cell height), reserving a 12pt bottom grid gap.
+floor((height - separator pixel - 12pt) / cell height), with device-pixel
+rounding, reserving a 12pt bottom grid gap. The terminal area's top follows
+the native safe area; PaneLayout reserves no fixed titlebar height.
 The tiled grid bottom is 12pt above the terminal area bottom, rounded upward
 onto a whole device pixel if necessary: the gap is at least 12pt and less
 than 12pt plus one device pixel. Left, right and bottom edge panes extend their chrome to the terminal
 area bounds, owning the side margins and bottom gap as padding. Background,
 dimming and padding input reach those edges; toolbar hot zones and scroller
 strips follow the new pane boundary, with the knob still 4pt inward. The
-content, chrome and divider tops respect the 44pt titlebar margin plus the separator's device pixel. Client rows reserve both, with device-pixel rounding. Below the fixed 44pt
-`PaneLayout.topMargin`, the global vertical subcell remainder sits above the
+content, chrome and divider tops respect the separator's bottom edge.
+Below the separator, the global vertical subcell remainder sits above the
 whole tiled tree. Only outer-top tiled panes expand upward into it, rendering
 the bottom slice of their preceding history row through Ghostty's top render
 inset in backing pixels. Every inner tiled top and bottom expands through its
@@ -487,7 +489,7 @@ content bottom through the bottom render inset, showing following rows when
 scrolled up, clipped only at the window edge. At the live bottom there are no
 following rows, so the band is plain background below the fully visible last
 row. Empty history shows background. Alternate-screen panes keep their
-unexpanded grid view and zero insets, leaving background in both bands. Zoom uses the same rule. Each top band runs from the grid top to the separator or split divider, possibly spanning several history rows. The full-width one-device-pixel separator sits at 44pt; outer-top vertical dividers meet its bottom edge. Dividers stay behind tiled panes and floats. During a stale-root shrink, terminal content is clipped below the separator without changing its grid. Committed and free floating chrome frames are bounded below the separator too.
+unexpanded grid view and zero insets, leaving background in both bands. Zoom uses the same rule. Each top band runs from the grid top to the separator or split divider, possibly spanning several history rows. The full-width one-device-pixel separator sits at the supplied terminal-bounds top, rounded upward to a device pixel; outer-top vertical dividers meet its bottom edge. Dividers stay behind tiled panes and floats. During a stale-root shrink, terminal content is clipped below the separator without changing its grid. Committed and free floating chrome frames are bounded below the separator too.
 
 PaneLayout returns the grid, expanded content, clipped chrome and paired render insets
 for each tiled pane. Chrome uses the content rect for hit testing;
@@ -642,13 +644,27 @@ windows may appear in several sections.
 supplies the floating glass, collapse animation and saved width (236pt,
 200-360pt). The window has an icon-only unified toolbar only because the
 sidebar's glass reaches the top of the window, traffic lights inside it,
-when there is one; without it AppKit adds a plain titlebar strip. Title
-and toolbar draw nothing over the terminal, and the window, chrome and
-terminal share the Ghostty theme background. New Session is a standard
+when there is one; without it AppKit adds a plain titlebar strip. The
+window, chrome, native header and terminal share the Ghostty theme background.
+Full screen keeps the toolbar visible by removing `.autoHideToolbar` from
+the presentation options. New Session is a standard
 image toolbar item, as is the sidebar toggle, targeting the split view
 controller. Both are borderless and the toolbar is not customizable.
 
-Titlebar tabs project the current session's top-level windows from the
+Titlebar tabs and the remote user@host label occupy a flexible native
+`NSToolbarItem` after `sidebarTrackingSeparator`, not a content overlay.
+They follow the native separator when the floating sidebar opens.
+`WindowOwner` computes the background and appearance once and assigns them
+atomically to `WindowTabs.theme`. On theme assignment and
+`viewDidMoveToWindow`, the tabs synchronize their own window's background,
+appearance and titlebar transparency. An app-owned, non-hit-testing
+`HeaderBackground` is the lowest subview of that host's contentView;
+in full screen the host is the separate `NSToolbarFullScreenWindow`, whose
+native root otherwise draws white. No public API removes the native toolbar
+material: the app covers it from beneath without mutating private views.
+WindowTabs paints no background of its own, preserving the native sidebar shadow.
+
+Tabs project the current session's top-level windows from the
 unfiltered feed; descendant windows activate their ancestor tab. Each title
 is the sidebar row title of that window's active pane, falling back to the
 tmux window name until its feed label arrives. WindowView's active pane,
