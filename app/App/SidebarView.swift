@@ -8,7 +8,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     var leave: () -> Void = {}
 
     private var items: [SidebarRow] = []
-    private var folded: Set<SessionID> = []
     private func entry(_ row: Int) -> SidebarRow? { items.indices.contains(row) ? items[row] : nil }
 
     var newSession: () -> Void = {}
@@ -161,7 +160,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         snapshot = next
         noMatches.isHidden = next.map { $0.filter.isEmpty || !$0.sessions.isEmpty } ?? true
         let previous = items
-        items = sidebarRows(next, folded: folded)
+        items = sidebarRows(next)
         if previous.map(\.id) == items.map(\.id), previous.map(\.height) == items.map(\.height) {
             table.reloadData(forRowIndexes: IndexSet(items.indices.filter { items[$0] != previous[$0] }), columnIndexes: [0])
         } else { table.reloadData() }
@@ -214,7 +213,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
 
     func focus() {
         table.keyboardSelection = true
-        if let session = snapshot?.client.session, folded.remove(session) != nil { show(snapshot) }
         if table.selectedRow < 0, let current = snapshot?.client,
             let index = items.firstIndex(where: { $0.target == current })
         {
@@ -226,16 +224,11 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
 
     func completedNavigation(to target: (session: SessionID, window: WindowID)?) {
         guard let target else { return }
-        if folded.remove(target.session) != nil { show(snapshot) }
         let matches = items.indices.filter { items[$0].target?.session == target.session && items[$0].target?.window == target.window }
         if let index = matches.first(where: { items[$0].target == snapshot?.client }) ?? matches.first {
             table.selectRowIndexes([index], byExtendingSelection: false)
             table.scrollRowToVisible(index)
         }
-    }
-
-    private func revealWindow(_ target: Snapshot.Position) {
-        if folded.remove(target.session) != nil { show(snapshot) }
     }
 
     func nextAttention(_ delta: Int) {
@@ -262,7 +255,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
 
     private func jump(_ target: Snapshot.Position) {
         activating = nil
-        revealWindow(target)
         if let index = items.firstIndex(where: { $0.target == target }) {
             table.selectRowIndexes([index], byExtendingSelection: false)
             table.scrollRowToVisible(index)
@@ -287,14 +279,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
 
     @objc private func clicked() {
         guard let row = entry(table.clickedRow) else { return }
-        if case .header = row.kind {
-            fold(row.id.session)
-        } else { jump(row) }
-    }
-
-    private func fold(_ session: SessionID) {
-        if !folded.insert(session).inserted { folded.remove(session) }
-        show(snapshot)
+        jump(row)
     }
 
     @objc private func searched() {
@@ -307,9 +292,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         switch (Int(event.keyCode), event.charactersIgnoringModifiers ?? "", mods) {
         case (125, _, []), (_, "j", []), (_, "n", .control): move(1)
         case (126, _, []), (_, "k", []), (_, "p", .control): move(-1)
-        case (123, _, []), (124, _, []):
-            if let session = entry(table.selectedRow)?.id.session ?? snapshot?.client.session,
-               folded.contains(session) == (event.keyCode == 124) { fold(session) }
         case (36, _, []), (76, _, []): jump(table.selectedRow)
         case (53, _, []): leave()
         case (_, "n", []): nextAttention(1)
@@ -358,8 +340,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let item = items[row]
         let cell = tableView.makeView(withIdentifier: SidebarCell.id, owner: nil) as? SidebarCell ?? SidebarCell(fonts)
-        cell.configure(item, expanded: !folded.contains(item.id.session))
-        cell.fold = { [weak self] in self?.fold(item.id.session) }
+        cell.configure(item)
         cell.addWindow.invoke = { [weak self] in self?.newWindow(item.id.session) }
         return cell
     }
@@ -371,7 +352,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     var visualRows: [SidebarRow] { items }
     var visualSearch: NSSearchField { search }
     var visualDiagnostic: String { statusLine.stringValue }
-    func visualFold(_ session: SessionID) { fold(session) }
     func visualJump(_ row: SidebarRow) { jump(row) }
     override func draw(_ dirtyRect: NSRect) {
         NSColor.windowBackgroundColor.setFill()
