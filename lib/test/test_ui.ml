@@ -554,6 +554,47 @@ let%expect_test "a live subagent uses its run start unless it has activity text"
     ╶◼helper 1m05s
     |}]
 
+let%expect_test "run metadata survives activity text and clears its clock on death or outcome" =
+  let p = agent_pane ~run:"run" "@20" "%30" "helper" in
+  let m =
+    {
+      (model ()) with
+      snap =
+        {
+          Sidebar.empty with
+          states = states [ ("%30", ("run", session ~activity:"checking tests" "")) ];
+          lingering =
+            State.String_map.singleton "run"
+              {
+                Sidebar.name = "helper";
+                parent = "";
+                outcome = None;
+                kind = Agent;
+                started = test_at;
+              };
+        };
+    }
+  in
+  List.iter
+    (fun (p, outcome) ->
+      let lingering =
+        State.String_map.map (fun (l : Sidebar.lingering) -> { l with outcome }) m.snap.lingering
+      in
+      let row = Sidebar.pane_label { m with snap = { m.snap with lingering } } p in
+      match row.run with
+      | None -> print_endline "no run"
+      | Some run ->
+          Printf.printf "%s %s %s\n" (Subrun.string_of_kind run.kind)
+            (Option.map_or ~default:"-" (fun _ -> "started") run.started)
+            (Ui.row_text ~now:test_at (Ui.Row ("", "$0", row))))
+    [ (p, None); ({ p with dead_at = Some 1. }, None); (p, Some Completed) ];
+  [%expect
+    {|
+    agent started ◼helper checking tests
+    agent - ◼helper checking tests
+    agent - ◼helper checking tests
+    |}]
+
 let%expect_test "elapsed time is compact: seconds, then minutes and seconds, then hours and minutes"
     =
   List.iter

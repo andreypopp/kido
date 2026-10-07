@@ -99,6 +99,12 @@ a running clock does not produce a snapshot every second. The TUI shows
 an elapsed caption for runs without activity text and schedules its own
 redraw at the next second boundary.
 
+Run kind and the optional running start time are derived once in Sidebar's
+typed rows. TUI elapsed captions and RPC metadata use that same value;
+activity text can hide the TUI clock without hiding the RPC start time.
+Ask targets are likewise resolved once in the typed snapshot, not by
+either frontend.
+
 Outstanding asks affect agent waiting indicators and the attention flag
 and appear in a separate snapshot list. The list matches the TUI's
 `a` mode: stable id, agent display name, full question text (the TUI

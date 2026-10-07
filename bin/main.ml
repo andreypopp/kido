@@ -399,9 +399,24 @@ let switch name doc kind =
            [ client; Tmux.Exec.getenv "TMUX_SIDE_CLIENT" ]
          |> Option.get_lazy Tmux.Exec.current_client
        in
-       (match kind with
-       | `Session -> ignore (ok (Tmux.Exec.switch_session ~socket ~client ~next))
-       | `Window -> ignore (ok (Sidebar.switch_window ~socket ~dir ~client ~next)));
+       let model =
+         Sidebar.make ~now:Unix.gettimeofday
+           {
+             interval = Sidebar.default_interval;
+             client;
+             socket;
+             dir;
+             threshold = State.stall_threshold ();
+             grace = Reap.grace ();
+           }
+       in
+       let direction = if next then Sidebar.Next else Sidebar.Prev in
+       let request =
+         match kind with
+         | `Session -> Sidebar.Switch_session direction
+         | `Window -> Sidebar.Switch_window direction
+       in
+       ignore (ok (snd (Sidebar.handle model request)));
        0
 
 let switch_session =

@@ -121,6 +121,14 @@ let%expect_test "rpc surface" =
               indicator;
               title = (if i = 0 then title else []);
               caption = (if i = 0 then Text title else Elapsed 100.);
+              run =
+                (if i = List.length indicators - 1 then None
+                 else
+                   Some
+                     {
+                       kind = (match i mod 3 with 0 -> Subrun.Agent | 1 -> Bash | _ -> Stream);
+                       started = (if i mod 2 = 0 then Some 100. else None);
+                     });
             };
           children = [];
         })
@@ -133,25 +141,6 @@ let%expect_test "rpc surface" =
       Sidebar.Item { first with children = [ Sidebar.Item first ] };
     ]
   in
-  let panes =
-    List.mapi
-      (fun i _ -> Fixture.pane ~run:(string_of_int i) ("%" ^ string_of_int i))
-      (List.tl items)
-  in
-  let lingering =
-    List.mapi
-      (fun i _ ->
-        ( string_of_int i,
-          {
-            Sidebar.name = "run";
-            parent = "parent";
-            outcome = (if i mod 2 = 0 then None else Some Subrun.Completed);
-            kind = (match i mod 3 with 0 -> Subrun.Agent | 1 -> Bash | _ -> Stream);
-            started = 100.;
-          } ))
-      items
-    |> Sidebar.String_map.of_list
-  in
   let m = Sidebar.make ~now:(fun () -> 100.) opts in
   let m =
     {
@@ -160,8 +149,6 @@ let%expect_test "rpc surface" =
       snap =
         {
           Sidebar.empty with
-          panes;
-          lingering;
           states = Sidebar.String_map.singleton "%0" ("agent", Fixture.session State.Waiting);
         };
       sessions = [ { id = "$0"; name = "session"; current = true; nodes } ];

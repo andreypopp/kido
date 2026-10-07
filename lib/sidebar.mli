@@ -68,6 +68,7 @@ type indicator =
 
 type caption = Text of span list | Elapsed of float
 type row_kind = Agent | Run | Ssh | Shell
+type run = { kind : Subrun.kind; started : Timestamp.t option }
 
 type row = {
   pane : string;
@@ -76,6 +77,7 @@ type row = {
   indicator : indicator option;
   title : span list;
   caption : caption;
+  run : run option;
 }
 
 type node = Group of { name : string; first : item; rest : item list } | Item of item
@@ -123,13 +125,6 @@ val windows_in_order :
   lingering String_map.t ->
   (Tmux.Pane.t list * string option) list
 
-val switch_window :
-  socket:string option ->
-  dir:string ->
-  client:string ->
-  next:bool ->
-  ((string * string) option, string) result
-
 val filter : string -> section list -> section list
 val rebuild : model -> model
 val poll : ?wait:float -> opts:options -> Tmux.Conn.t -> snapshot -> snapshot
@@ -140,14 +135,25 @@ type switched = { session : string; window : string }
 
 type _ request =
   | Switch_window : direction -> (switched option, string) result request
+      (** Switch the client in sidebar order; returns the target, or None when none is eligible. *)
   | Switch_session : direction -> (switched option, string) result request
+      (** Switch the client in session order; returns the target, or None with only one session. *)
   | New_window : string -> (client, string) result request
+      (** Create a shell window in the given session and select it; returns its location. *)
   | New_session : (client, string) result request
+      (** Create a shell session using the current session's cwd and select it; returns its
+          location. *)
   | Select_window : switched -> (client, string) result request
+      (** Select the given session/window's active pane; returns its location. *)
   | Select_session : string -> (client, string) result request
+      (** Select the given session's active window and pane; returns their location. *)
   | Jump : client -> (client, string) result request
+      (** Switch the client to the given pane, keeping its session; returns where it landed. *)
   | Activate_ask : Ask.id -> (client, string) result request
+      (** Jump to the asking pane, reviving its ended session first; returns where it landed. *)
   | Delete_ask : Ask.id -> (unit, string) result request
+      (** Delete the ask and notify its live asker best-effort; Ok means it was removed. *)
   | Release_side_focus : (unit, string) result request
+      (** Return tmux keyboard focus to the terminal; Ok means the client refresh succeeded. *)
 
 val handle : model -> 'a request -> model * 'a

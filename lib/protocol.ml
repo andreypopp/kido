@@ -146,7 +146,6 @@ let reply : type a. int -> a Sidebar.request -> a -> Yojson.Safe.t =
   | Sidebar.Release_side_focus -> result_reply id "released" (fun () -> `Bool true) response
 
 open Sidebar
-module P = Tmux.Pane
 
 let role_name : role -> string = function
   | `Plain -> "plain"
@@ -183,12 +182,6 @@ let indicator_json = function
         | Status _ | Unknown | Done | Failed | Stalled -> []))
 
 let snapshot (m : model) =
-  let panes =
-    List.fold_left
-      (fun panes (p : P.t) ->
-        if String_map.mem p.pane_id panes then panes else String_map.add p.pane_id p panes)
-      String_map.empty m.snap.panes
-  in
   let spans l =
     `List
       (List.map
@@ -208,17 +201,6 @@ let snapshot (m : model) =
     | Item i -> item i
   and item i =
     let r = i.row in
-    let run, started =
-      match String_map.find_opt r.pane panes with
-      | Some p -> (
-          match Option.flat_map (fun run -> String_map.find_opt run m.snap.lingering) p.run with
-          | Some l ->
-              ( `String (Subrun.string_of_kind l.kind),
-                if Option.is_none p.dead_at && Option.is_none l.outcome then `Float l.started
-                else `Null )
-          | None -> (`Null, `Null))
-      | None -> (`Null, `Null)
-    in
     `Assoc
       [
         ( "kind",
@@ -230,8 +212,14 @@ let snapshot (m : model) =
         ("indicator", indicator_json r.indicator);
         ("title", spans r.title);
         ("tail", spans (match r.caption with Text tail -> tail | Elapsed _ -> []));
-        ("run", run);
-        ("started", started);
+        ( "run",
+          Option.map_or ~default:`Null
+            (fun (r : run) -> `String (Subrun.string_of_kind r.kind))
+            r.run );
+        ( "started",
+          Option.map_or ~default:`Null
+            (fun t -> `Float t)
+            (Option.flat_map (fun (r : run) -> r.started) r.run) );
         ("attention", `Bool (attention m r.pane));
         ("children", `List (List.map node i.children));
       ]
