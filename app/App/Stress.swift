@@ -905,7 +905,7 @@ typealias AppWindow = StressWindow
             let cell = app.stressState.2?.cell
             let pixel = 1 / window.backingScaleFactor
             let size = cell.map {
-                "\(max(1, Int(floor((frame.width - 8 - $0.width + pixel) / $0.width))))x\(max(1, Int(floor((floor((frame.height - 12) / pixel) * pixel - ceil(44 / pixel) * pixel - pixel) / $0.height))))"
+                "\(max(1, Int(floor((frame.width - 8 - $0.width + pixel) / $0.width))))x\(max(1, Int(floor((floor((frame.height - 12) / pixel) * pixel - pixel) / $0.height))))"
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 self.log(["floating-probe": "begin", "collapsed-size": size ?? "unknown"])

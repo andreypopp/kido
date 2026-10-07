@@ -8,10 +8,15 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         }
     }
 
+    private final class ToolbarTabsHost: NSView {
+        override var mouseDownCanMoveWindow: Bool { true }
+        override var intrinsicContentSize: NSSize { NSSize(width: 10000, height: 36) }
+    }
+
     let list = SidebarView()
     let content = NSView()
     let tabs = WindowTabs()
-    private let terminalHost = NSView()
+    let terminalHost = NSView()
     private let dock = NSView()
     private(set) var isFloating = false
     private var leading: NSLayoutConstraint!
@@ -77,7 +82,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         NSLayoutConstraint.activate([
             leading,
             content.trailingAnchor.constraint(equalTo: terminalHost.trailingAnchor),
-            content.topAnchor.constraint(equalTo: terminalHost.topAnchor),
+            content.topAnchor.constraint(equalTo: terminalHost.safeAreaLayoutGuide.topAnchor),
             content.bottomAnchor.constraint(equalTo: terminalHost.bottomAnchor),
         ])
         terminal.view = terminalHost
@@ -106,38 +111,44 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         if let outside, let root = outside.superview, let glass = dockedGlass {
             let area = content.convert(content.bounds, to: root)
             let left = glass.convert(glass.bounds, to: root).maxX
-            outside.frame = NSRect(x: left, y: area.minY, width: max(0, area.maxX - left), height: max(0, area.height - 44))
+            outside.frame = NSRect(x: left, y: area.minY, width: max(0, area.maxX - left), height: area.height)
         }
         let left = terminalHost.safeAreaInsets.left
         if !background, view.window != nil, !isCollapsed, !isFloating, left >= 200 {
             UserDefaults.standard.set(left, forKey: "nativeSidebarWidth")
         }
         view.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "newSession" }?.isHidden = isCollapsed || isFloating
-        if let root = view.window?.contentView?.superview {
-            let previous = tabs.superview.map { $0.convert(tabs.frame, to: root) }
-            if tabs.superview !== splitView { splitView.addSubview(tabs) }
-            let area = content.convert(content.bounds, to: root)
-            let toggle = view.window?.toolbar?.items.first { $0.itemIdentifier.rawValue == "toggleSidebar" }?.view
-            let start = isFloating ? previous?.minX ?? 116 : isCollapsed ? max(116, toggle.map { $0.convert($0.bounds, to: root).maxX + 16 } ?? 116) : area.minX + 16
-            tabs.frame = splitView.convert(NSRect(x: start, y: area.maxY - 44, width: max(0, area.maxX - start - 16), height: 44), from: root)
-            if var cover = dockedGlass as NSView? {
-                while let parent = cover.superview, parent !== splitView { cover = parent }
-                if cover.superview === splitView,
-                   let tabIndex = splitView.subviews.firstIndex(of: tabs),
-                   let coverIndex = splitView.subviews.firstIndex(of: cover), tabIndex > coverIndex {
-                    splitView.addSubview(tabs, positioned: .below, relativeTo: cover)
-                }
-            }
-            #if KIDO_VISUAL
-            dockedGlass?.wantsLayer = true
-            dockedGlass?.layer?.backgroundColor = isFloating ? NSColor.windowBackgroundColor.cgColor : nil
-            dockedGlass?.layer?.cornerRadius = isFloating ? list.layer?.cornerRadius ?? 0 : 0
-            #endif
-        }
+        #if KIDO_VISUAL
+        dockedGlass?.wantsLayer = true
+        dockedGlass?.layer?.backgroundColor = isFloating ? NSColor.windowBackgroundColor.cgColor : nil
+        dockedGlass?.layer?.cornerRadius = isFloating ? list.layer?.cornerRadius ?? 0 : 0
+        #endif
     }
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace, .init("newSession"), .init("toggleSidebar"), .sidebarTrackingSeparator] }
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace, .init("newSession"), .init("toggleSidebar"), .sidebarTrackingSeparator, .init("windowTabs")] }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        if id.rawValue == "windowTabs" {
+            let item = NSToolbarItem(itemIdentifier: id)
+            item.label = "Windows"
+            item.isBordered = false
+            let host = ToolbarTabsHost()
+            host.setContentHuggingPriority(.init(1), for: .horizontal)
+            host.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+            host.translatesAutoresizingMaskIntoConstraints = false
+            host.addSubview(tabs)
+            tabs.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                host.widthAnchor.constraint(greaterThanOrEqualToConstant: 85),
+                host.widthAnchor.constraint(lessThanOrEqualToConstant: 10000),
+                host.heightAnchor.constraint(equalToConstant: 36),
+                tabs.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+                tabs.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+                tabs.topAnchor.constraint(equalTo: host.topAnchor),
+                tabs.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+            ])
+            item.view = host
+            return item
+        }
         if id == .sidebarTrackingSeparator { return NSTrackingSeparatorToolbarItem(identifier: id, splitView: splitView, dividerIndex: 0) }
         if id.rawValue == "newSession" || id.rawValue == "toggleSidebar" {
             let toggle = id.rawValue == "toggleSidebar"
@@ -190,7 +201,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
             let outside = Outside()
             outside.dismiss = { [weak self] in self?.list.leave() }
             self.outside = outside
-            splitView.addSubview(outside, positioned: .above, relativeTo: tabs)
+            splitView.addSubview(outside, positioned: .above, relativeTo: terminalHost)
             isCollapsed = false
             resignKey = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: view.window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.list.leave() }
