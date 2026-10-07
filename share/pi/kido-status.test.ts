@@ -64,6 +64,7 @@ switch (args[0]) {
     } else {
       asks = asks.filter((a) => a.id !== args[args.length - 1]);
       fs.writeFileSync(file, JSON.stringify(asks));
+      fs.writeFileSync(file + ".removed", JSON.stringify(argv));
     }
     process.exit(0);
   }
@@ -1266,7 +1267,7 @@ test("user ask widgets collapse, expand one ask, insert ids and preserve only li
   }
 });
 
-test("clicking an ask's x removes it and queues the sidebar note without editing or expanding", async () => {
+test("clicking an ask's x removes it as the user and receives the sidebar note through the inbox", async () => {
   const fx = makeFixture();
   try {
     mkdirSync(dirname(fx.runsDir), { recursive: true });
@@ -1285,6 +1286,12 @@ test("clicking an ask's x removes it and queues the sidebar note without editing
     const delivered = s.delivered.length;
     assert.deepEqual(widget.handleMouse!({ type: "click", button: "left", x: 2, y: 0 }), { handled: true, render: true });
     assert.deepEqual(widget.render(80), collapsed);
+    await pollUntil(() => existsSync(file + ".removed"), 2000, "the user removal command");
+    assert.deepEqual(JSON.parse(readFileSync(file + ".removed", "utf8")), ["tool", "remove_ask", "--", "A1"]);
+    assert.equal(s.messages.length, messages);
+    assert.equal(await sendToInbox(s.inboxPath, envelope("asks", "The user removed ask A1: Ship now?", {
+      from: { session: "", name: "kido", pane: "" },
+    })), "ok");
     await pollUntil(() => s.messages.length === messages + 1 && !s.widgets.get("kido-asks")!.content!(null, fakeTheme).render(80).join("\n").includes("A1"), 2000, "the dismissed ask refresh");
     assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).map((a: any) => a.id), ["A2"]);
     assert.equal(s.ui.getEditorText(), "Existing text");
