@@ -229,17 +229,17 @@ let pi_session_file_exists pi cwd id =
       | exception Sys_error _ -> false
       | names -> Array.exists (String.suffix ~suf:suffix) names)
 
-let run_env ~dir id parent depth ~keep_alive =
+let run_env ~dir id parent depth =
   [
     "KIDO_AGENT_TASK_FILE=" ^ Subrun.task_path ~dir id;
     "KIDO_AGENT_RUN_ID=" ^ Subrun.string_of_id id;
     "KIDO_AGENT_DEPTH=" ^ string_of_int depth;
   ]
-  @ (match parent with
-    | Some ({ pid; session } : State.parent) ->
-        [ "KIDO_AGENT_PARENT_PID=" ^ string_of_int pid; "KIDO_AGENT_PARENT_SESSION=" ^ session ]
-    | None -> [])
-  @ if keep_alive then [ "KIDO_AGENT_KEEP_ALIVE=1" ] else []
+  @
+  match parent with
+  | Some ({ pid; session } : State.parent) ->
+      [ "KIDO_AGENT_PARENT_PID=" ^ string_of_int pid; "KIDO_AGENT_PARENT_SESSION=" ^ session ]
+  | None -> []
 
 let create_run_window ?resume ~dir (meta : Subrun.meta) ~session ~env command =
   let open Result.Infix in
@@ -402,5 +402,5 @@ let spawn ~dir ~self ~pi req =
   | Resume _ -> ());
   let resume = match req.mode with Fresh _ -> None | Resume _ -> Some mint in
   create_run_window ?resume ~dir meta ~session:pane.session_id
-    ~env:(run_env ~dir meta.id parent depth ~keep_alive:meta.keep_alive)
+    ~env:(run_env ~dir meta.id parent depth)
     command

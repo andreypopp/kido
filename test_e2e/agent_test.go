@@ -151,6 +151,7 @@ func TestGetAgentCmd(t *testing.T) {
 			if children {
 				args = append(args, "--children")
 				want["childrenAlive"] = false
+				want["keepAlive"] = false
 			}
 			got := firstLine(h.runKido("alpha", fmt.Sprintf("alive-%d-%t.out", i, children), args...))
 			var value map[string]any

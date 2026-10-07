@@ -155,7 +155,6 @@ PATH taken from the client when available, not the caller's full environment:
 | `KIDO_AGENT_DEPTH` | the child's depth, derived by kido |
 | `KIDO_AGENT_TASK_FILE` | the task text, in the run's directory |
 | `KIDO_AGENT_RUN_ID` | the run id, which for a pi child is also the session id it must prove it holds |
-| `KIDO_AGENT_KEEP_ALIVE` | `1` when spawned with `keepAlive` |
 
 For a `--no-parent` spawn, only the two parent variables are omitted
 rather than set empty, since their presence is what the child's own subagent test reads
@@ -394,7 +393,9 @@ and what queues", above); a message and an ask still wait for the turn.
 
 **Idle self-exit.** A child - the real one, by the session-id test above
 - that has settled a turn and stayed idle for thirty seconds calls pi's
-own shutdown on itself, unless it was spawned with `keepAlive`. The
+own shutdown on itself, unless its run metadata's `keepAlive` is true at
+the idle check. While true, the timer re-arms; editing the metadata takes
+effect at the next check. The
 same clock is armed once more, from the delivery of the task: a child
 handed its task has everything it needs; after thirty seconds kido gives
 up waiting. The delivery timer covers a child that never reaches a first turn. Arming from
@@ -416,7 +417,8 @@ turn exactly as finished work does, and a clock that cannot tell them
 apart shuts a parent down thirty seconds after it spawns, whereupon the
 orphan rule closes the child it was waiting for, mid-work. So the
 timer asks `kido get-agent --children <session>` first and re-arms if the
-answer is yes or inconclusive, exactly as it does for a focused window.
+answer is yes or inconclusive, or the run's own `keepAlive` field is true,
+exactly as it does for a focused window.
 
 The reading is of the **run records**, not of anything the session
 remembers: a run whose meta names this session as its parent and which

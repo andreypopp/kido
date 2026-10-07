@@ -256,7 +256,12 @@ let get_agent =
   cmd "get-agent" "Print an agent session's liveness as JSON."
   @@ let+ session = Arg.(value & pos 0 string "" & info [] ~docv:"SESSION")
      and+ context = flag "context" "Print the live agent graph for internal message validation."
-     and+ children = Arg.(value & flag & info [ "children" ] ~doc:"Include child-run liveness.") in
+     and+ children =
+       Arg.(
+         value & flag
+         & info [ "children" ]
+             ~doc:"Include child-run liveness and the session's own run keepAlive.")
+     in
      fun () ->
        let dir = state_dir () in
        if context then begin
@@ -283,6 +288,13 @@ let get_agent =
            if not children then fields
            else
              fields
+             @ (match Subrun.parse_id session with
+               | Ok id -> (
+                   match Subrun.read_meta ~dir id with
+                   | Some m -> [ ("keepAlive", `Bool m.keep_alive) ]
+                   | None when Sys.file_exists (Subrun.meta_path ~dir id) -> []
+                   | None -> [ ("keepAlive", `Bool false) ])
+               | Error _ -> [ ("keepAlive", `Bool false) ])
              @ [
                  ( "childrenAlive",
                    `Bool
@@ -458,8 +470,7 @@ let spawn_subagent =
        str "fork" "SESSION_ID"
          "Seed the child's session with this pi session's transcript, so it starts holding the \
           caller's context."
-     and+ keep_alive =
-       flag "keep-alive" "The child does not self-reap after going idle (KIDO_AGENT_KEEP_ALIVE)."
+     and+ keep_alive = flag "keep-alive" "The child does not self-reap after going idle."
      and+ no_parent =
        flag "no-parent"
          "Spawn with no parent edge at all: the child reports to nobody, arms no idle timer, and \

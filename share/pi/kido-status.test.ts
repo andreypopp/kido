@@ -93,7 +93,9 @@ switch (args[0]) {
       const mode = process.env.KIDO_FAKE_CHILDREN_ALIVE;
       if (mode === "fail") process.exit(1);
       const respond = () => {
-        process.stdout.write(JSON.stringify({ id: args[1], alive: true, childrenAlive: mode === "1" }) + "\\n");
+        const meta = path.join(process.env.KIDO_FAKE_STATE_DIR, "runs", args[1], "meta.json");
+        const keepAlive = fs.existsSync(meta) && JSON.parse(fs.readFileSync(meta, "utf8")).keepAlive === true;
+        process.stdout.write(JSON.stringify({ id: args[1], alive: true, childrenAlive: mode === "1", keepAlive }) + "\\n");
         process.exit(0);
       };
       if (mode === "timeout") setTimeout(respond, 10000); else respond();
@@ -4582,8 +4584,8 @@ test("a live target that takes its time is still waited for, and its reply is wh
   }
 });
 
-async function withIdleExitEnv<T>(seconds: number, keepAlive: boolean, fn: () => Promise<T>): Promise<T> {
-  return withEnv({ KIDO_IDLE_EXIT_SECONDS: String(seconds), KIDO_AGENT_KEEP_ALIVE: keepAlive ? "1" : undefined }, fn);
+async function withIdleExitEnv<T>(seconds: number, fn: () => Promise<T>): Promise<T> {
+  return withEnv({ KIDO_IDLE_EXIT_SECONDS: String(seconds) }, fn);
 }
 
 test("idle self-exit: a settled turn with no further work shuts the session down after the configured idle interval, measured", async () => {
@@ -4591,7 +4593,7 @@ test("idle self-exit: a settled turn with no further work shuts the session down
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
     await withParentEnv(process.pid, "boss-session", 5000, async () => {
-      await withIdleExitEnv(0.1, false, async () => {
+      await withIdleExitEnv(0.1, async () => {
         const factory = await freshExtensions();
         const s = await startWithShutdownSpy(fx, factory);
         const t0 = Date.now();
@@ -4612,7 +4614,7 @@ test("idle self-exit: new work resets the timer instead of letting it fire mid-t
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
     await withParentEnv(process.pid, "boss-session", 5000, async () => {
-      await withIdleExitEnv(0.15, false, async () => {
+      await withIdleExitEnv(0.15, async () => {
         const factory = await freshExtensions();
         const s = await startWithShutdownSpy(fx, factory);
         await s.emit("agent_settled", {}, { isIdle: () => true }); // arms the 150ms timer
@@ -4636,7 +4638,7 @@ test("idle self-exit: a root session (no parent) never arms the timer", async ()
     const saved = process.env.KIDO_AGENT_PARENT_SESSION;
     delete process.env.KIDO_AGENT_PARENT_SESSION;
     try {
-      await withIdleExitEnv(0.05, false, async () => {
+      await withIdleExitEnv(0.05, async () => {
         const factory = await freshExtensions();
         const s = await startWithShutdownSpy(fx, factory);
         await s.emit("agent_settled", {}, { isIdle: () => true });
@@ -4652,17 +4654,23 @@ test("idle self-exit: a root session (no parent) never arms the timer", async ()
   }
 });
 
-test("idle self-exit: keepAlive opts a child out entirely", async () => {
+test("idle self-exit: keepAlive is read from the run at each check", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
     await withParentEnv(process.pid, "boss-session", 5000, async () => {
-      await withIdleExitEnv(0.05, true, async () => {
+      await withIdleExitEnv(0.05, async () => {
+        const meta = join(fx.runsDir, DEFAULT_SESSION, "meta.json");
+        mkdirSync(dirname(meta), { recursive: true });
+        writeFileSync(meta, JSON.stringify({ keepAlive: true }));
         const factory = await freshExtensions();
         const s = await startWithShutdownSpy(fx, factory);
         await s.emit("agent_settled", {}, { isIdle: () => true });
         await new Promise((r) => setTimeout(r, 300));
-        assert.equal(s.shutdowns(), 0, "keepAlive must prevent the idle timer from ever arming");
+        assert.equal(s.shutdowns(), 0, "keepAlive must prevent idle shutdown");
+        await pollUntil(() => fx.childrenAliveCalls().length >= 2, 2000, "keepAlive re-arming");
+        writeFileSync(meta, JSON.stringify({ keepAlive: false }));
+        await pollUntil(() => s.shutdowns() > 0, 2000, "shutdown after keepAlive is disabled");
       });
     });
   } finally {
@@ -4676,7 +4684,7 @@ test("idle self-exit: a focused window re-arms instead of shutting down, then ex
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
     fx.setWindowFocused(true);
     await withParentEnv(process.pid, "boss-session", 5000, async () => {
-      await withIdleExitEnv(0.05, false, async () => {
+      await withIdleExitEnv(0.05, async () => {
         const factory = await freshExtensions();
         const s = await startWithShutdownSpy(fx, factory);
         await s.emit("agent_settled", {}, { isIdle: () => true });
@@ -4705,7 +4713,7 @@ test("idle self-exit: a live child run re-arms the clock, and the session exits 
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
     fx.setChildrenAlive(true);
     await withParentEnv(process.pid, "boss-session", 5000, async () => {
-      await withIdleExitEnv(0.05, false, async () => {
+      await withIdleExitEnv(0.05, async () => {
         const factory = await freshExtensions();
         const s = await startWithShutdownSpy(fx, factory);
         await s.emit("agent_settled", {}, { isIdle: () => true });
@@ -4733,7 +4741,7 @@ for (const mode of ["fail", "timeout"]) {
       fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
       process.env.KIDO_FAKE_CHILDREN_ALIVE = mode;
       await withParentEnv(process.pid, "boss-session", 5000, async () => {
-        await withIdleExitEnv(0.05, false, async () => {
+        await withIdleExitEnv(0.05, async () => {
           const factory = await freshExtensions();
           const s = await startWithShutdownSpy(fx, factory);
           await s.emit("agent_settled", {}, { isIdle: () => true });
@@ -4758,7 +4766,7 @@ test("idle self-exit: a shutdown pi declined is asked for again", async () => {
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "parent-x", self: true, canMessage: true, window: "@1" }]);
     await withParentEnv(process.pid, "boss-session", 5000, async () => {
-      await withIdleExitEnv(0.05, false, async () => {
+      await withIdleExitEnv(0.05, async () => {
         const factory = await freshExtensions();
         const s = await startWithShutdownSpy(fx, factory);
         await s.emit("agent_settled", {}, { isIdle: () => true });

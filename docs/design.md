@@ -174,8 +174,12 @@ report to a session nobody is reading.
 `State.get_live` - the named record, with no per-pane collapse - and prints
 `{"id": SESSION, "alive": bool}`. An unknown session answers false.
 Dead records answer false without being removed. One reading decides, and
-there is no debounce. The optional `--children` flag adds
-`"childrenAlive": bool`, scanning run records only when requested.
+there is no debounce. The optional `--children` flag scans run records
+and adds `"childrenAlive": bool` and `"keepAlive": bool`. `keepAlive`
+comes from the session's own run metadata, or is false when there is no
+run. If the metadata file exists but cannot be read or decoded, `keepAlive`
+is omitted: the idle timer re-arms on an inconclusive reading rather than
+shutting the child down.
 
 The question may not be put to a display. `kido tool list_runs` answers from
 a per-pane view (`State.by_pane`), which is right for a display and wrong
@@ -989,8 +993,9 @@ id is the child's session id") exactly as `notify_parent`'s own refusal
 is: a root session - a human's own interactive pi, including one started
 from inside an agent's pane with that agent's environment around it -
 must never reap itself. `spawn_subagent` also takes a
-`keepAlive` boolean, plumbed through as `KIDO_AGENT_KEEP_ALIVE`, for a
-deliberately long-lived helper that opts out of self-reaping entirely.
+`keepAlive` boolean in the run metadata for a deliberately long-lived
+helper. Every idle check reads it through `get-agent --children`, and
+re-arms while it is true. Editing it takes effect at the next check.
 
 **A session with a live child of its own is not idle.** Waiting for a
 child's report settles a turn exactly as finished work does, so before
@@ -1043,12 +1048,10 @@ fresh spawn uses, but:
   so a newly minted session receives the stored task again;
 - launches it with what the run was *spawned* with: its model, its tool
   allowlist and its `keepAlive`, all recorded in the meta for exactly
-  this. Handed to the child only through the environment and the command
-  line, those are forgotten by the time anything resumes it: a resumed
-  keepAlive helper would arm the thirty-second idle timer it was spawned
-  to opt out of, and a resumed tool-restricted child would get the full
-  toolset back - the worse of the two, since a narrow toolset is the
-  blast-radius bound the depth ceiling is not. An explicit `--keep-alive`,
+  this. The idle timer reads `keepAlive` from that same meta on every
+  check. Model and tools are passed on the command line: a resumed
+  tool-restricted child must not get the full toolset back, since a narrow
+  toolset is the blast-radius bound the depth ceiling is not. An explicit `--keep-alive`,
   or a command naming its own `--model`/`--tools`, still wins; the
   recorded value is the default, not a ceiling. There is deliberately no way to turn
   `keepAlive` back *off* on a resume, the same asymmetry `--model` has;

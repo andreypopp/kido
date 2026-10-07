@@ -78,8 +78,6 @@ const PARENT_LIVENESS_POLL_MS = Number(process.env.KIDO_PARENT_POLL_MS) || 5000;
 // stack, even though both default to 30 - not the same clock.
 const IDLE_EXIT_MS = (Number(process.env.KIDO_IDLE_EXIT_SECONDS) || 30) * 1000;
 
-const KEEP_ALIVE = process.env.KIDO_AGENT_KEEP_ALIVE === "1";
-
 const SPAWN_TIMEOUT_MS = Number(process.env.KIDO_SPAWN_TIMEOUT_MS) || 5000;
 
 // Must comfortably exceed Control.stop_escalation (lib/control.ml, default 5s), which `kido tool stop_run` can itself block for.
@@ -746,14 +744,13 @@ export default function (pi: ExtensionAPI) {
   // record per pane, so a `pi --print` started in the parent's pane and inheriting
   // TMUX_PANE would win that pane and make a healthy parent look gone.
   // kill(pid, 0) success or EPERM is not proof of life - a pid can be recycled.
-  const lookupBoolean = (res: RunKidoResult, id: string, field: "alive" | "childrenAlive" | "focused"): boolean | undefined => {
+  const lookupBoolean = (res: RunKidoResult, id: string, field: "alive" | "childrenAlive" | "keepAlive" | "focused"): boolean | undefined => {
     if (!res.ok) return undefined;
     try {
       const value: unknown = JSON.parse(res.out);
       if (!value || typeof value !== "object" || !("id" in value) || value.id !== id) return undefined;
-      if (field === "alive" && "alive" in value && typeof value.alive === "boolean") return value.alive;
-      if (field === "childrenAlive" && "childrenAlive" in value && typeof value.childrenAlive === "boolean") return value.childrenAlive;
-      if (field === "focused" && "focused" in value && typeof value.focused === "boolean") return value.focused;
+      const result: unknown = Reflect.get(value, field);
+      if (typeof result === "boolean") return result;
     } catch {}
     return undefined;
   };
@@ -824,7 +821,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const armIdleExit = (): void => {
-    if (!isSubagent() || KEEP_ALIVE) return;
+    if (!isSubagent()) return;
     clearIdleExit();
     idleExitTimer = setTimeout(async () => {
       // A session with a child of its own still running is not idle, however quiet it has
@@ -832,7 +829,7 @@ export default function (pi: ExtensionAPI) {
       // run records, not process memory, since a child outlives the turn that spawned it.
       const sessionId = seam().host?.sessionId() ?? "";
       const children = await runKido(["get-agent", sessionId, "--children"], { timeoutMs: 2000 });
-      if (lookupBoolean(children, sessionId, "childrenAlive") !== false) {
+      if (lookupBoolean(children, sessionId, "childrenAlive") !== false || lookupBoolean(children, sessionId, "keepAlive") !== false) {
         armIdleExit();
         return;
       }

@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The window the client is actually looking at reads "true", any other
@@ -48,9 +50,7 @@ func firstLine(s string) string {
 	return strings.SplitN(strings.TrimSpace(s), "\n", 2)[0]
 }
 
-// --keep-alive reaches the child's environment as KIDO_AGENT_KEEP_ALIVE=1,
-// the one thing share/pi/kido-agents.ts reads to opt out of idle self-exit.
-func TestSpawnKeepAliveSetsEnv(t *testing.T) {
+func TestSpawnKeepAliveSetsRunMetadata(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
@@ -67,10 +67,20 @@ func TestSpawnKeepAliveSetsEnv(t *testing.T) {
 		"--name", "kid-keepalive", "--task-file", taskFile,
 		"--keep-alive",
 	)
-	h.waitFileNonEmpty(outFile)
-	env := h.waitFileNonEmpty(envFile)
-	if got := envLine(env, "KIDO_AGENT_KEEP_ALIVE"); got != "1" {
-		t.Errorf("KIDO_AGENT_KEEP_ALIVE = %q, want %q", got, "1")
+	fields := strings.Fields(h.waitFileNonEmpty(outFile))
+	if len(fields) != 3 {
+		t.Fatalf("spawn output = %q", fields)
+	}
+	h.waitFileNonEmpty(envFile)
+	if got := h.runMeta("keepalive", fields[2])["keepAlive"]; got != true {
+		t.Errorf("keepAlive = %v, want true", got)
+	}
+	var lookup map[string]any
+	if err := json.Unmarshal([]byte(firstLine(h.runKido("alpha", "lookup.out", "get-agent", fields[2], "--children"))), &lookup); err != nil {
+		t.Fatal(err)
+	}
+	if lookup["keepAlive"] != true {
+		t.Errorf("get-agent keepAlive = %v, want true", lookup["keepAlive"])
 	}
 }
 
@@ -139,7 +149,6 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 		"KIDO_AGENT_RUN_ID":         runID,
 		"KIDO_AGENT_PARENT_SESSION": "new-parent-e2e",
 		"KIDO_AGENT_PARENT_PID":     "777",
-		"KIDO_AGENT_KEEP_ALIVE":     "1",
 	} {
 		if got := envLine(env, k); got != want {
 			t.Errorf("resumed child's %s = %q, want %q", k, got, want)
@@ -156,6 +165,9 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 	after := h.runMeta("after", runID)
 	if _, ok := after["screen"]; ok {
 		t.Errorf("run %s still shows the first attempt's screen after resuming", runID)
+	}
+	if after["keepAlive"] != true {
+		t.Errorf("resumed keepAlive = %v, want true", after["keepAlive"])
 	}
 	if after["startedAt"] != before["startedAt"] || after["parentSession"] != "new-parent-e2e" {
 		t.Errorf("resumed meta startedAt=%v parentSession=%v, want startedAt %v kept and the new parent",
@@ -313,10 +325,14 @@ func TestSpawnResumeParentIsTheCallersOrNobody(t *testing.T) {
 	}
 
 	env, windowID := h.resumeRun("defaulted", runID, windowID, sessDir)
-	for k, want := range map[string]string{"KIDO_AGENT_PARENT_SESSION": "root-e2e", "KIDO_AGENT_KEEP_ALIVE": ""} {
+	for k, want := range map[string]string{"KIDO_AGENT_PARENT_SESSION": "root-e2e"} {
 		if got := envLine(env, k); got != want {
 			t.Errorf("resumed child's %s = %q, want %q", k, got, want)
 		}
+	}
+
+	if got, _ := h.runMeta("defaulted", runID)["keepAlive"].(bool); got {
+		t.Errorf("resumed keepAlive = %v, want false", got)
 	}
 
 	env, _ = h.resumeRun("handed-over", runID, windowID, sessDir, "--no-parent")
@@ -399,8 +415,7 @@ func (h *harness) spawnRecordedRun(name string) (runID, sessDir string) {
 }
 
 // Nothing on the resume command line says keepAlive; it can only have
-// come from the run's own record, and the resumed child reports what it
-// actually got, not what kido asked tmux for.
+// come from the run's own record.
 func TestSpawnResumeCarriesKeepAlive(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -417,8 +432,9 @@ func TestSpawnResumeCarriesKeepAlive(t *testing.T) {
 		t.Fatalf("kido tool spawn_subagent --resume printed %q, want \"<window id> <pane id> <run id>\"", out)
 	}
 
-	if got := envLine(h.waitFileNonEmpty(envFile), "KIDO_AGENT_KEEP_ALIVE"); got != "1" {
-		t.Errorf("resumed child's KIDO_AGENT_KEEP_ALIVE = %q, want %q from the run's own record", got, "1")
+	h.waitFileNonEmpty(envFile)
+	if got := h.runMeta("resumed-keepalive", runID)["keepAlive"]; got != true {
+		t.Errorf("resumed keepAlive = %v, want true from the run's own record", got)
 	}
 }
 
@@ -472,5 +488,142 @@ func TestSpawnResumeCarriesToolsOntoThePiCommandLine(t *testing.T) {
 	started = h.startCommand(resume("override", "pi", "--model", "acme/claude-opus-5"))
 	if !strings.Contains(started, "--model acme/claude-opus-5") || strings.Contains(started, "claude-sonnet-5") {
 		t.Errorf("resumed pane's command = %q, want the model the resume named and not the recorded one", started)
+	}
+}
+
+// The real agent extension's timer uses the real lookup against a spawned run.
+// A gated settle makes the metadata edit happen before any idle check.
+func TestSpawnKeepAliveChangesAtIdleExit(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed")
+	}
+	version, err := exec.Command(node, "-e", "process.exit(Number(process.versions.node.split('.')[0]) >= 24 ? 0 : 1)").CombinedOutput()
+	if err != nil {
+		t.Skipf("need node >=24: %s", version)
+	}
+	extension, err := filepath.Abs("../share/pi/kido-agents.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(extension), "node_modules")); err != nil {
+		t.Skip("pi extension dependencies not installed")
+	}
+	for _, initial := range []bool{false, true} {
+		t.Run(fmt.Sprint(initial), func(t *testing.T) {
+			h := start(t, "alpha")
+			h.liveParent("alpha", "dynamic-parent")
+			gate := filepath.Join(h.dir, "settle")
+			log := filepath.Join(h.dir, "checks")
+			script := filepath.Join(h.dir, "child.mjs")
+			source := fmt.Sprintf(`import agents from %q;
+import { execFileSync } from 'node:child_process';
+import { existsSync, appendFileSync } from 'node:fs';
+const handlers = new Map();
+const run = process.env.KIDO_AGENT_RUN_ID;
+globalThis.__kidoPiExtensionSeam = { host: {
+ sessionId: () => run,
+ runKido: async (args) => {
+  const out = execFileSync(%q, args, { encoding: 'utf8', timeout: 2000 });
+  if (args.includes('--children')) appendFileSync(%q, out);
+  return { ok: true, out };
+ }
+}, agents: null };
+agents({ on: (name, fn) => handlers.set(name, fn), registerTool() {}, registerMessageRenderer() {} });
+globalThis.__kidoPiExtensionSeam.agents.sessionStarting({
+ shutdown: () => { appendFileSync(%q, 'shutdown'); process.exit(0); },
+ isIdle: () => true
+});
+const wait = setInterval(async () => {
+ if (!existsSync(%q)) return;
+ clearInterval(wait);
+ await handlers.get('agent_settled')({}, { isIdle: () => true });
+}, 20);
+setTimeout(() => process.exit(2), 15000);
+`, extension, kidoBin, log, log, gate)
+			if err := os.WriteFile(script, []byte(source), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"tool", "spawn_subagent", "--parent-pid", "1", "--parent-session", "dynamic-parent", "--name", "dynamic-keepalive", "--task-file", h.writeTaskFile("wait")}
+			if initial {
+				args = append(args, "--keep-alive")
+			}
+			h.in("set-environment", "-g", "KIDO_IDLE_EXIT_SECONDS", "0.2")
+			args = append(args, "--", node, script)
+			// runKido assembles shell arguments; quote the absolute file paths.
+			for i := range args {
+				args[i] = shellQuote(args[i])
+			}
+			fields := strings.Fields(firstLine(h.runKido("alpha", "dynamic-spawn.out", args...)))
+			if len(fields) != 3 {
+				t.Fatalf("spawn = %q", fields)
+			}
+			window, pane, runID := fields[0], fields[1], fields[2]
+			flip := func(keep bool) {
+				path := filepath.Join(h.stateDir, "runs", runID, "meta.json")
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var meta map[string]any
+				if err := json.Unmarshal(data, &meta); err != nil {
+					t.Fatal(err)
+				}
+				meta["keepAlive"] = keep
+				data, err = json.Marshal(meta)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path+".edit", data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(path+".edit", path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !initial {
+				flip(true)
+			}
+			if err := os.WriteFile(gate, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			h.waitFor(func() bool {
+				data, _ := os.ReadFile(log)
+				return strings.Count(string(data), "\n") >= 2
+			}, 4*time.Second, msgf("kept-alive child to re-arm the idle-exit check"))
+			if !h.windowExists(window) || h.in("display-message", "-p", "-t", pane, "#{pane_dead}") == "1" {
+				t.Fatal("kept-alive child exited")
+			}
+			metaPath := filepath.Join(h.stateDir, "runs", runID, "meta.json")
+			meta, err := os.ReadFile(metaPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checks, err := os.ReadFile(log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(metaPath, []byte("{"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			h.waitFor(func() bool {
+				data, _ := os.ReadFile(log)
+				return strings.Count(string(data), "\n") >= strings.Count(string(checks), "\n")+3
+			}, 4*time.Second, msgf("child to re-arm while its metadata is invalid JSON"))
+			if !h.windowExists(window) || h.in("display-message", "-p", "-t", pane, "#{pane_dead}") == "1" {
+				t.Fatal("child exited while its metadata was unreadable")
+			}
+			if err := os.WriteFile(metaPath, meta, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			flip(false)
+			h.waitFor(func() bool {
+				data, _ := os.ReadFile(log)
+				return strings.Contains(string(data), "shutdown")
+			}, settle, msgf("idle timer to shut down after keepAlive is disabled"))
+			h.waitFor(func() bool {
+				return !h.windowExists(window) || h.in("display-message", "-p", "-t", pane, "#{pane_dead}") == "1"
+			}, settle, msgf("child to exit after keepAlive is disabled"))
+		})
 	}
 }

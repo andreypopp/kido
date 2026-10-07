@@ -194,12 +194,12 @@ func TestGetAgentChildrenCmd(t *testing.T) {
 		}
 	}
 
-	check("before", "root-e2e", `{"id":"root-e2e","alive":false,"childrenAlive":false}`)
+	check("before", "root-e2e", `{"id":"root-e2e","alive":false,"keepAlive":false,"childrenAlive":false}`)
 	_, windowID := h.spawnRun("kid-e2e", "exec sleep 300")
-	check("running", "root-e2e", `{"id":"root-e2e","alive":true,"childrenAlive":true}`)
-	check("other", "other-sess", `{"id":"other-sess","alive":false,"childrenAlive":false}`)
+	check("running", "root-e2e", `{"id":"root-e2e","alive":true,"keepAlive":false,"childrenAlive":true}`)
+	check("other", "other-sess", `{"id":"other-sess","alive":false,"keepAlive":false,"childrenAlive":false}`)
 	h.killPane(h.in("list-panes", "-t", windowID, "-F", "#{pane_id}"))
 	h.waitFor(func() bool { return !h.windowExists(windowID) }, settle,
 		msgf("the sidebar's sweep to close window %s", windowID))
-	check("ended", "root-e2e", `{"id":"root-e2e","alive":true,"childrenAlive":false}`)
+	check("ended", "root-e2e", `{"id":"root-e2e","alive":true,"keepAlive":false,"childrenAlive":false}`)
 }
