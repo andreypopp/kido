@@ -1297,7 +1297,7 @@ test("clicking an ask's x removes it as the user and receives the sidebar note t
     assert.equal(s.ui.getEditorText(), "Existing text");
     assert.deepEqual(s.widgets.get("kido-asks")!.content!(null, fakeTheme).render(80), ["│ x A2: Keep this ask..."]);
     assert.deepEqual(s.messages.at(-1)!.message, {
-      customType: "kido-notice", content: "The user removed ask A1: Ship now?", display: true, details: { from: "kido" },
+      customType: "kido-notice", content: "The user removed ask A1: Ship now?", display: false, details: { from: "kido" },
     });
     assert.deepEqual(s.messages.at(-1)!.opts, { deliverAs: "nextTurn" });
     assert.equal(s.delivered.length, delivered);
@@ -1370,12 +1370,9 @@ test("external ask removals queue a notice for the next turn without waking or i
       const sent = s.messages.at(-1)!;
       assert.equal(sent.message.customType, "kido-notice");
       assert.equal(sent.message.content, "The user removed ask A99b9ccb7: Ship?");
-      assert.equal(sent.message.display, true);
+      assert.equal(sent.message.display, false);
       assert.deepEqual(sent.opts, { deliverAs: "nextTurn" });
       assert.equal(s.delivered.length, delivered, "no turn trigger");
-      const drawn = s.renderers.get("kido-notice")!(sent.message, { expanded: true }, fakeTheme).render(100).join("\n");
-      assert.match(drawn, /│ @kido notifies:/);
-      assert.match(drawn, /The user removed ask/);
       await s.emit("session_shutdown", { reason: "reload" });
     }
   } finally {

@@ -689,7 +689,7 @@ export default function (pi: ExtensionAPI) {
         if (env.text) pi.sendMessage({
           customType: NOTICE_CUSTOM_TYPE,
           content: env.text,
-          display: true,
+          display: false,
           details: { from: "kido" },
         }, { deliverAs: "nextTurn" });
         void refreshAsks().catch(() => {});
