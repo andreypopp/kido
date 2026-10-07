@@ -1,4 +1,5 @@
 import AppKit
+import GhosttyKit
 import XCTest
 import SnapshotTesting
 import SidebarFeed
@@ -6,16 +7,18 @@ import TmuxControl
 @testable import Kido
 
 @MainActor final class ToolbarTests: VisualTestCase {
-    func testHostLabel() throws {
+    func testHostLabel() async throws {
         let owner = try XCTUnwrap(delegate.open(.remote("buildbox"), start: false))
         defer { owner.close() }
         let tabs = owner.sidebar.tabs
         XCTAssertEqual(tabs.hostLabel()?.alias, "buildbox")
         XCTAssertFalse(try XCTUnwrap(tabs.hostLabel()).connected)
         tabs.entries = SessionModel(session: SessionID(number: 0), windows: [.init(id: WindowID(number: 0), name: "Shell"), .init(id: WindowID(number: 1), name: "Editor")], window: WindowID(number: 0)).navigation(nil).tabs
+        owner.window.display()
         let root = try XCTUnwrap(owner.window.contentView?.superview)
         var selections = 0
         tabs.select = { _ in selections += 1 }
+        XCTAssertFalse(owner.window(owner.window, willUseFullScreenPresentationOptions: [.fullScreen, .autoHideToolbar]).contains(.autoHideToolbar))
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
         for (name, text, connected) in [("connected", "dev@buildbox", true), ("offline", "dev@buildbox", false), ("long", "developer@buildbox.production.eu-west.example.net", true), ("local", "", true)] {
             tabs.hostLabel = { text.isEmpty ? nil : (text, "buildbox", connected) }
@@ -26,6 +29,13 @@ import TmuxControl
                 owner.sidebar.viewDidLayout()
                 if mode == "floating" { owner.sidebar.focusSidebar(nil) }
                 root.layoutSubtreeIfNeeded()
+                owner.window.display()
+                try await Task.sleep(for: .milliseconds(200))
+                XCTAssertTrue(owner.window.toolbar?.items.first { $0.itemIdentifier.rawValue == "windowTabs" }?.view === tabs.superview)
+                XCTAssertEqual(tabs.theme.background, owner.window.backgroundColor)
+                XCTAssertEqual(tabs.frame.height, 36)
+                XCTAssertGreaterThan(tabs.frame.width, 85)
+                XCTAssertEqual(owner.sidebar.content.convert(owner.sidebar.content.bounds, to: nil).maxY, owner.window.contentLayoutRect.maxY)
                 tabs.needsLayout = true
                 tabs.layoutSubtreeIfNeeded()
                 tabs.needsDisplay = true
@@ -37,8 +47,145 @@ import TmuxControl
                     XCTAssertEqual(selections, 0)
                     XCTAssertEqual(tabs.view(tabs, stringForToolTip: 0, point: .zero, userData: nil), "buildbox")
                 }
-                if let failure = verifySnapshot(of: tabs, as: .image, named: "\(name)-\(mode)", record: record),
+                if let failure = verifySnapshot(of: try headerImage(tabs), as: .image, named: "\(name)-\(mode)", record: record),
                    !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+            }
+        }
+    }
+
+    func testHeaderBackground() async throws {
+        final class NativeHeader: NSView {
+            override func draw(_ rect: NSRect) { NSColor.white.setFill(); bounds.fill() }
+        }
+        final class SidebarShadow: NSView {
+            override func draw(_ rect: NSRect) {
+                NSGradient(starting: NSColor(calibratedWhite: 0, alpha: 0.2), ending: .clear)!.draw(in: bounds, angle: 0)
+            }
+        }
+        let config = FileManager.default.temporaryDirectory.appendingPathComponent("header-\(UUID().uuidString).conf")
+        defer { try? FileManager.default.removeItem(at: config) }
+        let board = NSPasteboard(name: .init("header-\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        for hex in ["fffaf0", "172029"] {
+            try "background = #\(hex)\n".write(to: config, atomically: true, encoding: .utf8)
+            let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
+            let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+            defer { owner.close() }
+            owner.sidebar.tabs.entries = SessionModel(session: SessionID(number: 0), windows: [.init(id: WindowID(number: 0), name: "Shell")], window: WindowID(number: 0)).navigation(nil).tabs
+            let root = try XCTUnwrap(owner.window.contentView?.superview)
+            let expected = try XCTUnwrap(runtime.background.usingColorSpace(.sRGB))
+            let windowedShadow = SidebarShadow()
+            owner.window.contentView?.addSubview(windowedShadow)
+            let header = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 900, height: 52), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+            header.isReleasedWhenClosed = false
+            header.contentView = NativeHeader()
+            header.setFrame(NSRect(x: -20000, y: -20000, width: 900, height: 52), display: false)
+            defer { header.close() }
+            let transferredTabs = WindowTabs(frame: NSRect(x: 200, y: 8, width: 700, height: 36))
+            transferredTabs.theme = owner.sidebar.tabs.theme
+            let headerContent = try XCTUnwrap(header.contentView)
+            headerContent.addSubview(transferredTabs)
+            let paintedBackground = try XCTUnwrap(headerContent.subviews.first)
+            XCTAssertTrue(paintedBackground.isOpaque)
+            XCTAssertNil(paintedBackground.hitTest(.zero))
+            XCTAssertTrue(header.titlebarAppearsTransparent)
+            let transferredShadow = SidebarShadow()
+            headerContent.addSubview(transferredShadow, positioned: .below, relativeTo: transferredTabs)
+            for mode in ["docked", "collapsed", "floating"] {
+                owner.sidebar.dismissFloating()
+                owner.sidebar.isCollapsed = mode != "docked"
+                if mode == "floating" { owner.sidebar.focusSidebar(nil) }
+                owner.window.display()
+                try await Task.sleep(for: .milliseconds(200))
+                let tabsRect = owner.sidebar.tabs.convert(owner.sidebar.tabs.bounds, to: root)
+                windowedShadow.frame = NSRect(x: tabsRect.minX - 8, y: 0, width: 12, height: owner.window.contentView!.bounds.height)
+                transferredTabs.frame = NSRect(x: tabsRect.minX, y: 8, width: tabsRect.width, height: 36)
+                transferredShadow.frame = NSRect(x: tabsRect.minX - 8, y: 0, width: 12, height: headerContent.bounds.height)
+                windowedShadow.isHidden = mode == "collapsed"
+                transferredShadow.isHidden = mode == "collapsed"
+                for (name, view, tabs) in [("windowed", root, owner.sidebar.tabs), ("transferred", headerContent, transferredTabs)] {
+                    let image = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+                    view.cacheDisplay(in: view.bounds, to: image)
+                    let scale = CGFloat(image.pixelsHigh) / view.bounds.height
+                    let rect = tabs.convert(tabs.bounds, to: view)
+                    let x = Int(rect.minX * scale)
+                    let y = Int((view.bounds.maxY - rect.midY) * scale)
+                    let inside = try XCTUnwrap(image.colorAt(x: x, y: y))
+                    let left = try XCTUnwrap(image.colorAt(x: x - 1, y: y))
+                    XCTAssertEqual(inside.redComponent, left.redComponent, accuracy: 6 / (255 * scale), "\(hex) \(name) \(mode) shadow column red continuity")
+                    XCTAssertEqual(inside.greenComponent, left.greenComponent, accuracy: 6 / (255 * scale), "\(hex) \(name) \(mode) shadow column green continuity")
+                    XCTAssertEqual(inside.blueComponent, left.blueComponent, accuracy: 6 / (255 * scale), "\(hex) \(name) \(mode) shadow column blue continuity")
+                    let outside = try XCTUnwrap(image.colorAt(x: x, y: Int((view.bounds.maxY - rect.minY + 2) * scale)))
+                    XCTAssertEqual(inside.redComponent, outside.redComponent, accuracy: 2 / 255, "\(hex) \(name) \(mode) shadow red continuity")
+                    XCTAssertEqual(inside.greenComponent, outside.greenComponent, accuracy: 2 / 255, "\(hex) \(name) \(mode) shadow green continuity")
+                    XCTAssertEqual(inside.blueComponent, outside.blueComponent, accuracy: 2 / 255, "\(hex) \(name) \(mode) shadow blue continuity")
+                }
+                for view in [owner.sidebar.terminalHost, root, headerContent, try XCTUnwrap(headerContent.superview)] {
+                    let image = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+                    view.cacheDisplay(in: view.bounds, to: image)
+                    let scale = CGFloat(image.pixelsHigh) / view.bounds.height
+                    for y in [CGFloat(3), 26, 49] {
+                        let color = try XCTUnwrap(image.colorAt(x: image.pixelsWide - Int(20 * scale), y: Int(y * scale)))
+                        XCTAssertEqual(color.alphaComponent, 1, accuracy: 0.001, "\(hex) \(mode) header opacity")
+                        XCTAssertEqual(color.redComponent, expected.redComponent, accuracy: 2 / 255, "\(hex) \(mode) header red")
+                        XCTAssertEqual(color.greenComponent, expected.greenComponent, accuracy: 2 / 255, "\(hex) \(mode) header green")
+                        XCTAssertEqual(color.blueComponent, expected.blueComponent, accuracy: 2 / 255, "\(hex) \(mode) header blue")
+                    }
+                }
+                XCTAssertFalse(owner.window.isVisible)
+            }
+        }
+    }
+
+    func testLiveHeaderTheme() async throws {
+        XCTAssertEqual(ghostty_init(0, nil), GHOSTTY_SUCCESS)
+        final class NativeHeader: NSView {
+            override func draw(_ rect: NSRect) { NSColor.white.setFill(); bounds.fill() }
+        }
+        let board = NSPasteboard(name: .init("live-header-\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        defer { owner.close() }
+        owner.sidebar.isCollapsed = false
+        owner.window.display()
+        try await Task.sleep(for: .milliseconds(200))
+        let tabs = owner.sidebar.tabs
+        let header = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 900, height: 52), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        header.isReleasedWhenClosed = false
+        header.contentView = NativeHeader()
+        header.setFrame(NSRect(x: -20000, y: -20000, width: 900, height: 52), display: false)
+        defer { header.close() }
+        for transferred in [false, true] {
+            if transferred {
+                header.contentView!.addSubview(tabs)
+                tabs.frame = NSRect(x: 300, y: 8, width: 592, height: 36)
+            }
+            for (hex, appearance) in [("fffaf0", NSAppearance.Name.aqua), ("172029", .darkAqua), ("fffaf0", .aqua)] {
+                let changed = expectation(description: "Ghostty config reload \(hex)")
+                runtime.onConfigChange = { [weak owner] in owner?.updateAppearance(); changed.fulfill() }
+                let config = try XCTUnwrap(ghostty_config_new())
+                let text = "background = #\(hex)\n"
+                ghostty_config_load_string(config, text, UInt(text.utf8.count), "/live-header")
+                ghostty_config_finalize(config)
+                ghostty_app_update_config(runtime.app, config)
+                ghostty_config_free(config)
+                await fulfillment(of: [changed], timeout: 3)
+                XCTAssertEqual(owner.window.appearance?.name, appearance, "\(hex) main window")
+                XCTAssertEqual(tabs.effectiveAppearance.name, appearance, "\(hex) tabs transferred=\(transferred)")
+                XCTAssertEqual(tabs.window?.appearance?.name, appearance, "\(hex) host transferred=\(transferred)")
+                let view = try XCTUnwrap(tabs.window?.contentView)
+                let image = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+                view.cacheDisplay(in: view.bounds, to: image)
+                let expected = try XCTUnwrap(runtime.background.usingColorSpace(.sRGB))
+                let scale = CGFloat(image.pixelsHigh) / view.bounds.height
+                for y in [CGFloat(3), 26, 49] {
+                    let color = try XCTUnwrap(image.colorAt(x: image.pixelsWide - Int(20 * scale), y: Int(y * scale)))
+                    XCTAssertEqual(color.alphaComponent, 1, accuracy: 0.001)
+                    XCTAssertEqual(color.redComponent, expected.redComponent, accuracy: 2 / 255)
+                    XCTAssertEqual(color.greenComponent, expected.greenComponent, accuracy: 2 / 255)
+                    XCTAssertEqual(color.blueComponent, expected.blueComponent, accuracy: 2 / 255)
+                }
             }
         }
     }
