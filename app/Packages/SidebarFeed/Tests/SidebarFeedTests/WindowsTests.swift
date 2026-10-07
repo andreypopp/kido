@@ -85,7 +85,7 @@ private func windowsFixture(_ indicator: String = "waiting", attention: Bool = f
 func projectionSharesRowStatus(indicator: String) throws {
     let snapshot = try windowsFixture(indicator)
     let projection = sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)])
-    let status = try #require(sidebarRows(snapshot, folded: []).first { $0.target?.window == WindowID(number: 2) }?.status)
+    let status = try #require(sidebarRows(snapshot).first { $0.target?.window == WindowID(number: 2) }?.status)
     #expect(projection.statuses[WindowID(number: 0)] == status.tabStatus)
     #expect(sidebarWindows(try windowsFixture(indicator, attention: true), session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == status.tabStatus)
 }
@@ -93,10 +93,11 @@ func projectionSharesRowStatus(indicator: String) throws {
 @Test func projectedTitlesUseActivePane() throws {
     let snapshot = try windowsFixture(group: true)
     let window = WindowID(number: 0), session = SessionID(number: 0)
-    let rows = sidebarRows(snapshot, folded: [])
+    let rows = sidebarRows(snapshot)
     for pane in [PaneID(number: 0), PaneID(number: 3)] {
         let projection = sidebarWindows(snapshot, session: session, surviving: [window], activePanes: [window: pane])
-        #expect(projection.titles[window] == rows.first { $0.id == .pane(session, pane) }?.title)
+        #expect(projection.titles[window] == "Pane \(pane.number)")
+        #expect(rows.first { $0.id == .pane(session, pane) }?.title == "@Pane \(pane.number)")
         #expect(projection.titles.count == 1)
     }
     #expect(sidebarWindows(snapshot, session: session, surviving: [window], activePanes: [window: PaneID(number: 99)]).titles.isEmpty)
