@@ -1,6 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { AgentSession, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import programStatus from "./program-status.ts";
 
 function fixture(t: TestContext) {
@@ -46,7 +46,6 @@ test("root reports lifecycle transitions in exact OSC 7501 bytes", (t) => {
   f.emit("agent_before_settle", { outcome: "error" });
   f.emit("agent_settled");
   f.emit("agent_start");
-  f.emit("agent_before_settle", { outcome: "aborted" });
   f.emit("agent_settled");
   assert.deepEqual(f.writes, [
     "\x1b]7501;state=idle:app=pi:title=Q2Fmw6k=\x1b\\",
@@ -78,6 +77,72 @@ test("idle UI prompts and manual compaction restore rest, including compaction f
     "\x1b]7501;state=working:app=pi:title=Q2Fmw6k=:msg=Q29tcGFjdGluZyBjb250ZXh0\x1b\\",
     "\x1b]7501;state=idle:app=pi:title=Q2Fmw6k=\x1b\\",
   ]);
+});
+
+test("pi abort settles idle without before_settle, including retry and compaction cancellation", async (t) => {
+  const f = fixture(t);
+  for (const previous of ["completed", "error"]) {
+    for (const phase of ["prompt", "retry", "compaction"]) {
+      f.idle(false);
+      f.emit("agent_start");
+      f.emit("agent_before_settle", { outcome: previous });
+      f.idle(true);
+      f.emit("agent_settled");
+      const session = Object.assign(Object.create(AgentSession.prototype), {
+        _pendingToolNames: new Set(),
+        _recordSelection() {},
+        _flushPendingBashMessages() {},
+        _flushPendingCustomMessages() {},
+        _finishCancelledRetry() {},
+        abortRetry() {},
+        abortCompaction() {},
+        abortBranchSummary() {},
+        async waitForIdle() {},
+        async _runBeforeSettleBoundary() {
+          f.emit("agent_before_settle", { outcome: "completed" });
+          return false;
+        },
+        async _emitAgentSettled() {
+          f.idle(true);
+          f.emit("agent_settled");
+        },
+        agent: {
+          async prompt() {
+            f.idle(false);
+            f.emit("agent_start");
+            if (phase === "prompt") await session.abort();
+          },
+          abort() {},
+        },
+        async _handlePostAgentRun() {
+          if (phase === "compaction") f.emit("session_before_compact");
+          await session.abort();
+          if (phase === "compaction") f.emit("session_compact_failed", { aborted: true });
+          return false;
+        },
+      });
+      await session._runAgentPrompt([]);
+      assert.match(f.writes.at(-1)!, /state=idle:/, `${previous}, cancelled during ${phase}`);
+    }
+  }
+});
+
+test("compaction completion consumes its saved state and ignores unmatched events", (t) => {
+  const f = fixture(t);
+  for (const completion of ["session_compact", "session_compact_failed"]) {
+    f.idle(false);
+    f.emit("agent_start");
+    f.emit("session_before_compact");
+    f.emit(completion);
+    f.emit("agent_before_settle", { outcome: "completed" });
+    f.idle(true);
+    f.emit("agent_settled");
+    const reports = f.writes.length;
+    f.emit("session_compact_failed", { error: "Nothing to compact" });
+    f.emit("session_compact");
+    assert.equal(f.writes.length, reports, completion);
+    assert.match(f.writes.at(-1)!, /state=done:/);
+  }
 });
 
 test("only TUI on a tty writes; suppressed reports do not suppress later writes", (t) => {
