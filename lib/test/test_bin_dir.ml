@@ -58,6 +58,7 @@ let install root =
   copy "../../share/shim.sh" (share // "shim.sh");
   copy "../../share/pi/kido-status.ts" (share // "pi/kido-status.ts");
   copy "../../share/pi/kido-agents.ts" (share // "pi/kido-agents.ts");
+  copy "../../share/pi/program-status.ts" (share // "pi/program-status.ts");
   copy "../../share/claude/settings.json" (share // "claude/settings.json");
   List.iter (fun name -> ignore (recorder (prefix // "bin") name)) [ "kido"; "kido-tmux" ];
   (prefix // "bin", share, share // "bin")
@@ -100,11 +101,12 @@ let%expect_test "the shims run what they stand for, with the arguments as given"
     (same prog (bin // "kido"))
     (List.equal String.equal args ("ssh" :: awkward));
   (match run_shim path "pi" awkward with
-  | prog, "--extension" :: status :: "--extension" :: agents :: rest ->
-      Printf.printf "pi: real %b, extensions %b %b, args %b\n"
+  | prog, "--extension" :: status :: "--extension" :: agents :: "--extension" :: program :: rest ->
+      Printf.printf "pi: real %b, extensions %b %b %b, args %b\n"
         (String.equal prog (real // "pi"))
         (same status (share // "pi/kido-status.ts"))
         (same agents (share // "pi/kido-agents.ts"))
+        (same program (share // "pi/program-status.ts"))
         (List.equal String.equal rest awkward)
   | r -> show "pi" r);
   (match run_shim path "claude" awkward with
@@ -118,7 +120,7 @@ let%expect_test "the shims run what they stand for, with the arguments as given"
     {|
     tmux: kido-tmux true, args true
     ssh: kido true, args true
-    pi: real true, extensions true true, args true
+    pi: real true, extensions true true true, args true
     claude: real true, settings true, args true
     |}]
 

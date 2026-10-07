@@ -12,6 +12,7 @@
    %{project_root}/share/shim.sh
    %{project_root}/share/pi/kido-status.ts
    %{project_root}/share/pi/kido-agents.ts
+   %{project_root}/share/pi/program-status.ts
    %{project_root}/share/claude/settings.json))
  (preprocess
   (pps ppx_expect)))
