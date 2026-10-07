@@ -99,7 +99,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     override func layout() {
         super.layout()
         let inner = bounds.width - 16
-        search.frame = CGRect(x: 8, y: max(44, safeAreaInsets.top) + 2, width: inner, height: search.isHidden ? 0 : search.fittingSize.height)
+        search.frame = CGRect(x: 8, y: safeAreaInsets.top + 2, width: inner, height: search.isHidden ? 0 : search.fittingSize.height)
         let note: CGFloat = statusLine.isHidden ? 0 : 16
         statusLine.frame = CGRect(x: 8, y: search.frame.maxY, width: inner, height: note)
         let top = search.frame.maxY + note
