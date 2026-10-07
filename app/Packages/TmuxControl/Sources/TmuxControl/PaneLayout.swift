@@ -21,7 +21,6 @@ public struct PaneLayout: Equatable {
         public let insets: RenderInsets
     }
     public static let minimumMargin = CGSize(width: 4, height: 12)
-    public static let topMargin: CGFloat = 44
     public let client: CGSize
     public let before: CGSize
     public let after: CGSize
@@ -39,7 +38,7 @@ public struct PaneLayout: Equatable {
         before = CGSize(width: floor((cell.width / pixel - 1) / 2) * pixel,
                         height: floor((cell.height / pixel - 1) / 2) * pixel)
         after = CGSize(width: cell.width - pixel - before.width, height: cell.height - pixel - before.height)
-        topLine = CGRect(x: bounds.minX, y: ceil((bounds.minY + Self.topMargin) / pixel) * pixel, width: bounds.width, height: pixel)
+        topLine = CGRect(x: bounds.minX, y: ceil(bounds.minY / pixel) * pixel, width: bounds.width, height: pixel)
         bottom = floor((bounds.maxY - Self.minimumMargin.height) / pixel) * pixel
         client = CGSize(width: max(1, floor((bounds.width - 2 * Self.minimumMargin.width - cell.width + pixel) / cell.width)),
                         height: max(1, floor((bottom - topLine.maxY) / cell.height)))
