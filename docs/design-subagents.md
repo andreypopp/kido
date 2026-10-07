@@ -35,9 +35,8 @@ The rule runs one way only: a tool names its command, while a subcommand
 that is nobody's tool keeps whatever name fits it - `hook`, `shell`,
 `ssh`, `get-agent`, `prompt`, `snapshot`, `reap`, `runs`
 and the rest. `kido agent-status` is the sharpest case and keeps its own
-name too: it reports a session's whole state on every turn, of which
-`set_status`'s activity is one flag of twelve, so the narrow tool got a
-narrow command of its own (design.md, "Every report is whole") rather than the report being renamed after it.
+name too: it reports a session's identity and heartbeat, whereas
+`set_status` writes only activity (design.md, "Every report is whole").
 
 The parity is pinned rather than merely written down. `share/pi/testdata/
 tools.json` is one list read by both suites: pi's own asserts the
@@ -122,7 +121,13 @@ window, status, activity, parent, depth, cwd, model, `canMessage`,
 `canReply`, `sinceReport` and `stalled`. Own runs add `run`, `startedAt`,
 `state` (`running` or `ended`) and the ending's `outcome` result and text.
 A bash run or an ended subagent without a live record has no agent
-status and cannot reply. `canReply` also reflects an agent run's tool
+status and cannot reply. pi's status is the pane root's OSC 7501 state
+(working, blocked, done, error, idle; unknown when absent), and its name
+is that root's title. Claude Code uses Hook status and its pane title.
+A pi is stalled only with a working root and an old State heartbeat;
+a bare pi never stalls. The graph is a fresh single tmux read, not a
+cache. `ask_agent` refuses a stalled target before sending.
+`canReply` also reflects an agent run's tool
 allowlist. Names still resolve across the entire tmux session for
 messaging, asking, steering and interrupting; listing is not an addressing
 restriction.

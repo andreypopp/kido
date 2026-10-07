@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,7 +60,7 @@ func (h *harness) firstPane(session string) string {
 
 // idleAgent opens a window that does nothing and reports a pi session on
 // it. Its pane title is blanked, since tmux titles a new pane after the
-// host and a record without a title is named from its pane's.
+// host and the helper uses that title for its OSC root record.
 func (h *harness) idleAgent(session, id string, extra ...string) string {
 	h.t.Helper()
 	p := h.newWindow(session, "", "sh", "-c", "exec sleep 300")
@@ -102,7 +103,7 @@ func TestMessageAgentResolvesByNameTitleIdAndPrefix(t *testing.T) {
 	h.idleAgent("alpha", "abd456", "--inbox", in.Path)
 	h.idleAgent("alpha", "worker-x", "--title", "scout")
 	h.idleAgent("alpha", "worker-y", "--title", "scout")
-	h.title(h.idleAgent("alpha", "untitled", "--inbox", in.Path), "worker-6")
+	h.idleAgent("alpha", "untitled", "--title", "worker-6", "--inbox", in.Path)
 	h.idleAgent("beta", "elsewhere", "--title", "far-away", "--inbox", in.Path)
 	h.idleAgent("beta", "twin-a", "--title", "Twin")
 	h.idleAgent("beta", "twin-b", "--title", "Twin")
@@ -360,12 +361,25 @@ func TestNotifyParentKeepsAReportOverTheCap(t *testing.T) {
 func (h *harness) writeRecord(id, pane string, ts time.Time, extra map[string]any) {
 	h.t.Helper()
 	rec := map[string]any{
-		"agent": "pi", "pane": pane, "pid": os.Getpid(), "status": "idle",
+		"agent": "pi", "pane": pane, "pid": os.Getpid(), "reporting": []any{"Terminal"},
 		"ts": ts.UTC().Format("2006-01-02T15:04:05Z"),
 	}
+	status, title := "idle", ""
 	for k, v := range extra {
-		rec[k] = v
+		switch k {
+		case "status":
+			status = v.(string)
+		case "title":
+			title = v.(string)
+		default:
+			rec[k] = v
+		}
 	}
+	if title == "" {
+		title = strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - ")
+	}
+	state := map[string]string{"running": "working", "waiting": "blocked", "idle": "idle"}[status]
+	h.programStatus(pane, "state="+state+":app=pi:title="+base64.StdEncoding.EncodeToString([]byte(title)))
 	b, err := json.Marshal(rec)
 	if err != nil {
 		h.t.Fatal(err)

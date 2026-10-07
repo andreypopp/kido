@@ -41,8 +41,8 @@ func (h *harness) stalledFor(session, id string) func() bool {
 	}
 }
 
-// An agent that reports Running once and then goes silent - a wedged pi
-// with no heartbeat, from outside - must eventually be marked stalled.
+// A pi whose OSC root stays working while its identity heartbeat stops
+// must eventually be marked stalled.
 func TestAgentsShowsStalledAfterHeartbeatStops(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -60,7 +60,7 @@ func TestAgentsShowsStalledAfterHeartbeatStops(t *testing.T) {
 		msgf("agent %s to be reported stalled once no further report arrives", id))
 }
 
-// Negative control: an agent re-reporting Running faster than
+// Negative control: a working pi refreshing its identity faster than
 // KIDO_STALL_THRESHOLD_MS must never be marked stalled.
 func TestAgentsDoesNotShowStalledWhileHeartbeatContinues(t *testing.T) {
 	t.Parallel()

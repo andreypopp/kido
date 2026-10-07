@@ -18,6 +18,10 @@ type process = { pid : int; stdin : Unix.file_descr; stdout : Unix.file_descr }
 val spawn : ?socket:string -> string list -> (process, string) result
 val global_option : string -> string
 val list_panes : ?socket:string -> unit -> (Pane.t list, string) result
+
+val panes_and_programs :
+  ?socket:string -> unit -> (Pane.t list * Program_status.t Pane.Map.t, string) result
+
 val capture_pane : ?socket:string -> Pane.id -> (string list, string) result
 val capture_screen : ?socket:string -> Pane.id -> (string, string) result
 

@@ -95,8 +95,8 @@ let dismissals conn prev states =
   let now = Unix.gettimeofday () in
   Tmux.Pane.Map.fold
     (fun pane ((_, s) : string * State.session) out ->
-      match (s.agent, s.status) with
-      | State.Claude, State.Waiting -> (
+      match s.reporting with
+      | State.Hook { status = State.Waiting; _ } -> (
           match Tmux.Pane.Map.find_opt pane prev with
           | Some p when Float.(p.reported = s.ts && now - p.read < 1.) ->
               Tmux.Pane.Map.add pane p out
@@ -154,7 +154,14 @@ let take ~opts conn prev client =
             else
               Tmux.Pane.Map.update pane
                 (Option.map (fun (id, (s : State.session)) ->
-                     (id, { s with status = Idle; ended = Some p.reported })))
+                     ( id,
+                       {
+                         s with
+                         reporting =
+                           (match s.reporting with
+                           | Hook h -> Hook { h with status = Idle; ended = Some p.reported }
+                           | Terminal -> Terminal);
+                       } )))
                 states)
           probes states
       in
@@ -390,16 +397,19 @@ let track m =
       ssh_remote = Tmux.Pane.Map.filter live_pane m.ssh_remote;
     }
 
-let stall_pending m =
-  let now = m.now () in
+let stall_pending m snap =
+  let stalled snap now s =
+    State.stalled_since ~programs:snap.programs ~threshold:m.opts.threshold ~wake:snap.wake ~now s
+  in
   Tmux.Pane.Map.exists
-    (fun _ (_, (s : State.session)) ->
-      (match s.status with Running -> true | _ -> false)
-      && not
-           (Bool.equal
-              (State.stalled_since ~threshold:m.opts.threshold ~wake:m.snap.wake ~now:m.at s)
-              (State.stalled_since ~threshold:m.opts.threshold ~wake:m.snap.wake ~now s)))
-    m.snap.states
+    (fun pane (_, s) ->
+      not
+        (Bool.equal
+           (Option.exists
+              (fun (_, s) -> stalled m.snap m.at s)
+              (Tmux.Pane.Map.find_opt pane m.snap.states))
+           (stalled snap (m.now ()) s)))
+    snap.states
 
 let shell_pending m =
   Tmux.Pane.Map.exists
@@ -410,7 +420,8 @@ let shell_pending m =
 
 let done_ m pane =
   match Tmux.Pane.Map.find_opt pane m.snap.states with
-  | Some (_, { status = Idle; ended = Some ended; _ }) -> Float.(ended > seen_at m pane)
+  | Some (_, { reporting = Hook { status = Idle; ended = Some ended; _ }; _ }) ->
+      Float.(ended > seen_at m pane)
   | _ -> false
 
 let asking m pane =
@@ -433,7 +444,9 @@ let program_indicator m pane status (r : Tmux.Program_status.record) =
 
 let program_status m (p : P.t) =
   if
-    Tmux.Pane.Map.mem p.pane_id m.snap.states
+    Option.exists
+      (fun (_, (s : State.session)) -> match s.reporting with Hook _ -> true | Terminal -> false)
+      (Tmux.Pane.Map.find_opt p.pane_id m.snap.states)
     || Option.exists
          (fun run ->
            Option.exists
@@ -456,7 +469,7 @@ let program_status m (p : P.t) =
 let attention m pane =
   asking m pane
   || (match Tmux.Pane.Map.find_opt pane m.snap.states with
-    | Some (_, { status = Waiting; _ }) -> true
+    | Some (_, { reporting = Hook { status = Waiting; _ }; _ }) -> true
     | _ -> false)
   || done_ m pane
   || Option.exists
@@ -478,8 +491,12 @@ let agent_title_of m (p : P.t) =
   if not (State.is_agent_pane m.snap.states ~pi:m.snap.pi p) then None
   else
     match Tmux.Pane.Map.find_opt p.pane_id m.snap.states with
-    | Some (_, { title; _ }) when not (String.is_empty title) -> Some title
-    | _ -> ( match List_runs.agent_title p.title with "" -> Some "-" | t -> Some t)
+    | Some (_, s) ->
+        Some
+          (match List_runs.display_name ~programs:m.snap.programs [ p ] s with
+          | "" -> "-"
+          | title -> title)
+    | None -> ( match List_runs.agent_title p.title with "" -> Some "-" | t -> Some t)
 
 let span role text = { text; role }
 let plain = span `Plain
@@ -499,8 +516,17 @@ let pane_label m (p : P.t) =
   let row kind indicator title caption =
     { pane = p.pane_id; window = p.window_id; kind; indicator; title; caption; run }
   in
-  match (program_status m p, agent_title_of m p) with
-  | Some (status, r), agent_title ->
+  match (lingering, program_status m p, agent_title_of m p) with
+  | Some l, _, _ when Option.is_some l.outcome || Option.is_some p.dead_at ->
+      row
+        (match l.kind with Agent -> Agent | Bash | Stream -> Run)
+        (Some (Gone l.outcome))
+        [ span `Dim l.name ]
+        (Text
+           (Option.map_or ~default:[]
+              (fun o -> [ span `Dim (Subrun.string_of_result o) ])
+              l.outcome))
+  | _, Some (status, r), agent_title ->
       let app = Tmux.Program_status.app status r in
       let title = Option.value ~default:(Option.value ~default:p.current_command app) r.title in
       let kind =
@@ -509,19 +535,37 @@ let pane_label m (p : P.t) =
         | None -> if Option.is_some agent_title then Agent else Shell
       in
       row kind
-        (Some (program_indicator m p.pane_id status r))
+        (Some
+           (if asking m p.pane_id then Status Waiting
+            else if
+              Option.exists
+                (fun (_, s) ->
+                  State.stalled_since ~programs:m.snap.programs ~threshold:m.opts.threshold
+                    ~wake:m.snap.wake ~now:m.at s)
+                (Tmux.Pane.Map.find_opt p.pane_id m.snap.states)
+            then Stalled
+            else program_indicator m p.pane_id status r))
         [ plain title ]
-        (Text
-           (match
-              List.filter
-                (fun s -> not (String.is_empty s))
-                (Option.to_list r.msg
-                @ Option.to_list
-                    (Option.map (Printf.sprintf "%d%%") (Tmux.Program_status.progress r)))
-            with
-           | [] -> []
-           | parts -> [ span `Dim (String.concat " " parts) ]))
-  | None, None -> (
+        (match
+           List.filter
+             (fun s -> not (String.is_empty s))
+             (Option.to_list r.msg
+             @ (if Option.is_some r.msg then []
+                else
+                  Option.to_list
+                    (Option.flat_map
+                       (fun (_, (s : State.session)) ->
+                         if String.is_empty s.activity then None else Some s.activity)
+                       (Tmux.Pane.Map.find_opt p.pane_id m.snap.states)))
+             @ Option.to_list (Option.map (Printf.sprintf "%d%%") (Tmux.Program_status.progress r))
+             )
+         with
+        | [] -> (
+            match run with
+            | Some { kind = Agent; started = Some started } -> Elapsed started
+            | _ -> Text [])
+        | parts -> Text [ span `Dim (String.concat " " parts) ])
+  | _, None, None -> (
       match lingering with
       | Some l -> (
           let kind = match l.kind with Agent -> Agent | Bash | Stream -> Run in
@@ -560,14 +604,16 @@ let pane_label m (p : P.t) =
                 (Tmux.Pane.Map.find_opt p.pane_id m.phases)
           in
           row kind ind text (Text []))
-  | None, Some title ->
+  | _, None, Some title ->
       let ind, activity =
         match Tmux.Pane.Map.find_opt p.pane_id m.snap.states with
         | None -> (Unknown, "")
         | Some (_, s) ->
-            ( (if State.stalled_since ~threshold:m.opts.threshold ~wake:m.snap.wake ~now:m.at s then
-                 Stalled
-               else Status s.status),
+            ( (if
+                 State.stalled_since ~programs:m.snap.programs ~threshold:m.opts.threshold
+                   ~wake:m.snap.wake ~now:m.at s
+               then Stalled
+               else match s.reporting with Hook h -> Status h.status | Terminal -> Unknown),
               s.activity )
       in
       let caption =
@@ -736,7 +782,7 @@ let poll ?wait ~(opts : options) conn prev =
 
 let step m (snap : snapshot) =
   let was = m.snap in
-  let pending = shell_pending m || stall_pending m in
+  let pending = shell_pending m || stall_pending m snap in
   let clock = read_clock () in
   (if detect_pause m.clock clock then
      try State.record_pause ~dir:m.opts.dir clock.wall with Unix.Unix_error _ | Sys_error _ -> ());

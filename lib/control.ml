@@ -34,16 +34,16 @@ let record_stopped ~dir id =
            { result = Stopped; text = ""; at = Some (Timestamp.now ()) }))
     (Subrun.parse_id id)
 
-let request ~states ~panes ~self kind target =
-  Message_agent.deliver ~states ~panes ~self { kind; reply_to = ""; id = "" } target ""
+let request ~programs ~states ~panes ~self kind target =
+  Message_agent.deliver ~programs ~states ~panes ~self { kind; reply_to = ""; id = "" } target ""
 
 let interrupt ~dir ~self to_ =
   let open Result.Infix in
   let live = State.load_live ~dir in
-  let* panes = Exec.list_panes () in
-  let* _, target = Message_agent.resolve ~live ~panes ~self (Descendant to_) in
-  match request ~states:(State.by_pane live) ~panes ~self Interrupt target with
-  | Ok _ -> Ok ("interrupted " ^ List_runs.display_name panes target)
+  let* panes, programs = Exec.panes_and_programs () in
+  let* _, target = Message_agent.resolve ~programs ~live ~panes ~self (Descendant to_) in
+  match request ~programs ~states:(State.by_pane live) ~panes ~self Interrupt target with
+  | Ok _ -> Ok ("interrupted " ^ List_runs.display_name ~programs panes target)
   | Error (Message_agent.Unavailable m | Failed m) -> Error m
 
 let stop ~dir ~self ~escalation ~warn ~force to_ =
@@ -87,7 +87,7 @@ let stop ~dir ~self ~escalation ~warn ~force to_ =
     else Error (Printf.sprintf "run %s has already ended" (Subrun.string_of_id meta.id))
   in
   let live = State.load_live ~dir in
-  let* panes = Exec.list_panes () in
+  let* panes, programs = Exec.panes_and_programs () in
   match meta.kind with
   | Bash | Stream -> (
       let* reached =
@@ -122,8 +122,10 @@ let stop ~dir ~self ~escalation ~warn ~force to_ =
                 (Printf.sprintf "%s was recorded stopped, but its pane could not be killed: %s"
                    label m))
   | Agent -> (
-      let* id, target = Message_agent.resolve ~live ~panes ~self (Descendant_run meta.id) in
-      let name = "subagent " ^ List_runs.display_name panes target in
+      let* id, target =
+        Message_agent.resolve ~programs ~live ~panes ~self (Descendant_run meta.id)
+      in
+      let name = "subagent " ^ List_runs.display_name ~programs panes target in
       let degrade () =
         match kill_run_pane ~before:(fun () -> record_stopped ~dir id) target.pane with
         | Ok `Killed -> Ok (Printf.sprintf "killed %s's pane" name)
@@ -154,7 +156,7 @@ let stop ~dir ~self ~escalation ~warn ~force to_ =
         let* () = unforced (name ^ " has no inbox to ask nicely over") in
         degrade ()
       else
-        match request ~states:(State.by_pane live) ~panes ~self Stop target with
+        match request ~programs ~states:(State.by_pane live) ~panes ~self Stop target with
         | Error (Message_agent.Unavailable m) ->
             let* () = unforced (Printf.sprintf "%s could not be asked to stop (%s)" name m) in
             degrade ()

@@ -209,13 +209,13 @@ let ask_user =
      and+ session_file = str "session-file" "PATH" "The pi session file to revive." in
      fun () ->
        let dir = state_dir () in
-       let id, s, p =
+       let id, s, p, programs =
          ok (Ask.caller ~dir ~self:(Tmux.Pane.of_string (Tmux.Exec.getenv "TMUX_PANE")) ~session)
          |> Option.to_result "no agent session has reported this pane"
          |> ok
        in
        let replaces = Option.map (fun id -> ok (Ask.parse_id id)) replaces in
-       let name = List_runs.display_name [ p ] s in
+       let name = List_runs.display_name ~programs [ p ] s in
        print
          (Result.map Ask.string_of_id
             (Ask.record ~dir ~self:session ~replaces ~session:id
@@ -265,13 +265,12 @@ let get_agent =
      fun () ->
        let dir = state_dir () in
        if context then begin
+         let panes, programs = ok (Tmux.Exec.panes_and_programs ()) in
          let agents =
            ok
              (List_runs.agents ~dir ~threshold:(State.stall_threshold ())
                 ~self:(Tmux.Pane.of_string (Tmux.Exec.getenv "TMUX_PANE"))
-                ~session:None
-                ~panes:(ok (Tmux.Exec.list_panes ()))
-                ~states:(State.load_live ~dir))
+                ~session:None ~panes ~programs ~states:(State.load_live ~dir))
          in
          print_endline
            (Yojson.Safe.to_string (`List (List.map List_runs.agent_info_to_yojson agents)));
@@ -540,13 +539,6 @@ let agent_status =
          required
          & opt (some string) None
          & info [ "session" ] ~docv:"ID" ~doc:"The agent's session id; one state file per session.")
-     and+ status =
-       Arg.(
-         value
-         & opt (some (enum State.statuses)) None
-         & info [ "status" ] ~docv:"STATUS"
-             ~doc:"One of running, waiting, compacting or idle; required unless $(b,--remove).")
-     and+ title = str "title" "TITLE" "The session's name, shown as the pane's label."
      and+ inbox =
        str "inbox" "PATH"
          "Path of the unix socket the agent takes prompts on, speaking kido's own protocol (see \
@@ -561,19 +553,15 @@ let agent_status =
          "Session id of the agent that spawned this one, empty for a root agent."
      and+ depth = num "depth" "N" "Depth in the spawn tree, 0 for a root agent."
      and+ model = str "model" "NAME" "Name of the model the agent is currently running."
-     and+ ended = flag "ended" "A turn just finished."
      and+ remove = flag "remove" "Delete the session's record." in
      Cli.run "agent-status" (fun () ->
          let dir = state_dir () in
          match
-           match (remove, status) with
-           | true, _ -> State.remove ~dir session ~pid:(Unix.getppid ())
-           | false, None -> failwith "--status is required"
-           | false, Some status ->
-               Reporting.agent_status ~dir
-                 ~pane:(Tmux.Pane.of_string (Tmux.Exec.getenv "TMUX_PANE"))
-                 ~agent ~session ~title ~inbox ~activity ~parent_pid ~parent_session ~depth ~model
-                 ~ended status
+           if remove then State.remove ~dir session ~pid:(Unix.getppid ())
+           else
+             Reporting.agent_status ~dir
+               ~pane:(Tmux.Pane.of_string (Tmux.Exec.getenv "TMUX_PANE"))
+               ~agent ~session ~inbox ~activity ~parent_pid ~parent_session ~depth ~model
          with
          | Ok () -> 0
          | Error holder ->

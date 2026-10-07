@@ -17,6 +17,7 @@ type record = {
 
 type t = { serial : int; records : record list }
 
+val root : t -> record option
 val parse : string -> (t, string) result
 val merge : t -> t option -> t
 val merge_panes : t Pane.Map.t -> t Pane.Map.t -> t Pane.Map.t

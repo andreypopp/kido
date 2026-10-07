@@ -16,6 +16,7 @@ package e2e
 import (
 	"bytes"
 	"cmp"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -116,8 +117,7 @@ func setup(m *testing.M) (int, error) {
 		return 0, err
 	}
 	// pi is a bash shim around node, so tmux reports a pi pane as "node".
-	// A pane running this one is a pi pane to kido only through what pi
-	// reports with `kido agent-status`, which is what the tests drive.
+	// Tests supply pi identity with agent-status and status with OSC 7501.
 	if nodeBin, err = buildFakeAgent(dir, dir, "node"); err != nil {
 		return 0, err
 	}
@@ -215,6 +215,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -229,6 +230,10 @@ func main() {
 		"Enter to select · Esc to cancel\n")
 	sc := bufio.NewScanner(os.Stdin)
 	for sc.Scan() {
+		if body, ok := strings.CutPrefix(sc.Text(), "osc "); ok {
+			fmt.Print("\x1b]7501;" + body + "\x1b\\")
+			continue
+		}
 		switch sc.Text() {
 		case "busy":
 			box("⏸ manual mode on · esc to interrupt · ← for agents")
@@ -404,7 +409,7 @@ func startPathPrefix(t *testing.T, session, pathDir string, kidoArgs ...string) 
 	var body bytes.Buffer
 	body.Write(defaults)
 	fmt.Fprintf(&body, `
-set-environment -g KIDO_PROTOCOL 1.1
+set-environment -g KIDO_PROTOCOL 2.0
 set-environment -g KIDO_LINGER_SECONDS 1
 set-environment -g KIDO_STOP_ESCALATION_MS 300
 set-environment -g KIDO_STALL_THRESHOLD_MS 3000
@@ -1041,15 +1046,70 @@ func (h *harness) hookPayload(sessionID, pane, event string, payload map[string]
 	}
 }
 
-// agentStatus runs `kido agent-status`, the way a non-Claude-Code agent
-// reports itself, out of band like hook.
+func (h *harness) programStatus(pane, body string) {
+	h.t.Helper()
+	tty := h.in("display-message", "-p", "-t", pane, "#{pane_tty}")
+	f, err := os.OpenFile(tty, os.O_WRONLY, 0)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString("\x1b]7501;" + body + "\x1b\\"); err != nil {
+		h.t.Fatal(err)
+	}
+	want := map[string]string{}
+	for _, part := range strings.Split(body, ":") {
+		key, value, _ := strings.Cut(part, "=")
+		want[key] = value
+	}
+	h.waitFor(func() bool {
+		var status struct {
+			Records []map[string]any `json:"records"`
+		}
+		out := h.in("display-message", "-p", "-t", pane, "#{pane_program_status}")
+		if json.Unmarshal([]byte(out), &status) != nil {
+			return false
+		}
+		for _, record := range status.Records {
+			if record["id"] == "" && record["state"] == want["state"] && record["title"] == want["title"] {
+				return true
+			}
+		}
+		return false
+	}, settle, msgf("terminal report %s", body))
+}
+
 func (h *harness) agentStatus(sessionID, pane, agent, status string, extra ...string) {
 	h.t.Helper()
 	args := []string{"agent-status", "--agent", agent, "--session", sessionID}
-	if status != "" {
-		args = append(args, "--status", status)
+	title := h.in("display-message", "-p", "-t", pane, "#{pane_title}")
+	title = strings.TrimPrefix(title, "π - ")
+	ended, remove := false, false
+	for i := 0; i < len(extra); i++ {
+		switch extra[i] {
+		case "--title":
+			i++
+			title = extra[i]
+		case "--ended":
+			ended = true
+		case "--remove":
+			remove = true
+			args = append(args, extra[i])
+		default:
+			args = append(args, extra[i])
+		}
 	}
-	cmd := exec.Command(kidoBin, append(args, extra...)...)
+	if !remove {
+		state := map[string]string{"running": "working", "waiting": "blocked", "compacting": "working", "idle": "idle"}[status]
+		if state == "" {
+			state = status
+		}
+		if ended {
+			state = "done"
+		}
+		h.programStatus(pane, "state="+state+":app=pi:title="+base64.StdEncoding.EncodeToString([]byte(title)))
+	}
+	cmd := exec.Command(kidoBin, args...)
 	cmd.Env = cleanEnv("TMUX="+h.inner+",0,0", "TMUX_PANE="+pane)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		h.t.Fatalf("kido agent-status %s: %v\n%s", status, err, out)
@@ -1091,8 +1151,8 @@ func (h *harness) waitFileContains(path, sub string) string {
 
 // piPane opens a window in session running the fake agent named "node",
 // which is what tmux reports for a real pi pane, and titles it the way pi
-// titles its pane ("π - <session> - <cwd>"). The pane is nothing to kido
-// until pi reports through agentStatus.
+// titles its pane ("π - <session> - <cwd>"). Tests supply its identity
+// and terminal status through agentStatus.
 func (h *harness) piPane(session, title string) string {
 	h.t.Helper()
 	id := h.newWindow(session, "", nodeBin, "--")

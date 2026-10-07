@@ -22,18 +22,24 @@ let agent_of_yojson = function `String s -> Ok (agent_of_string s) | _ -> Error 
 
 type parent = { session : string; pid : int [@default 0] } [@@deriving yojson]
 
+type hook = {
+  status : status;
+  ended : Timestamp.t option;
+  background : bool;
+  tool_pending : bool; [@key "toolPending"]
+}
+[@@deriving yojson]
+
+type reporting = Hook of hook | Terminal [@@deriving yojson]
+
 type session = {
   agent : agent;
   pane : Tmux.Pane.id option;
       [@to_yojson Tmux.Pane.optional_id_to_yojson] [@of_yojson Tmux.Pane.optional_id_of_yojson]
   pid : int;
-  status : status;
+  reporting : reporting;
   ts : Timestamp.t;
-  title : string; [@default ""]
   inbox : string; [@default ""]
-  ended : Timestamp.t option; [@default None]
-  background : bool; [@default false]
-  tool_pending : bool; [@key "toolPending"] [@default false]
   activity : string; [@default ""]
   parent : parent option; [@default None]
   depth : int; [@default 0]
@@ -175,11 +181,21 @@ let held_message id s =
 
 let stall_threshold () = Timestamp.ms_env Sys.getenv_opt "KIDO_STALL_THRESHOLD_MS" 180.
 
-let stalled_since ~threshold ~wake ~now s =
-  match s.status with
-  | Running when not (s.background || s.tool_pending) ->
-      Float.(now - max s.ts (Option.value wake ~default:neg_infinity) >= threshold)
-  | Running | Waiting | Compacting | Idle -> false
+let stalled_since ~programs ~threshold ~wake ~now s =
+  let working =
+    match s.reporting with
+    | Hook h -> (
+        match h.status with Running -> not (h.background || h.tool_pending) | _ -> false)
+    | Terminal ->
+        Option.exists
+          (fun (r : Tmux.Program_status.record) ->
+            match r.state with Working _ -> true | _ -> false)
+          (Option.flat_map
+             (fun pane ->
+               Option.flat_map Tmux.Program_status.root (Tmux.Pane.Map.find_opt pane programs))
+             s.pane)
+  in
+  working && Float.(now - max s.ts (Option.value wake ~default:neg_infinity) >= threshold)
 
 let wake_file ~dir = Filename.concat dir "wake"
 let wake ~dir = Option.flat_map Timestamp.of_string (Fs.read (wake_file ~dir))

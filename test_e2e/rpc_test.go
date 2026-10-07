@@ -648,7 +648,7 @@ func TestRpcFailures(t *testing.T) {
 		if msg := stderr.String(); !strings.HasPrefix(msg, "kido rpc: "+c.want) {
 			t.Errorf("%q: stderr %q, want kido rpc: %s...", c.args, msg, c.want)
 		}
-		if len(out) != 0 && string(out) != "{\"hello\":{\"protocol\":\"1.1\"}}\n" {
+		if len(out) != 0 && string(out) != "{\"hello\":{\"protocol\":\"2.0\"}}\n" {
 			t.Errorf("%q: unexpected stdout %q", c.args, out)
 		}
 	}
@@ -674,7 +674,7 @@ func TestRpcRecoversFromAnError(t *testing.T) {
 	if err := holder.Start(); err != nil {
 		t.Fatal(err)
 	}
-	rec := fmt.Sprintf(`{"agent":"claude","pane":"%%999","pid":%d,"status":"idle","ts":"2026-01-01T00:00:00Z"}`,
+	rec := fmt.Sprintf(`{"agent":"claude","pane":"%%999","pid":%d,"reporting":["Hook",{"status":"idle","ended":null,"background":false,"toolPending":false}],"ts":"2026-01-01T00:00:00Z"}`,
 		holder.Process.Pid)
 	if err := os.WriteFile(filepath.Join(dir, "held.json"), []byte(rec), 0o644); err != nil {
 		t.Fatal(err)

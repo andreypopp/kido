@@ -1,25 +1,11 @@
-let record ~dir id (s : State.session) ~ended =
-  let ended =
-    if not ended then None
-    else
-      match State.get ~dir id with
-      | Some { status = Idle; ended = Some prev; _ } -> Some prev
-      | _ -> Some s.ts
-  in
-  State.record ~dir id { s with ended }
-
-let session ~agent ~pane ~pid status : State.session =
+let session ~agent ~pane ~pid reporting : State.session =
   {
     agent;
     pane;
     pid;
-    status;
+    reporting;
     ts = Timestamp.now ();
-    title = "";
     inbox = "";
-    ended = None;
-    background = false;
-    tool_pending = false;
     activity = "";
     parent = None;
     depth = 0;
@@ -50,17 +36,27 @@ let hook ~dir ~pane ~debug text =
   let id = input.session_id in
   let parked =
     (not (String.is_empty id))
-    && Option.exists (fun (s : State.session) -> s.background) (State.get ~dir id)
+    && Option.exists
+         (fun (s : State.session) ->
+           match s.reporting with Hook h -> h.background | Terminal -> false)
+         (State.get ~dir id)
   in
   let action = Hook.apply input ~parked in
   if debug then log_hook ~dir ~pane json input action;
-  let claude status = session ~agent:Claude ~pane ~pid:(Procs.reporter_pid ()) status in
+  let claude h = session ~agent:Claude ~pane ~pid:(Procs.reporter_pid ()) (Hook h) in
   (match action with
     | Ignore -> Ok ()
     | Remove -> State.remove ~dir id ~pid:(Procs.reporter_pid ())
-    | Ended -> record ~dir id (claude Idle) ~ended:true
+    | Ended ->
+        let ended =
+          match State.get ~dir id with
+          | Some { reporting = Hook { status = Idle; ended = Some prev; _ }; _ } -> prev
+          | _ -> Timestamp.now ()
+        in
+        State.record ~dir id
+          (claude { status = Idle; ended = Some ended; background = false; tool_pending = false })
     | Report { status; background; tool_pending } ->
-        record ~dir id { (claude status) with background; tool_pending } ~ended:false)
+        State.record ~dir id (claude { status; ended = None; background; tool_pending }))
   |> Result.map_err (State.held_message id)
 
 let one_line s ~max =
@@ -79,12 +75,11 @@ let one_line s ~max =
   let s = Buffer.contents b in
   String.rdrop_while (Char.equal ' ') (Msg.utf_8_prefix s max)
 
-let agent_status ~dir ~pane ~agent ~session:id ~title ~inbox ~activity ~parent_pid ~parent_session
-    ~depth ~model ~ended status =
-  record ~dir id
+let agent_status ~dir ~pane ~agent ~session:id ~inbox ~activity ~parent_pid ~parent_session ~depth
+    ~model =
+  State.record ~dir id
     {
-      (session ~agent:(State.agent_of_string agent) ~pane ~pid:(Unix.getppid ()) status) with
-      title;
+      (session ~agent:(State.agent_of_string agent) ~pane ~pid:(Unix.getppid ()) Terminal) with
       inbox;
       activity = one_line activity ~max:256;
       parent =
@@ -93,4 +88,3 @@ let agent_status ~dir ~pane ~agent ~session:id ~title ~inbox ~activity ~parent_p
       depth;
       model;
     }
-    ~ended

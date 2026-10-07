@@ -194,7 +194,7 @@ func TestSpawnResumeBeforeOldPaneIsSwept(t *testing.T) {
 	gate := filepath.Join(h.dir, "finish")
 	fake := filepath.Join(h.dir, "pi")
 	script := fmt.Sprintf(`#!/bin/bash
-%s agent-status --agent pi --session "$KIDO_AGENT_RUN_ID" --status idle --parent-session resume-parent-e2e
+%s agent-status --agent pi --session "$KIDO_AGENT_RUN_ID" --parent-session resume-parent-e2e
 until [ -f %s ]; do
   [ "$SECONDS" -lt 10 ] || exit 1
   read -r -t 1 ignored

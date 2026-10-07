@@ -1,18 +1,20 @@
-# pi extensions: kido-status and kido-agents
+# pi extensions: program-status, kido-status and kido-agents
 
-Two extensions, installed together:
+Three extensions, installed together:
 
-- **`kido-status.ts`** reports a [pi](https://github.com/earendil-works/pi)
-  session's live status to kido, so pi sessions show up in the kido tmux
-  sidebar next to Claude Code ones, and opens an *inbox* socket so kido can
-  send a prompt into the session.
+- **`program-status.ts`** reports a [pi](https://github.com/earendil-works/pi)
+  session's status and name through OSC 7501 in TUI mode on a tty. The pane
+  records drive the sidebar even without the kido extensions.
+- **`kido-status.ts`** reports identity, activity and heartbeat to kido,
+  and opens an *inbox* socket so kido can send a prompt into the session.
 - **`kido-agents.ts`** is agent coordination: the tools below, dispatch of
   everything but a plain prompt arriving on that inbox, and the subagent
   lifecycle.
 
-They are separate because they are separate jobs — being visible in a
-sidebar and coordinating a fleet of agents — but they share one session's
-inbox and one status report, so they find each other at load time through
+The two kido extensions are separate because they are separate jobs —
+reporting identity and coordinating a fleet of agents — but they share
+one session's inbox and one identity report, so they find each other at
+load time through
 a pair of slots on `globalThis.__kidoPiExtensionSeam`.
 `kido-agents.ts` imports nothing but *types* from `kido-status.ts`, on
 purpose: pi evaluates each extension in a module registry of its own, so
@@ -22,7 +24,8 @@ list_runs answered `[]`). Load order does not matter either: pi may run
 either factory first, and neither reads the other's slot until a tool call
 or an event.
 
-Install both. Either on its own still loads and degrades quietly: without
+Install all three. Either kido extension on its own still loads and
+degrades quietly: without
 `kido-agents.ts`, an envelope arriving on the inbox is delivered as its
 own text rather than dispatched by kind; without `kido-status.ts`, the
 tools report kido as unavailable.
@@ -30,10 +33,10 @@ tools report kido as unavailable.
 The status half shells out to:
 
 ```
-kido agent-status --agent pi --session <id> --status running|waiting|compacting|idle \
-     [--title <text>] [--activity <text>] [--model <name>] \
+kido agent-status --agent pi --session <id> \
+     [--activity <text>] [--model <name>] \
      [--parent-pid <pid>] [--parent-session <id>] [--depth <n>] \
-     [--ended] [--remove] [--inbox <path>] [--protocol <n>]
+     [--remove] [--inbox <path>]
 ```
 
 kido reads `$TMUX_PANE` from the environment, so the command is spawned from
@@ -61,38 +64,49 @@ id".
 ## Install
 
 Nothing to install: the `pi` in kido's bin directory runs the real pi with
-`--extension` for both of these files where the package ships them, so a
+`--extension` for all three files where the package ships them, so a
 pi started from a kido pane has them and one started anywhere else does
 not. A copy in `~/.pi/agent/extensions/` from an earlier kido registers
 nothing and can be deleted (docs/design.md, "One copy of each pi
 extension").
 
-To run them against a checkout, pass both (`-e` repeats); they need
+To run them against a checkout, pass all three (`-e` repeats); they need
 not be in the same directory, but there is no reason not to be:
 
 ```sh
-pi -e /path/to/kido-status.ts -e /path/to/kido-agents.ts
+pi -e /path/to/program-status.ts -e /path/to/kido-status.ts -e /path/to/kido-agents.ts
 ```
 
 ## Behaviour
 
-| pi event | reported status |
-|---|---|
-| `session_start` | `idle` (also captures session id and name) |
-| `agent_start`, `turn_start`, `tool_execution_start`, `tool_call` | `running` |
-| `ui_prompt_start` / `ui_prompt_end` | `waiting` / back to `running` (or `idle`, if the prompt was raised while pi was idle) |
-| `session_before_compact` | `compacting` |
-| `session_compact`, `session_compact_failed` | back to the status from before compaction |
-| `agent_settled` (and `ctx.isIdle()`) | `idle --ended` |
-| `session_shutdown` | `--remove` (and the inbox socket is closed and unlinked) |
+`program-status.ts` reports the root pane record (`id=""`, `app=pi`),
+with the session name as title:
 
-- If `kido` is not on `PATH`, or pi is not running inside tmux, the extension
-  does nothing at all, quietly.
-- Every invocation is fire-and-forget (detached, `stdio: "ignore"`); a missing
-  binary, a non-zero exit, or a spawn error never reaches pi and never prints
-  to the TUI.
-- Reports are coalesced: kido is only invoked when the status or title actually
-  changes, so a burst of tool calls costs one process, not one per call.
+| pi event | OSC 7501 state |
+|---|---|
+| `session_start` | `idle` |
+| `agent_start` | `working` |
+| `ui_prompt_start` / `ui_prompt_end` | `blocked` / back to `working` (or `idle`, if pi is idle) |
+| `session_before_compact` | `working`, message `Compacting context` |
+| `session_compact`, `session_compact_failed` | back to the state from before compaction |
+| `agent_settled` (and `ctx.isIdle()`) | `done` on completion, `idle` on abort, `error` on error |
+
+`kido-status.ts` claims the session identity at `session_start`, reports
+activity, model and inbox changes, and sends heartbeats when work starts
+and every thirty seconds while work or compaction is active. At
+`session_shutdown` it sends `--remove` and closes and unlinks the inbox.
+Pi status, title and completion are not stored in State. A tracked pi
+stalls only when the root record is working and its heartbeat is stale;
+a bare pi has no heartbeat and never stalls.
+
+- If `kido` is not on `PATH`, or pi is not running inside tmux, the kido
+  extensions do nothing at all, quietly. OSC reporting is independent.
+- The initial identity claim is awaited. Later reports are fire-and-forget
+  (detached, `stdio: "ignore"`); their missing binary, non-zero exit or spawn
+  error never reaches pi and never prints to the TUI.
+- Identity reports coalesce activity, model, inbox and removal changes;
+  heartbeats bypass that key. OSC reports coalesce state, title and message
+  changes separately.
 
 ## Inbox
 
@@ -101,12 +115,9 @@ hand this pi session a prompt, so a session you are not typing into can still be
 given work.
 
 On `session_start` the extension binds a unix **stream** socket and reports its
-path once, as `--inbox <path> --protocol <n>` on the first status report; kido
-carries both values forward, so later reports omit them. `--protocol` is the
-highest inbox envelope version this extension speaks (kido's `lib/msg.ml`;
-see AGENTS.md), and a sender that sees no advertised protocol sends plain v0
-text instead of a JSON envelope. On `session_shutdown` the socket is closed and
-the file unlinked.
+path as `--inbox <path>` on identity reports. kido's agent tools send v1
+JSON envelopes; the inbox also accepts plain v0 prompts. On
+`session_shutdown` the socket is closed and the file unlinked.
 
 Where to bind is kido's decision, not the extension's: it runs `kido get-inbox
 <pid>`, which prints `{"path": "<state>/inbox/<pid>.sock"}` without creating
@@ -169,7 +180,7 @@ nothing useful until a session has started and kido has been found:
   run id to use with `stop_run`.
 - `set_status(activity)` runs `kido tool set_status -- <text>`, free text
   capped at 256 bytes and shown next to this session in kido's sidebar,
-  separate from the running/waiting/idle status above. An empty string
+  separate from the OSC 7501 state above. An empty string
   clears it. The extension keeps its own copy of the activity as well,
   since that is what every later `kido agent-status` report carries; the
   narrow command is what writes the record without touching anything

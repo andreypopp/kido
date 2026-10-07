@@ -162,7 +162,7 @@ func (h *harness) activeWindowID(session string) string {
 
 // A caller already at the depth ceiling (root 0, subagent 1, subagent 2)
 // is refused. The caller's depth is recorded first with a real
-// `kido agent-status` call, as pi's own status reporting would.
+// `kido agent-status` call, as pi's own identity reporting would.
 func TestSpawnRefusesDepthBeyondCeiling(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -175,7 +175,7 @@ func TestSpawnRefusesDepthBeyondCeiling(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := fmt.Sprintf(
-		"%s agent-status --agent pi --session caller-e2e --status idle --depth %d && "+
+		"%s agent-status --agent pi --session caller-e2e --depth %d && "+
 			"%s tool spawn_subagent --parent-pid 1 --parent-session p --name kid --task-file %s > %s 2>&1; echo rc=$? >> %s",
 		kidoBin, maxDepthForTest, kidoBin, taskFile, outFile, outFile)
 	h.sendLiteral(cmd)

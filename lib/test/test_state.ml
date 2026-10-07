@@ -18,10 +18,10 @@ let outcome = function
         (Option.map_or ~default:"" Tmux.Pane.to_string h.pane)
 
 let%expect_test "a record is written compactly, without its empty fields" =
-  let s = { (session Running ~ts:1_700_000_000.25) with ended = Some 1_700_000_000. } in
+  let s = session Idle ~ts:1_700_000_000.25 in
   print_endline (Yojson.Safe.to_string (State.session_to_yojson { s with pid = 42 }));
   [%expect
-    {| {"agent":"pi","pane":"%1","pid":42,"status":"running","ts":"2023-11-14T22:13:20.25Z","ended":"2023-11-14T22:13:20Z"} |}]
+    {| {"agent":"pi","pane":"%1","pid":42,"reporting":["Terminal"],"ts":"2023-11-14T22:13:20.25Z"} |}]
 
 let%expect_test "timestamps round-trip through RFC 3339" =
   List.iter
@@ -47,11 +47,13 @@ let%expect_test "timestamps round-trip through RFC 3339" =
     none
     |}]
 
-let%expect_test "stalled only while running without a background wait or a tool call" =
+let%expect_test "Hook stalls only while running without a background wait or a tool call" =
+  let session = session ~agent:State.Claude in
   let now = 1_700_000_000. in
   List.iter
     (fun (name, s, wake) ->
-      Printf.printf "%-28s %b\n" name (State.stalled_since ~threshold:60. ~wake ~now s))
+      Printf.printf "%-28s %b\n" name
+        (State.stalled_since ~programs:Tmux.Pane.Map.empty ~threshold:60. ~wake ~now s))
     [
       ("just under the threshold", session Running ~ts:(now -. 59.), None);
       ("exactly at the threshold", session Running ~ts:(now -. 60.), None);

@@ -36,9 +36,11 @@ resolved once at the command edge by `State.dir`: a convention-following
 `$KIDO_STATE_DIR`, `$XDG_STATE_HOME/kido`, and `~/.local/state/kido`.
 There is one JSON file per
 agent session named by session id, written temp-then-rename. A record
-carries the agent's status, its pane, its pid, its title, its inbox
-socket, its free-text activity, its model, and its place in the spawn
-tree. There is no locking beyond the claim that keeps
+carries the agent's pane, pid, inbox socket, free-text activity, model,
+heartbeat timestamp and place in the spawn tree. Its reporting variant
+is `Terminal` for pi, or `Hook` for Claude Code with status, ended,
+background and tool-pending fields. pi's status and session title live
+only in the pane's OSC 7501 root record, not in State. There is no locking beyond the claim that keeps
 one session id to one live process ("Identity"). The
 one policy that stands in for it is that `State.load_live` removes any record whose
 pid is dead, rather than skipping it. When two records name one pane the
@@ -226,25 +228,21 @@ they are a pile-up on the machine least able to afford one.
 Every report is whole; nothing is carried forward. `kido agent-status`
 builds a fresh `State.session` straight from its arguments on every call,
 and an omitted flag is the flag's zero value in the record, not the
-previous report's. A caller that wants a field to persist - title, inbox,
+previous report's. A caller that wants a field to persist - inbox,
 activity, model, parent pid, parent session, depth - sends it again on
 every call. The agent knows all of them from its own state and
 environment, and reporting them fresh is more robust than walking the
 parent chain, which fails as soon as one intermediate record is gone. `--inbox ""` is how an agent
-says its socket is gone; `share/pi/kido-status.ts` sends `--title`, `--model`
+says its socket is gone; `share/pi/kido-status.ts` sends `--model`
 and `--inbox` on every report, empty when there is nothing to say, for
 exactly this reason.
 
 `kido tool set_status -- <activity>` is the same field by a narrower door:
 the one command behind the `set_status` tool, which finds the calling
 session by its pane and writes that field and nothing else. It is not a
-rename of `agent-status`, which reports everything about a session on
-every turn and is how `--activity` normally arrives; naming a
-thirteen-flag report after one narrow tool would be the wrong way round.
-Writing the previous record back with one field replaced, rather than
-building a fresh one, is what keeps the status, the turn's end time, the
-background flag and `TS` - which staleness is measured from - out of a
-command that is only about a label.
+rename of `agent-status`, which reports the session's identity and
+heartbeat. Writing the previous record back with one field replaced keeps
+its identity, reporting variant and timestamp untouched.
 
 Activity is the one field a model writes directly into a state record, so it
 is sanitised once, on the way in, by both commands: control characters
@@ -256,14 +254,10 @@ A model is free to ignore a schema and any same-uid process can run either
 command, so kido's cap is the only one that counts; the extension sends the
 text through untouched.
 
-The extension coalesces reports: one whose key (status, title, activity,
-model, inbox path, ended, remove) matches the last one sent is dropped.
-Activity and model are in the key because a `set_status` or a model switch
-that does not change the status would otherwise be silently lost. The
-inbox path is in the key because another handler can send an equivalent
-idle report while `session_start` is still awaiting the socket bind; a
-bound path changes the key, so the first report to carry it is never
-mistaken for a duplicate of one sent before the bind.
+The extension coalesces reports by activity, model, inbox path and
+removal. A freshly bound inbox changes the key, so its first report
+cannot be mistaken for a duplicate sent before the bind. Heartbeats
+bypass coalescing. Status and title are not identity-report fields.
 
 ## The inbox
 
@@ -508,7 +502,7 @@ Within scope the rules run in order, and each errors on its own ambiguity
 rather than falling through to guess with a different rule: an exact
 case-insensitive name, then an exact session id, then a unique id prefix.
 The name a session is matched by is the same one `kido tool list_runs` displays
-for it, its reported title falling back to its pane's title, so a name read
+for it: the OSC root title for pi, the stripped pane title for Claude Code. A name read
 off `list_runs` can always be resolved back. Refusal over guessing is the
 stance throughout: `replyTo` is never inferred even when exactly one ask
 from the target is pending, because guessing wrong does not fail safe, it
@@ -1019,7 +1013,7 @@ once the user looks away.
 child finished its own work on its own terms. `ctx.shutdown()` runs the
 same `session_shutdown` handler a normal exit does, so `endOwnRun`
 accepts an absent reason (a plain shutdown carries no reason) and
-records `completed` off `host.status() === "idle"`, same as any other
+records `completed` from its own in-process settled flag, same as any other
 quit, except a child still awaiting its first turn records `failed`.
 
 **Two 30-second figures stack, and are not one number.** Idle self-exit
@@ -1380,33 +1374,24 @@ elsewhere. Its cap is 64KB.
 
 ## Heartbeat and staleness
 
-An agent can be alive and wedged. kido models only running and gone: a
-wedged subagent sits reporting `running` forever, its pane is not dead so
-no sweep touches it, and a parent blocked in `ask_agent` burns the whole
-five-minute timeout finding out. The signal is the record's report time,
-but status reporting is not a heartbeat by itself. The extension
-coalesces identical reports, and `agent_start`, `turn_start`,
-`tool_execution_start` and `tool_call` all send the same `running` key,
-so only the first unchanged report reaches kido and the timestamp marks
-the start of the turn, not the last sign of life. A turn has no upper
-bound, so no threshold fixes that: a healthy pi minutes into one long turn would
-cross it, and a parent blocked in `ask_agent` reports nothing itself and
-would mark itself stalled before a busy child had a chance to answer.
+A live pid can still be wedged. pi's identity extension sends a heartbeat
+when work starts and every thirty seconds while a turn or compaction is
+active, on an unref'd timer. It stops when `ctx.isIdle()` is true at
+settle or compaction completion. The initial heartbeat refreshes an
+identity that may have been idle for hours; all heartbeats bypass the
+identity-report coalescing key.
 
-So while the reported status is `running`, the extension re-sends it
-every thirty seconds, bypassing the coalescing key, on an unref'd timer
-that stops the moment the status leaves `running`. That makes the
-timestamp a real last-seen heartbeat, and `State.stalled_since` derives
-"claims running but has not reported in three minutes" from it, the way
-a shell's state is derived from timestamps rather than read from a flag.
-It is never a new status value: the status vocabulary is what an agent
-reports about itself, and a wedged agent by definition reports nothing.
-It is never true for anything but `running`; idle and waiting are
-legitimately quiet. Three minutes is six missed heartbeats, a margin
-against a dropped or delayed report rather than against turn length, and
-it leaves most of an ask's default timeout for a genuinely busy target.
-`ask_agent` reads the stalled flag off the live agent graph it already
-fetches and refuses a stalled target immediately.
+A pi is stalled only when its pane's OSC 7501 root record says working
+and State's heartbeat timestamp is at least three minutes old, rebased
+against the wake marker. Blocked, idle, done, error and absent roots
+never stall. A bare pi has no State heartbeat and never stalls.
+The sidebar and one-shot agent graph use the same rule;
+`ask_agent` refuses a stalled target before sending anything.
+The sidebar also redraws when a refreshed heartbeat clears a stall,
+without redrawing on ordinary heartbeat-only changes.
+
+Claude Code's status is Hook-driven and has no periodic heartbeat.
+Its running status can stall, subject to the exemptions below.
 
 A session parked on background work is exempt. kido's `Stop` handler
 records `running` with `background` set when the payload carries
@@ -1479,11 +1464,21 @@ verdict without pi's extension knowing anything about sleep.
 What this does not cover: a session with no sidebar running has nothing
 to notice the gap, and an ask against it is back to the original flaw.
 
-## Two extensions, and the seam between them
+## pi extensions, and the seam between them
 
-pi's support is two extensions, loaded together by the `pi` shim's two
-`--extension` flags ("The bin directory"). `kido-status.ts` is
-the status report, its coalescing, the heartbeat, the session claim, and
+The pi shim loads three extensions. `program-status.ts` is independent
+of kido: in TUI mode on a tty it emits OSC 7501 root records, app=pi,
+with the session name as title. Working, blocked, done, idle and error
+come from pi's lifecycle; compaction is working with a message.
+The pane records drive the sidebar's indicator, completion attention,
+title and message/progress caption even without the other extensions.
+A State identity adds inbox, parentage, activity and the user-ask overlay.
+Gone runs outrank terminal records; Claude Code keeps its Hook status.
+Activity is used as the caption when the program supplies no message;
+a live subagent with neither uses its elapsed clock.
+
+`kido-status.ts` is the identity report, its coalescing, the heartbeat,
+the session claim, and
 the inbox server with plain v0 delivery; the inbox is status-side because
 it predates all the agent work and exists so `kido prompt` can hand a
 prompt to a session nobody is typing into. `kido-agents.ts` is the tools,
@@ -1496,11 +1491,11 @@ the status half every tool reports kido as unavailable.
 
 The inbox is the one thing that could not simply be split: the agent
 half needs it to dispatch what arrives and to refuse an ask when there is
-nowhere for the answer to land, and it is one socket, with one coalescing
-key and one last-reported status beside it, none of which may be
-duplicated. So the two halves meet at a pair of slots: the status half
+nowhere for the answer to land, and it is one socket with one identity-report
+coalescing key, neither of which may be duplicated. The two halves meet at
+a pair of slots: the status half
 publishes a small host of accessors (the kido path, the
-session id and status, whether the inbox is open, and the shared
+session id, whether the inbox is open, and the shared
 `deliver`, `runKido` and `spawnDetached`), and the agent half publishes
 its hooks - only what someone actually calls, and nothing kept published
 for a reader that might turn up.

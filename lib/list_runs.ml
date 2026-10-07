@@ -1,12 +1,26 @@
 open Tmux
 
+type status = Reported of State.status | Program of Tmux.Program_status.state option
+
+let status_to_yojson = function
+  | Reported s -> State.status_to_yojson s
+  | Program state ->
+      `String
+        (match state with
+        | None -> "unknown"
+        | Some Idle -> "idle"
+        | Some (Working _) -> "working"
+        | Some (Blocked _) -> "blocked"
+        | Some Done -> "done"
+        | Some Error -> "error")
+
 type agent_info = {
   id : string;
   name : string;
   agent : State.agent;
   pane : Tmux.Pane.id;
   window : Tmux.Window.id;
-  status : State.status;
+  status : status;
   activity : string;
   parent : string;
   depth : int;
@@ -50,12 +64,26 @@ let agent_title title =
       let i = skip 0 in
       String.sub title i (String.length title - i)
 
-let display_name panes (s : State.session) =
-  if not (String.is_empty s.title) then s.title
-  else
-    Option.map_or ~default:""
-      (fun (p : Pane.t) -> agent_title p.title)
-      (Option.flat_map (Pane.find panes) s.pane)
+let root programs (s : State.session) =
+  Option.flat_map
+    (fun pane -> Option.flat_map Program_status.root (Pane.Map.find_opt pane programs))
+    s.pane
+
+let status programs (s : State.session) =
+  match s.reporting with
+  | Hook h -> Reported h.status
+  | Terminal -> Program (Option.map (fun (r : Program_status.record) -> r.state) (root programs s))
+
+let display_name ~programs panes (s : State.session) =
+  match s.reporting with
+  | Terminal ->
+      Option.map_or ~default:""
+        (fun (r : Program_status.record) -> Option.value ~default:"" r.title)
+        (root programs s)
+  | Hook _ ->
+      Option.map_or ~default:""
+        (fun (p : Pane.t) -> agent_title p.title)
+        (Option.flat_map (Pane.find panes) s.pane)
 
 let per_pane live = List.map snd (Tmux.Pane.Map.bindings (State.by_pane live))
 
@@ -86,7 +114,7 @@ let can_reply ~dir id =
   | Some m -> List.is_empty m.tools || List.mem ~eq:String.equal "message_agent" m.tools
   | None -> true
 
-let agents ~dir ~threshold ~self ~session ~panes ~states =
+let agents ~dir ~threshold ~self ~session ~panes ~programs ~states =
   let open Result.Infix in
   let+ session =
     match session with
@@ -118,11 +146,11 @@ let agents ~dir ~threshold ~self ~session ~panes ~states =
         (fun (p : Pane.t) ->
           {
             id;
-            name = display_name panes s;
+            name = display_name ~programs panes s;
             agent = s.agent;
             pane = p.pane_id;
             window = p.window_id;
-            status = s.status;
+            status = status programs s;
             activity = s.activity;
             parent = Option.map_or ~default:"" (fun (p : State.parent) -> p.session) s.parent;
             depth = s.depth;
@@ -132,7 +160,7 @@ let agents ~dir ~threshold ~self ~session ~panes ~states =
             can_reply = (not (String.is_empty s.inbox)) && can_reply ~dir id;
             model = s.model;
             since_report = Float.to_int (now -. s.ts);
-            stalled = State.stalled_since ~threshold ~wake ~now s;
+            stalled = State.stalled_since ~programs ~threshold ~wake ~now s;
           })
         (Option.flat_map (Pane.find panes) s.pane))
 
@@ -143,9 +171,9 @@ type row =
 
 let list_runs ~dir ~threshold ~self ~session =
   let open Result.Infix in
-  let* panes = Exec.list_panes () in
+  let* panes, programs = Exec.panes_and_programs () in
   let+ agents =
-    agents ~dir ~threshold ~self ~session ~panes ~states:(per_pane (State.load_live ~dir))
+    agents ~dir ~threshold ~self ~session ~panes ~programs ~states:(per_pane (State.load_live ~dir))
   in
   let caller = List.find_opt (fun a -> a.self) agents in
   let own = Option.map_or ~default:"" (fun a -> a.id) caller in

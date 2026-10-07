@@ -9,33 +9,36 @@ type spec = { kind : Msg.kind; reply_to : string; id : string }
 type failure = Unavailable of string | Failed of string
 type send_error = No_text | Not_sent of string
 
-let decide ~panes to_ by = function
+let decide ~programs ~panes to_ by = function
   | [] -> None
   | [ e ] -> Some (Ok e)
   | many ->
-      List.map (fun (id, s) -> Printf.sprintf "%s (%s)" id (List_runs.display_name panes s)) many
+      List.map
+        (fun (id, s) -> Printf.sprintf "%s (%s)" id (List_runs.display_name ~programs panes s))
+        many
       |> List.sort String.compare |> String.concat ", "
       |> Printf.sprintf "%S matches several agents by %s: %s" to_ by
       |> fun m -> Some (Error m)
 
-let match_target ~panes sessions to_ =
+let match_target ~programs ~panes sessions to_ =
   let named (_, s) =
-    let name = List_runs.display_name panes s in
+    let name = List_runs.display_name ~programs panes s in
     (not (String.is_empty name)) && String.equal_caseless name to_
   in
-  match decide ~panes to_ "name" (List.filter named sessions) with
+  match decide ~programs ~panes to_ "name" (List.filter named sessions) with
   | Some r -> Some r
   | None -> (
       match List.find_opt (fun (id, _) -> String.equal id to_) sessions with
       | Some e -> Some (Ok e)
       | None ->
-          decide ~panes to_ "id" (List.filter (fun (id, _) -> String.prefix ~pre:to_ id) sessions))
+          decide ~programs ~panes to_ "id"
+            (List.filter (fun (id, _) -> String.prefix ~pre:to_ id) sessions))
 
-let resolve_target states panes ~self address =
+let resolve_target ~programs states panes ~self address =
   let open Result.Infix in
   let to_, matched =
     match address with
-    | Name to_ -> (to_, fun states -> match_target ~panes states to_)
+    | Name to_ -> (to_, fun states -> match_target ~programs ~panes states to_)
     | Run id ->
         let id = Subrun.string_of_id id in
         ( id,
@@ -69,28 +72,29 @@ let reaches states panes ~self id =
           List_runs.is_ancestor parent_of ~ancestor:caller id)
         (List_runs.caller_pane panes self)
 
-let descendant_target states panes ~self to_ =
+let descendant_target ~programs states panes ~self to_ =
   let open Result.Infix in
-  let* ((id, target) as e) = resolve_target states panes ~self to_ in
+  let* ((id, target) as e) = resolve_target ~programs states panes ~self to_ in
   let* reached = reaches states panes ~self id in
   if reached then Ok e
-  else Error (List_runs.display_name panes target ^ " is not this agent's descendant")
+  else Error (List_runs.display_name ~programs panes target ^ " is not this agent's descendant")
 
-let resolve ~live ~panes ~self recipient =
+let resolve ~programs ~live ~panes ~self recipient =
   let open Result.Infix in
   let* ((_, target) as e) =
     match recipient with
-    | Named to_ -> resolve_target (List_runs.per_pane live) panes ~self (Name to_)
-    | Descendant to_ -> descendant_target (List_runs.per_pane live) panes ~self (Name to_)
-    | Descendant_run id -> descendant_target (List_runs.per_pane live) panes ~self (Run id)
+    | Named to_ -> resolve_target ~programs (List_runs.per_pane live) panes ~self (Name to_)
+    | Descendant to_ -> descendant_target ~programs (List_runs.per_pane live) panes ~self (Name to_)
+    | Descendant_run id ->
+        descendant_target ~programs (List_runs.per_pane live) panes ~self (Run id)
     | Parent session -> Result.map (fun s -> (session, s)) (Msg.live_parent live session)
   in
   if Option.equal Tmux.Pane.equal target.pane self then
-    Error (List_runs.display_name panes target ^ " is this agent")
+    Error (List_runs.display_name ~programs panes target ^ " is this agent")
   else Ok e
 
-let deliver ~states ~panes ~self spec (target : State.session) text =
-  let name = List_runs.display_name panes target in
+let deliver ~programs ~states ~panes ~self spec (target : State.session) text =
+  let name = List_runs.display_name ~programs panes target in
   let kind = Msg.string_of_kind spec.kind in
   let is_message = match spec.kind with Message -> true | _ -> false in
   if (not is_message) && String.is_empty target.inbox then
@@ -101,7 +105,8 @@ let deliver ~states ~panes ~self spec (target : State.session) text =
   else
     let from : Msg.from =
       match Option.flat_map (fun self -> Tmux.Pane.Map.find_opt self states) self with
-      | Some (id, (s : State.session)) -> { session = id; name = s.title; pane = self }
+      | Some (id, (s : State.session)) ->
+          { session = id; name = List_runs.display_name ~programs panes s; pane = self }
       | None -> { session = ""; name = ""; pane = self }
     in
     let payload =
@@ -143,7 +148,7 @@ let send ~dir ~self recipient spec text =
   else
     let live = State.load_live ~dir in
     let states = State.by_pane live in
-    let* panes = not_sent (Tmux.Exec.list_panes ()) in
+    let* panes, programs = not_sent (Tmux.Exec.panes_and_programs ()) in
     let alternative = "use kido tool message_agent instead, which is one-way and needs no reply" in
     let* () =
       match (spec.kind, Option.flat_map (fun self -> Tmux.Pane.Map.find_opt self states) self) with
@@ -161,15 +166,20 @@ let send ~dir ~self recipient spec text =
                (Printf.sprintf
                   "%s has no inbox for an answer to arrive on, and only a long-lived process has \
                    one; nothing sent - %s"
-                  (List_runs.display_name panes caller)
+                  (List_runs.display_name ~programs panes caller)
                   alternative))
       | _ -> Ok ()
     in
-    let* id, target = not_sent (resolve ~live ~panes ~self recipient) in
-    let name = List_runs.display_name panes target in
-    match (deliver ~states ~panes ~self spec target text, spec.kind, target.status) with
+    let* id, target = not_sent (resolve ~programs ~live ~panes ~self recipient) in
+    let name = List_runs.display_name ~programs panes target in
+    match
+      ( deliver ~programs ~states ~panes ~self spec target text,
+        spec.kind,
+        List_runs.status programs target )
+    with
     | Ok `Pasted, _, _ -> Ok (Printf.sprintf "pasted into %s's pane" name)
-    | Ok `Inbox, Message, (State.Running | Compacting) ->
+    | Ok `Inbox, Message, (List_runs.Reported (Running | Compacting) | Program (Some (Working _)))
+      ->
         let steerable =
           Result.get_or ~default:false (reaches (List_runs.per_pane live) panes ~self id)
         in

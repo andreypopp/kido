@@ -39,14 +39,14 @@ func TestSecondHolderOfASessionIdIsRefused(t *testing.T) {
 	h := start(t, "alpha")
 
 	// The pid on the holder's record is a running process for as long as the pane is.
-	script := fmt.Sprintf("%s agent-status --agent pi --session dup-e2e --status idle --title holder; exec sleep 300", kidoBin)
+	script := fmt.Sprintf("%s agent-status --agent pi --session dup-e2e --activity holder; exec sleep 300", kidoBin)
 	holderPane := h.newWindow("alpha", "holder-e2e", "sh", "-c", script)
 	h.waitPaneCommand(holderPane, "sleep")
 	h.waitFor(func() bool { _, ok := h.readRecord(t, "dup-e2e"); return ok }, settle,
 		msgf("the holder's own record to appear"))
 
 	out := h.runKido("alpha", "intruder.out",
-		"agent-status", "--agent", "pi", "--session", "dup-e2e", "--status", "running", "--title", "intruder")
+		"agent-status", "--agent", "pi", "--session", "dup-e2e", "--activity", "intruder")
 	if !strings.Contains(out, "rc=6") {
 		t.Errorf("a second live process reporting under a held session id = %q, want rc=6", out)
 	}
@@ -54,7 +54,7 @@ func TestSecondHolderOfASessionIdIsRefused(t *testing.T) {
 		t.Errorf("output = %q, want it to say where the holder is", out)
 	}
 	rec, ok := h.readRecord(t, "dup-e2e")
-	if !ok || rec["title"] != "holder" {
+	if !ok || rec["activity"] != "holder" {
 		t.Fatalf("record = %+v, want the holder's untouched", rec)
 	}
 
@@ -63,18 +63,18 @@ func TestSecondHolderOfASessionIdIsRefused(t *testing.T) {
 	if !strings.Contains(out, "rc=6") {
 		t.Errorf("a second live process removing a held session's record = %q, want rc=6", out)
 	}
-	if rec, ok := h.readRecord(t, "dup-e2e"); !ok || rec["title"] != "holder" {
+	if rec, ok := h.readRecord(t, "dup-e2e"); !ok || rec["activity"] != "holder" {
 		t.Errorf("record = %+v (present %v), want the holder's still there", rec, ok)
 	}
 
 	// With the holder gone, its session id is free.
 	h.killPane(holderPane)
-	restart := fmt.Sprintf("%s agent-status --agent pi --session dup-e2e --status idle --title restarted; exec sleep 300", kidoBin)
+	restart := fmt.Sprintf("%s agent-status --agent pi --session dup-e2e --activity restarted; exec sleep 300", kidoBin)
 	restartPane := h.newWindow("alpha", "restarted-e2e", "sh", "-c", restart)
 	h.waitPaneCommand(restartPane, "sleep")
 	h.waitFor(func() bool {
 		rec, ok := h.readRecord(t, "dup-e2e")
-		return ok && rec["title"] == "restarted"
+		return ok && rec["activity"] == "restarted"
 	}, settle, func() string {
 		rec, ok := h.readRecord(t, "dup-e2e")
 		return fmt.Sprintf("the record to be the restarted process's; it is %+v (present %v)", rec, ok)

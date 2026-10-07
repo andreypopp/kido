@@ -16,8 +16,6 @@ const HEARTBEAT_MS = Number(process.env.KIDO_HEARTBEAT_MS) || 30000;
 // A timeout here is not a refusal: State.record's write path (lib/state.ml) is what actually decides who holds the id.
 const CLAIM_TIMEOUT_MS = 5000;
 
-export type Status = "running" | "waiting" | "compacting" | "idle";
-
 export type RunKidoResult = { ok: true; out: string } | { ok: false; error: string; code?: number };
 
 // lib/reporting.ml's exit code when another live process already holds this session id.
@@ -164,7 +162,6 @@ export interface StatusHost {
   // no tmux. kido-agents.ts checks it against KIDO_AGENT_RUN_ID to tell a real
   // subagent from a process that merely inherited one's environment.
   sessionId(): string | null;
-  status(): Status;
   // Synchronous on purpose: ask_agent checks it with no await between the check and
   // registering its waiter.
   inboxOpen(): boolean;
@@ -181,7 +178,6 @@ export interface AgentHooks {
   // Before the kido lookup: a /reload brings a fresh ctx and the old reference
   // must not survive it even in a session with no kido.
   sessionStarting(ctx: SessionContext): void;
-  // Called once the inbox is bound and before the first status report.
   sessionStarted(): Promise<void>;
   inboxLost(): void;
   // Called after the inbox is down and before the removal report.
@@ -264,12 +260,9 @@ export default function (pi: ExtensionAPI) {
   // process holds this session id - this pi is then not tracked, and must neither
   // report nor bind an inbox for the rest of the session.
   let reporter: { kido: string; sessionId: string } | null = null;
-  let title: string | undefined;
   let activity = "";
   let model: string | undefined;
   let lastKey: string | null = null;
-  let current: Status = "idle";
-  let beforeCompact: Status = "idle";
 
   let heartbeatTimer: NodeJS.Timeout | null = null;
 
@@ -398,8 +391,9 @@ export default function (pi: ExtensionAPI) {
   };
 
   const startHeartbeat = (): void => {
-    if (heartbeatTimer) return;
-    heartbeatTimer = setInterval(() => report({ kind: "heartbeat" }), HEARTBEAT_MS);
+    if (!reporter || heartbeatTimer) return;
+    report("heartbeat");
+    heartbeatTimer = setInterval(() => report("heartbeat"), HEARTBEAT_MS);
     heartbeatTimer.unref(); // a hung kido must never hold pi's event loop open
   };
   const stopHeartbeat = (): void => {
@@ -409,59 +403,26 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // Shared by report() and by the claim session_start makes with it, awaited rather
-  // than fired and forgotten there. Every report is whole: title, model and inbox
-  // ride on every call, empty when there is none, since kido carries no field
-  // forward between reports.
-  const statusArgs = (sessionId: string, status: Status, opts: { ended?: boolean; remove?: boolean; inbox: string } = { inbox: "" }): string[] => {
+  const statusArgs = (sessionId: string, opts: { remove?: boolean; inbox: string } = { inbox: "" }): string[] => {
     const args = [
-      "agent-status",
-      "--agent",
-      "pi",
-      "--session",
-      sessionId,
-      "--status",
-      status,
-      "--activity",
-      activity,
-      "--title",
-      title ?? "",
-      "--model",
-      model ?? "",
-      "--inbox",
-      opts.inbox,
+      "agent-status", "--agent", "pi", "--session", sessionId,
+      "--activity", activity, "--model", model ?? "", "--inbox", opts.inbox,
     ];
     if (PARENT_PID !== undefined) args.push("--parent-pid", String(PARENT_PID));
     if (PARENT_SESSION) args.push("--parent-session", PARENT_SESSION);
     if (DEPTH !== undefined) args.push("--depth", String(DEPTH));
-    if (opts.ended) args.push("--ended");
     if (opts.remove) args.push("--remove");
     return args;
   };
 
-  // "settled" and "removed" are always idle, so their status is not a separate
-  // thing that could disagree with them.
-  type Report = { kind: "status"; status: Status } | { kind: "heartbeat" } | { kind: "settled" } | { kind: "removed" };
-
-  // Fire-and-forget. Coalesced: identical consecutive reports are dropped, except a
-  // heartbeat re-send. The inbox path joins the coalescing key, so the report that
-  // first carries a freshly bound one is never dropped as a duplicate of an idle
-  // report already sent without it.
-  const report = (r: Report): void => {
+  const report = (kind: "identity" | "heartbeat" | "removed"): void => {
     if (!reporter) return;
-    const status = r.kind === "heartbeat" ? current : r.kind === "status" ? r.status : "idle";
-    const ended = r.kind === "settled";
-    const remove = r.kind === "removed";
-    const inboxPath = inboxOpen() ? (heldInbox()?.path ?? "") : "";
-
-    const key = [status, title ?? "", activity, model ?? "", inboxPath, ended ? 1 : 0, remove ? 1 : 0].join("|");
-    if (r.kind !== "heartbeat" && key === lastKey) return;
-    if (r.kind !== "heartbeat") lastKey = key;
-    current = status;
-    if (status === "running") startHeartbeat();
-    else stopHeartbeat();
-
-    spawnDetached(reporter.kido, statusArgs(reporter.sessionId, status, { ended, remove, inbox: inboxPath }));
+    const remove = kind === "removed";
+    const inbox = inboxOpen() ? (heldInbox()?.path ?? "") : "";
+    const key = [activity, model ?? "", inbox, remove].join("|");
+    if (kind !== "heartbeat" && key === lastKey) return;
+    if (kind !== "heartbeat") lastKey = key;
+    spawnDetached(reporter.kido, statusArgs(reporter.sessionId, { remove, inbox }));
   };
 
   // Awaited but never blocking the event loop: a blocked process cannot accept an
@@ -507,7 +468,6 @@ export default function (pi: ExtensionAPI) {
   seam().host = {
     kidoPath: () => kido,
     sessionId: () => reporter?.sessionId ?? null,
-    status: () => current,
     inboxOpen,
     setActivity: (text: string) => {
       // Two writes of one fact: `kido tool set_status` updates the record without
@@ -515,6 +475,7 @@ export default function (pi: ExtensionAPI) {
       // `kido agent-status` report carries - leaving it stale would have the next
       // report clear the activity this one just set.
       activity = text;
+      report("identity");
       if (kido) spawnDetached(kido, ["tool", "set_status", "--", activity]);
     },
     deliver,
@@ -529,7 +490,6 @@ export default function (pi: ExtensionAPI) {
     reporter = null;
     if (!kido) return;
     const sessionId = ctx.sessionManager.getSessionId();
-    title = ctx.sessionManager.getSessionName() || undefined;
     model = ctx.model?.id;
     lastKey = null;
     stopHeartbeat();
@@ -539,7 +499,7 @@ export default function (pi: ExtensionAPI) {
     // report under, and every later report is fire-and-forget precisely because
     // this one settled the question.
     if (sessionId) {
-      const claim = await runKido(statusArgs(sessionId, "idle"), { timeoutMs: CLAIM_TIMEOUT_MS });
+      const claim = await runKido(statusArgs(sessionId), { timeoutMs: CLAIM_TIMEOUT_MS });
       if (!claim.ok && claim.code === EXIT_SESSION_HELD) {
         try {
           ctx.ui?.notify?.(`kido: ${claim.error}`, "warning");
@@ -563,52 +523,30 @@ export default function (pi: ExtensionAPI) {
     // After the inbox, before the first report (which carries --inbox).
     await seam().agents?.sessionStarted();
 
-    report({ kind: "status", status: "idle" });
-  });
-
-  pi.on("session_info_changed", (event) => {
-    title = event.name || undefined;
-    report({ kind: "status", status: current });
+    report("identity");
   });
 
   pi.on("model_select", (event) => {
     model = event.model.id;
-    report({ kind: "status", status: current });
+    report("identity");
   });
 
   const running = () => {
     seam().agents?.workStarted();
-    report({ kind: "status", status: "running" });
+    startHeartbeat();
+    report("identity");
   };
   pi.on("agent_start", running);
   pi.on("turn_start", running);
   pi.on("tool_execution_start", running);
   pi.on("tool_call", running);
-
-  // Blocking extension UI prompts: pi is waiting for the user, not working.
-  pi.on("ui_prompt_start", () => report({ kind: "status", status: "waiting" }));
-  // A prompt can also be raised while pi is idle (an extension command calling
-  // ctx.ui.select(), say); reporting "running" would then stick forever.
-  pi.on("ui_prompt_end", (_event, ctx) => {
-    report({ kind: "status", status: ctx.isIdle() ? "idle" : "running" });
-  });
-
-  pi.on("session_before_compact", () => {
-    beforeCompact = current;
-    report({ kind: "status", status: "compacting" });
-  });
-  // Restore whatever we reported before compaction started: a manual /compact
-  // can happen while idle, and agent_settled would not fire afterwards to
-  // correct a blind "running".
-  const restoreBeforeCompact = () => report({ kind: "status", status: beforeCompact });
-  pi.on("session_compact", restoreBeforeCompact);
-  pi.on("session_compact_failed", restoreBeforeCompact);
-
-  // The true idle signal: no retry, compaction, or follow-up left.
-  pi.on("agent_settled", (_event, ctx) => {
-    if (!ctx.isIdle()) return;
-    report({ kind: "settled" });
-  });
+  pi.on("session_before_compact", startHeartbeat);
+  const stopWhenIdle = (_event: unknown, ctx: { isIdle(): boolean }) => {
+    if (ctx.isIdle()) stopHeartbeat();
+  };
+  pi.on("session_compact", stopWhenIdle);
+  pi.on("session_compact_failed", stopWhenIdle);
+  pi.on("agent_settled", stopWhenIdle);
 
   pi.on("session_shutdown", async (event?: { reason?: ShutdownReason }) => {
     // Both run synchronously before this handler's first await, which is what lets
@@ -623,6 +561,6 @@ export default function (pi: ExtensionAPI) {
     // "new", "resume" and "fork" all end or move this process to a new session id, so
     // the old record must still be removed.
     if (event?.reason === "reload") return;
-    report({ kind: "removed" });
+    report("removed");
   });
 }

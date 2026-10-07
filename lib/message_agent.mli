@@ -18,6 +18,7 @@ val reaches :
     is no agent reaches everything. *)
 
 val resolve :
+  programs:Tmux.Program_status.t Tmux.Pane.Map.t ->
   live:(string * State.session) list ->
   panes:Tmux.Pane.t list ->
   self:Tmux.Pane.id option ->
@@ -25,6 +26,7 @@ val resolve :
   (string * State.session, string) result
 
 val deliver :
+  programs:Tmux.Program_status.t Tmux.Pane.Map.t ->
   states:(string * State.session) Tmux.Pane.Map.t ->
   panes:Tmux.Pane.t list ->
   self:Tmux.Pane.id option ->

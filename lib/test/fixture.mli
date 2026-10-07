@@ -12,7 +12,6 @@ val session :
   ?ts:Kido.Timestamp.t ->
   ?background:bool ->
   ?tool_pending:bool ->
-  ?title:string ->
   ?inbox:string ->
   ?parent:string ->
   ?depth:int ->

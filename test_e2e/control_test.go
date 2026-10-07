@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -96,9 +97,19 @@ func TestStopDoesNotKillAHealthyChild(t *testing.T) {
 // its `kido agent-status` (an --inbox, say).
 func (h *harness) recordedRun(name string, flags ...string) (runID, windowID string) {
 	h.t.Helper()
+	title := name
+	var args []string
+	for i := 0; i < len(flags); i++ {
+		if flags[i] == "--title" {
+			i++
+			title = flags[i]
+		} else {
+			args = append(args, flags[i])
+		}
+	}
 	runID, windowID = h.spawnRun(name, fmt.Sprintf(
-		`%s agent-status --agent pi --session "$KIDO_AGENT_RUN_ID" --status idle --parent-session root-e2e %s; exec sleep 300`,
-		kidoBin, strings.Join(flags, " ")))
+		`printf "\033]7501;state=idle:app=pi:title=%s\007"; %s agent-status --agent pi --session "$KIDO_AGENT_RUN_ID" --parent-session root-e2e %s; exec sleep 300`,
+		base64.StdEncoding.EncodeToString([]byte(title)), kidoBin, strings.Join(args, " ")))
 	record := filepath.Join(h.stateDir, runID+".json")
 	h.waitFor(func() bool { _, err := os.Stat(record); return err == nil }, settle,
 		msgf("run %s's own record %s", runID, record))

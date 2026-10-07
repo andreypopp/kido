@@ -35,7 +35,7 @@ func TestSpawnedChildNoticeReachesParentInboxQuickly(t *testing.T) {
 	// Reports itself as a subagent (as kido-status.ts's session_start
 	// would), then reports home exactly as pi's notify_parent tool does.
 	child := fmt.Sprintf(
-		"%s agent-status --agent pi --session child-notice-e2e --status idle "+
+		"%s agent-status --agent pi --session child-notice-e2e "+
 			"--parent-session parent-notice-e2e; "+
 			"printf \"the answer is 42\" | %s tool notify_parent; "+
 			"exec sleep 300",

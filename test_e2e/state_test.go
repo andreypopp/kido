@@ -22,7 +22,7 @@ func TestStateReportingOutsideTmux(t *testing.T) {
 			if tool == "hook" {
 				cmd.Stdin = strings.NewReader(`{"session_id":"outside","hook_event_name":"UserPromptSubmit"}`)
 			} else {
-				cmd.Args = append(cmd.Args, "--agent", "pi", "--session", "outside", "--status", "running")
+				cmd.Args = append(cmd.Args, "--agent", "pi", "--session", "outside")
 			}
 			if out, err := cmd.CombinedOutput(); err != nil || len(out) != 0 {
 				t.Fatalf("%s outside tmux = %v %q", tool, err, out)

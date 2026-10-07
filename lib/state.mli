@@ -2,18 +2,24 @@ type status = Running | Waiting | Compacting | Idle [@@deriving to_yojson]
 type agent = Claude | Pi | Other of string [@@deriving to_yojson]
 type parent = { session : string; pid : int }
 
+type hook = {
+  status : status;
+  ended : Timestamp.t option;
+  background : bool;
+  tool_pending : bool; [@key "toolPending"]
+}
+[@@deriving to_yojson]
+
+type reporting = Hook of hook | Terminal [@@deriving to_yojson]
+
 type session = {
   agent : agent;
   pane : Tmux.Pane.id option;
       [@to_yojson Tmux.Pane.optional_id_to_yojson] [@of_yojson Tmux.Pane.optional_id_of_yojson]
   pid : int;
-  status : status;
+  reporting : reporting;
   ts : Timestamp.t;
-  title : string;
   inbox : string;
-  ended : Timestamp.t option;
-  background : bool;
-  tool_pending : bool;
   activity : string;
   parent : parent option;
   depth : int;
@@ -21,7 +27,6 @@ type session = {
 }
 [@@deriving to_yojson]
 
-val statuses : (string * status) list
 val string_of_status : status -> string
 val string_of_agent : agent -> string
 val agent_of_string : string -> agent
@@ -38,6 +43,14 @@ val record : dir:string -> string -> session -> (unit, session) result
 val remove : dir:string -> string -> pid:int -> (unit, session) result
 val held_message : string -> session -> string
 val stall_threshold : unit -> float
-val stalled_since : threshold:float -> wake:Timestamp.t option -> now:Timestamp.t -> session -> bool
+
+val stalled_since :
+  programs:Tmux.Program_status.t Tmux.Pane.Map.t ->
+  threshold:float ->
+  wake:Timestamp.t option ->
+  now:Timestamp.t ->
+  session ->
+  bool
+
 val wake : dir:string -> Timestamp.t option
 val record_pause : dir:string -> Timestamp.t -> unit

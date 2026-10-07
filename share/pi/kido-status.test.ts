@@ -1,5 +1,5 @@
 // One suite covers kido-status.ts and kido-agents.ts together, since that pair is
-// what a real pi host loads and every case here needs both the status half's
+// what a real pi host loads alongside program-status.ts; every case here needs the identity half's
 // inbox and the agent half's dispatch. It drives the extensions only through what
 // a real pi host and peer agent would use: registered tools, registered lifecycle
 // events, and a real unix socket speaking the inbox wire protocol - never by
@@ -256,7 +256,7 @@ interface Fixture {
   waitForCloseRun(ms?: number): Promise<string[]>;
   lastStatusArgs(): string[] | undefined;
   setStatusCalls(): string[][];
-  statusReportsWith(status: string): string[][];
+  identityReports(): string[][];
   statusReportCount(): number;
   statusReportsWithRemove(): string[][];
   agentsCallCount(): number;
@@ -456,17 +456,12 @@ function makeFixture(): Fixture {
     setStatusCalls() {
       return jsonLines(setStatusLogFile);
     },
-    statusReportsWith(status) {
-      return jsonLines(statusLogFile).filter((args: string[]) => {
-        const i = args.indexOf("--status");
-        return i >= 0 && args[i + 1] === status;
-      });
+    identityReports() {
+      return jsonLines(statusLogFile).filter((args: string[]) => !args.includes("--remove"));
     },
     statusReportsWithRemove() {
       return jsonLines(statusLogFile).filter((args: string[]) => args.includes("--remove"));
     },
-    // Unfiltered by status, unlike statusReportsWith: a heartbeat firing after idle
-    // reports the now-current status ("idle"), which a check scoped to one status would miss.
     statusReportCount() {
       return jsonLines(statusLogFile).length;
     },
@@ -3223,7 +3218,7 @@ test("set_status's schema accepts an activity over the byte cap, and setActivity
     await s.emit("agent_settled", {}, { isIdle: () => true });
     let report: string[] | undefined;
     await pollUntil(() => {
-      report = fx.statusReportsWith("idle").find((args) => {
+      report = fx.identityReports().find((args) => {
         const i = args.indexOf("--activity");
         return i >= 0 && args[i + 1] !== "";
       });
@@ -3402,7 +3397,7 @@ test("session_shutdown records this run's own outcome as completed when it ends 
     await asSubagent("run-failed", async () => {
       const factory = await freshExtensions();
       const s = await startSession(fx2, { factory, sessionId: "run-failed" });
-      await s.emit("ui_prompt_start"); // leaves current = "waiting"
+      await s.emit("agent_start");
       await s.emit("session_shutdown");
       assert.deepEqual(fx2.lastRunOutcomeArgs(), ["run-outcome", "--result", "failed", "--unreported", "--", "run-failed"]);
     });
@@ -3952,7 +3947,10 @@ test("the first pi on a session id is tracked and goes on reporting", async () =
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
     const s = await startSession(fx);
     await s.emit("turn_start");
-    await pollUntil(() => fx.statusReportsWith("running").length >= 1, 2000, "a running report from a tracked session");
+    await pollUntil(() => fx.identityReports().length >= 3, 2000, "identity and initial work heartbeat from a tracked session");
+    for (const args of fx.identityReports()) {
+      for (const flag of ["--status", "--title", "--ended"]) assert.ok(!args.includes(flag), args.join(" "));
+    }
     assert.deepEqual(s.notifications, [], "nothing to tell the user about");
     await s.emit("session_shutdown", { reason: "quit" });
   } finally {
@@ -3960,7 +3958,7 @@ test("the first pi on a session id is tracked and goes on reporting", async () =
   }
 });
 
-test("a running session re-sends its status on a heartbeat, bypassing the coalescing key that would otherwise drop a repeat", async () => {
+test("work sends identity heartbeats without putting status in the coalescing key", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
@@ -3971,10 +3969,10 @@ test("a running session re-sends its status on a heartbeat, bypassing the coales
       await s.emit("turn_start");
       await s.emit("tool_execution_start");
       await s.emit("tool_call");
-      await pollUntil(() => fx.statusReportsWith("running").length >= 1, 2000, "the first running report");
-      assert.equal(fx.statusReportsWith("running").length, 1, "coalescing must still drop the identical follow-ups");
+      await pollUntil(() => fx.identityReports().length >= 3, 2000, "the initial identity and work heartbeat reports");
+      assert.equal(fx.identityReports().length, 3, "coalescing must still drop the identical follow-ups");
 
-      await pollUntil(() => fx.statusReportsWith("running").length >= 2, 5000, "a heartbeat re-report past KIDO_HEARTBEAT_MS");
+      await pollUntil(() => fx.identityReports().length >= 4, 5000, "a heartbeat re-report past KIDO_HEARTBEAT_MS");
       await s.emit("session_shutdown");
     });
   } finally {
@@ -3991,12 +3989,12 @@ test("the heartbeat stops once the session is no longer running", async () => {
       const s = await startSession(fx, { factory });
       await s.emit("turn_start");
       // Wait for a heartbeat to have actually fired, not merely the first report.
-      await pollUntil(() => fx.statusReportsWith("running").length >= 2, 2000, "a heartbeat re-report");
+      await pollUntil(() => fx.identityReports().length >= 3, 2000, "a heartbeat re-report");
       await s.emit("agent_settled", {}, { isIdle: () => true });
       // Polled for a window with no growth, rather than sampled twice: a fixed
       // "sleep, then sleep again" lets a late arrival land in the second window
-      // instead of the first on a loaded runner. Counted regardless of status,
-      // not just "running": a heartbeat that failed to stop keeps resending "idle".
+      // instead of the first on a loaded runner. Count every identity report:
+      // a heartbeat that failed to stop keeps refreshing the timestamp while idle.
       await pollForStable(
         () => fx.statusReportCount(),
         200,
@@ -4772,7 +4770,7 @@ test("idle self-exit: a shutdown pi declined is asked for again", async () => {
         await s.emit("agent_settled", {}, { isIdle: () => true });
         await pollUntil(() => s.shutdowns() > 0, 2000, "the first ctx.shutdown() attempt");
         await s.emit("session_before_compact");
-        await s.emit("session_compact");
+        await s.emit("session_compact", {}, { isIdle: () => true });
         await pollUntil(
           () => s.shutdowns() > 1,
           2000,

@@ -40,7 +40,7 @@ func TestKidoSeparateServerAndState(t *testing.T) {
 		if got := server.shellIn(pane, "tmux display-message -p '#{socket_path}'"); got != server.mustServer("").Socket {
 			t.Errorf("pane reaches %q, want %s", got, server.kidoSock)
 		}
-		if got := server.shellIn(pane, "KIDO_STATE_DIR=/must-not-use kido agent-status --agent pi --session isolated --status running; echo $?"); got != "0" {
+		if got := server.shellIn(pane, "KIDO_STATE_DIR=/must-not-use kido agent-status --agent pi --session isolated; echo $?"); got != "0" {
 			t.Fatalf("agent-status: %q", got)
 		}
 		body, err := os.ReadFile(filepath.Join(server.state, "isolated.json"))

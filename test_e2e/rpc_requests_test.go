@@ -26,11 +26,11 @@ func TestRpcHelloAndRequests(t *testing.T) {
 			return false
 		}, settle, msgf("RPC line %s", want))
 	}
-	waitLine(`{"hello":{"protocol":"1.1"}}`)
+	waitLine(`{"hello":{"protocol":"2.0"}}`)
 	f.mu.Lock()
 	first := f.lines[0].raw
 	f.mu.Unlock()
-	if first != `{"hello":{"protocol":"1.1"}}` {
+	if first != `{"hello":{"protocol":"2.0"}}` {
 		t.Fatalf("first line: %s", first)
 	}
 	f.send(`{"id":1,"switch-window":{"direction":"next"}}`)
@@ -108,7 +108,7 @@ func TestRpcProtocolRefusal(t *testing.T) {
 		if stamp != "" {
 			server = `"9.9"`
 		}
-		want := "{\"hello\":{\"protocol\":\"1.1\",\"server\":" + server + "}}\n{\"error\":\"server protocol does not match binary protocol\"}\n"
+		want := "{\"hello\":{\"protocol\":\"2.0\",\"server\":" + server + "}}\n{\"error\":\"server protocol does not match binary protocol\"}\n"
 		if out.String() != want {
 			t.Fatalf("refusal %q, want %q", out.String(), want)
 		}

@@ -44,26 +44,25 @@ let pane ?(session = "sess") ?(window = "@1") ?(command = "") ?(title = "") ?(pi
 let agent_pane ?run w p title = pane ~window:w ~title ?run p
 let shell_pane w p = pane ~window:w ~command:"zsh" p
 
-let session ?(agent = State.Pi) ?(status = State.Running) ?(title = "") ?(parent = "") ?(depth = 0)
+let session ?(agent = State.Claude) ?(status = State.Running) ?(parent = "") ?(depth = 0)
     ?(ts = test_at) ?ended ?(activity = "") pane : State.session =
   {
     agent;
     pane = Tmux.Pane.of_string pane;
     pid = Unix.getpid ();
-    status;
+    reporting =
+      (match agent with
+      | Claude -> Hook { status; ended; background = false; tool_pending = false }
+      | Pi | Other _ -> Terminal);
     ts;
-    title;
     inbox = "";
-    ended;
-    background = false;
-    tool_pending = false;
     activity;
     parent = (if String.is_empty parent then None else Some { State.session = parent; pid = 0 });
     depth;
     model = "";
   }
 
-let agent_state id parent title = (id, session ~title ~parent "")
+let agent_state id parent = (id, session ~parent "")
 
 let states l =
   List.fold_left
@@ -107,10 +106,7 @@ let%expect_test "a subagent's window nests under the pane that spawned it" =
       shell_pane "@13" "%47";
       agent_pane "@20" "%30" "subagent";
     ]
-    [
-      ("%22", agent_state "root-sess" "" "orchestrator");
-      ("%30", agent_state "kid-sess" "root-sess" "subagent");
-    ];
+    [ ("%22", agent_state "root-sess" ""); ("%30", agent_state "kid-sess" "root-sess") ];
   [%expect {|
     sess
     ┌◼orchestrator
@@ -121,10 +117,7 @@ let%expect_test "a subagent's window nests under the pane that spawned it" =
 let%expect_test "field() keeps the three cases aligned" =
   render
     [ agent_pane "@1" "%1" "orchestrator"; pane ~title:"idle-agent" "%2"; shell_pane "@1" "%3" ]
-    [
-      ("%1", agent_state "root-sess" "" "orchestrator");
-      ("%2", ("idle-sess", session ~status:Idle ~title:"idle-agent" ""));
-    ];
+    [ ("%1", agent_state "root-sess" ""); ("%2", ("idle-sess", session ~status:Idle "")) ];
   [%expect {|
     sess
     ┌◼orchestrator
@@ -142,10 +135,10 @@ let%expect_test "sibling subagents form one group" =
       agent_pane "@22" "%32" "subagent-c";
     ]
     [
-      ("%22", agent_state "root-sess" "" "orchestrator");
-      ("%30", agent_state "kid-a-sess" "root-sess" "subagent-a");
-      ("%31", agent_state "kid-b-sess" "root-sess" "subagent-b");
-      ("%32", agent_state "kid-c-sess" "root-sess" "subagent-c");
+      ("%22", agent_state "root-sess" "");
+      ("%30", agent_state "kid-a-sess" "root-sess");
+      ("%31", agent_state "kid-b-sess" "root-sess");
+      ("%32", agent_state "kid-c-sess" "root-sess");
     ];
   [%expect
     {|
@@ -166,9 +159,9 @@ let%expect_test "a two-pane sibling keeps its own bracket beside the group glyph
       agent_pane "@21" "%31" "subagent-b";
     ]
     [
-      ("%22", agent_state "root-sess" "" "orchestrator");
-      ("%30", agent_state "kid-a-sess" "root-sess" "subagent-a");
-      ("%31", agent_state "kid-b-sess" "root-sess" "subagent-b");
+      ("%22", agent_state "root-sess" "");
+      ("%30", agent_state "kid-a-sess" "root-sess");
+      ("%31", agent_state "kid-b-sess" "root-sess");
     ];
   [%expect
     {|
@@ -190,12 +183,12 @@ let%expect_test "groups at depth two" =
       agent_pane "@6" "%6" "grandkid-b2";
     ]
     [
-      ("%1", agent_state "root-sess" "" "root");
-      ("%2", agent_state "a-sess" "root-sess" "subagent-a");
-      ("%3", agent_state "b-sess" "root-sess" "subagent-b");
-      ("%4", agent_state "a1-sess" "a-sess" "grandkid-a1");
-      ("%5", agent_state "b1-sess" "b-sess" "grandkid-b1");
-      ("%6", agent_state "b2-sess" "b-sess" "grandkid-b2");
+      ("%1", agent_state "root-sess" "");
+      ("%2", agent_state "a-sess" "root-sess");
+      ("%3", agent_state "b-sess" "root-sess");
+      ("%4", agent_state "a1-sess" "a-sess");
+      ("%5", agent_state "b1-sess" "b-sess");
+      ("%6", agent_state "b2-sess" "b-sess");
     ];
   [%expect
     {|
@@ -211,7 +204,7 @@ let%expect_test "groups at depth two" =
 let%expect_test "two root agents in one window are the window's own bracket" =
   render
     [ agent_pane "@1" "%1" "first"; agent_pane "@1" "%2" "second" ]
-    [ ("%1", agent_state "first-sess" "" "first"); ("%2", agent_state "second-sess" "" "second") ];
+    [ ("%1", agent_state "first-sess" ""); ("%2", agent_state "second-sess" "") ];
   [%expect {|
     sess
     ┌◼first
@@ -227,20 +220,14 @@ let%expect_test "the parent's column is carried across a nested child, and stops
       agent_pane "@20" "%30" "subagent";
       shell_pane "@20" "%31";
     ]
-    [
-      ("%22", agent_state "root-sess" "" "orchestrator");
-      ("%30", agent_state "kid-sess" "root-sess" "subagent");
-    ];
+    [ ("%22", agent_state "root-sess" ""); ("%30", agent_state "kid-sess" "root-sess") ];
   render
     [
       shell_pane "@13" "%10";
       agent_pane "@13" "%22" "orchestrator";
       agent_pane "@20" "%30" "subagent";
     ]
-    [
-      ("%22", agent_state "root-sess" "" "orchestrator");
-      ("%30", agent_state "kid-sess" "root-sess" "subagent");
-    ];
+    [ ("%22", agent_state "root-sess" ""); ("%30", agent_state "kid-sess" "root-sess") ];
   [%expect
     {|
     sess
@@ -260,19 +247,19 @@ let%expect_test
   render
     [ agent_pane "@1" "%1" "root"; agent_pane "@2" "%2" "kid"; agent_pane "@3" "%3" "grandkid" ]
     [
-      ("%1", agent_state "root-sess" "" "root");
-      ("%2", ("kid-sess", session ~title:"kid" ~parent:"root-sess" ~depth:1 ""));
-      ("%3", ("gk-sess", session ~title:"grandkid" ~parent:"kid-sess" ~depth:1 ""));
+      ("%1", agent_state "root-sess" "");
+      ("%2", ("kid-sess", session ~parent:"root-sess" ~depth:1 ""));
+      ("%3", ("gk-sess", session ~parent:"kid-sess" ~depth:1 ""));
     ];
   render
     [ agent_pane "@1" "%1" "unrelated"; agent_pane "@2" "%2" "orphan" ]
     [
-      ("%1", agent_state "other-sess" "" "unrelated");
-      ("%2", ("orphan-sess", session ~title:"orphan" ~parent:"elsewhere-sess" ~depth:1 ""));
+      ("%1", agent_state "other-sess" "");
+      ("%2", ("orphan-sess", session ~parent:"elsewhere-sess" ~depth:1 ""));
     ];
   render
     [ agent_pane "@1" "%207" "a"; agent_pane "@2" "%208" "b" ]
-    [ ("%207", agent_state "a-sess" "b-sess" "a"); ("%208", agent_state "b-sess" "a-sess" "b") ];
+    [ ("%207", agent_state "a-sess" "b-sess"); ("%208", agent_state "b-sess" "a-sess") ];
   [%expect
     {|
     sess
@@ -299,10 +286,10 @@ let%expect_test "the same state renders the same rows every time" =
   in
   let st =
     [
-      ("%1", agent_state "root-sess" "" "root");
-      ("%3", agent_state "a-sess" "root-sess" "kid-a");
-      ("%4", agent_state "b-sess" "root-sess" "kid-b");
-      ("%5", agent_state "g-sess" "b-sess" "grandkid");
+      ("%1", agent_state "root-sess" "");
+      ("%3", agent_state "a-sess" "root-sess");
+      ("%4", agent_state "b-sess" "root-sess");
+      ("%5", agent_state "g-sess" "b-sess");
     ]
   in
   let rows () =
@@ -610,8 +597,8 @@ let%expect_test "run metadata survives activity text and clears its clock on dea
   [%expect
     {|
     agent started ◼helper checking tests
-    agent - ◼helper checking tests
-    agent - ◼helper checking tests
+    agent - ×helper
+    agent - ✓helper completed
     |}]
 
 let%expect_test "elapsed time is compact: seconds, then minutes and seconds, then hours and minutes"
@@ -669,7 +656,7 @@ let%expect_test
   let id = new_run ~dir ~parent:"root-sess" "subagent" in
   render ~dir
     [ agent_pane "@13" "%22" "orchestrator"; pane ~window:"@20" ~dead_at:1. ~run:id "%30" ]
-    [ ("%22", agent_state "root-sess" "" "orchestrator") ];
+    [ ("%22", agent_state "root-sess" "") ];
   render
     [
       agent_pane "@13" "%22" "working-on-kido";
@@ -677,8 +664,8 @@ let%expect_test
       agent_pane ~run:"run-1" "@20" "%4" "helper";
     ]
     [
-      ("%22", agent_state "root-sess" "" "working-on-kido");
-      ("%4", ("helper-sess", session ~status:Idle ~title:"helper" ~parent:"root-sess" ""));
+      ("%22", agent_state "root-sess" "");
+      ("%4", ("helper-sess", session ~status:Idle ~parent:"root-sess" ""));
     ];
   render
     [
@@ -687,9 +674,9 @@ let%expect_test
       agent_pane "@20" "%30" "subagent-b";
     ]
     [
-      ("%21", agent_state "top-sess" "" "top-level");
-      ("%101", agent_state "second-sess" "" "second");
-      ("%30", agent_state "kid-sess" "second-sess" "subagent-b");
+      ("%21", agent_state "top-sess" "");
+      ("%101", agent_state "second-sess" "");
+      ("%30", agent_state "kid-sess" "second-sess");
     ];
   [%expect
     {|
@@ -1307,7 +1294,7 @@ let%expect_test
           Sidebar.empty with
           client = client "alpha";
           panes;
-          states = states [ ("%2", ("i", session ~title:"kido" "")) ];
+          states = states [ ("%2", ("i", session "")) ];
         };
     }
   in
@@ -1550,18 +1537,14 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
   let run = new_run ~dir ~parent:"root" ~kind:Bash "build" in
   let panes =
     [
-      pane ~session:"alpha" ~window:"@1" ~active:true "%1";
-      pane ~session:"alpha" ~window:"@2" "%2";
+      pane ~session:"alpha" ~window:"@1" ~title:"root" ~active:true "%1";
+      pane ~session:"alpha" ~window:"@2" ~title:"kid" "%2";
       pane ~session:"alpha" ~window:"@2" ~command:"bash" "%3";
       pane ~session:"alpha" ~window:"@3" ~run "%4";
     ]
   in
   let states =
-    states
-      [
-        ("%1", ("root", session ~title:"root" ""));
-        ("%2", ("kid", session ~parent:"root" ~title:"kid" ""));
-      ]
+    states [ ("%1", ("root", session "")); ("%2", ("kid", session ~parent:"root" "")) ]
   in
   let m, _ =
     Sidebar.step (model ~dir ())

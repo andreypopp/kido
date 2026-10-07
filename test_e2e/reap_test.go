@@ -32,7 +32,7 @@ func (h *harness) windowID(paneID string) string {
 // the recorded pid is the sleep's own) before becoming a long sleep.
 func (h *harness) subagentWindow(session, name, sessionID, parentSession string) (paneID, windowID string) {
 	h.t.Helper()
-	script := fmt.Sprintf("%s agent-status --agent pi --session %s --status idle "+
+	script := fmt.Sprintf("%s agent-status --agent pi --session %s "+
 		"--parent-session %s; exec sleep 300",
 		kidoBin, sessionID, parentSession)
 	paneID = h.newWindow(session, name, "sh", "-c", script)
@@ -86,6 +86,9 @@ func (h *harness) runKido(session, outName string, args ...string) string {
 func (h *harness) runScript(session, outName, script string) string {
 	h.t.Helper()
 	outFile := filepath.Join(h.dir, outName)
+	if err := os.Remove(outFile); err != nil && !os.IsNotExist(err) {
+		h.t.Fatal(err)
+	}
 	h.newWindow(session, "", "sh", "-c", fmt.Sprintf("%s > %s 2>&1; echo rc=$? >> %s", script, outFile, outFile))
 	var content string
 	h.waitFor(func() bool {
@@ -314,7 +317,7 @@ func TestSidebarCancelsSubagentOfDeadParent(t *testing.T) {
 	h := start(t, "alpha")
 
 	// Reported from inside its own pane, so its pid can actually die (unlike liveParent's).
-	parentScript := fmt.Sprintf("%s agent-status --agent pi --session parent-e2e --status idle"+
+	parentScript := fmt.Sprintf("%s agent-status --agent pi --session parent-e2e"+
 		"; exec sleep 300", kidoBin)
 	parentPane := h.newWindow("alpha", "parent-e2e", "sh", "-c", parentScript)
 	h.waitPaneCommand(parentPane, "sleep")
@@ -337,12 +340,12 @@ func TestSidebarSurvivesAParentPaneCollision(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	parentScript := fmt.Sprintf("%s agent-status --agent pi --session parent-collision-e2e --status idle"+
+	parentScript := fmt.Sprintf("%s agent-status --agent pi --session parent-collision-e2e"+
 		"; exec sleep 300", kidoBin)
 	parentPane := h.newWindow("alpha", "parent-collision-e2e", "sh", "-c", parentScript)
 	h.waitPaneCommand(parentPane, "sleep")
 
-	childScript := fmt.Sprintf("%s agent-status --agent pi --session child-collision-e2e --status idle "+
+	childScript := fmt.Sprintf("%s agent-status --agent pi --session child-collision-e2e "+
 		"--parent-session parent-collision-e2e; exec sleep 300", kidoBin)
 	childPane := h.newWindow("alpha", "kid-collision-e2e", "sh", "-c", childScript)
 	h.waitPaneCommand(childPane, "sleep")
@@ -368,7 +371,7 @@ func TestReapCancelsSubagentOfDeadParent(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 
-	parentScript := fmt.Sprintf("%s agent-status --agent pi --session parent-oneshot-e2e --status idle"+
+	parentScript := fmt.Sprintf("%s agent-status --agent pi --session parent-oneshot-e2e"+
 		"; exec sleep 300", kidoBin)
 	parentPane := h.newWindow("alpha", "parent-oneshot-e2e", "sh", "-c", parentScript)
 	h.waitPaneCommand(parentPane, "sleep")

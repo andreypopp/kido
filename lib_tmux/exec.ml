@@ -113,6 +113,22 @@ let list_panes ?socket () =
     (fun out -> Pane.parse (lines out))
     (exec ?socket [ "list-panes"; "-a"; "-F"; Pane.format ])
 
+let panes_and_programs ?socket () =
+  Result.map
+    (fun out ->
+      let panes, programs =
+        List.fold_left
+          (fun (panes, programs) line ->
+            match String.index_opt line '\030' with
+            | Some i ->
+                ( String.sub line (i + 1) (String.length line - i - 1) :: panes,
+                  String.sub line 0 i :: programs )
+            | None -> (panes, programs))
+          ([], []) (lines out)
+      in
+      (Pane.parse (List.rev panes), Program_status.parse_lines programs))
+    (exec ?socket [ "list-panes"; "-a"; "-F"; Program_status.format ^ "\030" ^ Pane.format ])
+
 let capture_pane ?socket pane =
   Result.map lines (exec ?socket [ "capture-pane"; "-p"; "-t"; Pane.to_string pane ])
 

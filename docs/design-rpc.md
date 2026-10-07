@@ -36,7 +36,7 @@ separate value, not a protocol version.
 ## Compatibility before snapshots
 
 `Protocol.value` is the binary's MAJOR.MINOR protocol constant, currently
-`1.1`. The launcher stamps it into the tmux server's environment at
+`2.0`. The launcher stamps it into the tmux server's environment at
 creation, before its configuration runs. RPC probes that stamp before
 opening the model's control connection.
 
@@ -146,18 +146,24 @@ merging pending notifications. A new pane's notification may arrive after
 that read, so it survives until the next read; if the pane is still absent,
 its records are dropped even if it never appeared in topology.
 
-For panes without a State record, program records override shell/ssh
-status, but not a gone run. The representative is chosen by blocked,
+Program records override shell/ssh and pi status, but not a gone run.
+Claude Code's Hook status takes precedence on its own row. The representative is chosen by blocked,
 error, working, done, idle priority, then bytewise id, excluding
 acknowledged done/error records so they cannot hide ongoing work. If all
 records are acknowledged completions, the first record supplies an idle
 label. Its title (or inherited app or foreground command) names the row;
-message and optional progress percentage form the caption. Indicators map
+message and optional progress percentage form the caption. With no program
+message, State activity supplies the caption; a live subagent with neither
+uses its elapsed clock. Indicators map
 to waiting, failed, running, done and idle. Visiting acknowledges done/error
 only in that view; only a newer pane serial re-arms them, not a reconnect.
-State-backed agent display remains unchanged in step 2, although its
-program records are still exposed in RPC. Step 4 moves pi display status
-from State to these terminal records.
+pi State records contain identity, inbox, parentage, activity, model and
+heartbeat, not status, completion or title. pi display and completion
+attention come from terminal records; its ask overlay still outranks the
+indicator. Stalled means a working root with a stale State heartbeat,
+rebased against wake. Bare pi never stalls. pi addressing uses root title,
+even when a nested program overwrites that root. Claude Code retains its
+Hook status and completion timestamp.
 
 ## Requests and navigation
 
@@ -198,9 +204,27 @@ rollback or automatic replay. Concurrent views can still revive one
 ended ask twice before a live holder reports. pi resolution retains
 tmux's command-client PATH semantics.
 
-The new requests, asks list and OSC 7501 records retain protocol 1.1 for
-this development phase; the 2.0 bump accompanies moving agent status out
-of State.
+Protocol 2.0 changes from 1.1:
+- Removed: the server-side filter request and top-level snapshot.filter.
+  Snapshots contain all sessions; search is client-side.
+- Added: new-window/new-session, select-window/select-session, jump,
+  activate-ask/delete-ask and release-side-focus requests, using the
+  existing integer-id reply and error envelopes.
+- Added: the top-level snapshot asks list and program_status on pane items.
+- Changed: switch-window prev from a hoisted child targets its direct
+  parent window, including a hoisted parent; ordinary navigation still
+  skips run-marked windows and wraps across sessions.
+- Changed: pi item indicator, attention, title and caption use OSC records
+  instead of State status/title/completion. Pi compaction is running with
+  a message, not compacting. Gone runs outrank terminal and Hook status;
+  Claude Code retains Hook status and completion.
+- Changed: pi stall requires a working root and stale State heartbeat;
+  bare pi never stalls. Pi addressing uses the root title. State supplies
+  identity, inbox, parentage, activity and the ask overlay; agent-status
+  removes --status, --ended and --title.
+- Unchanged: switch-session requests and integer-correlated replies were
+  already present in 1.1. Snapshot v remains 2.
+No compatibility shims are provided.
 
 Sessions are ordered oldest first, with name breaking creation-time ties.
 Windows use the sidebar's parent-first tree ordering within each session,

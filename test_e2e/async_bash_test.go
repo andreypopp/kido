@@ -180,7 +180,7 @@ func TestAsyncBashEndsWhenItsParentQuits(t *testing.T) {
 	childPIDFile := filepath.Join(h.dir, "orphan-command.pid")
 	fake := filepath.Join(h.dir, "pi")
 	script := fmt.Sprintf(`#!/bin/bash
-%s agent-status --agent pi --session orphan-parent-e2e --status idle
+%s agent-status --agent pi --session orphan-parent-e2e
 %s tool async_bash --name orphan-bash -- sh -c %s > %s
 read -r -t 30 ignored
 %s agent-status --agent pi --session orphan-parent-e2e --remove

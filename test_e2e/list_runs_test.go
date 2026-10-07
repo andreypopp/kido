@@ -84,7 +84,7 @@ func TestListRunsPeersParentSiblingsAndOwnRuns(t *testing.T) {
 	for _, row := range rows {
 		seen[row.ID] = row
 	}
-	if len(seen) != 4 || seen["peer-list"].Relationship != "peer" || seen["peer-list"].Status != "waiting" || seen["peer-list"].Activity != "reviewing" {
+	if len(seen) != 4 || seen["peer-list"].Relationship != "peer" || seen["peer-list"].Status != "blocked" || seen["peer-list"].Activity != "reviewing" {
 		t.Fatalf("root rows = %+v, want one peer and three own runs", rows)
 	}
 	for _, id := range []string{"first-list", "second-list", bash} {

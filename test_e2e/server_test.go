@@ -64,8 +64,8 @@ func (r *kidoRun) mustServer(tmux string) endpoint {
 	if !filepath.IsAbs(e.Socket) || !sameFile(e.Socket, r.kidoSock) {
 		r.t.Errorf("socket = %q, want the absolute path of %s", e.Socket, r.kidoSock)
 	}
-	if e.Protocol != "1.1" {
-		r.t.Errorf("binary protocol = %q, want 1.1", e.Protocol)
+	if e.Protocol != "2.0" {
+		r.t.Errorf("binary protocol = %q, want 2.0", e.Protocol)
 	}
 	return e
 }
@@ -87,8 +87,8 @@ func TestKidoServerStartsTheServerDetached(t *testing.T) {
 	}
 
 	first := r.mustServer("")
-	if first.Server != "1.1" {
-		t.Fatalf("server stamp = %q, want 1.1", first.Server)
+	if first.Server != "2.0" {
+		t.Fatalf("server stamp = %q, want 2.0", first.Server)
 	}
 	if got := r.mustKido("list-sessions", "-F", "#{session_name} #{session_attached}"); got != "main 0" {
 		t.Errorf("sessions = %q, want main, detached", got)
@@ -119,8 +119,8 @@ func TestKidoServerStartsTheServerDetached(t *testing.T) {
 	}
 	r.mustKido("set-environment", "-gu", "KIDO_PROTOCOL")
 	out, _, code := r.server("")
-	if code != 0 || !strings.Contains(out, `"protocol":"1.1","server":null`) {
-		t.Errorf("unstamped server: exit %d, JSON %q, want protocol:1.1 and server:null", code, out)
+	if code != 0 || !strings.Contains(out, `"protocol":"2.0","server":null`) {
+		t.Errorf("unstamped server: exit %d, JSON %q, want protocol:2.0 and server:null", code, out)
 	}
 }
 

@@ -37,7 +37,7 @@ let prompt ~dir ~self ~window text =
   let failed r = Result.map_err (fun m -> Failed m) r in
   if String.is_empty text then Error No_prompt
   else
-    let* panes = failed (Exec.list_panes ()) in
+    let* panes, programs = failed (Exec.panes_and_programs ()) in
     let* self = failed (List_runs.caller_pane panes self) in
     let states = State.by_pane (State.load_live ~dir) in
     let sweep = lazy (Procs.sweep ()).pi in
@@ -58,7 +58,7 @@ let prompt ~dir ~self ~window text =
     | [ p ] ->
         let inbox, name =
           Option.map_or ~default:("", p.title)
-            (fun (_, (s : State.session)) -> (s.inbox, List_runs.display_name panes s))
+            (fun (_, (s : State.session)) -> (s.inbox, List_runs.display_name ~programs panes s))
             (Tmux.Pane.Map.find_opt p.pane_id states)
         in
         failed

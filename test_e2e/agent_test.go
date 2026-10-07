@@ -29,15 +29,14 @@ func (h *harness) countRows(want string) int {
 func TestPiPaneLooksLikeAClaudePane(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	// pi titles its pane "π - <session> - <cwd>", and reports its status
-	// with `kido agent-status` instead of a Claude Code hook.
+	// pi titles its pane "π - <session> - <cwd>" and reports status with OSC 7501.
 	pane := h.piPane("alpha", "π - deploy - kido")
 
 	for _, c := range []struct{ status, glyph string }{
 		{"idle", ""},
 		{"running", "◼"},
 		{"waiting", "◆"},
-		{"compacting", "◌"},
+		{"compacting", "◼"},
 	} {
 		h.agentStatus("pi-1", pane, "pi", c.status)
 		h.waitGlyph("deploy - kido", c.glyph)
@@ -54,18 +53,16 @@ func TestPiPaneLooksLikeAClaudePane(t *testing.T) {
 			return fmt.Sprintf("two identical rows for the pi and claude panes (rows are %q)", h.rows())
 		})
 
-	// --remove drops pi's record at shutdown; the pane is then just a
-	// process again, not an agent, and shows its foreground command. The
-	// claude pane is the one that keeps the title row.
+	// Removing identity does not clear the pane's terminal status.
 	h.agentStatus("pi-1", pane, "pi", "", "--remove")
 	h.waitFor(func() bool {
-		return h.countRows("╶◼deploy - kido") == 1 && h.countRows("╶ node") == 1
+		return h.countRows("╶◼deploy - kido") == 2
 	}, settle, func() string {
-		return fmt.Sprintf("the pi pane back to a plain node row (rows are %q)", h.rows())
+		return fmt.Sprintf("the bare pi pane retains its terminal status (rows are %q)", h.rows())
 	})
 }
 
-// A recorded --title must win over the session/cwd kido could otherwise
+// The OSC root title must win over the session/cwd kido could otherwise
 // derive by stripping pi's marker off the pane title, since splitting on
 // "-" breaks for a session name that itself contains " - ".
 func TestPiReportedTitleWinsOverPaneTitle(t *testing.T) {

@@ -16,7 +16,6 @@ import type {
   Sender,
   SessionContext,
   ShutdownReason,
-  Status,
 } from "./kido-status.ts";
 
 function seam(): Seam {
@@ -252,7 +251,7 @@ interface AgentInfo {
   pane: string;
   self: boolean;
   canMessage: boolean;
-  status: Status;
+  status: "running" | "waiting" | "compacting" | "idle" | "working" | "blocked" | "done" | "error" | "unknown";
   activity: string;
   canReply: boolean;
   window: string;
@@ -797,6 +796,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   let reportedToParent = false;
+  let settled = true;
 
   // "awaiting-first-turn" lasts until the first sign a turn began; a child whose pi could
   // not start its model at all settles at startup looking exactly like an idle child
@@ -816,6 +816,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const workStarted = (): void => {
+    settled = false;
     if (phase.phase === "awaiting-first-turn") phase = { phase: "worked" };
     clearIdleExit();
   };
@@ -974,7 +975,7 @@ export default function (pi: ExtensionAPI) {
       }
       // Fail fast rather than wait out the timeout against a target that is never going to answer.
       if (target.stalled) {
-        return reply(`${who} has been quiet for ${target.sinceReport}s while reporting running; likely stalled, refusing to wait for a reply`);
+        return reply(`${who} has been quiet for ${target.sinceReport}s while reporting working; likely stalled, refusing to wait for a reply`);
       }
       const alive = await runKido(["get-agent", target.id], { timeoutMs: 2000 });
       if (lookupBoolean(alive, target.id, "alive") === false) return reply(`${who} is no longer running; refusing to wait for a reply`);
@@ -1395,7 +1396,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_settled", async (_event: unknown, ctx: { isIdle(): boolean }) => {
-    if (!ctx.isIdle() || !isSubagent()) return;
+    if (!ctx.isIdle()) return;
+    settled = true;
+    if (!isSubagent()) return;
     armIdleExit();
     if (phase.phase !== "worked" || !phase.lastError || phase.lastError.notified) return;
     phase.lastError.notified = true;
@@ -1438,12 +1441,10 @@ export default function (pi: ExtensionAPI) {
     const runID = ownRunID();
     // pi fires session_shutdown for five reasons; only "quit" (or an absent reason) ends the run.
     if (!runID || !host || (reason !== undefined && reason !== "quit")) return;
-    // "idle" is the only status a turn finishes on, so anything else at shutdown is a
-    // failure - and so is a session still waiting for its first turn.
     const [result, text] =
       phase.phase === "awaiting-first-turn"
         ? ["failed", NO_FIRST_TURN_TEXT]
-        : [host.status() === "idle" ? "completed" : "failed", phase.lastError && `its last turn failed: ${trimErrorMessage(phase.lastError.text)}`];
+        : [settled ? "completed" : "failed", phase.lastError && `its last turn failed: ${trimErrorMessage(phase.lastError.text)}`];
     const args = ["run-outcome", "--result", result];
     if (!reportedToParent) args.push("--unreported");
     if (text) args.push("--text", text);

@@ -17,6 +17,8 @@ type record = {
 
 type t = { serial : int; records : record list }
 
+let root t = List.find_opt (fun r -> String.is_empty r.id) t.records
+
 let decode s =
   let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/" in
   let s =

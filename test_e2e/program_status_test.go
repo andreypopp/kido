@@ -155,11 +155,13 @@ func TestProgramStatusSidebarAndRpc(t *testing.T) {
 	if r.ProgramStatus.Serial <= serial {
 		t.Fatal("newer serial did not rearm after reconnect")
 	}
-	h.agentStatus("status-agent", pane, "pi", "running", "--title", "Tracked", "--activity", "State wins")
-	h.waitRow("◼Tracked State wins")
-	r = wait("done", "running", 1)
-	if len(r.Title) != 1 || r.Title[0].Text != "Tracked" {
-		t.Fatalf("State precedence: %+v", r)
+	if out, rc := h.kidoAs(pane, "", nil, "agent-status", "--agent", "pi", "--session", "status-agent"); rc != 0 {
+		t.Fatalf("identity: %d %s", rc, out)
+	}
+	h.waitRow("✓Build Plan")
+	r = wait("done", "done", 1)
+	if len(r.Title) != 1 || r.Title[0].Text != "Build" {
+		t.Fatalf("terminal precedence: %+v", r)
 	}
 	h.agentStatus("status-agent", pane, "pi", "", "--remove")
 	h.waitRow("✓Build Plan")

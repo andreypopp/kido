@@ -1,4 +1,4 @@
-# kido rpc protocol 1.1
+# kido rpc protocol 2.0
 
 fork revision: 0fa3fddd8ec31b158762b8f8fe0d3ef3767f364e
 
@@ -20,9 +20,9 @@ XDG_STATE_HOME/kido, then ~/.local/state/kido. --client names the app's
 control client. Socket paths fit the platform's sun_path including NUL.
 Run outside tmux with no KIDO_AGENT_* environment.
 
-The first stdout line is {"hello":{"protocol":"1.1"}}. A differing or absent
-server stamp produces {"hello":{"protocol":"1.1","server":"other"}} or
-{"hello":{"protocol":"1.1","server":null}}, followed by
+The first stdout line is {"hello":{"protocol":"2.0"}}. A differing or absent
+server stamp produces {"hello":{"protocol":"2.0","server":"other"}} or
+{"hello":{"protocol":"2.0","server":null}}, followed by
 {"error":"server protocol does not match binary protocol"}, then exit 2.
 Exit 0 means stdin EOF. Exit 1 means a missing argument, absent server/client,
 or stdin read error; diagnostics use stderr. Option errors use cmdliner.
@@ -106,8 +106,29 @@ digits), new-session only true, and select-window exactly session and
 window identifier fields ($N and @N). Multiple recognized operations are
 invalid. All requests use the existing error envelope and explicit socket.
 
-These additions and OSC 7501 records retain protocol 1.1 during
-implementation; the 2.0 bump accompanies moving agent status out of State.
+## Changes from 1.1 to 2.0
+
+- Removed: the server-side filter request and top-level snapshot.filter.
+  Snapshots contain all sessions; search is client-side.
+- Added: new-window/new-session, select-window/select-session, jump,
+  activate-ask/delete-ask and release-side-focus requests, using the
+  existing integer-id reply and error envelopes.
+- Added: the top-level snapshot asks list and program_status on pane items.
+- Changed: switch-window prev from a hoisted child targets its direct
+  parent window, including a hoisted parent; ordinary navigation still
+  skips run-marked windows and wraps across sessions.
+- Changed: pi item indicator, attention, title and caption use OSC records
+  instead of State status/title/completion. Pi compaction is running with
+  a message, not compacting. Gone runs outrank terminal and Hook status;
+  Claude Code retains Hook status and completion.
+- Changed: pi stall requires a working root and stale State heartbeat;
+  bare pi never stalls. Pi addressing uses the root title. State supplies
+  identity, inbox, parentage, activity and the ask overlay; agent-status
+  removes --status, --ended and --title.
+- Unchanged: switch-session requests and integer-correlated replies were
+  already present in 1.1. Snapshot v remains 2.
+
+No compatibility shims are provided.
 
 All stdout events are NDJSON from one writer; replies and snapshots can
 alternate, but bytes from separate lines do not interleave.
@@ -213,9 +234,10 @@ Fields:
   meaningful only on blocked, progress only on working/blocked. App is
   inherited from the nearest ancestor that has one,
   including root across missing parents; inheritance is not materialized
-  into these records. All records are included, even on State-backed
-  panes where the agent's State display takes precedence during step 2;
-  step 4 moves pi display status from State to terminal records.
+  into these records. All records are included. They drive pi display
+  even when a State identity exists; Claude Code retains Hook status.
+  Gone runs take precedence. With no program message, activity or a live
+  subagent's elapsed clock supplies the caption.
   For other panes, records override shell/ssh display but not gone runs.
   Representative priority is blocked > error > working > done > idle,
   then id order, excluding acknowledged done/error records. If only
@@ -256,7 +278,7 @@ structure. Hoisting stays per session.
 ## Server endpoint
 
 kido server --server <dir> ensures a detached server and prints one line:
-{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"1.1","server":"1.1"}.
+{"tmux":"/absolute/kido-tmux","socket":"/dir/socket","protocol":"2.0","server":"2.0"}.
 protocol is the binary's Protocol.value, always a string. server is always present:
 the server's KIDO_PROTOCOL stamp, or null when absent, even when it matches protocol.
 The app compares them to detect a kido upgrade with an old server.

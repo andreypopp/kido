@@ -8,15 +8,12 @@ val agent_status :
   pane:Tmux.Pane.id option ->
   agent:string ->
   session:string ->
-  title:string ->
   inbox:string ->
   activity:string ->
   parent_pid:int ->
   parent_session:string ->
   depth:int ->
   model:string ->
-  ended:bool ->
-  State.status ->
   (unit, State.session) result
 (** [Error] is another live process holding the session. *)
 
