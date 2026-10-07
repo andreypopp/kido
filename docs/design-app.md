@@ -60,7 +60,16 @@ URL delivery and the App Intent share Host validation and window routing. Each r
 creates a new native window, including repeated requests for one alias.
 Host is trimmed and accepts an SSH alias or user@hostname, not options,
 whitespace, controls or shell syntax. Ports and jump hosts belong in SSH
-config. There is no host picker, recent-connections store or remote restore.
+config. File → **New Local Window** uses ordinary Local routing even when other
+windows exist; the cold remote-launch gate still holds Local requests back.
+File → **Connect to Remote Host…** uses the same remote routing as URLs and the
+App Intent. Its native alert is a sheet on the key window, or app-modal without
+one, with a labeled host field and Connect/Cancel buttons. Invalid input reopens
+the alert with the text retained and an error. Neither item has a shortcut.
+Dock reopen still focuses existing windows. There is no recent-connections store
+or remote restore. Off-screen FileMenuTests exercise the dialog response handler
+directly rather than running a modal alert, and create inert window owners without
+starting a server.
 Local keeps `SessionModel.title` (session and current window); remote prefixes
 it with resolved `user@host / `. The original dialing alias is the window
 content's tooltip. Offline titles drop the session/window name.
