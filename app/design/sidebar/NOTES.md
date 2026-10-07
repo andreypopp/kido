@@ -1,5 +1,13 @@
 # Sidebar reference
 
+## Approved Finder-style redesign
+
+The current preview is a new Finder-inspired sidebar proposal, not the older shipped/reference layout below. Session names are plain noninteractive 11pt semibold secondary labels, without cards or fold buttons. A small trailing plus button creates a new window in that session (visual placeholder in the preview); only its icon brightens on hover. Its center aligns with the top-level pane status-circle column (15pt from the item's right edge). Each window is one rounded 7pt item with 3pt spacing between items; multi-pane windows contain one contiguous row per pane inside the same item. A faint 1pt horizontal delimiter now separates different windows: 7pt separator row (3pt gap on either side), 12pt inset on both ends, labelColor at approximately 7.5% alpha. It appears between sibling windows and before nested child windows, never between panes of one window or before the session's first top-level window. Nested separators follow the child's indent. The active window has one continuous 10% labelColor fill; only multi-pane windows retain a small focused-pane mark. Single-pane windows need no extra mark.
+
+Pane rows are 32pt, or 48pt with activity; titles are 13pt at all depths. Only two leading 16pt monochrome icons: agent for agents/agent-runs, terminal for shells, SSH, bash runs, and stream monitors. Agent/agent-run names get an `@` prefix (without doubling an existing `@`); status and clock remain trailing, activity stays below the title. Nested windows appear as independent items beneath their parent window, indented 21pt per level with no guides, rather than embedded in its selection background. This keeps each window's rounded item intact even when one of its panes owns children. Grouped pane rows individually navigate to their pane; tabs still restore the remembered active pane.
+
+System colors/materials and SF Symbol equivalents make this implementable with ordinary AppKit table/group-row drawing. Icon artwork is a preview approximation. Historical sections below document previous decisions and are not the current redesign contract. The user approved this redesign and requested implementation handoff to kido-app.
+
 Self-contained HTML reference for **shipped Kido.app 0.1.5 pane focus and window tabs**. Remote support is being finished; the new remote-only host label below is a design proposal for user review.
 
 ```sh
