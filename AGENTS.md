@@ -9,7 +9,8 @@ kido's own design decisions - which store is authoritative for what, the
 inbox protocol, addressing, the ask/reply cycle rule, spawning and the
 window lifecycle, run outcomes, the heartbeat, and the seam between the
 two pi extensions - live in [docs/design.md](docs/design.md), with the
-subagent side in [docs/design-subagents.md](docs/design-subagents.md).
+subagent side in [docs/design-subagents.md](docs/design-subagents.md)
+and the external-client RPC in [docs/design-rpc.md](docs/design-rpc.md).
 Read them before changing any of that; neither the code's comments nor
 this file repeat it.
 
