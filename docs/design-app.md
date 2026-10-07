@@ -675,25 +675,46 @@ WindowTabs paints no background of its own, preserving the native sidebar shadow
 
 Tabs project the current session's top-level windows from the
 unfiltered feed; descendant windows activate their ancestor tab. Each title
-is the sidebar row title of that window's active pane, falling back to the
+is the raw feed label of that window's active pane, falling back to the
 tmux window name until its feed label arrives. WindowView's active pane,
 read from tmux layouts and `%window-pane-changed`, is shared with terminal
 focus. Status dots summarize the window and its descendants.
 
-`SidebarView` is a flat `NSOutlineView`: session headers with a
-new-window button, then one bracket per tmux window at every depth drawn as a guide
-line, with no window label. A top-level node is a window; an item's
-nested children (hoisted child windows) are subpanes, one guide column
-per level. Each row is title, then tail (or a started row's clock),
-then a status glyph: red for a real failure, orange for waiting,
-stalled or the feed's attention flag, a spinner for running or
-compacting, nothing otherwise. Titles keep their width and tails
-truncate first. Selection is a quiet pill (a stronger semantic fill with Increase
-Contrast), and glyph colours do not change with it. Selection and scroll survive snapshots by
-session-scoped node identity. Scroll anchors the first visible identity
-and its intra-row offset, falling back to pixels only if that row disappears.
+`SidebarView` is a reusable `NSTableView` backed by the pure row model in
+`SidebarFeed/Rows.swift`. Sessions have noninteractive 29pt headers with
+11pt semibold secondary labels and an always-visible, separately accessible
+new-window plus; hovering brightens only its icon. No session folding remains.
+Each window is an independent 7pt rounded item. All its panes precede its
+panes' child-window trees, in pane order. Children indent 21pt per level,
+without guides or inherited ancestor fill. The active window has continuous
+10% labelColor fill; only multi-pane groups mark the focused pane with a 2pt
+strip, inset 7pt vertically. Independent keyboard selection clips to the
+same window slice.
 
-The search and single-line, truncating diagnostic sit above the outline;
+Pane rows are 32pt, or 48pt with activity, at every depth. Monochrome 16pt
+text.bubble/terminal symbols precede 13pt titles at x=indent+36, y=7;
+11pt activity sits at y=26. Agents and agent runs receive a display-only
+@ prefix, never doubled and never used in tab or window titles. Status and
+10pt tabular clocks remain trailing; the status and header plus centers are
+15pt from the right edge. Idle has no glyph, running/compacting a green dot,
+waiting agents an orange dot, failures a red dot, done/completed a green
+checkmark and stalled a red exclamation. Attention navigation remains
+independent of these visual statuses.
+
+Each item has 3pt bottom spacing; each child collection adds another 3pt,
+and each session adds 16pt. A 7pt separator (3pt, 1pt line, 3pt) precedes
+nested windows and subsequent top-level siblings, never the first top-level
+window or panes within a group. Lines inset 12pt from each end at the
+receiving window's indent and use 7.5% labelColor. Every row has positive
+height. Colors resolve at drawing time; fonts are created at initialization.
+Same-shape snapshots reload only changed rows and clock ticks invalidate
+only the clock label.
+
+Selection and scroll survive snapshots by session-scoped node identity.
+Scroll anchors the first visible identity and its intra-row offset,
+falling back to pixels only if that row disappears.
+
+The search and single-line, truncating diagnostic sit above the table;
 the full diagnostic is available in its tooltip. The search field
 is the one store of the filter: each feed process receives it on start
 and every edit. Jump failures leave the filter and focus intact; a
@@ -704,10 +725,13 @@ The toolbar and Control-Command-S toggle the sidebar; the View menu's
 Show/Hide title follows its collapsed state. Focus Sidebar uses
 Control-Command-L. Control-Command-F enters full screen. Control-Command-N (Shift for previous) walks attention;
 Control-Command-J/K switches windows; Option-Command-]/[ switches sessions in the unfiltered
-sidebar card order, including folded sessions, with wraparound and a single-session no-op.
-Session navigation uses RPC switch-session and selects and unfolds the returned current window.
-Command-N creates a session and Command-T creates a window. In the outline, j/k move, n/N jump
-to attention, Return jumps, Escape returns to the pane and / searches.
+sidebar session order, with wraparound and a single-session no-op.
+Session navigation uses RPC switch-session and selects the returned current window.
+Command-N creates a session and Command-T creates a window. In the table, arrows and j/k
+move pane-only selection, n/N jump to attention, Return activates with exactly one
+switch-client, Escape returns to the pane and / searches. Left/Right do nothing;
+headers do not activate or fold. Search Enter waits for the matching filtered snapshot,
+then activates once; failures preserve filter and focus.
 The sidebar is visible by default; it does not automatically collapse
 at narrow widths.
 
