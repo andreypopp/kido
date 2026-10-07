@@ -100,7 +100,7 @@ import SidebarFeed
     func updateAppearance() {
         let background = runtime.background
         window.backgroundColor = background
-        for view in [sidebar.view, sidebar.content] {
+        for view in [sidebar.view, sidebar.terminalHost, sidebar.content] {
             view.wantsLayer = true
             view.layer?.backgroundColor = background.cgColor
         }
@@ -110,9 +110,18 @@ import SidebarFeed
             $0 <= 0.04045 ? $0 / 12.92 : pow(($0 + 0.055) / 1.055, 2.4)
         }
         let luminance = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
-        window.appearance = NSAppearance(named: luminance < 0.5 ? .darkAqua : .aqua)
+        let theme = (background: background, appearance: NSAppearance(named: luminance < 0.5 ? .darkAqua : .aqua))
+        window.appearance = theme.appearance
+        sidebar.tabs.theme = theme
         session?.updateBackground()
     }
+
+    func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions) -> NSApplication.PresentationOptions {
+        proposedOptions.subtracting(.autoHideToolbar)
+    }
+
+    func windowDidEnterFullScreen(_ notification: Notification) { updateAppearance() }
+    func windowDidExitFullScreen(_ notification: Notification) { updateAppearance() }
 
     func send(_ commands: [Command], then done: (@MainActor @Sendable ([Reply]?) -> Void)? = nil) {
         guard case .connected(let connection, _, _) = link else { return done?(nil) ?? () }
