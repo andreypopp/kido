@@ -4,7 +4,7 @@ DERIVED := build/xcode.noindex/derived
 CONFIG ?= Debug
 APP = $(DERIVED)/Build/Products/$(CONFIG)/Kido.app
 
-.PHONY: visual all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-stop release
+.PHONY: visual all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release
 
 all:
 	ln -sfn "$$(GHOSTTY_OPTIMIZE=$(GHOSTTY_OPTIMIZE) scripts/build-ghosttykit.sh)" build/GhosttyKit.xcframework
@@ -50,17 +50,21 @@ run: all
 
 DEMO := KIDO_DEMO_DIR=$(CURDIR)/build/demo
 
-demo: CONFIG = Release
+demo demo-build: CONFIG = Release
 demo-debug: CONFIG = Debug
-demo demo-debug: all
-	$(DEMO) scripts/demo.sh $(APP)/Contents/MacOS/Kido
+demo demo-debug demo-build demo-stop: DERIVED = build/xcode.noindex/derived-demo
+demo demo-debug demo-build: APP = $(DERIVED)/Build/Products/$(CONFIG)/KidoDev.app
+demo demo-debug demo-build: XCODE_SETTINGS += PRODUCT_BUNDLE_IDENTIFIER=com.andreypopp.kido.dev KIDO_PRODUCT_NAME=KidoDev INFOPLIST_KEY_CFBundleDisplayName=KidoDev
+demo demo-debug demo-build: all
+demo demo-debug:
+	$(DEMO) scripts/demo.sh $(APP)/Contents/MacOS/KidoDev
 
 demo-stop:
-	$(DEMO) scripts/demo.sh stop $(DERIVED)/Build/Products/Release/Kido.app/Contents/MacOS/Kido
+	$(DEMO) scripts/demo.sh stop $(DERIVED)/Build/Products/Release/KidoDev.app/Contents/MacOS/KidoDev
 
 test: all
 	cd Packages/TmuxControl && swift test
 	cd Packages/SidebarFeed && swift test
 
 clean:
-	rm -rf build/xcode.noindex/derived build/xcode.noindex/derived-tsan build/xcode.noindex/derived-asan build/xcode.noindex/derived-stress build/xcode.noindex/derived-tsan-stress build/xcode.noindex/derived-asan-stress Kido.xcodeproj
+	rm -rf build/xcode.noindex/derived build/xcode.noindex/derived-demo build/xcode.noindex/derived-tsan build/xcode.noindex/derived-asan build/xcode.noindex/derived-stress build/xcode.noindex/derived-tsan-stress build/xcode.noindex/derived-asan-stress Kido.xcodeproj
