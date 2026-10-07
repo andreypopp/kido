@@ -348,14 +348,8 @@ let new_window ?socket ?(remain_on_exit = true) ~session ~name ~cwd ~env command
     | Error e when window_exists ?socket w.window_id -> Error e
     | Ok _ | Error _ -> Ok w
 
-let session_window ?socket session =
-  exec ?socket [ "display-message"; "-p"; "-t"; session ^ ":"; "#{window_id}" ]
-
-let new_shell ~socket ~session ~cwd_from =
+let new_shell ~socket ~session ~cwd =
   let open Result.Infix in
-  let* cwd =
-    exec ?socket [ "display-message"; "-p"; "-t"; cwd_from ^ ":"; "#{pane_current_path}" ]
-  in
   if String.is_empty cwd then Error "no current pane directory"
   else
     let* out =

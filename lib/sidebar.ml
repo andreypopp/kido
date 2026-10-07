@@ -669,26 +669,15 @@ type _ request =
   | Delete_ask : Ask.id -> (unit, string) result request
   | Release_side_focus : (unit, string) result request
 
-let handle : type a. model -> a request -> model * a =
- fun m request ->
+let handle : type a. socket:string option -> dir:string -> client:string -> a request -> a =
+ fun ~socket ~dir ~client request ->
   let switched result =
     Result.map (Option.map (fun (session, window) -> { session; window })) result
   in
-  let jump panes (target : client) =
-    if
-      not
-        (List.exists
-           (fun (p : P.t) ->
-             String.equal p.session_id target.session
-             && String.equal p.window_id target.window
-             && String.equal p.pane_id target.pane)
-           panes)
-    then Error "no such pane in session/window"
-    else
-      Result.map
-        (fun () -> target)
-        (Tmux.Exec.jump ?socket:m.opts.socket ~client:m.opts.client ~session:target.session
-           ~window:target.window target.pane)
+  let jump (target : client) =
+    Result.map
+      (fun () -> target)
+      (Tmux.Exec.jump ?socket ~client ~session:target.session ~window:target.window target.pane)
   in
   let create session =
     let open Result.Infix in
@@ -696,93 +685,93 @@ let handle : type a. model -> a request -> model * a =
       match session with
       | Some session -> Ok session
       | None -> (
-          match Tmux.Exec.client_state ?socket:m.opts.socket m.opts.client with
+          match Tmux.Exec.client_state ?socket client with
           | Some c -> Ok c.session_id
           | None -> Error "no current tmux session")
     in
-    let* panes = Tmux.Exec.list_panes ?socket:m.opts.socket () in
-    if not (List.exists (fun (p : P.t) -> String.equal p.session_id cwd_from) panes) then
-      Error "no such session"
-    else
-      let* session, window, pane = Tmux.Exec.new_shell ~socket:m.opts.socket ~session ~cwd_from in
-      let target = { session; window; pane } in
-      Result.map_err
-        (fun e -> Printf.sprintf "created %s:%s.%s but selection failed: %s" session window pane e)
-        (Result.map
-           (fun () -> target)
-           (Tmux.Exec.jump ?socket:m.opts.socket ~client:m.opts.client ~session ~window pane))
-  in
-  let select (target : switched) =
-    let open Result.Infix in
-    let* panes = Tmux.Exec.list_panes ?socket:m.opts.socket () in
-    match
-      List.find_opt
-        (fun (p : P.t) ->
-          String.equal p.session_id target.session
-          && String.equal p.window_id target.window
-          && p.active)
-        panes
-    with
-    | None -> Error "no such window in session"
-    | Some p -> jump panes { session = target.session; window = target.window; pane = p.pane_id }
+    let* panes = Tmux.Exec.list_panes ?socket () in
+    match List.find_opt (fun (p : P.t) -> String.equal p.session_id cwd_from && p.active) panes with
+    | None -> Error "no such session"
+    | Some p ->
+        let* session, window, pane = Tmux.Exec.new_shell ~socket ~session ~cwd:p.current_path in
+        Result.map_err
+          (fun e ->
+            Printf.sprintf "created %s:%s.%s but selection failed: %s" session window pane e)
+          (jump { session; window; pane })
   in
   match request with
-  | Select_window target -> (m, select target)
-  | Select_session session ->
-      ( m,
-        Result.flat_map
-          (fun window -> select { session; window })
-          (Tmux.Exec.session_window ?socket:m.opts.socket session) )
-  | New_window session -> (m, create (Some session))
-  | New_session -> (m, create None)
+  | Select_window target -> (
+      let open Result.Infix in
+      let* panes = Tmux.Exec.list_panes ?socket () in
+      match
+        List.find_opt
+          (fun (p : P.t) ->
+            String.equal p.session_id target.session
+            && String.equal p.window_id target.window
+            && p.active)
+          panes
+      with
+      | None -> Error "no such window in session"
+      | Some p -> jump { session = target.session; window = target.window; pane = p.pane_id })
+  | Select_session session -> (
+      let open Result.Infix in
+      let* panes = Tmux.Exec.list_panes ?socket () in
+      match
+        List.find_opt (fun (p : P.t) -> String.equal p.session_id session && p.active) panes
+      with
+      | None -> Error "no such window in session"
+      | Some p -> jump { session; window = p.window_id; pane = p.pane_id })
+  | New_window session -> create (Some session)
+  | New_session -> create None
   | Jump target ->
-      ( m,
-        Result.flat_map
-          (fun panes -> jump panes target)
-          (Tmux.Exec.list_panes ?socket:m.opts.socket ()) )
+      let open Result.Infix in
+      let* panes = Tmux.Exec.list_panes ?socket () in
+      if
+        List.exists
+          (fun (p : P.t) ->
+            String.equal p.session_id target.session
+            && String.equal p.window_id target.window
+            && String.equal p.pane_id target.pane)
+          panes
+      then jump target
+      else Error "no such pane in session/window"
   | Activate_ask id -> (
       let open Result.Infix in
-      ( m,
-        let* ask =
-          match Ask.read ~dir:m.opts.dir id with
-          | Some ask -> Ok ask
-          | None -> Error ("no ask " ^ Ask.string_of_id id)
-        in
-        let* current =
-          match Tmux.Exec.client_state ?socket:m.opts.socket m.opts.client with
-          | Some c -> Ok c
-          | None -> Error "no current tmux session"
-        in
-        let* pane =
-          Ask.target ~socket:m.opts.socket ~dir:m.opts.dir ~session:current.session_id ask
-        in
-        let* panes = Tmux.Exec.list_panes ?socket:m.opts.socket () in
-        let candidates = List.filter (fun (p : P.t) -> String.equal p.pane_id pane) panes in
-        let target =
-          match
-            List.find_opt (fun (p : P.t) -> String.equal p.session_id current.session_id) candidates
-          with
-          | Some p -> Some p
-          | None -> List.head_opt candidates
-        in
-        match target with
-        | None -> Error "asking agent has no pane"
-        | Some p -> jump panes { session = p.session_id; window = p.window_id; pane } ))
-  | Delete_ask id -> (m, Ask.remove ~dir:m.opts.dir ~self:"" id)
-  | Release_side_focus -> (m, Tmux.Exec.release_side_focus ?socket:m.opts.socket m.opts.client)
+      let* ask =
+        match Ask.read ~dir id with
+        | Some ask -> Ok ask
+        | None -> Error ("no ask " ^ Ask.string_of_id id)
+      in
+      let* current =
+        match Tmux.Exec.client_state ?socket client with
+        | Some c -> Ok c
+        | None -> Error "no current tmux session"
+      in
+      let* pane = Ask.target ~socket ~dir ~session:current.session_id ask in
+      let* panes = Tmux.Exec.list_panes ?socket () in
+      let candidates = List.filter (fun (p : P.t) -> String.equal p.pane_id pane) panes in
+      let target =
+        match
+          List.find_opt (fun (p : P.t) -> String.equal p.session_id current.session_id) candidates
+        with
+        | Some p -> Some p
+        | None -> List.head_opt candidates
+      in
+      match target with
+      | None -> Error "asking agent has no pane"
+      | Some p -> jump { session = p.session_id; window = p.window_id; pane })
+  | Delete_ask id -> Ask.remove ~dir ~self:"" id
+  | Release_side_focus -> Tmux.Exec.release_side_focus ?socket client
   | Switch_window direction ->
-      ( m,
-        switched
-          (Result.flat_map
-             (fun panes ->
-               let states = State.by_pane (State.load_live ~dir:m.opts.dir) in
-               Tmux.Exec.switch_window ?socket:m.opts.socket ~client:m.opts.client
-                 ~next:(match direction with Next -> true | Prev -> false)
-                 (windows_in_order panes states
-                    (lingering_subagents ~dir:m.opts.dir panes String_map.empty)))
-             (Tmux.Exec.list_panes ?socket:m.opts.socket ())) )
+      switched
+        (Result.flat_map
+           (fun panes ->
+             let states = State.by_pane (State.load_live ~dir) in
+             Tmux.Exec.switch_window ?socket ~client
+               ~next:(match direction with Next -> true | Prev -> false)
+               (windows_in_order panes states (lingering_subagents ~dir panes String_map.empty)))
+           (Tmux.Exec.list_panes ?socket ()))
   | Switch_session direction ->
-      ( m,
-        switched
-          (Tmux.Exec.switch_session ~socket:m.opts.socket ~client:m.opts.client
-             ~next:(match direction with Next -> true | Prev -> false)) )
+      switched
+        (Tmux.Exec.switch_session ~socket ~client
+           ~next:(match direction with Next -> true | Prev -> false))

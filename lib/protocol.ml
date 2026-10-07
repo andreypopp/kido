@@ -103,27 +103,6 @@ let decode line =
 
 let error id message = `Assoc [ ("reply", `Assoc [ ("id", `Int id); ("error", `String message) ]) ]
 
-let switched_reply id result =
-  `Assoc
-    [
-      ( "reply",
-        `Assoc
-          (("id", `Int id)
-          :: [
-               (match result with
-               | Error e -> ("error", `String e)
-               | Ok target ->
-                   ( "switched",
-                     Option.map_or ~default:`Null
-                       (fun (target : Sidebar.switched) ->
-                         `Assoc
-                           [
-                             ("session", `String target.session); ("window", `String target.window);
-                           ])
-                       target ));
-             ]) );
-    ]
-
 let location (c : Sidebar.client) =
   `Assoc [ ("session", `String c.session); ("window", `String c.window); ("pane", `String c.pane) ]
 
@@ -131,11 +110,15 @@ let result_reply id key encode = function
   | Error e -> error id e
   | Ok value -> `Assoc [ ("reply", `Assoc [ ("id", `Int id); (key, encode value) ]) ]
 
+let switched =
+  Option.map_or ~default:`Null (fun (target : Sidebar.switched) ->
+      `Assoc [ ("session", `String target.session); ("window", `String target.window) ])
+
 let reply : type a. int -> a Sidebar.request -> a -> Yojson.Safe.t =
  fun id request response ->
   match request with
-  | Sidebar.Switch_window _ -> switched_reply id response
-  | Sidebar.Switch_session _ -> switched_reply id response
+  | Sidebar.Switch_window _ -> result_reply id "switched" switched response
+  | Sidebar.Switch_session _ -> result_reply id "switched" switched response
   | Sidebar.New_window _ -> result_reply id "created" location response
   | Sidebar.New_session -> result_reply id "created" location response
   | Sidebar.Select_window _ -> result_reply id "selected" location response

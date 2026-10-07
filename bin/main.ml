@@ -399,24 +399,13 @@ let switch name doc kind =
            [ client; Tmux.Exec.getenv "TMUX_SIDE_CLIENT" ]
          |> Option.get_lazy Tmux.Exec.current_client
        in
-       let model =
-         Sidebar.make ~now:Unix.gettimeofday
-           {
-             interval = Sidebar.default_interval;
-             client;
-             socket;
-             dir;
-             threshold = State.stall_threshold ();
-             grace = Reap.grace ();
-           }
-       in
        let direction = if next then Sidebar.Next else Sidebar.Prev in
        let request =
          match kind with
          | `Session -> Sidebar.Switch_session direction
          | `Window -> Sidebar.Switch_window direction
        in
-       ignore (ok (snd (Sidebar.handle model request)));
+       ignore (ok (Sidebar.handle ~socket ~dir ~client request));
        0
 
 let switch_session =
@@ -784,32 +773,26 @@ let rpc =
                  Queue.clear input;
                  l)
            in
-           let m =
-             List.fold_left
-               (fun m -> function
-                 | Line l -> (
-                     match Protocol.decode l with
-                     | Request (id, Any request) -> (
-                         try
-                           let m, response = Sidebar.handle m request in
-                           write (Yojson.Safe.to_string (Protocol.reply id request response));
-                           m
-                         with
-                         | Sys_error e ->
-                             write (Yojson.Safe.to_string (Protocol.error id e));
-                             m
-                         | Unix.Unix_error (e, fn, arg) ->
-                             write
-                               (Yojson.Safe.to_string
-                                  (Protocol.error id (Fs.unix_message e fn arg)));
-                             m)
-                     | Invalid (id, error) ->
-                         write (Yojson.Safe.to_string (Protocol.error id error));
-                         m
-                     | Ignored -> m)
-                 | Eof | Read_error _ -> m)
-               m inputs
-           in
+           List.iter
+             (function
+               | Line l -> (
+                   match Protocol.decode l with
+                   | Request (id, Any request) -> (
+                       try
+                         let response =
+                           Sidebar.handle ~socket:opts.socket ~dir:opts.dir ~client:opts.client
+                             request
+                         in
+                         write (Yojson.Safe.to_string (Protocol.reply id request response))
+                       with
+                       | Sys_error e -> write (Yojson.Safe.to_string (Protocol.error id e))
+                       | Unix.Unix_error (e, fn, arg) ->
+                           write
+                             (Yojson.Safe.to_string (Protocol.error id (Fs.unix_message e fn arg))))
+                   | Invalid (id, error) -> write (Yojson.Safe.to_string (Protocol.error id error))
+                   | Ignored -> ())
+               | Eof | Read_error _ -> ())
+             inputs;
            let last =
              if not changed then last
              else

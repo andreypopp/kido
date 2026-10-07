@@ -220,8 +220,8 @@ let set_search m search = redraw { m with search } m.side
 
 let request m req =
   try
-    let side, response = S.handle m.side req in
-    ({ m with side }, response)
+    let opts = m.side.opts in
+    (m, S.handle ~socket:opts.socket ~dir:opts.dir ~client:opts.client req)
   with
   | Sys_error e -> (m, Error e)
   | Unix.Unix_error (e, fn, arg) -> (m, Error (Fs.unix_message e fn arg))

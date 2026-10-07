@@ -156,4 +156,4 @@ type _ request =
   | Release_side_focus : (unit, string) result request
       (** Return tmux keyboard focus to the terminal; Ok means the client refresh succeeded. *)
 
-val handle : model -> 'a request -> model * 'a
+val handle : socket:string option -> dir:string -> client:string -> 'a request -> 'a

@@ -66,12 +66,10 @@ val new_window :
   string list ->
   (window, string) result
 
-val session_window : ?socket:string -> string -> (string, string) result
-
 val new_shell :
   socket:string option ->
   session:string option ->
-  cwd_from:string ->
+  cwd:string ->
   (string * string * string, string) result
 
 val kill_window : ?socket:string -> string -> (unit, string) result
