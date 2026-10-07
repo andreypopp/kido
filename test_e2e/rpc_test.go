@@ -382,6 +382,29 @@ func TestRpcMatchesTheTUI(t *testing.T) {
 	}
 }
 
+func TestRpcWindowRename(t *testing.T) {
+	t.Parallel()
+	h := start(t, "alpha")
+	h.in("rename-window", "-t", "alpha:", "before-rename")
+	h.in("split-window", "-d", "-t", "alpha:")
+	f := h.startFeed("alpha")
+	for _, name := range []string{"before-rename", "after-rename"} {
+		if name == "after-rename" {
+			h.in("rename-window", "-t", "alpha:", name)
+		}
+		f.waitLast(func(s feedSnapshot) bool {
+			for _, session := range s.Sessions {
+				for _, node := range session.Nodes {
+					if node.Kind == "window" && node.Name == name && len(node.Children) == 2 {
+						return true
+					}
+				}
+			}
+			return false
+		}, "window group named "+name)
+	}
+}
+
 func TestRpcRunStartedWithActivity(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")

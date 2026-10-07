@@ -993,6 +993,10 @@ let%expect_test
   Printf.printf "ts only: %b\n" (Sidebar.same (snap test_at) (snap (test_at +. 60.)));
   Printf.printf "status: %b\n" (Sidebar.same (snap test_at) (snap ~status:Idle test_at));
   let p = pane ~command:"zsh" "%1" in
+  Printf.printf "layout: %b\n"
+    (Sidebar.same
+       { Sidebar.empty with panes = [ p ] }
+       { Sidebar.empty with panes = [ { p with window_layout = "x" } ] });
   Printf.printf "window name: %b\n"
     (Sidebar.same
        { Sidebar.empty with panes = [ p ] }
@@ -1009,7 +1013,8 @@ let%expect_test
     {|
     ts only: true
     status: false
-    window name: true
+    layout: true
+    window name: false
     exit: false
     command: false
     |}]

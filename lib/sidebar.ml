@@ -182,7 +182,6 @@ let same a b =
     {
       p with
       window_index = 0;
-      window_name = "";
       window_layout = "";
       current_path = "";
       active = false;
