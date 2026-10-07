@@ -11,6 +11,13 @@ import SidebarFeed
     let routes = WindowRoutes()
     private var ordinaryLaunchEvent = true
 
+    #if KIDO_VISUAL
+    init(runtime: GhosttyRuntime? = nil) {
+        self.runtime = runtime
+        super.init()
+    }
+    #endif
+
     func applicationWillFinishLaunching(_ notification: Notification) {
         let event = NSAppleEventManager.shared().currentAppleEvent
         ordinaryLaunchEvent = event.map { $0.eventClass == AEEventClass(kCoreEventClass) && $0.eventID == AEEventID(kAEOpenApplication) } ?? true
@@ -132,7 +139,10 @@ import SidebarFeed
         let file = NSMenu(title: "File")
         let newWindow = item("New Window", #selector(PaneView.runCommand(_:)), "t", .command)
         newWindow.representedObject = PaneCommand.newWindow
-        file.items = [item("New Session", #selector(newSession), "n", .command), newWindow]
+        file.items = [item("New Session", #selector(newSession), "n", .command), newWindow,
+                      .separator(), item("New Local Window", #selector(newLocalWindow), "", []),
+                      item("Connect to Remote Host…", #selector(connectRemoteHost), "", [])]
+        for entry in file.items.suffix(2) { entry.target = self }
         let find = NSMenu(title: "Find")
         find.items = [
             item("Find…", #selector(PaneView.showFind(_:)), "f", .command),
@@ -154,6 +164,9 @@ import SidebarFeed
     @objc private func resetClipboardPermissions() {
         WindowOwner.resetClipboardPermissions(owners)
     }
+
+    @objc func newLocalWindow() { routes.ordinaryOpen() }
+    @objc private func connectRemoteHost() { RemoteHostDialog(routes: routes).show(on: NSApp.keyWindow) }
 
     @objc private func newSession() { current?.newSession() }
     @objc private func nextAttention() { current?.nextAttention() }
