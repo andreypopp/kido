@@ -1243,7 +1243,7 @@ let%expect_test
   let show filter =
     Printf.printf "%S: %s\n" filter
       (String.concat " | "
-         (List.map (Ui.row_text ~now:m.at) (lines { m with search = Some filter })))
+         (List.map (Ui.row_text ~now:m.at) (Array.to_list (Ui.lines ~search:filter (Sidebar.rebuild m)))))
   in
   show "";
   show "zz";
@@ -1342,7 +1342,7 @@ let%expect_test "a snapshot as the feed sends it" =
         lingering = Sidebar.lingering_subagents ~dir panes State.String_map.empty;
       }
   in
-  let json m = Option.get_exn_or "client" (Sidebar.to_json m) in
+  let json m = Option.get_exn_or "client" (Protocol.snapshot m) in
   print_endline (Yojson.Safe.pretty_to_string (json m));
   print_endline
     (Yojson.Safe.to_string
@@ -1354,7 +1354,6 @@ let%expect_test "a snapshot as the feed sends it" =
     {
       "v": 2,
       "client": { "session": "$0", "window": "@1", "pane": "%1" },
-      "filter": "",
       "error": null,
       "sessions": [
         {
@@ -1459,7 +1458,7 @@ let%expect_test "a snapshot as the feed sends it" =
         }
       ]
     }
-    {"v":2,"client":{"session":"$0","window":"@1","pane":"%1"},"filter":"","error":"tmux: gone","sessions":[]}
+    {"v":2,"client":{"session":"$0","window":"@1","pane":"%1"},"error":"tmux: gone","sessions":[]}
     |}]
 
 let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" =
@@ -1491,13 +1490,12 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
         lingering = Sidebar.lingering_subagents ~dir panes State.String_map.empty;
       }
   in
-  print_endline (Yojson.Safe.pretty_to_string (Option.get_exn_or "client" (Sidebar.to_json m)));
+  print_endline (Yojson.Safe.pretty_to_string (Option.get_exn_or "client" (Protocol.snapshot m)));
   [%expect
     {|
     {
       "v": 2,
       "client": { "session": "$0", "window": "@1", "pane": "%1" },
-      "filter": "",
       "error": null,
       "sessions": [
         {

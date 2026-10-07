@@ -244,7 +244,6 @@ type model = {
   snap : snapshot;
   sessions : section list;
   client : client option;
-  search : string option;
   started : float;
   seen : float String_map.t;
   phases : phase String_map.t;
@@ -261,7 +260,6 @@ let make ~now opts =
     snap = empty;
     sessions = [];
     client = None;
-    search = None;
     started = at;
     seen = String_map.empty;
     phases = String_map.empty;
@@ -598,33 +596,30 @@ let fuzzy pattern s =
   in
   go 0 0 0 0
 
+let filter text sessions =
+  if String.is_empty text then sessions
+  else
+    let rec node = function
+      | Item i -> item i
+      | Group g -> List.concat_map item (g.first :: g.rest)
+    and item i =
+      (match (i.row.kind, i.row.title) with
+      | Agent, title -> [ String.concat "" (List.map (fun s -> s.text) title) ]
+      | Ssh, _ :: host :: _ -> [ host.text ]
+      | _ -> [])
+      @ List.concat_map node i.children
+    in
+    List.filter_map
+      (fun (s : section) ->
+        List.filter_map (fuzzy text) (s.name :: List.concat_map node s.nodes)
+        |> List.reduce max
+        |> Option.map (fun score -> (score, s)))
+      sessions
+    |> List.stable_sort (fun (a, _) (b, _) -> Int.compare b a)
+    |> List.map snd
+
 let rebuild m =
   let order = P.order_sessions m.snap.panes in
-  let order =
-    match m.search with
-    | None -> order
-    | Some filter ->
-        List.filter_map
-          (fun (s : P.session) ->
-            let texts =
-              s.name
-              :: List.concat_map
-                   (List.filter_map (fun (p : P.t) ->
-                        match agent_title_of m p with
-                        | Some t -> Some t
-                        | None ->
-                            Option.map
-                              (fun (x : Procs.ssh_session) -> x.host)
-                              (Procs.Int_map.find_opt p.pane_pid m.snap.ssh)))
-                   s.windows
-            in
-            List.filter_map (fuzzy filter) texts
-            |> List.reduce max
-            |> Option.map (fun score -> (score, s)))
-          order
-        |> List.stable_sort (fun (a, _) (b, _) -> Int.compare b a)
-        |> List.map snd
-  in
   let sessions =
     List.map
       (fun (s : P.session) ->
@@ -672,146 +667,26 @@ let step m (snap : snapshot) =
   let m = track { m with at = m.now (); clock; snap; client } in
   if (not (same snap was)) || pending then (rebuild m, true) else (m, false)
 
-type command =
-  | Filter of string option
-  | Switch of int * [ `Window | `Session ] * bool
-  | Invalid of int * string
-  | Ignored
+type direction = Next | Prev
+type switched = { session : string; window : string }
 
-let command line =
-  match Yojson.Safe.from_string line with
-  | `Assoc [ ("filter", `String text) ] -> Filter (if String.is_empty text then None else Some text)
-  | `Assoc fields -> (
-      match
-        ( List.assoc_opt ~eq:String.equal "id" fields,
-          List.assoc_opt ~eq:String.equal "switch-window" fields,
-          List.assoc_opt ~eq:String.equal "switch-session" fields )
-      with
-      | Some (`Int id), Some (`Assoc [ ("direction", `String direction) ]), None
-      | Some (`Int id), None, Some (`Assoc [ ("direction", `String direction) ])
-        when String.equal direction "next" || String.equal direction "prev" ->
-          Switch
-            ( id,
-              (if List.mem_assoc ~eq:String.equal "switch-window" fields then `Window else `Session),
-              String.equal direction "next" )
-      | Some (`Int id), _, _ -> Invalid (id, "invalid or unknown request")
-      | _ -> Ignored)
-  | _ -> Ignored
-  | exception Yojson.Json_error _ -> Ignored
+type _ request =
+  | Switch_window : direction -> (switched option, string) result request
+  | Switch_session : direction -> (switched option, string) result request
 
-let role_name : role -> string = function
-  | `Plain -> "plain"
-  | `Current -> "current"
-  | `Proc -> "proc"
-  | `Dim -> "dim"
-  | `Err -> "err"
-  | `Running -> "running"
-  | `Waiting -> "waiting"
-  | `Compacting -> "compacting"
-  | `Done -> "done"
-  | `Stalled -> "stalled"
-
-let kind = function
-  | Status s -> State.string_of_status s
-  | Unknown -> "unknown"
-  | Done -> "done"
-  | Failed -> "failed"
-  | Stalled -> "stalled"
-  | Gone _ -> "gone"
-
-let indicator_json = function
-  | None -> `Null
-  | Some i ->
-      `Assoc
-        (("kind", `String (kind i))
-        ::
-        (match i with
-        | Gone o ->
-            [
-              ( "outcome",
-                Option.map_or ~default:`Null (fun o -> `String (Subrun.string_of_result o)) o );
-            ]
-        | Status _ | Unknown | Done | Failed | Stalled -> []))
-
-let to_json m =
-  let panes =
-    List.fold_left
-      (fun panes (p : P.t) ->
-        if String_map.mem p.pane_id panes then panes else String_map.add p.pane_id p panes)
-      String_map.empty m.snap.panes
+let handle : type a. model -> a request -> model * a =
+ fun m request ->
+  let switched result =
+    Result.map (Option.map (fun (session, window) -> { session; window })) result
   in
-  let spans l =
-    `List
-      (List.map
-         (fun s -> `Assoc [ ("text", `String s.text); ("role", `String (role_name s.role)) ])
-         l)
-  in
-  let rec node = function
-    | Group g ->
-        `Assoc
-          [
-            ("kind", `String "window");
-            ("id", `String g.first.row.window);
-            ("window", `String g.first.row.window);
-            ("name", `String g.name);
-            ("children", `List (List.map item (g.first :: g.rest)));
-          ]
-    | Item i -> item i
-  and item i =
-    let r = i.row in
-    let run, started =
-      match String_map.find_opt r.pane panes with
-      | Some p -> (
-          match Option.flat_map (fun run -> String_map.find_opt run m.snap.lingering) p.run with
-          | Some l ->
-              ( `String (Subrun.string_of_kind l.kind),
-                if Option.is_none p.dead_at && Option.is_none l.outcome then `Float l.started
-                else `Null )
-          | None -> (`Null, `Null))
-      | None -> (`Null, `Null)
-    in
-    `Assoc
-      [
-        ( "kind",
-          `String
-            (match r.kind with Agent -> "agent" | Run -> "run" | Ssh -> "ssh" | Shell -> "shell") );
-        ("id", `String r.pane);
-        ("pane", `String r.pane);
-        ("window", `String r.window);
-        ("indicator", indicator_json r.indicator);
-        ("title", spans r.title);
-        ("tail", spans (match r.caption with Text tail -> tail | Elapsed _ -> []));
-        ("run", run);
-        ("started", started);
-        ("attention", `Bool (attention m r.pane));
-        ("children", `List (List.map node i.children));
-      ]
-  in
-  Option.map
-    (fun (c : client) ->
-      `Assoc
-        [
-          ("v", `Int 2);
-          ( "client",
-            `Assoc
-              [
-                ("session", `String c.session);
-                ("window", `String c.window);
-                ("pane", `String c.pane);
-              ] );
-          ("filter", `String (Option.get_or ~default:"" m.search));
-          ("error", Option.map_or ~default:`Null (fun e -> `String e) m.snap.err);
-          ( "sessions",
-            `List
-              (List.map
-                 (fun s ->
-                   `Assoc
-                     [
-                       ("id", `String s.id);
-                       ("name", `String s.name);
-                       ("current", `Bool s.current);
-                       ("nodes", `List (List.map node s.nodes));
-                     ])
-                 m.sessions) );
-        ])
-    m.client
+  match request with
+  | Switch_window direction ->
+      ( m,
+        switched
+          (switch_window ~socket:m.opts.socket ~dir:m.opts.dir ~client:m.opts.client
+             ~next:(match direction with Next -> true | Prev -> false)) )
+  | Switch_session direction ->
+      ( m,
+        switched
+          (Tmux.Exec.switch_session ~socket:m.opts.socket ~client:m.opts.client
+             ~next:(match direction with Next -> true | Prev -> false)) )

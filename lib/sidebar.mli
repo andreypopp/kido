@@ -87,7 +87,6 @@ type model = {
   snap : snapshot;
   sessions : section list;
   client : client option;
-  search : string option;
   started : float;
   seen : float String_map.t;
   phases : phase String_map.t;
@@ -129,15 +128,16 @@ val switch_window :
   next:bool ->
   ((string * string) option, string) result
 
+val filter : string -> section list -> section list
 val rebuild : model -> model
 val poll : ?wait:float -> opts:options -> Tmux.Conn.t -> snapshot -> snapshot
 val step : model -> snapshot -> model * bool
 
-type command =
-  | Filter of string option
-  | Switch of int * [ `Window | `Session ] * bool
-  | Invalid of int * string
-  | Ignored
+type direction = Next | Prev
+type switched = { session : string; window : string }
 
-val command : string -> command
-val to_json : model -> Yojson.Safe.t option
+type _ request =
+  | Switch_window : direction -> (switched option, string) result request
+  | Switch_session : direction -> (switched option, string) result request
+
+val handle : model -> 'a request -> model * 'a

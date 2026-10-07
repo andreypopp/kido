@@ -769,37 +769,36 @@ let rpc =
                  Queue.clear input;
                  l)
            in
-           let search =
+           let m =
              List.fold_left
-               (fun search -> function
+               (fun m -> function
                  | Line l -> (
-                     match Sidebar.command l with
-                     | Filter f -> f
-                     | Switch (id, kind, next) ->
-                         let result =
-                           match kind with
-                           | `Window ->
-                               Sidebar.switch_window ~socket:(Some socket) ~dir ~client ~next
-                           | `Session ->
-                               Tmux.Exec.switch_session ~socket:(Some socket) ~client ~next
-                         in
-                         write (Yojson.Safe.to_string (Protocol.reply id result));
-                         search
+                     match Protocol.decode l with
+                     | Request (id, Any request) -> (
+                         try
+                           let m, response = Sidebar.handle m request in
+                           write (Yojson.Safe.to_string (Protocol.reply id request response));
+                           m
+                         with
+                         | Sys_error e ->
+                             write (Yojson.Safe.to_string (Protocol.error id e));
+                             m
+                         | Unix.Unix_error (e, fn, arg) ->
+                             write
+                               (Yojson.Safe.to_string
+                                  (Protocol.error id (Fs.unix_message e fn arg)));
+                             m)
                      | Invalid (id, error) ->
-                         write (Yojson.Safe.to_string (Protocol.reply id (Error error)));
-                         search
-                     | Ignored -> search)
-                 | Eof | Read_error _ -> search)
-               m.search inputs
-           in
-           let m, changed =
-             if Option.equal String.equal search m.search then (m, changed)
-             else (Sidebar.rebuild { m with search }, true)
+                         write (Yojson.Safe.to_string (Protocol.error id error));
+                         m
+                     | Ignored -> m)
+                 | Eof | Read_error _ -> m)
+               m inputs
            in
            let last =
              if not changed then last
              else
-               match Sidebar.to_json m with
+               match Protocol.snapshot m with
                | Some json ->
                    let line = Yojson.Safe.to_string json in
                    if not (String.equal line last) then write line;

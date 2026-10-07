@@ -31,8 +31,8 @@ The tick also performs idempotent reap and Claude screen probing.
 
 ## Requests and replies
 
-Stdin is one JSON object per line. {"filter":"text"} sets the filter;
-{"filter":""} clears it. Neither replies.
+Stdin is one JSON object per line. Search is client-side; filter requests
+are unknown requests.
 {"id":7,"switch-window":{"direction":"next"}} or direction "prev" uses the
 same fresh-state flat tree ordering and eligible windows as the CLI.
 Prev from a hoisted window targets its direct parent window, including a
@@ -59,7 +59,6 @@ After hello, a full snapshot is emitted when visible model data changes:
 {
   "v": 2,
   "client": { "session": "$1", "window": "@2", "pane": "%3" },
-  "filter": "",
   "error": null,
   "sessions": [
     {
@@ -98,7 +97,6 @@ After hello, a full snapshot is emitted when visible model data changes:
 ```
 
 - **`client`**: the named client's current session, window and pane ids.
-- **`filter`**: the active search string, empty when cleared.
 - **`error`**: null or a transient error string; the stream continues.
 - **`sessions`**: the
   session's top-level nodes in display order. A session is the

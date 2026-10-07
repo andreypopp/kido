@@ -10,7 +10,7 @@ type line =
   | Message of string
   | Ask of Ask.t * string option
 
-let lines (side : S.model) =
+let lines ?(search = "") (side : S.model) =
   let glyph i n = if n = 1 then "╶" else if i = 0 then "┌" else if i = n - 1 then "└" else "├" in
   let continuation i n = if i < n - 1 then "│" else " " in
   let out = ref [] in
@@ -47,7 +47,7 @@ let lines (side : S.model) =
         (fun (s : S.section) ->
           out := Header { name = s.name; current = s.current } :: !out;
           List.iter (node "" None "") s.nodes)
-        side.sessions;
+        (S.filter search side.sessions);
       Array.of_list (List.rev !out)
 
 type mode = Windows | Asks
@@ -64,6 +64,7 @@ type model = {
   status : string;
   g_pend : bool;
   mode : mode;
+  search : string option;
 }
 
 let make ?conn ~standalone side =
@@ -79,6 +80,7 @@ let make ?conn ~standalone side =
     status = "";
     g_pend = false;
     mode = Windows;
+    search = None;
   }
 
 (* Every style names its foreground: Mosaic's grid paints an explicit white on any cell left
@@ -181,7 +183,7 @@ let redraw m side =
   let prev = Option.flat_map key (CCArray.get_safe m.lines m.cursor) in
   let drawn =
     match m.mode with
-    | Windows -> lines side
+    | Windows -> lines ~search:(Option.get_or ~default:"" m.search) side
     | Asks ->
         Array.of_list
           (Header { name = "asks"; current = true }
@@ -209,7 +211,7 @@ let next_attention m delta =
   in
   if n = 0 then m else go 0 m.cursor
 
-let set_search m search = redraw m (S.rebuild { m.side with search })
+let set_search m search = redraw { m with search } m.side
 
 let release_focus m =
   match Tmux.Exec.release_side_focus m.side.opts.client with
@@ -238,7 +240,7 @@ let jump m =
       match Tmux.Exec.jump ~client:m.side.opts.client pane with
       | Error e -> ({ m with status = e }, Mosaic.Cmd.none)
       | Ok () ->
-          let m = match m.side.search with Some _ -> focus (set_search m None) pane | None -> m in
+          let m = if Option.is_some m.search then focus (set_search m None) pane else m in
           (m, if m.standalone then Mosaic.Cmd.quit else Mosaic.Cmd.none))
 
 (* C-s reaches the side job whenever it has focus (server-client.c forwards every non-mouse key
@@ -272,29 +274,27 @@ let key m (k : Mosaic.Event.key) =
   let top m = move { m with cursor = -1 } 1
   and bottom m = move { m with cursor = Array.length m.lines } (-1) in
   let leave m =
-    match (m.mode, m.side.search) with
+    match (m.mode, m.search) with
     | Asks, _ when not m.standalone ->
         none (redraw { m with mode = Windows; cursor = -1; top = 0 } m.side)
     | Asks, _ -> (m, Mosaic.Cmd.quit)
-    | Windows, search -> (
-        match search with
-        | Some _ -> none (set_search m None)
-        | None -> if m.standalone then (m, Mosaic.Cmd.quit) else none (release_focus m))
+    | Windows, Some _ -> none (set_search m None)
+    | Windows, None -> if m.standalone then (m, Mosaic.Cmd.quit) else none (release_focus m)
   in
-  let cycle next =
-    match
-      Tmux.Exec.switch_window ~client:m.side.opts.client ~next
-        (S.windows_in_order m.side.snap.panes m.side.snap.states m.side.snap.lingering)
+  let cycle direction =
+    try
+      let side, response = S.handle m.side (S.Switch_window direction) in
+      match response with Ok _ -> { m with side } | Error e -> { m with side; status = e }
     with
-    | Ok _ -> m
-    | Error e -> { m with status = e }
+    | Sys_error e -> { m with status = e }
+    | Unix.Unix_error (e, fn, arg) -> { m with status = Fs.unix_message e fn arg }
   in
-  match m.side.search with
+  match m.search with
   | Some filter when not (String.is_empty text) -> none (set_search m (Some (filter ^ text)))
   | _ -> (
       match e.key with
-      | Down when e.modifier.shift -> none (cycle true)
-      | Up when e.modifier.shift -> none (cycle false)
+      | Down when e.modifier.shift -> none (cycle S.Next)
+      | Up when e.modifier.shift -> none (cycle S.Prev)
       | Down | Line_feed -> none (move m 1)
       | Up -> none (move m (-1))
       | _ when ctrl 'j' || ctrl 'n' || is 'j' -> none (move m 1)
@@ -305,15 +305,15 @@ let key m (k : Mosaic.Event.key) =
       | _ when ctrl 'c' -> leave m
       | _ when is 'q' -> if m.standalone then (m, Mosaic.Cmd.quit) else none m
       | Backspace -> (
-          match m.side.search with
+          match m.search with
           | None -> none m
-          | Some "" -> none { m with side = { m.side with search = None } }
+          | Some "" -> none { m with search = None }
           | Some filter ->
               let rec last i =
                 if i > 0 && Char.code filter.[i] land 0xc0 = 0x80 then last (i - 1) else i
               in
               none (set_search m (Some (String.sub filter 0 (last (String.length filter - 1))))))
-      | _ when is 'a' && Option.is_none m.side.search ->
+      | _ when is 'a' && Option.is_none m.search ->
           none
             (redraw
                {
@@ -428,7 +428,7 @@ let view m =
   let footer =
     if not (String.is_empty m.status) then line (truncate m.width [ span `Err m.status ])
     else
-      match m.side.search with
+      match m.search with
       | Some filter -> line (truncate m.width [ span `Dim "/"; plain filter ])
       | None -> line []
   in

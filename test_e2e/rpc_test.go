@@ -45,7 +45,6 @@ type feedSnapshot struct {
 		Window  string `json:"window"`
 		Pane    string `json:"pane"`
 	} `json:"client"`
-	Filter   string  `json:"filter"`
 	Error    *string `json:"error"`
 	Sessions []struct {
 		ID      string    `json:"id"`
@@ -334,8 +333,15 @@ func TestRpcMatchesTheTUI(t *testing.T) {
 		return true
 	}, settle, func() string { return fmt.Sprintf("feed draws %q, TUI %q", s.drawn(), h.rows()) })
 
-	if s.V != 2 || s.Filter != "" || s.Error != nil {
-		t.Errorf("v/filter/error = %d %q %v, want 2 \"\" null: %s", s.V, s.Filter, s.Error, s.raw)
+	if s.V != 2 || s.Error != nil {
+		t.Errorf("v/error = %d %v, want 2 null: %s", s.V, s.Error, s.raw)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(s.raw), &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fields["filter"]; ok {
+		t.Fatalf("snapshot contains filter: %s", s.raw)
 	}
 	pane := h.in("display-message", "-p", "-c", f.client, "#{session_id} #{window_id} #{pane_id}")
 	if got := s.Client.Session + " " + s.Client.Window + " " + s.Client.Pane; got != pane {
@@ -520,9 +526,6 @@ func TestRpcLinkedWindowClientSession(t *testing.T) {
 	}
 }
 
-// A change is one new line; a quiet server is no line at all; the filter
-// narrows the next line and a bare "filter" clears it; an unknown command
-// is ignored; EOF on stdin is exit 0.
 func TestRpcStream(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
@@ -580,17 +583,14 @@ func TestRpcStream(t *testing.T) {
 	quiet("after the new window")
 
 	f.send(`{"filter":"bet"}`)
-	s := f.waitLast(func(s feedSnapshot) bool { return s.Filter == "bet" }, "the filter")
-	if len(s.Sessions) != 1 || s.Sessions[0].Name != "beta" {
-		t.Errorf("filtered sessions: %s", s.raw)
+	quiet("an uncorrelated filter request")
+	if s := f.last(); len(s.Sessions) != 2 {
+		t.Errorf("sessions changed by filter: %s", s.raw)
 	}
 	f.send("frobnicate")
 	quiet("an unknown command")
 	f.send(`{"filter":""}`)
-	s = f.waitLast(func(s feedSnapshot) bool { return s.Filter == "" }, "the filter cleared")
-	if len(s.Sessions) != 2 {
-		t.Errorf("unfiltered sessions: %s", s.raw)
-	}
+	quiet("an empty filter request")
 
 	f.stdin.Close()
 	select {

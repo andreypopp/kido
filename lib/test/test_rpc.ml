@@ -1,12 +1,68 @@
 open Kido
 
+let%expect_test "rpc decoder" =
+  List.iter
+    (fun line ->
+      match Protocol.decode line with
+      | Request (id, Any request) -> (
+          let show kind direction =
+            Printf.printf "%d:%s:%s\n" id kind
+              (match direction with Sidebar.Next -> "next" | Prev -> "prev")
+          in
+          match request with
+          | Sidebar.Switch_window direction -> show "window" direction
+          | Sidebar.Switch_session direction -> show "session" direction)
+      | Invalid (id, error) -> Printf.printf "%d:%s\n" id error
+      | Ignored -> print_endline "ignored")
+    [
+      {|{"filter":"hello"}|};
+      {|{"filter":""}|};
+      {|{"id":7,"switch-window":{"direction":"next"},"extra":true}|};
+      {|{"id":8,"switch-window":{"direction":"prev"}}|};
+      {|{"id":9,"switch-session":{"direction":"next"}}|};
+      {|{"id":10,"switch-session":{"direction":"prev"}}|};
+      {|{"id":11,"switch-window":{"direction":"other"}}|};
+      {|{"id":12,"switch-window":{"direction":"next","extra":true}}|};
+      {|{"id":13,"switch-window":{"direction":"next"},"switch-session":{"direction":"prev"}}|};
+      {|{"id":14,"filter":"hello"}|};
+      {|{"id":15,"unknown":true}|};
+      {|{"id":"16","switch-window":{"direction":"next"}}|};
+      {|{"switch-window":{"direction":"next"}}|};
+      {|{"filter":"hello","extra":true}|};
+      {|[]|};
+      "invalid";
+    ];
+  [%expect
+    {|
+    ignored
+    ignored
+    7:window:next
+    8:window:prev
+    9:session:next
+    10:session:prev
+    11:invalid or unknown request
+    12:invalid or unknown request
+    13:invalid or unknown request
+    14:invalid or unknown request
+    15:invalid or unknown request
+    ignored
+    ignored
+    ignored
+    ignored
+    ignored
+    |}]
+
 let%expect_test "rpc surface" =
   let emit json = print_endline (Yojson.Safe.to_string json) in
   print_endline Protocol.value;
   List.iter (fun stamp -> emit (Protocol.hello stamp)) [ Some Protocol.value; Some "other"; None ];
   List.iter
-    (fun result -> emit (Protocol.reply 7 result))
-    [ Ok (Some ("$3", "@12")); Ok None; Error "invalid or unknown request" ];
+    (fun result -> emit (Protocol.reply 7 (Sidebar.Switch_window Next) result))
+    [
+      Ok (Some { Sidebar.session = "$3"; window = "@12" });
+      Ok None;
+      Error "invalid or unknown request";
+    ];
   List.iter
     (fun server ->
       emit
@@ -93,7 +149,6 @@ let%expect_test "rpc surface" =
     {
       m with
       client = Some { session = "$0"; window = "@1"; pane = "%0" };
-      search = Some "filter";
       snap =
         {
           Sidebar.empty with
@@ -104,10 +159,10 @@ let%expect_test "rpc surface" =
       sessions = [ { id = "$0"; name = "session"; current = true; nodes } ];
     }
   in
-  emit (Option.get_exn_or "snapshot" (Sidebar.to_json m));
+  emit (Option.get_exn_or "snapshot" (Protocol.snapshot m));
   emit
     (Option.get_exn_or "error snapshot"
-       (Sidebar.to_json
+       (Protocol.snapshot
           { m with snap = { Sidebar.empty with err = Some "tmux: gone" }; sessions = [] }));
   [%expect
     {|
@@ -121,6 +176,6 @@ let%expect_test "rpc surface" =
     {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"1.1","server":"1.1"}
     {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"1.1","server":"other"}
     {"tmux":"/bin/kido-tmux","socket":"/server/socket","protocol":"1.1","server":null}
-    {"v":2,"client":{"session":"$0","window":"@1","pane":"%0"},"filter":"filter","error":null,"sessions":[{"id":"$0","name":"session","current":true,"nodes":[{"kind":"window","id":"@1","window":"@1","name":"window","children":[{"kind":"agent","id":"%0","pane":"%0","window":"@1","indicator":null,"title":[{"text":"span","role":"plain"},{"text":"span","role":"current"},{"text":"span","role":"proc"},{"text":"span","role":"dim"},{"text":"span","role":"err"},{"text":"span","role":"running"},{"text":"span","role":"waiting"},{"text":"span","role":"compacting"},{"text":"span","role":"done"},{"text":"span","role":"stalled"}],"tail":[{"text":"span","role":"plain"},{"text":"span","role":"current"},{"text":"span","role":"proc"},{"text":"span","role":"dim"},{"text":"span","role":"err"},{"text":"span","role":"running"},{"text":"span","role":"waiting"},{"text":"span","role":"compacting"},{"text":"span","role":"done"},{"text":"span","role":"stalled"}],"run":"agent","started":100.0,"attention":true,"children":[]},{"kind":"run","id":"%1","pane":"%1","window":"@1","indicator":{"kind":"running"},"title":[],"tail":[],"run":"bash","started":null,"attention":false,"children":[]},{"kind":"ssh","id":"%2","pane":"%2","window":"@1","indicator":{"kind":"waiting"},"title":[],"tail":[],"run":"stream","started":100.0,"attention":false,"children":[]},{"kind":"shell","id":"%3","pane":"%3","window":"@1","indicator":{"kind":"compacting"},"title":[],"tail":[],"run":"agent","started":null,"attention":false,"children":[]},{"kind":"agent","id":"%4","pane":"%4","window":"@1","indicator":{"kind":"idle"},"title":[],"tail":[],"run":"bash","started":100.0,"attention":false,"children":[]},{"kind":"run","id":"%5","pane":"%5","window":"@1","indicator":{"kind":"unknown"},"title":[],"tail":[],"run":"stream","started":null,"attention":false,"children":[]},{"kind":"ssh","id":"%6","pane":"%6","window":"@1","indicator":{"kind":"done"},"title":[],"tail":[],"run":"agent","started":100.0,"attention":false,"children":[]},{"kind":"shell","id":"%7","pane":"%7","window":"@1","indicator":{"kind":"failed"},"title":[],"tail":[],"run":"bash","started":null,"attention":false,"children":[]},{"kind":"agent","id":"%8","pane":"%8","window":"@1","indicator":{"kind":"stalled"},"title":[],"tail":[],"run":"stream","started":100.0,"attention":false,"children":[]},{"kind":"run","id":"%9","pane":"%9","window":"@1","indicator":{"kind":"gone","outcome":null},"title":[],"tail":[],"run":"agent","started":null,"attention":false,"children":[]},{"kind":"ssh","id":"%10","pane":"%10","window":"@1","indicator":{"kind":"gone","outcome":"completed"},"title":[],"tail":[],"run":"bash","started":100.0,"attention":false,"children":[]},{"kind":"shell","id":"%11","pane":"%11","window":"@1","indicator":{"kind":"gone","outcome":"failed"},"title":[],"tail":[],"run":"stream","started":null,"attention":false,"children":[]},{"kind":"agent","id":"%12","pane":"%12","window":"@1","indicator":{"kind":"gone","outcome":"died"},"title":[],"tail":[],"run":"agent","started":100.0,"attention":false,"children":[]},{"kind":"run","id":"%13","pane":"%13","window":"@1","indicator":{"kind":"gone","outcome":"stopped"},"title":[],"tail":[],"run":null,"started":null,"attention":false,"children":[]}]},{"kind":"agent","id":"%0","pane":"%0","window":"@1","indicator":null,"title":[{"text":"span","role":"plain"},{"text":"span","role":"current"},{"text":"span","role":"proc"},{"text":"span","role":"dim"},{"text":"span","role":"err"},{"text":"span","role":"running"},{"text":"span","role":"waiting"},{"text":"span","role":"compacting"},{"text":"span","role":"done"},{"text":"span","role":"stalled"}],"tail":[{"text":"span","role":"plain"},{"text":"span","role":"current"},{"text":"span","role":"proc"},{"text":"span","role":"dim"},{"text":"span","role":"err"},{"text":"span","role":"running"},{"text":"span","role":"waiting"},{"text":"span","role":"compacting"},{"text":"span","role":"done"},{"text":"span","role":"stalled"}],"run":"agent","started":100.0,"attention":true,"children":[{"kind":"agent","id":"%0","pane":"%0","window":"@1","indicator":null,"title":[{"text":"span","role":"plain"},{"text":"span","role":"current"},{"text":"span","role":"proc"},{"text":"span","role":"dim"},{"text":"span","role":"err"},{"text":"span","role":"running"},{"text":"span","role":"waiting"},{"text":"span","role":"compacting"},{"text":"span","role":"done"},{"text":"span","role":"stalled"}],"tail":[{"text":"span","role":"plain"},{"text":"span","role":"current"},{"text":"span","role":"proc"},{"text":"span","role":"dim"},{"text":"span","role":"err"},{"text":"span","role":"running"},{"text":"span","role":"waiting"},{"text":"span","role":"compacting"},{"text":"span","role":"done"},{"text":"span","role":"stalled"}],"run":"agent","started":100.0,"attention":true,"children":[]}]}]}]}
-    {"v":2,"client":{"session":"$0","window":"@1","pane":"%0"},"filter":"filter","error":"tmux: gone","sessions":[]}
+    {"v":2,"client":{"session":"$0","window":"@1","pane":"%0"},"error":null,"sessions":[{"id":"$0","name":"session","current":true,"nodes":[{"kind":"window","id":"@1","window":"@1","name":"window","children":[{"kind":"agent","id":"%0","pane":"%0","window":"@1","indicator":null,"title":[{"text":"span","role":"plain"},{"text":"span","role":"current"},{"text":"span","role":"proc"},{"text":"span","role":"dim"},{"text":"span","role":"err"},{"text":"span","role":"running"},{"text":"span","role":"waiting"},{"text":"span","role":"compacting"},{"text":"span","role":"done"},{"text":"span","role":"stalled"}],"tail":[{"text":"span","role":"plain"},{"text":"span","role":"current"},{"text":"span","role":"proc"},{"text":"span","role":"dim"},{"text":"span","role":"err"},{"text":"span","role":"running"},{"text":"span","role":"waiting"},{"text":"span","role":"compacting"},{"text":"span","role":"done"},{"text":"span","role":"stalled"}],"run":"agent","started":100.0,"attention":true,"children":[]},{"kind":"run","id":"%1","pane":"%1","window":"@1","indicator":{"kind":"running"},"title":[],"tail":[],"run":"bash","started":null,"attention":false,"children":[]},{"kind":"ssh","id":"%2","pane":"%2","window":"@1","indicator":{"kind":"waiting"},"title":[],"tail":[],"run":"stream","started":100.0,"attention":false,"children":[]},{"kind":"shell","id":"%3","pane":"%3","window":"@1","indicator":{"kind":"compacting"},"title":[],"tail":[],"run":"agent","started":null,"attention":false,"children":[]},{"kind":"agent","id":"%4","pane":"%4","window":"@1","indicator":{"kind":"idle"},"title":[],"tail":[],"run":"bash","started":100.0,"attention":false,"children":[]},{"kind":"run","id":"%5","pane":"%5","window":"@1","indicator":{"kind":"unknown"},"title":[],"tail":[],"run":"stream","started":null,"attention":false,"children":[]},{"kind":"ssh","id":"%6","pane":"%6","window":"@1","indicator":{"kind":"done"},"title":[],"tail":[],"run":"agent","started":100.0,"attention":false,"children":[]},{"kind":"shell","id":"%7","pane":"%7","window":"@1","indicator":{"kind":"failed"},"title":[],"tail":[],"run":"bash","started":null,"attention":false,"children":[]},{"kind":"agent","id":"%8","pane":"%8","window":"@1","indicator":{"kind":"stalled"},"title":[],"tail":[],"run":"stream","started":100.0,"attention":false,"children":[]},{"kind":"run","id":"%9","pane":"%9","window":"@1","indicator":{"kind":"gone","outcome":null},"title":[],"tail":[],"run":"agent","started":null,"attention":false,"children":[]},{"kind":"ssh","id":"%10","pane":"%10","window":"@1","indicator":{"kind":"gone","outcome":"completed"},"title":[],"tail":[],"run":"bash","started":100.0,"attention":false,"children":[]},{"kind":"shell","id":"%11","pane":"%11","window":"@1","indicator":{"kind":"gone","outcome":"failed"},"title":[],"tail":[],"run":"stream","started":null,"attention":false,"children":[]},{"kind":"agent","id":"%12","pane":"%12","window":"@1","indicator":{"kind":"gone","outcome":"died"},"title":[],"tail":[],"run":"agent","started":100.0,"attention":false,"children":[]},{"kind":"run","id":"%13","pane":"%13","window":"@1","indicator":{"kind":"gone","outcome":"stopped"},"title":[],"tail":[],"run":null,"started":null,"attention":false,"children":[]}]},{"kind":"agent","id":"%0","pane":"%0","window":"@1","indicator":null,"title":[{"text":"span","role":"plain"},{"text":"span","role":"current"},{"text":"span","role":"proc"},{"text":"span","role":"dim"},{"text":"span","role":"err"},{"text":"span","role":"running"},{"text":"span","role":"waiting"},{"text":"span","role":"compacting"},{"text":"span","role":"done"},{"text":"span","role":"stalled"}],"tail":[{"text":"span","role":"plain"},{"text":"span","role":"current"},{"text":"span","role":"proc"},{"text":"span","role":"dim"},{"text":"span","role":"err"},{"text":"span","role":"running"},{"text":"span","role":"waiting"},{"text":"span","role":"compacting"},{"text":"span","role":"done"},{"text":"span","role":"stalled"}],"run":"agent","started":100.0,"attention":true,"children":[{"kind":"agent","id":"%0","pane":"%0","window":"@1","indicator":null,"title":[{"text":"span","role":"plain"},{"text":"span","role":"current"},{"text":"span","role":"proc"},{"text":"span","role":"dim"},{"text":"span","role":"err"},{"text":"span","role":"running"},{"text":"span","role":"waiting"},{"text":"span","role":"compacting"},{"text":"span","role":"done"},{"text":"span","role":"stalled"}],"tail":[{"text":"span","role":"plain"},{"text":"span","role":"current"},{"text":"span","role":"proc"},{"text":"span","role":"dim"},{"text":"span","role":"err"},{"text":"span","role":"running"},{"text":"span","role":"waiting"},{"text":"span","role":"compacting"},{"text":"span","role":"done"},{"text":"span","role":"stalled"}],"run":"agent","started":100.0,"attention":true,"children":[]}]}]}]}
+    {"v":2,"client":{"session":"$0","window":"@1","pane":"%0"},"error":"tmux: gone","sessions":[]}
     |}]

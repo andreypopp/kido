@@ -8,7 +8,7 @@ type line =
   | Message of string
   | Ask of Ask.t * string option
 
-val lines : Sidebar.model -> line array
+val lines : ?search:string -> Sidebar.model -> line array
 
 type mode = Windows | Asks
 
@@ -24,6 +24,7 @@ type model = {
   status : string;
   g_pend : bool;
   mode : mode;
+  search : string option;
 }
 
 val make : ?conn:Tmux.Conn.t -> standalone:bool -> Sidebar.model -> model

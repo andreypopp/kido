@@ -59,12 +59,12 @@ before accepting snapshots. A rejected or incompatible hello stops the
 feed and exposes a protocol mismatch rather than retrying it as a
 transient failure. An ordinary disconnect or unreadable event causes a
 new subprocess connection, with exponential backoff capped at eight
-seconds. A snapshot resets the backoff. The client restores its filter
-on reconnect and fails pending requests rather than replaying them.
+seconds. A snapshot resets the backoff. The client fails pending requests
+on reconnect rather than replaying them.
 
 ## One model, two views
 
-`Sidebar` owns the tick, per-pane tracking, search and the typed session
+`Sidebar` owns the tick, per-pane tracking and the typed session
 and node tree. RPC serializes that model; `Ui` draws it with Mosaic. The
 model has no width, colour or layout. The TUI owns its cursor, scroll and
 keys, maps roles to styles and indicators to glyphs, and derives bracket
@@ -83,7 +83,7 @@ not through requests or per-client tmux options.
 ## Whole snapshots
 
 A snapshot holds the named client's session, window and pane location,
-the active filter, a transient error, and sessions in display order.
+a transient error, and sessions in display order.
 Each session holds its name, current marker and a tree of nodes. A
 multi-pane window is a window group containing pane items; a one-pane
 window is an item directly. Items distinguish agents, async bash runs,
@@ -120,16 +120,20 @@ transition.
 
 ## Requests and navigation
 
-A filter request sets the model's fuzzy session search; an empty string
-clears it. Matching uses session names, agent titles and ssh destinations,
-and sorts matching sessions by score. Filter requests have no reply.
-Multiple queued filter changes settle on the last value in that tick.
+Search is client-side. The model always contains all sessions; the TUI
+keeps its search text locally and applies Sidebar's pure fuzzy filter to
+the session tree it renders. Matching uses session names, agent titles
+and ssh destinations, and sorts matching sessions by score. Empty text
+keeps the original ordering. Agent titles are row title spans; an ssh
+destination is the host span following the "ssh " prefix, excluding any
+remote command text. RPC accepts no filter request and emits no filter
+field.
 
 Switch-window and switch-session requests carry an integer id and a
 `next` or `prev` direction. Each receives a correlated reply with the
 switched session and window, null if there is no eligible target, or an
 error. Switching uses fresh state through the same functions as the CLI,
-not the filtered snapshot or a client-provided ordering. A reply reports
+not a client-provided ordering. A reply reports
 the switch operation; it is not an accompanying post-switch snapshot.
 
 Sessions are ordered oldest first, with name breaking creation-time ties.
@@ -148,8 +152,7 @@ order and preserves the target session's active window. A single session
 has no session-switch target.
 
 Invalid or unknown requests with integer ids get error replies. Invalid
-JSON and requests without integer ids are ignored, apart from the valid
-filter request. Request errors do not end the stream. The stdin reader
+JSON and requests without integer ids are ignored. Request errors do not end the stream. The stdin reader
 thread only queues lines, EOF and read errors under a mutex. The tick
 drains that queue and owns the control connection and stdout writer.
 Replies and snapshots may alternate, but their JSON lines never
@@ -172,9 +175,9 @@ a new RPC subprocess performs a new hello and starts a new model.
 ## Limits of the surface
 
 RPC exposes no TUI-local cursor, scroll, keyboard focus, glyphs or layout,
-and it does not synchronize those between views. Its own filter and
-per-pane tracking belong to that subprocess. It provides only filtering
-and relative session/window navigation, not arbitrary tmux commands,
+and it does not synchronize those between views. Per-pane tracking belongs
+to that subprocess. It provides only relative session/window navigation,
+not arbitrary tmux commands,
 terminal output, pane geometry, run control or inbox delivery. The
 contract's fork dependencies describe the separate tmux capabilities an
 external client can use, not additional RPC messages.
