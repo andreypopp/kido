@@ -348,6 +348,27 @@ let new_window ?socket ?(remain_on_exit = true) ~session ~name ~cwd ~env command
     | Error e when window_exists ?socket w.window_id -> Error e
     | Ok _ | Error _ -> Ok w
 
+let session_window ?socket session =
+  exec ?socket [ "display-message"; "-p"; "-t"; session ^ ":"; "#{window_id}" ]
+
+let new_shell ~socket ~session ~cwd_from =
+  let open Result.Infix in
+  let* cwd =
+    exec ?socket [ "display-message"; "-p"; "-t"; cwd_from ^ ":"; "#{pane_current_path}" ]
+  in
+  if String.is_empty cwd then Error "no current pane directory"
+  else
+    let* out =
+      exec ?socket
+        ((match session with
+           | Some session -> [ "new-window"; "-t"; session ^ ":" ]
+           | None -> [ "new-session" ])
+        @ [ "-d"; "-P"; "-F"; "#{session_id}:#{window_id}:#{pane_id}"; "-c"; cwd ])
+    in
+    match String.split ~by:":" out with
+    | [ session; window; pane ] -> Ok (session, window, pane)
+    | _ -> Error (Printf.sprintf "created shell but could not read its location: %S" out)
+
 let kill_window ?socket window_id = run ?socket [ "kill-window"; "-t"; window_id ]
 let kill_pane ?socket pane_id = run ?socket [ "kill-pane"; "-t"; pane_id ]
 let mark_run pane_id run_id = run [ "set-option"; "-p"; "-t"; pane_id; Pane.run_option; run_id ]

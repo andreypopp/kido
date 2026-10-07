@@ -16,6 +16,16 @@ type any = Any : 'a Sidebar.request -> any
 type input = Request of int * any | Invalid of int * string | Ignored
 
 let decode line =
+  let identifier prefix = function
+    | Some (`String s)
+      when String.length s > 1
+           && Char.equal s.[0] prefix
+           && String.for_all
+                (fun c -> Char.compare c '0' >= 0 && Char.compare c '9' <= 0)
+                (String.sub s 1 (String.length s - 1)) ->
+        Some s
+    | _ -> None
+  in
   match Yojson.Safe.from_string line with
   | `Assoc fields -> (
       match List.assoc_opt ~eq:String.equal "id" fields with
@@ -29,6 +39,10 @@ let decode line =
                       "switch-window";
                       "switch-session";
                       "jump";
+                      "new-window";
+                      "new-session";
+                      "select-window";
+                      "select-session";
                       "activate-ask";
                       "delete-ask";
                       "release-side-focus";
@@ -45,16 +59,6 @@ let decode line =
                   (if String.equal key "switch-window" then Any (Sidebar.Switch_window direction)
                    else Any (Sidebar.Switch_session direction))
             | [ ("jump", `Assoc location) ] when List.length location = 3 -> (
-                let identifier prefix = function
-                  | Some (`String s)
-                    when String.length s > 1
-                         && Char.equal s.[0] prefix
-                         && String.for_all
-                              (fun c -> Char.compare c '0' >= 0 && Char.compare c '9' <= 0)
-                              (String.sub s 1 (String.length s - 1)) ->
-                      Some s
-                  | _ -> None
-                in
                 match
                   ( identifier '$' (List.assoc_opt ~eq:String.equal "session" location),
                     identifier '@' (List.assoc_opt ~eq:String.equal "window" location),
@@ -71,6 +75,22 @@ let decode line =
                        if String.equal key "activate-ask" then Any (Sidebar.Activate_ask id)
                        else Any (Sidebar.Delete_ask id))
                      (Ask.parse_id id))
+            | [ (key, value) ]
+              when String.equal key "new-window" || String.equal key "select-session" ->
+                Option.map
+                  (fun session ->
+                    if String.equal key "new-window" then Any (Sidebar.New_window session)
+                    else Any (Sidebar.Select_session session))
+                  (identifier '$' (Some value))
+            | [ ("new-session", `Bool true) ] -> Some (Any Sidebar.New_session)
+            | [ ("select-window", `Assoc target) ] when List.length target = 2 -> (
+                match
+                  ( identifier '$' (List.assoc_opt ~eq:String.equal "session" target),
+                    identifier '@' (List.assoc_opt ~eq:String.equal "window" target) )
+                with
+                | Some session, Some window ->
+                    Some (Any (Sidebar.Select_window { session; window }))
+                | _ -> None)
             | [ ("release-side-focus", `Bool true) ] -> Some (Any Sidebar.Release_side_focus)
             | _ -> None
           in
@@ -116,6 +136,10 @@ let reply : type a. int -> a Sidebar.request -> a -> Yojson.Safe.t =
   match request with
   | Sidebar.Switch_window _ -> switched_reply id response
   | Sidebar.Switch_session _ -> switched_reply id response
+  | Sidebar.New_window _ -> result_reply id "created" location response
+  | Sidebar.New_session -> result_reply id "created" location response
+  | Sidebar.Select_window _ -> result_reply id "selected" location response
+  | Sidebar.Select_session _ -> result_reply id "selected" location response
   | Sidebar.Jump _ -> result_reply id "jumped" location response
   | Sidebar.Activate_ask _ -> result_reply id "activated" location response
   | Sidebar.Delete_ask _ -> result_reply id "deleted" (fun () -> `Bool true) response

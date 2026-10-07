@@ -66,6 +66,14 @@ val new_window :
   string list ->
   (window, string) result
 
+val session_window : ?socket:string -> string -> (string, string) result
+
+val new_shell :
+  socket:string option ->
+  session:string option ->
+  cwd_from:string ->
+  (string * string * string, string) result
+
 val kill_window : ?socket:string -> string -> (unit, string) result
 val kill_pane : ?socket:string -> string -> (unit, string) result
 val mark_run : string -> string -> (unit, string) result

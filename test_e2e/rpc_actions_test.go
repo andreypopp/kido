@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -163,4 +164,118 @@ func TestRpcAskActivateReviveDeleteExplicitSocket(t *testing.T) {
 	f.waitReply(fmt.Sprintf(`{"reply":{"id":5,"error":%q}}`, "no ask "+id))
 	f.send(fmt.Sprintf(`{"id":6,"delete-ask":%q}`, id))
 	f.waitReply(fmt.Sprintf(`{"reply":{"id":6,"error":%q}}`, "no ask "+id))
+}
+
+func (f *feed) waitLocationReply(id int, key string) (session, window, pane string) {
+	f.h.t.Helper()
+	f.h.waitFor(func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, line := range f.lines {
+			var event struct {
+				Reply struct {
+					ID                int    `json:"id"`
+					Error             string `json:"error"`
+					Created, Selected struct{ Session, Window, Pane string }
+				} `json:"reply"`
+			}
+			if json.Unmarshal([]byte(line.raw), &event) != nil || event.Reply.ID != id {
+				continue
+			}
+			if event.Reply.Error != "" {
+				f.h.t.Fatalf("request %d: %s", id, event.Reply.Error)
+			}
+			target := event.Reply.Created
+			if key == "selected" {
+				target = event.Reply.Selected
+			}
+			session, window, pane = target.Session, target.Window, target.Pane
+			return session != "" && window != "" && pane != ""
+		}
+		return false
+	}, settle, msgf("location reply %d", id))
+	f.waitReply(fmt.Sprintf(`{"reply":{"id":%d,%q:{"session":%q,"window":%q,"pane":%q}}}`, id, key, session, window, pane))
+	return
+}
+
+func TestRpcCreateExplicitSocket(t *testing.T) {
+	t.Parallel()
+	h := start(t, "one")
+	h.newSession("two")
+	cwd, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.in("set-option", "-g", "default-command", "exec sleep 300")
+	origin := h.in("new-window", "-P", "-F", "#{pane_id}", "-t", "two:", "-c", cwd, "exec sleep 300")
+	session := h.in("display-message", "-p", "-t", origin, "#{session_id}")
+	f := h.startFeed("one")
+	f.waitLast(func(s feedSnapshot) bool { return len(s.Sessions) == 2 }, "sessions")
+	f.send(fmt.Sprintf(`{"id":71,"new-window":%q}`, session))
+	createdSession, window, pane := f.waitLocationReply(71, "created")
+	if createdSession != session {
+		t.Fatalf("new-window session: %s", createdSession)
+	}
+	if got := h.in("display-message", "-p", "-t", pane, "#{pane_current_path}"); got != cwd {
+		t.Fatalf("cwd: %s", got)
+	}
+	if got := h.in("display-message", "-p", "-t", pane, "#{pane_start_command}"); got != `"exec sleep 300"` {
+		t.Fatalf("default command: %s", got)
+	}
+	if got := h.in("display-message", "-p", "-c", f.client, "#{session_id} #{window_id} #{pane_id}"); got != session+" "+window+" "+pane {
+		t.Fatalf("creation selection: %s", got)
+	}
+	f.send(`{"id":72,"new-session":true}`)
+	newSession, newWindow, newPane := f.waitLocationReply(72, "created")
+	if newSession == session || newWindow == window || newPane == pane {
+		t.Fatal("session not created")
+	}
+	if got := h.in("display-message", "-p", "-t", newPane, "#{pane_current_path}"); got != cwd {
+		t.Fatalf("session cwd: %s", got)
+	}
+	f.waitLast(func(s feedSnapshot) bool { return s.Client.Session == newSession && s.Client.Pane == newPane }, "created session snapshot")
+	before := h.in("list-panes", "-a", "-F", "#{session_id}:#{window_id}:#{pane_id}")
+	f.send(`{"id":73,"new-window":"$999999"}`)
+	f.waitReply(`{"reply":{"id":73,"error":"no such session"}}`)
+	for i, request := range []string{`"new-window":"two"`, `"new-session":false`, `"new-session":true,"new-window":"$0"`} {
+		f.send(fmt.Sprintf(`{"id":%d,%s}`, 74+i, request))
+		f.waitReply(fmt.Sprintf(`{"reply":{"id":%d,"error":"invalid or unknown request"}}`, 74+i))
+	}
+	if got := h.in("list-panes", "-a", "-F", "#{session_id}:#{window_id}:#{pane_id}"); got != before {
+		t.Fatal("invalid creation had effects")
+	}
+}
+
+func TestRpcSelectExplicitSocket(t *testing.T) {
+	t.Parallel()
+	h := start(t, "one")
+	h.newSession("two")
+	window := h.in("display-message", "-p", "-t", "one:", "#{window_id}")
+	pane := h.in("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", window, "exec sleep 300")
+	h.in("select-pane", "-t", pane)
+	session := h.in("display-message", "-p", "-t", "two:", "#{session_id}")
+	h.in("link-window", "-s", window, "-t", "two:")
+	h.in("select-window", "-t", session+":"+window)
+	f := h.startFeed("one")
+	f.waitLast(func(s feedSnapshot) bool { return len(s.Sessions) == 2 }, "sessions")
+	f.send(fmt.Sprintf(`{"id":81,"select-window":{"session":%q,"window":%q}}`, session, window))
+	s, w, p := f.waitLocationReply(81, "selected")
+	if s != session || w != window || p != pane {
+		t.Fatalf("select: %s %s %s", s, w, p)
+	}
+	f.send(fmt.Sprintf(`{"id":82,"select-session":%q}`, session))
+	f.waitLocationReply(82, "selected")
+	f.send(fmt.Sprintf(`{"id":83,"select-window":{"session":%q,"window":"@999999"}}`, session))
+	f.waitReply(`{"reply":{"id":83,"error":"no such window in session"}}`)
+	for i, request := range []string{`"select-window":{"session":"two","window":"@0"}`, `"select-window":{"session":"$0","window":"@0","pane":"%0"}`, `"select-session":"two"`, `"select-session":"$999999"`} {
+		f.send(fmt.Sprintf(`{"id":%d,%s}`, 84+i, request))
+		if i < 3 {
+			f.waitReply(fmt.Sprintf(`{"reply":{"id":%d,"error":"invalid or unknown request"}}`, 84+i))
+		} else {
+			f.waitReply(`{"reply":{"id":87,"error":"no such window in session"}}`)
+		}
+	}
+	if got := h.in("display-message", "-p", "-c", f.client, "#{session_id} #{window_id} #{pane_id}"); got != session+" "+window+" "+pane {
+		t.Fatalf("selection changed: %s", got)
+	}
 }

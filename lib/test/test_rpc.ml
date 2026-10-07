@@ -12,6 +12,10 @@ let%expect_test "rpc decoder" =
           match request with
           | Sidebar.Switch_window direction -> show "window" direction
           | Sidebar.Switch_session direction -> show "session" direction
+          | Sidebar.New_window _ -> Printf.printf "%d:new-window\n" id
+          | Sidebar.New_session -> Printf.printf "%d:new-session\n" id
+          | Sidebar.Select_session _ -> Printf.printf "%d:select-session\n" id
+          | Sidebar.Select_window _ -> Printf.printf "%d:select-window\n" id
           | Sidebar.Jump _ -> Printf.printf "%d:jump\n" id
           | Sidebar.Activate_ask _ -> Printf.printf "%d:activate\n" id
           | Sidebar.Delete_ask _ -> Printf.printf "%d:delete\n" id

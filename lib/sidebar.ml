@@ -674,6 +674,10 @@ type switched = { session : string; window : string }
 type _ request =
   | Switch_window : direction -> (switched option, string) result request
   | Switch_session : direction -> (switched option, string) result request
+  | New_window : string -> (client, string) result request
+  | New_session : (client, string) result request
+  | Select_window : switched -> (client, string) result request
+  | Select_session : string -> (client, string) result request
   | Jump : client -> (client, string) result request
   | Activate_ask : Ask.id -> (client, string) result request
   | Delete_ask : Ask.id -> (unit, string) result request
@@ -700,7 +704,51 @@ let handle : type a. model -> a request -> model * a =
         (Tmux.Exec.jump ?socket:m.opts.socket ~client:m.opts.client ~session:target.session
            ~window:target.window target.pane)
   in
+  let create session =
+    let open Result.Infix in
+    let* cwd_from =
+      match session with
+      | Some session -> Ok session
+      | None -> (
+          match Tmux.Exec.client_state ?socket:m.opts.socket m.opts.client with
+          | Some c -> Ok c.session_id
+          | None -> Error "no current tmux session")
+    in
+    let* panes = Tmux.Exec.list_panes ?socket:m.opts.socket () in
+    if not (List.exists (fun (p : P.t) -> String.equal p.session_id cwd_from) panes) then
+      Error "no such session"
+    else
+      let* session, window, pane = Tmux.Exec.new_shell ~socket:m.opts.socket ~session ~cwd_from in
+      let target = { session; window; pane } in
+      Result.map_err
+        (fun e -> Printf.sprintf "created %s:%s.%s but selection failed: %s" session window pane e)
+        (Result.map
+           (fun () -> target)
+           (Tmux.Exec.jump ?socket:m.opts.socket ~client:m.opts.client ~session ~window pane))
+  in
+  let select (target : switched) =
+    let open Result.Infix in
+    let* panes = Tmux.Exec.list_panes ?socket:m.opts.socket () in
+    match
+      List.find_opt
+        (fun (p : P.t) ->
+          String.equal p.session_id target.session
+          && String.equal p.window_id target.window
+          && p.active)
+        panes
+    with
+    | None -> Error "no such window in session"
+    | Some p -> jump panes { session = target.session; window = target.window; pane = p.pane_id }
+  in
   match request with
+  | Select_window target -> (m, select target)
+  | Select_session session ->
+      ( m,
+        Result.flat_map
+          (fun window -> select { session; window })
+          (Tmux.Exec.session_window ?socket:m.opts.socket session) )
+  | New_window session -> (m, create (Some session))
+  | New_session -> (m, create None)
   | Jump target ->
       ( m,
         Result.flat_map

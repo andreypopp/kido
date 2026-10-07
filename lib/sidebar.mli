@@ -141,6 +141,10 @@ type switched = { session : string; window : string }
 type _ request =
   | Switch_window : direction -> (switched option, string) result request
   | Switch_session : direction -> (switched option, string) result request
+  | New_window : string -> (client, string) result request
+  | New_session : (client, string) result request
+  | Select_window : switched -> (client, string) result request
+  | Select_session : string -> (client, string) result request
   | Jump : client -> (client, string) result request
   | Activate_ask : Ask.id -> (client, string) result request
   | Delete_ask : Ask.id -> (unit, string) result request

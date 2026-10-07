@@ -208,7 +208,8 @@ a new RPC subprocess performs a new hello and starts a new model.
 
 RPC exposes no TUI-local cursor, scroll, glyphs or layout,
 and it does not synchronize those between views. Per-pane tracking belongs
-to that subprocess. Navigation includes relative switches, pane activation,
+to that subprocess. Navigation includes shell/session creation, absolute window/session selection,
+relative switches, pane activation,
 ask activation/deletion and releasing tmux side-status keyboard focus,
 not arbitrary tmux commands,
 terminal output, pane geometry, run control or inbox delivery. The
@@ -220,3 +221,26 @@ its panes occur in each session with the same ids; clients key nodes by
 session as well as node id. Moving a node within a session keeps its id.
 Snapshots are current display state, not durable run history or a
 transactional view of every underlying store.
+
+## Creation and absolute selection
+
+New_window and New_session return `(client, string) result`, as do
+Select_window (a session/window pair) and Select_session (a session id).
+All are Sidebar requests; Protocol owns their integer-id correlation and
+wire representation.
+
+Creation inherits the target session's active pane cwd for a window, or
+the named client's current session cwd for a session. It uses the server's
+default shell/command, naming and indexing. Selection retains a window's
+active pane and the requested session occurrence of a linked window.
+Creation is detached, followed by a jump. Failure after creation identifies
+the created location in the error and leaves the effect intact; reconnects
+must fail pending callbacks rather than replay them. Directory lookup,
+creation and selection all use the model's explicit socket.
+
+## Client boundary
+
+A client uses rpc plus its own tmux control client. Navigation and shell
+creation use rpc; terminal I/O, content and geometry use the control
+client. Starting or inspecting a server with `kido server` and transport
+setup such as ssh come before rpc exists.

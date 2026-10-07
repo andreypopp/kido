@@ -76,6 +76,36 @@ Jump's payload has exactly the three identifier fields; ask ids follow
 the ask tool's syntax. Release accepts only true. Multiple recognized
 operations in one object are invalid. Outer extra fields are ignored.
 
+Creation and absolute window/session selection also require integer ids:
+{"id":12,"new-window":"$3"} creates a detached default-shell window in
+that session, then selects it for the named client and releases side focus.
+{"id":13,"new-session":true} creates a detached session with a default-shell
+window, then selects it and releases side focus. Both reply with
+{"reply":{"id":12,"created":{"session":"$3","window":"@13","pane":"%10"}}}.
+The new session replies with its newly allocated session id instead.
+
+New-window inherits the target session's active pane directory. New-session
+inherits the named client's current session's active pane directory. Both
+resolve that directory on the server at execution, use tmux's configured
+default shell/command, and let tmux allocate names and indexes. No local
+frontend home, command, environment or cwd is supplied. A missing session,
+client or directory is an error, not permission to create elsewhere.
+Creation and selection are separate effects: a selection failure returns
+an error identifying the created session/window/pane. The created shell
+is not rolled back, and clients must not replay the request on reconnect.
+
+{"id":14,"select-window":{"session":"$3","window":"@13"}} validates
+fresh session/window membership and selects that window's active pane,
+not its first pane. The session qualifies linked windows.
+{"id":15,"select-session":"$3"} selects that session's active window and
+pane using fresh server state. Both release side focus and reply with
+{"reply":{"id":14,"selected":{"session":"$3","window":"@13","pane":"%10"}}}.
+These replies report the operation, not a promised subsequent snapshot.
+New-window/select-session accept only a tmux session id ($ followed by
+digits), new-session only true, and select-window exactly session and
+window identifier fields ($N and @N). Multiple recognized operations are
+invalid. All requests use the existing error envelope and explicit socket.
+
 These additions retain protocol 1.1 during implementation; its next bump
 is batched with OSC 7501, not performed by this phase.
 
