@@ -798,8 +798,12 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
     }
 
     private func sidebarSnapshot(_ list: SidebarView, _ name: String, testName: String = #function) {
+        window.layoutIfNeeded()
         list.layoutSubtreeIfNeeded()
+        list.visualTable.tile()
         list.visualTable.layoutSubtreeIfNeeded()
+        if list.visualTable.numberOfRows > 0 { list.visualTable.scrollRowToVisible(0) }
+        list.visualScroll.reflectScrolledClipView(list.visualScroll.contentView)
         list.displayIfNeeded()
         CATransaction.flush()
         XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
@@ -824,7 +828,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
             object["sessions"] = sessions
             fixture = object
         }
-        let rows = sidebarRows(live, folded: [])
+        let rows = sidebarRows(live)
         XCTAssertTrue(rows.contains { $0.indent > 0 && $0.target != nil })
         let invalid = rows.filter { $0.height <= 0 }
         XCTAssertTrue(invalid.isEmpty, "NSTableView requires positive row heights: \(invalid.map(\.id))")
@@ -875,9 +879,6 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
             list.update(.running(live))
             sidebarSnapshot(list, dark ? "live-dark" : "live-light")
         }
-        list.visualFold(SessionID(number: 0))
-        sidebarSnapshot(list, "folded-dark")
-        list.visualFold(SessionID(number: 0))
         let nested = try sidebarFixture { object in
             object["client"] = ["session": "$0", "window": "@458", "pane": "%502"]
             var sessions = object["sessions"] as! [[String: Any]]
@@ -906,20 +907,48 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         sidebarSnapshot(list, "active-parent-light")
         window.setContentSize(NSSize(width: 236, height: 680))
         sidebarSnapshot(list, "narrow-light")
+        window.setContentSize(NSSize(width: 292, height: 680))
+        list.update(.running(try sidebarFixture { $0["client"] = ["session": "$0", "window": "@786", "pane": "%892"] }))
+        sidebarSnapshot(list, "child-active-light")
+        let grouped = try sidebarFixture { object in
+            var sessions = object["sessions"] as! [[String: Any]]
+            let nodes = sessions[0]["nodes"] as! [[String: Any]]
+            var second = (nodes[1]["children"] as! [[String: Any]])[0], third = nodes[0]
+            second["window"] = nodes[0]["window"]
+            second["tail"] = [["text": "Grouped pane activity", "role": "dim"]]
+            third["id"] = "%999"; third["pane"] = "%999"
+            third["children"] = []; third["title"] = [["text": "terminal", "role": "plain"]]; third["kind"] = "shell"
+            sessions[0]["nodes"] = [["kind": "window", "id": nodes[0]["window"]!, "window": nodes[0]["window"]!,
+                                     "name": "group", "children": [nodes[0], second, third]]]
+            object["sessions"] = sessions
+            object["client"] = ["session": "$0", "window": nodes[0]["window"]!, "pane": nodes[0]["pane"]!]
+        }
+        list.update(.running(grouped))
+        list.focus()
+        let down = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "j", charactersIgnoringModifiers: "j", isARepeat: false, keyCode: 38))
+        list.visualTable.keyDown(with: down)
+        sidebarSnapshot(list, "three-pane-keyboard-light")
+        let header = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? SidebarCell)
+        let hover = try XCTUnwrap(NSEvent.enterExitEvent(with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil))
+        header.addWindow.mouseEntered(with: hover)
+        sidebarSnapshot(list, "plus-hover-light")
+        header.addWindow.mouseExited(with: hover)
+        window.setContentSize(NSSize(width: 236, height: 680))
         list.visualSearch.stringValue = "no-such-session"
         list.visualSearch.isHidden = false
         list.update(.running(try sidebarFixture { $0["filter"] = "no-such-session"; $0["sessions"] = [] }))
         sidebarSnapshot(list, "no-matches-light")
     }
 
-    func testFoldedFilteredEnterSendsOnce() async throws {
+    func testFilteredEnterSendsOnce() async throws {
         for reply: Reply in [.success([]), .failure(["delayed failure"])] {
             window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 260),
                               styleMask: [.titled], backing: .buffered, defer: false)
             let list = SidebarView()
             window.contentView = list
             list.update(.running(try sidebarFixture { $0["filter"] = "main" }))
-            list.visualFold(SessionID(number: 0))
             list.visualSearch.stringValue = "main"
             var commands: [[Command]] = []
             var pending: [@MainActor @Sendable ([Reply]?) -> Void] = []
@@ -1185,7 +1214,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         print("RPC E2E hello 1.1; unstamped server refused; local mismatch alert prepared off-screen")
     }
 
-    func testSidebarFoldingKeysAndAccessibility() throws {
+    func testSidebarHeadersKeysAndAccessibility() throws {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 260),
                           styleMask: [.titled], backing: .buffered, defer: false)
         let list = SidebarView()
@@ -1198,32 +1227,29 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         XCTAssertEqual(list.visualTable.focusRingType, .none)
         XCTAssertEqual(list.visualTable.selectionHighlightStyle, .none)
         XCTAssertTrue((list.visualTable as? Table)?.keyboardSelection == true)
-        XCTAssertEqual(header.accessibilityRole(), .button)
-        XCTAssertEqual(header.accessibilityValue() as? String, "expanded")
+        XCTAssertEqual(header.accessibilityRole(), .staticText)
+        XCTAssertNil(header.accessibilityValue())
+        XCTAssertFalse(header.accessibilityPerformPress())
+        XCTAssertFalse(header.addWindow.isHidden)
+        XCTAssertEqual(header.addWindow.accessibilityLabel(), "New window in " + fixture.sessions[0].name)
+        var created: [SessionID] = []
+        list.newWindow = { created.append($0) }
+        header.addWindow.invoke()
+        XCTAssertEqual(created, [fixture.sessions[0].id])
         func key(_ code: UInt16) throws {
             let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
                 windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code))
             list.visualTable.keyDown(with: event)
         }
-        try key(123)
-        XCTAssertFalse(list.visualRows.contains { $0.target?.session == fixture.client.session })
-        XCTAssertEqual(list.visualTable.selectedRow, -1)
-        try key(124)
-        XCTAssertTrue(list.visualRows.contains { $0.target == fixture.client })
-        XCTAssertEqual(list.visualTable.selectedRow, -1)
-        list.focus()
+        let rows = list.visualRows
         let selected = list.visualTable.selectedRow
+        try key(123)
         try key(124)
-        XCTAssertEqual(list.visualTable.selectedRow, selected, "unfolding keeps selection")
-        let expanded = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? SidebarCell)
-        XCTAssertTrue(expanded.accessibilityPerformPress())
-        let collapsed = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? SidebarCell)
-        XCTAssertEqual(collapsed.accessibilityValue() as? String, "collapsed")
-        XCTAssertFalse(collapsed.addWindow.isHidden)
-        XCTAssertTrue(collapsed.accessibilityPerformPress())
+        XCTAssertEqual(list.visualRows, rows)
+        XCTAssertEqual(list.visualTable.selectedRow, selected)
         for row in list.visualRows where row.target != nil {
             let cell = SidebarCell(SidebarFonts())
-            cell.configure(row, expanded: true)
+            cell.configure(row)
             XCTAssertNil(cell.toolTip)
             XCTAssertNil(cell.addWindow.toolTip)
             XCTAssertTrue(cell.accessibilityLabel()?.contains(row.indicatorDescription) == true)
@@ -1232,6 +1258,36 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
             XCTAssertEqual((cell.addWindow.cell as? NSButtonCell)?.highlightsBy, [])
         }
         XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
+    }
+
+    func testClockWidthChangeInvalidatesTitle() throws {
+        let fixture = try sidebarFixture { object in
+            var sessions = object["sessions"] as! [[String: Any]]
+            var nodes = sessions[0]["nodes"] as! [[String: Any]]
+            var children = nodes[0]["children"] as! [[String: Any]]
+            children[0]["title"] = [["text": String(repeating: "Long title ", count: 20), "role": "plain"]]
+            nodes[0]["children"] = children
+            sessions[0]["nodes"] = nodes
+            object["sessions"] = sessions
+        }
+        let row = try XCTUnwrap(sidebarRows(fixture).first { $0.started != nil })
+        let started = try XCTUnwrap(row.started)
+        let cell = SidebarCell(SidebarFonts())
+        cell.frame = NSRect(x: 0, y: 0, width: 292, height: 32)
+        defer { SidebarView.visualNow = nil }
+        for (before, after) in [(9.0, 10.0), (59.0, 60.0), (3599.0, 3600.0)] {
+            SidebarView.visualNow = started.addingTimeInterval(before)
+            cell.configure(row)
+            SidebarView.visualNow = started.addingTimeInterval(after)
+            cell.updateClock()
+            XCTAssertEqual(cell.visualClockDirtyRect.minX, 36 + CGFloat(row.indent) * 21,
+                           "width-changing tick must invalidate the title’s truncation edge")
+        }
+        SidebarView.visualNow = started.addingTimeInterval(11)
+        cell.configure(row)
+        SidebarView.visualNow = started.addingTimeInterval(12)
+        cell.updateClock()
+        XCTAssertGreaterThan(cell.visualClockDirtyRect.minX, 200, "equal-width tick must remain clock-only")
     }
 
     func testNavigationFeedFirst() throws {
@@ -1243,7 +1299,11 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         let destination = try sidebarFixture { $0["client"] = ["session": "$0", "window": "@458", "pane": "%502"] }
         list.update(.running(initial))
         list.layoutSubtreeIfNeeded()
-        list.visualFold(SessionID(number: 0))
+        let selectedBeforeNil = list.visualTable.selectedRow
+        let originBeforeNil = list.visualScroll.contentView.bounds.origin
+        list.completedNavigation(to: nil)
+        XCTAssertEqual(list.visualTable.selectedRow, selectedBeforeNil)
+        XCTAssertEqual(list.visualScroll.contentView.bounds.origin, originBeforeNil)
         list.update(.running(destination))
         list.completedNavigation(to: (destination.client.session, destination.client.window))
         let selected = list.visualTable.selectedRow
@@ -1253,18 +1313,6 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
             XCTAssertTrue(list.visualTable.visibleRect.intersects(list.visualTable.rect(ofRow: selected)), "destination must be visible")
         }
         XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
-    }
-
-    func testNoOpNavigationConsumesReveal() throws {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 260),
-                          styleMask: [.titled], backing: .buffered, defer: false)
-        let list = SidebarView()
-        window.contentView = list
-        list.update(.running(try sidebarFixture()))
-        list.visualFold(SessionID(number: 0))
-        list.completedNavigation(to: nil)
-        list.update(.running(try sidebarFixture { $0["client"] = ["session": "$0", "window": "@458", "pane": "%502"] }))
-        XCTAssertFalse(list.visualRows.contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 502)) }, "unrelated client change must not consume a completed no-op navigation")
     }
 
     func testSidebarNavigationAndAnchoring() async throws {
@@ -1302,9 +1350,8 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         XCTAssertGreaterThan(before, 0)
         XCTAssertGreaterThan(newIndex, anchorIndex)
         XCTAssertEqual(list.visualScroll.contentView.bounds.minY - list.visualTable.rect(ofRow: newIndex).minY, before, accuracy: 1)
-        list.visualFold(SessionID(number: 0))
         list.update(.running(fixture))
-        XCTAssertFalse(list.visualRows.contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 502)) })
+        XCTAssertTrue(list.visualRows.contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 502)) })
         let navigated = try sidebarFixture { $0["client"] = ["session": "$0", "window": "@458", "pane": "%502"] }
         list.completedNavigation(to: (navigated.client.session, navigated.client.window))
         XCTAssertEqual(list.visualRows[list.visualTable.selectedRow].target?.window, navigated.client.window)
