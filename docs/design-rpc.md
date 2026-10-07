@@ -99,8 +99,16 @@ a running clock does not produce a snapshot every second. The TUI shows
 an elapsed caption for runs without activity text and schedules its own
 redraw at the next second boundary.
 
-Outstanding asks affect agent waiting indicators and the attention flag;
-there is no separate ask list on the wire. Attention uses the same model
+Outstanding asks affect agent waiting indicators and the attention flag
+and appear in a separate snapshot list. The list matches the TUI's
+`a` mode: stable id, agent display name, full question text (the TUI
+renders its first line), and a live-pane association that distinguishes
+ended asks. Agent session identity and creation time support stable
+identity and ordering; ended and revivable report whether activation
+would need revival and whether its directory/session file exist.
+Paths remain private persistence details. The model polls revival
+availability so removing a file changes the snapshot even without an
+ask-file change. Attention uses the same model
 predicate as the TUI's attention navigation: an outstanding ask, a waiting
 agent, or an idle agent that completed since this view last visited it.
 The client's location comes from its session's active pane, matching both
@@ -135,6 +143,30 @@ switched session and window, null if there is no eligible target, or an
 error. Switching uses fresh state through the same functions as the CLI,
 not a client-provided ordering. A reply reports
 the switch operation; it is not an accompanying post-switch snapshot.
+
+Jump, activate-ask, delete-ask and release-side-focus also carry integer
+ids and return correlated, typed results. Sidebar's request GADT and
+handle function own these actions for both the TUI and RPC; Protocol
+alone decodes JSON and encodes replies. Jump takes a full location and
+validates it against fresh topology before switching, retaining the
+session for linked windows. Ask activation takes an id, rereads the
+authoritative ask, resolves its live holder or revives it, then jumps.
+It prefers the current session's occurrence of a linked live pane.
+Deletion uses human semantics and notifies the live asker best-effort.
+Release changes tmux side-status keyboard focus, not frontend cursor or
+OS focus. Every tmux call in these paths uses the model's explicit
+socket, including revived window creation.
+
+Search clearing after successful activation and standalone picker exit
+remain TUI-local. Request errors and syscall failures are recoverable
+at each frontend's execution boundary and do not occupy snapshot.error.
+A revived window can outlive a failed subsequent jump: there is no
+rollback or automatic replay. Concurrent views can still revive one
+ended ask twice before a live holder reports. pi resolution retains
+tmux's command-client PATH semantics.
+
+The new requests and asks list retain protocol 1.1 for this development
+phase; the version bump will be batched with OSC 7501.
 
 Sessions are ordered oldest first, with name breaking creation-time ties.
 Windows use the sidebar's parent-first tree ordering within each session,
@@ -174,9 +206,10 @@ a new RPC subprocess performs a new hello and starts a new model.
 
 ## Limits of the surface
 
-RPC exposes no TUI-local cursor, scroll, keyboard focus, glyphs or layout,
+RPC exposes no TUI-local cursor, scroll, glyphs or layout,
 and it does not synchronize those between views. Per-pane tracking belongs
-to that subprocess. It provides only relative session/window navigation,
+to that subprocess. Navigation includes relative switches, pane activation,
+ask activation/deletion and releasing tmux side-status keyboard focus,
 not arbitrary tmux commands,
 terminal output, pane geometry, run control or inbox delivery. The
 contract's fork dependencies describe the separate tmux capabilities an

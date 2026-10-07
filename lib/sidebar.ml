@@ -21,6 +21,8 @@ type lingering = {
 }
 
 type probe = { reported : float; read : float; dismissed : bool }
+type ask_target = Live of string | Revivable | Unavailable
+type ask = { ask : Ask.t; target : ask_target }
 
 type snapshot = {
   client : Tmux.Exec.client_state option;
@@ -34,7 +36,7 @@ type snapshot = {
   err : string option;
   probes : probe String_map.t;
   lingering : lingering String_map.t;
-  asks : (Ask.t * string option) list;
+  asks : ask list;
 }
 
 let empty =
@@ -170,22 +172,23 @@ let take ~opts conn prev client =
         asks =
           List.map
             (fun (a : Ask.t) ->
-              ( a,
+              let pane =
                 Option.map
                   (fun (s : State.session) -> s.pane)
-                  (List.assoc_opt ~eq:String.equal a.session live) ))
+                  (List.assoc_opt ~eq:String.equal a.session live)
+              in
+              let target =
+                match pane with
+                | Some pane -> Live pane
+                | None -> if Option.is_none (Ask.revival_error a) then Revivable else Unavailable
+              in
+              { ask = a; target })
             (Ask.list ~dir:opts.dir);
       }
 
 let same a b =
   let drawn (p : P.t) =
-    {
-      p with
-      window_index = 0;
-      window_layout = "";
-      current_path = "";
-      active = false;
-    }
+    { p with window_index = 0; window_layout = ""; current_path = ""; active = false }
   in
   let session (_, (s : State.session)) = { s with ts = 0. } in
   Option.equal Stdlib.( = ) a.client b.client
@@ -374,7 +377,7 @@ let done_ m pane =
 let asking m pane =
   match String_map.find_opt pane m.snap.states with
   | None -> false
-  | Some (id, _) -> List.exists (fun ((a : Ask.t), _) -> String.equal a.session id) m.snap.asks
+  | Some (id, _) -> List.exists (fun a -> String.equal a.ask.session id) m.snap.asks
 
 let attention m pane =
   asking m pane
@@ -599,14 +602,12 @@ let fuzzy pattern s =
 let filter text sessions =
   if String.is_empty text then sessions
   else
-    let rec node = function
-      | Item i -> item i
-      | Group g -> List.concat_map item (g.first :: g.rest)
+    let rec node = function Item i -> item i | Group g -> List.concat_map item (g.first :: g.rest)
     and item i =
       (match (i.row.kind, i.row.title) with
-      | Agent, title -> [ String.concat "" (List.map (fun s -> s.text) title) ]
-      | Ssh, _ :: host :: _ -> [ host.text ]
-      | _ -> [])
+        | Agent, title -> [ String.concat "" (List.map (fun s -> s.text) title) ]
+        | Ssh, _ :: host :: _ -> [ host.text ]
+        | _ -> [])
       @ List.concat_map node i.children
     in
     List.filter_map
@@ -673,13 +674,68 @@ type switched = { session : string; window : string }
 type _ request =
   | Switch_window : direction -> (switched option, string) result request
   | Switch_session : direction -> (switched option, string) result request
+  | Jump : client -> (client, string) result request
+  | Activate_ask : Ask.id -> (client, string) result request
+  | Delete_ask : Ask.id -> (unit, string) result request
+  | Release_side_focus : (unit, string) result request
 
 let handle : type a. model -> a request -> model * a =
  fun m request ->
   let switched result =
     Result.map (Option.map (fun (session, window) -> { session; window })) result
   in
+  let jump panes (target : client) =
+    if
+      not
+        (List.exists
+           (fun (p : P.t) ->
+             String.equal p.session_id target.session
+             && String.equal p.window_id target.window
+             && String.equal p.pane_id target.pane)
+           panes)
+    then Error "no such pane in session/window"
+    else
+      Result.map
+        (fun () -> target)
+        (Tmux.Exec.jump ?socket:m.opts.socket ~client:m.opts.client ~session:target.session
+           ~window:target.window target.pane)
+  in
   match request with
+  | Jump target ->
+      ( m,
+        Result.flat_map
+          (fun panes -> jump panes target)
+          (Tmux.Exec.list_panes ?socket:m.opts.socket ()) )
+  | Activate_ask id -> (
+      let open Result.Infix in
+      ( m,
+        let* ask =
+          match Ask.read ~dir:m.opts.dir id with
+          | Some ask -> Ok ask
+          | None -> Error ("no ask " ^ Ask.string_of_id id)
+        in
+        let* current =
+          match Tmux.Exec.client_state ?socket:m.opts.socket m.opts.client with
+          | Some c -> Ok c
+          | None -> Error "no current tmux session"
+        in
+        let* pane =
+          Ask.target ~socket:m.opts.socket ~dir:m.opts.dir ~session:current.session_id ask
+        in
+        let* panes = Tmux.Exec.list_panes ?socket:m.opts.socket () in
+        let candidates = List.filter (fun (p : P.t) -> String.equal p.pane_id pane) panes in
+        let target =
+          match
+            List.find_opt (fun (p : P.t) -> String.equal p.session_id current.session_id) candidates
+          with
+          | Some p -> Some p
+          | None -> List.head_opt candidates
+        in
+        match target with
+        | None -> Error "asking agent has no pane"
+        | Some p -> jump panes { session = p.session_id; window = p.window_id; pane } ))
+  | Delete_ask id -> (m, Ask.remove ~dir:m.opts.dir ~self:"" id)
+  | Release_side_focus -> (m, Tmux.Exec.release_side_focus ?socket:m.opts.socket m.opts.client)
   | Switch_window direction ->
       ( m,
         switched

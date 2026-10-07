@@ -6,7 +6,7 @@ type span = Mosaic.span = { text : string; style : Style.t }
 
 type line =
   | Header of { name : string; current : bool }
-  | Row of string * S.row
+  | Row of string * string * S.row
   | Message of string
   | Ask of Ask.t * string option
 
@@ -14,11 +14,11 @@ let lines ?(search = "") (side : S.model) =
   let glyph i n = if n = 1 then "╶" else if i = 0 then "┌" else if i = n - 1 then "└" else "├" in
   let continuation i n = if i < n - 1 then "│" else " " in
   let out = ref [] in
-  let rec node prefix lead stem = function
+  let rec node session prefix lead stem = function
     | S.Item item ->
         let g = Option.get_or ~default:"╶" lead in
         let nested = prefix ^ (if Option.is_none lead then " " else stem) ^ " " in
-        draw item (prefix ^ g) nested
+        draw session item (prefix ^ g) nested
     | S.Group group ->
         let panes = group.first :: group.rest in
         let n = List.length panes in
@@ -31,13 +31,14 @@ let lines ?(search = "") (side : S.model) =
                   ( (if j > 0 then stem else lead) ^ glyph j n,
                     prefix ^ stem ^ continuation j n ^ " " )
             in
-            draw item (prefix ^ g) nested)
+            draw session item (prefix ^ g) nested)
           panes
-  and draw (item : S.item) tree nested =
-    out := Row (tree, item.row) :: !out;
+  and draw session (item : S.item) tree nested =
+    out := Row (tree, session, item.row) :: !out;
     let n = List.length item.children in
     List.iteri
-      (fun i child -> node nested (Some (if i = n - 1 then "└" else "├")) (continuation i n) child)
+      (fun i child ->
+        node session nested (Some (if i = n - 1 then "└" else "├")) (continuation i n) child)
       item.children
   in
   match side.snap.err with
@@ -46,7 +47,7 @@ let lines ?(search = "") (side : S.model) =
       List.iter
         (fun (s : S.section) ->
           out := Header { name = s.name; current = s.current } :: !out;
-          List.iter (node "" None "") s.nodes)
+          List.iter (node s.id "" None "") s.nodes)
         (S.filter search side.sessions);
       Array.of_list (List.rev !out)
 
@@ -127,7 +128,7 @@ let parts ~now : line -> span list * span list * span list = function
       ( [],
         [ span role (a.name ^ " " ^ Ask.string_of_id a.id) ],
         [ span role (" " ^ List.hd (String.split_on_char '\n' a.text)) ] )
-  | Row (prefix, r) -> (
+  | Row (prefix, _, r) -> (
       let tree = if String.is_empty prefix then [] else [ span `Dim prefix ] in
       ( (tree
         @ match Option.flat_map glyph r.indicator with None -> [ plain " " ] | Some i -> [ i ]),
@@ -144,14 +145,13 @@ let spans ~now line =
 let row_text ~now line = String.concat "" (List.map (fun s -> s.text) (spans ~now line))
 
 let pane_of : line -> string option = function
-  | Row (_, r) -> Some r.pane
+  | Row (_, _, r) -> Some r.pane
   | Ask (_, pane) -> pane
   | Header _ | Message _ -> None
 
 let index_of ?(key = pane_of) m pane =
   Option.map fst (CCArray.find_idx (fun l -> Option.equal String.equal (key l) (Some pane)) m.lines)
 
-let selected m = Option.flat_map pane_of (CCArray.get_safe m.lines m.cursor)
 let view_rows m = if m.height > 1 then m.height - 1 else Array.length m.lines
 let shown m = List.init (max 0 (min (view_rows m) (Array.length m.lines - m.top))) (( + ) m.top)
 let clamp_top m = { m with top = max 0 (min m.top (Array.length m.lines - view_rows m)) }
@@ -187,7 +187,12 @@ let redraw m side =
     | Asks ->
         Array.of_list
           (Header { name = "asks"; current = true }
-          :: List.map (fun (a, p) -> Ask (a, p)) side.snap.asks)
+          :: List.map
+               (fun (a : S.ask) ->
+                 Ask
+                   ( a.ask,
+                     match a.target with Live pane -> Some pane | Revivable | Unavailable -> None ))
+               side.snap.asks)
   in
   let m = { m with side; lines = drawn } in
   match side.snap.err with
@@ -213,10 +218,17 @@ let next_attention m delta =
 
 let set_search m search = redraw { m with search } m.side
 
+let request m req =
+  try
+    let side, response = S.handle m.side req in
+    ({ m with side }, response)
+  with
+  | Sys_error e -> (m, Error e)
+  | Unix.Unix_error (e, fn, arg) -> (m, Error (Fs.unix_message e fn arg))
+
 let release_focus m =
-  match Tmux.Exec.release_side_focus m.side.opts.client with
-  | Ok () -> focus m m.side.snap.active
-  | Error e -> { m with status = e }
+  let m, response = request m S.Release_side_focus in
+  match response with Ok () -> focus m m.side.snap.active | Error e -> { m with status = e }
 
 type msg =
   | Snapshot of S.snapshot
@@ -225,22 +237,20 @@ type msg =
   | Resize of int * int
 
 let jump m =
-  let target =
+  let req =
     match CCArray.get_safe m.lines m.cursor with
-    | Some (Ask (a, _)) -> (
-        match m.side.client with
-        | None -> Error "no current tmux session"
-        | Some c -> Result.map Option.some (Ask.target ~dir:m.side.opts.dir ~session:c.session a))
-    | _ -> Ok (selected m)
+    | Some (Ask (a, _)) -> Some (S.Activate_ask a.id)
+    | Some (Row (_, session, r)) -> Some (S.Jump { session; window = r.window; pane = r.pane })
+    | _ -> None
   in
-  match target with
-  | Error e -> ({ m with status = e }, Mosaic.Cmd.none)
-  | Ok None -> (m, Mosaic.Cmd.none)
-  | Ok (Some pane) -> (
-      match Tmux.Exec.jump ~client:m.side.opts.client pane with
+  match req with
+  | None -> (m, Mosaic.Cmd.none)
+  | Some req -> (
+      let m, response = request m req in
+      match response with
       | Error e -> ({ m with status = e }, Mosaic.Cmd.none)
-      | Ok () ->
-          let m = if Option.is_some m.search then focus (set_search m None) pane else m in
+      | Ok c ->
+          let m = if Option.is_some m.search then focus (set_search m None) c.pane else m in
           (m, if m.standalone then Mosaic.Cmd.quit else Mosaic.Cmd.none))
 
 (* C-s reaches the side job whenever it has focus (server-client.c forwards every non-mouse key
@@ -282,12 +292,8 @@ let key m (k : Mosaic.Event.key) =
     | Windows, None -> if m.standalone then (m, Mosaic.Cmd.quit) else none (release_focus m)
   in
   let cycle direction =
-    try
-      let side, response = S.handle m.side (S.Switch_window direction) in
-      match response with Ok _ -> { m with side } | Error e -> { m with side; status = e }
-    with
-    | Sys_error e -> { m with status = e }
-    | Unix.Unix_error (e, fn, arg) -> { m with status = Fs.unix_message e fn arg }
+    let m, response = request m (S.Switch_window direction) in
+    match response with Ok _ -> m | Error e -> { m with status = e }
   in
   match m.search with
   | Some filter when not (String.is_empty text) -> none (set_search m (Some (filter ^ text)))
@@ -326,9 +332,8 @@ let key m (k : Mosaic.Event.key) =
       | _ when is 'd' && match m.mode with Asks -> true | Windows -> false -> (
           match CCArray.get_safe m.lines m.cursor with
           | Some (Ask (a, _)) -> (
-              match Ask.remove ~dir:m.side.opts.dir ~self:"" a.id with
-              | Ok () -> none m
-              | Error e -> none { m with status = e })
+              let m, response = request m (S.Delete_ask a.id) in
+              match response with Ok () -> none m | Error e -> none { m with status = e })
           | _ -> none m)
       | _ when is '/' && match m.mode with Windows -> true | Asks -> false ->
           none (set_search m (Some ""))
@@ -346,7 +351,7 @@ let next_wait m =
   List.fold_left
     (fun wait i ->
       match m.lines.(i) with
-      | Row (_, { caption = Elapsed s; _ }) -> Float.min wait (1. -. Float.rem (now -. s) 1.)
+      | Row (_, _, { caption = Elapsed s; _ }) -> Float.min wait (1. -. Float.rem (now -. s) 1.)
       | Row _ | Header _ | Message _ | Ask _ -> wait)
     m.side.opts.interval (shown m)
 

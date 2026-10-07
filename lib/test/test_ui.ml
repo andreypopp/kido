@@ -544,7 +544,8 @@ let%expect_test "a live subagent uses its run start unless it has activity text"
       render ~dir ~at:(test_at +. 65.) panes
         [ ("%30", (run, session ~activity ~ts:(test_at +. 60.) "")) ])
     [ ""; "checking tests"; "" ];
-  [%expect {|
+  [%expect
+    {|
     sess
     ╶◼helper 1m05s
     sess
@@ -584,8 +585,7 @@ let%expect_test "a live run wakes the tick at its next second boundary" =
           Sidebar.empty with
           client = client "sess";
           panes;
-          lingering =
-            Sidebar.lingering_subagents ~dir panes State.String_map.empty;
+          lingering = Sidebar.lingering_subagents ~dir panes State.String_map.empty;
         }
     in
     Printf.printf "%.3f\n" (Ui.next_wait (Ui.make ~standalone:false side))
@@ -650,9 +650,7 @@ let%expect_test "lingering entries carry forward; only a missing outcome is re-r
   let dir = temp () in
   let id = new_run ~dir "subagent" in
   let panes = [ pane ~window:"@20" ~dead_at:1. ~run:id "%30" ] in
-  let first =
-    Sidebar.lingering_subagents ~dir panes State.String_map.empty
-  in
+  let first = Sidebar.lingering_subagents ~dir panes State.String_map.empty in
   let show l =
     let (l : Sidebar.lingering) = State.String_map.find id l in
     Printf.printf "%s %s\n" l.name (Option.map_or ~default:"-" Subrun.string_of_result l.outcome)
@@ -888,7 +886,8 @@ let%expect_test "shell_indicator debounce on a controlled clock" =
       +200ms: running
     |}]
 
-let label m p = Ui.row_text ~now:m.Sidebar.at (Row ("", Sidebar.pane_label m p))
+let label m (p : Tmux.Pane.t) =
+  Ui.row_text ~now:m.Sidebar.at (Row ("", p.session_id, Sidebar.pane_label m p))
 
 let%expect_test "phases and latches are forgotten with their panes" =
   let m = model ~started:test_at () in
@@ -922,7 +921,7 @@ let%expect_test "the debounce and the stall both redraw on a quiet tick" =
     Array.exists
       (fun (l : Ui.line) ->
         match l with
-        | Row (_, { pane = "%1"; _ }) ->
+        | Row (_, _, { pane = "%1"; _ }) ->
             List.exists (fun (s : Ui.span) -> String.equal s.text "◼") (Ui.spans ~now:!clock l)
         | _ -> false)
       !m.lines
@@ -1243,7 +1242,8 @@ let%expect_test
   let show filter =
     Printf.printf "%S: %s\n" filter
       (String.concat " | "
-         (List.map (Ui.row_text ~now:m.at) (Array.to_list (Ui.lines ~search:filter (Sidebar.rebuild m)))))
+         (List.map (Ui.row_text ~now:m.at)
+            (Array.to_list (Ui.lines ~search:filter (Sidebar.rebuild m)))))
   in
   show "";
   show "zz";
@@ -1354,6 +1354,7 @@ let%expect_test "a snapshot as the feed sends it" =
     {
       "v": 2,
       "client": { "session": "$0", "window": "@1", "pane": "%1" },
+      "asks": [],
       "error": null,
       "sessions": [
         {
@@ -1458,7 +1459,7 @@ let%expect_test "a snapshot as the feed sends it" =
         }
       ]
     }
-    {"v":2,"client":{"session":"$0","window":"@1","pane":"%1"},"error":"tmux: gone","sessions":[]}
+    {"v":2,"client":{"session":"$0","window":"@1","pane":"%1"},"asks":[],"error":"tmux: gone","sessions":[]}
     |}]
 
 let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" =
@@ -1496,6 +1497,7 @@ let%expect_test "feed nodes nest a two-pane subagent window and a one-pane run" 
     {
       "v": 2,
       "client": { "session": "$0", "window": "@1", "pane": "%1" },
+      "asks": [],
       "error": null,
       "sessions": [
         {

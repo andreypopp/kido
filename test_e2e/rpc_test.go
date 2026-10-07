@@ -52,6 +52,16 @@ type feedSnapshot struct {
 		Current bool      `json:"current"`
 		Nodes   []feedRow `json:"nodes"`
 	} `json:"sessions"`
+	Asks []struct {
+		ID        string  `json:"id"`
+		Session   string  `json:"session"`
+		Name      string  `json:"name"`
+		Text      string  `json:"text"`
+		Created   string  `json:"created"`
+		Pane      *string `json:"pane"`
+		Ended     bool    `json:"ended"`
+		Revivable bool    `json:"revivable"`
+	} `json:"asks"`
 	raw string
 }
 

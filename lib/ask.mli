@@ -13,7 +13,9 @@ type t = {
   created : Timestamp.t;
 }
 
+val read : dir:string -> id -> t option
 val list : dir:string -> t list
+val revival_error : t -> string option
 
 val caller :
   dir:string ->
@@ -33,6 +35,6 @@ val record :
   now:Timestamp.t ->
   (id, string) result
 
-val target : dir:string -> session:string -> t -> (string, string) result
+val target : socket:string option -> dir:string -> session:string -> t -> (string, string) result
 val remove : dir:string -> self:string -> id -> (unit, string) result
 val to_json : live:(string * State.session) list -> t -> Yojson.Safe.t

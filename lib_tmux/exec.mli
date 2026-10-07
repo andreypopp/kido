@@ -42,14 +42,22 @@ val switch_window :
   (Pane.t list * string option) list ->
   ((string * string) option, string) result
 
-val jump : client:string -> string -> (unit, string) result
-val release_side_focus : string -> (unit, string) result
+val jump :
+  ?socket:string ->
+  client:string ->
+  session:string ->
+  window:string ->
+  string ->
+  (unit, string) result
+
+val release_side_focus : ?socket:string -> string -> (unit, string) result
 val send_prompt : string -> string -> (unit, string) result
-val window_exists : string -> bool
+val window_exists : ?socket:string -> string -> bool
 
 type window = { window_id : string; pane_id : string; pane_pid : int }
 
 val new_window :
+  ?socket:string ->
   ?remain_on_exit:bool ->
   session:string ->
   name:string ->

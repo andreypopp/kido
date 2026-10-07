@@ -145,20 +145,25 @@ let to_json ~live ask =
       `Assoc (fields @ [ ("ended", `Bool (not (List.mem_assoc ~eq:String.equal ask.session live))) ])
   | json -> json
 
-let target ~dir ~session ask =
+let revival_error ask =
+  let directory =
+    try match (Unix.stat ask.cwd).st_kind with Unix.S_DIR -> true | _ -> false
+    with Unix.Unix_error ((ENOENT | ENOTDIR), _, _) -> false
+  in
+  if not directory then Some ("ask directory is gone: " ^ ask.cwd)
+  else if not (Tmux.Exec.is_file ask.session_file) then
+    Some ("pi session file is gone: " ^ ask.session_file)
+  else None
+
+let target ~socket ~dir ~session ask =
   match List.assoc_opt ~eq:String.equal ask.session (State.load_live ~dir) with
   | Some s -> Ok s.pane
-  | None ->
-      let directory =
-        try match (Unix.stat ask.cwd).st_kind with Unix.S_DIR -> true | _ -> false
-        with Unix.Unix_error ((ENOENT | ENOTDIR), _, _) -> false
-      in
-      if not directory then Error ("ask directory is gone: " ^ ask.cwd)
-      else if not (Tmux.Exec.is_file ask.session_file) then
-        Error ("pi session file is gone: " ^ ask.session_file)
-      else
-        Result.map
-          (fun (w : Tmux.Exec.window) -> w.pane_id)
-          (Tmux.Exec.new_window ~remain_on_exit:false ~session ~name:("ask-" ^ ask.id) ~cwd:ask.cwd
-             ~env:[]
-             [ "pi"; "--session"; ask.session_file ])
+  | None -> (
+      match revival_error ask with
+      | Some e -> Error e
+      | None ->
+          Result.map
+            (fun (w : Tmux.Exec.window) -> w.pane_id)
+            (Tmux.Exec.new_window ?socket ~remain_on_exit:false ~session ~name:("ask-" ^ ask.id)
+               ~cwd:ask.cwd ~env:[]
+               [ "pi"; "--session"; ask.session_file ]))

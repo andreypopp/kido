@@ -4,7 +4,7 @@ type span = Mosaic.span = { text : string; style : Style.t }
 
 type line =
   | Header of { name : string; current : bool }
-  | Row of string * Sidebar.row
+  | Row of string * string * Sidebar.row
   | Message of string
   | Ask of Ask.t * string option
 

@@ -20,6 +20,8 @@ type lingering = {
 }
 
 type probe = { reported : float; read : float; dismissed : bool }
+type ask_target = Live of string | Revivable | Unavailable
+type ask = { ask : Ask.t; target : ask_target }
 
 type snapshot = {
   client : Tmux.Exec.client_state option;
@@ -33,7 +35,7 @@ type snapshot = {
   err : string option;
   probes : probe String_map.t;
   lingering : lingering String_map.t;
-  asks : (Ask.t * string option) list;
+  asks : ask list;
 }
 
 val empty : snapshot
@@ -139,5 +141,9 @@ type switched = { session : string; window : string }
 type _ request =
   | Switch_window : direction -> (switched option, string) result request
   | Switch_session : direction -> (switched option, string) result request
+  | Jump : client -> (client, string) result request
+  | Activate_ask : Ask.id -> (client, string) result request
+  | Delete_ask : Ask.id -> (unit, string) result request
+  | Release_side_focus : (unit, string) result request
 
 val handle : model -> 'a request -> model * 'a

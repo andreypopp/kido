@@ -265,18 +265,18 @@ let switch_window ?socket ~client ~next windows =
 
 let release_args client = [ "refresh-client"; "-t"; client; "-f"; "!" ^ side_focus_flag ]
 
-let jump ~client pane =
-  run
+let jump ?socket ~client ~session ~window pane =
+  run ?socket
     ([
        "switch-client";
        "-c";
        client;
        "-t";
-       pane;
+       session ^ ":" ^ window ^ "." ^ pane;
        ";";
        "select-window";
        "-t";
-       pane;
+       session ^ ":" ^ window;
        ";";
        "select-pane";
        "-t";
@@ -285,7 +285,7 @@ let jump ~client pane =
      ]
     @ release_args client)
 
-let release_side_focus client = run (release_args client)
+let release_side_focus ?socket client = run ?socket (release_args client)
 
 let send_prompt pane text =
   let buf = Printf.sprintf "kido-prompt-%d" (Unix.getpid ()) in
@@ -305,17 +305,17 @@ let send_prompt pane text =
 
 (* On a closed window the fork's display-message exits 0 and prints an empty
    line, so only the echoed id answers. *)
-let window_exists window_id =
-  match exec [ "display-message"; "-p"; "-t"; window_id; "#{window_id}" ] with
+let window_exists ?socket window_id =
+  match exec ?socket [ "display-message"; "-p"; "-t"; window_id; "#{window_id}" ] with
   | Ok out -> String.equal out window_id
   | Error _ -> false
 
 type window = { window_id : string; pane_id : string; pane_pid : int }
 
-let new_window ?(remain_on_exit = true) ~session ~name ~cwd ~env command =
+let new_window ?socket ?(remain_on_exit = true) ~session ~name ~cwd ~env command =
   let open Result.Infix in
   let* out =
-    exec
+    exec ?socket
       ([
          "new-window";
          "-d";
@@ -344,8 +344,8 @@ let new_window ?(remain_on_exit = true) ~session ~name ~cwd ~env command =
      race is not a failure to create the window. *)
   if not remain_on_exit then Ok w
   else
-    match exec [ "set-option"; "-p"; "-t"; w.pane_id; "remain-on-exit"; "on" ] with
-    | Error e when window_exists w.window_id -> Error e
+    match exec ?socket [ "set-option"; "-p"; "-t"; w.pane_id; "remain-on-exit"; "on" ] with
+    | Error e when window_exists ?socket w.window_id -> Error e
     | Ok _ | Error _ -> Ok w
 
 let kill_window ?socket window_id = run ?socket [ "kill-window"; "-t"; window_id ]

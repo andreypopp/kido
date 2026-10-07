@@ -48,6 +48,37 @@ No eligible target (including a single session) replies
 An invalid or unknown request carrying an integer id replies
 {"reply":{"id":7,"error":"invalid or unknown request"}}; requests without an
 integer id and invalid JSON are ignored. Errors do not stop the stream.
+Pane activation preserves the session, including linked windows:
+{"id":8,"jump":{"session":"$3","window":"@12","pane":"%9"}}
+replies {"reply":{"id":8,"jumped":{"session":"$3","window":"@12","pane":"%9"}}}.
+The full location must exist in fresh server topology; invalid membership
+returns an error without switching. Jump selects the pane and releases
+the named client's side-status keyboard focus.
+
+{"id":9,"activate-ask":"A12345678"} resolves the authoritative ask by id,
+jumps to its live session's pane, or revives pi from its saved session file
+in its recorded cwd, in the named client's current tmux session. A live
+pane linked into that session stays there; otherwise its first session
+occurrence is selected. Success replies
+{"reply":{"id":9,"activated":{"session":"$3","window":"@12","pane":"%9"}}}.
+A missing ask, cwd, session file or pane returns an error. Revival does
+not remove the ask. Creation followed by a failed jump is not rolled back
+or retried. pi is resolved through the tmux command client's PATH.
+
+{"id":10,"delete-ask":"A12345678"} removes the ask as the user and sends
+the asking agent a best-effort removal note through its live inbox.
+Success replies {"reply":{"id":10,"deleted":true}}; a missing ask errors.
+{"id":11,"release-side-focus":true} releases the named tmux client's
+side-status keyboard focus and replies {"reply":{"id":11,"released":true}}.
+All four requests require integer ids, use the existing error envelope,
+and keep the stream alive on errors. No cursor or OS focus is affected.
+Jump's payload has exactly the three identifier fields; ask ids follow
+the ask tool's syntax. Release accepts only true. Multiple recognized
+operations in one object are invalid. Outer extra fields are ignored.
+
+These additions retain protocol 1.1 during implementation; its next bump
+is batched with OSC 7501, not performed by this phase.
+
 All stdout events are NDJSON from one writer; replies and snapshots can
 alternate, but bytes from separate lines do not interleave.
 
@@ -59,6 +90,7 @@ After hello, a full snapshot is emitted when visible model data changes:
 {
   "v": 2,
   "client": { "session": "$1", "window": "@2", "pane": "%3" },
+  "asks": [],
   "error": null,
   "sessions": [
     {
@@ -97,6 +129,14 @@ After hello, a full snapshot is emitted when visible model data changes:
 ```
 
 - **`client`**: the named client's current session, window and pane ids.
+- **`asks`**: outstanding asks in creation-time/id order, including ended
+  sessions. Each entry has `id`, agent `session`, display `name`, full
+  `text`, `created` (RFC 3339 UTC), `pane` (live holder's pane id or null),
+  `ended` (no live holder), and `revivable` (ended, with an existing cwd
+  directory and session file). Revival availability is polled; it does not
+  promise a successful future activation. Pane is a display association,
+  not a jump target: activate by ask id to resolve current topology.
+  Session-file paths and cwd are not exposed.
 - **`error`**: null or a transient error string; the stream continues.
 - **`sessions`**: the
   session's top-level nodes in display order. A session is the
