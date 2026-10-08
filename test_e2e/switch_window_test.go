@@ -106,10 +106,6 @@ func setupSwitchWindowSessions(t *testing.T) *harness {
 	return h
 }
 
-// `kido switch-window next|prev` walks a single flat list across the
-// whole server: kido's session order with each session's windows in
-// tmux's own order. "a1" -> "c0" distinguishes this from tmux's own
-// next-window, which wraps inside one session (a1 -> a0).
 func TestSwitchWindowOrder(t *testing.T) {
 	t.Parallel()
 	h := setupSwitchWindowSessions(t)
@@ -133,8 +129,6 @@ func TestSwitchWindowOrder(t *testing.T) {
 	h.waitWindow("a", "a0")
 }
 
-// prev is the exact inverse of next, walking the same flat list
-// backwards and wrapping from the very first window to the very last.
 func TestSwitchWindowOrderPrev(t *testing.T) {
 	t.Parallel()
 	h := setupSwitchWindowSessions(t)
@@ -366,19 +360,43 @@ func TestSwitchWindowFromHoistedSubagent(t *testing.T) {
 	h.waitWindow("a", "a0")
 }
 
-func TestSwitchWindowPrevFromNestedRun(t *testing.T) {
+func TestSwitchWindowNestedSiblings(t *testing.T) {
 	t.Parallel()
 	h := start(t, "a")
 	h.renameWindow("a", 0, "root")
 	h.liveParent("a", "root-session")
+	h.addWindow("a", "top")
 	h.subagentWindow("a", "child", "child-session", "root-session")
 	h.subagentWindow("a", "grandchild", "grandchild-session", "child-session")
+	h.subagentWindow("a", "sibling", "sibling-session", "root-session")
 
-	h.selectWindow("a", "grandchild")
-	h.runSwitchWindow("prev")
-	h.waitWindow("a", "child")
-	h.runSwitchWindow("prev")
-	h.waitWindow("a", "root")
+	for _, mode := range []string{"cli", "unfocused", "focused"} {
+		t.Run(mode, func(t *testing.T) {
+			if mode == "focused" {
+				focusSidebar(h)
+			}
+			for _, step := range []struct{ from, direction, to string }{
+				{"child", "next", "sibling"},
+				{"sibling", "prev", "child"},
+				{"child", "prev", "root"},
+				{"grandchild", "prev", "child"},
+				{"grandchild", "next", "top"},
+				{"sibling", "next", "top"},
+				{"root", "next", "top"},
+				{"top", "next", "root"},
+			} {
+				h.selectWindow("a", step.from)
+				if mode == "cli" {
+					h.runSwitchWindow(step.direction)
+				} else if step.direction == "next" {
+					h.sendKeys("S-Down")
+				} else {
+					h.sendKeys("S-Up")
+				}
+				h.waitWindow("a", step.to)
+			}
+		})
+	}
 }
 
 // An explicit server wins over a private default with no running server.

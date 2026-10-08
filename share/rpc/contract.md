@@ -34,17 +34,21 @@ The tick also performs idempotent reap and Claude screen probing.
 Stdin is one JSON object per line. Search is client-side; filter requests
 are unknown requests.
 {"id":7,"switch-window":{"direction":"next"}} or direction "prev" uses the
-same fresh-state flat tree ordering and eligible windows as the CLI.
-Prev from a hoisted window targets its direct parent window, including a
-hoisted parent. Otherwise both directions skip run-marked windows and wrap
-across sessions; next from a hoisted window follows that same walk.
+same fresh-state navigation as the CLI and sidebar keys. A nested window
+steps to its adjacent direct sibling in feed order, including run windows.
+Prev from the first child selects its direct parent, even a nested run
+window. Next from the last child steps from its top-level ancestor to the
+next top-level window. Top-level steps never descend into children: they
+skip windows containing run-marked panes and wrap across all sessions in
+sidebar order.
 A successful switch replies
 {"reply":{"id":7,"switched":{"session":"$3","window":"@12"}}}.
 {"id":7,"switch-session":{"direction":"next"}} or direction "prev" uses the
 same session ordering as the sidebar and CLI, wrapping at either end. Its
 reply has the same switched session and window shape.
-No eligible target (including a single session) replies
-{"reply":{"id":7,"switched":null}}.
+No eligible target replies
+{"reply":{"id":7,"switched":null}}. A sole eligible top-level window can
+select itself; a single session has no switch-session target.
 An invalid or unknown request carrying an integer id replies
 {"reply":{"id":7,"error":"invalid or unknown request"}}; requests without an
 integer id and invalid JSON are ignored. Errors do not stop the stream.
@@ -117,9 +121,11 @@ invalid. All requests use the existing error envelope and explicit socket.
   existing integer-id reply and error envelopes. New-window takes a window
   id and inserts immediately after it, inheriting its active pane directory.
 - Added: the top-level snapshot asks list and program_status on pane items.
-- Changed: switch-window prev from a hoisted child targets its direct
-  parent window, including a hoisted parent; ordinary navigation still
-  skips run-marked windows and wraps across sessions.
+- Changed: switch-window steps among direct siblings in feed order; prev
+  from the first child selects its direct parent. Next from the last child
+  steps from its top-level ancestor. Top-level steps skip run-marked windows,
+  never descend, and wrap across sessions in sidebar order. The CLI and
+  sidebar Shift-Up/Down keys share this order; a sole eligible root selects itself.
 - Changed: pi item indicator, attention, title and caption use OSC records
   instead of State status/title/completion. Pi compaction is running with
   a message, not compacting. Gone runs outrank terminal and Hook status;

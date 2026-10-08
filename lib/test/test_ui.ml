@@ -409,7 +409,7 @@ let%expect_test "order_windows_by_tree: the lingering fallback, and a record bea
     @211 anchor=%101
     |}]
 
-let%expect_test "window targets: prev follows the direct anchor, next skips marked windows" =
+let%expect_test "window targets: siblings precede parents, next leaves the root subtree" =
   let windows =
     Sidebar.windows_in_order
       (List.concat
@@ -433,6 +433,7 @@ let%expect_test "window targets: prev follows the direct anchor, next skips mark
         (Option.map_or ~default:"-"
            (fun (p : Tmux.Pane.t) -> Tmux.Window.to_string p.window_id)
            (Tmux.Exec.window_target ~next
+              ~session:(Option.get_exn_or "id" (Tmux.Session.of_string "$0"))
               ~window:
                 (Option.get_exn_or "id"
                    (Tmux.Window.of_string
@@ -457,7 +458,7 @@ let%expect_test "window targets: prev follows the direct anchor, next skips mark
     {|
     prev other -> @201
     prev root -> @209
-    prev child2 -> @201
+    prev child2 -> @202
     prev grandchild -> @203
     next child2 -> @209
     next root -> @209

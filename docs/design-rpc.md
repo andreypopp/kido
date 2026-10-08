@@ -212,9 +212,11 @@ Protocol 2.0 changes from 1.1:
   existing integer-id reply and error envelopes. New-window takes a window
   id and inserts immediately after it, inheriting its active pane directory.
 - Added: the top-level snapshot asks list and program_status on pane items.
-- Changed: switch-window prev from a hoisted child targets its direct
-  parent window, including a hoisted parent; ordinary navigation still
-  skips run-marked windows and wraps across sessions.
+- Changed: switch-window steps among direct siblings in feed order; prev
+  from the first child selects its direct parent. Next from the last child
+  steps from its top-level ancestor. Top-level steps skip run-marked windows,
+  never descend, and wrap across sessions in sidebar order. The CLI and
+  sidebar Shift-Up/Down keys share this order; a sole eligible root selects itself.
 - Changed: pi item indicator, attention, title and caption use OSC records
   instead of State status/title/completion. Pi compaction is running with
   a message, not compacting. Gone runs outrank terminal and Hook status;
@@ -233,14 +235,19 @@ starting from tmux window order; panes within a window are oldest first
 by pane id. A child window anchors under the pane of its parent agent.
 Missing anchors remain roots rather than dropping windows.
 
-Window navigation walks that flat tree order across session boundaries
-and wraps. Ordinary next/prev targets skip windows containing run-marked
-panes. The nested-window anchor rule is the exception: prev from a
-hoisted child targets its direct parent's window, even if that parent is
-itself hoisted and run-marked. Next from a hoisted window follows the
-ordinary walk. Session navigation wraps through the unfiltered session
-order and preserves the target session's active window. A single session
-has no session-switch target.
+Window navigation first steps among a nested window's direct siblings in
+feed order, including run windows. Prev from the first child selects its
+direct parent, even when nested and run-marked. Next from the last child
+steps from its top-level ancestor to the next top-level window. Top-level
+steps never descend into children: they skip windows containing run-marked
+panes and wrap across sessions in sidebar order. A sole eligible root can
+select itself; no eligible root yields null. Siblings of a multi-pane
+parent follow its panes' feed order, then each pane's child order.
+These rules share Sidebar's typed Switch_window request across RPC, the CLI
+and focused or unfocused sidebar Shift-Up/Down keys. Session navigation
+remains independent: it wraps through the unfiltered session order and
+preserves the target session's active window. A single session has no
+session-switch target.
 
 Invalid or unknown requests with integer ids get error replies. Invalid
 JSON and requests without integer ids are ignored. Request errors do not end the stream. The stdin reader

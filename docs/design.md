@@ -1603,16 +1603,17 @@ The price is that a window hoisted under a parent's pane is not in tmux's
 own window order: a subagent's window can sit above a lower-numbered one,
 and a parent's later panes sit below a whole foreign window. That is the
 trade, not a bug - the spawn tree is what the sidebar is for. `kido
-switch-window` (S-Up/S-Down) walks the sidebar's order, not tmux's, so
-next from a hoisted window moves to the following unmarked window, while
-prev returns to its direct parent window, even when that parent is hoisted.
-The command prints nothing: its key bindings run it through `run-shell`,
-which would show any output in the pane. It skips a subagent's window on purpose - the user asked to cycle top-level
-windows, keyed off the same run pane (`@kido_run`) `Reap.sweep` uses and
-for the same reason - so a hoisted window is reachable through the
-sidebar and by prev from its own child, not by top-level cycling. The walk also draws as a root
-anything whose anchor row never appeared, for the same reason the
-ordering emits what it missed: a dropped row is an agent nobody can see.
+switch-window` (S-Up/S-Down) first steps among a hoisted window's direct
+siblings in feed order, including runs. Prev from the first child selects
+its direct parent, even when hoisted. Next from the last child steps from
+its top-level ancestor. Top-level steps never descend: they skip windows
+containing run-marked panes (`@kido_run`) and wrap across sessions in
+sidebar order. A sole eligible root can select itself. The command prints
+nothing: its key bindings run it through `run-shell`, which would show
+any output in the pane. The same order serves RPC and the focused sidebar's
+Shift-Up/Down keys. The tree also draws as a root anything whose anchor
+row never appeared, for the same reason the ordering emits what it missed:
+a dropped row is an agent nobody can see.
 
 Both walks, the sidebar's and `kido tool list_runs`', share one parent-first
 ordering that emits every item exactly once, tree or no tree. A cycle is

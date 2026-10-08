@@ -40,7 +40,11 @@ val switch_session :
   ((Session.id * Window.id) option, string) result
 
 val window_target :
-  next:bool -> window:Window.id -> (Pane.t list * Pane.id option) list -> Pane.t option
+  next:bool ->
+  session:Session.id ->
+  window:Window.id ->
+  (Pane.t list * Pane.id option) list ->
+  Pane.t option
 
 val switch_window :
   ?socket:string ->

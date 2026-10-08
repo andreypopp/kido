@@ -235,30 +235,69 @@ let switch_session ~socket ~client ~next =
         | None -> Ok None)
     (list_panes ?socket ())
 
-let window_target ~next ~window windows =
-  let panes = List.concat_map fst windows in
-  let windows = Array.of_list windows in
-  let first ((w : Pane.t list), _) = List.hd w in
-  let n = Array.length windows in
-  let unmarked j = List.for_all (fun (p : Pane.t) -> Option.is_none p.run) (fst windows.(j)) in
-  let rec find j k =
-    if k = 0 then None else if unmarked j then Some j else find (step ~next j n) (k - 1)
+let window_target ~next ~session ~window windows =
+  let first ((panes : Pane.t list), _) = List.hd panes in
+  let parent ((_, anchor) as w) =
+    Option.flat_map
+      (fun anchor ->
+        List.find_opt
+          (fun candidate ->
+            Session.equal (first candidate).session_id (first w).session_id
+            && List.exists (fun (p : Pane.t) -> Pane.equal p.pane_id anchor) (fst candidate))
+          windows)
+      anchor
   in
-  match Array.find_idx (fun w -> Window.equal (first w).window_id window) windows with
+  match
+    List.find_opt
+      (fun w ->
+        Session.equal (first w).session_id session && Window.equal (first w).window_id window)
+      windows
+  with
   | None -> None
-  | Some (i, (_, anchor)) -> (
-      match
-        if next then None
-        else
+  | Some current -> (
+      let rec root w = match parent w with Some p -> root p | None -> w in
+      let adjacent =
+        Option.flat_map
+          (fun p ->
+            let siblings =
+              List.concat_map
+                (fun (pane : Pane.t) ->
+                  List.filter
+                    (fun ((_, anchor) as w) ->
+                      Session.equal (first w).session_id session
+                      && Option.equal Pane.equal anchor (Some pane.pane_id))
+                    windows)
+                (fst p)
+              |> Array.of_list
+            in
+            Option.flat_map
+              (fun (i, _) ->
+                let j = i + if next then 1 else -1 in
+                if j >= 0 && j < Array.length siblings then Some (first siblings.(j))
+                else if next then None
+                else Some (first p))
+              (Array.find_idx (fun w -> Window.equal (first w).window_id window) siblings))
+          (parent current)
+      in
+      match adjacent with
+      | Some _ -> adjacent
+      | None ->
+          let roots = List.filter (fun w -> Option.is_none (parent w)) windows |> Array.of_list in
+          let active = first (root current) in
+          let n = Array.length roots in
+          let rec find j k =
+            if k = 0 then None
+            else if List.for_all (fun (p : Pane.t) -> Option.is_none p.run) (fst roots.(j)) then
+              Some (first roots.(j))
+            else find (step ~next j n) (k - 1)
+          in
           Option.flat_map
-            (fun anchor -> List.find_opt (fun (p : Pane.t) -> Pane.equal p.pane_id anchor) panes)
-            anchor
-      with
-      | Some parent -> Some parent
-      | None -> (
-          match find (step ~next i n) n with
-          | Some j when j <> i -> Some (first windows.(j))
-          | _ -> None))
+            (fun (i, _) -> find (step ~next i n) n)
+            (Array.find_idx
+               (fun w ->
+                 Session.equal (first w).session_id active.session_id
+                 && Window.equal (first w).window_id active.window_id)
+               roots))
 
 let switch_window ?socket ~client ~next windows =
   let active =
@@ -270,7 +309,9 @@ let switch_window ?socket ~client ~next windows =
       (client_state ?socket client)
   in
   match
-    Option.flat_map (fun (a : Pane.t) -> window_target ~next ~window:a.window_id windows) active
+    Option.flat_map
+      (fun (a : Pane.t) -> window_target ~next ~session:a.session_id ~window:a.window_id windows)
+      active
   with
   | Some target ->
       Result.map

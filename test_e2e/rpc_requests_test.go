@@ -33,14 +33,15 @@ func TestRpcHelloAndRequests(t *testing.T) {
 	if first != `{"hello":{"protocol":"2.0"}}` {
 		t.Fatalf("first line: %s", first)
 	}
+	session := h.in("display-message", "-p", "-t", "alpha:", "#{session_id}")
+	firstWindow := h.in("display-message", "-p", "-t", "alpha:", "#{window_id}")
 	f.send(`{"id":1,"switch-window":{"direction":"next"}}`)
-	waitLine(`{"reply":{"id":1,"switched":null}}`)
+	waitLine(fmt.Sprintf(`{"reply":{"id":1,"switched":{"session":%q,"window":%q}}}`, session, firstWindow))
 	f.send(`{"id":2,"unknown":true}`)
 	waitLine(`{"reply":{"id":2,"error":"invalid or unknown request"}}`)
 	f.send(`{"id":3,"switch-window":{"direction":"sideways"}}`)
 	waitLine(`{"reply":{"id":3,"error":"invalid or unknown request"}}`)
 	h.newWindow("alpha", "second")
-	session := h.in("display-message", "-p", "-t", "alpha:", "#{session_id}")
 	window := h.in("display-message", "-p", "-t", "alpha:second", "#{window_id}")
 	f.send(`{"id":4,"switch-window":{"direction":"next"}}`)
 	waitLine(fmt.Sprintf(`{"reply":{"id":4,"switched":{"session":%q,"window":%q}}}`, session, window))
@@ -75,6 +76,54 @@ func TestRpcHelloAndRequests(t *testing.T) {
 			t.Fatalf("switch-session %s: got %s, want %s %s", step.direction, got, step.session, step.window)
 		}
 	}
+}
+
+func TestRpcSwitchWindowTree(t *testing.T) {
+	t.Parallel()
+	h := start(t, "a")
+	h.renameWindow("a", 0, "root")
+	h.liveParent("a", "root-session")
+	h.addWindow("a", "top")
+	_, child := h.subagentWindow("a", "child", "child-session", "root-session")
+	_, grandchild := h.subagentWindow("a", "grandchild", "grandchild-session", "child-session")
+	_, grandSibling := h.subagentWindow("a", "grand-sibling", "grand-sibling-session", "child-session")
+	_, sibling := h.subagentWindow("a", "sibling", "sibling-session", "root-session")
+	h.addWindow("a", "orphan")
+	h.markSubagent("a", "orphan")
+	h.newSessionSpaced("b")
+	root := h.in("display-message", "-p", "-t", "a:root", "#{window_id}")
+	top := h.in("display-message", "-p", "-t", "a:top", "#{window_id}")
+	other := h.in("display-message", "-p", "-t", "b:", "#{window_id}")
+	session := h.in("display-message", "-p", "-t", "a:", "#{session_id}")
+	otherSession := h.in("display-message", "-p", "-t", "b:", "#{session_id}")
+	f := h.startFeed("a")
+	for i, step := range []struct{ fromSession, from, direction, session, window string }{
+		{session, root, "next", session, top},
+		{session, child, "next", session, sibling},
+		{session, sibling, "prev", session, child},
+		{session, child, "prev", session, root},
+		{session, grandchild, "prev", session, child},
+		{session, grandchild, "next", session, grandSibling},
+		{session, grandSibling, "prev", session, grandchild},
+		{session, grandSibling, "next", session, top},
+		{session, sibling, "next", session, top},
+		{session, top, "next", otherSession, other},
+		{otherSession, other, "prev", session, top},
+		{otherSession, other, "next", session, root},
+		{session, root, "prev", otherSession, other},
+	} {
+		h.in("switch-client", "-c", f.client, "-t", step.fromSession, ";", "select-window", "-t", step.from)
+		f.send(fmt.Sprintf(`{"id":%d,"switch-window":{"direction":%q}}`, i, step.direction))
+		f.waitReply(fmt.Sprintf(`{"reply":{"id":%d,"switched":{"session":%q,"window":%q}}}`, i, step.session, step.window))
+		if got := h.in("display-message", "-p", "-c", f.client, "#{session_id} #{window_id}"); got != step.session+" "+step.window {
+			t.Fatalf("switch-window %s from %s: %s, want %s %s", step.direction, step.from, got, step.session, step.window)
+		}
+	}
+	h.markSubagent("a", "root")
+	h.markSubagent("a", "top")
+	h.in("set-option", "-p", "-t", "b:", "@kido_run", "other-run")
+	f.send(`{"id":100,"switch-window":{"direction":"next"}}`)
+	f.waitReply(`{"reply":{"id":100,"switched":null}}`)
 }
 
 func TestRpcProtocolRefusal(t *testing.T) {
