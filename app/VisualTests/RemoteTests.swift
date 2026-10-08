@@ -405,7 +405,7 @@ import TmuxControl
                        after.components(separatedBy: "\n").filter { $0 == "server" }.count, "automatic redial must never start a server")
         _ = await replies(first, [Command("new-window", "-d", "-n", "Second", "/bin/cat")])
         try await until("new remote window reaches both models") { first.navigation.windows.count == 2 && second.navigation.windows.count == 2 }
-        first.nextWindow()
+        first.perform(.switchWindow(next: true))
         try await until("remote switch-window uses feed client") { first.navigation.window?.number == 1 && second.navigation.window?.number == 1 }
         first.window.setContentSize(NSSize(width: 1000, height: 600))
         second.window.setContentSize(NSSize(width: 640, height: 400))
@@ -457,9 +457,9 @@ import TmuxControl
         let upgradedAlert = try XCTUnwrap(mismatch.preparedAlert?.alert)
         let upgradedContent = try XCTUnwrap(upgradedAlert.window.contentView)
         XCTAssertTrue(labels(upgradedContent).contains { $0 == "Restart kido on localhost" })
-        XCTAssertTrue(labels(upgradedContent).contains { $0.contains("Server: 0.9. Host binary: 1.1.") })
+        XCTAssertTrue(labels(upgradedContent).contains { $0.contains("Server: 0.9. Host binary: 2.0.") })
         XCTAssertNil(mismatch.testConnection)
-        _ = try await Child.run(transport.launch([tools.tmux, "-u", "-S", socket, "set-environment", "-g", "KIDO_PROTOCOL", "1.1"]))
+        _ = try await Child.run(transport.launch([tools.tmux, "-u", "-S", socket, "set-environment", "-g", "KIDO_PROTOCOL", "2.0"]))
         mismatch.respondToAlert(.alertFirstButtonReturn)
         try await until("Reconnect rediscovers compatible protocol") { mismatch.testBanner.isHidden }
         transports += owners.compactMap(\.ssh)

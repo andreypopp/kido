@@ -2,7 +2,7 @@ import Foundation
 import TmuxControl
 
 public struct RPCVersion: Decodable, Equatable, Sendable, CustomStringConvertible {
-    public static let required = RPCVersion(major: 1, minor: 1)
+    public static let required = RPCVersion(major: 2, minor: 0)
     public let major: Int
     public let minor: Int
     private init(major: Int, minor: Int) { self.major = major; self.minor = minor }
@@ -12,7 +12,7 @@ public struct RPCVersion: Decodable, Equatable, Sendable, CustomStringConvertibl
               let major = Int(parts[0]), let minor = Int(parts[1]) else { return nil }
         self.init(major: major, minor: minor)
     }
-    public var compatible: Bool { major == Self.required.major && minor >= Self.required.minor }
+    public var compatible: Bool { self == Self.required }
     public var description: String { "\(major).\(minor)" }
     public init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
@@ -41,8 +41,30 @@ public enum RPCEvent: Decodable, Sendable {
             public let window: WindowID
         }
         public let id: Int
-        public let switched: Target?
-        public let error: String?
+        public enum Value: Sendable {
+            case switched(Target?), jumped(Snapshot.Position), created(Snapshot.Position), selected(Snapshot.Position), released
+            case error(String)
+        }
+        public let value: Value
+        private enum CodingKeys: String, CodingKey { case id, switched, jumped, created, selected, released, error }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(Int.self, forKey: .id)
+            guard c.allKeys.filter({ $0 != .id }).count == 1 else {
+                throw DecodingError.dataCorruptedError(forKey: .id, in: c, debugDescription: "invalid RPC reply")
+            }
+            if c.contains(.error) { value = .error(try c.decode(String.self, forKey: .error)) }
+            else if c.contains(.switched) { value = .switched(try c.decodeIfPresent(Target.self, forKey: .switched)) }
+            else if c.contains(.jumped) { value = .jumped(try c.decode(Snapshot.Position.self, forKey: .jumped)) }
+            else if c.contains(.created) { value = .created(try c.decode(Snapshot.Position.self, forKey: .created)) }
+            else if c.contains(.selected) { value = .selected(try c.decode(Snapshot.Position.self, forKey: .selected)) }
+            else {
+                guard try c.decode(Bool.self, forKey: .released) else {
+                    throw DecodingError.dataCorruptedError(forKey: .released, in: c, debugDescription: "release must be true")
+                }
+                value = .released
+            }
+        }
     }
     case hello(Hello), reply(Reply), snapshot(Snapshot), error(String)
     private enum CodingKeys: String, CodingKey { case hello, reply, error, v }

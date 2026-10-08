@@ -192,7 +192,7 @@ import TmuxControl
 
     func testOrphanedTab() throws {
         let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data("""
-        {"v":2,"filter":"","client":{"session":"$0","window":"@1","pane":"%1"},"sessions":[{"id":"$0","name":"s","current":true,"nodes":[{"kind":"shell","id":"%0","pane":"%0","window":"@0","title":[],"tail":[],"attention":false,"children":[{"kind":"run","id":"%1","pane":"%1","window":"@1","title":[],"tail":[],"attention":false,"children":[]}]}]}]}
+        {"v":2,"asks":[],"client":{"session":"$0","window":"@1","pane":"%1"},"sessions":[{"id":"$0","name":"s","current":true,"nodes":[{"kind":"shell","id":"%0","pane":"%0","window":"@0","program_status":{"serial":0,"records":[]},"title":[],"tail":[],"attention":false,"children":[{"kind":"run","id":"%1","pane":"%1","window":"@1","program_status":{"serial":0,"records":[]},"title":[],"tail":[],"attention":false,"children":[]}]}]}]}
         """.utf8))
         let model = SessionModel(session: SessionID(number: 0), windows: [.init(id: WindowID(number: 1), name: "Child")], window: WindowID(number: 1))
         XCTAssertEqual(model.navigation(snapshot).tabs.map(\.id), [WindowID(number: 1)], "orphan child must retain a tab")
@@ -200,14 +200,14 @@ import TmuxControl
 
     func testWindowSelectionTargetsSession() {
         let model = SessionModel(session: SessionID(number: 3), windows: [.init(id: WindowID(number: 7), name: "w")], window: WindowID(number: 7))
-        XCTAssertEqual(model.select(.number(1)), Command("switch-client", "-t", "$3:@7"), "selection must target the tab's session")
-        XCTAssertEqual(PaneCommand.window(.number(1)).command(PaneID(number: 0), cell: .zero, model: model), model.select(.number(1)))
-        for step in [WindowStep.next, .previous, .last] {
-            XCTAssertEqual(model.select(step), model.select(.number(1)))
-        }
+        XCTAssertEqual(model.select(.number(1)), RPCRequest.selectWindow(SessionID(number: 3), WindowID(number: 7)), "selection must target the tab's session")
+        XCTAssertNil(PaneCommand.window(.number(1)).command(PaneID(number: 0), cell: .zero))
+        XCTAssertNil(model.select(.next))
+        XCTAssertNil(model.select(.previous))
+        XCTAssertEqual(model.select(.last), model.select(.number(1)))
         let menus = SessionMenus()
-        var commands: [Command] = []
-        menus.send = { commands = $0 }
+        var commands: [RPCRequest] = []
+        menus.send = { commands.append($0) }
         menus.update(model)
         let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
             windowNumber: 0, context: nil, characters: "1", charactersIgnoringModifiers: "1", isARepeat: false, keyCode: 18)!
@@ -215,21 +215,36 @@ import TmuxControl
         XCTAssertEqual(commands, [model.select(.number(1))!])
     }
 
+    func testWindowShortcutsUseRPC() {
+        let menus = SessionMenus()
+        var requests: [RPCRequest] = []
+        menus.send = { requests.append($0) }
+        menus.update(SessionModel())
+        for (key, next) in [("}", true), ("{", false)] {
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+                windowNumber: 0, context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: 0)!
+            XCTAssertTrue(menus.window.performKeyEquivalent(with: event))
+            XCTAssertEqual(requests.last, .switchWindow(next: next))
+        }
+        XCTAssertEqual(requests.count, 2)
+        let view = NSApp.mainMenu?.items.first { $0.title == "View" }?.submenu
+        XCTAssertFalse(view?.items.contains { $0.title.contains("Window in Sidebar") } == true)
+        XCTAssertFalse(view?.items.contains { ["j", "k"].contains($0.keyEquivalent) && $0.keyEquivalentModifierMask == [.command, .control] } == true)
+        XCTAssertNil(PaneCommand.newWindow.command(PaneID(number: 0), cell: .zero))
+    }
+
     func testSessionShortcutsUseRPCNavigationOnce() {
         let menus = SessionMenus()
-        var directions: [Bool] = []
-        var commands: [Command] = []
-        menus.selectSession = { directions.append($0) }
-        menus.send = { commands += $0 }
+        var commands: [RPCRequest] = []
+        menus.send = { commands.append($0) }
         menus.update(SessionModel())
         for (key, code, next) in [("]", UInt16(30), true), ("[", UInt16(33), false)] {
             let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .option], timestamp: 0,
                 windowNumber: 0, context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: code)!
             XCTAssertTrue(menus.session.performKeyEquivalent(with: event))
-            XCTAssertEqual(directions.last, next)
+            XCTAssertEqual(commands.last, .switchSession(next: next))
         }
-        XCTAssertEqual(directions, [true, false])
-        XCTAssertTrue(commands.isEmpty)
+        XCTAssertEqual(commands, [.switchSession(next: true), .switchSession(next: false)])
     }
 
     func testOfflineDismissesFloatingSidebar() throws {
