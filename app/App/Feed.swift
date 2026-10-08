@@ -6,8 +6,6 @@ final class Feed: @unchecked Sendable {
     typealias Location = String
     typealias Locate = (@escaping @Sendable (Result<Location, Failure>) -> Void) -> Void
 
-    enum Navigation: String { case window = "switch-window", session = "switch-session" }
-
     enum Status {
         case starting
         case invalidBundle(Failure)
@@ -25,9 +23,8 @@ final class Feed: @unchecked Sendable {
     private let locate: Locate
     @MainActor private let prepare: ([String]) -> Launch
     @MainActor private var child: Child?
-    private var pending: [Int: @MainActor @Sendable ((session: SessionID, window: WindowID)?, String?) -> Void] = [:]
-    private var requestID = 0
-    @MainActor private let query: () -> String
+    @MainActor private var pending: [Int: (request: RPCRequest, completed: @MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void)] = [:]
+    @MainActor private var requestID = 0
     private let reader = DispatchQueue(label: "Feed.reader")
     private let writer = DispatchQueue(label: "Feed.writer")
     @MainActor private var input: FileHandle?
@@ -40,14 +37,13 @@ final class Feed: @unchecked Sendable {
     @MainActor private func publish(_ status: Status) { self.status = status; onChange(status) }
 
     @MainActor init(
-        serverDir: String, locate: @escaping Locate, query: @escaping () -> String, drain: Drain? = nil,
+        serverDir: String, locate: @escaping Locate, drain: Drain? = nil,
         prepare: @escaping ([String]) -> Launch = { Launch(tools.kido, $0, environment: tools.environment) }, onChange: @escaping (Status) -> Void
     ) {
         self.serverDir = serverDir
         self.drain = drain
         self.locate = locate
         self.prepare = prepare
-        self.query = query
         self.onChange = onChange
         start()
     }
@@ -68,40 +64,29 @@ final class Feed: @unchecked Sendable {
         writer.async { try? input.close() }
     }
 
-    @MainActor func filter(_ text: String) {
-        guard let input else { return }
-        writer.async { try? input.write(contentsOf: try JSONSerialization.data(withJSONObject: ["filter": text]) + Data([10])) }
-    }
-
-    @MainActor func switchTarget(_ navigation: Navigation, next: Bool, completed: @escaping @MainActor @Sendable ((session: SessionID, window: WindowID)?, String?) -> Void) {
-        guard let input, case .running = status else { return completed(nil, "the RPC feed is not ready") }
+    @MainActor func request(_ request: RPCRequest, completed: @escaping @MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void) {
+        guard let input, case .running = status else { return completed(.failure(.terminal("the RPC feed is not ready"))) }
         do throws(Failure) { try tools.validate() } catch {
             publish(.invalidBundle(error))
-            return completed(nil, error.message)
+            return completed(.failure(error))
         }
-        reader.async { [self] in
-            requestID += 1
-            let id = requestID
-            pending[id] = completed
-            writer.async {
-                do {
-                    try input.write(contentsOf: try JSONSerialization.data(withJSONObject: ["id": id, navigation.rawValue: ["direction": next ? "next" : "prev"]]) + Data([10]))
-                } catch {
-                    self.reader.async {
-                        let callback = self.pending.removeValue(forKey: id)
-                        DispatchQueue.main.async { callback?(nil, "Could not write RPC request") }
-                    }
+        requestID += 1
+        let id = requestID
+        pending[id] = (request, completed)
+        writer.async { [weak self] in
+            do { try input.write(contentsOf: request.data(id: id)) }
+            catch {
+                DispatchQueue.main.async {
+                    self?.pending.removeValue(forKey: id)?.completed(.failure(.terminal("Could not write RPC request")))
                 }
             }
         }
     }
 
-    private func failPending() {
-        reader.async { [self] in
-            let callbacks = Array(pending.values)
-            pending.removeAll()
-            DispatchQueue.main.async { callbacks.forEach { $0(nil, "RPC connection ended before the request completed") } }
-        }
+    @MainActor private func failPending() {
+        let callbacks = Array(pending.values)
+        pending.removeAll()
+        callbacks.forEach { $0.completed(.failure(.terminal("RPC connection ended before the request completed"))) }
     }
 
     @MainActor private func start() {
@@ -139,7 +124,6 @@ final class Feed: @unchecked Sendable {
         }
         _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
         input = stdin.fileHandleForWriting
-        filter(query())
         let output = stdout.fileHandleForReading.fileDescriptor
         let source = DispatchSource.makeReadSource(fileDescriptor: output, queue: reader)
         nonisolated(unsafe) var buffer = Data()
@@ -161,12 +145,13 @@ final class Feed: @unchecked Sendable {
                 let first = !greeted
                 greeted = true
                 if case .reply(let reply) = event, !first {
-                    let callback = self?.pending.removeValue(forKey: reply.id)
                     DispatchQueue.main.async {
-                        guard let self, self.generation == generation else {
-                            return callback?(nil, "RPC connection changed before the reply arrived") ?? ()
+                        guard let self, self.generation == generation, let pending = self.pending.removeValue(forKey: reply.id) else { return }
+                        guard pending.request.accepts(reply.value) else {
+                            return pending.completed(.failure(.terminal("Unexpected RPC reply kind")))
                         }
-                        callback?(reply.switched.map { ($0.session, $0.window) }, reply.error)
+                        if case .error(let message) = reply.value { pending.completed(.failure(.terminal(message))) }
+                        else { pending.completed(.success(reply.value)) }
                     }
                     continue
                 }

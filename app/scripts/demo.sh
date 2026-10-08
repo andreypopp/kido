@@ -57,11 +57,10 @@ AWK
   done
   t send-keys -t main:kido.0 "'$K' async_bash --name build -- sleep 3600" Enter
 fi
-# Agents are status records only; they turn stalled without heartbeats, so rerun to refresh.
-t send-keys -t main:kido.0 "'$K' agent-status --agent pi --session demo-kido --status running --title kido --activity 'fixing sidebar tests'" Enter
-t send-keys -t main:review "'$K' agent-status --agent pi --session demo-review --parent-session demo-kido --depth 1 --status waiting --title review --activity 'needs your answer'" Enter
-t send-keys -t main:tests.0 "'$K' agent-status --agent pi --session demo-tests --parent-session demo-kido --depth 1 --status running --title tests --activity 'running e2e'" Enter
-t send-keys -t research:notes "'$K' agent-status --agent claude --session demo-notes --status idle --title notes --activity 'wrote summary'" Enter
-t send-keys -t research:deep "'$K' agent-status --agent pi --session demo-deep --status compacting --title deep-dive" Enter
+t send-keys -t main:kido.0 "'$K' agent-status --agent pi --session demo-kido --activity 'fixing sidebar tests'; printf '\\033]2;π kido\\007\\033]7501;state=working:app=pi\\007'; sleep 86400" Enter
+t send-keys -t main:review "'$K' agent-status --agent pi --session demo-review --parent-session demo-kido --depth 1 --activity 'needs your answer'; printf '\\033]2;π review\\007\\033]7501;state=blocked:app=pi:kind=question\\007'; sleep 86400" Enter
+t send-keys -t main:tests.0 "'$K' agent-status --agent pi --session demo-tests --parent-session demo-kido --depth 1 --activity 'running e2e'; printf '\\033]2;π tests\\007\\033]7501;state=working:app=pi\\007'; sleep 86400" Enter
+t send-keys -t research:notes "'$K' agent-status --agent claude --session demo-notes --activity 'wrote summary'; sleep 86400" Enter
+t send-keys -t research:deep "'$K' agent-status --agent pi --session demo-deep --activity compacting; printf '\\033]2;π deep-dive\\007\\033]7501;state=working:app=pi\\007'; sleep 86400" Enter
 t select-window -t main:kido
 exec "$APP"
