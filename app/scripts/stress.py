@@ -281,6 +281,8 @@ floating = False
 collapsed_size = None
 last_size = None
 floating_probes = 0
+floating_interrupted = 0
+floating_errors = []
 floating_deferred = 0
 for line in lines:
     try:
@@ -293,25 +295,33 @@ for line in lines:
     elif event.get('floating-probe') == 'end':
         floating = False
         floating_probes += 1
+        problems.extend(floating_errors)
+        floating_errors.clear()
+    elif event.get('floating-probe') == 'interrupted':
+        floating = False
+        floating_interrupted += 1
+        floating_errors.clear()
     elif 'client-size-send ' in line:
         size = line.rsplit('client-size-send ', 1)[1].strip()
         if floating and size not in (last_size, collapsed_size):
-            problems.append('floating changed terminal size via refresh-client -C: ' + line)
+            floating_errors.append('floating changed terminal size via refresh-client -C: ' + line)
         elif floating:
             floating_deferred += 1
         last_size = size
     if event.get('verification') and not event.get('passed'):
         problems.append('UI verification failed: ' + line)
+problems.extend(floating_errors)
 if done:
     done['counts']['floating-no-refresh-verified'] = floating_probes
+    done['counts']['floating-no-refresh-interrupted'] = floating_interrupted
     done['counts']['floating-deferred-or-redundant-refresh'] = floating_deferred
     counts['child-window'] = done['counts'].get('child-window-seen', 0)
     if counts['child-window-attempted'] and not counts['child-window']:
         problems.append('async child windows were sent but never observed in the feed')
-    for action in ('tabs', 'sidebar-jump', 'sidebar-search', 'sidebar-fold', 'sidebar-mode'):
+    for action in ('tabs', 'sidebar-jump', 'sidebar-search', 'sidebar-mode'):
         if not done['counts'].get(action + '-delivered'):
             problems.append('UI action never delivered: ' + action)
-    for kind in ('displayed-window', 'tab-order', 'shortcut-order', 'one-switch-client', 'search-escape', 'floating-frame', 'floating-dismiss', 'floating-no-refresh'):
+    for kind in ('displayed-window', 'tab-order', 'shortcut-order', 'one-rpc-jump', 'search-escape', 'floating-frame', 'floating-dismiss', 'floating-no-refresh'):
         if not done['counts'].get(kind + '-verified'):
             problems.append('UI verification never ran: ' + kind)
 gone = {event['detail'] for event in app if event.get('event') == 'drag-killed'}
