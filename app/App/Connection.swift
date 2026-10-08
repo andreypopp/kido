@@ -58,7 +58,8 @@ final class Connection: @unchecked Sendable {
     @MainActor private var desiredSize: String?
     @MainActor private var sentSize: String?
     @MainActor private var sizeInFlight = false
-    @MainActor var navigationModel: () -> SessionModel = { SessionModel() }
+    @MainActor var navigate: (PaneCommand) -> Void = { _ in }
+    @MainActor var userFocus: () -> Void = {}
     @MainActor private(set) var model = SessionModel() {
         didSet { onChange(model) }
     }
@@ -248,6 +249,7 @@ final class Connection: @unchecked Sendable {
             DispatchQueue.main.async { self.view?.windows[window]?.focus(pane) }
         case .sessionWindowChanged(let s, let window):
             DispatchQueue.main.async {
+                if let index = self.model.sessions.firstIndex(where: { $0.id == s }) { self.model.sessions[index].window = window }
                 if s == self.model.session { self.model.window = window }
             }
         case .unrecognized(let line) where line.hasPrefix("%subscription-changed windows "):
