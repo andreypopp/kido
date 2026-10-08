@@ -9,7 +9,7 @@ final class WindowTabs: NSView {
     }
     private let headerBackground = HeaderBackground()
 
-    var entries: [SessionModel.Tab] = [] { didSet { if entries != oldValue { needsDisplay = true } } }
+    var entries: [SessionModel.Tab] = [] { didSet { needsDisplay = true } }
     var select: (WindowStep) -> Void = { _ in }
     var hostLabel: () -> (text: String, alias: String, connected: Bool)? = { nil }
     var theme: (background: NSColor, appearance: NSAppearance?) = (.windowBackgroundColor, nil) {
