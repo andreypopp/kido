@@ -40,7 +40,9 @@ visual: DERIVED = build/xcode.noindex/derived-visual
 visual:
 	mkdir -p build/bundle/visual/{home,state,tmp,config}
 	$(MAKE) all DERIVED=$(DERIVED) SANITIZE="KIDO_VISUAL_CONDITION=KIDO_VISUAL"
-	xcodebuild -quiet -project Kido.xcodeproj -scheme Visual -configuration Debug \
+	server=$$(mktemp -d /tmp/ka-visual-XXXXXX) || exit 1; \
+	trap '$(abspath $(DERIVED)/Build/Products/Debug/Kido.app/Contents/Resources/kido/bin/kido-tmux) -S "$$server/socket" kill-server 2>/dev/null || true; rm -rf "$$server"' EXIT; \
+	xcodebuild -quiet -project Kido.xcodeproj -scheme Visual -configuration Debug KIDO_VISUAL_SERVER="$$server" \
 		-destination platform=macOS -derivedDataPath $(DERIVED) KIDO_VISUAL_CONDITION=KIDO_VISUAL \
 		KIDO_VISUAL_RECORD=$(RECORD) KIDO_VISUAL_TMUX=$(abspath $(DERIVED)/Build/Products/Debug/Kido.app/Contents/Resources/kido/bin/kido-tmux) test
 	python3 scripts/quit-check.py $(abspath $(APP))

@@ -12,6 +12,15 @@ class OwnerWindow: NSWindow {
     }
 }
 
+private class AlertEscape: NSView {
+    var button: NSButton?
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard event.charactersIgnoringModifiers == "\u{1b}", event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return false }
+        button?.performClick(nil)
+        return true
+    }
+}
+
 @MainActor final class WindowOwner: NSObject, NSWindowDelegate {
     let runtime: GhosttyRuntime
     let host: Host
@@ -42,10 +51,18 @@ class OwnerWindow: NSWindow {
     var request: (RPCRequest, @escaping @MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void) -> Void = { $1(.failure(.terminal("the RPC feed is not ready"))) }
     private(set) var preparedAlert: (alert: NSAlert, respond: (NSApplication.ModalResponse) -> Void)?
 
+    private static let localServerRestarted = Notification.Name("KidoLocalServerRestarted")
+
+    @objc private func localServerRestarted(_ notification: Notification) {
+        guard alive, host == .local, case .mismatch(let endpoint) = link,
+              notification.object as? String == endpoint.server.socket else { return }
+        start()
+    }
+
     private enum Attempt {
         case discover
         case attach(Endpoint)
-        case confirm(Endpoint)
+        case check(Endpoint)
     }
 
     private enum Link {
@@ -61,6 +78,7 @@ class OwnerWindow: NSWindow {
         self.host = host
         self.runtime = runtime
         super.init()
+        NotificationCenter.default.addObserver(self, selector: #selector(localServerRestarted(_:)), name: Self.localServerRestarted, object: nil)
         window = AppWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -193,7 +211,7 @@ class OwnerWindow: NSWindow {
                 let endpoint: Endpoint
                 switch attempt {
                 case .attach(let remembered): return dial(remembered, backoff: backoff)
-                case .confirm(let remembered): endpoint = remembered
+                case .check(let remembered): endpoint = remembered
                 case .discover:
                     #if KIDO_VISUAL || KIDO_STRESS
                     if let testEndpoint { endpoint = testEndpoint }
@@ -215,7 +233,7 @@ class OwnerWindow: NSWindow {
         switch link {
         case .locating(let pending, let delay), .redialing(_, let pending, let delay): attempt = pending; backoff = delay
         case .connected(_, let endpoint, let delay): attempt = .attach(endpoint); backoff = initial == nil ? 0.05 : delay
-        case .mismatch(let endpoint): attempt = .confirm(endpoint); backoff = 0.1
+        case .mismatch(let endpoint): attempt = .check(endpoint); backoff = 0.1
         case .down, .changed: return
         }
         invalidate()
@@ -264,8 +282,19 @@ class OwnerWindow: NSWindow {
         alert.informativeText += "\n\nCompatibility: this app needs exactly protocol \(RPCVersion.required). Server: \(server.map(String.init(describing:)) ?? "unstamped (older kido)")."
         if !local && (upgraded || newer && binary != server), let binary { alert.informativeText += " Host binary: \(binary)." }
         alert.informativeText += " Protocol numbers are not Kido.app release numbers."
-        alert.addButton(withTitle: local ? "Restart…" : "Reconnect")
+        if local {
+            alert.informativeText += "\n\nRestarting ends all sessions and panes on this local kido-app server. Running commands and agents will stop. Other clients attached to this server will disconnect."
+        }
+        alert.addButton(withTitle: local ? "Restart" : "Reconnect").hasDestructiveAction = local
         alert.addButton(withTitle: "Close").keyEquivalent = "\u{1b}"
+        if local {
+            alert.buttons[0].keyEquivalent = ""
+            alert.window.defaultButtonCell = alert.buttons[1].cell as? NSButtonCell
+            alert.window.initialFirstResponder = alert.buttons[1]
+            let escape = AlertEscape()
+            escape.button = alert.buttons[1]
+            alert.accessoryView = escape
+        }
         return alert
     }
 
@@ -283,30 +312,19 @@ class OwnerWindow: NSWindow {
             guard let self, accepts(generation) else { return }
             guard response == .alertFirstButtonReturn else { banner.isHidden = false; return }
             if host != .local { return start() }
-            let confirmation = NSAlert()
-            confirmation.messageText = "Restart the local server?"
-            confirmation.informativeText = "Restarting ends all sessions and panes on this local kido-app server. Running commands and agents will stop. Other clients attached to this server will disconnect."
-            confirmation.addButton(withTitle: "Cancel")
-            confirmation.addButton(withTitle: "Restart").hasDestructiveAction = true
-            confirmation.buttons[0].keyEquivalent = "\u{1b}"
-            confirmation.window.defaultButtonCell = confirmation.buttons[0].cell as? NSButtonCell
-            confirmation.window.initialFirstResponder = confirmation.buttons[0]
-            prepareAlert(confirmation) { [weak self] response in
-                guard let self, accepts(generation) else { return }
-                guard response == .alertSecondButtonReturn else { return mismatchSheet(endpoint) }
-                link = .locating(.confirm(Endpoint(server: endpoint.server, kido: tools.kido)), 0.1)
-                task = Task {
+            link = .locating(.check(endpoint), 0.1)
+            task = Task {
+                guard accepts(generation) else { return }
+                do throws(Failure) {
+                    try await endpoint.server.restart(drain: drain)
                     guard accepts(generation) else { return }
-                    do throws(Failure) {
-                        try await endpoint.server.restart(drain: drain)
-                        guard accepts(generation) else { return }
-                        link = .down
-                        start()
-                    } catch {
-                        guard accepts(generation) else { return }
-                        link = .down
-                        down("Could not restart the app server", error.message, button: "Reconnect")
-                    }
+                    NotificationCenter.default.post(name: Self.localServerRestarted, object: endpoint.server.socket)
+                    link = .down
+                    start()
+                } catch {
+                    guard accepts(generation) else { return }
+                    link = .down
+                    down("Could not restart the app server", error.message, button: "Reconnect")
                 }
             }
         }
