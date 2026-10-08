@@ -209,14 +209,19 @@ func TestRpcCreateExplicitSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.in("set-option", "-g", "default-command", "exec sleep 300")
-	origin := h.in("new-window", "-P", "-F", "#{pane_id}", "-t", "two:", "-c", cwd, "exec sleep 300")
+	first := h.in("display-message", "-p", "-t", "two:", "#{window_id}")
+	origin := h.in("new-window", "-P", "-F", "#{window_id}", "-t", "two:", "-c", cwd, "exec sleep 300")
+	last := h.in("new-window", "-P", "-F", "#{window_id}", "-t", "two:", "exec sleep 300")
 	session := h.in("display-message", "-p", "-t", origin, "#{session_id}")
 	f := h.startFeed("one")
 	f.waitLast(func(s feedSnapshot) bool { return len(s.Sessions) == 2 }, "sessions")
-	f.send(fmt.Sprintf(`{"id":71,"new-window":%q}`, session))
+	f.send(fmt.Sprintf(`{"id":71,"new-window":%q}`, origin))
 	createdSession, window, pane := f.waitLocationReply(71, "created")
 	if createdSession != session {
 		t.Fatalf("new-window session: %s", createdSession)
+	}
+	if got := h.in("list-windows", "-t", session, "-F", "#{window_id}"); got != strings.Join([]string{first, origin, window, last}, "\n") {
+		t.Fatalf("window index order: %s", got)
 	}
 	if got := h.in("display-message", "-p", "-t", pane, "#{pane_current_path}"); got != cwd {
 		t.Fatalf("cwd: %s", got)
@@ -237,9 +242,9 @@ func TestRpcCreateExplicitSocket(t *testing.T) {
 	}
 	f.waitLast(func(s feedSnapshot) bool { return s.Client.Session == newSession && s.Client.Pane == newPane }, "created session snapshot")
 	before := h.in("list-panes", "-a", "-F", "#{session_id}:#{window_id}:#{pane_id}")
-	f.send(`{"id":73,"new-window":"$999999"}`)
-	f.waitReply(`{"reply":{"id":73,"error":"no such session"}}`)
-	for i, request := range []string{`"new-window":"two"`, `"new-session":false`, `"new-session":true,"new-window":"$0"`} {
+	f.send(`{"id":73,"new-window":"@999999"}`)
+	f.waitReply(`{"reply":{"id":73,"error":"no such window"}}`)
+	for i, request := range []string{`"new-window":"two"`, `"new-session":false`, `"new-session":true,"new-window":"@0"`, `"new-window":"$0"`} {
 		f.send(fmt.Sprintf(`{"id":%d,%s}`, 74+i, request))
 		f.waitReply(fmt.Sprintf(`{"reply":{"id":%d,"error":"invalid or unknown request"}}`, 74+i))
 	}

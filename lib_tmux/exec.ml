@@ -379,16 +379,21 @@ let new_window ?socket ?(remain_on_exit = true) ~session ~name ~cwd ~env command
     | Error e when window_exists ?socket w.window_id -> Error e
     | Ok _ | Error _ -> Ok w
 
-let new_shell ~socket ~session ~cwd =
+let new_shell ~socket target =
   let open Result.Infix in
-  if String.is_empty cwd then Error "no current pane directory"
+  let from, command, missing =
+    match target with
+    | `Window window ->
+        let id = Window.to_string window in
+        (id, [ "new-window"; "-a"; "-t"; id ], "no such window")
+    | `Session session -> (Session.to_string session ^ ":", [ "new-session" ], "no such session")
+  in
+  let* cwd = exec ?socket [ "display-message"; "-p"; "-t"; from; "#{pane_current_path}" ] in
+  if String.is_empty cwd then Error missing
   else
     let* out =
       exec ?socket
-        ((match session with
-           | Some session -> [ "new-window"; "-t"; Session.to_string session ^ ":" ]
-           | None -> [ "new-session" ])
-        @ [ "-d"; "-P"; "-F"; "#{session_id}:#{window_id}:#{pane_id}"; "-c"; cwd ])
+        (command @ [ "-d"; "-P"; "-F"; "#{session_id}:#{window_id}:#{pane_id}"; "-c"; cwd ])
     in
     match String.split ~by:":" out with
     | [ session; window; pane ] -> (

@@ -802,7 +802,7 @@ type switched = { session : Tmux.Session.id; window : Tmux.Window.id }
 type _ request =
   | Switch_window : direction -> (switched option, string) result request
   | Switch_session : direction -> (switched option, string) result request
-  | New_window : Tmux.Session.id -> (client, string) result request
+  | New_window : Tmux.Window.id -> (client, string) result request
   | New_session : (client, string) result request
   | Select_window : switched -> (client, string) result request
   | Select_session : Tmux.Session.id -> (client, string) result request
@@ -821,28 +821,22 @@ let handle : type a. socket:string option -> dir:string -> client:string -> a re
       (fun () -> target)
       (Tmux.Exec.jump ?socket ~client ~session:target.session ~window:target.window target.pane)
   in
-  let create session =
+  let create window =
     let open Result.Infix in
-    let* cwd_from =
-      match session with
-      | Some session -> Ok session
+    let* target =
+      match window with
+      | Some window -> Ok (`Window window)
       | None -> (
           match Tmux.Exec.client_state ?socket client with
-          | Some c -> Ok c.session_id
+          | Some c -> Ok (`Session c.session_id)
           | None -> Error "no current tmux session")
     in
-    let* panes = Tmux.Exec.list_panes ?socket () in
-    match
-      List.find_opt (fun (p : P.t) -> Tmux.Session.equal p.session_id cwd_from && p.active) panes
-    with
-    | None -> Error "no such session"
-    | Some p ->
-        let* session, window, pane = Tmux.Exec.new_shell ~socket ~session ~cwd:p.current_path in
-        Result.map_err
-          (fun e ->
-            Printf.sprintf "created %s:%s.%s but selection failed: %s"
-              (Tmux.Session.to_string session) (Tmux.Window.to_string window) (P.to_string pane) e)
-          (jump { session; window; pane })
+    let* session, window, pane = Tmux.Exec.new_shell ~socket target in
+    Result.map_err
+      (fun e ->
+        Printf.sprintf "created %s:%s.%s but selection failed: %s" (Tmux.Session.to_string session)
+          (Tmux.Window.to_string window) (P.to_string pane) e)
+      (jump { session; window; pane })
   in
   match request with
   | Select_window target -> (
@@ -866,7 +860,7 @@ let handle : type a. socket:string option -> dir:string -> client:string -> a re
       with
       | None -> Error "no such window in session"
       | Some p -> jump { session; window = p.window_id; pane = p.pane_id })
-  | New_window session -> create (Some session)
+  | New_window window -> create (Some window)
   | New_session -> create None
   | Jump target ->
       let open Result.Infix in

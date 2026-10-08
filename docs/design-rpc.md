@@ -209,7 +209,8 @@ Protocol 2.0 changes from 1.1:
   Snapshots contain all sessions; search is client-side.
 - Added: new-window/new-session, select-window/select-session, jump,
   activate-ask/delete-ask and release-side-focus requests, using the
-  existing integer-id reply and error envelopes.
+  existing integer-id reply and error envelopes. New-window takes a window
+  id and inserts immediately after it, inheriting its active pane directory.
 - Added: the top-level snapshot asks list and program_status on pane items.
 - Changed: switch-window prev from a hoisted child targets its direct
   parent window, including a hoisted parent; ordinary navigation still
@@ -287,9 +288,11 @@ Select_window (a session/window pair) and Select_session (a session id).
 All are Sidebar requests; Protocol owns their integer-id correlation and
 wire representation.
 
-Creation inherits the target session's active pane cwd for a window, or
-the named client's current session cwd for a session. It uses the server's
-default shell/command, naming and indexing. Selection retains a window's
+New_window takes a window id and inserts immediately after that window
+in its session with tmux new-window -a -t. Creation inherits the target
+window's active pane cwd for a window, or the named client's current
+session cwd for a session. It uses the server's default shell/command,
+naming and indexing. Selection retains a window's
 active pane and the requested session occurrence of a linked window.
 Creation is detached, followed by a jump. Failure after creation identifies
 the created location in the error and leaves the effect intact; reconnects

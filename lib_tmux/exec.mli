@@ -75,8 +75,7 @@ val new_window :
 
 val new_shell :
   socket:string option ->
-  session:Session.id option ->
-  cwd:string ->
+  [ `Window of Window.id | `Session of Session.id ] ->
   (Session.id * Window.id * Pane.id, string) result
 
 val kill_window : ?socket:string -> Window.id -> (unit, string) result

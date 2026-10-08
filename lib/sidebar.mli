@@ -141,7 +141,7 @@ type _ request =
       (** Switch the client in sidebar order; returns the target, or None when none is eligible. *)
   | Switch_session : direction -> (switched option, string) result request
       (** Switch the client in session order; returns the target, or None with only one session. *)
-  | New_window : Tmux.Session.id -> (client, string) result request
+  | New_window : Tmux.Window.id -> (client, string) result request
       (** Create a shell window in the given session and select it; returns its location. *)
   | New_session : (client, string) result request
       (** Create a shell session using the current session's cwd and select it; returns its

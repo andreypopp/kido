@@ -69,12 +69,13 @@ let decode line =
                        if String.equal key "activate-ask" then Any (Sidebar.Activate_ask id)
                        else Any (Sidebar.Delete_ask id))
                      (Ask.parse_id id))
-            | [ (key, value) ]
-              when String.equal key "new-window" || String.equal key "select-session" ->
+            | [ ("new-window", value) ] ->
                 Option.map
-                  (fun session ->
-                    if String.equal key "new-window" then Any (Sidebar.New_window session)
-                    else Any (Sidebar.Select_session session))
+                  (fun window -> Any (Sidebar.New_window window))
+                  (identifier Tmux.Window.of_string (Some value))
+            | [ ("select-session", value) ] ->
+                Option.map
+                  (fun session -> Any (Sidebar.Select_session session))
                   (identifier Tmux.Session.of_string (Some value))
             | [ ("new-session", `Bool true) ] -> Some (Any Sidebar.New_session)
             | [ ("select-window", `Assoc target) ] when List.length target = 2 -> (
