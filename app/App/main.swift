@@ -49,8 +49,7 @@ import SidebarFeed
         guard let runtime = GhosttyRuntime(pasteboard: pasteboard) else { fatalError("libghostty failed to initialise") }
         self.runtime = runtime
         NSApp.mainMenu = mainMenu()
-        menus.send = { [weak self] in self?.current?.send($0) }
-        menus.selectSession = { [weak self] in self?.current?.switchTarget(.session, next: $0) }
+        menus.send = { [weak self] in self?.current?.perform($0) }
         runtime.onConfigChange = { [weak self] in self?.owners.filter(\.alive).forEach { $0.updateAppearance() } }
         runtime.onColorSchemeChange = { [weak self] in self?.owners.filter(\.alive).forEach { $0.updateColorScheme() } }
         routes.ready(isDefaultLaunch: isDefaultLaunch == true && ordinaryLaunchEvent) { [weak self] in _ = self?.open($0) }
@@ -132,8 +131,6 @@ import SidebarFeed
             .separator(),
             item("Next Needing Attention", #selector(nextAttention), "n", [.command, .control]),
             item("Previous Needing Attention", #selector(previousAttention), "N", [.command, .control]),
-            item("Next Window in Sidebar", #selector(nextWindow), "j", [.command, .control]),
-            item("Previous Window in Sidebar", #selector(previousWindow), "k", [.command, .control]),
         ]
         for item in view.items.prefix(2) { item.target = current?.sidebar }
         let file = NSMenu(title: "File")
@@ -171,8 +168,6 @@ import SidebarFeed
     @objc private func newSession() { current?.newSession() }
     @objc private func nextAttention() { current?.nextAttention() }
     @objc private func previousAttention() { current?.previousAttention() }
-    @objc private func nextWindow() { current?.nextWindow() }
-    @objc private func previousWindow() { current?.previousWindow() }
     @objc private func quitItem() { quit("the Quit menu item") }
     func quit(_ reason: String) { trigger = reason; NSApp.terminate(nil) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -203,6 +198,7 @@ import SidebarFeed
 
     #if KIDO_STRESS
     var stressState: (SessionModel, SessionModel, SessionView?, Connection?, SidebarFeed.Snapshot?) { owners.first!.stressState }
+    var stressGeneration: Int { owners.first!.generation }
     var sidebar: Sidebar { owners.first!.sidebar }
     #endif
 }

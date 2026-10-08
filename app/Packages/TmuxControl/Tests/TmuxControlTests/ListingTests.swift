@@ -3,9 +3,9 @@ import Testing
 @testable import TmuxControl
 
 @Test func listings() throws {
-    #expect(SessionListing("$3\u{1F}a b\u{1F}c") == SessionListing("$3\u{1F}a b\u{1F}c"))
-    #expect(SessionListing("$3\u{1F}a b\u{1F}c")?.name == "a b\u{1F}c")
-    #expect(SessionListing("$3\u{1F}")?.name == "")
+    #expect(SessionListing("$3\u{1F}@7\u{1F}a b\u{1F}c")?.window == WindowID(number: 7))
+    #expect(SessionListing("$3\u{1F}@7\u{1F}a b\u{1F}c")?.name == "a b\u{1F}c")
+    #expect(SessionListing("$3\u{1F}@7\u{1F}")?.name == "")
     #expect(SessionListing("@3\u{1F}a") == nil)
     #expect(SessionListing("$3") == nil)
 
