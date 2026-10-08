@@ -11,6 +11,7 @@ let pane ?(session = "a") ?(created = 100.) ?(session_id = "$0") ?(index = 0) ?(
     window_layout = "";
     pane_id = Option.get_exn_or "id" (Tmux.Pane.of_string id);
     active;
+    pane_active = active;
     pane_pid = pid;
     current_command = cmd;
     current_path = cwd;

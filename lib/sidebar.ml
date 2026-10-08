@@ -216,7 +216,14 @@ let take ~opts conn prev client =
 
 let same a b =
   let drawn (p : P.t) =
-    { p with window_index = 0; window_layout = ""; current_path = ""; active = false }
+    {
+      p with
+      window_index = 0;
+      window_layout = "";
+      current_path = "";
+      active = false;
+      pane_active = false;
+    }
   in
   let session (_, (s : State.session)) = { s with ts = 0. } in
   Option.equal Stdlib.( = ) a.client b.client
@@ -849,7 +856,7 @@ let handle : type a. socket:string option -> dir:string -> client:string -> a re
           (fun (p : P.t) ->
             Tmux.Session.equal p.session_id target.session
             && Tmux.Window.equal p.window_id target.window
-            && p.active)
+            && p.pane_active)
           panes
       with
       | None -> Error "no such window in session"

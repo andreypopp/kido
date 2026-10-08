@@ -23,6 +23,7 @@ type t = {
   window_layout : string;
   pane_id : id;
   active : bool;
+  pane_active : bool;
   pane_pid : int;
   current_command : string;
   current_path : string;

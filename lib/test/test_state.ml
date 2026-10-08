@@ -203,6 +203,7 @@ let%expect_test "is_agent_pane: reported, running claude, a pi in the tree, a pl
       window_layout = "";
       pane_id = Option.get_exn_or "id" (Tmux.Pane.of_string id);
       active = false;
+      pane_active = false;
       pane_pid = pid;
       current_command = cmd;
       current_path = "";

@@ -14,6 +14,7 @@ let pane ?run ?dead ?(watched = false) pane_id window_id : Tmux.Pane.t =
     window_layout = "";
     pane_id = Option.get_exn_or "id" (Tmux.Pane.of_string pane_id);
     active = watched;
+    pane_active = watched;
     pane_pid = 0;
     current_command = "";
     current_path = "";

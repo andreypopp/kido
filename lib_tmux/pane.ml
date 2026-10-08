@@ -42,6 +42,7 @@ type t = {
   window_layout : string;
   pane_id : id;
   active : bool;
+  pane_active : bool;
   pane_pid : int;
   current_command : string;
   current_path : string;
@@ -94,10 +95,11 @@ let format =
       "#{pane_dead_time}";
       "#{session_attached}";
       "#{" ^ run_option ^ "}";
+      "#{pane_active}";
       "#{pane_title}";
     ]
 
-let fields = 24
+let fields = 25
 
 let split_n n s =
   let rec go n from =
@@ -145,7 +147,8 @@ let parse_line line =
           dead_at = (if String.equal f.(19) "1" then time f.(20) else None);
           session_attached = not (String.equal f.(21) "" || String.equal f.(21) "0");
           run = nonempty f.(22);
-          title = f.(23);
+          pane_active = String.equal f.(23) "1";
+          title = f.(24);
         }
 
 let parse lines = List.filter_map parse_line lines

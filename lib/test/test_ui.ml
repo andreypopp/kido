@@ -26,6 +26,7 @@ let pane ?(session = "sess") ?(window = "@1") ?(command = "") ?(title = "") ?(pi
     window_layout = "";
     pane_id = Option.get_exn_or "id" (Tmux.Pane.of_string pane_id);
     active;
+    pane_active = active;
     pane_pid = pid;
     current_command = command;
     current_path = "";
