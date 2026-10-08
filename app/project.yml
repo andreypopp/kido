@@ -99,8 +99,7 @@ schemes:
       targets: [VisualTests]
       environmentVariables:
         KIDO_APP_BACKGROUND: "1"
-        KIDO_APP_SERVER: /tmp/kido-visual-unconnected
-        KIDO_APP_TMUX: /usr/bin/false
+        KIDO_APP_SERVER: "$(KIDO_VISUAL_SERVER)"
         HOME: "$(SRCROOT)/build/bundle/visual/home"
         XDG_STATE_HOME: "$(SRCROOT)/build/bundle/visual/state"
         TMUX_TMPDIR: "$(SRCROOT)/build/bundle/visual/tmp"
