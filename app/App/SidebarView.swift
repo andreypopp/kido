@@ -3,20 +3,10 @@ import SidebarFeed
 import TmuxControl
 
 final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
-    var request: (RPCRequest, @escaping @MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void) -> Void = { $1(.failure(.terminal("the RPC feed is not ready"))) }
+    var navigate: (RPCRequest) -> Void = { _ in }
+    var onIntent: () -> Void = {}
     var leave: () -> Void = {}
-    enum Target { case pane(Snapshot.Position), window(SessionID, WindowID) }
-    var prepareFocus: (Target) -> Void = { _ in }
-    var intentChanged: () -> Void = {}
-    private(set) var intent = 0
     private var rendering = false
-    private var completing = false
-
-    func supersedeIntent() {
-        guard !completing else { return }
-        intent += 1
-        intentChanged()
-    }
 
     private var items: [SidebarRow] = []
     private func entry(_ row: Int) -> SidebarRow? { items.indices.contains(row) ? items[row] : nil }
@@ -32,7 +22,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     private var renderedQuery = ""
     private var feedNote: (String, NSColor)?
     private var failure: String?
-    private var activating: Int?
     private var visibleSnapshot: Snapshot? { sidebarSearch(snapshot, query: query) }
     private let fonts = SidebarFonts()
     private var tick: Timer?
@@ -65,7 +54,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         table.backgroundColor = .clear
         table.dataSource = self
         table.delegate = self
-        table.focusChanged = { [weak self] in self?.supersedeIntent() }
+        table.focusChanged = { [weak self] in self?.onIntent() }
         table.target = self
         table.action = #selector(clicked)
         table.focusRingType = .none
@@ -166,8 +155,10 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     }
 
     private func show(_ next: Snapshot?) {
-        let same = next.map { snapshot?.sameSidebarContent(as: $0) == true } ?? (snapshot == nil)
-        guard !same || renderedQuery != query else { snapshot = next; return }
+        if renderedQuery == query, next.map({ snapshot?.sameSidebarContent(as: $0) == true }) ?? (snapshot == nil) {
+            snapshot = next
+            return
+        }
         renderedQuery = query
         rendering = true
         defer { rendering = false }
@@ -231,7 +222,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     }
 
     func focus() {
-        supersedeIntent()
+        onIntent()
         table.keyboardSelection = true
         if table.selectedRow < 0, let current = snapshot?.client,
             let index = items.firstIndex(where: { $0.target == current })
@@ -264,38 +255,12 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         jump(row)
     }
 
-    private func jump(_ target: Snapshot.Position) {
-        guard activating != intent else { return }
+    private func jump(_ target: Snapshot.Position) { navigate(.jump(target)) }
+
+    func select(_ target: Snapshot.Position) {
         if let index = items.firstIndex(where: { $0.target == target }) {
             table.selectRowIndexes([index], byExtendingSelection: false)
             table.scrollRowToVisible(index)
-        }
-        perform(.jump(target))
-    }
-
-    func perform(_ request: RPCRequest) {
-        supersedeIntent()
-        let revision = intent
-        if case .jump = request { activating = revision }
-        failed(nil)
-        self.request(request) { [weak self] result in
-            guard let self else { return }
-            if activating == revision { activating = nil }
-            guard intent == revision else { return }
-            completing = true
-            defer { completing = false }
-            switch result {
-            case .failure(let error): failed(error.message)
-            case .success(.jumped(let target)), .success(.selected(let target)), .success(.created(let target)):
-                prepareFocus(.pane(target))
-                completedActivation()
-            case .success(.switched(let target)):
-                guard let target else { return }
-                prepareFocus(.window(target.session, target.window))
-                completedActivation()
-            case .success(.released): leave()
-            default: break
-            }
         }
     }
 
@@ -321,11 +286,11 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         case (126, _, []), (_, "k", []), (_, "p", .control): move(-1)
         case (36, _, []), (76, _, []): jump(table.selectedRow)
         case (53, _, []):
-            perform(.releaseSideFocus)
+            navigate(.releaseSideFocus)
         case (_, "n", []): nextAttention(1)
         case (_, "N", []): nextAttention(-1)
         case (_, "/", []):
-            supersedeIntent()
+            onIntent()
             search.isHidden = false
             needsLayout = true
             layoutSubtreeIfNeeded()
@@ -344,7 +309,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
             show(snapshot)
             activate()
         case #selector(cancelOperation(_:)):
-            supersedeIntent()
+            onIntent()
             search.stringValue = ""
             show(snapshot)
             search.isHidden = true
@@ -357,12 +322,12 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        if !rendering { supersedeIntent() }
+        if !rendering { onIntent() }
     }
 
-    func controlTextDidChange(_ notification: Notification) { supersedeIntent(); show(snapshot) }
-    func controlTextDidBeginEditing(_ notification: Notification) { supersedeIntent() }
-    func controlTextDidEndEditing(_ notification: Notification) { supersedeIntent() }
+    func controlTextDidChange(_ notification: Notification) { onIntent(); show(snapshot) }
+    func controlTextDidBeginEditing(_ notification: Notification) { onIntent() }
+    func controlTextDidEndEditing(_ notification: Notification) { onIntent() }
 
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { items[row].height }
