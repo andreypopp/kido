@@ -1,11 +1,8 @@
 package e2e
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -69,38 +66,6 @@ func TestPiTerminalStatusIdentityAndStall(t *testing.T) {
 	h.waitGlyph("Terminal", "!")
 	h.waitFor(func() bool { return listed("working", "Terminal", true) }, settle, msgf("stale working terminal stalls"))
 
-	caller := h.firstPane("alpha")
-	h.programStatus(caller, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", caller, "#{pane_title}"), "π - "))
-	h.agentStatus("asker", caller, "pi", "--inbox", startInbox(t, "ok\n").Path)
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Fatal(err)
-	}
-	extension, _ := filepath.Abs("../share/pi/kido-agents.ts")
-	script := filepath.Join(h.dir, "ask.mjs")
-	source := fmt.Sprintf(`import agents from %q;
-import { execFileSync } from "node:child_process";
-const tools = new Map();
-globalThis.__kidoPiExtensionSeam = { agents: null, host: {
- sessionId: () => "asker",
- inboxOpen: () => true,
- runKido: async (args) => ({ ok: true, out: execFileSync(%q, args, { encoding: "utf8", timeout: 2000 }) })
-}};
-agents({ on() {}, registerTool: (tool) => tools.set(tool.name, tool), registerMessageRenderer() {} });
-const result = await tools.get("ask_agent").execute("ask", { to: "Terminal", question: "ready?", timeoutMs: 100 });
-console.log(result.content[0].text);
-`, extension, kidoBin)
-	if err := os.WriteFile(script, []byte(source), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, node, script)
-	cmd.Env = cleanEnv("TMUX="+h.inner+",0,0", "TMUX_PANE="+caller)
-	out, err := cmd.CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "reporting working; likely stalled, refusing") || len(in.Received()) != 0 {
-		t.Fatalf("stalled ask: %v %q, inbox %v", err, out, in.Received())
-	}
 	wake := filepath.Join(h.stateDir, "wake")
 	if err := os.WriteFile(wake, []byte(time.Now().UTC().Format(time.RFC3339Nano)), 0o644); err != nil {
 		t.Fatal(err)

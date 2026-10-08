@@ -4391,8 +4391,7 @@ test("ask_agent refuses a stalled target immediately, without sending anything",
     const ask = s.tools.get("ask_agent");
 
     const result = await settlesWithin(ask.execute("c1", { to: "peer-a", question: "q" }), 500);
-    assert.match(result.content[0].text, /stalled/);
-    assert.match(result.content[0].text, /245/);
+    assert.match(result.content[0].text, /245s while reporting working; likely stalled, refusing to wait for a reply/);
     assert.equal(fx.lastLogFor("peer-a", "ask"), undefined, "a stalled target must never actually be asked");
   } finally {
     await fx.restore();
