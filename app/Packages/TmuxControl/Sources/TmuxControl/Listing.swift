@@ -1,14 +1,16 @@
 public struct SessionListing: Equatable, Sendable {
     public let id: SessionID
     public let name: String
+    public var window: WindowID
 
-    public static let format = "#{session_id}\u{1F}#{session_name}"
+    public static let format = "#{session_id}\u{1F}#{window_id}\u{1F}#{session_name}"
 
     public init?(_ line: String) {
-        let f = line.split(separator: "\u{1F}", maxSplits: 1, omittingEmptySubsequences: false)
-        guard f.count == 2, let id = SessionID(f[0]) else { return nil }
+        let f = line.split(separator: "\u{1F}", maxSplits: 2, omittingEmptySubsequences: false)
+        guard f.count == 3, let id = SessionID(f[0]), let window = WindowID(f[1]) else { return nil }
         self.id = id
-        name = String(f[1])
+        self.window = window
+        name = String(f[2])
     }
 }
 
