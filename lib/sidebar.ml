@@ -488,10 +488,7 @@ let shell_indicator m ph =
 
 let agent_title_of m (p : P.t) =
   if not (State.is_agent_pane m.snap.states ~pi:m.snap.pi p) then None
-  else
-    match Tmux.Pane.Map.find_opt p.pane_id m.snap.states with
-    | Some (_, s) -> Some (match List_runs.display_name [ p ] s with "" -> "-" | title -> title)
-    | None -> ( match List_runs.agent_title p.title with "" -> Some "-" | t -> Some t)
+  else Some (match List_runs.agent_title p.title with "" -> "-" | t -> t)
 
 let span role text = { text; role }
 let plain = span `Plain
