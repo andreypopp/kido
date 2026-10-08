@@ -3,9 +3,20 @@ import SidebarFeed
 import TmuxControl
 
 final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
-    var send: ([Command], @escaping @MainActor @Sendable ([Reply]?) -> Void) -> Void = { $1(nil) }
-    var filter: (String) -> Void = { _ in }
+    var request: (RPCRequest, @escaping @MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void) -> Void = { $1(.failure(.terminal("the RPC feed is not ready"))) }
     var leave: () -> Void = {}
+    enum Target { case pane(Snapshot.Position), window(SessionID, WindowID) }
+    var prepareFocus: (Target) -> Void = { _ in }
+    var intentChanged: () -> Void = {}
+    private(set) var intent = 0
+    private var rendering = false
+    private var completing = false
+
+    func supersedeIntent() {
+        guard !completing else { return }
+        intent += 1
+        intentChanged()
+    }
 
     private var items: [SidebarRow] = []
     private func entry(_ row: Int) -> SidebarRow? { items.indices.contains(row) ? items[row] : nil }
@@ -18,9 +29,11 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     private let statusLine = NSTextField(labelWithString: "")
     private let noMatches = NSTextField(labelWithString: "No matches")
     private var snapshot: Snapshot?
+    private var renderedQuery = ""
     private var feedNote: (String, NSColor)?
     private var failure: String?
-    private var activating: String?
+    private var activating: Int?
+    private var visibleSnapshot: Snapshot? { sidebarSearch(snapshot, query: query) }
     private let fonts = SidebarFonts()
     private var tick: Timer?
 
@@ -52,6 +65,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         table.backgroundColor = .clear
         table.dataSource = self
         table.delegate = self
+        table.focusChanged = { [weak self] in self?.supersedeIntent() }
         table.target = self
         table.action = #selector(clicked)
         table.focusRingType = .none
@@ -69,6 +83,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         statusLine.maximumNumberOfLines = 1
         noMatches.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         noMatches.textColor = .secondaryLabelColor
+        noMatches.isHidden = true
         search.isHidden = true
         for view in [search, scroll, statusLine, noMatches] { addSubview(view) }
         updateAppearance()
@@ -117,7 +132,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
             feedNote = ("The sidebar feed is not running, retrying…\n\(message)", .secondaryLabelColor)
         case .running(let snapshot):
             feedNote = nil
-            if snapshot != self.snapshot { show(snapshot) }
+            show(snapshot)
         }
         noteChanged()
     }
@@ -151,16 +166,21 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     }
 
     private func show(_ next: Snapshot?) {
+        let same = next.map { snapshot?.sameSidebarContent(as: $0) == true } ?? (snapshot == nil)
+        guard !same || renderedQuery != query else { snapshot = next; return }
+        renderedQuery = query
+        rendering = true
+        defer { rendering = false }
         let selected = entry(table.selectedRow)?.id
         let origin = scroll.contentView.bounds.origin
         let first = table.rows(in: table.visibleRect).location
         let anchor = first == NSNotFound ? nil : entry(first).map { ($0.id, origin.y - table.rect(ofRow: first).minY) }
-        let cleared = next?.filter.isEmpty == true && snapshot?.filter.isEmpty == false
-        let recenter = cleared || next.map { $0.client != snapshot?.client } ?? false
+        let recenter = next.map { $0.client != snapshot?.client } ?? false
         snapshot = next
-        noMatches.isHidden = next.map { $0.filter.isEmpty || !$0.sessions.isEmpty } ?? true
+        let visible = visibleSnapshot
+        noMatches.isHidden = query.isEmpty || visible?.sessions.isEmpty != true
         let previous = items
-        items = sidebarRows(next)
+        items = sidebarRows(visible)
         if previous.map(\.id) == items.map(\.id), previous.map(\.height) == items.map(\.height) {
             table.reloadData(forRowIndexes: IndexSet(items.indices.filter { items[$0] != previous[$0] }), columnIndexes: [0])
         } else { table.reloadData() }
@@ -173,7 +193,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
             scroll.contentView.scroll(to: NSPoint(x: origin.x, y: y))
             scroll.reflectScrolledClipView(scroll.contentView)
         }
-        if let query = activating, next?.filter == query { activate() }
         updateTick()
     }
 
@@ -208,10 +227,11 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
 
     private func activate() {
         if table.selectedRow >= 0 { jump(table.selectedRow) }
-        else if let target = sidebarTarget(snapshot) { jump(target) }
+        else if let target = sidebarTarget(visibleSnapshot) { jump(target) }
     }
 
     func focus() {
+        supersedeIntent()
         table.keyboardSelection = true
         if table.selectedRow < 0, let current = snapshot?.client,
             let index = items.firstIndex(where: { $0.target == current })
@@ -222,17 +242,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         table.scrollRowToVisible(table.selectedRow)
     }
 
-    func completedNavigation(to target: (session: SessionID, window: WindowID)?) {
-        guard let target else { return }
-        let matches = items.indices.filter { items[$0].target?.session == target.session && items[$0].target?.window == target.window }
-        if let index = matches.first(where: { items[$0].target == snapshot?.client }) ?? matches.first {
-            table.selectRowIndexes([index], byExtendingSelection: false)
-            table.scrollRowToVisible(index)
-        }
-    }
-
     func nextAttention(_ delta: Int) {
-        if let target = sidebarTarget(snapshot, selected: entry(table.selectedRow)?.target, attention: delta) { jump(target) }
+        if let target = sidebarTarget(visibleSnapshot, selected: entry(table.selectedRow)?.target, attention: delta) { jump(target) }
     }
 
     private func jump(_ row: SidebarRow) {
@@ -254,27 +265,46 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     }
 
     private func jump(_ target: Snapshot.Position) {
-        activating = nil
+        guard activating != intent else { return }
         if let index = items.firstIndex(where: { $0.target == target }) {
             table.selectRowIndexes([index], byExtendingSelection: false)
             table.scrollRowToVisible(index)
         }
+        perform(.jump(target))
+    }
+
+    func perform(_ request: RPCRequest) {
+        supersedeIntent()
+        let revision = intent
+        if case .jump = request { activating = revision }
         failed(nil)
-        send([Command("switch-client", "-t", "\(target.session):\(target.window).\(target.pane)")]) { [weak self] replies in
+        self.request(request) { [weak self] result in
             guard let self else { return }
-            switch replies?.first {
-            case .success?: break
-            case .failure(let lines)?: return failed(lines.joined(separator: "\n"))
-            case nil: return failed("the connection to tmux closed before the jump")
+            if activating == revision { activating = nil }
+            guard intent == revision else { return }
+            completing = true
+            defer { completing = false }
+            switch result {
+            case .failure(let error): failed(error.message)
+            case .success(.jumped(let target)), .success(.selected(let target)), .success(.created(let target)):
+                prepareFocus(.pane(target))
+                completedActivation()
+            case .success(.switched(let target)):
+                guard let target else { return }
+                prepareFocus(.window(target.session, target.window))
+                completedActivation()
+            case .success(.released): leave()
+            default: break
             }
-            if !search.stringValue.isEmpty {
-                search.stringValue = ""
-                search.isHidden = true
-                needsLayout = true
-                filter("")
-            }
-            leave()
         }
+    }
+
+    func completedActivation() {
+        search.stringValue = ""
+        search.isHidden = true
+        needsLayout = true
+        show(snapshot)
+        leave()
     }
 
     @objc private func clicked() {
@@ -282,10 +312,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         jump(row)
     }
 
-    @objc private func searched() {
-        if activating != search.stringValue { activating = nil }
-        filter(search.stringValue)
-    }
+    @objc private func searched() { show(snapshot) }
 
     fileprivate func key(_ event: NSEvent) -> Bool {
         let mods = event.modifierFlags.intersection([.command, .control, .option])
@@ -293,10 +320,12 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         case (125, _, []), (_, "j", []), (_, "n", .control): move(1)
         case (126, _, []), (_, "k", []), (_, "p", .control): move(-1)
         case (36, _, []), (76, _, []): jump(table.selectedRow)
-        case (53, _, []): leave()
+        case (53, _, []):
+            perform(.releaseSideFocus)
         case (_, "n", []): nextAttention(1)
         case (_, "N", []): nextAttention(-1)
         case (_, "/", []):
+            supersedeIntent()
             search.isHidden = false
             needsLayout = true
             layoutSubtreeIfNeeded()
@@ -312,13 +341,12 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
             focus()
             move(table.selectedRow < 0 ? 1 : 0)
         case #selector(insertNewline(_:)):
-            searched()
-            activating = search.stringValue
-            if snapshot?.filter == search.stringValue { activate() }
+            show(snapshot)
+            activate()
         case #selector(cancelOperation(_:)):
+            supersedeIntent()
             search.stringValue = ""
-            activating = nil
-            filter("")
+            show(snapshot)
             search.isHidden = true
             needsLayout = true
             focus()
@@ -327,6 +355,14 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         }
         return true
     }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        if !rendering { supersedeIntent() }
+    }
+
+    func controlTextDidChange(_ notification: Notification) { supersedeIntent(); show(snapshot) }
+    func controlTextDidBeginEditing(_ notification: Notification) { supersedeIntent() }
+    func controlTextDidEndEditing(_ notification: Notification) { supersedeIntent() }
 
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { items[row].height }
@@ -361,6 +397,17 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
 }
 
 final class Table: NSTableView {
+    var focusChanged: () -> Void = {}
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { focusChanged() }
+        return accepted
+    }
+    override func resignFirstResponder() -> Bool {
+        let accepted = super.resignFirstResponder()
+        if accepted { focusChanged() }
+        return accepted
+    }
     var keyboardSelection = false {
         didSet { enumerateAvailableRowViews { row, _ in row.subviews.forEach { $0.needsDisplay = true } } }
     }
