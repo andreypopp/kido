@@ -202,8 +202,11 @@ import TmuxControl
         let model = SessionModel(session: SessionID(number: 3), windows: [.init(id: WindowID(number: 7), name: "w")], window: WindowID(number: 7))
         XCTAssertEqual(model.select(.number(1)), RPCRequest.selectWindow(SessionID(number: 3), WindowID(number: 7)), "selection must target the tab's session")
         XCTAssertNil(PaneCommand.window(.number(1)).command(PaneID(number: 0), cell: .zero))
-        XCTAssertNil(model.select(.next))
-        XCTAssertNil(model.select(.previous))
+        XCTAssertEqual(model.select(.next), .switchWindow(next: true))
+        XCTAssertEqual(model.select(.previous), .switchWindow(next: false))
+        XCTAssertEqual(SessionModel().select(.next), .switchWindow(next: true))
+        XCTAssertEqual(SessionModel().select(.previous), .switchWindow(next: false))
+        XCTAssertNil(SessionModel().select(.number(1)))
         XCTAssertEqual(model.select(.last), model.select(.number(1)))
         let menus = SessionMenus()
         var commands: [RPCRequest] = []
