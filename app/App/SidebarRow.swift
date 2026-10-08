@@ -3,6 +3,7 @@ import SidebarFeed
 
 struct SidebarFonts {
     let regular = NSFont.systemFont(ofSize: 13)
+    let nested = NSFont.systemFont(ofSize: 12)
     let section = NSFont.systemFont(ofSize: 11, weight: .semibold)
     let tail = NSFont.systemFont(ofSize: 11)
     let clock = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
@@ -63,11 +64,13 @@ final class SidebarCell: NSTableCellView {
         let next = row?.started.map { sidebarElapsed(started: $0, now: now) } ?? ""
         guard next != clock else { return }
         let oldWidth = (clock as NSString).size(withAttributes: [.font: fonts.clock]).width
-        let width = (next as NSString).size(withAttributes: [.font: fonts.clock]).width
+        let size = (next as NSString).size(withAttributes: [.font: fonts.clock])
         clock = next
-        let leading = 36 + CGFloat(row?.indent ?? 0) * 21
-        let x = oldWidth == width ? bounds.width - 27 - width : leading
-        let dirtyRect = NSRect(x: x, y: 7, width: max(0, bounds.width - 27 - x), height: 18)
+        let padding = CGFloat(row?.padding ?? 7)
+        let leading = CGFloat(row?.leading ?? 36)
+        let dirtyRect = oldWidth == size.width
+            ? NSRect(origin: NSPoint(x: bounds.width - 27 - size.width, y: padding + 2), size: size)
+            : NSRect(x: leading, y: padding, width: max(0, bounds.width - 27 - leading), height: 18)
         #if KIDO_VISUAL
         visualClockDirtyRect = dirtyRect
         #endif
@@ -84,21 +87,19 @@ final class SidebarCell: NSTableCellView {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             NSGraphicsContext.saveGraphicsState()
             defer { NSGraphicsContext.restoreGraphicsState() }
-            if row.target != nil {
-                let x = CGFloat(row.indent) * 21
-                let above: CGFloat = row.position == .middle || row.position == .bottom ? 7 : 0
-                let below: CGFloat = row.position == .middle || row.position == .top ? 7 : 0
-                let rect = NSRect(x: x, y: -above, width: max(0, bounds.width - x), height: bounds.height + above + below)
+            NSBezierPath(rect: bounds).addClip()
+            for (depth, slice) in row.windows.enumerated() {
+                let x = CGFloat(depth) * 16
+                let rect = NSRect(x: x, y: -slice.offset, width: max(0, bounds.width - x), height: slice.height)
                 let path = NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7)
-                NSBezierPath(rect: bounds).addClip()
-                if row.active { NSColor.labelColor.withAlphaComponent(0.10).setFill(); path.fill() }
+                if slice.active { NSColor.labelColor.withAlphaComponent(0.10).setFill(); path.fill() }
                 path.addClip()
             }
-            let leading = (row.target == nil ? 12 : 36) + CGFloat(row.indent) * 21
-            if row.focused && row.position != .single {
+            let leading = row.target == nil ? 12 : CGFloat(row.leading)
+            if row.focused && row.multiPane {
                 let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
                 (dark ? NSColor.white.withAlphaComponent(0.85) : NSColor.black.withAlphaComponent(0.75)).setFill()
-                NSRect(x: CGFloat(row.indent) * 21, y: 7, width: 2, height: bounds.height - 14).fill()
+                NSRect(x: CGFloat(row.indent) * 16, y: row.padding, width: 2, height: bounds.height - row.padding * 2).fill()
             }
             if row.target != nil, (superview as? NSTableRowView)?.isSelected == true,
                let table = enclosingScrollView?.documentView as? Table, table.keyboardSelection,
@@ -107,7 +108,7 @@ final class SidebarCell: NSTableCellView {
             }
             if case .divider = row.kind {
                 NSColor.labelColor.withAlphaComponent(0.075).setFill()
-                let x = CGFloat(row.indent) * 21 + 12
+                let x: CGFloat = 12
                 let line = NSRect(x: x, y: 3, width: max(0, bounds.width - x - 12), height: 1)
                 let pixels = convertToBacking(line)
                 convertFromBacking(NSRect(x: pixels.minX.rounded(), y: pixels.minY.rounded(),
@@ -116,9 +117,9 @@ final class SidebarCell: NSTableCellView {
             }
             if case .gap = row.kind { return }
             let header = { if case .header = row.kind { return true }; return false }()
-            let y: CGFloat = header ? 6.5 : 7
+            let y: CGFloat = header ? 6.5 : row.padding
             let dotX = bounds.width - 15
-            let iconRect = NSRect(x: leading - 24, y: 8, width: 16, height: 16)
+            let iconRect = NSRect(x: leading - 24, y: y + 1, width: 16, height: 16)
             if !header && dirtyRect.intersects(iconRect) {
                 Self.icons[row.icon]?.draw(in: iconRect,
                           from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
@@ -130,11 +131,11 @@ final class SidebarCell: NSTableCellView {
             let titleRect = NSRect(x: leading, y: y, width: max(0, end - leading), height: 18)
             if dirtyRect.intersects(titleRect) {
                 (row.title as NSString).draw(in: titleRect,
-                                       withAttributes: [.font: header ? fonts.section : fonts.regular,
-                                                        .foregroundColor: header ? NSColor.secondaryLabelColor : NSColor.labelColor,
+                                       withAttributes: [.font: header ? fonts.section : row.indent == 0 ? fonts.regular : fonts.nested,
+                                                        .foregroundColor: header || row.quietShell ? NSColor.secondaryLabelColor : NSColor.labelColor,
                                                         .paragraphStyle: paragraph])
             }
-            let tailRect = NSRect(x: leading, y: 26, width: max(0, bounds.width - leading - 24), height: 15)
+            let tailRect = NSRect(x: leading, y: row.tailY, width: max(0, bounds.width - leading - 24), height: 15)
             if dirtyRect.intersects(tailRect) {
                 (row.tail as NSString).draw(in: tailRect,
                                           withAttributes: [.font: fonts.tail, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph])
