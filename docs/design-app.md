@@ -17,9 +17,9 @@ belongs to Kido.app, not tmux.
 
 Each native window attaches one control client (`kido-tmux -u -S <socket>
 -N -C attach-session -f pause-after=N,new-layouts,no-detach-on-destroy`)
-and behaves like a normal client: showing a window or session is
-`select-window` or `switch-client`, and the app then follows tmux's
-notifications. So the client's current session, window and pane are
+and behaves like a normal client: all sidebar and tab navigation and shell
+creation use correlated `kido rpc` requests, and the app follows tmux's
+notifications. The control client owns terminal I/O and pane mechanics. So the client's current session, window and pane are
 always the ones shown, which kido's `watched`, done-until-visited and
 reaping rules depend on. A client per session would mark every session
 attached. When its session is destroyed, `no-detach-on-destroy` moves
@@ -139,15 +139,16 @@ Connect may call that kido's `server --server DIR`; JSON tmux/socket paths are
 opaque remote values, not local files. The returned socket must end in `/socket`;
 its parent is retained for feed/navigation. Local retains bundled-tmux validation.
 Discovery decodes the server's protocol stamp, not its build ID. The required
-protocol is 1.1: the major must match and the minor must be at least 1.
+protocol is exactly 2.0 at discovery and RPC hello; both major and minor
+must match. Discovery checks both the binary and creating-server stamp.
 Mismatches block the affected window with a native alert sheet; Close leaves
 a disconnected, read-only view with Reconnect to check again. Local sheets
 offer Restart… with a Cancel-first confirmation that sessions, panes, commands
 and agents end and other clients disconnect; Cancel returns to the mismatch.
-Remote sheets offer Reconnect, advise updating the app for a newer major,
+Remote sheets offer Reconnect, advise updating the app for a newer major or minor,
 and read discovery's binary protocol before recommending an upgrade: an
-already-compatible binary only needs its server restarted. Discovery gates
-on the server stamp; RPC hello retains both versions for later mismatches.
+already-compatible binary only needs its server restarted. RPC hello retains
+both versions for later mismatches. No server is restarted automatically.
 Reconnect repeats discovery after the user fixes the mismatch.
 There is no compatibility waiver or remote restart. The bundle's captured
 BUILD-ID detects an app replaced on disk and requires relaunch independently
@@ -707,12 +708,12 @@ y=25.5/24.5 top-level single/multi, y=22.5/21.5 nested single/multi.
 Its line box is 15pt; activity rows are tuned to their visible text rather
 than equal box padding. Agents and
 agent runs receive a display-only @ prefix, never doubled. Idle shell panes
-(kind shell, no run, neither running nor compacting) display secondary-colored
-`Terminal`; running shells, SSH, and run items keep their labels. Both display
+(kind shell, no run, resolved idle/done/failed indicator) display secondary-colored
+`Terminal`; other shells, full-screen programs, SSH, and run items keep their labels. Both display
 rules leave raw pane labels and tab/window titles unchanged. Status and
 10pt tabular clocks remain trailing; the status and header plus centers are
 15pt from the right edge. Idle has no glyph, running/compacting a green dot,
-waiting agents an orange dot, failures a red dot, done/completed a green
+waiting rows of any kind an orange dot, failures a red dot, done/completed a green
 checkmark and stalled a red exclamation. Attention navigation remains
 independent of these visual statuses.
 
@@ -733,22 +734,46 @@ falling back to pixels only if that row disappears.
 
 The search and single-line, truncating diagnostic sit above the table;
 the full diagnostic is available in its tooltip. The search field
-is the one store of the filter: each feed process receives it on start
-and every edit. Jump failures leave the filter and focus intact; a
+is the one store of the query and survives helper restarts. Filtering is
+client-side, using kido's ASCII fuzzy score over session names, recursively
+collected agent-title spans and ssh host spans. Matches retain whole sessions;
+no matches displays “No matches”. Tabs always consume the full snapshot. Jump failures leave the filter and focus intact; a
 successful jump clears it and returns focus to the pane. External tmux
 switches update selection without taking keyboard focus.
 
-The toolbar and Control-Command-S toggle the sidebar; the View menu's
+The toolbar and Shift-Command-S toggle the sidebar; the View menu's
 Show/Hide title follows its collapsed state. Focus Sidebar uses
-Control-Command-L. Control-Command-F enters full screen. Control-Command-N (Shift for previous) walks attention;
-Control-Command-J/K switches windows; Option-Command-]/[ switches sessions in the unfiltered
+Command-S. Control-Command-F enters full screen. Control-Command-N (Shift for previous) walks attention;
+Command-{/} and Ghostty previous/next tab use RPC switch-window; there are
+no Control-Command-J/K shortcuts. Nested windows step among direct siblings,
+prev from the first child selects its parent, and next from the last child
+steps from its top-level ancestor. Top-level steps skip run windows and wrap
+across sessions; a sole eligible window can select itself and null is a no-op.
+Option-Command-]/[ switches sessions in the unfiltered
 sidebar session order, with wraparound and a single-session no-op.
 Session navigation uses RPC switch-session and selects the returned current window.
-Command-N creates a session and Command-T creates a window. In the table, arrows and j/k
+Command-N and toolbar plus create a session via new-session. Each session
+header plus creates a window after that session's current window via new-window.
+Command-T sends new-window with the current window id; the server inserts
+immediately after it using its active pane's cwd. Numbered and last tabs use
+select-window; absolute sessions use select-session. In the table, arrows and j/k
 move pane-only selection, n/N jump to attention, Return activates with exactly one
-switch-client, Escape returns to the pane and / searches. Left/Right do nothing;
-headers do not activate or fold. Search Enter waits for the matching filtered snapshot,
-then activates once; failures preserve filter and focus.
+RPC jump, Escape releases side focus via RPC and returns to the pane, and /
+searches. Left/Right do nothing; headers do not activate or fold. Search Enter
+activates once, including while its reply is delayed. Only correlated success
+clears the query and returns focus when the authoritative pane view is current;
+failures preserve query and focus. One monotonic UI-intent revision advances on edits, selection/focus changes
+and navigation. Each request captures it; only a still-current completion
+clears query, leaves the sidebar or installs deferred focus. Any new intent
+cancels deferred focus, which is consumed on pane changes as well as window
+topology. Pending requests fail once on disconnect and are never replayed.
+Replies do not synthesize topology.
+
+Snapshots require asks and every pane's program_status. Asks are decoded only;
+there is no ask UI. Indicator, title, tail and attention come from the resolved
+snapshot fields, not re-derived from raw program records. Waiting propagates
+to tab dots for all row kinds; error still outranks attention. Control-mode
+%program-status lines remain unrecognized and unused; Ghostty is unchanged.
 The sidebar is visible by default; it does not automatically collapse
 at narrow widths.
 

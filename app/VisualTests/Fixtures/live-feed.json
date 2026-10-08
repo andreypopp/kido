@@ -5,7 +5,6 @@
     "window": "@824",
     "pane": "%936"
   },
-  "filter": "",
   "error": null,
   "sessions": [
     {
@@ -49,10 +48,18 @@
               "started": 1791098646.964646,
               "attention": false,
               "children": [],
-              "run": "bash"
+              "run": "bash",
+              "program_status": {
+                "serial": 0,
+                "records": []
+              }
             }
           ],
-          "run": null
+          "run": null,
+          "program_status": {
+            "serial": 0,
+            "records": []
+          }
         },
         {
           "kind": "window",
@@ -96,10 +103,18 @@
                   "started": 1791131078.818641,
                   "attention": false,
                   "children": [],
-                  "run": "agent"
+                  "run": "agent",
+                  "program_status": {
+                    "serial": 0,
+                    "records": []
+                  }
                 }
               ],
-              "run": null
+              "run": null,
+              "program_status": {
+                "serial": 0,
+                "records": []
+              }
             },
             {
               "kind": "shell",
@@ -119,7 +134,11 @@
               "started": null,
               "attention": false,
               "children": [],
-              "run": null
+              "run": null,
+              "program_status": {
+                "serial": 0,
+                "records": []
+              }
             }
           ]
         },
@@ -159,10 +178,18 @@
               "started": 1791125890.55034,
               "attention": false,
               "children": [],
-              "run": "agent"
+              "run": "agent",
+              "program_status": {
+                "serial": 0,
+                "records": []
+              }
             }
           ],
-          "run": null
+          "run": null,
+          "program_status": {
+            "serial": 0,
+            "records": []
+          }
         }
       ]
     },
@@ -189,7 +216,11 @@
           "started": null,
           "attention": false,
           "children": [],
-          "run": null
+          "run": null,
+          "program_status": {
+            "serial": 0,
+            "records": []
+          }
         }
       ]
     },
@@ -216,7 +247,11 @@
           "started": null,
           "attention": false,
           "children": [],
-          "run": null
+          "run": null,
+          "program_status": {
+            "serial": 0,
+            "records": []
+          }
         }
       ]
     },
@@ -249,7 +284,11 @@
               "started": null,
               "attention": false,
               "children": [],
-              "run": null
+              "run": null,
+              "program_status": {
+                "serial": 0,
+                "records": []
+              }
             },
             {
               "kind": "shell",
@@ -269,7 +308,11 @@
               "started": null,
               "attention": false,
               "children": [],
-              "run": null
+              "run": null,
+              "program_status": {
+                "serial": 0,
+                "records": []
+              }
             }
           ]
         }
@@ -298,9 +341,14 @@
           "started": null,
           "attention": false,
           "children": [],
-          "run": null
+          "run": null,
+          "program_status": {
+            "serial": 0,
+            "records": []
+          }
         }
       ]
     }
-  ]
+  ],
+  "asks": []
 }
