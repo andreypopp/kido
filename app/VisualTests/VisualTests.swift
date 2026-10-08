@@ -113,8 +113,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
 
     private var terminal: WindowView? { session?.windows.values.first { !$0.isHidden } }
 
-    @discardableResult private func start(height: CGFloat = 560, dark: Bool = false, history: Int = 1000) async throws -> String {
-        NSApp.appearance = NSAppearance(named: .aqua)
+    private func loadRuntime() throws {
         if Self.processRuntime == nil {
             let config = directory.appendingPathComponent("ghostty.conf")
             let themes = app.appendingPathComponent("Resources/themes").path
@@ -123,6 +122,18 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
             Self.processRuntime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))))
         }
         runtime = try XCTUnwrap(Self.processRuntime)
+    }
+
+    private func sidebarOwner() throws -> WindowOwner {
+        try loadRuntime()
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        addTeardownBlock { @MainActor in owner.close() }
+        return owner
+    }
+
+    @discardableResult private func start(height: CGFloat = 560, dark: Bool = false, history: Int = 1000) async throws -> String {
+        NSApp.appearance = NSAppearance(named: .aqua)
+        try loadRuntime()
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: height),
                           styleMask: [.titled, .fullSizeContentView, .resizable], backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: .aqua)
@@ -397,7 +408,8 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
     func testFloatingSidebar() async throws {
         try await start()
         window.styleMask.insert([.closable, .miniaturizable])
-        let sidebar = Sidebar()
+        let owner = try sidebarOwner()
+        let sidebar = owner.sidebar
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.backgroundColor = runtime.background
@@ -406,7 +418,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         session.autoresizingMask = [.width, .height]
         sidebar.content.addSubview(session)
         sidebar.focusTerminal = { [weak self] in self?.session.focusActive() }
-        sidebar.list.request = { [weak self] in self?.rpc?.request($0, completed: $1) }
+        owner.request = { [weak self] in self?.rpc?.request($0, completed: $1) }
         let toolbar = NSToolbar(identifier: "FloatingSidebar")
         toolbar.delegate = sidebar
         toolbar.displayMode = .iconOnly
@@ -1005,7 +1017,8 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         for success in [true, false] {
             window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 260),
                               styleMask: [.titled], backing: .buffered, defer: false)
-            let list = SidebarView()
+            let owner = try sidebarOwner()
+            let list = owner.sidebar.list
             window.contentView = list
             let snapshot = try sidebarFixture()
             list.update(.running(snapshot))
@@ -1016,7 +1029,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
             var pending: [@MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void] = []
             var left = 0
             list.leave = { left += 1 }
-            list.request = { request, done in commands.append(request); pending.append(done) }
+            owner.request = { request, done in commands.append(request); pending.append(done) }
             _ = list.control(list.visualSearch, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:)))
             list.update(.running(snapshot))
             _ = list.control(list.visualSearch, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:)))
@@ -1046,12 +1059,13 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
 
     func testSupersededSidebarReplies() throws {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 680), styleMask: [.titled], backing: .buffered, defer: false)
-        let list = SidebarView()
+        let owner = try sidebarOwner()
+        let list = owner.sidebar.list
         window.contentView = list
         list.update(.running(try sidebarFixture()))
         var pending: [@MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void] = []
         var left = 0
-        list.request = { _, done in pending.append(done) }
+        owner.request = { _, done in pending.append(done) }
         list.leave = { left += 1 }
         let rows = list.visualRows.filter { $0.target != nil }
         list.visualSearch.stringValue = "main"
@@ -1092,7 +1106,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         owner.start()
         try await wait("owner split snapshot") { owner.sidebar.list.visualRows.contains { $0.target?.pane.description == pane } }
         let row = try XCTUnwrap(owner.sidebar.list.visualRows.first { $0.target?.pane.description == pane })
-        owner.sidebar.list.request = { _, done in done(.success(.jumped(row.target!))) }
+        owner.request = { _, done in done(.success(.jumped(row.target!))) }
         owner.sidebar.list.focus()
         owner.sidebar.list.visualJump(row)
         XCTAssertTrue(owner.sidebar.list.containsFocus, "focus must wait until the pane becomes current")
@@ -1100,7 +1114,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         view.focus(row.target!.pane)
         XCTAssertEqual((owner.window.firstResponder as? PaneView)?.pane.description, pane, "onPaneChange must consume deferred focus without a topology notification")
         let original = try XCTUnwrap(owner.sidebar.list.visualRows.first { $0.target?.pane == PaneID(number: 0) })
-        owner.sidebar.list.request = { _, done in done(.success(.jumped(original.target!))) }
+        owner.request = { _, done in done(.success(.jumped(original.target!))) }
         owner.sidebar.list.focus()
         owner.sidebar.list.visualJump(original)
         owner.sidebar.list.focus()
@@ -1120,7 +1134,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         let list = owner.sidebar.list
         try await wait("other session header") { list.visualRows.contains { $0.id == .header(SessionID(other)!) } }
         var requests: [RPCRequest] = []
-        list.request = { request, done in requests.append(request); done(.failure(.terminal("test response"))) }
+        owner.request = { request, done in requests.append(request); done(.failure(.terminal("test response"))) }
         let index = try XCTUnwrap(list.visualRows.firstIndex { $0.id == .header(SessionID(other)!) })
         let header = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell)
         XCTAssertEqual(header.addWindow.accessibilityLabel(), "New window in other")
@@ -1504,7 +1518,8 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
     func testNavigationFeedFirst() throws {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 160),
                           styleMask: [.titled], backing: .buffered, defer: false)
-        let list = SidebarView()
+        let owner = try sidebarOwner()
+        let list = owner.sidebar.list
         window.contentView = list
         let initial = try sidebarFixture()
         let destination = try sidebarFixture { $0["client"] = ["session": "$0", "window": "@458", "pane": "%502"] }
@@ -1512,8 +1527,8 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         list.layoutSubtreeIfNeeded()
         let selectedBeforeNil = list.visualTable.selectedRow
         let originBeforeNil = list.visualScroll.contentView.bounds.origin
-        list.request = { _, done in done(.success(.switched(nil))) }
-        list.perform(.switchWindow(next: true))
+        owner.request = { _, done in done(.success(.switched(nil))) }
+        owner.perform(.switchWindow(next: true))
         XCTAssertEqual(list.visualTable.selectedRow, selectedBeforeNil)
         XCTAssertEqual(list.visualScroll.contentView.bounds.origin, originBeforeNil)
         list.update(.running(destination))
@@ -1528,7 +1543,8 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
 
     func testSidebarNavigationAndAnchoring() async throws {
         try await start()
-        let list = SidebarView()
+        let owner = try sidebarOwner()
+        let list = owner.sidebar.list
         list.frame = NSRect(x: 0, y: 0, width: 292, height: 260)
         window.contentView = list
         let fixture = try sidebarFixture { object in
@@ -1573,14 +1589,14 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         list.leave = { left += 1 }
         list.visualSearch.stringValue = "main"
         list.focus()
-        list.request = { request, done in commands.append(request); done(.failure(.terminal("no such pane"))) }
+        owner.request = { request, done in commands.append(request); done(.failure(.terminal("no such pane"))) }
         list.visualJump(row)
         XCTAssertEqual(commands, [.jump(row.target!)])
         XCTAssertEqual(list.query, "main")
         XCTAssertEqual(left, 0)
         XCTAssertEqual(list.visualDiagnostic, "no such pane")
         XCTAssertTrue(list.containsFocus)
-        list.request = { request, done in
+        owner.request = { request, done in
             commands.append(request)
             XCTAssertTrue(Thread.isMainThread)
             done(.success(request == .releaseSideFocus ? .released : .jumped(row.target!)))
@@ -1605,7 +1621,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         XCTAssertEqual(left, 2)
         let target = try XCTUnwrap(list.visualRows.first { $0.target != nil })
         let failed = expectation(description: "real private tmux jump reply")
-        list.request = { [weak self] request, done in
+        owner.request = { [weak self] request, done in
             self?.rpc?.request(request) { result in XCTAssertTrue(Thread.isMainThread); done(result); failed.fulfill() }
         }
         list.visualJump(target)

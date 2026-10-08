@@ -847,13 +847,13 @@ typealias AppWindow = StressWindow
         }
     }
 
-    private func afterSidebarReply(_ list: SidebarView, verification: String, action: () -> Void, completed: @escaping @MainActor @Sendable () -> Void) {
+    private func afterSidebarReply(_ owner: WindowOwner, verification: String, action: () -> Void, completed: @escaping @MainActor @Sendable () -> Void) {
         let timeout = DispatchWorkItem { self.check("rpc-completion-deadline", false) }
         rpcTimeout = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: timeout)
-        let original = list.request
+        let original = owner.request
         var requests = 0
-        list.request = { request, done in
+        owner.request = { request, done in
             requests += 1
             original(request) { result in
                 done(result)
@@ -864,7 +864,7 @@ typealias AppWindow = StressWindow
             }
         }
         action()
-        list.request = original
+        owner.request = original
         check(verification, requests == 1)
     }
 
@@ -899,7 +899,7 @@ typealias AppWindow = StressWindow
             guard !rows.isEmpty else { return }
             let row = rows[random(rows.count)]
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-            afterSidebarReply(list, verification: "one-rpc-jump", action: { table.keyDown(with: key("\r", 36)) }) {
+            afterSidebarReply(app.stressOwner, verification: "one-rpc-jump", action: { table.keyDown(with: key("\r", 36)) }) {
                 self.verifyUI()
             }
         case .sidebarSearch:
@@ -959,7 +959,7 @@ typealias AppWindow = StressWindow
                     switch self.random(3) {
                     case 0:
                         self.counts["floating-escape", default: 0] += 1
-                        self.afterSidebarReply(list, verification: "one-rpc-release", action: { table.keyDown(with: self.key("\u{1b}", 53)) }, completed: dismissed)
+                        self.afterSidebarReply(app.stressOwner, verification: "one-rpc-release", action: { table.keyDown(with: self.key("\u{1b}", 53)) }, completed: dismissed)
                         return
                     case 1:
                         let point = sidebar.content.convert(NSPoint(x: sidebar.content.bounds.maxX - 10, y: 20), to: nil)
