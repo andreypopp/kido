@@ -199,6 +199,7 @@ import SidebarFeed
     #if KIDO_STRESS
     var stressState: (SessionModel, SessionModel, SessionView?, Connection?, SidebarFeed.Snapshot?) { owners.first!.stressState }
     var stressGeneration: Int { owners.first!.generation }
+    var stressOwner: WindowOwner { owners.first! }
     var sidebar: Sidebar { owners.first!.sidebar }
     #endif
 }
