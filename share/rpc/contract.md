@@ -1,6 +1,6 @@
 # kido rpc protocol 2.0
 
-fork revision: b8b9d12f1677bb509550315366ce05b3eef0d1aa
+fork revision: 676f83a82e19fcfae5abf9619a9bf64fbfb06cd5
 
 Protocol.value is the binary's protocol constant. The launcher stamps it into
 the server's global KIDO_PROTOCOL environment at creation. Exact MAJOR.MINOR
@@ -239,7 +239,8 @@ Fields:
   `id` and `state` (idle, working, done, blocked, error), and optional own
   `app`, `kind` (permission, question, auth), integer `progress` (0..100),
   `title` and `msg`. Title and msg are decoded, validated UTF-8 strings,
-  not base64; the tmux input accepts padded or unpadded base64. Kind is
+  not base64; the tmux input accepts padded or unpadded base64. Msg is
+  limited to 2048 decoded bytes (2732 encoded bytes). Kind is
   meaningful only on blocked, progress only on working/blocked. App is
   inherited from the nearest ancestor that has one,
   including root across missing parents; inheritance is not materialized

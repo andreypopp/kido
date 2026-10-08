@@ -1,7 +1,9 @@
 package e2e
 
 import (
+	"encoding/base64"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -13,8 +15,10 @@ import (
 func TestProgramStatusSidebarAndRpc(t *testing.T) {
 	t.Parallel()
 	h := start(t, "status")
-	ready := filepath.Join(t.TempDir(), "ready")
-	pane := h.newWindow("status", "program", "sh", "-c", fmt.Sprintf(`stty -echo; printf ready > %s; while IFS= read -r line; do case "$line" in prompt) printf '\033]133;A\007';; *) printf '\033]7501;%%s\007' "$line";; esac; done`, shellQuote(ready)))
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	longStatus := filepath.Join(dir, "long-status")
+	pane := h.newWindow("status", "program", "sh", "-c", fmt.Sprintf(`stty -echo; printf ready > %s; while IFS= read -r line; do case "$line" in prompt) printf '\033]133;A\007';; long) cat %s;; *) printf '\033]7501;%%s\007' "$line";; esac; done`, shellQuote(ready), shellQuote(longStatus)))
 	h.waitFileNonEmpty(ready)
 	emit := func(body string) {
 		t.Helper()
@@ -47,6 +51,15 @@ func TestProgramStatusSidebarAndRpc(t *testing.T) {
 	if r.ProgramStatus.Serial == 0 || r.ProgramStatus.Records[0].Title != "Build" || r.ProgramStatus.Records[0].Msg != "Plan" || r.ProgramStatus.Records[0].App != "builder" {
 		t.Fatalf("decoded records: %+v", r.ProgramStatus)
 	}
+	msg := strings.Repeat("long message ", 125)
+	if err := os.WriteFile(longStatus, []byte("\x1b]7501;state=working:app=builder:title=QnVpbGQ=:msg="+base64.StdEncoding.EncodeToString([]byte(msg))+"\a"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	emit("long")
+	f.waitLast(func(s feedSnapshot) bool {
+		r, ok := find(s)
+		return ok && len(r.ProgramStatus.Records) == 1 && r.ProgramStatus.Records[0].Msg == msg
+	}, "1500-byte program status message")
 	emit("state=blocked:app=builder:title=QnVpbGQ=:msg=UGxhbg==:kind=question")
 	h.waitRow("◆Build Plan")
 	wait("blocked", "waiting", 1)
