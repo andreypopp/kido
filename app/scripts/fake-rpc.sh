@@ -2,10 +2,9 @@
 exec python3 -u -c '
 import json, select, sys, time
 started = time.time() - 5
-query = ""
-print(json.dumps(dict(hello=dict(protocol="1.1"))))
+print(json.dumps(dict(hello=dict(protocol="2.0"))))
 def item(kind, pane, window, title, status=None, children=None, attention=False, started=None, tail="", run=None):
-    return dict(kind=kind, id="%"+str(pane), pane="%"+str(pane), window="@"+str(window), indicator=status,
+    return dict(program_status=dict(serial=0, records=[]), kind=kind, id="%"+str(pane), pane="%"+str(pane), window="@"+str(window), indicator=status,
         title=[dict(text=title, role="proc" if kind in ["run", "ssh", "shell"] else "plain")], tail=[dict(text=tail, role="dim")] if tail else [],
         run=run, started=started, attention=attention, children=children or [])
 def group(window, children):
@@ -24,13 +23,16 @@ while True:
         group(7, [item("agent", 9, 7, "refactor", dict(kind="compacting"), tail="compacting"), item("shell", 10, 7, "zsh", dict(kind="unknown"))])]
     sessions = [dict(id="$0", name="main", current=True, nodes=[main, item("run", 5, 4, "make test", dict(kind="running"), started=started, run="bash"), item("run", 16, 11, "main-watch", dict(kind="running"), started=started, run="stream")]),
         dict(id="$1", name="work", current=False, nodes=work)]
-    print(json.dumps(dict(v=2, client=dict(session="$0", window="@0", pane="%0"), filter=query,
-        error="could not read the agent state" if "!" in query else None,
-        sessions=[s for s in sessions if query.replace("!", "") in s["name"]])))
+    print(json.dumps(dict(v=2, client=dict(session="$0", window="@0", pane="%0"), asks=[], error=None, sessions=sessions)))
     if select.select([sys.stdin], [], [], .5)[0]:
         line = sys.stdin.readline()
         if not line: break
         request = json.loads(line)
-        if "filter" in request: query = request["filter"]
-        elif "switch-window" in request or "switch-session" in request: print(json.dumps(dict(reply=dict(id=request["id"], switched=None))))
+        if "id" not in request: continue
+        reply = dict(id=request["id"])
+        if "switch-window" in request or "switch-session" in request: reply["switched"] = None
+        elif "jump" in request: reply["jumped"] = request["jump"]
+        elif "release-side-focus" in request: reply["released"] = True
+        else: reply["error"] = "fake server does not mutate topology"
+        print(json.dumps(dict(reply=reply)))
 '

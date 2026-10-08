@@ -2,6 +2,16 @@ import AppKit
 import TmuxControl
 import SidebarFeed
 
+class OwnerWindow: NSWindow {
+    var focusChanged: (NSResponder?, NSResponder?) -> Void = { _, _ in }
+    override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        let old = firstResponder
+        let accepted = super.makeFirstResponder(responder)
+        if accepted, old !== firstResponder { focusChanged(old, firstResponder) }
+        return accepted
+    }
+}
+
 @MainActor final class WindowOwner: NSObject, NSWindowDelegate {
     let runtime: GhosttyRuntime
     let host: Host
@@ -24,6 +34,7 @@ import SidebarFeed
     private var model = SessionModel()
     private var snapshot: Snapshot?
     private var navigationModel = SessionModel()
+    private var focusTarget: SidebarView.Target?
     private(set) var preparedAlert: (alert: NSAlert, respond: (NSApplication.ModalResponse) -> Void)?
 
     private enum Attempt {
@@ -76,15 +87,25 @@ import SidebarFeed
         sidebar.splitView.setPosition(max(200, min(360, width)), ofDividerAt: 0)
         if !background { sidebar.isCollapsed = UserDefaults.standard.bool(forKey: "sidebarCollapsed") }
         sidebar.changed = { [weak self] in self?.menuChanged() }
-        sidebar.list.send = { [weak self] in self?.send($0, then: $1) }
-        sidebar.list.newSession = { [weak self] in self?.newSession() }
-        sidebar.list.newWindow = { [weak self] in self?.create(Command("new-window", "-d", "-P", "-F", "#{session_id}:#{window_id}.#{pane_id}", "-t", $0, "-c", "#{pane_current_path}")) }
-        sidebar.tabs.select = { [weak self] step in
-            guard let self, let command = navigationModel.select(step) else { return }
-            send([command])
+        sidebar.list.request = { [weak self] request, done in
+            guard let feed = self?.feed else { return done(.failure(.terminal("the RPC feed is not ready"))) }
+            feed.request(request, completed: done)
         }
-        sidebar.list.filter = { [weak self] in self?.feed?.filter($0) }
-        sidebar.focusTerminal = { [weak self] in self?.session?.focusActive() }
+        sidebar.list.newSession = { [weak self] in self?.newSession() }
+        sidebar.list.newWindow = { [weak self] session in
+            guard let self, let window = model.sessions.first(where: { $0.id == session })?.window else { return }
+            perform(.newWindow(window))
+        }
+        sidebar.tabs.select = { [weak self] in self?.selectWindow($0) }
+        sidebar.focusTerminal = { [weak self] in self?.focusSelected() }
+        sidebar.list.prepareFocus = { [weak self] in self?.focusTarget = $0 }
+        sidebar.list.intentChanged = { [weak self] in self?.focusTarget = nil }
+        (window as? OwnerWindow)?.focusChanged = { [weak self] old, next in
+            guard let self else { return }
+            if let pane = next as? PaneView, model.window.flatMap({ session?.windows[$0]?.active }) == pane.pane,
+               old == nil || old is PaneView || old === window { return }
+            sidebar.list.supersedeIntent()
+        }
         banner = Banner(background: runtime.background, target: self, action: #selector(WindowOwner.start))
         banner.frame = sidebar.content.bounds
         sidebar.content.addSubview(banner)
@@ -177,7 +198,7 @@ import SidebarFeed
                     #endif
                 }
                 guard accepts(generation) else { return }
-                if endpoint.server.protocolVersion?.compatible != true { return protocolMismatch(endpoint) }
+                if endpoint.server.protocolVersion?.compatible != true || !endpoint.server.binaryProtocol.compatible { return protocolMismatch(endpoint) }
                 dial(endpoint, backoff: backoff)
             } catch { failed(generation, error) }
         }
@@ -211,14 +232,19 @@ import SidebarFeed
 
     static func mismatchAlert(host: Host, server: RPCVersion?, binary: RPCVersion?) -> NSAlert {
         let alert = NSAlert()
-        let local = host == .local, newer = max(server?.major ?? 0, binary?.major ?? 0) > RPCVersion.required.major
+        let local = host == .local
+        func newerThanRequired(_ version: RPCVersion?) -> Bool {
+            guard let version else { return false }
+            return version.major > RPCVersion.required.major || version.major == RPCVersion.required.major && version.minor > RPCVersion.required.minor
+        }
+        let newer = newerThanRequired(server) || newerThanRequired(binary)
         let upgraded = !newer && binary?.compatible == true
         if newer {
             alert.messageText = local ? "This server needs a newer Kido.app" : "Update Kido.app to connect"
             alert.informativeText = local
                 ? "This local server was started by a newer Kido.app. Update the app, or restart the server using this bundle. Restarting ends all its sessions and panes."
                 : "The server on \(host.label) is newer than this app supports. Update Kido.app, then reconnect."
-            if !local, let binary, binary.major > (server?.major ?? 0) {
+            if !local, let binary, newerThanRequired(binary), !newerThanRequired(server) {
                 alert.informativeText = "kido on \(host.label) is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."
             }
         } else if !local && upgraded {
@@ -230,7 +256,7 @@ import SidebarFeed
                 ? "This server was started by an older kido. Restart it to use the kido bundled with this app."
                 : "The host is running an older kido server that this app cannot connect to. Upgrade kido on the host and restart its server, then reconnect."
         }
-        alert.informativeText += "\n\nCompatibility: this app needs protocol \(RPCVersion.required) or later within major \(RPCVersion.required.major). Server: \(server.map(String.init(describing:)) ?? "unstamped (older kido)")."
+        alert.informativeText += "\n\nCompatibility: this app needs exactly protocol \(RPCVersion.required). Server: \(server.map(String.init(describing:)) ?? "unstamped (older kido)")."
         if !local && (upgraded || newer && binary != server), let binary { alert.informativeText += " Host binary: \(binary)." }
         alert.informativeText += " Protocol numbers are not Kido.app release numbers."
         alert.addButton(withTitle: local ? "Restart…" : "Reconnect")
@@ -369,6 +395,7 @@ import SidebarFeed
         view.onPaneChange = { [weak self] in
             guard let self, accepts(generation) else { return }
             updateTabs()
+            if focusTarget != nil { focusSelected() }
         }
         view.frame = sidebar.content.bounds
         view.autoresizingMask = [.width, .height]
@@ -378,7 +405,15 @@ import SidebarFeed
                 onChange: { [weak self] model in guard let self, accepts(generation) else { return }; changed(view, model) },
                 onDiagnostic: { [weak self] message in guard let self, accepts(generation) else { return }; banner.show(message, "", button: nil) },
                 onClose: { [weak self] exit in guard let self, alive, self.generation == generation else { return }; closed(view, exit) })
-            connection.navigationModel = { [weak self] in self?.navigationModel ?? SessionModel() }
+            connection.userFocus = { [weak self] in self?.sidebar.list.supersedeIntent() }
+            connection.navigate = { [weak self] command in
+                guard let self, accepts(generation) else { return }
+                switch command {
+                case .newWindow: if let window = model.window { perform(.newWindow(window)) }
+                case .window(let step): selectWindow(step)
+                default: break
+                }
+            }
             connection.onURL = { [weak self] text in
                 guard let self, accepts(generation) else { return }
                 guard let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
@@ -398,7 +433,7 @@ import SidebarFeed
             session?.close()
             session = view
             feed = Feed(
-                serverDir: endpoint.directory, locate: connection.locateFeed, query: { [weak self] in self?.sidebar.list.query ?? "" }, drain: drain,
+                serverDir: endpoint.directory, locate: connection.locateFeed, drain: drain,
                 prepare: { [transport = ssh] args in transport?.launch([endpoint.kido] + args) ?? Launch(endpoint.kido, args, environment: tools.environment) },
                 onChange: { [weak self] status in
                     guard let self, accepts(generation) else { return }
@@ -407,7 +442,7 @@ import SidebarFeed
                         return self.protocolMismatch(Endpoint(server: Server(tmux: server.tmux, socket: server.socket, protocolVersion: version, binaryProtocol: binary ?? server.binaryProtocol), kido: endpoint.kido))
                     }
                     self.sidebar.list.update(status)
-                    if case .running(let snapshot) = status, self.sidebar.list.query.isEmpty, snapshot.filter.isEmpty {
+                    if case .running(let snapshot) = status {
                         self.snapshot = snapshot
                         self.updateTabs()
                     }
@@ -434,7 +469,7 @@ import SidebarFeed
 
     private func updateTabs() {
         let next = model.navigation(snapshot, activePanes: session?.windows.compactMapValues(\.active) ?? [:])
-        sidebar.tabs.entries = next.tabs
+        if sidebar.tabs.entries != next.tabs { sidebar.tabs.entries = next.tabs }
         if navigationModel != next.model {
             navigationModel = next.model
             menuChanged()
@@ -453,6 +488,7 @@ import SidebarFeed
             sidebar.content.addSubview(view, positioned: .below, relativeTo: banner)
         }
         view.show(model.window)
+        if focusTarget != nil { focusSelected() }
         ready()
     }
 
@@ -467,51 +503,34 @@ import SidebarFeed
         }
     }
 
-    @objc func newSession() {
-        let home = tools.environment["HOME"] ?? NSHomeDirectory()
-        guard case .connected(let connection, _, _) = link, let window = connection.model.window else {
-            var words = ["new-session", "-d", "-P", "-F", "#{session_id}:#{window_id}.#{pane_id}"]
-            if host == .local { words += ["-c", home] }
-            return create(Command(words: words))
-        }
-        send([Command("display-message", "-p", "-t", window, "#{pane_current_path}")]) { [weak self] replies in
-            guard case .success(let lines)? = replies?.first, let cwd = lines.first, !cwd.isEmpty else { return }
-            self?.create(Command("new-session", "-d", "-P", "-F", "#{session_id}:#{window_id}.#{pane_id}", "-c", cwd))
+    @objc func newSession() { perform(.newSession) }
+
+    func selectWindow(_ step: WindowStep) {
+        switch step {
+        case .next: perform(.switchWindow(next: true))
+        case .previous: perform(.switchWindow(next: false))
+        default: if let request = navigationModel.select(step) { perform(request) }
         }
     }
 
-    private func create(_ command: Command) {
-        sidebar.list.failed(nil)
-        send([command]) { [weak self] replies in
-            guard let self else { return }
-            guard case .success(let lines)? = replies?.first, let target = lines.first else {
-                if case .failure(let lines)? = replies?.first { sidebar.list.failed(lines.joined(separator: "\n")) }
-                else { sidebar.list.failed("The connection closed before creation completed") }
-                return
+    func perform(_ request: RPCRequest) { sidebar.list.perform(request) }
+
+    private func focusSelected() {
+        if let target = focusTarget {
+            switch target {
+            case .pane(let position):
+                guard model.session == position.session, model.window == position.window,
+                      session?.windows[position.window]?.active == position.pane else { return }
+            case .window(let s, let w):
+                guard model.session == s, model.window == w, session?.windows[w]?.active != nil else { return }
             }
-            send([Command("switch-client", "-t", target)]) { [weak self] replies in
-                guard let self else { return }
-                if case .success? = replies?.first { session?.focusActive() }
-                else if case .failure(let lines)? = replies?.first { sidebar.list.failed(lines.joined(separator: "\n")) }
-                else { sidebar.list.failed("The connection closed before selection completed") }
-            }
+            focusTarget = nil
         }
+        session?.focusActive()
     }
 
     @objc func nextAttention() { sidebar.list.nextAttention(1) }
     @objc func previousAttention() { sidebar.list.nextAttention(-1) }
-    @objc func nextWindow() { switchTarget(.window, next: true) }
-    @objc func previousWindow() { switchTarget(.window, next: false) }
-
-    func switchTarget(_ navigation: Feed.Navigation, next: Bool) {
-        sidebar.list.failed(nil)
-        guard case .connected(let connection, _, _) = link else { return }
-        feed?.switchTarget(navigation, next: next) { [weak self] target, error in
-            guard let self, case .connected(let current, _, _) = link, current === connection else { return }
-            if let error { return sidebar.list.failed(error) }
-            sidebar.list.completedNavigation(to: target)
-        }
-    }
 
     private func openTransport(_ token: Int) async throws(Failure) {
         guard case .remote(let destination) = host else { return }
@@ -545,6 +564,7 @@ import SidebarFeed
     }
 
     private func invalidate(keepingSnapshot: Bool = false) {
+        focusTarget = nil
         generation += 1
         clipboardPermission = .ask
         preparedAlert = nil
@@ -587,7 +607,8 @@ import SidebarFeed
         window.delegate = nil
         onClose()
     }
-    func windowDidBecomeKey(_ notification: Notification) { menuChanged() }
+    func windowDidBecomeKey(_ notification: Notification) { sidebar.list.supersedeIntent(); menuChanged() }
+    func windowDidResignKey(_ notification: Notification) { sidebar.list.supersedeIntent() }
     func windowDidChangeOcclusionState(_ notification: Notification) { presentAlert() }
     func updateColorScheme() { session?.updateColorScheme() }
     var navigation: SessionModel { navigationModel }

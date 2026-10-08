@@ -264,11 +264,21 @@ Hover/drag users can hit the strip instead of terminal content; last-column
 drag selection is untested. Reserve space or narrow/condition hit testing
 (small-to-medium). Status: accepted overlap; selection impact untested.
 
+## Outstanding asks have no app UI
+
+RPC 2.0 asks are decoded, including ended and revivable askers, but the app
+has no activation or deletion UI. Live waiting rows remain accessible through
+normal sidebar navigation; ended askers cannot be revived from Kido.app.
+Use kido's ask view instead. Status: accepted migration scope.
+
 ## Feed restart loses done-until-visited attention
 
 The feed's in-memory tracking does not survive process restart.
 This affects sidebar attention, not agent state or pane content; a restart
 can lose an unvisited completion indication without restoring it later.
+Program-status completion acknowledgements likewise belong to the RPC model;
+the app does not reconstruct them from raw records. The local search query
+survives helper restarts independently.
 See [The sidebar's model, and the feed](design.md#the-sidebars-model-and-the-feed)
 for the CLI-side ownership.
 Persisting that transient tracking is medium cross-component work.

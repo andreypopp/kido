@@ -57,9 +57,10 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
     private var connection: Connection!
     private var model = SessionModel()
     private var tabSnapshot: Snapshot?
+    private var rpc: Feed?
 
     private func updateTabs(_ status: Feed.Status? = nil, query: String = "") {
-        if case .running(let snapshot) = status, query.isEmpty, snapshot.filter.isEmpty { tabSnapshot = snapshot }
+        if case .running(let snapshot) = status { tabSnapshot = snapshot }
         (window.contentViewController as? Sidebar)?.tabs.entries = model.navigation(tabSnapshot, activePanes: session.windows.compactMapValues(\.active)).tabs
     }
 
@@ -78,6 +79,8 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
     }
 
     override func tearDown() async throws {
+        rpc?.stop()
+        rpc = nil
         if connection != nil { connection.gridFailed() }
         window?.contentView = nil
         window?.close()
@@ -130,7 +133,13 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         window.contentView = session
         let tmuxConfig = directory.appendingPathComponent("tmux.conf")
         try "set -g history-limit \(history)\nset -s get-clipboard request\n".write(to: tmuxConfig, atomically: true, encoding: .utf8)
-        _ = try await command(["-f", tmuxConfig.path, "new-session", "-d", "-s", "visual", "-x", "80", "-y", "30", "exec /bin/cat"])
+        let endpoint = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
+        XCTAssertEqual(endpoint.status, 0, endpoint.err)
+        _ = try await command(["source-file", tmuxConfig.path])
+        _ = try await command(["rename-session", "-t", "$0", "visual"])
+        _ = try await command(["rename-window", "-t", "@0", "zsh"])
+        _ = try await command(["respawn-pane", "-k", "-t", "%0", "exec /bin/cat"])
+        _ = try await command(["clear-history", "-t", "%0"])
         let clipboardMode = try await command(["show", "-sv", "get-clipboard"])
         connection = try Connection(server: Server(tmux: tmux, socket: socket, protocolVersion: .required), view: session,
                                     onChange: { [weak self] model in
@@ -140,6 +149,21 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
                                     },
                                     onDiagnostic: { XCTFail($0) }, onClose: { _ in })
         try await wait("initial layout") { self.terminal?.panes.isEmpty == false }
+        rpc = Feed(serverDir: directory.path, locate: connection.locateFeed, onChange: { _ in })
+        try await wait("RPC ready") { if case .running? = self.rpc?.status { return true }; return false }
+        connection.navigate = { [weak self] command in
+            guard let self else { return }
+            switch command {
+            case .window(let step):
+                switch step {
+                case .next: rpc?.request(.switchWindow(next: true)) { _ in }
+                case .previous: rpc?.request(.switchWindow(next: false)) { _ in }
+                default: if let request = model.navigation(tabSnapshot).model.select(step) { rpc?.request(request) { _ in } }
+                }
+            case .newWindow: if let window = model.window { rpc?.request(.newWindow(window)) { _ in } }
+            default: break
+            }
+        }
         try await settle()
         if dark {
             let changed = expectation(description: "appearance config changed")
@@ -234,7 +258,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         sidebar.splitView.setPosition(236, ofDividerAt: 0)
         sidebar.tabs.select = { [weak self] step in
             guard let self, let command = model.navigation(tabSnapshot).model.select(step) else { return }
-            connection.send([command])
+            rpc?.request(command) { if case .failure(let error) = $0 { XCTFail(error.message) } }
         }
         _ = try await command(["rename-window", "-t", "visual:0", "Shell"])
         let middle = try await command(["new-window", "-d", "-P", "-F", "#{window_id}", "-t", "visual", "-n", "Editor", "exec /bin/cat"])
@@ -247,10 +271,10 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         let panes = listing.split(separator: "\n").map { $0.split(separator: " ").map(String.init) }
         let shell = try XCTUnwrap(panes.first { $0[0] != middle && $0[0] != last && $0[0] != child })
         let childPane = try XCTUnwrap(panes.first { $0[0] == child })[1]
-        func fixture(_ status: String = "waiting", filtered: Bool = false, review: String = "Review changes") throws -> Snapshot {
+        func fixture(_ status: String = "waiting", review: String = "Review changes") throws -> Snapshot {
             func item(_ pane: [String], children: [[String: Any]] = [], status: String = "idle") -> [String: Any] {
                 ["kind": pane[0] == child ? "run" : "shell", "run": pane[0] == child ? "agent" as Any : NSNull(), "id": pane[1], "pane": pane[1], "window": pane[0],
-                 "title": [["text": pane[0] == middle ? (pane[1] == secondPane ? review : "Agent caption") : pane[0] == last ? "Build output" : "Shell prompt", "role": "plain"]], "tail": [], "indicator": ["kind": status],
+                 "program_status": ["serial": 0, "records": []], "title": [["text": pane[0] == middle ? (pane[1] == secondPane ? review : "Agent caption") : pane[0] == last ? "Build output" : "Shell prompt", "role": "plain"]], "tail": [], "indicator": ["kind": status],
                  "attention": status == "done", "children": children]
             }
             let nodes: [[String: Any]] = [item(shell),
@@ -259,8 +283,8 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
                      item(pane, children: i == 0 ? [item([child, childPane], status: status)] : [])
                  }], item(try XCTUnwrap(panes.first { $0[0] == last }))]
             let object: [String: Any] = ["v": 2, "client": ["session": "$0", "window": child, "pane": childPane],
-                "filter": filtered ? "hidden" : "", "sessions": [["id": "$0", "name": "visual", "current": true,
-                    "nodes": filtered ? [nodes[1]] : nodes]]]
+                "asks": [], "sessions": [["id": "$0", "name": "visual", "current": true,
+                    "nodes": nodes]]]
             return try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
         }
         updateTabs(.running(try fixture()), query: "")
@@ -277,7 +301,6 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         XCTAssertEqual((sidebar.tabs.accessibilityChildren()?[1] as? NSAccessibilityElement)?.accessibilityLabel(), "Window: Review updated — attention")
         updateTabs(.running(try fixture()), query: "")
         XCTAssertEqual(sidebar.tabs.entries.map(\.status), [.quiet, .attention, .quiet])
-        sidebar.list.filter = { query in self.updateTabs(.running(try! fixture(filtered: true)), query: query) }
         sidebar.list.visualSearch.stringValue = "hidden"
         XCTAssertTrue(sidebar.list.visualSearch.sendAction(try XCTUnwrap(sidebar.list.visualSearch.action), to: sidebar.list.visualSearch.target))
         XCTAssertEqual(sidebar.tabs.entries.map(\.name), ["Shell prompt", "Review changes", "Build output"])
@@ -304,13 +327,13 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         connection.send([Command("select-window", "-t", shell[0])])
         try await wait("first window selected") { self.model.window?.description == shell[0] }
         let menus = SessionMenus()
-        menus.send = { [weak self] in self?.connection.send($0) }
+        menus.send = { [weak self] request in self?.rpc?.request(request) { if case .failure(let error) = $0 { XCTFail(error.message) } } }
         menus.update(model.navigation(tabSnapshot).model)
         let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
             timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "2", charactersIgnoringModifiers: "2", isARepeat: false, keyCode: 19))
         XCTAssertTrue(menus.window.performKeyEquivalent(with: key))
         try await wait("Cmd-2 selects second tab") { self.model.window?.description == middle }
-        XCTAssertEqual(model.navigation(tabSnapshot).model.select(.number(2)), Command("switch-client", "-t", "$0:\(middle)"))
+        XCTAssertEqual(model.navigation(tabSnapshot).model.select(.number(2)), RPCRequest.selectWindow(SessionID(number: 0), WindowID(middle)!))
         XCTAssertEqual(session.windows.first { !$0.value.isHidden }?.key.description, middle)
         let area = sidebar.content.convert(sidebar.content.bounds, to: root)
         XCTAssertGreaterThan(sidebar.tabs.convert(sidebar.tabs.bounds, to: root).minY, area.maxY)
@@ -350,15 +373,19 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         let pendingSelection = try XCTUnwrap(model.navigation(tabSnapshot).model.select(.number(2)))
         connection.visualCommands.removeAll()
         let selected = expectation(description: "pending selection completed")
-        connection.send([Command("switch-client", "-t", "other"), pendingSelection]) { replies in
-            XCTAssertNotNil(replies)
+        _ = try await command(["switch-client", "-t", "other"])
+        rpc?.request(pendingSelection) { result in
+            if case .failure(let error) = result { XCTFail(error.message) }
             selected.fulfill()
         }
         await fulfillment(of: [selected], timeout: 20)
-        let selectedSession = try await command(["list-clients", "-F", "#{session_id}:#{window_id}"])
+        let appClient: String = try await withCheckedThrowingContinuation { continuation in
+            connection.locateFeed { continuation.resume(with: $0) }
+        }
+        let selectedSession = try await command(["display-message", "-p", "-c", appClient, "#{session_id}:#{window_id}"])
         XCTAssertEqual(selectedSession, "$0:\(middle)")
         try await wait("pending selection returns to its own session") { self.model.session == SessionID(number: 0) && self.model.window?.description == middle }
-        XCTAssertEqual(connection.visualCommands.filter { $0.line.hasPrefix("switch-client") }.count, 2)
+        XCTAssertEqual(connection.visualCommands.filter { $0.line.hasPrefix("switch-client") }.count, 0)
         connection.send([Command("switch-client", "-t", "other")])
         try await wait("current session tabs only") { self.model.windows.map(\.name) == ["Other session"] }
         connection.send([Command("switch-client", "-t", "visual")])
@@ -379,7 +406,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         session.autoresizingMask = [.width, .height]
         sidebar.content.addSubview(session)
         sidebar.focusTerminal = { [weak self] in self?.session.focusActive() }
-        sidebar.list.send = { [weak self] in self?.connection.send($0, then: $1) }
+        sidebar.list.request = { [weak self] in self?.rpc?.request($0, completed: $1) }
         let toolbar = NSToolbar(identifier: "FloatingSidebar")
         toolbar.delegate = sidebar
         toolbar.displayMode = .iconOnly
@@ -393,9 +420,9 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         sidebar.splitView.setPosition(292, ofDividerAt: 0)
         sidebar.viewDidLayout()
         let row = try XCTUnwrap(self.terminal?.panes.first)
-        let object: [String: Any] = ["v": 2, "filter": "", "client": ["session": "$0", "window": connection.model.window!.description, "pane": row.pane.description],
+        let object: [String: Any] = ["v": 2, "asks": [], "client": ["session": "$0", "window": connection.model.window!.description, "pane": row.pane.description],
             "sessions": [["id": "$0", "name": "visual", "current": true, "nodes": [["kind": "shell", "id": row.pane.description,
-                "pane": row.pane.description, "window": connection.model.window!.description, "title": [["text": "Terminal", "role": "plain"]], "tail": [], "indicator": ["kind": "idle"], "attention": false, "children": []]]]]]
+                "pane": row.pane.description, "window": connection.model.window!.description, "program_status": ["serial": 0, "records": []], "title": [["text": "Terminal", "role": "plain"]], "tail": [], "indicator": ["kind": "idle"], "attention": false, "children": []]]]]]
         sidebar.list.update(.running(try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))))
         let menu = try XCTUnwrap(NSApp.mainMenu?.items.first { $0.title == "View" }?.submenu)
         let entries = Array(menu.items.prefix(2))
@@ -511,6 +538,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
             windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
         window.sendEvent(escape)
+        try await wait("RPC release returns focus") { !sidebar.isFloating && self.window.firstResponder is PaneView }
         XCTAssertFalse(sidebar.isFloating)
         XCTAssertTrue(window.firstResponder is PaneView)
         try key()
@@ -570,7 +598,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         window.sendEvent(enter)
         try await wait("jump dismisses sidebar") { !sidebar.isFloating }
         XCTAssertTrue(window.firstResponder is PaneView)
-        XCTAssertEqual(connection.visualCommands.filter { $0.line.hasPrefix("switch-client") }.count, 1)
+        XCTAssertEqual(connection.visualCommands.filter { $0.line.hasPrefix("switch-client") }.count, 0)
         try key()
         NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
         XCTAssertFalse(sidebar.isFloating)
@@ -920,11 +948,11 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
             var nodes = sessions[0]["nodes"] as! [[String: Any]]
             var panes = nodes[1]["children"] as! [[String: Any]]
             var children = panes[0]["children"] as! [[String: Any]]
-            children[0]["children"] = [["kind": "agent", "id": "%1990", "pane": "%1990", "window": "@1990",
+            children[0]["children"] = [["kind": "agent", "id": "%1990", "pane": "%1990", "window": "@1990", "program_status": ["serial": 0, "records": []],
                                         "title": [["text": "review-notes", "role": "plain"]],
                                         "tail": [["text": "Checking nested activity", "role": "dim"]],
                                         "run": "agent", "started": 1791131100, "indicator": ["kind": "running"], "attention": false,
-                                        "children": [["kind": "shell", "id": "%1991", "pane": "%1991", "window": "@1991",
+                                        "children": [["kind": "shell", "id": "%1991", "pane": "%1991", "window": "@1991", "program_status": ["serial": 0, "records": []],
                                                       "title": [["text": "zsh", "role": "plain"]], "tail": [],
                                                       "indicator": ["kind": "done"], "attention": false, "children": []]]]]
             object["client"] = ["session": "$0", "window": children[0]["window"]!, "pane": children[0]["pane"]!]
@@ -969,36 +997,139 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         window.setContentSize(NSSize(width: 236, height: 680))
         list.visualSearch.stringValue = "no-such-session"
         list.visualSearch.isHidden = false
-        list.update(.running(try sidebarFixture { $0["filter"] = "no-such-session"; $0["sessions"] = [] }))
+        list.update(.running(try sidebarFixture()))
         sidebarSnapshot(list, "no-matches-light")
     }
 
     func testFilteredEnterSendsOnce() async throws {
-        for reply: Reply in [.success([]), .failure(["delayed failure"])] {
+        for success in [true, false] {
             window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 260),
                               styleMask: [.titled], backing: .buffered, defer: false)
             let list = SidebarView()
             window.contentView = list
-            list.update(.running(try sidebarFixture { $0["filter"] = "main" }))
+            let snapshot = try sidebarFixture()
+            list.update(.running(snapshot))
             list.visualSearch.stringValue = "main"
-            var commands: [[Command]] = []
-            var pending: [@MainActor @Sendable ([Reply]?) -> Void] = []
-            list.send = { batch, done in commands.append(batch); pending.append(done) }
+            list.focus()
+            let responder = window.firstResponder
+            var commands: [RPCRequest] = []
+            var pending: [@MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void] = []
+            var left = 0
+            list.leave = { left += 1 }
+            list.request = { request, done in commands.append(request); pending.append(done) }
             _ = list.control(list.visualSearch, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:)))
-            XCTAssertEqual(commands.count, 1, "one Enter must send one switch-client before delayed reply")
+            list.update(.running(snapshot))
+            _ = list.control(list.visualSearch, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:)))
+            XCTAssertEqual(commands.count, 1, "one Enter must send one RPC jump before delayed reply")
+            let target = try XCTUnwrap(list.visualRows[list.visualTable.selectedRow].target)
+            XCTAssertEqual(commands, [.jump(target)])
             let completed = expectation(description: "delayed reply")
             DispatchQueue.main.async {
-                for done in pending { done([reply]) }
+                for done in pending { done(success ? .success(.jumped(target)) : .failure(.terminal("delayed failure"))) }
                 completed.fulfill()
             }
             await fulfillment(of: [completed], timeout: 5)
-            XCTAssertEqual(commands.count, 1, "delayed reply must not send another switch-client")
+            XCTAssertEqual(commands.count, 1, "delayed reply must not send another RPC jump")
+            XCTAssertEqual(list.query, success ? "" : "main")
+            XCTAssertEqual(left, success ? 1 : 0)
+            if !success {
+                XCTAssertTrue(window.firstResponder === responder)
+                XCTAssertEqual(list.visualDiagnostic, "delayed failure")
+                list.update(.restarting("test restart"))
+                list.update(.starting)
+                list.update(.running(snapshot))
+                XCTAssertEqual(list.query, "main")
+            }
             XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
         }
     }
 
+    func testSupersededSidebarReplies() throws {
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 680), styleMask: [.titled], backing: .buffered, defer: false)
+        let list = SidebarView()
+        window.contentView = list
+        list.update(.running(try sidebarFixture()))
+        var pending: [@MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void] = []
+        var left = 0
+        list.request = { _, done in pending.append(done) }
+        list.leave = { left += 1 }
+        let rows = list.visualRows.filter { $0.target != nil }
+        list.visualSearch.stringValue = "main"
+        list.focus()
+        list.visualJump(rows[0])
+        list.visualSearch.stringValue = "mainx"
+        list.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: list.visualSearch))
+        list.visualSearch.stringValue = "main"
+        list.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: list.visualSearch))
+        pending.removeFirst()(.success(.jumped(rows[0].target!)))
+        XCTAssertEqual(list.query, "main", "type then delete must supersede Enter even with the same final query")
+        XCTAssertEqual(left, 0)
+        list.focus()
+        list.visualTable.keyDown(with: NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!)
+        list.visualTable.keyDown(with: NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "/", charactersIgnoringModifiers: "/", isARepeat: false, keyCode: 44)!)
+        pending.removeFirst()(.success(.released))
+        XCTAssertNotNil(list.visualSearch.currentEditor())
+        XCTAssertEqual(left, 0, "old Escape must not leave a new search")
+        list.focus()
+        list.visualJump(rows[0])
+        list.focus()
+        list.visualJump(rows[1])
+        XCTAssertEqual(pending.count, 2, "a newer intent must be able to replace a pending activation")
+        guard pending.count == 2 else { return }
+        pending[1](.success(.jumped(rows[1].target!)))
+        let afterB = left
+        pending[0](.success(.jumped(rows[0].target!)))
+        XCTAssertEqual(left, afterB, "A completing after B must not act on B's UI")
+    }
+
+    func testSameWindowDeferredPaneFocus() async throws {
+        try await start()
+        let pane = try await command(["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", "%0", "exec /bin/cat"])
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let endpoint = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
+        owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(endpoint.out.utf8)), kido: tools.kido)
+        defer { owner.close() }
+        owner.start()
+        try await wait("owner split snapshot") { owner.sidebar.list.visualRows.contains { $0.target?.pane.description == pane } }
+        let row = try XCTUnwrap(owner.sidebar.list.visualRows.first { $0.target?.pane.description == pane })
+        owner.sidebar.list.request = { _, done in done(.success(.jumped(row.target!))) }
+        owner.sidebar.list.focus()
+        owner.sidebar.list.visualJump(row)
+        XCTAssertTrue(owner.sidebar.list.containsFocus, "focus must wait until the pane becomes current")
+        let view = try XCTUnwrap(owner.testSession?.windows[row.target!.window])
+        view.focus(row.target!.pane)
+        XCTAssertEqual((owner.window.firstResponder as? PaneView)?.pane.description, pane, "onPaneChange must consume deferred focus without a topology notification")
+        let original = try XCTUnwrap(owner.sidebar.list.visualRows.first { $0.target?.pane == PaneID(number: 0) })
+        owner.sidebar.list.request = { _, done in done(.success(.jumped(original.target!))) }
+        owner.sidebar.list.focus()
+        owner.sidebar.list.visualJump(original)
+        owner.sidebar.list.focus()
+        view.focus(original.target!.pane)
+        XCTAssertTrue(owner.sidebar.list.containsFocus, "new focus intent must cancel a deferred pane target")
+    }
+
+    func testHeaderCreatesWindowInItsSession() async throws {
+        try await start()
+        let other = try await command(["new-session", "-d", "-P", "-F", "#{session_id}", "-s", "other", "exec /bin/cat"])
+        let current = try await command(["new-window", "-P", "-F", "#{window_id}", "-t", other, "exec /bin/cat"])
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let endpoint = try await Child.run(tools.kido, ["server", "--server", directory.path], env: tools.environment)
+        owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(endpoint.out.utf8)), kido: tools.kido)
+        defer { owner.close() }
+        owner.start()
+        let list = owner.sidebar.list
+        try await wait("other session header") { list.visualRows.contains { $0.id == .header(SessionID(other)!) } }
+        var requests: [RPCRequest] = []
+        list.request = { request, done in requests.append(request); done(.failure(.terminal("test response"))) }
+        let index = try XCTUnwrap(list.visualRows.firstIndex { $0.id == .header(SessionID(other)!) })
+        let header = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell)
+        XCTAssertEqual(header.addWindow.accessibilityLabel(), "New window in other")
+        header.addWindow.performClick(nil)
+        XCTAssertEqual(requests, [.newWindow(WindowID(current)!)], "heading plus must honour that session's current window, not the client's session")
+    }
+
     func testSwitchWindowAndSessionOutputAndReconnect() async throws {
-        for navigation in [Feed.Navigation.window, .session] {
+        for navigation in ["switch-window", "switch-session"] {
             let scratch = app.appendingPathComponent("build/sbfix/\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
             let script = scratch.appendingPathComponent("kido")
@@ -1009,15 +1140,15 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
             #!/bin/sh
             exec python3 -u -c '
             import json, sys
-            print(json.dumps(dict(hello=dict(protocol="1.1"))))
+            print(json.dumps(dict(hello=dict(protocol="2.0"))))
             snapshot = json.load(open("\(fixture.path)"))
             print(json.dumps(snapshot))
             held = None
             for line in sys.stdin:
                 request = json.loads(line)
-                if request.get("filter") == "exit": break
-                if "\(navigation.rawValue)" not in request: continue
-                direction = request["\(navigation.rawValue)"]["direction"]
+                if request["id"] == 5: break
+                if "\(navigation)" not in request: continue
+                direction = request["\(navigation)"]["direction"]
                 reply = dict(id=request["id"], switched=dict(session="$3", window="@12") if direction == "next" else dict(session="$1", window="@5"))
                 if request["id"] == 3:
                     print(json.dumps(dict(reply=dict(id=request["id"], switched=None))))
@@ -1036,49 +1167,49 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
             var snapshots = 0
             let feed = Feed(serverDir: scratch.path, locate: { done in
                 done(.success("private-client"))
-            }, query: { "" }, onChange: { status in
+            }, onChange: { status in
                 if case .starting = status { starts += 1 }
                 if case .running = status { snapshots += 1 }
             })
             feed.testKido = script.path
             defer { feed.stop() }
             try await wait("fake feed ready") { snapshots == 1 }
+            let next: RPCRequest = navigation == "switch-window" ? .switchWindow(next: true) : .switchSession(next: true)
+            let prev: RPCRequest = navigation == "switch-window" ? .switchWindow(next: false) : .switchSession(next: false)
             let switched = expectation(description: "switch stdout")
-            feed.switchTarget(navigation, next: true) { target, error in
-                XCTAssertNil(error)
+            feed.request(next) { result in
+                guard case .success(.switched(let target)) = result else { return XCTFail("switch failed") }
                 XCTAssertEqual(target?.session, SessionID(number: 3), "navigation must return its own stdout session")
                 XCTAssertEqual(target?.window, WindowID(number: 12), "navigation must return its own stdout window")
                 switched.fulfill()
             }
             let previous = expectation(description: "previous target")
-            feed.switchTarget(navigation, next: false) { target, error in
-                XCTAssertNil(error)
+            feed.request(prev) { result in
+                guard case .success(.switched(let target)) = result else { return XCTFail("switch failed") }
                 XCTAssertEqual(target?.session, SessionID(number: 1))
                 XCTAssertEqual(target?.window, WindowID(number: 5))
                 previous.fulfill()
             }
             await fulfillment(of: [switched, previous], timeout: 5)
             let noop = expectation(description: "null target")
-            feed.switchTarget(navigation, next: true) { target, error in
-                XCTAssertNil(error)
+            feed.request(next) { result in
+                guard case .success(.switched(let target)) = result else { return XCTFail("switch failed") }
                 XCTAssertNil(target)
                 noop.fulfill()
             }
             let failed = expectation(description: "RPC error")
-            feed.switchTarget(navigation, next: false) { target, error in
-                XCTAssertNil(target)
-                XCTAssertEqual(error, "navigation failed")
+            feed.request(prev) { result in
+                guard case .failure(let error) = result else { return XCTFail("missing error") }
+                XCTAssertEqual(error.message, "navigation failed")
                 failed.fulfill()
             }
             await fulfillment(of: [noop, failed], timeout: 5)
             let stale = expectation(description: "pending request fails once")
             stale.assertForOverFulfill = true
-            feed.switchTarget(navigation, next: true) { target, error in
-                XCTAssertNil(target)
-                XCTAssertNotNil(error)
+            feed.request(next) { result in
+                guard case .failure = result else { return XCTFail("missing disconnect failure") }
                 stale.fulfill()
             }
-            feed.filter("exit")
             try await wait("feed reconnected") { starts == 2 && snapshots == 3 }
             await fulfillment(of: [stale], timeout: 5)
         }
@@ -1145,8 +1276,8 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
     }
 
     func testServerProtocolFields() throws {
-        for stamp in ["null", "\"0.9\"", "\"1.0\"", "\"2.0\""] {
-            let server = try JSONDecoder().decode(Server.self, from: Data("{\"tmux\":\"/bin/kido-tmux\",\"socket\":\"/tmp/private/socket\",\"protocol\":\"1.1\",\"server\":\(stamp)}".utf8))
+        for stamp in ["null", "\"0.9\"", "\"1.1\"", "\"2.1\""] {
+            let server = try JSONDecoder().decode(Server.self, from: Data("{\"tmux\":\"/bin/kido-tmux\",\"socket\":\"/tmp/private/socket\",\"protocol\":\"2.0\",\"server\":\(stamp)}".utf8))
             XCTAssertEqual(server.binaryProtocol, .required)
             XCTAssertFalse(server.protocolVersion?.compatible == true)
             XCTAssertEqual(server.protocolVersion?.description, stamp == "null" ? nil : String(stamp.dropFirst().dropLast()))
@@ -1158,19 +1289,19 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         for (host, stamp, binary, title, body) in [
             (Kido.Host.local, nil, nil, "Restart the local kido server", "This server was started by an older kido. Restart it to use the kido bundled with this app."),
             (.local, "0.9", nil, "Restart the local kido server", "This server was started by an older kido. Restart it to use the kido bundled with this app."),
-            (.local, "2.0", nil, "This server needs a newer Kido.app", "This local server was started by a newer Kido.app. Update the app, or restart the server using this bundle. Restarting ends all its sessions and panes."),
+            (.local, "2.1", nil, "This server needs a newer Kido.app", "This local server was started by a newer Kido.app. Update the app, or restart the server using this bundle. Restarting ends all its sessions and panes."),
             (remote, nil, nil, "Update kido on dev@buildbox", "The host is running an older kido server that this app cannot connect to. Upgrade kido on the host and restart its server, then reconnect."),
             (remote, "0.9", "0.9", "Update kido on dev@buildbox", "The host is running an older kido server that this app cannot connect to. Upgrade kido on the host and restart its server, then reconnect."),
-            (remote, "2.0", "2.0", "Update Kido.app to connect", "The server on dev@buildbox is newer than this app supports. Update Kido.app, then reconnect."),
-            (remote, "1.0", "2.0", "Update Kido.app to connect", "kido on dev@buildbox is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."),
-            (remote, nil, "2.0", "Update Kido.app to connect", "kido on dev@buildbox is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."),
-            (remote, "0.9", "2.0", "Update Kido.app to connect", "kido on dev@buildbox is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."),
-            (remote, "0.9", "1.1", "Restart kido on dev@buildbox", "kido was updated on the host, but its running server still uses the older version. Restart that server, then reconnect.")
+            (remote, "2.1", "2.1", "Update Kido.app to connect", "The server on dev@buildbox is newer than this app supports. Update Kido.app, then reconnect."),
+            (remote, "1.0", "2.1", "Update Kido.app to connect", "kido on dev@buildbox is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."),
+            (remote, nil, "2.1", "Update Kido.app to connect", "kido on dev@buildbox is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."),
+            (remote, "0.9", "2.1", "Update Kido.app to connect", "kido on dev@buildbox is newer than this app supports, but its running server still uses the older version. Update Kido.app, then restart that server and reconnect."),
+            (remote, "0.9", "2.0", "Restart kido on dev@buildbox", "kido was updated on the host, but its running server still uses the older version. Restart that server, then reconnect.")
         ] as [(Kido.Host, String?, String?, String, String)] {
             let alert = WindowOwner.mismatchAlert(host: host, server: stamp.flatMap(RPCVersion.init), binary: binary.flatMap(RPCVersion.init))
             XCTAssertEqual(alert.messageText, title)
-            let showBinary = host != .local && (binary == "1.1" || binary == "2.0" && binary != stamp)
-            XCTAssertEqual(alert.informativeText, body + "\n\nCompatibility: this app needs protocol 1.1 or later within major 1. Server: \(stamp ?? "unstamped (older kido)")." + (showBinary ? " Host binary: \(binary!)." : "") + " Protocol numbers are not Kido.app release numbers.")
+            let showBinary = host != .local && (binary == "2.0" || binary == "2.1" && binary != stamp)
+            XCTAssertEqual(alert.informativeText, body + "\n\nCompatibility: this app needs exactly protocol 2.0. Server: \(stamp ?? "unstamped (older kido)")." + (showBinary ? " Host binary: \(binary!)." : "") + " Protocol numbers are not Kido.app release numbers.")
             XCTAssertEqual(alert.buttons.map(\.title), [host == .local ? "Restart…" : "Reconnect", "Close"])
             XCTAssertEqual(alert.buttons[1].keyEquivalent, "\u{1b}")
         }
@@ -1185,23 +1316,57 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         try await start()
         _ = try await command(["new-window", "-d", "-t", "visual", "-n", "second", "exec /bin/cat"])
         var snapshots = 0
-        let feed = Feed(serverDir: directory.path, locate: connection.locateFeed, query: { "" }, onChange: { status in
+        let feed = Feed(serverDir: directory.path, locate: connection.locateFeed, onChange: { status in
             if case .running = status { snapshots += 1 }
         })
         defer { feed.stop() }
         try await wait("private RPC hello and snapshot") { snapshots > 0 }
         let switched = expectation(description: "private RPC switch reply")
-        feed.switchTarget(.window, next: true) { target, error in
-            XCTAssertNil(error)
+        feed.request(.switchWindow(next: true)) { result in
+            guard case .success(.switched(let target)) = result else { return XCTFail("switch failed") }
             XCTAssertNotNil(target)
             print("RPC E2E switched: \(target?.session.description ?? "nil") \(target?.window.description ?? "nil")")
             switched.fulfill()
         }
         await fulfillment(of: [switched], timeout: 5)
+        let before = try XCTUnwrap(model.window)
+        let cwd = try await command(["display-message", "-p", "-t", before.description, "#{pane_current_path}"])
+        let count = model.windows.count
+        try XCTUnwrap(terminal?.panes.first).onCommand(.newWindow)
+        try await wait("RPC-created window reaches topology") { self.model.windows.count == count + 1 && self.model.window != before }
+        let created = try XCTUnwrap(model.window)
+        let order = model.windows.map(\.id)
+        XCTAssertEqual(order.firstIndex(of: created), order.firstIndex(of: before).map { $0 + 1 })
+        let inherited = try await command(["display-message", "-p", "-t", created.description, "#{pane_current_path}"])
+        XCTAssertEqual(inherited, cwd)
+        let newSession = expectation(description: "RPC new session")
+        var location: Snapshot.Position?
+        feed.request(.newSession) { result in
+            if case .success(.created(let target)) = result { location = target }
+            else { XCTFail("new session failed") }
+            newSession.fulfill()
+        }
+        await fulfillment(of: [newSession], timeout: 5)
+        let target = try XCTUnwrap(location)
+        let selected = expectation(description: "RPC selects session")
+        feed.request(.selectSession(target.session)) { result in
+            if case .success(.selected(let selected)) = result { XCTAssertEqual(selected, target) }
+            else { XCTFail("select session failed") }
+            selected.fulfill()
+        }
+        await fulfillment(of: [selected], timeout: 5)
+        let rejected = expectation(description: "invalid jump does not navigate")
+        feed.request(.jump(Snapshot.Position(session: target.session, window: before, pane: target.pane))) { result in
+            if case .failure = result {} else { XCTFail("invalid membership succeeded") }
+            rejected.fulfill()
+        }
+        await fulfillment(of: [rejected], timeout: 5)
+        let unchanged = try await command(["list-clients", "-F", "#{session_id}:#{window_id}"])
+        XCTAssertEqual(Set(unchanged.split(separator: "\n").map(String.init)), ["\(target.session):\(target.window)"])
         feed.stop()
         _ = try await command(["set-environment", "-gu", "KIDO_PROTOCOL"])
         var refused = false
-        let unstamped = Feed(serverDir: directory.path, locate: connection.locateFeed, query: { "" }, onChange: { status in
+        let unstamped = Feed(serverDir: directory.path, locate: connection.locateFeed, onChange: { status in
             if case .protocolMismatch(let version, let binary) = status { XCTAssertNil(version); XCTAssertEqual(binary, .required); refused = true }
         })
         defer { unstamped.stop() }
@@ -1242,7 +1407,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         XCTAssertNil(owner.window.attachedSheet)
         XCTAssertNil(owner.testConnection)
         XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || owner.window.isMainWindow || NSApp.isActive)
-        print("RPC E2E hello 1.1; unstamped server refused; local mismatch alert prepared off-screen")
+        print("RPC E2E hello 2.0; unstamped server refused; local mismatch alert prepared off-screen")
     }
 
     func testSidebarHeadersKeysAndAccessibility() throws {
@@ -1347,11 +1512,11 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         list.layoutSubtreeIfNeeded()
         let selectedBeforeNil = list.visualTable.selectedRow
         let originBeforeNil = list.visualScroll.contentView.bounds.origin
-        list.completedNavigation(to: nil)
+        list.request = { _, done in done(.success(.switched(nil))) }
+        list.perform(.switchWindow(next: true))
         XCTAssertEqual(list.visualTable.selectedRow, selectedBeforeNil)
         XCTAssertEqual(list.visualScroll.contentView.bounds.origin, originBeforeNil)
         list.update(.running(destination))
-        list.completedNavigation(to: (destination.client.session, destination.client.window))
         let selected = list.visualTable.selectedRow
         XCTAssertGreaterThanOrEqual(selected, 0, "feed-first completion must select the destination")
         if selected >= 0 {
@@ -1399,31 +1564,31 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         list.update(.running(fixture))
         XCTAssertTrue(list.visualRows.contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 502)) })
         let navigated = try sidebarFixture { $0["client"] = ["session": "$0", "window": "@458", "pane": "%502"] }
-        list.completedNavigation(to: (navigated.client.session, navigated.client.window))
-        XCTAssertEqual(list.visualRows[list.visualTable.selectedRow].target?.window, navigated.client.window)
         list.update(.running(navigated))
+        XCTAssertEqual(list.visualRows[list.visualTable.selectedRow].target?.window, navigated.client.window)
         XCTAssertTrue(list.visualRows.contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 502)) })
         let row = try XCTUnwrap(list.visualRows.first { $0.target != nil })
-        var commands: [[Command]] = []
+        var commands: [RPCRequest] = []
         var left = 0
-        var filters: [String] = []
         list.leave = { left += 1 }
-        list.filter = { filters.append($0) }
         list.visualSearch.stringValue = "main"
         list.focus()
-        list.send = { batch, done in commands.append(batch); done([.failure(["no such pane"])]) }
+        list.request = { request, done in commands.append(request); done(.failure(.terminal("no such pane"))) }
         list.visualJump(row)
-        XCTAssertEqual(commands, [[Command("switch-client", "-t", "\(row.target!.session):\(row.target!.window).\(row.target!.pane)")]])
+        XCTAssertEqual(commands, [.jump(row.target!)])
         XCTAssertEqual(list.query, "main")
         XCTAssertEqual(left, 0)
         XCTAssertEqual(list.visualDiagnostic, "no such pane")
         XCTAssertTrue(list.containsFocus)
-        list.send = { batch, done in commands.append(batch); XCTAssertTrue(Thread.isMainThread); done([.success([])]) }
+        list.request = { request, done in
+            commands.append(request)
+            XCTAssertTrue(Thread.isMainThread)
+            done(.success(request == .releaseSideFocus ? .released : .jumped(row.target!)))
+        }
         list.visualJump(row)
         XCTAssertEqual(commands.count, 2)
         XCTAssertEqual(left, 1)
         XCTAssertEqual(list.query, "")
-        XCTAssertEqual(filters, [""])
         list.visualSearch.stringValue = "keep-me"
         list.update(.running(try sidebarFixture()))
         XCTAssertEqual(list.query, "keep-me")
@@ -1440,8 +1605,8 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         XCTAssertEqual(left, 2)
         let target = try XCTUnwrap(list.visualRows.first { $0.target != nil })
         let failed = expectation(description: "real private tmux jump reply")
-        list.send = { [weak self] batch, done in
-            self?.connection.send(batch) { replies in XCTAssertTrue(Thread.isMainThread); done(replies); failed.fulfill() }
+        list.request = { [weak self] request, done in
+            self?.rpc?.request(request) { result in XCTAssertTrue(Thread.isMainThread); done(result); failed.fulfill() }
         }
         list.visualJump(target)
         await fulfillment(of: [failed], timeout: 5)
