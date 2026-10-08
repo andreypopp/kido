@@ -802,6 +802,11 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         list.layoutSubtreeIfNeeded()
         list.visualTable.tile()
         list.visualTable.layoutSubtreeIfNeeded()
+        list.displayIfNeeded()
+        CATransaction.flush()
+        list.layoutSubtreeIfNeeded()
+        list.visualTable.tile()
+        list.visualTable.layoutSubtreeIfNeeded()
         if list.visualTable.numberOfRows > 0 { list.visualTable.scrollRowToVisible(0) }
         list.visualScroll.reflectScrolledClipView(list.visualScroll.contentView)
         list.displayIfNeeded()
@@ -910,6 +915,31 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         window.setContentSize(NSSize(width: 292, height: 680))
         list.update(.running(try sidebarFixture { $0["client"] = ["session": "$0", "window": "@786", "pane": "%892"] }))
         sidebarSnapshot(list, "child-active-light")
+        let subtree = try sidebarFixture { object in
+            var sessions = object["sessions"] as! [[String: Any]]
+            var nodes = sessions[0]["nodes"] as! [[String: Any]]
+            var panes = nodes[1]["children"] as! [[String: Any]]
+            var children = panes[0]["children"] as! [[String: Any]]
+            children[0]["children"] = [["kind": "agent", "id": "%1990", "pane": "%1990", "window": "@1990",
+                                        "title": [["text": "review-notes", "role": "plain"]],
+                                        "tail": [["text": "Checking nested activity", "role": "dim"]],
+                                        "run": "agent", "started": 1791131100, "indicator": ["kind": "running"], "attention": false,
+                                        "children": [["kind": "shell", "id": "%1991", "pane": "%1991", "window": "@1991",
+                                                      "title": [["text": "zsh", "role": "plain"]], "tail": [],
+                                                      "indicator": ["kind": "done"], "attention": false, "children": []]]]]
+            object["client"] = ["session": "$0", "window": children[0]["window"]!, "pane": children[0]["pane"]!]
+            panes[0]["children"] = children
+            nodes[1]["children"] = panes
+            sessions[0]["nodes"] = nodes
+            object["sessions"] = sessions
+        }
+        XCTAssertEqual(sidebarRows(subtree).filter { $0.active && $0.target != nil }.map { $0.target!.window },
+                       [824, 1990, 1991].map { WindowID(number: UInt32($0)) })
+        list.update(.running(subtree))
+        sidebarSnapshot(list, "focused-child-subtree-light")
+        window.appearance = NSAppearance(named: .darkAqua)
+        sidebarSnapshot(list, "focused-child-subtree-dark")
+        window.appearance = NSAppearance(named: .aqua)
         let grouped = try sidebarFixture { object in
             var sessions = object["sessions"] as! [[String: Any]]
             let nodes = sessions[0]["nodes"] as! [[String: Any]]
@@ -927,6 +957,7 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
         list.focus()
         let down = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
             windowNumber: window.windowNumber, context: nil, characters: "j", charactersIgnoringModifiers: "j", isARepeat: false, keyCode: 38))
+        list.visualTable.keyDown(with: down)
         list.visualTable.keyDown(with: down)
         sidebarSnapshot(list, "three-pane-keyboard-light")
         let header = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? SidebarCell)
@@ -1261,33 +1292,48 @@ func clipboardQueryScript(ready: String, result: String, selector: String, deadl
     }
 
     func testClockWidthChangeInvalidatesTitle() throws {
-        let fixture = try sidebarFixture { object in
-            var sessions = object["sessions"] as! [[String: Any]]
-            var nodes = sessions[0]["nodes"] as! [[String: Any]]
-            var children = nodes[0]["children"] as! [[String: Any]]
-            children[0]["title"] = [["text": String(repeating: "Long title ", count: 20), "role": "plain"]]
-            nodes[0]["children"] = children
-            sessions[0]["nodes"] = nodes
-            object["sessions"] = sessions
-        }
-        let row = try XCTUnwrap(sidebarRows(fixture).first { $0.started != nil })
-        let started = try XCTUnwrap(row.started)
-        let cell = SidebarCell(SidebarFonts())
-        cell.frame = NSRect(x: 0, y: 0, width: 292, height: 32)
         defer { SidebarView.visualNow = nil }
-        for (before, after) in [(9.0, 10.0), (59.0, 60.0), (3599.0, 3600.0)] {
-            SidebarView.visualNow = started.addingTimeInterval(before)
+        for multi in [false, true] {
+            let fixture = try sidebarFixture { object in
+                var sessions = object["sessions"] as! [[String: Any]]
+                var nodes = sessions[0]["nodes"] as! [[String: Any]]
+                var children = nodes[0]["children"] as! [[String: Any]]
+                children[0]["title"] = [["text": String(repeating: "Long title ", count: 20), "role": "plain"]]
+                children[0]["tail"] = [["text": "Activity", "role": "dim"]]
+                if multi {
+                    var sibling = children[0]
+                    sibling["id"] = "%1999"; sibling["pane"] = "%1999"
+                    children[0] = ["kind": "window", "id": children[0]["window"]!, "window": children[0]["window"]!,
+                                   "name": "group", "children": [children[0], sibling]]
+                }
+                nodes[0]["children"] = children
+                sessions[0]["nodes"] = nodes
+                object["sessions"] = sessions
+            }
+            let row = try XCTUnwrap(sidebarRows(fixture).first { $0.started != nil })
+            XCTAssertEqual(row.multiPane, multi)
+            XCTAssertFalse(row.tail.isEmpty)
+            let started = try XCTUnwrap(row.started)
+            let cell = SidebarCell(SidebarFonts())
+            cell.frame = NSRect(x: 0, y: 0, width: 292, height: row.height)
+            for (before, after) in [(9.0, 10.0), (59.0, 60.0), (3599.0, 3600.0)] {
+                SidebarView.visualNow = started.addingTimeInterval(before)
+                cell.configure(row)
+                SidebarView.visualNow = started.addingTimeInterval(after)
+                cell.updateClock()
+                XCTAssertEqual(cell.visualClockDirtyRect.minX, 48,
+                               "width-changing tick must invalidate the nested title’s truncation edge")
+                XCTAssertEqual(cell.visualClockDirtyRect.minY, multi ? 4 : 5)
+            }
+            SidebarView.visualNow = started.addingTimeInterval(11)
             cell.configure(row)
-            SidebarView.visualNow = started.addingTimeInterval(after)
+            SidebarView.visualNow = started.addingTimeInterval(12)
             cell.updateClock()
-            XCTAssertEqual(cell.visualClockDirtyRect.minX, 36 + CGFloat(row.indent) * 21,
-                           "width-changing tick must invalidate the title’s truncation edge")
+            XCTAssertGreaterThan(cell.visualClockDirtyRect.minX, 200, "equal-width tick must remain clock-only")
+            let activityRect = NSRect(x: row.leading, y: row.tailY, width: cell.bounds.width - row.leading - 24, height: 15)
+            XCTAssertFalse(cell.visualClockDirtyRect.intersects(activityRect),
+                           "equal-width nested \(multi ? "multi" : "single") clock must not redraw activity")
         }
-        SidebarView.visualNow = started.addingTimeInterval(11)
-        cell.configure(row)
-        SidebarView.visualNow = started.addingTimeInterval(12)
-        cell.updateClock()
-        XCTAssertGreaterThan(cell.visualClockDirtyRect.minX, 200, "equal-width tick must remain clock-only")
     }
 
     func testNavigationFeedFirst() throws {

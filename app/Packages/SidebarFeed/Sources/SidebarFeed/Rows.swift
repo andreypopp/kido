@@ -15,7 +15,11 @@ public struct SidebarRow: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case header, pane(Snapshot.Position), divider, gap
     }
-    public enum Position: Equatable, Sendable { case single, top, middle, bottom }
+    public struct WindowSlice: Equatable, Sendable {
+        public let offset: Double
+        public let height: Double
+        public let active: Bool
+    }
     public enum Icon: String, Equatable, Sendable { case agent = "text.bubble", terminal }
     public let id: ID
     public let kind: Kind
@@ -28,9 +32,14 @@ public struct SidebarRow: Equatable, Sendable {
     public let attention: Bool
     public let started: Date?
     public let focused: Bool
-    public var position: Position = .single
+    public var windows: [WindowSlice] = []
+    public var multiPane = false
+    public var quietShell = false
     public var icon: Icon = .terminal
-    public var active = false
+    public var active: Bool { windows.contains { $0.active } }
+    public var padding: Double { (indent == 0 ? 7 : 5) - (multiPane ? 1 : 0) }
+    public var leading: Double { Double(indent) * 16 + (indent == 0 ? 36 : 32) }
+    public var tailY: Double { padding + (indent == 0 ? 18.5 : 17.5) }
     public var target: Snapshot.Position? {
         if case .pane(let target) = kind { return target }; return nil
     }
@@ -70,14 +79,19 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
     for session in snapshot.sessions {
         rows.append(SidebarRow(id: .header(session.id), kind: .header, indent: 0, height: 29,
                                title: session.name, tail: "", status: .quiet, attention: false, started: nil, focused: false))
+        var y = 0.0
         func windows(_ nodes: [Node], depth: Int) {
             for (index, node) in nodes.enumerated() {
-                if depth > 0 || index > 0 {
+                if depth == 0 && index > 0 {
                     rows.append(SidebarRow(id: .divider(session.id, node.id), kind: .divider, indent: depth, height: 7,
                                            title: "", tail: "", status: .quiet, attention: false, started: nil, focused: false))
+                    y += 7
                 }
+                let start = rows.count
+                let top = y
                 let panes: [Item] = switch node { case .window(let group): group.children; case .item(let item): [item] }
-                for (index, item) in panes.enumerated() {
+                let multiPane = panes.count > 1
+                for item in panes {
                     let description: String = switch item.indicator {
                     case .gone(let outcome): "gone" + (outcome.map { ", " + $0.rawValue } ?? "")
                     case .some(let indicator): String(describing: indicator)
@@ -87,29 +101,42 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                     let tail = item.tail.map(\.text).joined()
                     let agent = item.kind == .agent || item.run == .agent
                     let label = item.label
+                    let quietShell = item.kind == .shell && item.run == nil && item.indicator != .running && item.indicator != .compacting
+                    let height = (tail.isEmpty ? 32.0 : 44.0) - (depth == 0 ? 0 : 4) - (multiPane ? 2 : 0)
                     rows.append(SidebarRow(id: .pane(session.id, item.id), kind: .pane(target), indent: depth,
-                                           height: tail.isEmpty ? 32 : 48,
-                                           title: agent && !label.hasPrefix("@") ? "@" + label : label,
+                                           height: height,
+                                           title: quietShell ? "Terminal" : agent && !label.hasPrefix("@") ? "@" + label : label,
                                            tail: tail, status: item.status, indicatorDescription: description,
                                            attention: item.attention, started: item.run == nil ? nil : item.started,
                                            focused: target == snapshot.client,
-                                           position: panes.count == 1 ? .single : index == 0 ? .top : index == panes.count - 1 ? .bottom : .middle,
-                                           icon: agent ? .agent : .terminal,
-                                           active: session.id == snapshot.client.session && item.window == snapshot.client.window))
+                                           multiPane: multiPane, quietShell: quietShell,
+                                           icon: agent ? .agent : .terminal))
+                    y += height
+                    if !item.children.isEmpty {
+                        windows(item.children, depth: depth + 1)
+                        rows.append(SidebarRow(id: .spacing(session.id, "children:" + item.id.description), kind: .gap, indent: depth + 1, height: 3,
+                                               title: "", tail: "", status: .quiet, attention: false, started: nil, focused: false))
+                        y += 3
+                    }
+                }
+                let height = y - top
+                let window: WindowID = switch node { case .window(let group): group.window; case .item(let item): item.window }
+                let active = session.id == snapshot.client.session && window == snapshot.client.window
+                var offset = 0.0
+                for index in start..<rows.count {
+                    rows[index].windows.append(.init(offset: offset, height: height, active: active))
+                    offset += rows[index].height
                 }
                 rows.append(SidebarRow(id: .spacing(session.id, "window:" + node.id), kind: .gap, indent: depth, height: 3,
                                        title: "", tail: "", status: .quiet, attention: false, started: nil, focused: false))
-                for item in panes where !item.children.isEmpty {
-                    windows(item.children, depth: depth + 1)
-                    rows.append(SidebarRow(id: .spacing(session.id, "children:" + item.id.description), kind: .gap, indent: depth + 1, height: 3,
-                                           title: "", tail: "", status: .quiet, attention: false, started: nil, focused: false))
-                }
+                y += 3
             }
         }
         windows(session.nodes, depth: 0)
         rows.append(SidebarRow(id: .gap(session.id), kind: .gap, indent: 0, height: 16,
                                title: "", tail: "", status: .quiet, attention: false, started: nil, focused: false))
     }
+    for index in rows.indices { rows[index].windows.reverse() }
     return rows
 }
 
