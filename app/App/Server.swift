@@ -105,9 +105,8 @@ struct Server: Decodable, Sendable {
     func restart(drain: Drain? = nil) async throws(Failure) {
         try tools.validate()
         let current = try await Self.locate(drain: drain).server
-        guard current.socket == socket, current.protocolVersion == protocolVersion else {
-            throw Failure(message: "The server changed. Reconnect before restarting it.")
-        }
+        guard current.socket == socket else { throw Failure(message: "Discovery returned a different local server socket.") }
+        if current.protocolVersion != protocolVersion, current.protocolVersion?.compatible == true { return }
         let (killed, _, err) = try await Child.run(tools.tmux, ["-S", socket, "kill-server"], env: tools.environment, drain: drain)
         guard killed == 0 else { throw Failure(message: err.isEmpty ? "Could not stop the app server" : err) }
     }
