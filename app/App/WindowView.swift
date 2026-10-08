@@ -383,6 +383,7 @@ final class WindowView: NSView {
         view.onURL = { [weak connection] in connection?.openURL($0) }
         view.onSelect = { [weak self] in
             guard let self else { return }
+            connection?.userFocus()
             var commands = [Command("select-pane", "-t", id)]
             if case .floating(let z) = self.shown?.visible.root.panes.first(where: { $0.id == id })?.layer, z > 0 {
                 commands.append(Command("move-pane", "-t", id, "-z", 0))
@@ -390,9 +391,12 @@ final class WindowView: NSView {
             self.sendPane(commands)
         }
         view.onCommand = { [weak self] command in
-            guard let connection = self?.connection,
-                let tmux = command.command(id, cell: self?.session?.cell ?? .zero, model: connection.navigationModel())
-            else { return }
+            guard let connection = self?.connection else { return }
+            switch command {
+            case .window, .newWindow: return connection.navigate(command)
+            default: break
+            }
+            guard let tmux = command.command(id, cell: self?.session?.cell ?? .zero) else { return }
             if case .clear = command {
                 connection.sync(id, first: [tmux, Command("clear-history", "-t", id)])
             } else { self?.sendPane([tmux]) }
