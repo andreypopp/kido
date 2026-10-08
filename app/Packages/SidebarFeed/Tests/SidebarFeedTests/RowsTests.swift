@@ -25,40 +25,83 @@ private func fixture(filter: String = "", client: Int = 0, sessions: [Int] = [0]
     return try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
 }
 
-@Test func independentWindowsAndExactSpacing() throws {
+@Test func nestedWindowsAndExactSpacing() throws {
     let rows = sidebarRows(try fixture(client: 5))
     let panes = rows.filter { $0.target != nil }
     #expect(panes.map(\.indent) == [0, 0, 1, 2, 1, 1])
-    #expect(rows.filter { $0.kind == .divider }.map(\.indent) == [0, 1, 2, 1, 1])
-    #expect(rows.filter { $0.kind == .divider }.map(\.height) == [7, 7, 7, 7, 7])
-    #expect(rows.map(\.height) == [29, 32, 3, 7, 32, 3, 7, 48, 3, 7, 32, 3, 3, 7, 32, 3, 7, 32, 3, 3, 16])
+    #expect(rows.filter { $0.kind == .divider }.map(\.indent) == [0])
+    #expect(rows.filter { $0.kind == .divider }.map(\.height) == [7])
+    #expect(rows.map(\.height) == [29, 32, 3, 7, 32, 40, 28, 3, 3, 3, 28, 3, 28, 3, 3, 3, 16])
     #expect(rows.allSatisfy { $0.height > 0 })
-    #expect(panes.map(\.active) == [false, true, false, false, false, false])
-    #expect(panes.allSatisfy { $0.position == .single })
-    let child = sidebarRows(try fixture(client: 2)).filter { $0.target != nil }
-    #expect(child.filter(\.active).map(\.title) == ["pane-2"])
+    #expect(panes.map(\.active) == [false, true, true, true, true, true])
+    #expect(panes.allSatisfy { !$0.multiPane })
+    #expect(panes.dropFirst().map { $0.windows.first!.height } == [174, 174, 174, 174, 174])
+    #expect(panes.dropFirst().map { $0.windows.first!.offset } == [0, 32, 72, 109, 140])
+    #expect(panes[2].windows.map(\.height) == [174, 74])
+    #expect(panes[3].windows.map(\.offset) == [72, 40, 0])
+    #expect(rows.filter { $0.active && $0.target == nil }.count == 6)
+    let child = sidebarRows(try fixture(client: 1)).filter { $0.target != nil }
+    #expect(child.filter(\.active).map(\.title) == ["@pane-1", "pane-2"])
+    #expect(child[2].windows.map(\.active) == [false, true])
+    #expect(child[3].windows.map(\.active) == [false, true, false])
+    let grandchild = sidebarRows(try fixture(client: 2)).filter { $0.target != nil }
+    #expect(grandchild.filter(\.active).map(\.title) == ["pane-2"])
 }
 
 @Test func groupedPanesStayContiguous() throws {
     let rows = sidebarRows(try fixture(grouped: true))
-    #expect(rows.map(\.height) == [29, 32, 32, 3, 16])
+    #expect(rows.map(\.height) == [29, 30, 30, 3, 16])
     #expect(rows.filter { $0.kind == .divider }.isEmpty)
-    #expect(rows.filter { $0.target != nil }.map(\.position) == [.top, .bottom])
+    #expect(rows.filter { $0.target != nil }.allSatisfy { $0.multiPane })
+    #expect(rows.filter { $0.target != nil }.map { $0.windows[0].offset } == [0, 30])
+    #expect(rows.filter { $0.target != nil }.map { $0.windows[0].height } == [60, 60])
     #expect(rows.allSatisfy { $0.height > 0 })
 }
 
-@Test func everyPanesChildrenFollowEntireGroup() throws {
+@Test func eachPanesChildrenPrecedeItsNextSibling() throws {
     let snapshot = try fixture(grouped: true, descendants: true)
     let rows = sidebarRows(snapshot)
     let panes = rows.filter { $0.target != nil }
-    #expect(panes.map { $0.target!.pane } == [0, 5, 6, 1, 2, 3].map { PaneID(number: UInt32($0)) })
-    #expect(panes.map(\.position) == [.top, .middle, .bottom, .single, .single, .single])
-    #expect(panes.map(\.height) == [32, 48, 32, 48, 32, 32])
-    #expect(panes.map(\.indent) == [0, 0, 0, 1, 2, 1])
-    #expect(panes.map(\.active) == [true, true, true, false, false, false])
-    #expect(rows.filter { $0.kind == .divider }.map(\.indent) == [1, 2, 1])
-    #expect(sidebarTarget(snapshot, attention: 1) == panes[4].target)
+    #expect(panes.map { $0.target!.pane } == [0, 1, 2, 5, 3, 6].map { PaneID(number: UInt32($0)) })
+    #expect(panes.map(\.multiPane) == [true, false, false, true, false, true])
+    #expect(panes.map(\.height) == [30, 40, 28, 42, 28, 30])
+    #expect(panes.map(\.indent) == [0, 1, 2, 0, 1, 0])
+    #expect(panes.allSatisfy { $0.active })
+    #expect(panes.map { $0.windows[0].height } == [216, 216, 216, 216, 216, 216])
+    #expect(rows.filter { $0.kind == .divider }.isEmpty)
+    #expect(sidebarTarget(snapshot, attention: 1) == panes[2].target)
+    #expect(sidebarTarget(snapshot, selected: panes[5].target, attention: -1) == panes[2].target)
     #expect(Set(rows.map(\.id)).count == rows.count)
+}
+
+@Test(arguments: [(false, false, false), (false, false, true), (false, true, false), (false, true, true),
+                  (true, false, false), (true, false, true), (true, true, false), (true, true, true)])
+func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) throws {
+    var pane: [String: Any] = ["kind": "agent", "id": "%1", "pane": "%1", "window": "@1",
+                               "title": [], "tail": activity ? [["text": "working", "role": "dim"]] : [], "attention": false, "children": []]
+    let node: [String: Any]
+    if multi {
+        var sibling = pane
+        sibling["id"] = "%2"; sibling["pane"] = "%2"
+        node = ["kind": "window", "id": "@1", "window": "@1", "name": "group", "children": [pane, sibling]]
+    } else { node = pane }
+    if nested {
+        pane["id"] = "%0"; pane["pane"] = "%0"; pane["window"] = "@0"
+        pane["children"] = [node]
+    }
+    let object: [String: Any] = ["v": 2, "client": ["session": "$0", "window": "@1", "pane": "%1"], "filter": "",
+                               "sessions": [["id": "$0", "name": "main", "current": true, "nodes": [nested ? pane : node]]]]
+    let snapshot = try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
+    let row = try #require(sidebarRows(snapshot).first { $0.target?.pane == PaneID(number: 1) })
+    #expect(row.height == (activity ? 44 : 32) - (nested ? 4 : 0) - (multi ? 2 : 0))
+    #expect(row.padding == (nested ? 5 : 7) - (multi ? 1 : 0))
+    #expect(row.leading == (nested ? 48 : 36))
+    #expect(row.tailY == (nested ? 22.5 : 25.5) - (multi ? 1 : 0))
+    #expect(row.multiPane == multi)
+    #expect(row.windows.count == (nested ? 2 : 1))
+    #expect(row.windows.last?.active == true)
+    #expect(row.windows.first?.active == !nested)
+    #expect(sidebarRows(snapshot).allSatisfy { $0.height > 0 })
 }
 
 @Test func filteredSessionsKeepIdentity() throws {
@@ -75,7 +118,7 @@ private func fixture(filter: String = "", client: Int = 0, sessions: [Int] = [0]
     #expect(panes.map(\.started) == [nil, nil, Date(timeIntervalSince1970: 100), Date(timeIntervalSince1970: 100), Date(timeIntervalSince1970: 100), nil])
     #expect(panes.allSatisfy { if case .pane = $0.kind { return true }; return false })
     #expect(panes.first { $0.title == "@pane-1" }?.tail == "working")
-    #expect(panes.map(\.height) == [32, 32, 48, 32, 32, 32])
+    #expect(panes.map(\.height) == [32, 32, 40, 28, 28, 28])
 }
 
 @Test(arguments: [(0, "0s"), (59, "59s"), (60, "1m00s"), (3599, "59m59s"), (3600, "1h00m"), (7260, "2h01m"), (-1, "0s")])
@@ -86,7 +129,7 @@ func elapsed(_ seconds: Int, _ expected: String) {
 @Test(arguments: [("agent", "null", "Ada", "@Ada", SidebarRow.Icon.agent),
                   ("agent", "null", "@Ada", "@Ada", .agent),
                   ("run", "\"agent\"", "Ada", "@Ada", .agent),
-                  ("shell", "null", "zsh", "zsh", .terminal),
+                  ("shell", "null", "zsh", "Terminal", .terminal),
                   ("ssh", "null", "host", "host", .terminal),
                   ("run", "\"bash\"", "job", "job", .terminal),
                   ("run", "\"stream\"", "monitor", "monitor", .terminal)])
@@ -103,6 +146,29 @@ func iconsAndDisplayOnlyPrefix(_ kind: String, _ run: String, _ title: String, _
     #expect(row.icon == icon)
     #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)],
                            activePanes: [WindowID(number: 0): PaneID(number: 0)]).titles[WindowID(number: 0)] == title)
+}
+
+@Test(arguments: [("shell", "null", "idle", true, SidebarRow.Status.quiet),
+                  ("shell", "null", "done", true, .done), ("shell", "null", "failed", true, .error),
+                  ("shell", "null", "waiting", true, .quiet), ("shell", "null", "running", false, .running),
+                  ("shell", "null", "compacting", false, .running), ("ssh", "null", "idle", false, .quiet),
+                  ("run", "\"bash\"", "done", false, .done), ("run", "\"stream\"", "failed", false, .error),
+                  ("shell", "\"bash\"", "idle", false, .quiet)])
+func idleShellIsDisplayOnly(_ kind: String, _ run: String, _ indicator: String, _ quiet: Bool, _ status: SidebarRow.Status) throws {
+    let json = """
+    {"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},"filter":"","sessions":[
+      {"id":"$0","name":"main","current":true,"nodes":[
+        {"kind":"\(kind)","run":\(run),"id":"%0","pane":"%0","window":"@0","indicator":{"kind":"\(indicator)"},
+         "title":[{"text":"last-command","role":"plain"}],"tail":[],"attention":false,"children":[]}]}]}
+    """
+    let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(json.utf8))
+    let row = try #require(sidebarRows(snapshot).first { $0.target != nil })
+    #expect(row.title == (quiet ? "Terminal" : "last-command"))
+    #expect(row.quietShell == quiet)
+    #expect(row.status == status)
+    #expect(row.indicatorDescription == indicator)
+    #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)],
+                           activePanes: [WindowID(number: 0): PaneID(number: 0)]).titles[WindowID(number: 0)] == "last-command")
 }
 
 @Test func originalIndicatorDescriptions() throws {
