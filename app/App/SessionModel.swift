@@ -39,6 +39,11 @@ struct SessionModel: Equatable {
     }
 
     func select(_ step: WindowStep) -> RPCRequest? {
+        switch step {
+        case .next: return .switchWindow(next: true)
+        case .previous: return .switchWindow(next: false)
+        default: break
+        }
         guard let session, !windows.isEmpty else { return nil }
         let target: WindowID? = switch step {
         case .next, .previous: nil
