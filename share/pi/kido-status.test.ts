@@ -1,5 +1,5 @@
 // One suite covers kido-status.ts and kido-agents.ts together, since that pair is
-// what a real pi host loads alongside program-status.ts; every case here needs the identity half's
+// what a real pi host loads alongside pi's native status reporter; every case here needs the identity half's
 // inbox and the agent half's dispatch. It drives the extensions only through what
 // a real pi host and peer agent would use: registered tools, registered lifecycle
 // events, and a real unix socket speaking the inbox wire protocol - never by
@@ -2131,8 +2131,7 @@ test("pi's run drops a wake trigger and keeps the rest of the turn", async () =>
 
 test("pi's clearQueue restores only editor text and preserves both custom queues in order across reload", async () => {
   assert.equal(typeof globalThis.__kidoPiExtensionClearQueue, "function", "pi must expose clearQueue");
-  const piDist = new URL("./", import.meta.resolve("@earendil-works/pi-coding-agent"));
-  const { Agent } = await import(new URL("../node_modules/@earendil-works/pi-agent-core/dist/agent.js", piDist).href);
+  const { Agent } = await import(import.meta.resolve("@earendil-works/pi-agent-core"));
   const agent = new Agent();
   const custom = ["kido-message", "kido-ask", "kido-notice", "kido-stream", "kido-reply"].map((customType) => ({
     role: "custom", customType, content: customType, display: true, timestamp: 0,
@@ -2161,7 +2160,7 @@ test("pi's clearQueue restores only editor text and preserves both custom queues
 
 test("a queued custom follow-up survives Escape during a tool call", { timeout: 5000 }, async (t) => {
   const piDist = new URL("./", import.meta.resolve("@earendil-works/pi-coding-agent"));
-  const { Agent } = await import(new URL("../node_modules/@earendil-works/pi-agent-core/dist/agent.js", piDist).href);
+  const { Agent } = await import(import.meta.resolve("@earendil-works/pi-agent-core"));
   const { InteractiveMode } = await import(new URL("modes/interactive/interactive-mode.js", piDist).href);
   for (const escape of [false, true]) {
     await t.test(escape ? "Escape restores the editor and aborts" : "abort alone preserves the queue", async () => {

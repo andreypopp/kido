@@ -123,7 +123,7 @@ window, status, activity, parent, depth, cwd, model, `canMessage`,
 A bash run or an ended subagent without a live record has no agent
 status and cannot reply. pi's status is the pane root's OSC 7501 state
 (working, blocked, done, error, idle; unknown when absent), and its name
-is that root's title. Claude Code uses Hook status and its pane title.
+comes from the pane title, set by pi through OSC 0/2. Claude Code uses Hook status and its pane title.
 A pi is stalled only with a working root and an old State heartbeat;
 a bare pi never stalls. The graph is a fresh single tmux read, not a
 cache. `ask_agent` refuses a stalled target before sending.

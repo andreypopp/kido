@@ -1,20 +1,14 @@
 open Kido
 open Fixture
 
-let%expect_test "Hook names use the pane title and Terminal names use the root record" =
+let%expect_test "Hook and Terminal names use the pane title" =
   let panes =
     [
       pane ~title:"π - kido" "%1"; pane ~title:"π - review - kido" "%2"; pane ~title:"π - kido" "%3";
     ]
   in
-  let programs =
-    Tmux.Program_status.parse_lines
-      [
-        "%3\031{\"serial\":1,\"records\":[{\"id\":\"\",\"state\":\"idle\",\"title\":\"z4AgLSBraWRv\"}]}";
-      ]
-  in
   List.iter
-    (fun s -> print_endline (List_runs.display_name ~programs panes s))
+    (fun s -> print_endline (List_runs.display_name panes s))
     [
       session ~agent:Claude ~pane:"%1" Idle;
       session ~agent:Claude ~pane:"%2" Idle;
@@ -23,7 +17,7 @@ let%expect_test "Hook names use the pane title and Terminal names use the root r
   [%expect {|
     kido
     review - kido
-    π - kido
+    kido
     |}]
 
 let%expect_test "is_ancestor refuses a self-edge" =

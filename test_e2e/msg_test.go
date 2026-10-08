@@ -2,7 +2,6 @@ package e2e
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -323,7 +322,7 @@ func TestNotifyParentKeepsAReportOverTheCap(t *testing.T) {
 	h := start(t, "alpha")
 	caller := h.firstPane("alpha")
 	in := startInbox(t, "ok\n")
-	h.idleAgent("alpha", "parent-sess", "", "--inbox", in.Path)
+	h.idleAgent("alpha", "parent-sess", "parent", "--inbox", in.Path)
 	const run = "run-cap-e2e"
 	report := filepath.Join(h.stateDir, "runs", run, "report")
 	if err := os.MkdirAll(filepath.Dir(report), 0o755); err != nil {
@@ -333,7 +332,7 @@ func TestNotifyParentKeepsAReportOverTheCap(t *testing.T) {
 		t.Helper()
 		env := []string{"KIDO_AGENT_PARENT_SESSION=parent-sess", "KIDO_AGENT_RUN_ID=" + run}
 		before := len(in.Received())
-		h.expectKido(caller, text, env, "delivered to  by inbox", "tool", "notify_parent")
+		h.expectKido(caller, text, env, "delivered to parent by inbox", "tool", "notify_parent")
 		got := envelopes(in)
 		if len(got) != before+1 {
 			t.Fatalf("parent inbox received %q, want one more notice", in.Received())
@@ -391,7 +390,7 @@ func (h *harness) writeRecord(id, pane string, ts time.Time, extra map[string]an
 		title = strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - ")
 	}
 	state := map[string]string{"running": "working", "waiting": "blocked", "idle": "idle"}[status]
-	h.programStatus(pane, "state="+state+":app=pi:title="+base64.StdEncoding.EncodeToString([]byte(title)))
+	h.programStatus(pane, "state="+state+":app=pi", title)
 	b, err := json.Marshal(rec)
 	if err != nil {
 		h.t.Fatal(err)

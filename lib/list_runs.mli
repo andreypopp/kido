@@ -23,12 +23,8 @@ type agent_info = {
 
 val caller_pane : Tmux.Pane.t list -> Tmux.Pane.id option -> (Tmux.Pane.t, string) result
 val agent_title : string -> string
-
 val status : Tmux.Program_status.t Tmux.Pane.Map.t -> State.session -> status
-
-val display_name :
-  programs:Tmux.Program_status.t Tmux.Pane.Map.t -> Tmux.Pane.t list -> State.session -> string
-
+val display_name : Tmux.Pane.t list -> State.session -> string
 val per_pane : (string * State.session) list -> (string * State.session) list
 
 val in_session :

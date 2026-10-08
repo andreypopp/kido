@@ -74,16 +74,10 @@ let status programs (s : State.session) =
   | Hook h -> Reported h.status
   | Terminal -> Program (Option.map (fun (r : Program_status.record) -> r.state) (root programs s))
 
-let display_name ~programs panes (s : State.session) =
-  match s.reporting with
-  | Terminal ->
-      Option.map_or ~default:""
-        (fun (r : Program_status.record) -> Option.value ~default:"" r.title)
-        (root programs s)
-  | Hook _ ->
-      Option.map_or ~default:""
-        (fun (p : Pane.t) -> agent_title p.title)
-        (Option.flat_map (Pane.find panes) s.pane)
+let display_name panes (s : State.session) =
+  Option.map_or ~default:""
+    (fun (p : Pane.t) -> agent_title p.title)
+    (Option.flat_map (Pane.find panes) s.pane)
 
 let per_pane live = List.map snd (Tmux.Pane.Map.bindings (State.by_pane live))
 
@@ -146,7 +140,7 @@ let agents ~dir ~threshold ~self ~session ~panes ~programs ~states =
         (fun (p : Pane.t) ->
           {
             id;
-            name = display_name ~programs panes s;
+            name = display_name panes s;
             agent = s.agent;
             pane = p.pane_id;
             window = p.window_id;

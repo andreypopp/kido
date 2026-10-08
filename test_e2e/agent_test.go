@@ -64,22 +64,21 @@ func TestPiPaneLooksLikeAClaudePane(t *testing.T) {
 	})
 }
 
-// The OSC root title must win over the session/cwd kido could otherwise
-// derive by stripping pi's marker off the pane title, since splitting on
-// "-" breaks for a session name that itself contains " - ".
-func TestPiReportedTitleWinsOverPaneTitle(t *testing.T) {
+func TestPiPaneTitleAndNativeStatus(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
-	// The pane title alone would render as "deploy - kido" once the pi
-	// marker is stripped; the reported title must win instead.
-	pane := h.piPane("alpha", "π - deploy - kido")
-
-	h.programStatus(pane, "state=idle:app=pi", "deploy")
+	pane := h.piPane("alpha", "π - deploy - branch - kido")
+	h.programStatus(pane, "state=working:app=pi:msg=ZGVwbG95IC0gYnJhbmNo")
 	h.agentStatus("pi-3", pane, "pi")
-	h.waitGlyph("deploy", "")
-	if got := h.rowFor("deploy"); got != "╶ deploy" {
-		t.Fatalf("row = %q, want the reported title alone, not the pane title", got)
+	h.waitGlyph("deploy - branch - kido", "◼")
+	if got := h.rowFor("deploy"); got != "╶◼deploy - branch - kido" {
+		t.Fatalf("row = %q, want pane title, native status and no duplicate caption", got)
 	}
+	h.agentStatus("pi-3", pane, "pi", "--remove")
+	h.waitGlyph("deploy - branch - kido", "◼")
+	h.agentStatus("pi-3", pane, "pi")
+	h.programStatus(pane, "state=clear")
+	h.waitGlyph("deploy - branch - kido", "?")
 }
 
 // TestPiBeatsClaudeOnTheSamePane checks the precedence rule. pi runs Claude

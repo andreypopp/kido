@@ -40,4 +40,4 @@ fi
 ./node_modules/.bin/tsc --strict --noEmit --module NodeNext --moduleResolution NodeNext \
 	--target ES2024 --allowImportingTsExtensions --erasableSyntaxOnly --skipLibCheck \
 	--typeRoots ./node_modules/@types ../../.pi/tests/no-git-writes.test.ts
-exec node --test --test-reporter=spec kido-status.test.ts program-status.test.ts ../../.pi/tests/no-git-writes.test.ts
+exec node --test --test-reporter=spec kido-status.test.ts ../../.pi/tests/no-git-writes.test.ts

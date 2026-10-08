@@ -490,11 +490,7 @@ let agent_title_of m (p : P.t) =
   if not (State.is_agent_pane m.snap.states ~pi:m.snap.pi p) then None
   else
     match Tmux.Pane.Map.find_opt p.pane_id m.snap.states with
-    | Some (_, s) ->
-        Some
-          (match List_runs.display_name ~programs:m.snap.programs [ p ] s with
-          | "" -> "-"
-          | title -> title)
+    | Some (_, s) -> Some (match List_runs.display_name [ p ] s with "" -> "-" | title -> title)
     | None -> ( match List_runs.agent_title p.title with "" -> Some "-" | t -> Some t)
 
 let span role text = { text; role }
@@ -527,14 +523,23 @@ let pane_label m (p : P.t) =
               l.outcome))
   | _, Some (status, r), agent_title ->
       let app = Tmux.Program_status.app status r in
-      let title = Option.value ~default:(Option.value ~default:p.current_command app) r.title in
+      let pi = Option.exists (String.equal "pi") app in
+      let title =
+        if pi then List_runs.agent_title p.title
+        else Option.value ~default:(Option.value ~default:p.current_command app) r.title
+      in
       let kind =
         match lingering with
         | Some l -> ( match l.kind with Agent -> Agent | Bash | Stream -> Run)
         | None -> if Option.is_some agent_title then Agent else Shell
       in
       let message =
-        match r.msg with
+        match
+          Option.filter
+            (fun message ->
+              not (pi && (String.equal title message || String.prefix ~pre:(message ^ " - ") title)))
+            r.msg
+        with
         | Some message -> message
         | None ->
             Option.map_or ~default:""

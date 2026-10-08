@@ -203,10 +203,10 @@ func TestShimsReachTheRealPrograms(t *testing.T) {
 	}
 
 	name, args := run("pi 'hello  there'")
-	if name != "pi" || len(args) != 7 || args[0] != "--extension" || args[2] != "--extension" || args[4] != "--extension" || args[6] != "hello  there" {
-		t.Fatalf("pi reached %s %q, want three --extension and the message", name, args)
+	if name != "pi" || len(args) != 5 || args[0] != "--extension" || args[2] != "--extension" || args[4] != "hello  there" {
+		t.Fatalf("pi reached %s %q, want two --extension and the message", name, args)
 	}
-	for i, ext := range []string{"kido-status.ts", "kido-agents.ts", "program-status.ts"} {
+	for i, ext := range []string{"kido-status.ts", "kido-agents.ts"} {
 		if !sameFile(args[2*i+1], filepath.Join(shareDir, "pi", ext)) {
 			t.Errorf("--extension %s, want the shipped %s", args[2*i+1], ext)
 		}
@@ -257,7 +257,7 @@ export default function (pi: any) {
 				t.Fatal(err)
 			}
 			if links {
-				for _, name := range []string{"kido-status.ts", "kido-agents.ts", "program-status.ts"} {
+				for _, name := range []string{"kido-status.ts", "kido-agents.ts"} {
 					if err := os.Symlink(filepath.Join(checkout, name), filepath.Join(exts, name)); err != nil {
 						t.Fatal(err)
 					}

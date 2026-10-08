@@ -151,18 +151,20 @@ Claude Code's Hook status takes precedence on its own row. The representative is
 error, working, done, idle priority, then bytewise id, excluding
 acknowledged done/error records so they cannot hide ongoing work. If all
 records are acknowledged completions, the first record supplies an idle
-label. Its title (or inherited app or foreground command) names the row;
-message and optional progress percentage form the caption. With no program
+label. Its title (or inherited app or foreground command) names a generic
+program row. pi's label comes instead from the pane title (OSC 0/2),
+with the π prefix stripped. Message and optional progress percentage
+form the caption, except a pi message duplicating its session name. With no program
 message, State activity supplies the caption; a live subagent with neither
 uses its elapsed clock. Indicators map
 to waiting, failed, running, done and idle. Visiting acknowledges done/error
 only in that view; only a newer pane serial re-arms them, not a reconnect.
 pi State records contain identity, inbox, parentage, activity, model and
-heartbeat, not status, completion or title. pi display and completion
-attention come from terminal records; its ask overlay still outranks the
-indicator. Stalled means a working root with a stale State heartbeat,
-rebased against wake. Bare pi never stalls. pi addressing uses root title,
-even when a nested program overwrites that root. Claude Code retains its
+heartbeat, not status, completion or title. pi status and completion
+attention come from pi 1.1.0's native OSC 7501 records; its ask overlay
+still outranks the indicator. Stalled means a working root with a stale State heartbeat,
+rebased against wake. Bare pi never stalls. pi addressing uses the pane title, including when a nested program
+overwrites the OSC root. Claude Code retains its
 Hook status and completion timestamp.
 
 ## Requests and navigation
@@ -217,12 +219,13 @@ Protocol 2.0 changes from 1.1:
   steps from its top-level ancestor. Top-level steps skip run-marked windows,
   never descend, and wrap across sessions in sidebar order. The CLI and
   sidebar Shift-Up/Down keys share this order; a sole eligible root selects itself.
-- Changed: pi item indicator, attention, title and caption use OSC records
+- Changed: pi item indicator, attention and caption use native OSC records;
+  its title uses the pane title
   instead of State status/title/completion. Pi compaction is running with
   a message, not compacting. Gone runs outrank terminal and Hook status;
   Claude Code retains Hook status and completion.
 - Changed: pi stall requires a working root and stale State heartbeat;
-  bare pi never stalls. Pi addressing uses the root title. State supplies
+  bare pi never stalls. Pi addressing uses the stripped pane title. State supplies
   identity, inbox, parentage, activity and the ask overlay; agent-status
   removes --status, --ended and --title.
 - Unchanged: switch-session requests and integer-correlated replies were

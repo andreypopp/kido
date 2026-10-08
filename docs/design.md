@@ -39,8 +39,9 @@ agent session named by session id, written temp-then-rename. A record
 carries the agent's pane, pid, inbox socket, free-text activity, model,
 heartbeat timestamp and place in the spawn tree. Its reporting variant
 is `Terminal` for pi, or `Hook` for Claude Code with status, ended,
-background and tool-pending fields. pi's status and session title live
-only in the pane's OSC 7501 root record, not in State. There is no locking beyond the claim that keeps
+background and tool-pending fields. pi's status lives
+in its native OSC 7501 root record, and its title in the pane title
+(set by pi through OSC 0/2), not in State. There is no locking beyond the claim that keeps
 one session id to one live process ("Identity"). The
 one policy that stands in for it is that `State.load_live` removes any record whose
 pid is dead, rather than skipping it. When two records name one pane the
@@ -502,7 +503,7 @@ Within scope the rules run in order, and each errors on its own ambiguity
 rather than falling through to guess with a different rule: an exact
 case-insensitive name, then an exact session id, then a unique id prefix.
 The name a session is matched by is the same one `kido tool list_runs` displays
-for it: the OSC root title for pi, the stripped pane title for Claude Code. A name read
+for it: the stripped pane title for pi and Claude Code. A name read
 off `list_runs` can always be resolved back. Refusal over guessing is the
 stance throughout: `replyTo` is never inferred even when exactly one ask
 from the target is pending, because guessing wrong does not fail safe, it
@@ -1466,12 +1467,17 @@ to notice the gap, and an ask against it is back to the original flaw.
 
 ## pi extensions, and the seam between them
 
-The pi shim loads three extensions. `program-status.ts` is independent
-of kido: in TUI mode on a tty it emits OSC 7501 root records, app=pi,
-with the session name as title. Working, blocked, done, idle and error
-come from pi's lifecycle; compaction is working with a message.
-The pane records drive the sidebar's indicator, completion attention,
-title and message/progress caption even without the other extensions.
+The pi shim loads two extensions. pi 1.1.0 natively emits OSC 7501 root
+records, app=pi, after terminal feature detection in interactive mode.
+Working, blocked, done, idle and error come from pi's lifecycle.
+Its native dialogs report blocked; extension custom UI does not.
+Terminal stop clears the root without app. PI_PROGRAM_STATUS=0 disables
+reporting and =1 forces it. pi supplies no OSC title or progress.
+The pane title, set through OSC 0/2 as "π - <name> - <cwd>", names pi
+rows and agents, with the π prefix stripped. The records drive indicators
+and completion attention even without the extensions. A pi message
+duplicating its session name is omitted from the caption; other messages
+remain visible.
 A State identity adds inbox, parentage, activity and the user-ask overlay.
 Gone runs outrank terminal records; Claude Code keeps its Hook status.
 Activity is used as the caption when the program supplies no message;

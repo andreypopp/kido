@@ -7,8 +7,7 @@ case ${1-} in
 install | remove | uninstall | update | list | config | auth) ;;
 *)
 	set -- --extension "$kido_share/pi/kido-status.ts" \
-		--extension "$kido_share/pi/kido-agents.ts" \
-		--extension "$kido_share/pi/program-status.ts" "$@"
+		--extension "$kido_share/pi/kido-agents.ts" "$@"
 	;;
 esac
 kido_real pi

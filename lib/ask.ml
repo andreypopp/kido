@@ -57,9 +57,7 @@ let caller ~dir ~self ~session =
       | Some s when Option.equal Tmux.Pane.equal s.pane self -> Ok (Some (session, s))
       | _ -> Error "no calling agent session has reported this pane"
   in
-  let* panes, programs =
-    if Option.is_none self then Ok ([], Tmux.Pane.Map.empty) else Tmux.Exec.panes_and_programs ()
-  in
+  let* panes = if Option.is_none self then Ok [] else Tmux.Exec.list_panes () in
   let pane = Option.flat_map (Tmux.Pane.find panes) self in
   let id =
     match caller with
@@ -76,7 +74,7 @@ let caller ~dir ~self ~session =
   else
     match (caller, pane) with
     | None, _ -> Ok None
-    | Some (id, s), Some p -> Ok (Some (id, s, p, programs))
+    | Some (id, s), Some p -> Ok (Some (id, s, p))
     | Some _, None -> Error "calling pane not found"
 
 let invalidate ?(removed = false) ~dir ~self ask =

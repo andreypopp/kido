@@ -321,6 +321,11 @@ that read still lacks the pane, its records are dropped. This field is not part 
 100ms topology format. OSC 133 A clears the applicable records; process
 exit, RIS and respawn also follow the fork's program-status clear rules.
 These behaviours come from the pinned fork, not stock tmux.
+pi status comes from pi 1.1.0's native OSC 7501 root record, with no
+title or progress. pi labels and addressing use the pane title set
+through OSC 0/2, with the π prefix stripped; generic programs retain
+their OSC record title. A pi message duplicating the session name is
+omitted from the caption.
 
 share/dune installs only its named source trees and files; this contract
 and testdata are checkout-only review artifacts.

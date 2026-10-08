@@ -209,13 +209,13 @@ let ask_user =
      and+ session_file = str "session-file" "PATH" "The pi session file to revive." in
      fun () ->
        let dir = state_dir () in
-       let id, s, p, programs =
+       let id, s, p =
          ok (Ask.caller ~dir ~self:(Tmux.Pane.of_string (Tmux.Exec.getenv "TMUX_PANE")) ~session)
          |> Option.to_result "no agent session has reported this pane"
          |> ok
        in
        let replaces = Option.map (fun id -> ok (Ask.parse_id id)) replaces in
-       let name = List_runs.display_name ~programs [ p ] s in
+       let name = List_runs.display_name [ p ] s in
        print
          (Result.map Ask.string_of_id
             (Ask.record ~dir ~self:session ~replaces ~session:id

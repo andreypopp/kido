@@ -16,7 +16,6 @@ package e2e
 import (
 	"bytes"
 	"cmp"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -230,11 +229,18 @@ func main() {
 		"Enter to select · Esc to cancel\n")
 	sc := bufio.NewScanner(os.Stdin)
 	for sc.Scan() {
+		if title, ok := strings.CutPrefix(sc.Text(), "title "); ok {
+			fmt.Print("\x1b]2;π - " + title + "\x1b\\")
+			continue
+		}
 		if body, ok := strings.CutPrefix(sc.Text(), "osc "); ok {
 			fmt.Print("\x1b]7501;" + body + "\x1b\\")
 			continue
 		}
 		switch sc.Text() {
+		case "quit":
+			fmt.Print("\x1b]7501;state=clear\x1b\\")
+			return
 		case "busy":
 			box("⏸ manual mode on · esc to interrupt · ← for agents")
 		case "esc":
@@ -1048,15 +1054,17 @@ func (h *harness) hookPayload(sessionID, pane, event string, payload map[string]
 
 func (h *harness) programStatus(pane, body string, title ...string) {
 	h.t.Helper()
-	if len(title) > 0 {
-		body += ":title=" + base64.StdEncoding.EncodeToString([]byte(title[0]))
-	}
 	tty := h.in("display-message", "-p", "-t", pane, "#{pane_tty}")
 	f, err := os.OpenFile(tty, os.O_WRONLY, 0)
 	if err != nil {
 		h.t.Fatal(err)
 	}
 	defer f.Close()
+	if len(title) > 0 {
+		if _, err := f.WriteString("\x1b]2;π - " + title[0] + "\x1b\\"); err != nil {
+			h.t.Fatal(err)
+		}
+	}
 	if _, err := f.WriteString("\x1b]7501;" + body + "\x1b\\"); err != nil {
 		h.t.Fatal(err)
 	}
@@ -1073,8 +1081,11 @@ func (h *harness) programStatus(pane, body string, title ...string) {
 		if json.Unmarshal([]byte(out), &status) != nil {
 			return false
 		}
+		if want["state"] == "clear" {
+			return len(status.Records) == 0
+		}
 		for _, record := range status.Records {
-			if record["id"] == "" && record["state"] == want["state"] && record["title"] == want["title"] {
+			if record["id"] == "" && record["state"] == want["state"] {
 				return true
 			}
 		}
@@ -1128,12 +1139,17 @@ func (h *harness) waitFileContains(path, sub string) string {
 // piPane opens a window in session running the fake agent named "node",
 // which is what tmux reports for a real pi pane, and titles it the way pi
 // titles its pane ("π - <session> - <cwd>"). Tests supply its identity
-// and terminal status through agentStatus.
+// through agentStatus and terminal status through programStatus.
 func (h *harness) piPane(session, title string) string {
 	h.t.Helper()
 	id := h.newWindow(session, "", nodeBin, "--")
 	h.waitPaneCommand(id, "node")
-	h.title(id, title)
+	title = "π - " + strings.TrimPrefix(title, "π - ")
+	h.in("send-keys", "-t", id, "-l", "title "+strings.TrimPrefix(title, "π - "))
+	h.in("send-keys", "-t", id, "Enter")
+	h.waitFor(func() bool {
+		return h.in("display-message", "-p", "-t", id, "#{pane_title}") == title
+	}, settle, msgf("pi OSC 2 title %s", title))
 	return id
 }
 

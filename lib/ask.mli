@@ -21,9 +21,7 @@ val caller :
   dir:string ->
   self:Tmux.Pane.id option ->
   session:string ->
-  ( (string * State.session * Tmux.Pane.t * Tmux.Program_status.t Tmux.Pane.Map.t) option,
-    string )
-  result
+  ((string * State.session * Tmux.Pane.t) option, string) result
 
 val record :
   dir:string ->

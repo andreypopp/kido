@@ -1,10 +1,10 @@
-# pi extensions: program-status, kido-status and kido-agents
+# pi extensions: kido-status and kido-agents
 
-Three extensions, installed together:
+Two extensions, installed together. pi 1.1.0 natively reports status
+through OSC 7501 in interactive mode after terminal feature detection.
+Its pane title, set through OSC 0/2, names the session in kido.
+These work even without the kido extensions.
 
-- **`program-status.ts`** reports a [pi](https://github.com/earendil-works/pi)
-  session's status and name through OSC 7501 in TUI mode on a tty. The pane
-  records drive the sidebar even without the kido extensions.
 - **`kido-status.ts`** reports identity, activity and heartbeat to kido,
   and opens an *inbox* socket so kido can send a prompt into the session.
 - **`kido-agents.ts`** is agent coordination: the tools below, dispatch of
@@ -24,7 +24,7 @@ list_runs answered `[]`). Load order does not matter either: pi may run
 either factory first, and neither reads the other's slot until a tool call
 or an event.
 
-Install all three. Either kido extension on its own still loads and
+Install both. Either kido extension on its own still loads and
 degrades quietly: without
 `kido-agents.ts`, an envelope arriving on the inbox is delivered as its
 own text rather than dispatched by kind; without `kido-status.ts`, the
@@ -64,32 +64,28 @@ id".
 ## Install
 
 Nothing to install: the `pi` in kido's bin directory runs the real pi with
-`--extension` for all three files where the package ships them, so a
+`--extension` for both files where the package ships them, so a
 pi started from a kido pane has them and one started anywhere else does
 not. A copy in `~/.pi/agent/extensions/` from an earlier kido registers
 nothing and can be deleted (docs/design.md, "One copy of each pi
 extension").
 
-To run them against a checkout, pass all three (`-e` repeats); they need
+To run them against a checkout, pass both (`-e` repeats); they need
 not be in the same directory, but there is no reason not to be:
 
 ```sh
-pi -e /path/to/program-status.ts -e /path/to/kido-status.ts -e /path/to/kido-agents.ts
+pi -e /path/to/kido-status.ts -e /path/to/kido-agents.ts
 ```
 
 ## Behaviour
 
-`program-status.ts` reports the root pane record (`id=""`, `app=pi`),
-with the session name as title:
-
-| pi event | OSC 7501 state |
-|---|---|
-| `session_start` | `idle` |
-| `agent_start` | `working` |
-| `ui_prompt_start` / `ui_prompt_end` | `blocked` / back to `working` (or `idle`, if pi is idle) |
-| `session_before_compact` | `working`, message `Compacting context` |
-| `session_compact`, `session_compact_failed` | back to the state from before compaction |
-| `agent_settled` (and `ctx.isIdle()`) | `done` on completion, `idle` on abort, `error` on error |
+pi's native root record (`id=""`, `app=pi`) supplies working, blocked,
+done, idle and error. Native question, permission and auth dialogs report
+blocked, but extension custom UI does not. pi supplies no OSC title or
+progress; its pane title is "π - <name> - <cwd>". A message duplicating
+the session name is omitted from the caption; other messages remain.
+Terminal stop sends clear without app. `PI_PROGRAM_STATUS=0` disables
+reporting and `=1` forces it.
 
 `kido-status.ts` claims the session identity at `session_start`, reports
 activity, model and inbox changes, and sends heartbeats when work starts
@@ -105,8 +101,7 @@ a bare pi has no heartbeat and never stalls.
   (detached, `stdio: "ignore"`); their missing binary, non-zero exit or spawn
   error never reaches pi and never prints to the TUI.
 - Identity reports coalesce activity, model, inbox and removal changes;
-  heartbeats bypass that key. OSC reports coalesce state, title and message
-  changes separately.
+  heartbeats bypass that key. Native OSC reports coalesce separately.
 
 ## Inbox
 
