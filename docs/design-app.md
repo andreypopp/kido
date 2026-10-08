@@ -684,17 +684,32 @@ focus. Status dots summarize the window and its descendants.
 `SidebarFeed/Rows.swift`. Sessions have noninteractive 29pt headers with
 11pt semibold secondary labels and an always-visible, separately accessible
 new-window plus; hovering brightens only its icon. No session folding remains.
-Each window is an independent 7pt rounded item. All its panes precede its
-panes' child-window trees, in pane order. Children indent 21pt per level,
-without guides or inherited ancestor fill. The active window has continuous
-10% labelColor fill; only multi-pane groups mark the focused pane with a 2pt
-strip, inset 7pt vertically. Independent keyboard selection clips to the
-same window slice.
+Each window is a 7pt rounded container enclosing its panes and descendants.
+Each pane's child-window trees immediately follow that pane, before its
+next sibling; drawn order and navigation share the row-model traversal.
+Children indent 16pt per level without guides. The active window has one
+continuous 10% labelColor fill across its subtree. Focusing a child fills
+that child's subtree, not its ancestors. Row slices carry each enclosing
+window's offset and total height so rounding remains continuous even across
+short spacing rows. Only multi-pane windows mark the focused pane with a
+2pt strip at that window's left edge, inset by the row's vertical padding.
+Independent keyboard selection clips to the enclosing rounded containers.
 
-Pane rows are 32pt, or 48pt with activity, at every depth. Monochrome 16pt
-text.bubble/terminal symbols precede 13pt titles at x=indent+36, y=7;
-11pt activity sits at y=26. Agents and agent runs receive a display-only
-@ prefix, never doubled and never used in tab or window titles. Status and
+Top-level single-pane rows are 32/44pt (one line/activity), with 7pt vertical
+padding and 12pt leading inset. Nested single-pane rows are 28/40pt, with
+5pt vertical padding and 8pt leading inset. Multi-pane rows are 2pt shorter:
+30/42pt top-level with 6pt padding, 26/38pt nested with 4pt padding. Trailing
+insets remain 12pt. Monochrome 16pt text.bubble/terminal symbols have an
+8pt gap before 13pt top-level or 12pt nested system-font titles, with 18pt
+line height. Title x positions are indent+36 or indent+32; 11pt activity
+starts 18.5pt below top-level padding and 17.5pt below nested padding:
+y=25.5/24.5 top-level single/multi, y=22.5/21.5 nested single/multi.
+Its line box is 15pt; activity rows are tuned to their visible text rather
+than equal box padding. Agents and
+agent runs receive a display-only @ prefix, never doubled. Idle shell panes
+(kind shell, no run, neither running nor compacting) display secondary-colored
+`Terminal`; running shells, SSH, and run items keep their labels. Both display
+rules leave raw pane labels and tab/window titles unchanged. Status and
 10pt tabular clocks remain trailing; the status and header plus centers are
 15pt from the right edge. Idle has no glyph, running/compacting a green dot,
 waiting agents an orange dot, failures a red dot, done/completed a green
@@ -702,13 +717,15 @@ checkmark and stalled a red exclamation. Attention navigation remains
 independent of these visual statuses.
 
 Each item has 3pt bottom spacing; each child collection adds another 3pt,
-and each session adds 16pt. A 7pt separator (3pt, 1pt line, 3pt) precedes
-nested windows and subsequent top-level siblings, never the first top-level
-window or panes within a group. Lines inset 12pt from each end at the
-receiving window's indent and use 7.5% labelColor. Every row has positive
-height. Colors resolve at drawing time; fonts are created at initialization.
-Same-shape snapshots reload only changed rows and clock ticks invalidate
-only the clock label.
+and each session adds 16pt. A 7pt separator (3pt, 1pt line, 3pt) appears only
+between top-level windows, never before the first window, between nested
+windows, or between panes within a group. Lines inset 12pt at both ends and
+use 7.5% labelColor. Every row has positive height. Colors resolve at drawing
+time; fonts and the two configured dynamic-color icons are cached at
+initialization. Same-shape snapshots reload only changed rows. Equal-width
+clock ticks invalidate only the clock label; width changes invalidate the
+first-line band from the title's leading edge through the clock, so title
+truncation redraws. Icon/title/activity draws outside the dirty rect are skipped.
 
 Selection and scroll survive snapshots by session-scoped node identity.
 Scroll anchors the first visible identity and its intra-row offset,
