@@ -3,11 +3,11 @@ import Testing
 import TmuxControl
 @testable import SidebarFeed
 
-private func fixture(filter: String = "", client: Int = 0, sessions: [Int] = [0], grouped: Bool = false, descendants: Bool = false) throws -> Snapshot {
+private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = false, descendants: Bool = false) throws -> Snapshot {
     func item(_ id: Int, _ window: Int, run: String? = nil, started: Double? = nil, tail: String = "", children: [[String: Any]] = []) -> [String: Any] {
         ["kind": run == "bash" || run == "stream" ? "run" : "agent", "id": "%\(id)", "pane": "%\(id)", "window": "@\(window)",
          "run": run as Any? ?? NSNull(), "started": started as Any? ?? NSNull(), "indicator": ["kind": "running"],
-         "title": [["text": "pane-\(id)", "role": "plain"]], "tail": tail.isEmpty ? [] : [["text": tail, "role": "dim"]],
+         "program_status": ["serial": 0, "records": []], "title": [["text": "pane-\(id)", "role": "plain"]], "tail": tail.isEmpty ? [] : [["text": tail, "role": "dim"]],
          "attention": id == 2, "children": children]
     }
     let children = [item(1, 1, run: "agent", started: 100, tail: "working", children: [item(2, 2, run: "stream", started: 100)]),
@@ -19,7 +19,7 @@ private func fixture(filter: String = "", client: Int = 0, sessions: [Int] = [0]
             : [item(0, 0), item(5, 0)]]]
         : [item(0, 0, started: 100), item(5, 5, children: children)]
     let object: [String: Any] = ["v": 2, "client": ["session": "$0", "window": "@\(client)", "pane": "%\(client)"],
-                               "filter": filter, "error": NSNull(), "sessions": sessions.map {
+                               "asks": [], "error": NSNull(), "sessions": sessions.map {
                                    ["id": "$\($0)", "name": "session-\($0)", "current": $0 == 0, "nodes": nodes]
                                }]
     return try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
@@ -78,7 +78,7 @@ private func fixture(filter: String = "", client: Int = 0, sessions: [Int] = [0]
                   (true, false, false), (true, false, true), (true, true, false), (true, true, true)])
 func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) throws {
     var pane: [String: Any] = ["kind": "agent", "id": "%1", "pane": "%1", "window": "@1",
-                               "title": [], "tail": activity ? [["text": "working", "role": "dim"]] : [], "attention": false, "children": []]
+                               "program_status": ["serial": 0, "records": []], "title": [], "tail": activity ? [["text": "working", "role": "dim"]] : [], "attention": false, "children": []]
     let node: [String: Any]
     if multi {
         var sibling = pane
@@ -89,7 +89,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
         pane["id"] = "%0"; pane["pane"] = "%0"; pane["window"] = "@0"
         pane["children"] = [node]
     }
-    let object: [String: Any] = ["v": 2, "client": ["session": "$0", "window": "@1", "pane": "%1"], "filter": "",
+    let object: [String: Any] = ["v": 2, "client": ["session": "$0", "window": "@1", "pane": "%1"], "asks": [],
                                "sessions": [["id": "$0", "name": "main", "current": true, "nodes": [nested ? pane : node]]]]
     let snapshot = try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
     let row = try #require(sidebarRows(snapshot).first { $0.target?.pane == PaneID(number: 1) })
@@ -106,9 +106,9 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
 
 @Test func filteredSessionsKeepIdentity() throws {
     let rows = sidebarRows(try fixture(sessions: [0, 1]))
-    let filtered = sidebarRows(try fixture(filter: "session", sessions: [0]))
+    let filtered = sidebarRows(try fixture(sessions: [0]))
     #expect(filtered == rows.filter { $0.id.session == SessionID(number: 0) })
-    #expect(sidebarRows(try fixture(filter: "absent", sessions: [])).isEmpty)
+    #expect(sidebarRows(try fixture(sessions: [])).isEmpty)
     #expect(Set(rows.map(\.id)).count == rows.count)
     #expect(rows.filter { $0.focused }.count == 1)
 }
@@ -129,16 +129,16 @@ func elapsed(_ seconds: Int, _ expected: String) {
 @Test(arguments: [("agent", "null", "Ada", "@Ada", SidebarRow.Icon.agent),
                   ("agent", "null", "@Ada", "@Ada", .agent),
                   ("run", "\"agent\"", "Ada", "@Ada", .agent),
-                  ("shell", "null", "zsh", "Terminal", .terminal),
+                  ("shell", "null", "zsh", "zsh", .terminal),
                   ("ssh", "null", "host", "host", .terminal),
                   ("run", "\"bash\"", "job", "job", .terminal),
                   ("run", "\"stream\"", "monitor", "monitor", .terminal)])
 func iconsAndDisplayOnlyPrefix(_ kind: String, _ run: String, _ title: String, _ expected: String, _ icon: SidebarRow.Icon) throws {
     let json = """
-    {"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},"filter":"","sessions":[
+    {"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},"asks":[],"sessions":[
       {"id":"$0","name":"main","current":true,"nodes":[
         {"kind":"\(kind)","run":\(run),"id":"%0","pane":"%0","window":"@0",
-         "title":[{"text":"\(title)","role":"plain"}],"tail":[],"attention":false,"children":[]}]}]}
+         "program_status":{"serial":0,"records":[]},"title":[{"text":"\(title)","role":"plain"}],"tail":[],"attention":false,"children":[]}]}]}
     """
     let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(json.utf8))
     let row = try #require(sidebarRows(snapshot).first { $0.target != nil })
@@ -150,25 +150,29 @@ func iconsAndDisplayOnlyPrefix(_ kind: String, _ run: String, _ title: String, _
 
 @Test(arguments: [("shell", "null", "idle", true, SidebarRow.Status.quiet),
                   ("shell", "null", "done", true, .done), ("shell", "null", "failed", true, .error),
-                  ("shell", "null", "waiting", true, .quiet), ("shell", "null", "running", false, .running),
+                  ("shell", "null", "stalled", false, .stalled), ("shell", "null", "unknown", false, .quiet),
+                  ("shell", "null", "null", false, .quiet),
+                  ("shell", "null", "waiting", false, .attention), ("shell", "null", "running", false, .running),
                   ("shell", "null", "compacting", false, .running), ("ssh", "null", "idle", false, .quiet),
                   ("run", "\"bash\"", "done", false, .done), ("run", "\"stream\"", "failed", false, .error),
                   ("shell", "\"bash\"", "idle", false, .quiet)])
 func idleShellIsDisplayOnly(_ kind: String, _ run: String, _ indicator: String, _ quiet: Bool, _ status: SidebarRow.Status) throws {
+    let title = indicator == "null" ? "nvim" : "last-command"
+    let resolved = indicator == "null" ? "null" : "{\"kind\":\"\(indicator)\"}"
     let json = """
-    {"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},"filter":"","sessions":[
+    {"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},"asks":[],"sessions":[
       {"id":"$0","name":"main","current":true,"nodes":[
-        {"kind":"\(kind)","run":\(run),"id":"%0","pane":"%0","window":"@0","indicator":{"kind":"\(indicator)"},
-         "title":[{"text":"last-command","role":"plain"}],"tail":[],"attention":false,"children":[]}]}]}
+        {"kind":"\(kind)","run":\(run),"id":"%0","pane":"%0","window":"@0","indicator":\(resolved),
+         "program_status":{"serial":0,"records":[]},"title":[{"text":"\(title)","role":"plain"}],"tail":[],"attention":false,"children":[]}]}]}
     """
     let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(json.utf8))
     let row = try #require(sidebarRows(snapshot).first { $0.target != nil })
-    #expect(row.title == (quiet ? "Terminal" : "last-command"))
+    #expect(row.title == (quiet ? "Terminal" : title))
     #expect(row.quietShell == quiet)
     #expect(row.status == status)
-    #expect(row.indicatorDescription == indicator)
+    #expect(row.indicatorDescription == (indicator == "null" ? "" : indicator))
     #expect(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)],
-                           activePanes: [WindowID(number: 0): PaneID(number: 0)]).titles[WindowID(number: 0)] == "last-command")
+                           activePanes: [WindowID(number: 0): PaneID(number: 0)]).titles[WindowID(number: 0)] == title)
 }
 
 @Test func originalIndicatorDescriptions() throws {
@@ -179,10 +183,10 @@ func idleShellIsDisplayOnly(_ kind: String, _ run: String, _ indicator: String, 
     ]
     for (kind, outcome, status, description) in indicators {
         let data = """
-        {"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},"filter":"","sessions":[
+        {"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},"asks":[],"sessions":[
           {"id":"$0","name":"main","current":true,"nodes":[
             {"kind":"agent","id":"%0","pane":"%0","window":"@0","indicator":{"kind":"\(kind)","outcome":\(outcome.map { "\"\($0)\"" } ?? "null")},
-             "title":[],"tail":[],"attention":true,"children":[]}]}]}
+             "program_status":{"serial":0,"records":[]},"title":[],"tail":[],"attention":true,"children":[]}]}]}
         """
         let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(data.utf8))
         let row = try #require(sidebarRows(snapshot).first { $0.target != nil })
