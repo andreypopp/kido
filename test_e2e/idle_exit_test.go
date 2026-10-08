@@ -110,7 +110,8 @@ func TestSpawnResumeRecreatesWindowBoundToSameRun(t *testing.T) {
 		t.Fatalf("run %s screen = %q, want the sweep's capture of the first attempt", runID, screen)
 	}
 	newParentPane := h.newWindow("alpha", "", "sh", "-c", "exec sleep 300")
-	h.agentStatus("new-parent-e2e", newParentPane, "pi", "idle")
+	h.programStatus(newParentPane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", newParentPane, "#{pane_title}"), "π - "))
+	h.agentStatus("new-parent-e2e", newParentPane, "pi")
 
 	sessDir := filepath.Join(h.dir, "pi-sessions")
 	if err := os.MkdirAll(sessDir, 0o755); err != nil {

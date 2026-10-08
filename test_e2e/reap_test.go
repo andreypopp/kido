@@ -53,7 +53,8 @@ func (h *harness) subagentWindow(session, name, sessionID, parentSession string)
 func (h *harness) liveParent(session, sessionID string) {
 	h.t.Helper()
 	pane := h.in("display-message", "-p", "-t", session+":", "#{pane_id}")
-	h.agentStatus(sessionID, pane, "pi", "idle")
+	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus(sessionID, pane, "pi")
 }
 
 // killPane covers the case no linger helper or in-process poll can:
@@ -169,8 +170,8 @@ func TestReapLeavesUnmarkedWindowAlone(t *testing.T) {
 	h.waitPaneCommand(paneID, "sleep")
 	windowID := h.windowID(paneID)
 	// Live record naming an orphan's parent, pointing at an unmarked window.
-	h.agentStatus("stale-e2e", paneID, "pi", "idle",
-		"--parent-session", "vanished-e2e")
+	h.programStatus(paneID, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", paneID, "#{pane_title}"), "π - "))
+	h.agentStatus("stale-e2e", paneID, "pi", "--parent-session", "vanished-e2e")
 
 	if out := h.runKido("alpha", "reap.out", "reap"); !strings.Contains(out, "rc=0") {
 		t.Errorf("kido reap output = %q, want a clean exit", out)
@@ -356,7 +357,8 @@ func TestSidebarSurvivesAParentPaneCollision(t *testing.T) {
 	// An intruder claims the parent's own pane with a newer timestamp, the
 	// same way a `pi --print` inheriting TMUX_PANE does, left in place for
 	// the whole test.
-	h.agentStatus("intruder-collision-e2e", parentPane, "pi", "idle")
+	h.programStatus(parentPane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", parentPane, "#{pane_title}"), "π - "))
+	h.agentStatus("intruder-collision-e2e", parentPane, "pi")
 
 	h.stays(func() bool { return h.windowExists(windowID) },
 		"a subagent's window was closed by a pane collision on its parent's own record, though the parent's own record was on disk and its process alive")

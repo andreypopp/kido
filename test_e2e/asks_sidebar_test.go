@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -10,7 +11,8 @@ func TestSidebarAsksIndicatorAndMode(t *testing.T) {
 	h := start(t, "alpha")
 	pane := h.newWindow("alpha", "agent", "sh", "-c", "exec sleep 300")
 	in := startInbox(t, "ok\n")
-	h.agentStatus("asking-session", pane, "pi", "waiting", "--title", "Decider", "--inbox", in.Path)
+	h.programStatus(pane, "state=blocked:app=pi", "Decider")
+	h.agentStatus("asking-session", pane, "pi", "--inbox", in.Path)
 	file := filepath.Join(h.dir, "session.jsonl")
 	id, code := askCommand(h, pane, "Ship?\nSecond line", "tool", "ask_user", "--session", "asking-session", "--session-file", file)
 	if code != 0 {
@@ -32,7 +34,8 @@ func TestSidebarAsksIndicatorAndMode(t *testing.T) {
 		return false
 	}
 	f.waitLast(asking, "waiting indicator and attention in rpc")
-	h.agentStatus("asking-session", pane, "pi", "idle", "--title", "Decider", "--inbox", in.Path, "--ended")
+	h.programStatus(pane, "state=done:app=pi", "Decider")
+	h.agentStatus("asking-session", pane, "pi", "--inbox", in.Path)
 	h.waitRow("◆Decider")
 	focusSidebar(h)
 	h.sendKeys("/")
@@ -72,7 +75,8 @@ func TestSidebarAsksStandaloneEscape(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
-	h.agentStatus("standalone-ask", pane, "pi", "idle", "--title", "Decider")
+	h.programStatus(pane, "state=idle:app=pi", "Decider")
+	h.agentStatus("standalone-ask", pane, "pi")
 	id, code := askCommand(h, pane, "Question?", "tool", "ask_user", "--session-file", filepath.Join(h.dir, "session.jsonl"))
 	if code != 0 {
 		t.Fatal(id)
@@ -92,7 +96,8 @@ func TestAskUserExternalReplacementInvalidatesWidget(t *testing.T) {
 	h := start(t, "alpha")
 	_, pane := h.agentWithInbox("alpha", "external-ask")
 	in := startInbox(t, "ok\n")
-	h.agentStatus("external-ask", pane, "pi", "idle", "--inbox", in.Path)
+	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus("external-ask", pane, "pi", "--inbox", in.Path)
 	file := filepath.Join(h.dir, "session.jsonl")
 	id, code := askCommand(h, pane, "Original", "tool", "ask_user", "--session", "external-ask", "--session-file", file)
 	if code != 0 {

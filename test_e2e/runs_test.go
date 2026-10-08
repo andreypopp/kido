@@ -166,7 +166,8 @@ func TestStopRecordsStoppedOutcome(t *testing.T) {
 	// session id must equal the run id for Control.stop's outcome write to land anywhere).
 	paneID := h.in("list-panes", "-t", windowID, "-F", "#{pane_id}")
 	in := startInbox(h.t, "ok\n")
-	h.agentStatus(runID, paneID, "pi", "idle", "--inbox", in.Path)
+	h.programStatus(paneID, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", paneID, "#{pane_title}"), "π - "))
+	h.agentStatus(runID, paneID, "pi", "--inbox", in.Path)
 
 	out := h.runKido("alpha", "stop.out", "tool", "stop_run", runID)
 	if !strings.Contains(out, "killed") {

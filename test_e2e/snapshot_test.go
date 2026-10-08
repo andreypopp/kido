@@ -68,13 +68,15 @@ func TestSnapshotReplays(t *testing.T) {
 
 	// Resumes by its own session id too, like a hooked Claude pane.
 	piPane := h.piPane("beta", "π - resumable - kido")
-	h.agentStatus("pi-resume", piPane, "pi", "idle")
+	h.programStatus(piPane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", piPane, "#{pane_title}"), "π - "))
+	h.agentStatus("pi-resume", piPane, "pi")
 	h.waitGlyph("resumable - kido", "")
 
 	// pi that never reported is found by its process alone, and restarted
 	// fresh; a record of any other agent restarts nothing.
 	h.waitPaneCommand(h.newWindow("beta", "", filepath.Join(piBinDir, "pi"), "--"), "pi")
-	h.agentStatus("other-1", h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}"), "other", "idle")
+	h.programStatus(h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}"), "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}"), "#{pane_title}"), "π - "))
+	h.agentStatus("other-1", h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}"), "other")
 
 	// A window is named after the client that created it until tmux renames
 	// it to its pane's command a moment later; wait for that to settle, or

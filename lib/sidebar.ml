@@ -477,8 +477,7 @@ let attention m pane =
          match program_indicator m pane status r with
          | Status Waiting | Done | Failed -> true
          | _ -> false)
-       (Option.flat_map (program_status m)
-          (List.find_opt (fun (p : P.t) -> P.equal p.pane_id pane) m.snap.panes))
+       (Option.flat_map (program_status m) (P.find m.snap.panes pane))
 
 let shell_indicator m ph =
   match ph with
@@ -534,6 +533,14 @@ let pane_label m (p : P.t) =
         | Some l -> ( match l.kind with Agent -> Agent | Bash | Stream -> Run)
         | None -> if Option.is_some agent_title then Agent else Shell
       in
+      let message =
+        match r.msg with
+        | Some message -> message
+        | None ->
+            Option.map_or ~default:""
+              (fun (_, (s : State.session)) -> s.activity)
+              (Tmux.Pane.Map.find_opt p.pane_id m.snap.states)
+      in
       row kind
         (Some
            (if asking m p.pane_id then Status Waiting
@@ -549,16 +556,10 @@ let pane_label m (p : P.t) =
         (match
            List.filter
              (fun s -> not (String.is_empty s))
-             (Option.to_list r.msg
-             @ (if Option.is_some r.msg then []
-                else
-                  Option.to_list
-                    (Option.flat_map
-                       (fun (_, (s : State.session)) ->
-                         if String.is_empty s.activity then None else Some s.activity)
-                       (Tmux.Pane.Map.find_opt p.pane_id m.snap.states)))
-             @ Option.to_list (Option.map (Printf.sprintf "%d%%") (Tmux.Program_status.progress r))
-             )
+             [
+               message;
+               Option.map_or ~default:"" (Printf.sprintf "%d%%") (Tmux.Program_status.progress r);
+             ]
          with
         | [] -> (
             match run with
@@ -567,17 +568,9 @@ let pane_label m (p : P.t) =
         | parts -> Text [ span `Dim (String.concat " " parts) ])
   | _, None, None -> (
       match lingering with
-      | Some l -> (
+      | Some l ->
           let kind = match l.kind with Agent -> Agent | Bash | Stream -> Run in
-          match Option.flat_map (fun (r : run) -> r.started) run with
-          | Some started -> row kind (Some (Status Running)) [ plain l.name ] (Elapsed started)
-          | None ->
-              row kind (Some (Gone l.outcome))
-                [ span `Dim l.name ]
-                (Text
-                   (Option.map_or ~default:[]
-                      (fun o -> [ span `Dim (Subrun.string_of_result o) ])
-                      l.outcome)))
+          row kind (Some (Status Running)) [ plain l.name ] (Elapsed l.started)
       | None ->
           let cmd =
             match P.shell p with

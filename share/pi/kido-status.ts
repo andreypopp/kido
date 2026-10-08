@@ -470,13 +470,9 @@ export default function (pi: ExtensionAPI) {
     sessionId: () => reporter?.sessionId ?? null,
     inboxOpen,
     setActivity: (text: string) => {
-      // Two writes of one fact: `kido tool set_status` updates the record without
-      // disturbing anything else on it, and the local variable is what every later
-      // `kido agent-status` report carries - leaving it stale would have the next
-      // report clear the activity this one just set.
       activity = text;
-      report("identity");
-      if (kido) spawnDetached(kido, ["tool", "set_status", "--", activity]);
+      if (reporter) report("identity");
+      else if (kido) spawnDetached(kido, ["tool", "set_status", "--", activity]);
     },
     deliver,
     runKido,

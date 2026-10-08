@@ -163,7 +163,7 @@ func TestProgramStatusSidebarAndRpc(t *testing.T) {
 	if len(r.Title) != 1 || r.Title[0].Text != "Build" {
 		t.Fatalf("terminal precedence: %+v", r)
 	}
-	h.agentStatus("status-agent", pane, "pi", "", "--remove")
+	h.agentStatus("status-agent", pane, "pi", "--remove")
 	h.waitRow("✓Build Plan")
 	h.in("kill-pane", "-t", pane)
 	f.waitLast(func(s feedSnapshot) bool { _, ok := find(s); return !ok }, "pane records removed")

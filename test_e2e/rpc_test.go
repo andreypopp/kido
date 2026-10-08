@@ -493,7 +493,12 @@ func TestRpcRunStartedWithActivity(t *testing.T) {
 	rootPane := h.in("display-message", "-p", "-t", "alpha:0", "#{pane_id}")
 	for _, agent := range []string{"pi", "claude"} {
 		for _, status := range []string{"running", "idle"} {
-			h.agentStatus("root-e2e", rootPane, agent, status, "--title", "feed-root", "--activity", status)
+			state := "idle"
+			if status == "running" {
+				state = "working"
+			}
+			h.programStatus(rootPane, "state="+state+":app=pi", "feed-root")
+			h.agentStatus("root-e2e", rootPane, agent, "--activity", status)
 			f.waitLast(func(s feedSnapshot) bool {
 				for _, session := range s.Sessions {
 					for _, r := range feedItems(session.Nodes) {

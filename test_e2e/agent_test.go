@@ -32,13 +32,14 @@ func TestPiPaneLooksLikeAClaudePane(t *testing.T) {
 	// pi titles its pane "π - <session> - <cwd>" and reports status with OSC 7501.
 	pane := h.piPane("alpha", "π - deploy - kido")
 
-	for _, c := range []struct{ status, glyph string }{
+	for _, c := range []struct{ state, glyph string }{
 		{"idle", ""},
-		{"running", "◼"},
-		{"waiting", "◆"},
-		{"compacting", "◼"},
+		{"working", "◼"},
+		{"blocked", "◆"},
+		{"working", "◼"},
 	} {
-		h.agentStatus("pi-1", pane, "pi", c.status)
+		h.programStatus(pane, "state="+c.state+":app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+		h.agentStatus("pi-1", pane, "pi")
 		h.waitGlyph("deploy - kido", c.glyph)
 	}
 
@@ -46,7 +47,8 @@ func TestPiPaneLooksLikeAClaudePane(t *testing.T) {
 	// stay in the row, and the row is built exactly as a Claude pane's.
 	claude := h.claudePane("alpha", "✳ deploy - kido")
 	h.hook("sess-c", claude, "UserPromptSubmit")
-	h.agentStatus("pi-1", pane, "pi", "running")
+	h.programStatus(pane, "state=working:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus("pi-1", pane, "pi")
 	h.waitGlyph("deploy - kido", "◼")
 	h.waitFor(func() bool { return h.countRows("╶◼deploy - kido") == 2 }, settle,
 		func() string {
@@ -54,7 +56,7 @@ func TestPiPaneLooksLikeAClaudePane(t *testing.T) {
 		})
 
 	// Removing identity does not clear the pane's terminal status.
-	h.agentStatus("pi-1", pane, "pi", "", "--remove")
+	h.agentStatus("pi-1", pane, "pi", "--remove")
 	h.waitFor(func() bool {
 		return h.countRows("╶◼deploy - kido") == 2
 	}, settle, func() string {
@@ -72,7 +74,8 @@ func TestPiReportedTitleWinsOverPaneTitle(t *testing.T) {
 	// marker is stripped; the reported title must win instead.
 	pane := h.piPane("alpha", "π - deploy - kido")
 
-	h.agentStatus("pi-3", pane, "pi", "idle", "--title", "deploy")
+	h.programStatus(pane, "state=idle:app=pi", "deploy")
+	h.agentStatus("pi-3", pane, "pi")
 	h.waitGlyph("deploy", "")
 	if got := h.rowFor("deploy"); got != "╶ deploy" {
 		t.Fatalf("row = %q, want the reported title alone, not the pane title", got)
@@ -90,7 +93,8 @@ func TestPiBeatsClaudeOnTheSamePane(t *testing.T) {
 
 	// pi first, so its record is the older one: a most-recent-wins rule
 	// would show the inner Claude Code's idle instead.
-	h.agentStatus("pi-2", pane, "pi", "running")
+	h.programStatus(pane, "state=working:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus("pi-2", pane, "pi")
 	h.waitGlyph("bridge - kido", "◼")
 	h.hook("inner-claude", pane, "SessionStart") // idle
 	// Long enough for ten ticks: the pi record must keep the pane, not
@@ -102,7 +106,8 @@ func TestPiBeatsClaudeOnTheSamePane(t *testing.T) {
 
 	// And the other way round: pi's record is now the newer one, and the
 	// inner Claude Code reporting again must not take the pane back.
-	h.agentStatus("pi-2", pane, "pi", "waiting")
+	h.programStatus(pane, "state=blocked:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus("pi-2", pane, "pi")
 	h.waitGlyph("bridge - kido", "◆")
 	h.hook("inner-claude", pane, "UserPromptSubmit") // running
 	time.Sleep(time.Second)
@@ -111,7 +116,7 @@ func TestPiBeatsClaudeOnTheSamePane(t *testing.T) {
 	}
 
 	// With pi gone, the inner record is all that is left and it shows.
-	h.agentStatus("pi-2", pane, "pi", "", "--remove")
+	h.agentStatus("pi-2", pane, "pi", "--remove")
 	h.waitGlyph("bridge - kido", "◼")
 }
 
@@ -189,8 +194,8 @@ func TestSetStatusCmd(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
-	h.agentStatus("worker", pane, "pi", "running", "--title", "worker", "--inbox", "/tmp/nope.sock",
-		"--parent-session", "p", "--depth", "1", "--model", "claude-sonnet-5", "--activity", "the old one")
+	h.programStatus(pane, "state=working:app=pi", "worker")
+	h.agentStatus("worker", pane, "pi", "--inbox", "/tmp/nope.sock", "--parent-session", "p", "--depth", "1", "--model", "claude-sonnet-5", "--activity", "the old one")
 	before := h.stateRecord("worker")
 	setStatus := func(pane, activity string) (string, error) {
 		cmd := exec.Command(kidoBin, "tool", "set_status", activity)

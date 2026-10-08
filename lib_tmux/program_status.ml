@@ -104,16 +104,18 @@ let merge_panes incoming previous =
 
 let representative ?seen t =
   let rank = function Blocked _ -> 0 | Error -> 1 | Working _ -> 2 | Done -> 3 | Idle -> 4 in
-  List.filter
-    (fun r ->
+  List.fold_left
+    (fun best r ->
       match r.state with
-      | Done | Error -> not (Option.exists (fun serial -> serial >= t.serial) seen)
-      | _ -> true)
-    t.records
-  |> List.sort (fun a b ->
-      let order = Int.compare (rank a.state) (rank b.state) in
-      if order = 0 then String.compare a.id b.id else order)
-  |> List.head_opt
+      | (Done | Error) when Option.exists (fun serial -> serial >= t.serial) seen -> best
+      | _ -> (
+          match best with
+          | Some b
+            when let order = Int.compare (rank b.state) (rank r.state) in
+                 (if order = 0 then String.compare b.id r.id else order) <= 0 ->
+              best
+          | _ -> Some r))
+    None t.records
 
 let app t record =
   let rec find id =
@@ -155,7 +157,12 @@ let to_yojson t =
   `Assoc [ ("serial", `Int t.serial); ("records", `List (List.map record t.records)) ]
 
 let prune ~current programs =
-  Pane.Map.filter (fun pane _ -> List.mem ~eq:Pane.equal pane current) programs
+  List.fold_left
+    (fun out pane ->
+      match Pane.Map.find_opt pane programs with
+      | Some status -> Pane.Map.add pane status out
+      | None -> out)
+    Pane.Map.empty current
 
 let format = "#{pane_id}\031#{pane_program_status}"
 

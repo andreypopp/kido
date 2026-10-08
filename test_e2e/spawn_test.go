@@ -207,7 +207,8 @@ func TestSpawnNestsOneBelowItsCallersOwnRecord(t *testing.T) {
 	h := start(t, "alpha")
 
 	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
-	h.agentStatus("caller-e2e", pane, "pi", "idle", "--depth", strconv.Itoa(maxDepthForTest-1))
+	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus("caller-e2e", pane, "pi", "--depth", strconv.Itoa(maxDepthForTest-1))
 	outFile := filepath.Join(h.dir, "spawn.out")
 	envFile := filepath.Join(h.dir, "child.env")
 	h.runSpawn(outFile, envFile, "--parent-pid", "1", "--parent-session", "caller-e2e",
@@ -445,7 +446,8 @@ func TestSpawnNoParentIsNotReaped(t *testing.T) {
 		t.Errorf("spawned process's KIDO_AGENT_DEPTH = %q, want 1 below a caller with no record", got)
 	}
 
-	h.agentStatus("loner-e2e", paneID, "pi", "idle")
+	h.programStatus(paneID, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", paneID, "#{pane_title}"), "π - "))
+	h.agentStatus("loner-e2e", paneID, "pi")
 	if out := h.runKido("alpha", "reap.out", "reap"); !strings.Contains(out, "rc=0") {
 		t.Errorf("kido reap output = %q, want a clean exit", out)
 	}

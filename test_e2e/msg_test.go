@@ -61,11 +61,12 @@ func (h *harness) firstPane(session string) string {
 // idleAgent opens a window that does nothing and reports a pi session on
 // it. Its pane title is blanked, since tmux titles a new pane after the
 // host and the helper uses that title for its OSC root record.
-func (h *harness) idleAgent(session, id string, extra ...string) string {
+func (h *harness) idleAgent(session, id, title string, extra ...string) string {
 	h.t.Helper()
 	p := h.newWindow(session, "", "sh", "-c", "exec sleep 300")
 	h.in("select-pane", "-t", p, "-T", "")
-	h.agentStatus(id, p, "pi", "idle", extra...)
+	h.programStatus(p, "state=idle:app=pi", title)
+	h.agentStatus(id, p, "pi", extra...)
 	return p
 }
 
@@ -97,16 +98,17 @@ func TestMessageAgentResolvesByNameTitleIdAndPrefix(t *testing.T) {
 	h := start(t, "alpha")
 	h.newSession("beta")
 	caller := h.firstPane("alpha")
-	h.agentStatus("me", caller, "pi", "idle", "--title", "Self")
+	h.programStatus(caller, "state=idle:app=pi", "Self")
+	h.agentStatus("me", caller, "pi")
 	in := startInbox(t, "ok\n")
-	h.idleAgent("alpha", "abc123", "--title", "Worker-2", "--inbox", in.Path)
-	h.idleAgent("alpha", "abd456", "--inbox", in.Path)
-	h.idleAgent("alpha", "worker-x", "--title", "scout")
-	h.idleAgent("alpha", "worker-y", "--title", "scout")
-	h.idleAgent("alpha", "untitled", "--title", "worker-6", "--inbox", in.Path)
-	h.idleAgent("beta", "elsewhere", "--title", "far-away", "--inbox", in.Path)
-	h.idleAgent("beta", "twin-a", "--title", "Twin")
-	h.idleAgent("beta", "twin-b", "--title", "Twin")
+	h.idleAgent("alpha", "abc123", "Worker-2", "--inbox", in.Path)
+	h.idleAgent("alpha", "abd456", "", "--inbox", in.Path)
+	h.idleAgent("alpha", "worker-x", "scout")
+	h.idleAgent("alpha", "worker-y", "scout")
+	h.idleAgent("alpha", "untitled", "worker-6", "--inbox", in.Path)
+	h.idleAgent("beta", "elsewhere", "far-away", "--inbox", in.Path)
+	h.idleAgent("beta", "twin-a", "Twin")
+	h.idleAgent("beta", "twin-b", "Twin")
 
 	for _, c := range []struct{ to, want string }{
 		{"worker-2", "delivered to Worker-2 by inbox"},
@@ -138,9 +140,10 @@ func TestMessageAgentSendsEnvelopesFromTheCaller(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	caller := h.firstPane("alpha")
-	h.agentStatus("caller", caller, "pi", "idle", "--title", "asker", "--inbox", startInbox(t, "ok\n").Path)
+	h.programStatus(caller, "state=idle:app=pi", "asker")
+	h.agentStatus("caller", caller, "pi", "--inbox", startInbox(t, "ok\n").Path)
 	in := startInbox(t, "ok\n")
-	h.idleAgent("alpha", "target", "--title", "peer", "--inbox", in.Path)
+	h.idleAgent("alpha", "target", "peer", "--inbox", in.Path)
 
 	h.expectKido(caller, "hi there", nil, "delivered to peer by inbox", "tool", "message_agent", "--reply-to", "ask-1", "--", "peer")
 	h.expectKido(caller, "hi there", nil, "delivered to peer by inbox", "tool", "message_agent", "--", "peer")
@@ -148,7 +151,7 @@ func TestMessageAgentSendsEnvelopesFromTheCaller(t *testing.T) {
 
 	// An answer arrives on the asker's own inbox or not at all; the
 	// target getting nothing is the point.
-	mute := h.idleAgent("alpha", "mute", "--title", "mute")
+	mute := h.idleAgent("alpha", "mute", "mute")
 	h.expectKido(mute, "are you done?", nil,
 		"kido tool ask_agent: mute has no inbox for an answer to arrive on, and only a long-lived process has one; nothing sent - use kido tool message_agent instead, which is one-way and needs no reply",
 		"tool", "ask_agent", "--id", "t1", "--", "peer")
@@ -179,12 +182,14 @@ func TestMessagePastesOnlyWithoutAnInbox(t *testing.T) {
 	caller := h.firstPane("alpha")
 	pane := h.piPane("alpha", "π - pastee")
 
-	h.agentStatus("target", pane, "pi", "idle")
+	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus("target", pane, "pi")
 	h.expectKido(caller, "hi claude", nil, "pasted into pastee's pane", "tool", "message_agent", "--", "target")
 	h.waitPaneText(pane, "got: hi claude")
 
 	stale := staleSocket(t)
-	h.agentStatus("target", pane, "pi", "idle", "--inbox", stale)
+	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus("target", pane, "pi", "--inbox", stale)
 	h.expectKido(caller, "hello", nil, "kido tool message_agent: pastee is not accepting messages", "tool", "message_agent", "--", "target")
 
 	if err := os.Remove(stale); err != nil {
@@ -195,7 +200,8 @@ func TestMessagePastesOnlyWithoutAnInbox(t *testing.T) {
 	h.expectKido(caller, "hello", nil,
 		"kido tool message_agent: pastee is not accepting messages; after it exits, resume it with spawn_subagent(resume: "+run+") and resend",
 		"tool", "message_agent", "--", "target")
-	h.agentStatus("caller", caller, "pi", "idle", "--inbox", startInbox(t, "ok\n").Path)
+	h.programStatus(caller, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", caller, "#{pane_title}"), "π - "))
+	h.agentStatus("caller", caller, "pi", "--inbox", startInbox(t, "ok\n").Path)
 	h.expectKido(caller, "hello", nil,
 		"kido tool ask_agent: pastee is not accepting messages; after it exits, resume it with spawn_subagent(resume: "+run+") and resend",
 		"tool", "ask_agent", "--", "target")
@@ -203,7 +209,8 @@ func TestMessagePastesOnlyWithoutAnInbox(t *testing.T) {
 		"a message to a closed inbox was pasted")
 
 	nope := startInbox(t, "nope\n")
-	h.agentStatus("target", pane, "pi", "idle", "--inbox", nope.Path)
+	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus("target", pane, "pi", "--inbox", nope.Path)
 	h.expectKido(caller, "never pasted", nil,
 		fmt.Sprintf(`kido tool message_agent: inbox %s: answered "nope", want "ok"`, nope.Path),
 		"tool", "message_agent", "--", "target")
@@ -218,15 +225,18 @@ func TestAskReplyAndNoticeNeverPaste(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	caller := h.firstPane("alpha")
-	h.agentStatus("caller", caller, "pi", "idle", "--inbox", startInbox(t, "ok\n").Path)
+	h.programStatus(caller, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", caller, "#{pane_title}"), "π - "))
+	h.agentStatus("caller", caller, "pi", "--inbox", startInbox(t, "ok\n").Path)
 	pane := h.piPane("alpha", "π - victim")
 
-	h.agentStatus("target", pane, "pi", "idle")
+	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus("target", pane, "pi")
 	h.expectKido(caller, "x", nil,
 		"kido tool ask_agent: victim has no inbox to send a ask to; only a plain message can be sent as v0 text",
 		"tool", "ask_agent", "--", "target")
 
-	h.agentStatus("target", pane, "pi", "idle", "--inbox", staleSocket(t))
+	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus("target", pane, "pi", "--inbox", staleSocket(t))
 	for _, c := range []struct {
 		env  []string
 		args []string
@@ -239,7 +249,8 @@ func TestAskReplyAndNoticeNeverPaste(t *testing.T) {
 		h.expectKido(caller, "touch /tmp/pwned", c.env, want, c.args...)
 	}
 
-	h.agentStatus("target", pane, "pi", "idle", "--inbox", startInbox(t, "refused\n").Path)
+	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus("target", pane, "pi", "--inbox", startInbox(t, "refused\n").Path)
 	h.expectKido(caller, "touch /tmp/pwned", nil, "kido tool ask_agent: victim refused the ask", "tool", "ask_agent", "--", "target")
 
 	h.stays(func() bool { return !strings.Contains(h.paneText(pane), "got:") },
@@ -253,11 +264,12 @@ func TestSteerReachesDescendantsOnly(t *testing.T) {
 	h := start(t, "alpha")
 	in := startInbox(t, "ok\n")
 	caller := h.firstPane("alpha")
-	h.idleAgent("alpha", "root", "--title", "root", "--inbox", in.Path)
-	h.agentStatus("caller", caller, "pi", "idle", "--title", "caller", "--inbox", in.Path, "--parent-session", "root")
-	h.idleAgent("alpha", "child", "--title", "child", "--inbox", in.Path, "--parent-session", "caller")
-	h.idleAgent("alpha", "grandchild", "--title", "grandchild", "--inbox", in.Path, "--parent-session", "child")
-	h.idleAgent("alpha", "peer", "--title", "peer", "--inbox", in.Path)
+	h.idleAgent("alpha", "root", "root", "--inbox", in.Path)
+	h.programStatus(caller, "state=idle:app=pi", "caller")
+	h.agentStatus("caller", caller, "pi", "--inbox", in.Path, "--parent-session", "root")
+	h.idleAgent("alpha", "child", "child", "--inbox", in.Path, "--parent-session", "caller")
+	h.idleAgent("alpha", "grandchild", "grandchild", "--inbox", in.Path, "--parent-session", "child")
+	h.idleAgent("alpha", "peer", "peer", "--inbox", in.Path)
 
 	for _, c := range []struct{ to, want string }{
 		{"child", "delivered to child by inbox"},
@@ -287,7 +299,7 @@ func TestNotifyParentReachesTheSessionItsEnvironmentNames(t *testing.T) {
 	h.newSession("beta")
 	caller := h.firstPane("alpha")
 	in := startInbox(t, "ok\n")
-	h.idleAgent("beta", "parent-sess", "--title", "boss", "--inbox", in.Path)
+	h.idleAgent("beta", "parent-sess", "boss", "--inbox", in.Path)
 
 	h.expectKido(caller, "the answer is 42", []string{"KIDO_AGENT_PARENT_SESSION=parent-sess"},
 		"delivered to boss by inbox", "tool", "notify_parent")
@@ -311,7 +323,7 @@ func TestNotifyParentKeepsAReportOverTheCap(t *testing.T) {
 	h := start(t, "alpha")
 	caller := h.firstPane("alpha")
 	in := startInbox(t, "ok\n")
-	h.idleAgent("alpha", "parent-sess", "--inbox", in.Path)
+	h.idleAgent("alpha", "parent-sess", "", "--inbox", in.Path)
 	const run = "run-cap-e2e"
 	report := filepath.Join(h.stateDir, "runs", run, "report")
 	if err := os.MkdirAll(filepath.Dir(report), 0o755); err != nil {
@@ -435,7 +447,8 @@ func TestContextKeepsLiveRecordsSharingAPane(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	caller := h.firstPane("alpha")
-	h.agentStatus("context-self", caller, "pi", "idle")
+	h.programStatus(caller, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", caller, "#{pane_title}"), "π - "))
+	h.agentStatus("context-self", caller, "pi")
 	pane := h.piPane("alpha", "π - shared")
 	at := time.Now().Add(-time.Minute)
 	h.writeRecord("hidden-sender", pane, at, map[string]any{"title": "hidden-sender"})
@@ -581,16 +594,18 @@ func TestMessageAgentSaysAMessageToARunningAgentWaits(t *testing.T) {
 	h := start(t, "alpha")
 	in := startInbox(t, "ok\n")
 	caller := h.firstPane("alpha")
-	h.agentStatus("caller", caller, "pi", "idle", "--title", "caller", "--inbox", in.Path)
-	h.idleAgent("alpha", "idle-child", "--title", "idle-child", "--inbox", in.Path, "--parent-session", "caller")
+	h.programStatus(caller, "state=idle:app=pi", "caller")
+	h.agentStatus("caller", caller, "pi", "--inbox", in.Path)
+	h.idleAgent("alpha", "idle-child", "idle-child", "--inbox", in.Path, "--parent-session", "caller")
 	busy := func(id, status string, extra ...string) {
 		p := h.newWindow("alpha", "", "sh", "-c", "exec sleep 300")
 		h.in("select-pane", "-t", p, "-T", "")
-		h.agentStatus(id, p, "pi", status, append([]string{"--title", id, "--inbox", in.Path}, extra...)...)
+		h.programStatus(p, "state="+status+":app=pi", id)
+		h.agentStatus(id, p, "pi", append([]string{"--inbox", in.Path}, extra...)...)
 	}
-	busy("busy-peer", "running")
-	busy("busy-child", "running", "--parent-session", "caller")
-	busy("compacting-grandchild", "compacting", "--parent-session", "busy-child")
+	busy("busy-peer", "working")
+	busy("busy-child", "working", "--parent-session", "caller")
+	busy("compacting-grandchild", "working", "--parent-session", "busy-child")
 
 	for _, c := range []struct{ to, want string }{
 		{"idle-child", "delivered to idle-child by inbox"},

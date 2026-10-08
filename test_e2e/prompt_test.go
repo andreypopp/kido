@@ -149,7 +149,8 @@ func TestPromptMultiLine(t *testing.T) {
 
 	// No inbox socket: kido delivers through Tmux.Exec.send_prompt, not the
 	// socket path (TestPromptInboxNative).
-	h.agentStatus("pi-1", pane, "pi", "idle")
+	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus("pi-1", pane, "pi")
 
 	// printf expands \n inside the pane, not the caller's shell.
 	h.runPrompt(`echo AAA\necho BBB`)
@@ -275,7 +276,8 @@ func TestPromptInboxNative(t *testing.T) {
 	h := start(t, "alpha")
 	pane := h.piPane("alpha", "π - alpha")
 	in := startInbox(t, "ok\n")
-	h.agentStatus("pi-1", pane, "pi", "idle", "--inbox", in.Path)
+	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus("pi-1", pane, "pi", "--inbox", in.Path)
 
 	h.runPrompt("over the socket")
 	h.waitMain("rc=0")
@@ -289,7 +291,8 @@ func TestPromptInboxUnavailable(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	pane := h.piPane("alpha", "π - alpha")
-	h.agentStatus("pi-1", pane, "pi", "idle", "--inbox", staleSocket(t))
+	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus("pi-1", pane, "pi", "--inbox", staleSocket(t))
 
 	h.runPrompt("not pasted")
 	h.waitMain("rc=1")

@@ -70,7 +70,8 @@ func TestPiTerminalStatusIdentityAndStall(t *testing.T) {
 	h.waitFor(func() bool { return listed("working", "Terminal", true) }, settle, msgf("stale working terminal stalls"))
 
 	caller := h.firstPane("alpha")
-	h.agentStatus("asker", caller, "pi", "idle", "--inbox", startInbox(t, "ok\n").Path)
+	h.programStatus(caller, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", caller, "#{pane_title}"), "π - "))
+	h.agentStatus("asker", caller, "pi", "--inbox", startInbox(t, "ok\n").Path)
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Fatal(err)

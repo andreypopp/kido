@@ -1046,8 +1046,11 @@ func (h *harness) hookPayload(sessionID, pane, event string, payload map[string]
 	}
 }
 
-func (h *harness) programStatus(pane, body string) {
+func (h *harness) programStatus(pane, body string, title ...string) {
 	h.t.Helper()
+	if len(title) > 0 {
+		body += ":title=" + base64.StdEncoding.EncodeToString([]byte(title[0]))
+	}
 	tty := h.in("display-message", "-p", "-t", pane, "#{pane_tty}")
 	f, err := os.OpenFile(tty, os.O_WRONLY, 0)
 	if err != nil {
@@ -1079,40 +1082,13 @@ func (h *harness) programStatus(pane, body string) {
 	}, settle, msgf("terminal report %s", body))
 }
 
-func (h *harness) agentStatus(sessionID, pane, agent, status string, extra ...string) {
+func (h *harness) agentStatus(sessionID, pane, agent string, extra ...string) {
 	h.t.Helper()
-	args := []string{"agent-status", "--agent", agent, "--session", sessionID}
-	title := h.in("display-message", "-p", "-t", pane, "#{pane_title}")
-	title = strings.TrimPrefix(title, "π - ")
-	ended, remove := false, false
-	for i := 0; i < len(extra); i++ {
-		switch extra[i] {
-		case "--title":
-			i++
-			title = extra[i]
-		case "--ended":
-			ended = true
-		case "--remove":
-			remove = true
-			args = append(args, extra[i])
-		default:
-			args = append(args, extra[i])
-		}
-	}
-	if !remove {
-		state := map[string]string{"running": "working", "waiting": "blocked", "compacting": "working", "idle": "idle"}[status]
-		if state == "" {
-			state = status
-		}
-		if ended {
-			state = "done"
-		}
-		h.programStatus(pane, "state="+state+":app=pi:title="+base64.StdEncoding.EncodeToString([]byte(title)))
-	}
+	args := append([]string{"agent-status", "--agent", agent, "--session", sessionID}, extra...)
 	cmd := exec.Command(kidoBin, args...)
 	cmd.Env = cleanEnv("TMUX="+h.inner+",0,0", "TMUX_PANE="+pane)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		h.t.Fatalf("kido agent-status %s: %v\n%s", status, err, out)
+		h.t.Fatalf("kido agent-status %s: %v\n%s", sessionID, err, out)
 	}
 }
 
@@ -1126,8 +1102,8 @@ func (h *harness) agentWithInbox(session, sessionID string) (*inbox, string) {
 	paneID := h.newWindow(session, "", "sh", "-c", "exec sleep 300")
 	h.waitPaneCommand(paneID, "sleep")
 	in := startInbox(h.t, "ok\n")
-	h.agentStatus(sessionID, paneID, "pi", "idle",
-		"--inbox", in.Path)
+	h.programStatus(paneID, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", paneID, "#{pane_title}"), "π - "))
+	h.agentStatus(sessionID, paneID, "pi", "--inbox", in.Path)
 	return in, paneID
 }
 

@@ -112,7 +112,7 @@ func TestAsyncBashStreamEndsAcrossAParentRestart(t *testing.T) {
 
 	pid := h.wrapperPID(runID)
 	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
-	h.agentStatus("parent-stream-restart", pane, "pi", "", "--remove")
+	h.agentStatus("parent-stream-restart", pane, "pi", "--remove")
 	h.waitFor(func() bool { return syscall.Kill(pid, 0) == syscall.ESRCH }, settle,
 		msgf("the streaming wrapper to end during the quit-then-resume gap"))
 	info := h.waitOutcome(runID)
@@ -120,7 +120,8 @@ func TestAsyncBashStreamEndsAcrossAParentRestart(t *testing.T) {
 		t.Fatalf("restart gap outcome = %q/%q, want failed/its parent ended", info.Outcome, info.OutcomeText)
 	}
 	restarted := startInbox(h.t, "ok\n")
-	h.agentStatus("parent-stream-restart", pane, "pi", "idle", "--inbox", restarted.Path)
+	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus("parent-stream-restart", pane, "pi", "--inbox", restarted.Path)
 	if err := os.WriteFile(gate, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}

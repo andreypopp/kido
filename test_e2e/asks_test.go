@@ -55,7 +55,8 @@ func TestAskUserLifecycle(t *testing.T) {
 	h := start(t, "alpha")
 	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 	file := filepath.Join(h.dir, "session.jsonl")
-	h.agentStatus("ask-session", pane, "pi", "idle", "--title", "Orchestrator")
+	h.programStatus(pane, "state=idle:app=pi", "Orchestrator")
+	h.agentStatus("ask-session", pane, "pi")
 	id, code := askCommand(h, pane, "Ship now?\nOr wait?", "tool", "ask_user", "--session-file", file)
 	if code != 0 || !strings.HasPrefix(id, "A") || len(id) > 10 {
 		t.Fatalf("ask_user: exit %d, %s", code, id)
@@ -72,7 +73,8 @@ func TestAskUserLifecycle(t *testing.T) {
 	if got := openAsks(h, "no-session"); len(got) != 0 {
 		t.Fatalf("session filter: %+v", got)
 	}
-	h.agentStatus("ask-session", pane, "pi", "idle", "--title", "Renamed")
+	h.programStatus(pane, "state=idle:app=pi", "Renamed")
+	h.agentStatus("ask-session", pane, "pi")
 	out, code := askCommand(h, pane, "Ship Monday?", "tool", "ask_user", "--replaces", id, "--session-file", file)
 	asks = openAsks(h, "ask-session")
 	if code != 0 || out != id || len(asks) != 2 || asks[1].ID != id || asks[1].Text != "Ship Monday?" || asks[1].Name != "Renamed" || asks[1].Created == first.Created {
@@ -82,7 +84,7 @@ func TestAskUserLifecycle(t *testing.T) {
 	if code != 1 || !strings.Contains(out, "no ask A1") {
 		t.Fatalf("missing replace: exit %d, %s", code, out)
 	}
-	h.agentStatus("ask-session", pane, "pi", "", "--remove")
+	h.agentStatus("ask-session", pane, "pi", "--remove")
 	asks = openAsks(h, "ask-session")
 	if len(asks) != 2 || !asks[0].Ended || !asks[1].Ended {
 		t.Fatalf("asks did not persist as ended: %+v", asks)
@@ -91,7 +93,8 @@ func TestAskUserLifecycle(t *testing.T) {
 	if err != nil || strings.Contains(string(stored), "ended") {
 		t.Fatalf("ended was persisted: %s, %v", stored, err)
 	}
-	h.agentStatus("ask-session", pane, "pi", "idle")
+	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus("ask-session", pane, "pi")
 	if openAsks(h, "ask-session")[0].Ended {
 		t.Fatal("resumed session still ended")
 	}
@@ -113,14 +116,16 @@ func TestAskUserLifecycle(t *testing.T) {
 	if code != 0 || len(fields) != 3 {
 		t.Fatalf("spawn child: exit %d, %s", code, spawn)
 	}
-	h.agentStatus(fields[2], fields[1], "pi", "idle", "--parent-session", "ask-session", "--parent-pid", fmt.Sprint(os.Getpid()), "--depth", "1")
+	h.programStatus(fields[1], "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", fields[1], "#{pane_title}"), "π - "))
+	h.agentStatus(fields[2], fields[1], "pi", "--parent-session", "ask-session", "--parent-pid", fmt.Sprint(os.Getpid()), "--depth", "1")
 	for _, args := range [][]string{{"tool", "ask_user", "--session-file", file}, {"tool", "remove_ask", id}} {
 		out, code = askCommand(h, fields[1], "Question", args...)
 		if code != 1 || !strings.Contains(out, "top-level agents only") {
 			t.Fatalf("subagent refusal: exit %d, %s", code, out)
 		}
 	}
-	h.agentStatus("nested-session", fields[1], "pi", "idle", "--parent-session", "ask-session", "--parent-pid", fmt.Sprint(os.Getpid()), "--depth", "1")
+	h.programStatus(fields[1], "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", fields[1], "#{pane_title}"), "π - "))
+	h.agentStatus("nested-session", fields[1], "pi", "--parent-session", "ask-session", "--parent-pid", fmt.Sprint(os.Getpid()), "--depth", "1")
 	nested, code := askCommand(h, fields[1], "Nested root question", "tool", "ask_user", "--session", "nested-session", "--session-file", file)
 	if code != 0 {
 		t.Fatalf("nested root was mistaken for its pane's run: exit %d, %s", code, nested)

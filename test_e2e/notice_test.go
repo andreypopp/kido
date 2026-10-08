@@ -23,8 +23,8 @@ func TestSpawnedChildNoticeReachesParentInboxQuickly(t *testing.T) {
 	// A real inbox so the notice goes over the socket, not a paste fallback.
 	in := startInbox(t, "ok\n")
 	parentPane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
-	h.agentStatus("parent-notice-e2e", parentPane, "pi", "idle",
-		"--inbox", in.Path)
+	h.programStatus(parentPane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", parentPane, "#{pane_title}"), "π - "))
+	h.agentStatus("parent-notice-e2e", parentPane, "pi", "--inbox", in.Path)
 
 	taskFile := filepath.Join(h.dir, "task.txt")
 	if err := os.WriteFile(taskFile, []byte("say hi"), 0o644); err != nil {

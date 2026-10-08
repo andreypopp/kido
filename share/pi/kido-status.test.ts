@@ -3191,10 +3191,7 @@ test("notify_parent's schema accepts a summary over the byte cap, and execute() 
   }
 });
 
-// The cap that matters is kido's own (Reporting.one_line, lib/reporting.ml); only the
-// schema wrongly rejected past 256 characters. The report is still checked since
-// the local copy setActivity keeps is what every later report carries.
-test("set_status's schema accepts an activity over the byte cap, and setActivity sends it whole as kido tool set_status", async () => {
+test("set_status accepts an activity over the byte cap and reports it whole", async () => {
   const fx = makeFixture();
   try {
     fx.setAgents([{ id: "self", name: "self", parent: "", self: true, canMessage: true }]);
@@ -3208,13 +3205,6 @@ test("set_status's schema accepts an activity over the byte cap, and setActivity
     );
 
     await tool.execute("call-1", { activity: longActivity });
-    let call: string[] | undefined;
-    await pollUntil(() => (call = last(fx.setStatusCalls())) !== undefined, 2000, "a kido tool set_status call");
-    assert.equal(call![0], "tool");
-    assert.equal(call![1], "set_status");
-    assert.equal(call![2], "--", "the activity is positional, behind --, so one beginning with a dash is still an activity");
-    assert.equal(call![3], longActivity, "the extension no longer truncates; kido's own cap is what enforces the bound");
-
     await s.emit("agent_settled", {}, { isIdle: () => true });
     let report: string[] | undefined;
     await pollUntil(() => {
@@ -3226,6 +3216,23 @@ test("set_status's schema accepts an activity over the byte cap, and setActivity
     }, 2000, "a status report reflecting the activity");
     const i = report!.indexOf("--activity");
     assert.equal(report![i + 1], longActivity, "the report carries the same untruncated activity");
+    await pollUntil(() => [...commandWork.values()].every((work) => work.size === 0), 2000, "detached reports finish");
+    assert.equal(fx.setStatusCalls().length, 0);
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("set_status without a reporter sends the activity as a positional argument", async () => {
+  const fx = makeFixture();
+  try {
+    const s = await startSession(fx, { sessionId: "" });
+    const activity = "-" + "y".repeat(500);
+    await s.tools.get("set_status").execute("call-1", { activity });
+    let call: string[] | undefined;
+    await pollUntil(() => (call = last(fx.setStatusCalls())) !== undefined, 2000, "a kido tool set_status call");
+    assert.deepEqual(call, ["tool", "set_status", "--", activity]);
+    assert.equal(fx.identityReports().length, 0);
   } finally {
     await fx.restore();
   }

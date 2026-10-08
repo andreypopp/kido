@@ -20,8 +20,8 @@ func (h *harness) asyncParent(session, id string) *inbox {
 	h.t.Helper()
 	in := startInbox(h.t, "ok\n")
 	pane := h.in("display-message", "-p", "-t", session+":", "#{pane_id}")
-	h.agentStatus(id, pane, "pi", "idle",
-		"--inbox", in.Path)
+	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus(id, pane, "pi", "--inbox", in.Path)
 	return in
 }
 
@@ -243,7 +243,8 @@ func TestAsyncBashRecordsItsRunAndItsCommand(t *testing.T) {
 	t.Parallel()
 	h := start(t, "alpha")
 	pane := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
-	h.agentStatus("abash-caller-e2e", pane, "pi", "idle", "--depth", "1")
+	h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+	h.agentStatus("abash-caller-e2e", pane, "pi", "--depth", "1")
 
 	outFile := filepath.Join(h.dir, "derived.out")
 	h.sendLiteral(fmt.Sprintf("%s tool async_bash -- %s > %s 2>&1; echo rc=$? >> %s",

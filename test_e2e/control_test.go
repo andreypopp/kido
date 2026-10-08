@@ -78,7 +78,7 @@ func TestStopDoesNotKillAHealthyChild(t *testing.T) {
 		for len(in.Received()) == 0 && time.Now().Before(deadline) {
 			time.Sleep(10 * time.Millisecond)
 		}
-		h.agentStatus("healthy-e2e", paneID, "pi", "idle", "--remove")
+		h.agentStatus("healthy-e2e", paneID, "pi", "--remove")
 	}()
 
 	out := h.runKido("alpha", "stop.out", "tool", "stop_run", "healthy-e2e")
@@ -147,7 +147,8 @@ func TestStopWithNoWayToAskNeedsForce(t *testing.T) {
 		runID, windowID := h.recordedRun(c.name, c.flags...)
 		paneID := h.in("list-panes", "-t", windowID, "-F", "#{pane_id}")
 		bystander := h.in("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", windowID, "sh", "-c", "exec sleep 300")
-		h.agentStatus("decoy-"+c.name, bystander, "pi", "idle", "--title", runID)
+		h.programStatus(bystander, "state=idle:app=pi", runID)
+		h.agentStatus("decoy-"+c.name, bystander, "pi")
 
 		out := h.runKido("alpha", c.name+"-unforced.out", "tool", "stop_run", runID)
 		if !strings.Contains(out, c.refusal) || !strings.Contains(out, "pass --force") || !strings.Contains(out, "rc=1") {
@@ -179,12 +180,14 @@ func TestInterruptAndStopReachOnlyDescendants(t *testing.T) {
 	h := start(t, "alpha")
 
 	caller := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
-	h.agentStatus("caller-e2e", caller, "pi", "idle")
+	h.programStatus(caller, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", caller, "#{pane_title}"), "π - "))
+	h.agentStatus("caller-e2e", caller, "pi")
 	h.agentRunMeta("caller-e2e", caller, "caller-e2e", "")
 	agent := func(session, id string, flags ...string) *inbox {
 		in := startInbox(t, "ok\n")
 		pane := h.newWindow(session, "", "sh", "-c", "exec sleep 300")
-		h.agentStatus(id, pane, "pi", "idle", append([]string{"--inbox", in.Path}, flags...)...)
+		h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+		h.agentStatus(id, pane, "pi", append([]string{"--inbox", in.Path}, flags...)...)
 		h.agentRunMeta(id, pane, id, "")
 		return in
 	}
@@ -236,7 +239,8 @@ func TestStopSaysWhyItKilledAnUnwillingTarget(t *testing.T) {
 		in := startInbox(t, c.reply)
 		pane := h.newWindow("alpha", "", "sh", "-c", "exec sleep 300")
 		windowID := h.windowID(pane)
-		h.agentStatus(c.id, pane, "pi", "idle", "--inbox", in.Path)
+		h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+		h.agentStatus(c.id, pane, "pi", "--inbox", in.Path)
 		h.agentRunMeta(c.id, pane, c.id, "")
 		out := h.runKido("alpha", c.id+".out", "tool", "stop_run", c.id)
 		for _, want := range []string{"did not accept the stop request (", c.why, "and was still there after 300ms; killed its pane", "rc=0"} {
@@ -257,10 +261,12 @@ func TestStopBashRunFindsItsRunAndSpeaksForIt(t *testing.T) {
 	h := start(t, "alpha")
 	caller := h.in("display-message", "-p", "-t", "alpha:", "#{pane_id}")
 	in := startInbox(t, "ok\n")
-	h.agentStatus("caller-e2e", caller, "pi", "idle", "--inbox", in.Path)
+	h.programStatus(caller, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", caller, "#{pane_title}"), "π - "))
+	h.agentStatus("caller-e2e", caller, "pi", "--inbox", in.Path)
 	shellAgent := func(id string, flags ...string) string {
 		pane := h.newWindow("alpha", "")
-		h.agentStatus(id, pane, "pi", "idle", append([]string{"--inbox", startInbox(t, "ok\n").Path}, flags...)...)
+		h.programStatus(pane, "state=idle:app=pi", strings.TrimPrefix(h.in("display-message", "-p", "-t", pane, "#{pane_title}"), "π - "))
+		h.agentStatus(id, pane, "pi", append([]string{"--inbox", startInbox(t, "ok\n").Path}, flags...)...)
 		return pane
 	}
 	started := 0

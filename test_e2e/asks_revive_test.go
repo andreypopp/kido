@@ -26,12 +26,13 @@ func TestSidebarAsksRevive(t *testing.T) {
 		t.Fatal(err)
 	}
 	pane := h.in("new-window", "-d", "-P", "-F", "#{pane_id}", "-t", "alpha:", "-c", cwd)
-	h.agentStatus("ended-session", pane, "pi", "idle", "--title", "Ended")
+	h.programStatus(pane, "state=idle:app=pi", "Ended")
+	h.agentStatus("ended-session", pane, "pi")
 	id, code := askCommand(h, pane, "Restart me?", "tool", "ask_user", "--session-file", file)
 	if code != 0 {
 		t.Fatal(id)
 	}
-	h.agentStatus("ended-session", pane, "pi", "", "--remove")
+	h.agentStatus("ended-session", pane, "pi", "--remove")
 	focusSidebar(h)
 	h.sendKeys("a")
 	h.waitSelected("Ended " + id + " Restart me?")
@@ -85,8 +86,10 @@ func TestSidebarAsksRevive(t *testing.T) {
 	if len(openAsks(h, "ended-session")) != 1 {
 		t.Fatal("revive removed the ask")
 	}
-	h.agentStatus("ended-session", newPane, "pi", "idle", "--title", "Revived")
-	h.agentStatus("nested-competitor", newPane, "pi", "idle", "--title", "Other")
+	h.programStatus(newPane, "state=idle:app=pi", "Revived")
+	h.agentStatus("ended-session", newPane, "pi")
+	h.programStatus(newPane, "state=idle:app=pi", "Other")
+	h.agentStatus("nested-competitor", newPane, "pi")
 	focusSidebar(h)
 	h.waitSelected(id)
 	h.sendKeys("Enter")
