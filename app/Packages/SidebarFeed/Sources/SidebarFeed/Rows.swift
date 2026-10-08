@@ -51,7 +51,7 @@ extension Item {
     var status: SidebarRow.Status {
         switch indicator {
         case .failed, .gone(.failed), .gone(.died): .error
-        case .waiting: kind == .agent || run == .agent ? .attention : .quiet
+        case .waiting: .attention
         case .stalled: .stalled
         case .done, .gone(.completed): .done
         case .running, .compacting: .running
@@ -101,7 +101,7 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                     let tail = item.tail.map(\.text).joined()
                     let agent = item.kind == .agent || item.run == .agent
                     let label = item.label
-                    let quietShell = item.kind == .shell && item.run == nil && item.indicator != .running && item.indicator != .compacting
+                    let quietShell = item.kind == .shell && item.run == nil && (item.indicator == .idle || item.indicator == .done || item.indicator == .failed)
                     let height = (tail.isEmpty ? 32.0 : 44.0) - (depth == 0 ? 0 : 4) - (multiPane ? 2 : 0)
                     rows.append(SidebarRow(id: .pane(session.id, item.id), kind: .pane(target), indent: depth,
                                            height: height,

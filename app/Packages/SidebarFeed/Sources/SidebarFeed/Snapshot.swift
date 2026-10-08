@@ -15,18 +15,38 @@ public struct Snapshot: Decodable, Equatable, Sendable {
     }
 
     public let client: Position
-    public let filter: String
+    public let asks: [Ask]
     public let error: String?
-    public let sessions: [SessionNodes]
+    public var sessions: [SessionNodes]
 
-    private enum CodingKeys: String, CodingKey { case v, client, filter, error, sessions }
+    public func sameSidebarContent(as other: Snapshot) -> Bool {
+        func nodes(_ a: [Node], _ b: [Node]) -> Bool {
+            a.count == b.count && zip(a, b).allSatisfy { left, right in
+                switch (left, right) {
+                case (.window(let a), .window(let b)):
+                    a.id == b.id && nodes(a.children.map(Node.item), b.children.map(Node.item))
+                case (.item(let a), .item(let b)):
+                    a.id == b.id && a.window == b.window && a.kind == b.kind && a.run == b.run
+                    && a.indicator == b.indicator && a.title == b.title && a.tail == b.tail
+                    && a.started == b.started && a.attention == b.attention && nodes(a.children, b.children)
+                default: false
+                }
+            }
+        }
+        return client == other.client && sessions.count == other.sessions.count
+            && zip(sessions, other.sessions).allSatisfy { a, b in
+                a.id == b.id && a.name == b.name && a.current == b.current && nodes(a.nodes, b.nodes)
+            }
+    }
+
+    private enum CodingKeys: String, CodingKey { case v, client, asks, error, sessions }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let v = try c.decode(Int.self, forKey: .v)
         guard v == 2 else { throw DecodingError.dataCorruptedError(forKey: .v, in: c, debugDescription: "not a v2 snapshot: v \(v)") }
         client = try c.decode(Position.self, forKey: .client)
-        filter = try c.decode(String.self, forKey: .filter)
+        asks = try c.decode([Ask].self, forKey: .asks)
         error = try c.decodeIfPresent(String.self, forKey: .error)
         sessions = try c.decode([SessionNodes].self, forKey: .sessions)
     }
@@ -96,12 +116,13 @@ public struct Item: Decodable, Equatable, Sendable {
     public var pane: PaneID { id }
     public let window: WindowID
     public let indicator: Indicator?
+    public let program_status: ProgramStatus
     public let title: [Span]
     public let tail: [Span]
     public let started: Date?
     public let attention: Bool
     public let children: [Node]
-    private enum CodingKeys: String, CodingKey { case kind, id, pane, window, indicator, title, tail, run, started, attention, children }
+    private enum CodingKeys: String, CodingKey { case kind, id, pane, window, indicator, program_status, title, tail, run, started, attention, children }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         kind = try c.decode(Kind.self, forKey: .kind)
@@ -111,6 +132,7 @@ public struct Item: Decodable, Equatable, Sendable {
         guard id == pane else { throw DecodingError.dataCorruptedError(forKey: .id, in: c, debugDescription: "id must equal pane") }
         window = try c.decode(WindowID.self, forKey: .window)
         indicator = try c.decodeIfPresent(Indicator.self, forKey: .indicator)
+        program_status = try c.decode(ProgramStatus.self, forKey: .program_status)
         title = try c.decode([Span].self, forKey: .title)
         tail = try c.decode([Span].self, forKey: .tail)
         started = try c.decodeIfPresent(Double.self, forKey: .started).map { Date(timeIntervalSince1970: $0) }

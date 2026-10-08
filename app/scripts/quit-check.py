@@ -22,8 +22,8 @@ with tempfile.TemporaryDirectory(prefix="kido-quit-", dir="/tmp") as scratch:
     control.write_text(f'#!/bin/sh\necho $$ > {shlex.quote(str(root / "control.pid"))}\nexec {shlex.quote(str(tmux))} "$@"\n')
     feed.write_text('#!/usr/bin/python3\nimport os, signal, sys, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
                     + f'open({str(root / "feed.pid")!r}, "w").write(str(os.getpid()))\n'
-                    + 'print(\'{"hello":{"protocol":"1.1"}}\', flush=True)\n'
-                    + 'print(\'{"v":2,"filter":"","client":{"session":"$0","window":"@0","pane":"%0"},"sessions":[]}\', flush=True)\n'
+                    + 'print(\'{"hello":{"protocol":"2.0"}}\', flush=True)\n'
+                    + 'print(\'{"v":2,"asks":[],"client":{"session":"$0","window":"@0","pane":"%0"},"sessions":[]}\', flush=True)\n'
                     + 'while True: time.sleep(60)\n')
     control.chmod(0o700)
     feed.chmod(0o700)

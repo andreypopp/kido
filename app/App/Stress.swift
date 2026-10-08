@@ -1,10 +1,11 @@
 import AppKit
 import TmuxControl
 import GhosttyKit
+import SidebarFeed
 
 #if KIDO_STRESS
 
-final class StressWindow: NSWindow {
+final class StressWindow: OwnerWindow {
     var resizeRendering = false
     override var occlusionState: NSWindow.OcclusionState { resizeRendering ? [.visible] : super.occlusionState }
     override var canBecomeKey: Bool { false }
@@ -21,12 +22,12 @@ typealias AppWindow = StressWindow
         case resizeBurst = "resize-burst", loadMore = "load-more", gripDrag = "grip-drag"
         case gripDragKill = "grip-drag-kill", appearance, edgeResize = "edge-resize", detachReconnect = "detach-reconnect"
         case hiddenResize = "hidden-resize", clearHistory = "clear-history"
-        case tabs, sidebarJump = "sidebar-jump", sidebarSearch = "sidebar-search", sidebarFold = "sidebar-fold", sidebarMode = "sidebar-mode"
+        case tabs, sidebarJump = "sidebar-jump", sidebarSearch = "sidebar-search", sidebarMode = "sidebar-mode"
     }
     private static let actions: [Action] = [
         .wheel, .wheel, .stripPress, .stripWheel, .alternate, .scrollerDrag, .scrollerDrag, .scrollRequest, .find, .findNext, .findCloseResync,
         .resizeBurst, .loadMore, .gripDrag, .gripDragKill, .appearance, .edgeResize, .detachReconnect, .hiddenResize, .clearHistory,
-        .tabs, .sidebarJump, .sidebarSearch, .sidebarFold, .sidebarMode,
+        .tabs, .sidebarJump, .sidebarSearch, .sidebarMode,
     ]
     private let window: NSWindow
     private let send: ([Command]) -> Void
@@ -35,6 +36,7 @@ typealias AppWindow = StressWindow
     private let finish: DispatchTime
     private var seed: UInt64
     private var step = 0
+    private var rpcTimeout: DispatchWorkItem?
     private var counts: [String: Int] = [:]
     private var resizeCompleted = Set<ObjectIdentifier>()
     private var resizeAcknowledged: [String: Double] = [:]
@@ -676,6 +678,10 @@ typealias AppWindow = StressWindow
                 }
             }
         }
+        guard rpcTimeout == nil else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.tick() }
+            return
+        }
         let all = window.contentView.map(views) ?? []
         let panes = visible(all, PaneView.self)
         var action = Self.actions[random(Self.actions.count)]
@@ -699,7 +705,7 @@ typealias AppWindow = StressWindow
         log(["step": step, "action": action.rawValue, "pane": pane?.pane.description ?? "", "panes": panes.count,
              "visible": window.isVisible, "key": window.isKeyWindow, "main": window.isMainWindow,
              "active": NSApp.isActive, "onScreenWindows": onScreen()])
-        if [.tabs, .sidebarJump, .sidebarSearch, .sidebarFold, .sidebarMode].contains(action) { performUI(action) }
+        if [.tabs, .sidebarJump, .sidebarSearch, .sidebarMode].contains(action) { performUI(action) }
         else if let pane { perform(action, pane, all) }
         if step % 5 == 0 { verifyUI() }
         log(["tick": step, "counts": counts])
@@ -708,7 +714,7 @@ typealias AppWindow = StressWindow
 
     private func perform(_ action: Action, _ pane: PaneView, _ all: [NSView]) {
         switch action {
-        case .tabs, .sidebarJump, .sidebarSearch, .sidebarFold, .sidebarMode: break
+        case .tabs, .sidebarJump, .sidebarSearch, .sidebarMode: break
         case .stripPress:
             let point = pane.convert(NSPoint(x: pane.bounds.midX, y: pane.bounds.height - pane.renderInsets.top / 2), to: nil)
             pane.mouseDown(with: event(.leftMouseDown, point))
@@ -834,11 +840,32 @@ typealias AppWindow = StressWindow
                 self.check("tab-order", app.sidebar.tabs.entries.map(\.id) == navigation.windows.map(\.id))
                 let menu = NSApp.mainMenu?.items.first { $0.title == "Window" }?.submenu
                 self.check("shortcut-order", menu?.items.dropFirst(3).enumerated().allSatisfy { index, item in
-                    (item.representedObject as? Command) == navigation.select(.number(index + 1))
+                    (item.representedObject as? RPCRequest) == navigation.select(.number(index + 1))
                         && item.keyEquivalent == (index < 9 ? "\(index + 1)" : "")
                 } == true && menu?.items.count == navigation.windows.count + 3)
             }
         }
+    }
+
+    private func afterSidebarReply(_ list: SidebarView, verification: String, action: () -> Void, completed: @escaping @MainActor @Sendable () -> Void) {
+        let timeout = DispatchWorkItem { self.check("rpc-completion-deadline", false) }
+        rpcTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: timeout)
+        let original = list.request
+        var requests = 0
+        list.request = { request, done in
+            requests += 1
+            original(request) { result in
+                done(result)
+                timeout.cancel()
+                self.rpcTimeout = nil
+                if case .failure(let error) = result { self.log(["rpc-error": error.message]); self.check("rpc-completion", false) }
+                else { completed() }
+            }
+        }
+        action()
+        list.request = original
+        check(verification, requests == 1)
     }
 
     private func performUI(_ action: Action) {
@@ -863,8 +890,8 @@ typealias AppWindow = StressWindow
                 _ = NSApp.mainMenu?.performKeyEquivalent(with: key("\(random(9) + 1)", 0, .command))
                 counts["tab-cmd-number", default: 0] += 1
             default:
-                _ = NSApp.mainMenu?.performKeyEquivalent(with: key(random(2) == 0 ? "j" : "k", 0, [.command, .control]))
-                counts["tab-ctrl-cmd-jk", default: 0] += 1
+                _ = NSApp.mainMenu?.performKeyEquivalent(with: key(random(2) == 0 ? "}" : "{", 0, .command))
+                counts["tab-cmd-brace", default: 0] += 1
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.verifyUI() }
         case .sidebarJump:
@@ -872,15 +899,9 @@ typealias AppWindow = StressWindow
             guard !rows.isEmpty else { return }
             let row = rows[random(rows.count)]
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-            let original = list.send
-            var switches = 0
-            list.send = { commands, done in
-                switches += commands.filter { $0.line.hasPrefix("switch-client ") }.count
-                original(commands, done)
+            afterSidebarReply(list, verification: "one-rpc-jump", action: { table.keyDown(with: key("\r", 36)) }) {
+                self.verifyUI()
             }
-            table.keyDown(with: key("\r", 36))
-            list.send = original
-            check("one-switch-client", switches == 1)
         case .sidebarSearch:
             table.keyDown(with: key("/"))
             guard let field = all.compactMap({ $0 as? NSSearchField }).first else { return }
@@ -892,10 +913,16 @@ typealias AppWindow = StressWindow
             field.sendAction(field.action, to: field.target)
             _ = list.control(field, textView: NSTextView(), doCommandBy: #selector(NSResponder.cancelOperation(_:)))
             check("search-escape", list.query.isEmpty)
-        case .sidebarFold:
-            table.keyDown(with: key("", random(2) == 0 ? 123 : 124))
         case .sidebarMode:
             let lock = env["STRESS_UI_LOCK"] ?? ""
+            let generation = app.stressGeneration
+            let interrupted: @MainActor @Sendable () -> Bool = {
+                guard app.stressGeneration != generation else { return false }
+                self.counts["floating-frame-interrupted", default: 0] += 1
+                self.log(["floating-probe": "interrupted", "generation": generation, "current-generation": app.stressGeneration])
+                try? FileManager.default.removeItem(atPath: lock)
+                return true
+            }
             _ = FileManager.default.createFile(atPath: lock, contents: Data())
             sidebar.dismissFloating()
             sidebar.isCollapsed = true
@@ -908,16 +935,32 @@ typealias AppWindow = StressWindow
                 "\(max(1, Int(floor((frame.width - 8 - $0.width + pixel) / $0.width))))x\(max(1, Int(floor((floor((frame.height - 12) / pixel) * pixel - pixel) / $0.height))))"
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                self.log(["floating-probe": "begin", "collapsed-size": size ?? "unknown"])
+                guard !interrupted() else { return }
+                self.log(["floating-probe": "begin", "collapsed-size": size ?? "unknown", "generation": generation])
                 _ = NSApp.mainMenu?.performKeyEquivalent(with: self.key("s", 1, .command))
                 self.window.contentView?.layoutSubtreeIfNeeded()
                 sidebar.viewDidLayout()
-                self.check("floating-frame", sidebar.isFloating && sidebar.content.convert(sidebar.content.bounds, to: nil) == frame)
+                guard sidebar.isFloating && sidebar.content.convert(sidebar.content.bounds, to: nil) == frame else {
+                    self.check("floating-frame", false)
+                    return
+                }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    guard !interrupted() else { return }
                     self.check("floating-frame", sidebar.isFloating && sidebar.content.convert(sidebar.content.bounds, to: nil) == frame)
                     self.log(["floating-probe": "end"])
+                    let dismissed: @MainActor @Sendable () -> Void = {
+                        self.check("floating-dismiss", !sidebar.isFloating)
+                        for _ in 0..<3 {
+                            if self.random(2) == 0 { sidebar.toggleSidebar(nil); self.counts["toolbar-toggle-equivalent", default: 0] += 1 }
+                            else { _ = NSApp.mainMenu?.performKeyEquivalent(with: self.key("S", 1, [.command, .shift])); self.counts["sidebar-cmd-shift-s", default: 0] += 1 }
+                        }
+                        try? FileManager.default.removeItem(atPath: lock)
+                    }
                     switch self.random(3) {
-                    case 0: table.keyDown(with: self.key("\u{1b}", 53)); self.counts["floating-escape", default: 0] += 1
+                    case 0:
+                        self.counts["floating-escape", default: 0] += 1
+                        self.afterSidebarReply(list, verification: "one-rpc-release", action: { table.keyDown(with: self.key("\u{1b}", 53)) }, completed: dismissed)
+                        return
                     case 1:
                         let point = sidebar.content.convert(NSPoint(x: sidebar.content.bounds.maxX - 10, y: 20), to: nil)
                         self.views(sidebar.splitView).first { String(describing: type(of: $0)) == "Outside" }?
@@ -925,12 +968,7 @@ typealias AppWindow = StressWindow
                         self.counts["floating-outside-click", default: 0] += 1
                     default: _ = NSApp.mainMenu?.performKeyEquivalent(with: self.key("s", 1, .command))
                     }
-                    self.check("floating-dismiss", !sidebar.isFloating)
-                    for _ in 0..<3 {
-                        if self.random(2) == 0 { sidebar.toggleSidebar(nil); self.counts["toolbar-toggle-equivalent", default: 0] += 1 }
-                        else { _ = NSApp.mainMenu?.performKeyEquivalent(with: self.key("S", 1, [.command, .shift])); self.counts["sidebar-cmd-shift-s", default: 0] += 1 }
-                    }
-                    try? FileManager.default.removeItem(atPath: lock)
+                    dismissed()
                 }
             }
         default: break
@@ -993,5 +1031,5 @@ typealias AppWindow = StressWindow
     }
 }
 #else
-typealias AppWindow = NSWindow
+typealias AppWindow = OwnerWindow
 #endif
